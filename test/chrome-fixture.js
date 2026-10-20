@@ -1,4 +1,5 @@
 /** Shared isolated Chrome launcher with bounded startup and complete process-group cleanup [C7]. */
+import { execFileSync, spawn as spawnGuardian } from 'node:child_process';
 import { startFixtureChild as spawn } from './fixture-child.js';
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { loadavg, tmpdir } from 'node:os';
@@ -149,12 +150,71 @@ export function requireBrowserSlot() {
   if (process.env.PULLBOARD_TEST_BROWSER_SLOT === 'none') throw browserSlotRefusal('through test/chrome-fixture.js');
 }
 
+/**
+ * The guardian program: poll the watched pids and, once any is gone, take down the Chrome process group.
+ * It runs in its own session so the owner's death, by any signal, cannot take it along, and it ends by itself
+ * once the group is empty. Escalating to SIGKILL after two seconds covers Chrome helpers that ignore SIGTERM.
+ */
+const GUARDIAN_SOURCE = `
+const [group, ...watched] = process.argv.slice(1).map(Number);
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } };
+let signalledAt = 0;
+setInterval(() => {
+  if (!alive(-group)) process.exit(0);
+  if (watched.every(alive)) return;
+  if (!signalledAt) { signalledAt = Date.now(); try { process.kill(-group, 'SIGTERM'); } catch {} }
+  else if (Date.now() - signalledAt >= 2000) { try { process.kill(-group, 'SIGKILL'); } catch {} }
+}, 250);
+`;
+
+let runnerAncestor;
+
+/**
+ * Find the test runner above this process: the nearest ancestor whose command runs bin/run-tests.js itself.
+ * The walk uses `ps -o ppid=,command= -p <pid>`, which macOS and Linux share, runs once per process,
+ * and answers null for a direct `node --test`, where only the owner is guarded.
+ */
+export function findRunnerAncestor() {
+  if (runnerAncestor !== undefined) return runnerAncestor;
+  runnerAncestor = null;
+  try {
+    let pid = process.pid;
+    for (let depth = 0; depth < 32 && pid > 1; depth += 1) {
+      const row = execFileSync('ps', ['-o', 'ppid=,command=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      const match = /^(\d+)\s+(.*)$/su.exec(row);
+      if (!match) break;
+      pid = Number(match[1]);
+      const ancestor = execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      // The runner's own `node --test` child carries bin/run-tests.js only as its --import; it is not the runner.
+      if (/(?:^|[\s/])bin\/run-tests\.js(?:\s|$)/u.test(ancestor) && !/\s--(?:test|import)\b/u.test(ancestor)) { runnerAncestor = pid; break; }
+    }
+  } catch { /* No readable ancestry means the guardian watches the owner alone. */ }
+  return runnerAncestor;
+}
+
+/**
+ * Tie a detached Chrome process group to the processes that own it [C7].
+ * A SIGKILLed owner runs no cleanup, so the group would outlive it for days; this starts a tiny detached
+ * guardian that kills the group within about a second of the owner, or the runner above it, disappearing.
+ * The group leader's pid is the group id.
+ */
+export function guardChromeGroup(groupId, { ownerPid = process.pid } = {}) {
+  if (process.platform === 'win32' || !Number.isSafeInteger(groupId) || groupId <= 1) return null;
+  const watched = [ownerPid, findRunnerAncestor()].filter((pid) => Number.isSafeInteger(pid) && pid > 1);
+  const guardian = spawnGuardian(process.execPath, ['-e', GUARDIAN_SOURCE, String(groupId), ...watched.map(String)],
+    { detached: true, stdio: 'ignore' });
+  guardian.on('error', () => {});
+  guardian.unref();
+  return guardian.pid ?? null;
+}
+
 /** Launch an executable as a detached process group and retain its stderr and launch timing. */
 export function launchChromeProcess({ executable, args = [], env = process.env, cleanupTimeoutMs = CLEANUP_TIMEOUT_MS } = {}) {
   requireBrowserSlot();
   if (!executable) throw new Error('Chrome was not found; install Chrome or set PULLBOARD_CHROME.');
   const launchedAt = Date.now();
   const child = spawn(executable, args, { detached: true, env, stdio: ['ignore', 'ignore', 'pipe'] });
+  if (child.pid) guardChromeGroup(child.pid);
   let stderr = '';
   let launchError = null;
   child.stderr.setEncoding('utf8');

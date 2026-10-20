@@ -10,7 +10,7 @@ import vm from 'node:vm';
 import { stableChrome, press, tapTouch } from './stable.js';
 import { closeBoard, openBoard } from '../../src/board.js';
 import { fetchFresh } from '../http-fixture.js';
-import { requireBrowserSlot } from '../chrome-fixture.js';
+import { guardChromeGroup, requireBrowserSlot } from '../chrome-fixture.js';
 import { disableFixtureBackgroundView } from './background-view-fixture.js';
 
 
@@ -659,6 +659,7 @@ async function startSnapshotChrome(executable, profile, { timeoutMs = 30_000, si
     const startedAt = Date.now();
     requireBrowserSlot();
     const child = spawn(executable, args, { detached: true, stdio: ['ignore', 'ignore', 'pipe'] });
+    if (child.pid) guardChromeGroup(child.pid);
     const stopped = new Promise((resolve) => child.once('close', (code, signal) => resolve({ code, signal })));
     let stopPromise;
     let onAbort;
