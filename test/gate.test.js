@@ -559,8 +559,14 @@ test('output after the match', async () => {
 });
 `);
   const runner = resolve(import.meta.dirname, '../bin/run-tests.js');
-  const named = `${shellWord(process.execPath)} ${shellWord(runner)} ${shellWord(fixture)} 2>&1 | grep -Eq '^ok [0-9]+ - passing named item check'`;
-  for (const command of [named, 'yes | grep -q y', 'sh -c "exit 7" | tail -1']) {
+  const named = `${shellWord(process.execPath)} ${shellWord(runner)} ${shellWord(fixture)} 2>&1`;
+  const captured = (probe, assertion = `printf '%s\\n' "$out"`) => `out=$(${probe}) && ${assertion}`;
+  const commands = [
+    captured(named, `printf '%s\\n' "$out" | grep -Eq '^ok [0-9]+ - passing named item check'`),
+    captured('yes | grep -q y'),
+    captured('sh -c "exit 7" | tail -1'),
+  ];
+  for (const command of commands) {
     const item = repoWithGate('true', command);
     const baseline = JSON.parse(item.run('show', '1', '--json').stdout).item_check_baseline;
     assert.equal(baseline.result, 'green', 'background baselines preserve last-stage semantics');

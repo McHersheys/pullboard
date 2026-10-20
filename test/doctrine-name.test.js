@@ -404,7 +404,7 @@ test('[D4,A5] verify in a detached checkout reads the trunk baseline for a doctr
     lanes: { web: { owns: ['web/'], specs: [] } }, shared: [] }, null, 2) + '\n');
   box.git(source, 'add', '-A');
   box.git(source, 'commit', '-q', '-m', 'chore: initialize doctrine verification fixture');
-  const check = `${shellWord(process.execPath)} ${shellWord(BIN)} spec check | grep -E 'DOCTRINE[.]md: .*0 errors'`;
+  const check = `out=$(${shellWord(process.execPath)} ${shellWord(BIN)} spec check 2>&1) && printf '%s\\n' "$out" | grep -Eq 'DOCTRINE[.]md: .*0 errors'`;
   const added = box.run(source, 'add', 'web', 'Doctrine review fixture', '--criterion', 'The frozen doctrine check passes in the verifier clone.', '--check', check, '--json');
   assert.equal(added.status, 0, `${added.stdout}${added.stderr}`);
   const id = JSON.parse(added.stdout).item.item_id;

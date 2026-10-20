@@ -63,6 +63,24 @@ test('init adds a Claude Code session hook that runs resume, and keeps every oth
   assert.equal(bare.stdout, '');
 });
 
+test('a slow tour names its slowest steps [N10]', () => {
+  const box = sandbox();
+  const real = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim();
+  const slowBin = join(box.dir, 'slow-bin');
+  mkdirSync(slowBin);
+  // A git that sleeps before each commit: the slow step the tour must name, through a shim it calls, not a switch.
+  writeFileSync(join(slowBin, 'git'), `#!/bin/sh\ncase "$*" in *"feat(app)"*) sleep 15 ;; esac\nexec ${JSON.stringify(real)} "$@"\n`);
+  chmodSync(join(slowBin, 'git'), 0o755);
+  const plainEnv = { ...box.env, TMPDIR: box.dir, PATH: `${slowBin}:${process.env.PATH}` };
+  delete plainEnv.NO_COLOR;
+  delete plainEnv.FORCE_COLOR;
+  const shown = spawnSync(process.execPath, [BIN, 'tour'], { cwd: box.dir, env: plainEnv, encoding: 'utf8' });
+  assert.equal(shown.status, 0, `${shown.stdout}${shown.stderr}`);
+  const slowest = shown.stderr.split('\n').find((line) => line.startsWith('slowest steps:'));
+  assert.ok(slowest, 'the tour names its slowest steps');
+  assert.match(slowest, /git commit -q -m "feat\(app\)[^;]*? ([0-9]{5,}) ms/u, 'the slowed commit is named with its time');
+});
+
 test('the tour runs a reject and its rework on a throwaway repo, in under thirty seconds [N10]', () => {
   const box = sandbox();
   const plainEnv = { ...box.env, TMPDIR: box.dir };
@@ -71,7 +89,8 @@ test('the tour runs a reject and its rework on a throwaway repo, in under thirty
   const started = Date.now();
   const shown = spawnSync(process.execPath, [BIN, 'tour'], { cwd: box.dir, env: plainEnv, encoding: 'utf8' });
   assert.equal(shown.status, 0, `${shown.stdout}${shown.stderr}`);
-  assert.ok(Date.now() - started < 30_000, 'thirty seconds'); // budget: approved row N10 states thirty seconds.
+  const slowest = shown.stderr.split('\n').find((line) => line.startsWith('slowest steps:')) ?? 'the tour named no slowest steps';
+  assert.ok(Date.now() - started < 30_000, `thirty seconds; ${slowest}`); // budget: approved row N10 states thirty seconds.
   assert.doesNotMatch(shown.stdout, /\u001b\[/, 'piped output stays plain');
   assert.match(shown.stdout, /review-1 \(Scripted\) \$ pullboard verify 1 reject --reason BEHAVIOR_MISMATCH/);
   assert.match(shown.stdout, /sent back: #1 BEHAVIOR_MISMATCH by review-1 \(Scripted\): greet\(''\) returns "Hello, !"/);
