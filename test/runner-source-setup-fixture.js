@@ -51,7 +51,7 @@ childProcess.spawn = (command, args, options) => {
     if (${JSON.stringify(mode)} === 'index') return spawn(command, [...args, '--fixture-invalid-option'], options);
     if (${JSON.stringify(mode)} === 'missing') return spawn(${JSON.stringify(join(dir, 'missing-git'))}, args, options);
     // Let queued pipe bytes drain before exit; an immediate exit can discard the fixture's diagnostic tail.
-    if (${JSON.stringify(mode)} === 'large') return spawn(process.execPath, ['-e', ${JSON.stringify(`process.stderr.write('x'.repeat(20_000) + ${JSON.stringify(`\nfatal: fixture tail token=${SECRET} https://user:fake-password@fixture.invalid/repo?token=${SECRET} ${remoteHome}/private.txt 192.168.1.99\nAuthorization: Bearer fixture-bearer-secret\nCookie: session=fixture-cookie-secret\n`)}); process.exitCode = 23;`)}], options);
+    if (${JSON.stringify(mode)} === 'large') return spawn(process.execPath, ['-e', ${JSON.stringify(`process.stderr.write('x'.repeat(20_000) + ${JSON.stringify(`\nfatal: fixture tail token=${SECRET} https://user:fake-password@fixture.invalid/repo?token=${SECRET} ${remoteHome}/private.txt 10.20.30.40\nAuthorization: Bearer fixture-bearer-secret\nCookie: session=fixture-cookie-secret\n`)}); process.exitCode = 23;`)}], options);
     writeFileSync(join(options.cwd, '.git', 'index.lock'), 'held by this fixture\\n');
   }
   return spawn(command, args, options);
@@ -84,7 +84,7 @@ syncBuiltinESMExports();\n`);
       assert.match(result.stdout, /exit 23[\s\S]*fixture tail/u, 'bounded stderr retains the concrete failure tail');
       assert.ok(!result.stdout.includes(SECRET) && !result.stdout.includes('fake-password'), 'credential assignments and URL credentials stay private');
       assert.ok(!result.stdout.includes('fixture-bearer-secret') && !result.stdout.includes('fixture-cookie-secret'), 'spaced bearer and cookie credentials stay private');
-      assert.ok(!result.stdout.includes('192.168.1.99'), 'private network addresses stay private');
+      assert.ok(!result.stdout.includes('10.20.30.40'), 'private network addresses stay private');
       assert.ok(Buffer.byteLength(result.stdout.split('PULLBOARD_RUN_RESULT ')[0]) < 2_400, 'the diagnostic is bounded in bytes');
     }
     assert.ok(!result.stdout.includes(remoteHome), 'runner-private paths never reach the controller');

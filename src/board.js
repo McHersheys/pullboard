@@ -1687,7 +1687,7 @@ export function reopen(board, id, { agentId, note = '', conflict, cause }) {
   });
 }
 
-/** Read test and merge-commit evidence from a Studio/manual landing note without checking Git. */
+/** Read test and merge-commit evidence from a hand-written landing note without checking Git. */
 function manualLandingFailure(note) {
   const generatedPrefix = /^Landing batch [a-z0-9_-]{1,80} failed /iu.exec(note);
   const body = generatedPrefix ? note.slice(generatedPrefix[0].length) : note;

@@ -29,8 +29,8 @@ function fixture(t) {
     GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
   const original = Object.fromEntries(Object.keys(overrides).map(key => [key, process.env[key]]));
   Object.assign(process.env, overrides);
-  const env = { ...process.env, GIT_AUTHOR_NAME: 'Corey Olson', GIT_AUTHOR_EMAIL: 'olevicor@icloud.com',
-    GIT_COMMITTER_NAME: 'Corey Olson', GIT_COMMITTER_EMAIL: 'olevicor@icloud.com' };
+  const env = { ...process.env, GIT_AUTHOR_NAME: 'Sentinel Fixture', GIT_AUTHOR_EMAIL: 'sentinel@example.invalid',
+    GIT_COMMITTER_NAME: 'Sentinel Fixture', GIT_COMMITTER_EMAIL: 'sentinel@example.invalid' };
   runFixtureGit(['init', '-q', '-b', 'main'], { cwd: root, env });
   writeFileSync(join(root, 'pullboard.json'), JSON.stringify({ gate: 'true', lanes: { core: { owns: ['src/'] } } }));
   writeFileSync(join(root, 'SPEC.md'), '# Fixture\n\n## A\n- A6 [approved, must] Report stuck work. | gate: review\n');

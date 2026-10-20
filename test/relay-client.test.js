@@ -1255,7 +1255,7 @@ async function finalReplicaOrder(fixture, timing) {
   assert.deepEqual(replicaFiles.map(localEvents), beforeFuture, 'neither clone applies a future engine or its own later move');
 }
 
-test('[H3,H16,V1,V17] three cloned linked replicas order competing claims', { timeout: 240_000 }, async (t) => { // 20 paired rounds (60 CLI spawns), six sync/registration spawns and three local API calls took 170s on Studio; setup fits the remaining ceiling.
+test('[H3,H16,V1,V17] three cloned linked replicas order competing claims', { timeout: 240_000 }, async (t) => { // 20 paired rounds (60 CLI spawns), six sync/registration spawns and three local API calls took 170s under load; setup fits the remaining ceiling.
   const timing = threeReplicaPhaseCapture(t);
   return timing.run(async () => {
     const fixture = await threeReplicaFixture(t, timing);

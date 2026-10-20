@@ -348,7 +348,7 @@ test('a red landing gate returns a verified item to its builder [B3,V4]', async 
   assert.equal(JSON.parse(noNamedTest.out).error.code, 'LANDING_FAILURE_REQUIRED');
   for (const invalidNote of [
     `Landing failed: gate red; merge commit ${'d'.repeat(40)}`,
-    `Studio landing gate red: see the log; merge commit ${'d'.repeat(40)}`,
+    `Landing gate red on the runner: see the log; merge commit ${'d'.repeat(40)}`,
     `Reopening #12: the gate was red; merge commit ${'d'.repeat(40)}`,
   ]) {
     const refused = manualBox.run(manualBox.repo, 'reopen', String(manualItem.id), '--note', invalidNote, '--json');
