@@ -14,11 +14,25 @@ import {
 } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import {
+  basename,
+  join,
+} from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { CHECKOUT_SESSION_TOKEN_ENV } from './agent-session.js';
 import { displayAgentName } from './agent-names.js';
 import { loadConfig } from './config.js';
+import {
+  AGENT_SESSION_IDS,
+  AGENT_SHELL_MARKERS,
+} from './person.js';
 import { registerProjectAndLink } from './projects.js';
+
+/**
+ * The caller's agent-session identity and checkout lease. A scripted seat must never inherit them: a seat that did
+ * would be recorded under the caller's session, and its verify would then be refused as self-verification (#952).
+ */
+const CALLER_SESSION_NAMES = new Set([...AGENT_SHELL_MARKERS, ...AGENT_SESSION_IDS, CHECKOUT_SESSION_TOKEN_ENV]);
 
 const BIN = fileURLToPath(new URL('../bin/pullboard.js', import.meta.url));
 
@@ -109,13 +123,22 @@ export async function tour(io) {
   writeFileSync(join(shims, 'pullboard'), `#!/bin/sh\nexec "${process.execPath}" "${BIN}" "$@"\n`);
   chmodSync(join(shims, 'pullboard'), 0o755);
   // Nothing of the person's git setup reaches the tour: no config files, and no GIT_ variable, such
-  // as GIT_DIR from a hook or GIT_CONFIG_COUNT pairs, which git reads as config too.
-  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('GIT_') && name !== 'NODE_TEST_CONTEXT'));
+  // as GIT_DIR from a hook or GIT_CONFIG_COUNT pairs, which git reads as config too. The caller's agent session
+  // stays out as well, so each seat is judged as its own session below (#952).
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('GIT_') && name !== 'NODE_TEST_CONTEXT' && !CALLER_SESSION_NAMES.has(name)));
   Object.assign(env, { PATH: `${shims}:${process.env.PATH}`, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', PULLBOARD_HOME: join(dir, '.pullboard'), PULLBOARD_MACHINE_HOME: join(dir, '.pullboard-machine') });
   const repo = join(dir, 'greeter');
   const app = `${repo}-app-1`;
   const review = `${repo}-review-1`;
   const where = { coordinator: repo, 'app-1': app, 'review-1': review };
+  /**
+   * The agent session a scripted seat runs as (#952). Each seat has its own session identifier, derived from this
+   * run's unique folder, so the builder and the reviewer are two sessions and neither is the caller's.
+   *
+   * @param {string} who
+   * @returns {Record<string, string>}
+   */
+  const seatSession = (who) => ({ CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: `${basename(dir)}-${who}` });
   const timings = [];
 
   /**
@@ -128,7 +151,7 @@ export async function tour(io) {
     const result = spawnSync(file, args, {
       cwd: where[who],
       encoding: 'utf8',
-      env: { ...env, GIT_AUTHOR_NAME: who, GIT_AUTHOR_EMAIL: `${who}@tour.invalid`, GIT_COMMITTER_NAME: who, GIT_COMMITTER_EMAIL: `${who}@tour.invalid` },
+      env: { ...env, ...seatSession(who), GIT_AUTHOR_NAME: who, GIT_AUTHOR_EMAIL: `${who}@tour.invalid`, GIT_COMMITTER_NAME: who, GIT_COMMITTER_EMAIL: `${who}@tour.invalid` },
     });
     timings.push({ label: label || `${file} ${typed(args)}`, ms: performance.now() - started });
     if ((result.status === 0) === fails) {
@@ -189,7 +212,8 @@ export async function tour(io) {
     pb('app-1', ['claim', '1'], { show: /^claimed/ });
     write('app-1', { 'src/greet.mjs': FIXED, 'src/greet.test.mjs': EDGE_TEST });
     run('app-1', 'git', ['commit', '-q', '-am', 'fix(app): a blank name greets the world [G1]']);
-    const second = pb('app-1', ['submit', '1'], { show: /^submitted/ }).match(/at ([0-9a-f]{12})/)[1];
+    // The fix edits a test that existed at the claim, so the submit says why (#814).
+    const second = pb('app-1', ['submit', '1', '--infra', 'pins the blank-name edge the verifier found'], { show: /^submitted/ }).match(/at ([0-9a-f]{12})/)[1];
 
     step(7, 'The verifier breaks the fix on purpose, to prove the new test can fail, then restores it and accepts.');
     run('review-1', 'git', ['switch', '-q', '--detach', second]);

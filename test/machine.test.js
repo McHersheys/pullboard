@@ -476,7 +476,7 @@ test('every refusal a move raises today is declared on that move, and every decl
   assert.ok(walk.refusalsOf('cli.js#submitHere').has('UNKNOWN_SPEC'), 'submit calls the freezer too');
   assert.ok(!walk.refusalsOf('cli.js#submitHere', new Set(CAUGHT['cli.js#submitHere'])).has('UNKNOWN_SPEC'), 'and catches what it raises');
   assert.ok(walk.refusalsOf('cli.js#freezer').has('A5_GRAMMAR_VERSION'), 'the freezer propagates an unsupported grammar version');
-  for (const code of ['NOT_CLAIMABLE', 'LANE_HELD', 'GATE_RED', 'NO_GATE', 'NOT_AT_COMMIT', 'SELF_VERIFY', 'BAD_DECISION']) {
+  for (const code of ['INFRA_NOTE_REQUIRED', 'NOT_CLAIMABLE', 'LANE_HELD', 'GATE_RED', 'NO_GATE', 'NOT_AT_COMMIT', 'SELF_VERIFY', 'BAD_DECISION']) {
     assert.ok(ENTRY_POINTS.some(({ at }) => at.some((entry) => walk.refusalsOf(entry).has(code))), `the walk finds ${code}`);
   }
   for (const code of Object.keys(NOT_MOVES)) {
@@ -853,7 +853,7 @@ test('pullboard help lists each role\'s moves from the declaration, and pullboar
 /** Guards checked before the explicit transition: CLI facts and optional roadmap selection. */
 const PRECHECKED = {
   claim: ['joined', 'checkProvesSomething'],
-  submit: ['joined', 'checkProvesSomething', 'criterionUnchanged', 'treeClean', 'nothingUntracked', 'hasCommit', 'withinLane', 'trunkMergeClean', 'doctrineHolds', 'gateConfigured', 'queuedItemLease', 'gateGreen', 'treeStillDuringGate', 'noUnverifiedStack'],
+  submit: ['joined', 'checkProvesSomething', 'criterionUnchanged', 'treeClean', 'nothingUntracked', 'hasCommit', 'withinLane', 'trunkMergeClean', 'infraExplained', 'doctrineHolds', 'gateConfigured', 'queuedItemLease', 'gateGreen', 'treeStillDuringGate', 'noUnverifiedStack'],
   reserve: ['coordinatorSaysAs', 'joined', 'roadmapReadable'],
   accept: ['coordinatorSaysAs', 'joined', 'atSubmittedCommit', 'reviewTreeCurrent', 'trunkMergeClean', 'queuedItemLease', 'itemCheckGreen', 'noUnverifiedStack'],
   reject: ['coordinatorSaysAs', 'joined', 'atSubmittedCommit', 'reviewTreeCurrent'],

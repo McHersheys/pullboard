@@ -475,7 +475,7 @@ test('an item claimed before the gate existed submits once a gate exists [C7,B26
   commitAll(box, 'chore: expose an untrusted candidate gate');
   const marker = join(box.dir, 'gate-ran.log');
   box.env.GATE_MARKER = marker;
-  const submitted = box.run('submit', '1', '--json');
+  const submitted = box.run('submit', '1', '--json', '--infra', 'the gate was configured after the claim');
   assert.equal(submitted.code, 0, `${submitted.out}\n${submitted.err}`);
   const receipt = JSON.parse(submitted.out);
   assert.equal(receipt.gate.green, true);
@@ -593,7 +593,7 @@ test('a landing-gated project defers the full suite from submit to landing [V4,C
   put(optedIn.box.root, 'src/cli.js', 'export const version = 2;\n');
   commitAll(optedIn.box, 'feat(core): change global source [G1]');
 
-  const deferred = optedIn.box.run('submit', '1', '--json');
+  const deferred = optedIn.box.run('submit', '1', '--json', '--infra', 'the landing fixture edits its pullboard.json');
   assert.equal(deferred.code, 0, deferred.err);
   const receipt = JSON.parse(deferred.out);
   assert.equal(receipt.gate.full, true, 'the selector still reports that it fell back to the whole suite');
@@ -620,7 +620,7 @@ test('a landing-gated project defers the full suite from submit to landing [V4,C
   put(candidateOnly.box.root, 'pullboard.json', JSON.stringify(candidateConfig));
   put(candidateOnly.box.root, 'src/cli.js', 'export const version = 2;\n');
   commitAll(candidateOnly.box, 'feat(core): try candidate-only deferral [G1]');
-  const ordinary = candidateOnly.box.run('submit', '1', '--json');
+  const ordinary = candidateOnly.box.run('submit', '1', '--json', '--infra', 'the landing fixture edits its pullboard.json');
   assert.equal(ordinary.code, 0, ordinary.err);
   const ordinaryReceipt = JSON.parse(ordinary.out);
   assert.equal(ordinaryReceipt.gate.deferred, false, 'a candidate-only setting is not trusted');
@@ -631,7 +631,7 @@ test('a landing-gated project defers the full suite from submit to landing [V4,C
   const named = project('landing');
   put(named.box.root, 'src/a.js', 'export const value = 2;\n');
   commitAll(named.box, 'feat(core): change one selected source [G1]');
-  const selected = named.box.run('submit', '1', '--json');
+  const selected = named.box.run('submit', '1', '--json', '--infra', 'the landing fixture edits its pullboard.json');
   assert.equal(selected.code, 0, selected.err);
   const selectedReceipt = JSON.parse(selected.out);
   assert.equal(selectedReceipt.gate.full, false);
@@ -683,14 +683,14 @@ test("a landing-gated submit runs the project's invariant tests [V4,C7]", (t) =>
 
   const empty = project();
   change(empty.box);
-  const unchanged = empty.box.run('submit', '1', '--json');
+  const unchanged = empty.box.run('submit', '1', '--json', '--infra', 'the landing fixture edits its pullboard.json');
   assert.equal(unchanged.code, 0, unchanged.err);
   assert.equal(existsSync(empty.marker), false, 'the empty default adds no tests');
   unstamped(empty.box);
 
   const mandatory = project(['test/invariant.test.js']);
   change(mandatory.box);
-  const guarded = mandatory.box.run('submit', '1', '--json');
+  const guarded = mandatory.box.run('submit', '1', '--json', '--infra', 'the landing fixture edits its pullboard.json');
   assert.equal(guarded.code, 0, guarded.err);
   const guardedReceipt = JSON.parse(guarded.out);
   assert.equal(guardedReceipt.gate.full, true, 'the selector still reports an uncertain full fallback');
@@ -702,7 +702,7 @@ test("a landing-gated submit runs the project's invariant tests [V4,C7]", (t) =>
 
   const red = project(['test/invariant.test.js'], true);
   change(red.box);
-  const refused = red.box.run('submit', '1', '--json');
+  const refused = red.box.run('submit', '1', '--json', '--infra', 'the landing fixture edits its pullboard.json');
   assert.notEqual(refused.code, 0, 'a failing configured invariant must refuse the submit');
   assert.match(refused.err + refused.out, /GATE_RED/u);
   assert.ok(existsSync(red.marker), 'the listed invariant actually ran');
@@ -720,7 +720,7 @@ test("a landing-gated submit runs the project's invariant tests [V4,C7]", (t) =>
   candidate.submitInvariants = ['test/c.test.js'];
   put(trusted.box.root, 'pullboard.json', JSON.stringify(candidate));
   change(trusted.box);
-  const ignored = trusted.box.run('submit', '1', '--json');
+  const ignored = trusted.box.run('submit', '1', '--json', '--infra', 'the landing fixture edits its pullboard.json');
   assert.notEqual(ignored.code, 0, 'accepted main policy overrides both the claim-time list and candidate edit');
   assert.match(ignored.err + ignored.out, /GATE_RED/u);
   assert.ok(existsSync(trusted.marker), 'the accepted-main invariant still ran');
@@ -730,14 +730,14 @@ test("a landing-gated submit runs the project's invariant tests [V4,C7]", (t) =>
   const missing = project(['test/invariant.test.js']);
   rmSync(join(missing.box.root, 'test/invariant.test.js'));
   change(missing.box);
-  const absent = missing.box.run('submit', '1', '--json');
+  const absent = missing.box.run('submit', '1', '--json', '--infra', 'the landing fixture edits its pullboard.json');
   assert.notEqual(absent.code, 0, 'deleting a mandatory file cannot make the guard disappear');
   assert.match(absent.err + absent.out, /submitInvariants file test\/invariant\.test\.js is missing or unreadable/u);
   unstamped(missing.box);
 
   const named = project(['test/invariant.test.js', 'test/invariant.test.js']);
   change(named.box, false);
-  const selected = named.box.run('submit', '1', '--json');
+  const selected = named.box.run('submit', '1', '--json', '--infra', 'the landing fixture edits its pullboard.json');
   assert.equal(selected.code, 0, selected.err);
   const receipt = JSON.parse(selected.out);
   assert.equal(receipt.gate.full, false);
@@ -1487,7 +1487,7 @@ test('a submit runs the static style checks first [C7]', t => {
   put(box.root, 'src/cli.js', "import { join, resolve } from 'node:path';\nexport const fixture = join;\n");
   commitAll(box, 'feat(core): expose the missed static guard [G1]');
   rmSync(marker, { force: true });
-  const submitted = box.run('submit', '1', '--json');
+  const submitted = box.run('submit', '1', '--json', '--infra', 'the static guard fixture edits its pullboard.json');
   assert.notEqual(submitted.code, 0, 'submit must refuse a static import violation before any item proof');
   assert.match(submitted.out + submitted.err, /src\/cli\.js:1: one import binding per line/u);
   assert.equal(existsSync(marker), false, 'the frozen item check must not run after an early static refusal');

@@ -16,6 +16,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { request } from 'node:http';
 import { connect } from 'node:net';
@@ -442,5 +443,34 @@ test('explicit and trunk pre-push landings jump the machine gate line and show i
   } finally {
     writeFileSync(pushGate.release, 'released');
     await Promise.all(pushChildren.map((child) => child.closed));
+  }
+});
+
+/** The digest the agent-session ledger stores for one session identifier, as src/person.js computes it. */
+function sessionDigest(name, value) {
+  return createHash('sha256').update(JSON.stringify([name, value])).digest('hex');
+}
+
+test('the tour finishes when an agent session runs it [N10]', () => {
+  // A caller in Claude Code or Codex runs the tour; the scripted seats must not inherit the caller's session, so the
+  // reject-and-rework still verifies (#952). The caller's own digest must appear on no item the tour moved.
+  for (const [name, value] of [['CLAUDE_CODE_SESSION_ID', 'caller-session-952'], ['CODEX_THREAD_ID', 'caller-thread-952']]) {
+    const box = sandbox();
+    const callerEnv = { ...box.env, TMPDIR: box.dir, CLAUDECODE: '1', [name]: value };
+    delete callerEnv.PULLBOARD_MODEL;
+    delete callerEnv.NO_COLOR;
+    delete callerEnv.FORCE_COLOR;
+    const shown = spawnSync(process.execPath, [BIN, 'tour'], { cwd: box.dir, env: callerEnv, encoding: 'utf8' });
+    assert.equal(shown.status, 0, `${name}: ${shown.stdout}${shown.stderr}`);
+    assert.match(shown.stdout, /^Nothing shipped until a second agent verified it\.$/mu);
+    assert.match(shown.stdout, /verified #1: CRITERION_MET/);
+    assert.doesNotMatch(shown.stdout, /SELF_SESSION_VERIFY/);
+
+    const repo = /Look around: cd (\S+) && pullboard log/.exec(shown.stdout)[1];
+    const ledger = readFileSync(join(repo, '.git', 'pullboard', 'item-sessions.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    const digests = ledger.map((row) => row.digest);
+    // The ledger holds the builder's claim and submit; the reviewer's verify passing already proves it is another session.
+    assert.ok(digests.length > 0, `${name}: the builder's claim and submit are recorded`);
+    assert.equal(digests.includes(sessionDigest(name, value)), false, `${name}: the caller's session is no seat's builder`);
   }
 });

@@ -18,6 +18,18 @@ import { fileSizeProblems } from '../bin/checks/file-size.js';
 import { testNameProblems } from '../bin/checks/test-names.js';
 import { emptyCatchProblems } from '../bin/checks/empty-catch.js';
 import { testInputProblems } from '../bin/checks/test-inputs.js';
+import * as store from '../src/board.js';
+import { submitFixture } from './board-submit-fixture.js';
+import { createE2eHelpers } from './e2e-helpers.js';
+import { loadDoctrine } from '../src/doctrine.js';
+import { loadConfig } from '../src/config.js';
+import { draftConflictSplits } from '../src/rigor-splits.js';
+import { proposeDoctrine } from '../src/doctrine-rulings.js';
+import { conflictNote } from '../src/trunk-conflict.js';
+import { conflictNoteFiles, conflictReport } from '../src/rigor-conflicts.js';
+
+const conflictE2e = createE2eHelpers();
+after(conflictE2e.cleanup);
 
 const ROOT = resolve(import.meta.dirname, '..');
 const CHECKS = ['file-size', 'test-names', 'empty-catch', 'test-inputs'];
@@ -119,6 +131,113 @@ function fixture(name) {
   mkdirSync(root, { recursive: true });
   return root;
 }
+
+/** Record synthetic conflict history through public board moves, without claiming gates ran. */
+function conflictHistory() {
+  const box = conflictE2e.project('true');
+  const board = store.openBoard(join(box.repo, '.git/pullboard/board.sqlite'));
+  try {
+    const builder = store.register(board, { lane: 'web', path: join(box.dir, 'history-builder'), model: 'Fixture builder' });
+    const reviewer = store.register(board, { lane: 'web', path: join(box.dir, 'history-reviewer'), model: 'Fixture reviewer' });
+    /** Accept a synthetic submission, then record its typed conflict reopen. */
+    const collision = (title, files) => {
+      const id = store.addItem(board, { by: 'coordinator', lane: 'web', title });
+      store.claim(board, id, { agentId: builder, lane: 'web', leaseMs: 7_200_000,
+        freeze: item => ({ text: item.item_title, digest: `fixture:${item.item_id}` }) });
+      const commit = id.toString(16).padStart(40, '0');
+      submitFixture(board, id, { agentId: builder, commit, tree: 'a'.repeat(40) });
+      store.verify(board, id, { agentId: reviewer, decision: 'ACCEPT', note: 'synthetic accepted-history fixture; no gate claim',
+        head: commit, digest: store.getItem(board, id).item_frozen_digest, policy: 'any' });
+      store.reopen(board, id, { agentId: 'coordinator', conflict: { files, trunk: 'b'.repeat(40) } });
+      return id;
+    };
+    const first = collision('First collision', ['src/cli.js', 'src/rare.js']);
+    const second = collision('Second collision', ['src/cli.js']);
+    const held = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'An unrelated hold' });
+    store.holdItem(board, held, { agentId: 'coordinator', reason: 'a discussion mentions a conflict in src/unrelated.js' });
+    return { ...box, ids: [first, second] };
+  } finally { store.closeBoard(board); }
+}
+
+test('rigor reports a file that keeps causing merge conflicts [D1,C7]', () => {
+  const box = conflictHistory();
+  const before = readFileSync(join(box.repo, 'SPEC.md'), 'utf8');
+  const run = box.run(box.repo, 'rigor', '--json');
+  assert.equal(run.code, 0, run.out + run.err);
+  const report = JSON.parse(run.out);
+  assert.ok(Array.isArray(report.hotFiles), 'rigor exposes its per-file conflict history');
+  assert.deepEqual(report.hotFiles.map(file => file.file), ['src/cli.js'], 'one-off and prose-only paths never become hot files');
+  assert.deepEqual(report.hotFiles[0].items, box.ids, 'the report names the actual colliding items');
+  assert.equal(report.hotFiles[0].reopens, 2, 'each typed reopen counts once for this file');
+  assert.deepEqual(report.causes, [], 'architectural collisions do not pretend to be proved code-rule failures');
+  assert.equal(readFileSync(join(box.repo, 'SPEC.md'), 'utf8'), before, 'reporting alone does not draft or approve a rule');
+});
+
+
+test('a hot file becomes a draft split proposal [D1,C7]', () => {
+  const box = conflictHistory();
+  const original = loadDoctrine(box.repo).repo.rows;
+  const beforeSpec = readFileSync(join(box.repo, 'SPEC.md'), 'utf8');
+  const run = box.run(box.repo, 'rigor', '--draft-splits', '--json');
+  assert.equal(run.code, 0, run.out + run.err);
+  const report = JSON.parse(run.out);
+  assert.equal(report.splitDrafts.length, 1);
+  const draft = report.splitDrafts[0];
+  const doctrine = loadDoctrine(box.repo);
+  const row = doctrine.repo.rows.find(row => row.id === draft.row.id);
+  assert.equal(row.status, 'draft', 'the person has not approved this architectural advice');
+  assert.equal(row.gate, 'review', 'a suggestion has no fabricated executable proof');
+  assert.match(row.text, /splitting "src\/cli\.js"/u);
+  assert.match(row.text, /one module per command/u);
+  assert.match(row.text, /Source: conflict-split:/u);
+  assert.doesNotMatch(row.text, /Source: rigor:/u);
+  assert.deepEqual(doctrine.repo.rows.filter(row => row.id !== draft.row.id), original, 'existing judgments remain unchanged');
+  assert.equal(readFileSync(join(box.repo, 'SPEC.md'), 'utf8'), beforeSpec);
+  const written = readFileSync(doctrine.repo.file, 'utf8');
+  const again = box.run(box.repo, 'rigor', '--draft-splits', '--json');
+  assert.equal(again.code, 0, again.out + again.err);
+  assert.deepEqual(JSON.parse(again.out).splitDrafts, [], 'restarts do not duplicate pending advice');
+  assert.equal(readFileSync(doctrine.repo.file, 'utf8'), written);
+  const lane = box.run(box.web, 'rigor', '--draft-splits', '--json');
+  assert.equal(lane.code, 1, lane.out + lane.err);
+  assert.match(lane.out + lane.err, /COORDINATOR_ONLY/u);
+  const board = store.openBoard(join(box.repo, '.git/pullboard/board.sqlite'));
+  try {
+    const reservation = store.rowDrafts(board).find(row => row.id === draft.row.id);
+    assert.equal(reservation.target, 'doctrine', 'the ordinary draft is durably reserved on the project board');
+    assert.equal(reservation.gate, 'review');
+  } finally { store.closeBoard(board); }
+});
+
+test('conflict history counts exact notes and exposes unattributed holds [D1]', () => {
+  const now = new Date('2026-10-20T12:00:00Z');
+  /** An ordinary event-shaped fixture, with no synthetic database writes. */
+  const event = (id, item, kind, detail, at = now.toISOString()) => ({ event_id: id, item_id: item, event_kind: kind, event_at: at, event_detail: JSON.stringify(detail) });
+  const typed = event(1, 1, 'reopen', { conflict: { files: ['src/cli.js', 'src/one.js'], trunk: 'a'.repeat(40) } });
+  const held = event(2, 2, 'hold_item', { reason: conflictNote({ files: ['src/cli.js'], trunk: 'b'.repeat(40) }) });
+  const history = [typed, held, held, event(3, 2, 'unhold_item', {}),
+    event(4, 3, 'hold_item', { reason: 'a merge conflict somewhere in src/guess.js' }),
+    event(5, 4, 'hold_item', { reason: 'waiting for a person' }),
+    event(6, 5, 'reopen', { conflict: { files: ['src/old.js'], trunk: 'a'.repeat(40) } }, '2026-10-06T11:59:59Z'),
+    event(7, 6, 'hold_item', { reason: conflictNote({ files: ['src/future.js'], trunk: 'b'.repeat(40) }) }, '2026-10-20T12:00:01Z'),
+    event(8, 7, 'hold_item', { reason: conflictNote({ files: ['src/boundary.js'], trunk: 'b'.repeat(40) }) }, '2026-10-06T12:00:00Z')];
+  const report = conflictReport(history, { now });
+  assert.deepEqual(report.hotFiles.map(file => [file.file, file.reopens, file.holds, file.items]), [['src/cli.js', 1, 1, [1, 2]]]);
+  assert.deepEqual(report.hotFiles[0].events.map(event => event.source), ['typed-conflict', 'machine-note-syntax']);
+  assert.deepEqual(report.unattributedHolds.map(entry => entry.item), [3]);
+  assert.deepEqual(report.conflictFiles.map(file => file.file).sort(), ['src/boundary.js', 'src/cli.js', 'src/one.js']);
+  assert.equal(conflictReport([typed, event(9, 1, 'hold_item', { reason: conflictNote({ files: ['src/cli.js'], trunk: 'b'.repeat(40) }) })], { now }).hotFiles.length, 0, 'repeated events on one item cannot meet the distinct-item threshold');
+});
+
+test('canonical conflict notes preserve exact quoted paths [D1]', () => {
+  const files = ['src/plain.js', 'src/a, b.js', 'src/"quoted".js', 'src/a|b.js', 'src/line\nend.js', 'src/日本語.js'];
+  const note = conflictNote({ files, trunk: 'a'.repeat(40) });
+  assert.deepEqual(conflictNoteFiles(note), files);
+  for (const invalid of [note + ' extra', 'discussion: ' + note, note.replace(', ', ',')]) assert.equal(conflictNoteFiles(invalid), null);
+  assert.equal(conflictNoteFiles(conflictNote({ files: ['', 'src/a.js'], trunk: 'a'.repeat(40) })), null);
+  assert.equal(conflictNoteFiles(conflictNote({ files: ['src/a.js', 'src/a.js'], trunk: 'a'.repeat(40) })), null);
+  assert.equal(conflictNoteFiles(conflictNote({ files: ['src/\0bad.js'], trunk: 'a'.repeat(40) })), null);
+});
 
 test('Pullboard\'s four checks count what main has [D1, C7]', async (t) => {
   assert.equal(typeof fileSizeProblems, 'function', 'the size check imports without running');
@@ -296,4 +415,70 @@ test('Pullboard\'s four checks count what main has [D1, C7]', async (t) => {
     assert.deepEqual(runCheck('test-inputs', { root }).lines.map((line) => line.slice(0, line.indexOf(':'))),
       ['test/late.test.js', 'test/queued-walk.test.js'], 'a declaration below the first code line is not read, as the selection reads it');
   });
+});
+
+test('a split draft resumes after its row is reserved [D1]', async () => {
+  const box = conflictHistory();
+  const board = store.openBoard(join(box.repo, '.git/pullboard/board.sqlite'));
+  try {
+    const report = conflictReport(store.events(board));
+    const ctx = { info: { root: box.repo, isMain: true }, config: loadConfig(box.repo) };
+    const before = readFileSync(loadDoctrine(box.repo).repo.file, 'utf8');
+    let interrupted = false;
+    let calls = 0;
+    const dependencies = {
+      read: () => ({ coordinator: true, rows: store.rowDrafts(board), decisions: store.rowDecisions(board) }),
+      /** Interrupt once after the real durable reservation, before the ordinary file write. */
+      reserve: row => {
+        calls += 1;
+        const entry = store.draftSpecRow(board, { agentId: 'coordinator', row, written: true });
+        if (!interrupted) { interrupted = true; throw new Error('fixture interruption after durable reservation'); }
+        return entry;
+      },
+    };
+    await assert.rejects(draftConflictSplits(ctx, report, dependencies), /fixture interruption after durable reservation/u);
+    assert.equal(readFileSync(loadDoctrine(box.repo).repo.file, 'utf8'), before);
+    const reserved = store.rowDrafts(board);
+    assert.equal(reserved.length, 1, 'the reservation survived the interrupted file write');
+    const recovered = await draftConflictSplits(ctx, report, dependencies);
+    assert.equal(recovered.length, 1, 'a board reservation alone cannot pretend the file draft exists');
+    assert.equal(recovered[0].row.id, reserved[0].id, 'recovery keeps the exact reserved identity');
+    assert.equal(calls, 1, 'recovery does not reserve another identity');
+    const row = loadDoctrine(box.repo).repo.rows.find(row => row.id === reserved[0].id);
+    assert.equal(row.status, 'draft');
+    assert.equal(row.text, reserved[0].text, 'recovery preserves the original pending judgment and source');
+    assert.equal(row.gate, 'review');
+    assert.equal(store.rowDrafts(board).length, 1);
+    assert.deepEqual(await draftConflictSplits(ctx, report, dependencies), []);
+    const declined = box.run(box.repo, 'spec', 'decline', 'doctrine:' + row.id, '--reason', 'choose another split');
+    assert.equal(declined.code, 0, declined.out + declined.err);
+    writeFileSync(loadDoctrine(box.repo).repo.file, before);
+    await assert.rejects(draftConflictSplits(ctx, report, dependencies), error => error.code === 'STALE_ROW_DECISION', 'an interrupted retry never recreates a row with a person decision');
+    assert.equal(readFileSync(loadDoctrine(box.repo).repo.file, 'utf8'), before);
+  } finally { store.closeBoard(board); }
+});
+
+
+test('concurrent split proposals keep one reserved row [D1]', async () => {
+  const box = conflictHistory();
+  const board = store.openBoard(join(box.repo, '.git/pullboard/board.sqlite'));
+  try {
+    const report = conflictReport(store.events(board));
+    const ctx = { info: { root: box.repo, isMain: true }, config: loadConfig(box.repo) };
+    const dependencies = {
+      read: () => ({ coordinator: true, rows: store.rowDrafts(board), decisions: store.rowDecisions(board) }),
+      reserve: row => store.draftSpecRow(board, { agentId: 'coordinator', row, written: true }),
+    };
+    // The first await leaves an actual reservation; the second call recovers it before the first writes.
+    await Promise.all([draftConflictSplits(ctx, report, dependencies), draftConflictSplits(ctx, report, dependencies)]);
+    const doctrine = loadDoctrine(box.repo);
+    assert.deepEqual(doctrine.repo.problems, [], 'concurrent identical writes never duplicate a row id');
+    const proposed = doctrine.repo.rows.filter(row => row.text.includes('Source: conflict-split:'));
+    assert.equal(proposed.length, 1);
+    assert.equal(proposed[0].status, 'draft');
+    assert.equal(store.rowDrafts(board).length, 1);
+    const before = readFileSync(doctrine.repo.file, 'utf8');
+    assert.throws(() => proposeDoctrine({ ...ctx, doctrine }, { source: 'fixture', gate: 'review' }, 'Different judgment', { id: proposed[0].id }), error => error.code === 'ROW_DRAFT');
+    assert.equal(readFileSync(doctrine.repo.file, 'utf8'), before, 'a fixed-id retry cannot overwrite a different judgment');
+  } finally { store.closeBoard(board); }
 });

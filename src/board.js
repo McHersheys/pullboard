@@ -1242,7 +1242,7 @@ export function release(board, id, agentId, note = '') {
  * @param {{ agentId: string, commit: string, tree: string, files?: string[], policyCommit?: string, note?: string }} at - `files`: what the
  *   item's own commits changed since its claim; a rework adds to what the first attempt changed.
  */
-export function submit(board, id, { agentId, commit, tree, files = [], policyCommit = null, note, submissionProof: proof }) {
+export function submit(board, id, { agentId, commit, tree, files = [], policyCommit = null, note, submissionProof: proof, infra = null }) {
   let recordedProof;
   if (note !== undefined && (typeof note !== 'string' || !note.trim() || /[\r\n\u2028\u2029]/u.test(note))) {
     throw new Refused('USAGE', 'a submission note, when present, is one nonempty line');
@@ -1262,6 +1262,7 @@ export function submit(board, id, { agentId, commit, tree, files = [], policyCom
         withinLane: null,
         trunkMergeClean: null,
         noUnverifiedStack: null,
+        infraExplained: null, // The CLI checks the claimed Git diff before this transition.
         doctrineHolds: null,
         gateConfigured: null, queuedItemLease: null,
         gateGreen: null,
@@ -1307,7 +1308,7 @@ export function submit(board, id, { agentId, commit, tree, files = [], policyCom
       ...(policyCommit ? { policyCommit } : {}),
       ...(criterionDigest ? { criterionDigest } : {}),
       ...(note === undefined ? {} : { note: note.trim() }),
-      ...(recordedProof ? { submissionProof: recordedProof } : {}),
+      ...(recordedProof ? { submissionProof: recordedProof } : {}), ...(infra ? { infra } : {}),
     });
   });
 }

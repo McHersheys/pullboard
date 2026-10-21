@@ -36,7 +36,10 @@ import {
 } from './git.js';
 import { Refused } from './refused.js';
 import { writeRowApply } from './row-decisions.js';
-import { loadSpec } from './spec.js';
+import {
+  loadSpec,
+  parseSpec,
+} from './spec.js';
 import {
   policyAt,
   trunkRef,
@@ -167,6 +170,13 @@ export function proposeDoctrine(ctx, values, text, { id: fixed, reserved = [], w
   const planned = { id: 'doctrine:' + id, row: { id, status: 'draft', tier, text: ruling, gate, section: section?.name ?? 'DR · Rulings' } };
   if (!write) return planned;
   const source = readFileSync(doctrine.repo.file, 'utf8');
+  // Two identical callers may share the reservation. Check the bytes actually read, not a stale planning context.
+  const existing = fixed ? parseSpec(source).rows.filter(row => row.id === fixed) : [];
+  if (existing.length) {
+    if (existing.length === 1 && existing[0].status === 'draft' && existing[0].text === ruling
+      && existing[0].gate === gate && existing[0].tier === tier) return planned;
+    throw new Refused('ROW_DRAFT', `${fixed} already names different or decided doctrine; reload its current row before proposing a new ruling`);
+  }
   const newline = source.includes('\r\n') ? '\r\n' : '\n';
   const lines = source.split(/\r?\n/u);
   if (section) {
