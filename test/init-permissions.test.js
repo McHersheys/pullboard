@@ -195,3 +195,31 @@ test('init grants the agent the permissions the Pullboard loop needs [I1,I2]', t
   assert.deepEqual(JSON.parse(readFileSync(skipSettingsPath, 'utf8')).sandbox, skipSandbox, '--no-permissions preserves existing sandbox scope');
   assert.equal(readFileSync(skipCodexPath, 'utf8'), skipCodexBytes, '--no-permissions preserves existing Codex rules byte-for-byte');
 });
+
+test('init keeps an existing Codex pullboard server in any TOML form and adds no second one [A9,I1]', (t) => {
+  const forms = {
+    'a trailing comment': '[mcp_servers.pullboard] # the team runs it here\ncommand = "pullboard"\nargs = ["mcp"]\n',
+    'a single-quoted key': "[mcp_servers.'pullboard']\ncommand = \"pullboard\"\nargs = [\"mcp\"]\n",
+    'an inline table': 'mcp_servers = { pullboard = { command = "pullboard", args = ["mcp"] } }\n',
+    'an inline table under [mcp_servers]': '[mcp_servers]\npullboard = { command = "pullboard", args = ["mcp"] }\n',
+    'dotted keys': 'mcp_servers.pullboard.command = "pullboard"\nmcp_servers.pullboard.args = ["mcp"]\n',
+  };
+  for (const [form, existing] of Object.entries(forms)) {
+    const box = initFixture(t);
+    mkdirSync(join(box.root, '.codex'), { recursive: true });
+    writeFileSync(join(box.root, '.codex', 'config.toml'), existing);
+    const initialized = box.init();
+    assert.equal(initialized.code, 0, `${form}: ${initialized.stderr}`);
+    assert.equal(readFileSync(join(box.root, '.codex', 'config.toml'), 'utf8'), existing, `${form}: the config is byte for byte as it was, with no duplicate server`);
+    assert.ok(initialized.document.notes.includes('kept the Codex MCP server in .codex/config.toml'), `${form}: init says it kept the server`);
+  }
+  // A server by another name, or pullboard named only inside a string or a comment, still gets the pullboard table.
+  const box = initFixture(t);
+  const other = '# [mcp_servers.pullboard] was here once\n[mcp_servers.other]\ncommand = "pullboard"\n';
+  mkdirSync(join(box.root, '.codex'), { recursive: true });
+  writeFileSync(join(box.root, '.codex', 'config.toml'), other);
+  assert.equal(box.init().code, 0);
+  const after = readFileSync(join(box.root, '.codex', 'config.toml'), 'utf8');
+  assert.ok(after.startsWith(other), 'the existing config is kept');
+  assert.match(after.slice(other.length), /^\n\[mcp_servers\.pullboard\]\ncommand = "sh"\n/u, 'the pullboard server is appended once');
+});

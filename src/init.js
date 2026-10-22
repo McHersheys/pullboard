@@ -425,6 +425,75 @@ export const MCP_COMMAND =
   'm=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/..; for p in node_modules/.bin/pullboard "$m/node_modules/.bin/pullboard"; do [ -x "$p" ] && exec "$p" mcp; done; command -v pullboard >/dev/null && exec pullboard mcp; echo "pullboard is not installed; npm i -D pullboard" >&2; exit 1';
 
 /**
+ * Split a TOML key such as `mcp_servers.'pullboard'` into its parts: bare, "basic" or 'literal', dots between.
+ *
+ * @param {string} text
+ * @returns {string[]|null} null when the text is not a plain dotted key.
+ */
+function tomlKeyParts(text) {
+  const parts = [];
+  const pattern = /\s*(?:([A-Za-z0-9_-]+)|"((?:[^"\\]|\\.)*)"|'([^']*)')\s*(\.|$)/uy;
+  let match;
+  while (pattern.lastIndex < text.length && (match = pattern.exec(text))) {
+    parts.push(match[1] ?? (match[2] !== undefined ? JSON.parse(`"${match[2]}"`) : match[3]));
+    if (!match[4]) return pattern.lastIndex === text.length ? parts : null;
+  }
+  return null;
+}
+
+/**
+ * Drop a TOML line's comment: a # outside any quoted string.
+ *
+ * @param {string} line
+ * @returns {string}
+ */
+function withoutTomlComment(line) {
+  let quote = '';
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (quote === '"' && char === '\\') index += 1;
+    else if (quote && char === quote) quote = '';
+    else if (!quote && (char === '"' || char === "'")) quote = char;
+    else if (!quote && char === '#') return line.slice(0, index);
+  }
+  return line;
+}
+
+/**
+ * Whether a Codex config.toml already defines an MCP server by this name, in any form TOML allows: a
+ * `[mcp_servers.name]` table with quoted keys or a trailing comment, its subtables, dotted keys under
+ * `[mcp_servers]` or the top level, or an inline table. Init must keep such a server and add no second
+ * one, since a duplicate makes the whole file invalid TOML (#961).
+ *
+ * @param {string} contents
+ * @param {string} name
+ * @returns {boolean}
+ */
+export function codexHasMcpServer(contents, name) {
+  const names = (path) => path.length >= 2 && path[0] === 'mcp_servers' && path[1] === name;
+  let table = [];
+  for (const raw of String(contents).split(/\r?\n/u)) {
+    const line = withoutTomlComment(raw).trim();
+    const header = /^\[\[?(.+?)\]\]?$/u.exec(line);
+    if (header) {
+      table = tomlKeyParts(header[1]) ?? [];
+      if (names(table)) return true;
+      continue;
+    }
+    const equals = line.indexOf('=');
+    if (equals < 1) continue;
+    const key = tomlKeyParts(line.slice(0, equals));
+    if (!key) continue;
+    const path = [...table, ...key];
+    if (names(path)) return true;
+    // An inline table: mcp_servers = { name = { ... } } names the server among its keys.
+    const value = line.slice(equals + 1);
+    if (path.length === 1 && path[0] === 'mcp_servers' && new RegExp(`[{,]\\s*(?:${name}|"${name}"|'${name}')\\s*[.=]`, 'u').test(value)) return true;
+  }
+  return false;
+}
+
+/**
  * Register pullboard mcp for Claude Code (.mcp.json) and Codex (.codex/config.toml), merging with any servers already
  * there and never replacing a pullboard entry or a file it cannot read, so an agent can work the loop through MCP (#961).
  *
@@ -452,7 +521,7 @@ function writeMcpConfig(root, onWrite) {
   }
   const codex = join(root, '.codex', 'config.toml');
   const contents = existsSync(codex) ? readFileSync(codex, 'utf8') : '';
-  if (/^\s*\[mcp_servers\.(?:pullboard|"pullboard")\]\s*$/mu.test(contents) || /^\s*\[mcp_servers\]\s*$(?:(?!^\s*\[)[\s\S])*?^\s*pullboard\s*=/mu.test(contents)) {
+  if (codexHasMcpServer(contents, 'pullboard')) {
     notes.push('kept the Codex MCP server in .codex/config.toml');
   } else {
     // A new table at the end is valid TOML after any existing content, so nothing already there is rewritten.
