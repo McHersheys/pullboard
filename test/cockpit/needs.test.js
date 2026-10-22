@@ -448,7 +448,7 @@ test('needs you and the asks sit in their lists [N26]', { timeout: 180_000 }, as
 test('an agent-approved row shows in Needs you with its agent and commit and a confirm and decline move [S1,B26,P6,N26]', { timeout: 120_000 }, async () => { // budget: isolated real Git/API setup and two owned browser profiles, not a performance claim.
   const box = machine();
   box.env.GIT_AUTHOR_NAME = 'Agent & \"unconfirmed\" seat';
-  const alpha = project(box, 'agent approval');
+  const alpha = project(box, 'agent approval', undefined, {}, { agentApproved: true });
   const view = await startView(box);
   let chrome, snapshotHost, agentApi, reads;
   try {
