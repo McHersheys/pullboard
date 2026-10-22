@@ -1,14 +1,26 @@
 /** @pullboard-test-input source-tree */
 /** Cockpit needs checks, using the shared real-board fixtures [N26]. */
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { SPEC, machine, project, build, sendBack, startView, styleOf, element, openPage, projectRows, agentEntries, needEntries, itemRow, shoutNameText, chromeExecutable, openSnapshotChrome, closeSnapshotChrome, chooseFilter, boardId, boardOf, fetchLive, serveFolder } from './fixture.js';
 import { cockpitPage } from '../../src/cockpit.js';
+import { runFixtureChild } from '../fixture-child.js';
+import { approvalAgentApi, approvalReadGate } from './agent-approval-fixture.js';
 import { personNeeds } from '../../src/needs.js';
+
+/** Confirm the fixture's baseline approvals through the real person-view channel. */
+async function confirmBaseline(view, repo) {
+  const id = await boardId(view, repo);
+  const reply = await fetchLive(view.base + '/api/v1/boards/' + id + '/moves', {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-pullboard-key': view.key },
+    body: JSON.stringify({ verb: 'spec-approve', args: { ids: 'G1,G2' } }),
+  });
+  assert.equal(reply.status, 200, 'the real private view confirms the baseline G1/G2 approvals');
+}
 
 test('every Needs-you surface follows the shared builder [N26,A9]', async () => {
   const box = machine();
@@ -17,6 +29,7 @@ test('every Needs-you surface follows the shared builder [N26,A9]', async () => 
   box.run(alpha.repo, 'hold', 'web', '--reason', 'Raw board hold');
   const view = await startView(box);
   try {
+    await confirmBaseline(view, alpha.repo);
     const page = await openPage(view);
     const calls = [
       { kind: 'decision', id: 701, ref: 'reviewer', text: 'Builder decision one?', what: 'decision' },
@@ -68,6 +81,7 @@ test("the page's Needs-you comes from the shared builder [N26]", { timeout: 180_
   let snapshotHost, relayServer, chrome;
   const profiles = [];
   try {
+    await confirmBaseline(view, alpha.repo);
     const id = await boardId(view, alpha.repo);
     const approved = await fetchLive(view.base + '/api/v1/boards/' + id + '/moves', {
       method: 'POST', headers: { 'content-type': 'application/json', 'x-pullboard-key': view.key },
@@ -245,6 +259,7 @@ test("needs-you holds only the person's calls; the rest show on the board with w
   box.run(alpha.repo, 'hold', 'web', '--reason', 'G3 is open');
   const view = await startView(box);
   try {
+    await confirmBaseline(view, alpha.repo);
     const page = await openPage(view);
     const needs = page.show('needs');
     assert.deepEqual(needEntries(needs).map(([go, ref, words]) => [go.split(':')[0], ref, words]), [
@@ -277,9 +292,10 @@ test("needs-you holds only the person's calls; the rest show on the board with w
 
 test('needs-you lines keep their titles on a phone [N26]', async () => {
   const box = machine();
-  project(box, 'alpha', `${SPEC}- G3 [pending] Should a greeting with a title long enough to need the room wrap? | gate: review\n`);
+  const alpha = project(box, 'alpha', `${SPEC}- G3 [pending] Should a greeting with a title long enough to need the room wrap? | gate: review\n`);
   const view = await startView(box);
   try {
+    await confirmBaseline(view, alpha.repo);
     const page = await openPage(view, { width: 375 });
     const style = await styleOf(view);
     // A need is an item's row: its reference and words on the title line, NEEDS YOU and its kind below, its action at the right.
@@ -335,6 +351,7 @@ test('needs you and the asks sit in their lists [N26]', { timeout: 180_000 }, as
   })())`));
   const click = (selector) => chrome.click(`document.querySelector(${JSON.stringify(selector)})`);
   try {
+    await confirmBaseline(view, alpha.repo);
     chrome = await openSnapshotChrome(executable, view.link.href, profile);
     await chrome.waitFor("typeof data === 'object' && data?.project?.decisions?.length === 1 && data.project.asked.length === 1 && data.project.holds.length === 1");
     for (const scheme of ['light', 'dark']) {
@@ -424,5 +441,100 @@ test('needs you and the asks sit in their lists [N26]', { timeout: 180_000 }, as
     if (chrome) await closeSnapshotChrome(chrome);
     rmSync(profile, { recursive: true, force: true });
     await view.stop();
+  }
+});
+
+
+test('an agent-approved row shows in Needs you with its agent and commit and a confirm and decline move [S1,B26,P6,N26]', { timeout: 120_000 }, async () => { // budget: isolated real Git/API setup and two owned browser profiles, not a performance claim.
+  const box = machine();
+  box.env.GIT_AUTHOR_NAME = 'Agent & \"unconfirmed\" seat';
+  const alpha = project(box, 'agent approval');
+  const view = await startView(box);
+  let chrome, snapshotHost, agentApi, reads;
+  try {
+    const initial = await boardOf(view, alpha.repo);
+    const flagged = initial.needs.filter(row => row.kind === 'agent-approved');
+    assert.deepEqual(flagged.map(row => row.id), ['G1', 'G2']);
+    const page = await openPage(view);
+    for (const row of flagged) {
+      assert.ok(page.show('needs').includes(`data-agent-approved="${row.id}"`), 'agent-approved calls have their own Needs-you row');
+      assert.equal(row.agent, 'Agent & \"unconfirmed\" seat');
+      assert.ok(page.show('needs').includes('Agent &amp; &quot;unconfirmed&quot; seat'), 'author text is escaped rather than promoted into markup');
+      assert.ok(page.show('needs').includes(row.commit));
+      assert.ok(page.show('needs').includes(row.attribution));
+    }
+    assert.match(page.show('needs'), />Confirm</u);
+    assert.match(page.show('needs'), />Decline</u);
+    const executable = chromeExecutable();
+    assert.ok(executable, 'Chrome is required to prove real person clicks and read-only agent viewing');
+    agentApi = await approvalAgentApi(box, alpha.repo);
+    const id = await boardId(view, alpha.repo);
+    const agentState = await agentApi.call('/api/v1/boards/' + id + '/state');
+    assert.equal(agentState.status, 200, 'an API-key reader can see the flagged rows');
+    for (const verb of ['spec-approve', 'spec-decline']) {
+      const attempt = await agentApi.call('/api/v1/boards/' + id + '/moves', { verb, args: { ids: 'G1', ...(verb === 'spec-decline' ? { reason: 'An agent must not decide this.' } : {}) } });
+      assert.equal(attempt.status, 409);
+      assert.equal(attempt.document.error.code, 'B26_PERSON_CHANNEL');
+    }
+    assert.ok((await boardOf(view, alpha.repo)).needs.some(row => row.kind === 'agent-approved' && row.id === 'G1'), 'refused agent writes leave the call unchanged');
+    const output = join(box.dir, 'agent-read-only');
+    box.run(alpha.repo, 'view', '--export', output);
+    snapshotHost = await serveFolder(output, '/agent/');
+    chrome = await openSnapshotChrome(executable, snapshotHost.base + '/agent/', join(box.dir, 'agent-approval-readonly-chrome'));
+    await chrome.waitFor('document.querySelectorAll("#needs [data-agent-approved]").length === 2');
+    const agentRows = await chrome.stable('document.querySelector("#needs").innerHTML');
+    assert.match(agentRows, /agent-approved/u);
+    assert.doesNotMatch(agentRows, /data-row-decision|<button/u, 'a read-only reader sees attribution without a person move');
+    await closeSnapshotChrome(chrome); chrome = null;
+    const refused = runFixtureChild(process.execPath, [join(import.meta.dirname, '../../bin/pullboard.js'), 'spec', 'approve', 'G1', '--json'], {
+      cwd: alpha.web, env: { ...box.env, CLAUDECODE: '1' }, encoding: 'utf8',
+    });
+    assert.equal(refused.status, 1);
+    assert.equal(JSON.parse(refused.stdout).error.code, 'B26_PERSON_CHANNEL');
+    chrome = await openSnapshotChrome(executable, 'about:blank', join(box.dir, 'agent-approval-person-chrome'));
+    reads = await approvalReadGate(chrome, view.base);
+    await chrome.send('Page.navigate', { url: view.link.href });
+    await chrome.waitFor('document.querySelectorAll("#needs [data-agent-approved]").length === 2');
+    await chrome.click(`document.querySelector('[data-agent-approved="G1"] [data-row-decision="approve"]')`);
+    await chrome.waitFor('document.querySelector(\'[data-agent-approved="G1"]\') === null');
+    const confirmed = await boardOf(view, alpha.repo);
+    assert.equal(confirmed.spec.find(row => row.id === 'G1').agentApproval, null);
+    assert.equal(confirmed.needs.some(row => row.kind === 'agent-approved' && row.id === 'G1'), false);
+    await chrome.click(`document.querySelector('[data-agent-approved="G2"] [data-row-decision="decline"]')`);
+    await chrome.waitFor('document.querySelector("#spec-decline-dialog").hidden === false');
+    await chrome.click('document.querySelector("#spec-decline-cancel")');
+    assert.ok((await boardOf(view, alpha.repo)).needs.some(row => row.kind === 'agent-approved' && row.id === 'G2'), 'cancelling records no decision');
+    const specFile = join(alpha.repo, 'SPEC.md');
+    const specText = readFileSync(specFile, 'utf8');
+    reads.hold();
+    try {
+      await chrome.stable('void refresh(); true');
+      await reads.waitForHeld();
+      assert.ok(reads.heldCount() > 0, 'an actual state HTTP response is withheld during the stale-row refusal');
+      writeFileSync(specFile, specText.split('\n').filter(line => !line.startsWith('- G2 ')).join('\n'));
+      await chrome.click(`document.querySelector('[data-agent-approved="G2"] [data-row-decision="approve"]')`);
+      await chrome.waitFor('document.querySelector(\'[data-agent-approved="G2"] .spec-feedback.no\') !== null');
+      const refusal = await chrome.stable('document.querySelector(\'[data-agent-approved="G2"] .spec-feedback.no\').textContent');
+      assert.match(refusal, /G2/u, 'the actual backend refusal is visible beside the initiating Needs-you row');
+      assert.ok(reads.heldCount() > 0, 'real state responses remain held until refusal is observed and SPEC is restored');
+    } finally { writeFileSync(specFile, specText); await reads.release(); }
+    await chrome.stable('refresh()');
+    await chrome.waitFor('document.querySelector(\'[data-agent-approved="G2"]\') !== null');
+    await chrome.click(`document.querySelector('[data-agent-approved="G2"] [data-row-decision="decline"]')`);
+    await chrome.click('document.querySelector("#spec-decline-reason")');
+    await chrome.send('Input.insertText', { text: 'The person declines this unconfirmed requirement.' });
+    await chrome.click('document.querySelector("#spec-decline-submit")');
+    await chrome.waitFor('document.querySelector(\'[data-agent-approved="G2"]\') === null');
+    const declined = await boardOf(view, alpha.repo);
+    const row = declined.spec.find(entry => entry.id === 'G2');
+    assert.equal(row.decision.decision, 'decline');
+    assert.match(row.decision.reason, /person declines/u);
+    assert.equal(declined.needs.some(entry => entry.kind === 'agent-approved' && entry.id === 'G2'), false);
+  } finally {
+    const cleanupErrors = [];
+    for (const cleanup of [() => reads?.close(), () => chrome && closeSnapshotChrome(chrome), () => snapshotHost?.close(), () => agentApi?.stop(), () => view.stop()]) {
+      try { await cleanup(); } catch (error) { cleanupErrors.push(error); }
+    }
+    if (cleanupErrors.length) throw new AggregateError(cleanupErrors, 'owned approval fixtures failed cleanup');
   }
 });

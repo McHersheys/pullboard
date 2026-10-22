@@ -989,6 +989,7 @@ async function hostedListed(boards) {
   // A list that arrives after a failed read, once this computer's view answered, means the page recovered: the problem
   // it showed is over, and this list decides what shows now.
   if (shown === 'problem' && localReached) { localNote(null); shown = ''; }
+  if (boards.length && !hosted.relaySession && pageStartup(document.documentElement).pairedBefore()) { localNote('signed-out-paired'); return; }
   if (boards.length) {
     if (localNavigationOnly) localNote('local-open', { listed: true });
     else if (['looking', 'not-running', 'no-linked', 'unpaired', 'signed-out'].includes(shown)) localNote(null);

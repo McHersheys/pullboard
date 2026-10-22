@@ -39,6 +39,7 @@ import { pageScriptPart1 } from './view/page-script-1.js';
 import { pageScriptPart2 } from './view/page-script-2.js';
 import { pageScriptPart3 } from './view/page-script-3.js';
 import { pageScriptPart4 } from './view/page-script-4.js';
+import { agentApprovalScript } from './view/agent-approval.js';
 import { historyLoadingScript } from './view/history-loading.js';
 
 /** The CLI's default phrases, ordered by depth for the existing prose inventory guard. */
@@ -1106,17 +1107,18 @@ function render() {
   // on the board with who holds it; it is the agents' to move.
   const personalNeeds = personNeeds(p);
   // Adapt display targets and the existing hold age without reimplementing which calls belong here.
-  const needs = personalNeeds.filter((row) => !['draft', 'rigor-draft', 'sentinel-draft'].includes(row.kind)).map((row) => row.kind === 'decision'
+  const needs = personalNeeds.filter((row) => !['draft', 'rigor-draft', 'sentinel-draft', 'agent-approved'].includes(row.kind)).map((row) => row.kind === 'decision'
     ? ['decide:' + row.id, row.ref, row.text, 'decide', row.at]
     : row.kind === 'pending' ? ['spec:' + row.id, row.ref, row.text, 'answer ' + row.ref] // the person's words; agents get the command (#875)
       : ['tab:shouts', row.ref, row.text, row.what, p.holds.find((hold) => hold.hold_lane === row.id)?.hold_at]);
   const drafts = personalNeeds.find((row) => row.kind === 'draft')?.count ?? 0;
   const rigorDrafts = personalNeeds.filter((row) => row.kind === 'rigor-draft');
   const sentinelDrafts = personalNeeds.filter((row) => row.kind === 'sentinel-draft');
+  const agentApprovals = personalNeeds.filter((row) => row.kind === 'agent-approved');
   // Each of the person's calls is a row at the head of Active, shaped like an item: what it is first, then NEEDS YOU and
   // its kind where an item has its lane, and what to do at the right. Every call is a row; the draft rows are one row
   // with their count. Read-only, a row is its words, opening nothing.
-  $('needs').hidden = (!needs.length && !drafts && !rigorDrafts.length && !sentinelDrafts.length) || view.state !== 'active' || Boolean(view.lane);
+  $('needs').hidden = (!needs.length && !drafts && !rigorDrafts.length && !sentinelDrafts.length && !agentApprovals.length) || view.state !== 'active' || Boolean(view.lane);
   const needRow = ([target, ref, text, what, at], kind, action) => '<li class="row ask"' + (readOnly ? '' : ' data-go="' + esc(target) + '"') + '><span class="dot ask"></span><div><div class="t">' + (ref ? '<span>' + esc(ref) + '</span>' : '') + rich(text, titles, !readOnly) + '</div>'
     + (at ? '<span class="row-age">' + age(at) + '</span>' : '') + '<div class="meta"><span class="why"><b>NEEDS YOU</b> ' + esc(kind) + '</span></div></div><span class="chip warn">' + esc(action) + '</span></li>';
   const needKind = (entry) => entry[3] === 'decide' ? needRow([entry[0], '', entry[2], entry[3], entry[4]], 'a decision, asked by ' + entry[1], 'decide')
@@ -1124,6 +1126,7 @@ function render() {
   const needsHtml = needs.map(needKind).join('')
     + rigorDrafts.map(row => needRow([row.target, row.ref, row.text], 'a proved Rigor draft', 'Approve or Decline')).join('')
     + sentinelDrafts.map(row => sentinelDraftRow(row)).join('')
+    + agentApprovals.map(row => agentApprovalRow(row)).join('')
     + (drafts ? needRow(['tab:spec', String(drafts), 'draft spec rows to approve or drop'], 'Spec rows waiting on you', 'review') : '');
   $('needs').innerHTML = needsHtml;
   // Home reads the rules first, then the same calls (#967).
@@ -1458,7 +1461,7 @@ function render() {
  * it, so it stays closed across reloads, and across restarts of the view, which serves from the
  * same address again, until they open it. While hidden it is not drawn.
  */
-${pageScriptPart4(pageScope)}${historyLoadingScript()}</script>
+${agentApprovalScript()}${pageScriptPart4(pageScope)}${historyLoadingScript()}</script>
 </body>
 </html>`;
 }

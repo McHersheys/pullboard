@@ -1284,3 +1284,67 @@ test('the hosted page paints no other screen before the one it settles on [N26,H
     }
   }
 });
+
+test('a browser paired here before says it was signed out above this computer\'s boards [N26,H5]', { timeout: 120_000 }, async () => { // budget: hang ceiling for two hosted loads with real round trips in Chrome.
+  const executable = chromeExecutable();
+  assert.ok(executable, 'the signed-out note needs real Chrome');
+  const box = machine();
+  const board = project(box, 'signed-out-paired');
+  box.run(board.repo, 'add', 'web', 'A board on this computer', '--specs', 'G1');
+  const profile = mkdtempSync(join(tmpdir(), 'pullboard-signed-out-paired-'));
+  // Signed out on the relay: its session ended, as when Chrome's cookie jar lost it (#902).
+  const relay = createRelayBrowserHandler({ authenticate: async () => { throw new Refused('AUTH_REQUIRED', 'Sign in.'); } });
+  let view, chrome, listener;
+  const failures = [];
+  try {
+    view = await startView(box);
+    chrome = await openSnapshotChrome(executable, 'about:blank', profile);
+    listener = ({ data }) => {
+      const message = JSON.parse(String(data));
+      if (message.method !== 'Fetch.requestPaused') return;
+      const { requestId, request: asked } = message.params;
+      const address = new URL(asked.url);
+      (async () => {
+        if (address.origin === LOCAL) {
+          const reply = await call({ base: view.base }, address.pathname + address.search, { method: asked.method, headers: Object.fromEntries(Object.entries(asked.headers).filter(([name]) => name.toLowerCase() !== 'host')) });
+          return chrome.send('Fetch.fulfillRequest', { requestId, responseCode: reply.status, responseHeaders: Object.entries(reply.headers).filter(([name]) => !['content-length', 'transfer-encoding', 'connection', 'keep-alive', 'date'].includes(name)).map(([name, value]) => ({ name, value: String(value) })), body: Buffer.from(reply.body).toString('base64') });
+        }
+        let head = {}, body = '';
+        const handled = await relay({ method: 'GET', url: address.pathname, headers: {} }, { writeHead: (status, headers) => { head = headers; }, end: (content) => { body = content ?? ''; } });
+        if (!handled) return chrome.send('Fetch.failRequest', { requestId, errorReason: 'Failed' });
+        const policy = head['content-security-policy'].replace("connect-src 'self'", "connect-src 'self' " + view.base);
+        return chrome.send('Fetch.fulfillRequest', { requestId, responseCode: 200, responseHeaders: [{ name: 'Content-Type', value: head['content-type'] }, { name: 'Cache-Control', value: 'no-store' }, { name: 'Content-Security-Policy', value: policy }], body: Buffer.from(body).toString('base64') });
+      })().catch((error) => failures.push(error.message));
+    };
+    chrome.socket.addEventListener('message', listener);
+    await chrome.send('Fetch.enable', { patterns: [{ urlPattern: HOSTED + '/*', requestStage: 'Request' }, { urlPattern: LOCAL + '/*', requestStage: 'Request' }] });
+    for (const permissions of [['loopbackNetwork', 'localNetwork', 'localNetworkAccess'], ['localNetworkAccess']]) {
+      try { await chrome.send('Browser.grantPermissions', { origin: HOSTED, permissions }); break; } catch { /* a name this Chrome does not have */ }
+    }
+    // ?paired: this browser keeps a relay board key from an earlier pairing; ?fresh: it never paired.
+    await chrome.send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
+      if (location.origin !== ${JSON.stringify(HOSTED)}) return;
+      if (location.search === '?paired') localStorage.setItem('pullboard.relay.keys.v1', JSON.stringify({ 'b_paired': 'key' }));
+      if (location.search === '?fresh') localStorage.removeItem('pullboard.relay.keys.v1');
+    })()` });
+    const note = "JSON.stringify({ state: document.querySelector('#local-note').hidden ? null : document.querySelector('#local-note').dataset.state, heading: document.getElementById('local-note-title').textContent, text: document.getElementById('local-note-text').textContent, signIn: !document.querySelector('#local-note [data-part=\"github\"]').hidden, board: document.querySelector('#chain')?.textContent.includes('A board on this computer') })";
+
+    await chrome.send('Page.navigate', { url: HOSTED + '/?paired' });
+    await chrome.waitFor("document.querySelector('#chain')?.textContent.includes('A board on this computer') && document.querySelector('#local-note').dataset.state === 'signed-out-paired'", 45_000); // budget: hang ceiling for a hosted load with its local round trip.
+    const paired = JSON.parse(await chrome.stable(note));
+    assert.deepEqual(paired, { state: 'signed-out-paired', heading: 'Signed out of pullboard.dev',
+      text: 'Your session here ended, so your shared boards cannot open. Sign in again to see them; the boards on this computer stay open.', signIn: true, board: true });
+
+    await chrome.send('Page.navigate', { url: HOSTED + '/?fresh' });
+    await chrome.waitFor("location.search === '?fresh' && document.querySelector('#chain')?.textContent.includes('A board on this computer')", 45_000); // budget: hang ceiling for a hosted load with its local round trip.
+    const fresh = JSON.parse(await chrome.stable(note));
+    assert.notEqual(fresh.state, 'signed-out-paired', 'a browser that never paired here sees only this computer\'s boards');
+    assert.deepEqual(failures, []);
+  } finally {
+    try { if (chrome) { if (listener) chrome.socket.removeEventListener('message', listener); await closeSnapshotChrome(chrome); } }
+    finally {
+      try { if (view) await view.stop(); }
+      finally { rmSync(profile, { recursive: true, force: true }); }
+    }
+  }
+});
