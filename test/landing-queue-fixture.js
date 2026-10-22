@@ -1,6 +1,6 @@
 /** Public, real-Git landing contention fixture; no private drill data is used [B3,R3,Q1,Q2,E8]. */
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as store from '../src/board.js';
 
@@ -19,7 +19,7 @@ function readBoard(box, action) {
 }
 
 /** Build two independent items and accept the higher id first through actual CLI checks. */
-function acceptedPair(helpers, box) {
+function acceptedPair(helpers, box, staleAfterFirst) {
   const entries = [1, 2].map(number => {
     const root = join(box.dir, `queue-build-${number}`);
     box.git(box.repo, 'worktree', 'add', '-q', '-b', `web/queue-${number}`, root, 'main');
@@ -29,6 +29,11 @@ function acceptedPair(helpers, box) {
       '--criterion', `queue item ${number} works`, '--check', `grep -qx works ${file}`, '--json'));
     const id = added.item.item_id;
     run(box, root, 'claim', String(id));
+    if (number === 2 && staleAfterFirst) {
+      // The first-to-land item changes the lower id's checked path on an independent branch.
+      mkdirSync(join(root, 'web'), { recursive: true });
+      writeFileSync(join(root, 'web', 'queue-1.txt'), 'works changed\n');
+    }
     const commit = helpers.commitFile(box, root, file, 'works\n', 'feat(web): build queue fixture [G1]');
     assert.equal(commit.status, 0, commit.stderr);
     run(box, root, 'submit', String(id));
@@ -45,7 +50,7 @@ function acceptedPair(helpers, box) {
 }
 
 /** Prove named waiting, exclusion and verdict order with two real overlapping land commands. */
-export async function landingQueueCase(t, helpers) {
+export async function landingQueueCase(t, helpers, { staleAfterFirst = false } = {}) {
   const sandbox = helpers.sandbox();
   const arm = join(sandbox.dir, 'landing-armed');
   const entered = join(sandbox.dir, 'landing-entered');
@@ -56,7 +61,7 @@ export async function landingQueueCase(t, helpers) {
     `const [arm,entered,release] = ${JSON.stringify([arm, entered, release])};`,
     "if (fs.existsSync(arm)) { fs.writeFileSync(entered, process.cwd()); const end = Date.now() + 20000; while (!fs.existsSync(release) && Date.now() < end) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,20); assert.ok(fs.existsSync(release), 'owning test releases the gate'); }",
     "const files = fs.existsSync('web') ? fs.readdirSync('web').filter(file => /^queue-\\d+\\.txt$/.test(file)) : [];",
-    "for (const file of files) assert.equal(fs.readFileSync('web/' + file,'utf8'), 'works\\n');",
+    "for (const file of files) assert.match(fs.readFileSync('web/' + file,'utf8'), /^works/);",
     "console.log('TAP version 13\\nok 1 - landed queue files keep their behavior\\n1..1\\n# tests 1\\n# pass 1\\n# fail 0');",
   ].join('\n'));
   const box = helpers.project(`node ${JSON.stringify(gateFile)}`, sandbox);
@@ -64,7 +69,7 @@ export async function landingQueueCase(t, helpers) {
   box.git(box.dir, 'init', '-q', '--bare', remote);
   box.git(box.repo, 'remote', 'add', 'origin', remote);
   box.git(box.repo, 'push', '-q', '-u', 'origin', 'main');
-  const entries = acceptedPair(helpers, box);
+  const entries = acceptedPair(helpers, box, staleAfterFirst);
   const base = box.git(box.repo, 'rev-parse', 'main');
   const children = [];
   t.after(async () => {
@@ -75,6 +80,7 @@ export async function landingQueueCase(t, helpers) {
     }
   });
   writeFileSync(arm, 'armed');
+  box.env.CODEX_THREAD_ID = 'private-landing-queue-session';
   const first = helpers.launch(box, box.repo, process.execPath, [helpers.BIN, 'land', '--max', '1']);
   children.push(first);
   await helpers.waitFor(() => existsSync(entered) || first.exitCode !== null, 'first landing reaches its real gate');
@@ -87,11 +93,25 @@ export async function landingQueueCase(t, helpers) {
   await helpers.waitFor(() => /landing waiting: .*held by .*; queued/u.test(second.stdoutText) || second.exitCode !== null,
     'second landing names its holder and queues');
   assert.match(second.stdoutText, /landing waiting: .*held by .*; queued/u, `${second.stdoutText}\n${second.stderrText}`);
+  const holder = readBoard(box, board => store.landingLeaseState(board).holder);
+  assert.equal(holder.pid, first.pid);
+  assert.ok(second.stdoutText.includes(holder.label), 'the queue names the actual durable holder');
   assert.equal(second.exitCode, null, 'the second command stays queued instead of refusing');
   assert.equal(readBoard(box, board => store.landingBatches(board).length), 1, 'the waiter creates no concurrent batch');
   assert.equal(box.git(box.repo, 'rev-parse', 'main'), base, 'neither unfinished gate advances main');
+  await helpers.waitFor(() => Date.parse(readBoard(box, board => store.landingLeaseState(board).holder?.until)) > Date.parse(holder.until),
+    'the independent parent renews while the worker is blocked inside its real synchronous gate');
+  assert.equal(readBoard(box, board => store.landingBatches(board).at(-1).state), 'gating');
   writeFileSync(release, 'released');
   const results = await Promise.all(children.map(child => child.closed));
+  if (staleAfterFirst) {
+    assert.equal(results[0].code, 0, results[0].failure);
+    assert.equal(results[1].code, 1, 'the queued command refuses the now-stale acceptance');
+    assert.match(second.stderrText, /STALE_VERDICT/u);
+    assert.equal(readBoard(box, board => store.landingBatches(board).length), 1, 'a stale waiter starts no batch');
+    assert.equal(readBoard(box, board => store.getItem(board, entries[0].id).item_merged_commit), null);
+    return;
+  }
   for (const result of results) assert.deepEqual({ code: result.code, signal: result.signal }, { code: 0, signal: null }, result.failure ?? 'land succeeds');
   const batches = readBoard(box, store.landingBatches);
   assert.equal(batches.length, 2);

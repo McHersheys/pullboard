@@ -1,7 +1,8 @@
 /** Wait for board admission without occupying a machine test slot [Q1,Q2,Q3]. */
 import { randomUUID } from 'node:crypto';
 import { setTimeout as pause } from 'node:timers/promises';
-import { landingLeaseState } from './landing-lease.js';
+import { assertLandingLease, landingLeaseState } from './landing-lease.js';
+import { Refused } from './refused.js';
 
 /** A dead local owner can be released immediately on an unlinked board; never compare foreign PIDs. */
 function deadLocalOwner(holder) {
@@ -11,19 +12,26 @@ function deadLocalOwner(holder) {
 }
 
 /** Return a generation-bound lease whose renewal failures prevent later landing writes. */
-export async function takeLandingResource({ board, write, branch, onWait }) {
+export async function takeLandingResource({ board, write, branch, onWait, onLost }) {
   const token = randomUUID();
   const parameters = { agentId: 'coordinator', token, branch, pid: process.pid };
   let generation = null;
   let timer;
+  let watchdog;
+  let deadline = 0;
   let pending = Promise.resolve();
   let lost = null;
   /** Serialize heartbeats and explicit checks, retaining a failure until the command stops. */
   const assertHeld = () => {
     const task = pending.then(async () => {
       if (lost) throw lost;
-      try { return await write('landingLeaseMove', [{ ...parameters, action: 'renew', generation }]); }
-      catch (error) { lost = error; throw error; }
+      try {
+        const result = await write('landingLeaseMove', [{ ...parameters, action: 'renew', generation }]);
+        assertLandingLease(board, { token, branch, generation }); // A delayed recovered receipt is not a fresh grant.
+        deadline = Date.parse(result.holder.until);
+        return result;
+      }
+      catch (error) { lost = error; onLost?.(error); throw error; }
     });
     pending = task.catch(() => {});
     return task;
@@ -33,21 +41,32 @@ export async function takeLandingResource({ board, write, branch, onWait }) {
       const holder = landingLeaseState(board).holder;
       if (deadLocalOwner(holder)) await write('landingLeaseMove', [{ agentId: 'coordinator', action: 'release', token: holder.token, generation: holder.generation }]);
       const result = await write('landingLeaseMove', [{ ...parameters, action: 'request' }]);
-      if (result.acquired) { generation = result.generation; break; }
+      if (result.acquired) { generation = result.generation; deadline = Date.parse(result.holder.until); break; }
       await onWait?.({ holders: result.holder ? [result.holder] : [], position: result.position });
       await pause(1000);
     }
     timer = setInterval(() => { void assertHeld().catch(() => {}); }, 5000);
     timer.unref();
+    watchdog = setInterval(() => {
+      if (!lost && Date.now() >= deadline - 1000) {
+        lost = new Refused('LAND_LEASE_LOST', 'the landing lease could not renew before its deadline; inspect pullboard resume after its owned worker stops');
+        onLost?.(lost);
+      }
+    }, 100);
+    watchdog.unref();
     return { name: 'landing', scope: 'board', fence: { token, branch, generation }, assertHeld,
+      /** Check the current wall-time fence without adding an await before a physical action. */
+      assertCurrent() { return assertLandingLease(board, { token, branch, generation }); },
       /** End renewals before releasing; a stale generation never clears its successor. */
       async release() {
         clearInterval(timer);
+        clearInterval(watchdog);
         await pending;
         await write('landingLeaseMove', [{ ...parameters, action: 'release', generation }]);
       } };
   } catch (error) {
     clearInterval(timer);
+    clearInterval(watchdog);
     try { await write('landingLeaseMove', [{ ...parameters, action: 'release', generation }]); }
     catch { /* Preserve the admission failure; the ordered lease expires without a false grant. */ }
     throw error;

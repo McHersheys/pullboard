@@ -34,6 +34,9 @@ after(helpers.cleanup);
 test('a trunk lands one batch at a time [B3,R3,Q1,Q2,E8]', { timeout: 120_000 }, // budget: hang ceiling for real private Git, CLI checks, both gate barriers and cleanup; no speed target.
   async t => landingQueueCase(t, helpers));
 
+test('a queued landing rechecks freshness after its holder moves main [E8,Q1,Q2]', { timeout: 120_000 }, // budget: real private Git/CLI and deterministic gate barrier; no speed target.
+  async t => landingQueueCase(t, helpers, { staleAfterFirst: true }));
+
 /** Open a fixture's independent board and always close it after its observation or public move. */
 function withBoard(root, action) {
   const board = store.openBoard(join(root, '.git', 'pullboard', 'board.sqlite'));
