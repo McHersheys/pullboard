@@ -238,7 +238,11 @@ export async function landingQueueCase(t, helpers, { staleAfterFirst = false, ki
       assert.equal(readBoard(box, board => store.landingBatches(board).length), 2);
       return;
     }
-    if (!killParent) assert.equal((await first.closed).code, 1, 'a surviving authority owner refuses after its worker stops');
+    if (!killParent) {
+      assert.equal((await first.closed).code, 1, 'a surviving authority owner refuses after its worker stops');
+      assert.match(first.stderrText, /\[LAND_WORKER\]/u, 'guardian loss reports a typed worker refusal');
+      assert.doesNotMatch(first.stderrText, /Error: kill EPERM|internal\/event_target/u, 'an uncaught cleanup error is not guardian fencing');
+    }
     assert.equal(existsSync(release), false, 'the owning test did not let the abandoned gate proceed');
     const waiting = await second.closed;
     assert.equal(waiting.code, 1);

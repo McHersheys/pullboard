@@ -45,11 +45,20 @@ function stop(child, member) {
     && current.get(pid)?.processSha256 === rows.get(pid)?.processSha256) {
     try { process.kill(pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
   }
-  // A SIGSTOP parent can retain its guardian as an unreaped zombie after the whole group exited.
-  if (![...current.values()].some(row => row.pgid === child.pid && !row.state.startsWith('Z'))) return;
+  // Descendant signals can empty the group; its earlier census is no longer a signal target.
+  const group = census();
+  if (!group || !runningGroup(group, child.pid)) return;
   try { process.kill(-child.pid, 'SIGKILL'); }
-  catch (error) { if (error.code !== 'ESRCH') throw error; }
+  catch (error) {
+    if (error.code === 'ESRCH') return;
+    const after = error.code === 'EPERM' ? census() : null;
+    if (after && !runningGroup(after, child.pid)) return; // macOS can report EPERM for an already-empty group.
+    throw error; // A live group or unknown census never licenses suppressing a permission failure.
+  }
 }
+
+/** Unknown states remain executing; only a known group without non-zombie members is drained. */
+function runningGroup(rows, pgid) { return [...rows.values()].some(row => row.pgid === pgid && !row.state.startsWith('Z')); }
 
 /** Run blocking batch work under a live parent that owns all canonical writes and lease renewal. */
 export async function runLandingWorker(options, { write, checkLease, checkLeaseNow, bindWorker, watchDeadline, onWait, say, signal }) {
