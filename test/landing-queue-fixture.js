@@ -19,10 +19,15 @@ function readBoard(box, action) {
   finally { store.closeBoard(board); }
 }
 
-/** Observe only a recorded fixture PID; no process is signalled by this read. */
-function alive(pid) {
-  try { process.kill(pid, 0); return true; }
+/** An exited zombie cannot execute a gate; observe only the fixture's recorded PID. */
+function running(pid) {
+  try { process.kill(pid, 0); }
   catch (error) { if (error.code === 'ESRCH') return false; throw error; }
+  const state = spawnSync('/bin/ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' });
+  if (state.status === 1 && !state.stdout?.trim()) return false; // It exited between kill(0) and ps.
+  assert.equal(state.status, 0, 'the fixture can observe its own process state');
+  assert.match(state.stdout.trim(), /^[A-Z]/u, 'an unknown process state is not proof of exit');
+  return !state.stdout.trim().startsWith('Z');
 }
 
 /** Retain actual states for only this fixture's known PIDs when a custody assertion fails. */
@@ -129,7 +134,7 @@ export async function landingQueueCase(t, helpers, { staleAfterFirst = false, ki
       process.kill(holder.guardianPid, 'SIGKILL'); // This exact PID came from this private command's bound guardian.
     } else first.kill('SIGSTOP'); // Keep IPC connected while the authority owner cannot renew or run its own watchdog.
     try {
-      await helpers.waitFor(() => !alive(holder.guardianPid) && !alive(blockedGatePid), 'the guardian and blocked gate stop without releasing their marker',
+      await helpers.waitFor(() => !running(holder.guardianPid) && !running(blockedGatePid), 'the guardian and blocked gate stop without releasing their marker',
         suspendParent ? 45_000 : 8_000); // Budget: actual 30s lease expiry plus owned-process drain; not a speed threshold.
     } catch (error) {
       const batch = readBoard(box, board => store.landingBatches(board).at(-1));
