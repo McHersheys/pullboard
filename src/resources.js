@@ -25,6 +25,7 @@ import {
   withMachineHomeWrite,
 } from './machine-home.js';
 import { Refused } from './refused.js';
+import { takeLandingResource } from './landing-resource.js';
 import { gateQueueSettings } from './queue-settings.js';
 import {
   ARRIVAL_ORDER,
@@ -604,6 +605,7 @@ function pause(ms) { return new Promise((resolvePromise) => setTimeout(resolvePr
  */
 export async function takeResource(options) {
   const { name, capacity, scope = 'machine', root = process.cwd(), allowIdleCapacityUpdate = false } = options;
+  if (scope === 'board' && name === 'landing' && capacity === 1 && options.board && typeof options.write === 'function') return takeLandingResource(options);
   if (typeof name !== 'string' || !name.trim() || name.trim() !== name) throw new Refused('BAD_RESOURCE_NAME', 'resource name must be nonempty trimmed text');
   if (name.startsWith('runner:')) throw new Refused('RESERVED_RUNNER_RESOURCE', 'runner resource rows are managed by the machine gate; request name "gate"');
   if (!Number.isSafeInteger(capacity) || capacity < 1) throw new Refused('BAD_RESOURCE_CAPACITY', 'resource capacity must be a positive integer');

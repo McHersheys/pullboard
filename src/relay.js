@@ -1148,12 +1148,14 @@ function outboxLink(root, file, state, io) {
 /** Send one board operation before executing it locally, and report its canonical engine result. */
 export async function relayOperation(root, operation, args, io, command, applyLocally) {
   const file = linkFile(root);
+  const landingAuthority = operation === 'landingLeaseMove' || args?.[0]?.landingFence !== undefined;
   return locked(file, async () => {
     const state = loadLink(file);
     /** Apply through the CLI's existing board handle so local events and guards remain unchanged. */
-    const applyPausedMoveLocally = () => typeof applyLocally === 'function'
-      ? applyLocally()
-      : localRecords(root, (board) => store[operation](board, ...args));
+    const applyPausedMoveLocally = () => {
+      if (landingAuthority) throw new Refused('LAND_RELAY_REQUIRED', 'a linked landing lease needs an acknowledged relay order; restore the relay connection before landing');
+      return typeof applyLocally === 'function' ? applyLocally() : localRecords(root, (board) => store[operation](board, ...args));
+    };
     if (!state && deletedRecovery(root)) return deletedMoveResult(root, operation, args, command, io, applyPausedMoveLocally);
     if (!state || state.unlinking) throw new Refused('RELAY_UNLINK_PENDING', 'finish unlinking this device with pullboard relay off before sending a move');
     if (state.recovery) throw new Refused('RELAY_RECOVERY_PENDING', `finish the saved recovery for sequence ${state.recovery.skip} before sending a linked move`);
@@ -1166,7 +1168,10 @@ export async function relayOperation(root, operation, args, io, command, applyLo
     moves.add(state.board);
     try {
       let ordered;
-      const queue = (error, move) => queueMove(outboxLink(root, file, state, io), { operation, args, command, move, error, applyLocally: applyPausedMoveLocally });
+      const queue = (error, move) => {
+        if (landingAuthority) throw error;
+        return queueMove(outboxLink(root, file, state, io), { operation, args, command, move, error, applyLocally: applyPausedMoveLocally });
+      };
       try { ordered = await ensureOrdered(root, file, state, io); }
       catch (error) {
         if (outboxQueueable(state, error, operation, io)) return await queue(error);
