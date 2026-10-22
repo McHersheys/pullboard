@@ -1,5 +1,5 @@
 /**
- * pullboard mcp: a local MCP server over stdio that lets an agent's own MCP client read the board and
+ * pullboard mcp: a local MCP server over stdio that lets an agent's own MCP client read the board, work the loop and
  * coordinate on it as that agent (A9), and never make a person's move (P6). It is newline-delimited
  * JSON-RPC 2.0 on stdin and stdout, hand-written because Pullboard has no dependencies, and it opens
  * no network connection (P5). Every tool runs the CLI command it mirrors through the same `main` the
@@ -65,6 +65,59 @@ export const MCP_TOOLS = Object.freeze([
       additionalProperties: false,
     },
   },
+  {
+    name: 'next',
+    description: 'Take the next item this seat can work, claiming it, or with verify the next review, reserving it. Mirrors pullboard next [--verify].',
+    inputSchema: {
+      type: 'object',
+      properties: { verify: { type: 'boolean', description: 'Take the next review instead of the next item to build.' } },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'claim',
+    description: 'Claim an item, or renew this seat\'s claim on it; its criterion freezes at claim. Mirrors pullboard claim <id>.',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'integer', description: 'The item id, as on the board.' } },
+      required: ['id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'submit',
+    description: 'Submit this seat\'s committed work on an item: a clean tree, the gate green at HEAD. Mirrors pullboard submit <id> [--infra "<why>"].',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'integer', description: 'The item id, as on the board.' },
+        infra: { type: 'string', description: 'Why an existing test or gate file was edited, when submit asks for it.' },
+      },
+      required: ['id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'verify',
+    description: 'Give a verdict on another agent\'s submitted item from its checked-out commit. Mirrors pullboard verify <id> accept --note "<how>" or reject --reason <CODE> --note "<what failed>".',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'integer', description: 'The item id, as on the board.' },
+        decision: { type: 'string', enum: ['accept', 'reject'], description: 'accept or reject.' },
+        note: { type: 'string', description: 'How it was proved, or what failed.' },
+        reason: { type: 'string', description: 'For a reject: the reason code, such as TEST_FAILURE.' },
+        cause: { type: 'string', description: 'For a reject: the cause key, when one is known.' },
+      },
+      required: ['id', 'decision', 'note'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'resume',
+    description: 'Pick this seat\'s work back up from the board: what it holds, what came back, and the one next step. Mirrors pullboard resume.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
 ]);
 
 /** The prefix that marks a captured idea in its shout, until ideas become their own kind of item. */
@@ -93,6 +146,12 @@ function validateArguments(tool, args) {
     }
     if (rule.type === 'string' && typeof value !== 'string') {
       throw new Refused('BAD_REQUEST', `${tool.name} needs ${key} as text; use the tool's input schema`);
+    }
+    if (rule.type === 'boolean' && typeof value !== 'boolean') {
+      throw new Refused('BAD_REQUEST', `${tool.name} needs ${key} as true or false; use the tool's input schema`);
+    }
+    if (rule.enum && !rule.enum.includes(value)) {
+      throw new Refused('BAD_REQUEST', `${tool.name} needs ${key} as one of ${rule.enum.join(', ')}; use the tool's input schema`);
     }
   }
   return args;
@@ -132,6 +191,19 @@ async function runCli(runCommand, cwd, argv) {
   return { status, document };
 }
 
+/** The CLI argv for one loop move (next, claim, submit, verify, resume), or null for any other tool. */
+function loopArgv(name, input) {
+  if (name === 'next') return ['next', '--json', ...(input.verify ? ['--verify'] : [])];
+  if (name === 'claim') return ['claim', '--json', '--', String(input.id)];
+  if (name === 'submit') return ['submit', '--json', ...(input.infra === undefined ? [] : [`--infra=${input.infra}`]), '--', String(input.id)];
+  if (name === 'verify') {
+    return ['verify', '--json', `--note=${input.note}`, ...(input.reason === undefined ? [] : [`--reason=${input.reason}`]),
+      ...(input.cause === undefined ? [] : [`--cause=${input.cause}`]), '--', String(input.id), input.decision];
+  }
+  if (name === 'resume') return ['resume', '--json'];
+  return null;
+}
+
 /** A tool result carrying one versioned document, flagged as an error when it is a refusal. */
 function toolResult(document, isError) {
   return { content: [{ type: 'text', text: JSON.stringify(document, null, 2) }], structuredContent: document, isError };
@@ -165,6 +237,13 @@ async function callTool(runCommand, cwd, name, args) {
     const shown = await runCli(runCommand, cwd, ['show', '--json', '--', String(input.id)]);
     return toolResult(shown.document, Boolean(shown.status));
   }
+  // The loop's moves are the CLI's own argv: flags as --name=value, so no value can be read as another flag,
+  // and positionals after --, so an id or decision cannot either (#961).
+  const loop = loopArgv(name, input);
+  if (loop) {
+    const moved = await runCli(runCommand, cwd, loop);
+    return toolResult(moved.document, Boolean(moved.status));
+  }
   // The CLI's own shout argv, positionals after --, as moveArgs builds it. moveArgs refuses blank text
   // before the engine runs, so the text goes straight to the CLI, whose shout refuses it as EMPTY_SHOUT.
   const argv = name === 'shout'
@@ -197,7 +276,7 @@ async function handleMessage(message, { runCommand, cwd, seat }) {
       protocolVersion: MCP_PROTOCOL_VERSIONS.includes(requested) ? requested : MCP_PROTOCOL_VERSIONS[0],
       capabilities: { tools: {} },
       serverInfo: { name: 'pullboard', version: VERSION },
-      instructions: `Pullboard tools for ${seat}: read the board, show an item, shout, capture an idea. They run the CLI's own moves and refusals. A person's move (approving or declining rows, answering decisions, signing off) is refused HUMAN_REQUIRED here.`,
+      instructions: `Pullboard tools for ${seat}: read the board, show an item, shout, capture an idea, and work the loop: next, claim, submit, verify, resume. They run the CLI's own moves and refusals. A person's move (approving or declining rows, answering decisions, signing off) is refused HUMAN_REQUIRED here.`,
     } };
   }
   if (method === 'ping') return { jsonrpc: '2.0', id, result: {} };

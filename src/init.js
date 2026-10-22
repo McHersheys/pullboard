@@ -418,6 +418,55 @@ export const RESUME_HOOK =
   'm=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/..; for p in node_modules/.bin/pullboard "$m/node_modules/.bin/pullboard"; do [ -x "$p" ] && exec "$p" resume; done; command -v pullboard >/dev/null && exec pullboard resume; true';
 
 /**
+ * The MCP server command: pullboard from this checkout's install, else the main checkout's, else the PATH (#961).
+ * It runs through sh -c, as the session hook does, so one entry works however pullboard was installed.
+ */
+export const MCP_COMMAND =
+  'm=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/..; for p in node_modules/.bin/pullboard "$m/node_modules/.bin/pullboard"; do [ -x "$p" ] && exec "$p" mcp; done; command -v pullboard >/dev/null && exec pullboard mcp; echo "pullboard is not installed; npm i -D pullboard" >&2; exit 1';
+
+/**
+ * Register pullboard mcp for Claude Code (.mcp.json) and Codex (.codex/config.toml), merging with any servers already
+ * there and never replacing a pullboard entry or a file it cannot read, so an agent can work the loop through MCP (#961).
+ *
+ * @param {string} root
+ * @param {(path: string) => void} onWrite
+ * @returns {string[]} What happened, one note per client.
+ */
+function writeMcpConfig(root, onWrite) {
+  const notes = [];
+  const claude = join(root, '.mcp.json');
+  let config = {};
+  if (existsSync(claude)) {
+    try { config = JSON.parse(readFileSync(claude, 'utf8')); } catch { config = null; }
+  }
+  const servers = config?.mcpServers;
+  if (!config || typeof config !== 'object' || Array.isArray(config) || (servers !== undefined && (!servers || typeof servers !== 'object' || Array.isArray(servers)))) {
+    notes.push('kept .mcp.json, which is not a JSON object with an mcpServers object; add a pullboard server that runs pullboard mcp');
+  } else if (servers && Object.hasOwn(servers, 'pullboard')) {
+    notes.push('kept the Claude Code MCP server in .mcp.json');
+  } else {
+    config.mcpServers = { ...servers, pullboard: { command: 'sh', args: ['-c', MCP_COMMAND] } };
+    writeFileSync(claude, `${JSON.stringify(config, null, 2)}\n`);
+    onWrite('.mcp.json');
+    notes.push('added pullboard mcp to .mcp.json for Claude Code');
+  }
+  const codex = join(root, '.codex', 'config.toml');
+  const contents = existsSync(codex) ? readFileSync(codex, 'utf8') : '';
+  if (/^\s*\[mcp_servers\.(?:pullboard|"pullboard")\]\s*$/mu.test(contents) || /^\s*\[mcp_servers\]\s*$(?:(?!^\s*\[)[\s\S])*?^\s*pullboard\s*=/mu.test(contents)) {
+    notes.push('kept the Codex MCP server in .codex/config.toml');
+  } else {
+    // A new table at the end is valid TOML after any existing content, so nothing already there is rewritten.
+    const prefix = contents && !contents.endsWith('\n') ? `${contents}\n` : contents;
+    const table = `${prefix ? `${prefix}\n` : ''}[mcp_servers.pullboard]\ncommand = "sh"\nargs = ["-c", ${JSON.stringify(MCP_COMMAND)}]\n`;
+    mkdirSync(join(root, '.codex'), { recursive: true });
+    writeFileSync(codex, table);
+    onWrite('.codex/config.toml');
+    notes.push('added pullboard mcp to .codex/config.toml for Codex; trust this project so Codex loads it');
+  }
+  return notes;
+}
+
+/**
  * Have Claude Code run `pullboard resume` whenever a session starts, resumes or is compacted (I6), so
  * an agent picks its work up from the board rather than from a summary of it. The hook is merged
  * into .claude/settings.json; every other setting stays as it was.
@@ -585,6 +634,7 @@ export function initRepo({ info, openBoardHere, register, closeBoard, model, per
     ...installHooks(root, onWrite),
     ...installSkills(root, onWrite),
     writeSessionHook(root, onWrite),
+    ...writeMcpConfig(root, onWrite),
   ];
   if (gate && (!configured || configured === gate)) {
     const gateNote = missingGateNote(root, gate);
