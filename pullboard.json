@@ -1,6 +1,7 @@
 {
   "name": "pullboard",
   "gate": "npm run gate",
+  "landingShards": 6,
   "affectedTests": "node bin/run-tests.js",
   "submitGate": "landing",
   "submit": { "requireInfraNote": true },
