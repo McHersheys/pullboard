@@ -77,6 +77,13 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .group-view { display: grid; gap: 14px; max-width: 1000px; }
 .group-panel { padding: 14px 16px; }
 .group-panel h2 { margin: 0 0 10px; font-size: 17px; }
+.home { display: grid; gap: 14px; max-width: 760px; }
+.home-card { padding: 14px 16px; }
+.home-card h2 { margin: 0 0 10px; font-size: 17px; }
+.home-counts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 0 0 10px; }
+.home-counts dt { color: var(--ink-muted); font-size: 13px; }
+.home-counts dd { margin: 2px 0 0; font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.home-needs { margin: 0; padding: 0; border-bottom: 0; }
 .group-need { display: grid; grid-template-columns: minmax(90px, auto) auto minmax(0, 1fr) auto; align-items: baseline; gap: 5px 10px; width: 100%; padding: 9px 0; text-align: left; border: 0; border-top: 1px solid var(--line); background: none; }
 .group-need:hover { background: var(--surface-2); }
 .group-need > b { color: var(--ink-muted); }
