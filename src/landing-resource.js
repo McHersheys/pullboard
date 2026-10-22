@@ -26,8 +26,14 @@ export async function takeLandingResource({ board, write, branch, onWait, onLost
   let timer;
   let watchdog;
   let deadline = 0;
+  const deadlineListeners = new Set();
   let pending = Promise.resolve();
   let lost = null;
+  /** Send only acknowledged deadlines to the independent guardian. */
+  const confirmedUntil = until => {
+    deadline = Date.parse(until);
+    for (const listener of deadlineListeners) listener(deadline);
+  };
   /** Serialize heartbeats and explicit checks, retaining a failure until the command stops. */
   const assertHeld = () => {
     const task = pending.then(async () => {
@@ -35,8 +41,8 @@ export async function takeLandingResource({ board, write, branch, onWait, onLost
       try {
         const result = await write('landingLeaseMove', [{ ...parameters, action: 'renew', generation }]);
         if (lost) throw lost;
-        assertLandingLease(board, { token, branch, generation }); // A delayed recovered receipt is not a fresh grant.
-        deadline = Date.parse(result.holder.until);
+        const holder = assertLandingLease(board, { token, branch, generation }); // A delayed recovered receipt is not a fresh grant.
+        confirmedUntil(holder.until);
         return result;
       }
       catch (error) { lost = error; onLost?.(error); throw error; }
@@ -49,7 +55,7 @@ export async function takeLandingResource({ board, write, branch, onWait, onLost
       const holder = landingLeaseState(board).holder;
       if (deadLocalOwner(holder)) await write('landingLeaseMove', [{ agentId: 'coordinator', action: 'release', token: holder.token, generation: holder.generation }]);
       const result = await write('landingLeaseMove', [{ ...parameters, action: 'request' }]);
-      if (result.acquired) { generation = result.generation; deadline = Date.parse(result.holder.until); break; }
+      if (result.acquired) { generation = result.generation; confirmedUntil(result.holder.until); break; }
       await onWait?.({ holders: result.holder ? [result.holder] : [], position: result.position });
       await pause(1000);
     }
@@ -67,10 +73,12 @@ export async function takeLandingResource({ board, write, branch, onWait, onLost
       async bindWorker(guardianPid) {
         await assertHeld();
         if (lost) throw lost;
-        const result = await write('landingLeaseMove', [{ ...parameters, action: 'bind', generation, guardianPid }]);
+        await write('landingLeaseMove', [{ ...parameters, action: 'bind', generation, guardianPid }]);
         if (lost) throw lost;
-        deadline = Date.parse(result.holder.until);
+        confirmedUntil(assertLandingLease(board, { token, branch, generation }).until);
       },
+      /** Keep the guardian's own deadline current even if this parent later stops responding. */
+      watchDeadline(listener) { deadlineListeners.add(listener); listener(deadline); return () => deadlineListeners.delete(listener); },
       /** Check the current wall-time fence without adding an await before a physical action. */
       assertCurrent() { return assertLandingLease(board, { token, branch, generation }); },
       /** End renewals before releasing; a stale generation never clears its successor. */

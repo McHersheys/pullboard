@@ -56,7 +56,7 @@ function acceptedPair(helpers, box, staleAfterFirst) {
 }
 
 /** Prove named waiting, exclusion and verdict order with two real overlapping land commands. */
-export async function landingQueueCase(t, helpers, { staleAfterFirst = false, killParent = false } = {}) {
+export async function landingQueueCase(t, helpers, { staleAfterFirst = false, killParent = false, killGuardian = false, suspendParent = false } = {}) {
   const sandbox = helpers.sandbox();
   const arm = join(sandbox.dir, 'landing-armed');
   const entered = join(sandbox.dir, 'landing-entered');
@@ -66,7 +66,9 @@ export async function landingQueueCase(t, helpers, { staleAfterFirst = false, ki
   writeFileSync(gateFile, [
     "const fs = require('node:fs'); const assert = require('node:assert/strict');",
     `const [arm,entered,release,gatePid] = ${JSON.stringify([arm, entered, release, gatePid])};`,
-    "if (fs.existsSync(arm)) { fs.writeFileSync(gatePid, String(process.pid)); fs.writeFileSync(entered, process.cwd()); const end = Date.now() + 20000; while (!fs.existsSync(release) && Date.now() < end) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,20); assert.ok(fs.existsSync(release), 'owning test releases the gate'); }",
+    ...(suspendParent ? ["if (fs.existsSync(gatePid)) { const old = Number(fs.readFileSync(gatePid,'utf8')); try { process.kill(old,0); throw new Error('the previous landing gate is still running when the successor gate starts'); } catch(error) { if (error.code !== 'ESRCH') throw error; } }"] : []),
+    // Budget: the suspended-parent control holds beyond the real 30s lease; 65s is a runaway ceiling, not a speed target.
+    `if (fs.existsSync(arm)) { fs.writeFileSync(gatePid, String(process.pid)); fs.writeFileSync(entered, process.cwd()); const end = Date.now() + ${suspendParent ? 65000 : 20000}; while (!fs.existsSync(release) && Date.now() < end) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,20); assert.ok(fs.existsSync(release), 'owning test releases the gate'); }`,
     "const files = fs.existsSync('web') ? fs.readdirSync('web').filter(file => /^queue-\\d+\\.txt$/.test(file)) : [];",
     "for (const file of files) assert.match(fs.readFileSync('web/' + file,'utf8'), /^works/);",
     "console.log('TAP version 13\\nok 1 - landed queue files keep their behavior\\n1..1\\n# tests 1\\n# pass 1\\n# fail 0');",
@@ -82,7 +84,7 @@ export async function landingQueueCase(t, helpers, { staleAfterFirst = false, ki
   t.after(async () => {
     writeFileSync(release, 'released');
     for (const child of children) {
-      if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+      if (child.exitCode === null && child.signalCode === null) { child.kill('SIGCONT'); child.kill('SIGTERM'); }
       await child.closed;
     }
   });
@@ -95,7 +97,8 @@ export async function landingQueueCase(t, helpers, { staleAfterFirst = false, ki
   const firstBatch = readBoard(box, board => store.landingBatches(board).at(-1));
   assert.equal(firstBatch.state, 'gating');
   assert.deepEqual(firstBatch.items.map(entry => entry.id), [entries[1].id], 'verdict order precedes numeric item order');
-  const second = helpers.launch(box, box.repo, process.execPath, [helpers.BIN, 'land', '--max', '1']);
+  if (suspendParent) rmSync(arm); // Only later gates become unblocked; the current one still requires its unreleased marker.
+  const second = helpers.launch(box, box.repo, process.execPath, [helpers.BIN, 'land', ...(suspendParent ? ['--adopt'] : ['--max', '1'])]);
   children.push(second);
   await helpers.waitFor(() => /landing waiting: .*held by .*; queued/u.test(second.stdoutText) || second.exitCode !== null,
     'second landing names its holder and queues');
@@ -109,12 +112,29 @@ export async function landingQueueCase(t, helpers, { staleAfterFirst = false, ki
   await helpers.waitFor(() => Date.parse(readBoard(box, board => store.landingLeaseState(board).holder?.until)) > Date.parse(holder.until),
     'the independent parent renews while the worker is blocked inside its real synchronous gate');
   assert.equal(readBoard(box, board => store.landingBatches(board).at(-1).state), 'gating');
-  if (killParent) {
+  if (killParent || killGuardian || suspendParent) {
     const blockedGatePid = Number(readFileSync(gatePid, 'utf8'));
     assert.ok(Number.isSafeInteger(holder.guardianPid));
-    first.kill('SIGKILL'); // Kill only the CLI, leaving its separately grouped guardian responsible for the blocked gate.
-    assert.equal((await first.closed).signal, 'SIGKILL');
-    await helpers.waitFor(() => !alive(holder.guardianPid) && !alive(blockedGatePid), 'the guardian and blocked gate stop without releasing their marker');
+    if (killParent) {
+      first.kill('SIGKILL'); // Only the CLI dies; its separately grouped guardian owns the blocked gate.
+      assert.equal((await first.closed).signal, 'SIGKILL');
+    } else if (killGuardian) {
+      process.kill(holder.guardianPid, 'SIGKILL'); // This exact PID came from this private command's bound guardian.
+    } else first.kill('SIGSTOP'); // Keep IPC connected while the authority owner cannot renew or run its own watchdog.
+    await helpers.waitFor(() => !alive(holder.guardianPid) && !alive(blockedGatePid), 'the guardian and blocked gate stop without releasing their marker',
+      suspendParent ? 45_000 : 8_000); // Budget: actual 30s lease expiry plus owned-process drain; not a speed threshold.
+    if (suspendParent) {
+      const successor = await second.closed;
+      assert.equal(successor.code, 0, successor.failure ?? 'the queued adopter lands only after the previous gate is dead');
+      assert.equal(existsSync(release), false, 'no test release made the old gate look drained');
+      assert.equal(readBoard(box, board => store.landingBatches(board).at(-1).state), 'landed');
+      first.kill('SIGCONT');
+      assert.equal((await first.closed).code, 1, 'the resumed old holder cannot use its expired generation');
+      run(box, box.repo, 'land', '--max', '1');
+      assert.equal(readBoard(box, board => store.landingBatches(board).length), 2);
+      return;
+    }
+    if (!killParent) assert.equal((await first.closed).code, 1, 'a surviving authority owner refuses after its worker stops');
     assert.equal(existsSync(release), false, 'the owning test did not let the abandoned gate proceed');
     const waiting = await second.closed;
     assert.equal(waiting.code, 1);

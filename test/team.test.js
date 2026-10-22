@@ -40,6 +40,12 @@ test('a queued landing rechecks freshness after its holder moves main [E8,Q1,Q2]
 test('an abandoned landing drains its blocked gate before adoption [Q1,Q3,B3]', { timeout: 120_000 }, // budget: private CLI death, owned-process cleanup, interrupted-batch adoption and Git; no speed target.
   async t => landingQueueCase(t, helpers, { killParent: true }));
 
+test('a dead landing guardian cannot leave its blocked worker running [Q1,Q3,B3]', { timeout: 120_000 }, // budget: private guardian death, identity-bound cleanup and explicit adoption; no speed target.
+  async t => landingQueueCase(t, helpers, { killGuardian: true }));
+
+test('a suspended landing owner is fenced before the queued adopter runs [Q1,Q3]', { timeout: 120_000 }, // budget: real 30s authority expiry, independent guardian watchdog, cleanup and adoption; no speed target.
+  async t => landingQueueCase(t, helpers, { suspendParent: true }));
+
 /** Open a fixture's independent board and always close it after its observation or public move. */
 function withBoard(root, action) {
   const board = store.openBoard(join(root, '.git', 'pullboard', 'board.sqlite'));

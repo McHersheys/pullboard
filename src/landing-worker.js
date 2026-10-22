@@ -1,5 +1,5 @@
 /** Isolate blocking Git and gates so the coordinator keeps renewing and fencing its board lease [Q1,Q3]. */
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as store from './board.js';
@@ -12,38 +12,54 @@ const FILE = fileURLToPath(import.meta.url);
 /** Preserve one typed refusal prefix while passing it through more than one process. */
 function messageText(error) { return String(error.message).replace(/^\[[A-Z][A-Z0-9_]*\] /u, ''); }
 
-/** Stop only the process group this invocation created; never signal another landing's processes. */
-function stop(child) {
-  if (!child.pid) return;
-  // Sharded gates start their own groups; collect them while their parent ancestry is still present.
+/** Read process identities before attributing a live worker or its detached gate descendants. */
+function census() {
   try {
-    const rows = parseProcessCensus(execFileSync('/bin/ps', ['-axo', 'pid=,ppid=,pgid=,lstart=,stat=,comm='], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } }));
-    if (rows) {
-      const owned = new Set([child.pid]);
-      let changed;
-      do {
-        changed = false;
-        for (const row of rows.values()) if (owned.has(row.ppid) && !owned.has(row.pid)) { owned.add(row.pid); changed = true; }
-      } while (changed);
-      for (const pid of [...owned].reverse()) if (pid !== child.pid) {
-        try { process.kill(pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
-      }
-    }
-  } catch { /* The worker's own group is still known; never broaden a failed census to the machine. */ }
+    const result = spawnSync('/bin/ps', ['-axo', 'pid=,ppid=,pgid=,lstart=,stat=,comm='], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } });
+    if (result.status !== 0) return null;
+    const rows = parseProcessCensus(result.stdout);
+    rows?.delete(result.pid); // This already-exited observer is never a cleanup target.
+    return rows;
+  } catch { return null; }
+}
+
+/** Stop a currently owned group; a recorded worker identity permits cleanup after guardian death without trusting a reused PID. */
+function stop(child, member) {
+  if (!child.pid) return;
+  const rows = census();
+  const root = rows?.get(child.pid);
+  const known = member && rows?.get(member.pid);
+  const ownsRoot = root && (child.pid === process.pid || root.ppid === process.pid && child.exitCode === null && child.signalCode === null);
+  const ownsMember = known && known.pgid === child.pid && known.started === member.started && known.processSha256 === member.processSha256;
+  if (!ownsRoot && !ownsMember) return;
+  // Shards have separate groups; traverse actual descendant ancestry before stopping the known group.
+  const owned = new Set([ownsRoot ? child.pid : member.pid]);
+  let changed;
+  do {
+    changed = false;
+    for (const row of rows.values()) if (owned.has(row.ppid) && !owned.has(row.pid)) { owned.add(row.pid); changed = true; }
+  } while (changed);
+  const current = census();
+  for (const pid of [...owned].reverse()) if (pid !== child.pid && current?.get(pid)?.started === rows.get(pid)?.started
+    && current.get(pid)?.processSha256 === rows.get(pid)?.processSha256) {
+    try { process.kill(pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
+  }
   try { process.kill(-child.pid, 'SIGKILL'); }
   catch (error) { if (error.code !== 'ESRCH') throw error; }
 }
 
 /** Run blocking batch work under a live parent that owns all canonical writes and lease renewal. */
-export async function runLandingWorker(options, { write, checkLease, checkLeaseNow, bindWorker, onWait, say, signal }) {
+export async function runLandingWorker(options, { write, checkLease, checkLeaseNow, bindWorker, watchDeadline, onWait, say, signal }) {
   const child = spawn(process.execPath, [FILE, 'guardian'], { cwd: options.root, env: process.env, detached: true, stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
   const inFlight = new Set();
   let result;
   let failure;
   let stderr = '';
+  let member;
+  const unwatch = watchDeadline(until => { if (child.connected) child.send({ type: 'deadline', until }, () => {}); });
   child.stderr.setEncoding('utf8').on('data', part => { stderr = (stderr + part).slice(-65536); });
   /** A failed authority check stops the whole owned group before another command can adopt its worktree. */
-  const abort = () => { failure ??= signal.reason; if (child.exitCode === null && child.signalCode === null) stop(child); };
+  const abort = () => { failure ??= signal.reason; stop(child, member); };
   signal.addEventListener('abort', abort, { once: true });
   /** Reply only over this owned child's channel, preserving the original typed refusal. */
   const answer = (id, value, error) => {
@@ -51,13 +67,27 @@ export async function runLandingWorker(options, { write, checkLease, checkLeaseN
     child.send({ type: 'answer', id, value, error: error ? { code: error.code ?? 'LAND_WORKER', message: messageText(error) } : null }, () => {});
   };
   child.on('message', message => {
+    if (message.type === 'worker') {
+      if (signal.aborted || failure) { stop(child, member); return; }
+      try { checkLeaseNow(); }
+      catch (error) { failure = error; stop(child, member); return; }
+      const row = census()?.get(message.pid);
+      if (!row || row.ppid !== child.pid || row.pgid !== child.pid) {
+        failure = new Refused('LAND_WORKER', 'the landing worker identity could not be confirmed; inspect pullboard resume before adopting');
+        stop(child);
+        return;
+      }
+      member = row;
+      child.send({ type: 'worker-start', options: { ...options, guardianPid: child.pid } }, () => {});
+      return;
+    }
     if (message.type === 'say') { say(message.text); return; }
     if (message.type === 'result') { result = message.value; return; }
     if (message.type === 'failure') { failure = new Refused(message.code, message.message); return; }
     if (message.type !== 'call') return;
     /** Permit only the batch worker's narrow protocol, retaining all authority in this parent. */
     const act = async () => {
-      if (signal.aborted) throw signal.reason;
+      if (signal.aborted || failure) throw signal.reason ?? failure;
       if (message.operation === 'check') { await checkLease(); checkLeaseNow(); return null; }
       if (message.operation === 'wait') return await onWait?.(message.args[0]);
       if (!['recordLandingBatch', 'finishLandingBatch', 'recordLandingFlake', 'recordFlakeObservation', 'recordGateRun', 'reopen', 'appendFact'].includes(message.operation)) {
@@ -72,6 +102,12 @@ export async function runLandingWorker(options, { write, checkLease, checkLeaseN
   try {
     const terminal = new Promise(resolveClose => {
       child.once('error', error => { failure = error; });
+      child.once('exit', (code, terminatedBy) => {
+        if (code !== 0 || terminatedBy || result === undefined) {
+          failure ??= new Refused('LAND_WORKER', 'the landing guardian stopped unexpectedly; inspect pullboard resume before adopting');
+          stop(child, member);
+        }
+      });
       child.once('close', (code, terminatedBy) => resolveClose({ code, signal: terminatedBy }));
     });
     await new Promise((resolveSpawn, reject) => { child.once('spawn', resolveSpawn); child.once('error', reject); });
@@ -84,13 +120,14 @@ export async function runLandingWorker(options, { write, checkLease, checkLeaseN
     return result;
   } finally {
     signal.removeEventListener('abort', abort);
-    if (child.exitCode === null && child.signalCode === null) stop(child);
+    unwatch();
+    if (child.exitCode === null && child.signalCode === null) stop(child, member);
     await Promise.allSettled(inFlight);
   }
 }
 
 /** Make one checked request to the live parent without giving the worker independent board-write authority. */
-function channel() {
+function channel(group) {
   let next = 0;
   let finished = false;
   const waiting = new Map();
@@ -102,7 +139,7 @@ function channel() {
     if (message.error) pair.reject(new Refused(message.error.code, message.error.message));
     else pair.resolve(message.value);
   });
-  process.once('disconnect', () => { if (!finished) { try { process.kill(-process.pid, 'SIGKILL'); } catch { process.exit(1); } } });
+  process.once('disconnect', () => { if (!finished) { try { process.kill(-group, 'SIGKILL'); } catch { process.exit(1); } } });
   const call = (operation, args = []) => new Promise((resolve, reject) => {
     const id = ++next;
     waiting.set(id, { resolve, reject });
@@ -113,7 +150,7 @@ function channel() {
 
 /** Enter batch execution only through the parent's private process channel. */
 async function workerMain(options) {
-  const pipe = channel();
+  const pipe = channel(options.guardianPid);
   const { call } = pipe;
   const board = store.openBoard(join(repoInfo(options.root).commonDir, 'pullboard', 'board.sqlite'));
   try {
@@ -143,13 +180,28 @@ function guardianMain() {
   let finished = false;
   let closed = false;
   let pending = 0;
+  let deadline = 0;
+  let expiring = false;
+  /** Fail closed independently of a suspended CLI, using only its last acknowledged authority deadline. */
+  const expire = () => {
+    if (finished || expiring) return;
+    expiring = true;
+    if (process.connected) process.send({ type: 'failure', code: 'LAND_LEASE_LOST', message: 'the guardian stopped its owned worker before the acknowledged landing lease expired' }, () => stop({ pid: process.pid }));
+    else stop({ pid: process.pid });
+  };
+  const watchdog = setInterval(() => { if (deadline && Date.now() >= deadline - 1500) expire(); }, 100);
   /** Flush result and refusal messages before ending this private channel normally. */
   const finish = () => {
     if (!closed || pending) return;
     finished = true;
+    clearInterval(watchdog);
     if (process.connected) process.disconnect();
   };
   process.on('message', message => {
+    if (message.type === 'deadline') {
+      if (Number.isFinite(message.until)) deadline = message.until;
+      return;
+    }
     if (message.type === 'start' && !worker) {
       // The worker stays in this guardian's detached group; its gates inherit that group too.
       worker = spawn(process.execPath, [FILE, 'worker'], { cwd: message.options.root, env: process.env,
@@ -167,7 +219,10 @@ function guardianMain() {
         process.exitCode = code ?? (signal ? 1 : 0);
         finish();
       });
-      worker.send(message);
+      worker.once('spawn', () => process.send({ type: 'worker', pid: worker.pid }));
+    } else if (message.type === 'worker-start' && worker?.connected) {
+      if (!deadline || Date.now() >= deadline - 1500) { expire(); return; }
+      worker.send({ type: 'start', options: message.options });
     } else if (worker?.connected) worker.send(message, () => {});
   });
   process.once('disconnect', () => { if (!finished) stop({ pid: process.pid }); });
