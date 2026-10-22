@@ -44,6 +44,7 @@ import { laneOf } from './lanes.js';
 import { takeResource } from './resources.js';
 import { runLandingWorker } from './landing-worker.js';
 import { Refused } from './refused.js';
+import { policyAt } from './trusted-policy.js';
 import { landingFileTimes } from './submit-invariants.js';
 import {
   flakeSource,
@@ -702,10 +703,9 @@ export async function land(options) {
 }
 
 /** Select only after admission, retaining the existing batch, proof and adoption rules. */
-export async function runLandingBatch({ root, board, config, write, say, owner, maximum = Infinity, dryRun = false, adopt = false, onWait, checkLease, checkLeaseNow }) {
-  // Quarantine is read from the accepted main policy this landing runs under, never from a branch.
-  board.quarantineEnabled = () => config.flakes?.quarantine === true;
+export async function runLandingBatch({ root, board, config, write, say, owner, maximum = Infinity, dryRun = false, adopt = false, onWait, checkLease, checkLeaseNow, fence }) {
   let trunk = mainCheckout(root);
+  if (fence && trunk?.branch !== fence.branch) throw new Refused('LAND_LEASE_LOST', 'the trunk branch changed while landing waited; start a new land command for its current branch');
   const recorded = store.landingBatches(board).findLast((batch) => batch.state === 'landed' && batch.base === trunk?.commit);
   if (!dryRun && recorded && isClean(root) && !untracked(root).length) {
     await checkLease();
@@ -713,7 +713,11 @@ export async function runLandingBatch({ root, board, config, write, say, owner, 
     trunk = mainCheckout(root);
   }
   if (!trunk?.commit) throw new Refused('LAND_TRUNK', 'landing needs the coordinator’s primary branch; return its checkout to the trunk');
+  // Pin accepted policy after any recorded-landed repair, never before admission or from candidate files.
+  config ??= policyAt(root, trunk.commit).config;
+  board.quarantineEnabled = () => config.flakes?.quarantine === true;
   const unfinished = store.landingBatches(board).findLast((batch) => batch.state !== 'landed' && batch.state !== 'blocked');
+  if (fence && unfinished && unfinished.branch !== fence.branch) throw new Refused('LAND_LEASE_LOST', 'the interrupted batch belongs to another trunk branch; restore that branch and start a fresh land --adopt');
   const selected = candidates(board, root, trunk.commit, maximum);
   const stale = selected.blocked.find(item => item.code === 'STALE_VERDICT');
   if (!selected.ready.length && stale) throw staleVerdictRefusal({ item_id: stale.id }, stale);

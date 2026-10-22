@@ -3,7 +3,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as store from './board.js';
-import { invalidateGitFacts, repoInfo } from './git.js';
+import { invalidateGitFacts, mainCheckout, repoInfo } from './git.js';
 import { Refused } from './refused.js';
 import { parseProcessCensus } from './process-census.js';
 
@@ -156,10 +156,10 @@ async function workerMain(options) {
   try {
     const { runLandingBatch } = await import('./land.js');
     /** Canonical catch-up may have moved proof or trunk while the request was in flight. */
-    const checkLease = async () => { await call('check'); invalidateGitFacts(); assertWorkerFence(board, options.fence); };
+    const checkLease = async () => { await call('check'); invalidateGitFacts(); assertWorkerFence(board, options.fence, options.root); };
     const result = await runLandingBatch({ ...options, board, write: (operation, args) => call(operation, args),
       say: text => process.send({ type: 'say', text }), onWait: state => call('wait', [state]), checkLease,
-      checkLeaseNow: () => assertWorkerFence(board, options.fence) });
+      checkLeaseNow: () => assertWorkerFence(board, options.fence, options.root) });
     pipe.finish({ type: 'result', value: result });
   } catch (error) {
     process.exitCode = 1;
@@ -168,9 +168,12 @@ async function workerMain(options) {
 }
 
 /** Check the shared native board immediately before a physical Git action, with no intervening await. */
-function assertWorkerFence(board, fence) {
+function assertWorkerFence(board, fence, root) {
   // This imported live binding is used only after module initialization, keeping board cycles inert.
-  return assertLandingLease(board, fence);
+  const holder = assertLandingLease(board, fence);
+  invalidateGitFacts();
+  if (mainCheckout(root)?.branch !== fence.branch) throw new Refused('LAND_LEASE_LOST', 'the trunk branch changed; start a fresh land command for its current branch');
+  return holder;
 }
 import { assertLandingLease } from './landing-lease.js';
 
