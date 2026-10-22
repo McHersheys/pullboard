@@ -116,6 +116,13 @@ async function interruptedBranchControls(box) {
 /** Resolve absent config from the repaired accepted tip; explicit direct-call config remains supported. */
 async function repairedPolicyControls(box, batch) {
   box.git(box.repo, 'reset', '--hard', batch.base); // Only this private fixture simulates receipts preceding local Git repair.
+  try {
+    box.git(box.repo, 'switch', '-q', '-c', 'alternate-repair');
+    await withFixtureLease(box, 'refs/heads/alternate-repair', async options => {
+      await assert.rejects(runLandingBatch(options), error => error.code === 'LAND_LEASE_LOST');
+      assert.equal(box.git(box.repo, 'rev-parse', 'HEAD'), batch.base, 'a foreign-branch recorded repair never moves Git before refusing');
+    });
+  } finally { box.git(box.repo, 'switch', '-q', 'main'); invalidateGitFacts(); }
   await withFixtureLease(box, 'refs/heads/main', async options => {
     const count = store.landingBatches(options.board).length;
     const result = await runLandingBatch(options);
@@ -225,6 +232,8 @@ export async function landingQueueCase(t, helpers, { staleAfterFirst = false, ki
       assert.equal(readBoard(box, board => store.landingBatches(board).at(-1).state), 'landed');
       first.kill('SIGCONT');
       assert.equal((await first.closed).code, 1, 'the resumed old holder cannot use its expired generation');
+      assert.match(first.stderrText, /\[LAND_LEASE_LOST\]/u, 'the resumed owner reports its typed authority refusal');
+      assert.doesNotMatch(first.stderrText, /Error: kill EPERM|internal\/event_target/u, 'an uncaught cleanup error is not lease fencing');
       run(box, box.repo, 'land', '--max', '1');
       assert.equal(readBoard(box, board => store.landingBatches(board).length), 2);
       return;

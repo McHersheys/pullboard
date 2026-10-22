@@ -40,10 +40,13 @@ function stop(child, member) {
     for (const row of rows.values()) if (owned.has(row.ppid) && !owned.has(row.pid)) { owned.add(row.pid); changed = true; }
   } while (changed);
   const current = census();
-  for (const pid of [...owned].reverse()) if (pid !== child.pid && current?.get(pid)?.started === rows.get(pid)?.started
+  if (!current) return; // Missing identity evidence never authorizes a process-group signal.
+  for (const pid of [...owned].reverse()) if (pid !== child.pid && !current.get(pid)?.state.startsWith('Z') && current.get(pid)?.started === rows.get(pid)?.started
     && current.get(pid)?.processSha256 === rows.get(pid)?.processSha256) {
     try { process.kill(pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
   }
+  // A SIGSTOP parent can retain its guardian as an unreaped zombie after the whole group exited.
+  if (![...current.values()].some(row => row.pgid === child.pid && !row.state.startsWith('Z'))) return;
   try { process.kill(-child.pid, 'SIGKILL'); }
   catch (error) { if (error.code !== 'ESRCH') throw error; }
 }

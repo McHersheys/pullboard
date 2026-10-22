@@ -706,7 +706,10 @@ export async function land(options) {
 export async function runLandingBatch({ root, board, config, write, say, owner, maximum = Infinity, dryRun = false, adopt = false, onWait, checkLease, checkLeaseNow, fence }) {
   let trunk = mainCheckout(root);
   if (fence && trunk?.branch !== fence.branch) throw new Refused('LAND_LEASE_LOST', 'the trunk branch changed while landing waited; start a new land command for its current branch');
+  const unfinished = store.landingBatches(board).findLast((batch) => batch.state !== 'landed' && batch.state !== 'blocked');
+  if (fence && unfinished && unfinished.branch !== fence.branch) throw new Refused('LAND_LEASE_LOST', 'the interrupted batch belongs to another trunk branch; restore that branch and start a fresh land --adopt');
   const recorded = store.landingBatches(board).findLast((batch) => batch.state === 'landed' && batch.base === trunk?.commit);
+  if (fence && recorded && recorded.branch !== fence.branch) throw new Refused('LAND_LEASE_LOST', 'the recorded Git repair belongs to another trunk branch; restore that branch before landing');
   if (!dryRun && recorded && isClean(root) && !untracked(root).length) {
     await checkLease();
     git(root, ['merge', '--ff-only', recorded.tip]);
@@ -716,8 +719,6 @@ export async function runLandingBatch({ root, board, config, write, say, owner, 
   // Pin accepted policy after any recorded-landed repair, never before admission or from candidate files.
   config ??= policyAt(root, trunk.commit).config;
   board.quarantineEnabled = () => config.flakes?.quarantine === true;
-  const unfinished = store.landingBatches(board).findLast((batch) => batch.state !== 'landed' && batch.state !== 'blocked');
-  if (fence && unfinished && unfinished.branch !== fence.branch) throw new Refused('LAND_LEASE_LOST', 'the interrupted batch belongs to another trunk branch; restore that branch and start a fresh land --adopt');
   const selected = candidates(board, root, trunk.commit, maximum);
   const stale = selected.blocked.find(item => item.code === 'STALE_VERDICT');
   if (!selected.ready.length && stale) throw staleVerdictRefusal({ item_id: stale.id }, stale);
