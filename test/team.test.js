@@ -24,11 +24,15 @@ import { decodeBoardKey, seal } from '../src/seal.js';
 import { ENGINE_VERSION as PEOPLE_VERSION } from '../src/machine.js';
 import { relayWorkBudgetMs } from './relay-budget.js';
 import { hostname } from 'node:os';
+import { landingQueueCase } from './landing-queue-fixture.js';
 
 const CLI = join(import.meta.dirname, '..', 'bin', 'pullboard.js');
 
 const helpers = createE2eHelpers();
 after(helpers.cleanup);
+
+test('a trunk lands one batch at a time [B3,R3,Q1,Q2,E8]', { timeout: 120_000 }, // budget: hang ceiling for real private Git, CLI checks, both gate barriers and cleanup; no speed target.
+  async t => landingQueueCase(t, helpers));
 
 /** Open a fixture's independent board and always close it after its observation or public move. */
 function withBoard(root, action) {
