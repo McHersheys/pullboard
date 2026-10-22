@@ -11,19 +11,28 @@ import { after, test } from 'node:test';
 import { gateSlotEnvironment, listResources, setResourceCapacity, takeResource } from '../src/resources.js';
 import { parseProcessCensus } from '../src/process-census.js';
 import { listResources as listPreRunnerResources, takeResource as takePreRunnerResource } from './fixtures/resources-pre-runners.js';
-import { runFixtureChild, runFixtureChildAsync, startFixtureChild } from './fixture-child.js';
+import { cleanupFixtureChildren, runFixtureChild, runFixtureChildAsync, startFixtureChild } from './fixture-child.js';
 import { readRemoteGateHolders, waitForCondition } from './runner-fixture-state.js';
+import { assertAttemptDeadlineReset, assertRedispatchDeadlineAccounting, runPairedRerun, startRunnerCpuStandIn } from './runner-paired-rerun-fixture.js';
+import { assertFixtureGroupEpermControls, stopGroup } from './runner-process-group.js';
 import { parentDeathDrainFixture } from './runner-parent-death-fixture.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { refuseSandboxBlocked } from '../src/gate.js';
 import { SECRET, HOST, shellQuote, installSshStandIn } from './runner-ssh-fixture.js';
 import { sourceSetupFailureFixture } from './runner-source-setup-fixture.js';
+import { runnerSourceRefusalCases } from './runner-source-refusal-fixture.js';
+
+/** Per-phase deadlines for one runner round trip; together they stay near the 60-second hang ceiling. */
+const ROUND_TRIP_DEADLINES = { dispatch: 20_000, 'remote run': 30_000, 'result return': 10_000 }; // budget: a stuck runner fails by name in about a minute, far under the 660-second per-test limit.
+const PAIRED_RERUN_FIXTURE = { createE2eHelpers, cli, observe, startToolingCli, awaitRoundTrip, phaseCounts,
+  ROUND_TRIP_DEADLINES, HOST, shellQuote, installSshStandIn, processesUnder, stopGroup };
 
 const BIN = resolve(import.meta.dirname, '../bin/pullboard.js');
 const TEMP = [];
 const TOOLING_SNAPSHOTS = new Map();
 const e2e = createE2eHelpers();
 after(e2e.cleanup);
+after(cleanupFixtureChildren);
 
 /** Run Git in the private source repository and preserve useful failure context. */
 function git(repo, env, ...args) {
@@ -84,11 +93,13 @@ function writeProbe(repo, { remoteStateRoot, remoteMachineHome, sourceHome, sour
   historyBaseCommit, annotatedTagObject, lightweightTagObject }) {
   const probe = `import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 test('runner executed the committed source in its private checkout', () => {
+  assert.equal(readFileSync('empty.bin').length, 0, 'an empty blob preserves the next object boundary');
+  assert.deepEqual(readFileSync('binary.bin'), Buffer.from([0, 10, 255, 13, 0, 128]), 'binary framing preserves exact bytes');
   const commit = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
   const tree = execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { encoding: 'utf8' }).trim();
   const shallow = execFileSync('git', ['rev-parse', '--is-shallow-repository'], { encoding: 'utf8' }).trim();
@@ -213,22 +224,10 @@ function startToolingCli(repo, env, args, { toolingRoot = resolve(import.meta.di
   }
 }
 
-/** Per-phase deadlines for one runner round trip; together they stay near the 60-second hang ceiling. */
-const ROUND_TRIP_DEADLINES = { dispatch: 20_000, 'remote run': 30_000, 'result return': 10_000 }; // budget: a stuck runner fails by name in about a minute, far under the 660-second per-test limit.
-
 /** Count the stand-in's phase markers; a missing file means nothing was dispatched yet. */
 function phaseCounts(file) {
   const lines = existsSync(file) ? readFileSync(file, 'utf8').split('\n') : [];
   return { dispatched: lines.filter(line => line === 'dispatched').length, returned: lines.filter(line => line === 'returned').length };
-}
-
-/** Stop a detached fixture child's whole process group, escalating if TERM is ignored. */
-async function stopGroup(child, closed) {
-  const signal = name => { try { process.kill(-child.pid, name); } catch (error) { if (error.code !== 'ESRCH') throw error; } };
-  signal('SIGTERM');
-  const settled = await Promise.race([closed.then(() => true), new Promise(resolve => setTimeout(() => resolve(false), 5_000))]); // budget: TERM grace before KILL.
-  signal('SIGKILL');
-  if (!settled) await closed;
 }
 
 /**
@@ -239,7 +238,7 @@ async function stopGroup(child, closed) {
  * passes the marker counts it read before spawning the child: a fast child can dispatch before this
  * function first runs, and a baseline read here would swallow that dispatch.
  */
-async function awaitRoundTrip(child, closed, phasesFile, before, deadlines = ROUND_TRIP_DEADLINES) {
+async function awaitRoundTrip(child, closed, phasesFile, before, deadlines = ROUND_TRIP_DEADLINES, firstReceiptAccepted = null) {
   const limits = { ...ROUND_TRIP_DEADLINES, ...deadlines };
   let done = null;
   closed.then(result => { done = result; });
@@ -248,11 +247,22 @@ async function awaitRoundTrip(child, closed, phasesFile, before, deadlines = ROU
   assert.ok(!phasesFile || before, 'awaitRoundTrip needs the phase baseline read before the child was spawned');
   let phase = 'dispatch';
   let phaseStarted = Date.now();
+  let observed = { dispatched: 0, returned: 0 };
   while (!done) {
     const total = phasesFile ? phaseCounts(phasesFile) : { dispatched: 0, returned: 0 };
     const counts = phasesFile ? { dispatched: total.dispatched - before.dispatched, returned: total.returned - before.returned } : total;
-    const next = counts.dispatched > counts.returned ? 'remote run' : counts.dispatched > 0 ? 'result return' : 'dispatch';
-    if (next !== phase) { timings.push(`${phase} ${Date.now() - phaseStarted}ms`); phase = next; phaseStarted = Date.now(); }
+    // The observer saves the accepted first receipt before preparing its paired dispatch. That real
+    // controller-side witness ends result delivery; a worker's "returned" marker alone cannot do so.
+    const redispatch = counts.dispatched === 1 && counts.returned === 1 && firstReceiptAccepted?.();
+    const next = redispatch ? 'dispatch' : counts.dispatched > counts.returned ? 'remote run' : counts.dispatched > 0 ? 'result return' : 'dispatch';
+    // A returned attempt and its paired dispatch can arrive in one poll without changing the phase's name.
+    // Each real marker advance starts a fresh clock, while a phase with no new marker remains bounded.
+    if (next !== phase || counts.dispatched > observed.dispatched || counts.returned > observed.returned) {
+      timings.push(`${phase} ${Date.now() - phaseStarted}ms (attempt ${observed.dispatched})`);
+      phase = next;
+      phaseStarted = Date.now();
+      observed = counts;
+    }
     const spent = Date.now() - phaseStarted;
     if (spent > limits[phase]) {
       await stopGroup(child, closed);
@@ -586,6 +596,8 @@ test('a private check never refuses its own remote lease [C7,V4]', async (t) => 
   }
 });
 
+test('current source refuses private, oversized and unsupported blobs before SSH [C7,S1]', runnerSourceRefusalCases);
+
 test('a queued run executes on a registered runner and its result comes back [C7]', async (t) => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-runner-')));
   TEMP.push(dir);
@@ -624,9 +636,11 @@ test('a queued run executes on a registered runner and its result comes back [C7
   assert.equal(initialized.status, 0, initialized.context);
   writeFileSync(join(repo, 'pullboard.json'), JSON.stringify({ gate: 'true' }));
   writeFileSync(join(repo, 'tracked.txt'), 'committed runner source\n');
+  writeFileSync(join(repo, 'empty.bin'), Buffer.alloc(0));
+  writeFileSync(join(repo, 'binary.bin'), Buffer.from([0, 10, 255, 13, 0, 128]));
   writeFileSync(join(repo, 'history-original.txt'), 'committed history witness\n');
   writeFileSync(join(repo, '.gitignore'), '.env\n');
-  git(repo, env, 'add', '.gitignore', 'pullboard.json', 'tracked.txt', 'history-original.txt');
+  git(repo, env, 'add', '.gitignore', 'pullboard.json', 'tracked.txt', 'history-original.txt', 'empty.bin', 'binary.bin');
   git(repo, env, 'commit', '-q', '-m', 'test: prepare registered runner fixture');
   const historyBaseCommit = git(repo, env, 'rev-parse', 'HEAD');
   git(repo, env, 'tag', '-a', 'runner-release', '-m', 'runner release annotation witness', historyBaseCommit);
@@ -1915,64 +1929,35 @@ test('a refused runner checkout names its failed Git step and stderr [C6,C7]', a
   }
 });
 
-test('a red on a registered runner gets its paired rerun and ledger entry, or stays unclassified without the host load [C7]', { timeout: 300_000 }, async (t) => {
-  for (const mode of ['remote-load', 'no-load', 'paired-no-load']) await t.test(mode, async () => {
-    const helper = createE2eHelpers();
-    t.after(helper.cleanup);
-    const box = helper.project('true');
-    const repo = box.repo;
-    const [fixtureBin, remoteHome, worker] = ['runner-bin', 'runner-home', 'second-machine'].map((name) => join(box.dir, name));
-    const remoteMachineHome = join(remoteHome, '.pullboard');
-    for (const folder of [fixtureBin, remoteMachineHome, worker, join(repo, 'test')]) mkdirSync(folder, { recursive: true });
-    const env = { ...box.env, PATH: fixtureBin + ':' + box.env.PATH };
-    writeFileSync(join(repo, 'package.json'), JSON.stringify({ private: true, type: 'module' }) + '\n');
-    for (const part of ['src', 'bin']) cpSync(resolve(import.meta.dirname, '..', part), join(repo, part), { recursive: true });
-    // Red on its first run, green on its paired rerun: a flake the ledger should record.
-    const runs = join(box.dir, 'flaky-runs');
-    writeFileSync(join(repo, 'test/flaky.test.js'), `import { test } from 'node:test'; import { appendFileSync, existsSync, readFileSync } from 'node:fs';
-test('remote flaky case', () => { const n = existsSync(${JSON.stringify(runs)}) ? readFileSync(${JSON.stringify(runs)}, 'utf8').length : 0; appendFileSync(${JSON.stringify(runs)}, 'x'); if (n === 0) throw new Error('first run fails'); });\n`);
-    const config = JSON.parse(readFileSync(join(repo, 'pullboard.json'), 'utf8'));
-    writeFileSync(join(repo, 'pullboard.json'), JSON.stringify({ ...config, gate: 'node bin/run-tests.js test/flaky.test.js', flakes: { rerun: true } }) + '\n');
-    box.git(repo, 'add', '-A');
-    box.git(repo, 'commit', '-q', '-m', 'test: a remote flaky fixture');
-    // The worker reports a known load, or (as an older worker would) a receipt without one: on every run, or only on
-    // the paired rerun, whose receipt the classification rests on too (#925). A marker file spans worker processes.
-    const preload = join(box.dir, 'worker-preload.mjs');
-    const firstReceipt = join(box.dir, 'first-receipt-seen');
-    const strip = mode === 'no-load' ? 'true' : `existsSync(${JSON.stringify(firstReceipt)}) || (writeFileSync(${JSON.stringify(firstReceipt)}, ''), false)`;
-    writeFileSync(preload, mode === 'remote-load'
-      ? "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url); const os = require('node:os'); os.loadavg = () => [7.25, 7.25, 7.25]; require('node:module').syncBuiltinESMExports();\n"
-      : "import { existsSync, writeFileSync } from 'node:fs'; const write = process.stderr.write.bind(process.stderr); process.stderr.write = (chunk, ...rest) => { const text = String(chunk); const match = /^(PULLBOARD_RUNNER_RESULT \\S+ )(\\S+)\\n$/u.exec(text); if (!match) return write(chunk, ...rest); const body = JSON.parse(Buffer.from(match[2], 'base64').toString('utf8')); if (" + strip + ") delete body.load; return write(match[1] + Buffer.from(JSON.stringify(body)).toString('base64') + '\\n', ...rest); };\n");
-    installSshStandIn({ bin: fixtureBin, worker, home: remoteHome, machineHome: remoteMachineHome, requests: join(box.dir, 'requests.jsonl'), nodeOptions: '--import=' + pathToFileURL(preload).href });
-    assert.equal(cli(repo, env, 'settings', 'gateSlots', '1', '--json').status, 0);
-    const registered = cli(repo, env, 'runner', 'add', HOST, '--slots', '1', '--browser', '1', '--json');
-    assert.equal(registered.status, 0, fixtureResultContext(registered));
-    const prior = { home: process.env.PULLBOARD_HOME, machine: process.env.PULLBOARD_MACHINE_HOME };
-    Object.assign(process.env, { PULLBOARD_HOME: env.PULLBOARD_HOME, PULLBOARD_MACHINE_HOME: env.PULLBOARD_MACHINE_HOME });
-    const held = await takeResource({ name: 'gate', capacity: 1, scope: 'machine', root: repo, agent: 'flake-local-holder', item: 'flake-local-holder', kind: 'force-registered-runner' });
+test('a red on a registered runner gets its paired rerun and ledger entry, or stays unclassified without the host load [C7]', { timeout: 300_000 }, async t => {
+  for (const mode of ['remote-load', 'no-load', 'paired-no-load']) {
+    await t.test(mode, child => runPairedRerun(child, mode, PAIRED_RERUN_FIXTURE));
+  }
+});
+
+test('the runner round trip deadline holds under a loaded test machine and still catches a stuck phase [C7]',
+  { timeout: 660_000 }, async t => { // budget: five real paired attempts plus a bounded held phase, below the file hang ceiling.
+    await assertAttemptDeadlineReset(PAIRED_RERUN_FIXTURE);
+    await assertRedispatchDeadlineAccounting(PAIRED_RERUN_FIXTURE);
+    assertFixtureGroupEpermControls();
+    const busy = await startRunnerCpuStandIn();
+    t.after(busy.stop);
+    assert.equal(busy.count, Math.max(1, Math.floor(busy.cores / 2)), 'the fixture owns one busy child for each half-core slot');
     try {
-      const run = observe(startToolingCli(repo, env, ['gate', '--json'], { detached: true }));
-      const finished = await awaitRoundTrip(run.child, run.closed, join(box.dir, 'requests.jsonl.phases'), { dispatched: 0, returned: 0 });
-      assert.equal(finished.status, 1, 'the original red stays the gate result');
+      for (let run = 1; run <= 5; run++) {
+        await t.test(`paired rerun ${run} of 5 [C7]`, async child => {
+          const observation = await runPairedRerun(child, 'paired-no-load', PAIRED_RERUN_FIXTURE, { cpuLoad: busy });
+          assert.equal(observation.paired?.green, true, 'the paired runner rerun makes progress and passes');
+          assert.equal(observation.classification, 'unclassified', 'without the paired host load, a green run is not called a flake');
+          busy.assertAlive();
+        });
+      }
+      t.diagnostic(JSON.stringify({ cpuStandIn: busy.count, pids: busy.pids, cores: busy.cores,
+        loadBefore: Number(busy.loadBefore.toFixed(1)), loadDuring: Number(busy.loadAfter().toFixed(1)), pairedRuns: 5, cpu: busy.report.cpuSnapshots }));
+      await t.test('a permanently held result return remains a named bounded failure [C7]', async child => {
+        await runPairedRerun(child, 'paired-no-load', PAIRED_RERUN_FIXTURE, { hold: 'return' });
+      });
     } finally {
-      held.release();
-      for (const [key, value] of [['PULLBOARD_HOME', prior.home], ['PULLBOARD_MACHINE_HOME', prior.machine]]) if (value === undefined) delete process.env[key]; else process.env[key] = value;
-    }
-    const evidence = join(repo, '.git', 'pullboard', 'flake-evidence');
-    const [observation] = readdirSync(evidence).map((id) => JSON.parse(readFileSync(join(evidence, id, 'observation.json'), 'utf8')));
-    assert.equal(observation.main, box.git(repo, 'rev-parse', 'HEAD'), 'the pinned main is recorded');
-    if (mode === 'remote-load') {
-      assert.equal(observation.classification, 'flake', observation.reason);
-      assert.deepEqual(observation.load.average, [7.25, 7.25, 7.25], 'the execution host\'s load is recorded, not the controller\'s');
-      assert.equal(observation.paired?.green, true, 'the one paired rerun ran and passed');
-    } else if (mode === 'no-load') {
-      assert.equal(observation.classification, 'unclassified');
-      assert.match(observation.reason, /does not carry the execution host's load/u);
-      assert.equal(observation.paired, null, 'no rerun is guessed without the host load');
-    } else {
-      assert.equal(observation.paired?.green, true, 'the paired rerun ran and passed, but its receipt lacks the host load');
-      assert.equal(observation.classification, 'unclassified', 'a green pair without its host load never makes a flake: ' + observation.reason);
-      assert.match(observation.reason, /paired remote receipt does not carry the execution host's load/u);
+      await busy.stop();
     }
   });
-});

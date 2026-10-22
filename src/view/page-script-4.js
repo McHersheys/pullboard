@@ -451,6 +451,20 @@ function moveMessage(move, result) {
   return move.args.off ? 'released the ' + move.args.lane + ' lane' : 'holding the ' + move.args.lane + ' lane: ' + move.args.reason;
 }
 
+/**
+ * One sentinel draft in Needs-you: a watch the person has not approved, with the proof Rigor drafted it from.
+ * It says draft and waiting, never watching, so an unapproved check cannot pass for an approved one.
+ */
+function sentinelDraftRow(row) {
+  const side = (label, proof) => label + ' commit ' + proof.commit.slice(0, 12) + ' exit ' + proof.exit;
+  const evidence = row.evidence;
+  const proof = evidence && evidence.proof ? 'Proof: ' + evidence.proof.check + ', ' + side('red', evidence.proof.red) + ', ' + side('green', evidence.proof.green) + '.' : '';
+  const repeats = evidence ? 'Drafted from ' + evidence.occurrences + (evidence.occurrences === 1 ? ' repeat of ' : ' repeats of ') + evidence.key + (evidence.items.length ? ' on ' + evidence.items.map((item) => '#' + item.id).join(', ') : '') + '.' : 'Proposed by an agent with no repeat cited.';
+  return '<li class="row ask" data-sentinel-draft="' + esc(row.ref) + '"><span class="dot ask"></span><div><div class="t"><span>' + esc(row.ref) + '</span>' + esc(row.text) + '</div>'
+    + '<div class="muted sentinel-proof">' + esc(repeats + (proof ? ' ' + proof : '')) + '</div>'
+    + '<div class="meta"><span class="why"><b>NEEDS YOU</b> a sentinel draft awaiting your approval, not watching yet</span></div></div><span class="chip warn">Approve or Decline</span></li>';
+}
+
 /** One blueprint fit proposal: its decision, its new text or reason, and where it came from. */
 function fitRow(f) {
   return '<div class="fit-row" data-fit="' + esc(f.target) + '"><div class="meta"><b>' + esc(f.target) + '</b><span class="chip">' + esc(f.decision) + '</span><span class="chip">unverified draft, recorded as ' + esc(f.recordedAs) + '</span></div>' + (f.text ? '<div>' + esc(f.text) + '</div>' : '') + (f.reason ? '<div>Reason: ' + esc(f.reason) + '</div>' : '') + '<div class="muted">Blueprint source: ' + esc(f.blueprint.name + ' v' + f.blueprint.version + ' ' + (f.kind === 'item' ? 'starter' : f.kind) + ' ' + f.key + ': ' + f.source) + '</div></div>';

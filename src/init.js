@@ -42,7 +42,10 @@ import {
   settingCommand,
 } from './gate-config.js';
 export { detectGate } from './gate-config.js';
-import { gitPath } from './git.js';
+import {
+  gitPath,
+  tryGit,
+} from './git.js';
 import { machineHome } from './machine-home.js';
 import { Refused } from './refused.js';
 import { reviewerStartup } from './next-steps.js';
@@ -565,11 +568,13 @@ export function initRepo({ info, openBoardHere, register, closeBoard, model, per
   const doctrine = existsSync(join(root, CONFIG_FILE)) ? loadConfig(root).practice : doctrineFile(root);
   const gate = detectGate(root);
   const configured = configuredGate(root);
+  const config = JSON.parse(configTemplate(gate, detectFixers(root)));
+  if (!tryGit(root, ['remote']).stdout) config.landing = { publish: 'separate' };
   const written = [];
   /** Record only paths setup actually writes; unrelated files never enter its staging command. */
   const onWrite = (path) => { if (!written.includes(path)) written.push(path); onWritten?.(path); };
   const notes = [
-    writeNew(join(root, CONFIG_FILE), configTemplate(gate, detectFixers(root)), CONFIG_FILE, onWrite),
+    writeNew(join(root, CONFIG_FILE), `${JSON.stringify(config, null, 2)}\n`, CONFIG_FILE, onWrite),
     writeNew(join(root, 'SPEC.md'), specTemplate(basename(root), gate), 'SPEC.md', onWrite),
     writeNew(join(root, doctrine), practiceTemplate(), doctrine, onWrite),
     ignoreAgentWorktrees(root, onWrite),

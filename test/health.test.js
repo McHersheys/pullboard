@@ -14,6 +14,7 @@ import { pathToFileURL } from 'node:url';
 import * as store from '../src/board.js';
 import { main } from '../src/cli.js';
 import { boardHealth } from '../src/health.js';
+import { recurringJobs } from '../src/recurring-jobs.js';
 import { scanHealthSentinel } from '../src/health-sentinel.js';
 import { loadConfig } from '../src/config.js';
 import { gateRuns } from '../src/gate-control.js';
@@ -538,4 +539,72 @@ test('one health run sends at most ten stuck shouts and names how many it held b
   assert.match(shouts.at(-1).shout_text, /^Health: 2 more notices from this run were held back/u);
   assert.equal(shouts.at(-1).shout_to, 'coordinator');
   assert.equal(seats.length, 12);
+});
+
+test('a recurring job that missed its cadence is a finding [D1,C7]', async (t) => {
+  const box = repo(t);
+  const { board, at } = boardAt(box);
+  store.register(board, { lane: 'coordinator', path: box.root });
+  const worker = store.register(board, { lane: 'core', path: join(box.dir, 'core-1') });
+  at(10 * HOUR);
+  for (const name of ['nightly', 'edge', 'fresh', 'never']) store.declareJob(board, { agentId: 'coordinator', name, every: '10m', owner: 'coordinator' });
+  at(9 * HOUR);
+  store.recordJobRun(board, { agentId: worker, name: 'nightly' });
+  at(16 * 60_000);
+  store.recordJobRun(board, { agentId: worker, name: 'edge' });
+  at(14 * 60_000);
+  store.recordJobRun(board, { agentId: worker, name: 'fresh' });
+  store.closeBoard(board);
+  const { code, stdout } = await cli(box.root, ['health', '--json']);
+  assert.equal(code, 1, 'a silent job is stuck work');
+  const missed = JSON.parse(stdout).stuck.filter((entry) => entry.cause === 'JOB_MISSED').map((entry) => entry.subject).sort();
+  assert.deepEqual(missed, ['job:edge', 'job:never', 'job:nightly'], 'a run 14 minutes ago is on time for a 10 minute job; 16 minutes ago and never run are missed');
+  const found = JSON.parse(stdout).stuck.find((entry) => entry.subject === 'job:nightly');
+  assert.match(found.why, /nightly/u);
+  assert.ok(found.why.includes(ago(9 * HOUR)), `the finding names the last run: ${found.why}`);
+  assert.match(found.why, /owner is coordinator/u);
+  assert.equal(found.owner.who, 'coordinator');
+  const scan = scanHealthSentinel(box.file, { root: box.root, config: loadConfig(box.root), now: new Date(NOW) });
+  assert.ok(scan.findings.some((entry) => entry.key === 'JOB_MISSED:job:nightly'), 'the sentinel feed carries the finding');
+});
+
+test('an agent cannot widen a declared cadence [D1,C7]', (t) => {
+  const box = repo(t);
+  const { board } = boardAt(box);
+  t.after(() => store.closeBoard(board));
+  store.register(board, { lane: 'coordinator', path: box.root });
+  const worker = store.register(board, { lane: 'core', path: join(box.dir, 'core-1') });
+  store.declareJob(board, { agentId: 'coordinator', name: 'loop', every: '10m', owner: 'coordinator' });
+  assert.throws(() => store.declareJob(board, { agentId: worker, name: 'loop', every: 'daily', owner: worker }), (error) => error.code === 'JOB_CADENCE_COORDINATOR_ONLY');
+  assert.equal(recurringJobs(board)[0].every, '10m');
+  assert.equal(store.declareJob(board, { agentId: 'coordinator', name: 'loop', every: '1h', owner: 'coordinator' }).every, '1h', 'the coordinator may change it');
+});
+
+test('a missed job is reported once per episode, not on every scan [D1,C7]', (t) => {
+  const box = repo(t);
+  const { board, at } = boardAt(box);
+  t.after(() => store.closeBoard(board));
+  store.register(board, { lane: 'coordinator', path: box.root });
+  const worker = store.register(board, { lane: 'core', path: join(box.dir, 'core-1') });
+  at(10 * HOUR);
+  store.declareJob(board, { agentId: 'coordinator', name: 'sweep', every: '10m', owner: 'coordinator' });
+  at(0);
+  /** Scan and record as the sentinel does; returns what the scan published, or null when nothing changed. */
+  const scan = () => {
+    const seen = scanHealthSentinel(box.file, { root: box.root, config: loadConfig(box.root), now: new Date(NOW) });
+    if (seen) store.recordHealthFindings(board, { agentId: 'coordinator', ...seen });
+    return seen;
+  };
+  assert.ok(scan()?.findings.some((entry) => entry.key === 'JOB_MISSED:job:sweep'), 'the first scan reports the miss');
+  const notices = () => store.allShouts(board).filter((notice) => notice.shout_from === 'sentinel').length;
+  const first = notices();
+  assert.ok(first >= 1, 'the owner hears of it');
+  assert.equal(scan(), null, 'a second scan of the same episode publishes nothing');
+  assert.equal(notices(), first, 'and shouts nothing');
+  at(5 * 60_000);
+  store.recordJobRun(board, { agentId: worker, name: 'sweep' });
+  at(0);
+  const cleared = scan();
+  assert.ok(cleared && !cleared.findings.some((entry) => entry.cause === 'JOB_MISSED'), 'a run ends the episode and the scan publishes the clearing');
+  assert.equal(scan(), null, 'and then it is quiet');
 });

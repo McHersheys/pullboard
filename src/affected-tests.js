@@ -5,6 +5,10 @@ import { fileURLToPath } from 'node:url';
 import { pathToFileURL } from 'node:url';
 import { cleanGitEnvironment } from './git.js';
 import {
+  COMMAND_CANDIDATE,
+  ENGINE_CANDIDATE,
+} from './discovery.js';
+import {
   commonJsIn,
   importsIn,
 } from './module-imports.js';
@@ -18,6 +22,7 @@ const SOURCE_TREE_INPUT = '/** @pullboard-test-input source-tree */';
 const DOCS_TREE_INPUT = '/** @pullboard-test-input docs-tree */';
 // A computed-import test may declare the repository modules it can load, in its leading comment header only.
 const LOADS = /^\/\*\* @pullboard-test-loads (.+?) \*\/$/u;
+const COMMAND_REGISTRY = 'src/commands/index.js';
 const GLOBAL = new Set(['bin/run-tests.js', 'package.json', 'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'pnpm-lock.yaml', 'src/gate.js', 'src/cli.js', 'src/hooks.js', 'src/trusted-policy.js', 'src/affected-tests.js', 'src/module-imports.js']);
 
 /**
@@ -281,6 +286,8 @@ function graphAt(root, commit, changedDocs = []) {
         }
         continue;
       }
+      // The command registry loads its sibling modules by discovery; synthetic edges below stand for those imports (#804).
+      if (target === '(computed)' && path === COMMAND_REGISTRY) continue;
       if (!target.startsWith('.')) {
         unknown.set(path, target === '(computed)' ? 'non-literal dynamic import' : 'unresolved package import');
         continue;
@@ -297,6 +304,15 @@ function graphAt(root, commit, changedDocs = []) {
       reverse.get('bin/pullboard.js').add(path);
     }
   });
+  // Discovery is not an import: the command registry loads each src/commands module, and machine.js reads each
+  // src/*-engine.js leaf as text. A change to one reaches the reader, so everything that imports the reader is selected.
+  for (const module of paths) {
+    const reader = module.startsWith('src/commands/') && COMMAND_CANDIDATE.test(module.slice('src/commands/'.length)) ? COMMAND_REGISTRY
+      : module.startsWith('src/') && ENGINE_CANDIDATE.test(module.slice('src/'.length)) ? 'src/machine.js' : null;
+    if (!reader) continue;
+    if (!reverse.has(module)) reverse.set(module, new Set());
+    reverse.get(module).add(reader);
+  }
   return { paths, reverse, unknown, undeclared, testTreeReaders, sourceTreeReaders, docInputs };
 }
 

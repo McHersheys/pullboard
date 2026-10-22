@@ -8,7 +8,10 @@ import {
   spawn,
   spawnSync,
 } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import {
+  createHash,
+  randomUUID,
+} from 'node:crypto';
 import {
   existsSync,
   mkdirSync,
@@ -29,18 +32,31 @@ import {
 } from 'node:path';
 import {
   availableParallelism,
+  freemem,
+  loadavg,
   tmpdir,
 } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import {
   gitChildEnv,
   gitPath,
+  headCommit,
   headTree,
   invalidateGitFacts,
   isClean,
   untracked,
 } from './git.js';
 import { recordGateRun } from './gate-control.js';
+import {
+  receiptBody,
+  receiptFields,
+  receiptStore,
+} from './gate-run-receipt.js';
+import {
+  committedTest,
+  tapTests,
+} from './tap-tests.js';
+import { mainPolicy } from './trusted-policy.js';
 import { secretsIn } from './hooks.js';
 import { Refused } from './refused.js';
 import { missingGate } from './gate-config.js';
@@ -588,16 +604,53 @@ export async function runGate(root, config, { trustStamp = true, onWait, landing
   if (trustStamp && isStampedGreen(root)) return { isGreen: true, isCached: true, output: '', seconds: 0, log: '' };
   return await withGateSlot(root, async (lease) => {
     pinRunMain(lease, onFailure);
-    const run = fullGateRun(root, config, trustStamp, { waitMs: lease.waitMs, gateLease: lease, landing, stages, waivers });
+    const run = fullGateRun(root, config, trustStamp, { waitMs: lease.waitMs, gateLease: lease, landing, stages, waivers, kind: landing ? 'land' : 'gate' });
     if (!run.isGreen && onFailure) await onFailure(run, { root, command: config.gate, lease });
+    await recordRun(onFailure, run);
     return run;
   }, {
     landing, browser: true, agent, item, kind: landing ? 'landing' : 'gate', onWait,
   });
 }
 
+/** Hand a run's receipt to its observer, which records it on the board; recording never changes the run's verdict [C7,D1]. */
+async function recordRun(observer, run) {
+  if (!run.receiptId || typeof observer?.recordRun !== 'function') return;
+  try { await observer.recordRun(run.receiptId); } catch { /* A board that cannot take the record leaves the gate result as it was. */ }
+}
+
+/**
+ * Leave the receipt of one real run of the accepted gate: its tree, the command's digest, its result, the committed
+ * tests that failed and the host load, taken from the process this module just ran. It is private to this module on
+ * purpose: no caller can hand it a result, so a receipt always describes an execution [C7,D1]. A run of any other
+ * command, or one whose checkout was dirty or moved while it ran, proves nothing about a tree and leaves no receipt.
+ *
+ * @returns {string | null} the receipt id
+ */
+function leaveRunReceipt(root, config, run, { before, kind }) {
+  try {
+    if (before === null || committedTree(root) !== before || run.executionSourceUnchanged === false) return null;
+    const policy = mainPolicy(root);
+    const head = headCommit(root);
+    const store = receiptStore(root);
+    if (policy.config.gate !== config.gate || !head || !store) return null;
+    const failures = new Map();
+    for (const row of run.isGreen ? [] : tapTests(run.output ?? '', run.executionRoot ?? root)) {
+      if (row.passed || row.skip || row.type === 'suite' || ['subtestsFailed', 'cancelledByParent', 'testAborted'].includes(row.failureType)) continue;
+      if (row.file && committedTest(root, head, row.file)) failures.set(JSON.stringify([row.file, row.name]), { file: row.file, name: row.name });
+    }
+    const local = { average: loadavg(), cpus: availableParallelism(), freeMB: Math.floor(freemem() / 1048576) };
+    const receipt = receiptFields({ version: 1, id: randomUUID(), kind, tree: before, head, main: policy.commit, command: createHash('sha256').update(config.gate).digest('hex'),
+      green: run.isGreen, failures: [...failures.values()], load: Array.isArray(run.executionLoad?.average) ? run.executionLoad : local, at: new Date().toISOString() });
+    if (!receipt) return null;
+    mkdirSync(store, { recursive: true, mode: 0o700 });
+    writeFileSync(join(store, `${receipt.id}.json`), receiptBody(receipt), { flag: 'wx', mode: 0o600 });
+    return receipt.id;
+  } catch { return null; }
+}
+
 /** Run a full gate while its caller owns the queue lease; only a full run may stamp its tree. */
-function fullGateRun(root, config, trustStamp = false, { waitMs = 0, log = gitPath(root, LOG), gateLease, landing = false, stages = false, waivers = [] } = {}) {
+function fullGateRun(root, config, trustStamp = false, { waitMs = 0, log = gitPath(root, LOG), gateLease, landing = false, stages = false, waivers = [], kind = 'gate' } = {}) {
   if (trustStamp && isStampedGreen(root)) return { isGreen: true, isCached: true, output: '', seconds: 0, log: '' };
   const before = committedTree(root);
   const run = runProfiledShell(root, config.gate, { waitMs, pipefail: true, profileFile: `${log}.profile.json`, gateLease, landing, stages, waivers });
@@ -605,9 +658,10 @@ function fullGateRun(root, config, trustStamp = false, { waitMs = 0, log = gitPa
   writeFileSync(log, output);
   // The environment refusing a run says nothing about the gate, so only a real result is recorded (U41).
   if (!run.sandboxBlocked) recordGateRun(root, gateRunRecord(root, config, isGreen, gateLease));
+  const receiptId = run.sandboxBlocked ? null : leaveRunReceipt(root, config, run, { before, kind });
   refuseSandboxBlocked(run);
   if (isGreen && before !== null && committedTree(root) === before) writeFileSync(gitPath(root, STAMP), `${before}\n`);
-  return { isGreen, isCached: false, output, seconds, log, profile, profilePath, ...(run.executionRoot ? { executionRoot: run.executionRoot } : {}),
+  return { isGreen, isCached: false, output, seconds, log, profile, profilePath, receiptId, ...(run.executionRoot ? { executionRoot: run.executionRoot } : {}),
     // A remote run's host load and pinned main reach the flake diagnostics with it (#925).
     ...(run.executionRunner ? { executionRunner: run.executionRunner, executionMain: run.executionMain ?? null, executionLoad: run.executionLoad ?? null } : {}), ...(stages ? { stages: run.stages } : {}) };
 }
@@ -723,7 +777,7 @@ export async function runSubmitGate(root, config, { base, trunk, changed, check,
     const proofWait = check ? 0 : lease.waitMs;
     let proof;
     // The proof keeps each stage's status, so a person's waiver can only ever explain named test failures.
-    if (!deferFullFallback && selection.full) proof = fullGateRun(root, config, false, { waitMs: proofWait, log: proofLog, gateLease: lease, stages: true });
+    if (!deferFullFallback && selection.full) proof = fullGateRun(root, config, false, { waitMs: proofWait, log: proofLog, gateLease: lease, stages: true, kind: 'submit' });
     else if (!proofFiles.length) proof = { isGreen: true, output: '', seconds: 0, isCached: false, log: '' };
     else {
       const command = `${config.affectedTests.trimEnd()} ${proofFiles.map(path => commandWord('./' + path)).join(' ')}`;
@@ -734,6 +788,7 @@ export async function runSubmitGate(root, config, { base, trunk, changed, check,
     writeFileSync(log, `item check:\n${criterion.output}\n${phase}:\n${proof.output}`);
     if (!proof.isGreen && onFailure) await onFailure(proof, { root,
       command: !deferFullFallback && selection.full ? config.gate : `${config.affectedTests.trimEnd()} ${proofFiles.map(path => commandWord('./' + path)).join(' ')}`, lease });
+    await recordRun(onFailure, proof);
     return finish(proof);
   }, { browser, agent, item, kind, itemCheck: true, onWait });
 }

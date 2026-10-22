@@ -99,6 +99,24 @@ function figure({ width, height, title, desc, body }) {
 const text = (x, y, words, cls, anchor = 'start') => `<text class="${cls}" x="${x}" y="${y}"${anchor === 'start' ? '' : ` text-anchor="${anchor}"`}>${esc(words)}</text>`;
 
 /**
+ * Split a ' · ' list too wide for a box of width `w` into two lines, filling the first; one line otherwise.
+ * Why: a state that keeps several moves (↻ release · escalate · refreeze) outgrew its box and the card.
+ *
+ * @param {string} sub
+ * @param {number} w
+ * @returns {string[]}
+ */
+function wrapList(sub, w) {
+  const fits = Math.floor((w - 16) / (12 * 0.56));
+  const parts = sub.split(' · ');
+  if (sub.length <= fits || parts.length < 2) return [sub];
+  let first = parts[0];
+  let used = 1;
+  while (used < parts.length - 1 && `${first} · ${parts[used]}`.length <= fits) first = `${first} · ${parts[used++]}`;
+  return [first, parts.slice(used).join(' · ')];
+}
+
+/**
  * A box with a title and an optional second line, centred. A stack draws two cards behind it, for
  * work several agents do at once; `final` draws a second border inside, for a state nothing leaves.
  *
@@ -109,9 +127,12 @@ function box({ x, y, w, h, kind, title, sub, mono = false, stack = false, final 
   const cx = x + w / 2;
   const behind = stack ? [10, 5].map((d) => `<rect x="${x + d}" y="${y - d}" width="${w}" height="${h}" rx="8"/>`).join('') : '';
   const inner = final ? `<rect x="${x + 4}" y="${y + 4}" width="${w - 8}" height="${h - 8}" rx="5" fill="none"/>` : '';
-  const lines = sub
-    ? [text(cx, y + h / 2 - 4, title, `t1${mono ? ' mono' : ''}`, 'middle'), text(cx, y + h / 2 + 14, sub, 't2', 'middle')]
-    : [text(cx, y + h / 2 + 5, title, `t1${mono ? ' mono' : ''}`, 'middle')];
+  const subs = sub ? wrapList(sub, w) : [];
+  const lines = subs.length === 2
+    ? [text(cx, y + h / 2 - 8, title, `t1${mono ? ' mono' : ''}`, 'middle'), text(cx, y + h / 2 + 8, subs[0], 't2', 'middle'), text(cx, y + h / 2 + 22, subs[1], 't2', 'middle')]
+    : sub
+      ? [text(cx, y + h / 2 - 4, title, `t1${mono ? ' mono' : ''}`, 'middle'), text(cx, y + h / 2 + 14, sub, 't2', 'middle')]
+      : [text(cx, y + h / 2 + 5, title, `t1${mono ? ' mono' : ''}`, 'middle')];
   return `<g class="${kind}"${final ? ` data-final="${esc(final)}"` : ''}>${behind}<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8"/>${inner}${lines.join('')}</g>`;
 }
 

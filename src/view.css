@@ -523,6 +523,9 @@ form.inline { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; paddin
 .feed { padding: 6px 10px 10px; display: grid; }
 .feed > div { display: grid; grid-template-columns: 4.6em minmax(0, 1fr); gap: 10px; padding: 7px 0; border-top: 1px solid var(--line); overflow-wrap: break-word; }
 .feed > .empty { display: block; }
+/* Older history still streaming to a phone (#956): one quiet line at the end of the list, gone once complete. */
+.history-note { margin: 0; padding: 12px 10px; color: var(--ink-muted); font-size: 13px; text-align: center; }
+.history-note.failed { color: var(--ink); }
 .feed > div:first-child, .feed > .day + div { border-top: 0; }
 /* The shout composer: one bar, to on the left, the message growing with what is typed, send on the right. */
 .shout-form { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px; }
@@ -637,7 +640,7 @@ code.inline.long { white-space: break-spaces; overflow-wrap: anywhere; }
 .fact-code .muted { margin-left: 4px; font-size: 12px; }
 .fact-code .ref { margin-left: 4px; }
 .ref-missing { display: inline-block; }
-.feed .act { display: flex; gap: 0 5px; align-items: baseline; min-width: 0; }
+.feed .act { display: flex; gap: 0 5px; align-items: baseline; min-width: 0; overflow-wrap: anywhere; }
 .feed .act .what { flex: 1 1 auto; min-width: 0; overflow-wrap: break-word; color: var(--ink-muted); }
 .feed .act .said { flex: 1 1 0; min-width: 0; margin-left: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-muted); }
 .feed .act .said code { white-space: nowrap; }

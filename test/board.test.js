@@ -1293,17 +1293,29 @@ test('[O3] declared families travel from join through submit and verdict, and ab
   const file = join(repo, '.git', 'pullboard', 'board.sqlite');
   const persistent = store.openBoard(file);
   t.after(() => store.closeBoard(persistent));
+  const initialEvents = store.events(persistent);
+  const coordinatorJoin = initialEvents.find(event => event.event_kind === 'join' && event.event_by === 'coordinator');
+  const baselineEvents = initialEvents.filter(event => event.event_kind === 'spec_approval_baseline');
+  const builderJoin = initialEvents.find(event => event.event_kind === 'join' && event.event_by === 'web-1');
+  assert.equal(baselineEvents.length, 1, 'first worktree setup records the compatibility baseline exactly once');
+  assert.ok(coordinatorJoin.event_id < baselineEvents[0].event_id && baselineEvents[0].event_id < builderJoin.event_id,
+    'a cold local main establishes its coordinator and existing approvals before registering the worktree');
+  assert.deepEqual(store.specApprovalBaseline(persistent).rows.map(row => row.id), ['G1'],
+    'later lane joins retain the original approved source row');
   assert.equal(store.agentAt(persistent, builderPath).agent_family, 'Family Alpha');
   assert.equal(store.agentAt(persistent, reviewerRoot).agent_family, 'Family Beta');
   assert.equal(store.agentAt(persistent, noFamilyRoot).agent_family, null);
   assert.equal(store.agentAt(persistent, noFamilyRoot).agent_model, 'Test Model');
   const apiState = projectState(repo);
   assert.equal(apiState.agents.find((agent) => agent.agent_id === 'web-1').agent_model, 'Test Model');
-  store.register(persistent, { lane: 'coordinator', path: repo });
+  // CLI seats use Git's physical root even when the fixture directory names a /tmp alias.
+  const coordinatorRoot = git(repo, 'rev-parse', '--show-toplevel');
+  assert.equal(store.agentAt(persistent, coordinatorRoot).agent_id, 'coordinator');
+  store.register(persistent, { lane: 'coordinator', path: coordinatorRoot });
   const stateWithCoordinator = projectState(repo);
   assert.equal(stateWithCoordinator.agents.find((agent) => agent.agent_id === 'coordinator').agent_model, null);
-  assert.equal(store.agentAt(persistent, repo).agent_family, null, 'the core supplies no family for itself');
-  store.register(persistent, { lane: 'coordinator', path: repo, family: 'Family Coordinator' });
+  assert.equal(store.agentAt(persistent, coordinatorRoot).agent_family, null, 'the core supplies no family for itself');
+  store.register(persistent, { lane: 'coordinator', path: coordinatorRoot, family: 'Family Coordinator' });
   const coordinatorResume = await runMain(repo, ['resume']);
   assert.match(coordinatorResume.stdout, /resume: coordinator \(unknown\) \[family Family Coordinator\], coordinator lane/);
   const coordinatorJson = await runMain(repo, ['resume', '--json']);

@@ -38,6 +38,22 @@ export async function returnUnmergeable(root, board, me, { ordered, trunkMerge }
 }
 
 /**
+ * The submitted items this agent session built or submitted, by the very rule verify refuses them under
+ * (refuseSelfSession), so next --verify never reserves a review its own session could not give. The session
+ * ledger lives in this repository's Git directory and never on the board, so the ids travel with the move.
+ *
+ * @param {{ commonDir: string }} info
+ * @param {any} board
+ * @returns {number[]}
+ */
+export function ownSessionReviews(info, board) {
+  return store.listItems(board).filter((item) => item.item_status === 'submitted').flatMap((item) => {
+    try { refuseSelfSession(info, item); return []; }
+    catch (error) { if (error instanceof Refused && error.code === 'SELF_SESSION_VERIFY') return [item.item_id]; throw error; }
+  });
+}
+
+/**
  * The review half of one next loop: return heads that no longer merge, then reserve the named review or the next one.
  *
  * @param {any} ctx
@@ -59,5 +75,5 @@ export async function nextReview(ctx, board, me, values, { ordered, idArg, trunk
     return { item: await ordered('reserveReview', [id, reservation]), reasons: [] };
   }
   return await ordered('reserveNextReview', [{ agentId: me.id, lane: me.lane, leaseMs: ctx.config.reviewLeaseMs, policy: ctx.config.verify.policy,
-    familyPolicy: ctx.config.verify.family, runnable: values.runnable, routes: values.routes }]);
+    familyPolicy: ctx.config.verify.family, runnable: values.runnable, routes: values.routes, skipIds: ownSessionReviews(ctx.info, board) }]);
 }

@@ -53,6 +53,8 @@ Every line it prints is something to act on. `pullboard inbox` marks what it pri
 
 Close each finding with its next step in the same cycle. When the step belongs to someone else, shout it to them with the line itself. The thresholds live in pullboard.json under `health`: `stuck` (default 1h), `holds` (1d) and `release` (1d). Item #772 adds a sentinel that posts each new finding to the feed once; until it lands, the listener's loop is where findings arrive.
 
+A recurring job that runs on a cadence, such as a listener loop or a sentinel, records each run with `pullboard loop ran <name>`, and `pullboard health` flags one that stays silent for 1.5 cadences. The coordinator declares the cadence with `pullboard loop declare <name> --every 10m --owner <seat or lane>`; `pullboard loop` lists the jobs and their last runs.
+
 ## Route by roadmap order
 
 `pullboard digest --out briefing.md` writes a short Markdown briefing of this board for a person or a chat assistant; hand it over when someone needs the board's state at a glance.
@@ -91,6 +93,8 @@ Land verified work in batches with `pullboard land`: preview with `pullboard lan
 
 `pullboard flakes rerun on`, run by the coordinator from the main checkout, opts this board into one exact-target rerun at the pinned candidate and a pinned-main comparison for supported native Node checks; `pullboard flakes rerun off` turns these pairs off again, and off is the default. An unsupported runner or selector stays unclassified. Full raw logs and profiles remain private under the local common Git directory; their portable digests remain on the board. A second confirmed flake sighting drafts ordinary strong repair work; it does not approve requirements or a waiver.
 
+`pullboard flakes quarantine on`, run by the coordinator from the main checkout, lets a test that a gate run proved both red and green on one tree stop blocking landings until its repair item is verified; it still runs and reports. `pullboard flakes quarantine off` turns this off again, and off is the default.
+
 With paired diagnostics off, when a batch goes red, land runs each failing test file alone. A file that passes alone is a flake and holds the batch with `LAND_FLAKE` until the test is fixed or the person records an expiring waiver. A real red is split in halves until one item reproduces it alone; land returns only that item, with a fact naming the tests it fails, and lands the green rest. When green items fail only together, it stops with `LAND_INTERACTION` and lands nothing.
 
 A red batch reopens only the item a paired control proves. Before you reopen a culprit, run the same failing test or command twice: once on the control, which is main or the batch without the candidate, and once on the candidate. The control must pass and the candidate must reproduce the red. Keep both commands, both commits and both outputs as the evidence, and put them in the reopen note: `pullboard reopen <id> --note "<test file>: <test name>; merge commit <sha>"` names the red, and a verified item refuses any other note with `LANDING_FAILURE_REQUIRED`. When the pair does not prove it, keep the candidate held with `pullboard hold <id> "unproven culprit: <test>"` and leave it unreopened until a paired control does.
@@ -98,6 +102,8 @@ A red batch reopens only the item a paired control proves. Before you reopen a c
 ## Release every day
 
 Publish a release at least once a day while landed work waits. `pullboard health` reports `release <tag> overdue` when landed items have waited longer than `health.release` since the newest version tag.
+
+When the board lands in two tiers (`landing.publish` set to `"separate"` in pullboard.json), an accepted item lands on the local trunk after quick guards, and the coordinator runs `pullboard publish` to run the whole suite on that trunk head and push it only when every test passes. A red head is not pushed: fix the failing tests it names, then publish again.
 
 ## What can go wrong, and what watches it
 

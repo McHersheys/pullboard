@@ -26,7 +26,11 @@ import {
   AGENT_SESSION_IDS,
   AGENT_SHELL_MARKERS,
 } from './person.js';
-import { registerProjectAndLink } from './projects.js';
+import {
+  forgetProject,
+  listProjects,
+  registerProject,
+} from './projects.js';
 
 /**
  * The caller's agent-session identity and checkout lease. A scripted seat must never inherit them: a seat that did
@@ -235,7 +239,10 @@ export async function tour(io) {
     io.err(slowestSteps(timings));
     return 1;
   }
-  await registerProjectAndLink(repo, new Date(), loadConfig(repo), io);
+  // One demo stays in the list: each run replaces the last tour demo, and listProjects drops any whose folder is gone.
+  // The demo is registered locally only, never linked to the relay, even when relay on --all is set (#951).
+  for (const entry of listProjects()) if (entry.project === CONFIG.project && entry.root !== repo) forgetProject(entry.root);
+  registerProject(repo, new Date(), loadConfig(repo));
   io.say('\nNothing shipped until a second agent verified it.');
   io.say(`Look around: cd ${repo} && pullboard log`);
   io.say('see it: pullboard view');

@@ -1,0 +1,83 @@
+/** The pullboard milestone command, in its own module so an item adding another command never edits these lines. */
+import * as store from '../board.js';
+import {
+  mainCheckout,
+} from '../git.js';
+import {
+  Refused,
+} from '../refused.js';
+import {
+  actOn,
+  ordered,
+} from '../cli.js';
+
+/** Run `pullboard milestone` and return its exit code. */
+export async function run(io, { first, second, rest, values }) {
+  const act = (work) => actOn(io, work);
+  return act(async (ctx, board, me) => {
+  const ids = (text) => (text ?? '').split(',').map((value) => value.trim()).filter(Boolean);
+  let name;
+  let entry;
+  if (first === 'add') {
+    if (!second || rest.length || values.before !== undefined || values.add !== undefined || values.remove !== undefined || values.name !== undefined) {
+      throw new Refused('USAGE', 'pullboard milestone add <name> [--note ...] [--items 1,2,3]');
+    }
+    name = await ordered(ctx, board, 'addMilestone', [{ agentId: me.id, name: second, note: values.note ?? null, items: ids(values.items) }]);
+  } else if (first === 'items') {
+    if (!second || rest.length || Boolean(values.add) === Boolean(values.remove) || values.items !== undefined || values.note !== undefined || values.before !== undefined || values.name !== undefined) {
+      throw new Refused('USAGE', 'pullboard milestone items <name> --add ids or --remove ids');
+    }
+    name = second;
+    const next = await ordered(ctx, board, 'editMilestoneItems', [name, {
+      agentId: me.id,
+      add: values.add === undefined ? [] : ids(values.add),
+      remove: values.remove === undefined ? [] : ids(values.remove),
+    }]);
+    entry = { ...store.milestones(board).find((value) => value.name === name), items: next };
+  } else if (first === 'order') {
+    if (!second || rest.length !== 1 || !rest[0].trim() || values.items !== undefined || values.note !== undefined || values.before !== undefined || values.name !== undefined || values.add !== undefined || values.remove !== undefined) {
+      throw new Refused('USAGE', 'pullboard milestone order <name> <ids>');
+    }
+    name = second;
+    await ordered(ctx, board, 'orderMilestoneItems', [name, { agentId: me.id, items: ids(rest[0]) }]);
+  } else if (first === 'move') {
+    if (!second || rest.length || !values.before || values.items !== undefined || values.note !== undefined || values.name !== undefined || values.add !== undefined || values.remove !== undefined) {
+      throw new Refused('USAGE', 'pullboard milestone move <name> --before <other>');
+    }
+    name = second;
+    await ordered(ctx, board, 'moveMilestone', [name, { agentId: me.id, before: values.before }]);
+    entry = store.milestones(board).find((value) => value.name === name);
+  } else if (first === 'edit') {
+    if (!second || rest.length || (values.name === undefined && values.note === undefined && values.target === undefined) || values.items !== undefined || values.before !== undefined || values.add !== undefined || values.remove !== undefined || values.next !== undefined) {
+      throw new Refused('USAGE', 'pullboard milestone edit <name> [--name <new name>] [--note <text>] [--target <date and time>|none]');
+    }
+    name = second;
+    entry = await ordered(ctx, board, 'editMilestone', [name, { agentId: me.id, newName: values.name, note: values.note, ...(values.target === undefined ? {} : { target: store.canonicalMilestoneTarget(values.target) }) }]);
+    name = entry.name;
+  } else if (first === 'ship') {
+    if (!second || rest.length || ['items', 'note', 'before', 'name', 'add', 'remove', 'target'].some((key) => values[key] !== undefined)) {
+      throw new Refused('USAGE', 'pullboard milestone ship <name> [--next <name>]');
+    }
+    name = second;
+    const shipped = await ordered(ctx, board, 'shipMilestone', [name, { agentId: me.id, commit: mainCheckout(ctx.info.root)?.commit ?? null, ...(values.next === undefined ? {} : { next: values.next }) }]);
+    io.result?.(shipped);
+    const outcome = shipped.moved.length ? `moved ${shipped.moved.map((id) => `#${id}`).join(', ')} into ${shipped.into}` : 'no local items moved';
+    const external = shipped.notMoved.length ? `; not moved across boards: ${shipped.notMoved.join(', ')}` : '';
+    io.say(`milestone shipped: ${name} at ${shipped.milestone.shipped.commit}; ${outcome}${external}`);
+    return 0;
+  } else if (first === 'remove') {
+    if (!second || rest.length || values.items !== undefined || values.note !== undefined || values.before !== undefined || values.name !== undefined || values.add !== undefined || values.remove !== undefined) {
+      throw new Refused('USAGE', 'pullboard milestone remove <name>');
+    }
+    name = second;
+    await ordered(ctx, board, 'removeMilestone', [name, { agentId: me.id }]);
+    entry = { name };
+  } else {
+    throw new Refused('USAGE', 'use pullboard milestone add, items, order, move, edit, ship or remove');
+  }
+  entry ??= store.milestones(board).find((value) => value.name === name);
+  io.result?.({ milestone: entry });
+  io.say(`milestone ${first === 'remove' ? 'removed' : first === 'add' ? 'added' : 'updated'}: ${name}`);
+  return 0;
+});
+}

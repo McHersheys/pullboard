@@ -18,6 +18,7 @@ import * as store from './board.js';
 import {
   exportBoard,
   importBoard,
+  isInitialBoard,
 } from './exchange.js';
 import {
   codeIsFromMain,
@@ -200,33 +201,14 @@ export async function relayPair(root, io) {
 
 /** Refuse a nonempty target board before spending its one-use code. */
 function requireFreshTarget(root) {
-  const local = localSnapshot(root);
-  const tables = local.snapshot.tables;
-  const nonempty = Object.entries(tables).filter(([name, rows]) => !['board_meta', 'agent', 'event', 'sqlite_sequence'].includes(name) && rows.length);
-  const meta = tables.board_meta;
-  const metadata = new Map(meta.map((row) => [row.meta_key, row.meta_value]));
-  const agents = tables.agent;
-  const events = tables.event;
-  const sequence = tables.sqlite_sequence;
-  let initialDetail = false;
+  const info = repoInfo(root);
+  const board = store.openBoard(join(info.commonDir, 'pullboard', 'board.sqlite'), undefined, { isMain: codeIsFromMain() });
   try {
-    const detail = JSON.parse(events[0]?.event_detail);
-    // Init has no declared model; engine 8 records that absence explicitly.
-    if (detail.model === undefined || detail.model === 'unknown') {
-      delete detail.model;
-      initialDetail = JSON.stringify(detail) === JSON.stringify({ lane: 'coordinator' });
+    const eventLog = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get('event_log_version');
+    if (!isInitialBoard(board) || eventLog?.meta_value !== String(store.EVENT_LOG_VERSION)) {
+      throw new Refused('IMPORT_NOT_EMPTY', 'pair into a freshly initialized clone with no board work; preserve this board and use another clone');
     }
-  }
-  catch { /* A non-init history cannot be safely replaced by a paired snapshot. */ }
-  if (meta.length !== 2 || !BOARD.test(metadata.get('board_id') ?? '') ||
-      metadata.get('event_log_version') !== String(store.EVENT_LOG_VERSION) ||
-      agents.length !== 1 || agents[0].agent_id !== 'coordinator' || agents[0].agent_lane !== 'coordinator' ||
-      agents[0].agent_route !== 'strong' || agents[0].agent_last_shout_id !== 0 || !agents[0].agent_path ||
-      events.length !== 1 || events[0].event_by !== 'coordinator' || events[0].event_kind !== 'join' ||
-      events[0].item_id !== null || !initialDetail || sequence.length !== 1 || sequence[0].name !== 'event' ||
-      sequence[0].seq !== 1 || nonempty.length) {
-    throw new Refused('IMPORT_NOT_EMPTY', 'pair into a freshly initialized clone with no board work; preserve this board and use another clone');
-  }
+  } finally { store.closeBoard(board); }
 }
 
 /** Refuse to overwrite an unrelated device key under the same persistent board id. */

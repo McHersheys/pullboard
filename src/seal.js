@@ -39,9 +39,9 @@ function keyBytes(value) {
 /** Canonical, domain-separated associated data binds the header and public position. */
 function associatedData(binding, version = SEAL_VERSION) {
   if (!binding || typeof binding.boardId !== 'string' || !binding.boardId.length ||
-      binding.boardId.length > 256 || !['snapshot', 'move', 'request'].includes(binding.kind) ||
+      binding.boardId.length > 256 || !['snapshot', 'move', 'request', 'outbox'].includes(binding.kind) ||
       !Number.isSafeInteger(binding.sequence) || binding.sequence < 0 || !Number.isInteger(version) || version < 0 || version > 255) {
-    throw new Refused('SEAL_BINDING', 'Supply the board id, snapshot/move/request kind and nonnegative safe sequence.');
+    throw new Refused('SEAL_BINDING', 'Supply the board id, snapshot/move/request/outbox kind and nonnegative safe sequence.');
   }
   return new TextEncoder().encode(JSON.stringify([
     'pullboard-sealed', version, binding.boardId, binding.sequence, binding.kind,

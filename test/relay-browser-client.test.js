@@ -1,0 +1,204 @@
+/** The relay browser client's sealed snapshot decode, in Chrome and in WebKit [H5,H16]. */
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir, userInfo } from 'node:os';
+import { dirname, join } from 'node:path';
+import { test } from 'node:test';
+import { gzipSync } from 'node:zlib';
+import { findChromeExecutable, startChrome } from './relay-browser-fixture.js';
+
+/** The hosted page's real secure origin, answered from memory: no network is used. */
+const ORIGIN = 'https://app.pullboard.dev/';
+const CLIENT = new URL('../relay/browser-client.js', import.meta.url);
+
+/** Two real sealed-snapshot payloads, gzipped as src/relay.js does: a tiny document and a board of 3000 items. */
+function snapshotInputs() {
+  const items = Array.from({ length: 3000 }, (_, index) => ({ id: index + 1, title: `fixture item ${index + 1}`, status: 'open', lane: 'core', criterion: 'x'.repeat(80) }));
+  const documents = {
+    small: { hello: 'world', n: [1, 2, 3] },
+    board: { version: 1, tables: { item: items } },
+  };
+  return Object.entries(documents).map(([name, document]) => ({
+    name, base64: gzipSync(Buffer.from(JSON.stringify(document))).toString('base64'), length: JSON.stringify(document).length,
+  }));
+}
+
+/** The snapshotDocument function exactly as relay/browser-client.js writes it, cut from the module source. */
+function snapshotDocumentSource() {
+  const source = readFileSync(CLIENT, 'utf8');
+  const start = source.indexOf('async function snapshotDocument(');
+  const end = source.indexOf('\n}\n', start) + 2;
+  assert.ok(start > 0 && end > start, 'relay/browser-client.js still defines snapshotDocument');
+  return source.slice(start, end);
+}
+
+/** The same function with the decode the client had before #976, which piped a Blob stream: the control WebKit refused. */
+function blobStreamSource() {
+  return snapshotDocumentSource().replace('new Response(plain).body.pipeThrough', 'new Blob([plain]).stream().pipeThrough');
+}
+
+/**
+ * Page script that runs one snapshotDocument source on every input and leaves window.result as JSON text naming,
+ * per input, the decoded length or the refusal.
+ */
+function pageScript(decodeSource, inputs, { blobStreamFails = false } = {}) {
+  return `class Refused extends Error { constructor(code, message) { super('[' + code + '] ' + message); } }
+const withBrowserDeadline = work => work();
+${blobStreamFails ? `Blob.prototype.stream = function stream() {
+  return new ReadableStream({ start(controller) { controller.error(new TypeError('Failed to Decode Data')); } });
+};` : ''}
+${decodeSource}
+window.result = null;
+(async () => {
+  const out = {};
+  for (const [name, base64] of ${JSON.stringify(inputs.map(input => [input.name, input.base64]))}) {
+    const plain = Uint8Array.from(atob(base64), character => character.charCodeAt(0));
+    try { out[name] = 'decoded ' + JSON.stringify(await snapshotDocument(plain)).length; } catch (error) { out[name] = 'REFUSED ' + error.message; }
+  }
+  window.result = JSON.stringify(out);
+})();`;
+}
+
+/** The newest Playwright WebKit build this account has cached, or null on a machine without one. */
+function findWebkit() {
+  if (process.env.PULLBOARD_WEBKIT) return existsSync(process.env.PULLBOARD_WEBKIT) ? process.env.PULLBOARD_WEBKIT : null;
+  if (process.platform !== 'darwin') return null;
+  const cache = join(userInfo().homedir, 'Library', 'Caches', 'ms-playwright');
+  let builds = [];
+  try { builds = readdirSync(cache).filter(name => /^webkit-\d+$/u.test(name)); } catch { return null; }
+  builds.sort((left, right) => Number(right.slice(7)) - Number(left.slice(7)));
+  for (const build of builds) {
+    const executable = join(cache, build, 'Playwright.app', 'Contents', 'MacOS', 'Playwright');
+    if (existsSync(executable)) return executable;
+  }
+  return null;
+}
+
+/**
+ * Load an HTML page at a real https origin, answering its one request from memory, in WebKit and return the JSON the page leaves in window.result. It drives
+ * Playwright's WebKit build over its inspector pipe (JSON separated by NUL on descriptors 3 and 4), with no package.
+ * WebKit refused the old decode only on a loaded page at a secure origin, never on about:blank or plain http.
+ */
+async function runPageInWebkit(executable, html) {
+  const profile = mkdtempSync(join(tmpdir(), 'pullboard-webkit-'));
+  const frameworks = dirname(dirname(dirname(dirname(executable))));
+  const child = spawn(executable, ['--inspector-pipe', '--headless', '--no-startup-window', `--user-data-dir=${profile}`], {
+    detached: true, env: { ...process.env, HOME: userInfo().homedir, DYLD_FRAMEWORK_PATH: frameworks, DYLD_LIBRARY_PATH: frameworks },
+    stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'],
+  });
+  const exited = new Promise(resolveExit => child.once('close', resolveExit));
+  const pending = new Map();
+  let target = null;
+  let pageProxyId = null;
+  let nextId = 0;
+  let buffer = '';
+  /** Send one browser-level command and wait for its answer, with a hang ceiling. */
+  const send = (method, params = {}, proxy) => new Promise((resolveSend, rejectSend) => {
+    const id = ++nextId;
+    const timer = setTimeout(() => rejectSend(new Error(`WebKit ${method} gave no answer`)), 20_000); // budget: hang ceiling for one WebKit command.
+    pending.set(id, message => { clearTimeout(timer); message.error ? rejectSend(new Error(`WebKit ${method}: ${message.error.message}`)) : resolveSend(message.result ?? {}); });
+    child.stdio[3].write(JSON.stringify({ id, method, params, ...(proxy ? { pageProxyId: proxy } : {}) }) + '\0');
+  });
+  const innerPending = new Map();
+  let innerId = 0;
+  /** Send one command to a page target and wait for its answer. */
+  const toTarget = (targetId, proxy, method, params = {}) => new Promise((resolveTarget, rejectTarget) => {
+    const id = ++innerId;
+    const timer = setTimeout(() => rejectTarget(new Error(`WebKit page ${method} gave no answer`)), 20_000); // budget: hang ceiling for one WebKit page command.
+    innerPending.set(id, inner => { clearTimeout(timer); inner.error ? rejectTarget(new Error(`WebKit page ${method}: ${inner.error.message}`)) : resolveTarget(inner.result); });
+    send('Target.sendMessageToTarget', { targetId, message: JSON.stringify({ id, method, params }) }, proxy).catch(rejectTarget);
+  });
+  /** Answer every request of a target from memory with the page, before the target runs. */
+  const intercept = async (targetId, proxy) => {
+    await toTarget(targetId, proxy, 'Network.enable');
+    await toTarget(targetId, proxy, 'Network.setInterceptionEnabled', { enabled: true });
+    await toTarget(targetId, proxy, 'Network.addInterception', { url: '', stage: 'request' });
+  };
+  /** Follow the page's targets: intercept and resume each, and keep the one that committed. */
+  const onEvent = message => {
+    if (message.method === 'Target.targetCreated' && message.params.targetInfo.type === 'page') {
+      const info = message.params.targetInfo;
+      const proxy = message.pageProxyId;
+      pageProxyId ??= proxy;
+      void (async () => {
+        try { await intercept(info.targetId, proxy); } catch { /* A target that closed needs no interception. */ }
+        if (!info.isProvisional) target = info.targetId;
+        if (info.isPaused) await send('Target.resume', { targetId: info.targetId }, proxy).catch(() => {});
+      })();
+    } else if (message.method === 'Target.didCommitProvisionalTarget') target = message.params.newTargetId;
+    else if (message.method === 'Target.dispatchMessageFromTarget') {
+      const inner = JSON.parse(message.params.message);
+      if (inner.id !== undefined && innerPending.has(inner.id)) { innerPending.get(inner.id)(inner); innerPending.delete(inner.id); }
+      else if (inner.method === 'Network.requestIntercepted') {
+        const { requestId, request } = inner.params;
+        const ours = request.url === ORIGIN;
+        void toTarget(message.params.targetId, message.pageProxyId, ours ? 'Network.interceptRequestWithResponse' : 'Network.interceptRequestWithError',
+          ours ? { requestId, content: Buffer.from(html).toString('base64'), base64Encoded: true, mimeType: 'text/html', status: 200, statusText: 'OK', headers: { 'content-type': 'text/html' } }
+            : { requestId, errorType: 'General' }).catch(() => {});
+      }
+    }
+  };
+  child.stdio[4].setEncoding('utf8').on('data', chunk => {
+    buffer += chunk;
+    for (let end = buffer.indexOf('\0'); end >= 0; end = buffer.indexOf('\0')) {
+      const message = JSON.parse(buffer.slice(0, end));
+      buffer = buffer.slice(end + 1);
+      if (message.id !== undefined && pending.has(message.id)) { pending.get(message.id)(message); pending.delete(message.id); } else onEvent(message);
+    }
+  });
+  /** Evaluate an expression in the page's current target and return its by-value result. */
+  const evaluate = async expression => {
+    const result = await toTarget(target, pageProxyId, 'Runtime.evaluate', { expression, returnByValue: true });
+    assert.ok(!result.wasThrown, 'WebKit evaluation threw');
+    return result.result.value;
+  };
+  try {
+    await send('Playwright.enable');
+    const { browserContextId } = await send('Playwright.createContext');
+    await send('Playwright.createPage', { browserContextId });
+    for (let wait = 0; !target && wait < 2_000; wait++) await new Promise(resolveWait => setTimeout(resolveWait, 10)); // budget: poll interval, no speed claim.
+    assert.ok(target, 'WebKit made a page target');
+    await send('Playwright.navigate', { url: ORIGIN, pageProxyId });
+    for (let wait = 0; wait < 500; wait++) {
+      let value;
+      try { value = await evaluate('window.result'); } catch { value = undefined; } // a navigation in flight has no page yet
+      if (value) return JSON.parse(value);
+      await new Promise(resolveWait => setTimeout(resolveWait, 20)); // budget: poll interval, no speed claim.
+    }
+    assert.fail('WebKit never left a result on the page');
+  } finally {
+    try { await send('Playwright.close'); } catch { /* The browser already stopped. */ }
+    const stopped = await Promise.race([exited.then(() => true), new Promise(resolveStop => setTimeout(() => resolveStop(false), 3_000))]); // budget: hang ceiling for WebKit shutdown.
+    if (!stopped) { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* The group already exited. */ } await exited; }
+    rmSync(profile, { recursive: true, force: true });
+  }
+}
+
+test('the sealed gzip snapshot decodes through a Response body, the way WebKit accepts [H5,H16]', {
+  skip: !findChromeExecutable() && 'Chrome is not installed',
+}, async t => {
+  const inputs = snapshotInputs();
+  const decoded = Object.fromEntries(inputs.map(input => [input.name, `decoded ${input.length}`]));
+  const chrome = await startChrome();
+  t.after(() => chrome.close());
+  await chrome.navigate('about:blank');
+  /** Run one decode source on both inputs in Chrome. */
+  const inChrome = async (source, options) => JSON.parse(await chrome.evaluate(
+    `(() => { ${pageScript(source, inputs, options)}; return new Promise(resolve => { const wait = () => window.result ? resolve(window.result) : setTimeout(wait, 5); wait(); }); })()`, 'decode the sealed snapshots'));
+  assert.deepEqual(await inChrome(snapshotDocumentSource()), decoded, 'Chrome opens both sealed gzip snapshots');
+  assert.deepEqual(await inChrome(blobStreamSource()), decoded, 'Chrome also decodes the old Blob stream path');
+  assert.deepEqual(await inChrome(snapshotDocumentSource(), { blobStreamFails: true }), decoded,
+    'the decode does not depend on Blob.stream, which WebKit refuses');
+
+  const webkit = findWebkit();
+  if (!webkit) { t.diagnostic('No cached WebKit build on this machine; the WebKit half did not run, the Chrome half did.'); return; }
+  const control = await runPageInWebkit(webkit, `<script>${pageScript(blobStreamSource(), inputs)}</script>`);
+  for (const input of inputs) {
+    assert.match(control[input.name], /^REFUSED \[SNAPSHOT_FORMAT\] The sealed gzip snapshot is invalid/u,
+      `the Blob.stream control is no longer red in this WebKit for ${input.name}; this test cannot prove the cure until it is (${control[input.name]})`);
+  }
+  assert.deepEqual(await runPageInWebkit(webkit, `<script>${pageScript(snapshotDocumentSource(), inputs)}</script>`), decoded,
+    'real WebKit opens both sealed gzip snapshots through the shipped decode');
+  t.diagnostic('WebKit ran: ' + webkit);
+});

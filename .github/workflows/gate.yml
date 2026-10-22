@@ -59,6 +59,22 @@ jobs:
       - run: node bin/pullboard.js spec check
       - run: npm test -- --shard=${{ matrix.shard }}/${{ matrix.shards }}
 
+  hosted-shapes:
+    name: hosted shapes (every way to open a board through pullboard.dev)
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    # Hang ceiling for six board states in each available browser; WebKit runs only where a Playwright build exists.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Run the matrix outside the gate
+        run: npm run hosted-shapes
+
   perf:
     name: view performance (3000 items, eight projects)
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'

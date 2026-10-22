@@ -321,6 +321,26 @@ test('[A9,P5] an MCP client reads the board and shouts as its agent', async (t) 
   assert.equal(counts(box.database).shouts, before.shouts + 3);
 });
 
+test('board_status answers through MCP on a board with a held item [A9,N26]', async (t) => {
+  const box = project(t);
+  const added = cli(box, box.repo, ['add', 'web', 'Held MCP item', '--criterion', 'a held item still lets MCP read the board']);
+  assert.equal(added.status, 0, JSON.stringify(added.document));
+  const itemId = added.document.item.item_id;
+  const claimed = cli(box, box.web, ['claim', String(itemId)], box.sessionA);
+  assert.equal(claimed.status, 0, JSON.stringify(claimed.document));
+
+  const client = mcpClient(t, box, box.web, box.sessionA);
+  await initialize(client);
+  const status = await client.call('board_status', {});
+  assert.equal(status.isError, false, JSON.stringify(status));
+  assert.ok(status.structuredContent.items.some((item) => item.item_id === itemId && item.item_status === 'claimed'),
+    'status lists the held item as claimed');
+  assert.deepEqual(status.structuredContent.needsYou, personNeeds(personNeedsState(box.web)),
+    'the read-only needs builder reads a held item with the board clock');
+  const { code } = await client.close();
+  assert.equal(code, 0);
+});
+
 test('[P6,A9] a person\'s move through MCP is refused', async (t) => {
   const box = project(t);
   const decisionId = personDecision(box);

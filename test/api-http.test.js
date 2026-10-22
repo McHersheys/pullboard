@@ -723,7 +723,8 @@ test("[A2, N26] the board state sends summaries and an item's detail comes from 
   assert.equal(acceptedDetail.criterion, 'Every list reads the Zebra marker');
   assert.equal(acceptedDetail.check, 'true');
   assert.equal(acceptedDetail.checkBaseline.result, 'green');
-  assert.equal(acceptedDetail.verdict.note, 'ran the check and read the summary');
+  assert.equal(acceptedDetail.verdict.note, 'ran the check and read the summary\nverified against agent-approved G1',
+    'the post-init approved fixture row qualifies the receipt without losing the reviewer note');
   assert.deepEqual(acceptedDetail.thread.filter((entry) => entry.type === 'fact').map((entry) => entry.text), ['a fact only the thread carries']);
 
   /** Search through HTTP and return the matching ids in board order. */

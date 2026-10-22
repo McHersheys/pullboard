@@ -17,6 +17,11 @@ export function personNeeds(state) {
       ref: hold.hold_lane, text: hold.hold_reason, what: 'lane held by ' + name(hold.hold_by) })),
     ...rigorDrafts,
     ...(state.sentinelDrafts ?? []),
+    ...(state.spec ?? []).filter(row => row.agentApproval && row.agentApproval.mode !== 'allow' && row.decision?.decision !== 'decline').map(row => ({ kind: 'agent-approved', id: row.id,
+      ref: row.id, agent: row.agentApproval.agent, commit: row.agentApproval.commit, attribution: row.agentApproval.attribution,
+      text: `${row.id} is agent-approved; ${row.agentApproval.attribution}: ${row.agentApproval.agent}; commit ${row.agentApproval.commit ?? 'not committed'}`,
+      what: 'confirm or decline this row', target: `spec:${row.id}`,
+      actions: [{ verb: 'spec-approve', args: { ids: row.id } }, { verb: 'spec-decline', args: { ids: row.id } }] })),
     ...(drafts ? [{ kind: 'draft', id: 'drafts', count: drafts, ref: String(drafts),
       text: 'draft spec rows to approve or drop' + rows.filter(row => row.staleDecision).map(row => `; ${row.stage}`).join(''), what: 'review in SPEC.md', target: 'tab:spec' }] : []),
   ];

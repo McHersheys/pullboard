@@ -42,12 +42,12 @@ test('init writes config, spec, agent docs and hooks once, and never clobbers [I
   box.git(repo, 'init', '-q', '-b', 'main');
   writeFileSync(join(repo, 'AGENTS.md'), '# Mine\n\nkeep me\n');
   writeFileSync(join(repo, 'package.json'), JSON.stringify({ scripts: { test: 'node --test' } }));
-  const first = box.run(repo, 'init');
+  const first = box.run(repo, 'init', '--verbose');
   assert.equal(first.code, 0);
   assert.match(first.out, /added the pullboard section to AGENTS.md/);
   assert.equal(JSON.parse(readFileSync(join(repo, 'pullboard.json'), 'utf8')).gate, 'npm test');
   writeFileSync(join(repo, 'pullboard.json'), JSON.stringify({ ...CONFIG, gate: 'mine' }));
-  const second = box.run(repo, 'init');
+  const second = box.run(repo, 'init', '--verbose');
   assert.match(second.out, /kept pullboard.json/);
   assert.doesNotMatch(second.out, /no gate yet/, 'the config already names a gate');
   assert.equal(JSON.parse(readFileSync(join(repo, 'pullboard.json'), 'utf8')).gate, 'mine');
@@ -119,7 +119,7 @@ test("the coordinator's resume names its next step from the spec and the board, 
   const repo = join(fresh.dir, 'fresh');
   mkdirSync(repo);
   fresh.git(repo, 'init', '-q', '-b', 'main');
-  const initialized = fresh.run(repo, 'init');
+  const initialized = fresh.run(repo, 'init', '--verbose');
   assert.match(initialized.out, /^Next: ask your agent to set up Pullboard here; in Claude Code, start a new session first so it loads the Pullboard skills\.$/m, 'init gives one setup instruction and preserves Claude Code skill loading');
   const firstSetup = JSON.parse(fresh.run(repo, 'resume', '--json').out).setup;
   assert.equal(firstSetup?.step, 1, 'a new board starts by asking what the person wants');
@@ -450,6 +450,33 @@ test('explicit and trunk pre-push landings jump the machine gate line and show i
 function sessionDigest(name, value) {
   return createHash('sha256').update(JSON.stringify([name, value])).digest('hex');
 }
+
+test('a second tour replaces the first demo and links nothing to the relay [N10]', { timeout: 300_000 }, () => {
+  // The machine's own list and relay state hold their own home, so a tour run here can only touch that home (#951).
+  const box = sandbox();
+  const home = join(box.dir, 'private-home');
+  mkdirSync(home);
+  const real = join(box.dir, 'real-project');
+  mkdirSync(real);
+  box.git(real, 'init', '-q', '-b', 'main');
+  writeFileSync(join(home, 'projects.json'), JSON.stringify({ projects: [{ root: real, name: 'real-project', project: '', added: '2026-01-01T00:00:00.000Z' }] }));
+  mkdirSync(join(home, 'relay-machine'), { mode: 0o700 });
+  writeFileSync(join(home, 'relay-machine', 'state.json'), JSON.stringify({ v: 2, autoLink: true, owner: null, machine: 'machine-951', devices: [], excluded: [], pending: null, revocations: [], approvals: [] }), { mode: 0o600 });
+  const tourEnv = { ...box.env, TMPDIR: box.dir, PULLBOARD_HOME: home };
+  delete tourEnv.NO_COLOR;
+  delete tourEnv.FORCE_COLOR;
+  delete tourEnv.PULLBOARD_MODEL;
+  const repos = [];
+  for (let run = 1; run <= 2; run += 1) {
+    const shown = spawnSync(process.execPath, [BIN, 'tour'], { cwd: box.dir, env: tourEnv, encoding: 'utf8' });
+    assert.equal(shown.status, 0, `run ${run}: ${shown.stdout}${shown.stderr}`);
+    repos.push(/Look around: cd (\S+) && pullboard log/u.exec(shown.stdout)[1]);
+  }
+  const registry = JSON.parse(readFileSync(join(home, 'projects.json'), 'utf8')).projects;
+  assert.deepEqual(registry.map((entry) => entry.root), [real, repos[1]], 'the list holds the real project and the demo of the second run, and no other');
+  const state = JSON.parse(readFileSync(join(home, 'relay-machine', 'state.json'), 'utf8'));
+  assert.deepEqual(state.approvals, [], 'no relay link request or approval was made for either demo');
+});
 
 test('the tour finishes when an agent session runs it [N10]', () => {
   // A caller in Claude Code or Codex runs the tour; the scripted seats must not inherit the caller's session, so the

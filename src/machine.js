@@ -9,41 +9,48 @@
  * broken copy, and checks the declaration against the refusals board.js and cli.js raise today.
  */
 
-import { RIGOR_NOTICE_ENGINE } from './rigor-source.js';
-import { HEALTH_CAP_ENGINE } from './health-receipts.js';
-import { NATIVE_FLAKE_ENGINE } from './flake-engine.js';
+import {
+  ENGINE_CANDIDATE,
+  ENGINE_FILE,
+  discovered,
+} from './discovery.js';
+import {
+  readdirSync,
+  readFileSync,
+} from 'node:fs';
 
-/** First writer for withdraw-and-remove milestone behavior; shipment remains engine 45. */
-export const WITHDRAW_MILESTONE_ENGINE = 51;
+export { AUTO_ESCALATE_ENGINE } from './auto-escalate-engine.js';
+export { ROW_DRAFT_ENGINE } from './row-draft-engine.js';
+export { STRONG_REJECTION_NOTICE_ENGINE } from './strong-rejection-notice-engine.js';
+export { SUBMITTED_CONFLICT_ENGINE } from './submitted-conflict-engine.js';
+export { WITHDRAW_MILESTONE_ENGINE } from './withdraw-milestone-engine.js';
 
-/** First engine that automatically escalates an item's second rejection at its current route [B15]. */
-export const AUTO_ESCALATE_ENGINE = 50;
-
-/** The first engine that records a spec row a lane agent drafts on the board, not in SPEC.md (#878). */
-export const ROW_DRAFT_ENGINE = 55;
-
-/** First engine replacing an automatic ceiling escalation with a paired notice [B15,H16]. */
-export const STRONG_REJECTION_NOTICE_ENGINE = 54;
-
-/** Executable move semantics, carried by every sealed move and retained during replay [H16]. */
 /**
- * The engine at which a conflict reopen may return a submitted head, not only an accepted one, and any joined
- * seat may record it (#807; allocated by the coordinator, 19 Oct).
+ * Find every feature engine: each src/*-engine.js leaf declares exactly one `export const NAME_ENGINE = n;` line.
+ * A feature that raises the engine adds its own new file and no line of any shared one, so two items adding
+ * different engines never conflict [C7,V4]. The value is read as text because machine.js needs it synchronously.
+ *
+ * @param {URL} directory the folder holding the *-engine.js leaves
+ * @returns {Record<string, number>} engine number by file name, in name order
  */
-export const SUBMITTED_CONFLICT_ENGINE = 60;
+export function discoverEngines(directory = new URL('./', import.meta.url)) {
+  const found = {};
+  for (const file of discovered(readdirSync(directory), ENGINE_CANDIDATE, ENGINE_FILE, 'feature engine')) {
+    const lines = readFileSync(new URL(file, directory), 'utf8').split('\n').filter((line) => /^export const /u.test(line));
+    const match = lines.length === 1 ? /^export const [A-Z][A-Z0-9_]*_ENGINE = (\d+);$/u.exec(lines[0]) : null;
+    if (!match) throw new Error(`${file} must declare exactly one line \`export const NAME_ENGINE = <number>;\` so ENGINE_VERSION can read it`);
+    found[file.slice(0, -'-engine.js'.length)] = Number(match[1]);
+  }
+  return found;
+}
 
-export const ENGINE_VERSION = Math.max(
-  HEALTH_CAP_ENGINE,
-  SUBMITTED_CONFLICT_ENGINE,
-  NATIVE_FLAKE_ENGINE,
-  ROW_DRAFT_ENGINE,
-  AUTO_ESCALATE_ENGINE,
-  RIGOR_NOTICE_ENGINE,
-  WITHDRAW_MILESTONE_ENGINE,
-  STRONG_REJECTION_NOTICE_ENGINE,
-  52,
-  56,
-);
+export { REOPEN_FIRST_REFUSAL_ENGINE } from './reopen-first-refusal-engine.js';
+
+/** Every feature engine by name, discovered from the *-engine.js files beside this one. */
+export const ENGINE_REGISTRY = discoverEngines();
+
+/** The highest engine number any feature declares. */
+export const ENGINE_VERSION = Math.max(...Object.values(ENGINE_REGISTRY));
 
 /**
  * The engine whose relay moves carry seat provenance and verifier standing (#579). It is its own
@@ -151,27 +158,29 @@ export const GUARDS = [
   { id: 'roadmapReadable', refuse: 'MILESTONES_CORRUPT', rule: 'the roadmap is readable when selecting the next review', next: 'restore board metadata from a known-good board export', source: 'board', when: 'only next --verify selection; a review reserved by id does not consult the roadmap' },
   { id: 'coordinatorSaysAs', refuse: 'MAIN_IS_COORDINATOR', rule: 'in the main checkout, the caller says it is the coordinator', next: 'verify from your own worktree; the coordinator adds --as coordinator', source: 'cli' },
   { id: 'holderOrCoordinator', refuse: 'NOT_YOURS', rule: 'the caller holds the item, or is the coordinator', next: 'shout its holder, or the coordinator', source: 'board' },
+  { id: 'releaseOwnsWork', refuse: 'NOT_YOURS', rule: 'the caller holds the claim or is the builder yielding its active first-refusal window', next: 'release your own claim or reservation, or ask the current builder', source: 'board' },
   { id: 'isHolder', refuse: 'NOT_YOURS', rule: 'the caller holds the claim', next: 'pullboard claim <id>', source: 'board' },
   { id: 'inLane', refuse: 'WRONG_LANE', rule: "the item is in the caller's lane; the main checkout builds coordinator-lane items only", next: "cd <the lane's worktree> && pullboard claim <id>", source: 'board' },
   { id: 'routeAllows', refuse: 'ROUTE', rule: "the caller's route covers the item's: light, then mid, then strong", next: 'pullboard next, which offers only items your route covers', source: 'board' },
   { id: 'dependenciesVerified', refuse: 'BLOCKED', rule: 'every item it waits on is verified', next: 'claim another item, or shout the lane it waits on', source: 'board' },
+  { id: 'builderFirstRefusal', refuse: 'REOPEN_HELD_FOR_BUILDER', rule: 'a returned item waits for its original builder until its recorded deadline or builder release', next: 'wait until the named deadline, or ask its builder to run pullboard release <id>', source: 'board' },
   { id: 'notHeldByAnother', refuse: 'HELD', rule: 'no other agent holds it under a live lease', next: 'pullboard next', source: 'board' },
   { id: 'laneOpen', refuse: 'LANE_HELD', rule: 'nobody holds its lane', next: 'pullboard next --wait 9 (minutes)', source: 'board', when: 'unless the caller is renewing its own live claim' },
   { id: 'itemNotHeld', refuse: 'ITEM_HELD', rule: 'the coordinator has not put this item on hold', next: 'the coordinator lifts it with pullboard hold <id> --off', source: 'board', when: 'unless the caller is renewing its own live claim' },
   { id: 'correctionRefrozen', refuse: 'PENDING_REFREEZE', rule: 'no coordinator correction to a claimed criterion or check is waiting to be frozen', next: 'pullboard refreeze <id>', source: 'board' },
   { id: 'oneLiveClaim', refuse: 'ONE_CLAIM', rule: 'the caller holds no other live top-level claim, reworks of its own rejected items aside', next: 'submit or release the other item first; child items are free', source: 'board' },
-  { id: 'rowsInForce', refuse: 'UNKNOWN_SPEC', alsoRefuses: [{ code: 'A5_GRAMMAR_VERSION', next: 'upgrade Pullboard or use a file written for grammar 1' }, { code: 'NO_POLICY', next: 'restore the committed coordinator policy' }, { code: 'BAD_CONFIG', next: 'repair and commit the coordinator configuration' }, { code: 'SPEC_BEHIND_MAIN', next: 'merge main from this worktree, then retry the claim' }], rule: 'every row the item cites exists and is in force', next: 'fix the spec, or the coordinator withdraws the item', source: 'board', when: 'only where the criterion freezes: claiming an item with no frozen criterion, and refreeze' },
+  { id: 'rowsInForce', refuse: 'UNKNOWN_SPEC', alsoRefuses: [{ code: 'A5_GRAMMAR_VERSION', next: 'upgrade Pullboard or use a file written for grammar 1' }, { code: 'NO_POLICY', next: 'restore the committed coordinator policy' }, { code: 'BAD_CONFIG', next: 'repair and commit the coordinator configuration' }, { code: 'SPEC_BEHIND_MAIN', next: 'merge main from this worktree, then retry the claim' }, { code: 'AGENT_APPROVAL_REQUIRED', next: 'ask the coordinator to arrange the person’s confirmation or decline, or change the explicit refuse setting' }], rule: 'every row the item cites exists and is in force', next: 'fix the spec, or the coordinator withdraws the item', source: 'board', when: 'only where the criterion freezes: claiming an item with no frozen criterion, and refreeze' },
   { id: 'criterionUnchanged', refuse: 'CRITERIA_CHANGED', rule: 'the criterion and the rows it cites read as they did at claim', next: 'the coordinator runs pullboard refreeze <id>', source: 'cli' },
   { id: 'treeClean', refuse: 'DIRTY', rule: 'the worktree has no uncommitted changes', next: 'commit your changes, then submit', source: 'cli' },
   { id: 'nothingUntracked', refuse: 'UNTRACKED', rule: 'the worktree has no untracked files', next: 'commit or ignore them, then submit', source: 'cli' },
-  { id: 'hasCommit', refuse: 'NO_COMMIT', rule: 'there is a commit to submit', next: 'commit your work, then submit', source: 'cli' },
+  { id: 'hasCommit', refuse: 'NO_COMMIT', alsoRefuses: [{ code: 'HOST_NAME', next: 'reword the named commit\'s message without this machine\'s name (git rebase -i, then reword), then run pullboard submit <id> again' }], rule: 'there is a commit to submit, and no commit it adds names this machine', next: 'commit your work, then submit', source: 'cli' },
   { id: 'gateConfigured', refuse: 'NO_GATE', rule: 'the repo names a gate command', next: 'in the main checkout, run pullboard gate set "<project test command>", then commit pullboard.json', source: 'cli' },
   { id: 'withinLane', refuse: 'OUTSIDE_LANE', alsoRefuses: [{ code: 'NO_POLICY', next: 'restore the claim base or ask the coordinator to refreeze' }, { code: 'BAD_CONFIG', next: 'restore the committed coordinator configuration' }, { code: 'GIT_GRAFTS', next: 'ask the coordinator to remove the Git graft file before retrying' }], rule: 'the full claimed diff respects committed coordinator ownership', next: 'restore foreign paths or shout their owner', source: 'cli' },
   { id: 'trunkMergeClean', refuse: 'MERGE_CONFLICT', alsoRefuses: [{ code: 'MERGE_CHECK_FAILED', next: 'use Git 2.38 or newer, restore its objects and retry' }, { code: 'NO_POLICY', next: 'restore the primary repository metadata' }, { code: 'NO_TRUNK', next: 'check out the trunk branch in the main checkout once and run pullboard inbox' }], rule: 'the candidate merges cleanly into the current primary branch without changing an index or worktree', next: 'merge the trunk into your branch, resolve conflicts, commit and resubmit', source: 'cli' },
   { id: 'noUnverifiedStack', refuse: 'STACKED_ON_UNVERIFIED', rule: "the candidate range contains no other item's unverified submitted commit", next: 'wait for that item to be accepted, or rebuild without its commits', source: 'cli' },
   { id: 'infraExplained', refuse: 'INFRA_NOTE_REQUIRED', rule: 'edits to tests or gate files that existed at claim carry an explanation', next: 'pullboard submit <id> --infra "<why>"', source: 'cli' },
   { id: 'doctrineHolds', refuse: 'RATCHET_ROSE', alsoRefuses: [{ code: 'RATCHET_UNCOUNTED', next: 'fix the check so it exits 0 or 1 within its timeout, then submit again' }], rule: "every touched doctrine check counts (exit 0 or 1), none rises above its committed count and no changed file gains a problem; watch-mode rules only count", next: "fix the new problems, commit, submit again; only the person's signature raises count:", source: 'cli', when: 'only when accepted main has an approved doctrine rule with gate: check' },
-  { id: 'itemCheckGreen', refuse: 'CHECK_RED', alsoRefuses: [{ code: 'CHECK_UNVERIFIED', next: 'restore the frozen install or check environment and retry' }], rule: 'the frozen item check passes at the submitted commit, or its clean reviewed composition for a stale acceptance', next: 'reject the failing behavior; the builder fixes and resubmits', source: 'cli' },
+  { id: 'itemCheckGreen', refuse: 'CHECK_RED', alsoRefuses: [{ code: 'CHECK_UNVERIFIED', next: 'restore the frozen install or check environment and retry' }, { code: 'GUARD_CANNOT_FAIL', next: 'reject: the check stays green with the named guard reverted' }, { code: 'GUARD_NOT_FOUND', next: 'the named guard is not in the submitted commit; ask the coordinator to fix it' }], rule: 'the frozen item check passes at the submitted commit, or its clean reviewed composition for a stale acceptance', next: 'reject the failing behavior; the builder fixes and resubmits', source: 'cli' },
 
   { id: 'checkProvesSomething', refuse: 'CRITERION_PROVES_NOTHING', rule: "the item's check does not already pass on main, or the person accepted that exact check", next: 'set a check that fails before the work, or the person runs pullboard check accept <id>', source: 'cli', when: 'only when accepted main sets checks.provesNothing to "hold"' },
   { id: 'gateGreen', refuse: 'GATE_RED', alsoRefuses: [{ code: 'PIPEFAIL_UNAVAILABLE', next: 'rewrite the gate without a pipe' }], rule: 'the gate, which submit runs itself every time, is green at HEAD', next: 'fix what the digest names, commit, submit again', source: 'cli' },
@@ -204,12 +213,12 @@ export const GUARDS = [
 export const MOVES = [
   {
     verb: 'claim', from: ['open', 'claimed'], to: 'claimed', by: ['agent', 'coordinator'], refuse: 'NOT_CLAIMABLE',
-    guards: ['joined', 'itemExists', IN_STATE, 'checkProvesSomething', 'itemNotHeld', 'inLane', 'routeAllows', 'dependenciesVerified', 'notHeldByAnother', 'correctionRefrozen', 'laneOpen', 'oneLiveClaim', 'rowsInForce'],
+    guards: ['joined', 'itemExists', IN_STATE, 'checkProvesSomething', 'itemNotHeld', 'inLane', 'routeAllows', 'dependenciesVerified', 'notHeldByAnother', 'builderFirstRefusal', 'correctionRefrozen', 'laneOpen', 'oneLiveClaim', 'rowsInForce'],
     sets: ['item_owner', 'item_lease_until', 'item_frozen_digest'], command: 'pullboard claim <id>',
   },
   {
-    verb: 'release', from: ['claimed'], to: 'open', by: ['agent', 'coordinator'], refuse: 'NOT_YOURS',
-    guards: ['joined', 'itemExists', IN_STATE, 'isHolder', 'reviewReleaseExplained'], command: 'pullboard release <id>',
+    verb: 'release', from: ['open', 'claimed'], to: 'open', by: ['agent', 'coordinator'], refuse: 'NOT_YOURS',
+    guards: ['joined', 'itemExists', IN_STATE, 'releaseOwnsWork', 'reviewReleaseExplained'], command: 'pullboard release <id>',
   },
   { verb: 'lapse', from: ['claimed'], to: 'open', by: ['clock'], guards: [], when: 'its lease runs out' },
   {
@@ -237,6 +246,7 @@ export const MOVES = [
   {
     verb: 'reopen', from: ['submitted', 'verified'], to: 'open', by: ['coordinator'], refuse: 'NOT_SUBMITTED',
     guards: ['joined', 'itemExists', IN_STATE, 'coordinatorOnly', 'noteGiven', 'causeWellFormed', 'notMerged', 'landingFailureRecorded', 'trunkConflicts', 'conflictAccepted'],
+    alsoRefuses: [{ code: 'BAD_CONFIG', rule: 'the configured first-refusal duration fits a valid UTC deadline', next: 'set claim.reopenFirstRefusalMinutes to a non-negative whole number within the supported date range, or 0 to disable' }],
     sets: ['item_verdict', 'item_verified_by', 'item_owner', 'item_lease_until', 'item_review_by', 'item_review_until'],
     command: 'pullboard reopen <id> --note "why" | --conflict <file> [--conflict <file>]',
   },

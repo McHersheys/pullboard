@@ -502,7 +502,7 @@ test('doctrine init preserves legacy rules and outside guidance, refreshes label
   writeFileSync(join(repo, 'AGENTS.md'), agents + '\nKeep this footer.\n');
   const updatedWays = ways.replace('Delete only after team review.', 'Delete only after pair review.');
   writeFileSync(join(repo, 'ways.md'), updatedWays);
-  const refreshed = box.run(repo, 'init');
+  const refreshed = box.run(repo, 'init', '--verbose');
   assert.equal(refreshed.code, 0, refreshed.err);
   assert.match(refreshed.out, /updated the pullboard section/);
   agents = readFileSync(join(repo, 'AGENTS.md'), 'utf8');

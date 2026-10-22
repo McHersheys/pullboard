@@ -46,6 +46,25 @@ import { Refused } from './refused.js';
 export const SETUP_COMMIT_QUESTION = 'Commit Pullboard setup now? [Y/n] ';
 export const SETUP_COMMIT_LATER = "To commit Pullboard's files: pullboard init --yes";
 
+/** End setup with one action; the agent reads the remaining questions through resume. */
+export function initNextLine(agentSession, { verbose = false } = {}) {
+  if (verbose) return agentSession
+    ? 'Next: run pullboard resume now to continue setup in this session; the new skills load next session, and setup does not need them.'
+    : 'Next: ask your agent to set up Pullboard here; in Claude Code, start a new session first so it loads the Pullboard skills.';
+  return agentSession ? 'Next: run pullboard resume to continue setup in this session.'
+    : 'Next: ask your agent to run pullboard resume to finish setup.';
+}
+
+/** Describe the view without suggesting process termination, including when its port belongs to another program. */
+export function initViewLine(view, { verbose = false } = {}) {
+  if (['started', 'running'].includes(view.state)) return `Pullboard view is running at http://127.0.0.1:${view.port}.${verbose && view.log ? ` Log: ${view.log}` : ''}`;
+  if (view.state === 'busy') return `Port ${view.port} is in use; the background view did not start.`;
+  if (view.state === 'failed') return verbose
+    ? `The background view did not start: ${view.message}${view.log ? ` (log: ${view.log})` : ''}`
+    : 'The background view did not start; setup is ready.';
+  return null;
+}
+
 /** Bind content to the executable mode Git records. */
 function setupFingerprint(mode, content) {
   return createHash('sha256').update(mode + ':').update(content).digest('hex');
@@ -183,7 +202,7 @@ export async function finishInitCommit(plan, { io, yes, landed, permissions }) {
 }
 
 /** Report setup and blueprint notes together, keeping the CLI command itself bounded. */
-export function reportInitSetup(io, info, notes, landed, agentSession) {
+export function reportInitSetup(io, info, notes, landed, { verbose = false } = {}) {
   const fresh = landed.filter(added => !added.marked);
   const waiting = landed.length ? initWaitingRows(info.root, { rows: fresh.flatMap(added => added.rows) }) : [];
   /** Give each blueprint the same complete list of still-undecided rows. */
@@ -192,9 +211,14 @@ export function reportInitSetup(io, info, notes, landed, agentSession) {
     ...(landed.length ? { blueprint: blueprintResult(landed[0]), blueprints: landed.map(blueprintResult) } : {}) };
   io.result?.(result);
   const staging = notes.at(-1)?.startsWith('git add -f -- ') ? notes.at(-1) : null;
-  io.say(agentSession
-    ? 'Next: run pullboard resume now to continue setup in this session; the new skills load next session, and setup does not need them.\nSetup details:'
-    : 'Next: ask your agent to set up Pullboard here; in Claude Code, start a new session first so it loads the Pullboard skills.\nSetup details:');
+  if (!verbose) {
+    io.say('Set up Pullboard: board, project rules, Git hooks and agent instructions.');
+    const missingGate = notes.find(note => note.startsWith('gate command "'));
+    if (missingGate) io.say(missingGate.split(';')[0] + '.');
+    if (landed.length) io.say(`Blueprints: ${landed.length}; ${waiting.length} rows waiting for a decision.`);
+    return { result, staging };
+  }
+  io.say('Setup details:');
   (staging ? notes.slice(0, -1) : notes).forEach(note => io.say(note));
   for (const added of landed) {
     if (added.marked) io.say(alreadyAddedLine(added.blueprint));

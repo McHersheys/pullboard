@@ -43,8 +43,8 @@ test('init adds a Claude Code session hook that runs resume, and keeps every oth
   box.git(repo, 'init', '-q', '-b', 'main');
   const mine = { permissions: { allow: ['Bash(npm test)'] }, hooks: { Stop: [{ hooks: [{ type: 'command', command: 'echo done' }] }] } };
   writeFileSync(join(repo, '.claude', 'settings.json'), JSON.stringify(mine));
-  assert.match(box.run(repo, 'init').out, /added a Claude Code session hook/);
-  assert.match(box.run(repo, 'init').out, /kept the Claude Code session hook/);
+  assert.match(box.run(repo, 'init', '--verbose').out, /added a Claude Code session hook/);
+  assert.match(box.run(repo, 'init', '--verbose').out, /kept the Claude Code session hook/);
   const settings = JSON.parse(readFileSync(join(repo, '.claude', 'settings.json'), 'utf8'));
   // Init also grants the loop's allow rules and machine-home write (#670): the person's own rule stays first and
   // nothing else in permissions changes. test/init-permissions.test.js owns the exact rule list.

@@ -134,8 +134,13 @@ function childResult(root, env, argv, observedSnapshotUploads, initialSnapshotUp
 
 export { childResult as relayFixtureChild };
 
-/** Start an isolated board and authorized loopback relay; a null coordinatorModel keeps its initial identity unknown. */
-export async function relayClientFixture(t, { cliChildren, coordinatorModel, accountStorageBytes } = {}) {
+/**
+ * Start an isolated board and authorized loopback relay; a null coordinatorModel keeps its initial identity unknown.
+ * The relay polls each live stream at its production 200 ms. Each poll opens the board journals, and at the 10 ms this
+ * fixture once used, a loaded machine kept the test process busy enough that browser replies queued past their
+ * deadlines (#955, #979). A case that needs a faster poll passes pollMs by name and says why.
+ */
+export async function relayClientFixture(t, { cliChildren, coordinatorModel, accountStorageBytes, pollMs = 200 } = {}) {
   const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-relay-cleanup-')));
   const root = join(scratch, 'repo');
   const home = join(scratch, 'home');
@@ -232,6 +237,9 @@ globalThis.fetch = function tracedFetch(input, init) {
   let stateReadHold = null;
   let stateReadStarted = 0;
   let refuseSnapshotWrites = false;
+  let stallApi = false;
+  let loseSnapshotReply = null;
+  const lostSnapshotReplies = [];
   let rejectSnapshotWrites = null;
   let rejectedStateReads = null;
   let legacySnapshotApi = false;
@@ -343,7 +351,16 @@ globalThis.fetch = function tracedFetch(input, init) {
       return writeHead(acceptedApprovalCompletionReturnedAsRefusal ? 403 : status, ...args);
     };
     const end = res.end.bind(res);
+    const loseThisReply = snapshotWrite && loseSnapshotReply;
+    if (loseThisReply) loseSnapshotReply = null;
     res.end = (chunk, ...args) => {
+      if (loseThisReply && res.statusCode === 200) {
+        // The real service stored the snapshot; only its acknowledgement is lost on the wire (#919).
+        lostSnapshotReplies.push(snapshotRecord.ciphertext);
+        if (loseThisReply.thenStateReads) rejectedStateReads = { ...loseThisReply.thenStateReads };
+        req.socket.destroy();
+        return res;
+      }
       if (acceptedApprovalCompletionReturnedAsRefusal) {
         chunk = JSON.stringify({ version: 1, error: { code: 'REVIEWER_COMPLETE_REFUSED',
           message: 'The completion response was refused after sealed delivery.',
@@ -362,6 +379,7 @@ globalThis.fetch = function tracedFetch(input, init) {
       request: Buffer.concat(requestChunks), response: Buffer.concat(responseChunks) }));
     calls.push({ method: req.method, path: req.url, accept: req.headers.accept ?? '', engine: req.headers['x-pullboard-engine'],
       browser: String(req.headers.cookie ?? '').includes('pb_session=') });
+    if (stallApi && (req.url ?? '').startsWith('/api/')) { request.resume(); await new Promise(() => {}); }
     if (legacySnapshotApi && req.method === 'GET' && req.url === '/api/v2') {
       res.writeHead(legacySnapshotApi === 'bad-route' ? 400 : 200, { 'content-type': 'application/json' });
       res.end(JSON.stringify(legacySnapshotApi === 'bad-route'
@@ -468,7 +486,7 @@ globalThis.fetch = function tracedFetch(input, init) {
   const origin = 'http://127.0.0.1:' + relayPort;
   auth = createRelayAuth({ database: authDatabase, github: createGitHubClient({ ...provider.config, callbackURL: origin + '/auth/github/callback' }) });
   signIn = createAuthHandler({ auth, publicOrigin: origin });
-  api = createRelayHandler({ directory: join(scratch, 'relay'), auth, publicOrigin: origin, pollMs: 10, maintenanceMs: 0, accountStorageBytes, now: () => Date.now() + timeOffsetMs });
+  api = createRelayHandler({ directory: join(scratch, 'relay'), auth, publicOrigin: origin, pollMs, maintenanceMs: 0, accountStorageBytes, now: () => Date.now() + timeOffsetMs });
   /** Sign a separate phone in over actual OAuth HTTP; its person session stays only in fixture RAM. */
   async function phoneSession() {
     if (phone) return phone;
@@ -740,11 +758,20 @@ globalThis.fetch = function tracedFetch(input, init) {
     overrideDelete(value) { override = value; },
     failTokenMints(count) { mintFailures = count; },
     refuseSnapshotWrites(value) { refuseSnapshotWrites = value; },
+    /** Leave every board API request unanswered until its client times out, like an overloaded relay. */
+    stallApi(value = true) { stallApi = value; },
+    /**
+     * Let the real relay accept the next API1 snapshot PUT, then drop its reply by closing the socket,
+     * optionally answering later state reads with a chosen refusal, as the #919 lost-ACK review did.
+     */
+    loseNextSnapshotReply(options = {}) { loseSnapshotReply = { thenStateReads: options.thenStateReads ?? null }; },
+    /** SHA-256 digests of the snapshots the relay accepted while their replies were lost. */
+    lostSnapshotReplies() { return [...lostSnapshotReplies]; },
     /** Restart only the private service with a changed operator quota, retaining real journals and credentials. */
     setStorageQuota(bytes) {
       assert.ok(Number.isSafeInteger(bytes) && bytes > 0);
       api.close();
-      api = createRelayHandler({ directory: join(scratch, 'relay'), auth, publicOrigin: origin, pollMs: 10,
+      api = createRelayHandler({ directory: join(scratch, 'relay'), auth, publicOrigin: origin, pollMs,
         maintenanceMs: 0, accountStorageBytes: bytes, now: () => Date.now() + timeOffsetMs });
     },
     /** Return a chosen HTTP refusal for snapshot writes, without inspecting the sealed body. */

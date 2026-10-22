@@ -64,6 +64,8 @@ export function hostedMarkup(localView, { looking = false, signIn = null } = {})
       <div class="ob-act" data-part="github" hidden>${github.replace('<a ', '<a id="local-note-go" ')}</div>
       <div class="ob-act" data-part="command" hidden>${commandBoxes('', OPEN_ASK, 'local-note')}</div>
       <div class="ob-act" data-part="open" hidden><a class="ob-big ob-go" id="local-note-view" href="${localView}/local/view">Open your board</a></div>
+      <p class="ob-small" data-part="local-open" hidden><a id="local-note-direct" href="${localView}/local/view">Open your board on this computer</a></p>
+      <p class="ob-small" data-part="local-command" hidden>On this computer, run <code>pullboard view</code> to open your board in its own page.</p>
       <p class="ob-small" id="local-note-small" hidden></p>
       <p class="ob-live" id="local-note-live" hidden><i aria-hidden="true"></i><span></span></p>
       <div class="ob-help" id="local-note-help" hidden>${SPEECH}<span><span id="local-note-lead"></span><small id="local-note-said"></small></span><button type="button" id="local-note-help-copy" data-copy="">Copy</button></div>
@@ -85,7 +87,7 @@ export function hostedBrowser(agent) {
   if (/Opera|OPR\//.test(said)) return 'Opera';
   if (/Chrom/.test(said)) return 'Chrome';
   if (/Firefox\//.test(said)) return 'Firefox';
-  if (/Safari\//.test(said)) return 'Safari';
+  if (/Safari\/|AppleWebKit\//.test(said)) return 'Safari';
   return 'This browser';
 }
 
@@ -95,8 +97,8 @@ export function hostedBrowser(agent) {
  * Your browser said no and Where are your projects? on a computer, and #757's two screens, Your boards, on your phone
  * and One step on your computer, for a phone and for a person signed in with nothing shared.
  *
- * @param {string|null} state - looking, asking, blocked, not-running, mismatch, problem, signed-out, no-linked, unpaired, linked-failed or local-failed.
- * @param {{phone?: boolean, detail?: string, linked?: string[]}} [facts] - Whether the page runs on a phone, a refusal's own words, and the boards the account shares that this browser cannot open yet.
+ * @param {string|null} state - looking, local-open, asking, blocked, not-running, mismatch, problem, signed-out, no-linked, unpaired, linked-failed or local-failed.
+ * @param {{phone?: boolean, detail?: string, linked?: string[], localNavigationOnly?: boolean, listed?: boolean, signedIn?: boolean, localOriginKnown?: boolean}} [facts] - The device, refusal, linked boards and whether local boards need their own page beside a listed relay board.
  * @returns {null|{state: string, kind: string, heading: string, text?: string, parts: string[], command?: string, ask?: string, small?: string, live?: string, lead?: string, help?: string, detail?: string}}
  */
 export function hostedState(state, facts = {}) {
@@ -108,6 +110,10 @@ export function hostedState(state, facts = {}) {
     small: 'It shares every project with your account. Your boards show up here by themselves.', live: 'Waiting for your boards' };
   const models = {
     'looking': { kind: 'state', heading: 'Finding your boards…', parts: ['spin'] },
+    'local-open': { kind: facts.listed ? 'note' : 'state', heading: 'Open this computer’s board',
+      text: !facts.listed && !facts.localOriginKnown ? 'This command opens your board in its own page.' : undefined,
+      parts: [facts.listed ? (facts.localOriginKnown ? 'local-open' : 'local-command') : (facts.localOriginKnown ? 'open' : 'command'),
+        ...(facts.signedIn ? [] : ['github'])], command: 'pullboard view', ask: opening },
     'asking': { kind: 'state', heading: 'Click Allow', text: 'Your browser is asking if this page may open the boards on this computer. Your boards stay on this computer.', parts: ['ask'],
       live: 'Waiting for you to click Allow', lead: agent, help: 'Help me allow Pullboard in my browser.' },
     'blocked': { kind: 'state', heading: 'Your browser said no', text: 'That\'s fine. Turn it back on in three clicks:', parts: ['steps'],
@@ -131,7 +137,8 @@ export function hostedState(state, facts = {}) {
     'local-failed': { kind: 'note', heading: 'This computer\'s boards did not load', text: 'They show here by themselves once Pullboard answers.', parts: [], detail: facts.detail },
   };
   const model = state ? models[state] : null;
-  return model ? { state, ...model } : null;
+  return model ? { state, ...model, parts: [...model.parts,
+    ...(facts.localNavigationOnly && state !== 'local-open' ? [facts.localOriginKnown ? 'local-open' : 'local-command'] : [])] } : null;
 }
 
 /**
@@ -171,6 +178,7 @@ export function drawHosted(doc, model, place) {
   $('local-note-help-copy').dataset.copy = model?.help || '';
   for (const button of note.querySelectorAll('button[data-copy]')) button.textContent = 'Copy';
   $('local-note-view').href = place.view + '/local/view';
+  $('local-note-direct').href = place.view + '/local/view';
   for (const link of note.querySelectorAll('.ob-gh')) if (place.signIn) link.href = place.signIn;
   // A person already signed in is never asked to sign in: Where are your projects? keeps only this computer's card.
   note.querySelector('.ob-two').classList.toggle('signed-in', Boolean(place.session));

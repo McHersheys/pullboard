@@ -7,6 +7,7 @@ import {
   listAgents,
   logEvent,
 } from './board.js';
+import { CI_FLAKE_ENGINE } from './flake-engine.js';
 import { NATIVE_FLAKE_ENGINE } from './flake-engine.js';
 import { ENGINE_VERSION } from './machine.js';
 import { Refused } from './refused.js';
@@ -31,7 +32,7 @@ export function flakeObservation(value) {
   const text = (entry, limit) => typeof entry === 'string' && entry.length > 0 && entry.length <= limit && !/[\r\n\0]/u.test(entry);
   if (!value || !text(value.id, 80) || !/^[a-zA-Z0-9-]+$/u.test(value.id) || !SHA.test(value.head ?? '')
       || !SHA.test(value.tree ?? '') || value.main !== null && !SHA.test(value.main ?? '')
-      || !['check', 'submit', 'verify', 'land', 'gate'].includes(value.kind) || !CLASSIFICATIONS.includes(value.classification)
+      || !['check', 'submit', 'verify', 'land', 'gate', 'ci'].includes(value.kind) || !CLASSIFICATIONS.includes(value.classification)
       || !DIGEST.test(value.commandSha256 ?? '') || !text(value.reason, 2048) || !Number.isFinite(Date.parse(value.at))
       || !Number.isFinite(value.diagnosticMs) || value.diagnosticMs < 0) {
     throw new Refused('FLAKE_EVIDENCE', 'a failure observation needs its pinned source, gate kind, time and complete receipts');
@@ -50,14 +51,28 @@ export function flakeObservation(value) {
       || value.classification === 'stable-red' && (!paired || paired.green)) {
     throw new Refused('FLAKE_EVIDENCE', 'a flake needs a red original and one green pair; a pinned green main is a possible regression instead');
   }
+  // A CI observation names its run, attempts, job, runner and Node version; a hosted runner's load is unknown (#918).
+  const ci = value.kind === 'ci' ? ciRecord(value.ci, text) : null;
+  if (value.kind !== 'ci' && value.ci !== undefined) throw new Refused('FLAKE_EVIDENCE', 'only a CI observation carries a CI record');
   const load = value.load;
-  if (!load || !Array.isArray(load.average) || load.average.length !== 3 || load.average.some(number => !Number.isFinite(number) || number < 0)
+  if (value.kind === 'ci' ? load !== null : !load || !Array.isArray(load.average) || load.average.length !== 3 || load.average.some(number => !Number.isFinite(number) || number < 0)
       || !Number.isSafeInteger(load.cpus) || load.cpus < 1 || !Number.isSafeInteger(load.freeMB) || load.freeMB < 0) {
     throw new Refused('FLAKE_EVIDENCE', 'record observed machine load with this failure');
   }
   return { id: value.id, file, name, head: value.head, tree: value.tree, main: value.main, kind: value.kind,
     classification: value.classification, commandSha256: value.commandSha256, reason: value.reason, at: new Date(value.at).toISOString(),
-    diagnosticMs: value.diagnosticMs, load: { average: [...load.average], cpus: load.cpus, freeMB: load.freeMB }, original, paired, mainReceipt };
+    diagnosticMs: value.diagnosticMs, load: load === null ? null : { average: [...load.average], cpus: load.cpus, freeMB: load.freeMB },
+    ...(ci ? { ci } : {}), original, paired, mainReceipt };
+}
+
+/** Check a CI observation's provenance: provider, numeric run id, the red attempt and its later rerun, job, runner, Node version. */
+function ciRecord(ci, text) {
+  if (!ci || ci.provider !== 'github' || !/^\d{1,20}$/u.test(ci.run ?? '') || !Number.isSafeInteger(ci.attempt) || ci.attempt < 1
+      || !Number.isSafeInteger(ci.rerunAttempt) || ci.rerunAttempt <= ci.attempt || !text(ci.job, 200) || !text(ci.runner, 200)
+      || !/^v\d+\.\d+\.\d+$/u.test(ci.node ?? '')) {
+    throw new Refused('FLAKE_EVIDENCE', 'a CI observation names its provider, run id, failed attempt, rerun attempt, job, runner and Node version');
+  }
+  return { provider: ci.provider, run: ci.run, attempt: ci.attempt, rerunAttempt: ci.rerunAttempt, job: ci.job, runner: ci.runner, node: ci.node };
 }
 
 /** A stable identity follows the actual test, rather than its line number, machine or latest source head. */
@@ -97,7 +112,8 @@ export function flakeLedger(board) {
 
 /** Atomically append one observation, drafting ordinary repair work only on a second confirmed sighting. */
 export function recordFlakeObservation(board, { agentId, observation, lane }) {
-  if ((board.executionEngineVersion ?? ENGINE_VERSION) < NATIVE_FLAKE_ENGINE) throw new Refused('ENGINE_VERSION', `flake observations require engine ${NATIVE_FLAKE_ENGINE}; upgrade Pullboard`);
+  const needed = observation?.kind === 'ci' ? CI_FLAKE_ENGINE : NATIVE_FLAKE_ENGINE;
+  if ((board.executionEngineVersion ?? ENGINE_VERSION) < needed) throw new Refused('ENGINE_VERSION', `${observation?.kind === 'ci' ? 'CI ' : ''}flake observations require engine ${needed}; upgrade Pullboard`);
   if (!listAgents(board).some(agent => agent.agent_id === agentId)) throw new Refused('NOT_JOINED', 'join this board before recording a flake observation');
   const value = flakeObservation(observation);
   return atomic(board, () => {

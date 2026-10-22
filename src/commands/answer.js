@@ -1,0 +1,40 @@
+/** The pullboard answer command, in its own module so an item adding another command never edits these lines. */
+import * as store from '../board.js';
+import {
+  parseImplies,
+} from '../implies.js';
+import {
+  laneNames,
+} from '../lanes.js';
+import {
+  requirePersonChannel,
+} from '../person.js';
+import {
+  actOn,
+  agentDisplayName,
+  idArg,
+  ordered,
+  personMode,
+} from '../cli.js';
+
+/** Run `pullboard answer` and return its exit code. */
+export async function run(io, { first, second, rest, values }) {
+  const act = (work) => actOn(io, work);
+  return act(async (ctx, board, me) => {
+  const asPerson = personMode(ctx, me, values);
+  if (asPerson) requirePersonChannel(ctx.io.personChannel);
+  const implies = parseImplies(values.implies);
+  const supersedes = values.supersedes === undefined ? undefined : idArg(String(values.supersedes).replace(/^#/u, ''));
+  const id = await ordered(ctx, board, 'answerDecision', [idArg(first), { agentId: me.id, text: [second, ...rest].filter(Boolean).join(' '), lanes: laneNames(ctx.config), asPerson, channel: ctx.io.personChannel ?? 'terminal',
+    ...(implies ? { implies } : {}), ...(supersedes ? { supersedes } : {}) }]);
+  const ask = store.getShout(board, idArg(first));
+  io.result?.({ id, answers: ask.shout_id });
+  if (asPerson) {
+    const originalAsker = ask.shout_answers === null ? ask.shout_from : store.getShout(board, ask.shout_answers).shout_from;
+    io.say(`person answered #${ask.shout_id}; notified ${agentDisplayName(store.listAgents(board), ctx.config, originalAsker)} as #${id}`);
+  } else {
+    io.say(`answered #${ask.shout_id} to ${agentDisplayName(store.listAgents(board), ctx.config, ask.shout_from)} as #${id}`);
+  }
+  return 0;
+});
+}

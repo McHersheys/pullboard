@@ -8,9 +8,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { createAuthHandler } from '../relay/auth-http.js';
+import { createDeviceHandler } from '../relay/device-http.js';
+import { createDeviceStore } from '../relay/device-store.js';
 import { createGitHubClient } from '../relay/github.js';
 import { createRelayAuth } from '../relay/auth.js';
 import { createRelayHandler } from '../relay/service.js';
+import { Refused } from '../src/refused.js';
 import { ENGINE_VERSION } from '../src/machine.js';
 import {
   authenticateDeviceEnrollment,
@@ -238,4 +241,59 @@ test('relay devices isolate accounts, persist opaque wraps, expire enrollments a
     method: 'POST', cookie: freshCookie, origin: box.origin, body: {},
   });
   assert.equal(oldId.document.error?.code, 'DEVICE_REVOKED', 'a fresh sign-in does not resurrect the tombstoned device id');
+});
+
+test('pending phone link names are session-scoped and exclude used or expired approvals [H5,H15,H17]', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'pullboard-device-approvals-'));
+  let now = 1_800_000_000_000;
+  const devices = createDeviceStore({ directory: root, now: () => now });
+  const account = '7';
+  const other = '8';
+  const device = 'device-' + 'a'.repeat(32);
+  const publisher = 'b'.repeat(32);
+  devices.register(account, device);
+  devices.register(other, device);
+  /** Make one valid pending phone action with an independently selected account and board. */
+  const context = (id, owner, board, action, target, expires) => ({ id, account: owner, publisher, board, device, action, target,
+    machine: 'machine-one', command: 'pullboard relay on --all', expires });
+  /** Store an encrypted request through the same approval validation used by the relay endpoint. */
+  const add = (value) => devices.requestApproval(value.account, value, 'sealed-intent');
+  add(context('live-link', account, 'c'.repeat(32), 'link', 'fixture/live', now + 60_000));
+  add(context('other-link', other, 'd'.repeat(32), 'link', 'fixture/private', now + 60_000));
+  add(context('used-link', account, 'e'.repeat(32), 'link', 'fixture/used', now + 30_000));
+  devices.completeApproval(account, 'used-link', 'phone-response');
+  add(context('expired-link', account, 'f'.repeat(32), 'link', 'fixture/expired', now + 1));
+  add(context('live-revoke', account, publisher, 'revoke-device', device, now + 60_000));
+  now += 2;
+
+  const server = createServer(createDeviceHandler({
+    authenticate: async (req) => {
+      const cookie = req.headers.cookie;
+      if (cookie === 'revoked=1') throw new Refused('DEVICE_REVOKED', 'revoked');
+      return { kind: cookie === 'machine=1' ? 'machine' : 'session', user: { id: cookie === 'other=1' ? other : account } };
+    },
+    authorizeBoard: async () => {}, boardsFor: async () => [], devices,
+    linkBoard: async () => {}, issueMachine: async () => {}, issueActionGrant: async () => {},
+    consumeActionGrant: async () => {}, revokeToken: async () => {}, deleteBoard: async () => {},
+  }));
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => { server.closeAllConnections(); server.close(); devices.close?.(); rmSync(root, { recursive: true, force: true }); });
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  /** Read the public pending-link endpoint as a chosen authenticated principal. */
+  const get = async (cookie) => {
+    const response = await fetch(origin + '/api/v1/devices/approvals', { headers: { cookie } });
+    return { response, document: await response.json() };
+  };
+
+  const own = await get('owner=1');
+  assert.deepEqual(own.document.links, [{ name: 'fixture/live' }], 'only live link-request names leave the account boundary');
+  assert.equal(own.document.links[0].sealed, undefined, 'the browser never receives the sealed intent');
+  assert.deepEqual((await get('other=1')).document.links, [{ name: 'fixture/private' }], 'another signed-in account sees only its own request');
+  const machine = await get('machine=1');
+  assert.equal(machine.response.status, 403);
+  assert.equal(machine.document.error?.code, 'HUMAN_REQUIRED');
+  const revoked = await get('revoked=1');
+  assert.equal(revoked.response.status, 403);
+  assert.equal(revoked.document.error?.code, 'DEVICE_REVOKED');
 });

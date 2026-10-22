@@ -108,7 +108,7 @@ test('a lone newcomer starts a reviewer with one command [V1,B26]', t => {
   box.git(box.web, 'merge', '-q', '--ff-only', 'main');
   const model = box.env.PULLBOARD_MODEL;
   delete box.env.PULLBOARD_MODEL;
-  const initialized = box.run(box.repo, 'init');
+  const initialized = box.run(box.repo, 'init', '--verbose');
   if (model !== undefined) box.env.PULLBOARD_MODEL = model;
   assert.equal(initialized.code, 0, initialized.err);
   const added = box.run(box.repo, 'add', 'web', 'Ready for review', '--specs', 'G1',

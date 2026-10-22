@@ -27,7 +27,7 @@
  * accepted. Every rule of an architecture blueprint names its source, or the blueprint is refused
  * with BLUEPRINT_NO_SOURCE when it is read or saved: an architecture rule paraphrases a known-good
  * reference, so the row it drafts must say which one. An item's route is light, mid or strong (strong when left out), as pullboard add takes
- * it. Its brief, criterion and check pass through to add unchanged, so a light or mid item is filed when it
+ * it. Its brief and criterion pass through unchanged; bundled checks use the chosen lane folder. A light or mid item is filed when it
  * carries what add requires for that route and refused with add's own refusal when it does not.
  * A check is stored on the item and never run during add: no check baseline starts, so nothing a
  * blueprint supplies executes. A blueprint is read from the bundled set or a local path, never a URL.
@@ -62,6 +62,7 @@ export const BLUEPRINT_KINDS = ['product', 'architecture', 'practice', 'beyond-c
 const LEGACY_KINDS = { infrastructure: 'architecture' };
 
 const BUNDLED_DIR = fileURLToPath(new URL('./blueprints/', import.meta.url));
+const BUNDLED = new WeakSet();
 const NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const KEY_RE = /^[A-Za-z0-9]+$/u;
 const PREFIX_RE = /^[A-Z][A-Z0-9]*$/u;
@@ -75,6 +76,16 @@ const ROUTES = ['light', 'mid', 'strong'];
 export function bundledBlueprints() {
   if (!existsSync(BUNDLED_DIR)) return [];
   return readdirSync(BUNDLED_DIR).filter((file) => file.endsWith('.json')).map((file) => file.slice(0, -5)).sort();
+}
+
+/** Scope only trusted bundled starters to a unique owned folder; arbitrary local checks keep their meaning. */
+export function starterCheck(blueprint, command, placement, config) {
+  const owns = placement.proposal?.owns ?? config.lanes[placement.lane]?.owns ?? [];
+  if (!BUNDLED.has(blueprint) || owns.length !== 1 || !owns[0].endsWith('/')) return command;
+  const folder = owns[0].replace(/\/+$/u, '');
+  if (!folder || /[*?{}\[\]]/u.test(folder)) return command;
+  const quoted = `'./${folder.replaceAll("'", "'\\''")}'`;
+  return `cd ${quoted} && (${command})`;
 }
 
 /**
@@ -104,6 +115,7 @@ export function readBlueprint(reference, cwd) {
   }
   const blueprint = validateBlueprint(value, bundled ? text : basename(file));
   if (bundled && blueprint.name !== text) throw new Refused('BAD_BLUEPRINT', `${text}.json names itself "${blueprint.name}"; its name and file name must match`);
+  if (bundled) BUNDLED.add(blueprint);
   return blueprint;
 }
 
@@ -437,10 +449,12 @@ export function repoAnswers(root) {
  * @returns {Blueprint}
  */
 export function landBlueprint(blueprint, answers) {
-  return { ...blueprint, questions: blueprint.questions.map((question) => {
+  const landed = { ...blueprint, questions: blueprint.questions.map((question) => {
     const answer = question.detect ? answers[question.detect] : undefined;
     return answer && question.choices.includes(answer) ? { ...question, default: answer } : question;
   }) };
+  if (BUNDLED.has(blueprint)) BUNDLED.add(landed);
+  return landed;
 }
 
 /**

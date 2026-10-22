@@ -342,11 +342,16 @@ function writeAtomic(file, text) {
 }
 
 /** Read raw sign-off records without applying signer verification recursively. */
-function readRawRecords(root) {
+export function readRawRecords(root) {
   const file = join(root, '.pullboard/signoffs.jsonl');
   if (!existsSync(file)) return [];
   return readFileSync(file, 'utf8').split('\n').filter((line) => line.trim()).map((line, index) => {
-    try { return JSON.parse(line); } catch { throw new Refused('BAD_SIGNOFFS', `.pullboard/signoffs.jsonl line ${index + 1} is not JSON`); }
+    let record;
+    try { record = JSON.parse(line); } catch { throw new Refused('BAD_SIGNOFFS', `.pullboard/signoffs.jsonl line ${index + 1} is not JSON`); }
+    if (!record || typeof record !== 'object' || Array.isArray(record)) {
+      throw new Refused('BAD_SIGNOFFS', `.pullboard/signoffs.jsonl line ${index + 1} is not a record object; restore the complete sign-off record`);
+    }
+    return record;
   });
 }
 

@@ -203,7 +203,7 @@ test('a dropped watch resumes from its last event [A2,N26]', async (t) => {
 test('watch --work announces a claimable item and a review left waiting [A2,N26]', async (t) => {
   const box = project();
   const builder = box.cli(box.root, 'worktree', 'app', '--model', 'watch-builder');
-  const waiting = box.cli(box.root, 'add', 'app', 'Waits on another item', '--criterion', 'waits', '--specs', 'G1', '--check', 'true').item;
+  const waiting = box.cli(box.root, 'add', 'app', 'Waits on another item', '--criterion', 'waits', '--specs', 'G1', '--check', 'true', '--wait').item;
   box.cli(box.root, 'check', 'accept', String(waiting.item_id)); // #728 holds a check already green on main until the person accepts it.
   const before = events(box).length;
   const watch = startWatch(box, ['--json', '--work', 'app', '--review-wait', '0.02']);
@@ -212,12 +212,15 @@ test('watch --work announces a claimable item and a review left waiting [A2,N26]
   assert.equal(watch.out.lines.length, 0, 'work already claimable when watch starts is its baseline, so it prints nothing');
 
   // A newly opened item in the lane is claimable.
-  const added = box.cli(box.root, 'add', 'app', 'Fresh app work', '--criterion', 'claimable', '--specs', 'G1', '--check', 'true').item;
+  const added = box.cli(box.root, 'add', 'app', 'Fresh app work', '--criterion', 'claimable', '--specs', 'G1', '--check', 'true', '--wait').item;
   const notice = JSON.parse((await watch.line((line) => JSON.parse(line).kind === 'claimable', 5_000, 'claimable notice')).line); // budget: hang ceiling for one line, not a latency claim.
   assert.equal(notice.item, added.item_id);
   assert.equal(notice.notice, true);
   assert.equal(notice.detail, 'app: Fresh app work');
-  assert.equal(notice.sequence, lastSequence(box), 'a notice carries the sequence it follows');
+  const noticed = events(box).find(event => event.event_id === notice.sequence);
+  assert.equal(noticed.item_id, added.item_id, 'the notice follows its new item');
+  assert.ok(['add', 'check-baseline'].includes(noticed.event_kind), 'the notice follows the add or its actual baseline observation');
+  assert.equal(added.item_check_baseline.result, 'green', 'the baseline is finished before later move assertions');
   const blocked = box.cli(box.root, 'add', 'app', 'Waits for the fresh work', '--criterion', 'after', '--specs', 'G1', '--after', String(added.item_id)).item;
 
   // A released claim makes the item claimable again.
@@ -276,7 +279,7 @@ test('watch --work announces a claimable item and a review left waiting [A2,N26]
   assert.equal(watch.out.lines.filter(({ line }) => JSON.parse(line).kind === 'review-wait' && JSON.parse(line).item === added.item_id).length, 1,
     'a waiting review is announced once');
   assert.ok(kinds.includes('accept') && kinds.includes('reject'), 'the verdicts print as events too');
-  const moves = events(box).slice(before).map((event) => event.event_kind);
+  const moves = events(box).slice(before).map(event => event.event_kind);
   assert.deepEqual(moves, ['add', 'add', 'claim', 'release', 'check_accept', 'claim', 'submit', 'join', 'reserve', 'accept', 'claim', 'submit', 'reserve', 'reject'],
     'watch wrote no event: the new ones are exactly the moves this test made');
 });

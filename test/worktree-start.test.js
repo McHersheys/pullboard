@@ -2,10 +2,12 @@
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
+import { hostname } from 'node:os';
 import { after, test } from 'node:test';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { runFixtureChild } from './fixture-child.js';
 import { configProblems, defaults } from '../src/config.js';
+import { machineNameProblems, machineNames } from '../src/hooks.js';
 import { installStep } from '../src/worktree.js';
 
 const e2e = createE2eHelpers();
@@ -248,4 +250,93 @@ test('worktree suggests no install for a zero-dependency project [I1,L3]', () =>
   box.git(loose, 'commit', '-q', '-m', 'chore: shrinkwrap');
   assert.deepEqual(installStep(loose), { command: 'npm ci', note: 'its own install from the committed npm-shrinkwrap.json, so its tests run its own code' },
     'an npm-shrinkwrap.json in HEAD is a committed lockfile');
+});
+
+test('the worktree and branch names Pullboard makes carry no host part [I1,I2]', () => {
+  const box = sandbox();
+  const { web } = project('true', box);
+  box.env.PULLBOARD_MODEL = 'Name Model';
+  const made = box.run(web, 'worktree', 'api', '--json');
+  assert.equal(made.code, 0, made.err || made.out);
+  const result = JSON.parse(made.out);
+  assert.equal(result.branch, 'api/1', 'the branch is <lane>/<n>');
+  const short = hostname().split('.')[0].toLowerCase();
+  for (const name of [result.branch, basename(result.path)]) {
+    assert.ok(!name.toLowerCase().includes(short), `"${name}" carries no host part`);
+  }
+});
+
+test('a submit naming a stand-in host refuses at HOST_NAME, and only warns when the setting is off [C1]', () => {
+  const box = sandbox();
+  const { repo } = project('true', box);
+  const base = box.git(repo, 'rev-parse', 'HEAD');
+  box.git(repo, 'commit', '-q', '--allow-empty', '-m', 'chore: note the stand-in-host branch');
+  const range = `${base}..HEAD`;
+  assert.throws(() => machineNameProblems(repo, range, { refuse: true, say: () => {}, names: ['stand-in-host'] }),
+    (error) => error.code === 'HOST_NAME' && /names this machine/u.test(error.message));
+  const said = [];
+  machineNameProblems(repo, range, { refuse: false, say: (line) => said.push(line), names: ['stand-in-host'] });
+  assert.equal(said.length, 1, 'the setting off warns once per named commit');
+  assert.match(said[0], /^warning: commit [0-9a-f]{12} names this machine/u);
+  machineNameProblems(repo, range, { refuse: true, say: () => {}, names: ['no-such-name-here'] });
+  // A stand-in computer name is one of this machine's names, matched case-insensitively at submit.
+  const computer = machineNames({ host: 'stand-in-host', computer: 'Stand In Box' });
+  assert.ok(computer.includes('stand in box'), 'the computer name joins the machine names');
+  const second = box.git(repo, 'rev-parse', 'HEAD');
+  box.git(repo, 'commit', '-q', '--allow-empty', '-m', 'chore: note the STAND IN box in a message');
+  assert.throws(() => machineNameProblems(repo, `${second}..HEAD`, { refuse: true, say: () => {}, names: computer }),
+    (error) => error.code === 'HOST_NAME' && /names this machine/u.test(error.message), 'a stand-in computer name is refused');
+});
+
+test('a stand-in host after a field separator in a commit body is still refused [C1]', () => {
+  const box = sandbox();
+  const { repo } = project('true', box);
+  const base = box.git(repo, 'rev-parse', 'HEAD');
+  const message = join(box.dir, 'separator-message.txt');
+  writeFileSync(message, 'chore: note a separator\n\nbefore \u001f and \u001e then fixture-host-892 after\n');
+  box.git(repo, 'commit', '-q', '--allow-empty', '-F', message);
+  assert.throws(() => machineNameProblems(repo, `${base}..HEAD`, { refuse: true, say: () => {}, names: ['fixture-host-892'] }),
+    (error) => error.code === 'HOST_NAME', 'a name after U+001F and U+001E in the body is found');
+});
+
+/**
+ * Build a claimed web item whose only commit names this machine in its message, then submit it. The
+ * setting is written to the main checkout first, since submit reads the accepted main's policy [C1].
+ */
+function submitNamingThisMachine(box, noHostName) {
+  const { repo, web } = project('true', box);
+  const configPath = join(repo, 'pullboard.json');
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  config.commits = { ...(config.commits ?? {}), noHostName };
+  writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+  box.git(repo, 'add', 'pullboard.json');
+  box.git(repo, 'commit', '-q', '-m', `chore: set the host-name guard to ${noHostName}`);
+  box.git(web, 'merge', '-q', '--ff-only', 'main');
+  assert.equal(box.run(repo, 'add', 'web', 'Page', '--specs', 'G1', '--criterion', 'renders a heading').code, 0);
+  assert.equal(box.run(web, 'claim', '1').code, 0);
+  mkdirSync(join(web, 'web'), { recursive: true });
+  writeFileSync(join(web, 'web', 'a.html'), '<h1>Hi</h1>\n');
+  box.git(web, 'add', '-A');
+  // The host name comes from the machine at run time; it is never written into a file or a shout.
+  box.git(web, 'commit', '-q', '-m', 'feat(web): page [G1]', '-m', `built on ${hostname()}`);
+  return box.run(web, 'submit', '1');
+}
+
+test('a submit naming this machine is refused at HOST_NAME when commits.noHostName is on, and the host name stays out of the output [C1]', () => {
+  const box = sandbox();
+  const host = hostname().toLowerCase();
+  const refused = submitNamingThisMachine(box, true);
+  assert.equal(refused.code, 1, 'the submit is refused');
+  assert.match(refused.err, /\[HOST_NAME\]/u);
+  assert.equal(`${refused.out}\n${refused.err}`.toLowerCase().includes(host), false, 'the output does not name the host');
+});
+
+test('the same submit only warns when commits.noHostName is off, and the submit goes on [C1]', () => {
+  const box = sandbox();
+  const host = hostname().toLowerCase();
+  const submitted = submitNamingThisMachine(box, false);
+  assert.equal(submitted.code, 0, submitted.err);
+  assert.match(submitted.out, /warning: commit [0-9a-f]{12} names this machine in its message/u, 'the warning line is printed');
+  assert.match(submitted.out, /submitted #1 at [0-9a-f]{12}/u, 'the submit continues to its record');
+  assert.equal(`${submitted.out}\n${submitted.err}`.toLowerCase().includes(host), false, 'the output does not name the host');
 });

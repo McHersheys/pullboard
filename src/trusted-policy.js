@@ -186,9 +186,10 @@ export function frozenCheck(item) {
 /** Run the frozen check at the exact submitted commit in a private clone, leaving live worktrees untouched.
  * @param {string} root
  * @param {object} item
- * @param {{ waitMs?: number, gateSlotHeld?: boolean, gateLease?: object }} [options] - Queue wait before the private check started.
+ * @param {{ waitMs?: number, gateSlotHeld?: boolean, gateLease?: object, mutate?: (directory: string) => string }} [options] - Queue wait before the private check started;
+ *   mutate changes the scratch tree after checkout (a guard revert) and returns a reason when it cannot [C7,V4].
  */
-export function checkAtCommit(root, item, { waitMs = 0, gateSlotHeld = false, gateLease } = {}) {
+export function checkAtCommit(root, item, { waitMs = 0, gateSlotHeld = false, gateLease, mutate } = {}) {
   const command = frozenCheck(item);
   if (!command) return { state: 'pass', green: true, checked: false, report: '' };
   let config;
@@ -246,7 +247,11 @@ export function checkAtCommit(root, item, { waitMs = 0, gateSlotHeld = false, ga
     }
     const checkout = clone.status === 0 && spawnSync('git', ['checkout', '--quiet', '--detach', item.item_commit], { cwd: copy, env, stdio: 'ignore' });
     if (!checkout || checkout.status !== 0) return finish('unverified', 'clone or checkout could not start');
-    checkedSourceReady = true;
+    if (mutate) {
+      const reason = mutate(copy);
+      if (reason) return finish('unverified', reason);
+    }
+    checkedSourceReady = !mutate;
     const deadline = Date.now() + timeout;
     if (install) {
       installLogPath = join(scratch, 'install.log');

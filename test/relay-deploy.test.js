@@ -783,6 +783,7 @@ function refusingStoragePage(t, { hash, board, sealed }) {
   const unexpected = [];
   const replaced = [];
   let snapshotReads = 0;
+  let approvalReads = 0;
   /** Model storage that refuses writes, as a private window or a full quota does. */
   const storage = () => ({
     length: 0, key: () => null, getItem: () => null,
@@ -825,6 +826,12 @@ function refusingStoragePage(t, { hash, board, sealed }) {
       const url = new URL(String(input), location.origin);
       const accept = new Headers(init.headers).get('accept');
       if (url.pathname === '/api/v1/boards') return reply({ version: 1, boards: [{ id: board, repository: 'acme/widgets' }] });
+      if (url.pathname === '/api/v1/devices/approvals') {
+        approvalReads += 1;
+        assert.equal(init.method ?? 'GET', 'GET', 'pending phone approvals are read-only');
+        assert.equal(init.credentials, 'same-origin', 'the approvals request carries the signed-in phone session');
+        return reply({ version: 1, links: [] });
+      }
       if (url.pathname === '/api/v1/boards/' + board + '/state') { snapshotReads += 1; return reply({ version: 1, state: { sequence: 0, sealed } }, 200, { etag: '"0"' }); }
       if (url.pathname === '/api/v1/boards/' + board + '/events' && accept === 'text/event-stream') {
         return new Promise((resolveStream, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true }));
@@ -843,7 +850,7 @@ function refusingStoragePage(t, { hash, board, sealed }) {
       else delete globalThis[name];
     }
   });
-  return { location, refused, unexpected, replaced, snapshotReads: () => snapshotReads };
+  return { location, refused, unexpected, replaced, snapshotReads: () => snapshotReads, approvalReads: () => approvalReads };
 }
 
 test('[H5,H15] an early pairing survives until the transport takes it when storage refuses writes', async (t) => {
@@ -861,6 +868,7 @@ test('[H5,H15] an early pairing survives until the transport takes it when stora
   const transport = await createTransport();
   assert.deepEqual((await transport.request('/api/v1/boards')).boards.map(row => row.id), [board], 'the transport takes the early pairing from module memory and pairs the board');
   assert.equal(page.snapshotReads(), 1, 'the board pairs once');
+  assert.ok(page.approvalReads() > 0, 'the transport checks pending approvals with its signed-in session');
 
   const later = await createTransport();
   assert.deepEqual((await later.request('/api/v1/boards')).boards, [], 'a second take finds no pairing');

@@ -27,7 +27,7 @@ function project(t) {
   return { root, env, git, run };
 }
 
-test('init ends with one confirmation command for its own writes [I1,I2,D1,D2]', (t) => {
+test('verbose init exposes one confirmation command for its own writes [I1,I2,D1,D2]', (t) => {
   const box = project(t);
   box.git('config', 'user.name', 'Newcomer Fixture');
   box.git('config', 'user.email', 'newcomer@example.invalid');
@@ -44,11 +44,12 @@ test('init ends with one confirmation command for its own writes [I1,I2,D1,D2]',
   writeFileSync(join(box.root, '.claude', 'skills', 'pullboard-run', 'SKILL.md'), '# My existing guide\n');
   writeFileSync(join(box.root, 'CLAUDE.md'), '@AGENTS.md\n');
   writeFileSync(join(box.root, 'AGENTS.md'), '# My instructions\n');
-  const result = box.run('init');
+  const result = box.run('init', '--verbose');
   assert.equal(result.status, 0, result.stderr);
-  const stagingLine = result.stdout.trimEnd().split('\n').at(-1);
   const label = "To commit Pullboard's files: ";
-  assert.ok(stagingLine.startsWith(label), `expected the final line to start with ${label}`);
+  const recipes = result.stdout.split('\n').filter(line => line.startsWith(label));
+  assert.equal(recipes.length, 1, 'verbose exposes exactly one setup-only confirmation');
+  const stagingLine = recipes[0];
   const command = stagingLine.slice(label.length);
   assert.equal(command, 'pullboard init --yes');
   const staged = spawnSync('sh', ['-c', command], { cwd: box.root, env: box.env, encoding: 'utf8' });
@@ -75,7 +76,7 @@ test('an agent that runs init continues setup in the same session [I1,I2]', (t) 
   for (const marker of AGENT_SHELL_MARKERS) delete human.env[marker];
   const humanResult = human.run('init');
   assert.equal(humanResult.status, 0, humanResult.stderr);
-  assert.ok(humanResult.stdout.includes('Next: ask your agent to set up Pullboard here; in Claude Code, start a new session first so it loads the Pullboard skills.'));
+  assert.ok(humanResult.stdout.includes('Next: ask your agent to run pullboard resume to finish setup.'));
   assert.doesNotMatch(humanResult.stdout, /run pullboard resume now/u);
 
   const agent = project(t);
@@ -83,8 +84,14 @@ test('an agent that runs init continues setup in the same session [I1,I2]', (t) 
   agent.env.CLAUDECODE = '1';
   const agentResult = agent.run('init');
   assert.equal(agentResult.status, 0, agentResult.stderr);
-  assert.ok(agentResult.stdout.includes('Next: run pullboard resume now to continue setup in this session; the new skills load next session, and setup does not need them.'));
+  assert.ok(agentResult.stdout.includes('Next: run pullboard resume to continue setup in this session.'));
   assert.doesNotMatch(agentResult.stdout, /Next: ask your agent/u);
+  const humanDetails = human.run('init', '--verbose');
+  assert.equal(humanDetails.status, 0, humanDetails.stderr);
+  assert.match(humanDetails.stdout, /in Claude Code, start a new session first so it loads the Pullboard skills/u);
+  const agentDetails = agent.run('init', '--verbose');
+  assert.equal(agentDetails.status, 0, agentDetails.stderr);
+  assert.match(agentDetails.stdout, /new skills load next session, and setup does not need them/u);
 });
 
 test('init detects language gates and gives an example in the same ecosystem [I1,I2]', (t) => {
@@ -118,7 +125,7 @@ test('init detects language gates and gives an example in the same ecosystem [I1
   const config = JSON.parse(readFileSync(configPath, 'utf8'));
   config.gate = '';
   writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
-  const rerun = emptyConfigured.run('init');
+  const rerun = emptyConfigured.run('init', '--verbose');
   assert.equal(rerun.status, 0, rerun.stderr);
   assert.match(rerun.stdout, /no gate yet: record the command that proves the build with pullboard gate set 'npm test'/u);
   assert.doesNotMatch(rerun.stdout, /if this board has no build/u);
@@ -126,7 +133,7 @@ test('init detects language gates and gives an example in the same ecosystem [I1
 
 test('setup offers a gate to a board with no build [I1,I2]', (t) => {
   const box = project(t);
-  const initialized = box.run('init');
+  const initialized = box.run('init', '--verbose');
   assert.equal(initialized.status, 0, initialized.stderr);
   assert.match(initialized.stdout, /if this board has no build.*pullboard spec check.*second agent review checks the actual work/u);
 

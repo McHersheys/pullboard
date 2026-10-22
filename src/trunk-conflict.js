@@ -14,8 +14,8 @@ import {
 } from './machine.js';
 import { Refused } from './refused.js';
 
-/** The engine whose reopen may carry a trunk conflict; older engines refuse it before replay. */
-export const CONFLICT_ENGINE = 52;
+import { CONFLICT_ENGINE } from './trunk-conflict-engine.js';
+export { CONFLICT_ENGINE };
 
 /** The label an item carries from a conflict reopen until its next verdict. */
 export const MAIN_MERGE_LABEL = 'needs main merge';

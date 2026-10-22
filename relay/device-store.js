@@ -105,6 +105,12 @@ export function createDeviceStore({ directory, now = Date.now }) {
       expireApprovals();
       return database().prepare("SELECT * FROM phone_approval WHERE account=? AND device=? AND state='waiting' ORDER BY expires,id").all(account, device).map(approval);
     },
+    /** List only the names of unexpired link requests for their signed-in account, never sealed intent. */
+    pendingLinks(account) {
+      expireApprovals();
+      return database().prepare("SELECT context FROM phone_approval WHERE account=? AND action='link' AND state='waiting' ORDER BY expires,id")
+        .all(account).map(row => ({ name: approvalContext(JSON.parse(row.context)).target }));
+    },
     /** Persist only the phone-encrypted reply, rejecting expired or twice-completed approval. */
     completeApproval(account, id, response) {
       if (typeof response !== 'string' || !/^[A-Za-z0-9_-]{1,32000}$/u.test(response)) throw new Refused('PHONE_APPROVAL_CONTEXT', 'send the encrypted phone reply');

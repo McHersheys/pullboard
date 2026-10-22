@@ -35,7 +35,7 @@ Statuses: approved = decided · draft = proposed · pending = open question · f
 - B20 [draft, aim] The person orders open items: now, next or later, and up or down within each; next follows it first. | gate: test/board.test.js
 - B21 [approved, aim] A shout can ask for a decision; it stays open until someone answers it. | gate: test/board.test.js | serves: B7
 - B22 [approved, aim] A shout can attach typed evidence: attempt or receipt, outcome, item and commit, as fields, not prose. | gate: test/board.test.js | serves: B7
-- B23 [approved, aim] A shout's path:lines@commit reference opens that code as it was at that commit. | gate: test/cockpit.test.js | serves: B7
+- B23 [approved, aim] A shout's path:lines@commit reference opens that code as it was at that commit. | gate: test/cockpit/references.test.js | serves: B7
 - B24 [draft, aim] An item can wait on an item in another repo of its project, written repo#id. | gate: test/board.test.js | serves: N33
 - B25 [approved, must] Questions go one step up: agents ask their coordinator; a coordinator asks the person or the coordinator above. | gate: test/board.test.js | serves: B21
 - B26 [approved, must] Needs-you holds only the person's calls: decisions passed up, rows to approve, held lanes; agents ask their coordinator. | gate: test/board.test.js | serves: B25
@@ -193,7 +193,7 @@ Statuses: approved = decided · draft = proposed · pending = open question · f
 - N36 [draft, aim] The view names each repo as pullboard.json does, falling back to its folder name. | gate: test/cockpit.test.js | serves: N26
 - N37 [draft, must] pullboard help keeps each command's usage apart from its words, so tools can read it. | gate: test/e2e.test.js
 - N38 [draft, must] Every tab, item, row and shout in the view has its own address, so any of them can be linked. | gate: test/cockpit.test.js | serves: N26
-- N39 [approved, must] The view's secret never stays in the address bar: the first link trades it for a cookie. | gate: test/cockpit.test.js | serves: N26
+- N39 [approved, must] The view's secret never stays in the address bar: the first link trades it for a cookie. | gate: test/e2e-view.test.js | serves: N26
 - N40 [draft, must] Every action in the view answers within 100 ms and never over 250 ms, on a board of 3,000 items with eight projects open. | gate: test/cockpit/perf.test.js | serves: N26
 
 ## A · API: the engine others build on

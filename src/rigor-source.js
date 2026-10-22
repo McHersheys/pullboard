@@ -1,8 +1,8 @@
 /** Typed provenance of a proved Rigor row; prose alone never identifies a cause [D1,S1]. */
 import { causeProblem } from './rigor.js';
 
-/** First engine that posts deterministic repeated-cause notices [D1,H16]. */
-export const RIGOR_NOTICE_ENGINE = 43;
+import { RIGOR_NOTICE_ENGINE } from './rigor-notice-engine.js';
+export { RIGOR_NOTICE_ENGINE };
 
 /** Keep the cause, evidence and executed proof in one row-safe, portable source field. */
 export function rigorSource(cause, proof) {

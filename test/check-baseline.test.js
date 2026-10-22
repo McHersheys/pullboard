@@ -292,7 +292,7 @@ test('[V2,H3,H16] green baseline warns through add edit show and private next ve
   assert.match(review.stdout, /CRITERION_PROVES_NOTHING/u);
 });
 
-test('[V2,H3,H16] repo gates skip command execution and baselines preserve clear and missing-main states', async function baselineTransitions() {
+test('[V2,H3,H16] repo gates execute before baselines report green and preserve clear and missing-main states', async function baselineTransitions() {
   const box = project({ content: 'green' });
   const gateMarker = join(box.dir, 'repo-gate-marker.txt');
   const gate = fileCheck('green', gateMarker);
@@ -301,14 +301,12 @@ test('[V2,H3,H16] repo gates skip command execution and baselines preserve clear
   box.git(box.repo, 'add', 'pullboard.json');
   box.git(box.repo, 'commit', '-q', '-m', 'chore: set the fixture gate');
   const { item: gated } = addChecked(box, 'Gate check', gate);
-  assert.deepEqual(gated.item_check_baseline, {
-    command: gate,
-    main: box.git(box.repo, 'rev-parse', 'refs/heads/main'),
-    result: 'green',
-    reason: 'repo gate',
-    warning: 'CRITERION_PROVES_NOTHING',
-  });
-  assert.equal(existsSync(gateMarker), false, 'an exact gate match never runs its command, even in the temporary clone');
+  assert.equal(gated.item_check_baseline.command, gate);
+  assert.equal(gated.item_check_baseline.main, box.git(box.repo, 'rev-parse', 'refs/heads/main'));
+  assert.equal(gated.item_check_baseline.result, 'green');
+  assert.equal(gated.item_check_baseline.reason, undefined, 'a matching gate receives an actual measurement');
+  assert.equal(gated.item_check_baseline.warning, 'CRITERION_PROVES_NOTHING');
+  assert.equal(existsSync(gateMarker), true, 'an exact gate match runs its command in the temporary clone');
 
   const metadataEdit = box.run(box.repo, ['edit', String(gated.item_id), '--brief', 'updated brief', '--json']);
   assert.equal(metadataEdit.status, 0, `${metadataEdit.stdout}${metadataEdit.stderr}`);

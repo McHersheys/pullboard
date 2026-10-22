@@ -48,7 +48,7 @@ test('opening an item loads its detail on demand [N26,A2]', { timeout: 150_000 }
     assert.ok(executable, 'Chrome is required to open items in the view');
     const box = machine();
     const alpha = project(box, 'detail-demand');
-    box.run(alpha.repo, 'add', 'web', 'Offline greeting', '--specs', 'G1', '--criterion', 'The greeting renders from the snapshot alone.', '--brief', 'Keep the greeting short.', '--check', 'true');
+    box.run(alpha.repo, 'add', 'web', 'Offline greeting', '--specs', 'G1', '--criterion', 'The greeting renders from the snapshot alone.', '--brief', 'Keep the greeting short.', '--check', 'true', '--wait');
     box.run(alpha.repo, 'add', 'web', 'Farewell page', '--specs', 'G1', '--criterion', 'The farewell mentions the zeppelin.');
     box.run(alpha.repo, 'add', 'web', 'Footer', '--specs', 'G1', '--criterion', 'The footer renders.');
     build(box, alpha, 1, 'greeting.html');

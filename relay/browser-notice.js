@@ -32,13 +32,14 @@ export function storedOwnedRequestState(storage, key, requests) {
 }
 
 /** Build truthful device notices from authorized boards and their decrypted pending requests. */
-export function noticeLines({ available, paired, ownedRequestIds = new Map(), waitingBoards = new Map(), approvedBoards = new Set(), warnings = [], failure = '' }) {
+export function noticeLines({ available, paired, ownedRequestIds = new Map(), waitingBoards = new Map(), approvedBoards = new Set(), pendingLinks = [], warnings = [], failure = '' }) {
   const lines = [];
   const waiting = [...paired.entries()].reduce((count, [id, entry]) => {
     const owned = ownedRequestIds.get(id) ?? new Set();
     return count + reconcileOwnedRequests(entry.state?.personRequests, owned).waiting.length;
   }, 0);
   if (waiting) lines.push(`${waiting} request${waiting === 1 ? '' : 's'} from this device ${waiting === 1 ? 'is' : 'are'} waiting for a linked machine to run Pullboard.`);
+  for (const link of pendingLinks) if (typeof link?.name === 'string') lines.push(`${link.name}: waiting for approval on your phone.`);
   const pairedRepositories = new Set(available.filter(board => paired.has(board.id)).map(board => board.repository));
   for (const board of available.filter(value => !paired.has(value.id))) {
     // This phone just approved the link: its key is on the way, so asking to pair would be wrong.

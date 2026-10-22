@@ -30,6 +30,10 @@ export function createDeviceHandler({ authenticate, authorizeBoard, boardsFor, d
         if (context.account !== account || context.publisher !== who.board || context.machine !== who.machine) throw new Refused('TOKEN_BOARD', 'publish approval only for this authenticated machine and board');
         apiJson(res, 200, { approval: devices.requestApproval(account, context, body.sealed) }); return true;
       }
+      if (url.pathname === '/api/v1/devices/approvals' && req.method === 'GET') {
+        if (who.kind !== 'session') throw new Refused('HUMAN_REQUIRED', 'sign in as the person to see pending phone approvals');
+        apiJson(res, 200, { links: devices.pendingLinks(account) }); return true;
+      }
       const approvalRoute = /^\/api\/v1\/devices\/approvals\/([A-Za-z0-9_-]{1,80})(?:\/(authorize|complete|execute))?$/.exec(url.pathname);
       if (approvalRoute) {
         if (!['session', 'machine'].includes(who.kind)) throw new Refused('HUMAN_REQUIRED', 'use the phone session or the publishing machine for this approval');

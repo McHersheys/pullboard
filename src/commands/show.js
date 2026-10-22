@@ -1,0 +1,111 @@
+/** The pullboard show command, in its own module so an item adding another command never edits these lines. */
+import {
+  displayAgentName,
+} from '../agent-names.js';
+import {
+  barCorrectionLine,
+  barCorrections,
+} from '../bar-corrections.js';
+import * as store from '../board.js';
+import {
+  agentApprovalLine,
+  itemAgentApprovals,
+  specApprovalState,
+} from '../spec-approval.js';
+import {
+  sayCheckBaseline,
+} from '../check-baseline.js';
+import * as infraNotes from '../infra-note.js';
+import {
+  mainMergeFor,
+  mainMergeLines,
+} from '../trunk-conflict.js';
+import {
+  staleVerdictRefusal,
+  verdictProjector,
+} from '../verdict-freshness.js';
+import {
+  agentDisplayName,
+  context,
+  firstLineOf,
+  idArg,
+  itemLine,
+  sayBrief,
+  withBoard,
+} from '../cli.js';
+import { relayStatus } from '../relay.js';
+
+/** Run `pullboard show` and return its exit code. */
+export function run(io, { first, values }) {
+  const ctx = context(io);
+  const id = idArg(first);
+  const { item, verdicts, moves, thread, related, reviewer, agents, mainMerge, infra, approval } = withBoard(ctx, (board) => ({
+    item: verdictProjector(ctx.info.root, board).project(store.getItem(board, id)),
+    verdicts: store.verdictsFor(board, id),
+    moves: store.events(board, { itemId: id }).filter((event) => ['attempt', 'escalate'].includes(event.event_kind)),
+    thread: store.itemThread(board, id),
+    related: store.relatedItems(board, store.getItem(board, id)),
+    reviewer: store.reviewHolder(board, store.getItem(board, id)),
+    agents: store.listAgents(board), mainMerge: mainMergeFor(board, id), infra: infraNotes.infraNoteOf(store.events(board, { itemId: id })),
+    approval: specApprovalState(ctx.info.root, { board, config: ctx.config }),
+  }));
+  const agentName = (id) => displayAgentName(agents.find((agent) => agent.agent_id === id) ?? { agent_id: id }, ctx.config.agents.names);
+  const agentApproved = itemAgentApprovals(item, approval);
+  const approvalQualification = agentApprovalLine(agentApproved);
+  // #922: moves on this item made while the relay was down wait in this machine's relay outbox until it answers.
+  const relayPending = (relayStatus(ctx.info.root).outbox ?? []).filter((move) => move.item === id);
+  if (values.json) {
+    io.result({ ...item, verdicts, thread, agentApproved, approvalQualification, ...(relayPending.length ? { relayPending } : {}) });
+    return 0;
+  }
+  io.say(itemLine(item, agentName, Boolean(mainMerge)));
+  if (item.item_status === 'verified' && approvalQualification) io.say(approvalQualification);
+  if (item.item_verdict_state) io.say(staleVerdictRefusal(item, item.item_verdict_state).message);
+  if (item.item_criterion) io.say(`criterion: ${item.item_criterion}`);
+  if (item.item_check) io.say(`check: ${item.item_check}`);
+  sayCheckBaseline(io, item);
+  sayBrief(io, item.item_brief);
+  for (const move of relayPending) io.say(`pending in the relay outbox: ${move.operation}${move.actor ? ` by ${move.actor}` : ''} (made ${move.queuedAt}); it goes up in order when the relay answers`);
+  for (const { item: other, shared } of related) {
+    io.say(`related: #${other.item_id} ${other.item_title}: ${shared.slice(0, 4).join(', ')}${shared.length > 4 ? ', ...' : ''} (git log -p -1 ${other.item_commit.slice(0, 12)} -- ${shared[0]})`);
+  }
+  const attempts = moves.filter((event) => event.event_kind === 'attempt').map((event) => JSON.parse(event.event_detail).result);
+  if (attempts.length) io.say(`unattended attempts: ${attempts.join(', ')}`);
+  for (const event of moves.filter((entry) => entry.event_kind === 'escalate')) {
+    const detail = JSON.parse(event.event_detail);
+    io.say(`escalated ${detail.from} -> ${detail.to} by ${agentName(event.event_by)}${detail.attempt ? `, pinned at ${detail.attempt}` : ''}: ${detail.note.split('\n')[0]}`);
+  }
+  if (item.item_frozen) {
+    const frozen = JSON.parse(item.item_frozen);
+    io.say(`frozen at claim (${item.item_frozen_digest.slice(0, 12)}):`);
+    frozen.rows.forEach((row) => io.say(`  ${row.id}: ${row.text}${row.gate ? `  | gate: ${row.gate}` : ''}`));
+  }
+  if (item.item_commit) io.say(`submitted by ${agentName(item.item_built_by)}${item.item_builder_family ? ` [family ${item.item_builder_family}]` : ''} at ${item.item_commit}`);
+  if (infra) io.say(`infra note: ${infra.note} (files: ${infra.files.join(', ') || 'none'})`);
+  if (reviewer) io.say(`under review by ${agentName(reviewer)} until ${item.item_review_until}`);
+  // Earlier verdicts as one line each, so an item sent back several times stays short to read
+  // (N30); --history prints every note in full.
+  const verdictLine = (verdict) => `${verdict.verdict_decision} ${verdict.verdict_reason} by ${agentName(verdict.verdict_by)}${verdict.verdict_verifier_family ? ` [family ${verdict.verdict_verifier_family}]` : ''} at ${verdict.verdict_commit.slice(0, 12)}`;
+  const notes = verdicts.map((verdict, index) => (values.history || index === verdicts.length - 1 ? verdict.verdict_note : firstLineOf(verdict.verdict_note)));
+  verdicts.forEach((verdict, index) => {
+    io.say(`${verdictLine(verdict)}${notes[index] ? `: ${notes[index]}` : ''}`);
+    io.say(`  check: ${verdict.check ?? 'unknown'}`);
+  });
+  if (notes.some((note, index) => note !== verdicts[index].verdict_note)) io.say(`(earlier verdicts shortened; every note in full: pullboard show ${id} --history)`);
+  for (const correction of barCorrections(thread)) io.say(barCorrectionLine(correction));
+  for (const line of mainMerge ? mainMergeLines(item, mainMerge, agentName) : []) io.say(line);
+  if (item.item_merged_commit) io.say(`merged as ${item.item_merged_commit}`);
+  if (item.item_withdrawn_reason) io.say(`withdrawn: ${item.item_withdrawn_reason}`);
+  io.say('thread:');
+  for (const entry of thread) {
+    const stamp = `  ${entry.at}  ${agentDisplayName(agents, ctx.config, entry.by)}  `;
+    if (entry.type === 'fact') {
+      io.say(`${stamp}fact ${entry.kind} ${entry.id}${entry.supersedes ? ' (supersedes ' + entry.supersedes + ')' : ''}: ${entry.text}`);
+      if (entry.ref) io.say(`    ref: ${entry.ref.path}:${entry.ref.start}${entry.ref.end === entry.ref.start ? '' : '-' + entry.ref.end}@${entry.ref.commit}`);
+    } else {
+      const detail = entry.detail;
+      io.say(`${stamp}${entry.kind}${detail.commit ? ' at ' + detail.commit : ''}${detail.reason ? ': ' + detail.reason : ''}${detail.note ? `: ${detail.note}` : ''}`);
+    }
+  }
+  return 0;
+}

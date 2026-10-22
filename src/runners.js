@@ -115,20 +115,63 @@ function sourceObjects(root, source) {
   const configRecord = records.find(record => record.endsWith('\tpullboard.json'));
   const configObject = configRecord?.match(/^\d+ blob ([a-f0-9]{40,64})\t/u)?.[1];
   const config = configObject ? configFromSource(sourceGit(root, ['cat-file', 'blob', configObject])) : defaults();
-  for (const record of records) {
+  const blobs = records.map(record => {
     const match = /^(\d+) (\w+) ([a-f0-9]{40,64})\t([\s\S]+)$/u.exec(record);
     if (!match || match[2] !== 'blob') throw new Refused('RUNNER_SOURCE', 'runner source contains a submodule or unsupported object; keep this run local');
     const [, , , object, path] = match;
     if (blockedPaths([path], config.protect).length || /(?:^|\/)board\.sqlite(?:-(?:wal|shm))?$/u.test(path)) {
       throw new Refused('RUNNER_SECRET', 'committed runner source includes a blocked private file; remove it before remote execution');
     }
-    const size = Number(sourceGit(root, ['cat-file', '-s', object]).trim());
-    if (!Number.isSafeInteger(size) || size > MAX_BLOB_BYTES) {
-      throw new Refused('RUNNER_SCAN_LIMIT', 'a committed blob exceeds the safe runner scan limit; keep the run local or reduce that file');
-    }
-    const text = sourceGit(root, ['cat-file', 'blob', object]);
-    const findings = secretsIn(text.split(/\r?\n/u).map((line, index) => ({ path, line: index + 1, text: line })));
-    if (findings.length) throw new Refused('RUNNER_SECRET', `source leak scan refused ${findings[0]}; remove the secret before remote execution`);
+    return { object, path };
+  });
+  // Hundreds of per-blob Git launches used almost the entire dispatch budget under load.
+  // Check every size first, then stream the same pinned bodies through one bounded record reader.
+  if (blobs.length) {
+    const input = blobs.map(({ object }) => object + '\n').join('');
+    const metadata = sourceGit(root, ['cat-file', '--batch-check'], { input }).trimEnd().split('\n');
+    if (metadata.length !== blobs.length) throw new Refused('RUNNER_SOURCE', 'incomplete current source inventory; retry from the committed repository');
+    const sizes = metadata.map((line, index) => {
+      const match = /^([a-f0-9]{40,64}) blob (\d+)$/u.exec(line);
+      if (!match || match[1] !== blobs[index].object) throw new Refused('RUNNER_SOURCE', 'invalid current source inventory; retry from the committed repository');
+      const size = Number(match[2]);
+      if (!Number.isSafeInteger(size) || size > MAX_BLOB_BYTES) {
+        throw new Refused('RUNNER_SCAN_LIMIT', 'a committed blob exceeds the safe runner scan limit; keep the run local or reduce that file');
+      }
+      return size;
+    });
+    const scratch = mkdtempSync(join(tmpdir(), 'pullboard-runner-source-'));
+    try {
+      const scan = join(scratch, 'current.scan');
+      for (let start = 0; start < blobs.length;) {
+        let end = start, bytes = 0;
+        // Bound scratch usage too: an otherwise valid large tree must not fill the temp volume.
+        do {
+          bytes += sizes[end] + blobs[end].object.length + 32;
+          end++;
+        } while (end < blobs.length && bytes + sizes[end] + blobs[end].object.length + 32 <= MAX_BLOB_BYTES);
+        const output = openSync(scan, 'wx', 0o600);
+        try { sourceGit(root, ['cat-file', '--batch'], {
+          input: blobs.slice(start, end).map(({ object }) => object + '\n').join(''), stdio: ['pipe', output, 'pipe'],
+        }); } finally { closeSync(output); }
+        const descriptor = openSync(scan, 'r');
+        try {
+          for (let index = start; index < end; index++) {
+            const { object, path } = blobs[index];
+            const record = objectRecord(descriptor);
+            if (record.object !== object || record.type !== 'blob' || record.data.length !== sizes[index]) {
+              throw new Refused('RUNNER_SOURCE', 'current source record differs from its inventory; retry from the committed repository');
+            }
+            const findings = secretsIn(record.data.toString('utf8').split(/\r?\n/u)
+              .map((text, line) => ({ path, line: line + 1, text })));
+            if (findings.length) throw new Refused('RUNNER_SECRET', `source leak scan refused ${findings[0]}; remove the secret before remote execution`);
+          }
+          if (readSync(descriptor, Buffer.alloc(1), 0, 1, null) !== 0) {
+            throw new Refused('RUNNER_SOURCE', 'unexpected current source records; retry from the committed repository');
+          }
+        } finally { closeSync(descriptor); rmSync(scan, { force: true }); }
+        start = end;
+      }
+    } finally { rmSync(scratch, { recursive: true, force: true }); }
   }
   const commit = sourceGit(root, ['cat-file', 'commit', source.commit]);
   if (secretsIn(commit.split('\n').map((text, index) => ({ path: 'commit', line: index + 1, text }))).length) {

@@ -27,6 +27,11 @@ import { draftConflictSplits } from '../src/rigor-splits.js';
 import { proposeDoctrine } from '../src/doctrine-rulings.js';
 import { conflictNote } from '../src/trunk-conflict.js';
 import { conflictNoteFiles, conflictReport } from '../src/rigor-conflicts.js';
+import {
+  breachLine,
+  changeRange,
+  qualityBreaches,
+} from '../src/rigor-quality.js';
 
 const conflictE2e = createE2eHelpers();
 after(conflictE2e.cleanup);
@@ -481,4 +486,172 @@ test('concurrent split proposals keep one reserved row [D1]', async () => {
     assert.throws(() => proposeDoctrine({ ...ctx, doctrine }, { source: 'fixture', gate: 'review' }, 'Different judgment', { id: proposed[0].id }), error => error.code === 'ROW_DRAFT');
     assert.equal(readFileSync(doctrine.repo.file, 'utf8'), before, 'a fixed-id retry cannot overwrite a different judgment');
   } finally { store.closeBoard(board); }
+});
+
+
+/**
+ * A real git repo on main with `files` committed, then a work branch, for the quality rules [D1,D3].
+ * commit(subject, files) writes and commits on the branch and returns the commit id.
+ */
+function qualityRepo(name, files) {
+  const root = fixture(name);
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
+  /** Git in the fixture, with a fixed identity and no hooks. */
+  const run = (...args) => {
+    const result = spawnSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', '-c', 'core.hooksPath=/dev/null', ...args], { cwd: root, env, encoding: 'utf8' });
+    assert.equal(result.status, 0, `git ${args.join(' ')}: ${result.stderr}`);
+    return result.stdout.trim();
+  };
+  /** Write files and commit them with this subject. */
+  const commit = (subject, changes) => {
+    for (const [path, text] of Object.entries(changes)) put(root, path, text);
+    run('add', '-A');
+    run('commit', '-q', '-m', subject);
+    return run('rev-parse', 'HEAD');
+  };
+  run('init', '-q', '-b', 'main');
+  commit('feat: start', files);
+  run('checkout', '-q', '-b', 'work');
+  return { root, commit };
+}
+
+test('rigor reports a fix with no reproducing test [D1,D3]', () => {
+  const start = { 'src/parse.js': 'export function parse(text) {\n  return text.split(\',\');\n}\n',
+    'test/parse.test.js': 'import { test } from \'node:test\';\ntest(\'parses [G1]\', () => {});\n' };
+  const bare = qualityRepo('quality-fix-bare', start);
+  bare.commit('feat(parse): count fields', { 'src/count.js': 'export const count = (text) => text.length;\n' });
+  const fix = bare.commit('fix(parse): ignore empty input', { 'src/parse.js': 'export function parse(text) {\n  if (!text) return [];\n  return text.split(\',\');\n}\n' });
+  const breaches = qualityBreaches(bare.root, changeRange(bare.root), { rules: ['fix-test'] });
+  assert.deepEqual(breaches.map((breach) => breachLine(breach)),
+    [`src/parse.js:2: fix-test: fix ${fix.slice(0, 12)} "fix(parse): ignore empty input" changes no test that reproduces its failure`],
+    'the fix is named at its file and first changed line with the rule it breaks; a feature commit with no test is not a fix');
+  assert.deepEqual(breachLine(breaches[0], new Map([['fix-test', 'T7']])).split(': ').slice(1, 2), ['T7 fix-test'], 'a drafted row names its id beside the rule');
+  const tested = qualityRepo('quality-fix-tested', start);
+  tested.commit('fix(parse): ignore empty input', { 'src/parse.js': 'export function parse(text) {\n  if (!text) return [];\n  return text.split(\',\');\n}\n',
+    'test/parse.test.js': 'import { test } from \'node:test\';\ntest(\'parses [G1]\', () => {});\ntest(\'empty input [G1]\', () => {});\n' });
+  assert.deepEqual(qualityBreaches(tested.root, changeRange(tested.root), { rules: ['fix-test'] }), [], 'a fix that ships a test passes');
+  assert.deepEqual(qualityBreaches(bare.root, changeRange(bare.root, { base: 'HEAD' }), { rules: ['fix-test'] }), [], 'an empty change has nothing to judge');
+});
+
+test('rigor reports a silent catch [D1,D3]', () => {
+  const old = 'export function old() {\n  try { return 1; } catch { return 0; }\n}\n';
+  const repo = qualityRepo('quality-catch', { 'src/load.js': old });
+  repo.commit('feat(load): read settings', { 'src/load.js': [
+    old.trimEnd(),
+    'export function settings(read) {',
+    '  try { return read(); } catch { return null; }',
+    '}',
+    'export function loud(read) {',
+    '  try { return read(); } catch (error) { console.warn(`settings unreadable: ${error.message}`); return null; }',
+    '}',
+    'export function strict(read) {',
+    '  try { return read(); } catch (error) { throw new Error(`settings: ${error.message}`); }',
+    '}',
+    'export const later = (load) => load().catch(() => null);',
+    'export const told = (load) => load().catch((error) => log(`load failed: ${error.message}`));',
+    'export const words = \'a catch { } in a string is not code\';',
+    '',
+  ].join('\n'), 'test/load.test.js': 'try { JSON.parse(\'{\'); } catch { }\n' });
+  const breaches = qualityBreaches(repo.root, changeRange(repo.root), { rules: ['silent-catch'] });
+  assert.deepEqual(breaches.map((breach) => breachLine(breach)), [
+    'src/load.js:5: silent-catch: catch is silent: it neither throws nor logs a line that names its subject',
+    'src/load.js:13: silent-catch: .catch handler is silent: it neither throws nor logs a line that names its subject',
+  ], 'only the added silent catches are named: the old one, the logged one, the rethrow, a string and a test file are not');
+});
+
+test('rigor reports a catch the change made silent [D1,D3]', () => {
+  const start = [
+    'export function settings(read) {',
+    '  try {',
+    '    return read();',
+    '  } catch (error) {',
+    '    console.warn(`settings unreadable: ${error.message}`);',
+    '    return null;',
+    '  }',
+    '}',
+    'export function cached(read) {',
+    '  try {',
+    '    return read();',
+    '  } catch {',
+    '    return {};',
+    '  }',
+    '}',
+    '',
+  ];
+  const repo = qualityRepo('quality-catch-edited', { 'src/settings.js': start.join('\n') });
+  const edited = [...start];
+  edited.splice(4, 2, '    return {};');
+  edited[edited.indexOf('    return {};', 8)] = '      return {};';
+  repo.commit('fix(settings): fall back to defaults', { 'src/settings.js': edited.join('\n') });
+  const breaches = qualityBreaches(repo.root, changeRange(repo.root), { rules: ['silent-catch'] });
+  assert.deepEqual(breaches.map((breach) => breachLine(breach)), [
+    'src/settings.js:4: silent-catch: catch is silent: it neither throws nor logs a line that names its subject',
+  ], 'the catch whose logged body became a silent fallback is named at its header; the old silent catch, only reindented, is not');
+});
+
+test('rigor reports a catch whose log line alone is deleted [D1,D3]', () => {
+  const start = [
+    'export function settings(read) {',
+    '  try {',
+    '    return read();',
+    '  } catch (error) {',
+    '    console.warn(`settings unreadable: ${error.message}`);',
+    '    return null;',
+    '  }',
+    '}',
+    'export function other(read) {',
+    '  try {',
+    '    return read();',
+    '  } catch (error) {',
+    '    console.warn(`other unreadable: ${error.message}`);',
+    '    return null;',
+    '  }',
+    '}',
+    '',
+  ];
+  const repo = qualityRepo('quality-catch-deleted', { 'src/settings.js': start.join('\n') });
+  repo.commit('fix(settings): quieter reads', { 'src/settings.js': start.filter((line) => !line.includes('settings unreadable')).join('\n') });
+  const breaches = qualityBreaches(repo.root, changeRange(repo.root), { rules: ['silent-catch'] });
+  assert.deepEqual(breaches.map((breach) => breachLine(breach)), [
+    'src/settings.js:4: silent-catch: catch is silent: it neither throws nor logs a line that names its subject',
+  ], 'a change that only deletes a catch log names that catch; the untouched logged catch is not named');
+});
+
+test('rigor matches a catch to its earlier self when a new one shares its header [D1,D3]', () => {
+  const start = [
+    'export function strict(read) {',
+    '  try {',
+    '    return read();',
+    '  } catch (error) {',
+    '    throw new Error(`strict read failed: ${error.message}`);',
+    '  }',
+    '}',
+    'export function old(read) {',
+    '  try {',
+    '    return read();',
+    '  } catch (error) {',
+    '    return null;',
+    '  }',
+    '}',
+    '',
+  ];
+  const repo = qualityRepo('quality-catch-shifted', { 'src/read.js': start.join('\n') });
+  const edited = [
+    'export function logged(read) {',
+    '  try {',
+    '    return read();',
+    '  } catch (error) {',
+    '    console.warn(`logged read failed: ${error.message}`);',
+    '    return null;',
+    '  }',
+    '}',
+    ...start.slice(0, 4),
+    '    return null;',
+    ...start.slice(5),
+  ];
+  repo.commit('fix(read): softer strict reads', { 'src/read.js': edited.join('\n') });
+  const breaches = qualityBreaches(repo.root, changeRange(repo.root), { rules: ['silent-catch'] });
+  assert.deepEqual(breaches.map((breach) => breachLine(breach)), [
+    'src/read.js:12: silent-catch: catch is silent: it neither throws nor logs a line that names its subject',
+  ], 'the strict catch made silent is named at its kept header; the new logged catch and the old silent catch are not');
 });

@@ -32,6 +32,10 @@ import {
   milestones,
   openBoardReadOnly,
 } from './board.js';
+import {
+  CAUGHT_KINDS,
+  caughtFrom,
+} from './caught.js';
 import { healthReport } from './health.js';
 import { secretsIn } from './hooks.js';
 import { Refused } from './refused.js';
@@ -42,6 +46,8 @@ export const DIGEST_MAX_BYTES = 50_000;
 const ROW_LIMIT = 200;
 /** Fact kinds that record a judgement and its reason. */
 const JUDGEMENTS = ['decision', 'rejection', 'root-cause', 'supersession'];
+/** How far back the briefing's caught section reads, in days. */
+const CAUGHT_DAYS = 30;
 /** Plain words for verdict reasons, keeping the code beside them for agents. */
 const REASONS = {
   TEST_FAILURE: 'a test failed', BEHAVIOR_MISMATCH: 'the behavior differs from the bar', INSUFFICIENT_EVIDENCE: 'too little evidence',
@@ -209,6 +215,13 @@ function render(db, { name, now, root, config }) {
   /** Who moves a stuck finding next, in plain words. */
   const owner = ({ role, who }) => (role === 'person' ? 'you' : role === 'coordinator' ? 'the coordinator' : who ? `${text(who, 80)} (${role})` : `a ${role}`);
   const stuck = health.stuck.map((entry) => `- ${entry.item ? label(entry.item) : text(entry.subject, 60)}: ${text(entry.title, 240)}, since ${text(entry.since, 40)}: ${text(entry.why, 400)}\n  Next, ${owner(entry.owner)}: ${text(entry.next, 300)}`);
+  // What the board caught in the last month, from moves it already recorded; shown here and never pushed.
+  const windowStart = new Date(now.getTime() - CAUGHT_DAYS * 86_400_000).toISOString();
+  const caught = caughtFrom(db.prepare('SELECT * FROM event ORDER BY event_id').all(), db.prepare('SELECT * FROM verdict ORDER BY verdict_id').all(), windowStart);
+  const caughtLabels = new Map(CAUGHT_KINDS.map(({ kind, label }) => [kind, label]));
+  const caughtEntries = caught.entries.slice().reverse().map((entry) =>
+    `- ${caughtLabels.get(entry.kind)}: ${entry.item === null ? 'no item' : label(entry.item)}, ${text(entry.at, 40)}: ${text(entry.text, 400)}`);
+  const caughtCounts = CAUGHT_KINDS.map(({ kind, label: words }) => `${caught.counts[kind]} ${words}`).join('; ');
   const sections = [
     section('Stuck and who moves it', stuck, stuck.length, 4_000, 'Nothing is stuck.'),
     section('Open work', open.slice(0, ROW_LIMIT).map(work), open.length, 8_000, 'Nothing is open.'),
@@ -219,7 +232,10 @@ function render(db, { name, now, root, config }) {
     section('Questions waiting on you', questions, Number(db.prepare(`SELECT count(*) AS n ${waiting}`).get().n), 4_500, 'No question waits on you.'),
     section('Latest shouts to the coordinator', shouts, Number(db.prepare("SELECT count(*) AS n FROM shout WHERE shout_to = 'coordinator'").get().n), 5_000, 'No one has shouted the coordinator yet.'),
     section('Milestones', roadmap, roadmap.length, 4_000, 'No milestones are set.'),
+    section(`What the board caught, last ${CAUGHT_DAYS} days`, caughtEntries, caught.total, 4_000, 'Nothing was caught in this window.'),
   ];
+  // The per-kind counts sit under the heading, before the lines they count.
+  if (caught.total) sections.at(-1).text = sections.at(-1).text.replace('\n\n', `\n\n${caughtCounts}.\n\n`);
   const sequence = Number(db.prepare('SELECT coalesce(max(event_id), 0) AS n FROM event').get().n);
   const glance = [
     `- ${landed} items landed and ${accepted} are accepted and wait to land.`,

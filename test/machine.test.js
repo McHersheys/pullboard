@@ -89,9 +89,9 @@ const NOT_MOVES = {
 const ENTRY_POINTS = [
   { verbs: ['claim'], at: ['board.js#claim'] },
   { verbs: ['release'], at: ['board.js#release'] },
-  { verbs: ['submit'], at: ['board.js#submit', 'cli.js#submitHere'] },
+  { verbs: ['submit'], at: ['board.js#submit', 'commands/submit.js#submitHere'] },
   { verbs: ['reserve'], at: ['board.js#reserveReview', 'board.js#reserveNextReview'] },
-  { verbs: ['accept', 'reject'], at: ['board.js#verify', 'cli.js#verifyHere'] },
+  { verbs: ['accept', 'reject'], at: ['board.js#verify', 'commands/verify.js#verifyHere'] },
   { verbs: ['escalate'], at: ['board.js#escalate'] },
   { verbs: ['withdraw'], at: ['board.js#withdraw'] },
   { verbs: ['refreeze'], at: ['board.js#refreeze'] },
@@ -115,9 +115,12 @@ const CALLBACKS = { 'board.js': { freeze: 'cli.js#freezer' } };
  * reads committed doctrine rules leniently: a doctrine it cannot parse carries no check [D1].
  */
 const CAUGHT = {
-  'cli.js#submitHere': ['native-flakes.js#observeFailure', 'cli.js#freezer', 'main-red.js#compareMainFailures', 'main-red.js#matchingReworks', 'doctrine-checks.js#checkRulesAt'],
+  'commands/submit.js#submitHere': ['native-flakes.js#observeFailure', 'cli.js#freezer', 'main-red.js#compareMainFailures', 'main-red.js#matchingReworks', 'doctrine-checks.js#checkRulesAt'],
   // observeNativeFailure catches its optional pair/recording errors; they cannot become lifecycle refusals.
-  'cli.js#verifyHere': ['cli.js#freezer', 'native-flakes.js#observeFailure'],
+  'commands/verify.js#verifyHere': ['cli.js#freezer', 'native-flakes.js#observeFailure'],
+  // Invalid approval evidence is data, not a lifecycle refusal; runtime controls keep it unconfirmed.
+  'spec-approval.js#approvalEvidence': ['spec.js#readSignoffs'],
+  'spec-approval.js#confirmedDecision': ['signature.js#verifyRowDecision'],
   // Historical decline metadata is parsed inside a non-throwing boundary, covered by the Rigor history control.
   'board.js#reopen': ['rigor-notices.js#declinedRigorSource'],
 };
@@ -167,21 +170,26 @@ function functionsIn(source) {
  * functions it calls, followed across imports and into the functions the CLI hands the board.
  *
  * @param {(file: string) => string} read - The source of a file in src/.
+ * @param {{ caught?: boolean }} [options] Honor explicit caller/callee catch boundaries for escaping codes.
  * @returns {{ functions: (file: string) => string[], refusalsOf: (key: string, skip?: Set<string>) => Set<string> }}
  */
-function codeWalk(read) {
+function codeWalk(read, { caught = false } = {}) {
   const files = new Map();
   const load = (file) => {
     if (!files.has(file)) {
       const source = read(file);
       const named = new Map();
-      for (const [, names, from] of source.matchAll(/import\s*\{([^}]*)\}\s*from\s*'\.\/([\w-]+\.js)'/g)) {
+      /** Resolve a relative import to its path under src/, from a file in src/ or src/commands/. */
+      const under = (dots, name) => (file.startsWith('commands/') ? (dots === '..' ? name : `commands/${name}`) : (dots === '.' ? name : null));
+      for (const [, names, dots, name] of source.matchAll(/import\s*\{([^}]*)\}\s*from\s*'(\.\.?)\/([\w-]+\.js)'/g)) {
+        const from = under(dots, name);
+        if (!from) continue;
         for (const part of names.split(',').map((text) => text.trim()).filter(Boolean)) {
           const [original, local = original] = part.split(/\s+as\s+/);
           named.set(local, `${from}#${original}`);
         }
       }
-      const spaces = new Map([...source.matchAll(/import \* as (\w+) from '\.\/([\w-]+\.js)'/g)].map(([, space, from]) => [space, from]));
+      const spaces = new Map([...source.matchAll(/import \* as (\w+) from '(\.\.?)\/([\w-]+\.js)'/g)].map(([, space, dots, name]) => [space, under(dots, name)]).filter(([, from]) => from));
       files.set(file, { bodies: functionsIn(source), named, spaces });
     }
     return files.get(file);
@@ -197,7 +205,10 @@ function codeWalk(read) {
       ...[...body.matchAll(/(?<!\w)(?<!(?<!\.\.)\.)(\w+)\(/g)].map(([, callee]) => (bodies.has(callee) ? `${file}#${callee}` : named.get(callee) ?? CALLBACKS[file]?.[callee])),
       ...[...body.matchAll(/\b(\w+)\.(\w+)\(/g)].map(([, space, callee]) => (spaces.has(space) ? `${spaces.get(space)}#${callee}` : undefined)),
     ];
-    for (const callee of callees.filter(Boolean)) for (const code of refusalsOf(callee, skip, seen)) codes.add(code);
+    for (const callee of callees.filter(Boolean)) {
+      if (caught && (CAUGHT[key] ?? []).includes(callee)) continue;
+      for (const code of refusalsOf(callee, skip, seen)) codes.add(code);
+    }
     return codes;
   };
   return { functions: (file) => [...load(file).bodies.keys()], refusalsOf };
@@ -238,7 +249,7 @@ function declaredCodes(machine, verbs) {
  * @returns {string[]}
  */
 function codeProblems(machine, read = fromDisk) {
-  const walk = codeWalk(read);
+  const walk = codeWalk(read, { caught: true });
   const problems = new Set();
   for (const { verbs, at } of ENTRY_POINTS) {
     const declared = declaredCodes(machine, verbs);
@@ -248,7 +259,8 @@ function codeProblems(machine, read = fromDisk) {
       }
     }
   }
-  const raised = new Set(['board.js', 'cli.js', 'spec.js'].flatMap((file) => walk.functions(file).flatMap((name) => [...walk.refusalsOf(`${file}#${name}`)])));
+  const commandFiles = readdirSync(new URL('../src/commands/', import.meta.url)).filter((name) => name.endsWith('.js') && name !== 'index.js').map((name) => `commands/${name}`);
+  const raised = new Set(['board.js', 'cli.js', 'spec.js', ...commandFiles].flatMap((file) => walk.functions(file).flatMap((name) => [...walk.refusalsOf(`${file}#${name}`)])));
   for (const code of declaredCodes(machine)) if (!raised.has(code)) problems.add(`${code} is declared but the board, CLI and spec parser never raise it`);
   return [...problems];
 }
@@ -473,8 +485,8 @@ test('every refusal a move raises today is declared on that move, and every decl
   assert.ok(walk.refusalsOf('board.js#refreeze').has('UNKNOWN_SPEC'), 'and refreeze too');
   assert.ok(walk.refusalsOf('board.js#claim').has('A5_GRAMMAR_VERSION'), 'grammar declarations can stop a claim with their own code');
   assert.ok(walk.refusalsOf('board.js#refreeze').has('A5_GRAMMAR_VERSION'), 'and stop a refreeze too');
-  assert.ok(walk.refusalsOf('cli.js#submitHere').has('UNKNOWN_SPEC'), 'submit calls the freezer too');
-  assert.ok(!walk.refusalsOf('cli.js#submitHere', new Set(CAUGHT['cli.js#submitHere'])).has('UNKNOWN_SPEC'), 'and catches what it raises');
+  assert.ok(walk.refusalsOf('commands/submit.js#submitHere').has('UNKNOWN_SPEC'), 'submit calls the freezer too');
+  assert.ok(!walk.refusalsOf('commands/submit.js#submitHere', new Set(CAUGHT['commands/submit.js#submitHere'])).has('UNKNOWN_SPEC'), 'and catches what it raises');
   assert.ok(walk.refusalsOf('cli.js#freezer').has('A5_GRAMMAR_VERSION'), 'the freezer propagates an unsupported grammar version');
   for (const code of ['INFRA_NOTE_REQUIRED', 'NOT_CLAIMABLE', 'LANE_HELD', 'GATE_RED', 'NO_GATE', 'NOT_AT_COMMIT', 'SELF_VERIFY', 'BAD_DECISION']) {
     assert.ok(ENTRY_POINTS.some(({ at }) => at.some((entry) => walk.refusalsOf(entry).has(code))), `the walk finds ${code}`);
@@ -498,6 +510,8 @@ test('a broken copy of the declaration fails the check against the code, both wa
   assert.deepEqual(codeProblems(noRows).sort(), [
     'A5_GRAMMAR_VERSION is raised by claim but not declared there',
     'A5_GRAMMAR_VERSION is raised by refreeze but not declared there',
+    'AGENT_APPROVAL_REQUIRED is raised by claim but not declared there',
+    'AGENT_APPROVAL_REQUIRED is raised by refreeze but not declared there',
     'BAD_CONFIG is raised by claim but not declared there',
     'BAD_CONFIG is raised by refreeze but not declared there',
     'NO_POLICY is raised by claim but not declared there',
@@ -526,6 +540,13 @@ test('a broken copy of the code fails the check: a refusal added wherever a move
     'MOON_PHASE is raised by refreeze but not declared there',
   ], 'claim and refreeze let a freeze refusal through; submit and verify catch it');
 
+  const inProof = editedSource('spec-approval.js', /^function approvalEvidence\(root, evidenceErrors\) \{$/m, "$&\n  if (!root) throw new Refused('MOON_PHASE', 'wait for the full moon');");
+  assert.deepEqual(codeProblems(MACHINE, inProof).sort(), [
+    'MOON_PHASE is raised by accept and reject but not declared there',
+    'MOON_PHASE is raised by claim but not declared there',
+    'MOON_PHASE is raised by refreeze but not declared there',
+  ], 'only caught proof readers are excluded; a new guard inside their caller is still audited');
+
   const inArrow = editedSource('route-escalation.js', /^export const canTake = .*$/m, "import { Refused } from './refused.js';\nexport const canTake = (agentRoute, itemRoute) => { if (!agentRoute) throw new Refused('NO_ROUTE', 'no route'); return ROUTES.indexOf(itemRoute) <= ROUTES.indexOf(agentRoute); };");
   assert.deepEqual(codeProblems(MACHINE, inArrow).sort(), [
     'NO_ROUTE is raised by accept and reject but not declared there',
@@ -533,7 +554,7 @@ test('a broken copy of the code fails the check: a refusal added wherever a move
     'NO_ROUTE is raised by reserve but not declared there',
   ], 'reserve reaches the route check through the reviewer checks it shares with a verdict');
 
-  const doubleQuoted = editedSource('cli.js', /^const cdTo = .*$/m, "const cdTo = (root) => { if (!root) throw new Refused(\"NO_ROOT\", 'no root'); return 'cd ' + root + ' &&'; };");
+  const doubleQuoted = editedSource('cli.js', /^(?:export )?const cdTo = .*$/m, "const cdTo = (root) => { if (!root) throw new Refused(\"NO_ROOT\", 'no root'); return 'cd ' + root + ' &&'; };");
   assert.deepEqual(codeProblems(MACHINE, doubleQuoted), [
     'NO_ROOT is raised by submit but not declared there',
     'NO_ROOT is raised by accept and reject but not declared there',
@@ -914,6 +935,8 @@ test('claim refuses in the declared order, one failure peeled at a time, on a re
     const strong = store.register(board, { lane: 'web', path: '/repo-web-strong' });
     const claimAs = (id, agentId, lane, freezer = retiredFreeze) => outcome(() => store.claim(board, id, { agentId, lane, leaseMs: 7_200_000, freeze: freezer }));
     const done = submittedItem(board);
+    const returned = submittedItem(board);
+    store.verify(board, returned, { agentId: 'web-2', decision: 'REJECT', reason: 'TEST_FAILURE', head: SHA_A, digest: 'digest:Page', policy: 'any', note: 'the check fails', reopenFirstRefusalMinutes: 30 });
     const dependency = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'Page' });
     const target = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'Page', after: [dependency] });
     const spare = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'Page' });
@@ -928,7 +951,7 @@ test('claim refuses in the declared order, one failure peeled at a time, on a re
     store.releaseItemHold(board, target, { agentId: 'coordinator' });
     fired.push(claimAs(target, light, 'api'), claimAs(target, light, 'web'), claimAs(target, strong, 'web'));
     verdictOn(board, dependency, 'web-2', 'ACCEPT');
-    fired.push(claimAs(target, strong, 'web'));
+    fired.push(claimAs(target, strong, 'web'), claimAs(returned, strong, 'web'));
     store.editItem(board, target, { agentId: 'coordinator', criterion: 'Pending correction before the lane guard.' });
     store.release(board, target, 'web-2');
     fired.push(claimAs(target, strong, 'web'));
@@ -940,7 +963,7 @@ test('claim refuses in the declared order, one failure peeled at a time, on a re
     store.release(board, spare, strong);
     fired.push(claimAs(target, strong, 'web'), claimAs(target, strong, 'web', freeze));
     assert.deepEqual(fired, [...declaredBoardOrder('claim'), 'ok']);
-    assert.deepEqual(fired, ['NO_ITEM', 'NOT_CLAIMABLE', 'ITEM_HELD', 'WRONG_LANE', 'ROUTE', 'BLOCKED', 'HELD', 'PENDING_REFREEZE', 'LANE_HELD', 'ONE_CLAIM', 'UNKNOWN_SPEC', 'ok']);
+    assert.deepEqual(fired, ['NO_ITEM', 'NOT_CLAIMABLE', 'ITEM_HELD', 'WRONG_LANE', 'ROUTE', 'BLOCKED', 'HELD', 'REOPEN_HELD_FOR_BUILDER', 'PENDING_REFREEZE', 'LANE_HELD', 'ONE_CLAIM', 'UNKNOWN_SPEC', 'ok']);
   } finally {
     lab.done();
   }
@@ -1369,7 +1392,7 @@ test('a helper added to the board that changes a status outside moveItem is refu
 
 
 test('transport boundaries keep a new item refusal in ordered dispatch visible [M1,M4,H16]', () => {
-  const inDispatch = editedSource('cli.js', /^async function ordered\(ctx, board, operation, args\) \{$/m,
+  const inDispatch = editedSource('cli.js', /^(?:export )?async function ordered\(ctx, board, operation, args\) \{$/m,
     "$&\n  if (args[0] === 999) throw new Refused('MOON_PHASE', 'wait for the full moon');");
   assert.deepEqual(codeProblems(MACHINE, inDispatch).sort(), [
     'MOON_PHASE is raised by accept and reject but not declared there',

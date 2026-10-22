@@ -233,7 +233,7 @@ test('export and import CLI commands exchange a versioned document between real 
     // An import recipient starts without its own declared coordinator metadata.
     const initEnv = { ...env };
     delete initEnv.PULLBOARD_MODEL;
-    const initialized = runFixtureChild(process.execPath, [BIN, 'init'], { cwd: targetRoot, env: initEnv, encoding: 'utf8' });
+    const initialized = runFixtureChild(process.execPath, [BIN, 'init', '--verbose'], { cwd: targetRoot, env: initEnv, encoding: 'utf8' });
     assert.equal(initialized.status, 0, initialized.stderr || initialized.stdout);
     assert.match(initialized.stdout, /coordinator/i);
 
@@ -285,6 +285,51 @@ test('import preserves other metadata and refuses malformed fresh identities [A2
       }
     }
   } finally {
+    store.closeBoard(source);
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+
+test('fresh-init approval baselines are disposable only with exact setup history [A2,A7,S1]', () => {
+  const directory = tempDirectory();
+  const source = populatedBoard(join(directory, 'source.sqlite'));
+  const setup = store.openBoard(join(directory, 'setup.sqlite'));
+  /** An exact valid source snapshot, deliberately different on the two boards. */
+  const baseline = text => ({ version: 1, file: 'SPEC.md', anchor: null,
+    rows: [{ id: 'G1', text, source: `- G1 [approved, must] ${text}` }] });
+  try {
+    store.recordSpecApprovalBaseline(source, { agentId: 'coordinator', baseline: baseline('The imported source governs.') });
+    const incoming = exportBoard(source);
+    store.register(setup, { lane: 'coordinator', path: '/fresh' });
+    store.recordSpecApprovalBaseline(setup, { agentId: 'coordinator', baseline: baseline('Local setup is disposable.') });
+    for (let index = 0; index < 6; index += 1) {
+      const target = store.openBoard(join(directory, `fresh-${index}.sqlite`));
+      try {
+        // A trusted restore can carry malformed old state; no append-only guard is bypassed here.
+        const initial = exportBoard(setup);
+        if (index === 1) initial.tables.board_meta.push({ meta_key: 'retained', meta_value: 'repo setting' });
+        if (index === 2) initial.tables.event[1].event_by = 'machine';
+        if (index === 3) initial.tables.event[1].item_id = 42;
+        if (index === 4) initial.tables.board_meta.find(row => row.meta_key === 'spec_approval_baseline').meta_value = '{}';
+        if (index === 5) {
+          initial.tables.event.push({ ...initial.tables.event[0], event_id: 3, event_kind: 'unrelated', event_detail: '{}' });
+          initial.tables.sqlite_sequence.find(row => row.name === 'event').seq = 3;
+        }
+        importBoard(target, initial);
+        if (index) {
+          const before = exportBoard(target);
+          assert.throws(() => importBoard(target, incoming), /IMPORT_NOT_EMPTY/u);
+          assert.deepEqual(exportBoard(target), before, 'non-setup history and metadata remain untouched');
+        } else {
+          importBoard(target, incoming);
+          assert.deepEqual(exportBoard(target), incoming, 'the source baseline and every source row replace local setup');
+          assert.equal(store.specApprovalBaseline(target).rows[0].text, 'The imported source governs.');
+        }
+      } finally { store.closeBoard(target); }
+    }
+  } finally {
+    store.closeBoard(setup);
     store.closeBoard(source);
     rmSync(directory, { recursive: true, force: true });
   }

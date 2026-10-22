@@ -345,7 +345,8 @@ test('only a file that reaches a browser launch takes a browser slot [C7,O5]', a
   assert.deepEqual(missed, [], 'every file that launched Chrome in the census is classified browser-bound');
   // Cockpit and journey files stay bound by rule until #741 guards the view fixture; the rest must reach a launch.
   const reached = bound.filter(file => !file.startsWith('test/cockpit/') && file !== 'test/journeys.test.js');
-  assert.ok(reached.length <= 20,
+  // 21 Oct: 21, since #977's relay-local-origin.test.js really launches WebKit and Chrome to prove the Safari local route.
+  assert.ok(reached.length <= 21,
     `about 42 of ${tracked.length} test files are browser-bound by launch (the census's 15 non-cockpit launchers, plus cockpit and journey files until #741); got ${bound.length}, ${reached.length} outside cockpit: ${reached.join(', ')}`);
 
   const runner = runnerFixture(t, {

@@ -16,6 +16,11 @@ import {
   undraftedRigor,
 } from './rigor-notices.js';
 import { personNeeds } from './needs.js';
+import { displayAgentName } from './agent-names.js';
+import {
+  projectSpecApprovals,
+  specApprovalState,
+} from './spec-approval.js';
 import {
   sentinelDraftNeeds,
   sentinels,
@@ -24,11 +29,12 @@ import {
 /** Borrow an existing connection or open a read-only one; retain exact row-decision matching. */
 export function personNeedsState(root, { board: providedBoard = null, includeRigorUndrafted = false } = {}) {
   const info = repoInfo(root);
-  const board = providedBoard ?? { db: store.openBoardReadOnly(join(info.commonDir, 'pullboard', 'board.sqlite')) };
+  // A held item is judged against the board's clock (#974), so the read-only board carries the CLI's clock.
+  const board = providedBoard ?? { db: store.openBoardReadOnly(join(info.commonDir, 'pullboard', 'board.sqlite')), clock: store.systemClock };
   try {
     const decisions = store.rowDecisions(board);
-    const state = projectFit(pendingFit(info.commonDir), projectRowDecisions(decisions, projectState(root, { board })));
     const config = loadConfig(root);
+    const state = projectSpecApprovals(projectFit(pendingFit(info.commonDir), projectRowDecisions(decisions, projectState(root, { board }))), specApprovalState(root, { board, config }));
     const rows = projectRowDecisions(decisions, { root, spec: loadSpec(root, config).rows, practice: loadDoctrine(root, config).rows });
     const rigorDrafts = rigorDraftNeeds(rows);
     const projected = { ...state, rigorDrafts, sentinelDrafts: sentinelDraftNeeds(sentinels(board)), ...(includeRigorUndrafted
@@ -37,4 +43,16 @@ export function personNeedsState(root, { board: providedBoard = null, includeRig
   } finally {
     if (!providedBoard) store.closeBoard(board);
   }
+}
+
+/** Keep status's complete obligation list without dashboard history, Git ages, or release notes. */
+export function personNeedsSummary(root, { board, config }) {
+  const spec = loadSpec(root, config);
+  const rows = projectRowDecisions(store.rowDecisions(board), { root, spec: spec.rows, practice: loadDoctrine(root, config).rows });
+  const projected = projectSpecApprovals({ ...rows,
+    decisions: store.openDecisions(board, store.PERSON), holds: store.laneHolds(board),
+    agents: store.listAgents(board).map(agent => ({ ...agent, displayName: displayAgentName(agent, config.agents.names) })),
+    rigorDrafts: rigorDraftNeeds(rows), sentinelDrafts: sentinelDraftNeeds(sentinels(board)),
+  }, specApprovalState(root, { board, config, spec }));
+  return projected;
 }

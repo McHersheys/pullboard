@@ -1246,12 +1246,12 @@ test('a sandbox-blocked gate asks the person [I1,C7]', async (t) => {
     put(box.root, 'test/permission.test.js', denied);
     commitAll(box);
     box = builderRepo(box);
+    chmodSync(directory, 0o500); // The real add baseline must observe the same outside-file refusal.
     assert.equal(box.coordinator('add', 'build', 'Real permission check', '--check', runner).code, 0);
     assert.equal(box.run('claim', '1').code, 0);
     put(box.root, 'src/a.js', 'export const value = 2;\n');
     commitAll(box, 'feat(core): update selected source [G1]');
     const item = { ...JSON.parse(box.coordinator('show', '1', '--json').out), item_commit: box.git('rev-parse', 'HEAD').trim() };
-    chmodSync(directory, 0o500);
     try {
       assert.throws(() => writeFileSync(outside, 'sentinel'), { code: 'EACCES' }, 'the operating system actually denies this write');
       blocked(box.run('gate'), outside);

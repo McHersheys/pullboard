@@ -1,0 +1,423 @@
+/** The pullboard spec command, in its own module so an item adding another command never edits these lines. */
+import {
+  fitCommand,
+} from '../blueprint-fit-command.js';
+import {
+  fitSummary,
+  readFitBatch,
+} from '../blueprint-fit.js';
+import {
+  answerQuestion,
+} from '../blueprints.js';
+import * as store from '../board.js';
+import {
+  hookRead,
+} from '../cli-support.js';
+import {
+  COORDINATOR,
+  DOCTRINE_FILE,
+  LEGACY_DOCTRINE_FILE,
+} from '../config.js';
+import {
+  proposeDoctrine,
+} from '../doctrine-rulings.js';
+import {
+  doctrineHistory,
+} from '../doctrine.js';
+import {
+  citedTestFiles,
+  rowEvidence,
+  rowStage,
+} from '../evidence.js';
+import {
+  headCommit,
+} from '../git.js';
+import {
+  committedIds,
+} from '../history.js';
+import {
+  personCommand,
+  requirePersonChannel,
+} from '../person.js';
+import {
+  productProblems,
+} from '../products.js';
+import {
+  Refused,
+} from '../refused.js';
+import {
+  rowDecisionContext,
+} from '../row-decision-state.js';
+import {
+  decisionAnswer,
+  decisionProjection,
+  handAnsweredQuestions,
+  pendingAnswers,
+  planRowApply,
+  prepareRowDecisions,
+  restoreRowApply,
+  rowDecisionView,
+  writeRowApply,
+} from '../row-decisions.js';
+import {
+  clashingRowDrafts,
+  pendingRowDrafts,
+  trunkRowIds,
+  withRowDrafts,
+} from '../row-drafts.js';
+import {
+  addSigner,
+  assertRequiredSigners,
+  defaultPrincipal,
+  hasSignerFile,
+} from '../signature.js';
+import {
+  draftRow,
+} from '../spec-draft.js';
+import {
+  legacyDoctrineRenameBase,
+  lintSpec,
+  loadSpec,
+  missingGateFindings,
+  parseSpec,
+  permanenceProblems,
+  readSignoffs,
+  signOff,
+  standings,
+  unmetRows,
+} from '../spec.js';
+import {
+  renderSpecView,
+} from '../view.js';
+import {
+  mkdirSync,
+  writeFileSync,
+} from 'node:fs';
+import {
+  dirname,
+  join,
+  resolve,
+} from 'node:path';
+import {
+  pathToFileURL,
+} from 'node:url';
+import {
+  citations,
+  context,
+  coordinatorFile,
+  idList,
+  ordered,
+  primaryCheckoutRoot,
+  reserveRow,
+  specProof,
+  textArg,
+  whoAmI,
+  withBoard,
+} from '../cli.js';
+
+/**
+ * The spec commands: reads, sign-offs and person decisions applied by the coordinator.
+ *
+ * @param {any} io
+ * @param {any} args
+ * @returns {Promise<number>}
+ */
+export async function specCommand(io, { first, second, rest, values }) {
+  const ctx = context(io);
+  const commandFlags = {
+    '--json': ['json'],
+    check: ['json'],
+    view: ['out'],
+    show: [],
+    unmet: ['must'],
+    signoff: ['by', 'note', 'note-file'],
+    signers: ['key', 'by'],
+    draft: ['aim', 'gate', 'section', 'doctrine', 'source'],
+    approve: ['by', 'text'],
+    decline: ['reason'],
+    answer: [],
+    apply: [],
+    fit: ['text', 'reason'],
+  }[first ?? '--json'];
+  if (!commandFlags) throw new Refused('USAGE', 'use pullboard spec --json | check | view | show <id> | unmet [--must] | draft "<text>" | signoff <ids> | approve <ids> | decline <ids> --reason "why" | answer <id> "<choice or text>" | apply');
+  const allowedFlags = [...new Set([...commandFlags, 'json'])];
+  for (const flag of Object.keys(values)) {
+    if (!allowedFlags.includes(flag)) {
+      const next = flag === 'must' ? 'use --must with spec unmet' : 'use a flag accepted by this spec command';
+      throw new Refused('FLAG_NOT_ALLOWED', `spec ${first ?? '--json'} does not take --${flag}; ${next}`);
+    }
+  }
+  if (first === 'fit') {
+    return await withBoard(ctx, async (board) => await fitCommand(ctx, board, null, second ?? 'list', rest, values, { ordered, whoAmI }));
+  }
+  const spec = loadSpec(ctx.info.root, ctx.config);
+  if (!spec.exists) throw new Refused('NO_SPEC', `no ${ctx.config.spec}; run: pullboard init`);
+  const practice = ctx.doctrine;
+  const signoffs = readSignoffs(ctx.info.root);
+  if (first === 'draft') {
+    if (second && /\|\s*gate\s*:/iu.test(second)) {
+      throw new Refused('INLINE_GATE', 'move the gate after the requirement as --gate "<check>"');
+    }
+    if (!second?.trim() || rest.length || /[\r\n|]/u.test(second)) {
+      throw new Refused('USAGE', 'give one nonempty, single-line requirement: pullboard spec draft "<text>"');
+    }
+    if (values.gate !== undefined && (!values.gate.trim() || /[\r\n|]/u.test(values.gate))) {
+      throw new Refused('USAGE', 'give one nonempty, single-line gate without a field separator, or omit --gate to use review');
+    }
+    if (values.doctrine) {
+      if (typeof values.source !== 'string' || !values.source.trim() || /[\r\n|]/u.test(values.source)) {
+        throw new Refused('USAGE', 'a doctrine ruling needs its source; give --source "shout 42" or --source "chat, 2026-10-16"');
+      }
+      withBoard(ctx, (board) => {
+        if (!ctx.info.isMain || whoAmI(ctx, board).id !== COORDINATOR) throw new Refused('COORDINATOR_ONLY', 'only the coordinator proposes standing rulings; ask your coordinator to run spec draft --doctrine --source');
+      });
+      const planned = proposeDoctrine(ctx, values, second, { reserved: (hookRead(ctx, (board) => store.rowDrafts(board)) ?? []).map((draft) => draft.id), write: false });
+      const result = proposeDoctrine(ctx, values, second, { id: (await reserveRow(ctx, { ...planned.row, target: 'doctrine' }, true)).id });
+      io.result?.(result);
+      io.say(result.id);
+      return 0;
+    }
+    if (values.source !== undefined) throw new Refused('FLAG_NOT_ALLOWED', 'spec draft --source belongs to --doctrine; use both when proposing a ruling');
+    const tier = values.aim ? 'aim' : 'must';
+    const plan = draftRow(ctx.info.root, ctx.config, { target: 'spec', text: second.trim(), gate: values.gate?.trim() ?? 'review', tier, section: values.section, write: false,
+      taken: [...(hookRead(ctx, (board) => store.rowDrafts(board)) ?? []).map((draft) => draft.id), ...(ctx.info.isMain ? [] : trunkRowIds(ctx.info.root, primaryCheckoutRoot(ctx.info), ctx.config))] });
+    // A lane cannot write SPEC.md, so its reservation is the draft, cited at once and written by spec apply; the main checkout writes its row now (#878).
+    const entry = await reserveRow(ctx, plan.row, ctx.info.isMain);
+    const { id, row } = ctx.info.isMain ? draftRow(ctx.info.root, ctx.config, { target: 'spec', text: plan.row.text, gate: plan.row.gate, tier, section: values.section, id: entry.id }) : { id: entry.id, row: entry };
+    io.result?.({ id, row });
+    io.say(id);
+    return 0;
+  }
+  if (first === 'approve' || first === 'decline') {
+    requirePersonChannel(io.personChannel);
+    return withBoard(ctx, async (board) => {
+      const me = whoAmI(ctx, board);
+      if (!ctx.info.isMain || me.id !== COORDINATOR) throw new Refused('B26_PERSON_APPROVAL', 'only the person from the main checkout approves or declines rows; use pullboard view for the person to decide');
+      const ids = [second, ...rest].filter(Boolean).flatMap((text) => text.split(/[\s,]+/u)).filter(Boolean);
+      // An approve keeps a pending answer: plain, it approves the answered text; --text says what it replaces.
+      const kept = first === 'approve' ? pendingAnswers(ctx.info.root, ctx.config, ids, store.rowDecisions(board)) : new Map();
+      const decide = { decision: first, reason: values.reason, by: values.by, on: new Date().toISOString(), commit: headCommit(ctx.info.root) ?? '' };
+      const records = values.text === undefined && kept.size ? ids.flatMap((id) => prepareRowDecisions(ctx.info.root, ctx.config, { ...decide, ids: [id], text: kept.get(id)?.text }))
+        : prepareRowDecisions(ctx.info.root, ctx.config, { ...decide, ids, text: values.text });
+      const decisions = await ordered(ctx, board, 'recordRowDecisions', [{ agentId: store.PERSON, channel: io.personChannel ?? 'terminal', decisions: records }]);
+      io.result?.({ decisions });
+      decisions.forEach((record) => {
+        const old = record.kind === 'spec' ? kept.get(record.id) : undefined;
+        const now = decisionAnswer(record);
+        if (old && old.text !== record.text) io.say(`${record.id}: this text replaces the pending answer ${old.answer} with ${now === null ? `"${record.text}"` : `the answer ${now}`}`);
+        io.say(`${record.kind === 'doctrine' ? 'doctrine:' : ''}${record.id}: ${first === 'approve' ? (old && old.text === record.text ? `approved with the answer ${old.answer}` : 'approved') : 'declined'}, pending apply`);
+      });
+      return 0;
+    });
+  }
+  if (first === 'answer') {
+    requirePersonChannel(io.personChannel, process.env, { command: personCommand(primaryCheckoutRoot(ctx.info) ?? ctx.info.root, ['spec', 'answer', second, rest.join(' ')]) });
+    return withBoard(ctx, async (board) => {
+      const me = whoAmI(ctx, board);
+      if (!ctx.info.isMain || me.id !== COORDINATOR) throw new Refused('B26_PERSON_APPROVAL', 'only the person answers a pending question, from the main checkout or the view', 'ask the person to answer it in pullboard view, or in their own terminal at the main checkout');
+      const given = rest.join(' ').trim();
+      if (!second || !given || /[\r\n|]/u.test(given)) throw new Refused('USAGE', 'give one row and a one-line answer without a field separator: pullboard spec answer <id> "<choice or text>"');
+      const row = spec.rows.find((entry) => entry.id === second);
+      if (!row) throw new Refused('NO_ROW', `${second} is not a row in ${ctx.config.spec}`, 'list the pending questions with pullboard spec --json, then answer one of them');
+      if (row.status !== 'pending') throw new Refused('SPEC_ANSWER', `${second} is ${row.status}, not a pending question`, `read it with pullboard spec show ${second}; only a pending row takes an answer`);
+      const { text } = answerQuestion(row.text, given, second);
+      const records = prepareRowDecisions(ctx.info.root, ctx.config, { ids: [second], decision: 'approve', text, on: new Date().toISOString(), commit: headCommit(ctx.info.root) ?? '' });
+      const decisions = await ordered(ctx, board, 'recordRowDecisions', [{ agentId: store.PERSON, channel: io.personChannel ?? 'terminal', decisions: records }]);
+      // The answer reported is read back from the signed text, never carried as a field of its own.
+      const answered = decisions.map((record) => ({ ...record, answer: decisionAnswer(record) }));
+      io.result?.({ decisions: answered });
+      answered.forEach((record) => io.say(`${record.id}: answered ${record.answer}, pending apply`));
+      return 0;
+    });
+  }
+  if (first === 'apply') {
+    if (second || rest.length) throw new Refused('USAGE', 'pullboard spec apply takes no ids; it applies current person decisions');
+    return withBoard(ctx, async (board) => {
+      const me = whoAmI(ctx, board);
+      if (!ctx.info.isMain || me.id !== COORDINATOR) throw new Refused('COORDINATOR_ONLY', 'only the coordinator applies row decisions; ask your coordinator to run pullboard spec apply');
+      // A lane's board drafts (#878) reach SPEC.md as draft rows at their own ids; the person approves them there as before.
+      const drafted = pendingRowDrafts(loadSpec(ctx.info.root, ctx.config), store.rowDrafts(board)).map((draft) => draftRow(ctx.info.root, ctx.config, { target: 'spec', text: draft.text, gate: draft.gate, tier: draft.tier, section: /^(.*?)\d+$/u.exec(draft.id)[1], id: draft.id }));
+      drafted.forEach((row) => io.say(`${row.file}: ${row.id} drafted from a lane, for the person to approve`));
+      clashingRowDrafts(loadSpec(ctx.info.root, ctx.config), store.rowDrafts(board)).forEach((draft) => io.say(`${ctx.config.spec}: ${draft.id} holds other text, so the draft by ${draft.by} was not written; shout ${draft.by} to run pullboard spec draft again and cite the new id`));
+      const plan = planRowApply(ctx.info.root, ctx.config, store.rowDecisions(board));
+      writeRowApply(ctx.info.root, plan);
+      let applied;
+      try { applied = await ordered(ctx, board, 'applyRowDecisions', [{ agentId: me.id, events: plan.records.map((record) => record.event) }]); }
+      catch (error) { restoreRowApply(ctx.info.root, plan); throw error; }
+      io.result?.({ applied, files: plan.files.map((file) => file.file) });
+      applied.forEach((record) => io.say(`${record.file}: ${record.id} ${record.decision === 'approve' ? 'approved' : 'wont'}${record.reason ? `: ${record.reason}` : ''}`));
+      if (!applied.length && !drafted.length) io.say('no pending row decisions');
+      else io.say('stage and commit the changed row files and any .pullboard/signoffs.jsonl receipts');
+      return 0;
+    });
+  }
+  if (first === 'check' || first === undefined) {
+    const files = [[ctx.config.spec, spec], ...(practice.exists ? [[practice.name, practice]] : [])];
+    for (const [, parsed] of files) assertRequiredSigners(ctx.info.root, parsed.rows);
+    const collisionFiles = [[ctx.config.spec, spec], ...(practice.repoExists ? [[practice.name, practice.repo]] : [])];
+    const renameBase = collisionFiles.some(([name]) => name === DOCTRINE_FILE)
+      ? legacyDoctrineRenameBase(ctx.info.root, DOCTRINE_FILE)
+      : null;
+    const baselineNotes = new Set();
+    const previousSources = new Map();
+    const previousCounts = new Map(collisionFiles.map(([name]) => {
+      const baselineName = renameBase && name === DOCTRINE_FILE ? LEGACY_DOCTRINE_FILE : name;
+      const previous = name === DOCTRINE_FILE && !renameBase
+        ? { status: 1, stdout: '' }
+        : coordinatorFile(ctx.info.root, baselineName, renameBase ?? undefined);
+      if (previous.baseline) baselineNotes.add(previous.baseline);
+      const rows = previous.status === 0 ? parseSpec(previous.stdout, { strictGrammarVersion: false }).rows : [];
+      previousSources.set(name, rows);
+      const counts = new Map();
+      for (const row of rows) counts.set(row.id, (counts.get(row.id) ?? 0) + 1);
+      return [name, counts];
+    }));
+    const locationsById = new Map();
+    for (const [name, parsed] of collisionFiles) {
+      for (const row of parsed.rows) {
+        const locations = locationsById.get(row.id) ?? [];
+        locations.push({ name, line: row.line });
+        locationsById.set(row.id, locations);
+      }
+    }
+    const collisionFindings = new Map(collisionFiles.map(([name]) => [name, []]));
+    for (const [id, locations] of locationsById) {
+      if (locations.length < 2) continue;
+      const currentCounts = new Map();
+      for (const location of locations) currentCounts.set(location.name, (currentCounts.get(location.name) ?? 0) + 1);
+      const known = [...currentCounts].every(([name, count]) => count <= (previousCounts.get(name)?.get(id) ?? 0));
+      for (let index = 0; index < locations.length; index++) {
+        const location = locations[index];
+        const other = locations[(index + 1) % locations.length];
+        collisionFindings.get(location.name).push({
+          level: known ? 'warning' : 'error', line: location.line, id,
+          message: `${known ? 'known duplicate id' : 'duplicate id'}; also appears at ${other.name}:${other.line}`,
+        });
+      }
+    }
+    let errors = 0;
+    const messages = [...baselineNotes];
+    for (const [name, parsed] of files) {
+      const findings = [
+        ...lintSpec(parsed).filter((finding) => !finding.message.startsWith('duplicate id;')),
+        ...missingGateFindings(parsed, ctx.info.root),
+        ...(collisionFindings.get(name) ?? []),
+      ];
+      findings.forEach((finding) => messages.push(`${name}:${finding.line} ${finding.id ?? ''} ${finding.level}: ${finding.message}`.replace('  ', ' ')));
+      const history = parsed === practice ? doctrineHistory(ctx.info.root, name) : committedIds(ctx.info.root, name);
+      const cited = name === ctx.config.spec ? citations(ctx, history) : new Map();
+      const lost = permanenceProblems(parsed === practice ? practice.repo : name === ctx.config.spec ? withRowDrafts(parsed, hookRead(ctx, (board) => store.rowDrafts(board))) : parsed, { committed: history.ids, cited });
+      if (name === ctx.config.spec) {
+        const mainRows = new Set((previousSources.get(name) ?? []).map(row => row.id));
+        for (const problem of lost) {
+          if (mainRows.has(problem.id)) problem.message = 'is present on main but missing from this worktree; run git merge main, then pullboard spec check';
+        }
+        const answered = handAnsweredQuestions(previousSources.get(name) ?? [], parsed.rows, () => hookRead(ctx, (board) => store.rowDecisions(board)) ?? []);
+        lost.push(...answered.map((id) => ({ id, message: io.guidance(`pending question answered by hand; ask the person to run pullboard spec answer ${id} "<choice or text>" and restore the pending row`) })));
+      }
+      lost.forEach((problem) => messages.push(`${name}: ${problem.id} error: ${problem.message}`));
+      const fileErrors = findings.filter((finding) => finding.level === 'error').length + lost.length;
+      errors += fileErrors;
+      messages.push(`${name}: ${parsed.rows.length} rows, ${fileErrors} errors, ${findings.length + lost.length - fileErrors} warnings`);
+    }
+    const unnamed = productProblems(ctx.config, spec);
+    unnamed.forEach((problem) => messages.push(`${ctx.config.spec}: error: ${problem}`));
+    errors += unnamed.length;
+    if (values.json && !errors) {
+      const rows = files.flatMap(([file, parsed]) => parsed.rows.map(({ id, status, tier, text, gate, serves, signers = [], section, line, origin, version, reason, file: source, source: from }) => (
+        { id, status, tier, text, gate, serves, signers, section, line, file: source ?? file,
+          ...(from === undefined ? {} : { source: from }), ...(origin ? { origin, version, reason } : {}) }
+      )));
+      const fit = readFitBatch(ctx.info.commonDir, { isMain: ctx.info.isMain, channel: io.personChannel });
+      io.result({ rows, ...(fit.proposals.length ? { fit: fit.proposals, fitBatch: fit.batch } : {}) });
+    } else messages.forEach((message) => io.say(message));
+    if (!values.json) fitSummary(readFitBatch(ctx.info.commonDir, { isMain: ctx.info.isMain, channel: io.personChannel })).forEach((message) => io.say(message));
+    return errors ? 1 : 0;
+  }
+  if (first === 'signers' && second === 'add') {
+    requirePersonChannel(io.personChannel);
+    const signer = addSigner(ctx.info.root, { by: values.by, key: values.key });
+    io.result?.(signer);
+    io.say(signer.added
+      ? signer.initial
+        ? `added SSH signer ${signer.by}; stage and commit ${signer.path}, .pullboard/first-commit, and .pullboard/signers.initial`
+        : `added SSH signer ${signer.by} to ${signer.path}; commit ${signer.path} and .pullboard/signoffs.jsonl`
+      : `${signer.by} is already listed in ${signer.path}`);
+    return 0;
+  }
+  if (first === 'view') {
+    const out = values.out ? resolve(ctx.io.cwd, values.out) : join(ctx.info.gitDir, 'pullboard', 'spec.html');
+    const html = renderSpecView({
+      title: spec.title,
+      ...withBoard(ctx, board => rowDecisionView(ctx.info.root, ctx.config, store.rowDecisions(board), spec, practice)),
+      signoffs,
+      generatedAt: new Date().toISOString().slice(0, 16).replace('T', ' '),
+      files: { spec: ctx.config.spec, practice: ctx.config.practice },
+    });
+    mkdirSync(dirname(out), { recursive: true });
+    writeFileSync(out, html);
+    io.result?.({ path: out });
+    io.say(`wrote ${out}`);
+    io.say(`open: ${pathToFileURL(out).href}`);
+    return 0;
+  }
+  if (first === 'show') {
+    const doctrineId = second?.startsWith('doctrine:');
+    const parsed = doctrineId ? practice : spec;
+    const id = doctrineId ? second.slice('doctrine:'.length) : second;
+    const source = parsed.rows.find((entry) => entry.id === id);
+    const row = source && withBoard(ctx, (board) => decisionProjection(store.rowDecisions(board), source, doctrineId ? 'doctrine' : 'spec', rowDecisionContext(ctx.info.root, ctx.config)));
+    if (!row) throw new Refused('NO_ROW', `no row ${second ?? ''} in ${ctx.config.spec}`);
+    const standing = standings(parsed.rows, signoffs).get(row.id) ?? { met: [], stale: [] };
+    io.result?.({ row, standing });
+    io.say(`${row.id} [${row.status}${row.tier ? `, ${row.tier}` : ''}] ${row.text}`);
+    if (row.stage) io.say(row.stage);
+    if (row.reason) io.say(`reason: ${row.reason}`);
+    if (row.gate) io.say(`gate: ${row.gate}`);
+    if (row.serves.length) io.say(`serves: ${row.serves.join(', ')}`);
+    if (row.source) io.say(`source: ${row.source}`);
+    io.say(`signed: ${standing.met.map((entry) => `${entry.by} ${entry.on}`).join(', ') || 'no'}${standing.stale.length ? `; stale: ${standing.stale.length}` : ''}`);
+    for (const entry of [...standing.met, ...standing.stale]) if (entry.note) io.say(`note (${entry.by}): ${entry.note}`);
+    return 0;
+  }
+  if (first === 'unmet') {
+    const rows = unmetRows(spec.rows, signoffs, { mustOnly: values.must });
+    const proof = specProof(ctx);
+    const testFiles = citedTestFiles(ctx.info.root);
+    const by = standings(spec.rows, signoffs);
+    io.result?.({ rows: rows.map((row) => ({ ...row, stage: rowStage(by.get(row.id), rowEvidence(ctx.info.root, row.id, { ...proof, testFiles })) })) });
+    rows.forEach((row) => io.say(`${row.id} [${row.tier || 'no tier'}] ${row.text} — ${rowStage(by.get(row.id), rowEvidence(ctx.info.root, row.id, { ...proof, testFiles }))}`));
+    io.say(`${rows.length} approved rows without a current sign-off`);
+    return 0;
+  }
+  if (first === 'signoff') {
+    requirePersonChannel(io.personChannel);
+    const ids = [second, ...rest].filter(Boolean).flatMap((text) => idList(text));
+    if (!ids.length) throw new Refused('USAGE', 'pullboard spec signoff <ids> [--by <principal>] [--note "what was checked"]');
+    const invalid = ids.filter((id) => spec.rows.find((row) => row.id === id)?.status !== 'approved');
+    if (invalid.length) throw new Refused('CANNOT_SIGN', `${invalid.join(', ')}: only approved rows in this spec are signed`);
+    const proof = specProof(ctx);
+    const testFiles = citedTestFiles(ctx.info.root);
+    const evidence = ids.map((id) => ({ id, ...rowEvidence(ctx.info.root, id, { ...proof, testFiles }) }));
+    const missing = evidence.filter((row) => !row.files.length && !row.verified.length).map((row) => row.id);
+    if (missing.length) throw new Refused('NO_EVIDENCE', `${missing.join(', ')} has no evidence; build it or cite its id in a test first`);
+    for (const row of evidence) {
+      io.say(`evidence for ${row.id}:`);
+      if (row.files.length) io.say('  cited by tests (none run by pullboard):');
+      for (const file of row.files) io.say(`    ${file}`);
+      for (const item of row.verified) io.say(`  verified #${item.id}: ${item.note || '(no accepting note)'}`);
+    }
+    const note = textArg(io, values, 'note') ?? '';
+    const by = values.by ?? (hasSignerFile(ctx.info.root) ? defaultPrincipal(ctx.info.root) : '');
+    const count = signOff(ctx.info.root, spec, { ids, by, on: new Date().toISOString(), note, commit: headCommit(ctx.info.root) ?? '' });
+    io.result?.({ count, by, ids, evidence });
+    io.say(`signed ${count} rows as ${by}; commit .pullboard/signoffs.jsonl`);
+    return 0;
+  }
+  throw new Refused('USAGE', 'pullboard spec --json | check | view | show <id> | unmet [--must] | draft "<text>" | signoff <ids> | signers add | approve <ids> | decline <ids> --reason "why" | answer <id> "<choice or text>" | apply');
+}
+
+/** Run `pullboard spec` and return its exit code. */
+export async function run(io, args) {
+  return await specCommand(io, args);
+}

@@ -480,11 +480,25 @@ export async function createTransport() { return { async request(path) {
       await open(VERSION, true);
       await chrome.waitFor("Boolean(transport) && [...boardSources.values()].map((source) => source.kind).sort().join() === 'local,relay' && document.querySelectorAll('#proj-list .proj.repo').length === 2", 25_000); // budget: hang ceiling for the relay module and its board list after the local read; no throughput claim.
       const roots = JSON.parse(await chrome.stable("JSON.stringify(Object.fromEntries([...boardSources.values()].map((source) => [source.kind, source.board.root])))"));
-      // A failed wait names the root the page reported next to the one it expected, so a spelling mismatch shows (#937).
+      // The page's own record of its last switch and its last reads, for the readiness capture (#889).
+      await chrome.stable(`(() => {
+        const read = api, pick = switchTo;
+        window.__journal = { switchedTo: null, reads: [] };
+        api = async (path, ...rest) => {
+          const entry = { path: String(path).split('?')[0], outcome: 'pending' };
+          window.__journal.reads = [...window.__journal.reads, entry].slice(-6);
+          try { const reply = await read(path, ...rest); entry.outcome = 'ok'; return reply; }
+          catch (error) { entry.outcome = 'failed: ' + String(error.message || error).slice(0, 80); throw error; }
+        };
+        switchTo = (root, ...rest) => { window.__journal.switchedTo = root; return pick(root, ...rest); };
+        return true;
+      })()`);
+      // A failed wait names the selected root, the sources, the last switch and the last reads, next to the root it
+      // expected, so a spelling mismatch, a dropped switch, a late read or a lost read shows which it was (#937, #889).
       const selected = async (root) => {
         try { await chrome.waitFor(`data?.project?.root === ${JSON.stringify(root)} && document.querySelector('#chain')?.textContent.length > 0`, 25_000); } // budget: hang ceiling for one board switch and its state read; no throughput claim.
         catch (error) {
-          const reported = await chrome.stable('JSON.stringify(data?.project?.root ?? null)').catch(() => 'unreadable');
+          const reported = await chrome.stable(`JSON.stringify({ selected: data?.project?.root ?? null, viewRoot: view.root, sources: [...boardSources.values()].map((source) => source.kind + ':' + source.board.root), ...window.__journal })`).catch(() => 'unreadable');
           throw new Error(`${error.message}; the page reported ${reported}, expected ${JSON.stringify(root)}`);
         }
       };
@@ -501,6 +515,22 @@ export async function createTransport() { return { async request(path) {
       await chrome.stable(`(switchTo(${JSON.stringify(roots.local)}), true)`);
       await selected(roots.local);
       assert.equal(await bannerHidden(), false, 'back on this machine\'s board, the note returns');
+      // A read of the chosen board that fails once, as one dropped under load, is read again: the page stays on the
+      // board the person chose instead of moving to the other one (#889).
+      await chrome.stable(`(switchTo(${JSON.stringify(roots.relay)}), true)`);
+      await selected(roots.relay);
+      await chrome.stable(`(() => {
+        const localId = [...boardSources.values()].find((source) => source.kind === 'local').board.id, read = api;
+        let armed = true;
+        api = async (path, ...rest) => {
+          if (armed && String(path).startsWith('/api/v1/boards/' + encodeURIComponent(localId) + '/state')) { armed = false; throw new Error('a dropped read'); }
+          return read(path, ...rest);
+        };
+        return true;
+      })()`);
+      await chrome.stable(`(switchTo(${JSON.stringify(roots.local)}), true)`);
+      await selected(roots.local);
+      assert.equal(await chrome.stable('view.root'), roots.local, 'the page keeps the board the person chose after one failed read');
       assert.equal(await bannerText(), mixedNote);
     } finally {
       local.client = null;

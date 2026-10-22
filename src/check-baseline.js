@@ -13,7 +13,6 @@ import {
   tryGit,
 } from './git.js';
 import { runShell } from './gate.js';
-import { CONFIG_FILE } from './config.js';
 import { Refused } from './refused.js';
 
 /**
@@ -29,7 +28,6 @@ export function checkBaseline(root, command, { main = undefined } = {}) {
   const captured = main === undefined ? prepareCheckBaseline(root, command) : { command, main, result: 'pending' };
   if (captured.result !== 'pending') return captured;
   const base = { command, main: captured.main };
-  if (command === gateOnMain(root, base.main)) return { ...base, result: 'green', reason: 'repo gate' };
   const directory = mkdtempSync(join(tmpdir(), 'pullboard-check-base-'));
   const checkout = join(directory, 'checkout');
   const env = gitChildEnv(root);
@@ -65,18 +63,7 @@ export function prepareCheckBaseline(root, command) {
   if (!primary) return { command, main: null, result: 'unavailable', reason: 'coordinator checkout is detached' };
   if (!primary.commit) return { command, main: null, result: 'unavailable', reason: 'no main' };
   const base = { command, main: primary.commit };
-  if (command === gateOnMain(root, base.main)) return { ...base, result: 'green', reason: 'repo gate' };
   return { ...base, result: 'pending', request: randomUUID() };
-}
-
-/** Use main's committed gate for the shortcut; a dirty local config cannot manufacture a green base. */
-function gateOnMain(root, main) {
-  const config = tryGit(root, ['show', `${main}:${CONFIG_FILE}`]);
-  if (config.status !== 0) return '';
-  try {
-    const gate = JSON.parse(config.stdout)?.gate;
-    return typeof gate === 'string' ? gate.trim() : '';
-  } catch { return ''; }
 }
 
 /**

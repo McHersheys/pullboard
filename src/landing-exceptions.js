@@ -20,6 +20,8 @@ export function landingWaiverKind(test) {
  * Keeping the kinds apart stops a new test named like a waived file from riding that waiver [B3,R3].
  */
 export function landingWaiverCovers(waiver, failure) {
+  // A quarantine names the test by file and name together, so it never covers a same-named test elsewhere [C7,D1].
+  if (waiver.quarantine) return waiver.quarantine.file === failure.file && waiver.quarantine.name === failure.name;
   return (waiver.kind ?? landingWaiverKind(waiver.test)) === 'file' ? waiver.test === failure.file : waiver.test === failure.name;
 }
 

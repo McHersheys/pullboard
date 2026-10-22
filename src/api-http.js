@@ -224,6 +224,11 @@ export function createApiHandler(adapter, { pollMs = 200 } = {}) {
       const itemRoute = /^\/api\/v1\/boards\/([^/]+)\/items\/([^/]+)$/.exec(url.pathname);
       const boardId = route?.[1] ?? shoutRoute?.[1] ?? itemRoute?.[1] ?? null;
       const who = await adapter.authenticate(req, { board: boardId, write: req.method === 'POST' });
+      if (url.pathname === '/api/v1/settings') {
+        if (req.method !== 'GET') throw new Refused('READ_ONLY', 'settings are read-only here; use the supported settings commands');
+        if (typeof adapter.settings !== 'function') throw new Refused('SETTINGS_NOT_AVAILABLE', 'read machine and repository settings from the local API');
+        return json(res, 200, await adapter.settings(url.searchParams.get('board'), who));
+      }
       if (req.method === 'GET' && url.pathname === '/api/v1/boards') {
         const listing = await adapter.boards(who);
         return json(res, 200, Array.isArray(listing) ? { boards: listing } : listing);

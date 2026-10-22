@@ -1,0 +1,33 @@
+/** The pullboard doctrine command, in its own module so an item adding another command never edits these lines. */
+import {
+  checkRulesAt,
+  doctrineReport,
+  ruleLine,
+} from '../doctrine-checks.js';
+import {
+  gateWaitReporter,
+} from '../gate-wait.js';
+import {
+  withGateSlot,
+} from '../gate.js';
+import {
+  Refused,
+} from '../refused.js';
+import {
+  context,
+  resourceAgent,
+} from '../cli.js';
+
+/** Run `pullboard doctrine` and return its exit code. */
+export async function run(io, { first, second, rest }) {
+  if (first !== 'check' || second || rest.length) throw new Refused('USAGE', 'pullboard doctrine check');
+  const ctx = context(io);
+  // Only a repo whose committed doctrine carries a check takes a machine slot for it.
+  const rules = checkRulesAt(ctx.info.root, 'HEAD', ctx.config.practice).length
+    ? await withGateSlot(ctx.info.root, () => doctrineReport(ctx.info.root, ctx.config), { itemCheck: true, agent: resourceAgent(ctx), kind: 'doctrine', onWait: gateWaitReporter(io) })
+    : [];
+  io.result?.({ rules });
+  if (!rules.length) io.say('no committed doctrine rule carries a check; add one as | gate: check <command> | count: N');
+  for (const rule of rules) io.say(ruleLine(rule));
+  return rules.every((rule) => rule.holds) ? 0 : 1;
+}

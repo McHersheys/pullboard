@@ -40,6 +40,7 @@ import { MACHINE } from './machine.js';
 import {
   listApiProjects,
   registryFile,
+  registeredProjectRootsSnapshot,
 } from './projects.js';
 import { milestoneRoadmap } from './roadmap.js';
 import { proofStats } from './stats.js';
@@ -55,6 +56,11 @@ import {
 } from './stats-flow.js';
 import { projectRowDecisions } from './row-decisions.js';
 import {
+  projectItemSpecApprovals,
+  projectSpecApprovals,
+  specApprovalState,
+} from './spec-approval.js';
+import {
   fitFile,
   pendingFit,
   projectFit,
@@ -69,6 +75,7 @@ import {
 } from './serve.js';
 import { relayPresentationShout } from './relay-presentation.js';
 import { createApiHandler } from './api-http.js';
+import { settingsInventory } from './settings-inventory.js';
 import { moveArgs } from './api-moves.js';
 import { personRequestStatuses } from './relay-requests.js';
 export { moveArgs } from './api-moves.js';
@@ -90,6 +97,7 @@ function stateFileInputs(root, config) {
     { name: `spec:${config.spec}`, path: join(root, config.spec) },
     { name: `practice:${config.practice}`, path: join(root, config.practice) },
     { name: 'builtin:standard-doctrine.md', path: new URL('./standard-doctrine.md', import.meta.url) },
+    ...['signoffs.jsonl', 'signers', 'first-commit', 'signers.initial'].map(name => ({ name: `approval:${name}`, path: join(root, '.pullboard', name) })),
     { name: 'fit:blueprint-fit.json', path: fitFile(repoInfo(root).commonDir) },
   ];
 }
@@ -476,7 +484,7 @@ function buildLocalBoardState(root, boardId, board, codeIsMain, { previous = nul
     state.requests = projectData.requests;
     state.personRequests = projectData.personRequests;
     state.milestones = projectData.milestones;
-    const decorated = projectFit(pendingFit(repoInfo(root).commonDir), projectRowDecisions(projectData.rowDecisions, state));
+    const decorated = projectSpecApprovals(projectFit(pendingFit(repoInfo(root).commonDir), projectRowDecisions(projectData.rowDecisions, state)), specApprovalState(root, { board, config }));
     const bases = new Map(decorated.items.map((item) => [item.id, item]));
     for (const id of dirtyIds) {
       if (!currentById.has(id)) continue;
@@ -825,6 +833,10 @@ export function createLocalApiHandler({ secret, getPort, runCommand, projects = 
     throw new TypeError('createLocalApiHandler sessionCookie needs a cookie name and a canonical base64url value with at least 128 bits of random capacity');
   }
   const projectScope = apiProjectScope(projects, scope);
+  // Other API reads refresh the registry; settings must not prune or rewrite its saved metadata.
+  const settingsProjects = projects === listApiProjects
+    ? () => (registeredProjectRootsSnapshot() ?? []).map(root => ({ root })) : projects;
+  const settingsScope = apiProjectScope(settingsProjects, scope);
   const apiProjects = projectScope.projects;
   const scopeCommonDir = projectScope.commonDir;
   const codeIsMain = codeIsFromMain() && isMain !== false;
@@ -965,7 +977,8 @@ export function createLocalApiHandler({ secret, getPort, runCommand, projects = 
           const row = currentBoard.db.prepare('SELECT item_status FROM item WHERE item_id = ?').get(dependency);
           if (row) status.set(dependency, row.item_status);
         }
-        const base = projectItemState(currentBoard, source, status);
+        const base = projectItemSpecApprovals(projectItemState(currentBoard, source, status),
+          specApprovalState(board.root, { board: currentBoard, config: loadConfig(board.root) }));
         // Detail reads need no new Git process while the trunk and immutable receipt log hold.
         const info = repoInfo(board.root);
         const tip = trunkRevisionReader(info)();
@@ -1025,6 +1038,7 @@ export function createLocalApiHandler({ secret, getPort, runCommand, projects = 
       if (req.headers.origin && req.headers.origin !== 'http://' + req.headers.host && !permittedOrigins.has(req.headers.origin)) throw new Refused('API_ORIGIN', 'use the API from its own origin');
       return { local: true };
     },
+    settings: (selected) => settingsInventory(settingsScope.projects(), selected),
     boards: () => withGitReadFacts(() => apiBoardListing(apiProjects, codeIsMain)),
     board: (id) => withGitReadFacts(() => findBoard(id, apiProjects, codeIsMain)),
     state: (board, who, seen, options) => withGitReadFacts(() => localState(board, seen, options).state),

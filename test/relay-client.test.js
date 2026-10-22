@@ -28,6 +28,8 @@ import { fetchFresh } from './http-fixture.js';
 import { relayResetSample } from './relay-reset-fixture.js';
 import { request as relayRequest } from '../src/relay.js';
 import { openPagedSnapshot } from '../src/relay-page-layout.js';
+import { initialSpecApprovalBaseline } from '../src/spec-approval-bootstrap.js';
+import { captureSpecApprovalBaseline } from '../src/spec-approval.js';
 import { AGENT_SHELL_MARKERS, SSH_SHELL_MARKERS } from '../src/person.js';
 
 const SIGN_INS = new Map();
@@ -1016,6 +1018,9 @@ async function competingReplicaClaims(fixture, timing) {
 async function recoverReplicaReplies(fixture, timing) {
   const { scratch, clones, worktrees, envs, gitAt, commonDir, relay, key, boardId, replicaFiles } = fixture;
   timing.begin('lost-reply recovery', 'exercise dropped CLI replies, replay recovery, and durable outcome ordering across all replicas');
+  // Exercise loss of the add's reply, after the separate one-time legacy migration has completed.
+  await timing.wait('establish the legacy approval baseline before the add fault', () => cli(clones[0], envs[0], 'shout', 'all', 'Legacy board ready for add recovery'));
+  await timing.wait('sync the migrated baseline to all clones', () => Promise.all(clones.map((root, index) => cli(root, envs[index], 'status'))));
   const beforeDropped = relay.uploads.length;
   relay.dropNextReply({ offline: true });
   const lostAdd = await timing.wait('send clone A add with its reply dropped', () => cliResult(clones[0], envs[0], 'add', 'web', 'Lost clone reply'));
@@ -1025,6 +1030,8 @@ async function recoverReplicaReplies(fixture, timing) {
   await timing.wait('sync all clones before retrying the lost add', () => Promise.all(clones.map((root, index) => cli(root, envs[index], 'status'))));
   const retriedAdd = await timing.wait('retry the lost clone add', () => cli(clones[0], envs[0], 'add', 'web', 'Lost clone reply'));
   assert.equal(relay.uploads.length, beforeDropped + 1, 'three-clone recovery never posts a second operation');
+  assert.equal(localEvents(replicaFiles[0]).filter(event => event.event_kind === 'spec_approval_baseline').length, 1,
+    'a lost bootstrap reply is consumed through its original receipt, never a second baseline');
   const retriedId = retriedAdd.item.item_id;
   for (const file of replicaFiles) {
     assert.equal(localEvents(file).filter((event) => event.event_kind === 'add' && event.item_id === retriedId).length, 1,
@@ -1420,4 +1427,38 @@ test('relay read recovery stays bounded and preserves refusals, invalid bodies a
   assert.equal(cancelled.readAttempts, 1, 'cancellation wins at the reset boundary');
   await assert.rejects(relayRequest({ url: 'http://127.0.0.1:1' }, '/fixture', { signal: {} }, { ignoreRelayEnvironmentToken: true }),
     error => error.code === 'RELAY_UNAVAILABLE', 'invalid signal setup keeps its existing transport refusal');
+});
+
+
+test('a pending legacy approval baseline keeps its exact source through resume [H16,S1]', { timeout: 60_000 }, async t => { // budget: one lost setup reply and one real resume, bounded fixture cleanup.
+  const timing = threeReplicaPhaseCapture(t);
+  await timing.run(async () => {
+    const fixture = await threeReplicaFixture(t, timing);
+    const { clones, envs, relay, replicaFiles } = fixture;
+    timing.begin('baseline reply recovery', 'lose one compatibility setup reply, change the spec, and resume');
+    relay.dropNextReply({ offline: true });
+    const first = await cliResult(clones[0], envs[0], 'add', 'web', 'Work after migration');
+    assert.equal(first.status, 1);
+    assert.equal(first.document.error.code, 'RELAY_UNAVAILABLE');
+    assert.equal(relay.uploads.length, 1, 'only setup reached the relay before the interrupted work');
+    const spec = join(clones[0], 'SPEC.md');
+    writeFileSync(spec, readFileSync(spec, 'utf8') + '- G99 [approved, must] A later row needs confirmation. | gate: review\n');
+    const local = store.openBoard(replicaFiles[0]);
+    try {
+      assert.equal(store.specApprovalBaselineExists(local), false, 'the offline device has not replayed its pending setup');
+      const config = { spec: 'SPEC.md' };
+      assert.ok(captureSpecApprovalBaseline(clones[0], config).rows.some(row => row.id === 'G99'));
+      const selected = initialSpecApprovalBaseline({ info: { root: clones[0], isMain: true } }, local, 'recordHealthFindings');
+      assert.equal(selected.rows.some(row => row.id === 'G99'), false, 'pending setup retains its original source instead of approving the changed file');
+      assert.equal(initialSpecApprovalBaseline({ info: { root: clones[0], isMain: false } }, local, 'recordHealthFindings'), null, 'a lane never seeds or consumes setup');
+    } finally { store.closeBoard(local); }
+    relay.failReads(false);
+    const resumed = await cli(clones[0], envs[0], 'resume');
+    assert.ok(resumed.needsYou.some(need => need.kind === 'agent-approved' && need.id === 'G99'));
+    const events = localEvents(replicaFiles[0]);
+    assert.equal(events.filter(event => event.event_kind === 'spec_approval_baseline').length, 1);
+    assert.equal(events.filter(event => event.event_kind === 'add' && JSON.parse(event.event_detail).title === 'Work after migration').length, 0,
+      'recovering internal setup never claims the interrupted add was performed');
+    timing.finish(['cloning three replicas', 'baseline reply recovery']);
+  });
 });

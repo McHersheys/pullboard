@@ -40,7 +40,7 @@ function commit(root, env, subject = 'chore: fixture state') {
 function shellWord(value) { return "'" + String(value).replaceAll("'", "'\\''") + "'"; }
 
 /** Create a private real-Git board with a selected native Node test command. */
-function fixture(t, { spec, source, affectedTests = 'node test/runner.js', reporter }) {
+function fixture(t, { spec, source, affectedTests = 'node test/runner.js', reporter, requireInfraNote = false }) {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-main-red-')));
   roots.push(directory);
   t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -65,6 +65,7 @@ function fixture(t, { spec, source, affectedTests = 'node test/runner.js', repor
   assert.equal(cli(root, env, 'init').code, 0);
   put(root, 'pullboard.json', JSON.stringify({
     gate: 'node test/runner.js',
+    ...(requireInfraNote ? { submit: { requireInfraNote: true } } : {}),
     ...(affectedTests ? { affectedTests } : {}),
     lanes: { core: { owns: ['test/'], specs: ['G'] } },
   }, null, 2) + '\n');
@@ -265,7 +266,7 @@ test("a red submit's comparisons keep FIFO and release between files [V4,C7]", a
 });
 
 test('an inherited red reads native spec reporter failure locations [V1]', t => {
-  const box = fixture(t, { spec: RED_SPEC, source: FAILING_TEST, reporter: 'spec' });
+  const box = fixture(t, { spec: RED_SPEC, source: FAILING_TEST, reporter: 'spec', requireInfraNote: true });
   delete box.env.NO_COLOR;
   box.env.FORCE_COLOR = '1';
   const [rework, submitItem] = addItems(box, [

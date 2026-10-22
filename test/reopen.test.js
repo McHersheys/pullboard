@@ -671,3 +671,41 @@ test('a reopened bar takes the same commit again [V2,V6,H16]', async (t) => {
   assert.equal(store.getItem(board, 1).item_status, 'claimed');
   assert.equal(store.getItem(board, 1).item_verdict, 'REJECT');
 });
+
+test('retained main controls builder first refusal during detached review [B13,B5,H16]', t => {
+  const box = project();
+  const { commit } = submitFixture(box);
+  const configPath = join(box.repo, 'pullboard.json');
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  config.claim = { reopenFirstRefusalMinutes: 30 };
+  writeFileSync(configPath, JSON.stringify(config, null, 2));
+  box.git(box.repo, 'add', 'pullboard.json');
+  box.git(box.repo, 'commit', '-q', '-m', 'chore: enable the private builder window');
+  const main = box.git(box.repo, 'rev-parse', 'HEAD');
+  assert.equal(JSON.parse(box.git(box.web, 'show', 'HEAD:pullboard.json')).claim, undefined,
+    'the candidate does not carry the enabled setting');
+  box.git(box.repo, 'switch', '-q', '--detach', commit);
+  try {
+    const rejected = box.run(box.repo, 'verify', '1', 'reject', '--as', 'coordinator', '--reason', 'OTHER', '--note', 'the private proof requires rework');
+    assert.equal(rejected.code, 0, rejected.err);
+  } finally { box.git(box.repo, 'switch', '-q', 'main'); }
+  assert.equal(box.git(box.repo, 'rev-parse', 'HEAD'), main);
+  const other = join(box.dir, 'web-other');
+  box.git(box.repo, 'worktree', 'add', '-q', '--detach', other, 'main');
+  assert.equal(box.run(other, 'join', 'web', '--model', 'Other private builder').code, 0);
+  const refused = box.run(other, 'claim', '1', '--json');
+  assert.equal(refused.code, 1, refused.out);
+  const error = JSON.parse(refused.out).error;
+  assert.equal(error.code, 'REOPEN_HELD_FOR_BUILDER');
+  assert.match(error.message, /web-1/u);
+  const board = openFixtureBoard(t, box);
+  const returned = store.events(board, { itemId: 1 }).findLast(event => event.event_kind === 'reject');
+  const window = JSON.parse(returned.event_detail).reopenFirstRefusal;
+  assert.equal(window.builder, 'web-1');
+  assert.equal(Date.parse(window.until) - Date.parse(returned.event_at), 30 * 60_000);
+  assert.equal(store.recentShouts(board).filter(row => row.shout_to === 'web-1' && row.shout_text.includes('waits for you')).length, 1);
+  const released = box.run(box.web, 'release', '1');
+  assert.equal(released.code, 0, released.err);
+  const claimed = box.run(other, 'claim', '1');
+  assert.equal(claimed.code, 0, claimed.err);
+});

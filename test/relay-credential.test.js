@@ -25,7 +25,12 @@ test('every current operation selects its native actor credential without a seco
     if (['claim', 'refreeze'].includes(operation)) args = [box.before.tables.item[0].item_id, options];
     if (operation === 'reserveNextReview') args = [options];
     if (operation === 'recordHealthFindings') args = [{ agentId: actor, observedRevision: 0, findings: [] }];
+    if (operation === 'recordSpecApprovalBaseline') args = [{ agentId: actor, baseline: { version: 1, file: 'SPEC.md', anchor: null, rows: [] } }];
     if (operation === 'recordFlakeObservation') args = [{ agentId: actor, lane: box.lane, observation: syntheticFlakeObservation('credential-fixture') }];
+    if (operation === 'recordGateRun') args = [{ agentId: actor, lane: box.lane, receipt: { version: 1, id: '00000000-0000-4000-8000-00000000c0de', kind: 'gate', tree: 'b'.repeat(40), head: 'a'.repeat(40),
+      main: 'a'.repeat(40), command: 'c'.repeat(64), green: true, failures: [], load: { average: [0, 0, 0], cpus: 1, freeMB: 100 }, at: '2026-10-20T00:00:00.000Z' } }];
+    if (operation === 'declareJob') args = [{ agentId: actor, name: 'credential-job', every: '10m', owner: actor }];
+    if (operation === 'recordJobRun') args = [{ agentId: actor, name: 'credential-job' }];
     if (operation === 'proposeSentinel') args = [{ agentId: actor,
       row: { name: 'credential-watch', check: 'true', every: 'hourly', owner: actor } }];
     if (['beginSentinelRun', 'finishSentinelRun'].includes(operation)) {
@@ -48,11 +53,15 @@ test('every current operation selects its native actor credential without a seco
     if (operation === 'applyRowDecisions') args = [{ agentId: actor, events: [] }];
     if (operation === 'draftSpecRow') args = [{ agentId: actor, row: { id: 'G9', text: 'A credential fixture row.', gate: 'review', tier: 'must', section: 'G · Goals' } }];
     if (operation === 'recordRowDecisions') { args = [{ agentId: 'person', channel: 'terminal', decisions: [] }]; kind = 'person'; }
+    // A gate run with no receipt from this machine's own gate is refused before it reaches transport.
+    if (operation === 'recordGateRun') return { operation, args, kind, sent: false, expected: 'GATE_RUN_UNBOUND' };
     return { operation, args, kind, ...(kind === 'person' ? { sent: false } : {}) };
   });
   cases.push(
     { operation: 'recordHealthFindings', args: [{ observedRevision: 0, findings: [] }], kind: 'agent', sent: false, expected: 'RELAY_ACTOR' },
+    { operation: 'recordSpecApprovalBaseline', args: [{ baseline: { version: 1, file: 'SPEC.md', anchor: null, rows: [] } }], kind: 'agent', sent: false, expected: 'RELAY_ACTOR' },
     { operation: 'recordFlakeObservation', args: [{ lane: box.lane, observation: syntheticFlakeObservation('missing-actor') }], kind: 'agent', sent: false, expected: 'RELAY_ACTOR' },
+    { operation: 'recordGateRun', args: [{ lane: box.lane, receipt: {} }], kind: 'agent', sent: false, expected: 'GATE_RUN_EVIDENCE' },
     { operation: 'submit', args: [999999, options], kind: 'agent', sent: false, expected: 'SUBMISSION_PROOF' },
     { operation: 'answerDecision', args: [999999, { ...options, asPerson: true, channel: 'terminal' }], kind: 'person', sent: false },
     { operation: 'holdLane', args: [box.lane, { ...options, asPerson: true, channel: 'terminal' }], kind: 'person', sent: false },

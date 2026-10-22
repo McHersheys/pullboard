@@ -10,10 +10,10 @@ export function relayMoveActor(move) {
   if (move.operation === 'addItem') return args[0]?.by ?? null;
   if (move.operation === 'shout') return args[0]?.from ?? null;
   if (['proposeSentinel', 'decideSentinel', 'beginSentinelRun', 'finishSentinelRun'].includes(move.operation)) return args[0]?.agentId ?? null;
-  if (['recordHealthFindings', 'recordFlakeObservation'].includes(move.operation)) return args[0]?.agentId ?? null;
+  if (['recordHealthFindings', 'recordFlakeObservation', 'recordGateRun', 'declareJob', 'recordJobRun'].includes(move.operation)) return args[0]?.agentId ?? null;
   if (['holdLane', 'releaseLane'].includes(move.operation) && args[1]?.asPerson) return 'person';
   if (move.operation === 'release') return args[1] ?? null;
-  if (['reserveNextReview', 'addMilestone', 'recordRowDecisions', 'applyRowDecisions', 'draftSpecRow', 'recordLandingBatch', 'recordLandingWaiver', 'recordLandingFlake', 'finishLandingBatch'].includes(move.operation)) return args[0]?.agentId ?? null;
+  if (['reserveNextReview', 'addMilestone', 'recordRowDecisions', 'applyRowDecisions', 'draftSpecRow', 'recordSpecApprovalBaseline', 'recordLandingBatch', 'recordLandingWaiver', 'recordLandingFlake', 'finishLandingBatch'].includes(move.operation)) return args[0]?.agentId ?? null;
   if (['acceptCheck', 'completeCheckBaseline', 'appendFact', 'editItem', 'escalate', 'recordAttempt', 'claim', 'submit', 'reserveReview', 'verify', 'merged', 'withdraw', 'refreeze',
     'passDecision', 'answerDecision', 'holdLane', 'releaseLane', 'holdItem', 'releaseItemHold', 'reopen', 'editMilestoneItems', 'orderMilestoneItems', 'moveMilestone', 'editMilestone', 'removeMilestone', 'shipMilestone'].includes(move.operation)) return args[1]?.agentId ?? null;
   return null;
@@ -70,4 +70,31 @@ export function relaySenderProblem(move, sender, kind, { phoneReceipt = false } 
   const actor = relayMoveActor(move);
   if (actor !== sender.agent) return new Refused('RELAY_SENDER_MISMATCH', `agent ${sender.agent} cannot act as ${typeof actor === 'string' ? actor : '(no declared agent)'}; send this operation as the authenticated agent`);
   return null;
+}
+
+/** Choose credentials only; main's relay sender policy remains the sole replay authorization. */
+export function credentialActor(move) {
+  const args = move.args;
+  if (move.operation === 'register' && move.engine >= VERIFIER_STANDING_ENGINE) {
+    const creator = args?.[0]?.createdBy;
+    return typeof creator === 'string' && creator !== 'machine' ? creator : 'machine';
+  }
+  if (move.personRequest || ['register', 'ensureCoordinator'].includes(move.operation)) return 'machine';
+  if (['recordRowDecisions', 'recordLandingWaiver'].includes(move.operation)
+    || move.operation === 'answerDecision' && args[1]?.asPerson
+    || move.operation === 'shout' && args[0]?.request) return 'person';
+  return relayMoveActor(move);
+}
+
+/** Compare caller intent without executing frozen callbacks or allocating another operation id. */
+export function operationIntent(operation, args) {
+  const values = Array.isArray(args) ? args.map((value, index) => {
+    if (!['claim', 'refreeze'].includes(operation) || index !== 1 || !value || typeof value !== 'object') return value;
+    const options = { ...value };
+    delete options.freeze;
+    delete options.frozen;
+    delete options.freezeError;
+    return options;
+  }) : args;
+  return JSON.stringify({ operation, args: values }, (_key, value) => typeof value === 'function' ? undefined : value);
 }

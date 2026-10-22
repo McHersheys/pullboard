@@ -14,7 +14,10 @@ import {
   bundledBlueprints,
   readBlueprint,
 } from './blueprints.js';
-import { CONFIG_FILE } from './config.js';
+import {
+  CONFIG_FILE,
+  configFromSource,
+} from './config.js';
 import { Refused } from './refused.js';
 
 /**
@@ -46,7 +49,7 @@ export function blueprintSlot(blueprint) {
  */
 export function installedBlueprints(root) {
   let specFile = 'SPEC.md';
-  try { specFile = JSON.parse(readFileSync(join(root, CONFIG_FILE), 'utf8')).spec ?? specFile; }
+  try { specFile = configFromSource(readFileSync(join(root, CONFIG_FILE), 'utf8')).spec; }
   catch (error) {
     // No pullboard.json yet, or one init will refuse on its own: the default spec file is read.
     if (!(error instanceof SyntaxError) && error?.code !== 'ENOENT') throw error;

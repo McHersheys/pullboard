@@ -47,7 +47,9 @@ test('one builder lists what needs the person [N26,A9]', async (t) => {
   const card = JSON.parse(resumed.out);
   assert.ok(Array.isArray(card.needsYou), 'resume exposes the shared person needs list');
   const expected = card.needsYou;
-  assert.deepEqual(expected.map(need => need.kind).sort(), ['decision', 'draft', 'hold', 'pending']);
+  assert.deepEqual(expected.map(need => need.kind).sort(), ['agent-approved', 'agent-approved', 'decision', 'draft', 'hold', 'pending']);
+  assert.deepEqual(expected.filter(need => need.kind === 'agent-approved').map(need => need.id).sort(), ['G1', 'G2'],
+    'approved source added after init stays visibly unconfirmed');
   assert.equal(expected.find(need => need.kind === 'pending').id, 'G3');
   assert.equal(expected.find(need => need.kind === 'draft').count, 1);
   assert.equal(expected.find(need => need.kind === 'hold').id, 'web');
@@ -56,6 +58,9 @@ test('one builder lists what needs the person [N26,A9]', async (t) => {
   const { personNeedsState } = await import('../src/needs-state.js');
   const state = personNeedsState(box.repo);
   assert.deepEqual(personNeeds(state), expected);
+  const statusCard = box.run(box.repo, 'status', '--json');
+  assert.equal(statusCard.code, 0, statusCard.err || statusCard.out);
+  assert.deepEqual(JSON.parse(statusCard.out).needs, expected, 'lightweight status preserves every kind of person obligation');
   const before = JSON.stringify(state);
   const browserBuilder = runInNewContext(`(${personNeeds.toString()})`);
   assert.deepEqual(JSON.parse(JSON.stringify(browserBuilder(state))), expected,

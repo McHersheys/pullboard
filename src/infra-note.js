@@ -84,17 +84,17 @@ export function existingGuardedEdits(root, claimHead, files, gates) {
 }
 
 /**
- * Decide whether a submit may proceed: refused with INFRA_NOTE_REQUIRED when it edits an existing guarded file and
- * carries no --infra reason, otherwise the note and the files it covers, to record on the submit event.
+ * Decide whether a submit may proceed: an enabled board policy requires an --infra reason for an existing guarded
+ * edit. A supplied note is recorded with its files whether or not the requirement is enabled.
  *
- * @param {{ root: string, claimHead: string, files: string[], gates: string[], infra: string | undefined }} submit
+ * @param {{ root: string, claimHead: string, files: string[], gates: string[], infra: string | undefined, requireInfraNote?: boolean }} submit
  * @returns {{ note: string, files: string[] } | null} the infra record, or null when none is needed or given
  * @throws {Refused} INFRA_NOTE_REQUIRED, or USAGE for a malformed --infra value
  */
-export function infraNote({ root, claimHead, files, gates, infra }) {
+export function infraNote({ root, claimHead, files, gates, infra, requireInfraNote = false }) {
   const edited = existingGuardedEdits(root, claimHead, files, gates);
   if (infra === undefined) {
-    if (!edited.length) return null;
+    if (!requireInfraNote || !edited.length) return null;
     throw new Refused('INFRA_NOTE_REQUIRED', `this change edits existing test or gate file${edited.length > 1 ? 's' : ''} ${edited.join(', ')}; say why with --infra "<why>"`,
       'run pullboard submit <id> --infra "<why>", giving the reason the edit is needed');
   }

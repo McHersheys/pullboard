@@ -63,7 +63,8 @@ async function snapshotDocument(plain) {
   if (plain[0] === 0x1f && plain[1] === 0x8b) {
     if (typeof DecompressionStream !== 'function') throw new Error('This browser cannot read gzip snapshots. Upgrade the browser client.');
     try {
-      const stream = new Blob([plain]).stream().pipeThrough(new DecompressionStream('gzip'));
+      // A Response body, not Blob.stream(): WebKit refuses to decode gzip piped from a Blob stream.
+      const stream = new Response(plain).body.pipeThrough(new DecompressionStream('gzip'));
       return JSON.parse(await withBrowserDeadline(() => new Response(stream).text()));
     } catch { throw new Refused('SNAPSHOT_FORMAT', 'The sealed gzip snapshot is invalid. Refresh it from a linked machine.'); }
   }
@@ -109,6 +110,8 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
   let browserPaired = false;
   let waitingBoards = new Map();
   const approvedBoards = new Set();
+  let pendingLinks = [];
+  let pendingLinksFailure = '';
   let warnings = [];
   let failure = '';
   let failureBoard = null;
@@ -160,7 +163,7 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
       entry.key = null;
     }
     paired.clear();
-    available = []; waitingBoards.clear(); warnings = []; pair = null;
+    available = []; waitingBoards.clear(); pendingLinks = []; pendingLinksFailure = ''; warnings = []; pair = null;
     for (const id of Object.keys(keys)) delete keys[id];
     document.querySelector('main')?.replaceChildren();
     if (error?.code !== 'DEVICE_REVOKED') { location.replace('/'); return; }
@@ -195,7 +198,8 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
       try { state = storedOwnedRequestState(localStorage, key, entry.state?.personRequests); } catch { /* Missing device storage can only hide this device's own notice. */ }
       ownedRequestIds.set(id, state.owned);
     }
-    const lines = noticeLines({ available, paired, ownedRequestIds, waitingBoards, approvedBoards, warnings, failure });
+    const lines = noticeLines({ available, paired, ownedRequestIds, waitingBoards, approvedBoards, pendingLinks, warnings,
+      failure: failure || pendingLinksFailure });
     for (const text of lines) {
       const paragraph = document.createElement('p');
       paragraph.textContent = text;
@@ -478,6 +482,16 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
   /** Reauthorize the listing, pair only visible boards, and close streams for lost access. */
   async function listing() {
     const document = await documentAt('/api/v1/boards', denied);
+    if (accessLost) throw accessError;
+    pendingLinks = [];
+    pendingLinksFailure = '';
+    try {
+      const pending = await documentAt('/api/v1/devices/approvals', denied);
+      pendingLinks = Array.isArray(pending.links) ? pending.links.filter(link => typeof link?.name === 'string' && link.name.trim()) : [];
+    } catch {
+      if (accessLost) throw accessError;
+      pendingLinksFailure = 'Phone approval status could not be checked. Refresh to retry.';
+    }
     if (accessLost) throw accessError;
     const device = await deviceBoardKeyState((path, options) => documentAt(path, denied, options));
     if (accessLost) throw accessError;

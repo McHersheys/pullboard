@@ -29,7 +29,7 @@ function project(t, folders) {
 test('lane add creates a lane and init proposes lanes from the layout [I1,I2,L1]', (t) => {
   // init proposes one lane per top-level package for a packages/* layout, and writes none of them.
   const box = project(t, ['packages/web/src', 'packages/api', 'docs']);
-  const init = box.run('init');
+  const init = box.run('init', '--verbose');
   assert.equal(init.status, 0, init.stderr);
   assert.match(init.stdout, /^proposed lanes: api owns packages\/api\/; web owns packages\/web\/$/mu);
   assert.match(init.stdout, /^add them from the main checkout, then tell the person which lanes you made: pullboard lane add api --owns packages\/api\/ && pullboard lane add web --owns packages\/web\/$/mu);
@@ -80,14 +80,14 @@ test('lane add creates a lane and init proposes lanes from the layout [I1,I2,L1]
 
   // An apps/* layout gets one lane per app.
   const apps = project(t, ['apps/mobile', 'apps/site']);
-  const appsInit = apps.run('init');
+  const appsInit = apps.run('init', '--verbose');
   assert.equal(appsInit.status, 0, appsInit.stderr);
   assert.match(appsInit.stdout, /^proposed lanes: mobile owns apps\/mobile\/; site owns apps\/site\/$/mu);
   assert.deepEqual(Object.keys(apps.lanes()), ['review']);
 
   // Any other layout gets one app lane.
   const plain = project(t, ['src', 'test']);
-  const plainInit = plain.run('init');
+  const plainInit = plain.run('init', '--verbose');
   assert.equal(plainInit.status, 0, plainInit.stderr);
   assert.match(plainInit.stdout, /^proposed lanes: app owns src\/ test\/$/mu);
   assert.match(plainInit.stdout, /^add them from the main checkout, then tell the person which lanes you made: pullboard lane add app --owns src\/,test\/$/mu);
@@ -99,7 +99,7 @@ test('lane add creates a lane and init proposes lanes from the layout [I1,I2,L1]
 
 test('init lets the agent add the first lane and tell the person, never stop to ask [I1,I2,L1]', (t) => {
   const box = project(t, ['server', 'test']);
-  const init = box.run('init');
+  const init = box.run('init', '--verbose');
   assert.equal(init.status, 0, init.stderr);
   const lanes = init.stdout.split('\n').filter((line) => /lane/u.test(line));
   assert.ok(lanes.some((line) => /^add them from the main checkout, then tell the person which lanes you made: pullboard lane add app --owns server\/,test\/$/u.test(line)), lanes.join('\n'));

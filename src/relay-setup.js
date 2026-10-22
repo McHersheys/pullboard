@@ -91,6 +91,8 @@ export async function autoLinkProject(root, io) {
   if (!machine.autoLink) return;
   const project = repoInfo(root).root;
   if (machine.excluded.includes(project) || relayStatus(project).linked) return;
+  const repository = originRepository(project, { optional: true });
+  if (!repository) return;
   const name = listApiProjects().find(entry => entry.root === project)?.name ?? project;
   let pending = machine.approvals.find(entry => entry.root === project);
   // Only the command that publishes the request prints the wait; later commands poll quietly.
@@ -104,7 +106,7 @@ export async function autoLinkProject(root, io) {
         .find(entry => entry.state?.token?.startsWith('pm_') && entry.state.account === machine.owner?.account && entry.state.url === machine.owner?.url);
       if (!candidate) throw new Refused('RELAY_SESSION', 'Run pullboard relay on --all to link this project and pair the phone.');
       source = candidate.state;
-      const proposal = await phoneProposal(source, 'link', originRepository(project),
+      const proposal = await phoneProposal(source, 'link', repository,
         { board: projectBoard(project), command: 'Link ' + name + '? (pullboard init)', link: true, root: project });
       const value = { root: project, publisherRoot: candidate.root, context: proposal.context, sealed: proposal.sealed, replyKey: proposal.reply.storedKey, published: false };
       pending = updateRelayMachine(state => {
@@ -474,12 +476,12 @@ function askLine(io, question) {
  * @param {any} io
  * @returns {Promise<number>}
  */
-export async function offerRelayAtInit(root, io) {
+export async function offerRelayAtInit(root, io, { details = true } = {}) {
   const shared = relayLinked(root) || readRelayMachine().autoLink;
   const offer = relayOfferAtInit({ enabled: relayOfferEnabled(), shared, stdin: io.stdin, stdout: io.stdout });
   if (offer === 'none') return 0;
   if (offer === 'ask' && acceptsRelayOffer(await askLine(io, RELAY_OFFER_QUESTION))) return await relayOnAllCommand(undefined, io);
-  io.say(RELAY_LATER);
+  if (details) io.say(RELAY_LATER);
   return 0;
 }
 

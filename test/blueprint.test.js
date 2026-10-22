@@ -10,6 +10,7 @@ import { bundledBlueprints, readBlueprint, validateBlueprint } from '../src/blue
 import { blueprintRowIds, starterStates } from '../src/blueprint-report.js';
 import { parseSpec } from '../src/spec.js';
 import { createE2eHelpers } from './e2e-helpers.js';
+import { assertStarterChecks } from './blueprint-starter-fixture.js';
 
 const BIN = resolve(import.meta.dirname, '../bin/pullboard.js');
 const PUBLISHED = JSON.parse(readFileSync(resolve(import.meta.dirname, '../src/blueprints/web-app.json'), 'utf8'));
@@ -246,7 +247,7 @@ test('every bundled starter item carries a criterion and a check [S1,I1]', () =>
     const items = readBlueprint(name, process.cwd()).items;
     assert.equal(added.items.length, items.length, `${name} files every starter`);
     assert.deepEqual(added.checksNotRun, added.items.map((item) => item.id), `${name}: every check is stored, none run`);
-    board.expected.push(...items.map((item) => [item.title, item.criterion, item.check]));
+    board.expected.push(...items.map((item) => [item.title, item.criterion, `cd './app' && (${item.check})`]));
   }
   for (const { box, expected } of boards) {
     const filed = json(box, 'list', '--all').items.sort((a, b) => a.item_id - b.item_id);
@@ -257,10 +258,10 @@ test('every bundled starter item carries a criterion and a check [S1,I1]', () =>
   // init --blueprint files them with both and prints that the checks are stored, not run.
   const web = readBlueprint('web-app', process.cwd());
   const fresh = emptyRepo();
-  const started = fresh.run('init', '--blueprint', 'web-app');
+  const started = fresh.run('init', '--blueprint', 'web-app', '--verbose');
   assert.equal(started.status, 0, started.stdout + started.stderr);
   const startedItems = (JSON.parse(fresh.run('list', '--json').stdout).items ?? []).sort((a, b) => a.item_id - b.item_id);
-  assert.deepEqual(startedItems.map((item) => [item.item_title, item.item_criterion, item.item_check]), web.items.map((item) => [item.title, item.criterion, item.check]));
+  assert.deepEqual(startedItems.map((item) => [item.item_title, item.item_criterion, item.item_check]), web.items.map((item) => [item.title, item.criterion, `cd './app' && (${item.check})`]));
   assert.match(started.stdout, new RegExp(`checks stored, not run: ${startedItems.map((item) => `#${item.item_id}`).join(', ')}; no check baseline ran`, 'u'));
 });
 
@@ -637,9 +638,9 @@ test('blueprint commands say what they did [S1,I1]', () => {
   writeFileSync(versioned, JSON.stringify(firstVersion));
   assert.equal(json(box, 'blueprint', 'starters', versioned).starters[0].id, one.id, 'version 1 names the item version 1 filed');
 
-  // init --blueprint lists every row that waits for the person, the inherited doctrine row PB7 included.
+  // Verbose init --blueprint lists every row that waits for the person, the inherited doctrine row PB7 included.
   const started = emptyRepo();
-  const init = started.run('init', '--blueprint', 'web-app');
+  const init = started.run('init', '--blueprint', 'web-app', '--verbose');
   assert.equal(init.status, 0, init.stdout + init.stderr);
   const waiting = JSON.parse(started.run('spec', '--json').stdout).rows.filter((row) => ['draft', 'pending'].includes(row.status));
   const doctrineRows = waiting.filter((row) => row.file !== 'SPEC.md');
@@ -655,7 +656,7 @@ test('blueprint commands say what they did [S1,I1]', () => {
   assert.deepEqual(JSON.parse(fromJson.stdout).blueprint.waitingRows.map((row) => row.id).sort(), waiting.map((row) => row.id).sort(), 'the JSON lists the same waiting rows');
 
   // A second init --blueprint says the blueprint is already there.
-  const reinit = started.run('init', '--blueprint', 'web-app');
+  const reinit = started.run('init', '--blueprint', 'web-app', '--verbose');
   assert.equal(reinit.status, 0, reinit.stdout + reinit.stderr);
   assert.match(reinit.stdout, /the Web app blueprint \(version 1\) is already on this board; nothing added/u);
   assert.doesNotMatch(reinit.stdout, /added the Web app blueprint/u);
@@ -734,7 +735,7 @@ test('init --blueprint starts a board from a blueprint [I1,S1]', () => {
 
   // A known name: init as usual, then the blueprint, in one command, with one summary line.
   const known = emptyRepo();
-  const started = known.run('init', '--blueprint', 'web-app');
+  const started = known.run('init', '--blueprint', 'web-app', '--verbose');
   assert.equal(started.status, 0, started.stdout + started.stderr);
   const summary = started.stdout.split('\n').filter((line) => line.startsWith(`added the ${PUBLISHED.title} blueprint:`));
   assert.equal(summary.length, 1, started.stdout);
@@ -771,7 +772,7 @@ test('init --blueprint starts a board from a blueprint [I1,S1]', () => {
   const withCheck = join(outside, 'checked.blueprint.json');
   writeFileSync(withCheck, JSON.stringify({ ...PUBLISHED, items: PUBLISHED.items.map((item, index) => (index === 0 ? { ...item, check: 'true' } : item)) }));
   const checkedRepo = emptyRepo();
-  const checked = checkedRepo.run('init', '--blueprint', withCheck);
+  const checked = checkedRepo.run('init', '--blueprint', withCheck, '--verbose');
   assert.equal(checked.status, 0, checked.stdout + checked.stderr);
   assert.match(checked.stdout, /checks stored, not run: #\d+(?:, #\d+)*; no check baseline ran/u, 'the summary says the checks were not run');
   const filed = JSON.parse(checkedRepo.run('list', '--json').stdout).items ?? [];
@@ -787,7 +788,7 @@ test('init --blueprint starts a board from a blueprint [I1,S1]', () => {
   const nested = emptyRepo();
   mkdirSync(join(nested.repo, 'plans'));
   writeFileSync(join(nested.repo, 'plans', 'local.json'), JSON.stringify({ ...PUBLISHED, name: 'local', title: 'Local plan' }));
-  const fromSub = nested.runIn(join(nested.repo, 'plans'), 'init', '--blueprint', 'local.json');
+  const fromSub = nested.runIn(join(nested.repo, 'plans'), 'init', '--blueprint', 'local.json', '--verbose');
   assert.equal(fromSub.status, 0, fromSub.stdout + fromSub.stderr);
   assert.match(fromSub.stdout, /added the Local plan blueprint:/u, 'the file next to the caller is the one added');
   assert.equal((JSON.parse(nested.run('list', '--json').stdout).items ?? []).length, PUBLISHED.items.length);
@@ -897,7 +898,7 @@ test('starter items land in a build lane, never the coordinator lane [S1,I1]', (
   // A fresh init with a blueprint: init proposes the app lane and the starters are filed in it.
   // The proposal stays unwritten until the agent runs the command init prints, then tells the person (#914).
   const fresh = emptyRepo();
-  const started = fresh.run('init', '--blueprint', 'web-app');
+  const started = fresh.run('init', '--blueprint', 'web-app', '--verbose');
   assert.equal(started.status, 0, started.stdout + started.stderr);
   assert.deepEqual(lanesOf(fresh), Array(PUBLISHED.items.length).fill('app'), 'init files every starter in the lane it proposes');
   assert.match(started.stdout, /starter items filed in the app lane, proposed above; add it with the command printed there/u, 'init says the lane is a proposal');
@@ -1486,3 +1487,5 @@ test('a Something else answer that names the stack fits a plain Node project [A8
   assert.equal(proposal.decision, 'answer');
   assert.equal(proposal.text, `The app is built with: ${stack}. Choices: Next.js, SvelteKit, Rails, Something else.`);
 });
+
+test("every bundled blueprint's starter check runs from its lane's folder and a baseline never reads green for a command that fails on main [I1,V2]", () => assertStarterChecks({ emptyRepo, freshBoard, json }));

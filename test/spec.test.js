@@ -9,6 +9,8 @@ import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
+import { configFromSource } from '../src/config.js';
+import { preCommitProblems } from '../src/hooks.js';
 import { standardDoctrine } from '../src/doctrine.js';
 import { AGENT_SHELL_MARKERS, SSH_SHELL_MARKERS } from '../src/person.js';
 import { requireRelayOnChannel } from '../src/person.js';
@@ -1044,3 +1046,71 @@ function answerCommandCase(t, separateGitDir) {
   assert.equal(person.status, 0, person.stdout + person.stderr);
   assert.equal(JSON.parse(person.stdout).decisions[0].answer, "Redis on the host's port");
 }
+
+test('spec check fails when an approved row names a missing gate [S4]', (t) => {
+  // A gate file that was committed and then removed is a lost test: an approved must-row fails spec check and
+  // names the row, the file and the removal (#809).
+  const box = specBox(t, { specSource: SPEC });
+  mkdirSync(join(box.root, 'test'));
+  writeFileSync(join(box.root, 'test/proof-gone.test.js'), 'export {};\n');
+  box.git('add', '-A');
+  box.git('commit', '-q', '-m', 'test: the proof');
+  box.git('rm', '-q', 'test/proof-gone.test.js');
+  box.git('commit', '-q', '-m', 'test: remove the proof');
+  writeFileSync(join(box.root, box.specName), `${SPEC}- G9 [approved, must] A rule keeps its proof. | gate: test/proof-gone.test.js\n`);
+  const text = box.run('check');
+  assert.equal(text.status, 1, text.stdout + text.stderr);
+  assert.match(text.stdout + text.stderr, /G9 error: gate file test\/proof-gone\.test\.js was removed from the repository/u);
+});
+
+test('a gate test that was never written only warns, so a new project passes [S4]', (t) => {
+  // A gate file that was never committed is a test not written yet: a warning, so the README's example still fits (#809).
+  const source = `${SPEC}- G9 [approved, must] A rule keeps its proof. | gate: test/never-written.test.js\n`;
+  const box = specBox(t, { specSource: source });
+  const text = box.run('check');
+  assert.equal(text.status, 0, text.stdout + text.stderr);
+  assert.match(text.stdout + text.stderr, /G9 warning: gate file test\/never-written\.test\.js does not exist yet/u);
+});
+
+test('a draft row with a missing gate file only warns [S4]', (t) => {
+  const source = `${SPEC}- G9 [draft, must] A rule not yet proved. | gate: test/not-yet.test.js\n`;
+  const box = specBox(t, { specSource: source });
+  const text = box.run('check');
+  assert.equal(text.status, 0, text.stdout + text.stderr);
+  assert.match(text.stderr + text.stdout, /G9 warning: gate file test\/not-yet\.test\.js does not exist/u);
+});
+
+test('a commit that deletes an approved row test is refused [S4]', (t) => {
+  // Staged deletion of the file an approved row names is refused until the same commit repoints the row (#809).
+  const box = specBox(t, { specSource: `${SPEC}- G9 [approved, must] A rule keeps its proof. | gate: test/proof.test.js\n` });
+  mkdirSync(join(box.root, 'test'));
+  writeFileSync(join(box.root, 'test/proof.test.js'), 'export {};\n');
+  box.git('add', '-A');
+  box.git('commit', '-q', '-m', 'test: the proof');
+  const config = configFromSource(readFileSync(join(box.root, 'pullboard.json'), 'utf8'));
+  box.git('rm', '-q', 'test/proof.test.js');
+  const refused = preCommitProblems({ root: box.root, isMain: true, config, agent: null });
+  assert.ok(refused.some((problem) => problem.includes('G9 names test/proof.test.js, which this commit deletes')), refused.join('\n'));
+  box.git('reset', '-q', '--hard', 'HEAD');
+  writeFileSync(join(box.root, 'test/proof-new.test.js'), 'export {};\n');
+  writeFileSync(join(box.root, config.spec), `${SPEC}- G9 [approved, must] A rule keeps its proof. | gate: test/proof-new.test.js\n`);
+  box.git('rm', '-q', 'test/proof.test.js');
+  box.git('add', '-A');
+  const repointed = preCommitProblems({ root: box.root, isMain: true, config, agent: null });
+  assert.ok(!repointed.some((problem) => problem.includes('G9 names')), `the same commit repoints the row: ${repointed.join('\n')}`);
+});
+
+test('a gate path written another way still guards its test [S4]', (t) => {
+  // ./test/proof.test.js and test/x/../proof.test.js name the file Git reports as test/proof.test.js (#809 review).
+  for (const gate of ['./test/proof.test.js', 'test/x/../proof.test.js']) {
+    const box = specBox(t, { specSource: `${SPEC}- G9 [approved, must] A rule keeps its proof. | gate: ${gate}\n` });
+    mkdirSync(join(box.root, 'test'));
+    writeFileSync(join(box.root, 'test/proof.test.js'), 'export {};\n');
+    box.git('add', '-A');
+    box.git('commit', '-q', '-m', 'test: the proof');
+    const config = configFromSource(readFileSync(join(box.root, 'pullboard.json'), 'utf8'));
+    box.git('rm', '-q', 'test/proof.test.js');
+    const refused = preCommitProblems({ root: box.root, isMain: true, config, agent: null });
+    assert.ok(refused.some((problem) => problem.includes('G9 names test/proof.test.js, which this commit deletes')), `${gate}: ${refused.join('\n')}`);
+  }
+});

@@ -219,14 +219,17 @@ test('a refused upload never blocks board moves [H16,B26]', async (t) => {
       transient.rejectSnapshots({ status, code: 'RELAY_UNAVAILABLE', message: `fixture snapshot HTTP ${status}` });
       await transient.link();
       const title = `not applied before baseline HTTP ${status}`;
-      const refused = await transient.cli('add', transient.lane, title);
-      assert.equal(refused.code, 1, 'a retryable outage still refuses the linked move');
-      assert.equal(refused.document.error.code, 'RELAY_UNAVAILABLE');
-      assert.doesNotMatch((refused.document.diagnostics ?? []).join('\n'), /relay paused/u,
+      const kept = await transient.cli('add', transient.lane, title);
+      assert.equal(kept.code, 0, 'a retryable outage never fails a local move before the baseline is accepted [B26]');
+      assert.doesNotMatch((kept.document.diagnostics ?? []).join('\n'), /relay paused/u,
         'retryable statuses never activate the permanent baseline pause');
+      assert.equal(JSON.parse(readFileSync(transient.linkFile, 'utf8')).baselinePause, undefined);
       transient.rejectSnapshots(null);
-      const retried = await transient.cli('add', transient.lane, title);
-      assert.equal(retried.code, 0, 'the same command succeeds after the transient failure clears');
+      const retried = await transient.cli('status');
+      assert.equal(retried.code, 0, 'the next command uploads the baseline once the transient failure clears');
+      const exported = await transient.cli('export');
+      assert.equal(exported.document.tables.item.filter(row => row.item_title === title).length, 1, 'the move rides the later baseline once');
+      assert.equal(transient.moveAcks.length, 0);
     });
   }
 
@@ -338,9 +341,9 @@ test('a refused upload never blocks board moves [H16,B26]', async (t) => {
   for (const refusal of [
     { label: 'unknown', status: 404, code: 'UNKNOWN_STATE' },
     { label: 'auth', status: 401, code: 'AUTH_REQUIRED' },
-    { label: 'unavailable', status: 503, code: 'RELAY_UNAVAILABLE' },
+    { label: 'unavailable', status: 503, code: 'RELAY_UNAVAILABLE', transient: true },
     { label: 'wrong-version', status: 404, code: 'NO_BOARD', version: 2 },
-    { label: 'unavailable-absence', status: 503, code: 'NO_BOARD' },
+    { label: 'unavailable-absence', status: 503, code: 'NO_BOARD', transient: true },
     { label: 'auth-absence', status: 401, code: 'NO_SNAPSHOT' },
   ]) {
     await t.test(`uncertain ${refusal.label} remote state never authorizes local fallback [H16]`, async subtest => {
@@ -350,6 +353,14 @@ test('a refused upload never blocks board moves [H16,B26]', async (t) => {
       assert.ok(JSON.parse(readFileSync(uncertain.linkFile, 'utf8')).baselinePause);
       uncertain.rejectStateReads(refusal);
       const blocked = await uncertain.cli('add', uncertain.lane, 'never apply a move after uncertain preflight');
+      if (refusal.transient) {
+        // #919: a relay that merely cannot answer never fails a local move; the move waits for a baseline, never an ordered send.
+        assert.equal(blocked.code, 0, 'an unreachable relay never fails a move before the baseline is accepted [B26]');
+        assert.equal(uncertain.moveAcks.length, 0);
+        const kept = await uncertain.cli('export');
+        assert.equal(kept.document.tables.item.some(row => row.item_title === 'never apply a move after uncertain preflight'), true);
+        return;
+      }
       assert.equal(blocked.code, 1, 'a failed remote check cannot become local fallback in the same command');
       assert.equal(blocked.document.error.code, refusal.code);
       assert.equal(uncertain.moveAcks.length, 0);

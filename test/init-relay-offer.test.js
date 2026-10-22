@@ -45,10 +45,10 @@ function safeTail(output, env) {
  * @param {{ when: string, send: string }[]} keys - Keys to type once each text appears, in order.
  * @returns {Promise<{ code: number | null, output: string, asked: boolean }>}
  */
-function initInTerminal(t, cwd, env, keys = [], setupAnswer = 'n\n') {
+function initInTerminal(t, cwd, env, keys = [], setupAnswer = 'n\n', verbose = false) {
   // The shell keeps a trap on SIGINT so Ctrl-C reaches init and still leaves the shell to print
   // init's exit code; dash, Linux's sh, would otherwise die with it. Init itself gets the default.
-  const inner = `trap : INT; ${shellWord(process.execPath)} ${shellWord(CLI)} init; echo "pty-exit:$?"`;
+  const inner = `trap : INT; ${shellWord(process.execPath)} ${shellWord(CLI)} init${verbose ? ' --verbose' : ''}; echo "pty-exit:$?"`;
   const script = process.platform === 'darwin' ? ['-q', '/dev/null', '/bin/sh', '-c', inner] : ['-qec', inner, '/dev/null'];
   const child = startFixtureChild('/bin/sh', ['-c', '/bin/cat | /usr/bin/script "$@"', 'sh', ...script], {
     cwd, env: { ...env, SHELL: '/bin/sh' }, stdio: ['pipe', 'pipe', 'pipe'],
@@ -119,7 +119,7 @@ updateRelayMachine((state) => { state.owner = { account: 'fixture-owner', url: $
 /** Count the sign-ins the loopback relay has started. */
 const signIns = (box) => box.calls.filter((call) => call.path.startsWith('/auth/device/start')).length;
 
-/** The last line init printed before the shell's exit mark; init ends with its staging line [I1,I2]. */
+/** The last line init printed before the shell's exit mark; init ends with its one next step [I1,I2]. */
 function lastInitLine(output) {
   const lines = output.split(EXIT_MARK)[0].replace(/\r/gu, '').split('\n').map((line) => line.trim()).filter(Boolean);
   return lines.at(-1) ?? '';
@@ -151,15 +151,15 @@ test('a person at init shares with one Enter [H5,H17,B26]', { timeout: 240_000 }
     assert.match(shown.stdout, /^relay\.offerAtInit: true/mu, 'the setting is on unless set to false');
   });
 
-  await t.test('n skips and prints pullboard relay on --all for later [H5]', async () => {
+  await t.test('n skips sharing and keeps one next step [H5]', async () => {
     const before = signIns(box);
     const root = freshRepository(box, 'answered-no');
     const run = await initInTerminal(t, root, person, [{ when: QUESTION, send: 'n\r' }]);
     assert.equal(run.code, 0, `init finishes: ${safeTail(run.output, person)}`);
     assert.equal(run.asked, true, 'a person at a terminal is asked');
     assert.equal(run.output.split(QUESTION).length - 1, 1, 'the question is asked once');
-    assert.ok(run.output.split(QUESTION)[1].includes(RELAY_LATER), 'n prints the command for later');
-    assert.equal(lastInitLine(run.output), SETUP_COMMIT_LATER, 'the one setup confirmation command stays last');
+    assert.equal(run.output.split(QUESTION)[1].includes(RELAY_LATER), false, 'default output leaves the optional recipe behind verbose');
+    assert.match(lastInitLine(run.output), /^Next:.*pullboard resume/u, 'the one next step stays last');
     assert.equal(signIns(box), before, 'n starts no sign-in');
     assert.equal(linked(root), false, 'n links nothing');
   });
@@ -198,13 +198,13 @@ test('a person at init shares with one Enter [H5,H17,B26]', { timeout: 240_000 }
     assert.match(after, /Pair your phone once: \S+#device=/u, 'the pairing link is printed');
     assert.ok(after.includes('\x1b[30;47m') && after.includes('█'), 'the QR is printed');
     assert.equal(after.includes(RELAY_LATER), false, 'a yes is not told to run the command later');
-    assert.equal(lastInitLine(run.output), SETUP_COMMIT_LATER, 'the one setup confirmation command stays last');
+    assert.match(lastInitLine(run.output), /^Next:.*pullboard resume/u, 'the one next step stays last');
     assert.deepEqual(['', 'y', 'Y', 'yes', ' y '].map(acceptsRelayOffer), [true, true, true, true, true], 'Enter or y is yes');
     assert.deepEqual(['n', 'no', 'later', null].map(acceptsRelayOffer), [false, false, false, false], 'anything else, or a closed terminal, is no');
   });
 });
 
-test('an agent or CI init is never asked and prints the command [H5,B26]', { timeout: 240_000 }, async (t) => {
+test('an agent or CI init stays noninteractive and shows one next step [H5,B26]', { timeout: 240_000 }, async (t) => {
   const box = await relayClientFixture(t);
   useLoopbackRelay(box);
   const person = personEnvironment(box);
@@ -219,7 +219,22 @@ test('an agent or CI init is never asked and prints the command [H5,B26]', { tim
     const run = await start();
     assert.equal(run.code, 0, `${name}: init finishes: ${safeTail(run.output, person)}`);
     assert.equal(run.asked, false, `${name}: is never asked`);
-    assert.ok(run.output.includes(RELAY_LATER), `${name}: prints pullboard relay on --all`);
+    assert.equal(run.output.includes(RELAY_LATER), false, `${name}: optional relay recipe stays behind verbose`);
+    assert.match(lastInitLine(run.output), /^Next:.*pullboard resume/u, `${name}: one final next step`);
   }
   assert.equal(signIns(box), before, 'no sign-in starts without the person');
+});
+
+test('verbose init retains sharing and setup recipes without starting either [I1,I2,H5,B26]', { timeout: 240_000 }, async (t) => {
+  const box = await relayClientFixture(t);
+  useLoopbackRelay(box);
+  const person = personEnvironment(box);
+  const before = signIns(box);
+  const root = freshRepository(box, 'verbose-recipes');
+  const run = await initInTerminal(t, root, person, [{ when: QUESTION, send: 'n\r' }], 'n\n', true);
+  assert.equal(run.code, 0, safeTail(run.output, person));
+  assert.ok(run.output.includes(RELAY_LATER), 'verbose preserves the optional sharing recipe');
+  assert.ok(run.output.includes(SETUP_COMMIT_LATER), 'verbose preserves the deferred setup commit recipe');
+  assert.equal(signIns(box), before, 'recipes do not start sign-in');
+  assert.equal(linked(root), false, 'declining still links nothing');
 });

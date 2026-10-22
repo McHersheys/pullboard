@@ -29,7 +29,8 @@ function fixture(t) {
   runFixtureGit(['init', '-q', '-b', 'main'], { cwd: root, stdio: 'pipe' });
   writeFileSync(join(root, 'pullboard.json'), JSON.stringify({ lanes: { web: { owns: ['web/'] } } }));
   writeFileSync(join(root, 'PRACTICE.md'), '');
-  const clock = { now: () => new Date('2026-10-08T12:00:00.000Z') };
+  let now = new Date('2026-10-08T12:00:00.000Z');
+  const clock = { now: () => now };
   const board = store.openBoard(join(root, '.git', 'pullboard', 'board.sqlite'), clock);
   t.after(() => store.closeBoard(board));
   store.register(board, { lane: 'coordinator', path: root });
@@ -46,7 +47,32 @@ function fixture(t) {
   submit('c'.repeat(40));
   store.verify(board, id, { agentId: reviewer, decision: 'ACCEPT', note: 'Fixture rework meets its bar.', head: 'c'.repeat(40), digest: 'frozen', policy: 'any' });
   store.merged(board, id, { agentId: 'coordinator', commit: 'd'.repeat(40) });
-  return { root, board };
+  return { root, board, builder, reviewer, setNow: (value) => { now = new Date(value); } };
+}
+
+/** Record two rejections of the same real board head after the criterion is corrected. */
+function addCorrectedRepeat(board, builder, reviewer, setNow) {
+  const commit = 'e'.repeat(40);
+  const tree = 'f'.repeat(40);
+  const id = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'Corrected bar fixture', criterion: 'the heading is visible' });
+  const freeze = (item) => ({ text: item.item_criterion, digest: `digest:${item.item_criterion}` });
+  const first = store.claim(board, id, { agentId: builder, lane: 'web', leaseMs: 3_600_000, freeze });
+  submitFixture(board, id, { agentId: builder, commit, tree });
+  store.verify(board, id, {
+    agentId: reviewer, decision: 'REJECT', reason: 'BEHAVIOR_MISMATCH', note: 'the heading is missing',
+    head: commit, digest: first.digest, policy: 'any',
+  });
+  setNow('2026-10-09T12:00:00.000Z');
+  store.claim(board, id, { agentId: builder, lane: 'web', leaseMs: 3_600_000, freeze });
+  store.editItem(board, id, { agentId: 'coordinator', criterion: 'the heading is accessible', reason: 'the fixture corrects its criterion' });
+  const corrected = store.refreeze(board, id, { agentId: 'coordinator', freeze });
+  submitFixture(board, id, { agentId: builder, commit, tree });
+  store.verify(board, id, {
+    agentId: reviewer, decision: 'REJECT', reason: 'BEHAVIOR_MISMATCH',
+    note: 'the corrected criterion still fails\nThe accessible heading is absent.',
+    head: commit, digest: corrected.after, policy: 'any',
+  });
+  return id;
 }
 
 test('[R1,R2,A1] stats JSON is versioned, text states the same proof numbers and neither records a move', async (t) => {
@@ -111,4 +137,74 @@ test('[R1,R2,A2] local HTTP state exposes exactly the command statistics', async
   assert.deepEqual(command.data.stats, proofStats(board, { now: Date.parse(command.data.stats.flow.asOf) }));
   assert.deepEqual({ ...document.state.proofStats, flow: { ...document.state.proofStats.flow, asOf: command.data.stats.flow.asOf } },
     command.data.stats, 'the two observations retain every invariant field exactly');
+});
+
+/** Add one catch of every other kind to the fixture board, through the events the board already records. */
+function addCatches(board) {
+  store.logEvent(board, 'coordinator', 'reopen', 1, { commit: 'c'.repeat(40), note: 'merge main', conflict: { files: ['web/app.js'], trunk: 'e'.repeat(40) }, cause: 'merge-conflict' });
+  store.logEvent(board, 'coordinator', 'reopen', 1, { commit: 'c'.repeat(40), note: 'red', supersedes: 1, landingFailure: { batch: 'b1', tests: [{ file: 'test/a.test.js', name: 'adds up' }], mergeCommit: 'f'.repeat(40) } });
+  store.logEvent(board, 'coordinator', 'flake-observation', null, { engine: 61, observation: { id: 'o1', classification: 'flake', file: 'test/b.test.js', name: 'waits' } });
+  store.logEvent(board, 'coordinator', 'test-quarantine', 1, { engine: 67, file: 'test/c.test.js', name: 'same tree', tree: 'd'.repeat(40), runs: ['r1', 'r2'] });
+  store.logEvent(board, 'sentinel', 'health-failure', 1, { key: 'k1', cause: 'refusal:STUCK', subject: 'item 1', engine: 1 });
+}
+
+test('[N26,D1] stats names what the board caught', async (t) => {
+  const { root, board, builder, reviewer, setNow } = fixture(t);
+  const repeatedId = addCorrectedRepeat(board, builder, reviewer, setNow);
+  addCatches(board);
+  const json = await run(root, ['stats', '--json']);
+  assert.equal(json.code, 0, json.stderr);
+  const { counts, total, entries } = json.data.stats.caught;
+  assert.deepEqual(counts, { sentBack: 3, conflict: 1, redHead: 1, flake: 2, stuck: 1 });
+  assert.equal(total, 8);
+  assert.match(entries.find((entry) => entry.kind === 'sentBack').text, /Fixture rejects the first attempt\./u, 'a sent-back line carries the gap the reviewer named');
+  assert.ok(entries.every((entry) => entry.at && Object.hasOwn(entry, 'item')), 'each catch names its item and when');
+  const repeated = entries.filter((entry) => entry.kind === 'sentBack' && entry.item === repeatedId);
+  assert.equal(repeated.length, 2, 'both persisted rejection events are shown');
+  assert.match(repeated[0].text, /the heading is missing/u, 'the earlier event keeps its own reviewer note');
+  assert.doesNotMatch(repeated[0].text, /corrected criterion/u);
+  assert.match(repeated[1].text, /the corrected criterion still fails\nThe accessible heading is absent\./u, 'the raw note remains intact in JSON');
+  const laterWindow = await run(root, ['stats', '--since', '2026-10-09', '--json']);
+  const laterRepeat = laterWindow.data.stats.caught.entries.filter((entry) => entry.kind === 'sentBack' && entry.item === repeatedId);
+  assert.equal(laterRepeat.length, 1, 'the later window excludes the earlier same-head rejection');
+  assert.match(laterRepeat[0].text, /the corrected criterion still fails/u, 'the later event retains its note after earlier history is consumed');
+  assert.doesNotMatch(laterRepeat[0].text, /the heading is missing/u);
+  const text = await run(root, ['stats']);
+  assert.match(text.stdout, /caught: 3 sent back by a reviewer · 1 conflicted with the trunk and went back for a merge · 1 heads the full suite refused to publish · 2 flakes proven · 1 stuck states the sentinel reported/u);
+  assert.match(text.stdout, /sent back by a reviewer: #1, \S+: TEST_FAILURE: Fixture rejects the first attempt\./u);
+  const repeatedLines = text.stdout.split(/\r?\n/u).filter((line) => line.startsWith(`  sent back by a reviewer: #${repeatedId},`));
+  assert.equal(repeatedLines.length, 2, 'each repeated rejection renders on one physical line');
+  assert.ok(repeatedLines.some((line) => line.includes('the heading is missing')));
+  assert.ok(repeatedLines.some((line) => line.includes('the corrected criterion still fails The accessible heading is absent.')));
+  assert.doesNotMatch(text.stdout, /^The accessible heading is absent\.$/mu, 'the multiline note does not leak into a second physical line');
+  assert.match(text.stdout, /conflicted with the trunk and went back for a merge: #1, \S+: conflicted with the trunk in web\/app\.js/u);
+  assert.match(text.stdout, /heads the full suite refused to publish: #1, \S+: the full suite failed test\/a\.test\.js: adds up/u);
+  assert.match(text.stdout, /flakes proven: no item, \S+: test\/b\.test\.js: waits passed on rerun/u);
+  assert.match(text.stdout, new RegExp(`flakes proven: #1, \\S+: test/c\\.test\\.js :: same tree went red and green on tree ${'d'.repeat(40)}`, 'u'), 'a test the board quarantined after one tree went red and green is a proven flake');
+  assert.match(text.stdout, /stuck states the sentinel reported: #1, \S+: item 1 \(STUCK\)/u);
+  const digest = await run(root, ['digest', '--json']);
+  assert.equal(digest.code, 0, digest.stderr);
+  assert.match(digest.data.markdown, /## What the board caught, last 30 days/u);
+  assert.match(digest.data.markdown, /3 sent back by a reviewer; 1 conflicted with the trunk/u);
+  assert.match(digest.data.markdown, /Fixture rejects the first attempt\./u);
+  const digestRows = digest.data.markdown.split(/\r?\n/u).filter((line) => line.startsWith(`- sent back by a reviewer: Corrected bar fixture (#${repeatedId}),`));
+  assert.equal(digestRows.length, 2, 'each repeated rejection remains one digest row');
+  assert.ok(digestRows.some((line) => line.includes('the heading is missing')));
+  assert.ok(digestRows.some((line) => line.includes('the corrected criterion still fails The accessible heading is absent.')));
+});
+
+test('[N26,D1] the caught list never interrupts', async (t) => {
+  const { root, board } = fixture(t);
+  addCatches(board);
+  const before = store.events(board);
+  const shouts = board.db.prepare('SELECT count(*) AS n FROM shout').get().n;
+  for (const args of [['status'], ['list'], ['inbox'], ['lanes']]) {
+    const out = await run(root, args);
+    assert.doesNotMatch(out.stdout + out.stderr, /caught/iu, `pullboard ${args[0]} stays silent about catches`);
+  }
+  assert.deepEqual(store.events(board), before, 'no ordinary command records a move for a catch');
+  await run(root, ['stats']);
+  await run(root, ['digest']);
+  assert.deepEqual(store.events(board), before, 'asking for the list records nothing');
+  assert.equal(board.db.prepare('SELECT count(*) AS n FROM shout').get().n, shouts, 'a catch pushes no shout, banner or notification');
 });

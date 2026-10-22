@@ -101,8 +101,8 @@ test('init leaves a view running for pullboard.dev [H5,N26]', async (t) => {
   const lines = viewLines(init.out);
   assert.equal(lines.length, 1, `init prints one line about the view:\n${init.out}`);
   const log = join(box.env.PULLBOARD_HOME, `view-${port}.log`);
-  assert.equal(lines[0], `Pullboard view is running in the background at http://127.0.0.1:${port}, so pullboard.dev finds this computer's boards (log: ${log}). `
-    + `To stop it: kill ${record.pid}; turn this off with "view": { "background": false } in ${join(box.env.PULLBOARD_MACHINE_HOME, 'settings.json')}`);
+  assert.equal(lines[0], `Pullboard view is running at http://127.0.0.1:${port}.`);
+  assert.doesNotMatch(init.out, /\b(?:kill\s+\d+|taskkill\s+\/PID\s+\d+)/iu, 'init does not advise killing the live view');
   assert.ok(!init.out.includes(record.secret), 'the line names where the view is, never its secret');
 
   const listing = await answers(port, record.secret);

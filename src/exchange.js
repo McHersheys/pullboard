@@ -8,7 +8,10 @@ import {
   ENGINE_VERSION,
   storeTriggers,
 } from './machine.js';
-import { EVENT_LOG_VERSION } from './board.js';
+import {
+  EVENT_LOG_VERSION,
+  specApprovalBaseline,
+} from './board.js';
 
 const VERSION = 1;
 
@@ -119,22 +122,27 @@ function validateDocument(db, document, names) {
 }
 
 /** Only the generated identity is disposable when restoring a fresh board (A2, A7). */
-function hasOnlyIdentity(db) {
+function hasOnlyIdentity(db, { baseline = false } = {}) {
   const rows = db.prepare('SELECT * FROM board_meta').all();
   const identity = rows.find((row) => row.meta_key === 'board_id');
   const eventLog = rows.find((row) => row.meta_key === 'event_log_version');
   return /^[0-9a-f]{32}$/.test(identity?.meta_value ?? '')
-    && rows.length === (eventLog ? 2 : 1)
-    && rows.every((row) => row.meta_key === 'board_id' || row.meta_key === 'event_log_version');
+    && rows.length === (eventLog ? 2 : 1) + (baseline ? 1 : 0)
+    && rows.every((row) => row.meta_key === 'board_id' || row.meta_key === 'event_log_version' || baseline && row.meta_key === 'spec_approval_baseline');
 }
 
 /** True only for the coordinator registration and join event that `pullboard init` creates. */
 function hasOnlyInitCoordinator(db, names) {
-  if (!names.includes('sqlite_sequence') || !hasOnlyIdentity(db)) return false;
+  let baseline;
+  try { baseline = specApprovalBaseline({ db }); }
+  catch (error) { if (!(error instanceof Refused)) throw error; return false; }
+  if (!names.includes('sqlite_sequence') || !hasOnlyIdentity(db, { baseline: Boolean(baseline) })) return false;
   const agents = db.prepare('SELECT * FROM agent').all();
-  const events = db.prepare('SELECT * FROM event').all();
+  const events = db.prepare('SELECT * FROM event ORDER BY event_id').all();
   const sequence = db.prepare('SELECT name, seq FROM sqlite_sequence ORDER BY name').all();
-  if (agents.length !== 1 || events.length !== 1 || sequence.length !== 1) return false;
+  if (agents.length !== 1 || events.length !== (baseline ? 2 : 1) || sequence.length !== 1) return false;
+  if (baseline && (events[1].event_id !== 2 || events[1].event_by !== 'coordinator'
+    || events[1].event_kind !== 'spec_approval_baseline' || events[1].item_id !== null)) return false;
   const [agent] = agents;
   const [event] = events;
   if (
@@ -143,11 +151,12 @@ function hasOnlyInitCoordinator(db, names) {
     || agent.agent_route !== 'strong'
     || agent.agent_last_shout_id !== 0
     || !agent.agent_path
+    || event.event_id !== 1
     || event.event_by !== 'coordinator'
     || event.event_kind !== 'join'
     || event.item_id !== null
     || sequence[0].name !== 'event'
-    || sequence[0].seq !== 1
+    || sequence[0].seq !== events.length
   ) return false;
   try {
     const detail = JSON.parse(event.event_detail);
@@ -160,6 +169,11 @@ function hasOnlyInitCoordinator(db, names) {
   return names
     .filter((table) => table !== 'agent' && table !== 'event' && table !== 'sqlite_sequence' && table !== 'board_meta')
     .every((table) => !db.prepare(`SELECT 1 FROM ${identifier(table)} LIMIT 1`).get());
+}
+
+/** Share the exact disposable init shape with pairing before it consumes a one-use code. */
+export function isInitialBoard(board) {
+  return hasOnlyInitCoordinator(board.db, tableNames(board.db));
 }
 
 /**
@@ -221,7 +235,7 @@ function restoreDocument(board, document, replace = false, expectedNativeDigest 
     } else if (initCoordinator) {
       db.exec('DELETE FROM event; DELETE FROM agent; DELETE FROM sqlite_sequence');
     }
-    if (onlyIdentity && !replace) db.exec('DELETE FROM board_meta');
+    if ((onlyIdentity || initCoordinator) && !replace) db.exec('DELETE FROM board_meta');
     for (const table of names.filter((name) => name !== 'sqlite_sequence')) {
       const columns = columnsOf(db, table);
       const sql = `INSERT INTO ${identifier(table)} (${columns.map(identifier).join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`;

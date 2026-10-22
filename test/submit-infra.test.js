@@ -9,10 +9,20 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmS
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
+import { configFromSource } from '../src/config.js';
 
 const BIN = join(import.meta.dirname, '../bin/pullboard.js');
 const SPEC = '# Submit proof fixture\n\n## G · Goals\n- G1 [approved, must] The selected test proves the change. | gate: test\n';
 const dirs = [];
+
+test('infra-note settings default off and refuse non-boolean policies [C7,V4]', () => {
+  assert.equal(configFromSource('{}').submit.requireInfraNote, false);
+  assert.equal(configFromSource('{"submit":{}}').submit.requireInfraNote, false);
+  assert.equal(configFromSource('{"submit":{"requireInfraNote":true}}').submit.requireInfraNote, true);
+  for (const submit of [null, [], true, { requireInfraNote: 'true' }, { requireInfraNote: 1 }, { requireInfraNote: null }, { requireInfraNotes: true }]) {
+    assert.throws(() => configFromSource(JSON.stringify({ submit })), error => error.code === 'BAD_CONFIG');
+  }
+});
 
 after(() => {
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
@@ -70,9 +80,10 @@ function privateRepo(t) {
 }
 
 /** Create a real joined builder while the coordinator stays on its unchanged trunk. */
-function builderRepo(box) {
+function builderRepo(box, { requireInfraNote = true } = {}) {
   const config = JSON.parse(readFileSync(join(box.root, 'pullboard.json'), 'utf8'));
   config.lanes = { build: { owns: ['src/', 'test/'], specs: ['G'] } };
+  if (requireInfraNote) config.submit = { requireInfraNote: true };
   put(box.root, 'pullboard.json', JSON.stringify(config));
   commitAll(box);
   const made = box.run('worktree', 'build', '--json');
@@ -89,14 +100,14 @@ function builderRepo(box) {
 }
 
 /** Commit one change to a builder checkout, then return the item's builder repository. */
-function infraBox(t, { edit, existing = true }) {
+function infraBox(t, { edit, existing = true, requireInfraNote = true }) {
   let box = privateRepo(t);
   put(box.root, 'pullboard.json', JSON.stringify({ gate: 'true', spec: 'SPEC.md' }));
   put(box.root, 'SPEC.md', SPEC);
   put(box.root, 'src/a.js', 'export const value = 1;\n');
   if (existing) put(box.root, 'test/existing.test.js', "import '../src/a.js';\n");
   commitAll(box);
-  box = builderRepo(box);
+  box = builderRepo(box, { requireInfraNote });
   assert.equal(box.coordinator('add', 'build', 'Infra note fixture', '--check', 'true').code, 0);
   assert.equal(box.run('claim', '1').code, 0);
   edit(box);
@@ -119,6 +130,28 @@ test('submit asks why when a change edits an existing test [C7,V4]', (t) => {
   assert.equal(shown.code, 0, shown.err);
   assert.match(shown.out, /infra note: the listener shim hid a real socket/u, 'the reviewer reads the note in show');
   assert.match(shown.out, /test\/existing\.test\.js/u, 'show names the edited file');
+});
+
+test('the infra note is required only when the board turns it on [C7,V4]', (t) => {
+  /** Edit an existing test file after the item claim. */
+  const edit = (box) => put(box.root, 'test/existing.test.js', "import '../src/a.js';\n// a change\n");
+  const optional = infraBox(t, { edit, requireInfraNote: false });
+  const accepted = optional.run('submit', '1');
+  assert.equal(accepted.code, 0, `${accepted.out}\n${accepted.err}`);
+  assert.doesNotMatch(`${accepted.out}\n${accepted.err}`, /INFRA_NOTE_REQUIRED/u);
+
+  const recorded = infraBox(t, { edit, requireInfraNote: false });
+  const noted = recorded.run('submit', '1', '--infra', 'the change keeps the real listener covered');
+  assert.equal(noted.code, 0, `${noted.out}\n${noted.err}`);
+  const shown = recorded.run('show', '1');
+  assert.equal(shown.code, 0, shown.err);
+  assert.match(shown.out, /infra note: the change keeps the real listener covered/u);
+  assert.match(shown.out, /test\/existing\.test\.js/u);
+
+  const enabled = infraBox(t, { edit, requireInfraNote: true });
+  const refused = enabled.run('submit', '1');
+  assert.equal(refused.code, 1, `${refused.out}\n${refused.err}`);
+  assert.match(`${refused.out}\n${refused.err}`, /INFRA_NOTE_REQUIRED/u);
 });
 
 test('a new test file needs no note [C7,V4]', (t) => {

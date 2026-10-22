@@ -30,7 +30,7 @@ const drawHosted = (${drawHosted.toString()});
  * page names before first paint (#757), and it hears nothing about this computer.
  */
 function localNote(state, facts = {}) {
-  drawHosted(document, hostedState(state, { browser: hostedBrowser(navigator), phone: document.documentElement.dataset.relayDevice === 'phone', ...facts }), { view: localSession?.origin || LOCAL_VIEW, signIn: hosted.signIn, session: hosted.relaySession });
+  drawHosted(document, hostedState(state, { browser: hostedBrowser(navigator), phone: document.documentElement.dataset.relayDevice === 'phone', localNavigationOnly, localOriginKnown: Boolean(localSession), signedIn: hosted.relaySession, ...facts }), { view: localSession?.origin || LOCAL_VIEW, signIn: hosted.signIn, session: hosted.relaySession });
   revealNote(state);
 }
 
@@ -118,6 +118,7 @@ function localExpired() {
 const LOCAL_STATES = ['looking', 'asking', 'blocked', 'not-running', 'mismatch'];
 let localChecking = false;
 let localReached = false;
+let localNavigationOnly = false;
 
 /**
  * Reach this machine's view: read the view's public protocol, which holds no secret and no board, and take the session
@@ -130,6 +131,13 @@ let localReached = false;
 async function connectLocal(again = false) {
   // A phone never runs Pullboard: it is unreachable at once, before a permission query or a fetch can wait (#900).
   if (pageStartup(document.documentElement).phone) return 'unreachable';
+  // WebKit refuses HTTPS-to-HTTP loopback reads even after a secret handoff. A top-level link opens the view itself,
+  // where its normal session key and same-origin requests work; keep relay boards and their pairing screens independent.
+  if (location.protocol === 'https:' && hostedBrowser(navigator) === 'Safari') {
+    localNavigationOnly = true;
+    if (!again) localNote('local-open', { listed: hosted.relaySession });
+    return 'unreachable';
+  }
   if (localChecking) return 'busy';
   localChecking = true;
   try { return await lookLocal(again); }
@@ -651,7 +659,8 @@ function flowSvg(p) {
   const inside = new Map(FLOW.states.map((s) => {
     const keeps = pairs.find((pair) => pair.from === s.id && pair.to === s.id);
     const said = keeps ? told([keeps]) : null;
-    const kept = said ? wrap(said.words, BW - 28 - wide('↻ ', 11), 11).map((line, i) => (i ? '  ' : '↻ ') + line) : [];
+    // A wrapped line opens with the dot it was split at, so the moves still read as one list (#954).
+    const kept = said ? wrap(said.words, BW - 28 - wide('↻ ', 11), 11).map((line, i) => (i ? '· ' : '↻ ') + line) : [];
     return [s.id, { keeps, said, kept, back: s.id === FLOW.initial && back ? back + ' sent back' : '' }];
   }));
   const BH = 44 + 15 * Math.max(1, ...[...inside.values()].map((box) => box.kept.length + (box.back ? 1 : 0)));
@@ -979,11 +988,15 @@ async function hostedListed(boards) {
   // A list that arrives after a failed read, once this computer's view answered, means the page recovered: the problem
   // it showed is over, and this list decides what shows now.
   if (shown === 'problem' && localReached) { localNote(null); shown = ''; }
-  if (boards.length) { if (['looking', 'not-running', 'no-linked', 'unpaired', 'signed-out'].includes(shown)) localNote(null); return; }
+  if (boards.length) {
+    if (localNavigationOnly) localNote('local-open', { listed: true });
+    else if (['looking', 'not-running', 'no-linked', 'unpaired', 'signed-out'].includes(shown)) localNote(null);
+    return;
+  }
   // Nobody signed in and no board on this computer yet: the page says how to make one, as the local view does.
   if (!hosted.relaySession) { if (shown === 'looking') localNote(null); return; }
   // An empty local view can still leave linked boards on another computer waiting for this browser to pair.
-  if (!['', 'looking', 'not-running', 'no-linked', 'unpaired'].includes(shown)) return;
+  if (!['', 'looking', 'not-running', 'no-linked', 'unpaired', 'local-open'].includes(shown)) return;
   let linked;
   try { linked = await linkedList(); } catch { return; /* the relay's banner says why */ }
   const names = (linked.boards || []).filter((board) => typeof board.repository === 'string').map((board) => board.repository);

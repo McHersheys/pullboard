@@ -8,6 +8,10 @@ import {
   policyAt,
 } from './trusted-policy.js';
 import { pinRunMain } from './gate.js';
+import {
+  readGateReceipt,
+  receiptStore,
+} from './gate-run-receipt.js';
 import { runProfiledShell } from './gate.js';
 import {
   diagnosticUnavailable,
@@ -28,6 +32,19 @@ export function observer(ctx, { kind, board, main, commit, privateCheck = false,
     // Diagnostics cannot block an existing check when its coordinator is detached or its observer cannot initialize.
     return async run => { if (!run.isGreen) diagnosticUnavailable({ run }, error); };
   }
+  /**
+   * Record the receipt the gate just wrote for its run; the board reads the receipt itself, never a run object [C7,D1].
+   * Only the coordinator's runs go on the board, since only they can prove a flake; a seat's run keeps its receipt on
+   * disk, so every seat's gate does not add a board move to each submit.
+   */
+  const recordRun = async receiptId => {
+    const receipt = agentId === COORDINATOR ? readGateReceipt(receiptStore(ctx.info.root), receiptId) : null;
+    if (!receipt) return;
+    const owners = receipt.failures.map(failure => laneOf(acceptedConfig, failure.file)).filter(owner => owner !== COORDINATOR);
+    const lane = owners[0] ?? Object.keys(acceptedConfig.lanes)[0];
+    const write = target => ordered(ctx, target, 'recordGateRun', [{ agentId, receipt, lane }]);
+    await (board ? write(board) : withBoard(ctx, write));
+  };
   // The pinned main rides on the observer, so a remote runner's receipt can name the main this run used (#925).
   return Object.assign(async (run, { root = ctx.info.root, command, lease }) => {
     await observeNativeFailure({ root, config: acceptedConfig, pin, run, command, lease, kind,
@@ -37,7 +54,7 @@ export function observer(ctx, { kind, board, main, commit, privateCheck = false,
         const write = target => ordered(ctx, target, 'recordFlakeObservation', [{ agentId, observation, lane }]);
         return board ? write(board) : withBoard(ctx, write);
       } });
-  }, { main: pin.main });
+  }, { main: pin.main, recordRun });
 }
 
 /** Prepare an ordinary check callback before it queues; the callback observes red under that same lease. */

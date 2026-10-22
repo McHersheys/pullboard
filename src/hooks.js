@@ -3,7 +3,11 @@
  * its folders, no secret or env file is committed, and a push sends exactly what the gate checked.
  * Each check returns its problems; an empty list lets git go on.
  */
-import { spawnSync } from 'node:child_process';
+import {
+  execFileSync,
+  spawnSync,
+} from 'node:child_process';
+import { hostname } from 'node:os';
 import {
   chmodSync,
   existsSync,
@@ -38,7 +42,9 @@ import { outOfLane } from './lanes.js';
 import {
   citedIds,
   deletedIds,
+  gateFiles,
   idProblems,
+  parseSpec,
 } from './spec.js';
 import { approvedRowProblems } from './approved-rows.js';
 
@@ -142,6 +148,64 @@ export function commitMsgProblems(raw, { rules, spec, doctrine = null }) {
   if (rules.noEmoji && EMOJI_RE.test(all)) problems.push('remove the emoji');
   if (rules.noCoAuthor && /^\s*co-authored-by\s*:/im.test(all)) problems.push('remove the Co-Authored-By trailer');
   return problems;
+}
+
+/**
+ * This machine's computer name as macOS shows it, or null when the platform has no such name or the
+ * lookup fails. The lookup has a short timeout, so a stuck scutil cannot stall a submit (C1).
+ *
+ * @returns {string | null}
+ */
+export function computerName() {
+  if (process.platform !== 'darwin') return null;
+  try {
+    return execFileSync('/usr/sbin/scutil', ['--get', 'ComputerName'], { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * This machine's names as a commit message would show them: the host name, its first label and the
+ * computer name, matched case-insensitively. Names under three characters are ignored, so a short word
+ * cannot refuse an honest message (C1). The sources are a parameter so a test can stand in for them.
+ *
+ * @param {{ host?: string, computer?: string | null }} [sources] - Defaults to this machine.
+ * @returns {string[]} Lower-case names.
+ */
+export function machineNames(sources = { host: hostname(), computer: computerName() }) {
+  const host = String(sources.host ?? '').trim().toLowerCase();
+  const computer = String(sources.computer ?? '').trim().toLowerCase();
+  return [...new Set([host, host.split('.')[0], computer])].filter((name) => name.length >= 3);
+}
+
+/**
+ * Check the commits a submit adds for this machine's names in their messages (C1). With `refuse`, the
+ * first named commit stops the submit and the next step says how to reword it; without, each named
+ * commit is reported through `say` and the submit goes on. The names are never echoed, so the refusal
+ * cannot leak them into a shout or a board thread.
+ *
+ * @param {string} root - The worktree the commits are in.
+ * @param {string} range - The commits a submit adds, as `<trunk>..<head>`.
+ * @param {{ refuse: boolean, say: (line: string) => void, names?: string[] }} options
+ * @returns {void}
+ */
+export function machineNameProblems(root, range, { refuse, say, names = machineNames() }) {
+  if (!names.length) return;
+  // The SHAs come from rev-list and each message is read on its own, so no character in a message can
+  // change where another message starts or ends.
+  const shas = git(root, ['rev-list', range]).split('\n').filter(Boolean);
+  for (const sha of shas) {
+    const message = git(root, ['log', '-1', '--format=%B', sha]);
+    const lower = message.toLowerCase();
+    if (!names.some((name) => lower.includes(name))) continue;
+    const short = sha.slice(0, 12);
+    if (refuse) {
+      throw new Refused('HOST_NAME', `commit ${short} names this machine in its message; a submit may not publish that name`,
+        `reword that commit's message without the machine's name, then run pullboard submit again`);
+    }
+    say(`warning: commit ${short} names this machine in its message; reword it before the branch is merged`);
+  }
 }
 
 /**
@@ -280,6 +344,7 @@ export function preCommitProblems({ root, isMain, config, agent, boardFile, preM
     problems.push(...secretsIn(addedLines(diff)).map((where) => `possible secret: ${where}`));
   }
   problems.push(...deletedRowProblems(root, [config.spec, config.practice]));
+  problems.push(...deletedGateProblems(root, config));
   problems.push(...approvedRowProblems(root, config, boardFile));
   if (isMain) return problems;
   if (!agent) {
@@ -308,6 +373,43 @@ export function preCommitProblems({ root, isMain, config, agent, boardFile, preM
       .flatMap((path) => outOfLane(ownershipConfig, agent.agent_lane, [path]))
       .map((path) => `outside the ${agent.agent_lane} lane: ${path}; shout its owner instead`),
   );
+  return problems;
+}
+
+/**
+ * A commit that deletes or renames a test file an approved must-row names must point that row at its new
+ * home in the same commit, or the rule loses its test silently (#809). The row is read from HEAD's spec
+ * and again from the staged one, so a repoint in this commit counts and a missing row does not.
+ *
+ * @param {string} root
+ * @param {{ spec?: string }} config
+ * @returns {string[]}
+ */
+export function deletedGateProblems(root, config) {
+  if (!config?.spec) return [];
+  const status = tryGit(root, ['diff', '--cached', '--name-status', '-M', '--no-color']);
+  if (status.status !== 0) return [];
+  const gone = new Map();
+  for (const line of status.stdout.split('\n').filter(Boolean)) {
+    const [code, from, to] = line.split('\t');
+    if (code.startsWith('D')) gone.set(from, 'deletes');
+    else if (code.startsWith('R')) gone.set(from, `renames to ${to}`);
+  }
+  if (!gone.size) return [];
+  const head = tryGit(root, ['show', `HEAD:${config.spec}`]);
+  if (head.status !== 0) return [];
+  const staged = tryGit(root, ['show', `:${config.spec}`]);
+  const before = parseSpec(head.stdout).rows.filter((row) => row.status === 'approved' && row.tier === 'must');
+  const after = staged.status === 0 ? parseSpec(staged.stdout).rows : [];
+  const problems = [];
+  for (const [file, change] of gone) {
+    for (const row of before) {
+      if (!gateFiles(row.gate).includes(file)) continue;
+      const now = after.find((candidate) => candidate.id === row.id);
+      if (now && !gateFiles(now.gate).includes(file)) continue;
+      problems.push(`${row.id} names ${file}, which this commit ${change}; point ${row.id} at its new home in this commit`);
+    }
+  }
   return problems;
 }
 

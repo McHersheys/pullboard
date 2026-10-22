@@ -38,6 +38,7 @@ import { pageScriptPart1 } from './view/page-script-1.js';
 import { pageScriptPart2 } from './view/page-script-2.js';
 import { pageScriptPart3 } from './view/page-script-3.js';
 import { pageScriptPart4 } from './view/page-script-4.js';
+import { historyLoadingScript } from './view/history-loading.js';
 
 /** The CLI's default phrases, ordered by depth for the existing prose inventory guard. */
 export const PULLBOARD_COMMANDS = Object.freeze(commandPhrases().sort((left, right) => right.split(' ').length - left.split(' ').length));
@@ -242,7 +243,7 @@ ${pageScriptPart2(pageScope)}function syncBoardMode(root) {
   document.body.classList.toggle('requests', requests);
 }
 
-${pageScriptPart3(pageScope)}async function refresh(fresh = null) {
+${pageScriptPart3(pageScope)}async function refresh(fresh = null, attempt = 1) {
   const generation = ++refreshStarted;
   const root = view.root;
   const mark = root ? view.seen['pb.seen.' + root] ?? keep('pb.seen.' + root) : null;
@@ -258,6 +259,13 @@ ${pageScriptPart3(pageScope)}async function refresh(fresh = null) {
   // Only a read of every board can say the shown project is gone and choose another. A catch-up that could not read
   // the shown board, as while the view restarts, failed; it keeps the board and the page says it is offline.
   if (fresh && !next.project && !next.group) throw new Error('the board did not answer; is pullboard view still running?');
+  // The shown board is listed but its read failed, as one dropped under load: read it again rather than hand the page
+  // to another board; only a board gone from the list does that (#889).
+  const failed = !next.project && !next.group && next.projects.find((p) => p.root === root && !p.ok);
+  if (failed) {
+    if (attempt < 3) { await new Promise((later) => { setTimeout(later, 300 * attempt); }); return refresh(fresh, attempt + 1); }
+    throw new Error(failed.error);
+  }
   refreshDrawn = { generation, full: !fresh };
   if (!next.project && !next.group && next.projects.some((p) => p.ok)) {
     view.root = next.projects.find((p) => p.ok).root;
@@ -1095,22 +1103,24 @@ function render() {
   // on the board with who holds it; it is the agents' to move.
   const personalNeeds = personNeeds(p);
   // Adapt display targets and the existing hold age without reimplementing which calls belong here.
-  const needs = personalNeeds.filter((row) => !['draft', 'rigor-draft'].includes(row.kind)).map((row) => row.kind === 'decision'
+  const needs = personalNeeds.filter((row) => !['draft', 'rigor-draft', 'sentinel-draft'].includes(row.kind)).map((row) => row.kind === 'decision'
     ? ['decide:' + row.id, row.ref, row.text, 'decide', row.at]
     : row.kind === 'pending' ? ['spec:' + row.id, row.ref, row.text, 'answer ' + row.ref] // the person's words; agents get the command (#875)
       : ['tab:shouts', row.ref, row.text, row.what, p.holds.find((hold) => hold.hold_lane === row.id)?.hold_at]);
   const drafts = personalNeeds.find((row) => row.kind === 'draft')?.count ?? 0;
   const rigorDrafts = personalNeeds.filter((row) => row.kind === 'rigor-draft');
+  const sentinelDrafts = personalNeeds.filter((row) => row.kind === 'sentinel-draft');
   // Each of the person's calls is a row at the head of Active, shaped like an item: what it is first, then NEEDS YOU and
   // its kind where an item has its lane, and what to do at the right. Every call is a row; the draft rows are one row
   // with their count. Read-only, a row is its words, opening nothing.
-  $('needs').hidden = (!needs.length && !drafts && !rigorDrafts.length) || view.state !== 'active' || Boolean(view.lane);
+  $('needs').hidden = (!needs.length && !drafts && !rigorDrafts.length && !sentinelDrafts.length) || view.state !== 'active' || Boolean(view.lane);
   const needRow = ([target, ref, text, what, at], kind, action) => '<li class="row ask"' + (readOnly ? '' : ' data-go="' + esc(target) + '"') + '><span class="dot ask"></span><div><div class="t">' + (ref ? '<span>' + esc(ref) + '</span>' : '') + rich(text, titles, !readOnly) + '</div>'
     + (at ? '<span class="row-age">' + age(at) + '</span>' : '') + '<div class="meta"><span class="why"><b>NEEDS YOU</b> ' + esc(kind) + '</span></div></div><span class="chip warn">' + esc(action) + '</span></li>';
   const needKind = (entry) => entry[3] === 'decide' ? needRow([entry[0], '', entry[2], entry[3], entry[4]], 'a decision, asked by ' + entry[1], 'decide')
     : entry[0].startsWith('spec:') ? needRow(entry, 'an open question in SPEC.md', 'answer') : needRow(entry, entry[3], 'release');
   $('needs').innerHTML = needs.map(needKind).join('')
     + rigorDrafts.map(row => needRow([row.target, row.ref, row.text], 'a proved Rigor draft', 'Approve or Decline')).join('')
+    + sentinelDrafts.map(row => sentinelDraftRow(row)).join('')
     + (drafts ? needRow(['tab:spec', String(drafts), 'draft spec rows to approve or drop'], 'Spec rows waiting on you', 'review') : '');
 
   const lanes = p.lanes;
@@ -1279,7 +1289,8 @@ function render() {
   // Opened from the status bar's unread, the feed is exactly those shouts, the ones after the mark the person had.
   const unread = view.unread?.root === view.root ? view.unread : null;
   const addressed = addressedShouts.get(JSON.stringify([view.root, view.shout]));
-  const feedShouts = addressed?.shout && !p.shouts.some((entry) => entry.shout_id === view.shout) ? [...p.shouts, addressed.shout] : p.shouts;
+  const shownShouts = addressed?.shout && !p.shouts.some((entry) => entry.shout_id === view.shout) ? [...p.shouts, addressed.shout] : p.shouts;
+  const feedShouts = [...shownShouts, ...olderShoutsOf(view.root, shownShouts)];
   const heard = unread ? feedShouts.filter((x) => x.shout_id > unread.after) : view.agent ? feedShouts.filter((x) => x.shout_from === view.agent || x.shout_to === view.agent) : feedShouts;
   const bar = !unread && !view.agent ? '' : '<div class="feed-bar">' + (unread ? '<span><b>' + heard.length + '</b> unread <button class="link" data-unread type="button">show all</button></span>'
     : '<span>Shouts with <b>' + esc(agentName(view.agent)) + '</b> <button class="link" data-agent="" type="button">show all</button></span>') + '</div>';
@@ -1431,6 +1442,7 @@ function render() {
   showTab();
   revealPlace();
   updateRoadmapPanel();
+  drawHistoryNotes();
 }
 
 /**
@@ -1438,7 +1450,7 @@ function render() {
  * it, so it stays closed across reloads, and across restarts of the view, which serves from the
  * same address again, until they open it. While hidden it is not drawn.
  */
-${pageScriptPart4(pageScope)}</script>
+${pageScriptPart4(pageScope)}${historyLoadingScript()}</script>
 </body>
 </html>`;
 }

@@ -60,3 +60,8 @@ test('[Q4] the machine pool ignores board and HOME overrides unless explicitly s
   assert.equal(privateHome.status, 0, privateHome.stderr);
   assert.equal(privateHome.stdout, resolve(override));
 });
+
+test('the settings API reports every setting with its scope, value, default and source and never a secret [O5,O6]', async () => {
+  const { proveSettingsApi } = await import('./settings-api-fixture.js');
+  await proveSettingsApi();
+});

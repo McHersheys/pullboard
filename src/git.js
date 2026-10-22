@@ -6,6 +6,7 @@ import {
   spawnSync,
 } from 'node:child_process';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { createHash } from 'node:crypto';
 import {
   existsSync,
   lstatSync,
@@ -19,6 +20,7 @@ import {
   dirname,
   join,
   resolve,
+  sep,
 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Refused } from './refused.js';
@@ -98,18 +100,20 @@ function fileSignature(path, includeContents = true) {
 }
 
 /** Refuse caching for config includes or any explicit ref backend selection this signature cannot track. */
-function configNeedsFallback(path) {
+function configNeedsFallback(path, { attribution = false } = {}) {
   try {
     const source = readFileSync(path, 'utf8');
     return /^\s*\[\s*include(?:if\b|[\s\]])/imu.test(source)
-      || /(?:^|\])\s*refstorage\s*=/imu.test(source);
+      || /(?:^|\])\s*refstorage\s*=/imu.test(source)
+      || (attribution && (/^\s*\[\s*(?:blame|mailmap|filter|diff)(?:\s|\])/imu.test(source)
+        || /(?:^|\])\s*attributesfile\s*=/imu.test(source)));
   } catch (error) {
     return error.code !== 'ENOENT' && error.code !== 'ENOTDIR';
   }
 }
 
 /** Describe worktree discovery and ref files without invoking Git, so a warm read can validate facts. */
-function repositorySignature(cwd, info = null, includeHead = false) {
+function repositorySignature(cwd, info = null, includeHead = false, { attribution = false } = {}) {
   const markers = [];
   try { markers.push(['physical-cwd', realpathSync.native(cwd)]); }
   catch (error) { markers.push(['physical-cwd', error.code ?? 'ERROR']); }
@@ -165,10 +169,10 @@ function repositorySignature(cwd, info = null, includeHead = false) {
   const commonDir = info?.commonDir ?? discoveredCommonDir;
   if (!gitDir || !commonDir) return includeHead ? null : JSON.stringify(markers);
   const configPaths = [join(gitDir, 'config'), join(commonDir, 'config'), join(gitDir, 'config.worktree')];
-  if (configPaths.some(configNeedsFallback)) return null;
+  if (configPaths.some(path => configNeedsFallback(path, { attribution }))) return null;
   for (const path of [rootPath, gitDir, commonDir]) markers.push([path, fileSignature(path, false)]);
   for (const path of [join(gitDir, 'commondir'), ...configPaths]) {
-    markers.push([path, fileSignature(path, basename(path) === 'commondir')]);
+    markers.push([path, fileSignature(path, attribution || basename(path) === 'commondir')]);
   }
   if (includeHead) {
     const headPath = join(gitDir, 'HEAD');
@@ -187,12 +191,20 @@ function repositorySignature(cwd, info = null, includeHead = false) {
       }
     }
   }
+  if (attribution) {
+    const index = process.env.GIT_INDEX_FILE ? resolve(cwd, process.env.GIT_INDEX_FILE) : join(gitDir, 'index');
+    markers.push([index, fileSignature(index, false)]);
+    for (const path of [join(commonDir, 'shallow'), join(commonDir, 'info', 'grafts'), join(commonDir, 'info', 'attributes')]) {
+      markers.push([path, fileSignature(path)]);
+    }
+  }
   return JSON.stringify(markers);
 }
 
 /** Describe relevant Git environment/config so harmless process settings can still share read facts. */
-function readCacheContext() {
+function readCacheContext({ attribution = false } = {}) {
   const env = process.env;
+  if (attribution && (env.GIT_NAMESPACE || Object.keys(env).some(name => name.startsWith('GIT_ATTR_')))) return null;
   const discoverySelectors = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_CEILING_DIRECTORIES',
     'GIT_DISCOVERY_ACROSS_FILESYSTEM', 'GIT_IMPLICIT_WORK_TREE', 'GIT_OBJECT_DIRECTORY',
     'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_SHALLOW_FILE', 'GIT_GRAFT_FILE'];
@@ -224,10 +236,35 @@ function readCacheContext() {
     if (env.GIT_CONFIG_SYSTEM) files.add(env.GIT_CONFIG_SYSTEM);
     else if (process.platform !== 'win32') files.add('/etc/gitconfig');
   }
+  if (attribution) {
+    const xdg = env.XDG_CONFIG_HOME || (env.HOME ? join(env.HOME, '.config') : null);
+    if (xdg) files.add(join(xdg, 'git', 'attributes'));
+    for (const path of ['/etc/gitattributes', '/usr/local/etc/gitattributes', '/opt/homebrew/etc/gitattributes']) files.add(path);
+  }
   const paths = [...files].sort();
-  if (paths.some(configNeedsFallback)) return null;
-  const fileMarkers = paths.map((path) => [path, fileSignature(path, false)]);
+  if (paths.some(path => configNeedsFallback(path, { attribution }))) return null;
+  const fileMarkers = paths.map((path) => [path, fileSignature(path, attribution)]);
   return JSON.stringify({ cwd: process.cwd(), values, home: env.HOME ?? null, xdg: env.XDG_CONFIG_HOME ?? null, files: fileMarkers });
+}
+
+/** Describe a stable read input without Git processes; unsupported attribution settings disable reuse. */
+export function gitReadSignature(root, files, { attribution = false } = {}) {
+  const context = readCacheContext({ attribution });
+  const repository = repositorySignature(root, null, true, { attribution });
+  if (context === null || repository === null) return null;
+  const paths = new Set(files.map(file => join(root, file)));
+  if (attribution) {
+    for (const file of files) {
+      let folder = dirname(resolve(root, file));
+      while (folder === resolve(root) || folder.startsWith(resolve(root) + sep)) {
+        paths.add(join(folder, '.gitattributes'));
+        if (folder === resolve(root)) break;
+        folder = dirname(folder);
+      }
+    }
+  }
+  const inputs = [...paths].map(path => [path, fileSignature(path)]);
+  return createHash('sha256').update(JSON.stringify([context, repository, inputs])).digest('hex');
 }
 
 /** Return a validated cached read fact, refreshing it when its filesystem signature changes. */

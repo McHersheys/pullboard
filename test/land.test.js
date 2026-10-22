@@ -9,12 +9,17 @@ import { exportBoard, importBoard } from '../src/exchange.js';
 import { landingFailures, landingSubject } from '../src/land.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { startFixtureChild, runFixtureChild } from './fixture-child.js';
+import { assertNoRemoteLanding } from './land-no-remote-fixture.js';
 
 const e2e = createE2eHelpers();
 after(e2e.cleanup);
 const { sandbox, project, commitFile, waitFor, BIN } = e2e;
 const FILES = [1, 2, 3, 4].map((n) => `web/land-${n}.test.js`);
 const MARKER_NOT_YET = Symbol('marker not yet written');
+
+test('a repo with no remote lands into the local trunk and status reads as normal [I1,B3,R3,H5]', () => {
+  assertNoRemoteLanding(sandbox, commitFile);
+});
 
 /** Read a complete marker, treating a missing or mid-write file as unpublished. */
 function readMarker(file) {
@@ -482,6 +487,7 @@ test('land pushes one exact batch in verdict order and records each first-contai
   assert.deepEqual(calls(box).slice(start), [[]], 'one full batch gate; pre-push reads its exact green tree stamp');
   const merges = box.git(box.repo, 'rev-list', '--reverse', '--first-parent', `${base}..${result.batch.tip}`).split('\n');
   for (const [index, id] of order.entries()) assert.equal(json(box, box.repo, 'show', String(id)).item_merged_commit, merges[index]);
+  for (const [index, id] of order.entries()) assert.equal(box.git(box.repo, 'log', '-1', '--format=%b', merges[index]).trim(), `Pullboard-Item: #${id}`, 'each train merge body is only its item trailer, naming no lane branch');
   const receipt = events(box).filter((event) => event.event_kind === 'main-moved');
   assert.equal(receipt.length, 1);
   assert.equal(JSON.parse(receipt[0].event_detail).sha, result.batch.tip);
@@ -492,6 +498,19 @@ test('land pushes one exact batch in verdict order and records each first-contai
   assert.deepEqual(calls(box).slice(start), [[]], 'second invocation runs no tests');
   const lane = box.run(entries[0].path, 'land', '--json');
   assert.equal(JSON.parse(lane.out).error?.code, 'COORDINATOR_ONLY');
+});
+
+test('a train merge body is only the item trailer even when the local Git config logs merges [B3,R3]', () => {
+  const box = landProject();
+  verifiedFour(box, { order: [0, 1, 2, 3] });
+  const base = box.git(box.repo, 'rev-parse', 'main');
+  box.git(box.repo, 'config', 'merge.log', 'true');
+  const result = json(box, box.repo, 'land', '--max', '4');
+  assert.equal(result.landed.length, 4);
+  const merges = box.git(box.repo, 'rev-list', '--reverse', '--first-parent', `${base}..${result.batch.tip}`).split('\n');
+  for (const [index, id] of result.landed.entries()) {
+    assert.equal(box.git(box.repo, 'log', '-1', '--format=%b', merges[index]).trim(), `Pullboard-Item: #${id}`, 'merge.log=true appends no shortlog to the body');
+  }
 });
 
 test('land bisects a real red, blocks stale proof and refuses an unverified stack [B3,R3,E8]', () => {
@@ -1356,4 +1375,111 @@ test('an item with no spec rows lands under a header its commit hook accepts [B3
   assert.deepEqual(result.landed, [item]);
   const [subject] = mergeSubjects(box, base, result.batch.tip);
   assert.equal(subject, 'docs(merge): docs fixture with no rows', 'a docs-lane item with no rows lands under docs(merge)');
+});
+
+test('publish pushes only a head the whole suite passed and names every red [B3,R3]', () => {
+  const box = landProject();
+  const entries = verifiedFour(box, { red: 1 });
+  const before = box.git(box.remote, 'rev-parse', 'main');
+  // Tier 1 by hand: each verified item lands on the local trunk only, as pullboard merged records it.
+  for (const entry of entries) {
+    box.git(box.repo, 'merge', '-q', '--no-ff', '-m', `chore(merge): land fixture ${entry.item} [G1]`, entry.commit);
+    const merged = box.run(box.repo, 'merged', String(entry.item), box.git(box.repo, 'rev-parse', 'HEAD'));
+    assert.equal(merged.code, 0, merged.err);
+  }
+  const head = box.git(box.repo, 'rev-parse', 'main');
+  const start = calls(box).length;
+  const red = box.run(box.repo, 'publish', '--json');
+  assert.equal(red.code, 1, 'a red head fails publish');
+  const report = JSON.parse(red.out);
+  assert.equal(report.published, false);
+  assert.equal(box.git(box.remote, 'rev-parse', 'main'), before, 'a red head is never pushed');
+  assert.deepEqual(report.red.map((entry) => entry.file), [FILES[1]], 'every failing test is named from the one run');
+  assert.deepEqual(report.red[0].items, [entries[1].item], 'the failing file names the landed item whose merge touched it');
+  assert.equal(calls(box).length - start, 1, 'one whole-suite run');
+  const again = box.run(box.repo, 'publish', '--json');
+  assert.equal(again.code, 0);
+  assert.equal(JSON.parse(again.out).waiting, true, 'the same red head waits for a new head');
+  assert.equal(calls(box).length - start, 1, 'waiting runs no tests');
+  // A fix lands on the trunk; the new head passes the whole suite and is pushed exactly.
+  assert.equal(commitFile(box, box.repo, FILES[1], 'PASS\n', 'fix(web): land fixture 2 passes again [G1]').status, 0);
+  const fixed = box.git(box.repo, 'rev-parse', 'main');
+  assert.notEqual(fixed, head);
+  const green = json(box, box.repo, 'publish');
+  assert.equal(green.published, true);
+  assert.equal(box.git(box.remote, 'rev-parse', 'main'), fixed, 'only the head the whole suite passed reaches the remote');
+});
+
+test('an accepted item lands on the local trunk before the whole suite runs [B3,R3]', () => {
+  const box = landProject();
+  const path = join(box.repo, 'pullboard.json');
+  const config = JSON.parse(readFileSync(path, 'utf8'));
+  writeFileSync(path, JSON.stringify({ ...config, landing: { publish: 'separate' } }, null, 2));
+  box.git(box.repo, 'add', 'pullboard.json');
+  box.git(box.repo, 'commit', '-q', '-m', 'chore: land on the local trunk first');
+  const entries = verifiedFour(box);
+  const remoteBefore = box.git(box.remote, 'rev-parse', 'main');
+  const start = calls(box).length;
+  const result = json(box, box.repo, 'land', '--max', '4');
+  assert.deepEqual(result.landed.sort((a, b) => a - b), entries.map((entry) => entry.item).sort((a, b) => a - b));
+  assert.equal(result.batch.state, 'landed');
+  assert.equal(box.git(box.repo, 'rev-parse', 'main'), result.batch.tip, 'the local trunk holds the landed batch');
+  assert.equal(box.git(box.remote, 'rev-parse', 'main'), remoteBefore, 'tier 1 pushes nothing');
+  assert.deepEqual(calls(box).slice(start), [], 'no whole-suite run before the items land');
+  const merges = box.git(box.repo, 'rev-list', '--first-parent', `${result.batch.base}..${result.batch.tip}`).split('\n');
+  for (const entry of entries) assert.ok(merges.includes(json(box, box.repo, 'show', String(entry.item)).item_merged_commit), `#${entry.item} has its merged receipt on the local trunk`);
+  // Tier 2 then runs the whole suite once on that exact head and pushes it.
+  const published = json(box, box.repo, 'publish');
+  assert.equal(published.published, true);
+  assert.equal(box.git(box.remote, 'rev-parse', 'main'), result.batch.tip);
+  assert.equal(calls(box).length - start, 1, 'publish ran the whole suite once');
+});
+
+test('a publish gate run is recorded and a red and green pair it sees files the flake [C7,D1]', () => {
+  const box = landProject();
+  const configFile = join(box.repo, 'pullboard.json');
+  const config = JSON.parse(readFileSync(configFile, 'utf8'));
+  writeFileSync(configFile, JSON.stringify({ ...config, flakes: { rerun: false } }, null, 2));
+  assert.equal(commitFile(box, box.repo, FILES[0], 'RED\n', 'test: commit the publish target [G1]').status, 0);
+  const tree = box.git(box.repo, 'rev-parse', 'HEAD^{tree}');
+  const firstHead = box.git(box.repo, 'rev-parse', 'HEAD');
+  const remoteBefore = box.git(box.remote, 'rev-parse', 'main');
+  const before = calls(box).length;
+  const red = box.run(box.repo, 'publish', '--json');
+  assert.equal(red.code, 1, red.err);
+  /** Read only the receipts actual gate executions wrote. */
+  const runs = () => onBoard(box, board => store.gateRuns(board));
+  /** Count repair items independently of unrelated diagnostic observations. */
+  const flakes = () => onBoard(box, board => store.listItems(board, { all: true }).filter(item => item.item_title.startsWith('Flaky test:')));
+  const [failed] = runs();
+  assert.ok(failed, 'the red publish records its authentic gate receipt');
+  assert.equal(failed.tree, tree);
+  assert.equal(failed.green, false);
+  assert.equal(failed.by, 'coordinator');
+  assert.equal(failed.failures[0].file, FILES[0]);
+  assert.equal(flakes().length, 0, 'one red run alone does not prove a flake');
+  assert.equal(box.git(box.remote, 'rev-parse', 'main'), remoteBefore, 'the red head stays local');
+  assert.equal(json(box, box.repo, 'publish').waiting, true, 'the same red HEAD still waits');
+  assert.equal(runs().length, 1, 'waiting records no fabricated execution');
+  assert.equal(calls(box).length - before, 1);
+
+  // New commit, unchanged tree: publish may try again without bypassing its same-HEAD retry guard.
+  box.env.LAND_SUPPRESS_RED = '1';
+  box.git(box.repo, 'commit', '--allow-empty', '-q', '-m', 'test: observe the same tree again [G1]');
+  const greenHead = box.git(box.repo, 'rev-parse', 'HEAD');
+  assert.notEqual(greenHead, firstHead);
+  assert.equal(box.git(box.repo, 'rev-parse', 'HEAD^{tree}'), tree);
+  assert.equal(json(box, box.repo, 'publish').published, true);
+  assert.equal(box.git(box.remote, 'rev-parse', 'main'), greenHead);
+  assert.deepEqual(runs().map(run => [run.tree, run.green]), [[tree, false], [tree, true]]);
+  const [repair] = flakes();
+  assert.equal(flakes().length, 1, 'publish alone proves the same-tree flake and files it once');
+  assert.ok(repair.item_brief.includes(failed.id) && repair.item_brief.includes(runs()[1].id), 'the item cites both actual publish receipts');
+  assert.equal(onBoard(box, board => store.flakeQuarantines(board)).length, 1);
+
+  box.git(box.repo, 'commit', '--allow-empty', '-q', '-m', 'test: observe a third publish [G1]');
+  assert.equal(json(box, box.repo, 'publish').published, true);
+  assert.deepEqual(runs().map(run => [run.tree, run.green]), [[tree, false], [tree, true], [tree, true]]);
+  assert.equal(flakes().length, 1, 'another publish receipt creates no duplicate flake item');
+  assert.equal(calls(box).length - before, 3, 'each receipt represents one actual full publish gate');
 });

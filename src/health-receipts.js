@@ -4,11 +4,8 @@ import { Refused } from './refused.js';
 /** The allocated engine for ordered sentinel observations; earlier moves keep their meaning. */
 export const HEALTH_SENTINEL_ENGINE = 42;
 
-/**
- * The engine from which one health run shouts at most HEALTH_SHOUT_CAP notices, naming the rest in one more, and an
- * idle seat alone hears that it is idle (#940). Earlier recorded runs replay with their original shouts.
- */
-export const HEALTH_CAP_ENGINE = 62;
+import { HEALTH_CAP_ENGINE } from './health-cap-engine.js';
+export { HEALTH_CAP_ENGINE };
 
 /** The most stuck or resolved notices one health run shouts one by one (#940). */
 export const HEALTH_SHOUT_CAP = 10;

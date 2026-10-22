@@ -80,6 +80,8 @@ function project(box, name, spec = SPEC, extra = {}) {
   delete initEnv.PULLBOARD_MODEL;
   // Set the fixture-only opt-out in the machine home that this exact init environment will use.
   disableFixtureBackgroundView(initEnv, box.dir);
+  // The spec is in place before init, so the board's approval baseline holds its approved rows as the person's (#960).
+  writeFileSync(join(repo, 'SPEC.md'), spec);
   box.runWithEnv(repo, initEnv, 'init');
   const config = { gate: 'true', spec: 'SPEC.md', verify: 'any', lease: '2h', lanes: { web: { owns: ['web/'], specs: ['G'] } }, shared: [], ...extra };
   writeFileSync(join(repo, 'pullboard.json'), JSON.stringify(config, null, 2));

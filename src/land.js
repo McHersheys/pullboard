@@ -32,8 +32,13 @@ import {
 import {
   runGate,
   runProfiledShell,
+  runStaticChecks,
   withGateSlot,
 } from './gate.js';
+import {
+  readGateReceipt,
+  receiptStore,
+} from './gate-run-receipt.js';
 import { laneOf } from './lanes.js';
 import { Refused } from './refused.js';
 import { landingFileTimes } from './submit-invariants.js';
@@ -162,7 +167,9 @@ async function mergeGroup(state, items) {
     if (checked !== (entry.reviewedCommit ?? entry.commit ?? item.item_commit)) throw new Refused('LAND_ITEM_MOVED', `item #${item.item_id} was re-reviewed; rebuild its landing from the checked commit`);
     const stale = verdictProjector(state.root, state.board, { main: batch.base }).state(item);
     if (stale) throw staleVerdictRefusal(item, stale);
-    const result = tryGit(batch.root, ['merge', '--no-ff', checked, '-m', landingSubject(item)]);
+    // The body is the item trailer alone: the subject carries the title, and no lane branch is named [B3,R3].
+    // merge.log is switched off on this call, so a local Git config cannot append a shortlog to the body.
+    const result = tryGit(batch.root, ['-c', 'merge.log=false', 'merge', '--no-ff', '--no-log', checked, '-m', landingSubject(item), '-m', `Pullboard-Item: #${item.item_id}`]);
     if (result.status !== 0) {
       const files = tryGit(batch.root, ['diff', '--name-only', '--diff-filter=U']).stdout.split('\n').filter(Boolean);
       if (!files.length) throw new Refused('LAND_MERGE', `merge of #${item.item_id} failed outside a conflict: ${result.stderr || result.stdout}; inspect ${batch.root} and its hooks before adopting`);
@@ -247,6 +254,14 @@ function coveredFailures(state, gate) {
   return gate.failures.length > 0 && gate.failures.every((failure) => failure.file && store.landingWaiverFor(state.board, failure));
 }
 
+/** Record the receipt the landing gate wrote for its run, in the lane that owns its first failing test [C7,D1]. */
+async function recordLandingRun(state, receiptId) {
+  const receipt = readGateReceipt(receiptStore(state.batch.root), receiptId);
+  if (!receipt) return;
+  const owner = receipt.failures.map(failure => laneOf(state.config, failure.file)).find(lane => lane !== 'coordinator');
+  await state.write('recordGateRun', [{ agentId: 'coordinator', receipt, lane: owner ?? store.getItem(state.board, state.batch.items[0].id).item_lane }]);
+}
+
 /** Run one full landing gate and retain its complete output under this batch's immutable phase path. */
 async function gateGroup(state, label) {
   const tree = headTree(state.batch.root);
@@ -264,7 +279,7 @@ async function gateGroup(state, label) {
         const owner = observation.file ? laneOf(state.config, observation.file) : 'coordinator';
         const lane = owner === 'coordinator' ? store.getItem(state.board, state.batch.items[0].id).item_lane : owner;
         return state.write('recordFlakeObservation', [{ agentId: 'coordinator', observation, lane }]);
-      } }), { main: pin.main }),
+      } }), { main: pin.main, recordRun: receiptId => recordLandingRun(state, receiptId) }),
   });
   copyFileSync(gate.log, logPath);
   if (gate.profilePath) copyFileSync(gate.profilePath, `${logPath}.profile.json`);
@@ -436,6 +451,7 @@ export function liveWaiverProjection(board) {
 /** Name one waived failure with the person's waiver, its reason and its expiry [B3]. */
 export function waiverLine(failure) {
   const { waiver } = failure;
+  if (waiver.quarantine) return `quarantined: ${failure.name} (${failure.file}) is a proven flake, reported but not blocking until repair #${waiver.quarantine.item} is verified`;
   return `waived: ${failure.name} (${failure.file}) by person waiver ${waiver.id} for ${waiver.kind ?? store.landingWaiverKind(waiver.test)} ${waiver.test}: ${waiver.reason}; expires ${waiver.until}`;
 }
 
@@ -579,8 +595,59 @@ async function publish(state) {
   return state.batch;
 }
 
+/** Whether this project lands in two tiers: on the local trunk at once, and on the remote only through publish (#801). */
+export function landsOnTrunk(config) {
+  return config?.landing?.publish === 'separate';
+}
+
+/**
+ * The quick guards a tier-1 landing runs on its merged tree (#801): the project's static checks and its submit
+ * invariants. Each item's frozen check already ran at verify, and the whole suite runs at publish.
+ */
+async function quickGuards(state) {
+  const root = state.batch.root;
+  await runStaticChecks(root, state.config, { agent: 'coordinator', onWait: state.onWait });
+  const invariants = [...new Set(state.config.submitInvariants ?? [])].sort();
+  if (!invariants.length) return;
+  const command = `${state.config.affectedTests} ${invariants.map(quote).join(' ')}`;
+  const run = await withGateSlot(root, lease => runProfiledShell(root, command, { waitMs: lease.waitMs, gateLease: lease }),
+    { agent: 'coordinator', kind: 'check', itemCheck: true, onWait: state.onWait });
+  if (!run.isGreen) throw new Refused('GATE_RED', `the submit invariants are red on the merged tree: ${invariants.join(', ')}`);
+}
+
+/**
+ * Tier 1 (#801): after a clean merge and its quick guards, the batch lands on the local trunk in seconds, with each
+ * item's merged receipt; nothing is pushed. pullboard publish runs the whole suite on the trunk head and pushes it.
+ */
+async function landOnTrunk(state) {
+  await save(state, { state: 'gating', tip: headCommit(state.batch.root) });
+  try { await quickGuards(state); } catch (error) {
+    if (!(error instanceof Refused)) throw error;
+    await save(state, { state: 'blocked' });
+    state.say(`nothing landed: ${error.message}`);
+    return;
+  }
+  for (const entry of state.batch.items) {
+    const item = store.getItem(state.board, entry.id);
+    if (item.item_status !== 'verified' || item.item_commit !== entry.commit) throw new Refused('LAND_ITEM_MOVED', `item #${entry.id} changed after the batch merged; rebuild its landing`);
+  }
+  if (mainCheckout(state.root)?.commit !== state.batch.base) throw new Refused('LAND_TRUNK_MOVED', 'main moved during the landing; rebuild the batch from its new tip');
+  await save(state, { state: 'trunk', proof: { tree: headTree(state.batch.root), failures: [], logPath: null } });
+  await finishTrunk(state);
+}
+
+/** Record a tier-1 batch's merged receipts and move the local trunk to it; an adopted 'trunk' batch resumes here (#801). */
+async function finishTrunk(state) {
+  state.batch = await state.write('finishLandingBatch', [{ agentId: 'coordinator', id: state.batch.id, tip: state.batch.tip }]);
+  const main = mainCheckout(state.root);
+  if (main?.commit === state.batch.base && isClean(state.root) && !untracked(state.root).length) git(state.root, ['merge', '--ff-only', state.batch.tip]);
+  state.say(`landed ${state.batch.items.map((entry) => `#${entry.id}`).join(', ')} at ${state.batch.tip} on the local trunk; pullboard publish pushes it once the whole suite passes`);
+}
+
 /** Build, gate, diagnose and durably land one coordinator batch; all external actions stay in its worktree. */
 export async function land({ root, board, config, write, say, owner, maximum = Infinity, dryRun = false, adopt = false, onWait }) {
+  // Quarantine is read from the accepted main policy this landing runs under, never from a branch.
+  board.quarantineEnabled = () => config.flakes?.quarantine === true;
   let trunk = mainCheckout(root);
   const recorded = store.landingBatches(board).findLast((batch) => batch.state === 'landed' && batch.base === trunk?.commit);
   if (!dryRun && recorded && isClean(root) && !untracked(root).length) {
@@ -593,7 +660,7 @@ export async function land({ root, board, config, write, say, owner, maximum = I
   const stale = selected.blocked.find(item => item.code === 'STALE_VERDICT');
   if (!selected.ready.length && stale) throw staleVerdictRefusal({ item_id: stale.id }, stale);
   if (dryRun) {
-    if (selected.ready.length) requirePushTarget(root, trunk.branch);
+    if (selected.ready.length && !landsOnTrunk(config)) requirePushTarget(root, trunk.branch);
     const conflicts = [];
     for (const item of selected.ready) {
       const merge = tryGit(root, ['merge-tree', '--write-tree', '--name-only', '-z', trunk.commit, item.item_landing_commit]);
@@ -625,7 +692,7 @@ export async function land({ root, board, config, write, say, owner, maximum = I
     return { batch: null, landed: [], conflicts: [], blocked: selected.blocked, culprits: [], flakes: [] };
   }
   if (!batch) {
-    requirePushTarget(root, trunk.branch);
+    if (!landsOnTrunk(config)) requirePushTarget(root, trunk.branch);
     const id = randomUUID();
     const directory = join(repoInfo(root).commonDir, 'pullboard', 'landings', id);
     batch = { version: 1, id, base: trunk.commit, tip: trunk.commit, branch: trunk.branch, root: join(directory, 'worktree'),
@@ -639,7 +706,8 @@ export async function land({ root, board, config, write, say, owner, maximum = I
   const state = { root, board, config, write, say, onWait, batch, culprits: batch.culprits ?? [], flaky: false, gates: new Map((batch.gateResults ?? []).map((result) => [result.tree, result])), diagnosed: new Map((batch.diagnostics ?? []).map((result) => [result.test, result.isGreen])) };
   await save(state, { owner });
   await returnCulprits(state);
-  if (state.batch.state === 'pushed' || state.batch.state === 'ready') await publish(state);
+  if (state.batch.state === 'trunk') await finishTrunk(state);
+  else if (state.batch.state === 'pushed' || state.batch.state === 'ready') await publish(state);
   else {
     const initialItems = (state.batch.candidates ?? state.batch.items)
       .filter((entry) => !state.culprits.some((culprit) => culprit.id === entry.id && culprit.commit === entry.commit));
@@ -648,6 +716,7 @@ export async function land({ root, board, config, write, say, owner, maximum = I
     await save(state, { ...build, conflicts: [...state.batch.conflicts, ...build.conflicts] });
     for (const entry of state.batch.blocked ?? []) say(`${entry.code} #${entry.id}${entry.stacked ? ` carries #${entry.stacked}` : ''}`);
     if (!build.items.length) await save(state, { state: 'blocked' });
+    else if (landsOnTrunk(state.config)) await landOnTrunk(state);
     else {
       let gate = await gateGroup(state, 'batch');
       let proof = gate.isGreen ? null : waivedProof(state, gate);

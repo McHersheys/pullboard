@@ -8,6 +8,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { missedJobFindings } from './recurring-jobs.js';
 import {
   COORDINATOR,
   durationMs,
@@ -90,6 +91,7 @@ export function healthReport({ db, root, config, now }) {
   const at = now.getTime();
   const age = (iso) => at - Date.parse(iso);
   const board = { db, clock: { now: () => now } };
+  report.stuck.push(...missedJobFindings(board, at));
   for (const stale of staleRowDecisions(rowDecisions(board), root, config)) {
     report.stuck.push(finding('STALE_ROW_DECISION', null, {
       subject: `${stale.kind}:${stale.id}`, key: `STALE_ROW_DECISION:${stale.kind}:${stale.id}`,
