@@ -1,9 +1,16 @@
 /** Isolate blocking Git and gates so the coordinator keeps renewing and fencing its board lease [Q1,Q3]. */
-import { spawn, spawnSync } from 'node:child_process';
+import {
+  spawn,
+  spawnSync,
+} from 'node:child_process';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as store from './board.js';
-import { invalidateGitFacts, mainCheckout, repoInfo } from './git.js';
+import {
+  invalidateGitFacts,
+  mainCheckout,
+  repoInfo,
+} from './git.js';
 import { Refused } from './refused.js';
 import { parseProcessCensus } from './process-census.js';
 

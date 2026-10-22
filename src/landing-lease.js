@@ -1,5 +1,8 @@
 /** Ordered board admission serializes one trunk independently of machine test capacity [Q1,Q2,Q3]. */
-import { atomic, logEvent } from './board.js';
+import {
+  atomic,
+  logEvent,
+} from './board.js';
 import { COORDINATOR } from './config.js';
 import { coordinatorHolder } from './coordinator-hold.js';
 import { Refused } from './refused.js';

@@ -1,7 +1,10 @@
 /** Wait for board admission without occupying a machine test slot [Q1,Q2,Q3]. */
 import { randomUUID } from 'node:crypto';
 import { setTimeout as pause } from 'node:timers/promises';
-import { assertLandingLease, landingLeaseState } from './landing-lease.js';
+import {
+  assertLandingLease,
+  landingLeaseState,
+} from './landing-lease.js';
 import { Refused } from './refused.js';
 
 /** A dead local owner can be released immediately on an unlinked board; never compare foreign PIDs. */
