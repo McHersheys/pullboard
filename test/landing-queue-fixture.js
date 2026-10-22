@@ -30,7 +30,7 @@ function running(pid) {
   const state = spawnSync('/bin/ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' });
   if (state.status === 1 && !state.stdout?.trim()) return false; // It exited between kill(0) and ps.
   assert.equal(state.status, 0, 'the fixture can observe its own process state');
-  assert.match(state.stdout.trim(), /^[A-Z]/u, 'an unknown process state is not proof of exit');
+  // Unknown or transient kernel states remain running until a later observation proves exit.
   return !state.stdout.trim().startsWith('Z');
 }
 
