@@ -346,7 +346,8 @@ test('only a file that reaches a browser launch takes a browser slot [C7,O5]', a
   // Cockpit and journey files stay bound by rule until #741 guards the view fixture; the rest must reach a launch.
   const reached = bound.filter(file => !file.startsWith('test/cockpit/') && file !== 'test/journeys.test.js');
   // 21 Oct: 21, since #977's relay-local-origin.test.js really launches WebKit and Chrome to prove the Safari local route.
-  assert.ok(reached.length <= 21,
+  // 22 Oct: 22, since #978's relay-pairing.test.js really launches two Chromes to pair a second browser.
+  assert.ok(reached.length <= 22,
     `about 42 of ${tracked.length} test files are browser-bound by launch (the census's 15 non-cockpit launchers, plus cockpit and journey files until #741); got ${bound.length}, ${reached.length} outside cockpit: ${reached.join(', ')}`);
 
   const runner = runnerFixture(t, {
