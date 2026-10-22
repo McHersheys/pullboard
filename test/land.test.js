@@ -1,6 +1,6 @@
 /** Exercise landing against real private Git worktrees, hooks, SQLite and bare remotes [B3,R3]. */
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { after, test } from 'node:test';
 import * as store from '../src/board.js';
@@ -586,6 +586,13 @@ test('land names sibling conflicts whose reviews share the unchanged main [B3,R3
   assert.deepEqual(result.conflicts, [{ id: entries[1].item, files: [FILES[0]] }], 'the actual batch names the collision between the two fresh siblings');
 });
 
+/** Keep the complete private diagnostic refusal in a failing assertion before fixture cleanup deletes its logs. */
+function diagnosticOutput(batch) {
+  const directory = dirname(batch.logPath);
+  return readdirSync(directory).filter(file => file.startsWith('diagnostic-') && file.endsWith('.log'))
+    .map(file => readFileSync(join(directory, file), 'utf8')).join('\n');
+}
+
 test('land diagnostics inherit their browser gate lease [C7]', () => {
   const box = landProject();
   const marker = join(box.dir, 'land-diagnostic-lease.json');
@@ -618,7 +625,7 @@ test('land diagnostics inherit their browser gate lease [C7]', () => {
     delete box.env.LAND_SUPPRESS_RED;
   }
   const result = json(box, box.repo, 'land');
-  assert.equal(result.batch.state, 'flaky', 'the full gate is red while its isolated diagnosis passes');
+  assert.equal(result.batch.state, 'flaky', `the full gate is red while its isolated diagnosis passes: ${diagnosticOutput(result.batch)}`);
   assert.deepEqual(result.flakes.map(({ test: file }) => file), [FILES[0]]);
   const inherited = JSON.parse(readFileSync(marker, 'utf8'));
   assert.equal(inherited.file, FILES[0]);
