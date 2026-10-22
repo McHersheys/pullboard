@@ -771,7 +771,8 @@ async function revokeBrowser(box, _chrome, device) {
     await revoke.waitForOutput('Sign in with GitHub: open ');
     assert.ok(box.calls.slice(before).some(record => record.path === '/auth/device/start'),
       'the only phone is removed through a fresh provider sign-in');
-    assert.equal(box.calls.slice(before).some(record => record.path === '/api/v1/devices/approvals'), false,
+    // The page may read pending approvals (#985); approving is the POST.
+    assert.equal(box.calls.slice(before).some(record => record.method === 'POST' && record.path === '/api/v1/devices/approvals'), false,
       'the target browser never approves its own removal');
     box.providerState.deviceAuthorized = true;
     const result = await revoke.closed;

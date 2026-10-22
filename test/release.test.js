@@ -58,7 +58,7 @@ test('a packed release installs with no network and runs the whole loop from a f
   const repo = join(dir, 'repo');
   mkdirSync(repo);
   git(repo, 'init', '-q', '-b', 'main');
-  const initialized = pullboard(repo, 'init');
+  const initialized = pullboard(repo, 'init', '--verbose');
   for (const line of ['wrote pullboard.json', 'wrote SPEC.md', 'wrote .githooks/pre-commit', 'set core.hooksPath to .githooks', 'opened the board in the git dir; this checkout is the coordinator']) {
     assert.ok(initialized.includes(line), `init says: ${line}`);
   }

@@ -48,6 +48,8 @@ function project(box) {
   const web = join(box.dir, 'web-1');
   mkdirSync(repo);
   box.git(repo, 'init', '-q', '-b', 'main');
+  // The spec is in place before init, so the board's approval baseline holds its approved rows as the person's (#960).
+  writeFileSync(join(repo, 'SPEC.md'), SPEC);
   assert.equal(box.run(repo, 'init').code, 0);
   writeFileSync(join(repo, 'pullboard.json'), JSON.stringify({
     gate: 'test ! -f RED', spec: 'SPEC.md', verify: { policy: 'any', family: 'off' },

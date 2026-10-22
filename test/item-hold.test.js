@@ -105,8 +105,10 @@ test('lifting a hold makes the item offerable again [N2,N22,H16,M1]', t => {
   const hold = prepareEngineMove(board, 'holdItem', [id, { agentId: 'coordinator', reason: 'review the release' }]);
   const at = '2026-10-09T12:00:00.000Z';
   const transport = { kind: 'move', sender: { kind: 'agent', userId: 'fixture-user', agent: 'coordinator' } };
+  // The project board also holds the spec baseline its init recorded, so event ids differ from the bare peer's (#960).
+  const unnumbered = (moved) => ({ ...moved, events: moved.events.map(({ event_id, ...event }) => event) });
   const applied = applyRelayMove(board, hold, { ...transport, sequence: 1, at });
-  assert.deepEqual(applyRelayMove(peer, hold, { ...transport, sequence: 1, at }), applied);
+  assert.deepEqual(unnumbered(applyRelayMove(peer, hold, { ...transport, sequence: 1, at })), unnumbered(applied));
   assert.equal(store.getItem(peer, id).item_hold_reason, 'review the release');
   const holdEvent = store.events(peer, { itemId: id }).at(-1);
   assert.equal(holdEvent.event_kind, 'hold_item');
@@ -131,7 +133,7 @@ test('lifting a hold makes the item offerable again [N2,N22,H16,M1]', t => {
   const release = prepareEngineMove(board, 'releaseItemHold', [id, { agentId: 'coordinator' }]);
   const releaseAt = '2026-10-09T12:01:00.000Z';
   const released = applyRelayMove(board, release, { ...transport, sequence: 2, at: releaseAt });
-  assert.deepEqual(applyRelayMove(peer, release, { ...transport, sequence: 2, at: releaseAt }), released);
+  assert.deepEqual(unnumbered(applyRelayMove(peer, release, { ...transport, sequence: 2, at: releaseAt })), unnumbered(released));
   assert.equal(store.events(peer, { itemId: id }).at(-1).event_kind, 'unhold_item');
   for (const replica of [board, peer]) {
     const item = store.getItem(replica, id);
