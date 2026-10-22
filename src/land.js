@@ -690,7 +690,7 @@ export async function land(options) {
       adopt: options.adopt, fence: lease.fence };
     if (batchOptions.maximum === null) delete batchOptions.maximum;
     return await runLandingWorker(batchOptions, { write, checkLease, checkLeaseNow: lease.assertCurrent,
-      onWait: options.onWait, say: options.say, signal: controller.signal });
+      bindWorker: lease.bindWorker, onWait: options.onWait, say: options.say, signal: controller.signal });
   } catch (error) { failed = true; throw error; }
   finally {
     try { await lease.release(); }

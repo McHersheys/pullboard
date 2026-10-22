@@ -27,6 +27,7 @@ function validEntry(entry) {
     && entry.branch.length <= 256 && typeof entry.label === 'string' && entry.label.length > 0 && entry.label.length <= 160
     && !/[\r\n]/u.test(entry.label) && Number.isSafeInteger(entry.pid) && entry.pid > 0
     && (entry.lineage === null || typeof entry.lineage === 'string' && entry.lineage.length > 0 && entry.lineage.length <= 64)
+    && (entry.guardianPid === undefined || Number.isSafeInteger(entry.guardianPid) && entry.guardianPid > 0)
     && Number.isFinite(Date.parse(entry.until)) && Number.isFinite(Date.parse(entry.since));
 }
 
@@ -62,9 +63,9 @@ function save(board, state, action, token) {
 }
 
 /** Enqueue, renew, inspect ownership or release through one deterministic ordered operation. */
-export function landingLeaseMove(board, { agentId, action, token, branch, pid, generation }) {
+export function landingLeaseMove(board, { agentId, action, token, branch, pid, generation, guardianPid }) {
   if (agentId !== COORDINATOR) throw new Refused('COORDINATOR_ONLY', 'only the coordinator takes a landing lease; ask your coordinator to run pullboard land');
-  if (!['request', 'renew', 'release'].includes(action) || !/^[a-f0-9-]{36}$/u.test(token ?? '')) {
+  if (!['request', 'renew', 'release', 'bind'].includes(action) || !/^[a-f0-9-]{36}$/u.test(token ?? '')) {
     throw new Refused('LAND_LEASE_REQUEST', 'a landing lease needs its command identity and a supported action; run pullboard land');
   }
   return atomic(board, () => {
@@ -74,9 +75,12 @@ export function landingLeaseMove(board, { agentId, action, token, branch, pid, g
     if (action === 'release') {
       if (state.holder?.token === token && state.holder.generation === generation) state.holder = null;
       state.line = state.line.filter(entry => entry.token !== token);
-    } else if (action === 'renew') {
+    } else if (action === 'renew' || action === 'bind') {
       const holder = assertLandingLease(board, { token, branch, generation });
-      state.holder = { ...holder, until: new Date(at.getTime() + LANDING_LEASE_MS).toISOString() };
+      if (action === 'bind' && (!Number.isSafeInteger(guardianPid) || guardianPid < 1 || holder.guardianPid && holder.guardianPid !== guardianPid)) {
+        throw new Refused('LAND_LEASE_REQUEST', 'this landing already names its owned guardian; start a new pullboard land command');
+      }
+      state.holder = { ...holder, ...(action === 'bind' ? { guardianPid } : {}), until: new Date(at.getTime() + LANDING_LEASE_MS).toISOString() };
     } else {
       requireConfirmedLanding(board);
       if (state.holder && Date.parse(state.holder.until) <= at.getTime()) state.holder = null;
@@ -84,7 +88,8 @@ export function landingLeaseMove(board, { agentId, action, token, branch, pid, g
       const old = state.holder?.token === token ? state.holder : state.line.find(entry => entry.token === token);
       const holder = coordinatorHolder(board);
       const entry = { token, branch, pid, label: `${holder?.label ?? 'coordinator'} landing ${token.slice(0, 8)}`,
-        lineage: holder?.lineage ?? null, since: old?.since ?? at.toISOString(), until: new Date(at.getTime() + LANDING_LEASE_MS).toISOString() };
+        lineage: holder?.lineage ?? null, ...(old?.guardianPid ? { guardianPid: old.guardianPid } : {}),
+        since: old?.since ?? at.toISOString(), until: new Date(at.getTime() + LANDING_LEASE_MS).toISOString() };
       if (!validEntry(entry)) throw new Refused('LAND_LEASE_REQUEST', 'a landing request needs its trunk and process identity; run pullboard land');
       if (old && (old.branch !== branch || old.pid !== pid || old.lineage !== entry.lineage)) {
         throw new Refused('LAND_LEASE_REQUEST', 'this landing identity already belongs to another invocation; start a new pullboard land command');

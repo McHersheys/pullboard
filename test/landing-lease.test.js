@@ -34,6 +34,9 @@ test('landing admission is FIFO and stale releases cannot free a successor [Q1,Q
   assert.equal(store.landingLeaseMove(board, second).position, 1);
   assert.equal(store.landingLeaseMove(board, third).position, 2);
   const fence = { ...first, generation: acquired.generation };
+  store.landingLeaseMove(board, { ...fence, action: 'bind', guardianPid: process.pid });
+  assert.equal(store.landingLeaseState(board).holder.guardianPid, process.pid);
+  assert.throws(() => store.landingLeaseMove(board, { ...fence, action: 'bind', guardianPid: process.pid + 1 }), error => error.code === 'LAND_LEASE_REQUEST');
   assert.throws(() => guardLandingWrite(board), error => error.code === 'LAND_LEASE_LOST');
   assert.throws(() => assertLandingLease(board, { ...fence, branch: 'refs/heads/other' }), error => error.code === 'LAND_LEASE_LOST');
   store.landingLeaseMove(board, { ...fence, action: 'release' });

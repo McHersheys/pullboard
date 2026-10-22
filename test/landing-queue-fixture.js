@@ -1,6 +1,6 @@
 /** Public, real-Git landing contention fixture; no private drill data is used [B3,R3,Q1,Q2,E8]. */
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as store from '../src/board.js';
 
@@ -16,6 +16,12 @@ function readBoard(box, action) {
   const board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
   try { return action(board); }
   finally { store.closeBoard(board); }
+}
+
+/** Observe only a recorded fixture PID; no process is signalled by this read. */
+function alive(pid) {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { if (error.code === 'ESRCH') return false; throw error; }
 }
 
 /** Build two independent items and accept the higher id first through actual CLI checks. */
@@ -50,16 +56,17 @@ function acceptedPair(helpers, box, staleAfterFirst) {
 }
 
 /** Prove named waiting, exclusion and verdict order with two real overlapping land commands. */
-export async function landingQueueCase(t, helpers, { staleAfterFirst = false } = {}) {
+export async function landingQueueCase(t, helpers, { staleAfterFirst = false, killParent = false } = {}) {
   const sandbox = helpers.sandbox();
   const arm = join(sandbox.dir, 'landing-armed');
   const entered = join(sandbox.dir, 'landing-entered');
   const release = join(sandbox.dir, 'landing-release');
+  const gatePid = join(sandbox.dir, 'landing-gate-pid');
   const gateFile = join(sandbox.dir, 'landing-queue-gate.cjs');
   writeFileSync(gateFile, [
     "const fs = require('node:fs'); const assert = require('node:assert/strict');",
-    `const [arm,entered,release] = ${JSON.stringify([arm, entered, release])};`,
-    "if (fs.existsSync(arm)) { fs.writeFileSync(entered, process.cwd()); const end = Date.now() + 20000; while (!fs.existsSync(release) && Date.now() < end) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,20); assert.ok(fs.existsSync(release), 'owning test releases the gate'); }",
+    `const [arm,entered,release,gatePid] = ${JSON.stringify([arm, entered, release, gatePid])};`,
+    "if (fs.existsSync(arm)) { fs.writeFileSync(gatePid, String(process.pid)); fs.writeFileSync(entered, process.cwd()); const end = Date.now() + 20000; while (!fs.existsSync(release) && Date.now() < end) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,20); assert.ok(fs.existsSync(release), 'owning test releases the gate'); }",
     "const files = fs.existsSync('web') ? fs.readdirSync('web').filter(file => /^queue-\\d+\\.txt$/.test(file)) : [];",
     "for (const file of files) assert.match(fs.readFileSync('web/' + file,'utf8'), /^works/);",
     "console.log('TAP version 13\\nok 1 - landed queue files keep their behavior\\n1..1\\n# tests 1\\n# pass 1\\n# fail 0');",
@@ -102,6 +109,24 @@ export async function landingQueueCase(t, helpers, { staleAfterFirst = false } =
   await helpers.waitFor(() => Date.parse(readBoard(box, board => store.landingLeaseState(board).holder?.until)) > Date.parse(holder.until),
     'the independent parent renews while the worker is blocked inside its real synchronous gate');
   assert.equal(readBoard(box, board => store.landingBatches(board).at(-1).state), 'gating');
+  if (killParent) {
+    const blockedGatePid = Number(readFileSync(gatePid, 'utf8'));
+    assert.ok(Number.isSafeInteger(holder.guardianPid));
+    first.kill('SIGKILL'); // Kill only the CLI, leaving its separately grouped guardian responsible for the blocked gate.
+    assert.equal((await first.closed).signal, 'SIGKILL');
+    await helpers.waitFor(() => !alive(holder.guardianPid) && !alive(blockedGatePid), 'the guardian and blocked gate stop without releasing their marker');
+    assert.equal(existsSync(release), false, 'the owning test did not let the abandoned gate proceed');
+    const waiting = await second.closed;
+    assert.equal(waiting.code, 1);
+    assert.match(second.stderrText, /LAND_ADOPT/u, 'a queued ordinary land preserves explicit interrupted-batch adoption');
+    rmSync(arm); // Future gates may run, but removing arm cannot unblock the old gate's release loop.
+    const adopted = JSON.parse(run(box, box.repo, 'land', '--adopt', '--json'));
+    assert.equal(adopted.batch.id, firstBatch.id);
+    assert.deepEqual(adopted.landed, [entries[1].id]);
+    run(box, box.repo, 'land', '--max', '1');
+    assert.deepEqual(readBoard(box, board => store.landingBatches(board).flatMap(batch => batch.items.map(entry => entry.id))), [entries[1].id, entries[0].id]);
+    return;
+  }
   writeFileSync(release, 'released');
   const results = await Promise.all(children.map(child => child.closed));
   if (staleAfterFirst) {

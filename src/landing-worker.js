@@ -9,6 +9,9 @@ import { parseProcessCensus } from './process-census.js';
 
 const FILE = fileURLToPath(import.meta.url);
 
+/** Preserve one typed refusal prefix while passing it through more than one process. */
+function messageText(error) { return String(error.message).replace(/^\[[A-Z][A-Z0-9_]*\] /u, ''); }
+
 /** Stop only the process group this invocation created; never signal another landing's processes. */
 function stop(child) {
   if (!child.pid) return;
@@ -32,19 +35,20 @@ function stop(child) {
 }
 
 /** Run blocking batch work under a live parent that owns all canonical writes and lease renewal. */
-export async function runLandingWorker(options, { write, checkLease, checkLeaseNow, onWait, say, signal }) {
-  const child = spawn(process.execPath, [FILE], { cwd: options.root, env: process.env, detached: true, stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+export async function runLandingWorker(options, { write, checkLease, checkLeaseNow, bindWorker, onWait, say, signal }) {
+  const child = spawn(process.execPath, [FILE, 'guardian'], { cwd: options.root, env: process.env, detached: true, stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+  const inFlight = new Set();
   let result;
   let failure;
   let stderr = '';
   child.stderr.setEncoding('utf8').on('data', part => { stderr = (stderr + part).slice(-65536); });
   /** A failed authority check stops the whole owned group before another command can adopt its worktree. */
-  const abort = () => { failure ??= signal.reason; stop(child); };
+  const abort = () => { failure ??= signal.reason; if (child.exitCode === null && child.signalCode === null) stop(child); };
   signal.addEventListener('abort', abort, { once: true });
   /** Reply only over this owned child's channel, preserving the original typed refusal. */
   const answer = (id, value, error) => {
     if (!child.connected) return;
-    child.send({ type: 'answer', id, value, error: error ? { code: error.code ?? 'LAND_WORKER', message: error.message } : null }, () => {});
+    child.send({ type: 'answer', id, value, error: error ? { code: error.code ?? 'LAND_WORKER', message: messageText(error) } : null }, () => {});
   };
   child.on('message', message => {
     if (message.type === 'say') { say(message.text); return; }
@@ -53,20 +57,25 @@ export async function runLandingWorker(options, { write, checkLease, checkLeaseN
     if (message.type !== 'call') return;
     /** Permit only the batch worker's narrow protocol, retaining all authority in this parent. */
     const act = async () => {
+      if (signal.aborted) throw signal.reason;
       if (message.operation === 'check') { await checkLease(); checkLeaseNow(); return null; }
       if (message.operation === 'wait') return await onWait?.(message.args[0]);
-      if (!['recordLandingBatch', 'finishLandingBatch', 'recordLandingFlake', 'recordFlakeObservation', 'recordGateRun'].includes(message.operation)) {
+      if (!['recordLandingBatch', 'finishLandingBatch', 'recordLandingFlake', 'recordFlakeObservation', 'recordGateRun', 'reopen', 'appendFact'].includes(message.operation)) {
         throw new Refused('LAND_WORKER', 'the landing worker requested an unsupported operation; stop it and inspect pullboard resume');
       }
       return await write(message.operation, message.args);
     };
-    void act().then(value => answer(message.id, value), error => answer(message.id, null, error));
+    const pending = act().then(value => answer(message.id, value), error => answer(message.id, null, error));
+    inFlight.add(pending);
+    void pending.finally(() => inFlight.delete(pending));
   });
   try {
-    const terminal = new Promise((resolveClose, reject) => {
-      child.once('error', reject);
+    const terminal = new Promise(resolveClose => {
+      child.once('error', error => { failure = error; });
       child.once('close', (code, terminatedBy) => resolveClose({ code, signal: terminatedBy }));
     });
+    await new Promise((resolveSpawn, reject) => { child.once('spawn', resolveSpawn); child.once('error', reject); });
+    await bindWorker(child.pid);
     if (signal.aborted) abort();
     else child.send({ type: 'start', options });
     const status = await terminal;
@@ -75,7 +84,8 @@ export async function runLandingWorker(options, { write, checkLease, checkLeaseN
     return result;
   } finally {
     signal.removeEventListener('abort', abort);
-    stop(child);
+    if (child.exitCode === null && child.signalCode === null) stop(child);
+    await Promise.allSettled(inFlight);
   }
 }
 
@@ -116,7 +126,7 @@ async function workerMain(options) {
     pipe.finish({ type: 'result', value: result });
   } catch (error) {
     process.exitCode = 1;
-    pipe.finish({ type: 'failure', code: error.code ?? 'LAND_WORKER', message: error.message });
+    pipe.finish({ type: 'failure', code: error.code ?? 'LAND_WORKER', message: messageText(error) });
   } finally { store.closeBoard(board); }
 }
 
@@ -127,6 +137,45 @@ function assertWorkerFence(board, fence) {
 }
 import { assertLandingLease } from './landing-lease.js';
 
-if (process.argv[1] === FILE && process.send) process.once('message', message => {
-  if (message.type === 'start') void workerMain(message.options);
-});
+/** A nonblocking guardian survives CLI death and stops its own whole group, even while the worker is synchronous. */
+function guardianMain() {
+  let worker;
+  let finished = false;
+  let closed = false;
+  let pending = 0;
+  /** Flush result and refusal messages before ending this private channel normally. */
+  const finish = () => {
+    if (!closed || pending) return;
+    finished = true;
+    if (process.connected) process.disconnect();
+  };
+  process.on('message', message => {
+    if (message.type === 'start' && !worker) {
+      // The worker stays in this guardian's detached group; its gates inherit that group too.
+      worker = spawn(process.execPath, [FILE, 'worker'], { cwd: message.options.root, env: process.env,
+        stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
+      worker.on('message', value => {
+        if (!process.connected) return;
+        pending += 1;
+        process.send(value, () => { pending -= 1; finish(); });
+      });
+      worker.once('error', error => {
+        if (process.connected) process.send({ type: 'failure', code: 'LAND_WORKER', message: error.message });
+      });
+      worker.once('close', (code, signal) => {
+        closed = true;
+        process.exitCode = code ?? (signal ? 1 : 0);
+        finish();
+      });
+      worker.send(message);
+    } else if (worker?.connected) worker.send(message, () => {});
+  });
+  process.once('disconnect', () => { if (!finished) stop({ pid: process.pid }); });
+}
+
+if (process.argv[1] === FILE && process.send) {
+  if (process.argv[2] === 'guardian') guardianMain();
+  else if (process.argv[2] === 'worker') process.once('message', message => {
+    if (message.type === 'start') void workerMain(message.options);
+  });
+}

@@ -8,7 +8,14 @@ import { Refused } from './refused.js';
 function deadLocalOwner(holder) {
   if (!holder || holder.lineage !== null) return false;
   try { process.kill(holder.pid, 0); return false; }
-  catch (error) { return error.code === 'ESRCH'; }
+  catch (error) {
+    if (error.code !== 'ESRCH') return false;
+    if (holder.guardianPid) {
+      try { process.kill(holder.guardianPid, 0); return false; }
+      catch (guardianError) { return guardianError.code === 'ESRCH'; }
+    }
+    return true;
+  }
 }
 
 /** Return a generation-bound lease whose renewal failures prevent later landing writes. */
@@ -27,6 +34,7 @@ export async function takeLandingResource({ board, write, branch, onWait, onLost
       if (lost) throw lost;
       try {
         const result = await write('landingLeaseMove', [{ ...parameters, action: 'renew', generation }]);
+        if (lost) throw lost;
         assertLandingLease(board, { token, branch, generation }); // A delayed recovered receipt is not a fresh grant.
         deadline = Date.parse(result.holder.until);
         return result;
@@ -55,6 +63,14 @@ export async function takeLandingResource({ board, write, branch, onWait, onLost
     }, 100);
     watchdog.unref();
     return { name: 'landing', scope: 'board', fence: { token, branch, generation }, assertHeld,
+      /** Record the guardian before it starts physical work, so dead-parent recovery waits for its drain. */
+      async bindWorker(guardianPid) {
+        await assertHeld();
+        if (lost) throw lost;
+        const result = await write('landingLeaseMove', [{ ...parameters, action: 'bind', generation, guardianPid }]);
+        if (lost) throw lost;
+        deadline = Date.parse(result.holder.until);
+      },
       /** Check the current wall-time fence without adding an await before a physical action. */
       assertCurrent() { return assertLandingLease(board, { token, branch, generation }); },
       /** End renewals before releasing; a stale generation never clears its successor. */
