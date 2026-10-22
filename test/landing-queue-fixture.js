@@ -263,10 +263,10 @@ export async function landingQueueCase(t, helpers, { staleAfterFirst = false, ki
   if (policyAfterFirst) {
     const calls = readFileSync(policyCalls, 'utf8').trim().split('\n').map(line => JSON.parse(line));
     assert.deepEqual(calls, [[], ['--new-policy']], 'the waiter uses the policy accepted while it queued');
-    await repairedPolicyControls(box, batches[1]);
   }
   for (const entry of entries) {
     assert.equal(readFileSync(join(box.repo, `web/queue-${entry.id}.txt`), 'utf8'), 'works\n');
     assert.equal(readBoard(box, board => board.db.prepare("SELECT COUNT(*) AS n FROM event WHERE event_kind='merged' AND item_id=?").get(entry.id).n), 1);
   }
+  if (policyAfterFirst) await repairedPolicyControls(box, batches[0]);
 }
