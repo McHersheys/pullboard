@@ -1,5 +1,6 @@
 /** Public, real-Git landing contention fixture; no private drill data is used [B3,R3,Q1,Q2,E8]. */
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as store from '../src/board.js';
@@ -22,6 +23,12 @@ function readBoard(box, action) {
 function alive(pid) {
   try { process.kill(pid, 0); return true; }
   catch (error) { if (error.code === 'ESRCH') return false; throw error; }
+}
+
+/** Retain actual states for only this fixture's known PIDs when a custody assertion fails. */
+function processObservation(pids) {
+  const result = spawnSync('/bin/ps', ['-o', 'pid=,ppid=,pgid=,stat=', '-p', pids.join(',')], { encoding: 'utf8' });
+  return { status: result.status, states: result.stdout?.trim() ?? '', error: result.error?.code ?? null };
 }
 
 /** Build two independent items and accept the higher id first through actual CLI checks. */
@@ -121,8 +128,15 @@ export async function landingQueueCase(t, helpers, { staleAfterFirst = false, ki
     } else if (killGuardian) {
       process.kill(holder.guardianPid, 'SIGKILL'); // This exact PID came from this private command's bound guardian.
     } else first.kill('SIGSTOP'); // Keep IPC connected while the authority owner cannot renew or run its own watchdog.
-    await helpers.waitFor(() => !alive(holder.guardianPid) && !alive(blockedGatePid), 'the guardian and blocked gate stop without releasing their marker',
-      suspendParent ? 45_000 : 8_000); // Budget: actual 30s lease expiry plus owned-process drain; not a speed threshold.
+    try {
+      await helpers.waitFor(() => !alive(holder.guardianPid) && !alive(blockedGatePid), 'the guardian and blocked gate stop without releasing their marker',
+        suspendParent ? 45_000 : 8_000); // Budget: actual 30s lease expiry plus owned-process drain; not a speed threshold.
+    } catch (error) {
+      const batch = readBoard(box, board => store.landingBatches(board).at(-1));
+      error.message += '; custody observation: ' + JSON.stringify({ processes: processObservation([first.pid, holder.guardianPid, blockedGatePid, second.pid]),
+        firstExit: first.exitCode, secondExit: second.exitCode, batchState: batch.state, revision: batch.revision, releaseExists: existsSync(release) });
+      throw error;
+    }
     if (suspendParent) {
       const successor = await second.closed;
       assert.equal(successor.code, 0, successor.failure ?? 'the queued adopter lands only after the previous gate is dead');
