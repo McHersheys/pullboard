@@ -453,3 +453,20 @@ test('spawned starts a Node child that starts the browser', () => {
     assert.equal(browserInCall(method, input), null, `${method} ${JSON.stringify(input)} is not a browser`);
   }
 });
+
+
+test('the actual runner preload stays browser-free while real direct launches stay bound [C7,O5]', async t => {
+  const root = sourceFixture(t, {
+    'package.json': '{"type":"module"}',
+    'test/plain.test.js': "import '../bin/run-tests.js';\n",
+    'test/direct.test.js': "import { spawnSync } from 'node:child_process'; spawnSync(process.env.PULLBOARD_CHROME, ['--version']);\n",
+  });
+  cpSync(resolve(import.meta.dirname, '../src'), join(root, 'src'), { recursive: true });
+  mkdirSync(join(root, 'bin'));
+  copyFileSync(TEST_RUNNER, join(root, 'bin/run-tests.js'));
+  commitSourceFixture(root);
+  assert.equal(await testsNeedBrowser(root, ['test/plain.test.js'], { byLaunch: true }), false,
+    'importing the actual runner and its refusal-only guard must not claim a browser slot');
+  assert.equal(await testsNeedBrowser(root, ['test/direct.test.js'], { byLaunch: true }), true,
+    'a real direct browser launcher still needs its browser slot');
+});

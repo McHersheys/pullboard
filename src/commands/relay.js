@@ -46,6 +46,7 @@ import {
 
 /** Run `pullboard relay` and return its exit code. */
 export async function run(io, { first, second, rest, values }) {
+  if (values['new-browser'] && first !== 'pair') throw new Refused('USAGE', 'pullboard relay pair --new-browser');
   if (first === 'recover') {
     if (second || rest.length || !values.skip || values.url || values.all) throw new Refused('USAGE', 'pullboard relay recover --skip <exact blocked next sequence>');
     requirePersonChannel('terminal');
@@ -93,6 +94,7 @@ export async function run(io, { first, second, rest, values }) {
   if (first === 'pair') {
     if (second || rest.length || values.url) throw new Refused('USAGE', 'pullboard relay pair');
     const ctx = context(io);
+    if (values['new-browser']) return await relayOnAllCommand(undefined, io, { pairAdditional: true });
     return await relayPair(ctx.info.root, io);
   }
   if (first === 'join') {

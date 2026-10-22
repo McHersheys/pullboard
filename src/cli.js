@@ -491,7 +491,6 @@ function selectedHelp(command, first, second, rest, values) {
   }
   return null;
 }
-
 const OPTIONS = {
   criterion: { type: 'string' },
   specs: { type: 'string' },
@@ -501,6 +500,7 @@ const OPTIONS = {
   port: { type: 'string' },
   slots: { type: 'string' },
   browser: { type: 'string' },
+  'new-browser': { type: 'boolean' },
   node: { type: 'string' },
   root: { type: 'string' },
   project: { type: 'boolean' },

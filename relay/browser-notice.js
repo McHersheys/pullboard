@@ -89,7 +89,7 @@ export const RELAY_SCREEN_WORDS = Object.freeze({
 
 /** Select guidance from observed inventory and key delivery, never infer why a computer has not uploaded. */
 export function emptyBoardStep({ available = [], waitingBoards = new Map(), approvedBoards = new Set(), loaded = false, browserPaired = false, failure = '' } = {}) {
-  const pair = { command: 'pullboard relay pair', ask: 'Help me pair this browser with my boards.',
+  const pair = { command: 'pullboard relay pair --new-browser', ask: 'Help me pair this browser with my boards.',
     small: 'On the computer with the boards, run this, then open the link it prints here or scan its QR.' };
   if (!loaded) return { title: 'Checking your linked boards', say: failure || 'Waiting for this account’s board list.', command: '', ask: '', small: '', waiting: failure || 'Checking your boards' };
   if (approvedBoards.size) return { title: 'Finishing this pairing', say: 'Approved; waiting for the computer to send this browser its board keys.',
