@@ -78,6 +78,17 @@ function verified(box, name, { touchTest = false } = {}) {
   return { id, path, head, file };
 }
 
+/** Re-review the submitted work with a changed trunk instead of bypassing verdict freshness. */
+function rechecked(box, entry) {
+  box.git(box.repo, 'switch', '-q', '--detach', entry.head);
+  try {
+    box.git(box.repo, 'merge', '-q', '--no-edit', 'main');
+    success(box, box.repo, 'verify', String(entry.id), 'accept', '--as', 'coordinator',
+      '--note', 'The frozen check passed on the submitted work composed with the updated trunk.');
+  } finally { box.git(box.repo, 'switch', '-q', 'main'); }
+  return boardRead(box, board => JSON.parse(store.events(board, { itemId: entry.id }).findLast(event => event.event_kind === 'accept').event_detail));
+}
+
 /** Save a project policy normally, without changing another machine's settings. */
 function policy(box, landing) {
   const file = join(box.repo, 'pullboard.json');
@@ -127,16 +138,6 @@ export function assertMatchingLandingHost(helpers) {
       'recorded legacy verdict moves replay without acquiring new metadata');
   });
 
-  // Model a sealed peer verdict reporting a different host; this is fixture data, not a measured second runtime.
-  const peerEnvironment = { ...environment, node: '0.0.1' };
-  boardRead(box, board => {
-    const item = store.getItem(board, entry.id);
-    store.verify(board, entry.id, { agentId: 'coordinator', decision: 'ACCEPT',
-      note: 'Stand-in peer records its different execution environment.', head: entry.head,
-      digest: item.item_frozen_digest, policy: 'any', check: 'green',
-      review: JSON.parse(accepted.event_detail).review, environment: peerEnvironment });
-  });
-
   const mismatch = { ...environment, platform: process.platform === 'linux' ? 'darwin' : 'linux' };
   policy(box, { environment: mismatch });
   const base = box.git(box.repo, 'rev-parse', 'HEAD');
@@ -151,6 +152,16 @@ export function assertMatchingLandingHost(helpers) {
   success(box, box.repo, 'settings', 'landing.pool', 'off');
   assert.equal(command(box, box.repo, 'land').document?.error?.code, 'LAND_HOST_NOT_JOINED');
   success(box, box.repo, 'settings', 'landing.pool', 'on');
+  const current = rechecked(box, entry);
+  // Model a sealed peer verdict reporting a different host; this is fixture data, not a measured second runtime.
+  const peerEnvironment = { ...environment, node: '0.0.1' };
+  boardRead(box, board => {
+    const item = store.getItem(board, entry.id);
+    store.verify(board, entry.id, { agentId: 'coordinator', decision: 'ACCEPT',
+      note: 'Stand-in peer records its different execution environment.', head: current.review.head,
+      digest: item.item_frozen_digest, policy: 'any', check: 'green',
+      review: current.review, environment: peerEnvironment });
+  });
   const landed = success(box, box.repo, 'land');
   assert.deepEqual(landed.landed, [entry.id]);
   assert.deepEqual(landed.batch.environment, environment);
@@ -210,6 +221,7 @@ export function assertNoCulpritTrunkHold(helpers) {
     '});',
   ].join('\n') + '\n');
   commit(fixed, fixed.repo, 'fix(web): correct the interaction expectation [G1]');
+  for (const entry of fixedEntries) rechecked(fixed, entry);
   assert.deepEqual(success(fixed, fixed.repo, 'land').landed, fixedEntries.map(entry => entry.id),
     'a correction to the held test releases the trunk without a waiver');
 }
