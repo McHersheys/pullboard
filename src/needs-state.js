@@ -46,20 +46,16 @@ export function personNeedsState(root, { board: providedBoard = null, includeRig
   }
 }
 
-/** Keep complete obligations without dashboard history; resume also retains fit and undrafted Rigor. */
-export function personNeedsSummary(root, { board, config, includeFit = false, includeRigorUndrafted = false }) {
+/** Keep status's complete obligation list without dashboard history, Git ages, or release notes. */
+export function personNeedsSummary(root, { board, config }) {
   const spec = loadSpec(root, config);
   const rows = projectRowDecisions(store.rowDecisions(board), { root, spec: spec.rows, practice: loadDoctrine(root, config).rows });
-  const state = { ...rows,
+  const projected = projectSpecApprovals({ ...rows,
     decisions: store.openDecisions(board, store.PERSON), holds: store.laneHolds(board),
     agents: store.listAgents(board).map(agent => ({ ...agent, displayName: displayAgentName(agent, config.agents.names) })),
     rigorDrafts: rigorDraftNeeds(rows), sentinelDrafts: sentinelDraftNeeds(sentinels(board)), blocks: recentBlocks(repoInfo(root).commonDir, board),
-  };
-  // Resume consumes obligations, not dashboard items; fit still projects every current row and proposal.
-  const fitted = includeFit ? projectFit(pendingFit(repoInfo(root).commonDir), { ...state, items: [] }) : state;
-  const projected = projectSpecApprovals(fitted, specApprovalState(root, { board, config, spec }));
-  return { ...projected, ...(includeRigorUndrafted
-    ? { rigorUndrafted: undraftedRigor(store.events(board), rows, { person: store.PERSON }) } : {}) };
+  }, specApprovalState(root, { board, config, spec }));
+  return projected;
 }
 
 /** The person's blocks from the last day, by the board's clock, for Needs you [C6]. */

@@ -37,8 +37,8 @@ import {
   takeDecisionNotices,
 } from '../implies.js';
 import {
-  personNeedsSummary,
-} from '../needs-state.js';
+  resumeNeeds,
+} from '../resume-needs.js';
 import {
   personNeeds,
 } from '../needs.js';
@@ -170,7 +170,7 @@ export async function resumeHere(io, view, diagnostics = false) {
     const staleVerdicts = pendingMerges.filter(item => item.item_verdict_state);
     const decisionSections = isMain ? coordinatorDecisionSections(board, ctx) : null;
     const { shouts = [], ...decisions } = decisionSections ?? {};
-    const needsState = personNeedsSummary(root, { board, config: ctx.config, includeFit: true, includeRigorUndrafted: me.id === COORDINATOR });
+    const needsState = resumeNeeds(root, { board, config: ctx.config, includeRigorUndrafted: me.id === COORDINATOR });
     return {
       me,
       health: recordedHealthFindings(board),
