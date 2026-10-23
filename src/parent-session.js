@@ -9,6 +9,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Refused } from './refused.js';
 import { createHash } from 'node:crypto';
+import { AGENT_SESSION_IDS } from './person.js';
 
 /** Accept an opaque identity, never a path, whitespace, credential or arbitrary session metadata. */
 export function parentIdentity(value) {
@@ -46,14 +47,19 @@ function ownSessionMetadata(file, session) {
   finally { if (descriptor !== undefined) closeSync(descriptor); }
 }
 
-/** Discover only the invoking Codex session's metadata file, matching its runtime id before reading it. */
+/** Keep the runtime's own identity; discover a parent only in its matching Codex metadata record. */
 export function runtimeSessionIdentity(environment = process.env, home = homedir()) {
-  const session = environment.CODEX_THREAD_ID || environment.CODEX_SESSION_ID;
-  if (!session || !/^[A-Za-z0-9-]+$/u.test(session)) return null;
+  const key = AGENT_SESSION_IDS.find(name => Boolean(environment[name]));
+  if (!key) return null;
+  let session;
+  try { session = parentIdentity(environment[key]); }
+  catch { return null; }
+  const own = { session, parent: null };
+  if (key === 'CLAUDE_CODE_SESSION_ID') return own;
   const sessions = join(environment.CODEX_HOME || join(home, '.codex'), 'sessions');
   let entries;
   try { entries = readdirSync(sessions, { recursive: true, withFileTypes: true }); }
-  catch { return null; }
+  catch { return own; }
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith(`-${session}.jsonl`)) continue;
     const metadata = ownSessionMetadata(join(entry.parentPath, entry.name), session);
@@ -62,7 +68,7 @@ export function runtimeSessionIdentity(environment = process.env, home = homedir
     try { return { session: parentIdentity(session), parent: parent ? parentIdentity(parent) : null }; }
     catch { /* An invalid runtime record cannot declare another identity. */ }
   }
-  return null;
+  return own;
 }
 
 /** Read this runtime's parent, keeping a primary session's missing parent visible as unknown. */

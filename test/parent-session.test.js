@@ -13,6 +13,7 @@ import {
   joinParentSession,
   parentSessionDigest,
   runtimeParentSession,
+  runtimeSessionIdentity,
 } from '../src/parent-session.js';
 import * as store from '../src/board.js';
 import { runFixtureGit } from './fixture-child.js';
@@ -44,6 +45,10 @@ test('[V1,B3] parent discovery reads only matching own runtime metadata and agre
   writeFileSync(own, JSON.stringify({ type: 'session_meta', payload: { id: 'other-session', parent_thread_id: 'foreign-parent' } }) + '\n');
   assert.equal(runtimeParentSession(environment), null, 'a filename alone cannot authenticate another session record');
   assert.equal(joinParentSession(undefined, {}), null, 'missing runtime metadata remains unknown');
+  assert.deepEqual(runtimeSessionIdentity({ CODEX_SESSION_ID: 'unrecorded-own-session', CODEX_HOME: home }),
+    { session: 'unrecorded-own-session', parent: null }, 'own runtime identity survives missing metadata');
+  assert.deepEqual(runtimeSessionIdentity({ CLAUDE_CODE_SESSION_ID: 'claude-own-session', ...environment }),
+    { session: 'claude-own-session', parent: null }, 'the native Claude session takes precedence over inherited Codex identity');
   assert.throws(() => joinParentSession('/private/session.jsonl'), { code: 'BAD_PARENT' });
 });
 
