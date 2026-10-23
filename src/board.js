@@ -15,6 +15,8 @@ import {
 export { verdictReviewProblem, verdictsFor, acceptedVerdict, checkedLandingCommit };
 export { landingLeaseMove, landingLeaseState } from './landing-lease.js';
 import { guardLandingWrite } from './landing-lease.js';
+import { boardBusyError } from './board-busy.js';
+export { boardBusyError };
 import {
   randomBytes,
   randomUUID,
@@ -142,19 +144,6 @@ export const EVENT_LOG_VERSION = 1;
 /** Maximum time a board connection waits for another process to release SQLite's lock. */
 export const BOARD_BUSY_TIMEOUT_MS = 10_000;
 
-/**
- * Replace SQLite's bare lock error with the board path and elapsed wait when the wait expires.
- *
- * @param {string} file
- * @param {number} startedAt
- * @param {Error & { errcode?: number }} error
- * @returns {Error}
- */
-export function boardBusyError(file, startedAt, error) {
-  const sqliteCode = Number.isInteger(error.errcode) ? error.errcode & 0xff : null;
-  if (sqliteCode !== 5 && error.code !== 'SQLITE_BUSY' && !/database is locked/iu.test(error.message ?? '')) return error;
-  return new Refused('BOARD_BUSY', `board file ${file} remained held by another process after ${Date.now() - startedAt}ms; wait for it to finish and retry`);
-}
 
 const BRIEF_LIMIT = 8000;
 const REVIEW_RELEASE_COOLDOWN_MS = 60 * 60 * 1000;

@@ -9,6 +9,7 @@ import * as store from '../src/board.js';
 import { assertLandingLease, guardLandingWrite, LANDING_LEASE_MS } from '../src/landing-lease.js';
 import { applyEngineMove, prepareEngineMove } from '../src/engine.js';
 import { exportBoard, importBoard } from '../src/exchange.js';
+import { landingRelayCallbacks } from '../src/landing-relay.js';
 
 /** Create isolated physical databases sharing an initial board and a controllable receipt clock. */
 function fixture(t) {
@@ -85,4 +86,21 @@ test('ordered landing admission replays identically and a takeover fences the ol
   const oldFence = { ...first, action: 'renew', generation: acquired.generation };
   assert.equal(move('landingLeaseMove', oldFence).error.code, 'COORDINATOR_HELD');
   assert.throws(() => assertLandingLease(box.boards[0], oldFence), error => error.code === 'LAND_LEASE_LOST');
+});
+
+
+test('fenced landing moves never take a local or queued relay fallback [Q1,H16]', () => {
+  let applied = 0; let queued = 0;
+  const cause = new Error('private relay unavailable');
+  const callbacks = { apply() { applied++; return 'local'; }, queue(error, move, apply) { queued++; assert.equal(error, cause); assert.equal(move, 'sealed'); return apply(); } };
+  for (const [operation, args] of [['landingLeaseMove', [{}]], ['recordLandingBatch', [{ landingFence: { generation: 1 } }]], ['finishLandingBatch', [{ landingFence: { generation: 1 } }]]]) {
+    const guarded = landingRelayCallbacks(operation, args, callbacks);
+    assert.throws(guarded.apply, error => error.code === 'LAND_RELAY_REQUIRED');
+    assert.throws(() => guarded.queue(cause, 'sealed'), error => error === cause);
+  }
+  assert.equal(applied, 0); assert.equal(queued, 0);
+  const ordinary = landingRelayCallbacks('shout', [{}], callbacks);
+  assert.equal(ordinary.apply(), 'local');
+  assert.equal(ordinary.queue(cause, 'sealed'), 'local');
+  assert.equal(applied, 2); assert.equal(queued, 1);
 });
