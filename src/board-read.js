@@ -23,7 +23,6 @@ export function withBoardRead(ctx, work) {
   catch (error) {
     if (board.current && store.writeRefused(error)) return withBoard(ctx, work);
     if (!store.writeRefused(error) && !store.schemaMissing(error)) throw error;
-    throw new Refused('BOARD_SCHEMA_BEHIND', 'this board was made by an older pullboard and a read never upgrades it',
-      'run a command that changes the board, such as pullboard shout or pullboard add, which upgrades it; then run this again');
+    throw new Refused('BOARD_SCHEMA_BEHIND', 'this board was made by an older pullboard and a read never upgrades it');
   }
 }
