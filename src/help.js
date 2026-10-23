@@ -56,7 +56,7 @@ Set up
   pullboard relay tokens                list this board's agent token ids, agents and expiry, never credentials
   pullboard relay revoke <token-id>     revoke one token from that list; other agents keep working
   pullboard relay recover --skip <sequence>  person-only recovery of one blocked next relay position
-  pullboard resume                      where you are: your claim, branch, uncommitted work, what came back,
+  pullboard resume [--diagnostics]      where you are: your claim, branch, what came back,
                                         unread shouts, what to do next; run it to start any session
   pullboard hooks                       reinstall the git hooks (e.g. after a fresh clone)
 
@@ -363,6 +363,10 @@ const HELP_FLAG_EXPLANATIONS = {
 
 /** Lines a command's own help adds after its example. */
 const HELP_NOTES = {
+  resume: [
+    'Ordinary resume reads the current work card and recorded health without running diagnostics or watches.',
+    'Use --diagnostics explicitly for setup, hooks, dirty files and stale-work checks.',
+  ],
   'sentinel run': [
     'Schedule this command with cron on a server or a scheduled CI job that already has ordinary board access.',
     'For example: 0 * * * * cd /path/to/project && pullboard sentinel run',

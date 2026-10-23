@@ -535,6 +535,7 @@ const OPTIONS = {
   ...SENTINEL_OPTIONS,
   ...QUALITY_OPTIONS,
   yes: { type: 'boolean' },
+  diagnostics: { type: 'boolean' },
   landing: { type: 'boolean' },
   adopt: { type: 'boolean' },
   waive: { type: 'string' },
