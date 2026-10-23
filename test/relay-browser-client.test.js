@@ -6,10 +6,18 @@ import { tmpdir, userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { gzipSync } from 'node:zlib';
-import { findChromeExecutable, startChrome } from './relay-browser-fixture.js';
+import { findChromeExecutable, relayWorkBudgetMs, startChrome } from './relay-browser-fixture.js';
 
 /** The hosted page's real secure origin, answered from memory: no network is used. */
 const ORIGIN = 'https://app.pullboard.dev/';
+import { closeBoard, openBoard } from '../src/board.js';
+import { prepareEngineMove, applyRelayMove } from '../src/engine.js';
+import { relaySnapshot } from '../src/relay-presentation.js';
+import { ENGINE_VERSION } from '../src/machine.js';
+import { decodeBoardKey, seal } from '../src/seal.js';
+import { relayClientFixture } from './relay-client-fixture.js';
+
+
 const CLIENT = new URL('../relay/browser-client.js', import.meta.url);
 
 /** Two real sealed-snapshot payloads, gzipped as src/relay.js does: a tiny document and a board of 3000 items. */
@@ -201,4 +209,107 @@ test('the sealed gzip snapshot decodes through a Response body, the way WebKit a
   assert.deepEqual(await runPageInWebkit(webkit, `<script>${pageScript(snapshotDocumentSource(), inputs)}</script>`), decoded,
     'real WebKit opens both sealed gzip snapshots through the shipped decode');
   t.diagnostic('WebKit ran: ' + webkit);
+});
+
+/** Add one genuine sealed move to the private loopback relay and replay its acknowledged receipt locally. */
+async function postAndApplyMove(box, link, key, sequence, move) {
+  const sealed = Buffer.from(await seal(key, new TextEncoder().encode(JSON.stringify(move)), {
+    boardId: link.board, kind: 'move', sequence,
+  })).toString('base64url');
+  const response = await fetch(box.origin + '/api/v1/boards/' + link.board + '/moves', {
+    method: 'POST', headers: {
+      authorization: 'Bearer ' + link.agentTokens.coordinator.token,
+      'x-pullboard-engine': String(ENGINE_VERSION), 'content-type': 'application/json',
+    }, body: JSON.stringify({ sequence, sealed }),
+  });
+  assert.equal(response.status, 200, 'the private relay accepts the sealed move at its next position');
+  const { event } = await response.json();
+  assert.equal(event.event_id, sequence);
+  const board = openBoard(join(box.root, '.git', 'pullboard', 'board.sqlite'));
+  try {
+    const outcome = applyRelayMove(board, move, {
+      sequence, at: event.event_at, sender: event.sender, kind: 'move',
+    });
+    assert.equal(outcome.error, undefined, 'the acknowledged operation applies through the native engine');
+  } finally { closeBoard(board); }
+  return event;
+}
+
+test('the phone shows moves past its checkpoint as pending [H5,H16]', {
+  skip: !findChromeExecutable() && 'Chrome is not installed',
+}, async t => {
+  const box = await relayClientFixture(t);
+  box.legacySnapshotApi(); // This case explicitly publishes sealed API1 checkpoints.
+  const initialTitle = 'PHONE_CHECKPOINT_INITIAL_1113';
+  const pendingTitles = ['PHONE_PENDING_ONE_1113', 'PHONE_PENDING_TWO_1113', 'PHONE_PENDING_THREE_1113'];
+  assert.equal((await box.cli('add', box.lane, initialTitle)).code, 0);
+  await box.link();
+  const link = JSON.parse(readFileSync(box.linkFile, 'utf8'));
+  const key = decodeBoardKey(readFileSync(box.keyFile, 'utf8').trim());
+  const credential = link.agentTokens.coordinator.token;
+  const stateResponse = await fetch(box.origin + '/api/v1/boards/' + link.board + '/state', {
+    headers: { authorization: 'Bearer ' + credential, 'x-pullboard-engine': String(ENGINE_VERSION) },
+  });
+  assert.equal(stateResponse.status, 200, 'the checkpoint at N is present before phone startup');
+  const checkpointN = (await stateResponse.json()).state.sequence;
+
+  const chrome = await startChrome();
+  t.after(() => chrome.close());
+  const cookie = await chrome.send('Network.setCookie', {
+    name: 'pb_session', value: (await box.phoneSession()).token, url: box.origin, httpOnly: true, sameSite: 'Lax',
+  });
+  assert.equal(cookie.success, true);
+  await chrome.navigate(box.origin + '/#board=' + link.board + '&key=' + readFileSync(box.keyFile, 'utf8').trim());
+  await chrome.waitFor('document.querySelector("#chain")?.textContent.includes(' + JSON.stringify(initialTitle) + ')');
+  const checkpointItems = await chrome.evaluate(`Array.from(document.querySelectorAll('#chain [data-item]'), row => ({ id: row.dataset.item, title: row.getAttribute('title') }))`);
+  assert.equal(checkpointItems.length, 1, 'the initial checkpoint exposes its one real item');
+  assert.equal(checkpointItems[0].title, initialTitle);
+  const loadsBefore = box.calls.filter(call => call.method === 'GET' && call.path === '/').length;
+
+  // No native checkpoint is published during this interval. The browser must keep the N projection,
+  // while the real stream delivers three sealed events at N+1 through N+3 without a manual state read.
+  for (let index = 0; index < pendingTitles.length; index += 1) {
+    const board = openBoard(join(box.root, '.git', 'pullboard', 'board.sqlite'));
+    let move;
+    try {
+      // Prepare each operation after replaying its predecessor so the native engine assigns distinct item IDs.
+      move = prepareEngineMove(board, 'addItem', [{ by: 'coordinator', lane: box.lane, title: pendingTitles[index] }]);
+    } finally { closeBoard(board); }
+    await postAndApplyMove(box, link, key, checkpointN + index + 1, move);
+  }
+  await chrome.waitFor(pendingTitles.map(title => 'document.querySelector("#relay-notice")?.textContent.includes(' + JSON.stringify(title) + ')').join(' && '));
+  const pendingView = await chrome.evaluate(`(() => ({
+    items: Array.from(document.querySelectorAll('#chain [data-item]'), row => ({ id: row.dataset.item, title: row.getAttribute('title') })),
+    activity: document.querySelector('#relay-notice')?.textContent ?? '',
+    body: document.body.innerText,
+  }))()`);
+  assert.deepEqual(pendingView.items, checkpointItems, 'the phone keeps checkpoint N authoritative while later events are pending');
+  for (const title of pendingTitles) assert.ok(pendingView.activity.includes(title), 'the pending-event notice shows pending event ' + title);
+  assert.match(pendingView.body, /pending event/iu, 'the UI identifies the received events as pending rather than checkpoint-derived state');
+  assert.equal(box.calls.filter(call => call.method === 'GET' && call.path === '/').length, loadsBefore,
+    'the phone catches up without reloading the page');
+
+  const checkpointN3 = relaySnapshot(box.root);
+  assert.equal(checkpointN3.presentation.state.items.filter(item => pendingTitles.includes(item.title)).length, 3,
+    'the later native checkpoint includes all three acknowledged operations');
+  const sealedCheckpoint = Buffer.from(await seal(key, new TextEncoder().encode(JSON.stringify(checkpointN3)), {
+    boardId: link.board, kind: 'snapshot', sequence: checkpointN + 3,
+  })).toString('base64url');
+  const published = await fetch(box.origin + '/api/v1/boards/' + link.board + '/state', {
+    method: 'PUT', headers: {
+      authorization: 'Bearer ' + credential,
+      'x-pullboard-engine': String(ENGINE_VERSION), 'content-type': 'application/json',
+    }, body: JSON.stringify({ sequence: checkpointN + 3, sealed: sealedCheckpoint }),
+  });
+  assert.equal(published.status, 200, 'the private relay accepts checkpoint N+3');
+  await chrome.waitFor(pendingTitles.map(title => 'document.querySelector("#chain")?.textContent.includes(' + JSON.stringify(title) + ')').join(' && '));
+  const settledView = await chrome.evaluate(`(() => ({
+    items: Array.from(document.querySelectorAll('#chain [data-item]'), row => ({ id: row.dataset.item, title: row.getAttribute('title') })),
+    activity: document.querySelector('#relay-notice')?.textContent ?? '',
+    body: document.body.innerText,
+  }))()`);
+  for (const title of pendingTitles) assert.ok(settledView.items.some(row => row.title === title), 'checkpoint N+3 makes ' + title + ' authoritative');
+  assert.doesNotMatch(settledView.body, /pending event/iu, 'the pending marks clear once checkpoint N+3 covers the events');
+  assert.equal(box.calls.filter(call => call.method === 'GET' && call.path === '/').length, loadsBefore,
+    'checkpoint installation keeps the same phone page');
 });
