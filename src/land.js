@@ -42,6 +42,8 @@ import {
 import { testsNeedBrowser } from './browser-admission.js';
 import { laneOf } from './lanes.js';
 import { Refused } from './refused.js';
+import { requireLandingHost } from './landing-host.js';
+import { environmentLabel, sameEnvironment } from './execution-environment.js';
 import { browserFreeChecksEnabled } from './settings.js';
 import { landingFileTimes } from './submit-invariants.js';
 import {
@@ -60,6 +62,30 @@ function quote(value) { return `'${String(value).replaceAll("'", "'\\''")}'`; }
 function testHash(root, file) {
   try { return createHash('sha256').update(readFileSync(join(root, file))).digest('hex'); }
   catch { return null; }
+}
+
+/** Read a committed test identity; an uncommitted edit cannot release a trunk hold. */
+function testBlob(root, commit, file) {
+  const result = tryGit(root, ['rev-parse', '--verify', `${commit}:${file}`]);
+  return result.status === 0 ? result.stdout : null;
+}
+
+/** A test defect holds every batch on its trunk until the committed test changes or every failure is waived. */
+function heldTestDefects(root, board, trunk) {
+  return store.landingTestDefects(board).filter(defect => {
+    if (defect.branch !== trunk.branch) return false;
+    const blob = testBlob(root, trunk.commit, defect.test);
+    return !(blob && blob !== defect.trunkBlob) && !defect.names.every(name => store.landingWaiverFor(board, { file: defect.test, name }));
+  });
+}
+
+/** Keep each verdict's recorded executor distinct from the actual landing host. */
+function environmentWarnings(board, items, environment) {
+  return items.flatMap(entry => {
+    const verdict = store.acceptedVerdict(board, store.getItem(board, entry.id));
+    const recorded = verdict?.environment ?? null;
+    return sameEnvironment(recorded, environment) ? [] : [{ item: entry.id, recorded, landing: environment }];
+  });
 }
 
 /** Derive failing test identities from TAP or spec reporter names and source locations, refusing unknown paths. */
@@ -306,9 +332,11 @@ async function gateGroup(state, label) {
     submissions: state.batch.items.map(({ id, commit }) => ({ id, commit })),
     failures: [...new Set(landingFailures(gate.output, state.batch.root, { excludeCancelled: true }).map(failure => failure.file).filter(Boolean))],
     fileTimes: landingFileTimes(state.batch.root, gate.profile) };
-  await save(state, { gateResults: [...state.gates.values()].map(({ tree: testedTree, isGreen, failures, accounted, complete, requiresGreen, logPath: log, flakeDiagnostics }) =>
+  const warnings = gate.environment ? environmentWarnings(state.board, state.batch.items, gate.environment) : [];
+  for (const warning of warnings) state.say(`#${warning.item} was checked on ${environmentLabel(warning.recorded)}; this landing ran on ${environmentLabel(warning.landing)}`);
+  await save(state, { environmentWarnings: warnings, gateResults: [...state.gates.values()].map(({ tree: testedTree, isGreen, failures, accounted, complete, requiresGreen, logPath: log, flakeDiagnostics, environment: executor }) =>
     ({ tree: testedTree, isGreen, failures, accounted: accounted ?? null, complete: complete ?? null, requiresGreen: Boolean(requiresGreen), logPath: log,
-      ...(flakeDiagnostics ? { flakeDiagnostics } : {}) })),
+      environment: executor ?? null, ...(flakeDiagnostics ? { flakeDiagnostics } : {}) })),
     invariantEvidence: { ...evidence, gates: [...evidence.gates, tested] } });
   return result;
 }
@@ -539,6 +567,24 @@ async function fileFlakes(state, gate, files) {
   state.say(`flake: ${files.join(', ')}; nothing landed; fix the test or ask the person for an expiring waiver`);
 }
 
+/** File a neutral test defect for the exact no-culprit red and leave its proof available for a waiver. */
+async function fileTestDefects(state, gate) {
+  const defects = [];
+  const files = [...new Set(gate.failures.map(failure => failure.file).filter(Boolean))];
+  if (!files.length) throw new Refused('LAND_DIAGNOSTIC', 'the no-culprit gate did not identify a failing test file');
+  for (const file of files) {
+    const owner = laneOf(state.config, file);
+    const lane = owner === 'coordinator' ? store.getItem(state.board, state.batch.items[0].id).item_lane : owner;
+    defects.push(await state.write('recordLandingTestDefect', [{ agentId: 'coordinator', test: file,
+      hash: testHash(state.batch.root, file), blob: testBlob(state.batch.root, state.batch.tip, file),
+      trunkBlob: testBlob(state.root, state.batch.base, file),
+      names: gate.failures.filter(failure => failure.file === file).map(failure => failure.name),
+      lane, batchId: state.batch.id, branch: state.batch.branch }]));
+  }
+  await save(state, { state: 'test-defect', failures: gate.failures, testDefects: defects });
+  state.say(`the trunk is held by a test defect: ${files.join(', ')}; correct the test or ask an approver for an expiring waiver`);
+}
+
 /** Name the remote a landing pushes the trunk to: the trunk branch's own remote, else origin [B3]. */
 function landingRemoteName(root, branch) {
   return tryGit(root, ['config', '--get', `branch.${branch.replace(/^refs\/heads\//u, '')}.remote`]).stdout || 'origin';
@@ -709,6 +755,7 @@ async function finishTrunk(state) {
 
 /** Build, gate, diagnose and durably land one coordinator batch; all external actions stay in its worktree. */
 export async function land({ root, board, config, write, say, owner, maximum = Infinity, dryRun = false, adopt = false, onWait }) {
+  const environment = dryRun ? null : requireLandingHost(store.boardId(board), config);
   // Quarantine is read from the accepted main policy this landing runs under, never from a branch.
   board.quarantineEnabled = () => config.flakes?.quarantine === true;
   let trunk = mainCheckout(root);
@@ -718,6 +765,8 @@ export async function land({ root, board, config, write, say, owner, maximum = I
     trunk = mainCheckout(root);
   }
   if (!trunk?.commit) throw new Refused('LAND_TRUNK', 'landing needs the coordinator’s primary branch; return its checkout to the trunk');
+  const testDefects = heldTestDefects(root, board, trunk);
+  if (!dryRun && testDefects.length) throw new Refused('LAND_TEST_DEFECT', `this trunk is held by ${testDefects.map(defect => `#${defect.item} (${defect.test})`).join(', ')}; correct the committed test or ask an approver for an expiring waiver`);
   const unfinished = store.landingBatches(board).findLast((batch) => batch.state !== 'landed' && batch.state !== 'blocked');
   const selected = candidates(board, root, trunk.commit, maximum);
   const stale = selected.blocked.find(item => item.code === 'STALE_VERDICT');
@@ -735,7 +784,7 @@ export async function land({ root, board, config, write, say, owner, maximum = I
     }
     return { batch: null, landed: [], conflicts, blocked: selected.blocked, culprits: [], flakes: [], items: selected.ready.map((item) => item.item_id) };
   }
-  if (unfinished && !adopt && unfinished.state !== 'flaky') throw new Refused('LAND_ADOPT', `batch ${unfinished.id} is ${unfinished.state}; inspect pullboard resume, then run pullboard land --adopt`);
+  if (unfinished && !adopt && !['flaky', 'test-defect'].includes(unfinished.state)) throw new Refused('LAND_ADOPT', `batch ${unfinished.id} is ${unfinished.state}; inspect pullboard resume, then run pullboard land --adopt`);
   if (adopt && !unfinished) throw new Refused('LAND_ADOPT', 'there is no interrupted landing batch; run pullboard land');
   let batch = unfinished;
   if (batch?.state === 'flaky') {
@@ -759,6 +808,7 @@ export async function land({ root, board, config, write, say, owner, maximum = I
     const id = randomUUID();
     const directory = join(repoInfo(root).commonDir, 'pullboard', 'landings', id);
     batch = { version: 1, id, base: trunk.commit, tip: trunk.commit, branch: trunk.branch, root: join(directory, 'worktree'),
+      ...(environment ? { environment } : {}),
       candidates: selected.ready.map(landingEntry),
       items: selected.ready.map(landingEntry), conflicts: [], blocked: selected.blocked,
       state: 'merging', owner, logPath: join(directory, 'logs', 'batch.log'), revision: 0 };
@@ -800,8 +850,11 @@ export async function land({ root, board, config, write, say, owner, maximum = I
               gate = await gateGroup(state, 'green-items');
               proof = gate.isGreen ? null : waivedProof(state, gate);
               if (!gate.isGreen && !proof) {
-                await save(state, { state: 'blocked', failures: gate.failures, culprits: state.culprits });
-                throw new Refused('LAND_INTERACTION', 'the individually green items fail together; nothing retries or lands; inspect the batch’s failing tests');
+                if (!state.culprits.length) { await fileTestDefects(state, gate); state.flaky = true; }
+                else {
+                  await save(state, { state: 'blocked', failures: gate.failures, culprits: state.culprits });
+                  throw new Refused('LAND_INTERACTION', 'the individually green items fail together; nothing retries or lands; inspect the batch’s failing tests');
+                }
               }
             }
           } else if (!state.flaky) await save(state, { state: 'blocked', culprits: state.culprits });

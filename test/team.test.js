@@ -24,11 +24,17 @@ import { decodeBoardKey, seal } from '../src/seal.js';
 import { ENGINE_VERSION as PEOPLE_VERSION } from '../src/machine.js';
 import { relayWorkBudgetMs } from './relay-budget.js';
 import { hostname } from 'node:os';
+import { assertMatchingLandingHost, assertNoCulpritTrunkHold } from './landing-environment-fixture.js';
 
 const CLI = join(import.meta.dirname, '..', 'bin', 'pullboard.js');
 
 const helpers = createE2eHelpers();
 after(helpers.cleanup);
+
+test('land runs on a matching host [E27,E28,E29]', { timeout: 180_000 }, () => { // budget: hang ceiling for real Git/CLI host checks, bisection and waiver controls; no speed target.
+  assertMatchingLandingHost(helpers);
+  assertNoCulpritTrunkHold(helpers);
+});
 
 /** Open a fixture's independent board and always close it after its observation or public move. */
 function withBoard(root, action) {
