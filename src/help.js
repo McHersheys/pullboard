@@ -33,6 +33,7 @@ Set up
                                         short slots for runs that name their test files are opt-in: pullboard settings gate.shortSlots <n> (default 0)
   pullboard runner add <ssh-host> --slots <n> --browser <n> [--node <remote-path>] [--root <remote-path>]
                                         register SSH test capacity; no runner sign-in; root defaults to ~/.pullboard-runner
+  pullboard runner list                 each runner's registered slots and browsers, which it runs at
   pullboard view [--project] [--port N] [--no-open]  every project on this machine in your browser; default http://127.0.0.1:${DEFAULT_VIEW_PORT}
                                         items, shouts, doctrine, agents and activity; --port 0 chooses a free port
                                         --project limits this view to the registered project for this repository
