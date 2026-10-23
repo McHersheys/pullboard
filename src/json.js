@@ -2,7 +2,7 @@
 import {
   nextStepFor,
   personRequestGuidance,
-} from './next-steps.js';
+} from './next-step-words.js';
 
 /** A shape's required top-level fields; optional fields may be added within this version. */
 function shape(fields) {
