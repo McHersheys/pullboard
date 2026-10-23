@@ -778,7 +778,7 @@ test('a migration-refused project stays quiet beside a normal board [A5,A6,N26]'
     const disclosureStart = sidebar.indexOf('<details class="unreadable-projects">');
     const disclosureEnd = sidebar.indexOf('</details>', disclosureStart);
     const disclosure = sidebar.slice(disclosureStart, disclosureEnd);
-    assert.match(disclosure, /<b>Missing board<\/b>/);
+    assert.match(disclosure, /<b>missing-board<\/b>/);
     assert.doesNotMatch(disclosure, /Refused board|schema 4/,
       'a schema refusal is excluded from the forget list');
     assert.match(sidebar, /data-forget-unreadable>Forget all<\/button>/);
