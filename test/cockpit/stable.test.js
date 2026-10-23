@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { findChromeExecutable } from '../chrome-fixture.js';
+import { findChromeExecutable, isRunnerCommand } from '../chrome-fixture.js';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const PROBE = join(ROOT, 'test/cockpit/chrome-owner-probe.mjs');
@@ -57,8 +57,23 @@ function stopRecorded(profile, pids) {
   for (const pid of pids) { try { process.kill(pid, 'SIGKILL'); } catch { /* Already gone. */ } }
 }
 
+test('the runner is bin/run-tests.js with any options, and its workers are not [C7]', () => {
+  const at = '/Users/someone/Code/Open Source/repo';
+  for (const command of [`node bin/run-tests.js test/a.test.js`, `node bin/run-tests.js --test-concurrency=1 test/a.test.js`,
+    `/usr/local/bin/node ${at}/bin/run-tests.js --test-concurrency=1 ${at}/test/a.test.js`]) assert.equal(isRunnerCommand(command), true, command);
+  for (const command of [`node --disable-warning=ExperimentalWarning --import ${at}/bin/run-tests.js ${at}/test/a.test.js`,
+    `node --import=${at}/bin/run-tests.js ${at}/test/a.test.js`, `node --test test/a.test.js bin/run-tests.js`, `node test/a.test.js`]) assert.equal(isRunnerCommand(command), false, command);
+});
+
+/** How each killed process starts the probe: the owner directly, or the runner, with and without its own options. */
+const VICTIMS = {
+  owner: [],
+  runner: ['bin/run-tests.js'],
+  'runner started with --test-concurrency=1': ['bin/run-tests.js', '--test-concurrency=1'],
+};
+
 for (const [launcher, name] of Object.entries(LAUNCHERS)) {
-  for (const killed of ['owner', 'runner']) {
+  for (const killed of Object.keys(VICTIMS)) {
     test(`Chrome from ${name} exits within 10 s of its ${killed} dying by SIGKILL [C7]`, {
       timeout: READY_BUDGET_MS + DEATH_BUDGET_MS + 30_000,
       skip: !findChromeExecutable() && 'Chrome is not installed',
@@ -72,7 +87,7 @@ for (const [launcher, name] of Object.entries(LAUNCHERS)) {
       // The runner case starts the probe the way the gate does, as a test file under bin/run-tests.js.
       const victim = killed === 'owner'
         ? spawn(process.execPath, [PROBE], { cwd: ROOT, env, stdio: 'ignore' })
-        : spawn(process.execPath, ['bin/run-tests.js', 'test/cockpit/chrome-owner-probe.mjs'], { cwd: ROOT, env, stdio: 'ignore' });
+        : spawn(process.execPath, [...VICTIMS[killed], 'test/cockpit/chrome-owner-probe.mjs'], { cwd: ROOT, env, stdio: 'ignore' });
       recorded.push(victim.pid);
       recorded.push(await waitForReady(readyFile, victim, READY_BUDGET_MS)); // budget: hang ceiling for Chrome to start, including a gate browser-slot wait; no speed claim.
       const before = chromeProcesses(profile);

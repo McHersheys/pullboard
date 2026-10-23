@@ -170,6 +170,22 @@ setInterval(() => {
 let runnerAncestor;
 
 /**
+ * Whether a process command line is the test runner itself, bin/run-tests.js with any options, and not one of its
+ * workers: a worker carries bin/run-tests.js only as its --import value, or runs under a standalone --test flag.
+ * Options such as --test-concurrency=1 belong to the runner and never make it a worker (#896). Paths may hold spaces.
+ *
+ * @param {string} command - The command line as ps prints it.
+ * @returns {boolean}
+ */
+export function isRunnerCommand(command) {
+  const text = String(command);
+  if (!/(?:^|[\s/])bin\/run-tests\.js(?:\s|$)/u.test(text)) return false;
+  if (/(?:^|\s)--test(?:\s|$)/u.test(text)) return false;
+  // The import value runs up to the next option, so a path with spaces still counts as one value.
+  return !/(?:^|\s)--import[=\s](?:(?!\s--)[^])*?bin\/run-tests\.js(?:\s|$)/u.test(text);
+}
+
+/**
  * Find the test runner above this process: the nearest ancestor whose command runs bin/run-tests.js itself.
  * The walk uses `ps -o ppid=,command= -p <pid>`, which macOS and Linux share, runs once per process,
  * and answers null for a direct `node --test`, where only the owner is guarded.
@@ -185,8 +201,7 @@ export function findRunnerAncestor() {
       if (!match) break;
       pid = Number(match[1]);
       const ancestor = execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-      // The runner's own `node --test` child carries bin/run-tests.js only as its --import; it is not the runner.
-      if (/(?:^|[\s/])bin\/run-tests\.js(?:\s|$)/u.test(ancestor) && !/\s--(?:test|import)\b/u.test(ancestor)) { runnerAncestor = pid; break; }
+      if (isRunnerCommand(ancestor.trim())) { runnerAncestor = pid; break; }
     }
   } catch { /* No readable ancestry means the guardian watches the owner alone. */ }
   return runnerAncestor;
