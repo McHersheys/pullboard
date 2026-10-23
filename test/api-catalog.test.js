@@ -277,6 +277,7 @@ catalogCase('[A1] command results match the catalog across roots and subcommands
   await json(box, repo, 'resume');
   await json(box, repo, 'status');
   await json(box, repo, 'stats');
+  await json(box, repo, 'badge');
   await json(box, repo, 'doctor');
   assert.deepEqual((await json(box, repo, 'health')).stuck, [], 'a new board has nothing stuck [A6]');
   await json(box, repo, 'skills', ['--update']);
