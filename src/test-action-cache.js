@@ -38,7 +38,7 @@ export const TEST_ACTIONS_ENV = 'PULLBOARD_TEST_ACTIONS';
 export const TEST_STAGE_ENV = 'PULLBOARD_TEST_STAGE';
 const VERSION = 1;
 const MODULE = /\.[cm]?js$/u;
-const RUNNER_INPUTS = ['bin/run-tests.js', 'package.json'];
+const RUNNER_INPUTS = ['bin/run-tests.js', 'src/test-action-reporter.js', 'package.json'];
 // The environment a test's verdict may depend on; anything else in the environment is per-run noise.
 const DECLARED_ENVIRONMENT = ['NODE_OPTIONS', 'PULLBOARD_HOSTED_SHAPES', 'PULLBOARD_TEST_TIMEOUT_MS', 'PULLBOARD_TEST_FILE_TIMEOUT_MS', 'TZ', 'LANG', 'LC_ALL'];
 // Options that choose how a run reports or splits files, never what a file proves.
@@ -248,8 +248,15 @@ export function reusableResult(store, key) {
   try { statSync(join(store, 'red', key)); return null; } catch { /* No red mark: the key never failed. */ }
   try {
     const entry = JSON.parse(readFileSync(join(store, 'green', `${key}.json`), 'utf8'));
-    return entry?.version === VERSION && entry.key === key && entry.status === 'pass' && typeof entry.commit === 'string' ? entry : null;
+    return entry?.version === VERSION && entry.key === key && entry.status === 'pass' && typeof entry.commit === 'string' && validTap(entry.tap) ? entry : null;
   } catch { return null; }
+}
+
+/** Incomplete reports rerun: an exit status alone cannot reproduce the file's recorded proof. */
+function validTap(report) {
+  return report && Array.isArray(report.lines) && report.lines.every(line => typeof line === 'string' && /^\s*(?:not )?ok \d+(?: |$)/u.test(line))
+    && report.counts && ['passed', 'failed', 'skipped', 'tests'].every(name => Number.isSafeInteger(report.counts[name]) && report.counts[name] >= 0)
+    && report.counts.failed === 0 && report.observedTests === report.counts.tests;
 }
 
 /**
@@ -300,7 +307,7 @@ function pruneRuns(store) {
  */
 export async function planTestActions(root, args, { fullSuite, landing = false, listFiles, env = process.env, write = text => process.stdout.write(text) }) {
   const keep = { args, files: null, done: false };
-  if (env[TEST_ACTIONS_ENV] || env.PULLBOARD_TEST_REUSE === '0' || args.some(arg => FILTER_OPTION.test(arg))) return keep;
+  if (env[TEST_ACTIONS_ENV] || env.PULLBOARD_TEST_REUSE === '0' || args.some(arg => FILTER_OPTION.test(arg) || /^--test[-_]reporter(?:[-_]destination)?(?:=|$)/u.test(arg))) return keep;
   let store, commit, keys, selectors;
   try {
     root = realpathSync(root);
@@ -323,6 +330,7 @@ export async function planTestActions(root, args, { fullSuite, landing = false, 
     if (!entry) { run.push(file); continue; }
     results.set(file.path, { status: 'pass', source: 'reused', key: entry.key, currentKey: file.key });
     write(`# reused ${entry.key} from ${entry.stage} ${entry.commit} (${file.path})\n`);
+    write(`${entry.tap.lines.join('\n')}\n# pass ${entry.tap.counts.passed}\n# fail ${entry.tap.counts.failed}\n# skipped ${entry.tap.counts.skipped}\n`);
   }
   if (!run.length && suiteProven(selectors.map(file => file.path), results).proven) {
     write(`# all ${selectors.length} test files reused; none ran\n`);
@@ -355,9 +363,12 @@ export function settleTestActions(runDir, { store, stage, commit, landing, code 
         let staged;
         try { staged = JSON.parse(readFileSync(join(runDir, 'green', name), 'utf8')); } catch { continue; }
         if (typeof staged?.key !== 'string' || !/^[0-9a-f]{64}$/u.test(staged.key)) continue;
+        let tap;
+        try { tap = JSON.parse(readFileSync(join(runDir, `${digest(staged.file)}.tap.json`), 'utf8')); } catch { continue; }
+        if (!validTap(tap)) continue;
         try { statSync(join(store, 'red', staged.key)); continue; } catch { /* Never red: the green may be stored. */ }
         writeAtomic(join(store, 'green', `${staged.key}.json`), { version: VERSION, key: staged.key, file: staged.file,
-          status: 'pass', stage, commit, node: process.version, at: new Date().toISOString() });
+          status: 'pass', stage, commit, node: process.version, at: new Date().toISOString(), tap });
       }
     }
   } catch (error) {

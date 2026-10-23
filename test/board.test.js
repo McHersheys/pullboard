@@ -684,6 +684,21 @@ test('every move lands in the event log; stats count items and verdicts [R1, R2]
   assert.equal(stats.rejected, 1);
 });
 
+test('summary reads expire a held claim at its deadline without changing its stored owner [B4,R1]', () => {
+  const id = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'A short claim' });
+  claimAs(id, 'web-1', 'web');
+  assert.equal(store.stats(board).items.claimed, 1);
+  assert.equal(store.itemsInStatus(board, 'claimed', 'web-1')[0].item_id, id);
+  assert.equal(store.itemsInStatus(board, 'claimed', 'web-2').length, 0);
+  clock.advance(2 * HOUR);
+  assert.deepEqual(store.stats(board).items, { open: 1, claimed: 0, submitted: 0, verified: 0, withdrawn: 0 });
+  assert.deepEqual(store.itemsInStatus(board, 'claimed', 'web-1'), []);
+  assert.equal(store.getItem(board, id).item_status, 'open');
+  const stored = board.db.prepare('SELECT item_status, item_owner FROM item WHERE item_id=?').get(id);
+  assert.equal(stored.item_status, 'claimed');
+  assert.equal(stored.item_owner, 'web-1');
+});
+
 test('an item can wait on others: claiming it is refused until they are verified [B8]', () => {
   const contract = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'Store module' });
   const user = store.addItem(board, { by: 'coordinator', lane: 'api', title: 'Uses the store', after: [contract] });
