@@ -65,7 +65,9 @@ function includedFiles(root, commit, command, tracked, depth = 0) {
   if (words[0] === 'npm' && (words[1] === 'test' && words.length === 2 || words[1] === 'run' && words.length === 3)) {
     try {
       const source = tryGit(root, ['show', `${commit}:package.json`]);
-      const script = JSON.parse(source.stdout).scripts?.[words[1] === 'test' ? 'test' : words[2]];
+      const manifest = JSON.parse(source.stdout);
+      if (Object.hasOwn(manifest, 'workspaces') || tracked.has('.npmrc')) return [];
+      const script = manifest.scripts?.[words[1] === 'test' ? 'test' : words[2]];
       return typeof script === 'string' ? includedFiles(root, commit, script, tracked, depth + 1) : [];
     } catch { return []; }
   }
