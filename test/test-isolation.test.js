@@ -66,7 +66,7 @@ test('a test reads no machine state outside its own private home [C7]', async (t
   // Cleanups run last-registered first, so the hostile lease is released before its directory goes.
   const cleanups = [() => rmSync(dir, { recursive: true, force: true })];
   t.after(async () => { for (const cleanup of cleanups.reverse()) await cleanup(); });
-  // The hostile machine: what the coordinator set on the MacBook on 23 Oct, plus a registered runner and a held lease.
+  // The hostile machine: the slot settings a coordinator set on a development machine on 23 Oct, plus a registered runner and a held lease.
   const hostile = join(dir, 'hostile-account');
   mkdirSync(join(hostile, '.pullboard'), { recursive: true });
   writeFileSync(join(hostile, '.pullboard', 'settings.json'), `${JSON.stringify({
