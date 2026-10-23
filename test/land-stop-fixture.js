@@ -33,20 +33,20 @@ function observedStop(finalRows) {
 
 /** Missing original identity evidence never licenses a broadcast; a retained process lifetime still attributes the group. */
 export async function assertLandingStopIdentity() {
-  const foreign = row(GROUP, { ppid: 1, started: 'Fri Oct 23 16:01:00 2026', processSha256: 'b'.repeat(64) });
+  const unattributed = row(GROUP, { ppid: 1, started: 'Fri Oct 23 16:01:00 2026', processSha256: 'b'.repeat(64) });
   const outcomes = [
-    observedStop(censusRows(foreign)),
-    observedStop(censusRows(foreign, row(GROUP + 1, { started: foreign.started }))),
-    observedStop(censusRows(foreign, row(GROUP + 1, { processSha256: foreign.processSha256 }))),
-    observedStop(censusRows(foreign, row(GROUP + 1, { pgid: GROUP + 10 }))),
+    observedStop(censusRows(unattributed)),
+    observedStop(censusRows(unattributed, row(GROUP + 1, { started: unattributed.started }))),
+    observedStop(censusRows(unattributed, row(GROUP + 1, { processSha256: unattributed.processSha256 }))),
+    observedStop(censusRows(unattributed, row(GROUP + 1, { pgid: GROUP + 10 }))),
     observedStop(null),
   ];
   for (const outcome of outcomes) {
-    assert.deepEqual(outcome.signals, [[GROUP + 1, 'SIGKILL'], [GROUP + 2, 'SIGKILL']], 'a group with no original live witness receives no negative-PGID signal');
+    assert.deepEqual(outcome.signals, [[GROUP + 1, 'SIGKILL'], [GROUP + 2, 'SIGKILL']], 'a group with no original identity witness receives no negative-PGID signal');
     assert.match(outcome.logs.join('\n'), /skipp.*(?:identity|census|witness)/iu, 'the missing attribution is explained, not claimed drained or proven reused');
   }
   for (const witness of [row(GROUP + 1, { ppid: 91 }), row(GROUP + 1, { state: 'Z' })]) {
-    const original = observedStop(censusRows(foreign, witness));
+    const original = observedStop(censusRows(unattributed, witness));
     assert.deepEqual(original.signals, [[GROUP + 1, 'SIGKILL'], [GROUP + 2, 'SIGKILL'], [-GROUP, 'SIGKILL']],
       'a recorded original identity remains a reservation witness despite reparenting or becoming a zombie');
     assert.deepEqual(original.logs, []);
