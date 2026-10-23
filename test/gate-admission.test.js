@@ -108,7 +108,9 @@ test('a lender keeps its place between its last nested file and its nested run e
   const hold = (pid, lender = null) => db.prepare('INSERT INTO file_holder(pid, since, lender) VALUES (?, ?, ?)').run(pid, Date.now(), lender);
   hold(parent);
   hold(unrelated);
-  db.prepare('INSERT INTO file_loan(runner, lender) VALUES (?, ?)').run(runner, parent);
+  // The parent is inside the synchronous call that started its nested run.
+  db.prepare('INSERT INTO file_call(call, lender) VALUES (?, ?)').run('call-1', parent);
+  db.prepare('INSERT INTO file_loan(runner, lender, call) VALUES (?, ?, ?)').run(runner, parent, 'call-1');
   assert.equal(await occupiedPlaces(home), 2, 'a lender with no nested file yet keeps its place');
   hold(child, parent);
   assert.equal(await occupiedPlaces(home), 2, 'its nested file runs in that place');
@@ -140,4 +142,24 @@ test('busy parent', async () => {
   const events = log();
   assert.equal(events.filter(event => event.at === 'start').length, 2, 'both nested files ran');
   assert.equal(peak(events), 1, 'with the busy parent holding one of 2 places, its nested files share the one left');
+});
+
+test('a run a synchronous call leaves behind lends nothing once the call returns [C7]', async (t) => {
+  const { root, env, log } = fixture(t, 1);
+  for (const file of ['inner-a.test.js', 'inner-b.test.js']) writeFileSync(join(root, file), timedFile(file, 200));
+  // The parent's shell call starts a detached run and returns at once; the parent then works on in its own place.
+  const detached = `const { execSync } = await import('node:child_process');
+  execSync(${JSON.stringify(`${JSON.stringify(process.execPath)} ${JSON.stringify(runner)} inner-a.test.js inner-b.test.js > /dev/null 2>&1 &`)}, { cwd: ${JSON.stringify(root)}, env: { ...process.env, FIXTURE_RUN: 'inner' } });
+  const until = Date.now() + 1500;
+  while (Date.now() < until) { /* computing in its own place */ }`;
+  writeFileSync(join(root, 'parent.test.js'), timedFile('parent.test.js', 0, detached));
+  const result = await runFixtureChildAsync(process.execPath, [runner, 'parent.test.js'], { cwd: root, env: { ...env, FIXTURE_RUN: 'outer' } });
+  assert.equal(result.status, 0, result.failure ?? result.stdout);
+  const deadline = Date.now() + 30_000;
+  while (log().filter(event => event.run === 'inner' && event.at === 'end').length < 2 && Date.now() < deadline) await new Promise(next => setTimeout(next, 100));
+  const events = log();
+  const parentEnd = events.find(event => event.file === 'parent.test.js' && event.at === 'end').t;
+  const innerStarts = events.filter(event => event.run === 'inner' && event.at === 'start').map(event => event.t);
+  assert.equal(innerStarts.length, 2, 'the detached run finished both files');
+  assert.ok(innerStarts.every(at => at >= parentEnd), 'on 1 core, the detached run waited for the parent instead of borrowing its place');
 });

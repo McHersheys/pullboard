@@ -11,6 +11,7 @@
  * files holds one, so it resumes into it. A run started asynchronously gets no loan, since its parent may compute.
  * Two nested runs of one parent share its one place; neither can wait forever on the token its own parent holds.
  */
+import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
@@ -40,6 +41,7 @@ export function testFilePool(env = process.env) {
     const pool = JSON.parse(value);
     if (typeof pool?.home !== 'string' || !Number.isSafeInteger(pool.cores) || pool.cores < 1) return null;
     if (pool.lender !== undefined && !Number.isSafeInteger(pool.lender)) return null;
+    if (pool.call !== undefined && typeof pool.call !== 'string') return null;
     return pool;
   } catch { return null; }
 }
@@ -54,7 +56,7 @@ export function testFilePool(env = process.env) {
 export function testFilePoolValue(env = process.env) {
   const pool = testFilePool(env);
   // A nested run's files keep the file that started it as their lender, so they take its place.
-  if (pool) return JSON.stringify({ home: pool.home, cores: pool.cores, ...(pool.lender ? { lender: pool.lender } : {}) });
+  if (pool) return JSON.stringify({ home: pool.home, cores: pool.cores, ...(pool.lender ? { lender: pool.lender, call: pool.call } : {}) });
   const override = Number(env[TEST_FILE_CORES_ENV]);
   const cores = Number.isSafeInteger(override) && override > 0 ? override : Math.max(1, availableParallelism());
   return JSON.stringify({ home: machineHome(), cores });
@@ -83,9 +85,11 @@ async function openPool(home) {
     PRAGMA synchronous = NORMAL;
     CREATE TABLE IF NOT EXISTS file_holder(pid INTEGER PRIMARY KEY, since INTEGER NOT NULL, lender INTEGER);
     CREATE TABLE IF NOT EXISTS file_waiter(ticket INTEGER PRIMARY KEY AUTOINCREMENT, pid INTEGER NOT NULL UNIQUE);
-    CREATE TABLE IF NOT EXISTS file_loan(runner INTEGER PRIMARY KEY, lender INTEGER NOT NULL);`);
+    CREATE TABLE IF NOT EXISTS file_loan(runner INTEGER PRIMARY KEY, lender INTEGER NOT NULL, call TEXT);
+    CREATE TABLE IF NOT EXISTS file_call(call TEXT PRIMARY KEY, lender INTEGER NOT NULL);`);
   // A pool made before holders named their lender gains the column; a missing lender reads as none.
   if (!db.prepare('PRAGMA table_info(file_holder)').all().some(column => column.name === 'lender')) db.exec('ALTER TABLE file_holder ADD COLUMN lender INTEGER');
+  if (!db.prepare('PRAGMA table_info(file_loan)').all().some(column => column.name === 'call')) db.exec('ALTER TABLE file_loan ADD COLUMN call TEXT');
   return db;
 }
 
@@ -119,6 +123,9 @@ function prune(db) {
   for (const { runner } of db.prepare('SELECT runner FROM file_loan').all()) {
     if (!alive(runner)) db.prepare('DELETE FROM file_loan WHERE runner = ?').run(runner);
   }
+  for (const { lender } of db.prepare('SELECT DISTINCT lender FROM file_call').all()) {
+    if (!alive(lender)) db.prepare('DELETE FROM file_call WHERE lender = ?').run(lender);
+  }
 }
 
 /**
@@ -127,7 +134,8 @@ function prune(db) {
  * its run does, so no other file can take it in between and the lender resumes into its own place.
  */
 function occupied(db) {
-  return db.prepare(`WITH lending AS (SELECT DISTINCT lender AS pid FROM file_loan WHERE lender IN (SELECT pid FROM file_holder))
+  return db.prepare(`WITH lending AS (SELECT DISTINCT lender AS pid FROM file_loan WHERE lender IN (SELECT pid FROM file_holder)
+    AND call IN (SELECT call FROM file_call))
     SELECT (SELECT count(*) FROM file_holder WHERE pid NOT IN (SELECT pid FROM lending))
       + (SELECT count(*) FROM lending WHERE NOT EXISTS (SELECT 1 FROM file_holder WHERE file_holder.lender = lending.pid)) AS n`).get().n;
 }
@@ -155,7 +163,7 @@ function admit(db, cores, lender) {
   return immediate(db, () => {
     prune(db);
     // A nested file steps into its lender's reserved place when no sibling holds it; that leaves the count unchanged.
-    const reserved = lender && db.prepare(`SELECT 1 FROM file_loan WHERE lender = ? AND lender IN (SELECT pid FROM file_holder)
+    const reserved = lender && db.prepare(`SELECT 1 FROM file_loan WHERE lender = ? AND lender IN (SELECT pid FROM file_holder) AND call IN (SELECT call FROM file_call)
       AND NOT EXISTS (SELECT 1 FROM file_holder WHERE lender = ?)`).get(lender, lender);
     const { taken, ahead } = standing(db);
     if (!reserved && ahead >= cores - taken) return false;
@@ -193,7 +201,7 @@ export async function takeTestFileToken(env = process.env) {
     catch { /* A row left behind is pruned once this process is gone. */ }
   });
   env[TEST_FILE_POOL_ENV] = JSON.stringify({ home: pool.home, cores: pool.cores });
-  lendThroughSyncCalls(pool, env);
+  lendThroughSyncCalls(pool, env, db);
   return Date.now() - asked;
 }
 
@@ -204,20 +212,23 @@ export async function takeTestFileToken(env = process.env) {
  * the nested files take theirs from the pool (#1046). A call whose environment no longer names this pool, as a test
  * that isolates its own pool does, is left exactly as written.
  */
-function lendThroughSyncCalls(pool, env) {
+function lendThroughSyncCalls(pool, env, db) {
   const ours = env[TEST_FILE_POOL_ENV];
-  const lent = JSON.stringify({ home: pool.home, cores: pool.cores, lender: process.pid });
   for (const name of ['spawnSync', 'execFileSync', 'execSync']) {
     const original = childProcess[name];
     childProcess[name] = function lendingSyncCall(...args) {
       const at = args.findIndex((arg, index) => index > 0 && arg && typeof arg === 'object' && !Array.isArray(arg));
       const options = at === -1 ? {} : args[at];
       const childEnv = options.env ?? env;
-      if (childEnv[TEST_FILE_POOL_ENV] === ours) {
-        const lending = { ...options, env: { ...childEnv, [TEST_FILE_POOL_ENV]: lent } };
-        if (at === -1) args.push(lending); else args[at] = lending;
-      }
-      return original.apply(this, args);
+      if (childEnv[TEST_FILE_POOL_ENV] !== ours) return original.apply(this, args);
+      // The loan is this call: it counts only while the call row exists, so a run the call leaves behind lends nothing.
+      const call = randomUUID();
+      const lent = JSON.stringify({ home: pool.home, cores: pool.cores, lender: process.pid, call });
+      const lending = { ...options, env: { ...childEnv, [TEST_FILE_POOL_ENV]: lent } };
+      if (at === -1) args.push(lending); else args[at] = lending;
+      db.prepare('INSERT INTO file_call(call, lender) VALUES (?, ?)').run(call, process.pid);
+      try { return original.apply(this, args); }
+      finally { db.prepare('DELETE FROM file_call WHERE call = ?').run(call); }
     };
   }
   syncBuiltinESMExports();
@@ -234,7 +245,7 @@ export async function lendParentToken(env = process.env) {
   const pool = testFilePool(env);
   if (!pool?.lender) return;
   const db = await openPool(pool.home);
-  immediate(db, () => db.prepare('INSERT OR REPLACE INTO file_loan(runner, lender) VALUES (?, ?)').run(process.pid, pool.lender));
+  immediate(db, () => db.prepare('INSERT OR REPLACE INTO file_loan(runner, lender, call) VALUES (?, ?, ?)').run(process.pid, pool.lender, pool.call ?? null));
   process.once('exit', () => {
     try { db.prepare('DELETE FROM file_loan WHERE runner = ?').run(process.pid); db.close(); }
     catch { /* A row left behind is pruned once this run is gone. */ }
