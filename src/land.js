@@ -42,6 +42,7 @@ import {
 } from './gate-run-receipt.js';
 import { laneOf } from './lanes.js';
 import { takeResource } from './resources.js';
+import { landingLeaseState, requireConfirmedLanding } from './landing-lease.js';
 import { runLandingWorker } from './landing-worker.js';
 import { Refused } from './refused.js';
 import { policyAt } from './trusted-policy.js';
@@ -659,11 +660,44 @@ async function finishTrunk(state) {
   state.say(`landed ${state.batch.items.map((entry) => `#${entry.id}`).join(', ')} at ${state.batch.tip} on the local trunk; pullboard publish pushes it once the whole suite passes`);
 }
 
+/** Skip admission only when no queued owner, interrupted batch or recorded Git repair needs it. */
+function idleLanding(board, trunk) {
+  const lease = landingLeaseState(board);
+  if (lease.holder || lease.line.length) return false;
+  return !store.landingBatches(board).some(batch =>
+    (batch.state !== 'landed' && batch.state !== 'blocked')
+      || (batch.state === 'landed' && batch.base === trunk));
+}
+
+/** Preserve the existing empty selection's refusal, blocked reports and result shape. */
+function emptyLanding(selected, say) {
+  const stale = selected.blocked.find(item => item.code === 'STALE_VERDICT');
+  if (stale) throw staleVerdictRefusal({ item_id: stale.id }, stale);
+  for (const entry of selected.blocked) say(`${entry.code} #${entry.id}${entry.stacked ? ` carries #${entry.stacked}` : ''}`);
+  return { batch: null, landed: [], conflicts: [], blocked: selected.blocked, culprits: [], flakes: [] };
+}
+
 /** Build, gate, diagnose and durably land one coordinator batch; all external actions stay in its worktree. */
 export async function land(options) {
   if (options.dryRun) return runLandingBatch(options);
-  const branch = mainCheckout(options.root)?.branch;
+  invalidateGitFacts();
+  const trunk = mainCheckout(options.root);
+  const branch = trunk?.branch;
   if (!branch) throw new Refused('LAND_TRUNK', 'landing needs the coordinator’s primary branch; return its checkout to the trunk');
+  if (trunk.commit && !options.adopt && idleLanding(options.board, trunk.commit)) {
+    requireConfirmedLanding(options.board);
+    // Only accepted trunk policy may inform this read-only preflight.
+    const config = policyAt(options.root, trunk.commit).config;
+    options.board.quarantineEnabled = () => config.flakes?.quarantine === true;
+    const selected = candidates(options.board, options.root, trunk.commit, options.maximum ?? Infinity);
+    invalidateGitFacts();
+    const current = mainCheckout(options.root);
+    if (!selected.ready.length && current?.commit === trunk.commit && current.branch === branch
+      && idleLanding(options.board, trunk.commit)) {
+      requireConfirmedLanding(options.board);
+      return emptyLanding(selected, options.say);
+    }
+  }
   let lastWait = '';
   const controller = new AbortController();
   const lease = await takeResource({ name: 'landing', scope: 'board', capacity: 1, board: options.board, write: options.write, branch,
@@ -750,10 +784,7 @@ export async function runLandingBatch({ root, board, config, write, say, owner, 
     await write('recordLandingBatch', [{ agentId: 'coordinator', batch: { ...batch, state: 'blocked', supersededByMain: trunk.commit }, revision: batch.revision }]);
     batch = null;
   }
-  if (!batch && !selected.ready.length) {
-    for (const entry of selected.blocked) say(`${entry.code} #${entry.id}${entry.stacked ? ` carries #${entry.stacked}` : ''}`);
-    return { batch: null, landed: [], conflicts: [], blocked: selected.blocked, culprits: [], flakes: [] };
-  }
+  if (!batch && !selected.ready.length) return emptyLanding(selected, say);
   if (!batch) {
     if (!landsOnTrunk(config)) requirePushTarget(root, trunk.branch);
     const id = randomUUID();
