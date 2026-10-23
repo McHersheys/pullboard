@@ -1,6 +1,10 @@
 /** What next prints when it reserves nothing: an offered review, or a builder still at work [C7,P4]. */
 import * as store from './board.js';
-import { agentDisplayName, span, whoAmI } from './cli.js';
+import {
+  agentDisplayName,
+  span,
+  whoAmI,
+} from './cli.js';
 import { withBoardRead } from './board-read.js';
 import { reviewQueueLine } from './next-steps.js';
 import { Refused } from './refused.js';
