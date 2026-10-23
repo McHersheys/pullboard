@@ -31,7 +31,7 @@ function census() {
 }
 
 /** Stop owned descendants and their group; optional observers exercise census races without signaling foreign processes. */
-export function stop(child, member, { read = census, kill = process.kill } = {}) {
+export function stop(child, member, { read = census, kill = process.kill, log = stopNotice } = {}) {
   if (!child.pid) return;
   const rows = read();
   const root = rows?.get(child.pid);
@@ -55,7 +55,12 @@ export function stop(child, member, { read = census, kill = process.kill } = {})
   }
   // Descendant signals can empty the group; its earlier census is no longer a signal target.
   const group = read();
-  if (!group || !runningGroup(group, child.pid)) return;
+  if (!group) { log(`landing stop skipped group ${child.pid}: the final process census is unavailable`); return; }
+  if (!runningGroup(group, child.pid)) return;
+  // Only an original attributed member can witness this group number's lifetime; a zombie still reserves its identity.
+  const witnessed = [...owned].some(pid => rows.get(pid)?.pgid === child.pid && group.get(pid)?.pgid === child.pid
+    && group.get(pid).started === rows.get(pid).started && group.get(pid).processSha256 === rows.get(pid).processSha256);
+  if (!witnessed) { log(`landing stop skipped group ${child.pid}: no recorded original process identity remains in that group`); return; }
   try { kill(-child.pid, 'SIGKILL'); }
   catch (error) {
     if (error.code === 'ESRCH') return;
@@ -64,6 +69,9 @@ export function stop(child, member, { read = census, kill = process.kill } = {})
     throw error; // A live group or unknown census never licenses suppressing a permission failure.
   }
 }
+
+/** Report unattributed remaining work without claiming its group was reused or drained. */
+function stopNotice(message) { process.stderr.write(message + '\n'); }
 
 /** Unknown states remain executing; only a known group without non-zombie members is drained. */
 function runningGroup(rows, pgid) { return [...rows.values()].some(row => row.pgid === pgid && !row.state.startsWith('Z')); }
