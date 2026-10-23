@@ -631,7 +631,14 @@ export async function serveView({ port = 0, secret = randomBytes(18).toString('b
       return apiHandler(req, res);
     }
     const given = Buffer.from(String(req.headers['x-pullboard-key'] ?? url.searchParams.get('k') ?? ''));
-    if (given.length !== key.length || !timingSafeEqual(given, key)) return json(res, 403, { error: 'this view needs its own address and secret: open the link pullboard view printed' });
+    if (given.length !== key.length || !timingSafeEqual(given, key)) {
+      const destination = req.headers['sec-fetch-dest'];
+      const browserPage = req.method === 'GET' && url.pathname === '/' && !url.searchParams.has('k') && req.headers['x-pullboard-key'] === undefined
+        && /(?:^|,)\s*text\/html(?:\s*;|\s*,|\s*$)/iu.test(String(req.headers.accept ?? ''))
+        && (destination === undefined || destination === 'document');
+      if (browserPage) return reply(res, 401, 'text/html; charset=utf-8', '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Open your board</title><h1>Open your board</h1><p>The board opens at <a href="' + HOSTED_ORIGIN + '">app.pullboard.dev</a>.</p></html>');
+      return json(res, 403, { error: 'this view needs its own address and secret: open the link pullboard view printed' });
+    }
     try {
       // The board, and the Roadmap at its own address (N38), are the one page.
       if (req.method === 'GET' && (url.pathname === '/' || /^\/(?:[^/]+\/)?(?:items|shouts|spec|doctrine|activity|roadmap|settings)(?:\/[^/]+)?$/.test(url.pathname))) return reply(res, 200, 'text/html; charset=utf-8', cockpitPage(secret, { paths: true }));
