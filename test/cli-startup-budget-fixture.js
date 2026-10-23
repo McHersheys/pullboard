@@ -71,6 +71,7 @@ export async function assertStartupBudgets(t) {
   try {
     const code=resolve(import.meta.dirname,'../bin/pullboard.js');
     const initial=boardDigest(db);
+    const expectedItems=JSON.parse(JSON.stringify(store.listItems({db,clock:store.systemClock})));
     const samples={version:[],show:[],status:[],list:[]};
     const childEnvironment={...process.env,PULLBOARD_HOME:join(root,'private-home'),PULLBOARD_MACHINE_HOME:join(root,'private-machine'),GIT_CONFIG_GLOBAL:'/dev/null',GIT_CONFIG_NOSYSTEM:'1'};
     for(const name of ['PULLBOARD_RELAY_TOKEN','PULLBOARD_RELAY_KEY']) delete childEnvironment[name];
@@ -84,7 +85,10 @@ export async function assertStartupBudgets(t) {
       assert.equal(data.version,1);
       if(name==='show') assert.equal(data.item_id,4);
       if(name==='status') assert.equal(data.stats.items.submitted,10);
-      if(name==='list') assert.equal(data.items.length,1000);
+      if(name==='list') {
+        assert.equal(data.items.length,1000);
+        assert.deepEqual(data.items,expectedItems,'the complete list rows survive the startup optimization');
+      }
       samples[name].push(milliseconds);
     }
     assert.equal(boardDigest(db),initial,'all persistent board rows remain unchanged');
