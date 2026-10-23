@@ -167,9 +167,10 @@ test('a run a synchronous call leaves behind lends nothing once the call returns
 test('a synchronous call returns only after the file it lent its place to has exited [C7]', async (t) => {
   const { root, env, log } = fixture(t, 1);
   writeFileSync(join(root, 'inner.test.js'), timedFile('inner.test.js', 2000));
-  // The shell starts a run, waits until its file is surely admitted inside the open call, then returns.
+  // The shell starts a run and returns only once its file has logged its start: it was admitted inside the open call.
+  const started = `until grep -q 'inner.test.js","at":"start' ${JSON.stringify(env.FIXTURE_LOG)} 2>/dev/null; do sleep 0.05; done`;
   const lingering = `const { execSync } = await import('node:child_process');
-  execSync(${JSON.stringify(`${JSON.stringify(process.execPath)} ${JSON.stringify(runner)} inner.test.js > /dev/null 2>&1 & sleep 1`)}, { cwd: ${JSON.stringify(root)}, env: { ...process.env, FIXTURE_RUN: 'inner' } });
+  execSync(${JSON.stringify(`${JSON.stringify(process.execPath)} ${JSON.stringify(runner)} inner.test.js > /dev/null 2>&1 & ${started}`)}, { cwd: ${JSON.stringify(root)}, env: { ...process.env, FIXTURE_RUN: 'inner' } });
   mark('resume');`;
   writeFileSync(join(root, 'parent.test.js'), timedFile('parent.test.js', 0, lingering));
   const result = await runFixtureChildAsync(process.execPath, [runner, 'parent.test.js'], { cwd: root, env: { ...env, FIXTURE_RUN: 'outer' } });
