@@ -326,6 +326,8 @@ export function runProfiledShell(root, command, { waitMs = 0, artifactDirectory,
     ...(gateLease && !gateLease.runner ? gateSlotEnvironment(gateLease) : gateSlotHeld ? { [GATE_SLOT_HELD_ENV]: '1' } : {}),
     [LANDING_RUN_ENV]: landing ? '1' : '0',
     [LANDING_WAIVERS_ENV]: landing ? JSON.stringify(waivers) : '[]',
+    // A reused test result names the stage that ran it (#1045).
+    PULLBOARD_TEST_STAGE: gateLease?.receiptKind ?? (landing ? 'land' : 'gate'),
   };
   // The registered worker returns the same complete stage/component accounting as a local run.
   gateLease?.tracker?.mark('runAt');
@@ -369,6 +371,7 @@ export async function runProfiledShellAsync(root, command, { waitMs = 0, gateSlo
   const inherited = {
     ...(gateLease ? gateSlotEnvironment(gateLease) : gateSlotHeld ? { [GATE_SLOT_HELD_ENV]: '1' } : {}),
     [LANDING_RUN_ENV]: landing ? '1' : '0',
+    PULLBOARD_TEST_STAGE: gateLease?.receiptKind ?? (landing ? 'land' : 'gate'),
   };
   const env = { ...gitChildEnv(root), ...inherited };
   const child = spawn(`(\n${command}\n) 2>&1`, { cwd: root, env, shell: true, stdio: ['ignore', 'pipe', 'pipe'] });

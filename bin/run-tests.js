@@ -1245,7 +1245,6 @@ function optionTakesValue(argument) {
         if (signature.includes('=') && !signature.includes('[=')) nodeOptionsWithValues.add(option[0]);
       }
     }
-
   }
   return nodeOptionsWithValues.has(argument.replaceAll('_', '-'));
 }
@@ -1442,6 +1441,9 @@ async function main(args) {
     const { testsNeedBrowser } = await import('../src/browser-admission.js');
     browser = await testsNeedBrowser(process.cwd(), explicitTestFiles(args));
   }
+  // A test file whose inputs did not change since a green run is reused, not run again (#1045).
+  const actions = await (await import('../src/test-action-cache.js')).planTestActions(process.cwd(), args, { fullSuite, landing: process.env[LANDING_RUN_ENV] === '1', listFiles: () => fullSuite ? trackedDefaultTestFiles(process.cwd(), process.env) : explicitTestFiles(args) });
+  if (actions.done) return;
   let signal = null;
   /** Keep sandbox lifetime inside the held lease, including the complete child process. */
   const shardLabel = process.env[LANDING_SHARD_ENV];
@@ -1451,7 +1453,7 @@ async function main(args) {
     const fileTimes = shardLabel ? join(sandbox, 'landing-file-times.jsonl') : '';
     if (fileTimes) process.env[LANDING_FILE_TIMES_ENV] = fileTimes;
     try {
-      const result = await executeTests(args, sandbox, gateMarkers, fullSuite, concurrency);
+      const result = await executeTests(actions.args, sandbox, gateMarkers, fullSuite && !actions.files, concurrency);
       signal = result.signal;
       process.exitCode = result.status ?? 1;
       if (fileTimes) (await import('../src/landing-shards.js')).printShardFileTimes(fileTimes);
@@ -1466,7 +1468,7 @@ async function main(args) {
       const { landingShardCount } = await import('../src/gate.js');
       const count = landingShardCount(process.cwd());
       if (count > 1) {
-        const files = isGitWorkTree(process.cwd(), process.env) ? trackedDefaultTestFiles(process.cwd(), process.env) : [];
+        const files = actions.files ?? (isGitWorkTree(process.cwd(), process.env) ? trackedDefaultTestFiles(process.cwd(), process.env) : []);
         if (!files.length) throw new Error('a sharded landing gate needs tracked Node test files; commit them or set landingShards to 1');
         const inherited = scopedMarker ? inheritedGateSlot({ root: process.cwd(), browser }) : null;
         const { runLandingShards } = await import('../src/landing-shards.js');
@@ -1500,7 +1502,7 @@ async function main(args) {
         const { runOnRunner } = await import('../src/runners.js');
         /** Quote the unchanged runner arguments for the remote command shell. */
         const word = value => `'${String(value).replaceAll("'", "'\\''")}'`;
-        const command = ['node', `./${runnerPath}`, ...args].map(word).join(' ');
+        const command = ['node', `./${runnerPath}`, ...actions.args].map(word).join(' ');
         const result = runOnRunner(process.cwd(), command, { runner: lease.runner, source: lease.source,
           browser, metadata: lease.runMetadata });
         process.stdout.write(result.output);
@@ -1531,6 +1533,7 @@ if (process.argv[1] && resolve(process.argv[1]) === runner) {
   await main(process.argv.slice(2));
 } else if (process.argv[1]) {
   process.env.PULLBOARD_TEST_FILE = process.argv[1];
+  if (process.env.PULLBOARD_TEST_ACTIONS) (await import('../src/test-action-cache.js')).recordTestAction(process.argv[1]);
   const fileTimes = process.env[LANDING_FILE_TIMES_ENV];
   // Only this test file reports; anything it starts is not one of the shard's files.
   delete process.env[LANDING_FILE_TIMES_ENV];
