@@ -17,6 +17,10 @@ import {
   exportBoard,
   importBoard,
 } from '../src/exchange.js';
+import {
+  applyEngineMove,
+  prepareEngineMove,
+} from '../src/engine.js';
 
 /** Real Git and SQLite, with one item per independently declared parent pair. */
 function fixture(t) {
@@ -52,12 +56,13 @@ function accepted(box, builderParent, reviewerParent, { historicalUnknown = fals
     freeze: () => ({ text: JSON.stringify({ rows: [] }), digest }) });
   const commit = String(id).padStart(40, 'a');
   submitFixture(box.board, id, { agentId: builder, commit, tree: String(id).padStart(40, 'b') });
-  // A historical engine predates parent assurance even when seats are known today.
-  if (engine !== undefined) box.board.executionEngineVersion = engine;
-  try {
-    store.verify(box.board, id, { agentId: reviewer, decision: 'ACCEPT', policy: 'any', head: commit, digest,
-      note: 'Changed the private fixture edge; its assertion failed, then passed when restored.' });
-  } finally { delete box.board.executionEngineVersion; }
+  const verdict = { agentId: reviewer, decision: 'ACCEPT', policy: 'any', head: commit, digest,
+    note: 'Changed the private fixture edge; its assertion failed, then passed when restored.' };
+  if (engine !== undefined) {
+    const move = { ...prepareEngineMove(box.board, 'verify', [id, verdict]), engine };
+    const outcome = applyEngineMove(box.board, move, { sequence: 1, at: '2026-10-23T12:00:00.000Z' });
+    assert.equal(outcome.error, undefined, 'the historical verdict replays through the ordinary engine');
+  } else store.verify(box.board, id, verdict);
   return { id, builderPath, reviewerPath };
 }
 
