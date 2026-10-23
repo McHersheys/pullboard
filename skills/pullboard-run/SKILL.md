@@ -119,6 +119,7 @@ When the board lands in two tiers (`landing.publish` set to `"separate"` in pull
 | A site or relay down | `pullboard relay` prints the relay link's state; open the site's front page | you, at the start of each cycle |
 | npm and the site disagreeing | `npm view <package> version` beside `pullboard version` and the version the site shows | you, after each release |
 | Main CI red | the CI's latest run on the trunk (on GitHub, `gh run list --branch main --limit 3`); `pullboard submit` names a test that fails on main too | you, at the start of each cycle, and the builder's shout |
+| The Pullboard-verified badge out of date | `pullboard badge` rewrites the board-derived badge files offline (landing also refreshes them) and lists what changed | you, after a merge that skipped landing |
 | A release past its day | `pullboard health`: `release <tag> overdue` | the listener's loop |
 
 A row you check by hand is a check waiting to be built. When one catches something twice, add it to the board as an item, the way #772 grew out of a coordinator's private board monitor.

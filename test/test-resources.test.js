@@ -367,7 +367,7 @@ function runnerFixture(t, tests) {
   writeFileSync(join(root, 'package.json'), '{"type":"module"}\n');
   copyFileSync(TEST_RUNNER, join(root, 'bin/run-tests.js'));
   cpSync(resolve(import.meta.dirname, '../src'), join(root, 'src'), { recursive: true });
-  for (const helper of ['chrome-fixture.js', 'fixture-child.js']) copyFileSync(resolve(import.meta.dirname, helper), join(root, 'test', helper));
+  for (const helper of ['chrome-fixture.js', 'chrome-launch-args.js', 'fixture-child.js']) copyFileSync(resolve(import.meta.dirname, helper), join(root, 'test', helper));
   for (const [path, source] of Object.entries(tests)) writeFileSync(join(root, path), source);
   const chrome = join(root, 'stand-in-browser');
   writeFileSync(chrome, '#!/bin/sh\nprintf "%s\\n" "$1" >> "$PULLBOARD_FIXTURE_LAUNCHES"\n');

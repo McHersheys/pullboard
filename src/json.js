@@ -41,6 +41,7 @@ export const JSON_SHAPES = {
     'milestone ship': shape({ milestone: 'object', into: 'string|null', moved: 'array', notMoved: 'array' }),
     show: shape({ item_id: 'number', item_title: 'string', item_lane: 'string', item_status: 'string', verdicts: 'array', thread: 'array' }),
     stats: shape({ stats: 'object', gateWaits: 'array' }),
+    badge: shape({ items: 'number', checked: 'number', percent: 'number|null', changed: 'array' }),
     status: shape({ me: 'object', mine: 'array', stats: 'object', reviewQueue: 'object', unread: 'number', relay: 'object' }),
     doctor: shape({ problems: 'array' }),
     health: shape({ asOf: 'string', thresholds: 'object', stuck: 'array', waiting: 'array' }),
