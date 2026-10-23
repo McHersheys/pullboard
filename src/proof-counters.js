@@ -1,3 +1,4 @@
+import { NATIVE_FLAKE_ENGINE } from './flake-engine.js';
 /** Rebuildable, local proof projections maintained with the event that produced them [R1,R2]. */
 import { moveFlowItem } from './stats-flow.js';
 import { roleOf } from './stats-flow.js';
@@ -99,7 +100,7 @@ function countActor(board, event, detail, at) {
 function keepCatch(event, detail) {
   return event.event_kind === 'reject' || event.event_kind === 'test-quarantine' ||
     event.event_kind === 'reopen' && (detail.conflict || detail.landingFailure) ||
-    event.event_kind === 'flake-observation' || event.event_kind === 'health-failure' && event.event_by === 'sentinel';
+    event.event_kind === 'flake-observation' && detail.engine === NATIVE_FLAKE_ENGINE && detail.observation?.classification === 'flake' || event.event_kind === 'health-failure' && event.event_by === 'sentinel';
 }
 
 /** Fold exactly this event into affected item/actor shards and the small aggregate. */
