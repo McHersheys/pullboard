@@ -7,18 +7,13 @@ import { basename, delimiter, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import { startFixtureChild, runFixtureChild, runFixtureGit } from './fixture-child.js';
+import { stageFixtureTests } from './run-tests-fixture.js';
 import { listResources } from '../src/resources.js';
 
 const runner = fileURLToPath(new URL('../bin/run-tests.js', import.meta.url));
 const shardFileCount = 9;
 const fixtureExitCeilingMs = '500';
 const fixtureCleanupMs = '100';
-
-/** Initialize a private fixture repository and stage exactly its intended tests. */
-function stageFixtureTests(root, paths) {
-  execFileSync('git', ['init', '-q'], { cwd: root, stdio: 'ignore' });
-  execFileSync('git', ['add', '--', ...paths], { cwd: root, stdio: 'ignore' });
-}
 
 /** Treat a reaped or zombie fixture PID as drained while waiting for it to stop executing. */
 async function waitForFixtureProcessDrain(pid, timeoutMs = 2000) {
@@ -386,7 +381,7 @@ if (process.argv[1] !== ${JSON.stringify(fixture.runner)}) {
   const originalExec = childProcess.execFile;
   let injected = false;
   function shouldTimeout(command, args) {
-    if (injected || command !== 'ps' || args?.[0] !== '-axo') return false;
+    if (injected || command !== 'ps' || args?.[0] !== '-p' || args?.[1] !== String(process.pid)) return false;
     injected = true;
     writeFileSync(${JSON.stringify(injected)}, JSON.stringify({ pid: process.pid, stack: new Error().stack }));
     return true;
@@ -476,7 +471,7 @@ if (process.argv[1]?.endsWith('/worker-start.test.js')) {
   const originalExec = childProcess.execFile;
   let injections = 0;
   function failWorkerSnapshot(command, args) {
-    if (command !== 'ps' || args?.[0] !== '-axo') return false;
+    if (command !== 'ps' || args?.[0] !== '-p' || args?.[1] !== String(process.pid)) return false;
     injections += 1;
     writeFileSync(${JSON.stringify(injected)}, JSON.stringify({ pid: process.pid, args, injections }));
     return true;
@@ -680,7 +675,8 @@ if (process.argv[1] === runner) {
 } else if (process.argv[1] === workerTest) {
   const original = childProcess.execFile;
   childProcess.execFile = (command, args, options, callback) => {
-    if (command === 'ps' && args?.[0] === '-axo') {
+    if (command === 'ps' && args?.[0] === '-p' && args?.[1] === String(process.pid)
+      && args?.[3] === 'pid=,ppid=,pgid=,stat=,lstart=') {
       writeFileSync(${JSON.stringify(workerInjected)}, 'injected');
       const error = new Error('injected persistent worker census failure'); error.code = 'ETIMEDOUT';
       setImmediate(() => callback(error, '', ''));

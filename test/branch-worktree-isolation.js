@@ -81,14 +81,17 @@ export async function assertBranchWorktreeBoardIsolation(t, sourceRoot) {
 
   const boardFileInBranch = join(branch, 'src', 'board.js');
   const boardSource = readFileSync(boardFileInBranch, 'utf8');
-  const migration = "    ['item', 'item_after', \"TEXT NOT NULL DEFAULT ''\"],";
-  assert.ok(boardSource.includes(migration), 'the candidate source contains the stable migration insertion point');
+  // The added-column list lives in board-migrate.js (#1047); the versions stay in board.js.
+  const migrateFileInBranch = join(branch, 'src', 'board-migrate.js');
+  const migrateSource = readFileSync(migrateFileInBranch, 'utf8');
+  const migration = "  ['item', 'item_after', \"TEXT NOT NULL DEFAULT ''\"],";
+  assert.ok(migrateSource.includes(migration), 'the candidate source contains the stable migration insertion point');
   assert.match(boardSource, /export const SCHEMA_VERSION = \d+;/u);
   assert.match(boardSource, /export const EVENT_LOG_VERSION = \d+;/u);
-  const branchBoardSource = boardSource.replace(migration,
-    `${migration}\n    ['item', 'item_branch_probe', \"TEXT NOT NULL DEFAULT ''\"],`);
-  assert.notEqual(branchBoardSource, boardSource);
-  writeFileSync(boardFileInBranch, branchBoardSource);
+  const branchBoardSource = migrateSource.replace(migration,
+    `${migration}\n  ['item', 'item_branch_probe', \"TEXT NOT NULL DEFAULT ''\"],`);
+  assert.notEqual(branchBoardSource, migrateSource);
+  writeFileSync(migrateFileInBranch, branchBoardSource);
 
   const machineFileInBranch = join(branch, 'src', 'machine.js');
   const machineSource = readFileSync(machineFileInBranch, 'utf8');

@@ -223,7 +223,7 @@ test('[A9,P5] an MCP client reads the board and shouts as its agent', async (t) 
   assert.match(hello.result.instructions, new RegExp(`agent ${box.agent} in the web lane`));
 
   const listed = await client.request('tools/list');
-  assert.deepEqual(listed.result.tools.map((tool) => tool.name), ['board_status', 'show_item', 'shout', 'capture_idea']);
+  assert.deepEqual(listed.result.tools.map((tool) => tool.name), ['board_status', 'show_item', 'shout', 'capture_idea', 'next', 'claim', 'submit', 'verify', 'resume']);
   for (const tool of listed.result.tools) {
     assert.equal(tool.inputSchema.type, 'object', tool.name);
     assert.equal(tool.inputSchema.additionalProperties, false, `${tool.name} refuses unknown arguments`);
@@ -377,4 +377,79 @@ test('[P6,A9] a person\'s move through MCP is refused', async (t) => {
   // The same moves are possible from the person's own terminal, so the refusal is MCP's, not the fixture's.
   const approved = cli(box, box.repo, ['spec', 'approve', 'G2']);
   assert.equal(approved.status, 0, JSON.stringify(approved.document));
+});
+
+test('an agent claims, submits, verifies and resumes through MCP with the CLI\'s refusals [A9,P6]', async (t) => {
+  const box = project(t);
+  const added = cli(box, box.repo, ['add', 'web', 'An item worked through MCP', '--specs', 'G1', '--criterion', 'web/mcp.txt exists.']);
+  assert.equal(added.status, 0, JSON.stringify(added.document));
+  const id = added.document.item.item_id;
+  const builder = mcpClient(t, box, box.web, box.sessionA);
+  await initialize(builder);
+  const names = (await builder.request('tools/list')).result.tools.map((tool) => tool.name);
+  for (const name of ['next', 'claim', 'submit', 'verify', 'resume']) assert.ok(names.includes(name), `MCP offers ${name}`);
+
+  // The same refusal, code and next step, whether the CLI or MCP makes the move.
+  const missing = await builder.call('claim', { id: 9999 });
+  const cliMissing = cli(box, box.web, ['claim', '9999'], box.sessionA);
+  assert.equal(missing.isError, true);
+  assert.equal(cliMissing.status, 1);
+  assert.deepEqual(missing.structuredContent.error, cliMissing.document.error, 'a refused claim reads the same through MCP');
+
+  const claimed = await builder.call('claim', { id });
+  assert.equal(claimed.isError, false, JSON.stringify(claimed.structuredContent));
+  mkdirSync(join(box.web, 'web'), { recursive: true });
+  writeFileSync(join(box.web, 'web', 'mcp.txt'), 'made through MCP\n');
+  box.git(box.web, 'add', 'web/mcp.txt');
+  box.git(box.web, 'commit', '-q', '-m', 'feat(web): write the MCP fixture file [G1]');
+  const submitted = await builder.call('submit', { id });
+  assert.equal(submitted.isError, false, JSON.stringify(submitted.structuredContent));
+  const commit = box.git(box.web, 'rev-parse', 'HEAD').trim();
+
+  // A builder never verifies its own work, through MCP as through the CLI.
+  const own = await builder.call('verify', { id, decision: 'accept', note: 'I built it.' });
+  const cliOwn = cli(box, box.web, ['verify', String(id), 'accept', '--note', 'I built it.'], box.sessionA);
+  assert.equal(own.isError, true);
+  assert.equal(own.structuredContent.error.code, cliOwn.document.error.code, 'self-verification is refused alike');
+  const resumed = await builder.call('resume', {});
+  assert.equal(resumed.isError, false, JSON.stringify(resumed.structuredContent));
+  assert.equal(resumed.structuredContent.version, 1);
+  assertProtocolOnly((await builder.close()).lines);
+
+  // Another agent, in its own session, takes the review and accepts through MCP.
+  const review = join(box.dir, 'review');
+  box.git(box.repo, 'worktree', 'add', '-q', '--detach', review, commit);
+  const sessionB = { CODEX_SESSION_ID: 'mcp-session-b' };
+  const reviewerJoined = cli(box, review, ['join', 'web', '--model', 'reviewer-model'], sessionB);
+  assert.equal(reviewerJoined.status, 0, JSON.stringify(reviewerJoined.document));
+  const reviewer = mcpClient(t, box, review, sessionB);
+  await initialize(reviewer);
+  const reserved = await reviewer.call('next', { verify: true });
+  assert.equal(reserved.isError, false, JSON.stringify(reserved.structuredContent));
+  const accepted = await reviewer.call('verify', { id, decision: 'accept', note: 'web/mcp.txt exists at the submitted commit.' });
+  assert.equal(accepted.isError, false, JSON.stringify(accepted.structuredContent));
+  assertProtocolOnly((await reviewer.close()).lines);
+  const shown = cli(box, box.repo, ['show', String(id)]);
+  assert.equal(shown.document.item_status, 'verified', 'the item was claimed, submitted and verified through MCP alone');
+  assert.equal(readFileSync(box.env.MCP_NETWORK_LOG, 'utf8').includes('attempt'), false, 'no tool opened a network connection');
+
+  // init registered the server for both clients, keeping what was already there.
+  const servers = JSON.parse(readFileSync(join(box.repo, '.mcp.json'), 'utf8')).mcpServers;
+  assert.deepEqual(servers.pullboard.args.slice(0, 1), ['-c']);
+  assert.match(servers.pullboard.args[1], /exec "\$p" mcp/u);
+  assert.match(readFileSync(join(box.repo, '.codex', 'config.toml'), 'utf8'), /^\[mcp_servers\.pullboard\]$/mu);
+  const other = join(box.dir, 'other');
+  mkdirSync(join(other, '.codex'), { recursive: true });
+  box.git(box.dir, 'init', '-q', '-b', 'main', other);
+  writeFileSync(join(other, '.mcp.json'), `${JSON.stringify({ mcpServers: { mine: { command: 'mine' } } })}\n`);
+  writeFileSync(join(other, '.codex', 'config.toml'), 'model = "mine"\n\n[mcp_servers.mine]\ncommand = "mine"\n');
+  const merged = box.run(other, ['init', '--model', 'coordinator-model']);
+  assert.equal(merged.status, 0, fixtureChildMessage(merged));
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(other, '.mcp.json'), 'utf8')).mcpServers).sort(), ['mine', 'pullboard'], 'an existing server is kept');
+  const toml = readFileSync(join(other, '.codex', 'config.toml'), 'utf8');
+  assert.ok(toml.startsWith('model = "mine"\n\n[mcp_servers.mine]\ncommand = "mine"\n'), 'existing Codex settings are kept as written');
+  assert.match(toml, /^\[mcp_servers\.pullboard\]$/mu);
+  const again = box.run(other, ['init', '--model', 'coordinator-model']);
+  assert.equal(readFileSync(join(other, '.codex', 'config.toml'), 'utf8'), toml, 'a second init adds nothing');
+  assert.ok(again.status === 0 || again.status === 1, 'a second init leaves the registration alone');
 });

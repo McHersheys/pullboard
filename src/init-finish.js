@@ -27,6 +27,10 @@ import {
 } from './git.js';
 import { loadConfig } from './config.js';
 import {
+  CODEX_MANUAL_NOTE,
+  mcpSetup,
+} from './init.js';
+import {
   alreadyAddedLine,
   initWaitingRows,
   waitingRowLines,
@@ -211,7 +215,7 @@ export function reportInitSetup(io, info, notes, landed, { verbose = false } = {
   const waiting = landed.length ? initWaitingRows(info.root, { rows: fresh.flatMap(added => added.rows) }) : [];
   /** Give each blueprint the same complete list of still-undecided rows. */
   const blueprintResult = added => ({ ...initBlueprintResult(added), marked: added.marked, waitingRows: waiting });
-  const result = { root: info.root, notes, proposedLanes: proposeLanes(info.root),
+  const result = { root: info.root, notes, proposedLanes: proposeLanes(info.root), mcp: mcpSetup(notes),
     ...(landed.length ? { blueprint: blueprintResult(landed[0]), blueprints: landed.map(blueprintResult) } : {}) };
   io.result?.(result);
   const staging = notes.at(-1)?.startsWith('git add -f -- ') ? notes.at(-1) : null;
@@ -220,6 +224,9 @@ export function reportInitSetup(io, info, notes, landed, { verbose = false } = {
     const missingGate = notes.find(note => note.startsWith('gate command "'));
     if (missingGate) io.say(missingGate.split(';')[0] + '.');
     if (landed.length) io.say(`Blueprints: ${landed.length}; ${waiting.length} rows waiting for a decision.`);
+    // Codex needs the person when its config writes mcp_servers inline: the exact block shows even without --verbose (#961).
+    const codexManual = notes.find(note => note.startsWith(CODEX_MANUAL_NOTE));
+    if (codexManual) io.say(codexManual);
     return { result, staging };
   }
   io.say('Setup details:');

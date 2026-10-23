@@ -66,6 +66,7 @@ import { LOCAL_LANDING_ENGINE } from './land-engine.js';
 import { REVIEW_SKIP_ENGINE } from './review-skip-engine.js';
 import { COORDINATOR_HOLD_ENGINE } from './coordinator-hold-engine.js';
 import { requireCoordinatorHold } from './coordinator-hold.js';
+import { LANDING_LEASE_ENGINE } from './landing-lease-engine.js';
 
 const ITEM_ID_FIRST_ARGUMENT = new Set(['acceptCheck', 'editItem', 'escalate', 'recordAttempt', 'claim', 'release', 'submit', 'reserveReview', 'verify', 'merged', 'withdraw', 'refreeze', 'reopen', 'appendFact']);
 
@@ -78,7 +79,7 @@ export const ENGINE_OPERATIONS = Object.freeze([
   'recordRowDecisions', 'applyRowDecisions', 'draftSpecRow', 'appendFact', 'recordSpecApprovalBaseline',
   'recordLandingBatch', 'recordLandingWaiver', 'recordLandingFlake', 'finishLandingBatch', 'acceptCheck',
   'recordHealthFindings', 'proposeSentinel', 'decideSentinel', 'beginSentinelRun', 'finishSentinelRun',
-  'recordFlakeObservation', 'recordGateRun', 'declareJob', 'recordJobRun', 'takeCoordinator',
+  'recordFlakeObservation', 'recordGateRun', 'declareJob', 'recordJobRun', 'takeCoordinator', 'landingLeaseMove',
 ]);
 
 /** Engine version at which each ordered operation first has stable replay semantics. */
@@ -87,6 +88,7 @@ const OPERATION_ENGINE = Object.freeze({ draftSpecRow: ROW_DRAFT_ENGINE, orderMi
 
 /** Dependency edits, causes, sealed reviews, submission proofs, trunk conflicts, health observations and milestone targets retain distinct recorded engine meanings. */
 function minimumOperationEngine(operation, args, board, at) {
+  if (operation === 'landingLeaseMove' || args[0]?.landingFence !== undefined) return LANDING_LEASE_ENGINE;
   if (['verify', 'reopen'].includes(operation) && args[1]?.reopenFirstRefusalMinutes !== undefined
     || ['claim', 'release'].includes(operation) && board && firstRefusal(board, args[0], at)) return REOPEN_FIRST_REFUSAL_ENGINE;
   // A batch landed on the local trunk before it is published (#801).
