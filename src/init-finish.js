@@ -42,6 +42,7 @@ import {
   relayOfferAtInit,
 } from './init.js';
 import { Refused } from './refused.js';
+import { HOSTED_ORIGIN } from './serve.js';
 
 export const SETUP_COMMIT_QUESTION = 'Commit Pullboard setup now? [Y/n] ';
 export const SETUP_COMMIT_LATER = "To commit Pullboard's files: pullboard init --yes";
@@ -55,9 +56,12 @@ export function initNextLine(agentSession, { verbose = false } = {}) {
     : 'Next: ask your agent to run pullboard resume to finish setup.';
 }
 
-/** Describe the view without suggesting process termination, including when its port belongs to another program. */
+/**
+ * Describe the view without suggesting process termination, including when its port belongs to another program.
+ * A running view is named by app.pullboard.dev, never its bare address, which opens only to a refusal without the key.
+ */
 export function initViewLine(view, { verbose = false } = {}) {
-  if (['started', 'running'].includes(view.state)) return `Pullboard view is running at http://127.0.0.1:${view.port}.${verbose && view.log ? ` Log: ${view.log}` : ''}`;
+  if (['started', 'running'].includes(view.state)) return `Pullboard view is running; open ${HOSTED_ORIGIN} to see your board.${verbose && view.log ? ` Log: ${view.log}` : ''}`;
   if (view.state === 'busy') return `Port ${view.port} is in use; the background view did not start.`;
   if (view.state === 'failed') return verbose
     ? `The background view did not start: ${view.message}${view.log ? ` (log: ${view.log})` : ''}`

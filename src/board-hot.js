@@ -81,6 +81,9 @@ export function lastMoves(board) {
  * @returns {any[]}
  */
 export function decisionAndEvidenceShouts(board) {
-  return board.db.prepare(`SELECT * FROM (SELECT * FROM shout WHERE shout_decision = 1
-    UNION SELECT * FROM shout WHERE shout_evidence_item > 0) ORDER BY shout_id`).all();
+  // Two indexed reads merged here: SQLite 3.53 (Node 24) plans the UNION of these as a full shout scan.
+  const decisions = board.db.prepare('SELECT * FROM shout WHERE shout_decision = 1').all();
+  const evidence = board.db.prepare('SELECT * FROM shout WHERE shout_evidence_item IS NOT NULL AND shout_evidence_item > 0').all();
+  const byId = new Map([...decisions, ...evidence].map((row) => [row.shout_id, row]));
+  return [...byId.values()].sort((a, b) => a.shout_id - b.shout_id);
 }

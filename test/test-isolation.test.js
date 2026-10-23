@@ -66,7 +66,7 @@ test('a test reads no machine state outside its own private home [C7]', async (t
   // Cleanups run last-registered first, so the hostile lease is released before its directory goes.
   const cleanups = [() => rmSync(dir, { recursive: true, force: true })];
   t.after(async () => { for (const cleanup of cleanups.reverse()) await cleanup(); });
-  // The hostile machine: what the coordinator set on the MacBook on 23 Oct, plus a registered runner and a held lease.
+  // The hostile machine: the slot settings a coordinator set on a development machine on 23 Oct, plus a registered runner and a held lease.
   const hostile = join(dir, 'hostile-account');
   mkdirSync(join(hostile, '.pullboard'), { recursive: true });
   writeFileSync(join(hostile, '.pullboard', 'settings.json'), `${JSON.stringify({
@@ -107,7 +107,7 @@ test('a test reads no machine state outside its own private home [C7]', async (t
   assert.equal(busy.status, 0, busy.stderr);
 
   // The probes are a real guard: run without the private home, the same suite reads the hostile machine and fails.
-  const exposed = await runFixtureChildAsync(process.execPath, ['--test', 'test/probe.test.js'], { cwd: root, env: machine });
+  const exposed = await runFixtureChildAsync(process.execPath, ['--test', '--test-reporter=tap', 'test/probe.test.js'], { cwd: root, env: machine });
   assert.notEqual(exposed.status, 0, 'a test that reads the machine home fails the guard');
   const seen = verdicts(exposed.stdout);
   for (const index of [0, 1, 2]) assert.match(seen[index], /^not ok /u, `${PROBES[index]} catches the machine it reads`);
