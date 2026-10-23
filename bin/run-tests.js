@@ -14,6 +14,7 @@ import { Worker } from 'node:worker_threads';
 import { randomUUID } from 'node:crypto';
 import { channel } from 'node:diagnostics_channel';
 import { AGENT_SHELL_MARKERS, SSH_SHELL_MARKERS } from '../src/person.js';
+import { isLandingWorkerIdentityTimeout, landingWorkerIdentityQuery, parseLandingWorkerIdentity } from '../src/landing-worker-identity.js';
 import { foreignNodeOptions, isolateTestMachine } from '../src/test-isolation.js';
 const runner = fileURLToPath(import.meta.url);
 const LANDING_RUN_ENV = 'PULLBOARD_LANDING_RUN';
@@ -479,6 +480,7 @@ function landingWorkerCancellationError(cause) {
 /** Retry a worker's initial process-identity receipt without blocking its event loop or exceeding the file-start ceiling. */
 async function landingWorkerIdentity(pid, timeoutMs = LANDING_WORKER_IDENTITY_TIMEOUT_MS) {
   if (process.platform === 'win32') return null;
+  const { args: snapshotArgs } = landingWorkerIdentityQuery(pid);
   const deadline = Date.now() + timeoutMs;
   let lastError = null;
   let retryNoticeReported = false;
@@ -496,8 +498,8 @@ async function landingWorkerIdentity(pid, timeoutMs = LANDING_WORKER_IDENTITY_TI
       if (remaining <= 0) break;
       try {
         const output = await new Promise((resolveOutput, rejectOutput) => {
-          const child = execFile('ps', ['-axo', 'pid=,ppid=,pgid=,stat=,lstart=,command='], {
-            encoding: 'utf8', timeout: Math.min(2000, Math.max(1, remaining)), maxBuffer: 64 << 20,
+          const child = execFile('ps', snapshotArgs, {
+            encoding: 'utf8', timeout: Math.min(2000, Math.max(1, remaining)),
           }, (error, stdout) => {
             if (snapshotChild === child) snapshotChild = null;
             error ? rejectOutput(error) : resolveOutput(stdout);
@@ -506,8 +508,8 @@ async function landingWorkerIdentity(pid, timeoutMs = LANDING_WORKER_IDENTITY_TI
           if (stopping) child.kill('SIGTERM');
         });
         if (stopping) throw landingWorkerCancellationError();
-        const identity = parseLandingProcessTable(output).find(processInfo => processInfo.pid === pid);
-        if (identity) {
+        const identity = parseLandingWorkerIdentity(output);
+        if (identity?.pid === pid) {
           if (stopping) throw landingWorkerCancellationError();
           return identity;
         }
@@ -516,8 +518,7 @@ async function landingWorkerIdentity(pid, timeoutMs = LANDING_WORKER_IDENTITY_TI
         lastError = error;
         if (!retryNoticeReported) {
           retryNoticeReported = true;
-          const timedOut = error.code === 'ETIMEDOUT' || (error.killed === true && error.signal === 'SIGTERM'
-            && error.cmd === 'ps -axo pid=,ppid=,pgid=,stat=,lstart=,command=');
+          const timedOut = isLandingWorkerIdentityTimeout(error, pid);
           process.stderr.write(timedOut
             ? 'run-tests: worker identity snapshot timed out; retrying before file execution\n'
             : `run-tests: worker identity snapshot failed (${error.code ?? 'unknown'}); retrying before file execution\n`);
