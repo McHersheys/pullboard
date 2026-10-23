@@ -1,7 +1,6 @@
 /** Counts distinguish named rule gates from committed trunk execution evidence [S1,A1,A2]. */
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { basename } from 'node:path';
 import {
   mainCheckout,
   tryGit,
@@ -10,7 +9,7 @@ import { literalShellWords } from './literal-shell-words.js';
 import { receiptFields } from './gate-run-receipt.js';
 
 const WEEK = 7 * 86_400_000;
-const FILE = /^(?:test\/)[A-Za-z0-9_./-]+\.(?:[cm]?js|cts)$/u;
+const FILE = /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*\.(?:[cm]?js|cts)$/u;
 
 /** Read schema-valid recorded runs only; old or incomplete receipts cannot prove a row. */
 function runs(board) {
@@ -41,9 +40,9 @@ function selectedFiles(args, tracked, canonical) {
     files.push(file);
   }
   // The canonical runner deliberately selects tracked .test.js/.test.mjs entry points, not helper modules.
-  if (!files.length) return [...tracked].filter(file => !file.split('/').some(part => part === 'node_modules' || part.startsWith('.'))).filter(file => canonical
-    ? /(?:^|\/)[^/]+\.test\.(?:js|mjs)$/u.test(file)
-    : /(?:^|\/)(?:test\.[cm]?js|(?:test-.+|.+[._-]test)\.[cm]?js)$/u.test(file));
+  if (!files.length) return canonical ? [...tracked]
+    .filter(file => !file.split('/').some(part => part === 'node_modules' || part.startsWith('.')))
+    .filter(file => /(?:^|\/)[^/]+\.test\.(?:js|mjs)$/u.test(file)) : [];
   return files;
 }
 
@@ -64,7 +63,7 @@ function includedFiles(root, commit, command, tracked, depth = 0) {
       return typeof script === 'string' ? includedFiles(root, commit, script, tracked, depth + 1) : [];
     } catch { return []; }
   }
-  if (basename(words[0] ?? '') !== 'node') return [];
+  if (words[0] !== 'node' && words[0] !== process.execPath) return [];
   if (words[1] === '--test') return selectedFiles(words.slice(2), tracked, false);
   if (words[1]?.replace(/^\.\//u, '') === 'bin/run-tests.js' && tracked.has('bin/run-tests.js')) {
     const source = tryGit(root, ['show', `${commit}:bin/run-tests.js`]);
