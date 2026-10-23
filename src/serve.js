@@ -450,7 +450,7 @@ export async function serveView({ port = 0, secret = randomBytes(18).toString('b
   let bound = 0;
   // The API reads projectState and codeAt from this module. Load its factory after our exports
   // initialize, and use the real CLI entry point without adding a second move implementation.
-  const { apiBoards, createLocalApiHandler } = await import('./api.js');
+  const { apiBoardListing, createLocalApiHandler } = await import('./api.js');
   const { main } = await import('./cli.js');
   const { startViewSignIn, viewSignInStatus, viewSignInPairingNavigation, cancelViewSignIn } = await import('./relay-setup.js');
   const signIns = new Set();
@@ -532,8 +532,9 @@ export async function serveView({ port = 0, secret = randomBytes(18).toString('b
     try {
       await forgetUnreadableBody(req);
       const registered = listApiProjects();
-      const readable = new Set(apiBoards(() => registered).map((project) => project.root));
-      const unreadable = registered.filter((project) => !readable.has(project.root));
+      const listing = apiBoardListing(() => registered);
+      const unreadable = listing.warnings
+        .filter((warning) => warning.error?.error?.code === 'BOARD_UNAVAILABLE');
       const forgotten = unreadable.filter((project) => forgetProject(project.root)).length;
       return json(res, 200, { version: 1, forgotten });
     } catch (error) {
