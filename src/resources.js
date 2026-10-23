@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   realpathSync,
+  writeFileSync,
 } from 'node:fs';
 import {
   execFile,
@@ -55,6 +56,8 @@ export const GATE_SLOT_HELD_ENV = 'PULLBOARD_GATE_SLOT_HELD';
 export const GATE_SLOT_POOL_ENV = 'PULLBOARD_GATE_SLOT_POOL';
 export const GATE_SLOT_TOKEN_ENV = 'PULLBOARD_GATE_SLOT_TOKEN';
 export const BROWSER_SLOT_HELD_ENV = 'PULLBOARD_BROWSER_SLOT_HELD';
+/** Where a runner asks the lease guard to record its own browser-slot refusal (#1043). */
+export const BROWSER_REFUSAL_FILE_ENV = 'PULLBOARD_BROWSER_REFUSAL_FILE';
 
 /** Reserve a distinct resource row for each configured remote host. */
 function runnerResourceName(host) { return `runner:${host}`; }
@@ -909,6 +912,9 @@ export async function takeResource(options) {
  * (namedFiles) may reuse one, so a whole suite started under a short check queues for a real slot.
  */
 export function inheritedGateSlot({ root = process.cwd(), browser = false, namedFiles = false } = {}) {
+  // Taken by the first guard in this process, so nothing it starts (a test body) can write the receipt.
+  const refusalFile = process.env[BROWSER_REFUSAL_FILE_ENV] ?? '';
+  delete process.env[BROWSER_REFUSAL_FILE_ENV];
   const markedPool = process.env[GATE_SLOT_POOL_ENV] ?? '';
   const token = process.env[GATE_SLOT_TOKEN_ENV] ?? '';
   if (!markedPool && !token) return null;
@@ -928,6 +934,7 @@ export function inheritedGateSlot({ root = process.cwd(), browser = false, named
   if (slotClass === 'short' && !namedFiles) throw new Refused('SHORT_SLOT_FULL_SUITE', 'a run that does not name its test files cannot reuse a short gate slot; start it outside the short check so it queues for an ordinary slot');
   const expectedBrowserMarker = holder.browser === 1 ? '1' : '';
   if (process.env[BROWSER_SLOT_HELD_ENV] !== expectedBrowserMarker) throw new Refused('GATE_SLOT_MARKER_INVALID', 'the inherited browser marker does not match its live gate lease; restart the child with gateSlotEnvironment(lease)');
+  if (browser && holder.browser !== 1 && refusalFile) writeFileSync(refusalFile, '{"code":"BROWSER_SLOT_REQUIRED"}\n', { mode: 0o600 });
   if (browser && holder.browser !== 1) throw new Refused('BROWSER_SLOT_REQUIRED', 'the inherited gate lease does not hold the browser slot; release it and reacquire gate with browser: true before launching Chrome');
   return {
     name: 'gate', scope: 'machine', token, pool, browser: holder.browser === 1, slotClass, waitMs: 0,
