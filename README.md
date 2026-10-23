@@ -12,9 +12,13 @@
 <p align="center">
   <a href="https://pullboard.dev"><img alt="pullboard: 893 items" src="https://img.shields.io/badge/pullboard-893%20items-2f7d5b?style=flat-square"></a>
   <a href="#how-it-works"><img alt="agent-verified: 100%" src="https://img.shields.io/badge/agent--verified-100%25-6e7781?style=flat-square"></a>
-  <a href="https://www.npmjs.com/package/pullboard"><img alt="npm" src="https://img.shields.io/npm/v/pullboard?style=flat-square&color=121a17"></a>
+  <a href="https://www.npmjs.com/package/pullboard"><img alt="npm" src="https://img.shields.io/badge/npm-v0.9.2-121a17?style=flat-square"></a>
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/npm/l/pullboard?style=flat-square&color=6b4fc8"></a>
 </p>
+
+<p align="center"><a href="https://youtu.be/O0kRdvd6dno"><img src="https://github.com/user-attachments/assets/958f602c-dafe-4608-abe1-1332e4393d28" alt="A builder agent says done and tests pass. A second agent checks the work, finds a problem and sends it back with the reason. The fix passes and merges." width="720"></a></p>
+
+<p align="center"><a href="https://youtu.be/O0kRdvd6dno"><b>▶ Watch the 90-ish second explainer</b></a></p>
 
 ### Pullboard enforces your intent and decisions. Build autonomously.
 
@@ -32,8 +36,6 @@ Pullboard keeps agents building **true to your intent**, with a second agent che
 **Vibe code a real product.** Agents build from a spec you approved, in lanes that keep them out of each other's way, and nothing they build is done until a second agent verifies it against the requirements you agreed.
 
 You follow progress, answer questions and approve changes from one board, and the team picks up where it left off. Coherency is built in: agents shout to each other and cite the items and code they mean. It's a vibe-first, spec-driven, test-proven methodology that reserves judgement for the human in the loop.
-
-https://github.com/user-attachments/assets/91bb722e-deb7-4b77-8512-5adc4fd22269
 
 ## Software factory
 

@@ -184,6 +184,7 @@ async function runCommand(argv, io) {
     if (error instanceof Refused) {
       io.refusal?.(error);
       io.err(`pullboard: ${await displayedRefusal(io, error)}\nnext: ${io.refusalDocument(error).error.next}`);
+      (await import('./next-steps.js')).reportBlock(io, error, { command });
       return 1;
     }
     throw error;
@@ -283,6 +284,7 @@ async function runMain(argv, streams) {
       if (!(error instanceof Refused)) throw error;
       io.refusal(error);
       io.err(`pullboard: ${await displayedRefusal(io, error)}\nnext: ${io.refusalDocument(error).error.next}`);
+      (await import('./next-steps.js')).reportBlock(io, error, { command: parsed.positionals[0] });
       io.flush(1);
       return 1;
     }

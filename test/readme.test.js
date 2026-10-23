@@ -309,7 +309,7 @@ test('README pins its approved Philosophy, Key concepts and Why structure [I10,I
   assert.ok(philosophy >= 0 && philosophy < concepts && concepts < whyStart && whyStart < nextTopLevel, 'Philosophy contains Key concepts and Why before the next top-level section');
   const approvedOpening = 'Pullboard keeps agents building **true to your intent**, with a second agent checking every change. Your judgement carries across every agent and every session, so a complex project stays coherent for months. It\'s a coordination queue for serious software: you decide what matters once, and many agents build, check and land the work.';
   const openingWithFigure = `${approvedOpening}\n\n${figureMarkup('docs/img/holds.svg', 'How it holds. Your decision becomes a bar each piece of work is frozen against; a second agent checks the exact commit; the board keeps what passed, what failed and why; the next agent starts from there.')}\n\n**Vibe code a real product.**`;
-  assert.ok(README.includes(openingWithFigure), 'the approved opening, then the holds figure, then the lead (the person, 22 Oct)');
+  assert.ok(README.includes(openingWithFigure), 'the approved opening, then the holds figure, then the lead');
   assert.equal(README.split(approvedOpening).length - 1, 1, 'the approved opening appears exactly once');
   assert.doesNotMatch(`${approvedOpening} ${FIGURES.holds()}`, /\b(?:memory|remember)\b/iu, 'the opening and its figure avoid those terms');
   const section = README.slice(philosophy, nextTopLevel);
