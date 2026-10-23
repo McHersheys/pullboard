@@ -45,6 +45,10 @@ import {
 import { milestoneRoadmap } from './roadmap.js';
 import { proofStats } from './stats.js';
 import {
+  ruleProofCounts,
+  ruleProofWindow,
+} from './rule-proof-counts.js';
+import {
   SUMMARY_KEYS,
   itemSummary,
   milestoneNamesByItem,
@@ -86,7 +90,7 @@ export { moveArgs } from './api-moves.js';
 
 /** Inputs shared by the complete state cache and the lightweight live-change watcher. */
 const STATE_REVISION_INPUTS = Object.freeze([
-  'identity', 'head', 'trunk', 'files', 'event', 'agents', 'leases', 'requestReceipts', 'milestones', 'externalRoadmap', 'eventLogVersion',
+  'identity', 'head', 'trunk', 'files', 'event', 'agents', 'leases', 'requestReceipts', 'milestones', 'externalRoadmap', 'eventLogVersion', 'ruleProofWindow',
 ]);
 
 /** Serialize named state inputs in one stable order for cache and stream comparisons. */
@@ -126,13 +130,15 @@ function localRevisionInputs(board, now) {
       item.item_status === 'submitted' && Boolean(item.item_review_by) && (item.item_review_until ?? '') > now,
     ]);
   const expiries = leases.flatMap(([, , , leaseUntil, , reviewUntil, claimLive, reviewLive]) => [claimLive ? leaseUntil : null, reviewLive ? reviewUntil : null]);
+  const proofWindow = ruleProofWindow(board, now);
   return {
     event: board.db.prepare('SELECT COALESCE(MAX(event_id), 0) AS id FROM event').get().id,
     agents: store.listAgents(board),
     leases,
     requestReceipts: board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?').get('relay_person_requests')?.meta_value ?? null,
     milestones: store.milestones(board),
-    nextExpiry: expiries.filter(Boolean).sort()[0] ?? null,
+    ruleProofWindow: proofWindow.events,
+    nextExpiry: [...expiries, proofWindow.nextExpiry].filter(Boolean).sort()[0] ?? null,
   };
 }
 
@@ -172,6 +178,7 @@ function boardStateRevision(root, id, isMain, { projects = listApiProjects, scop
     milestones: visibleMilestoneInputs(local.milestones, scopeCommonDir !== null),
     externalRoadmap: local.externalMilestones,
     eventLogVersion: store.EVENT_LOG_VERSION,
+    ruleProofWindow: local.ruleProofWindow,
   };
   const revision = stateRevision(inputs);
   return { cacheId: info.commonDir + '\0' + id, revision, event: local.event, milestones: local.externalMilestones,
@@ -420,6 +427,7 @@ function watchLocalStateRevision(board, { scopeCommonDir = null } = {}) {
       milestones: visibleMilestoneInputs(local.milestones, scopeCommonDir !== null),
       externalRoadmap,
       eventLogVersion: store.EVENT_LOG_VERSION,
+      ruleProofWindow: local.ruleProofWindow,
     });
   }
 
@@ -492,6 +500,7 @@ function buildLocalBoardState(root, boardId, board, codeIsMain, { previous = nul
     state.milestones = projectData.milestones;
     state.blocks = personBlockWords(repoInfo(root).commonDir, board.clock.now()); // Needs you below is recomputed with them [C6].
     const decorated = projectSpecApprovals(projectFit(pendingFit(repoInfo(root).commonDir), projectRowDecisions(projectData.rowDecisions, state)), specApprovalState(root, { board, config }));
+    decorated.ruleCounts = ruleProofCounts(root, board, decorated.spec);
     const bases = new Map(decorated.items.map((item) => [item.id, item]));
     for (const id of dirtyIds) {
       if (!currentById.has(id)) continue;
