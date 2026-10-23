@@ -94,6 +94,72 @@ test('a project switch never shows the old project\'s numbers [N26,A2]', { timeo
   }
 });
 
+test('the page never tells a person with boards to run init while the list loads [N26,H5]', { timeout: 120_000 }, async (t) => {
+  const executable = chromeExecutable();
+  if (!executable) return t.skip('Install Chrome or set PULLBOARD_CHROME for loading-state checks.');
+  const box = machine();
+  const alpha = project(box, 'alpha');
+  box.run(alpha.repo, 'add', 'web', 'Alpha waiting item', '--specs', 'G1', '--criterion', 'shown');
+  const empty = machine();
+  let view, bare, profile, chrome;
+  // What a person reads now: the page's visible text, as laid out, so a hidden card never counts.
+  const told = async () => chrome.stable("(document.body.innerText.match(/No boards yet|pullboard init/g) || []).join(' | ')");
+  try {
+    view = await startView(box);
+    bare = await startView(empty);
+    profile = mkdtempSync(join(tmpdir(), 'pullboard-list-loading-chrome-'));
+    chrome = await openSnapshotChrome(executable, 'about:blank', profile);
+    // Hold the board list and each board's state before real HTTP, so the page waits as on a loaded machine.
+    await chrome.send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
+      const nativeFetch = window.fetch.bind(window);
+      const gate = window.__listGate = { list: true, state: true, blocked: [] };
+      gate.release = (kind) => { gate[kind] = false; gate.blocked.filter((entry) => entry.kind === kind).forEach((entry) => entry.resolve()); };
+      window.fetch = async (input, init) => {
+        const path = new URL(typeof input === 'string' ? input : input.url, location.href).pathname;
+        const kind = path === '/api/v1/boards' ? 'list' : /^\\/api\\/v1\\/boards\\/[^/]+\\/state$/.test(path) ? 'state' : null;
+        if (kind && gate[kind]) await new Promise((resolve) => gate.blocked.push({ kind, resolve }));
+        return nativeFetch(input, init);
+      };
+    })()` });
+    await chrome.send('Page.navigate', { url: view.link.href });
+    await chrome.waitFor("window.__listGate?.blocked.some((entry) => entry.kind === 'list')");
+    const polls = [];
+    for (let poll = 0; poll < 5; poll += 1) polls.push(await told());
+    // The list answers, but no board has: the names are known and the page is still loading. A Back press redraws it.
+    await chrome.stable("window.__listGate.release('list')");
+    await chrome.waitFor("window.__listGate.blocked.some((entry) => entry.kind === 'state') && document.querySelector('#proj-list .pname')?.textContent === 'alpha'");
+    for (let poll = 0; poll < 5; poll += 1) polls.push(await told());
+    await chrome.stable("dispatchEvent(new PopStateEvent('popstate', { state: null })), true");
+    for (let poll = 0; poll < 5; poll += 1) polls.push(await told());
+    await chrome.stable("window.__listGate.release('state')");
+    await chrome.waitFor(`data?.root === ${JSON.stringify(alpha.repo)} && !document.body.classList.contains('loading') && document.body.innerText.includes('Alpha waiting item')`);
+    polls.push(await told());
+    assert.deepEqual(polls.filter(Boolean), [], 'a person with a board never reads No boards yet or pullboard init while the list loads');
+
+    // A machine truly without a board says both, once its list is known to be empty.
+    await chrome.send('Page.navigate', { url: bare.link.href });
+    await chrome.waitFor("window.__listGate?.blocked.some((entry) => entry.kind === 'list')");
+    assert.equal(await told(), '', 'nothing about init shows before the empty list answers');
+    await chrome.stable("window.__listGate.release('list')");
+    await chrome.waitFor("document.body.classList.contains('boardless')");
+    assert.equal(await told(), 'No boards yet | pullboard init', 'a truly empty list says No boards yet and the init step');
+    assert.deepEqual(chrome.exceptions, [], 'the held list raises no uncaught exception');
+  } finally {
+    try {
+      if (chrome) {
+        await chrome.stable("window.__listGate?.release('list'), window.__listGate?.release('state')").catch(() => {});
+        await closeSnapshotChrome(chrome);
+      }
+    } finally {
+      try { if (profile) rmSync(profile, { recursive: true, force: true }); }
+      finally {
+        try { if (bare) await bare.stop(); }
+        finally { if (view) await view.stop(); }
+      }
+    }
+  }
+});
+
 test('the sidebar lists every project and what needs the person [N26]', async () => {
   const box = machine();
   const alpha = project(box, 'alpha');
@@ -442,7 +508,7 @@ test('a machine with no board says how to start one [N26]', async () => {
     assert.deepEqual(classes(early), ['loading'], 'and stays so while the first answer is on its way');
     await early.release();
     assert.deepEqual(classes(early), ['boardless'], 'then the message takes the place of the board');
-    assert.match(page.html, /<main>\n {2}<section class="card-panel first">\n {4}<h2>No boards yet<\/h2>\n {4}<p>Run <code>pullboard init<\/code> in a git repo, or ask an agent to\. Its board shows up here by itself\.<\/p>\n {2}<\/section>\n/, 'the message says how a board starts');
+    assert.match(page.html, /<main>\n {2}<section class="card-panel first" hidden>\n {4}<h2>No boards yet<\/h2>\n {4}<p>Run <code>pullboard init<\/code> in a git repo, or ask an agent to\. Its board shows up here by itself\.<\/p>\n {2}<\/section>\n/, 'the message says how a board starts');
     assert.equal(page.show('proj-list'), '<div class="empty">None yet.</div>');
     assert.equal(page.element('products').hidden, true);
 
