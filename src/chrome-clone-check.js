@@ -1,7 +1,14 @@
 /** Observe macOS Chrome clone growth without deleting or attributing directories [C7]. */
 import { execFileSync } from 'node:child_process';
-import { lstatSync, readdirSync, realpathSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import {
+  lstatSync,
+  readdirSync,
+  realpathSync,
+} from 'node:fs';
+import {
+  dirname,
+  join,
+} from 'node:path';
 
 /** Snapshot directory identities so concurrent old-clone removal cannot conceal a newly created clone. */
 export function chromeCloneSnapshot() {

@@ -26,7 +26,7 @@ async function gracefulClose(profile, launched) {
   const info = await response.json();
   const socket = new WebSocket(info.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { socket.close(); reject(new Error('private Chrome graceful close timed out')); }, 3_000);
+    const timer = setTimeout(() => { socket.close(); reject(new Error('private Chrome graceful close timed out')); }, 3_000); // budget: hang ceiling for this private browser's graceful shutdown.
     socket.addEventListener('open', () => socket.send(JSON.stringify({ id: 1, method: 'Browser.close' })), { once: true });
     socket.addEventListener('error', () => { clearTimeout(timer); reject(new Error('private Chrome close connection failed')); }, { once: true });
     socket.addEventListener('close', () => { clearTimeout(timer); resolve(); }, { once: true });
