@@ -74,6 +74,7 @@ const OPTIONS = {
   directory: { type: 'string' },
   timeout: { type: 'string' },
   sentinel: { type: 'boolean' },
+  digest: { type: 'string' },
   // The rigor quality draft's options.
   base: { type: 'string' },
   head: { type: 'string' },
