@@ -301,6 +301,7 @@ async function gateGroup(state, label) {
   const tree = headTree(state.batch.root);
   const commit = headCommit(state.batch.root);
   const cached = state.gates.get(tree);
+  if (cached?.timedOut) throw new Refused('LAND_GATE_TIMEOUT', 'this exact tree has a recorded landing timeout; inspect its log before starting a new batch');
   if (cached && (completeGate(cached) || !coveredFailures(state, cached))) return cached;
   const directory = join(dirname(state.batch.root), 'logs');
   mkdirSync(directory, { recursive: true });
@@ -328,10 +329,14 @@ async function gateGroup(state, label) {
     submissions: state.batch.items.map(({ id, commit }) => ({ id, commit })),
     failures: [...new Set(landingFailures(gate.output, state.batch.root, { excludeCancelled: true }).map(failure => failure.file).filter(Boolean))],
     fileTimes: landingFileTimes(state.batch.root, gate.profile) };
-  await save(state, { gateResults: [...state.gates.values()].map(({ tree: testedTree, isGreen, failures, accounted, complete, requiresGreen, logPath: log, flakeDiagnostics }) =>
-    ({ tree: testedTree, isGreen, failures, accounted: accounted ?? null, complete: complete ?? null, requiresGreen: Boolean(requiresGreen), logPath: log,
+  await save(state, { gateResults: [...state.gates.values()].map(({ tree: testedTree, isGreen, failures, accounted, complete, requiresGreen, logPath: log, flakeDiagnostics, timedOut }) =>
+    ({ tree: testedTree, isGreen, ...(timedOut ? { timedOut: true } : {}), failures, accounted: accounted ?? null, complete: complete ?? null, requiresGreen: Boolean(requiresGreen), logPath: log,
       ...(flakeDiagnostics ? { flakeDiagnostics } : {}) })),
     invariantEvidence: { ...evidence, gates: [...evidence.gates, tested] } });
+  if (gate.timedOut) {
+    await save(state, { state: 'blocked', timedOut: true });
+    throw new Refused('LAND_GATE_TIMEOUT', 'the landing gate timed out; its process tree is stopped and no candidate is a culprit');
+  }
   return result;
 }
 
@@ -755,6 +760,17 @@ function emptyLanding(selected, say) {
   return { batch: null, landed: [], conflicts: [], blocked: selected.blocked, culprits: [], flakes: [] };
 }
 
+/** Defer a new ordinary attempt without taking capacity or sleeping between landing batches. */
+function cadenceDeferral(board, config, branch, say) {
+  const interval = config.landing?.cadenceMs;
+  if (!interval) return null;
+  const latest = store.landingBatches(board).filter(batch => batch.branch === branch).map(batch => Date.parse(batch.startedAt ?? '')).filter(Number.isFinite).sort((a, b) => b - a)[0];
+  if (latest === undefined || latest + interval <= Date.now()) return null;
+  const deferredUntil = new Date(latest + interval).toISOString();
+  say(`landing deferred until ${deferredUntil}: the trunk's landing cadence has not elapsed`);
+  return { batch: null, landed: [], conflicts: [], blocked: [], culprits: [], flakes: [], deferredUntil };
+}
+
 /** Build, gate, diagnose and durably land one coordinator batch; all external actions stay in its worktree. */
 export async function land(options) {
   if (options.dryRun) return runLandingBatch(options);
@@ -762,6 +778,11 @@ export async function land(options) {
   const trunk = mainCheckout(options.root);
   const branch = trunk?.branch;
   if (!branch) throw new Refused('LAND_TRUNK', 'landing needs the coordinator’s primary branch; return its checkout to the trunk');
+  if (trunk.commit && !options.adopt) {
+    requireConfirmedLanding(options.board);
+    const deferred = cadenceDeferral(options.board, policyAt(options.root, trunk.commit).config, branch, options.say);
+    if (deferred) return deferred;
+  }
   if (trunk.commit && !options.adopt && idleLanding(options.board, trunk.commit)) {
     requireConfirmedLanding(options.board);
     // Only accepted trunk policy may inform this read-only preflight.
@@ -831,6 +852,10 @@ export async function runLandingBatch({ root, board, config, write, say, owner, 
   // Pin accepted policy after any recorded-landed repair, never before admission or from candidate files.
   config ??= policyAt(root, trunk.commit).config;
   board.quarantineEnabled = () => config.flakes?.quarantine === true;
+  if (!dryRun && !adopt && !unfinished) {
+    const deferred = cadenceDeferral(board, config, trunk.branch, say);
+    if (deferred) return deferred;
+  }
   const selected = candidates(board, root, trunk.commit, maximum);
   const stale = selected.blocked.find(item => item.code === 'STALE_VERDICT');
   if (!selected.ready.length && stale) throw staleVerdictRefusal({ item_id: stale.id }, stale);
@@ -867,7 +892,7 @@ export async function runLandingBatch({ root, board, config, write, say, owner, 
     if (!landsOnTrunk(config)) requirePushTarget(root, trunk.branch);
     const id = randomUUID();
     const directory = join(repoInfo(root).commonDir, 'pullboard', 'landings', id);
-    batch = { version: 1, id, base: trunk.commit, tip: trunk.commit, branch: trunk.branch, root: join(directory, 'worktree'),
+    batch = { version: 1, id, startedAt: new Date().toISOString(), base: trunk.commit, tip: trunk.commit, branch: trunk.branch, root: join(directory, 'worktree'),
       candidates: selected.ready.map(landingEntry),
       items: selected.ready.map(landingEntry), conflicts: [], blocked: selected.blocked,
       state: 'merging', owner, logPath: join(directory, 'logs', 'batch.log'), revision: 0 };
@@ -876,51 +901,56 @@ export async function runLandingBatch({ root, board, config, write, say, owner, 
     git(root, ['worktree', 'add', '--detach', batch.root, batch.base]);
   }
   const state = { root, board, config, write, say, onWait, checkLease, checkLeaseNow, batch, culprits: batch.culprits ?? [], flaky: false, gates: new Map((batch.gateResults ?? []).map((result) => [result.tree, result])), diagnosed: new Map((batch.diagnostics ?? []).map((result) => [result.test, result.isGreen])) };
-  await save(state, { owner });
-  await returnCulprits(state);
-  if (state.batch.state === 'trunk') await finishTrunk(state);
-  else if (state.batch.state === 'pushed' || state.batch.state === 'ready') await publish(state);
-  else {
-    const initialItems = (state.batch.candidates ?? state.batch.items)
-      .filter((entry) => !state.culprits.some((culprit) => culprit.id === entry.id && culprit.commit === entry.commit));
-    if (!existsSync(state.batch.root)) throw new Refused('LAND_WORKTREE', `the recorded landing worktree is missing at ${state.batch.root}; restore it before adopting`);
-    const build = await mergeGroup(state, initialItems);
-    await save(state, { ...build, conflicts: [...state.batch.conflicts, ...build.conflicts] });
-    for (const entry of state.batch.blocked ?? []) say(`${entry.code} #${entry.id}${entry.stacked ? ` carries #${entry.stacked}` : ''}`);
-    if (!build.items.length) await save(state, { state: 'blocked' });
-    else if (landsOnTrunk(state.config)) await landOnTrunk(state);
-    else if (!await inlineDeferredGuards(state)) await save(state, { state: 'blocked' });
+  try {
+    await save(state, { owner });
+    await returnCulprits(state);
+    if (state.batch.state === 'trunk') await finishTrunk(state);
+    else if (state.batch.state === 'pushed' || state.batch.state === 'ready') await publish(state);
     else {
-      let gate = await gateGroup(state, 'batch');
-      let proof = gate.isGreen ? null : waivedProof(state, gate);
-      if (!gate.isGreen && !proof) {
-        const flakyFiles = await diagnose(state, gate.failures, gate);
-        if (flakyFiles.length) { await fileFlakes(state, gate, flakyFiles); state.flaky = true; }
-        else {
-          const green = await bisect(state, build.items, gate.failures);
-          if (!state.flaky && green.length) {
-            const rebuilt = await mergeGroup(state, green);
-            await save(state, { ...rebuilt, culprits: state.culprits });
-            // The smaller final tree lost the removed items' changes, so the kept items' deferred files run again on it.
-            if (!await inlineDeferredGuards(state)) {
-              await save(state, { state: 'blocked', culprits: state.culprits });
-              gate = null;
-            } else {
-              gate = await gateGroup(state, 'green-items');
-              proof = gate.isGreen ? null : waivedProof(state, gate);
-              if (!gate.isGreen && !proof) {
-                await save(state, { state: 'blocked', failures: gate.failures, culprits: state.culprits });
-                throw new Refused('LAND_INTERACTION', 'the individually green items fail together; nothing retries or lands; inspect the batch’s failing tests');
+      const initialItems = (state.batch.candidates ?? state.batch.items)
+        .filter((entry) => !state.culprits.some((culprit) => culprit.id === entry.id && culprit.commit === entry.commit));
+      if (!existsSync(state.batch.root)) throw new Refused('LAND_WORKTREE', `the recorded landing worktree is missing at ${state.batch.root}; restore it before adopting`);
+      const build = await mergeGroup(state, initialItems);
+      await save(state, { ...build, conflicts: [...state.batch.conflicts, ...build.conflicts] });
+      for (const entry of state.batch.blocked ?? []) say(`${entry.code} #${entry.id}${entry.stacked ? ` carries #${entry.stacked}` : ''}`);
+      if (!build.items.length) await save(state, { state: 'blocked' });
+      else if (landsOnTrunk(state.config)) await landOnTrunk(state);
+      else if (!await inlineDeferredGuards(state)) await save(state, { state: 'blocked' });
+      else {
+        let gate = await gateGroup(state, 'batch');
+        let proof = gate.isGreen ? null : waivedProof(state, gate);
+        if (!gate.isGreen && !proof) {
+          const flakyFiles = await diagnose(state, gate.failures, gate);
+          if (flakyFiles.length) { await fileFlakes(state, gate, flakyFiles); state.flaky = true; }
+          else {
+            const green = await bisect(state, build.items, gate.failures);
+            if (!state.flaky && green.length) {
+              const rebuilt = await mergeGroup(state, green);
+              await save(state, { ...rebuilt, culprits: state.culprits });
+              // The smaller final tree lost the removed items' changes, so the kept items' deferred files run again on it.
+              if (!await inlineDeferredGuards(state)) {
+                await save(state, { state: 'blocked', culprits: state.culprits });
+                gate = null;
+              } else {
+                gate = await gateGroup(state, 'green-items');
+                proof = gate.isGreen ? null : waivedProof(state, gate);
+                if (!gate.isGreen && !proof) {
+                  await save(state, { state: 'blocked', failures: gate.failures, culprits: state.culprits });
+                  throw new Refused('LAND_INTERACTION', 'the individually green items fail together; nothing retries or lands; inspect the batch’s failing tests');
+                }
               }
-            }
-          } else if (!state.flaky) await save(state, { state: 'blocked', culprits: state.culprits });
+            } else if (!state.flaky) await save(state, { state: 'blocked', culprits: state.culprits });
+          }
+        }
+        if (!state.flaky && gate && (gate.isGreen || proof)) {
+          await save(state, { state: 'ready', proof: proof ?? { tree: gate.tree, failures: [], logPath: gate.logPath }, culprits: state.culprits });
+          await publish(state);
         }
       }
-      if (!state.flaky && gate && (gate.isGreen || proof)) {
-        await save(state, { state: 'ready', proof: proof ?? { tree: gate.tree, failures: [], logPath: gate.logPath }, culprits: state.culprits });
-        await publish(state);
-      }
     }
+  } catch (error) {
+    if (!(error instanceof Refused) || error.code !== 'LAND_GATE_TIMEOUT') throw error;
+    say(error.message);
   }
   return { batch: state.batch, landed: state.batch.state === 'landed' ? state.batch.items.map((entry) => entry.id) : [],
     conflicts: state.batch.conflicts ?? [], blocked: state.batch.blocked ?? [], culprits: state.culprits, flakes: state.batch.flakes ?? [] };
