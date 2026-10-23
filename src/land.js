@@ -116,8 +116,8 @@ function landingEntry(item) {
     ...(item.item_landing_commit !== item.item_commit ? { reviewedCommit: item.item_landing_commit } : {}) };
 }
 
-/** Select verified, unmerged candidates in verdict order, retaining dependency order [B3,R3]. */
-function candidates(board, root, base, maximum) {
+/** Select in verdict order; a read-only preflight may stop at its first eligible item [B3,R3]. */
+function candidates(board, root, base, maximum, { firstReady = false } = {}) {
   const all = store.listItems(board, { all: true });
   const projector = verdictProjector(root, board, { main: base });
   const pending = all.filter((item) => item.item_status === 'verified' && !item.item_merged_commit);
@@ -146,7 +146,10 @@ function candidates(board, root, base, maximum) {
       blocked.push({ id: item.item_id, code: 'STACKED_UNVERIFIED', stacked: stacked.item_id });
       continue;
     }
-    if (ready.length < maximum) ready.push(item);
+    if (ready.length < maximum) {
+      ready.push(item);
+      if (firstReady) break;
+    }
   }
   return { ready, blocked };
 }
@@ -689,7 +692,7 @@ export async function land(options) {
     // Only accepted trunk policy may inform this read-only preflight.
     const config = policyAt(options.root, trunk.commit).config;
     options.board.quarantineEnabled = () => config.flakes?.quarantine === true;
-    const selected = candidates(options.board, options.root, trunk.commit, options.maximum ?? Infinity);
+    const selected = candidates(options.board, options.root, trunk.commit, options.maximum ?? Infinity, { firstReady: true });
     invalidateGitFacts();
     const current = mainCheckout(options.root);
     if (!selected.ready.length && current?.commit === trunk.commit && current.branch === branch

@@ -564,9 +564,13 @@ test('land bisects a real red, blocks stale proof and refuses an unverified stac
   assert.equal(box.git(box.remote, 'rev-parse', 'main'), result.batch.tip);
   assert.notEqual(result.batch.tip, base);
   const afterCalls = calls(box).length;
+  const beforeEmptyEvents = events(box);
+  const beforeEmptyLease = onBoard(box, board => store.landingLeaseState(board));
   const again = box.run(box.repo, 'land', '--json');
   assert.equal(again.code, 1, again.out + again.err);
   assert.equal(JSON.parse(again.out).error.code, 'STALE_VERDICT', 'an all-blocked queue refuses instead of suggesting an empty successful land');
+  assert.deepEqual(events(box), beforeEmptyEvents, 'an idle all-blocked selection adds no lease events');
+  assert.deepEqual(onBoard(box, board => store.landingLeaseState(board)), beforeEmptyLease, 'a stale refusal takes no lease');
   assert.equal(json(box, box.repo, 'show', String(entries[2].item)).item_status, 'open', 'the known red is returned to its builder and is no longer a verified landing candidate');
   assert.equal(calls(box).length, afterCalls, 'known unchanged red is not retried');
 });

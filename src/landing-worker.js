@@ -48,7 +48,8 @@ function stop(child, member) {
   } while (changed);
   const current = census();
   if (!current) return; // Missing identity evidence never authorizes a process-group signal.
-  for (const pid of [...owned].reverse()) if (pid !== child.pid && !current.get(pid)?.state.startsWith('Z') && current.get(pid)?.started === rows.get(pid)?.started
+  // Stop producers first: killing a held gate must not wake its worker into post-gate Git work.
+  for (const pid of owned) if (pid !== child.pid && !current.get(pid)?.state.startsWith('Z') && current.get(pid)?.started === rows.get(pid)?.started
     && current.get(pid)?.processSha256 === rows.get(pid)?.processSha256) {
     try { process.kill(pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
   }
@@ -226,7 +227,8 @@ function guardianMain() {
     }
     if (message.type === 'start' && !worker) {
       // The worker stays in this guardian's detached group; its gates inherit that group too.
-      worker = spawn(process.execPath, [FILE, 'worker'], { cwd: message.options.root, env: process.env,
+      // Worker observations must not leave an optional status-refresh index lock when interrupted.
+      worker = spawn(process.execPath, [FILE, 'worker'], { cwd: message.options.root, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
         stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
       worker.on('message', value => {
         if (!process.connected) return;
