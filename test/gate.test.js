@@ -780,11 +780,16 @@ test('a hand-recorded run never quarantines a test [C7,D1]', async (t) => {
 });
 
 /** A web project whose one source file is imported by thirty test files, each recording its own run. */
-function largeSelectionProject(deferAbove) {
+function largeSelectionProject(deferAbove, { inline = false } = {}) {
   const box = e2e.project('true');
   const config = JSON.parse(readFileSync(join(box.repo, 'pullboard.json'), 'utf8'));
   writeFileSync(join(box.repo, 'pullboard.json'), JSON.stringify({ ...config, submitGate: 'landing', affectedTests: 'node --test',
-    submitInvariants: ['web/guard.test.js'], landing: { publish: 'separate' }, ...(deferAbove ? { submitDeferAbove: deferAbove } : {}) }, null, 2));
+    submitInvariants: ['web/guard.test.js'], ...(inline ? {} : { landing: { publish: 'separate' } }), ...(deferAbove ? { submitDeferAbove: deferAbove } : {}) }, null, 2));
+  if (inline) {
+    // An inline landing pushes its gated tip, so it needs a remote; its gate (true) would pass anything.
+    box.git(box.dir, 'init', '-q', '--bare', join(box.dir, 'origin.git'));
+    box.git(box.repo, 'remote', 'add', 'origin', join(box.dir, 'origin.git'));
+  }
   writeFileSync(join(box.repo, 'package.json'), '{"type":"module"}\n');
   mkdirSync(join(box.repo, 'web'), { recursive: true });
   writeFileSync(join(box.repo, 'web/core.js'), 'export const value = 1;\n');
@@ -858,6 +863,18 @@ test('a large affected selection is deferred to landing at submit [C7]', () => {
   assert.notEqual(reopened.item_status, 'verified', 'the red item is sent back like a red submit');
   assert.equal(reopened.item_merged_commit, null);
   assert.ok(reopened.thread.some(entry => entry.kind === 'reopen' && /web\/selected-00\.test\.js/u.test(entry.detail.note)), 'the reopen names the failing deferred file');
+
+  const inline = largeSelectionProject(20, { inline: true });
+  const inlineRed = inline.submitChange('red');
+  assert.deepEqual(inlineRed.ran, ['guard']);
+  inline.accept(inlineRed.id, inlineRed.receipt.commit);
+  const inlineLanding = inline.box.run(inline.box.repo, 'land', '--json');
+  assert.equal(inlineLanding.code, 0, inlineLanding.err + inlineLanding.out);
+  assert.deepEqual(JSON.parse(inlineLanding.out).landed, [], 'an inline landing whose gate passes anything still runs the deferred files and lands nothing on red');
+  const inlineItem = JSON.parse(inline.box.run(inline.box.repo, 'show', String(inlineRed.id), '--json').out);
+  assert.notEqual(inlineItem.item_status, 'verified', 'the inline red item is sent back');
+  assert.equal(inlineItem.item_merged_commit, null);
+  assert.ok(inline.ran().length > 1, 'the inline landing ran the deferred files');
 
   const off = largeSelectionProject(null).submitChange(2);
   assert.equal(off.proof.submissionProof.deferredFiles, undefined);

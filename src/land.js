@@ -636,9 +636,15 @@ async function deferredGuards(state) {
   const deferred = deferredSelections(state);
   if (!deferred.length) return;
   const files = [...new Set(deferred.flatMap((row) => row.files))].sort();
+  const tree = headTree(root);
+  const commit = headCommit(root);
   const browser = !browserFreeChecksEnabled() || await testsNeedBrowser(root, files);
   const run = await withGateSlot(root, lease => runProfiledShell(root, `${state.config.affectedTests} ${files.map(quote).join(' ')}`, { waitMs: lease.waitMs, gateLease: lease, stages: true }),
     { agent: 'coordinator', kind: 'gate', landing: true, browser, onWait: state.onWait });
+  // The same pin as the full landing gate: a result only counts for the exact merged tree it ran on.
+  if (headCommit(root) !== commit || headTree(root) !== tree || !isClean(root)) {
+    throw new Refused('LAND_SOURCE_CHANGED', 'the landing source changed while the deferred affected tests ran; restore the recorded batch before adopting');
+  }
   state.say(`deferred affected tests: ${files.length} file(s) ${run.isGreen ? 'green' : 'red'} on the merged tree`);
   if (run.isGreen) return;
   const failures = landingFailures(run.output, root);
@@ -651,6 +657,15 @@ async function deferredGuards(state) {
   await save(state, { culprits: state.culprits });
   await returnCulprits(state);
   throw new Refused('GATE_RED', `the deferred affected tests are red on the merged tree: ${[...failed].join(', ') || 'no failing file was named; inspect the merged tree'}`);
+}
+
+/** Run the deferred affected tests before an inline landing's gate; false when they are red and nothing may land. */
+async function inlineDeferredGuards(state) {
+  try { await deferredGuards(state); return true; } catch (error) {
+    if (!(error instanceof Refused) || error.code !== 'GATE_RED') throw error;
+    state.say(`nothing landed: ${error.message}`);
+    return false;
+  }
 }
 
 /**
@@ -755,6 +770,7 @@ export async function land({ root, board, config, write, say, owner, maximum = I
     for (const entry of state.batch.blocked ?? []) say(`${entry.code} #${entry.id}${entry.stacked ? ` carries #${entry.stacked}` : ''}`);
     if (!build.items.length) await save(state, { state: 'blocked' });
     else if (landsOnTrunk(state.config)) await landOnTrunk(state);
+    else if (!await inlineDeferredGuards(state)) await save(state, { state: 'blocked' });
     else {
       let gate = await gateGroup(state, 'batch');
       let proof = gate.isGreen ? null : waivedProof(state, gate);
