@@ -375,10 +375,13 @@ globalThis.fetch = function tracedFetch(input, init) {
       }
       return end(chunk, ...args);
     };
-    res.once('finish', () => recordResponse({ method: req.method, path: req.url,
-      request: Buffer.concat(requestChunks), response: Buffer.concat(responseChunks) }));
-    calls.push({ method: req.method, path: req.url, accept: req.headers.accept ?? '', engine: req.headers['x-pullboard-engine'],
-      browser: String(req.headers.cookie ?? '').includes('pb_session=') });
+    const call = { method: req.method, path: req.url, accept: req.headers.accept ?? '', engine: req.headers['x-pullboard-engine'],
+      browser: String(req.headers.cookie ?? '').includes('pb_session=') };
+    res.once('finish', () => {
+      call.requestBytes = Buffer.concat(requestChunks).length; // What the client sent, for size bounds (#1014).
+      recordResponse({ method: req.method, path: req.url, request: Buffer.concat(requestChunks), response: Buffer.concat(responseChunks) });
+    });
+    calls.push(call);
     if (stallApi && (req.url ?? '').startsWith('/api/')) { request.resume(); await new Promise(() => {}); }
     if (legacySnapshotApi && req.method === 'GET' && req.url === '/api/v2') {
       res.writeHead(legacySnapshotApi === 'bad-route' ? 400 : 200, { 'content-type': 'application/json' });

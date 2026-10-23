@@ -92,6 +92,10 @@ import { terminalQr } from './qr.js';
 import { environmentLink } from './relay-environment.js';
 import { locked } from './relay-lock.js';
 import {
+  checkpointInBackground,
+  scheduleCheckpoint,
+} from './relay-checkpoint.js';
+import {
   decideUncertainBaseline,
   remoteBoardMissing,
   uncertainUploadFailure,
@@ -900,6 +904,24 @@ async function publishCheckpoint(root, file, state, io) {
   if (resumed) clearUploadPauseNotices(state);
 }
 
+/**
+ * Publish this board's checkpoint once, under the relay lock: the background publisher's one step (#1014). A board
+ * whose link is gone or being removed publishes nothing.
+ *
+ * @param {string} root
+ * @param {{ err: (line: string) => void, say: (line: string) => void }} io
+ * @returns {Promise<boolean>} Whether a linked board was published.
+ */
+export async function publishLatestCheckpoint(root, io) {
+  const file = linkFile(root);
+  return locked(file, async () => {
+    const state = loadLink(file);
+    if (!state || state.unlinking) return false;
+    await publishCheckpoint(root, file, state, io);
+    return true;
+  }, io);
+}
+
 /** Drain a legacy source once, refusing foreign history before it can be silently checkpointed. */
 async function ensureOrdered(root, file, state, io) {
   requireUnconflictedBaseline(state);
@@ -1229,13 +1251,17 @@ export async function relayOperation(root, operation, args, io, command, applyLo
       if (!receipt) throw new Refused('RELAY_RESPONSE', 'the acknowledged operation has no replay receipt; fetch a consistent relay snapshot');
       delete state.recovered;
       saveLink(file, state);
-      // A phone can read a compacted checkpoint; failed presentation uploads do not undo the move.
-      try { await publishCheckpoint(root, file, state, io); }
-      catch (error) {
-        if (!(error instanceof Refused)) throw error;
-        if (confirmedDeletion(state, error)) forgetDeletedCopy(root, file, state, io);
-        else if (error.code === 'AUTH_REQUIRED') reportExpiredSignIn(state, io);
-        else io.err(`pullboard: ${error.message}`);
+      // A phone reads the next checkpoint; the background publisher sends it once moves go quiet (#1014).
+      if (checkpointInBackground()) scheduleCheckpoint(root, file);
+      else {
+        // A phone can read a compacted checkpoint; failed presentation uploads do not undo the move.
+        try { await publishCheckpoint(root, file, state, io); }
+        catch (error) {
+          if (!(error instanceof Refused)) throw error;
+          if (confirmedDeletion(state, error)) forgetDeletedCopy(root, file, state, io);
+          else if (error.code === 'AUTH_REQUIRED') reportExpiredSignIn(state, io);
+          else io.err(`pullboard: ${error.message}`);
+        }
       }
       if (receipt.outcome.error) throw refusalFromReceipt(receipt.outcome.error);
       if (existsSync(file) && ['register', 'ensureCoordinator'].includes(operation)) await actorTransport(root, file, state, receipt.outcome.result, io);
@@ -1274,7 +1300,10 @@ export async function syncRelay(root, io) {
         saveLink(file, state);
         io.err(`pullboard: the relay ${state.url} did not sequence the previous move; retry that move explicitly if still wanted`);
       }
-      if (state.checkpoint || state.presentationDigest !== presentationDigest(relayPresentation(root))) await publishCheckpoint(root, file, state, io);
+      // In the background, a command never builds the presentation to compare it: only a saved, unsent checkpoint
+      // asks for a publisher. Otherwise the command publishes a changed presentation itself, as before #1014.
+      if (checkpointInBackground()) { if (state.checkpoint) scheduleCheckpoint(root, file); }
+      else if (state.checkpoint || state.presentationDigest !== presentationDigest(relayPresentation(root))) await publishCheckpoint(root, file, state, io);
       await deliverDeviceWraps(root, io);
       return summary(root, state);
     }
