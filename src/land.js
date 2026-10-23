@@ -39,8 +39,10 @@ import {
   readGateReceipt,
   receiptStore,
 } from './gate-run-receipt.js';
+import { testsNeedBrowser } from './browser-admission.js';
 import { laneOf } from './lanes.js';
 import { Refused } from './refused.js';
+import { browserFreeChecksEnabled } from './settings.js';
 import { landingFileTimes } from './submit-invariants.js';
 import {
   flakeSource,
@@ -60,11 +62,22 @@ function testHash(root, file) {
   catch { return null; }
 }
 
-/** Derive failing test identities from TAP names and source locations, refusing unknown paths. */
+/** Derive failing test identities from TAP or spec reporter names and source locations, refusing unknown paths. */
 export function landingFailures(output, root, { excludeCancelled = false } = {}) {
   const failures = [];
   let active = null;
+  /** A reported path relative to the root, or null when it lies outside it. */
+  const inRoot = (path) => {
+    const file = isAbsolute(path) ? relative(root, path) : path.replace(/^\.\//u, '');
+    return file && !file.startsWith('../') && !file.includes('\\') ? file : null;
+  };
+  // The spec reporter (Node 24's default for node --test) names each failure as "test at <file>:<line>" then "✖ <name>".
+  let specFile;
   for (const line of output.split('\n')) {
+    const at = /^\s*test at (.+?):\d+(?::\d+)?\s*$/u.exec(line);
+    if (at) { specFile = inRoot(at[1]); active = null; continue; }
+    const spec = specFile !== undefined ? /^\s*\u2716 (.+?)(?: \([\d.]+m?s\))?\s*$/u.exec(line) : null;
+    if (spec) { failures.push({ name: spec[1], file: specFile }); specFile = undefined; continue; }
     const failed = /^\s*not ok\s+\d+\s+-\s+(.*)$/u.exec(line);
     if (failed) {
       active = { name: failed[1].replace(/\s+#.*$/u, ''), file: null };
@@ -73,9 +86,8 @@ export function landingFailures(output, root, { excludeCancelled = false } = {})
     }
     const location = /^\s*location:\s*['"]?(.+?):\d+(?::\d+)?['"]?\s*$/u.exec(line);
     if (active && location) {
-      const path = location[1];
-      const file = isAbsolute(path) ? relative(root, path) : path.replace(/^\.\//u, '');
-      if (file && !file.startsWith('../') && !file.includes('\\')) active.file = file;
+      const file = inRoot(location[1]);
+      if (file) active.file = file;
     }
     if (excludeCancelled && active && /^\s*failureType:\s*['"]?(?:cancelledByParent|subtestsFailed)['"]?\s*$/u.test(line)) active.omit = true;
   }
@@ -615,13 +627,64 @@ async function quickGuards(state) {
   if (!run.isGreen) throw new Refused('GATE_RED', `the submit invariants are red on the merged tree: ${invariants.join(', ')}`);
 }
 
+/** The affected test files each batch item's submission moved to the landing gate, read from its exact submit. */
+function deferredSelections(state) {
+  return state.batch.items.flatMap((entry) => {
+    const event = store.events(state.board, { itemId: entry.id }).findLast((row) => row.event_kind === 'submit');
+    const detail = event ? JSON.parse(event.event_detail) : null;
+    const files = detail?.commit === entry.commit ? detail.submissionProof?.deferredFiles ?? [] : [];
+    return files.length ? [{ entry, files }] : [];
+  });
+}
+
+/**
+ * Run every affected test file a submit deferred over submitDeferAbove on the merged tree, before anything lands.
+ * A red sends back each item whose own deferred selection holds a failing file, the way a red submit would.
+ */
+async function deferredGuards(state) {
+  const root = state.batch.root;
+  const deferred = deferredSelections(state);
+  if (!deferred.length) return;
+  const files = [...new Set(deferred.flatMap((row) => row.files))].sort();
+  const tree = headTree(root);
+  const commit = headCommit(root);
+  const browser = !browserFreeChecksEnabled() || await testsNeedBrowser(root, files);
+  const run = await withGateSlot(root, lease => runProfiledShell(root, `${state.config.affectedTests} ${files.map(quote).join(' ')}`, { waitMs: lease.waitMs, gateLease: lease, stages: true }),
+    { agent: 'coordinator', kind: 'gate', landing: true, browser, onWait: state.onWait });
+  // The same pin as the full landing gate: a result only counts for the exact merged tree it ran on.
+  if (headCommit(root) !== commit || headTree(root) !== tree || !isClean(root)) {
+    throw new Refused('LAND_SOURCE_CHANGED', 'the landing source changed while the deferred affected tests ran; restore the recorded batch before adopting');
+  }
+  state.say(`deferred affected tests: ${files.length} file(s) ${run.isGreen ? 'green' : 'red'} on the merged tree`);
+  if (run.isGreen) return;
+  const failures = landingFailures(run.output, root);
+  const failed = new Set(failures.map((failure) => failure.file).filter(Boolean));
+  for (const { entry, files: own } of deferred) {
+    if (!own.some((file) => failed.has(file)) || state.culprits.some((culprit) => culprit.id === entry.id)) continue;
+    state.culprits.push({ id: entry.id, commit: entry.commit, ...(entry.reviewedCommit ? { reviewedCommit: entry.reviewedCommit } : {}),
+      mergeCommit: state.batch.tip, tests: failures.filter((failure) => own.includes(failure.file)) });
+  }
+  await save(state, { culprits: state.culprits });
+  await returnCulprits(state);
+  throw new Refused('GATE_RED', `the deferred affected tests are red on the merged tree: ${[...failed].join(', ') || 'no failing file was named; inspect the merged tree'}`);
+}
+
+/** Run the deferred affected tests before an inline landing's gate; false when they are red and nothing may land. */
+async function inlineDeferredGuards(state) {
+  try { await deferredGuards(state); return true; } catch (error) {
+    if (!(error instanceof Refused) || error.code !== 'GATE_RED') throw error;
+    state.say(`nothing landed: ${error.message}`);
+    return false;
+  }
+}
+
 /**
  * Tier 1 (#801): after a clean merge and its quick guards, the batch lands on the local trunk in seconds, with each
  * item's merged receipt; nothing is pushed. pullboard publish runs the whole suite on the trunk head and pushes it.
  */
 async function landOnTrunk(state) {
   await save(state, { state: 'gating', tip: headCommit(state.batch.root) });
-  try { await quickGuards(state); } catch (error) {
+  try { await quickGuards(state); await deferredGuards(state); } catch (error) {
     if (!(error instanceof Refused)) throw error;
     await save(state, { state: 'blocked' });
     state.say(`nothing landed: ${error.message}`);
@@ -717,6 +780,7 @@ export async function land({ root, board, config, write, say, owner, maximum = I
     for (const entry of state.batch.blocked ?? []) say(`${entry.code} #${entry.id}${entry.stacked ? ` carries #${entry.stacked}` : ''}`);
     if (!build.items.length) await save(state, { state: 'blocked' });
     else if (landsOnTrunk(state.config)) await landOnTrunk(state);
+    else if (!await inlineDeferredGuards(state)) await save(state, { state: 'blocked' });
     else {
       let gate = await gateGroup(state, 'batch');
       let proof = gate.isGreen ? null : waivedProof(state, gate);
@@ -728,16 +792,22 @@ export async function land({ root, board, config, write, say, owner, maximum = I
           if (!state.flaky && green.length) {
             const rebuilt = await mergeGroup(state, green);
             await save(state, { ...rebuilt, culprits: state.culprits });
-            gate = await gateGroup(state, 'green-items');
-            proof = gate.isGreen ? null : waivedProof(state, gate);
-            if (!gate.isGreen && !proof) {
-              await save(state, { state: 'blocked', failures: gate.failures, culprits: state.culprits });
-              throw new Refused('LAND_INTERACTION', 'the individually green items fail together; nothing retries or lands; inspect the batch’s failing tests');
+            // The smaller final tree lost the removed items' changes, so the kept items' deferred files run again on it.
+            if (!await inlineDeferredGuards(state)) {
+              await save(state, { state: 'blocked', culprits: state.culprits });
+              gate = null;
+            } else {
+              gate = await gateGroup(state, 'green-items');
+              proof = gate.isGreen ? null : waivedProof(state, gate);
+              if (!gate.isGreen && !proof) {
+                await save(state, { state: 'blocked', failures: gate.failures, culprits: state.culprits });
+                throw new Refused('LAND_INTERACTION', 'the individually green items fail together; nothing retries or lands; inspect the batch’s failing tests');
+              }
             }
           } else if (!state.flaky) await save(state, { state: 'blocked', culprits: state.culprits });
         }
       }
-      if (!state.flaky && (gate.isGreen || proof)) {
+      if (!state.flaky && gate && (gate.isGreen || proof)) {
         await save(state, { state: 'ready', proof: proof ?? { tree: gate.tree, failures: [], logPath: gate.logPath }, culprits: state.culprits });
         await publish(state);
       }
