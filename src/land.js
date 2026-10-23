@@ -42,7 +42,7 @@ import {
 } from './gate-run-receipt.js';
 import { testsNeedBrowser } from './browser-admission.js';
 import { laneOf } from './lanes.js';
-import { takeResource } from './resources.js';
+import { takeLandingResource } from './landing-resource.js';
 import {
   landingLeaseState,
   requireConfirmedLanding,
@@ -815,7 +815,7 @@ export async function land(options) {
   }
   let lastWait = '';
   const controller = new AbortController();
-  const lease = await takeResource({ name: 'landing', scope: 'board', capacity: 1, board: options.board, write: options.write, branch,
+  const lease = await takeLandingResource({ board: options.board, write: options.write, branch,
     onLost: error => controller.abort(error),
     /** Report a real ordered holder, without allocating machine test capacity to this waiter. */
     onWait({ holders, position }) {
