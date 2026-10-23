@@ -106,15 +106,12 @@ test('CI runs the gate on every push and pull request, Node 22.13 and 24, on Lin
   assert.doesNotMatch(job('linux'), /\n {4}if:/, 'Linux runs every time');
 });
 
-test("the README shows the workflow's status badge [C7]", () => {
+test("the README header shows the board's own badges, not the CI status badge [C7]", () => {
+  // The person, 22 Oct: drop the gate badge from the header; a live red CI badge says less than the board's verified record.
   const readme = readFileSync(resolve(ROOT, 'README.md'), 'utf8');
   const section = readme.search(/^## /mu);
   assert.notEqual(section, -1, 'the README has a section after its header');
   const header = readme.slice(0, section);
-  const workflow = 'https://github\\.com/pullboard-dev/pullboard/actions/workflows/gate\\.yml';
-  const githubBadge = 'https://github\\.com/pullboard-dev/pullboard/actions/workflows/gate\\.yml/badge\\.svg';
-  const shieldsBadge = 'https://img\\.shields\\.io/github/actions/workflow/status/pullboard-dev/pullboard/gate\\.yml';
-  const markdown = new RegExp(`\\[!\\[[^\\]]*\\]\\((?:${githubBadge}|${shieldsBadge}(?:\\?[^)]*)?)\\)\\]\\(${workflow}\\)`, 'u');
-  const html = new RegExp(`<a\\b(?=[^>]*\\bhref="${workflow}")[^>]*>\\s*<img\\b(?=[^>]*\\balt="gate")(?=[^>]*\\bsrc="(?:${githubBadge}|${shieldsBadge}(?:\\?[^\"]*)?)")[^>]*>\\s*<\\/a>`, 'u');
-  assert.ok(markdown.test(header) || html.test(header), 'the header links a GitHub or shields status badge to the gate workflow');
+  assert.doesNotMatch(header, /actions\/workflows\/gate\.yml/u, 'the header carries no CI status badge');
+  for (const badge of ['pullboard', 'agent-verified', 'npm']) assert.match(header, new RegExp(`alt="${badge}(?:: [^"]+)?"`, 'u'), `the header shows the ${badge} badge`);
 });
