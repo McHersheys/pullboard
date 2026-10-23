@@ -199,6 +199,8 @@ function codeWalk(read, { caught = false } = {}) {
     seen.add(key);
     const [file, name] = key.split('#');
     const { bodies, named, spaces } = load(file);
+    // A facade may import and re-export the helper; follow its real definition after extraction.
+    if (!bodies.has(name) && named.has(name)) return refusalsOf(named.get(name), skip, seen);
     const body = bodies.get(name) ?? '';
     const codes = new Set([...body.matchAll(/new Refused\(\s*(['"])([A-Z][A-Z0-9_]*)\1/g)].map((match) => match[2]));
     const callees = [
@@ -554,7 +556,7 @@ test('a broken copy of the code fails the check: a refusal added wherever a move
     'NO_ROUTE is raised by reserve but not declared there',
   ], 'reserve reaches the route check through the reviewer checks it shares with a verdict');
 
-  const doubleQuoted = editedSource('cli.js', /^(?:export )?const cdTo = .*$/m, "const cdTo = (root) => { if (!root) throw new Refused(\"NO_ROOT\", 'no root'); return 'cd ' + root + ' &&'; };");
+  const doubleQuoted = editedSource('cli-context.js', /^(?:export )?const cdTo = .*$/m, "const cdTo = (root) => { if (!root) throw new Refused(\"NO_ROOT\", 'no root'); return 'cd ' + root + ' &&'; };");
   assert.deepEqual(codeProblems(MACHINE, doubleQuoted), [
     'NO_ROOT is raised by submit but not declared there',
     'NO_ROOT is raised by accept and reject but not declared there',
