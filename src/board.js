@@ -73,8 +73,7 @@ import {
 } from './machine.js';
 import { LOCAL_LANDING_ENGINE } from './land-engine.js';
 import { SPEC_APPROVAL_ENGINE } from './spec-approval-engine.js';
-import { LANDING_ENVIRONMENT_ENGINE } from './landing-environment-engine.js';
-import { carriesLandingEnvironment, environmentProblem } from './execution-environment.js';
+import * as landingEnvironment from './landing-environment-guards.js';
 import { Refused } from './refused.js';
 import { refuseMaskedExit } from './check-mask.js';
 import {
@@ -1573,8 +1572,7 @@ export function verify(board, id, { agentId, decision, reason, note = '', cause,
   const isAccept = verb === 'accept';
   const code = isAccept ? ACCEPT_REASON : reason;
   const engine = board.executionEngineVersion ?? ENGINE_VERSION;
-  if (environment !== undefined && engine < LANDING_ENVIRONMENT_ENGINE) throw new Refused('ENGINE_VERSION', `verdict environments require engine ${LANDING_ENVIRONMENT_ENGINE}`);
-  if (environment !== undefined && environment !== null && environmentProblem(environment)) throw new Refused('VERDICT_ENVIRONMENT', 'a verdict environment needs exact platform, arch and Node version');
+  landingEnvironment.requireVerdict(board, environment);
   const declaration = MOVES.find(move => move.verb === verb);
   const newReview = engine >= VERDICT_REVIEW_ENGINE && review !== undefined;
   // Without the new sealed metadata, old moves keep their exact submitted-only semantics.
@@ -2672,12 +2670,7 @@ export { landingBatches };
 /** Append one coordinator-owned batch revision without changing the board schema [B3,R3]. */
 export function recordLandingBatch(board, { agentId, batch, revision = 0, landingFence }) {
   coordinatorOnly(agentId, 'records landing batches');
-  if ((board.executionEngineVersion ?? ENGINE_VERSION) < LANDING_ENVIRONMENT_ENGINE && board.db.prepare("SELECT 1 FROM event WHERE event_kind = 'landing-test-defect' LIMIT 1").get()) throw new Refused('ENGINE_VERSION', `this trunk has test-defect holds requiring engine ${LANDING_ENVIRONMENT_ENGINE}`);
-  if (carriesLandingEnvironment(batch) && (board.executionEngineVersion ?? ENGINE_VERSION) < LANDING_ENVIRONMENT_ENGINE) throw new Refused('ENGINE_VERSION', `landing environments and test defects require engine ${LANDING_ENVIRONMENT_ENGINE}`);
-  if (batch?.environmentWarnings !== undefined && !Array.isArray(batch.environmentWarnings)) throw new Refused('LAND_BATCH', 'landing environment warnings are a list');
-  const environments = [batch?.environment, ...(Array.isArray(batch?.gateResults) ? batch.gateResults : []).map(gate => gate?.environment),
-    ...(batch?.environmentWarnings ?? []).flatMap(warning => [warning?.recorded, warning?.landing])];
-  if (environments.some(environment => environment !== undefined && environment !== null && environmentProblem(environment))) throw new Refused('LAND_BATCH', 'a landing executor needs exact platform, arch and Node version');
+  landingEnvironment.requireBatch(board, batch);
   if (carriesFlakeDiagnostics(batch) && (board.executionEngineVersion ?? ENGINE_VERSION) < NATIVE_FLAKE_ENGINE) {
     throw new Refused('ENGINE_VERSION', `typed landing diagnostics require engine ${NATIVE_FLAKE_ENGINE}; upgrade Pullboard`);
   }
@@ -2691,8 +2684,7 @@ export function recordLandingBatch(board, { agentId, batch, revision = 0, landin
   return atomic(board, () => {
     guardLandingWrite(board, landingFence);
     const previous = landingBatches(board).find((entry) => entry.id === batch.id);
-    if (carriesLandingEnvironment(previous) && (board.executionEngineVersion ?? ENGINE_VERSION) < LANDING_ENVIRONMENT_ENGINE) throw new Refused('ENGINE_VERSION', `this batch requires engine ${LANDING_ENVIRONMENT_ENGINE}`);
-    if (previous && ['environment', 'testDefects'].some(key => Object.hasOwn(previous, key) && !Object.hasOwn(batch, key))) throw new Refused('LAND_BATCH', 'a landing revision keeps its recorded executor and test defects');
+    landingEnvironment.requireRevision(board, previous, batch);
     preserveInvariantEvidence(previous, evidence, board.executionEngineVersion ?? ENGINE_VERSION);
     validateLandingRevision(previous, batch, revision);
     const recorded = { ...batch, revision: revision + 1, updatedAt: now(board) };
@@ -2766,12 +2758,12 @@ export function waivedLandingProof(board, tree) {
 /** Atomically record a pushed batch's first-containing merges and one main-moved receipt [B3,R3]. */
 export function finishLandingBatch(board, { agentId, id, tip, landingFence }) {
   coordinatorOnly(agentId, 'finishes a landing');
-  if ((board.executionEngineVersion ?? ENGINE_VERSION) < LANDING_ENVIRONMENT_ENGINE && board.db.prepare("SELECT 1 FROM event WHERE event_kind = 'landing-test-defect' LIMIT 1").get()) throw new Refused('ENGINE_VERSION', `this trunk has test-defect holds requiring engine ${LANDING_ENVIRONMENT_ENGINE}`);
+  landingEnvironment.requireTrunk(board);
   return atomic(board, () => {
     guardLandingWrite(board, landingFence);
     const batch = landingBatches(board).find((entry) => entry.id === id);
     if (!batch || batch.tip !== tip) throw new Refused('LAND_BATCH', 'the pushed tip must match its recorded batch; run pullboard land --adopt');
-    if (carriesLandingEnvironment(batch) && (board.executionEngineVersion ?? ENGINE_VERSION) < LANDING_ENVIRONMENT_ENGINE) throw new Refused('ENGINE_VERSION', `this batch requires engine ${LANDING_ENVIRONMENT_ENGINE}`);
+    landingEnvironment.requireStoredBatch(board, batch);
     if (batch.state === 'landed') return batch;
     if (batch.state !== 'pushed' && !(batch.state === 'trunk' && (board.executionEngineVersion ?? ENGINE_VERSION) >= LOCAL_LANDING_ENGINE)) throw new Refused('LAND_NOT_PUSHED', 'record a successful push before landing receipts; run pullboard land --adopt');
     for (const entry of batch.items) {

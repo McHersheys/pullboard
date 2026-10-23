@@ -16,7 +16,10 @@ import {
   setGateSlots,
   setLandingPool,
 } from '../settings.js';
-import { context, withBoard } from '../cli.js';
+import {
+  context,
+  withBoard,
+} from '../cli.js';
 import { boardId } from '../board.js';
 
 /** Read or update machine-wide gate capacity. */

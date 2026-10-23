@@ -50,7 +50,10 @@ import {
 import { runLandingWorker } from './landing-worker.js';
 import { Refused } from './refused.js';
 import { requireLandingHost } from './landing-host.js';
-import { environmentLabel, sameEnvironment } from './execution-environment.js';
+import {
+  environmentLabel,
+  sameEnvironment,
+} from './execution-environment.js';
 import { browserFreeChecksEnabled } from './settings.js';
 import { policyAt } from './trusted-policy.js';
 import { landingFileTimes } from './submit-invariants.js';

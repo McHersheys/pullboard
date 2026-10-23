@@ -37,7 +37,10 @@ import {
   tmpdir,
 } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { environmentProblem, executionEnvironment } from './execution-environment.js';
+import {
+  environmentProblem,
+  executionEnvironment,
+} from './execution-environment.js';
 import { constrainedLandingHost } from './landing-host.js';
 import {
   gitChildEnv,

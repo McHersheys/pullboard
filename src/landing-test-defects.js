@@ -1,5 +1,9 @@
 /** Durable test defects hold a trunk when bisection identifies no item culprit [E29]. */
-import { addItem, atomic, logEvent } from './board.js';
+import {
+  addItem,
+  atomic,
+  logEvent,
+} from './board.js';
 import { COORDINATOR } from './config.js';
 import { ENGINE_VERSION } from './machine.js';
 import { LANDING_ENVIRONMENT_ENGINE } from './landing-environment-engine.js';
