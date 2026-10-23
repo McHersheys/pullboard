@@ -197,3 +197,26 @@ test('a name pattern that matches no test fails with NO_TESTS_MATCHED [C7,S13]',
   assert.equal(quietMatch.stdout, '', 'observing selection adds no public reporter output');
   assert.equal(readFileSync(box.marker, 'utf8'), 'xxx');
 });
+
+
+test('a name pattern that matches no test fails with NO_TESTS_MATCHED in a landing [C7,S13]', (t) => {
+  const box = discoveryFixture(t);
+  const runner = join(box.bin, 'run-tests.js');
+  const file = join(box.root, 'test', 'one.test.js');
+  const env = { ...process.env, PULLBOARD_LANDING_RUN: '1' };
+  delete env.NODE_TEST_CONTEXT;
+  /** Exercise the real landing API and its independent reporter on private files. */
+  const execute = (...args) => spawnSync(process.execPath, [runner, ...args], { cwd: box.root, env, encoding: 'utf8' });
+  const missing = execute('--test-name-pattern=absent landing case 1018', file);
+  assert.notEqual(missing.status, 0, `${missing.stdout}${missing.stderr}`);
+  assert.match(missing.stderr, /NO_TESTS_MATCHED/u);
+  assert.equal(existsSync(box.marker), false);
+  const silent = join(box.root, 'silent.mjs');
+  const output = join(box.root, 'selected-output.txt');
+  writeFileSync(silent, 'export default async function* (events) { for await (const event of events) {} }\n');
+  const matched = execute('--test-reporter', silent, '--test-reporter-destination', output,
+    '--test-name-pattern', 'one discovered test', file);
+  assert.equal(matched.status, 0, `${matched.stdout}${matched.stderr}`);
+  assert.equal(readFileSync(output, 'utf8'), '', 'the selected reporter destination stays silent');
+  assert.equal(readFileSync(box.marker, 'utf8'), 'x');
+});
