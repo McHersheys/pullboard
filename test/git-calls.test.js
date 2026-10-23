@@ -134,41 +134,6 @@ test('ordinary resume reads its indexed work card with at most four Git processe
   assert.equal(typeof card.next, 'string');
 });
 
-test('primary checkout facts reuse one canonical listing and refresh on Git changes [C7,N26]', (t) => {
-  const box = fixture(t);
-  box.git(box.repo, 'branch', '-m', 'main', 'trunk');
-  const result = readFactScenario(box, box.worker, `
-import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync } from 'node:fs';
-import { mainCheckout, tryGit, worktreeEntries } from ${JSON.stringify(GIT_MODULE)};
-const root = process.argv[1];
-const primary = ${JSON.stringify(box.repo)};
-await withGitFacts(async () => {
-  writeFileSync(process.env.PULLBOARD_GIT_CALLS, '');
-  const first = mainCheckout(root);
-  assert.equal(first.branch, 'refs/heads/trunk');
-  assert.deepEqual(mainCheckout(root), first);
-  assert.equal(worktreeEntries(root, { clean: true })[0].branch, first.branch);
-  assert.equal(readFileSync(process.env.PULLBOARD_GIT_CALLS, 'utf8').trim().split('\\n').filter(Boolean).length, 2);
-  assert.equal(first.commit, headCommit(primary));
-  assert.equal(tryGit(primary, ['branch', '-m', 'trunk', 'renamed']).status, 0);
-  assert.equal(mainCheckout(root).branch, 'refs/heads/renamed');
-  assert.equal(tryGit(primary, ['checkout', '--detach', first.commit]).status, 0);
-  assert.equal(mainCheckout(root), null);
-  assert.equal(tryGit(primary, ['switch', 'renamed']).status, 0);
-  assert.equal(mainCheckout(root).branch, 'refs/heads/renamed');
-});
-console.log(JSON.stringify({ green: true }));`);
-  assert.equal(result.green, true);
-  const unborn = join(box.dir, 'unborn');
-  mkdirSync(unborn);
-  box.git(unborn, 'init', '-q', '-b', 'empty-trunk');
-  const empty = readFactScenario(box, unborn, `
-import { mainCheckout } from ${JSON.stringify(GIT_MODULE)};
-console.log(JSON.stringify(mainCheckout(process.argv[1])));`);
-  assert.deepEqual(empty, { branch: 'refs/heads/empty-trunk', commit: null });
-});
-
 test('a runner sees the new HEAD after it commits its item [C7]', (t) => {
   const box = fixture(t);
   box.ok(box.repo, 'add', 'core', 'Refresh cached HEAD', '--specs', 'C7', '--route', 'light',

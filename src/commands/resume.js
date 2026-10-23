@@ -25,7 +25,6 @@ import {
 import {
   repoInfo,
   tryGit,
-  worktreeEntries,
 } from '../git.js';
 import {
   recordedHealthFindings,
@@ -255,7 +254,7 @@ export async function resumeHere(io, view, diagnostics = false) {
   if (!isMain) {
     const branch = diagnostics ? tryGit(root, ['rev-parse', '--abbrev-ref', 'HEAD']).stdout || 'HEAD' : sources.branch;
     // Against the main checkout's branch, not its HEAD, which is detached while the coordinator verifies.
-    const mainRef = diagnostics ? worktreeEntries(root)[0]?.branch : sources.mainRef;
+    const mainRef = diagnostics ? /^branch (.+)$/mu.exec(tryGit(root, ['worktree', 'list', '--porcelain']).stdout.split('\n\n')[0])?.[1] : sources.mainRef;
     const [behind = 0, ahead = 0] = diagnostics
       ? mainRef ? tryGit(root, ['rev-list', '--left-right', '--count', `${mainRef}...HEAD`]).stdout.split(/\s+/).map(Number) : []
       : [sources.behind, sources.ahead];

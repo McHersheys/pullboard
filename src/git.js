@@ -357,36 +357,12 @@ export function mainCheckout(root) {
   return fact(`mainCheckout:${resolve(root)}`, () => readMainCheckout(root));
 }
 
-/** Read one canonical worktree enumeration per command; sanitized authority facts have a separate key. */
-export function worktreeEntries(root, { clean = false } = {}) {
-  return fact(`worktreeEntries:${resolve(root)}:${clean}`, () => {
-    const result = tryGit(root, ['worktree', 'list', '--porcelain', '-z'], { env: clean ? cleanGitEnvironment() : process.env });
-    if (result.status !== 0) throw new Refused('NO_POLICY', 'the primary checkout cannot be located; restore the repository and ask the coordinator to retry');
-    return result.stdout.split('\0\0').filter(Boolean).map(block => {
-      const fields = block.split('\0');
-      return { path: fields.find(field => field.startsWith('worktree '))?.slice(9),
-        head: fields.find(field => field.startsWith('HEAD '))?.slice(5),
-        branch: fields.find(field => field.startsWith('branch '))?.slice(7),
-        bare: fields.includes('bare'), prunable: fields.some(field => /^prunable(?: |$)/u.test(field)) };
-    });
-  });
-}
-
 /** Resolve the primary checkout without assuming its branch is named main.
  *
  * @param {string} root
  * @returns {{ branch: string, commit: string | null } | null}
  */
 function readMainCheckout(root) {
-  const primary = worktreeEntries(root, { clean: true })[0];
-  if (primary && !primary.bare) {
-    if (!primary.path || !/^[a-f0-9]{40,64}$/u.test(primary.head ?? '')) throw new Refused('NO_POLICY', 'the primary checkout metadata is incomplete; restore its Git metadata and ask the coordinator to retry');
-    if (!primary.branch) return null;
-    const resolved = tryGit(root, ['rev-parse', '--verify', '--quiet', `${primary.branch}^{commit}`], { env: cleanGitEnvironment() });
-    if (resolved.status !== 0 && resolved.status !== 1) throw new Refused('NO_POLICY', 'the primary checkout commit cannot be read; restore its Git objects and ask the coordinator to retry');
-    return { branch: primary.branch, commit: resolved.status === 0 ? resolved.stdout : null };
-  }
-  // Bare repositories retain the existing explicit-ref fallback; their listing omits the branch.
   const env = cleanGitEnvironment();
   /** Run one Git lookup with the sanitized environment. */
   const gitCall = (args) => spawnSync('git', [...GIT_FLAGS, ...args], {

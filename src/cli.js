@@ -140,7 +140,6 @@ import {
   invalidateGitFacts,
   isClean,
   mainCheckout,
-  worktreeEntries,
   repoInfo,
   resolveCommit,
   tryGit,
@@ -1904,7 +1903,10 @@ export function primaryCheckoutRoot(info) {
     for (const candidate of candidates) {
       if (typeof candidate !== 'string' || !isAbsolute(candidate)) continue;
       try {
-        const { root, gitDir, commonDir: candidateCommonDir } = repoInfo(candidate);
+        const result = tryGit(candidate, ['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-dir', '--git-common-dir']);
+        const fields = result.stdout.split('\n');
+        if (result.status !== 0 || fields.length !== 3 || fields.some((field) => !field)) continue;
+        const [root, gitDir, candidateCommonDir] = fields;
         if (!existsSync(join(root, '.git'))
           || realpathSync.native(candidateCommonDir) !== commonDir
           || realpathSync.native(gitDir) !== realpathSync.native(candidateCommonDir)) continue;
@@ -1913,10 +1915,14 @@ export function primaryCheckoutRoot(info) {
     }
     return [...roots.values()];
   };
-  try {
-    const found = matches(worktreeEntries(info.root).map(entry => entry.path));
+  const worktrees = tryGit(info.root, ['worktree', 'list', '--porcelain', '-z']);
+  if (worktrees.status === 0) {
+    const candidates = worktrees.stdout.split('\0')
+      .filter((field) => field.startsWith('worktree '))
+      .map((field) => field.slice('worktree '.length));
+    const found = matches(candidates);
     if (found.length === 1) return found[0];
-  } catch { /* Registry recovery below remains available when Git cannot enumerate worktrees. */ }
+  }
   const registered = registeredProjectRootsSnapshot();
   if (registered === null) return null;
   const found = matches(registered);

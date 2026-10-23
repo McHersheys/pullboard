@@ -19,6 +19,7 @@ import {
 } from 'node:path';
 import * as store from './board.js';
 import {
+  CONFIG_FILE,
   DOCTRINE_FILE,
   LEGACY_DOCTRINE_FILE,
 } from './config.js';
@@ -28,8 +29,8 @@ import {
   loadDoctrine,
 } from './doctrine.js';
 import {
+  git,
   mainCheckout,
-  worktreeEntries,
   resolveCommit,
   tryGit,
 } from './git.js';
@@ -80,17 +81,13 @@ export function agentDoctrine(ctx, board) {
   const commit = primary?.commit ?? (retained ? resolveCommit(root, retained) : null);
   let doctrine = ctx.doctrine;
   let name = doctrine.name;
-  let policy = null;
-  if (commit) {
-    try { policy = policyAt(root, commit); }
-    catch (error) { if (!(error instanceof Refused) || error.code !== 'NO_POLICY') throw error; }
-  }
-  if (policy) {
-    const read = doctrineAt(root, commit, policy.config.practice);
+  if (commit && tryGit(root, ['show', `${commit}:${CONFIG_FILE}`]).status === 0) {
+    const read = doctrineAt(root, commit, policyAt(root, commit).config.practice);
     name = read.name;
     doctrine = doctrineFromSource(read.source, name);
   }
-  const primaryRoot = worktreeEntries(root)[0]?.path ?? null;
+  const entry = git(root, ['worktree', 'list', '--porcelain', '-z']).split('\0')[0];
+  const primaryRoot = entry.startsWith('worktree ') ? entry.slice('worktree '.length) : null;
   const file = primaryRoot && join(primaryRoot, name);
   const current = file && existsSync(file) ? readFileSync(file, 'utf8') : null;
   return appliedDoctrine(doctrine, store.rowDecisions(board), current);

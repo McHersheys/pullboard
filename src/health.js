@@ -6,6 +6,7 @@
  * It reads the board through a read-only SQLite connection and asks git only questions that leave
  * every checkout alone: merge-tree writes a tree object and never an index or a working tree.
  */
+import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { missedJobFindings } from './recurring-jobs.js';
 import {
@@ -14,7 +15,6 @@ import {
 } from './config.js';
 import {
   mainCheckout,
-  worktreeEntries,
   tryGit,
 } from './git.js';
 import { gateControlFindings } from './gate-control.js';
@@ -450,8 +450,6 @@ function unlanded(item, { since, now, trunk, root, byId, stacked }) {
  * tag (v1.2.3 or 1.2.3), and the work is every item first recorded merged after that tag.
  */
 function releaseOverdue(db, root, now, deadlineMs, history) {
-  const merged = db.prepare("SELECT item_id FROM item WHERE item_status = 'verified' AND item_merged_commit IS NOT NULL ORDER BY item_id").all();
-  if (!merged.length) return null;
   const tags = tryGit(root, ['for-each-ref', '--sort=-creatordate', '--format=%(refname:short)%09%(creatordate:iso-strict)', 'refs/tags']);
   if (tags.status !== 0 || !tags.stdout) return null;
   const latest = tags.stdout.split('\n').map((line) => line.split('\t')).find(([name]) => /^v?\d+\.\d+\.\d+$/u.test(name ?? ''));
@@ -460,7 +458,7 @@ function releaseOverdue(db, root, now, deadlineMs, history) {
   const published = Date.parse(dated);
   if (!Number.isFinite(published) || now - published < deadlineMs) return null;
   const landed = [];
-  for (const item of merged) {
+  for (const item of db.prepare("SELECT item_id FROM item WHERE item_status = 'verified' AND item_merged_commit IS NOT NULL ORDER BY item_id").all()) {
     const first = history.get(item.item_id)?.firstMerged;
     if (first && Date.parse(first) > published) landed.push(item.item_id);
   }
@@ -521,11 +519,7 @@ function unansweredAsks(db) {
 /** The primary checkout's branch and commit, or the retained trunk's, or null when neither reads. */
 function trunkTip(root) {
   let ref;
-  try {
-    const primary = mainCheckout(root);
-    ref = primary?.branch ?? trunkRef(root);
-    if (primary?.commit && ref.startsWith('refs/heads/')) return { name: ref.replace(/^refs\/heads\//u, ''), commit: primary.commit };
-  } catch { return null; /* A repo with no readable trunk skips merge checks. */ }
+  try { ref = mainCheckout(root)?.branch ?? trunkRef(root); } catch { return null; /* A repo with no readable trunk skips merge checks. */ }
   if (!ref?.startsWith('refs/heads/')) return null;
   const tip = tryGit(root, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
   return tip.status === 0 ? { name: ref.replace(/^refs\/heads\//u, ''), commit: tip.stdout } : null;
@@ -602,7 +596,8 @@ export function healthLines(report) {
  */
 function goneWorktrees(root) {
   try {
-    return new Set(worktreeEntries(root).filter(entry => entry.prunable).map(entry => entry.path).filter(Boolean));
+    const listing = execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    return new Set(listing.split('\n\n').filter((block) => /^prunable\b/mu.test(block)).map((block) => /^worktree (.+)$/mu.exec(block)?.[1]).filter(Boolean));
   } catch { return new Set(); }
 }
 
