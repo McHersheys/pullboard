@@ -146,7 +146,7 @@ console.log('explicit trunk receipt: '+value);
   const resumed = await box.cli(['resume'], undefined, agentRoot);
   const elapsed = performance.now() - began;
   assert.equal(resumed.code, 0, resumed.error);
-  assert.ok(elapsed < 100, `resume took ${elapsed.toFixed(3)} ms with a due 30 s sentinel`);
+  assert.ok(elapsed < 100, `resume took ${elapsed.toFixed(3)} ms with a due 30 s sentinel`); // budget: declared by item #1042 and coordinator24324: in-process resume under100ms after setup.
   assert.equal(existsSync(marker), false, 'resume neither runs the watch nor detaches a checker into the agent session');
   assert.equal(sentinels(box.board)[0].lastRun, null);
   assert.equal(store.events(box.board).some(row => row.event_kind === 'sentinel-start'), false);
