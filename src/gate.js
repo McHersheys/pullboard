@@ -286,6 +286,7 @@ export function runShell(root, command, { pipefail = false, env = {}, stages = f
   const timed = timeoutMs ? spawnSync(process.execPath, [fileURLToPath(new URL('./timed-shell-worker.js', import.meta.url))], { ...options, shell: false, stdio: ['pipe', 'pipe', 'pipe'], input: JSON.stringify({ command: script, timeoutMs, outputFile }) }) : null;
   if (timed && (timed.status !== 0 || timed.error)) throw new Refused('LAND_TIMEOUT_CUSTODY', 'the timed gate worker did not prove cleanup; inspect its owned processes before landing again');
   const result = timed ? { ...JSON.parse(timed.stdout || '{}'), stdout: '', stderr: timed.stderr } : spawnSync(script, options);
+  if (timed && result.error) throw new Refused('LAND_GATE_OUTPUT', `the timed gate stopped and drained after its output failed (${result.error}); inspect free disk space and ${timedDirectory} before landing again`);
   if (timed) result.stdout = readFileSync(outputFile, 'utf8') + (result.timedOut ? `\n[LAND_GATE_TIMEOUT] landing gate exceeded ${timeoutMs}ms; its owned processes are stopped\n` : '');
   if (timedDirectory) rmSync(timedDirectory, { recursive: true, force: true });
   if (result.timedOut || result.overflow || result.error) result.status = 1;

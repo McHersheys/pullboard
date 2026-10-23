@@ -1,12 +1,20 @@
 /** Run a bounded shell under identity-checked process custody before returning its result [E27]. */
 import { spawn } from 'node:child_process';
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createDescendantTracker } from './runner-custody.js';
 
 const request = JSON.parse(readFileSync(0, 'utf8'));
 if (!Number.isSafeInteger(request.timeoutMs) || request.timeoutMs < 1 || request.timeoutMs > 2_147_483_647) throw new Error('invalid shell timeout');
+// A spool that cannot be created must refuse before there is any command to stop.
+writeFileSync(request.outputFile, '', { mode: 0o600, flag: 'wx' });
 const directory = mkdtempSync(join(tmpdir(), 'pullboard-timed-shell-'));
 const tracker = createDescendantTracker(directory);
 const env = { ...process.env, NODE_OPTIONS: [process.env.NODE_OPTIONS, tracker.nodeOptions].filter(Boolean).join(' '), PULLBOARD_RUNNER_PRELOAD: tracker.nodeOptions };
@@ -18,7 +26,6 @@ let overflow = false;
 let error = null;
 let bytes = 0;
 let stopping;
-writeFileSync(request.outputFile, '', { mode: 0o600, flag: 'wx' });
 const closed = new Promise(resolveClose => {
   child.once('error', cause => { error = cause.message; resolveClose({ status: null, signal: null }); });
   child.once('close', (status, signal) => resolveClose({ status, signal }));
@@ -47,7 +54,10 @@ function stop() {
 function capture(chunk) {
   bytes += chunk.length;
   if (bytes > 2 ** 30) { overflow = true; void stop(); }
-  else appendFileSync(request.outputFile, chunk);
+  else if (!error) {
+    try { appendFileSync(request.outputFile, chunk); }
+    catch (cause) { error = cause.code ?? 'TIMED_OUTPUT_WRITE'; void stop(); }
+  }
 }
 child.stdout.on('data', capture);
 child.stderr.on('data', capture);
