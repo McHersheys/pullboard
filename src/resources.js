@@ -125,6 +125,7 @@ function openQueue(file) {
       CREATE INDEX IF NOT EXISTS holder_name ON holder(name);
       CREATE TABLE IF NOT EXISTS waiter (ticket INTEGER PRIMARY KEY AUTOINCREMENT, token TEXT UNIQUE NOT NULL, name TEXT NOT NULL, pid INTEGER NOT NULL, started TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL, repo TEXT NOT NULL, since TEXT NOT NULL, heartbeat INTEGER NOT NULL, landing INTEGER NOT NULL DEFAULT 0, item_check INTEGER NOT NULL DEFAULT 0, browser INTEGER NOT NULL DEFAULT 0, item TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT '', remote INTEGER NOT NULL DEFAULT 0, short_eligible INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS runner_unavailable (host TEXT PRIMARY KEY, since TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '');
+      CREATE TABLE IF NOT EXISTS runner_draining (host TEXT PRIMARY KEY, runner TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS waiter_name_ticket ON waiter(name, ticket);`);
     for (const table of ['holder', 'waiter']) {
       const columns = db.prepare(`PRAGMA table_info(${table})`).all().map(({ name }) => name);
@@ -291,6 +292,22 @@ function update(db, action) {
   }
 }
 
+/** Remove a view-port definition only after its last lease has left the resource queue. */
+function removeEmptyViewPortResource(db, name) {
+  if (!name.startsWith('view-port-')) return;
+  db.prepare(`DELETE FROM resource WHERE name = ?
+    AND NOT EXISTS (SELECT 1 FROM holder WHERE name = ?)
+    AND NOT EXISTS (SELECT 1 FROM waiter WHERE name = ?)`)
+    .run(name, name, name);
+}
+
+/** Sweep only empty view-port definitions after callers have pruned dead lease rows. */
+function removeEmptyViewPortResources(db) {
+  db.exec(`DELETE FROM resource WHERE name GLOB 'view-port-*'
+    AND NOT EXISTS (SELECT 1 FROM holder WHERE holder.name = resource.name)
+    AND NOT EXISTS (SELECT 1 FROM waiter WHERE waiter.name = resource.name)`);
+}
+
 /**
  * The admission order a pool uses now. Only the machine pool follows the machine settings
  * (gate.queue.reviewsFirst, currentReleaseFirst and agingMinutes); it is read on every poll so each process
@@ -436,7 +453,7 @@ function gateAdmission(db, ticket, capacity, shortCapacity, runners, order = ARR
       browsers: remoteHolders.filter(holder => holder.browser === 1).length,
     }];
   }));
-  const unavailable = new Set(db.prepare('SELECT host FROM runner_unavailable').all().map(row => row.host));
+  const unavailable = new Set(db.prepare('SELECT host FROM runner_unavailable UNION SELECT host FROM runner_draining').all().map(row => row.host));
   /** Keep an already holding process from taking another slot ahead of a different landing. */
   const blockedByLanding = waiter => holders.some(holder => holder.pid === waiter.pid)
     && waiters.some(other => other.landing === 1 && other.pid !== waiter.pid);
@@ -483,18 +500,25 @@ export function runnerResourceStatus(runners) {
   const configured = validatedRunners(runners);
   const db = open(machineResourceFile());
   try {
-    return update(db, () => configured.map(runner => {
-      const holders = db.prepare('SELECT agent, repo, since, browser, item, kind, runner FROM holder WHERE name = ? ORDER BY since, token')
-        .all(runnerResourceName(runner.host));
-      const unavailable = db.prepare('SELECT since, detail FROM runner_unavailable WHERE host = ?').get(runner.host);
-      return { ...runner, inUse: holders.length, browserInUse: holders.filter(holder => holder.browser === 1).length,
-        unavailable: Boolean(unavailable), ...(unavailable ? { unavailableSince: unavailable.since, unavailableReason: unavailable.detail } : {}), holders };
-    }));
+    return update(db, () => {
+      const visible = new Map(configured.map(runner => [runner.host, runner]));
+      for (const row of db.prepare('SELECT host, runner FROM runner_draining').all()) {
+        visible.set(row.host, { ...JSON.parse(row.runner), draining: true });
+      }
+      return [...visible.values()].flatMap(runner => {
+        const holders = db.prepare('SELECT agent, repo, since, browser, item, kind, runner FROM holder WHERE name = ? ORDER BY since, token')
+          .all(runnerResourceName(runner.host));
+        if (runner.draining && !holders.length) return [];
+        const unavailable = db.prepare('SELECT since, detail FROM runner_unavailable WHERE host = ?').get(runner.host);
+        return [{ ...runner, inUse: holders.length, browserInUse: holders.filter(holder => holder.browser === 1).length,
+          unavailable: Boolean(unavailable), ...(unavailable ? { unavailableSince: unavailable.since, unavailableReason: unavailable.detail } : {}), holders }];
+      });
+    });
   } finally { db.close(); }
 }
 
-/** Serialize runner-setting changes against active remote leases and clear that host's quarantine. */
-export function updateRunnerSettings(host, persist) {
+/** Serialize runner changes with admission; removal may drain active leases instead of refusing. */
+export function updateRunnerSettings(host, persist, { drain = false } = {}) {
   if (typeof host !== 'string' || !host.trim() || host.trim() !== host || typeof persist !== 'function') {
     throw new Refused('BAD_RUNNER_SETTINGS', 'a runner host and settings persistence callback are required');
   }
@@ -503,13 +527,23 @@ export function updateRunnerSettings(host, persist) {
     return update(db, () => {
       const resourceName = runnerResourceName(host);
       const held = db.prepare('SELECT COUNT(*) AS count FROM holder WHERE name = ?').get(resourceName).count;
-      if (held) throw new Refused('RUNNER_BUSY', `runner ${host} has ${held} active slot(s); wait for them to finish before changing its settings`);
+      if (held && !drain) throw new Refused('RUNNER_BUSY', `runner ${host} has ${held} active slot(s); wait for them to finish before changing its settings`);
+      const draining = drain && held && db.prepare('SELECT runner FROM runner_draining WHERE host = ?').get(host);
+      if (draining) return { ...JSON.parse(draining.runner), draining: true };
       const result = persist();
+      if (drain && held) {
+        // Dispatch settings no longer name this host. Keep its tombstone even after the last
+        // release, so a stale provider cannot offer it again; explicit registration clears it.
+        db.prepare('INSERT INTO runner_draining(host, runner) VALUES (?, ?) ON CONFLICT(host) DO UPDATE SET runner = excluded.runner')
+          .run(host, JSON.stringify(result));
+        return { ...result, draining: true };
+      }
       if (Number.isSafeInteger(result?.slots) && result.slots > 0) {
         db.prepare('INSERT INTO resource(name, capacity) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET capacity = excluded.capacity')
           .run(resourceName, result.slots);
       }
       db.prepare('DELETE FROM runner_unavailable WHERE host = ?').run(host);
+      db.prepare('DELETE FROM runner_draining WHERE host = ?').run(host);
       return result;
     });
   } finally { db.close(); }
@@ -661,10 +695,15 @@ function pause(ms) { return new Promise((resolvePromise) => setTimeout(resolvePr
  *   memory, when given, is read before each admission: a held verdict keeps the whole queue
  *   waiting in place, local, remote and short slots alike, and an unchecked one is passed to onWait once
  *   so the caller can warn.
- * @returns {Promise<{ name: string, scope: string, token: string, pool: string, browser: boolean, slotClass: 'gate'|'short', runner?: {host:string,slots:number,browser:number}, waitMs: number, release: () => void, renew: () => void, requeueRunner?: () => Promise<object> }>}
+ * @returns {Promise<{ name: string, scope: string, token: string, pool: string, browser: boolean, slotClass: 'gate'|'short', runner?: {host:string,slots:number,browser:number}, waitMs: number, release: () => void, renew: () => void, requeueRunner?: (reason?: string, options?: { local?: boolean }) => Promise<object> }>}
  */
 export async function takeResource(options) {
   const { name, capacity, scope = 'machine', root = process.cwd(), allowIdleCapacityUpdate = false } = options;
+  if (scope === 'board' && name === 'landing' && capacity === 1 && options.board && typeof options.write === 'function') {
+    // Ordinary machine/repo users must initialize without importing the board/gate cycle.
+    const { takeLandingResource } = await import('./landing-resource.js');
+    return takeLandingResource(options);
+  }
   if (typeof name !== 'string' || !name.trim() || name.trim() !== name) throw new Refused('BAD_RESOURCE_NAME', 'resource name must be nonempty trimmed text');
   if (name.startsWith('runner:')) throw new Refused('RESERVED_RUNNER_RESOURCE', 'runner resource rows are managed by the machine gate; request name "gate"');
   if (!Number.isSafeInteger(capacity) || capacity < 1) throw new Refused('BAD_RESOURCE_CAPACITY', 'resource capacity must be a positive integer');
@@ -835,7 +874,10 @@ export async function takeResource(options) {
         /** Commit this holder's deletion before closing; a failed update remains live and retryable. */
         const release = () => {
           if (released || transferred) return;
-          update(db, () => db.prepare('DELETE FROM holder WHERE token = ?').run(token));
+          update(db, () => {
+            db.prepare('DELETE FROM holder WHERE token = ?').run(token);
+            removeEmptyViewPortResource(db, name);
+          });
           released = true;
           clearInterval(heartbeat);
           db.close();
@@ -850,8 +892,8 @@ export async function takeResource(options) {
             throw new Refused('RESOURCE_LEASE_LOST', `resource lease for "${name}" is no longer held`);
           }
         };
-        /** Quarantine a failed remote host and retry this exact ticket on another executor. */
-        const requeueRunner = async () => {
+        /** Quarantine a failed remote host and retry this exact ticket on another executor, or only locally. */
+        const requeueRunner = async (reason = 'transport-lost', { local = false } = {}) => {
           if (!acquired.runner) throw new Refused('LOCAL_RUNNER_REQUEUE', 'only a remote lease can be returned to the runner queue');
           if (released || transferred || lost) throw new Refused('RESOURCE_LEASE_LOST', `resource lease for "${name}" is no longer held`);
           transferred = true;
@@ -861,7 +903,7 @@ export async function takeResource(options) {
           try {
             update(db, () => {
               db.prepare('INSERT INTO runner_unavailable(host, since, detail) VALUES (?, ?, ?) ON CONFLICT(host) DO UPDATE SET since = excluded.since, detail = excluded.detail')
-                .run(acquired.runner.host, new Date().toISOString(), 'TRANSPORT_LOST');
+                .run(acquired.runner.host, new Date().toISOString(), reason === 'cleanup-unverified' ? 'CLEANUP_UNVERIFIED' : 'TRANSPORT_LOST');
               const holderName = runnerResourceName(acquired.runner.host);
               const holder = db.prepare('SELECT token FROM holder WHERE token = ? AND name = ? AND runner = ?').get(token, holderName, acquired.runner.host);
               if (!holder) throw new Refused('RESOURCE_LEASE_LOST', `remote lease for "${name}" is no longer held`);
@@ -882,7 +924,7 @@ export async function takeResource(options) {
               }
               db.prepare('DELETE FROM holder WHERE token = ?').run(token);
               db.prepare('INSERT INTO waiter(ticket, token, name, pid, started, agent, repo, since, heartbeat, landing, item_check, diagnostic, browser, item, kind, remote, classed, release_aware, board_key, release_rank, queue_ticket, short_eligible) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-                .run(requeueTicket, token, name, pid, started, agent, repo, queuedAt, Date.now(), Number(landing), Number(itemCheck || diagnostic), Number(diagnostic), Number(browser), item, kind, Number(remote), marker, 1, boardKey, releaseRank, requeueOpportunity, Number(shortEligible));
+                .run(requeueTicket, token, name, pid, started, agent, repo, queuedAt, Date.now(), Number(landing), Number(itemCheck || diagnostic), Number(diagnostic), Number(browser), item, kind, Number(remote && !local), marker, 1, boardKey, releaseRank, requeueOpportunity, Number(shortEligible));
             });
           } catch (error) {
             transferred = false;
@@ -890,7 +932,7 @@ export async function takeResource(options) {
             throw error;
           }
           db.close();
-          return takeResource({ ...options, _resume: { token, ticket: requeueTicket ?? acquired.ticket, queueTicket: requeueOpportunity,
+          return takeResource({ ...options, ...(local ? { remote: false } : {}), _resume: { token, ticket: requeueTicket ?? acquired.ticket, queueTicket: requeueOpportunity,
             queuedAt, requestedAt, priorWaitMs: acquiredWaitMs, waitStartedAt: Date.now() } });
         };
         return { name, scope, token, pool, browser, slotClass: acquired.shortSlot ? 'short' : 'gate', ...(acquired.runner ? { runner: acquired.runner } : {}),
@@ -978,6 +1020,9 @@ export function listResources({ scope = 'machine', root = process.cwd() } = {}) 
   const order = queueOrder(scope);
   const db = open(databaseFile(scope, root), scope === 'machine');
   try {
-    return update(db, () => db.prepare('SELECT name, capacity FROM resource ORDER BY name').all().map(({ name, capacity }) => ({ name, capacity, ...snapshot(db, name, order) })));
+    return update(db, () => {
+      removeEmptyViewPortResources(db);
+      return db.prepare('SELECT name, capacity FROM resource ORDER BY name').all().map(({ name, capacity }) => ({ name, capacity, ...snapshot(db, name, order) }));
+    });
   } finally { db.close(); }
 }

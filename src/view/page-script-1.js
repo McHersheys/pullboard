@@ -77,7 +77,7 @@ function addressTab() {
   if (typeof location === 'undefined') return null;
   if (snapshot) {
     const tab = (location.hash || '').slice(1).split('/')[0] || '';
-    return ['items', 'shouts', 'spec', 'doctrine', 'activity', 'roadmap'].includes(tab) ? tab : null;
+    return ['home', 'items', 'shouts', 'spec', 'doctrine', 'activity', 'roadmap'].includes(tab) ? tab : null;
   }
   if (location.hash === '#items/pipeline') return 'items';
   if (/^#items\\/\\d+$/.test(location.hash)) return 'items';
@@ -93,10 +93,10 @@ function itemAddress(id, root = view.root) {
   const path = prefix + '/items/' + encodeURIComponent(String(id));
   return routed ? path + location.search : location.pathname + location.search + '#' + path.slice(1);
 }
-/** The tab the board's own address shows: the one last picked there, or Items. */
-function homeTab() {
+/** The tab the board's own address shows: the one last picked there, else Home on a board with no items yet and Items on one with work (#967). */
+function homeTab(page) {
   const kept = keep('pb.tab');
-  return kept && kept !== 'roadmap' ? kept : 'items';
+  return kept && kept !== 'roadmap' ? kept : page?.project && !page.project.items?.length ? 'home' : 'items';
 }
 const view = { roadmapOpen: new Map(), root: keep('pb.project'), tab: addressTab() || homeTab(), itemsView: typeof location !== 'undefined' && location.hash === '#items/pipeline' ? 'pipeline' : 'list', filterOpen: false, seen: {}, code: {}, item: null, adding: false, declining: null, state: 'active', rows: { spec: 'decide', doctrine: 'all' }, row: { spec: null, doctrine: null }, agent: null, allAgents: false, agentsHidden: keep('pb.agents') === 'hidden', statsOpen: false, open: {}, addressDetail: null, shout: null, scrollPlace: false };
 let switchGeneration = 0;
