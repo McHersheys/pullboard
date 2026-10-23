@@ -23,7 +23,7 @@ function showTab() {
 
 /** Read the selected repo, tab and detail from a path or the hosted page's fragment. */
 function placeAtAddress(page = data) {
-  const tabs = ['items', 'shouts', 'spec', 'doctrine', 'activity', 'roadmap', 'settings'];
+  const tabs = ['home', 'items', 'shouts', 'spec', 'doctrine', 'activity', 'roadmap', 'settings'];
   const hash = location.hash || '';
   let path = routed ? location.pathname || '/' : hash.slice(1);
   if (hash === '#items/pipeline' || hash === '#roadmap') path = hash.slice(1);
@@ -36,7 +36,7 @@ function placeAtAddress(page = data) {
   const named = (repo || group) && tabs.includes(parts[1]);
   const root = named ? repo?.root || group.key : null;
   if (named) parts.shift();
-  const tab = tabs.includes(parts[0]) ? parts.shift() : (!path && transportModule && globalThis.history?.state?.tab) || homeTab();
+  const tab = tabs.includes(parts[0]) ? parts.shift() : (!path && transportModule && globalThis.history?.state?.tab) || homeTab(page);
   return { root, tab, detail: parts[0] ?? null };
 }
 
@@ -102,7 +102,7 @@ function fromAddress(event) {
   }
   if (snapshot) {
     const kept = event?.state || {};
-    const place = location.hash ? placeAtAddress() : { root: null, tab: kept.tab || homeTab(), detail: kept.detail ?? null };
+    const place = location.hash ? placeAtAddress() : { root: null, tab: kept.tab || homeTab(data), detail: kept.detail ?? null };
     applyPlace(place, kept);
     if (kept.root && kept.root !== view.root) return switchTo(kept.root, view.item, false);
   } else {
