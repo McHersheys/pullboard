@@ -1055,8 +1055,10 @@ function render() {
   const p = data.project;
   const group = data.group;
   renderSide();
-  $('project-loading').hidden = data.root === view.root;
-  if (data.root !== view.root) {
+  // A list that names a board no read has answered yet is still loading, never a machine without boards (#1035).
+  const listing = !p && !group && data.projects.some((entry) => entry.ok);
+  $('project-loading').hidden = data.root === view.root && !listing;
+  if (data.root !== view.root || listing) {
     // Keep the cached picker available, but never label the last board's counts as the new one.
     document.querySelectorAll('[data-pane]').forEach((pane) => { pane.hidden = true; });
     for (const id of ['products', 'group-view', 'proof-stats', 'upgrade-note', 'person-requests', 'credentials', 'find-results']) $(id).hidden = true;
