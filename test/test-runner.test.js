@@ -1,7 +1,7 @@
 /** Test the CI-like test runner against real Git and PATH behavior [C7, S13]. */
 import assert from 'node:assert/strict';
 import { runFixtureExecFile as execFileSync, runFixtureChild as spawnSync } from './fixture-child.js';
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -121,7 +121,7 @@ function copyRunnerImports(sourceRoot, root) {
 
 /** Build the runner-discovery fixture from a source checkout. */
 function discoveryFixture(t, sourceRoot = fileURLToPath(new URL('../', import.meta.url))) {
-  const root = mkdtempSync(join(tmpdir(), 'pullboard-runner-discovery-'));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-runner-discovery-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const bin = join(root, 'bin');
   const tests = join(root, 'test');
@@ -164,4 +164,59 @@ test('discovery follows a new runner src import and its transitive dependency [C
   writeFileSync(join(source, 'src/discovery-extra.js'), "import { value } from './discovery-nested.js';\nif (value !== 'closure') throw new Error('transitive import failed');\n");
   writeFileSync(join(source, 'src/discovery-nested.js'), "export const value = 'closure';\n");
   runDiscovery(discoveryFixture(t, source));
+});
+
+
+test('a name pattern that matches no test fails with NO_TESTS_MATCHED [C7,S13]', (t) => {
+  const box = discoveryFixture(t);
+  const runner = join(box.bin, 'run-tests.js');
+  const file = join(box.root, 'test', 'one.test.js');
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  /** Execute the copied real runner with fixture inputs and preserve its native output. */
+  const execute = (...args) => spawnSync(process.execPath, [runner, ...args], { cwd: box.root, env, encoding: 'utf8' });
+  const missing = execute('--test-name-pattern', 'no matching case 1018', file);
+  assert.notEqual(missing.status, 0, `${missing.stdout}${missing.stderr}`);
+  assert.match(missing.stderr, /NO_TESTS_MATCHED/u);
+  assert.match(missing.stderr, /no matching case 1018/u);
+  assert.ok(missing.stderr.includes(file), missing.stderr);
+  assert.equal(existsSync(box.marker), false, 'a nonmatching case never executes');
+  const matched = execute(file, '--test-name-pattern=one discovered test');
+  assert.equal(matched.status, 0, `${matched.stdout}${matched.stderr}`);
+  assert.equal(readFileSync(box.marker, 'utf8'), 'x');
+  const whole = execute(file);
+  assert.equal(whole.status, 0, `${whole.stdout}${whole.stderr}`);
+  assert.equal(readFileSync(box.marker, 'utf8'), 'xx', 'whole-file behavior is preserved');
+  const silent = join(box.root, 'silent.mjs');
+  writeFileSync(silent, 'export default async function* (events) { for await (const event of events) {} }\n');
+  const quietMissing = execute('--test-reporter', silent, '--test-name-pattern', 'another absent case 1018', file);
+  assert.notEqual(quietMissing.status, 0, `${quietMissing.stdout}${quietMissing.stderr}`);
+  assert.match(quietMissing.stderr, /NO_TESTS_MATCHED/u);
+  const quietMatch = execute('--test-reporter', silent, '--test-name-pattern', 'one discovered test', file);
+  assert.equal(quietMatch.status, 0, `${quietMatch.stdout}${quietMatch.stderr}`);
+  assert.equal(quietMatch.stdout, '', 'observing selection adds no public reporter output');
+  assert.equal(readFileSync(box.marker, 'utf8'), 'xxx');
+});
+
+
+test('a name pattern that matches no test fails with NO_TESTS_MATCHED in a landing [C7,S13]', (t) => {
+  const box = discoveryFixture(t);
+  const runner = join(box.bin, 'run-tests.js');
+  const file = join(box.root, 'test', 'one.test.js');
+  const env = { ...process.env, PULLBOARD_LANDING_RUN: '1' };
+  delete env.NODE_TEST_CONTEXT;
+  /** Exercise the real landing API and its independent reporter on private files. */
+  const execute = (...args) => spawnSync(process.execPath, [runner, ...args], { cwd: box.root, env, encoding: 'utf8' });
+  const missing = execute('--test-name-pattern=absent landing case 1018', file);
+  assert.notEqual(missing.status, 0, `${missing.stdout}${missing.stderr}`);
+  assert.match(missing.stderr, /NO_TESTS_MATCHED/u);
+  assert.equal(existsSync(box.marker), false);
+  const silent = join(box.root, 'silent.mjs');
+  const output = join(box.root, 'selected-output.txt');
+  writeFileSync(silent, 'export default async function* (events) { for await (const event of events) {} }\n');
+  const matched = execute('--test-reporter', silent, '--test-reporter-destination', output,
+    '--test-name-pattern', 'one discovered test', file);
+  assert.equal(matched.status, 0, `${matched.stdout}${matched.stderr}`);
+  assert.equal(readFileSync(output, 'utf8'), '', 'the selected reporter destination stays silent');
+  assert.equal(readFileSync(box.marker, 'utf8'), 'x');
 });
