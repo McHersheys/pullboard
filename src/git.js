@@ -533,23 +533,25 @@ export function repoInfo(cwd, { env } = {}) {
 
 /**
  * Read top level, worktree Git dir and shared Git dir in one process. With no inherited selector, the same process
- * also reads the primary checkout's branch and commit and keeps them as this command's mainCheckout fact, so a
- * command learns where it is and what the trunk is from one Git call.
+ * also reads this checkout's HEAD commit and the primary checkout's branch and commit, and keeps them as this
+ * command's headCommit and mainCheckout facts, so a command learns where it is, its head and the trunk from one call.
  *
  * @param {string} cwd
  * @returns {{ root: string, commonDir: string, gitDir: string, isMain: boolean }}
  */
 function readRepoInfo(cwd, env) {
   const combined = !env && gitFacts.getStore()?.active && plainRepositoryEnvironment();
-  const primary = combined ? ['main-worktree/HEAD', '--symbolic-full-name', 'main-worktree/HEAD'] : [];
+  const primary = combined ? ['HEAD', 'main-worktree/HEAD', '--symbolic-full-name', 'main-worktree/HEAD'] : [];
   const info = tryGit(cwd, ['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-dir', '--git-common-dir', ...primary], { env });
-  // An unborn primary branch fails the combined call after the paths; ask for the paths alone, as before.
+  // An unborn branch here or in the primary checkout fails the combined call after the paths; ask for the paths alone.
   if (combined && info.status !== 0 && info.stdout) return readRepoInfo(cwd, process.env);
   const fields = info.stdout.split('\n');
-  if (combined && info.status === 0 && fields.length === 5 && fields.every(Boolean)) {
-    const [root, , , commit, branch] = fields;
+  if (combined && info.status === 0 && fields.length === 6 && fields.every(Boolean)) {
+    const [root, , , head, commit, branch] = fields;
+    const { facts } = gitFacts.getStore();
+    facts.set(`headCommit:${resolve(root)}`, head);
     // A detached primary checkout names no branch, as symbolic-ref reports it.
-    gitFacts.getStore().facts.set(`mainCheckout:${resolve(root)}`, branch.startsWith('refs/') ? { branch, commit } : null);
+    facts.set(`mainCheckout:${resolve(root)}`, branch.startsWith('refs/') ? { branch, commit } : null);
     fields.length = 3;
   }
   if (info.status !== 0 || fields.length !== 3 || fields.some((field) => !field)) {

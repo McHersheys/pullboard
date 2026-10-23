@@ -54,7 +54,8 @@ function fixture(t) {
   const home = join(dir, 'home');
   mkdirSync(repo);
   mkdirSync(shims);
-  writeFileSync(join(shims, 'git'), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$PULLBOARD_GIT_CALLS"\nexec "$PULLBOARD_REAL_GIT" "$@"\n');
+  // Each line names the folder Git ran in, then its arguments, so a count can tell this repository from the code's own.
+  writeFileSync(join(shims, 'git'), '#!/bin/sh\nprintf "%s\\t%s\\n" "$(pwd -P)" "$*" >> "$PULLBOARD_GIT_CALLS"\nexec "$PULLBOARD_REAL_GIT" "$@"\n');
   chmodSync(join(shims, 'git'), 0o755);
   // The repository's git hooks run pullboard from PATH; they must run this checkout, not an installed release.
   writeFileSync(join(shims, 'pullboard'), `#!/bin/sh\nexec '${process.execPath}' '${BIN}' "$@"\n`);
@@ -78,16 +79,17 @@ function fixture(t) {
   for (const name of ['PULLBOARD_RELAY_TOKEN', 'PULLBOARD_RELAY_KEY']) delete env[name];
   const hook = moduleHook(dir);
   /** Run the real CLI and return its result with the modules it loaded and the Git processes it started. */
-  const run = (...args) => {
+  const runIn = (cwd, ...args) => {
     writeFileSync(env.PULLBOARD_GIT_CALLS, '');
     writeFileSync(env.PULLBOARD_MODULE_LOG, '');
-    const result = runFixtureChild(process.execPath, ['--import', hook, BIN, ...args], { cwd: repo, env, encoding: 'utf8' });
+    const result = runFixtureChild(process.execPath, ['--import', hook, BIN, ...args], { cwd, env, encoding: 'utf8' });
     assert.equal(result.status, 0, `${args.join(' ')}: ${result.stdout}${result.stderr}`);
     const modules = [...new Set(readFileSync(env.PULLBOARD_MODULE_LOG, 'utf8').split('\n').filter(Boolean))]
       .map((url) => fileURLToPath(url)).filter((path) => path.startsWith(REPO + sep)).map((path) => path.slice(REPO.length + 1).split(sep).join('/'));
     const gitCalls = readFileSync(env.PULLBOARD_GIT_CALLS, 'utf8').split('\n').filter(Boolean);
     return { ...result, modules, gitCalls };
   };
+  const run = (...args) => runIn(repo, ...args);
   const git = (...args) => assert.equal(runFixtureChild(env.PULLBOARD_REAL_GIT, args, { cwd: repo, env, encoding: 'utf8' }).status, 0);
   git('init', '-q', '-b', 'main');
   writeFileSync(join(repo, 'pullboard.json'), JSON.stringify({
@@ -98,7 +100,10 @@ function fixture(t) {
   git('add', '-A');
   git('commit', '-q', '-m', 'chore(repo): set up the startup fixture');
   run('add', 'core', 'Show me', '--specs', 'C7', '--criterion', 'it shows', '--brief', 'Files: src/a.js\nTest: it shows.');
-  return { run };
+  const worktree = join(dir, 'core-1');
+  git('worktree', 'add', '-q', '-b', 'core/one', worktree);
+  runIn(worktree, 'join', 'core', '--model', 'test-model');
+  return { run, runIn, worktree };
 }
 
 test('a read command loads only its own modules [C7]', (t) => {
@@ -111,4 +116,13 @@ test('a read command loads only its own modules [C7]', (t) => {
   assert.match(show.stdout, /^#1 {2}/u);
   assert.deepEqual(show.modules.filter((path) => HEAVY.includes(path)), [], 'show loads no gate, relay or land module');
   assert.ok(show.gitCalls.length <= 2, `show started ${show.gitCalls.length} Git processes: ${show.gitCalls.join(' | ')}`);
+  // One rev-parse in the worktree answers top level, Git dirs, HEAD and the primary checkout for the whole process;
+  // the only other is the code's own checkout, asked once where the running code came from.
+  const claim = box.runIn(box.worktree, 'claim', '1');
+  assert.match(claim.stdout, /claimed #1/u);
+  const revParses = claim.gitCalls.filter((call) => /\brev-parse\b/u.test(call));
+  const here = revParses.filter((call) => call.startsWith(`${box.worktree}\t`));
+  assert.equal(here.length, 1, `claim asked the worktree for repo facts ${here.length} times: ${here.join(' | ')}`);
+  assert.ok(revParses.length <= 2, `claim started ${revParses.length} rev-parse processes: ${revParses.join(' | ')}`);
+  assert.ok(claim.gitCalls.length <= 10, `claim started ${claim.gitCalls.length} Git processes: ${claim.gitCalls.join(' | ')}`);
 });
