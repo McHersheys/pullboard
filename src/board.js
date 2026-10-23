@@ -73,11 +73,7 @@ import {
 import { LOCAL_LANDING_ENGINE } from './land-engine.js';
 import { SPEC_APPROVAL_ENGINE } from './spec-approval-engine.js';
 import { Refused } from './refused.js';
-import { PARENT_SESSION_ENGINE } from './parent-session-engine.js';
-import {
-  canonicalSessionDigest,
-  parentSessionDigest,
-} from './parent-session.js';
+import { saveJoinedSession } from './parent-session.js';
 import { itemAuthorProblem } from './item-authors.js';
 import { refuseMaskedExit } from './check-mask.js';
 import {
@@ -93,8 +89,6 @@ import {
   newSeatId,
   routeOf,
   saveAgentModel,
-  saveAgentParent,
-  saveAgentSession,
   seatLineage,
 } from './seats.js';
 import {
@@ -612,14 +606,11 @@ function current(board, item) {
  * @param {{ lane: string, path: string, route?: string, family?: string | null, model?: string | null, parent?: string | null, session?: string | null, createdBy?: string, id?: string }} who
  * @returns {string} The agent's id.
  */
-export function register(board, { lane, path, route = 'strong', family, model, parent, session, parentDigest: recordedParent, sessionDigest: recordedSession, createdBy, id: named }) {
+export function register(board, who) {
+  let { lane, path, route = 'strong', family, model, createdBy, id: named } = who;
   const engine = board.executionEngineVersion ?? ENGINE_VERSION;
   if (engine < 8) model = undefined;
   if (engine < VERIFIER_STANDING_ENGINE) { createdBy = undefined; named = undefined; }
-  const parentDigest = engine < PARENT_SESSION_ENGINE ? null
-    : recordedParent != null ? canonicalSessionDigest(recordedParent) : parent != null ? parentSessionDigest(parent) : null;
-  const sessionDigest = engine < PARENT_SESSION_ENGINE ? null
-    : recordedSession != null ? canonicalSessionDigest(recordedSession) : session != null ? parentSessionDigest(session) : null;
   checkRoute(route);
   if (lane === COORDINATOR && route !== 'strong') {
     throw new Refused('BAD_ROUTE', 'the coordinator plans, merges and verifies; it is always strong');
@@ -633,8 +624,7 @@ export function register(board, { lane, path, route = 'strong', family, model, p
           `this worktree is ${existing.agent_id} in the ${existing.agent_lane} lane, routed ${existing.agent_route}; use another worktree for ${lane} routed ${route}`,
         );
       }
-      if (parentDigest) saveAgentParent(board, existing.agent_id, parentDigest);
-      if (sessionDigest) saveAgentSession(board, existing.agent_id, sessionDigest);
+      saveJoinedSession(board, existing.agent_id, who);
       if (family !== undefined && family !== existing.agent_family) {
         board.db.prepare('UPDATE agent SET agent_family = ? WHERE agent_id = ?').run(family, existing.agent_id);
         logEvent(board, existing.agent_id, 'family', null, { family });
@@ -661,8 +651,7 @@ export function register(board, { lane, path, route = 'strong', family, model, p
         'INSERT INTO agent (agent_id, agent_lane, agent_path, agent_route, agent_family, agent_created_at) VALUES (?, ?, ?, ?, ?, ?)',
       )
       .run(id, lane, path, route, family ?? null, now(board));
-    if (parentDigest) saveAgentParent(board, id, parentDigest);
-    if (sessionDigest) saveAgentSession(board, id, sessionDigest);
+    saveJoinedSession(board, id, who);
     if ((board.executionEngineVersion ?? ENGINE_VERSION) >= 8) saveAgentModel(board, id, model);
     if (createdBy !== undefined) board.db.prepare('INSERT INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run(`agent_creator:${id}`, createdBy);
     // Only a relay replica replaying a receipt-bound registration marks the seat enrolled.

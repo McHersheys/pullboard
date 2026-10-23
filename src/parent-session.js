@@ -10,6 +10,12 @@ import { join } from 'node:path';
 import { Refused } from './refused.js';
 import { createHash } from 'node:crypto';
 import { AGENT_SESSION_IDS } from './person.js';
+import { PARENT_SESSION_ENGINE } from './parent-session-engine.js';
+import { ENGINE_VERSION } from './machine.js';
+import {
+  saveAgentParent,
+  saveAgentSession,
+} from './seats.js';
 
 /** Accept an opaque identity, never a path, whitespace, credential or arbitrary session metadata. */
 export function parentIdentity(value) {
@@ -28,6 +34,15 @@ export function parentSessionDigest(value) {
 export function canonicalSessionDigest(value) {
   if (typeof value !== 'string' || !/^[a-f0-9]{64}$/u.test(value)) throw new Refused('BAD_PARENT', 'the recorded parent session digest is invalid; join again from the runtime session');
   return value;
+}
+
+/** Save canonical ordered identities, or normalize direct API declarations, under their feature engine. */
+export function saveJoinedSession(board, id, { parent, session, parentDigest, sessionDigest }) {
+  if ((board.executionEngineVersion ?? ENGINE_VERSION) < PARENT_SESSION_ENGINE) return;
+  const recordedParent = parentDigest != null ? canonicalSessionDigest(parentDigest) : parent != null ? parentSessionDigest(parent) : null;
+  const recordedSession = sessionDigest != null ? canonicalSessionDigest(sessionDigest) : session != null ? parentSessionDigest(session) : null;
+  if (recordedParent) saveAgentParent(board, id, recordedParent);
+  if (recordedSession) saveAgentSession(board, id, recordedSession);
 }
 
 /** Read only the bounded first record; conversation history and other sessions' contents are never opened. */
