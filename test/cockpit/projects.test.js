@@ -538,7 +538,8 @@ test('a machine with no board says how to start one [N26]', async () => {
     const page = await openPage(view);
     const style = await styleOf(view);
     // Agents start boards, so the view offers no form for it.
-    assert.equal(page.run("document.querySelector('form, details, #init-form, #init-path')"), null,
+    const renderedMarkup = page.html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/giu, '');
+    assert.doesNotMatch(renderedMarkup, /init-form|init-path|Start a board|<details/,
       'the rendered page has no form or disclosure for starting a board');
     assert.doesNotMatch(style, /\.start\b/);
 
@@ -704,6 +705,8 @@ test('a migration-refused project stays quiet beside a normal board [A5,A6,N26]'
   const box = machine();
   const refused = project(box, 'refused-board', SPEC, { name: 'Refused board' });
   const normal = project(box, 'normal-board', SPEC, { name: 'Normal board' });
+  const missing = project(box, 'missing-board', SPEC, { name: 'Missing board' });
+  writeFileSync(join(missing.repo, 'pullboard.json'), '{not valid json');
   box.run(normal.repo, 'add', 'web', 'Readable beside the refused board', '--specs', 'G1');
   const primary = join(box.dir, 'migration-cli');
   const linked = join(box.dir, 'migration-cli-linked');
@@ -737,7 +740,8 @@ test('a migration-refused project stays quiet beside a normal board [A5,A6,N26]'
   unchanged();
   assert.ok(projection.projectState(normal.repo).items.some(item => item.title === 'Readable beside the refused board'));
   const projects = [{ root: refused.repo, name: 'Refused board', project: '', added: '2026-01-01' },
-    { root: normal.repo, name: 'Normal board', project: '', added: '2026-01-01' }];
+    { root: normal.repo, name: 'Normal board', project: '', added: '2026-01-01' },
+    { root: missing.repo, name: 'Missing board', project: '', added: '2026-01-01' }];
   const { serveApi } = await import(pathToFileURL(join(linked, 'src/api.js')).href);
   const { main } = await import(pathToFileURL(join(linked, 'src/cli.js')).href);
   const api = await serveApi({ port: 0, projects: () => projects, runCommand: main });
@@ -747,10 +751,12 @@ test('a migration-refused project stays quiet beside a normal board [A5,A6,N26]'
     assert.equal(reply.status, 200, 'one refused board does not crash the listing');
     const document = await reply.json();
     assert.deepEqual(document.boards.map(board => board.root), [normal.repo], 'the readable board remains listed');
-    assert.equal(document.warnings.length, 1, 'the migration refusal remains visible in the listing');
-    assert.equal(document.warnings[0].root, refused.repo);
-    assert.equal(document.warnings[0].error.error.code, 'UNMERGED_SCHEMA');
-    assert.match(document.warnings[0].error.error.message, /schema 4.*version 3.*merge.*main checkout.*throwaway board/);
+    assert.equal(document.warnings.length, 2, 'both refusals remain visible in the listing');
+    const schemaWarning = document.warnings.find(warning => warning.root === refused.repo);
+    const missingWarning = document.warnings.find(warning => warning.root === missing.repo);
+    assert.equal(schemaWarning.error.error.code, 'UNMERGED_SCHEMA');
+    assert.match(schemaWarning.error.error.message, /schema 4.*version 3.*merge.*main checkout.*throwaway board/);
+    assert.equal(missingWarning.error.error.code, 'BOARD_UNAVAILABLE');
     unchanged();
   };
   try {
@@ -767,10 +773,28 @@ test('a migration-refused project stays quiet beside a normal board [A5,A6,N26]'
     assert.match(sidebar, /merge this code into the main checkout first, or test it against a throwaway board/,
       'the quiet card tells the person the next step');
     assert.doesNotMatch(sidebar, /class="small bad"|class="bad"|stack trace/);
-    assert.doesNotMatch(sidebar, /class="unreadable-projects"|data-forget-unreadable/,
-      'a valid board refused for its schema is not classified as missing or offered for forgetting');
+    assert.match(sidebar, /<summary>1 board can no longer be found<\/summary>/,
+      'only the missing board is grouped as unreadable');
+    const disclosureStart = sidebar.indexOf('<details class="unreadable-projects">');
+    const disclosureEnd = sidebar.indexOf('</details>', disclosureStart);
+    const disclosure = sidebar.slice(disclosureStart, disclosureEnd);
+    assert.match(disclosure, /<b>Missing board<\/b>/);
+    assert.doesNotMatch(disclosure, /Refused board|schema 4/,
+      'a schema refusal is excluded from the forget list');
+    assert.match(sidebar, /data-forget-unreadable>Forget all<\/button>/);
     assert.ok(projectRows(sidebar).some(row => row.name === 'Normal board'), 'a healthy project stays beside the refusal');
     assert.match(page.show('chain'), /Readable beside the refused board/, 'the healthy project still renders its actual item');
+    const forgotten = await fetchLive(`${view.base}/api/v1/projects/forget-unreadable`, {
+      method: 'POST', headers: { 'x-pullboard-key': view.key, 'content-type': 'application/json' }, body: JSON.stringify({ confirm: true }),
+    });
+    assert.equal(forgotten.status, 200);
+    assert.deepEqual(await forgotten.json(), { version: 1, forgotten: 1 },
+      'the confirmed action removes only the currently unavailable registration');
+    const after = await fetchLive(`${view.base}/api/v1/boards`, { headers: { 'x-pullboard-key': view.key } });
+    const afterListing = await after.json();
+    assert.deepEqual(afterListing.boards.map(board => board.root), [normal.repo]);
+    assert.deepEqual(afterListing.warnings.map(warning => [warning.root, warning.error.error.code]), [[refused.repo, 'UNMERGED_SCHEMA']],
+      'the schema-blocked registration remains after forgetting the unavailable one');
     unchanged();
   } finally { await view.stop(); }
 });
