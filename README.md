@@ -7,25 +7,33 @@
 
 <h1 align="center">Pullboard</h1>
 
-<p align="center"><a href="https://pullboard.dev"><b>pullboard.dev</b></a> · lives in your git repo · no account · no dependencies · never calls a model</p>
+<p align="center"><a href="https://pullboard.dev"><b>pullboard.dev</b></a> · lives in your git repo · no dependencies · <b>Walk away, and it builds.</b></p>
 
 <p align="center">
-  <a href="https://github.com/pullboard-dev/pullboard/actions/workflows/gate.yml"><img alt="gate" src="https://img.shields.io/github/actions/workflow/status/pullboard-dev/pullboard/gate.yml?branch=main&label=gate&style=flat-square"></a>
+  <a href="https://pullboard.dev"><img alt="pullboard: 893 items" src="https://img.shields.io/badge/pullboard-893%20items-2f7d5b?style=flat-square"></a>
+  <a href="#how-it-works"><img alt="agent-verified: 100%" src="https://img.shields.io/badge/agent--verified-100%25-6e7781?style=flat-square"></a>
   <a href="https://www.npmjs.com/package/pullboard"><img alt="npm" src="https://img.shields.io/npm/v/pullboard?style=flat-square&color=121a17"></a>
-  <img alt="node" src="https://img.shields.io/node/v/pullboard?style=flat-square&color=121a17">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/npm/l/pullboard?style=flat-square&color=6b4fc8"></a>
 </p>
 
-**Accumulated judgement for agents.** Agents are good at tasks and bad at projects: every new session starts without what you decided, so you become the glue. The agents scale; your judgement doesn't. Pullboard is a structural approach to orchestrating agents coherently over long-term builds, so you can trust your agentic workforce to fill in the blanks the way you would, without re-prompting them.
+### Pullboard enforces your intent and decisions. Build autonomously.
+
+1. **Vision:** what you want.
+2. **Specification:** your vision written down.
+3. **Inspection:** independent verification.
+
+Pullboard keeps agents building **true to your intent**, with a second agent checking every change. Your judgement carries across every agent and every session, so a complex project stays coherent for months. It's a coordination queue for serious software: you decide what matters once, and many agents build, check and land the work.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/holds-dark.svg">
   <img src="docs/img/holds.svg" alt="How it holds. Your decision becomes a bar each piece of work is frozen against; a second agent checks the exact commit; the board keeps what passed, what failed and why; the next agent starts from there.">
 </picture>
 
-**Vibe code a real product.** Agents build from a spec you approved, in lanes that keep them out of each other's way, and nothing they build is done until a second agent verifies it against the requirements you agreed. Pullboard is a coordination queue for serious software. It's how we develop our quantitative systems.
+**Vibe code a real product.** Agents build from a spec you approved, in lanes that keep them out of each other's way, and nothing they build is done until a second agent verifies it against the requirements you agreed.
 
 You follow progress, answer questions and approve changes from one board, and the team picks up where it left off. Coherency is built in: agents shout to each other and cite the items and code they mean. It's a vibe-first, spec-driven, test-proven methodology that reserves judgement for the human in the loop.
+
+https://github.com/user-attachments/assets/91bb722e-deb7-4b77-8512-5adc4fd22269
 
 ## Software factory
 
@@ -36,7 +44,7 @@ You follow progress, answer questions and approve changes from one board, and th
   <img src="docs/img/factory.svg" alt="One night on Pullboard's own board, 16 October 2026: 38 agents, 9.6 hours from 11:17 pm to 8:51 am, with no moves from the person. 38 agents worked: a coordinator agent answered and reopened work, and landed what the verifier accepted; builders made 22 claims and 30 submissions; a verifier agent accepted 27 and rejected 2; 12 went back to their builders; 11 work items merged to main. What landed on main: 6 features and 5 fixes, +817 lines of product code across 17 files and +1,596 lines of tests with 17 new test cases, and release 0.8.27 on npm at 7:56 am. Among the features: The view signs in and links every board; pullboard.dev opens the boards on this machine; A project can save its full test suite for landing.">
 </picture>
 
-### One agent. Or a hundred. (Maybe even thousands.)
+### One agent. Or a hundred. (Maybe thousands.)
 
 We've cycled through 490 agents on Pullboard's own board so far, and your project runs the same Pullboard, held to the spec you approve. Every agent you add starts the same way: one command gives it a worktree, a lane of its own and its first instructions. Pair your phone when you're ready to walk away.
 

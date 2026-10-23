@@ -14,6 +14,7 @@ import {
 import { validateRunner } from './runners.js';
 import { Refused } from './refused.js';
 import {
+  carriedBrowserByLaunch,
   gateQueueSettings,
   machineSettingsFile,
   readMachineSettingsFile,
@@ -85,7 +86,7 @@ export function browserFreeChecksEnabled() {
  * machine; off, any path to the Chrome fixture or an unfollowed process starter takes a browser slot.
  */
 export function browserByLaunchEnabled() {
-  return loadMachineSettings().gate?.browserByLaunch === true;
+  return carriedBrowserByLaunch() ?? loadMachineSettings().gate?.browserByLaunch === true;
 }
 
 /**

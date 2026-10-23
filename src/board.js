@@ -22,8 +22,15 @@ import {
   mkdirSync,
 } from 'node:fs';
 import { dirname } from 'node:path';
+import { sharedSchemaOwner } from './board-schema.js';
+import { expectedBoardSchema } from './board-schema.js';
+import { sharedSchemaDiagnostic } from './board-schema.js';
+import { reportSharedSchema } from './board-schema.js';
 import { DatabaseSync } from 'node:sqlite';
 import { boardNotWritable } from './board-access.js';
+import { ensureHotIndexes } from './board-hot.js';
+import { boardBusyError } from './board-access.js';
+export { boardBusyError } from './board-access.js';
 import {
   briefFiles,
   briefSections,
@@ -139,20 +146,6 @@ export const EVENT_LOG_VERSION = 1;
 
 /** Maximum time a board connection waits for another process to release SQLite's lock. */
 export const BOARD_BUSY_TIMEOUT_MS = 10_000;
-
-/**
- * Replace SQLite's bare lock error with the board path and elapsed wait when the wait expires.
- *
- * @param {string} file
- * @param {number} startedAt
- * @param {Error & { errcode?: number }} error
- * @returns {Error}
- */
-export function boardBusyError(file, startedAt, error) {
-  const sqliteCode = Number.isInteger(error.errcode) ? error.errcode & 0xff : null;
-  if (sqliteCode !== 5 && error.code !== 'SQLITE_BUSY' && !/database is locked/iu.test(error.message ?? '')) return error;
-  return new Refused('BOARD_BUSY', `board file ${file} remained held by another process after ${Date.now() - startedAt}ms; wait for it to finish and retry`);
-}
 
 const BRIEF_LIMIT = 8000;
 const REVIEW_RELEASE_COOLDOWN_MS = 60 * 60 * 1000;
@@ -276,10 +269,11 @@ export function openBoardReadOnly(file) {
  *
  * @param {string} file
  * @param {{ now: () => Date }} [clock]
- * @param {{ isMain?: boolean }} [options] Only the main checkout may upgrade a shared board.
+ * @param {{ isMain?: boolean, onDiagnostic?: (message: string) => void }} [options] Only the main checkout may upgrade a shared board.
  * @returns {{ db: DatabaseSync, clock: { now: () => Date } }}
  */
-export function openBoard(file, clock = systemClock, { isMain } = {}) {
+export function openBoard(file, clock = systemClock, { isMain, onDiagnostic } = {}) {
+  isMain = sharedSchemaOwner(file, isMain);
   if (file !== ':memory:' && isMain === false) {
     let boardVersion = 0;
     let logVersion = 0;
@@ -312,12 +306,19 @@ export function openBoard(file, clock = systemClock, { isMain } = {}) {
   try {
     db = new DatabaseSync(file);
     db.exec(`PRAGMA busy_timeout = ${BOARD_BUSY_TIMEOUT_MS}`);
-    if (file !== ':memory:') db.exec('PRAGMA journal_mode = WAL');
-    migrateEventLogVersion(db);
-    migrate(db);
-    db.prepare('INSERT OR IGNORE INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run('board_id', randomBytes(16).toString('hex'));
+    if (file !== ':memory:' && isMain !== false) db.exec('PRAGMA journal_mode = WAL');
     const board = { db, clock };
-    guardStore(board);
+    if (isMain !== false || file === ':memory:') {
+      migrateEventLogVersion(db);
+      migrate(db);
+      ensureHotIndexes(db);
+      db.prepare('INSERT OR IGNORE INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run('board_id', randomBytes(16).toString('hex'));
+      guardStore(board);
+    } else {
+      // Read compatibility before any local effect; persistent schema belongs to trunk alone.
+      readEventLogVersion(db);
+      reportSharedSchema(file, sharedSchemaDiagnostic(db, expectedBoardSchema(SCHEMA, migrate, storeTriggers)), onDiagnostic);
+    }
     guardMoves(board);
     return board;
   } catch (error) {
@@ -2662,16 +2663,7 @@ export function peekShouts(board, agentId, limit = 2) {
     .reverse();
 }
 
-/**
- * The newest shouts on the board, newest first, read without marking anything read (N26).
- *
- * @param {any} board
- * @param {number} [limit]
- * @returns {any[]}
- */
-export function recentShouts(board, limit = 40) {
-  return board.db.prepare('SELECT * FROM shout ORDER BY shout_id DESC LIMIT ?').all(limit);
-}
+export { recentShouts, eventsOfKinds, recentEvents, lastMoves, decisionAndEvidenceShouts } from './board-hot.js';
 
 export { stats } from './board-stats.js';
 
