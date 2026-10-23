@@ -100,3 +100,44 @@ test('the server reports how many rule rows are proven, unproven and contradicte
   const none = { approved: 0, gated: 0, ungated: 0, proven: 0, unproven: 0, contradicted: 0 };
   assert.deepEqual((await documents(empty, api)).map(document => document.ruleCounts), [none, none]);
 });
+
+test('a gate command with npm flags counts as opaque [S1,A1,A2]', async (t) => {
+  const script = 'node --test test/proven.test.js';
+  const scripts = { test: script, 'integration-test': script, '--if-present': script, '--silent': script, '-s': script, '--': script };
+  const cases = [
+    ['npm test', 1],
+    ['npm run test', 1],
+    ["npm run 'integration-test'", 1],
+    ['npm run test && node --test test/proven.test.js', 1],
+    ['npm run --if-present', 0],
+    ['npm run --silent', 0],
+    ['npm run -s', 0],
+    ['npm run --', 0],
+    ["npm run '--if-present'", 0],
+    ['npm run --if-present test', 0],
+    ['npm run test --if-present', 0],
+    ['npm --silent run test', 0],
+    ['npm test --if-present', 0],
+    ['npm run test -- --test-name-pattern=proven', 0],
+    ['npm run --if-present && node --test test/proven.test.js', 0],
+    ['node --test test/proven.test.js && npm run --silent', 0],
+  ];
+  for (const [command, proven] of cases) {
+    const box = fixture();
+    t.after(() => store.closeBoard(box.board));
+    writeFileSync(join(box.root, 'package.json'), JSON.stringify({ private: true, type: 'module', scripts }));
+    writeFileSync(join(box.root, 'pullboard.json'), JSON.stringify({ ...helpers.CONFIG, gate: command }));
+    box.git(box.root, 'add', '-A');
+    box.git(box.root, 'commit', '-q', '-m', 'chore(fixture): configure the npm gate');
+    box.head = box.git(box.root, 'rev-parse', 'HEAD').trim();
+    // These historical records are seeded classification inputs, never a claim that npm ran the script.
+    seedRun(box, { command });
+    const api = await serveApi({ runCommand: main, isMain: true,
+      projects: () => [{ root: box.root, name: 'Npm gate proof fixture' }] });
+    try {
+      const seen = await documents(box, api);
+      const expected = { approved: 6, gated: 5, ungated: 1, proven, unproven: 5 - proven, contradicted: 0 };
+      assert.deepEqual(seen.map(document => document.ruleCounts), [expected, expected], command);
+    } finally { await api.close(); }
+  }
+});
