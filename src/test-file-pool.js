@@ -80,9 +80,10 @@ async function openPool(home) {
     PRAGMA synchronous = NORMAL;
     CREATE TABLE IF NOT EXISTS file_holder(pid INTEGER PRIMARY KEY, since INTEGER NOT NULL, lender INTEGER);
     CREATE TABLE IF NOT EXISTS file_waiter(ticket INTEGER PRIMARY KEY AUTOINCREMENT, pid INTEGER NOT NULL UNIQUE);
-    CREATE TABLE IF NOT EXISTS file_loan(runner INTEGER PRIMARY KEY, lender INTEGER NOT NULL);`);
+    CREATE TABLE IF NOT EXISTS file_loan(runner INTEGER PRIMARY KEY, lender INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 0);`);
   // A pool made before holders named their lender gains the column; a missing lender reads as none.
   if (!db.prepare('PRAGMA table_info(file_holder)').all().some(column => column.name === 'lender')) db.exec('ALTER TABLE file_holder ADD COLUMN lender INTEGER');
+  if (!db.prepare('PRAGMA table_info(file_loan)').all().some(column => column.name === 'active')) db.exec('ALTER TABLE file_loan ADD COLUMN active INTEGER NOT NULL DEFAULT 0');
   return db;
 }
 
@@ -124,7 +125,7 @@ function prune(db) {
  * its run does, so no other file can take it in between and the lender resumes into its own place.
  */
 function occupied(db) {
-  return db.prepare(`WITH lending AS (SELECT DISTINCT lender AS pid FROM file_loan WHERE lender IN (SELECT pid FROM file_holder))
+  return db.prepare(`WITH lending AS (SELECT DISTINCT lender AS pid FROM file_loan WHERE active = 1 AND lender IN (SELECT pid FROM file_holder))
     SELECT (SELECT count(*) FROM file_holder WHERE pid NOT IN (SELECT pid FROM lending))
       + (SELECT count(*) FROM lending WHERE NOT EXISTS (SELECT 1 FROM file_holder WHERE file_holder.lender = lending.pid)) AS n`).get().n;
 }
@@ -152,7 +153,7 @@ function admit(db, cores, lender) {
   return immediate(db, () => {
     prune(db);
     // A nested file steps into its lender's reserved place when no sibling holds it; that leaves the count unchanged.
-    const reserved = lender && db.prepare(`SELECT 1 FROM file_loan WHERE lender = ? AND lender IN (SELECT pid FROM file_holder)
+    const reserved = lender && db.prepare(`SELECT 1 FROM file_loan WHERE lender = ? AND active = 1 AND lender IN (SELECT pid FROM file_holder)
       AND NOT EXISTS (SELECT 1 FROM file_holder WHERE lender = ?)`).get(lender, lender);
     const { taken, ahead } = standing(db);
     if (!reserved && ahead >= cores - taken) return false;
@@ -193,6 +194,46 @@ export async function takeTestFileToken(env = process.env) {
   return Date.now() - asked;
 }
 
+// Budget: the loan's state follows the parent within this long; a parent using less CPU than this per look waits.
+const LOAN_WATCH_MS = 250;
+const LOAN_IDLE_CPU_MS = 25;
+
+/**
+ * Watches one parent: its loan is active only while the parent uses no CPU (blocked on its child, or idle awaiting
+ * it). A parent that keeps computing keeps its own token, so its nested files take separate ones (#1046).
+ * Linux reads CPU time from /proc in clock ticks (USER_HZ 100); other systems read ps, in hundredths.
+ */
+const LOAN_WATCH_SOURCE = `
+const { workerData } = require('node:worker_threads');
+const { execFileSync } = require('node:child_process');
+const { readFileSync } = require('node:fs');
+const emitWarning = process.emitWarning;
+process.emitWarning = (warning, ...rest) => { if (!String(warning).includes('SQLite is an experimental feature')) emitWarning.call(process, warning, ...rest); };
+const { DatabaseSync } = require('node:sqlite');
+process.emitWarning = emitWarning;
+const { file, runner, lender, everyMs, idleMs } = workerData;
+const db = new DatabaseSync(file);
+db.exec('PRAGMA busy_timeout = 10000');
+const cpuMs = () => {
+  if (process.platform === 'linux') {
+    const stat = readFileSync('/proc/' + lender + '/stat', 'utf8');
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    return (Number(fields[11]) + Number(fields[12])) * 10;
+  }
+  const time = execFileSync('ps', ['-o', 'time=', '-p', String(lender)], { encoding: 'utf8' }).trim();
+  const [days, clock] = time.includes('-') ? time.split('-') : ['0', time];
+  return clock.split(':').reverse().reduce((total, part, index) => total + Number(part) * [1, 60, 3600][index], Number(days) * 86400) * 1000;
+};
+let last = null;
+setInterval(() => {
+  try {
+    const now = cpuMs();
+    if (last !== null) db.prepare('UPDATE file_loan SET active = ? WHERE runner = ?').run(now - last <= idleMs ? 1 : 0, runner);
+    last = now;
+  } catch { /* The parent is gone; the pool prunes this loan with its run. */ }
+}, everyMs);
+`;
+
 /**
  * Mark this run as nested in a test file, so that file counts as waiting while the run lives. A run started
  * outside a test file lends nothing.
@@ -204,7 +245,11 @@ export async function lendParentToken(env = process.env) {
   const pool = testFilePool(env);
   if (!pool?.lender) return;
   const db = await openPool(pool.home);
-  immediate(db, () => db.prepare('INSERT OR REPLACE INTO file_loan(runner, lender) VALUES (?, ?)').run(process.pid, pool.lender));
+  immediate(db, () => db.prepare('INSERT OR REPLACE INTO file_loan(runner, lender, active) VALUES (?, ?, 0)').run(process.pid, pool.lender));
+  // A thread, because this runner's own loop blocks while its tests run; it never keeps the run alive.
+  const { Worker } = await import('node:worker_threads');
+  const watcher = new Worker(LOAN_WATCH_SOURCE, { eval: true, workerData: { file: join(pool.home, 'test-file-pool.sqlite'), runner: process.pid, lender: pool.lender, everyMs: LOAN_WATCH_MS, idleMs: LOAN_IDLE_CPU_MS } });
+  watcher.unref();
   process.once('exit', () => {
     try { db.prepare('DELETE FROM file_loan WHERE runner = ?').run(process.pid); db.close(); }
     catch { /* A row left behind is pruned once this run is gone. */ }

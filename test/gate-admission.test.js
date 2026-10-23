@@ -108,7 +108,8 @@ test('a lender keeps its place between its last nested file and its nested run e
   const hold = (pid, lender = null) => db.prepare('INSERT INTO file_holder(pid, since, lender) VALUES (?, ?, ?)').run(pid, Date.now(), lender);
   hold(parent);
   hold(unrelated);
-  db.prepare('INSERT INTO file_loan(runner, lender) VALUES (?, ?)').run(runner, parent);
+  // Active: the parent is blocked on its nested run, as the loan watcher records it.
+  db.prepare('INSERT INTO file_loan(runner, lender, active) VALUES (?, ?, 1)').run(runner, parent);
   assert.equal(await occupiedPlaces(home), 2, 'a lender with no nested file yet keeps its place');
   hold(child, parent);
   assert.equal(await occupiedPlaces(home), 2, 'its nested file runs in that place');
@@ -116,4 +117,28 @@ test('a lender keeps its place between its last nested file and its nested run e
   assert.equal(await occupiedPlaces(home), 2, 'the last nested file gone, the place is the lender\'s again, not free');
   db.prepare('DELETE FROM file_loan WHERE runner = ?').run(runner);
   assert.equal(await occupiedPlaces(home), 2, 'the nested run ended, the lender resumes in its own place');
+});
+
+test('a parent that keeps computing beside its nested run keeps its own token, so its nested files take separate ones [C7]', async (t) => {
+  const { root, env, log } = fixture(t, 2);
+  for (const file of ['inner-a.test.js', 'inner-b.test.js']) writeFileSync(join(root, file), timedFile(file, 400));
+  // The parent starts its nested run without waiting on it and spins the CPU until the run ends.
+  writeFileSync(join(root, 'busy.test.js'), `import { spawn } from 'node:child_process';
+import { test } from 'node:test';
+test('busy parent', async () => {
+  const child = spawn(process.execPath, [${JSON.stringify(runner)}, 'inner-a.test.js', 'inner-b.test.js'], { cwd: ${JSON.stringify(root)}, env: { ...process.env, FIXTURE_RUN: 'inner' }, stdio: 'ignore' });
+  let done = false;
+  child.on('exit', () => { done = true; });
+  while (!done) {
+    const until = Date.now() + 40;
+    while (Date.now() < until) { /* computing */ }
+    await new Promise(next => setImmediate(next));
+  }
+});
+`);
+  const result = await runFixtureChildAsync(process.execPath, [runner, 'busy.test.js'], { cwd: root, env: { ...env, FIXTURE_RUN: 'outer' } });
+  assert.equal(result.status, 0, result.failure ?? result.stdout);
+  const events = log();
+  assert.equal(events.filter(event => event.at === 'start').length, 2, 'both nested files ran');
+  assert.equal(peak(events), 1, 'with the busy parent holding one of 2 places, its nested files share the one left');
 });
