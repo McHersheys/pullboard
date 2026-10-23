@@ -17,7 +17,6 @@ import {
   join,
 } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { bornNear } from './process-census.js';
 import { parseProcessCensus } from './process-census.js';
 
 const safePath = [dirname(process.execPath), process.env.PATH || '/usr/local/bin:/usr/bin:/bin'].join(delimiter);
@@ -85,7 +84,7 @@ function record(value) {
     overflow = true;
   }
 }
-record({ type: 'boot', pid: process.pid, ppid: process.ppid, instance, started: Math.round(performance.timeOrigin) });
+record({ type: 'boot', pid: process.pid, ppid: process.ppid, instance });
 const channel = diagnostics.channel('child_process');
 const seen = new WeakSet();
 channel.subscribe(message => {
@@ -96,7 +95,7 @@ channel.subscribe(message => {
     const writeReceipt = () => {
       if (!Number.isSafeInteger(child.pid) || child.pid < 1) return;
       const commandSha256 = createHash('sha256').update(JSON.stringify({ command: child.spawnfile ?? '', args: child.spawnargs ?? [] })).digest('hex');
-      record({ type: 'spawn', pid: child.pid, ppid: process.pid, instance, commandSha256, at: Date.now() });
+      record({ type: 'spawn', pid: child.pid, ppid: process.pid, instance, commandSha256 });
     };
     if (Number.isSafeInteger(child.pid)) writeReceipt();
     else child.once('spawn', writeReceipt);
@@ -137,8 +136,6 @@ export function createDescendantTracker(directory, { census: processCensusHook =
   const offsets = new Map();
   const partial = new Map();
   const instancePids = new Map();
-  // Each job Node process's own boot record: its pid and start time, written into this job's private journal.
-  const boots = new Map();
   const overflowPath = journal.overflowPath;
   let current = baseline;
   let uncertain = false;
@@ -158,30 +155,25 @@ export function createDescendantTracker(directory, { census: processCensusHook =
   }
 
   /**
-   * Take custody of a live process proven to be this job's. A group lives inside one session, and a session holds
-   * only descendants of the job process that made it, so while that process lives its group is the job's too: record
-   * the group with its leader's start time. A group whose leader is already gone has no start time to check a reused
-   * number against, so it gets no custody; nor does a group led by a process that was here before the job (#1063).
-   * `byGroup` marks a process whose only proof is its group, which never proves the group in turn.
+   * Take custody of a live member of a group this census proves is the job's (groupProven). A group lives inside one
+   * session, and a session holds only descendants of the job process that made it, and the kernel never reuses a
+   * group's number while a member lives, so the member is the job's. It is marked `byGroup`: membership is its only
+   * proof, so it never proves the group in turn (#1063).
    */
-  function adopt(row, commandSha256, ownedPids, byGroup = false) {
-    known.set(row.pid, { ...row, commandSha256, root: false, group: row.pgid, ...(byGroup ? { byGroup: true } : {}) });
-    const leader = current.get(row.pgid);
-    const foreign = leader && baseline.get(row.pgid)?.birth === leader.birth;
-    if (!detachedGroups.has(row.pgid) && leader && !foreign && !/^Z/u.test(leader.state)) detachedGroups.set(row.pgid, leader.birth);
+  function adoptMember(row, ownedPids) {
+    known.set(row.pid, { ...row, commandSha256: '', root: false, group: row.pgid, byGroup: true });
     pendingIdentities.delete(row.pid);
     ownedPids.add(row.pid);
   }
 
   /**
-   * Whether this census still proves group `pgid` is the job's: its recorded leader is alive with its recorded start
-   * time, or a member proven by its own receipt, boot record or ancestry is. Group membership alone proves nothing.
+   * Whether this census proves group `pgid` is the job's: a live member is a process the job proved itself, as the
+   * runner's own launch, a spawn receipt matched while its parent was the job's, or live ancestry. A recorded start
+   * time never proves a group, since a census reads start times only to the second (#1063).
    */
   function groupProven(pgid) {
-    const leaderStarted = detachedGroups.get(pgid);
     for (const row of current.values()) {
       if (row.pgid !== pgid || /^Z/u.test(row.state)) continue;
-      if (row.pid === pgid && leaderStarted && row.birth === leaderStarted) return true;
       const identity = known.get(row.pid);
       if (identity && !identity.byGroup && identity.birth === row.birth && !retired.has(`${row.pid}:${row.birth}`)) return true;
     }
@@ -225,8 +217,6 @@ export function createDescendantTracker(directory, { census: processCensusHook =
         try { record = JSON.parse(line); } catch { markUncertain('child spawn journal record is invalid'); continue; }
         if (record.type === 'boot' && Number.isSafeInteger(record.pid) && record.pid > 0 && typeof record.instance === 'string') {
           instancePids.set(record.instance, record.pid);
-          // A boot record without its start time still binds receipts; it only proves nothing by itself.
-          if (Number.isFinite(record.started)) boots.set(record.pid, [...(boots.get(record.pid) ?? []), record.started].slice(-4));
         } else if (record.type === 'spawn' && Number.isSafeInteger(record.pid) && record.pid > 0
           && Number.isSafeInteger(record.ppid) && record.ppid > 0
           && typeof record.instance === 'string' && /^[a-f0-9]{64}$/u.test(record.commandSha256)) {
@@ -300,13 +290,6 @@ export function createDescendantTracker(directory, { census: processCensusHook =
           if (retired.has(`${row.pid}:${row.birth}`)) { markUncertain('a retired process identity reappeared'); continue; }
           if (prior && prior.birth === row.birth) { consumedEvents.add(event.eventId); ownedPids.add(row.pid); continue; }
           if (!prior && baseline.get(row.pid)?.birth === row.birth) { consumedEvents.add(event.eventId); continue; }
-          // The receipt and the census both carry a start time. A process born when a job process spawned it is that
-          // child, even if its parent exited before any census saw the two together; a reused pid starts later (#1063).
-          if ((row.ppid !== event.ppid || !ownedPids.has(event.ppid)) && bornNear(row, event.at)) {
-            adopt(row, event.commandSha256, ownedPids);
-            consumedEvents.add(event.eventId);
-            continue;
-          }
           // A spawn receipt must be observed while its exact parent instance still owns it.
           // A same-numbered PID first seen after reparenting is ambiguous and never adopted.
           if (row.ppid !== event.ppid) {
@@ -338,16 +321,6 @@ export function createDescendantTracker(directory, { census: processCensusHook =
           pendingIdentities.delete(row.pid);
           ownedPids.add(row.pid);
         }
-      }
-
-      // A Node process that wrote its own boot record into this job's private journal is the job's, once the
-      // census shows it born when it said it was (#1063).
-      for (const [pid, starts] of boots) {
-        const row = current.get(pid);
-        if (!row || /^Z/u.test(row.state) || ownedPids.has(pid) || retired.has(`${pid}:${row.birth}`)) continue;
-        if (baseline.get(pid)?.birth === row.birth) continue;
-        if (known.get(pid)?.birth === row.birth) ownedPids.add(pid);
-        else if (starts.some(started => bornNear(row, started))) adopt(row, '', ownedPids);
       }
 
       // Process ancestry captures non-Node children; journal receipts retain ownership after reparenting.
@@ -402,7 +375,7 @@ export function createDescendantTracker(directory, { census: processCensusHook =
         if (retired.has(`${row.pid}:${row.birth}`)) { markUncertain('a retired process identity reappeared'); continue; }
         if (prior && prior.birth === row.birth) { ownedPids.add(row.pid); continue; }
         if (baseline.get(row.pid)?.birth === row.birth) continue;
-        adopt(row, '', ownedPids, true);
+        adoptMember(row, ownedPids);
       }
       // A recorded PGID does not prove an unseen member belongs to this job. Keep
       // the lease fail-closed when a root group contains a process lacking identity evidence.

@@ -21,8 +21,8 @@ const preload = option ? fileURLToPath(option[1] || option[2] || option[3]) : ''
 if (!preload.startsWith(remoteRoot)) { writeFileSync(join(out, mode + '-local'), 'local\\n'); console.log('ran locally'); process.exit(0); }
 writeFileSync(join(out, mode + '-remote'), 'remote\\n');
 if (mode === 'overflow') { writeFileSync(join(dirname(preload), 'child-journal', 'overflow'), 'fixture overflow\\n'); process.exit(0); }
-// A launcher that exits as soon as it spawns, so no census sees the detached child beside its parent.
-spawn(process.execPath, ['-e', "require('node:child_process').spawn(process.execPath, [process.argv[1], process.argv[2]], { detached: true, stdio: 'ignore' }).unref(); process.exit(0);",
+// A launcher that starts a detached child, lives long enough for the runner to see the two together, then exits.
+spawn(process.execPath, ['-e', "require('node:child_process').spawn(process.execPath, [process.argv[1], process.argv[2]], { detached: true, stdio: 'ignore' }).unref(); setTimeout(() => process.exit(0), 1500);",
   fileURLToPath(new URL('./orphan-child.mjs', import.meta.url)), out], { stdio: 'ignore' });
 const deadline = Date.now() + 10_000;
 while (!existsSync(join(out, 'grandchild.pid')) && Date.now() < deadline) await new Promise(done => setTimeout(done, 20));
@@ -32,6 +32,9 @@ const CHILD = `import { spawn } from 'node:child_process';
 import { renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 const [out] = process.argv.slice(2);
+// Only once its launcher is gone, so the grandchild's parent is an orphan the runner must still own.
+const launcher = process.ppid;
+while (process.ppid === launcher) await new Promise(done => setTimeout(done, 20));
 const grandchild = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
 grandchild.unref();
 writeFileSync(join(out, 'child.pid'), String(process.pid));
@@ -43,8 +46,8 @@ setInterval(() => {}, 1000);
 
 /**
  * Run the gate twice on a stand-in SSH runner while the only local slot is held. The first job leaves a detached
- * child and grandchild that no census sees beside their exited launcher; the runner must still end both, verify
- * that, and return green. The second job makes its cleanup unverifiable; the run must rerun locally, not fail.
+ * child whose launcher exits, and that orphan then starts a detached grandchild; the runner must still end both,
+ * verify that from its own record, and return green. The second job makes its cleanup unverifiable; the run must rerun locally, not fail.
  */
 export async function runnerOrphanFixture(t, tools) {
   const { cli, git, installSshStandIn, observe, startToolingCli, processIsAlive, HOST } = tools;
@@ -151,37 +154,74 @@ function censusLine(pid, ppid, pgid, ms) {
 }
 
 /**
- * Drive the runner's custody through a scripted census and a recording kill. A job orphan is proven by its own boot
- * record while its group's leader is already gone; it exits, and a foreign leader and member then take that group
- * number. The runner must never adopt or signal the foreign group (#1063). Pids sit above any real pid_max.
+ * Drive the runner's custody through a scripted census and a recording kill; pids sit above any real pid_max. The
+ * runner adopts only what it can prove exactly, so two lookalikes must never be signalled (#1063):
+ * - a job process spawned a child and exited, and a foreign process holds that pid, born the same second;
+ * - a job group's members all exited, and a foreign leader holds that group number, born the same second as the old one.
  */
-export async function reusedGroupFixture(t, { createDescendantTracker, parseProcessCensus }) {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-runner-reused-group-')));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+export async function unprovenProcessFixture(t, { createDescendantTracker, parseProcessCensus }) {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-runner-unproven-')));
   const self = 9_000_001;
-  const group = 9_000_100;
-  const orphan = 9_000_101;
-  const foreign = [group, 9_000_102];
+  const root = 9_000_010;
+  const parent = 9_000_050;
+  const reusedPid = 9_000_060;
+  const leader = 9_000_100;
+  const member = 9_000_101;
+  const foreignMember = 9_000_102;
   const now = Date.now();
+  const line = (pid, ppid, pgid) => censusLine(pid, ppid, pgid, now);
   let rows = [censusLine(self, 1, self, now - 60_000)];
   const kills = [];
-  const census = () => parseProcessCensus(rows.join('\n'));
   const kill = (pid, signal) => {
     kills.push({ pid, signal });
     // A signalled process leaves the census, as a killed one would.
-    rows = rows.filter(line => { const [rowPid, , rowGroup] = line.split(' ').map(Number); return pid < 0 ? rowGroup !== -pid : rowPid !== pid; });
+    rows = rows.filter(entry => { const [rowPid, , rowGroup] = entry.split(' ').map(Number); return pid < 0 ? rowGroup !== -pid : rowPid !== pid; });
   };
-  const tracker = createDescendantTracker(dir, { census, kill, selfPid: self, intervalMs: 3_600_000 });
-  t.after(() => tracker.stopMonitoring());
-  writeFileSync(join(dir, 'child-journal', `children-${orphan}.jsonl`), JSON.stringify({ type: 'boot', pid: orphan, ppid: 1, instance: 'fixture-orphan', started: now }) + '\n');
-  rows = [...rows, censusLine(orphan, 1, group, now)];
+  // A lookalike leaves custody uncertain, so the stop loop waits for the cleanup budget; end that budget with the test.
+  let budgetSpent = false;
+  const tracker = createDescendantTracker(dir, { census: () => parseProcessCensus(rows.join('\n')), kill, selfPid: self,
+    timedOut: () => budgetSpent, intervalMs: 3_600_000 });
+  // End the budget and let the stop loop return before its journal directory goes.
+  t.after(async () => {
+    budgetSpent = true;
+    let timer;
+    await Promise.race([tracker.stopDescendants(), new Promise(done => { timer = setTimeout(done, 3_000); })]); // budget: one census pass after the budget ends.
+    clearTimeout(timer);
+    tracker.stopMonitoring();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  /** Stop descendants within a bound, then report what was signalled and what is in custody. */
+  const stop = async () => {
+    let timer;
+    await Promise.race([tracker.stopDescendants(), new Promise(done => { timer = setTimeout(done, 3_000); })]); // budget: nothing to stop returns at once.
+    clearTimeout(timer);
+    return { kills: [...kills], live: tracker.cleanupState().live.map(entry => entry.pid) };
+  };
+
+  rows = [...rows, line(root, self, root)];
+  tracker.registerRoot(root);
+  // The job's own parent records that it spawned a child, then exits; a foreign process born that second holds the pid.
+  writeFileSync(join(dir, 'child-journal', `children-${parent}.jsonl`), [
+    { type: 'boot', pid: parent, ppid: root, instance: 'fixture-parent' },
+    { type: 'spawn', pid: reusedPid, ppid: parent, instance: 'fixture-parent', commandSha256: 'a'.repeat(64), at: now },
+  ].map(entry => JSON.stringify(entry)).join('\n') + '\n');
+  rows = [...rows, line(reusedPid, 1, reusedPid)];
   tracker.observe();
-  assert.deepEqual(tracker.cleanupState().live.map(row => row.pid), [orphan], 'the orphan is the job\'s by its own boot record');
-  rows = [rows[0], censusLine(foreign[0], 1, group, now + 5_000), censusLine(foreign[1], foreign[0], group, now + 5_000)];
+  assert.deepEqual(await stop().then(state => state.kills), [], 'a receipt and a start second never prove a reparented pid');
+  assert.deepEqual(tracker.cleanupState().pending.map(entry => entry.pid), [reusedPid], 'the lookalike stays unidentified, so cleanup cannot verify');
+  rows = rows.filter(entry => Number(entry.split(' ')[0]) !== reusedPid);
   tracker.observe();
-  let timer;
-  await Promise.race([tracker.stopDescendants(), new Promise(done => { timer = setTimeout(done, 3_000); })]); // budget: a stop that adopts nothing returns at once.
-  clearTimeout(timer);
-  assert.deepEqual(kills.filter(({ pid }) => pid === -group || foreign.includes(pid)), [], 'the runner never signals a group it cannot prove is the job\'s');
-  assert.deepEqual(tracker.cleanupState().live, [], 'no foreign process is taken into custody');
+
+  // A detached group the job proved by ancestry; its leader exits, then its last member.
+  rows = [...rows, line(leader, root, leader), line(member, leader, leader)];
+  tracker.observe();
+  assert.deepEqual(tracker.cleanupState().live.map(entry => entry.pid).sort(), [leader, member], 'live ancestry proves the job group');
+  rows = rows.filter(entry => Number(entry.split(' ')[0]) !== leader).map(entry => Number(entry.split(' ')[0]) === member ? line(member, 1, leader) : entry);
+  tracker.observe();
+  assert.deepEqual(tracker.cleanupState().live.map(entry => entry.pid), [member], 'a proven member keeps its group after the leader exits');
+  rows = [...rows.filter(entry => Number(entry.split(' ')[0]) !== member), line(leader, 1, leader), line(foreignMember, leader, leader)];
+  tracker.observe();
+  const after = await stop();
+  assert.deepEqual(after.kills, [], 'the runner never signals a group it cannot prove is the job\'s');
+  assert.deepEqual(after.live, [], 'no foreign process is taken into custody');
 }
