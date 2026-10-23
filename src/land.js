@@ -782,16 +782,22 @@ export async function land({ root, board, config, write, say, owner, maximum = I
           if (!state.flaky && green.length) {
             const rebuilt = await mergeGroup(state, green);
             await save(state, { ...rebuilt, culprits: state.culprits });
-            gate = await gateGroup(state, 'green-items');
-            proof = gate.isGreen ? null : waivedProof(state, gate);
-            if (!gate.isGreen && !proof) {
-              await save(state, { state: 'blocked', failures: gate.failures, culprits: state.culprits });
-              throw new Refused('LAND_INTERACTION', 'the individually green items fail together; nothing retries or lands; inspect the batch’s failing tests');
+            // The smaller final tree lost the removed items' changes, so the kept items' deferred files run again on it.
+            if (!await inlineDeferredGuards(state)) {
+              await save(state, { state: 'blocked', culprits: state.culprits });
+              gate = null;
+            } else {
+              gate = await gateGroup(state, 'green-items');
+              proof = gate.isGreen ? null : waivedProof(state, gate);
+              if (!gate.isGreen && !proof) {
+                await save(state, { state: 'blocked', failures: gate.failures, culprits: state.culprits });
+                throw new Refused('LAND_INTERACTION', 'the individually green items fail together; nothing retries or lands; inspect the batch’s failing tests');
+              }
             }
           } else if (!state.flaky) await save(state, { state: 'blocked', culprits: state.culprits });
         }
       }
-      if (!state.flaky && (gate.isGreen || proof)) {
+      if (!state.flaky && gate && (gate.isGreen || proof)) {
         await save(state, { state: 'ready', proof: proof ?? { tree: gate.tree, failures: [], logPath: gate.logPath }, culprits: state.culprits });
         await publish(state);
       }

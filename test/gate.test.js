@@ -784,20 +784,23 @@ function largeSelectionProject(deferAbove, { inline = false } = {}) {
   const box = e2e.project('true');
   const config = JSON.parse(readFileSync(join(box.repo, 'pullboard.json'), 'utf8'));
   writeFileSync(join(box.repo, 'pullboard.json'), JSON.stringify({ ...config, submitGate: 'landing', affectedTests: 'node --test',
-    submitInvariants: ['web/guard.test.js'], ...(inline ? {} : { landing: { publish: 'separate' } }), ...(deferAbove ? { submitDeferAbove: deferAbove } : {}) }, null, 2));
+    submitInvariants: ['web/guard.test.js'], ...(inline ? { gate: 'node --test web/gate-check.test.js' } : { landing: { publish: 'separate' } }), ...(deferAbove ? { submitDeferAbove: deferAbove } : {}) }, null, 2));
   if (inline) {
-    // An inline landing pushes its gated tip, so it needs a remote; its gate (true) would pass anything.
+    // An inline landing pushes its gated tip, so it needs a remote; its gate only checks for a red marker file.
     box.git(box.dir, 'init', '-q', '--bare', join(box.dir, 'origin.git'));
     box.git(box.repo, 'remote', 'add', 'origin', join(box.dir, 'origin.git'));
   }
   writeFileSync(join(box.repo, 'package.json'), '{"type":"module"}\n');
   mkdirSync(join(box.repo, 'web'), { recursive: true });
   writeFileSync(join(box.repo, 'web/core.js'), 'export const value = 1;\n');
+  writeFileSync(join(box.repo, 'web/fix.js'), 'export const fixed = false;\n');
   const record = () => `import { appendFileSync } from 'node:fs';\nimport { test } from 'node:test';\nimport assert from 'node:assert/strict';\n`;
+  writeFileSync(join(box.repo, 'web/gate-check.test.js'), `${record()}import { existsSync } from 'node:fs';\n`
+    + `test('no red marker [G1]', () => assert.equal(existsSync(new URL('./RED', import.meta.url)), false));\n`);
   writeFileSync(join(box.repo, 'web/guard.test.js'), `${record()}test('guard [G1]', () => { appendFileSync(process.env.DEFER_MARKER, 'guard\\n'); });\n`);
   for (let index = 0; index < 30; index += 1) {
-    writeFileSync(join(box.repo, `web/selected-${String(index).padStart(2, '0')}.test.js`), `${record()}import { value } from './core.js';\n`
-      + `test('selected ${index} [G1]', () => { appendFileSync(process.env.DEFER_MARKER, '${index}\\n'); assert.notEqual(value, 'red'); });\n`);
+    writeFileSync(join(box.repo, `web/selected-${String(index).padStart(2, '0')}.test.js`), `${record()}import { value } from './core.js';\nimport { fixed } from './fix.js';\n`
+      + `test('selected ${index} [G1]', () => { appendFileSync(process.env.DEFER_MARKER, '${index}\\n'); assert.notEqual(value, 'red'); assert.ok(value !== 'needs-fix' || fixed); });\n`);
   }
   box.git(box.repo, 'add', '-A');
   box.git(box.repo, 'commit', '-q', '-m', 'chore: thirty tests import one source');
@@ -806,14 +809,15 @@ function largeSelectionProject(deferAbove, { inline = false } = {}) {
   delete box.env.NODE_TEST_CONTEXT;
   const ran = () => existsSync(box.env.DEFER_MARKER) ? readFileSync(box.env.DEFER_MARKER, 'utf8').trim().split('\n').filter(Boolean) : [];
   /** Add, claim, change the shared source and submit one item, returning its receipt and what ran. */
-  const submitChange = (value) => {
+  const submitChange = (value, { cwd = box.web, files = [] } = {}) => {
     const added = box.run(box.repo, 'add', 'web', `Set the value to ${value}`, '--specs', 'G1', '--criterion', 'The source exists.', '--check', 'test -f web/core.js', '--wait', '--json');
     assert.equal(added.code, 0, added.err);
     const id = JSON.parse(added.out).item.item_id;
-    assert.equal(box.run(box.web, 'claim', String(id)).code, 0);
-    assert.equal(e2e.commitFile(box, box.web, 'web/core.js', `export const value = ${JSON.stringify(value)};\n`, `feat(web): set the value [G1]`).status, 0);
+    assert.equal(box.run(cwd, 'claim', String(id)).code, 0);
+    for (const [path, text] of files) writeFileSync(join(cwd, path), text);
+    assert.equal(e2e.commitFile(box, cwd, files.length ? files[0][0] : 'web/core.js', files.length ? files[0][1] : `export const value = ${JSON.stringify(value)};\n`, `feat(web): set the value [G1]`).status, 0);
     rmSync(box.env.DEFER_MARKER, { force: true });
-    const submitted = box.run(box.web, 'submit', String(id), '--json');
+    const submitted = box.run(cwd, 'submit', String(id), '--json');
     assert.equal(submitted.code, 0, submitted.err + submitted.out);
     const receipt = JSON.parse(submitted.out);
     const proof = onLocalBoard(box, board => JSON.parse(store.events(board, { itemId: id }).findLast(row => row.event_kind === 'submit').event_detail));
@@ -875,6 +879,26 @@ test('a large affected selection is deferred to landing at submit [C7]', () => {
   assert.notEqual(inlineItem.item_status, 'verified', 'the inline red item is sent back');
   assert.equal(inlineItem.item_merged_commit, null);
   assert.ok(inline.ran().length > 1, 'the inline landing ran the deferred files');
+
+  // Item A carries the fix B's deferred files need, and also turns the gate red; bisect removes A and rebuilds B alone.
+  const split = largeSelectionProject(20, { inline: true });
+  const second = join(split.box.dir, 'web-2');
+  split.box.git(split.box.repo, 'worktree', 'add', '-q', second, '-b', 'web/two');
+  assert.equal(split.box.run(second, 'join', 'web').code, 0);
+  const itemA = split.submitChange('a', { files: [['web/fix.js', 'export const fixed = true;\n'], ['web/RED', 'red\n']] });
+  const itemB = split.submitChange('needs-fix', { cwd: second });
+  split.accept(itemA.id, itemA.receipt.commit);
+  split.accept(itemB.id, itemB.receipt.commit);
+  const splitLanding = split.box.run(split.box.repo, 'land', '--json');
+  assert.equal(splitLanding.code, 0, splitLanding.err + splitLanding.out);
+  assert.deepEqual(JSON.parse(splitLanding.out).landed, [], 'B does not land on a rebuilt tree that lost A\'s fix');
+  for (const id of [itemA.id, itemB.id]) {
+    const shown = JSON.parse(split.box.run(split.box.repo, 'show', String(id), '--json').out);
+    assert.notEqual(shown.item_status, 'verified', `#${id} is sent back`);
+    assert.equal(shown.item_merged_commit, null);
+  }
+  const reopenedB = JSON.parse(split.box.run(split.box.repo, 'show', String(itemB.id), '--json').out);
+  assert.ok(reopenedB.thread.some(entry => entry.kind === 'reopen' && /web\/selected-\d\d\.test\.js/u.test(entry.detail.note)), 'B is sent back for its own deferred files');
 
   const off = largeSelectionProject(null).submitChange(2);
   assert.equal(off.proof.submissionProof.deferredFiles, undefined);
