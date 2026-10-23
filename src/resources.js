@@ -178,12 +178,12 @@ function slotDatabaseLocked(error) {
   return code === 5 || code === 6 || /database is locked/iu.test(error?.message ?? '');
 }
 
-/** Name other processes with the database open; SQLite does not record which one holds its lock. */
+/** Name other processes with the database open; SQLite does not record which one holds its lock. lsof scans every process, slowly on a loaded machine, so it gets 10 s. */
 function slotDatabaseOpeners(file) {
   const lsof = ['/usr/sbin/lsof', '/usr/bin/lsof'].find(path => existsSync(path));
   if (!lsof) return [];
   let output = '';
-  try { output = execFileSync(lsof, ['-F', 'pc', '--', file], { encoding: 'utf8', timeout: 2_000, stdio: ['ignore', 'pipe', 'ignore'] }); }
+  try { output = execFileSync(lsof, ['-n', '-P', '-F', 'pc', '--', file], { encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'ignore'] }); }
   catch (error) { output = typeof error.stdout === 'string' ? error.stdout : ''; }
   const openers = [];
   for (const line of output.split('\n')) {
