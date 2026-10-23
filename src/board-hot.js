@@ -38,6 +38,44 @@ export function eventsOfKinds(board, kinds) {
 }
 
 /**
+ * Read landing evidence and only the exact submissions a failed gate names. Proposals need no
+ * unrelated submission history, and a board with no failed landing needs no submission rows.
+ * Keep every landing snapshot in order: later green gates/diagnostics still clear earlier reds,
+ * while repeated evidence keeps the original ordering rules in submitInvariantProposals.
+ */
+export function submitInvariantEvents(board, config) {
+  if (config.submitGate !== 'landing') return [];
+  const landings = eventsOfKinds(board, ['landing_batch']);
+  const needed = new Map();
+  for (const event of landings) {
+    const detail = JSON.parse(event.event_detail);
+    for (const gate of detail.batch?.invariantEvidence?.gates ?? []) {
+      if (gate.isGreen || !gate.failures.length) continue;
+      for (const row of gate.submissions) needed.set(`${row.id}:${row.commit}`, row);
+    }
+  }
+  if (!needed.size) return [];
+  const submissions = [];
+  const history = board.db.prepare("SELECT * FROM event WHERE item_id=? AND event_kind='submit' ORDER BY event_id DESC");
+  const remaining = new Map();
+  for (const { id, commit } of needed.values()) {
+    const commits = remaining.get(id) ?? new Set();
+    commits.add(commit);
+    remaining.set(id, commits);
+  }
+  for (const [id, commits] of remaining) {
+    for (const event of history.iterate(id)) {
+      const detail = JSON.parse(event.event_detail);
+      if (!commits.has(detail.commit) || !detail.submissionProof) continue;
+      submissions.push(event);
+      commits.delete(detail.commit);
+      if (!commits.size) break;
+    }
+  }
+  return [...landings, ...submissions].sort((a, b) => a.event_id - b.event_id);
+}
+
+/**
  * The newest events, newest first. The id bound states the range read, so the plan seeks from the
  * end of the log rather than scanning it.
  *

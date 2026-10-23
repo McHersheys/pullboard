@@ -8,7 +8,10 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, lstatSyn
 import { basename, delimiter, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile, execFileSync, spawnSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
+import {
+  devNull,
+  tmpdir,
+} from 'node:os';
 import { after, afterEach, beforeEach } from 'node:test';
 import { Worker } from 'node:worker_threads';
 import { randomUUID } from 'node:crypto';
@@ -304,7 +307,7 @@ function runTests(args, env, concurrency) {
     '--disable-warning=ExperimentalWarning',
     '--test',
     `--test-concurrency=${files}`,
-    ...(!reporter ? ['--test-reporter=tap'] : []),
+    ...(!reporter ? ['--test-reporter=tap', ...(env.PULLBOARD_TEST_ACTIONS ? ['--test-reporter-destination=stdout', `--test-reporter=${fileURLToPath(new URL('../src/test-action-reporter.js', import.meta.url))}`, `--test-reporter-destination=${devNull}`] : [])] : []),
     '--import',
     runner,
     ...placed,
@@ -890,6 +893,7 @@ async function runLandingTests(args, env, concurrency) {
   const selectedFiles = options.selectedFiles;
   delete options.selectedFiles;
   const reporterEntries = options.reporters;
+  if (process.env.PULLBOARD_TEST_ACTIONS) reporterEntries.push({ reporter: fileURLToPath(new URL('../src/test-action-reporter.js', import.meta.url)), destination: devNull });
   delete options.reporters;
   const loadedReporters = [];
   for (const entry of reporterEntries) {
