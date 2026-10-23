@@ -2,8 +2,10 @@
 import { PERSON } from './board.js';
 import { requirePersonChannel } from './person.js';
 import { Refused } from './refused.js';
-import { dueSentinels, sentinels } from './sentinels.js';
-import { runDueSentinels, withSentinelTrunk } from './sentinel-runner.js';
+import { dueSentinels } from './sentinels.js';
+import { sentinels } from './sentinels.js';
+import { runDueSentinels } from './sentinel-runner.js';
+import { withSentinelTrunk } from './sentinel-runner.js';
 import { healthSentinelEnabled } from './settings.js';
 
 /** The watch command's existing string options, shared with the CLI parser. */

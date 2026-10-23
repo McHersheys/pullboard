@@ -3,7 +3,8 @@ import { spawn } from 'node:child_process';
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
+import { rmSync } from 'node:fs';
 import { relative } from 'node:path';
 import { resolve } from 'node:path';
 import { sep } from 'node:path';
@@ -13,7 +14,8 @@ import { performance } from 'node:perf_hooks';
 import { Refused } from './refused.js';
 import { parseProcessCensus } from './process-census.js';
 import { sentinels } from './sentinels.js';
-import { gitChildEnv, mainCheckout } from './git.js';
+import { gitChildEnv } from './git.js';
+import { mainCheckout } from './git.js';
 
 /** Prepare immutable local trunk in a private clone, leaving every live checkout untouched. */
 export async function withSentinelTrunk(root, action) {
