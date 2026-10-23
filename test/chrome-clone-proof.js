@@ -59,11 +59,11 @@ function creationMonitor(before) {
 /** Ask only this private profile's browser to exit gracefully, preserving Chromium's own cleanup. */
 async function gracefulClose(profile, launched) {
   if (launched.child.exitCode !== null || launched.child.signalCode !== null) return;
-  const port = readFileSync(join(profile, 'DevToolsActivePort'), 'utf8').split('\n')[0].trim();
+  const [port, browserPath] = readFileSync(join(profile, 'DevToolsActivePort'), 'utf8').trim().split('\n');
   assert.match(port, /^\d+$/u);
-  const response = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(2_000) });
-  const info = await response.json();
-  const socket = new WebSocket(info.webSocketDebuggerUrl);
+  assert.match(browserPath, /^\/devtools\/browser\/[A-Za-z0-9-]+$/u);
+  // Chrome publishes the owned browser endpoint here; a second HTTP discovery is unnecessary.
+  const socket = new WebSocket(`ws://127.0.0.1:${port}${browserPath}`);
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => { socket.close(); reject(new Error('private Chrome graceful close timed out')); }, 3_000); // budget: hang ceiling for this private browser's graceful shutdown.
     socket.addEventListener('open', () => socket.send(JSON.stringify({ id: 1, method: 'Browser.close' })), { once: true });
@@ -105,7 +105,7 @@ export async function assertNoKilledChromeClone(t) {
         assert.deepEqual(newChromeClones(before), [], 'the harness must prevent clones even when its Chrome is SIGKILLed');
       }
     } catch (error) {
-      t.diagnostic(JSON.stringify({ phase: control ? 'unflagged-control' : 'harness', args, stderr: launched.stderr.slice(-2_000), createdClones: monitor.created.size, newClones: newChromeClones(before).length, observerErrors: monitor.errors }));
+      t.diagnostic(JSON.stringify({ phase: control ? 'unflagged-control' : 'harness', args, stderr: launched.stderr.slice(-2_000), createdClones: monitor.created.size, newClones: newChromeClones(before).length, observerErrors: monitor.errors, error: String(error), cause: String(error.cause ?? '') }));
       throw error;
     } finally {
       try { await gracefulClose(profile, launched); }
