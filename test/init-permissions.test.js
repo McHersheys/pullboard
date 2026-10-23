@@ -160,7 +160,10 @@ test('init grants the agent the permissions the Pullboard loop needs [I1,I2]', t
   assert.ok(initialized.document.notes.some(note => note.includes(expectedLegacyCodex)), 'Codex setup prints exact legacy workspace-write values scoped to the machine home');
   assert.ok(initialized.document.notes.some(note => /sandbox_mode at the TOML top level before any table, append these exact paths to any existing writable_roots array while keeping its entries, and do not duplicate the table or replace unrelated settings/u.test(note)), 'Codex setup explains the top-level key and exact append without replacing settings or duplicating the TOML table');
   assert.ok(initialized.document.notes.some(note => /https:\/\/learn\.chatgpt\.com\/docs\/config-file\/config-reference.*https:\/\/learn\.chatgpt\.com\/docs\/permissions/u.test(note)), 'Codex setup cites the official sandbox and permission-profile references');
-  assert.equal(readFileSync(codexConfigPath, 'utf8'), existingCodexConfig, 'init prints Codex configuration guidance without rewriting a project config');
+  const codexAfter = readFileSync(codexConfigPath, 'utf8');
+  assert.ok(codexAfter.startsWith(existingCodexConfig), 'init prints Codex configuration guidance without rewriting a project config');
+  // The only addition is the pullboard MCP server table (#961); the sandbox settings stay exactly as written.
+  assert.match(codexAfter.slice(existingCodexConfig.length), /^\n\[mcp_servers\.pullboard\]\ncommand = "sh"\nargs = \["-c", "[^\n]+"\]\n$/u);
   assert.ok(initialized.document.notes.some(note => /permission-profile users.*existing \[permissions\.<active-profile>\.filesystem\].*do not mix/iu.test(note)), 'Codex setup explains the permission-profile alternative without mixing config systems');
   const profileBoard = `${JSON.stringify(machineHomePath)} = "write" and ${JSON.stringify(join(box.root, '.git', 'pullboard'))} = "write" under their existing [permissions.<active-profile>.filesystem] table instead, since a named profile ignores writable_roots`;
   assert.ok(initialized.document.notes.some(note => note.includes(profileBoard)), 'the permission-profile step grants the board folder too (#913)');
@@ -191,4 +194,59 @@ test('init grants the agent the permissions the Pullboard loop needs [I1,I2]', t
   assert.deepEqual(JSON.parse(readFileSync(skipSettingsPath, 'utf8')).permissions, skipPermissions, '--no-permissions preserves existing Claude permissions');
   assert.deepEqual(JSON.parse(readFileSync(skipSettingsPath, 'utf8')).sandbox, skipSandbox, '--no-permissions preserves existing sandbox scope');
   assert.equal(readFileSync(skipCodexPath, 'utf8'), skipCodexBytes, '--no-permissions preserves existing Codex rules byte-for-byte');
+});
+
+test('init edits a simple Codex config and keeps a pullboard server already there [A9,I1]', (t) => {
+  // Every line is in the simple subset, so init appends the table once, or keeps the file when pullboard is there.
+  for (const [existing, codex] of [
+    ['[mcp_servers.pullboard] # the team runs it here\ncommand = "pullboard"\nargs = ["mcp"]\n', 'kept'],
+    ["[mcp_servers.'pullboard']\ncommand = \"pullboard\"\n", 'kept'],
+    ['mcp_servers.pullboard.command = "pullboard"\n', 'kept'],
+    ['[mcp_servers]\npullboard.command = "pullboard"\n', 'kept'],
+    ['# [mcp_servers.pullboard] was here once\n[mcp_servers.other]\ncommand = "pullboard"\n', 'added'],
+    ['[mcp_servers."\\U0001F600"]\ncommand = "smile"\n', 'added'],
+    ['model = "o3"\nlimits = [1, 2.5, true, "x"] # trailing\n', 'added'],
+  ]) {
+    const box = initFixture(t);
+    mkdirSync(join(box.root, '.codex'), { recursive: true });
+    writeFileSync(join(box.root, '.codex', 'config.toml'), existing);
+    const initialized = box.init();
+    assert.equal(initialized.code, 0, `${existing}\n${initialized.stderr}`);
+    assert.equal(initialized.document.mcp.codex, codex, existing);
+    const after = readFileSync(join(box.root, '.codex', 'config.toml'), 'utf8');
+    if (codex === 'kept') assert.equal(after, existing, 'a pullboard server already there is kept byte for byte');
+    else {
+      assert.ok(after.startsWith(existing), 'everything already there is kept');
+      assert.match(after.slice(existing.length), /^\n\[mcp_servers\.pullboard\]\ncommand = "sh"\nargs = \["-c", "[^\n]+"\]\n$/u, 'the pullboard table is appended once');
+    }
+  }
+});
+
+test('init leaves a Codex config outside the simple subset as written, prints the exact block and marks Codex manual [A9,I1]', (t) => {
+  // Outside the subset init never rewrites the person's TOML; it prints the one block for them to add.
+  for (const existing of [
+    'mcp_servers = { other = { command = "other-server", args = ["serve"] } }\n',
+    'mcp_servers = {}\n',
+    'mcp_servers = { pullboard = { command = "pullboard" } }\n',
+    'note = """\n[mcp_servers.pullboard]\n"""\n[mcp_servers.other]\ncommand = "other"\n',
+    'released = 1979-05-27\n',
+    '[[profiles]]\nname = "x"\n',
+  ]) {
+    const box = initFixture(t);
+    mkdirSync(join(box.root, '.codex'), { recursive: true });
+    writeFileSync(join(box.root, '.codex', 'config.toml'), existing);
+    const initialized = box.init();
+    assert.equal(initialized.code, 0, `${existing}\n${initialized.stderr}`);
+    assert.equal(readFileSync(join(box.root, '.codex', 'config.toml'), 'utf8'), existing, `${existing}: byte for byte as it was`);
+    assert.equal(initialized.document.mcp.codex, 'manual', `${existing}: --json marks Codex as manual`);
+    const note = initialized.document.notes.find(entry => entry.startsWith('kept .codex/config.toml as written:'));
+    assert.match(note ?? '', /\n\[mcp_servers\.pullboard\]\ncommand = "sh"\nargs = \["-c", "[^\n]+"\]$/u, `${existing}: the one exact block to add`);
+  }
+  // The plain command prints the block too, without --verbose.
+  const box = initFixture(t);
+  mkdirSync(join(box.root, '.codex'), { recursive: true });
+  writeFileSync(join(box.root, '.codex', 'config.toml'), 'mcp_servers = {}\n');
+  const plain = runFixtureChild(process.execPath, [BIN, 'init'], { cwd: box.root, env: box.env, encoding: 'utf8' });
+  assert.equal(plain.status, 0, plain.stderr);
+  assert.match(plain.stdout, /\[mcp_servers\.pullboard\]\ncommand = "sh"\nargs = \["-c", /u, 'the plain output shows the block');
 });
