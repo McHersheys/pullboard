@@ -25,6 +25,7 @@ import {
 import {
   repoInfo,
   tryGit,
+  worktreeEntries,
 } from '../git.js';
 import {
   scanHealthSentinel,
@@ -36,7 +37,7 @@ import {
   takeDecisionNotices,
 } from '../implies.js';
 import {
-  personNeedsState,
+  personNeedsSummary,
 } from '../needs-state.js';
 import {
   personNeeds,
@@ -170,7 +171,7 @@ export async function resumeHere(io, view) {
     const staleVerdicts = pendingMerges.filter(item => item.item_verdict_state);
     const decisionSections = isMain ? coordinatorDecisionSections(board, ctx) : null;
     const { shouts = [], ...decisions } = decisionSections ?? {};
-    const needsState = personNeedsState(root, { board, includeRigorUndrafted: me.id === COORDINATOR });
+    const needsState = personNeedsSummary(root, { board, config: ctx.config, includeFit: true, includeRigorUndrafted: me.id === COORDINATOR });
     return {
       me,
       all,
@@ -246,7 +247,7 @@ export async function resumeHere(io, view) {
   if (!isMain) {
     const branch = tryGit(root, ['rev-parse', '--abbrev-ref', 'HEAD']).stdout || 'HEAD';
     // Against the main checkout's branch, not its HEAD, which is detached while the coordinator verifies.
-    const mainRef = /^branch (.+)$/m.exec(tryGit(root, ['worktree', 'list', '--porcelain']).stdout.split('\n\n')[0])?.[1];
+    const mainRef = worktreeEntries(root)[0]?.branch;
     const [behind = 0, ahead = 0] = mainRef ? tryGit(root, ['rev-list', '--left-right', '--count', `${mainRef}...HEAD`]).stdout.split(/\s+/).map(Number) : [];
     const against = mainRef ? `${ahead} ahead of main, ${behind} behind${behind ? ' (merge main before you submit)' : ''}` : 'main is detached for a verification, so ahead and behind are unknown';
     say(`branch ${branch}: ${against}${dirty ? `; ${plural(dirty, 'file')} uncommitted` : ''}`);

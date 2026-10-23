@@ -1,7 +1,5 @@
 /** Real board watches: exact person approval, automatic execution, owner notices and replay [A6,D1,D3,H16]. */
 import assert from 'node:assert/strict';
-import childProcess from 'node:child_process';
-import { syncBuiltinESMExports } from 'node:module';
 import { existsSync } from 'node:fs';
 import { mkdirSync } from 'node:fs';
 import { mkdtempSync } from 'node:fs';
@@ -85,32 +83,6 @@ function fixture(t, { agentRoute } = {}) {
     run: () => runDueSentinels({ root, board, agentId: 'coordinator', ordered }) };
 }
 
-/** Observe one private fixture call's synchronous child costs, delegating its exact inputs unchanged. */
-function traceFixtureProcesses() {
-  const methods = ['spawnSync', 'execFileSync'];
-  const originals = Object.fromEntries(methods.map(method => [method, childProcess[method]]));
-  const calls = [];
-  for (const method of methods) {
-    /** Preserve the actual process call and record only bounded private-fixture Git arguments. */
-    childProcess[method] = function (...args) {
-      const began = performance.now();
-      try { return Reflect.apply(originals[method], this, args); }
-      finally {
-        if (calls.length < 80) calls.push({ method, program: String(args[0]),
-          ...(String(args[0]).split('/').at(-1) === 'git' ? { args: args[1] } : {}), ms: performance.now() - began });
-      }
-    };
-  }
-  syncBuiltinESMExports();
-  return { calls,
-    /** Restore every builtin before assertions, diagnostics, cleanup or a different command. */
-    stop() {
-      for (const method of methods) childProcess[method] = originals[method];
-      syncBuiltinESMExports();
-    },
-  };
-}
-
 /** Quote only a controlled fixture path as a shell word. */
 function quote(word) { return `'${word.replaceAll("'", "'\\''")}'`; }
 
@@ -172,17 +144,9 @@ console.log('explicit trunk receipt: '+value);
   assert.equal(approved.code, 0, approved.error || JSON.stringify(approved.document));
 
   // The frozen bar measures ordinary in-process handling after setup, not module loading or cold CLI startup.
-  const processTrace = traceFixtureProcesses();
   const began = performance.now();
-  let resumed;
-  let elapsed;
-  try { resumed = await box.cli(['resume'], undefined, agentRoot); }
-  finally {
-    elapsed = performance.now() - began;
-    processTrace.stop();
-    t.diagnostic(JSON.stringify({ observation: 'resume synchronous child calls', calls: processTrace.calls,
-      qualification: 'delegated original arguments/options; observer overhead and unobserved JS/SQLite remain; overlapping calls are not additive' }));
-  }
+  const resumed = await box.cli(['resume'], undefined, agentRoot);
+  const elapsed = performance.now() - began;
   assert.equal(resumed.code, 0, resumed.error || JSON.stringify(resumed.document));
   assert.ok(elapsed < 100, `resume took ${elapsed.toFixed(3)} ms with a due 30 s sentinel`); // budget: declared by item #1042 and coordinator24324: in-process resume under100ms after setup.
   assert.equal(existsSync(marker), false, 'resume neither runs the watch nor detaches a checker into the agent session');
