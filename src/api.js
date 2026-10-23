@@ -730,7 +730,7 @@ export function apiBoards(projects = listApiProjects, isMain) {
  * @param {() => { root: string, name: string, project: string, added: string }[]} projects
  * @returns {{ boards: object[], warnings: object[] }}
  */
-function apiBoardListing(projects = listApiProjects, isMain) {
+export function apiBoardListing(projects = listApiProjects, isMain) {
   const boards = [];
   const warnings = [];
   for (const project of projects()) {

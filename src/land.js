@@ -19,6 +19,8 @@ import {
   relative,
 } from 'node:path';
 import * as store from './board.js';
+import { badgeCounts } from './badge.js';
+import { writeBadges } from './badge.js';
 import {
   git,
   headCommit,
@@ -207,6 +209,13 @@ async function mergeGroup(state, items) {
     const first = git(batch.root, ['rev-list', '--first-parent', '--reverse', 'HEAD']).split('\n')
       .find((commit) => tryGit(batch.root, ['merge-base', '--is-ancestor', checked, commit]).status === 0);
     merged.push({ id: item.item_id, commit: item.item_commit, ...(checked !== item.item_commit ? { reviewedCommit: checked } : {}), merge: first });
+  }
+  if (merged.length) {
+    const changed = writeBadges(batch.root, badgeCounts(state.board));
+    if (changed.length) {
+      git(batch.root, ['add', '--', ...changed]);
+      git(batch.root, ['commit', '-m', 'chore: refresh board badge counts']);
+    }
   }
   let doctrineCounts = [];
   try {
