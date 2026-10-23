@@ -67,7 +67,7 @@ async function gracefulClose(profile, launched) {
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => { socket.close(); reject(new Error('private Chrome graceful close timed out')); }, 3_000); // budget: hang ceiling for this private browser's graceful shutdown.
     socket.addEventListener('open', () => socket.send(JSON.stringify({ id: 1, method: 'Browser.close' })), { once: true });
-    socket.addEventListener('error', () => { clearTimeout(timer); reject(new Error('private Chrome close connection failed')); }, { once: true });
+    socket.addEventListener('error', event => { clearTimeout(timer); reject(new Error('private Chrome close connection failed', { cause: event.error })); }, { once: true });
     socket.addEventListener('close', () => { clearTimeout(timer); resolve(); }, { once: true });
   });
   await waitUntil(() => launched.child.exitCode !== null || launched.child.signalCode !== null, 3_000, 'native Chrome did not exit after Browser.close');
@@ -108,8 +108,10 @@ export async function assertNoKilledChromeClone(t) {
       t.diagnostic(JSON.stringify({ phase: control ? 'unflagged-control' : 'harness', args, stderr: launched.stderr.slice(-2_000), createdClones: monitor.created.size, newClones: newChromeClones(before).length, observerErrors: monitor.errors, error: String(error), cause: String(error.cause ?? '') }));
       throw error;
     } finally {
-      try { await gracefulClose(profile, launched); }
-      finally { monitor.close(); await launched.close(); rmSync(profile, { recursive: true, force: true }); }
+      // A failed close is not retried: retain its first transport error and drain the owned group.
+      monitor.close();
+      try { await launched.close(); }
+      finally { rmSync(profile, { recursive: true, force: true }); }
     }
   }
   assert.deepEqual(newChromeClones(initial), [], 'the native control and killed test launch leave no new clone');
