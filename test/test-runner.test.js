@@ -165,3 +165,35 @@ test('discovery follows a new runner src import and its transitive dependency [C
   writeFileSync(join(source, 'src/discovery-nested.js'), "export const value = 'closure';\n");
   runDiscovery(discoveryFixture(t, source));
 });
+
+
+test('a name pattern that matches no test fails with NO_TESTS_MATCHED [C7,S13]', (t) => {
+  const box = discoveryFixture(t);
+  const runner = join(box.bin, 'run-tests.js');
+  const file = join(box.root, 'test', 'one.test.js');
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  /** Execute the copied real runner with fixture inputs and preserve its native output. */
+  const execute = (...args) => spawnSync(process.execPath, [runner, ...args], { cwd: box.root, env, encoding: 'utf8' });
+  const missing = execute('--test-name-pattern', 'no matching case 1018', file);
+  assert.notEqual(missing.status, 0, `${missing.stdout}${missing.stderr}`);
+  assert.match(missing.stderr, /NO_TESTS_MATCHED/u);
+  assert.match(missing.stderr, /no matching case 1018/u);
+  assert.ok(missing.stderr.includes(file), missing.stderr);
+  assert.equal(existsSync(box.marker), false, 'a nonmatching case never executes');
+  const matched = execute(file, '--test-name-pattern=one discovered test');
+  assert.equal(matched.status, 0, `${matched.stdout}${matched.stderr}`);
+  assert.equal(readFileSync(box.marker, 'utf8'), 'x');
+  const whole = execute(file);
+  assert.equal(whole.status, 0, `${whole.stdout}${whole.stderr}`);
+  assert.equal(readFileSync(box.marker, 'utf8'), 'xx', 'whole-file behavior is preserved');
+  const silent = join(box.root, 'silent.mjs');
+  writeFileSync(silent, 'export default async function* (events) { for await (const event of events) {} }\n');
+  const quietMissing = execute('--test-reporter', silent, '--test-name-pattern', 'another absent case 1018', file);
+  assert.notEqual(quietMissing.status, 0, `${quietMissing.stdout}${quietMissing.stderr}`);
+  assert.match(quietMissing.stderr, /NO_TESTS_MATCHED/u);
+  const quietMatch = execute('--test-reporter', silent, '--test-name-pattern', 'one discovered test', file);
+  assert.equal(quietMatch.status, 0, `${quietMatch.stdout}${quietMatch.stderr}`);
+  assert.equal(quietMatch.stdout, '', 'observing selection adds no public reporter output');
+  assert.equal(readFileSync(box.marker, 'utf8'), 'xxx');
+});
