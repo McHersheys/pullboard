@@ -1407,11 +1407,12 @@ test('expanding a roadmap row paints its detail within 100 ms [N26]', { timeout:
     await chrome.click(row(far));
     const again = await expand(far);
     assert.ok(again.fields.includes('Criterion') && again.ms < 100, `a second expand paints whole at once: ${JSON.stringify(again)}`);
-    // A row on screen is read ahead, so its first expand paints whole.
+    // A row scrolled onto the screen is read ahead, so its first expand paints whole.
     const near = await chrome.stable(`[...document.querySelectorAll('#roadmap .milestone-item[aria-expanded=false]')].find((each) => /^i:#\\d+$/u.test(each.dataset.roadmapKey)
-      && !each.closest('[hidden]') && each.getBoundingClientRect().top >= 0 && each.getBoundingClientRect().bottom <= innerHeight)?.dataset.roadmapKey`);
-    assert.ok(near, 'a row is on screen');
-    await chrome.waitFor(`window.__answered.some((path) => path.endsWith(${JSON.stringify('/items/' + near.slice(3))}))`, 20_000); // budget: hang ceiling for the read ahead queue.
+      && !each.closest('[hidden]') && each.dataset.roadmapKey !== ${JSON.stringify(far)})?.dataset.roadmapKey`);
+    assert.ok(near, 'the roadmap has another folded row');
+    await chrome.stable(`${row(near)}.scrollIntoView({ block: 'center', behavior: 'instant' }); true`);
+    await chrome.waitFor(`window.__answered.some((path) => path.endsWith(${JSON.stringify('/items/' + near.slice(3))})) && window.__asked.length === window.__answered.length`, 20_000); // budget: hang ceiling for the read ahead queue.
     const ahead = await expand(near);
     assert.ok(ahead.fields.includes('Criterion') && !ahead.loading && ahead.ms < 100, `a row read ahead paints whole at once: ${JSON.stringify(ahead)}`);
     assert.equal((await reads()).asked.filter((path) => path.endsWith(farPath)).length, 1, 'the far row was read once');

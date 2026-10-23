@@ -278,13 +278,16 @@ const movedKey = (item) => JSON.stringify([item.id, item.updatedAt, item.status,
 const aheadQueue = [];
 let aheadBusy = 0;
 
-/** Start the next queued reads ahead while fewer than two are on their way. */
+/**
+ * Start the next queued reads ahead while fewer than two are on their way. When the queue drains, one redraw puts what
+ * landed into the folded rows, so each opens in place whole.
+ */
 function aheadNext() {
   while (aheadBusy < 2 && aheadQueue.length) {
     const entry = aheadQueue.shift();
     if (!entry.start) continue;
     aheadBusy++;
-    entry.start().finally(() => { aheadBusy--; aheadNext(); });
+    entry.start().finally(() => { aheadBusy--; aheadNext(); if (!aheadBusy && !aheadQueue.length && view.tab === 'roadmap') render(); });
   }
 }
 

@@ -801,7 +801,8 @@ function milestoneItem(entry, p) {
   const source = root === view.root ? p : root ? named[0] : null;
   const label = local ? '#' + entry.id : String(entry.id);
   const expanded = view.tab === 'roadmap' && view.roadmapOpen.get(JSON.stringify([view.root, 'i:' + label])) === true;
-  const detail = item && expanded ? detailOf(source, item, true, root) : null;
+  // A folded row holds whatever detail is already kept, so it opens in place whole (#1039).
+  const detail = item ? detailOf(source, item, expanded, root) : null;
   if (item && !expanded) roadmapAhead.set('i:' + label, () => detailOf(source, item, 'ahead', root));
   // A status the lifecycle declares; the roadmap says unavailable or missing for an item it could not read.
   const read = item || (FLOW.states.some((state) => state.id === entry.status) ? { status: entry.status, verdict: null } : null);
@@ -816,10 +817,10 @@ function milestoneItem(entry, p) {
       holds: root === view.root ? source.holds : source.laneHolds, items: source.items, agents: source.agents, state: stateOf,
       address: (id) => itemAddress(id, root), board: root === view.root ? null : root,
       releases: (p.milestones || []).filter((milestone) => milestone.items.some((ref) => ref.id === entry.id)).map((milestone) => milestone.name),
-      error: detail?.error,
+      error: expanded ? detail?.error : undefined,
     }) : null,
     // Until its omitted fields arrive, an expanded row paints what its summary holds and fills the rest in place (#1039).
-    pending: Boolean(detail?.loading),
+    pending: expanded && Boolean(detail?.loading),
     stage: entry.state === 'landed' ? 'merged' : entry.state === 'accepted' ? 'accepted' : item ? pipelineStage(item) : entry.status,
     word: entry.status,
     open: item ? { root, id } : null,
