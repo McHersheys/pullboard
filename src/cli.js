@@ -36,6 +36,7 @@ import {
   mainLaneWork,
   reviewQueueLine,
   refuseNextIdle,
+  reportBlock,
 } from './next-steps.js';
 import { reviewerStartup } from './next-steps.js';
 import { environmentAgent } from './relay-environment.js';
@@ -2244,6 +2245,7 @@ async function runCommand(argv, io) {
     if (error instanceof Refused) {
       io.refusal?.(error);
       io.err(`pullboard: ${displayedRefusal(io, error)}\nnext: ${io.refusalDocument(error).error.next}`);
+      reportBlock(io, error, { command });
       return 1;
     }
     throw error;
@@ -2340,6 +2342,7 @@ async function runMain(argv, streams) {
       if (!(error instanceof Refused)) throw error;
       io.refusal(error);
       io.err(`pullboard: ${displayedRefusal(io, error)}\nnext: ${io.refusalDocument(error).error.next}`);
+      reportBlock(io, error, { command: parsed.positionals[0] });
       io.flush(1);
       return 1;
     }
