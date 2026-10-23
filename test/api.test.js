@@ -818,6 +818,9 @@ function apiFetch(api, path, options = {}) {
   return fetchFresh(new URL(path, api.origin), { ...requestOptions, headers, signal: requestOptions.signal ?? AbortSignal.timeout(10_000) });
 }
 
+/** The milliseconds one awaited request takes, end to end. */
+async function timedMs(work) { const started = performance.now(); await work(); return performance.now() - started; }
+
 /** Parse and validate a versioned API refusal. */
 async function apiError(response, status) {
   assert.equal(response.status, status);
@@ -1582,16 +1585,14 @@ test('[N26,A2] an item detail answers under 20 ms on a large board', async (t) =
   const times = [];
   try {
     for (const id of ids.slice(0, 20)) {
-      const started = performance.now();
-      assert.equal((await (await apiFetch(api, `${path}/items/${id}`)).json()).item.id, id);
-      times.push(performance.now() - started);
+      times.push(await timedMs(async () => assert.equal((await (await apiFetch(api, `${path}/items/${id}`)).json()).item.id, id)));
     }
   } finally { writeFileSync(stop, ''); await once(writer, 'close'); }
   assert.ok(Number(written.split('\n')[1]) > 0, 'an agent wrote to the board while the details were read');
   const sorted = [...times].sort((left, right) => left - right), median = (sorted[9] + sorted[10]) / 2;
   const report = `item detail ms, median ${median.toFixed(1)}: ${times.map((ms) => ms.toFixed(1)).join(' ')}`;
   t.diagnostic(report);
-  assert.ok(median < 20 && sorted[19] < 50, report);
+  assert.ok(median < 20 && sorted[19] < 50, report); // budget: declared by approved row N26 item #1040: median under 20 ms, none over 50 ms
   await (await apiFetch(api, `${path}/items/${ids[19]}`)).json();
   builds.length = 0;
   assert.equal((await (await apiFetch(api, `${path}/items/${ids[19]}`)).json()).item.id, ids[19]);
