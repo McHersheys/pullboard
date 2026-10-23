@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { submitFixture } from './board-submit-fixture.js';
 import { addItem, atomic, claim, closeBoard, events, getItem, logEvent, merged, openBoard, register, verify } from '../src/board.js';
-import { exportBoard, importBoard } from '../src/exchange.js';
+import { exportBoard, importBoard, restoreRelaySnapshot, semanticBoardDigest } from '../src/exchange.js';
+import { ENGINE_VERSION } from '../src/machine.js';
 import { proofStats as legacyProofStats } from './fixtures/proof-stats-legacy.js';
 import { proofStats } from '../src/stats.js';
 import { eventCounts } from '../src/stats.js';
@@ -240,6 +241,19 @@ test('[R1,R2,C7] proof stats counters match a full re-parse after every event', 
   logEvent(restored, 'web-1', 'shout', null, {});
   assert.deepEqual(restoredParses, [events(restored).at(-1).event_id], 'restored counters continue with one new event');
   same(restored);
+  const replacement = exportBoard(board);
+  const changedJoin = replacement.tables.event.find(event => event.event_kind === 'join' && event.event_by === 'web-1');
+  changedJoin.event_detail = JSON.stringify({ ...JSON.parse(changedJoin.event_detail), family: 'restored-family' });
+  const semantic = semanticBoardDigest(replacement);
+  replacement.tables.board_meta.push({ meta_key: 'local:proof-stats:v1:summary', meta_value: 'untrusted supplied projection' });
+  assert.equal(semanticBoardDigest(replacement), semantic, 'native digests ignore local projections');
+  replacement.tables.board_meta.push({ meta_key: 'relay_applied_sequence', meta_value: '1' },
+    { meta_key: 'relay_engine_version', meta_value: String(ENGINE_VERSION) });
+  restoreRelaySnapshot(board, replacement, 1);
+  same(board);
+  board.db.exec('PRAGMA query_only=ON');
+  try { same(board); }
+  finally { board.db.exec('PRAGMA query_only=OFF'); }
   const before = proofStats(board, { now: 1_770_000_000_000 });
   assert.throws(() => atomic(board, () => {
     logEvent(board, 'web-1', 'submit', id, { commit: 'f'.repeat(40) });
