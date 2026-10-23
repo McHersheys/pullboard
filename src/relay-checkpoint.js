@@ -8,8 +8,15 @@
  * keeps one upload in flight; moves during an upload are covered by the next one.
  */
 import { spawn } from 'node:child_process';
-import { readFileSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import {
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import {
+  dirname,
+  join,
+} from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /** Set to 0 to publish the checkpoint inside the command, as before #1014; the test runner sets it, like the view. */

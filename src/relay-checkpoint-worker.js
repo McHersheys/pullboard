@@ -5,8 +5,18 @@
  *
  * Usage (spawned by scheduleCheckpoint): node relay-checkpoint-worker.js <root> <relay link file>
  */
-import { appendFileSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
-import { checkpointFiles, checkpointQuietMs, publisherHolding } from './relay-checkpoint.js';
+import {
+  appendFileSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
+import {
+  checkpointFiles,
+  checkpointQuietMs,
+  publisherHolding,
+} from './relay-checkpoint.js';
 import { publishLatestCheckpoint } from './relay.js';
 
 const [root, file] = process.argv.slice(2);

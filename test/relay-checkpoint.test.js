@@ -62,7 +62,7 @@ test('a move on a large board sends only its event and never the checkpoint [H5]
     assert.equal(sent.filter(checkpointUpload).length, 0, `move ${index} uploaded no checkpoint`);
     const bytes = sent.reduce((total, call) => total + (call.requestBytes ?? 0), 0);
     assert.ok(bytes < 64 * 1024, `move ${index} sent ${bytes} bytes, under 64 KB`);
-    assert.ok(elapsed < 1000, `move ${index} returned in ${Math.round(elapsed)} ms, under one second`);
+    assert.ok(elapsed < 1000, `move ${index} returned in ${Math.round(elapsed)} ms, under one second`); // budget: declared by #1014's bar: a move returns in under one second.
   }
   await publisherDone(box, before, 1);
   await new Promise(next => setTimeout(next, 4_000)); // budget: a second quiet period, so a second upload would show.
@@ -92,7 +92,7 @@ test('a move during a held checkpoint upload returns before the upload ends [H5]
   const elapsed = performance.now() - started;
   assert.equal(moved.code, 0, JSON.stringify(moved.document));
   assert.equal(box.heldPublishes(), 1, 'the move returned while the upload was still held');
-  assert.ok(elapsed < 2000, `the move took ${Math.round(elapsed)} ms; it must not wait for the upload`);
+  assert.ok(elapsed < 2000, `the move took ${Math.round(elapsed)} ms; it must not wait for the upload`); // budget: ceiling for one CLI move with headroom, far under the held upload.
   box.holdPublishes(false);
   await publisherDone(box, from, 2);
 });
