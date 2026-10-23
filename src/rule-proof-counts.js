@@ -46,14 +46,20 @@ function selectedFiles(args, tracked, canonical) {
   return files;
 }
 
+/** Known external tools leave the parent shell's directory/environment intact; shell builtins do not. */
+function keepsShellContext(words) {
+  return words && (words[0] === 'node' || words[0] === process.execPath
+    || words[0] === 'npm' && (words[1] === 'test' && words.length === 2 || words[1] === 'run' && words.length === 3));
+}
+
 /** Resolve supported configured test commands at the receipt's committed source; opaque commands prove no file. */
 function includedFiles(root, commit, command, tracked, depth = 0) {
   if (depth > 4) return [];
   const words = literalShellWords(command);
   if (!words) {
-    // Only an AND chain is safe to compose: a green shell result means each selected command succeeded.
+    // A green AND chain proves its selected commands only if no earlier part changed the shell's cwd/environment.
     const parts = command.split(' && ');
-    return parts.length > 1 && parts.every(part => literalShellWords(part))
+    return parts.length > 1 && parts.every(part => keepsShellContext(literalShellWords(part)))
       ? parts.flatMap(part => includedFiles(root, commit, part, tracked, depth + 1)) : [];
   }
   if (words[0] === 'npm' && (words[1] === 'test' && words.length === 2 || words[1] === 'run' && words.length === 3)) {
