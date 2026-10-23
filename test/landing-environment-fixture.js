@@ -78,14 +78,16 @@ function verified(box, name, { touchTest = false } = {}) {
   return { id, path, head, file };
 }
 
-/** Re-review the submitted work with a changed trunk instead of bypassing verdict freshness. */
+/** Re-review only when the public projection requires it; unrelated trunk edits keep a fresh verdict. */
 function rechecked(box, entry) {
-  box.git(box.repo, 'switch', '-q', '--detach', entry.head);
-  try {
-    box.git(box.repo, 'merge', '-q', '--no-edit', 'main');
-    success(box, box.repo, 'verify', String(entry.id), 'accept', '--as', 'coordinator',
-      '--note', 'The frozen check passed on the submitted work composed with the updated trunk.');
-  } finally { box.git(box.repo, 'switch', '-q', 'main'); }
+  if (success(box, box.repo, 'show', String(entry.id)).item_verdict_state) {
+    box.git(box.repo, 'switch', '-q', '--detach', entry.head);
+    try {
+      box.git(box.repo, 'merge', '-q', '--no-edit', 'main');
+      success(box, box.repo, 'verify', String(entry.id), 'accept', '--as', 'coordinator',
+        '--note', 'The frozen check passed on the submitted work composed with the updated trunk.');
+    } finally { box.git(box.repo, 'switch', '-q', 'main'); }
+  }
   return boardRead(box, board => JSON.parse(store.events(board, { itemId: entry.id }).findLast(event => event.event_kind === 'accept').event_detail));
 }
 
