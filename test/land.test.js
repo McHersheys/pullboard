@@ -10,12 +10,18 @@ import { landingFailures, landingSubject } from '../src/land.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { startFixtureChild, runFixtureChild } from './fixture-child.js';
 import { assertNoRemoteLanding } from './land-no-remote-fixture.js';
+import { assertLandingDoctrineCounts } from './land-doctrine-fixture.js';
+import { onBoard, events, calls } from './land-board-fixture.js';
 
 const e2e = createE2eHelpers();
 after(e2e.cleanup);
 const { sandbox, project, commitFile, waitFor, BIN } = e2e;
 const FILES = [1, 2, 3, 4].map((n) => `web/land-${n}.test.js`);
 const MARKER_NOT_YET = Symbol('marker not yet written');
+
+test('a landing records a falling doctrine count and holds a rising count [B3,R3,D1,D3]', () => {
+  assertLandingDoctrineCounts({ landProject, itemWorktree, submitItem, acceptItem });
+});
 
 test('a repo with no remote lands into the local trunk and status reads as normal [I1,B3,R3,H5]', () => {
   assertNoRemoteLanding(sandbox, commitFile);
@@ -28,20 +34,6 @@ function readMarker(file) {
     if (error.code === 'ENOENT' || error instanceof SyntaxError) return MARKER_NOT_YET;
     throw error;
   }
-}
-
-/** Read a private board through public functions, never by mutating its database. */
-function onBoard(box, action, clock) {
-  const board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'), clock);
-  try { return action(board); } finally { store.closeBoard(board); }
-}
-
-/** Return append-only public events for receipt and replay assertions. */
-function events(box) { return onBoard(box, (board) => store.events(board)); }
-
-/** Parse the gate's actual command arguments to distinguish full runs from single-file diagnoses. */
-function calls(box) {
-  return existsSync(box.calls) ? readFileSync(box.calls, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [];
 }
 
 /** Start a separate process holding an exclusive write transaction on the fixture board. */
