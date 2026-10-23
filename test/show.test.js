@@ -44,9 +44,7 @@ test('the board stamps every proof receipt and show prints the chain [C7,H16]', 
   store.register(board, { lane: 'web', path: box.web, parentDigest: builderParent, sessionDigest: builderParent });
   const id = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'A stamped proof',
     criterion: 'The page is ready.', specIds: ['G1'], check: command });
-  /** Freeze the private board's actual approved rows and check command. */
-  const freeze = item => frozenCriterion(loadSpec(box.repo, loadConfig(box.repo)), item);
-  store.claim(board, id, { agentId: builder, lane: 'web', leaseMs: 3_600_000, freeze });
+  proofDocument(box.run(box.web, 'claim', String(id), '--json'));
   proofDocument(box.run(box.web, 'check', String(id), '--yes', '--json'));
   const checked = proofDocument(box.run(box.repo, 'show', String(id), '--json'));
   assert.ok(Array.isArray(checked.proofReceipts), 'show exposes the board-stamped receipt chain after a real check');
@@ -70,7 +68,7 @@ test('the board stamps every proof receipt and show prints the chain [C7,H16]', 
     assert.match(receipt.commit, /^[a-f0-9]{40}$/u);
     assert.equal(receipt.tree, box.git(box.repo, 'rev-parse', `${receipt.commit}^{tree}`));
     assert.equal(receipt.frozenDigest, shown.item_frozen_digest);
-    assert.deepEqual(receipt.environment, { node: process.version, platform: process.platform, arch: process.arch });
+    assert.deepEqual(receipt.environment, { node: process.versions.node, platform: process.platform, arch: process.arch });
     assert.equal(typeof receipt.runner, 'string');
     assert.ok(receipt.runner);
     assert.equal(receipt.seat, receipt.kind === 'verdict' ? reviewer : builder);
