@@ -1,0 +1,33 @@
+/** Observe macOS Chrome clone growth without deleting or attributing directories [C7]. */
+import { execFileSync } from 'node:child_process';
+import { lstatSync, readdirSync, realpathSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+
+/** Snapshot directory identities so concurrent old-clone removal cannot conceal a newly created clone. */
+export function chromeCloneSnapshot() {
+  if (process.platform !== 'darwin') return [];
+  const user = execFileSync('/usr/bin/getconf', ['DARWIN_USER_DIR'], { encoding: 'utf8', timeout: 2_000 }).trim();
+  const root = join(dirname(user.replace(/\/$/u, '')), 'X');
+  const result = [];
+  for (const bundle of ['com.google.Chrome', 'org.chromium.Chromium']) {
+    const directory = join(root, `${bundle}.code_sign_clone`);
+    let names;
+    let canonical;
+    try { names = readdirSync(directory); canonical = realpathSync(directory); }
+    catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+    for (const name of names.filter(name => /^code_sign_clone\.[A-Za-z0-9._-]{6}$/u.test(name))) {
+      try {
+        const path = join(directory, name);
+        const stat = lstatSync(path);
+        if (stat.isDirectory() && !stat.isSymbolicLink()) result.push(`${join(canonical, name)}:${stat.dev}:${stat.ino}`);
+      } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
+  }
+  return result.sort();
+}
+
+/** Report new identities only; this is a growth check, never evidence authorizing cleanup. */
+export function newChromeClones(before, after = chromeCloneSnapshot()) {
+  const known = new Set(before);
+  return after.filter(identity => !known.has(identity));
+}

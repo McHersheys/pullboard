@@ -1,3 +1,4 @@
+import { chromeLaunchArgs } from './chrome-launch-args.js';
 /** Shared isolated Chrome launcher with bounded startup and complete process-group cleanup [C7]. */
 import { execFileSync, spawn as spawnGuardian } from 'node:child_process';
 import { startFixtureChild as spawn } from './fixture-child.js';
@@ -270,9 +271,7 @@ export async function startChrome({
   const profile = resolve(profileDirectory ?? mkdtempSync(join(tmpdir(), 'pullboard-chrome-')));
   mkdirSync(profile, { recursive: true, mode: 0o700 });
   chmodSync(profile, 0o700);
-  const args = ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
-    '--disable-background-networking', '--disable-sync', '--disable-extensions', '--no-proxy-server',
-    '--use-mock-keychain', '--password-store=basic', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'];
+  const args = chromeLaunchArgs(profile);
   let launched;
   let socket;
   let loopDelay;

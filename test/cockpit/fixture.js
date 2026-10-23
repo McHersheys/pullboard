@@ -1,3 +1,4 @@
+import { chromeLaunchArgs } from '../chrome-launch-args.js';
 /** Shared real-board, VM and Chrome fixtures for the cockpit checks [N26]. */
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
@@ -645,9 +646,7 @@ function browserPause(ms) {
 /** Start Chrome, retry once, and wait for its DevTools port before giving up. */
 async function startSnapshotChrome(executable, profile, { timeoutMs = 30_000, signal, onOwned } = {}) {
   throwIfFixtureAborted(signal);
-  const args = ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
-    '--disable-background-networking', '--disable-sync', '--disable-extensions', '--no-proxy-server',
-    '--use-mock-keychain', '--password-store=basic', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'];
+  const args = chromeLaunchArgs(profile);
   let lastFailure = '';
   let lastFailureKind = '';
   const firstLaunchStartedAt = Date.now();
