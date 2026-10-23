@@ -107,7 +107,7 @@ test('CI runs the gate on every push and pull request, Node 22.13 and 24, on Lin
 });
 
 test("the README header shows the board's own badges, not the CI status badge [C7]", () => {
-  // The person, 22 Oct: drop the gate badge from the header; a live red CI badge says less than the board's verified record.
+  // Drop the gate badge from the header: a live red CI badge says less than the board's verified record.
   const readme = readFileSync(resolve(ROOT, 'README.md'), 'utf8');
   const section = readme.search(/^## /mu);
   assert.notEqual(section, -1, 'the README has a section after its header');
