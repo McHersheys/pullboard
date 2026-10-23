@@ -1,0 +1,95 @@
+/** Test files on one machine never outnumber its cores, and the longest files start first [C7]. */
+import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { test } from 'node:test';
+import { runFixtureChild, runFixtureChildAsync } from './fixture-child.js';
+import { TEST_FILE_CORES_ENV, TEST_FILE_POOL_ENV } from '../src/test-file-pool.js';
+
+const runner = fileURLToPath(new URL('../bin/run-tests.js', import.meta.url));
+
+/** A fixture test file that logs when its body starts and ends, holding its token for `ms`. */
+function timedFile(name, ms, body = '') {
+  return `import { appendFileSync } from 'node:fs';
+import { test } from 'node:test';
+const mark = at => appendFileSync(process.env.FIXTURE_LOG, JSON.stringify({ run: process.env.FIXTURE_RUN, file: ${JSON.stringify(name)}, at, t: Date.now() }) + '\\n');
+test(${JSON.stringify(name)}, async () => {
+  mark('start');
+  ${body}
+  await new Promise(done => setTimeout(done, ${ms}));
+  mark('end');
+});
+`;
+}
+
+/** A Git fixture repository with its own machine home, and an environment whose pool has `cores` tokens. */
+function fixture(t, cores) {
+  const root = mkdtempSync(join(tmpdir(), 'pullboard-file-pool-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  runFixtureChild('git', ['init', '-q'], { cwd: root });
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ type: 'module' }));
+  const machine = join(root, '.machine');
+  mkdirSync(machine);
+  // Four gate slots, so the four runs overlap and only the file pool can hold them to the cores.
+  writeFileSync(join(machine, 'settings.json'), JSON.stringify({ gateSlots: 4, browserSlots: 1 }));
+  const env = { ...process.env, PULLBOARD_MACHINE_HOME: machine, [TEST_FILE_CORES_ENV]: String(cores), FIXTURE_LOG: join(root, 'log.jsonl') };
+  // This test file holds a token of its own run's pool; the fixture runs get a pool of their own.
+  delete env[TEST_FILE_POOL_ENV];
+  return { root, env, log: () => readFileSync(env.FIXTURE_LOG, 'utf8').trim().split('\n').map(line => JSON.parse(line)) };
+}
+
+/** The most file bodies running at one moment in a start/end log. */
+function peak(events) {
+  let live = 0;
+  let most = 0;
+  for (const event of [...events].sort((a, b) => a.t - b.t || (a.at === 'end' ? -1 : 1))) {
+    live += event.at === 'start' ? 1 : -1;
+    most = Math.max(most, live);
+  }
+  return most;
+}
+
+test('four runs never hold more test files than cores, and the longest-recorded file starts first [C7]', async (t) => {
+  const { root, env, log } = fixture(t, 4);
+  const files = ['a.test.js', 'b.test.js', 'c.test.js', 'd.test.js', 'e.test.js', 'z-slow.test.js'];
+  for (const file of files) writeFileSync(join(root, file), timedFile(file, 300));
+  const runs = await Promise.all([1, 2, 3, 4].map(run => runFixtureChildAsync(process.execPath, [runner, ...files],
+    { cwd: root, env: { ...env, FIXTURE_RUN: String(run) } })));
+  for (const result of runs) assert.equal(result.status, 0, result.failure ?? result.stdout);
+  const events = log();
+  assert.equal(events.filter(event => event.at === 'start').length, 24, 'every file of every run ran');
+  assert.ok(peak(events) <= 4, `at most 4 files at once on 4 cores, saw ${peak(events)}`);
+
+  // The last landing timed z-slow longest, so it starts first though it sorts last.
+  mkdirSync(join(root, '.git', 'pullboard'), { recursive: true });
+  writeFileSync(join(root, '.git', 'pullboard', 'landing-file-times.json'),
+    JSON.stringify({ version: 1, files: { 'z-slow.test.js': 9000, 'c.test.js': 500, 'a.test.js': 10 } }));
+  writeFileSync(join(root, 'pullboard.json'), JSON.stringify({ testConcurrency: { files: 1 } }));
+  writeFileSync(env.FIXTURE_LOG, '');
+  const ordered = runFixtureChild(process.execPath, [runner, ...files], { cwd: root, env: { ...env, FIXTURE_RUN: 'order', PULLBOARD_LANDING_RUN: '1' }, encoding: 'utf8' });
+  assert.equal(ordered.status, 0, ordered.failure ?? ordered.stdout);
+  assert.deepEqual(log().filter(event => event.at === 'start').map(event => event.file),
+    ['z-slow.test.js', 'c.test.js', 'a.test.js', 'b.test.js', 'd.test.js', 'e.test.js'], 'timed files longest first, then the rest in order');
+});
+
+test('a file that waits on a nested run lends it its token, so saturated parents still run at most cores files [C7]', async (t) => {
+  const { root, env, log } = fixture(t, 2);
+  for (const file of ['inner-a.test.js', 'inner-b.test.js']) writeFileSync(join(root, file), timedFile(file, 300));
+  // Each outer file runs both inner files through run-tests and waits; its own body does no work meanwhile.
+  const nested = `const { spawnSync } = await import('node:child_process');
+  const inner = spawnSync(process.execPath, [${JSON.stringify(runner)}, 'inner-a.test.js', 'inner-b.test.js'], { cwd: ${JSON.stringify(root)}, env: { ...process.env, FIXTURE_RUN: 'inner-' + process.pid }, encoding: 'utf8' });
+  if (inner.status !== 0) throw new Error(inner.stdout + inner.stderr);`;
+  for (const file of ['outer-a.test.js', 'outer-b.test.js']) {
+    writeFileSync(join(root, file), timedFile(file, 0, nested).replace("mark('start');", '').replace("mark('end');", ''));
+  }
+  const result = await runFixtureChildAsync(process.execPath, [runner, 'outer-a.test.js', 'outer-b.test.js'], { cwd: root, env: { ...env, FIXTURE_RUN: 'outer' } });
+  assert.equal(result.status, 0, result.failure ?? result.stdout);
+  const events = log();
+  assert.equal(events.filter(event => event.at === 'start').length, 4, 'both inner files ran under both outer files');
+  assert.ok(peak(events) <= 2, `two saturated outer files with nested runs still run at most 2 files, saw ${peak(events)}`);
+  for (const run of new Set(events.map(event => event.run))) {
+    assert.equal(peak(events.filter(event => event.run === run)), 1, 'a nested run takes only the token its parent lent');
+  }
+});
