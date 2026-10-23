@@ -334,7 +334,8 @@ let aheadFrame = 0;
 
 /** Read ahead the detail of each folded Roadmap row on screen, once per frame, so its first expand fills at once (#1039). */
 function aheadRoadmapRows() {
-  if (aheadFrame || view.tab !== 'roadmap') return;
+  // A page drawn outside a browser, as the list tests draw one, has no frames and reads nothing ahead.
+  if (aheadFrame || view.tab !== 'roadmap' || typeof requestAnimationFrame !== 'function') return;
   aheadFrame = requestAnimationFrame(() => {
     aheadFrame = 0;
     for (const row of document.querySelectorAll('#roadmap .milestone-item[aria-expanded=false]')) {

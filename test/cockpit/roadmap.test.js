@@ -1079,7 +1079,9 @@ test('a blocked roadmap item shows its dot and expands to say why [N26]', { time
     assert.equal(await chrome.stable(`${row('#2')}.parentElement.querySelectorAll('.roadmap-criterion em').length`),0,'criterion markup stays escaped');
     assert.match(blocked, /Waits on#1 building.*web-2.*since/u, 'dependency includes state, holder and local time');
     assert.match(blocked, /History.*added/u); assert.match(blocked, /Release.*Next.*G1/u);
-    assert.ok((await reads()).filter(url => /\/items\/2$/.test(url)).length <= 1, 'the first opened row reads its detail once, ahead or on expand');
+    // The other board also has an item #2, so only this board's reads count.
+    const local = await chrome.stable('boardPath(view.root)');
+    assert.ok((await reads()).filter(url => url.endsWith(local + '/items/2')).length <= 1, 'the first opened row reads its detail once, ahead or on expand');
     for (const id of ['#2', '#6', '#5']) {
       if (id !== '#2') await opened(id);
       const text = await chrome.stable(`${row(id)}.parentElement.querySelector('.milestone-why').textContent`);
