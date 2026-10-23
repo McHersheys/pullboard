@@ -9,14 +9,14 @@ import {
 } from '../cli.js';
 import { openBoardReadOnly } from '../board.js';
 import { HEALTH_SENTINEL_ENGINE } from '../health-receipts.js';
-import { recentBlocks } from '../needs-state.js';
+import { readBlocks } from '../blocks.js';
 import { rigorReport } from '../rigor.js';
 
 /** Run `pullboard health` and return its exit code. */
 export function run(io) {
   const ctx = context(io);
   const report = boardHealth(ctx.file, { root: ctx.info.root, config: ctx.config, now: ctx.clock.now() });
-  report.blocks = blockReport(recentBlocks(ctx.info.commonDir, { clock: ctx.clock }), seatsByPath(ctx.file));
+  report.blocks = blockReport(readBlocks(ctx.info.commonDir, { since: new Date(ctx.clock.now().getTime() - 86_400_000) }), seatsByPath(ctx.file));
   io.result?.(report);
   for (const line of healthLines(report)) io.say(line);
   for (const line of blockLines(report.blocks)) io.say(line);

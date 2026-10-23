@@ -45,3 +45,16 @@ export function readBlocks(commonDir, { since } = {}) {
   }
   return blocks;
 }
+
+/**
+ * The last day's blocks only the person can clear, carrying only their plain words, never a local
+ * path, for every Needs you projection: the CLI, the local API and the sealed relay page [C6].
+ *
+ * @param {string} commonDir
+ * @param {Date} now
+ */
+export function personBlockWords(commonDir, now) {
+  return readBlocks(commonDir, { since: new Date(now.getTime() - 86_400_000) })
+    .filter(block => block.audience === 'person')
+    .map(({ at, code, command, audience, reason, step }) => ({ at, code, command, audience, reason, step }));
+}

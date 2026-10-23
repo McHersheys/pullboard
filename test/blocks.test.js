@@ -1,13 +1,27 @@
 /** A refusal that stops someone reaches whoever can clear it, is recorded, and repeats are counted [C6,N26]. */
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
+import { serveApi } from '../src/api.js';
+import { repoInfo } from '../src/git.js';
 import { personNeedsState } from '../src/needs-state.js';
+import { reportBlock } from '../src/next-steps.js';
+import { Refused } from '../src/refused.js';
+import { relayPresentation } from '../src/relay-presentation.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 
 const e2e = createE2eHelpers();
 after(e2e.cleanup);
 
-test('a Pullboard block reaches whoever can clear it and repeats are counted [C6,N26]', () => {
+/** Needs you as the local API serves it, read in full so every person call is present. */
+async function apiNeeds(api, root) {
+  const headers = { 'x-pullboard-key': 'blocks-test' };
+  const listing = await (await fetch(api.url)).json();
+  const id = listing.boards.find(board => board.root === root).id;
+  const { state } = await (await fetch(`http://127.0.0.1:${api.port}/api/v1/boards/${id}/state?detail=full`, { headers })).json();
+  return { needs: state.needs.filter(row => row.kind === 'block'), blocks: state.blocks };
+}
+
+test('a Pullboard block reaches whoever can clear it and repeats are counted [C6,N26]', async (t) => {
   const box = e2e.project();
 
   // A person-only move from an agent's terminal: the person, not the agent, can clear it.
@@ -22,6 +36,37 @@ test('a Pullboard block reaches whoever can clear it and repeats are counted [C6
   assert.match(needs[0].what, /^run pullboard view\b/u);
   assert.doesNotMatch(`${needs[0].text} ${needs[0].what}`, /\[[A-Z][A-Z0-9_]*\]|B26|relay|--/u);
 
+  // The local API and the sealed relay page build Needs you from the same ledger, without local paths.
+  const api = await serveApi({ secret: 'blocks-test', runCommand: async () => 0, isMain: true,
+    projects: () => [{ root: box.repo, name: 'blocks', project: '', added: '2026-10-22T00:00:00.000Z' }] });
+  t.after(() => api.close());
+  assert.deepEqual((await apiNeeds(api, box.repo)).needs.map(row => row.text), [needs[0].text]);
+
+  // The relay's person-only refusals, as relay.js and relay-seats.js raise them, are the person's too;
+  // a seat's own expired token is the coordinator's.
+  const said = [];
+  const io = { callerRole: () => 'coordinator', err: line => said.push(line) };
+  const info = repoInfo(box.repo);
+  const raise = (error, command) => reportBlock(io, error, { command, info, now: new Date() });
+  assert.equal(raise(new Refused('HUMAN_REQUIRED', 'send this person action from the paired phone'), 'answer').audience, 'person');
+  assert.equal(raise(new Refused('TOKEN_EXPIRED', 'the coordinator relay token expired; the person reissues it: run pullboard relay on in the main checkout'), 'shout').audience, 'person');
+  assert.equal(raise(new Refused('TOKEN_EXPIRED', 'the relay token of web-1 expired, and only a seat\'s own current token or its creator renews it; ask the coordinator for a fresh worktree: pullboard worktree <lane> --model "<model name>"'), 'claim').audience, 'coordinator');
+  assert.equal(said.filter(line => /only the person can clear this/u.test(line)).length, 2);
+  const personRows = personNeedsState(box.repo).needs.filter(row => row.kind === 'block');
+  assert.deepEqual(personRows.map(row => row.text).sort(), [
+    'Pullboard stopped a request that only you can clear: send this person action from the paired phone',
+    'Pullboard stopped a request that only you can clear: this terminal belongs to an agent',
+    'Pullboard stopped a request that only you can clear: your sign-in for the coordinator expired; the person reissues it',
+  ]);
+  for (const row of personRows) assert.doesNotMatch(row.text, /\[[A-Z][A-Z0-9_]*\]|relay|_/u);
+  // The API sees the new blocks at once (the ledger invalidates its cached state), and so does the relay page.
+  const served = await apiNeeds(api, box.repo);
+  assert.deepEqual(served.needs.map(row => row.text).sort(), personRows.map(row => row.text).sort());
+  assert.ok(served.blocks.every(block => block.audience === 'person' && !('path' in block)), JSON.stringify(served.blocks));
+  const sealed = relayPresentation(box.repo).state;
+  assert.deepEqual(sealed.needs.filter(row => row.kind === 'block').map(row => row.text).sort(), personRows.map(row => row.text).sort());
+  assert.ok(sealed.blocks.every(block => !('path' in block)), JSON.stringify(sealed.blocks));
+
   // An agent's coordinator-only move: the agent is told to take it to the coordinator.
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const held = box.run(box.web, 'hold', 'api', '--reason', 'the api lane waits');
@@ -30,7 +75,7 @@ test('a Pullboard block reaches whoever can clear it and repeats are counted [C6
     assert.match(held.err, /^pullboard: only the coordinator can clear this; tell them: pullboard shout coordinator "blocked by COORDINATOR_ONLY on pullboard hold: only the coordinator holds a lane"$/mu);
   }
   // An agent's block is not the person's call.
-  assert.equal(personNeedsState(box.repo).needs.filter(row => row.kind === 'block').length, 1);
+  assert.equal(personNeedsState(box.repo).needs.filter(row => row.kind === 'block').length, 3);
 
   // Health counts the day's blocks by code and drafts an item for the one that repeated.
   const report = JSON.parse(box.run(box.repo, 'health', '--json').out);
@@ -41,7 +86,9 @@ test('a Pullboard block reaches whoever can clear it and repeats are counted [C6
   assert.equal(byCode.COORDINATOR_ONLY.audience, 'coordinator');
   assert.equal(byCode.B26_PERSON_CHANNEL.count, 1);
   assert.deepEqual(byCode.B26_PERSON_CHANNEL.who, ['coordinator']);
-  assert.deepEqual(report.blocks.drafts.map(draft => draft.cause), ['refusal:COORDINATOR_ONLY']);
+  assert.equal(byCode.HUMAN_REQUIRED.count, 1);
+  assert.equal(byCode.TOKEN_EXPIRED.count, 2);
+  assert.deepEqual(report.blocks.drafts.map(draft => draft.cause), ['refusal:COORDINATOR_ONLY', 'refusal:TOKEN_EXPIRED']);
   const [draft] = report.blocks.drafts;
   assert.equal(draft.title, 'Pullboard blocked 3 requests in a day with COORDINATOR_ONLY');
   const text = box.run(box.repo, 'health').out;

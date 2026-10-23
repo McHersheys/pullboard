@@ -16,7 +16,7 @@ import {
   undraftedRigor,
 } from './rigor-notices.js';
 import { personNeeds } from './needs.js';
-import { readBlocks } from './blocks.js';
+import { personBlockWords } from './blocks.js';
 import { displayAgentName } from './agent-names.js';
 import {
   projectSpecApprovals,
@@ -58,8 +58,7 @@ export function personNeedsSummary(root, { board, config }) {
   return projected;
 }
 
-/** The blocks recorded in the last day, by the board's clock, for Needs you and health [C6]. */
+/** The person's blocks from the last day, by the board's clock, for Needs you [C6]. */
 export function recentBlocks(commonDir, board) {
-  const now = (board?.clock ?? store.systemClock).now();
-  return readBlocks(commonDir, { since: new Date(now.getTime() - 86_400_000) });
+  return personBlockWords(commonDir, (board?.clock ?? store.systemClock).now());
 }

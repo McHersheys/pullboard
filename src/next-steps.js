@@ -660,9 +660,15 @@ const NOT_BLOCKS = new Set(['USAGE', 'UNKNOWN_COMMAND']);
  * @returns {'person'|'coordinator'|'agent'}
  */
 export function blockAudience(code, message, step) {
-  const words = `${message}\n${step}`;
-  if (/_PERSON_ONLY$|^B26_PERSON_CHANNEL$/u.test(code) || /\bonly the person\b|\blet the person act\b|\bbring it to the person\b/iu.test(words)) return 'person';
-  if (/^(?:ask (?:the|your) coordinator|the coordinator\b)/iu.test(step) || /^COORDINATOR_ONLY$|_COORDINATOR_ONLY$/u.test(code)) return 'coordinator';
+  const person = /\bonly the person\b|\blet the person act\b|\bbring it to the person\b|\bthe person (?:reissues|runs|sends|approves)\b|\bfrom the paired phone\b|\bthe person['’]s terminal\b/iu;
+  const coordinator = /\bask (?:the|your) coordinator\b|^the coordinator\b/iu;
+  if (/_PERSON_ONLY$|^B26_PERSON_CHANNEL$|^HUMAN_REQUIRED$/u.test(code)) return 'person';
+  // The raise site's own words name who acts before the catalog's general step does: an expired
+  // coordinator token says the person reissues it, while a seat's says to ask the coordinator.
+  if (person.test(message)) return 'person';
+  if (coordinator.test(message) || /(?:^|_)COORDINATOR_ONLY$/u.test(code)) return 'coordinator';
+  if (person.test(step)) return 'person';
+  if (/^(?:ask (?:the|your) coordinator|the coordinator)\b/iu.test(step)) return 'coordinator';
   return 'agent';
 }
 
@@ -686,8 +692,10 @@ export function blockNotice(error, { command, by, path, at, caller }) {
   const first = plain(message);
   const cut = first.indexOf(step.slice(0, 24));
   const reason = (cut > 0 ? first.slice(0, cut) : first).replace(/[\s;:,.]+$/u, '') || first;
-  return { at: at.toISOString(), code, command: `pullboard ${command}`.trim(), by, path,
-    audience: blockAudience(code, message, step), reason, step };
+  const audience = blockAudience(code, message, step);
+  // The person never needs to know how the relay works: a relay token is their sign-in [C6].
+  const said = audience === 'person' ? reason.replace(/\b(?:the )?coordinator relay token\b/giu, 'your sign-in for the coordinator').replace(/\brelay token\b/giu, 'sign-in') : reason;
+  return { at: at.toISOString(), code, command: `pullboard ${command}`.trim(), by, path, audience, reason: said, step };
 }
 
 /**
