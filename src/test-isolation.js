@@ -5,8 +5,14 @@
  * gate.shortSlots, registered runners), the account's resources.sqlite, a CI marker a runner sets, or the
  * instrumentation an SSH runner loads into every Node process. bin/run-tests.js applies this to each test run.
  */
-import { mkdirSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import {
+  mkdirSync,
+  readFileSync,
+} from 'node:fs';
+import {
+  dirname,
+  join,
+} from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { childJournalPreloadSource } from './child-journal-preload.js';
 
