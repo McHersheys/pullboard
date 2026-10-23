@@ -229,7 +229,6 @@ test('[A5] board opens upgrade older event logs and refuse future event logs bef
   const release = join(box.dir, 'installed-release');
   mkdirSync(release);
   for (const name of ['bin', 'src', 'package.json']) cpSync(resolve(import.meta.dirname, '..', name), join(release, name), { recursive: true });
-  // Only a command that writes upgrades a board; a read never does (#1047).
   const older = spawnSync(process.execPath, [join(release, 'bin/pullboard.js'), 'shout', 'all', 'board upgrade', '--json'], { cwd: box.repo, env: box.env, encoding: 'utf8' });
   assert.equal(older.status, 0, older.stderr + older.stdout);
   assert.equal(readEventLogVersion(file), String(EVENT_LOG_VERSION), 'an installed release opens an older event log and upgrades its marker in place');
@@ -378,14 +377,12 @@ test('[A5, A6] a future-schema worktree cannot migrate the shared board; main ca
   const olderInstalled = new DatabaseSync(dbFile);
   olderInstalled.exec('ALTER TABLE item DROP COLUMN item_files; PRAGMA user_version = 1');
   olderInstalled.close();
-  // Only a command that writes upgrades a board; a read never does (#1047).
   const installedRun = spawnSync(process.execPath, [join(installed, 'bin/pullboard.js'), 'shout', 'app', 'board upgrade', '--json'], {
     cwd: repo, env: box.env, encoding: 'utf8',
   });
   assert.equal(installedRun.status, 0, installedRun.stderr + installedRun.stdout);
   const migratedInstalled = new DatabaseSync(dbFile, { readOnly: true });
-  assert.equal(migratedInstalled.prepare('PRAGMA user_version').get().user_version, 3,
-    'a copied installed release without Git metadata can upgrade an older board');
+  assert.equal(migratedInstalled.prepare('PRAGMA user_version').get().user_version, 3, 'a copied installed release without Git metadata can upgrade an older board');
   assert.ok(migratedInstalled.prepare('PRAGMA table_info(item)').all().some((column) => column.name === 'item_files'));
   migratedInstalled.close();
 
@@ -412,8 +409,7 @@ test('[A5, A6] a future-schema worktree cannot migrate the shared board; main ca
   });
   assert.equal(mainCodeFromWorktree.status, 0, mainCodeFromWorktree.stderr + mainCodeFromWorktree.stdout);
   const migratedFromWorktree = new DatabaseSync(dbFile, { readOnly: true });
-  assert.equal(migratedFromWorktree.prepare('PRAGMA user_version').get().user_version, 3,
-    'the main checkout code may upgrade its shared board even when cwd is a linked worktree');
+  assert.equal(migratedFromWorktree.prepare('PRAGMA user_version').get().user_version, 3, 'the main checkout code may upgrade its shared board even when cwd is a linked worktree');
   assert.ok(migratedFromWorktree.prepare('PRAGMA table_info(item)').all().some((column) => column.name === 'item_files'));
   migratedFromWorktree.close();
 
@@ -458,8 +454,7 @@ test('[A5, A6] a future-schema worktree cannot migrate the shared board; main ca
   });
   assert.equal(mainFromHook.status, 0, mainFromHook.stderr + mainFromHook.stdout);
   const upgradedFromHook = new DatabaseSync(dbFile, { readOnly: true });
-  assert.equal(upgradedFromHook.prepare('PRAGMA user_version').get().user_version, 3,
-    'main source upgrades even when a linked-worktree hook exports its Git directory');
+  assert.equal(upgradedFromHook.prepare('PRAGMA user_version').get().user_version, 3, 'main source upgrades even when a linked-worktree hook exports its Git directory');
   upgradedFromHook.close();
   before = readFileSync(dbFile);
 
