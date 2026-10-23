@@ -1,13 +1,45 @@
 /** The shared Chrome fixture bounds startup and removes profiles only after the owned process group exits [C7]. */
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { loadavg, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { test } from 'node:test';
 import { createEvaluator, createSender, createWaiter, findChromeExecutable, launchChromeProcess, startChrome, waitForTargetAbsent } from './chrome-fixture.js';
+import { observedChromeClones } from './chrome-clone-observer.js';
+
+test('a killed test Chrome leaves no code-sign clone [C7]', { skip: process.platform !== 'darwin' || !findChromeExecutable() }, async t => {
+  const profile = mkdtempSync(join(tmpdir(), 'pullboard-clone-proof-'));
+  let launched;
+  let clones = [];
+  t.after(async () => {
+    await launched?.close();
+    // Retain a genuine leak assertion while removing only this fixture's captured directory identities.
+    for (const clone of clones) {
+      try {
+        const stat = lstatSync(clone.path);
+        if (stat.isDirectory() && !stat.isSymbolicLink() && stat.dev === clone.dev && stat.ino === clone.ino) rmSync(clone.path, { recursive: true });
+      } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
+    rmSync(profile, { recursive: true, force: true });
+  });
+  launched = launchChromeProcess({ executable: findChromeExecutable(), args: ['--headless=new', '--disable-gpu',
+    '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--disable-sync',
+    '--disable-extensions', '--no-proxy-server', '--use-mock-keychain', '--password-store=basic',
+    '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'] });
+  const deadline = Date.now() + 15_000; // budget: observe the owned launch's native clone before deliberately killing it.
+  while (!clones.length && Date.now() < deadline) {
+    clones = observedChromeClones(launched.child);
+    if (!clones.length) await pause(100);
+  }
+  assert.ok(clones.length, 'the real owned Chrome must expose a native clone before the kill proof');
+  t.diagnostic(JSON.stringify({ ownedCloneCount: clones.length, paths: clones.map(clone => clone.path) }));
+  launched.child.kill('SIGKILL');
+  await launched.close();
+  assert.deepEqual(clones.filter(clone => existsSync(clone.path)), [], 'teardown removes this killed launch\'s actual code-sign clones');
+});
 
 /** Pause between checks while waiting for a fixture helper's readiness marker. */
 function pause(ms) {
