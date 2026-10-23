@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { test } from 'node:test';
+import { createAuthHandler } from '../relay/auth-http.js';
 import { createGitHubClient } from '../relay/github.js';
 import { githubFixture } from './relay-fixture.js';
 
@@ -25,6 +26,13 @@ test('a GitHub rate limit is named as one [H5,H16]', async (t) => {
     assert.match(error.message, new RegExp(resetAt.replace(/[.]/g, '\\.')));
     return true;
   });
+  const relay = createServer(createAuthHandler({ auth: { boardsFor: () => rateLimited.access(user, 'fixture/repository') }, publicOrigin: 'http://127.0.0.1' }));
+  relay.listen(0, '127.0.0.1');
+  await once(relay, 'listening');
+  t.after(() => { relay.closeAllConnections(); relay.close(); });
+  const answer = await fetch('http://127.0.0.1:' + relay.address().port + '/auth/boards');
+  assert.equal(answer.status, 429);
+  assert.equal((await answer.json()).error.code, 'GITHUB_RATE_LIMITED');
   assert.ok(lines.some(line => line.includes('403') && line.includes('x-ratelimit-remaining=0') && line.includes('x-ratelimit-reset=' + reset)), lines.join('\n'));
 
   fixture.state.installed = false;
