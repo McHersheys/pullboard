@@ -258,11 +258,11 @@ test('a name pattern with sharded discovery keeps its filter [C7,S13]', (t) => {
   /** Exercise configured discovery without explicit files, so the landing-shard branch is reached. */
   const execute = (pattern) => spawnSync(process.execPath, [join(box.bin, 'run-tests.js'),
     '--test-name-pattern', pattern], { cwd: box.root, env, encoding: 'utf8' });
-  const absent = execute('absent sharded case 1018');
-  assert.notEqual(absent.status, 0, `${absent.stdout}${absent.stderr}`);
-  assert.match(absent.stderr, /NO_TESTS_MATCHED/u);
-  assert.equal(existsSync(box.marker), false, 'a discarded filter must never run the tracked case');
   const present = execute('one discovered test');
   assert.equal(present.status, 0, `${present.stdout}${present.stderr}`);
-  assert.equal(readFileSync(box.marker, 'utf8'), 'x', 'matching discovery runs the selected case once');
+  assert.equal(readFileSync(box.marker, 'utf8'), 'x', 'the real configured shard is a positive control');
+  const absent = execute('absent sharded case 1018');
+  assert.notEqual(absent.status, 0, `${absent.stdout}${absent.stderr}`);
+  assert.match(absent.stderr, /NO_TESTS_MATCHED/u, `${absent.stdout}${absent.stderr}`);
+  assert.equal(readFileSync(box.marker, 'utf8'), 'x', 'a discarded filter must not run the tracked case again');
 });
