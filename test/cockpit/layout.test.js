@@ -33,7 +33,7 @@ test('the view never scrolls sideways at 320px [N26]', { timeout: 120_000 }, asy
     await chrome.send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: false });
     await chrome.stable(`document.documentElement.style.setProperty('--sans', ${JSON.stringify(font || 'system-ui, sans-serif')})`);
     await chrome.waitFor(`innerWidth === ${width}`);
-    for (const tab of ['items', 'shouts', 'spec', 'doctrine', 'activity', 'roadmap']) {
+    for (const tab of ['home', 'items', 'shouts', 'spec', 'doctrine', 'activity', 'roadmap']) {
       await chrome.click(`document.querySelector('[data-tab="${tab}"]')`);
       await chrome.waitFor(`!document.querySelector('[data-pane="${tab}"]').hidden`);
       const seen = JSON.parse(await chrome.stable(`JSON.stringify((() => {
@@ -318,7 +318,7 @@ test('the board reads at a glance from the status bar [N26]', { timeout: 180_000
         const r = await read();
         assert.ok(r.page.scroll <= r.page.width && r.page.body <= r.page.width, `${at}: no sideways scroll: ${JSON.stringify(r.page)}`);
         // The header carries the tabs and nothing else: no counts, no clock.
-        assert.deepEqual(r.tabs, ['Items', 'Shouts', 'Spec', 'Doctrine', 'Activity', 'Roadmap'], `${at}: the tabs carry no counts`);
+        assert.deepEqual(r.tabs, ['Home', 'Items', 'Shouts', 'Spec', 'Doctrine', 'Activity', 'Roadmap'], `${at}: the tabs carry no counts`);
         assert.ok(r.live === '' && r.liveInBar && !/live|\d\d:\d\d/.test(r.header), `${at}: a live board says nothing in the header: ${r.header}`);
         // On a phone the bar stays out of the way while the board is live.
         if (width === 375) assert.equal(r.barShown, false, `${at}: no status bar on a phone while live`);
