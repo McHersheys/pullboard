@@ -1,6 +1,10 @@
+import { withBoardRead } from '../board-read.js';
 /** The pullboard status command, in its own module so an item adding another command never edits these lines. */
 import * as store from '../board.js';
-import { personNeedsSummary } from '../needs-state.js';
+import { personNeedsSummary } from '../needs-summary.js';
+import { identifyCaller } from '../cli-identity.js';
+import { relayStateExists } from '../local-state.js';
+import { unlinkedRelayStatus } from '../relay-status-fields.js';
 import {
   reviewQueueLine,
 } from '../next-steps.js';
@@ -8,11 +12,7 @@ import {
   productLine,
   productSummaries,
 } from '../products.js';
-import * as relayOutput from '../relay-output.js';
-import {
-  originRepository,
-  relayStatus,
-} from '../relay.js';
+import { originRepository } from '../github-origin.js';
 import {
   loadSpec,
 } from '../spec.js';
@@ -23,25 +23,28 @@ import {
 import {
   context,
   span,
-  whoAmI,
-  withBoardRead,
-} from '../cli.js';
+} from '../cli-context.js';
 
 /** Run `pullboard status` and return its exit code. */
-export function run(io, { values }) {
+export async function run(io, { values }) {
   const ctx = context(io);
+  const hasRelayState = relayStateExists(ctx.info.commonDir);
+  const relay = hasRelayState ? await import('../relay.js') : null;
+  const environment = hasRelayState && process.env.PULLBOARD_RELAY_TOKEN !== undefined
+    ? await import('../relay-environment.js') : null;
   const summary = withBoardRead(ctx, (board) => {
-    const me = whoAmI(ctx, board);
+    const me = identifyCaller(ctx, board, { environmentAgent: environment?.environmentAgent ?? (() => null),
+      relayLinked: relay?.relayLinked ?? (() => false) });
     const mine = store.itemsInStatus(board, 'claimed', me.id);
     const approvalState = personNeedsSummary(ctx.info.root, { board, config: ctx.config });
-    return { me, mine, needs: approvalState.needs, specApprovalBaseline: approvalState.specApprovalBaseline, specApprovalEvidenceErrors: approvalState.specApprovalEvidenceErrors, stats: store.stats(board), reviewQueue: { ...store.reviewQueue(board), ...store.reviewQueueBreakdown(board) }, unread: store.unreadCount(board, me.id), relay: relayStatus(ctx.info.root),
+    return { me, mine, needs: approvalState.needs, specApprovalBaseline: approvalState.specApprovalBaseline, specApprovalEvidenceErrors: approvalState.specApprovalEvidenceErrors, stats: store.stats(board), reviewQueue: { ...store.reviewQueue(board), ...store.reviewQueueBreakdown(board) }, unread: store.unreadCount(board, me.id), relay: relay ? relay.relayStatus(ctx.info.root) : unlinkedRelayStatus(),
       submitInvariantProposals: submitInvariantProposals(store.submitInvariantEvents(board, ctx.config), ctx.config) };
   });
   if (values.json) {
     io.result(summary);
     return 0;
   }
-  for (const line of relayOutput.briefLines(summary.relay)) io.say(line);
+  if (hasRelayState) for (const line of (await import('../relay-output.js')).briefLines(summary.relay)) io.say(line);
   const { items, accepted, rejected } = summary.stats;
   io.say(`${summary.me.displayName}: ${summary.unread} unread shouts; holding ${summary.mine.map((item) => `#${item.item_id}`).join(', ') || 'nothing'}`);
   io.say(`board: ${items.open} open, ${items.claimed} claimed, ${items.submitted} awaiting verification, ${items.verified} verified, ${items.withdrawn} withdrawn`);

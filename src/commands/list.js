@@ -1,3 +1,4 @@
+import { withBoardRead } from '../board-read.js';
 /** The pullboard list command, in its own module so an item adding another command never edits these lines. */
 import * as store from '../board.js';
 import {
@@ -10,8 +11,7 @@ import {
   agentDisplayName,
   context,
   itemLine,
-  withBoardRead,
-} from '../cli.js';
+} from '../cli-context.js';
 
 /** Run `pullboard list` and return its exit code. */
 export function run(io, { first, values }) {

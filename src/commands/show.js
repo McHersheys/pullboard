@@ -1,3 +1,4 @@
+import { withBoardRead } from '../board-read.js';
 /** The pullboard show command, in its own module so an item adding another command never edits these lines. */
 import {
   displayAgentName,
@@ -31,12 +32,11 @@ import {
   idArg,
   itemLine,
   sayBrief,
-  withBoardRead,
-} from '../cli.js';
-import { relayStatus } from '../relay.js';
+} from '../cli-context.js';
+import { relayStateExists } from '../local-state.js';
 
 /** Run `pullboard show` and return its exit code. */
-export function run(io, { first, values }) {
+export async function run(io, { first, values }) {
   const ctx = context(io);
   const id = idArg(first);
   const { item, verdicts, moves, thread, related, reviewer, agents, mainMerge, infra, approval } = withBoardRead(ctx, (board) => ({
@@ -53,7 +53,9 @@ export function run(io, { first, values }) {
   const agentApproved = itemAgentApprovals(item, approval);
   const approvalQualification = agentApprovalLine(agentApproved);
   // #922: moves on this item made while the relay was down wait in this machine's relay outbox until it answers.
-  const relayPending = (relayStatus(ctx.info.root).outbox ?? []).filter((move) => move.item === id);
+  // Without a relay link or deleted-copy notice there is no outbox to read, so the relay client never loads.
+  const outbox = relayStateExists(ctx.info.commonDir) ? (await import('../relay.js')).relayStatus(ctx.info.root).outbox : undefined;
+  const relayPending = (outbox ?? []).filter((move) => move.item === id);
   if (values.json) {
     io.result({ ...item, verdicts, thread, agentApproved, approvalQualification, ...(relayPending.length ? { relayPending } : {}) });
     return 0;

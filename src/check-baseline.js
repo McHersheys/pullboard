@@ -12,7 +12,7 @@ import {
   mainCheckout,
   tryGit,
 } from './git.js';
-import { runShell } from './gate.js';
+import { runShell } from './shell-run.js';
 import { Refused } from './refused.js';
 
 /**

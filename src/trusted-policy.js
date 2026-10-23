@@ -3,9 +3,9 @@ import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import {
   digestOf,
-  sandboxBlockedScanner,
   writeTimingProfile,
-} from './gate.js';
+} from './gate-output.js';
+import { sandboxBlockedScanner } from './sandbox-denial.js';
 import {
   timingFromOutput,
   timingFromLog,
@@ -36,6 +36,7 @@ import {
   cleanGitEnvironment,
   gitConfig,
   invalidateGitFacts,
+  localConfigIs,
   mainCheckout,
   refuseGrafts,
 } from './git.js';
@@ -60,6 +61,8 @@ export function mainPolicy(root) {
 
 /** Retain the local primary branch outside replicated board data and read-only diagnostics [B34,V6]. */
 export function trunkRef(root, branch) {
+  // A trunk already recorded as this branch needs no Git process to confirm and nothing written.
+  if (branch !== undefined && localConfigIs(root, 'pullboard', 'trunk', branch)) return branch;
   const read = gitConfig(root, 'pullboard.trunk', { local: true, clean: true, flags: false, noReplace: true });
   if (read.status !== 0 && read.status !== 1) throw new Refused('NO_POLICY', 'the retained trunk cannot be read; restore the local Git configuration and retry');
   const current = read.status === 0 ? read.stdout.trim() : null;

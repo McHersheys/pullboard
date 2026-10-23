@@ -30,6 +30,8 @@ const gitFacts = new AsyncLocalStorage();
 const gitReadFacts = new AsyncLocalStorage();
 const READ_FACT_LIMIT = 512;
 const persistentReadFacts = new Map();
+/** Inherited Git variables that select another repository, index, object store or configuration. */
+const INHERITED_SELECTORS = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_PREFIX', 'GIT_CONFIG', 'GIT_CONFIG_PARAMETERS', 'GIT_CONFIG_COUNT', 'GIT_IMPLICIT_WORK_TREE', 'GIT_GRAFT_FILE', 'GIT_REPLACE_REF_BASE', 'GIT_SHALLOW_FILE'];
 
 /** Mark API read work so selected facts use the bounded process-lifetime, filesystem-validated cache.
  *
@@ -201,6 +203,28 @@ function repositorySignature(cwd, info = null, includeHead = false, { attributio
   return JSON.stringify(markers);
 }
 
+/** Whether every GIT_CONFIG_KEY_n override is one that selects no repository or Git object. */
+function safeConfigOverrides(env, count) {
+  // Identity validation and automatic housekeeping do not select repositories or Git objects.
+  const safeOverrides = new Set(['user.useconfigonly', 'gc.auto', 'maintenance.auto']);
+  for (let index = 0; index < count; index += 1) {
+    const key = env[`GIT_CONFIG_KEY_${index}`];
+    const value = env[`GIT_CONFIG_VALUE_${index}`];
+    if (!key || value === undefined || !safeOverrides.has(key.toLowerCase())) return false;
+  }
+  return true;
+}
+
+/**
+ * Whether Git run with this process's environment sees the same repository and refs as with a clean one: nothing
+ * selects another repository, object store or configuration, and config overrides are housekeeping only.
+ */
+function plainRepositoryEnvironment(env = process.env) {
+  if (INHERITED_SELECTORS.some((key) => !['GIT_CONFIG_COUNT', 'GIT_INDEX_FILE', 'GIT_PREFIX'].includes(key) && env[key] !== undefined)) return false;
+  const count = env.GIT_CONFIG_COUNT === undefined ? 0 : Number(env.GIT_CONFIG_COUNT);
+  return Number.isSafeInteger(count) && count >= 0 && count <= 16 && safeConfigOverrides(env, count);
+}
+
 /** Describe relevant Git environment/config so harmless process settings can still share read facts. */
 function readCacheContext({ attribution = false } = {}) {
   const env = process.env;
@@ -217,13 +241,7 @@ function readCacheContext({ attribution = false } = {}) {
   if (env.GIT_CONFIG_PARAMETERS) return null;
   const count = env.GIT_CONFIG_COUNT === undefined ? 0 : Number(env.GIT_CONFIG_COUNT);
   if (!Number.isSafeInteger(count) || count < 0 || count > 16) return null;
-  // Identity validation and automatic housekeeping do not select repositories or Git objects.
-  const safeOverrides = new Set(['user.useconfigonly', 'gc.auto', 'maintenance.auto']);
-  for (let index = 0; index < count; index += 1) {
-    const key = env[`GIT_CONFIG_KEY_${index}`];
-    const value = env[`GIT_CONFIG_VALUE_${index}`];
-    if (!key || value === undefined || !safeOverrides.has(key.toLowerCase())) return null;
-  }
+  if (!safeConfigOverrides(env, count)) return null;
   const files = new Set();
   if (env.GIT_CONFIG) files.add(env.GIT_CONFIG);
   if (env.GIT_CONFIG_GLOBAL) files.add(env.GIT_CONFIG_GLOBAL);
@@ -342,7 +360,8 @@ function changesGitFacts(args) {
  */
 export function cleanGitEnvironment() {
   const env = { ...process.env };
-  for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_PREFIX', 'GIT_CONFIG', 'GIT_CONFIG_PARAMETERS', 'GIT_CONFIG_COUNT', 'GIT_IMPLICIT_WORK_TREE', 'GIT_GRAFT_FILE', 'GIT_NO_REPLACE_OBJECTS', 'GIT_REPLACE_REF_BASE', 'GIT_SHALLOW_FILE']) delete env[key];
+  for (const key of INHERITED_SELECTORS) delete env[key];
+  delete env.GIT_NO_REPLACE_OBJECTS;
   for (const key of Object.keys(env)) if (/^GIT_CONFIG_(?:KEY|VALUE)_/.test(key)) delete env[key];
   env.GIT_NO_REPLACE_OBJECTS = '1';
   return env;
@@ -512,14 +531,29 @@ export function repoInfo(cwd, { env } = {}) {
   return fact(key, () => readRepoInfo(cwd));
 }
 
-/** Read top level, worktree Git dir and shared Git dir in one process.
+/**
+ * Read top level, worktree Git dir and shared Git dir in one process. With no inherited selector, the same process
+ * also reads this checkout's HEAD commit and the primary checkout's branch and commit, and keeps them as this
+ * command's headCommit and mainCheckout facts, so a command learns where it is, its head and the trunk from one call.
  *
  * @param {string} cwd
  * @returns {{ root: string, commonDir: string, gitDir: string, isMain: boolean }}
  */
 function readRepoInfo(cwd, env) {
-  const info = tryGit(cwd, ['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-dir', '--git-common-dir'], { env });
+  const combined = !env && gitFacts.getStore()?.active && plainRepositoryEnvironment();
+  const primary = combined ? ['HEAD', 'main-worktree/HEAD', '--symbolic-full-name', 'main-worktree/HEAD'] : [];
+  const info = tryGit(cwd, ['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-dir', '--git-common-dir', ...primary], { env });
+  // An unborn branch here or in the primary checkout fails the combined call after the paths; ask for the paths alone.
+  if (combined && info.status !== 0 && info.stdout) return readRepoInfo(cwd, process.env);
   const fields = info.stdout.split('\n');
+  if (combined && info.status === 0 && fields.length === 6 && fields.every(Boolean)) {
+    const [root, , , head, commit, branch] = fields;
+    const { facts } = gitFacts.getStore();
+    facts.set(`headCommit:${resolve(root)}`, head);
+    // A detached primary checkout names no branch, as symbolic-ref reports it.
+    facts.set(`mainCheckout:${resolve(root)}`, branch.startsWith('refs/') ? { branch, commit } : null);
+    fields.length = 3;
+  }
   if (info.status !== 0 || fields.length !== 3 || fields.some((field) => !field)) {
     const bare = bareWorktreeFinding(cwd);
     if (bare) throw new Refused(bare.code, `${bare.message}; run ${bare.next}`);
@@ -550,7 +584,8 @@ export function codeUsesRepository(commonDir, root = CODE_ROOT) {
 
 /** Determine whether the code is from its main checkout, retaining the non-repository fallback. */
 function readCodeIsFromMain(root) {
-  const env = gitChildEnv(root);
+  // The same variables `git rev-parse --local-env-vars` names, cleared without a Git process to ask.
+  const env = cleanGitEnvironment();
   const info = tryGit(root, ['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-dir', '--git-common-dir'], { env });
   const fields = info.stdout.split('\n');
   if (info.status === 0 && fields.length === 3 && fields.every(Boolean)) {
@@ -569,6 +604,37 @@ function readCodeIsFromMain(root) {
     if (parent === folder) return true;
     folder = parent;
   }
+}
+
+/**
+ * Whether the config file `git config --local` reads holds exactly one plain `<section>.<key>`, and it is `value`.
+ * False whenever the file could mean anything less certain (an include, a continued line, a quoted or commented
+ * value, a repeated key, an inherited selector), so the caller asks Git as before.
+ *
+ * @param {string} root
+ * @param {string} section
+ * @param {string} key
+ * @param {string} value
+ * @returns {boolean}
+ */
+export function localConfigIs(root, section, key, value) {
+  if (!/^[\w./-]+$/u.test(value) || !plainRepositoryEnvironment()) return false;
+  let text;
+  try { text = readFileSync(join(repoInfo(root).commonDir, 'config'), 'utf8'); }
+  catch { return false; }
+  if (/^\s*\[\s*include/imu.test(text) || /\\\r?$/mu.test(text)) return false;
+  let inSection = false;
+  const values = [];
+  for (const line of text.split('\n')) {
+    const header = /^\s*\[([^\]]*)\]\s*$/u.exec(line);
+    if (header) inSection = header[1].trim().toLowerCase() === section;
+    else if (/^\s*\[/u.test(line)) return false;
+    else {
+      const entry = /^\s*([A-Za-z][A-Za-z0-9-]*)\s*(?:=\s*(.*?))?\s*$/u.exec(line);
+      if (inSection && entry?.[1].toLowerCase() === key) values.push(entry[2]);
+    }
+  }
+  return values.length === 1 && values[0] === value;
 }
 
 /**
