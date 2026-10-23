@@ -32,9 +32,9 @@ function fixture(t) {
   runFixtureGit(['add', 'pullboard.json', 'SPEC.md'], { cwd: root });
   runFixtureGit(['-c', 'user.name=Assurance fixture', '-c', 'user.email=assurance@example.invalid', 'commit', '-q', '-m', 'chore: initialize assurance fixture'], { cwd: root });
   mkdirSync(join(root, '.git', 'pullboard'), { recursive: true });
-  const board = store.openBoard(join(root, '.git', 'pullboard', 'board.sqlite'));
+  const board = store.openBoard(join(root, '.git', 'pullboard', 'board.sqlite'), { now: () => new Date('2026-10-23T12:00:00.000Z') });
   t.after(() => store.closeBoard(board));
-  return { root, board };
+  return { root, board, sequence: 0 };
 }
 
 /** Build and accept once without inventing a gate execution for the board-state fixture. */
@@ -60,7 +60,7 @@ function accepted(box, builderParent, reviewerParent, { historicalUnknown = fals
     note: 'Changed the private fixture edge; its assertion failed, then passed when restored.' };
   if (engine !== undefined) {
     const move = { ...prepareEngineMove(box.board, 'verify', [id, verdict]), engine };
-    const outcome = applyEngineMove(box.board, move, { sequence: 1, at: '2026-10-23T12:00:00.000Z' });
+    const outcome = applyEngineMove(box.board, move, { sequence: ++box.sequence, at: '2026-10-23T12:00:00.000Z' });
     assert.equal(outcome.error, undefined, 'the historical verdict replays through the ordinary engine');
   } else store.verify(box.board, id, verdict);
   return { id, builderPath, reviewerPath };
@@ -68,7 +68,7 @@ function accepted(box, builderParent, reviewerParent, { historicalUnknown = fals
 
 test('[V1,B3] verdicts record independent assurance only for recorded different parents and show prints the tier', async (t) => {
   const box = fixture(t);
-  const independent = accepted(box, 'parent-P', 'parent-Q');
+  const independent = accepted(box, 'parent-P', 'parent-Q', { engine: 90 });
   assert.equal(store.verdictsFor(box.board, independent.id)[0].assurance, 'independent');
   for (const parents of [[undefined, 'parent-Q'], ['parent-P', undefined], [undefined, undefined]]) {
     const procedural = accepted(box, ...parents);
