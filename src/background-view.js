@@ -21,7 +21,10 @@ import { fileURLToPath } from 'node:url';
 import { fetchLocal } from './local-fetch.js';
 import { Refused } from './refused.js';
 import { registryFile } from './projects.js';
-import { LOOPBACK } from './serve.js';
+import {
+  HOSTED_ORIGIN,
+  LOOPBACK,
+} from './serve.js';
 import { defaultViewPort } from './view-port.js';
 import {
   portHolder,
@@ -189,18 +192,18 @@ export async function keepViewRunning(env = process.env) {
 
 /**
  * The one line init and resume print about the background view, or null when there is nothing
- * to say. Every line that names a running view says how to stop it.
+ * to say. Every line that names a running view says how to stop it, and names app.pullboard.dev
+ * rather than the bare view address, which opens only to a refusal without the key.
  *
  * @param {Awaited<ReturnType<typeof keepViewRunning>>} outcome
  * @returns {string | null}
  */
 export function backgroundViewLine(outcome) {
-  const where = `http://${LOOPBACK}:${outcome.port}`;
   const off = `turn this off with "view": { "background": false } in ${machineSettingsFile()}`;
   if (outcome.state === 'started') {
-    return `Pullboard view is running in the background at ${where}, so pullboard.dev finds this computer's boards (log: ${outcome.log}). To stop it: ${stopCommand(outcome.pid)}; ${off}`;
+    return `Pullboard view is running in the background, so ${HOSTED_ORIGIN} finds this computer's boards (log: ${outcome.log}). To stop it: ${stopCommand(outcome.pid)}; ${off}`;
   }
-  if (outcome.state === 'running') return `Pullboard view is running at ${where}, so pullboard.dev finds this computer's boards. To stop it: ${stopCommand(outcome.pid)}`;
+  if (outcome.state === 'running') return `Pullboard view is running, so ${HOSTED_ORIGIN} finds this computer's boards. To stop it: ${stopCommand(outcome.pid)}`;
   if (outcome.state === 'busy') {
     const { holder } = outcome;
     return `Port ${outcome.port} is in use${holder ? ` by ${holder.name} (pid ${holder.pid})` : ''}, so the background view did not start, and pullboard.dev looks for your view on that port: stop ${holder ? `it with ${stopCommand(holder.pid)}` : 'the program there'}, then run pullboard resume`;
