@@ -29,6 +29,12 @@ import { BOARD_SENTINEL_ENGINE } from '../src/sentinels.js';
 import { sentinelDefinition } from '../src/sentinels.js';
 import { sentinelDigest } from '../src/sentinels.js';
 import { sentinels } from '../src/sentinels.js';
+import { executeMove } from '../src/api.js';
+import { moveArgs } from '../src/api-moves.js';
+import { personRequestMove, preparePersonRequest } from '../src/person-request.js';
+import { personRequestRecords, receivePersonRequest, requestIntentDigest, requestMoveProblem, requestStageText } from '../src/relay-requests.js';
+import { PEOPLE_ENGINE } from '../src/people-engine.js';
+import { sentinelDraftNeeds } from '../src/sentinels.js';
 import { machineSettingsFile } from '../src/settings.js';
 import { runFixtureChild } from './fixture-child.js';
 import { runFixtureGit } from './fixture-child.js';
@@ -455,4 +461,108 @@ test('the background observer runs an approved board watch through its real resu
   assert.equal(readFileSync(runs, 'utf8'), 'run\n', 'the next callback honors the recorded due time');
   await observer.close();
   assert.equal(cancelled, true);
+});
+
+
+test('a person approves or declines a sentinel by its exact proposal [N26,P6]', async t => {
+  const box = fixture(t);
+  const proposal = store.proposeSentinel(box.board, { agentId: box.agent,
+    row: { name: 'view-watch', check: 'true', directory: '.', every: 'hourly', owner: 'core' } });
+  const draft = sentinelDraftNeeds(sentinels(box.board))[0];
+  assert.deepEqual([draft.check, draft.directory, draft.every, draft.owner, draft.digest],
+    [proposal.check, proposal.directory, proposal.every, proposal.owner, proposal.digest],
+    'the person sees the exact command, directory, schedule, owner and proposal digest');
+  /** Exercise the existing API-to-CLI adapter on this actual private person-view board. */
+  const act = (intent, channel = 'view') => executeMove(box.root, intent,
+    (argv, streams) => main(argv, { ...streams, clock: box.clock }), undefined, channel);
+  const approval = personRequestMove({ verb: 'sentinel-approve', args: { name: proposal.name, digest: proposal.digest } });
+  assert.deepEqual(moveArgs(approval), ['sentinel', 'approve', `--digest=${proposal.digest}`, '--json', '--', proposal.name]);
+  for (const args of [{ name: proposal.name }, { ...approval.args, digest: 'not-a-digest' }, { ...approval.args, as: 'person' }]) {
+    assert.throws(() => personRequestMove({ verb: 'sentinel-approve', args }), error => error.code === 'BAD_REQUEST');
+  }
+  const approved = await act(approval);
+  assert.equal(approved.status, 200, JSON.stringify(approved));
+  assert.equal(sentinels(box.board)[0].status, 'approved');
+  const replacement = store.proposeSentinel(box.board, { agentId: box.agent, row: { ...proposal, check: 'false' } });
+  const beforeStale = exportBoard(box.board);
+  const stale = await act(approval);
+  assert.equal(stale.body.error?.code, 'STALE_SENTINEL');
+  assert.deepEqual(exportBoard(box.board), beforeStale, 'an old tap neither approves the replacement nor writes a decision');
+  const decline = personRequestMove({ verb: 'sentinel-decline', args: { name: replacement.name,
+    digest: replacement.digest, reason: '  Not this command  ' } });
+  assert.deepEqual(moveArgs(decline), ['sentinel', 'decline', `--digest=${replacement.digest}`,
+    '--reason=  Not this command  ', '--json', '--', replacement.name]);
+  const declined = await act(decline);
+  assert.equal(declined.status, 200, JSON.stringify(declined));
+  assert.equal(sentinels(box.board)[0].status, 'declined');
+  assert.equal(sentinels(box.board)[0].reason, 'Not this command');
+  for (const intent of [approval, decline]) {
+    const beforeAgent = exportBoard(box.board);
+    const refused = await act(intent, 'agent');
+    assert.equal(refused.body.error?.code, 'B26_PERSON_CHANNEL');
+    assert.deepEqual(exportBoard(box.board), beforeAgent, 'an agent API channel never makes a person decision');
+  }
+  const relayed = store.proposeSentinel(box.board, { agentId: box.agent,
+    row: { name: 'relay-watch', check: 'true', every: 'daily', owner: 'core' } });
+  const intent = { verb: 'sentinel-approve', args: { name: relayed.name, digest: relayed.digest } };
+  /** Receive only through the ordinary durable authenticated request intake. */
+  const receive = (id, sender, requested = intent) => receivePersonRequest(box.board, preparePersonRequest(requested, id),
+    { sequence: appliedSequence(box.board) + 1, at: box.clock.now().toISOString(), sender });
+  assert.equal(receive('agent-sentinel', { kind: 'agent', agent: box.agent, userId: 'fixture-person' }).error?.code, 'RELAY_PERSON_ONLY');
+  assert.equal(receive('member-sentinel', { kind: 'person', userId: 'fixture-person', approver: false }).error?.code, 'NOT_APPROVER');
+  const person = { kind: 'person', userId: 'fixture-person', approver: true, login: 'phone-person', engine: PEOPLE_ENGINE };
+  const record = receive('person-sentinel', person);
+  assert.equal(record.status, 'waiting');
+  /** Bind each ordinary effect to the exact authenticated document under the existing receipt verifier. */
+  const tagged = (operation, args, phase, id, requested = record) => {
+    const move = prepareEngineMove(box.board, operation, args, { id });
+    move.personRequest = { id: requested.id, executor: 'fixture-device', phase, digest: requestIntentDigest(requested) };
+    return move;
+  };
+  /** The elected machine may carry the person's exact request, never mint another person action. */
+  const replay = move => applyRelayMove(box.board, move, { sequence: appliedSequence(box.board) + 1,
+    at: box.clock.now().toISOString(), kind: 'move', sender: { kind: 'machine', machine: 'fixture-device',
+      userId: 'fixture-person', login: 'executor-person', engine: PEOPLE_ENGINE } });
+  const claim = tagged('shout', [{ from: 'person', to: 'coordinator', text: requestStageText(record, 'claim'), lanes: ['core'] }], 'claim', 'sentinel-claim');
+  assert.equal(replay(claim).error, undefined);
+  const decision = { agentId: store.PERSON, channel: 'view', name: relayed.name,
+    digest: relayed.digest, decision: 'approve', reason: '' };
+  for (const [index, change] of [{ name: 'view-watch' }, { digest: proposal.digest }, { decision: 'decline', reason: 'not requested' },
+    { reason: 'not requested' }, { agentId: box.agent }, { channel: 'terminal' }].entries()) {
+    const badMove = tagged('decideSentinel', [{ ...decision, ...change }], 'execute', `sentinel-bad-${index}`);
+    assert.equal(requestMoveProblem(box.board, badMove)?.code, 'PERSON_REQUEST_RECEIPT');
+    assert.equal(replay(badMove).error?.code, 'RELAY_PERSON_ONLY', 'an invalid receipt never grants the machine person authority');
+    assert.equal(sentinels(box.board).find(row => row.name === relayed.name).status, 'pending');
+    assert.equal(personRequestRecords(box.board).find(row => row.id === record.id).status, 'waiting');
+  }
+  const applied = replay(tagged('decideSentinel', [decision], 'execute', 'sentinel-exact'));
+  assert.equal(applied.error, undefined, JSON.stringify(applied));
+  assert.equal(sentinels(box.board).find(row => row.name === relayed.name).status, 'approved');
+  assert.equal(personRequestRecords(box.board).find(row => row.id === record.id).status, 'done');
+  assert.equal(JSON.parse(box.board.db.prepare("SELECT event_detail FROM event WHERE event_kind='sentinel-decision' ORDER BY event_id DESC LIMIT 1").get().event_detail).person,
+    person.login, 'the decision belongs to the initiating phone person, not its executor');
+  const nextProposal = store.proposeSentinel(box.board, { agentId: box.agent, row: { ...relayed, check: 'false' } });
+  const declineIntent = { verb: 'sentinel-decline', args: { name: nextProposal.name,
+    digest: nextProposal.digest, reason: '  Requested decline  ' } };
+  const declineRecord = receive('person-sentinel-decline', person, declineIntent);
+  assert.equal(declineRecord.status, 'waiting');
+  const declineClaim = tagged('shout', [{ from: 'person', to: 'coordinator',
+    text: requestStageText(declineRecord, 'claim'), lanes: ['core'] }], 'claim', 'sentinel-decline-claim', declineRecord);
+  assert.equal(replay(declineClaim).error, undefined);
+  const declineDecision = { agentId: store.PERSON, channel: 'view', name: nextProposal.name,
+    digest: nextProposal.digest, decision: 'decline', reason: declineIntent.args.reason.trim() };
+  const wrongReason = tagged('decideSentinel', [{ ...declineDecision, reason: 'A different reason' }],
+    'execute', 'sentinel-decline-wrong-reason', declineRecord);
+  assert.equal(requestMoveProblem(box.board, wrongReason)?.code, 'PERSON_REQUEST_RECEIPT');
+  assert.equal(replay(wrongReason).error?.code, 'RELAY_PERSON_ONLY');
+  assert.equal(sentinels(box.board).find(row => row.name === nextProposal.name).status, 'pending');
+  assert.equal(personRequestRecords(box.board).find(row => row.id === declineRecord.id).status, 'waiting');
+  const exactDecline = replay(tagged('decideSentinel', [declineDecision], 'execute', 'sentinel-decline-exact', declineRecord));
+  assert.equal(exactDecline.error, undefined, JSON.stringify(exactDecline));
+  const declinedRelay = sentinels(box.board).find(row => row.name === nextProposal.name);
+  assert.equal(declinedRelay.status, 'declined');
+  assert.equal(declinedRelay.reason, 'Requested decline');
+  assert.equal(personRequestRecords(box.board).find(row => row.id === declineRecord.id).status, 'done');
+  assert.equal(JSON.parse(box.board.db.prepare("SELECT event_detail FROM event WHERE event_kind='sentinel-decision' ORDER BY event_id DESC LIMIT 1").get().event_detail).person,
+    person.login, 'the authenticated decline preserves its initiating person');
 });
