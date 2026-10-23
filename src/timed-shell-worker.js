@@ -1,6 +1,6 @@
 /** Run a bounded shell under identity-checked process custody before returning its result [E27]. */
 import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createDescendantTracker } from './runner-custody.js';
@@ -18,7 +18,7 @@ let overflow = false;
 let error = null;
 let bytes = 0;
 let stopping;
-const chunks = [];
+writeFileSync(request.outputFile, '', { mode: 0o600, flag: 'wx' });
 const closed = new Promise(resolveClose => {
   child.once('error', cause => { error = cause.message; resolveClose({ status: null, signal: null }); });
   child.once('close', (status, signal) => resolveClose({ status, signal }));
@@ -47,7 +47,7 @@ function stop() {
 function capture(chunk) {
   bytes += chunk.length;
   if (bytes > 2 ** 30) { overflow = true; void stop(); }
-  else chunks.push(chunk);
+  else appendFileSync(request.outputFile, chunk);
 }
 child.stdout.on('data', capture);
 child.stderr.on('data', capture);
@@ -60,4 +60,4 @@ clearTimeout(timer);
 await stop();
 tracker.stopMonitoring();
 rmSync(directory, { recursive: true, force: true });
-process.stdout.write(JSON.stringify({ ...result, timedOut, overflow, error, output: Buffer.concat(chunks).toString('utf8') }));
+process.stdout.write(JSON.stringify({ ...result, timedOut, overflow, error }));
