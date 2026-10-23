@@ -8,10 +8,8 @@
  * every code raised in src/ has a row here.
  */
 import { RECORDED_GENERIC_NEXT } from './recorded-refusal.js';
-import {
-  Refused,
-  recordBlock,
-} from './refused.js';
+import { Refused } from './refused.js';
+import { recordBlock } from './blocks.js';
 
 /** Describe the queue's actual outstanding reviews and submission age [Q1,V15]. */
 export function reviewQueueLine(ctx, queue, span) {

@@ -16,7 +16,7 @@ import {
   undraftedRigor,
 } from './rigor-notices.js';
 import { personNeeds } from './needs.js';
-import { readBlocks } from './refused.js';
+import { readBlocks } from './blocks.js';
 import { displayAgentName } from './agent-names.js';
 import {
   projectSpecApprovals,
