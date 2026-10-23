@@ -1,12 +1,13 @@
 /** @pullboard-test-input source-tree */
 /** Cockpit needs checks, using the shared real-board fixtures [N26]. */
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { SPEC, machine, project, build, sendBack, startView, styleOf, element, openPage, projectRows, agentEntries, needEntries, itemRow, shoutNameText, chromeExecutable, openSnapshotChrome, closeSnapshotChrome, chooseFilter, boardId, boardOf, fetchLive, serveFolder } from './fixture.js';
+import { BIN, SPEC, machine, project, build, sendBack, startView, styleOf, element, openPage, projectRows, agentEntries, needEntries, itemRow, shoutNameText, chromeExecutable, openSnapshotChrome, closeSnapshotChrome, chooseFilter, boardId, boardOf, fetchLive, serveFolder } from './fixture.js';
 import { cockpitPage } from '../../src/cockpit.js';
 import { runFixtureChild } from '../fixture-child.js';
 import { approvalAgentApi, approvalReadGate } from './agent-approval-fixture.js';
@@ -141,6 +142,50 @@ test("the page's Needs-you comes from the shared builder [N26]", { timeout: 180_
     if (relayServer) await new Promise(resolve => relayServer.close(resolve));
     if (snapshotHost) await snapshotHost.close();
     for (const profile of profiles) rmSync(profile, { recursive: true, force: true });
+    await view.stop();
+  }
+});
+
+test('a person-only block shows in Needs you with its one step [N26]', async () => {
+  const box = machine();
+  const alpha = project(box, 'person block');
+  box.env.CLAUDECODE = '1';
+  const refused = spawnSync(process.execPath, [BIN, 'answer', '1', 'yes', '--as', 'person'], {
+    cwd: alpha.repo, env: box.env, encoding: 'utf8',
+  });
+  delete box.env.CLAUDECODE;
+  assert.equal(refused.status, 1, refused.stderr);
+  assert.match(refused.stderr, /only the person can clear this/u);
+
+  const view = await startView(box);
+  try {
+    const page = await openPage(view);
+    const state = await boardOf(view, alpha.repo);
+    assert.equal(state.blocks.length, 1, 'the live API supplies the person-only block list');
+    assert.equal(state.blocks[0].audience, 'person');
+    const entries = needEntries(page.show('needs'));
+    assert.deepEqual(entries, [[null, 'blocked', 'Pullboard stopped a request that only you can clear: this terminal belongs to an agent',
+      state.blocks[0].step, 'next step']], 'the view shows the plain reason and the exact API step without a bogus release action');
+    assert.doesNotMatch(page.show('needs'), /B26_PERSON_CHANNEL|--as|pullboard answer/u,
+      'the view does not expose the rule code or refused command');
+
+    // Model #1077's API result after a successful matching move: the view follows the returned list instead of
+    // maintaining its own clear rule or editing the ledger.
+    page.run(`globalThis.realFetch = fetch;
+globalThis.hidePersonBlocks = false;
+globalThis.fetch = async function controlledStateFetch(path, init) {
+  const reply = await globalThis.realFetch(path, init);
+  if (!globalThis.hidePersonBlocks || !String(path).includes('/state')) return reply;
+  const body = await reply.json();
+  if (!body.state) throw new Error('the test expected a fresh board-state response');
+  body.state.blocks = [];
+  return { ok: reply.ok, status: reply.status, json: async () => body };
+};`);
+    page.run('globalThis.hidePersonBlocks = true; sentStates.clear();');
+    await page.run('refresh()');
+    assert.equal(needEntries(page.show('needs')).some(entry => entry[2].includes('Pullboard stopped a request')), false,
+      'the row disappears when the next API state no longer lists the block');
+  } finally {
     await view.stop();
   }
 });

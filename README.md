@@ -16,7 +16,7 @@
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/npm/l/pullboard?style=flat-square&color=6b4fc8"></a>
 </p>
 
-<p align="center"><a href="https://youtu.be/O0kRdvd6dno"><img src="https://github.com/user-attachments/assets/958f602c-dafe-4608-abe1-1332e4393d28" alt="A builder agent says done and tests pass. A second agent checks the work, finds a problem and sends it back with the reason. The fix passes and merges." width="720"></a></p>
+<p align="center"><a href="https://youtu.be/O0kRdvd6dno"><img src="https://github.com/user-attachments/assets/685da2ee-3be5-4d39-b14a-dba1a2cbb30d" alt="A builder agent says done and tests pass. A second agent checks the work, finds a problem and sends it back with the reason. The fix passes and merges." width="720"></a></p>
 
 <p align="center"><a href="https://youtu.be/O0kRdvd6dno"><b>▶ Watch the 90-ish second explainer</b></a></p>
 
