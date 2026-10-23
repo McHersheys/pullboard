@@ -113,7 +113,7 @@ export function assertMatchingLandingHost(helpers) {
   const receipts = receiptStore(box.repo);
   const head = box.git(box.repo, 'rev-parse', 'HEAD');
   const receipt = readdirSync(receipts).map(file => readGateReceipt(receipts, file.replace(/\.json$/u, '')))
-    .find(run => run?.kind === 'gate' && run.head === head);
+    .find(run => run?.kind === 'land' && run.head === head);
   assert.ok(receipt, 'the actual pre-push gate retained its canonical receipt for the committed trunk');
   assert.deepEqual(receipt.environment, environment);
   assert.equal(receiptBinds(receiptStore(box.repo), receipt), true);
