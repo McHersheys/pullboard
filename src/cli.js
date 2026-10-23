@@ -834,10 +834,10 @@ function configHere(info) {
  * @template T
  * @param {any} ctx
  * @param {(board: any) => T} work
+ * @param {any} [board] an already-open board, as withBoardRead passes
  * @returns {T}
  */
-export function withBoard(ctx, work) {
-  const board = store.openBoard(ctx.file, ctx.clock, { isMain: ctx.allowSchemaUpgrade });
+export function withBoard(ctx, work, board = store.openBoard(ctx.file, ctx.clock, { isMain: ctx.allowSchemaUpgrade })) {
   // Whether a proven flake stops blocking a landing is the coordinator's setting, read from accepted main on first use.
   let quarantine;
   board.quarantineEnabled = () => quarantine ??= mainPolicy(ctx.info.root).config.flakes?.quarantine === true;
@@ -857,6 +857,18 @@ export function withBoard(ctx, work) {
   if (result && typeof result.then === 'function') return result.finally(finish);
   finish();
   return result;
+}
+
+/**
+ * withBoard for a command that only reads: the board opens read-only, without the write lock or a
+ * migration (#1047). A board that needs a migration, or work that writes after all (a first
+ * coordinator registration), runs again through withBoard; SQLite refused the write, so nothing ran twice.
+ */
+export function withBoardRead(ctx, work) {
+  const board = store.openCurrentBoardReadOnly(ctx.file, ctx.clock);
+  if (!board) return withBoard(ctx, work);
+  try { return withBoard(ctx, work, board); }
+  catch (error) { if (store.writeRefused(error)) return withBoard(ctx, work); throw error; }
 }
 
 /**
@@ -2001,7 +2013,7 @@ export function sayReviewOffer(ctx, found) {
   const offer = { item: found.item.item_id, command, queue: found.offer.queue, ratio: found.offer.ratio };
   ctx.io.result?.({ item: found.item, review: true, held: false, shared: [], offer, build: found.build });
   ctx.io.say(`${reviewQueueLine(ctx, offer.queue, span)}; ratio ${offer.ratio} reached (zero active reviewers counts as one)`);
-  const agents = withBoard(ctx, (board) => store.listAgents(board));
+  const agents = withBoardRead(ctx, (board) => store.listAgents(board));
   ctx.io.say(`review offered: #${found.item.item_id} ${found.item.item_title}, built by ${agentDisplayName(agents, ctx.config, found.item.item_built_by)}; reserve it explicitly: ${command}`);
   if (found.build) ctx.io.say(`build available: #${found.build.item_id} ${found.build.item_title}; claim it explicitly: pullboard next --build`);
   else ctx.io.say('no build is currently free in your lane; this review is available');
@@ -2015,7 +2027,7 @@ export function sayReviewOffer(ctx, found) {
  * @param {any} ctx
  */
 export function refuseWhileBuilding(ctx) {
-  const building = withBoard(ctx, (board) => {
+  const building = withBoardRead(ctx, (board) => {
     const me = whoAmI(ctx, board).id;
     const items = store.listItems(board);
     if (items.some((item) => item.item_status === 'submitted' && item.item_built_by !== me)) return [];

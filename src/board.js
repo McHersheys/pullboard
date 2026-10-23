@@ -25,6 +25,13 @@ import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { boardNotWritable } from './board-access.js';
 import {
+  boardIsCurrent,
+  migrate,
+  recordSchemaStamp,
+  schemaDigest,
+} from './board-migrate.js';
+export { writeRefused } from './board-migrate.js';
+import {
   briefFiles,
   briefSections,
 } from './brief.js';
@@ -254,6 +261,23 @@ const SCHEMA = `
   );
 `;
 
+/** This code's schema digest: a board stamped with it and its present shape needs no migration. */
+const SCHEMA_DIGEST = schemaDigest(SCHEMA, EVENT_LOG_VERSION);
+
+/**
+ * Open the board for a command that only reads: read-only, with no write lock and no migration, so
+ * a writer holding the lock never stalls it (#1047). Null when there is no board yet or it needs a
+ * migration, which only a write open runs.
+ */
+export function openCurrentBoardReadOnly(file, clock = systemClock) {
+  if (file === ':memory:' || !existsSync(file)) return null;
+  const db = openBoardReadOnly(file);
+  let current = false;
+  try { current = boardIsCurrent(db, SCHEMA_DIGEST, SCHEMA_VERSION); }
+  finally { if (!current) db.close(); }
+  return current ? { db, clock, readOnly: true } : null;
+}
+
 /** Open an existing board without migrations, waiting for the same locks as openBoard. */
 export function openBoardReadOnly(file) {
   const startedAt = Date.now();
@@ -313,11 +337,15 @@ export function openBoard(file, clock = systemClock, { isMain } = {}) {
     db = new DatabaseSync(file);
     db.exec(`PRAGMA busy_timeout = ${BOARD_BUSY_TIMEOUT_MS}`);
     if (file !== ':memory:') db.exec('PRAGMA journal_mode = WAL');
-    migrateEventLogVersion(db);
-    migrate(db);
-    db.prepare('INSERT OR IGNORE INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run('board_id', randomBytes(16).toString('hex'));
+    // A board this code already migrated skips the migration, its write lock and the trigger audit (#1047).
+    const current = boardIsCurrent(db, SCHEMA_DIGEST, SCHEMA_VERSION);
+    if (!current) {
+      migrateEventLogVersion(db);
+      migrate(db);
+      db.prepare('INSERT OR IGNORE INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run('board_id', randomBytes(16).toString('hex'));
+    }
     const board = { db, clock };
-    guardStore(board);
+    if (!current) { guardStore(board); recordSchemaStamp(db, SCHEMA_DIGEST); }
     guardMoves(board);
     return board;
   } catch (error) {
@@ -383,44 +411,6 @@ function guardStore(board) {
     if (board.db.prepare('PRAGMA user_version').get().user_version >= GUARDED) logEvent(board, 'board', 'guards', null, found);
     if (board.db.prepare('PRAGMA user_version').get().user_version < SCHEMA_VERSION) board.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   });
-}
-
-/**
- * Bring a board made by an older version up to the current schema, one added column at a time, so
- * an upgrade never needs a fresh board.
- *
- * @param {DatabaseSync} db
- */
-function migrate(db) {
-  const added = [
-    ['item', 'item_after', "TEXT NOT NULL DEFAULT ''"],
-    ['item', 'item_brief', "TEXT NOT NULL DEFAULT ''"],
-    ['item', 'item_route', "TEXT NOT NULL DEFAULT 'strong'"],
-    ['item', 'item_check', "TEXT NOT NULL DEFAULT ''"],
-    ['agent', 'agent_route', "TEXT NOT NULL DEFAULT 'strong'"],
-    ['agent', 'agent_family', 'TEXT'],
-    ['item', 'item_builder_family', 'TEXT'],
-    ['verdict', 'verdict_verifier_family', 'TEXT'],
-    ['item', 'item_claim_head', 'TEXT'],
-    ['item', 'item_files', "TEXT NOT NULL DEFAULT ''"],
-    ['item', 'item_review_by', 'TEXT'],
-    ['item', 'item_review_until', 'TEXT'],
-    ['item', 'item_hold_reason', 'TEXT'],
-    ['item', 'item_hold_by', 'TEXT'],
-    ['item', 'item_hold_at', 'TEXT'],
-    ['shout', 'shout_decision', 'INTEGER NOT NULL DEFAULT 0'],
-    ['shout', 'shout_answers', 'INTEGER'],
-    ['shout', 'shout_evidence_kind', 'TEXT'],
-    ['shout', 'shout_evidence_outcome', 'TEXT'],
-    ['shout', 'shout_evidence_item', 'INTEGER'],
-    ['shout', 'shout_evidence_commit', 'TEXT'],
-    ['shout', 'shout_request', 'INTEGER NOT NULL DEFAULT 0'],
-    ['shout', 'shout_request_outcome', "TEXT NOT NULL DEFAULT ''"],
-  ];
-  for (const [table, column, type] of added) {
-    const columns = db.prepare(`PRAGMA table_info(${table})`).all().map((entry) => entry.name);
-    if (!columns.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
-  }
 }
 
 /**

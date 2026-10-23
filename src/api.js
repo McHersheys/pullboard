@@ -664,7 +664,11 @@ const VERSION = 1;
 function withBoard(root, read, isMain) {
   const info = repoInfo(root);
   loadConfig(info.root);
-  const board = store.openBoard(join(info.commonDir, 'pullboard', 'board.sqlite'), undefined, { isMain: isMain !== false && codeIsFromMain() });
+  const file = join(info.commonDir, 'pullboard', 'board.sqlite');
+  // A read takes no write lock and runs no migration (#1047); a read that writes after all runs again on a write open.
+  const current = store.openCurrentBoardReadOnly(file);
+  if (current) try { return read(current, info); } catch (error) { if (!store.writeRefused(error)) throw error; } finally { store.closeBoard(current); }
+  const board = store.openBoard(file, undefined, { isMain: isMain !== false && codeIsFromMain() });
   try { return read(board, info); } finally { store.closeBoard(board); }
 }
 
