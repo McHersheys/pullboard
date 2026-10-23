@@ -91,7 +91,25 @@ function fixture(t) {
     return { ...result, modules, gitCalls };
   };
   const run = (...args) => runIn(repo, ...args);
-  const git = (...args) => assert.equal(runFixtureChild(env.PULLBOARD_REAL_GIT, args, { cwd: repo, env, encoding: 'utf8' }).status, 0);
+  const gitAt = (cwd, ...args) => assert.equal(runFixtureChild(env.PULLBOARD_REAL_GIT, args, { cwd, env, encoding: 'utf8' }).status, 0);
+  const git = (...args) => gitAt(repo, ...args);
+  /** Compare the command snapshot with uncached facts from the same real repository. */
+  const facts = (cwd) => {
+    writeFileSync(env.PULLBOARD_GIT_CALLS, '');
+    const source = `import {readFileSync} from 'node:fs';
+import {repoInfo,headCommit,mainCheckout,withGitFacts} from ${JSON.stringify(new URL('../src/git.js', import.meta.url).href)};
+const root=${JSON.stringify(cwd)};
+const read=()=>({info:repoInfo(root),head:headCommit(root),primary:mainCheckout(root)});
+const scoped=await withGitFacts(read);
+const count=readFileSync(process.env.PULLBOARD_GIT_CALLS,'utf8').split('\\n').filter(Boolean).length;
+const uncached=read();
+console.log(JSON.stringify({scoped,uncached,count}));`;
+    const result = runFixtureChild(process.execPath, ['--input-type=module', '-e', source], { cwd, env, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.failure || result.stderr || result.stdout);
+    const resultFacts = JSON.parse(result.stdout);
+    assert.deepEqual(resultFacts.scoped, resultFacts.uncached, 'command memo keeps the original uncached Git contracts');
+    return resultFacts;
+  };
   git('init', '-q', '-b', 'main');
   writeFileSync(join(repo, 'pullboard.json'), JSON.stringify({
     spec: 'SPEC.md', practice: 'DOCTRINE.md', gate: 'true', lanes: { core: { owns: ['src/'], specs: ['C7'] } },
@@ -104,7 +122,7 @@ function fixture(t) {
   const worktree = join(dir, 'core-1');
   git('worktree', 'add', '-q', '-b', 'core/one', worktree);
   runIn(worktree, 'join', 'core', '--model', 'test-model');
-  return { run, runIn, worktree };
+  return { run, runIn, worktree, repo, gitAt, facts };
 }
 
 test('a read command loads only its own modules [C7]', async (t) => {
@@ -125,6 +143,14 @@ test('a read command loads only its own modules [C7]', async (t) => {
   assert.deepEqual(list.modules.filter((path) => HEAVY.includes(path)), [], 'list loads no gate, relay or land module');
   // One rev-parse in the worktree answers top level, Git dirs, HEAD and the primary checkout for the whole process;
   // the only other is the code's own checkout, asked once where the running code came from.
+  mkdirSync(join(box.worktree, 'src'));
+  writeFileSync(join(box.worktree, 'src', 'own-head.js'), 'export const fixture = true;\n');
+  box.gitAt(box.worktree, 'add', 'src/own-head.js');
+  box.gitAt(box.worktree, 'commit', '-q', '-m', 'feat(core): distinguish the worker head [C7]');
+  const worker = box.facts(box.worktree);
+  assert.notEqual(worker.scoped.head, worker.scoped.primary.commit, 'the current head is not silently replaced by the primary head');
+  assert.equal(worker.scoped.primary.branch, 'refs/heads/main');
+  assert.equal(worker.count, 1, 'one combined query returns paths, the worker commit and the primary branch/commit');
   const claim = box.runIn(box.worktree, 'claim', '1');
   assert.match(claim.stdout, /claimed #1/u);
   const revParses = claim.gitCalls.filter((call) => /\brev-parse\b/u.test(call));
@@ -132,5 +158,10 @@ test('a read command loads only its own modules [C7]', async (t) => {
   assert.equal(here.length, 1, `claim asked the worktree for repo facts ${here.length} times: ${here.join(' | ')}`);
   assert.ok(revParses.length <= 2, `claim started ${revParses.length} rev-parse processes: ${revParses.join(' | ')}`);
   assert.ok(claim.gitCalls.length <= 10, `claim started ${claim.gitCalls.length} Git processes: ${claim.gitCalls.join(' | ')}`);
+  box.gitAt(box.repo, 'switch', '--quiet', '--detach', 'main');
+  assert.equal(box.facts(box.worktree).scoped.primary, null, 'a detached primary keeps the existing null contract');
+  box.gitAt(box.repo, 'switch', '--quiet', '--orphan', 'unborn');
+  assert.deepEqual(box.facts(box.worktree).scoped.primary, { branch: 'refs/heads/unborn', commit: null },
+    'an unborn primary is a known branch without an invented commit');
   await assertStartupBudgets(t);
 });
