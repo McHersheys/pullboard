@@ -45,6 +45,8 @@ import * as itemSessions from './item-sessions.js';
 import * as seatCheckout from './seat-checkout.js';
 import { submitPreflight } from './submit-preflight.js';
 import * as store from './board.js';
+import { withBoardRead } from './board-read.js';
+export { withBoardRead };
 import * as nativeFlakes from './native-flake-cli.js';
 import {
   COMMANDS,
@@ -834,10 +836,20 @@ function configHere(info) {
  * @template T
  * @param {any} ctx
  * @param {(board: any) => T} work
- * @param {any} [board] an already-open board, as withBoardRead passes
+ * @param {any} [opened] an already-open board, as withBoardRead passes
  * @returns {T}
  */
-export function withBoard(ctx, work, board = store.openBoard(ctx.file, ctx.clock, { isMain: ctx.allowSchemaUpgrade })) {
+export function withBoard(ctx, work, opened) {
+  const board = opened ?? store.openBoard(ctx.file, ctx.clock, { isMain: ctx.allowSchemaUpgrade,
+    /** Report each source mismatch once through this invocation's text or JSON diagnostics. */
+    onDiagnostic(message) {
+      ctx.io.schemaDiagnostics ??= new Set();
+      const key = ctx.file + '\n' + message;
+      if (ctx.io.schemaDiagnostics.has(key)) return;
+      ctx.io.schemaDiagnostics.add(key);
+      ctx.io.err(message);
+    },
+  });
   // Whether a proven flake stops blocking a landing is the coordinator's setting, read from accepted main on first use.
   let quarantine;
   board.quarantineEnabled = () => quarantine ??= mainPolicy(ctx.info.root).config.flakes?.quarantine === true;
@@ -857,18 +869,6 @@ export function withBoard(ctx, work, board = store.openBoard(ctx.file, ctx.clock
   if (result && typeof result.then === 'function') return result.finally(finish);
   finish();
   return result;
-}
-
-/**
- * withBoard for a command that only reads: the board opens read-only, without the write lock or a
- * migration (#1047). A board that needs a migration, or work that writes after all (a first
- * coordinator registration), runs again through withBoard; SQLite refused the write, so nothing ran twice.
- */
-export function withBoardRead(ctx, work) {
-  const board = store.openCurrentBoardReadOnly(ctx.file, ctx.clock);
-  if (!board) return withBoard(ctx, work);
-  try { return withBoard(ctx, work, board); }
-  catch (error) { if (store.writeRefused(error)) return withBoard(ctx, work); throw error; }
 }
 
 /**

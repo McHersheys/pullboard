@@ -553,7 +553,10 @@ test('[A5, A6] a future-schema worktree cannot migrate the shared board; main ca
   box.git(repo, 'worktree', 'add', '-q', unguarded, '-b', 'schema/unguarded', 'schema/future');
   const guardedSource = join(unguarded, 'src/board.js');
   const guardedText = readFileSync(guardedSource, 'utf8');
-  const unguardedText = guardedText.replace(/  if \(file !== ':memory:' && isMain === false\) \{[\s\S]*?\n  \}\n(?=  if \(file !== ':memory:'\) mkdirSync)/, '');
+  const unguardedText = guardedText.replace(
+    "  isMain = sharedSchemaOwner(file, isMain);",
+    '  isMain = true;',
+  );
   assert.notEqual(unguardedText, guardedText, 'the mutation removes only the unmerged-schema guard');
   writeFileSync(guardedSource, unguardedText);
   const mutationProbe = join(unguarded, '.schema-mutation-probe.mjs');
@@ -1531,7 +1534,11 @@ test('one move recomputes only the items it touched [A2,N26]', async (t) => {
     const legacy = new DatabaseSync(boardFile);
     try { legacy.exec('DROP INDEX event_item_id_event_id; DROP INDEX verdict_item_id_verdict_id;'); }
     finally { legacy.close(); }
-    const migrated = openBoard(boardFile, undefined, { isMain: true });
+    // This positive migration control uses a private database; branch code cannot repair
+    // persistent indexes on the repository-shared board by supplying isMain: true.
+    const privateLegacy = join(box.dir, 'index-migration.sqlite');
+    cpSync(boardFile, privateLegacy);
+    const migrated = openBoard(privateLegacy);
     try {
       const restored = migrated.db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all().map(({ name }) => name);
       assert.ok(restored.includes('event_item_id_event_id'), 'reopening an existing board restores the event item index');
