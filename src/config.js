@@ -204,7 +204,7 @@ export function configProblems(config) {
   }
   if (typeof config.staticChecks !== 'string') problems.push('"staticChecks" is an optional project static-check command');
   if (config.landing !== undefined && (typeof config.landing !== 'object' || config.landing === null || Object.keys(config.landing).some(key => !['publish', 'timeout', 'cadence'].includes(key)) || ![undefined, 'separate'].includes(config.landing.publish))) {
-    problems.push('"landing" is optional; { "publish": "separate" } lands on the local trunk and pushes only through pullboard publish');
+    problems.push('"landing" has optional "timeout" and "cadence" durations, and "publish": "separate" to land locally and push through pullboard publish');
   }
   for (const key of ['timeout', 'cadence']) {
     const value = config.landing?.[key];
