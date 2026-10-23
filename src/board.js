@@ -147,7 +147,7 @@ export { flakeLedger, recordFlakeObservation } from './flakes.js';
 export { flakeQuarantines, gateRuns, recordGateRun } from './quarantine.js';
 
 /** The seat readers live in seats.js; the board re-exports them so `store.*` callers keep one import. */
-export { agentAt, agentCreator, coordinatorHolder, listAgents, nextSeatId, seatEnrolled, seatLineage, takeCoordinator, withVerifierStanding } from './seats.js';
+export { agentAt, agentById, agentCreator, coordinatorHolder, listAgents, nextSeatId, seatEnrolled, seatLineage, takeCoordinator, withVerifierStanding } from './seats.js';
 
 export const ACCEPT_REASON = 'CRITERION_MET';
 export const PERSON = 'person';
@@ -1428,7 +1428,7 @@ export function reviewQueueBreakdown(board) {
   let awaitingFirstReview = 0;
   let releasedWithoutVerdict = 0;
   const releasedItems = [];
-  for (const item of listItems(board).filter((entry) => entry.item_status === 'submitted' && !reviewHolder(board, entry))) {
+  for (const item of itemsInStatus(board, 'submitted').filter((entry) => !reviewHolder(board, entry))) {
     const releases = reviewReleasesSinceSubmit(board, item.item_id);
     if (releases.length) {
       releasedWithoutVerdict += 1;
@@ -1440,11 +1440,12 @@ export function reviewQueueBreakdown(board) {
 
 /** Summarize outstanding reviews using live leases and the latest submission's age [Q1,V15]. */
 export function reviewQueue(board) {
-  const pending = listItems(board).filter((item) => item.item_status === 'submitted');
+  const pending = itemsInStatus(board, 'submitted');
   const holders = pending.map((item) => reviewHolder(board, item)).filter(Boolean);
-  const submissions = new Map(board.db.prepare("SELECT item_id, MAX(event_at) AS submitted_at FROM event WHERE event_kind='submit' GROUP BY item_id")
-    .all().map((event) => [event.item_id, event.submitted_at]));
-  const oldestSubmittedAt = pending.map((item) => submissions.get(item.item_id)).filter(Boolean).sort()[0] ?? null;
+  // Only the current queue needs an age. Seek each item's history, including legacy timestamps,
+  // instead of grouping every submission ever made on the board.
+  const submittedAt = board.db.prepare("SELECT MAX(event_at) AS at FROM event WHERE item_id=? AND event_kind='submit'");
+  const oldestSubmittedAt = pending.map((item) => submittedAt.get(item.item_id).at).filter(Boolean).sort()[0] ?? null;
   return { pending: pending.length, reviewing: new Set(holders).size, reserved: holders.length, oldestSubmittedAt,
     ageMs: oldestSubmittedAt ? Math.max(0, board.clock.now().getTime() - Date.parse(oldestSubmittedAt)) : 0 };
 }
@@ -1842,11 +1843,18 @@ export function pendingRefreezeProblem(board, id) {
  * @returns {any[]}
  */
 export function listItems(board, { lane, all = false } = {}) {
+  const hasLane = lane !== undefined && lane !== null;
   const rows = board.db
-    .prepare('SELECT * FROM item WHERE (? IS NULL OR item_lane = ?) ORDER BY item_id DESC')
-    .all(lane ?? null, lane ?? null);
+    .prepare(`SELECT * FROM item WHERE ${all ? '1' : "item_status NOT IN ('verified','withdrawn')"}${hasLane ? ' AND item_lane=?' : ''} ORDER BY item_id DESC`)
+    .all(...(hasLane ? [lane] : []));
   const items = rows.map((item) => current(board, item));
-  return all ? items : items.filter((item) => !['verified', 'withdrawn'].includes(item.item_status));
+  return items;
+}
+
+/** Read a stored status/owner slice, excluding claims whose leases have expired rather than caching items. */
+export function itemsInStatus(board, status, owner = null) {
+  return board.db.prepare(`SELECT * FROM item WHERE item_status=?${owner === null ? '' : ' AND item_owner=?'} ORDER BY item_id DESC`)
+    .all(status, ...(owner === null ? [] : [owner])).map(item => current(board, item)).filter(item => item.item_status === status);
 }
 
 /** Return all recorded submitted heads of items still awaiting verification [V1,V17].
@@ -2657,7 +2665,7 @@ export function peekShouts(board, agentId, limit = 2) {
     .reverse();
 }
 
-export { recentShouts, eventsOfKinds, recentEvents, lastMoves, decisionAndEvidenceShouts } from './board-hot.js';
+export { recentShouts, eventsOfKinds, recentEvents, lastMoves, decisionAndEvidenceShouts, submitInvariantEvents } from './board-hot.js';
 
 export { stats } from './board-stats.js';
 
