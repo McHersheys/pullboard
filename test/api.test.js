@@ -1541,3 +1541,59 @@ test('one move recomputes only the items it touched [A2,N26]', async (t) => {
     await api.close();
   }
 });
+
+/** An agent writing to the board from its own process until the stop file appears, then printing its write count. */
+const WRITER = `import { DatabaseSync } from 'node:sqlite'; import { existsSync } from 'node:fs';
+const [file, stop] = process.argv.slice(1); const db = new DatabaseSync(file); db.exec('PRAGMA busy_timeout = 5000');
+const insert = db.prepare("INSERT INTO event (event_at, event_by, event_kind, item_id, event_detail) VALUES (?, 'coordinator', 'edit', ?, '{}')");
+let n = 0; process.stdout.write('ready\\n');
+while (!existsSync(stop)) { db.exec('BEGIN IMMEDIATE'); insert.run(new Date().toISOString(), 1 + (n++ % 1000)); db.exec('COMMIT'); await new Promise((done) => setTimeout(done, 2)); }
+db.close(); process.stdout.write(n + '\\n');`;
+
+test('[N26,A2] an item detail answers under 20 ms on a large board', async (t) => {
+  const box = project();
+  const boardFile = join(box.repo, '.git', 'pullboard', 'board.sqlite');
+  const board = openBoard(boardFile, undefined, { isMain: true });
+  const ids = [];
+  try {
+    for (let index = 0; index < 1000; index += 1) {
+      ids.push(addBoardItem(board, { by: 'coordinator', lane: 'app', title: `Large item ${index + 1}`, criterion: `Detail ${index + 1}`, specIds: ['G1'],
+        route: 'light', brief: 'Files:\n- app/large.js\nChange:\n- Keep it.\nTest:\n- It reads fast.', check: 'true' }));
+    }
+    const insert = board.db.prepare("INSERT INTO event (event_at, event_by, event_kind, item_id, event_detail) VALUES (?, 'coordinator', 'edit', ?, '{}')");
+    board.db.exec('BEGIN');
+    for (let event = board.db.prepare('SELECT COUNT(*) AS n FROM event').get().n; event < 40_000; event += 1) insert.run(new Date(Date.UTC(2026, 0, 1, 0, 0, event)).toISOString(), ids[event % 1000]);
+    board.db.exec('COMMIT');
+  } finally { closeBoard(board); }
+  const builds = [];
+  const api = await startLocalHandler(t, box, { personChannel: 'api', stateDetail: 'summary', onItemBuild: (entry) => builds.push(entry.itemId) });
+  const path = `/api/v1/boards/${(await (await apiFetch(api, '/api/v1/boards')).json()).boards[0].id}`;
+  const polled = await apiFetch(api, `${path}/state`);
+  assert.equal((await polled.json()).state.items.length, 1000);
+  const unchanged = await apiFetch(api, `${path}/state`, { headers: { 'if-none-match': polled.headers.get('etag') } });
+  assert.equal(unchanged.status, 304, 'an unchanged state poll gets a not-modified reply');
+  assert.equal(await unchanged.text(), '');
+
+  const stop = join(box.dir, 'stop-writer');
+  const writer = spawn(process.execPath, ['--input-type=module', '-e', WRITER, boardFile, stop], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let written = '';
+  writer.stdout.on('data', (part) => { written += part; });
+  while (!written.includes('ready')) await new Promise((done) => setTimeout(done, 5));
+  const times = [];
+  try {
+    for (const id of ids.slice(0, 20)) {
+      const started = performance.now();
+      assert.equal((await (await apiFetch(api, `${path}/items/${id}`)).json()).item.id, id);
+      times.push(performance.now() - started);
+    }
+  } finally { writeFileSync(stop, ''); await once(writer, 'close'); }
+  assert.ok(Number(written.split('\n')[1]) > 0, 'an agent wrote to the board while the details were read');
+  const sorted = [...times].sort((left, right) => left - right), median = (sorted[9] + sorted[10]) / 2;
+  const report = `item detail ms, median ${median.toFixed(1)}: ${times.map((ms) => ms.toFixed(1)).join(' ')}`;
+  t.diagnostic(report);
+  assert.ok(median < 20 && sorted[19] < 50, report);
+  await (await apiFetch(api, `${path}/items/${ids[19]}`)).json();
+  builds.length = 0;
+  assert.equal((await (await apiFetch(api, `${path}/items/${ids[19]}`)).json()).item.id, ids[19]);
+  assert.deepEqual(builds, [], 'an item whose last event has not moved is served from its cached detail');
+});
