@@ -4,13 +4,20 @@ import {
   existsSync,
   readFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import {
+  join,
+  resolve,
+} from 'node:path';
 import {
   createHash,
   randomUUID,
 } from 'node:crypto';
 import { requirePersonChannel } from './person.js';
-import { repoInfo } from './git.js';
+import {
+  gitConfig,
+  repoInfo,
+} from './git.js';
+import { homedir } from 'node:os';
 
 /** The ledger of refusals that stopped someone's command, beside the board in Git's common folder. */
 export const BLOCKS_FILE = join('pullboard', 'blocks.jsonl');
@@ -69,28 +76,61 @@ export function blockMoveKey(io) {
   if (!command) return null;
   const name = command.cliOperation;
   const words = command.positionals ?? [];
-  const branches = new Set(['spec', 'doctrine', 'sentinel', 'runner', 'relay', 'lane', 'milestone', 'hook', 'settings']);
-  const verb = name === 'hold' ? command.values?.off ? 'off' : 'on'
+  const branches = new Set(['spec', 'doctrine', 'sentinel', 'runner', 'relay', 'lane', 'milestone', 'hook', 'settings', 'loop', 'rigor', 'blueprint', 'flakes']);
+  let verb = name === 'hold' ? command.values?.off ? 'off' : 'on'
     : name === 'land' && command.values?.waive !== undefined ? 'waive'
     : ['verify', 'fact'].includes(name) ? words[1] ?? ''
     : name === 'check' && words[0] === 'accept' ? 'accept' : branches.has(name) ? words[0] ?? '' : '';
-  const targets = new Set(['answer', 'claim', 'submit', 'verify', 'check', 'show', 'release', 'withdraw', 'merged', 'fact', 'escalate', 'hold', 'shout']);
-  let target = targets.has(name) || /^#?\d+$/u.test(words[0] ?? '') ? words[0] ?? '' : '';
+  const itemTargets = new Set(['answer', 'claim', 'submit', 'verify', 'check', 'show', 'release', 'withdraw', 'merged', 'fact', 'escalate', 'hold', 'edit', 'refreeze', 'reopen', 'pass', 'log', 'why']);
+  const namedTargets = new Set(['shout', 'join', 'worktree', 'list', 'inbox', 'prompt', 'forget', 'import', 'add']);
+  let numericItem = itemTargets.has(name);
+  let target = numericItem || namedTargets.has(name) ? words[0] ?? '' : '';
   if (name === 'check' && verb === 'accept') target = words[1] ?? '';
-  if (name === 'next' && command.values?.verifyId !== undefined) target = String(command.values.verifyId);
-  if (name === 'spec' && ['approve', 'decline'].includes(verb)) {
+  if (name === 'land' && verb === 'waive') target = String(command.values.waive);
+  if (name === 'next' && command.values?.verifyId !== undefined) {
+    target = String(command.values.verifyId);
+    numericItem = true;
+  }
+  // These handlers take a named entity after their verb, not prose or an option value.
+  const namedBranches = new Set(['sentinel', 'runner', 'milestone', 'lane', 'loop', 'rigor', 'blueprint', 'flakes']);
+  if (namedBranches.has(name) || name === 'relay' && verb === 'revoke'
+      || name === 'spec' && ['answer', 'show'].includes(verb)) target = words[1] ?? '';
+  if (name === 'spec' && ['approve', 'decline', 'signoff'].includes(verb)) {
     target = [...new Set(words.slice(1).flatMap(word => word.split(/[\s,]+/u)).filter(Boolean))].sort().join(',');
-  } else if (name === 'spec' && verb === 'answer' || name === 'sentinel' || name === 'runner') target = words[1] ?? '';
-  if (/^#?\d+$/u.test(target)) target = String(Number(target.replace(/^#/u, '')));
+  }
+  if (name === 'spec' && ['fit', 'signers'].includes(verb)) {
+    verb += ':' + (words[1] ?? '');
+    target = words[2] ?? '';
+  }
+  if (name === 'blueprint' && verb === 'add') {
+    target = [...new Set([words[1], ...[].concat(command.values?.blueprint ?? [])].filter(Boolean))].sort();
+  }
+  if (name === 'spec' && verb === 'signers:add') {
+    const root = repoInfo(io.cwd ?? process.cwd()).root;
+    /** Read the signer's configured defaults without reading any key contents. */
+    const setting = field => gitConfig(root, field, { flags: false }).stdout || '';
+    const requested = command.values?.key || setting('user.signingkey') || join(homedir(), '.ssh/id_ed25519.pub');
+    const expanded = requested === '~' ? homedir() : requested.startsWith('~/') ? join(homedir(), requested.slice(2)) : requested;
+    target = { principal: command.values?.by || setting('user.email'), key: resolve(root, expanded).replace(/\.pub$/u, '') };
+  }
+  if (['forget', 'import'].includes(name) && target) target = resolve(io.cwd ?? process.cwd(), target);
+  if (name === 'milestone' && verb === 'add') target = target.trim();
+  // Item IDs accept #1 and 01 as aliases. Names such as milestones '01' and '1' remain distinct.
+  if (numericItem && /^#?\d+$/u.test(target)) target = String(Number(target.replace(/^#/u, '')));
   return key({ command: name, verb, item: target });
 }
 
 /** A multirow refusal completes only after every target has its own later successful move. */
 export function blockMoveKeys(io) {
   const command = io.relayCommand;
-  if (command?.cliOperation === 'spec' && ['approve', 'decline'].includes(command.positionals?.[0])) {
+  if (command?.cliOperation === 'spec' && ['approve', 'decline', 'signoff'].includes(command.positionals?.[0])) {
     return [...new Set(command.positionals.slice(1).flatMap(word => word.split(/[\s,]+/u)).filter(Boolean))]
       .map(id => blockMoveKey({ relayCommand: { ...command, positionals: [command.positionals[0], id] } }));
+  }
+  if (command?.cliOperation === 'blueprint' && command.positionals?.[0] === 'add') {
+    const refs = [...new Set([command.positionals[1], ...[].concat(command.values?.blueprint ?? [])].filter(Boolean))];
+    return refs.map(reference => blockMoveKey({ ...io, relayCommand: { ...command,
+      positionals: ['add', reference], values: { ...command.values, blueprint: [] } } }));
   }
   const move = blockMoveKey(io);
   return move ? [move] : [];
