@@ -884,11 +884,25 @@ async function prepareCheckpoint(root, state) {
  * a newer saved checkpoint.
  */
 async function publishCheckpoint(root, file, state, io, prepared = null) {
-  if (!state.token?.startsWith('pm_') || process.env.PULLBOARD_RELAY_TOKEN) return;
+  const staged = await stageCheckpoint(root, file, state, io, prepared);
+  if (!staged) return;
+  const sent = state.checkpoint;
+  let outcome;
+  try { outcome = { reply: await request(state, '/api/v1/boards/' + state.board + '/state', { method: 'PUT', body: sent }, io) }; }
+  catch (error) { outcome = { error }; }
+  recordCheckpointUpload(file, state, io, staged, sent, outcome);
+}
+
+/**
+ * Decide what checkpoint to send and save its exact sealed record first; null when nothing is to be sent (no machine
+ * credential, an upload pause not yet over, or a definitive rejection of this same image).
+ */
+async function stageCheckpoint(root, file, state, io, prepared) {
+  if (!state.token?.startsWith('pm_') || process.env.PULLBOARD_RELAY_TOKEN) return null;
   const resumed = Boolean(state.checkpointRefusal);
   if (state.checkpointRefusal && uploadPauseType(state.checkpointRefusal)) {
     if (!await uploadRetryReady(state, state.checkpointRefusal, path => request(state, path, {}, io))) {
-      saveLink(file, state); reportCheckpointRefusal(state, io); return;
+      saveLink(file, state); reportCheckpointRefusal(state, io); return null;
     }
     delete state.checkpointRefusal;
     saveLink(file, state);
@@ -901,29 +915,39 @@ async function publishCheckpoint(root, file, state, io, prepared = null) {
       saveLink(file, state);
     }
     // A definitive rejection retries only a fresh image after the board changes.
-    if (state.checkpointRefusal) { reportCheckpointRefusal(state, io); return; }
+    if (state.checkpointRefusal) { reportCheckpointRefusal(state, io); return null; }
   }
-  let reply;
-  try { reply = await request(state, '/api/v1/boards/' + state.board + '/state', { method: 'PUT', body: state.checkpoint }, io); }
-  catch (error) {
+  return { resumed };
+}
+
+/**
+ * Record how the upload of `sent` ended. A newer checkpoint saved meanwhile is left for the next upload, so an older
+ * acknowledgement never marks it sent.
+ */
+function recordCheckpointUpload(file, state, io, staged, sent, { reply, error }) {
+  if (error) {
     if (!(error instanceof Refused) || !permanentUploadRefusal(error)) throw error;
-    state.checkpointRefusal = { code: safePauseCode(error), message: safePauseMessage(error), status: error.httpStatus };
-    saveLink(file, state);
-    reportCheckpointRefusal(state, io);
+    if (state.checkpoint?.sealed === sent.sealed) {
+      state.checkpointRefusal = { code: safePauseCode(error), message: safePauseMessage(error), status: error.httpStatus };
+      saveLink(file, state);
+      reportCheckpointRefusal(state, io);
+    }
     return;
   }
-  if (reply.state?.sequence !== state.checkpoint.sequence || reply.state.sealed !== state.checkpoint.sealed) throw new Refused('RELAY_RESPONSE', 'the relay did not acknowledge this checkpoint; retry the configured relay');
-  state.presentationDigest = state.checkpointPresentationDigest;
-  delete state.checkpoint;
-  delete state.checkpointPresentationDigest;
+  if (reply.state?.sequence !== sent.sequence || reply.state.sealed !== sent.sealed) throw new Refused('RELAY_RESPONSE', 'the relay did not acknowledge this checkpoint; retry the configured relay');
+  if (state.checkpoint?.sealed === sent.sealed) {
+    state.presentationDigest = state.checkpointPresentationDigest;
+    delete state.checkpoint;
+    delete state.checkpointPresentationDigest;
+  }
   saveLink(file, state);
-  if (resumed) clearUploadPauseNotices(state);
+  if (staged.resumed) clearUploadPauseNotices(state);
 }
 
 /**
  * Publish this board's checkpoint once: the background publisher's one step (#1014). The board is read and sealed
- * before the relay lock; only saving and uploading the sealed record hold it, since the upload may record the relay's
- * API version and storage in the link. A board whose link is gone or being removed publishes nothing.
+ * before the relay lock, the lock is held only to save the sealed record and later to record the reply, and the
+ * upload itself holds no lock. A board whose link is gone or being removed publishes nothing.
  *
  * @param {string} root
  * @param {{ err: (line: string) => void, say: (line: string) => void }} io
@@ -935,12 +959,26 @@ export async function publishLatestCheckpoint(root, io) {
   if (!linked || linked.unlinking) return false;
   // Reading and sealing a large board takes about a second; it happens before the lock, so moves never wait on it.
   const prepared = await prepareCheckpoint(root, linked);
-  return locked(file, async () => {
+  const staged = await locked(file, async () => {
     const state = loadLink(file);
-    if (!state || state.unlinking || state.board !== linked.board) return false;
-    await publishCheckpoint(root, file, state, io, prepared);
-    return true;
+    if (!state || state.unlinking || state.board !== linked.board) return null;
+    const result = await stageCheckpoint(root, file, state, io, prepared);
+    return result && { ...result, sent: state.checkpoint, copy: structuredClone(state) };
   }, io);
+  if (!staged) return false;
+  // The upload holds no lock, so a move during it returns at once and the next checkpoint covers it. It runs on a
+  // copy of the link: the copy saves nothing, and what the upload learns is carried back under the lock below.
+  let outcome;
+  try { outcome = { reply: await request(staged.copy, '/api/v1/boards/' + staged.copy.board + '/state', { method: 'PUT', body: staged.sent }, io) }; }
+  catch (error) { outcome = { error }; }
+  await locked(file, async () => {
+    const state = loadLink(file);
+    if (!state || state.board !== linked.board) return;
+    if (staged.copy.snapshotApiVersion !== undefined) state.snapshotApiVersion = staged.copy.snapshotApiVersion;
+    if (staged.copy.storage !== undefined) state.storage = staged.copy.storage;
+    recordCheckpointUpload(file, state, io, staged, staged.sent, outcome);
+  }, io);
+  return true;
 }
 
 /** Drain a legacy source once, refusing foreign history before it can be silently checkpointed. */

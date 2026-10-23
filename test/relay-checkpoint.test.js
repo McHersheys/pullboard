@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { relayClientFixture } from './relay-client-fixture.js';
-import { CHECKPOINT_BACKGROUND_ENV } from '../src/relay-checkpoint.js';
+import { CHECKPOINT_BACKGROUND_ENV, CHECKPOINT_QUIET_ENV } from '../src/relay-checkpoint.js';
 
 /** Whether a relay call uploads a checkpoint: an API1 state write or an API2 page publish. */
 function checkpointUpload(call) {
@@ -29,7 +29,12 @@ test('a move on a large board sends only its event and never the checkpoint [H5]
   // The runner keeps checkpoints inside commands, like the view; this case opts in to the background publisher.
   const inline = process.env[CHECKPOINT_BACKGROUND_ENV];
   delete process.env[CHECKPOINT_BACKGROUND_ENV];
-  t.after(() => { if (inline === undefined) delete process.env[CHECKPOINT_BACKGROUND_ENV]; else process.env[CHECKPOINT_BACKGROUND_ENV] = inline; });
+  // A CLI child takes about a second to start, so a burst of them is modelled as moves under three seconds apart.
+  process.env[CHECKPOINT_QUIET_ENV] = '3000';
+  t.after(() => {
+    if (inline === undefined) delete process.env[CHECKPOINT_BACKGROUND_ENV]; else process.env[CHECKPOINT_BACKGROUND_ENV] = inline;
+    delete process.env[CHECKPOINT_QUIET_ENV];
+  });
   const box = await relayClientFixture(t);
 
   // Seed the presentation's heaviest part, as on the 22 Oct board: 20,000 shouts.
@@ -60,6 +65,34 @@ test('a move on a large board sends only its event and never the checkpoint [H5]
     assert.ok(elapsed < 1000, `move ${index} returned in ${Math.round(elapsed)} ms, under one second`);
   }
   await publisherDone(box, before, 1);
-  await new Promise(next => setTimeout(next, 2_000)); // budget: a second quiet period, so a second upload would show.
+  await new Promise(next => setTimeout(next, 4_000)); // budget: a second quiet period, so a second upload would show.
   assert.equal(box.calls.slice(before).filter(checkpointUpload).length, 1, 'ten moves in a burst produced one checkpoint upload');
+});
+
+test('a move during a held checkpoint upload returns before the upload ends [H5]', async (t) => {
+  const inline = process.env[CHECKPOINT_BACKGROUND_ENV];
+  delete process.env[CHECKPOINT_BACKGROUND_ENV];
+  t.after(() => { if (inline === undefined) delete process.env[CHECKPOINT_BACKGROUND_ENV]; else process.env[CHECKPOINT_BACKGROUND_ENV] = inline; });
+  const box = await relayClientFixture(t);
+  await box.link();
+  const warm = box.calls.length;
+  assert.equal((await box.cli('shout', 'all', 'warm up')).code, 0);
+  await publisherDone(box, warm, 1);
+
+  // The relay holds the next checkpoint upload; a move meanwhile must not wait for it.
+  box.holdPublishes(true);
+  t.after(() => box.holdPublishes(false));
+  const from = box.calls.length;
+  assert.equal((await box.cli('shout', 'all', 'starts the held upload')).code, 0);
+  const deadline = Date.now() + 15_000;
+  while (box.heldPublishes() === 0 && Date.now() < deadline) await new Promise(next => setTimeout(next, 50));
+  assert.equal(box.heldPublishes(), 1, 'the publisher\'s upload is in flight and held');
+  const started = performance.now();
+  const moved = await box.cli('shout', 'all', 'moves during the held upload');
+  const elapsed = performance.now() - started;
+  assert.equal(moved.code, 0, JSON.stringify(moved.document));
+  assert.equal(box.heldPublishes(), 1, 'the move returned while the upload was still held');
+  assert.ok(elapsed < 2000, `the move took ${Math.round(elapsed)} ms; it must not wait for the upload`);
+  box.holdPublishes(false);
+  await publisherDone(box, from, 2);
 });
