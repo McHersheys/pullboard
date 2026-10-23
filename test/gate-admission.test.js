@@ -108,8 +108,7 @@ test('a lender keeps its place between its last nested file and its nested run e
   const hold = (pid, lender = null) => db.prepare('INSERT INTO file_holder(pid, since, lender) VALUES (?, ?, ?)').run(pid, Date.now(), lender);
   hold(parent);
   hold(unrelated);
-  // Active: the parent is blocked on its nested run, as the loan watcher records it.
-  db.prepare('INSERT INTO file_loan(runner, lender, active) VALUES (?, ?, 1)').run(runner, parent);
+  db.prepare('INSERT INTO file_loan(runner, lender) VALUES (?, ?)').run(runner, parent);
   assert.equal(await occupiedPlaces(home), 2, 'a lender with no nested file yet keeps its place');
   hold(child, parent);
   assert.equal(await occupiedPlaces(home), 2, 'its nested file runs in that place');
@@ -119,10 +118,10 @@ test('a lender keeps its place between its last nested file and its nested run e
   assert.equal(await occupiedPlaces(home), 2, 'the nested run ended, the lender resumes in its own place');
 });
 
-test('a parent that keeps computing beside its nested run keeps its own token, so its nested files take separate ones [C7]', async (t) => {
+test('a parent that starts its nested run asynchronously keeps its own token, so its nested files take separate ones [C7]', async (t) => {
   const { root, env, log } = fixture(t, 2);
   for (const file of ['inner-a.test.js', 'inner-b.test.js']) writeFileSync(join(root, file), timedFile(file, 400));
-  // The parent starts its nested run without waiting on it and spins the CPU until the run ends.
+  // The parent starts its nested run without blocking on it and spins the CPU until the run ends.
   writeFileSync(join(root, 'busy.test.js'), `import { spawn } from 'node:child_process';
 import { test } from 'node:test';
 test('busy parent', async () => {
