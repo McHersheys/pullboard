@@ -42,7 +42,10 @@ import {
 } from './gate-run-receipt.js';
 import { laneOf } from './lanes.js';
 import { takeResource } from './resources.js';
-import { landingLeaseState, requireConfirmedLanding } from './landing-lease.js';
+import {
+  landingLeaseState,
+  requireConfirmedLanding,
+} from './landing-lease.js';
 import { runLandingWorker } from './landing-worker.js';
 import { Refused } from './refused.js';
 import { policyAt } from './trusted-policy.js';
