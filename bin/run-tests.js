@@ -1493,13 +1493,28 @@ async function main(args) {
     const sandbox = mkdtempSync(join(tmpdir(), 'pullboard-test-run-'));
     // A shard of a sharded landing reports each file's wall time back to its orchestrator.
     const fileTimes = shardLabel ? join(sandbox, 'landing-file-times.jsonl') : '';
+    // Observe leftovers around the whole execution, including failed cases; never remove clones.
+    const cloneCheck = browser && process.platform === 'darwin'
+      ? await import('../src/chrome-clone-check.js') : null;
+    let clonesBefore;
     if (fileTimes) process.env[LANDING_FILE_TIMES_ENV] = fileTimes;
     try {
+      clonesBefore = cloneCheck?.chromeCloneSnapshot();
       const result = await executeTests(actions.args, sandbox, gateMarkers, fullSuite && !actions.files, concurrency);
       signal = result.signal;
       process.exitCode = result.status ?? 1;
       if (fileTimes) (await import('../src/landing-shards.js')).printShardFileTimes(fileTimes);
-    } finally { rmSync(sandbox, { recursive: true, force: true }); }
+    } finally {
+      try {
+        if (clonesBefore) {
+          const growth = cloneCheck.newChromeClones(clonesBefore);
+          if (growth.length) {
+            process.stderr.write(`run-tests: CHROME_CLONE_GROWTH: ${growth.length} new native clone directories remain; stop browser work and notify the coordinator\n`);
+            process.exitCode = 1;
+          }
+        }
+      } finally { rmSync(sandbox, { recursive: true, force: true }); }
+    }
   };
   try {
     const { GATE_SLOT_HELD_ENV, GATE_SLOT_POOL_ENV, GATE_SLOT_TOKEN_ENV, gateSlotEnvironment, inheritedGateSlot } = await import('../src/resources.js');

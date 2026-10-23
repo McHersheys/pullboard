@@ -15,6 +15,7 @@ import { assertLandingStopIdentity } from './land-stop-fixture.js';
 import { assertLandingDoctrineCounts } from './land-doctrine-fixture.js';
 import { onBoard, events, calls } from './land-board-fixture.js';
 
+import { landingTimeoutFixture } from './landing-timeout-fixture.js';
 const e2e = createE2eHelpers();
 after(e2e.cleanup);
 const { sandbox, project, commitFile, waitFor, BIN } = e2e;
@@ -31,7 +32,6 @@ test('a landing records a falling doctrine count and holds a rising count [B3,R3
 test('a repo with no remote lands into the local trunk and status reads as normal [I1,B3,R3,H5]', () => {
   assertNoRemoteLanding(sandbox, commitFile);
 });
-
 
 /** Start a separate process holding an exclusive write transaction on the fixture board. */
 function startExclusiveBoardWriter(box, boardFile, name) {
@@ -1486,3 +1486,4 @@ test('a publish gate run is recorded and a red and green pair it sees files the 
   assert.equal(flakes().length, 1, 'another publish receipt creates no duplicate flake item');
   assert.equal(calls(box).length - before, 3, 'each receipt represents one actual full publish gate');
 });
+test('a landing gate past its timeout stops cleanly [E27,E29]', () => landingTimeoutFixture({ landProject, itemWorktree, submitItem, acceptItem, onBoard, json }));

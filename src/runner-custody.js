@@ -446,7 +446,9 @@ export function createDescendantTracker(directory, { census: processCensusHook =
         const row = current.get(identity.pid);
         if (!row || row.birth !== identity.birth || retired.has(`${identity.pid}:${identity.birth}`) || /^Z/u.test(row.state)) continue;
         const ownedGroup = identity.group;
-        if (Number.isSafeInteger(ownedGroup) && row.pgid === ownedGroup && !signaledGroups.has(ownedGroup)) {
+        if (Number.isSafeInteger(ownedGroup) && row.pgid === ownedGroup) {
+          // Another live member of an already-signalled group still has group custody, not a PID-only fallback.
+          if (signaledGroups.has(ownedGroup)) continue;
           const result = signalOwnedGroup(ownedGroup, 'SIGTERM');
           if (result === null) { censusFailure = true; break; }
           if (result) signaledGroups.add(ownedGroup);
@@ -468,7 +470,8 @@ export function createDescendantTracker(directory, { census: processCensusHook =
         const row = current.get(identity.pid);
         if (!row || row.birth !== identity.birth || retired.has(`${identity.pid}:${identity.birth}`) || /^Z/u.test(row.state)) continue;
         const ownedGroup = identity.group;
-        if (Number.isSafeInteger(ownedGroup) && row.pgid === ownedGroup && !killedGroups.has(ownedGroup)) {
+        if (Number.isSafeInteger(ownedGroup) && row.pgid === ownedGroup) {
+          if (killedGroups.has(ownedGroup)) continue;
           const result = signalOwnedGroup(ownedGroup, 'SIGKILL');
           if (result === null) { censusFailure = true; break; }
           if (result) killedGroups.add(ownedGroup);
