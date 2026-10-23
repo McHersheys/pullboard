@@ -26,7 +26,10 @@ import {
   tryGit,
 } from './git.js';
 import { loadConfig } from './config.js';
-import { CODEX_MANUAL_NOTE, mcpSetup } from './init.js';
+import {
+  CODEX_MANUAL_NOTE,
+  mcpSetup,
+} from './init.js';
 import {
   alreadyAddedLine,
   initWaitingRows,
