@@ -576,7 +576,8 @@ export function codeIsFromMain(root = CODE_ROOT) {
 
 /** Determine whether the code is from its main checkout, retaining the non-repository fallback. */
 function readCodeIsFromMain(root) {
-  const env = gitChildEnv(root);
+  // The same variables `git rev-parse --local-env-vars` names, cleared without a Git process to ask.
+  const env = cleanGitEnvironment();
   const info = tryGit(root, ['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-dir', '--git-common-dir'], { env });
   const fields = info.stdout.split('\n');
   if (info.status === 0 && fields.length === 3 && fields.every(Boolean)) {
@@ -595,6 +596,37 @@ function readCodeIsFromMain(root) {
     if (parent === folder) return true;
     folder = parent;
   }
+}
+
+/**
+ * Whether the config file `git config --local` reads holds exactly one plain `<section>.<key>`, and it is `value`.
+ * False whenever the file could mean anything less certain (an include, a continued line, a quoted or commented
+ * value, a repeated key, an inherited selector), so the caller asks Git as before.
+ *
+ * @param {string} root
+ * @param {string} section
+ * @param {string} key
+ * @param {string} value
+ * @returns {boolean}
+ */
+export function localConfigIs(root, section, key, value) {
+  if (!/^[\w./-]+$/u.test(value) || !plainRepositoryEnvironment()) return false;
+  let text;
+  try { text = readFileSync(join(repoInfo(root).commonDir, 'config'), 'utf8'); }
+  catch { return false; }
+  if (/^\s*\[\s*include/imu.test(text) || /\\\r?$/mu.test(text)) return false;
+  let inSection = false;
+  const values = [];
+  for (const line of text.split('\n')) {
+    const header = /^\s*\[([^\]]*)\]\s*$/u.exec(line);
+    if (header) inSection = header[1].trim().toLowerCase() === section;
+    else if (/^\s*\[/u.test(line)) return false;
+    else {
+      const entry = /^\s*([A-Za-z][A-Za-z0-9-]*)\s*(?:=\s*(.*?))?\s*$/u.exec(line);
+      if (inSection && entry?.[1].toLowerCase() === key) values.push(entry[2]);
+    }
+  }
+  return values.length === 1 && values[0] === value;
 }
 
 /**
