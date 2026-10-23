@@ -15,13 +15,14 @@ function row(pid, changes = {}) {
 /** A process census with the same indexed shape as the real ps observer. */
 function censusRows(...rows) { return new Map(rows.map(entry => [entry.pid, entry])); }
 
-/** Run the actual stop implementation; all signals here go only to a recording observer. */
+/** Model the guardian-dead fallback with a previously recorded member; every signal goes only to an observer. */
 function observedStop(finalRows) {
-  const original = censusRows(row(GROUP, { ppid: process.pid }), row(GROUP + 1));
+  const member = row(GROUP + 1, { ppid: 1 });
+  const original = censusRows(member, row(GROUP + 2, { ppid: member.pid }));
   const snapshots = [original, original, finalRows];
   const signals = [];
   const logs = [];
-  stop({ pid: GROUP, exitCode: null, signalCode: null }, undefined, {
+  stop({ pid: GROUP, exitCode: 0, signalCode: null }, member, {
     read: () => { assert.ok(snapshots.length, 'the stop never invents another observation'); return snapshots.shift(); },
     kill: (pid, signal) => signals.push([pid, signal]),
     log: text => logs.push(text),
@@ -30,24 +31,26 @@ function observedStop(finalRows) {
   return { signals, logs };
 }
 
-/** Missing original identity evidence never licenses a group broadcast; a known live group still stops. */
+/** Missing original identity evidence never licenses a broadcast; a retained process lifetime still attributes the group. */
 export async function assertLandingStopIdentity() {
-  const foreign = row(GROUP + 9, { ppid: 1, started: 'Fri Oct 23 16:01:00 2026', processSha256: 'b'.repeat(64) });
+  const foreign = row(GROUP, { ppid: 1, started: 'Fri Oct 23 16:01:00 2026', processSha256: 'b'.repeat(64) });
   const outcomes = [
     observedStop(censusRows(foreign)),
-    observedStop(censusRows(foreign, row(GROUP, { started: foreign.started }))),
-    observedStop(censusRows(foreign, row(GROUP, { processSha256: foreign.processSha256 }))),
-    observedStop(censusRows(foreign, row(GROUP, { pgid: GROUP + 10 }))),
-    observedStop(censusRows(foreign, row(GROUP, { state: 'Z' }))),
+    observedStop(censusRows(foreign, row(GROUP + 1, { started: foreign.started }))),
+    observedStop(censusRows(foreign, row(GROUP + 1, { processSha256: foreign.processSha256 }))),
+    observedStop(censusRows(foreign, row(GROUP + 1, { pgid: GROUP + 10 }))),
     observedStop(null),
   ];
   for (const outcome of outcomes) {
-    assert.deepEqual(outcome.signals, [[GROUP + 1, 'SIGKILL']], 'a group with no original live witness receives no negative-PGID signal');
+    assert.deepEqual(outcome.signals, [[GROUP + 1, 'SIGKILL'], [GROUP + 2, 'SIGKILL']], 'a group with no original live witness receives no negative-PGID signal');
     assert.match(outcome.logs.join('\n'), /skipp.*(?:identity|census|witness)/iu, 'the missing attribution is explained, not claimed drained or proven reused');
   }
-  const original = observedStop(censusRows(row(GROUP, { ppid: 1 })));
-  assert.deepEqual(original.signals, [[GROUP + 1, 'SIGKILL'], [-GROUP, 'SIGKILL']], 'reparenting keeps a matching original identity valid');
-  assert.deepEqual(original.logs, []);
+  for (const witness of [row(GROUP + 1, { ppid: 91 }), row(GROUP + 1, { state: 'Z' })]) {
+    const original = observedStop(censusRows(foreign, witness));
+    assert.deepEqual(original.signals, [[GROUP + 1, 'SIGKILL'], [GROUP + 2, 'SIGKILL'], [-GROUP, 'SIGKILL']],
+      'a recorded original identity remains a reservation witness despite reparenting or becoming a zombie');
+    assert.deepEqual(original.logs, []);
+  }
   await stopPrivateChild();
 }
 
