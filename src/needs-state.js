@@ -16,6 +16,7 @@ import {
   undraftedRigor,
 } from './rigor-notices.js';
 import { personNeeds } from './needs.js';
+import { readBlocks } from './refused.js';
 import { displayAgentName } from './agent-names.js';
 import {
   projectSpecApprovals,
@@ -37,7 +38,7 @@ export function personNeedsState(root, { board: providedBoard = null, includeRig
     const state = projectSpecApprovals(projectFit(pendingFit(info.commonDir), projectRowDecisions(decisions, projectState(root, { board }))), specApprovalState(root, { board, config }));
     const rows = projectRowDecisions(decisions, { root, spec: loadSpec(root, config).rows, practice: loadDoctrine(root, config).rows });
     const rigorDrafts = rigorDraftNeeds(rows);
-    const projected = { ...state, rigorDrafts, sentinelDrafts: sentinelDraftNeeds(sentinels(board)), ...(includeRigorUndrafted
+    const projected = { ...state, rigorDrafts, sentinelDrafts: sentinelDraftNeeds(sentinels(board)), blocks: recentBlocks(info.commonDir, board), ...(includeRigorUndrafted
       ? { rigorUndrafted: undraftedRigor(store.events(board), rows, { person: store.PERSON }) } : {}) };
     return { ...projected, needs: personNeeds(projected) };
   } finally {
@@ -52,7 +53,13 @@ export function personNeedsSummary(root, { board, config }) {
   const projected = projectSpecApprovals({ ...rows,
     decisions: store.openDecisions(board, store.PERSON), holds: store.laneHolds(board),
     agents: store.listAgents(board).map(agent => ({ ...agent, displayName: displayAgentName(agent, config.agents.names) })),
-    rigorDrafts: rigorDraftNeeds(rows), sentinelDrafts: sentinelDraftNeeds(sentinels(board)),
+    rigorDrafts: rigorDraftNeeds(rows), sentinelDrafts: sentinelDraftNeeds(sentinels(board)), blocks: recentBlocks(repoInfo(root).commonDir, board),
   }, specApprovalState(root, { board, config, spec }));
   return projected;
+}
+
+/** The blocks recorded in the last day, by the board's clock, for Needs you and health [C6]. */
+export function recentBlocks(commonDir, board) {
+  const now = (board?.clock ?? store.systemClock).now();
+  return readBlocks(commonDir, { since: new Date(now.getTime() - 86_400_000) });
 }

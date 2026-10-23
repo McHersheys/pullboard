@@ -8,7 +8,10 @@
  * every code raised in src/ has a row here.
  */
 import { RECORDED_GENERIC_NEXT } from './recorded-refusal.js';
-import { Refused } from './refused.js';
+import {
+  Refused,
+  recordBlock,
+} from './refused.js';
 
 /** Describe the queue's actual outstanding reviews and submission age [Q1,V15]. */
 export function reviewQueueLine(ctx, queue, span) {
@@ -643,4 +646,81 @@ export function nextStepFor(error, message, options = {}) {
   if (code === 'SPEC_BEHIND_MAIN') return NEXT_STEPS.SPEC_BEHIND_MAIN;
   return personRequestStep(stepInMessage(message) ?? NEXT_STEPS[code]
     ?? `ask the service owner about refusal code ${code || '(unknown)'}, including the displayed refusal`, options);
+}
+
+/** Refusals no move recovers from by itself: a typo is not Pullboard blocking anyone. */
+const NOT_BLOCKS = new Set(['USAGE', 'UNKNOWN_COMMAND']);
+
+/**
+ * Who can take a refusal's step: the person (a person-only move), the coordinator (a step that
+ * asks the coordinator), or the agent that ran the command. Read from the code and the same step
+ * this catalog gives, so the audience never disagrees with the step shown [P4].
+ *
+ * @param {string} code
+ * @param {string} message
+ * @param {string} step
+ * @returns {'person'|'coordinator'|'agent'}
+ */
+export function blockAudience(code, message, step) {
+  const words = `${message}\n${step}`;
+  if (/_PERSON_ONLY$|^B26_PERSON_CHANNEL$/u.test(code) || /\bonly the person\b|\blet the person act\b|\bbring it to the person\b/iu.test(words)) return 'person';
+  if (/^(?:ask (?:the|your) coordinator|the coordinator\b)/iu.test(step) || /^COORDINATOR_ONLY$|_COORDINATOR_ONLY$/u.test(code)) return 'coordinator';
+  return 'agent';
+}
+
+/** Plain words: no bracketed rule code, no backticks, one line [P4]. */
+function plain(text) {
+  return String(text).split('\n')[0].replace(/\[[A-Z][A-Z0-9_]*\]\s*/gu, '').replaceAll('`', '').replace(/\s+/gu, ' ').trim();
+}
+
+/**
+ * One block from a refusal that stopped a command: its code, command, who was stopped, who can
+ * clear it, and a plain one-line reason and step. Null for a usage slip, which blocks nobody.
+ *
+ * @param {{ code?: string, message: string, next?: string }} error
+ * @param {{ command: string, by: string, path: string, at: Date, caller?: string }} context
+ */
+export function blockNotice(error, { command, by, path, at, caller }) {
+  const code = typeof error?.code === 'string' ? error.code : 'INTERNAL';
+  if (NOT_BLOCKS.has(code)) return null;
+  const message = String(error.message).replace(/^\[[A-Z][A-Z0-9_]*\] /u, '');
+  const step = plain(nextStepFor(error, message, { caller }));
+  const first = plain(message);
+  const cut = first.indexOf(step.slice(0, 24));
+  const reason = (cut > 0 ? first.slice(0, cut) : first).replace(/[\s;:,.]+$/u, '') || first;
+  return { at: at.toISOString(), code, command: `pullboard ${command}`.trim(), by, path,
+    audience: blockAudience(code, message, step), reason, step };
+}
+
+/**
+ * The line a stopped command prints after its refusal, aimed at whoever can take the step. The
+ * agent's own step is already the refusal's next line, so only a step for someone else adds one.
+ *
+ * @param {ReturnType<typeof blockNotice>} block
+ * @returns {string | null}
+ */
+export function blockLine(block) {
+  if (block?.audience === 'person') return 'pullboard: only the person can clear this; it is in their Needs you list now';
+  if (block?.audience === 'coordinator') return `pullboard: only the coordinator can clear this; tell them: pullboard shout coordinator "blocked by ${block.code} on ${block.command}: ${block.reason.replaceAll('"', "'")}"`;
+  return null;
+}
+
+/**
+ * Record a refusal that stopped a command and print the line aimed at whoever can clear it. A
+ * ledger that cannot be written says so; it never hides the refusal it was recording.
+ *
+ * @param {any} io
+ * @param {{ code?: string, message: string, next?: string }} error
+ * @param {{ command: string, info: { commonDir: string, root: string, isMain: boolean }, now: Date }} context
+ */
+export function reportBlock(io, error, { command, info, now }) {
+  const caller = io.callerRole?.();
+  const block = blockNotice(error, { command, at: now, path: info.root, caller,
+    by: caller === 'person' ? 'person' : info.isMain ? 'coordinator' : 'agent' });
+  if (!block) return null;
+  try { recordBlock(info.commonDir, block); }
+  catch (failure) { io.err(`pullboard: this block was not recorded (${failure.message}); the refusal above still stands`); }
+  const line = blockLine(block);
+  if (line) io.err(line);
+  return block;
 }

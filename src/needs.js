@@ -5,6 +5,20 @@ export function personNeeds(state) {
     const agent = state.agents?.find(entry => entry.agent_id === id);
     return agent?.displayName || (agent ? `${id} (${agent.model || agent.agent_model || 'unknown'})` : id);
   };
+  /**
+   * Blocks only the person can clear, one row per rule and command with its plain reason and step,
+   * newest first. Inside personNeeds because the page carries this function's source [C6].
+   */
+  const personBlocks = (blocks) => {
+    const found = new Map();
+    for (const block of blocks) {
+      if (block.audience !== 'person') continue;
+      const key = `${block.code} ${block.command}`;
+      found.set(key, { kind: 'block', id: `block:${key}`, ref: 'blocked', count: (found.get(key)?.count ?? 0) + 1, at: block.at,
+        text: `Pullboard stopped a request that only you can clear: ${block.reason}`, what: block.step });
+    }
+    return [...found.values()].sort((a, b) => b.at.localeCompare(a.at));
+  };
   const rows = (state.spec ?? []).filter(row => !row.decision);
   const rigorDrafts = state.rigorDrafts ?? [];
   const drafts = rows.filter(row => (row.status === 'draft' || row.staleDecision) && !rigorDrafts.some(draft => draft.target === `spec:${row.id}`)).length;
@@ -22,7 +36,9 @@ export function personNeeds(state) {
       text: `${row.id} is agent-approved; ${row.agentApproval.attribution}: ${row.agentApproval.agent}; commit ${row.agentApproval.commit ?? 'not committed'}`,
       what: 'confirm or decline this row', target: `spec:${row.id}`,
       actions: [{ verb: 'spec-approve', args: { ids: row.id } }, { verb: 'spec-decline', args: { ids: row.id } }] })),
+    ...personBlocks(state.blocks ?? []),
     ...(drafts ? [{ kind: 'draft', id: 'drafts', count: drafts, ref: String(drafts),
       text: 'draft spec rows to approve or drop' + rows.filter(row => row.staleDecision).map(row => `; ${row.stage}`).join(''), what: 'review in SPEC.md', target: 'tab:spec' }] : []),
   ];
 }
+
