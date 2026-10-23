@@ -3,14 +3,14 @@ import { moveArgs } from './api-moves.js';
 import { Refused } from './refused.js';
 
 export const PERSON_REQUEST_VERSION = 1;
-const VERBS = Object.freeze(['add', 'shout', 'answer', 'hold', 'spec-approve', 'spec-decline']);
+const VERBS = Object.freeze(['add', 'shout', 'answer', 'hold', 'spec-approve', 'spec-decline', 'sentinel-approve', 'sentinel-decline']);
 
 /** Validate a narrow person intent while retaining literal arguments for the actual CLI parser. */
 export function personRequestMove(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)
       || Object.keys(body).some(key => !['verb', 'item', 'args'].includes(key))
       || !VERBS.includes(body.verb)) {
-    throw new Refused('BAD_REQUEST', 'a person request takes add, shout, answer, hold, spec-approve or spec-decline with item and args; use the view controls');
+    throw new Refused('BAD_REQUEST', 'a person request takes add, shout, answer, hold, spec-approve, spec-decline, sentinel-approve or sentinel-decline with item and args; use the view controls');
   }
   const move = structuredClone(body);
   move.args ??= {};

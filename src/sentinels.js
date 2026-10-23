@@ -67,6 +67,7 @@ export function rigorSentinelName(key) {
 export function sentinelDraftNeeds(rows) {
   return rows.filter(row => row.status === 'pending').map(row => ({
     kind: 'sentinel-draft', id: `sentinel:${row.name}`, ref: row.name,
+    check: row.check, directory: row.directory, every: row.every, owner: row.owner, digest: row.digest,
     text: `Sentinel draft: ${row.name} runs ${row.check} ${row.every === 'daily' || row.every === 'hourly' ? row.every : 'every ' + row.every}, reporting to ${row.owner}`,
     what: `pullboard sentinel approve ${row.name}, or decline it with --reason`, target: `sentinel:${row.name}`,
     ...(row.evidence ? { cause: row.evidence.key, evidence: row.evidence } : {}),

@@ -14,6 +14,7 @@ export const SENTINEL_OPTIONS = {
   timeout: { type: 'string' },
   next: { type: 'string' },
   sentinel: { type: 'boolean' },
+  digest: { type: 'string' },
 };
 
 /** Run due approved watches from ordinary resume, respecting the health switches. */
@@ -45,8 +46,10 @@ export async function sentinelCommand({ ctx, words, values, withBoard, whoAmI, o
       if (!ctx.info.isMain || me.id !== 'coordinator') throw new Refused('B26_PERSON_APPROVAL', 'only the person from the main checkout approves or declines a sentinel; use their terminal or Pullboard View');
       const current = sentinels(board).find(entry => entry.name === name);
       if (!current) throw new Refused('STALE_SENTINEL', 'read the current proposals with pullboard sentinels');
+      const digest = values.digest ?? current.digest;
+      if (digest !== current.digest) throw new Refused('STALE_SENTINEL', 'this proposal changed after it was shown; refresh the pending watch and decide its current command, directory and schedule');
       row = await ordered(ctx, board, 'decideSentinel', [{ agentId: PERSON, channel: ctx.io.personChannel ?? 'terminal',
-        name, digest: current.digest, decision: verb, reason: values.reason }]);
+        name, digest, decision: verb, reason: (values.reason ?? '').trim() }]);
     }
     ctx.io.result?.({ sentinel: row });
     ctx.io.say(`${name}: ${row.status}; ${row.every}; owner ${row.owner}; directory ${row.directory}\n  ${row.check}`);
