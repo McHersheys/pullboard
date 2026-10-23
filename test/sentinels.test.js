@@ -41,7 +41,7 @@ import { parseProcessCensus } from '../src/process-census.js';
 import { requireSupportedEngine as requirePublished55Engine } from './fixtures/engine-55-reader.js';
 
 /** Isolate actual SQLite, Git, settings and subprocess files; due time is explicitly injected. */
-function fixture(t) {
+function fixture(t, { agentRoute } = {}) {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-board-watch-')));
   const root = join(directory, 'repo'); mkdirSync(root);
   const overrides = { PULLBOARD_HOME: join(directory, 'home'), PULLBOARD_MACHINE_HOME: join(directory, 'machine'),
@@ -61,7 +61,7 @@ function fixture(t) {
   const clock = { time: Date.parse('2026-10-18T03:00:00Z'), now() { return new Date(this.time); } };
   const board = store.openBoard(join(root, '.git/pullboard/board.sqlite'), clock);
   store.register(board, { lane: 'coordinator', path: root });
-  const agent = store.register(board, { lane: 'core', path: join(directory, 'agent') });
+  const agent = store.register(board, { lane: 'core', path: join(directory, 'agent'), route: agentRoute });
   /** Apply the actual ordered board engine with deterministic injected receipt time. */
   const ordered = async (operation, args) => {
     const move = prepareEngineMove(board, operation, args);
@@ -120,7 +120,7 @@ function repeatedCause(box) {
 }
 
 test('resume never runs a sentinel and sentinel run runs the due ones [N26,A6,D3]', async t => {
-  const box = fixture(t);
+  const box = fixture(t, { agentRoute: 'mid' });
   const marker = join(box.directory, 'explicit-run.json');
   writeFileSync(join(box.root, 'value.txt'), 'committed trunk input');
   writeFileSync(join(box.root, 'slow-check.mjs'), `import {readFileSync,writeFileSync} from 'node:fs';
@@ -135,24 +135,26 @@ console.log('explicit trunk receipt: '+value);
   const agentRoot = join(box.directory, 'agent');
   runFixtureGit(['worktree', 'add', '--quiet', '--detach', agentRoot, 'main'], { cwd: box.root, env: box.env });
   const joined = await box.cli(['join', 'core', '--model', 'gpt-6.1-sol', '--route', 'mid'], undefined, agentRoot);
-  assert.equal(joined.code, 0, joined.error);
+  assert.equal(joined.code, 0, joined.error || JSON.stringify(joined.document));
   writeFileSync(join(agentRoot, 'value.txt'), 'uncommitted agent input');
   const command = `${quote(process.execPath)} slow-check.mjs`;
-  assert.equal((await box.cli(['sentinel', 'propose', 'slow-trunk', '--check', command, '--every', 'hourly', '--owner', box.agent, '--timeout', '35000'])).code, 0);
-  assert.equal((await box.cli(['sentinel', 'approve', 'slow-trunk'], 'view')).code, 0);
+  const proposed = await box.cli(['sentinel', 'propose', 'slow-trunk', '--check', command, '--every', 'hourly', '--owner', box.agent, '--timeout', '35000']);
+  assert.equal(proposed.code, 0, proposed.error || JSON.stringify(proposed.document));
+  const approved = await box.cli(['sentinel', 'approve', 'slow-trunk'], 'view');
+  assert.equal(approved.code, 0, approved.error || JSON.stringify(approved.document));
 
   // The frozen bar measures ordinary in-process handling after setup, not module loading or cold CLI startup.
   const began = performance.now();
   const resumed = await box.cli(['resume'], undefined, agentRoot);
   const elapsed = performance.now() - began;
-  assert.equal(resumed.code, 0, resumed.error);
+  assert.equal(resumed.code, 0, resumed.error || JSON.stringify(resumed.document));
   assert.ok(elapsed < 100, `resume took ${elapsed.toFixed(3)} ms with a due 30 s sentinel`); // budget: declared by item #1042 and coordinator24324: in-process resume under100ms after setup.
   assert.equal(existsSync(marker), false, 'resume neither runs the watch nor detaches a checker into the agent session');
   assert.equal(sentinels(box.board)[0].lastRun, null);
   assert.equal(store.events(box.board).some(row => row.event_kind === 'sentinel-start'), false);
 
   const run = await box.cli(['sentinel', 'run'], undefined, agentRoot);
-  assert.equal(run.code, 0, run.error);
+  assert.equal(run.code, 0, run.error || JSON.stringify(run.document));
   const executed = JSON.parse(readFileSync(marker, 'utf8'));
   assert.notEqual(executed.cwd, agentRoot, 'the explicit runner never uses the agent checkout');
   assert.notEqual(executed.cwd, box.root, 'the runner prepares a separate checkout rather than using live trunk');
