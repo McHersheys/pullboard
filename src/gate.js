@@ -583,11 +583,13 @@ async function withOneGateSlot(root, action, { landing = false, itemCheck = fals
       timed(lease).tracker.mark('actionAt');
       try { return await action(lease); }
       catch (error) {
-        if (!(error instanceof RunnerDropped) || !lease.runner || !lease.requeueRunner) throw error;
-        const runnerUnavailable = { host: lease.runner.host, reason: 'transport lost before a complete result', until: 'the host is checked and re-registered' };
+        // A cleanup the runner could not verify is the runner's failure, not the run's: rerun it locally (#1063).
+        const cleanup = error instanceof Refused && error.code === 'RUNNER_CLEANUP_TIMEOUT';
+        if (!(error instanceof RunnerDropped || cleanup) || !lease.runner || !lease.requeueRunner) throw error;
+        const runnerUnavailable = { host: lease.runner.host, reason: cleanup ? error.message : 'transport lost before a complete result', until: 'the host is checked and re-registered' };
         if (onWait) await onWait({ holders: [], line: [], position: 0, runnerUnavailable });
-        else process.stderr.write(`runner ${runnerUnavailable.host} unavailable: ${runnerUnavailable.reason}; until ${runnerUnavailable.until}; requeueing the run\n`);
-        lease = await lease.requeueRunner('transport-lost');
+        else process.stderr.write(`runner ${runnerUnavailable.host} unavailable: ${runnerUnavailable.reason}; until ${runnerUnavailable.until}; ${cleanup ? 'rerunning it locally' : 'requeueing the run'}\n`);
+        lease = await lease.requeueRunner(cleanup ? 'cleanup-unverified' : 'transport-lost', { local: cleanup });
       }
     }
   } finally {
