@@ -250,3 +250,22 @@ test('init leaves an inline mcp_servers table as written, prints the exact block
   const ordinary = initFixture(t);
   assert.equal(ordinary.init().document.mcp.codex, 'added');
 });
+
+test('init reads no table inside a multi-line string and reads every TOML escape in a key [A9,I1]', (t) => {
+  // A header written inside a multi-line string is text, so the pullboard server is still added; a \U escape never crashes.
+  for (const existing of [
+    'note = """\n[mcp_servers.pullboard]\n"""\n[mcp_servers.other]\ncommand = "other"\n',
+    "note = '''\n[mcp_servers.pullboard]\n'''\n",
+    '[mcp_servers."\\U0001F600"]\ncommand = "smile"\n',
+  ]) {
+    const box = initFixture(t);
+    mkdirSync(join(box.root, '.codex'), { recursive: true });
+    writeFileSync(join(box.root, '.codex', 'config.toml'), existing);
+    const initialized = box.init();
+    assert.equal(initialized.code, 0, `${existing}\n${initialized.stderr}`);
+    assert.equal(initialized.document.mcp.codex, 'added', existing);
+    const after = readFileSync(join(box.root, '.codex', 'config.toml'), 'utf8');
+    assert.ok(after.startsWith(existing), 'everything already there is kept');
+    assert.match(after.slice(existing.length), /^\n\[mcp_servers\.pullboard\]\ncommand = "sh"\n/u, 'the pullboard table is appended once');
+  }
+});

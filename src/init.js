@@ -425,6 +425,62 @@ export const MCP_COMMAND =
   'm=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/..; for p in node_modules/.bin/pullboard "$m/node_modules/.bin/pullboard"; do [ -x "$p" ] && exec "$p" mcp; done; command -v pullboard >/dev/null && exec pullboard mcp; echo "pullboard is not installed; npm i -D pullboard" >&2; exit 1';
 
 /**
+ * Decode the body of a TOML basic string: \\b \\t \\n \\f \\r \\e \\" \\\\, \\uXXXX and \\UXXXXXXXX. Null for an escape
+ * TOML does not define, so a key that cannot be read names nothing rather than crashing init (#961).
+ *
+ * @param {string} body
+ * @returns {string | null}
+ */
+function tomlBasicString(body) {
+  const simple = { b: '\b', t: '\t', n: '\n', f: '\f', r: '\r', e: '\u001b', '"': '"', '\\': '\\' };
+  let out = '';
+  for (let at = 0; at < body.length; at += 1) {
+    if (body[at] !== '\\') { out += body[at]; continue; }
+    const kind = body[at + 1];
+    if (kind in simple) { out += simple[kind]; at += 1; continue; }
+    const width = kind === 'u' ? 4 : kind === 'U' ? 8 : 0;
+    const hex = body.slice(at + 2, at + 2 + width);
+    if (!width || !/^[0-9A-Fa-f]+$/u.test(hex) || hex.length !== width) return null;
+    const code = Number.parseInt(hex, 16);
+    if (code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return null;
+    out += String.fromCodePoint(code);
+    at += 1 + width;
+  }
+  return out;
+}
+
+/**
+ * A Codex config.toml's lines, each with whether it begins inside a multi-line string ("""…""" or \'\'\'…\'\'\'). Such a
+ * line is text, never a table header or a key, however it looks (#961).
+ *
+ * @param {string} contents
+ * @returns {{ text: string, inString: boolean }[]}
+ */
+function tomlLines(contents) {
+  const lines = String(contents).split(/\r?\n/u);
+  const result = [];
+  let multi = '';
+  for (const text of lines) {
+    result.push({ text, inString: Boolean(multi) });
+    let quote = '';
+    for (let at = 0; at < text.length; at += 1) {
+      if (multi) {
+        if (multi === '"""' && text[at] === '\\') { at += 1; continue; }
+        if (text.startsWith(multi, at)) { at += multi.length - 1; multi = ''; }
+        continue;
+      }
+      const char = text[at];
+      if (quote === '"' && char === '\\') { at += 1; continue; }
+      if (quote) { if (char === quote) quote = ''; continue; }
+      if (text.startsWith('"""', at) || text.startsWith("\'\'\'", at)) { multi = text.slice(at, at + 3); at += 2; continue; }
+      if (char === '"' || char === "'") quote = char;
+      else if (char === '#') break;
+    }
+  }
+  return result;
+}
+
+/**
  * Split a TOML key such as `mcp_servers.'pullboard'` into its parts: bare, "basic" or 'literal', dots between.
  *
  * @param {string} text
@@ -435,7 +491,9 @@ function tomlKeyParts(text) {
   const pattern = /\s*(?:([A-Za-z0-9_-]+)|"((?:[^"\\]|\\.)*)"|'([^']*)')\s*(\.|$)/uy;
   let match;
   while (pattern.lastIndex < text.length && (match = pattern.exec(text))) {
-    parts.push(match[1] ?? (match[2] !== undefined ? JSON.parse(`"${match[2]}"`) : match[3]));
+    const part = match[1] ?? (match[2] !== undefined ? tomlBasicString(match[2]) : match[3]);
+    if (part === null) return null;
+    parts.push(part);
     if (!match[4]) return pattern.lastIndex === text.length ? parts : null;
   }
   return null;
@@ -472,7 +530,8 @@ function withoutTomlComment(line) {
 export function codexHasMcpServer(contents, name) {
   const names = (path) => path.length >= 2 && path[0] === 'mcp_servers' && path[1] === name;
   let table = [];
-  for (const raw of String(contents).split(/\r?\n/u)) {
+  for (const { text: raw, inString } of tomlLines(contents)) {
+    if (inString) continue;
     const line = withoutTomlComment(raw).trim();
     const header = /^\[\[?(.+?)\]\]?$/u.exec(line);
     if (header) {
@@ -502,7 +561,8 @@ export function codexHasMcpServer(contents, name) {
  */
 export function codexMcpServersInline(contents) {
   let table = [];
-  for (const raw of String(contents).split(/\r?\n/u)) {
+  for (const { text: raw, inString } of tomlLines(contents)) {
+    if (inString) continue;
     const line = withoutTomlComment(raw).trim();
     const header = /^\[\[?(.+?)\]\]?$/u.exec(line);
     if (header) { table = tomlKeyParts(header[1]) ?? []; continue; }
