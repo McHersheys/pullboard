@@ -58,7 +58,7 @@ function stopRecorded(profile, pids) {
 }
 
 test('the runner is bin/run-tests.js with any options, and its workers are not [C7]', () => {
-  const at = '/Users/someone/Code/Open Source/repo';
+  const at = '/work/Code Space/repo';
   for (const command of [`node bin/run-tests.js test/a.test.js`, `node bin/run-tests.js --test-concurrency=1 test/a.test.js`,
     `/usr/local/bin/node ${at}/bin/run-tests.js --test-concurrency=1 ${at}/test/a.test.js`,
     `node --import ./instrumentation.mjs bin/run-tests.js test/a.test.js`, `node --import=./instrumentation.mjs ${at}/bin/run-tests.js`]) assert.equal(isRunnerCommand(command), true, command);
