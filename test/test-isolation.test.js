@@ -1,4 +1,4 @@
-/** @pullboard-test-loads bin/run-tests.js src/test-isolation.js src/machine-home.js src/settings.js src/resources.js src/view-port.js */
+/** @pullboard-test-loads bin/run-tests.js src/test-isolation.js src/child-journal-preload.js src/machine-home.js src/settings.js src/resources.js src/view-port.js */
 /** A test's verdict never depends on the machine it runs on: settings, resources, runners, host markers, ports [C7]. */
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -8,6 +8,8 @@ import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { runFixtureChildAsync } from './fixture-child.js';
+import { childJournalPreloadSource } from '../src/child-journal-preload.js';
+import { foreignNodeOptions } from '../src/test-isolation.js';
 import { takeResource } from '../src/resources.js';
 import { DEFAULT_VIEW_PORT } from '../src/view-port.js';
 import { GATE_SLOT_HELD_ENV, GATE_SLOT_POOL_ENV, GATE_SLOT_TOKEN_ENV } from '../src/resources.js';
@@ -82,9 +84,10 @@ test('a test reads no machine state outside its own private home [C7]', async (t
   const holder = createServer();
   await new Promise((done) => { holder.once('error', done); holder.listen(DEFAULT_VIEW_PORT, '127.0.0.1', done); });
   cleanups.push(() => holder.listening ? new Promise((done) => holder.close(done)) : undefined);
+  // The runner's own spawn-journal preload, exactly as an SSH runner writes it for a job.
   const preload = join(dir, 'runner', 'child-spawn-preload.mjs');
-  mkdirSync(join(dir, 'runner'));
-  writeFileSync(preload, 'export {};\n');
+  mkdirSync(join(dir, 'runner', 'child-journal'), { recursive: true });
+  writeFileSync(preload, childJournalPreloadSource(join(dir, 'runner')));
   const root = probeSuite(dir);
 
   const base = { ...process.env, PULLBOARD_MACHINE_HOME: join(dir, 'outer-machine'), ISOLATION_HOSTILE_HOME: hostile };
@@ -108,4 +111,22 @@ test('a test reads no machine state outside its own private home [C7]', async (t
   assert.notEqual(exposed.status, 0, 'a test that reads the machine home fails the guard');
   const seen = verdicts(exposed.stdout);
   for (const index of [0, 1, 2]) assert.match(seen[index], /^not ok /u, `${PROBES[index]} catches the machine it reads`);
+});
+
+test('a forged runner preload of the same name stays foreign [C7]', (t) => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-forged-preload-')));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const preload = join(dir, 'child-spawn-preload.mjs');
+  const declared = `--import=${pathToFileURL(preload).href}`;
+  const env = { PULLBOARD_RUNNER_PRELOAD: declared };
+  writeFileSync(preload, childJournalPreloadSource(dir));
+  assert.equal(foreignNodeOptions(declared, env), false, 'the runner\'s own journal source is known');
+  assert.equal(foreignNodeOptions(declared, {}), true, 'undeclared, even the real preload is foreign');
+  writeFileSync(preload, `${childJournalPreloadSource(dir)}\nimport 'node:child_process';\n`);
+  assert.equal(foreignNodeOptions(declared, env), true, 'one added line makes the declared file foreign');
+  writeFileSync(preload, childJournalPreloadSource(join(dir, 'elsewhere')));
+  assert.equal(foreignNodeOptions(declared, env), true, 'the source for another directory is foreign');
+  rmSync(preload);
+  assert.equal(foreignNodeOptions(declared, env), true, 'a missing file is foreign');
+  assert.equal(foreignNodeOptions('--import=file:///elsewhere/unclassified.js', env), true, 'an undeclared import is foreign');
 });

@@ -38,6 +38,7 @@ import {
 } from 'node:url';
 import * as resourceApi from './resources.js';
 import { parseProcessCensus } from './process-census.js';
+import { childJournalPreloadSource } from './child-journal-preload.js';
 import {
   gateStages,
   stagedScript,
@@ -202,7 +203,7 @@ async function readSpec() {
     tagNames.add(tag.name);
     if (tag.chain.length ? tag.chain[0] !== tag.object : tag.object !== tag.peeledCommit) throw new Error('invalid tag manifest');
   }
-  const runtimeNames = ['resources.js', 'git.js', 'machine-home.js', 'refused.js', 'process-census.js', 'queue-settings.js', 'queue-order.js', 'sandbox-denial.js', 'gate-stages.js'];
+  const runtimeNames = ['resources.js', 'git.js', 'machine-home.js', 'refused.js', 'process-census.js', 'queue-settings.js', 'queue-order.js', 'sandbox-denial.js', 'gate-stages.js', 'child-journal-preload.js'];
   if (Object.keys(value.runtime.files).length !== runtimeNames.length
     || runtimeNames.some(name => typeof value.runtime.files[name] !== 'string')) throw new Error('invalid work specification');
   if (createHash('sha256').update(JSON.stringify(value.runtime.files)).digest('hex') !== value.runtime.sha256) throw new Error('invalid trusted runtime');
@@ -310,58 +311,7 @@ function writeChildJournalPreload(directory) {
   const journalDirectory = join(directory, 'child-journal');
   mkdirSync(journalDirectory, { mode: 0o700 });
   const overflowPath = join(journalDirectory, 'overflow');
-  const source = `
-import diagnostics from 'node:diagnostics_channel';
-import { closeSync, openSync, statSync, writeSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { createHash, randomUUID } from 'node:crypto';
-const directory = ${JSON.stringify(journalDirectory)};
-const overflowPath = ${JSON.stringify(overflowPath)};
-const instance = randomUUID();
-process.env.PULLBOARD_RUNNER_INSTANCE = instance;
-const file = join(directory, 'children-' + process.pid + '.jsonl');
-const fd = openSync(file, 'a', 0o600);
-let bytes = statSync(file).size;
-let overflow = false;
-const limit = 131072;
-function record(value) {
-  if (overflow) return;
-  try {
-    const line = JSON.stringify(value) + '\\n';
-    const size = Buffer.byteLength(line);
-    if (bytes + size > limit) {
-      overflow = true;
-      try { writeFileSync(overflowPath, 'journal limit reached\\n', { flag: 'wx', mode: 0o600 }); } catch {}
-      return;
-    }
-    writeSync(fd, line);
-    bytes += size;
-  } catch {
-    try { writeFileSync(overflowPath, 'journal write failed\\n', { flag: 'wx', mode: 0o600 }); } catch {}
-    overflow = true;
-  }
-}
-record({ type: 'boot', pid: process.pid, ppid: process.ppid, instance });
-const channel = diagnostics.channel('child_process');
-const seen = new WeakSet();
-channel.subscribe(message => {
-  try {
-    const child = message?.process;
-    if (!child || typeof child.once !== 'function' || seen.has(child)) return;
-    seen.add(child);
-    const writeReceipt = () => {
-      if (!Number.isSafeInteger(child.pid) || child.pid < 1) return;
-      const commandSha256 = createHash('sha256').update(JSON.stringify({ command: child.spawnfile ?? '', args: child.spawnargs ?? [] })).digest('hex');
-      record({ type: 'spawn', pid: child.pid, ppid: process.pid, instance, commandSha256 });
-    };
-    if (Number.isSafeInteger(child.pid)) writeReceipt();
-    else child.once('spawn', writeReceipt);
-  } catch {
-    try { writeFileSync(overflowPath, 'child receipt could not be recorded\\n', { flag: 'wx', mode: 0o600 }); } catch {}
-  }
-});
-process.once('exit', () => { try { closeSync(fd); } catch {} });
-`;
+  const source = childJournalPreloadSource(directory);
   const preload = join(directory, 'child-spawn-preload.mjs');
   writeFileSync(preload, source, { mode: 0o600, flag: 'wx' });
   return { preload, journalDirectory, overflowPath, nodeOptions: `--import=${pathToFileURL(preload).href}` };
