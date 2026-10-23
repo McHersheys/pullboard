@@ -107,7 +107,7 @@ test('a test reads no machine state outside its own private home [C7]', async (t
   assert.equal(busy.status, 0, busy.stderr);
 
   // The probes are a real guard: run without the private home, the same suite reads the hostile machine and fails.
-  const exposed = await runFixtureChildAsync(process.execPath, ['--test', 'test/probe.test.js'], { cwd: root, env: machine });
+  const exposed = await runFixtureChildAsync(process.execPath, ['--test', '--test-reporter=tap', 'test/probe.test.js'], { cwd: root, env: machine });
   assert.notEqual(exposed.status, 0, 'a test that reads the machine home fails the guard');
   const seen = verdicts(exposed.stdout);
   for (const index of [0, 1, 2]) assert.match(seen[index], /^not ok /u, `${PROBES[index]} catches the machine it reads`);
