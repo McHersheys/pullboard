@@ -142,18 +142,28 @@ export function appendProofCounter(board, event) {
   put(board, 'summary', summary);
 }
 
+/** Fully consume bounded read batches before writing shards, including on Node22.13's SQLite API. */
+function replayProofTail(board, cursor) {
+  const read = board.db.prepare('SELECT * FROM event WHERE event_id>? ORDER BY event_id LIMIT 256');
+  while (true) {
+    const batch = read.all(cursor);
+    if (!batch.length) return;
+    for (const event of batch) { appendProofCounter(board, event); cursor = event.event_id; }
+  }
+}
+
 /** Rebuild from authoritative history inside the caller's existing write transaction. */
 export function rebuildProofCounters(board) {
   clearProofCounters(board);
   put(board, 'summary', emptySummary());
-  for (const event of board.db.prepare('SELECT * FROM event ORDER BY event_id').iterate()) appendProofCounter(board, event);
+  replayProofTail(board, 0);
 }
 
 /** Catch up an older writer once; ordinary current-writer appends then decode only their new event. */
 export function ensureProofCounters(board) {
   const summary = proofCounter(board, 'summary');
   if (!summary) { rebuildProofCounters(board); return; }
-  for (const event of board.db.prepare('SELECT * FROM event WHERE event_id>? ORDER BY event_id').iterate(summary.last)) appendProofCounter(board, event);
+  replayProofTail(board, summary.last);
 }
 
 /** Readers never take a write lock to warm or repair a derived cache. */
