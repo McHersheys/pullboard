@@ -10,6 +10,7 @@
 import { RECORDED_GENERIC_NEXT } from './recorded-refusal.js';
 import { Refused } from './refused.js';
 import { recordBlock } from './blocks.js';
+import { repoInfo } from './git.js';
 
 /** Describe the queue's actual outstanding reviews and submission age [Q1,V15]. */
 export function reviewQueueLine(ctx, queue, span) {
@@ -660,7 +661,7 @@ const NOT_BLOCKS = new Set(['USAGE', 'UNKNOWN_COMMAND']);
  * @returns {'person'|'coordinator'|'agent'}
  */
 export function blockAudience(code, message, step) {
-  const person = /\bonly the person\b|\blet the person act\b|\bbring it to the person\b|\bthe person (?:reissues|runs|sends|approves)\b|\bfrom the paired phone\b|\bthe person['’]s terminal\b/iu;
+  const person = /\blet the person act\b|\bbring it to the person\b|\bthe person (?:reissues|runs|sends|approves)\b|\bfrom the paired phone\b|\bthe person['’]s terminal\b/iu;
   const coordinator = /\bask (?:the|your) coordinator\b|^the coordinator\b/iu;
   if (/_PERSON_ONLY$|^B26_PERSON_CHANNEL$|^HUMAN_REQUIRED$/u.test(code)) return 'person';
   // The raise site's own words name who acts before the catalog's general step does: an expired
@@ -717,9 +718,11 @@ export function blockLine(block) {
  *
  * @param {any} io
  * @param {{ code?: string, message: string, next?: string }} error
- * @param {{ command: string, info: { commonDir: string, root: string, isMain: boolean }, now: Date }} context
+ * @param {{ command: string, info?: { commonDir: string, root: string, isMain: boolean }, now?: Date }} context - info defaults to the checkout at io.cwd
  */
-export function reportBlock(io, error, { command, info, now }) {
+export function reportBlock(io, error, { command, info: given, now = io.clock?.now?.() ?? new Date() }) {
+  let info = given;
+  try { info ??= repoInfo(io.cwd); } catch { return null; /* Outside a repository there is no board to record on. */ }
   const caller = io.callerRole?.();
   const block = blockNotice(error, { command, at: now, path: info.root, caller,
     by: caller === 'person' ? 'person' : info.isMain ? 'coordinator' : 'agent' });

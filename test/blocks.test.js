@@ -4,7 +4,10 @@ import { after, test } from 'node:test';
 import { serveApi } from '../src/api.js';
 import { repoInfo } from '../src/git.js';
 import { personNeedsState } from '../src/needs-state.js';
-import { reportBlock } from '../src/next-steps.js';
+import {
+  blockAudience,
+  reportBlock,
+} from '../src/next-steps.js';
 import { Refused } from '../src/refused.js';
 import { relayPresentation } from '../src/relay-presentation.js';
 import { createE2eHelpers } from './e2e-helpers.js';
@@ -52,6 +55,9 @@ test('a Pullboard block reaches whoever can clear it and repeats are counted [C6
   assert.equal(raise(new Refused('TOKEN_EXPIRED', 'the coordinator relay token expired; the person reissues it: run pullboard relay on in the main checkout'), 'shout').audience, 'person');
   assert.equal(raise(new Refused('TOKEN_EXPIRED', 'the relay token of web-1 expired, and only a seat\'s own current token or its creator renews it; ask the coordinator for a fresh worktree: pullboard worktree <lane> --model "<model name>"'), 'claim').audience, 'coordinator');
   assert.equal(said.filter(line => /only the person can clear this/u.test(line)).length, 2);
+  // A step the agent takes stays the agent's even when it mentions the person as an alternative.
+  assert.equal(blockAudience('RATCHET_ROSE', 'C9 rose to 54, was 53; fix the new problems, commit, and submit again; only the person can sign an increased count',
+    'fix the new doctrine problems named in the report, commit, and submit again; only the person can sign an increased count'), 'agent');
   const personRows = personNeedsState(box.repo).needs.filter(row => row.kind === 'block');
   assert.deepEqual(personRows.map(row => row.text).sort(), [
     'Pullboard stopped a request that only you can clear: send this person action from the paired phone',

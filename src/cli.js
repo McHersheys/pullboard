@@ -2245,7 +2245,7 @@ async function runCommand(argv, io) {
     if (error instanceof Refused) {
       io.refusal?.(error);
       io.err(`pullboard: ${displayedRefusal(io, error)}\nnext: ${io.refusalDocument(error).error.next}`);
-      noteBlock(io, error, command);
+      reportBlock(io, error, { command });
       return 1;
     }
     throw error;
@@ -2296,13 +2296,6 @@ function rememberTrunk(io) {
   if (primary?.branch) trunkRef(info.root, primary.branch);
 }
 
-/** Record a refusal that stopped a command, aimed at whoever can clear it [C6]. */
-function noteBlock(io, error, command) {
-  let info;
-  try { info = repoInfo(io.cwd); } catch { return; /* Outside a repository there is no board to record on. */ }
-  reportBlock(io, error, { command, info, now: io.clock?.now?.() ?? new Date() });
-}
-
 /** Run one command and emit its single versioned JSON result when requested (A1). */
 export async function main(argv, streams) {
   if (argv[0] === 'serve' && !startupMainTraced) {
@@ -2349,7 +2342,7 @@ async function runMain(argv, streams) {
       if (!(error instanceof Refused)) throw error;
       io.refusal(error);
       io.err(`pullboard: ${displayedRefusal(io, error)}\nnext: ${io.refusalDocument(error).error.next}`);
-      noteBlock(io, error, parsed.positionals[0]);
+      reportBlock(io, error, { command: parsed.positionals[0] });
       io.flush(1);
       return 1;
     }
