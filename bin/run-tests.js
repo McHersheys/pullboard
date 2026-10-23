@@ -304,7 +304,7 @@ function runTests(args, env, concurrency) {
     '--disable-warning=ExperimentalWarning',
     '--test',
     `--test-concurrency=${files}`,
-    ...(!reporter ? ['--test-reporter=tap'] : []),
+    ...(!reporter ? ['--test-reporter=tap', ...(env.PULLBOARD_TEST_ACTIONS ? ['--test-reporter-destination=stdout', `--test-reporter=${fileURLToPath(new URL('../src/test-action-reporter.js', import.meta.url))}`, '--test-reporter-destination=/dev/null'] : [])] : []),
     '--import',
     runner,
     ...placed,
@@ -890,6 +890,7 @@ async function runLandingTests(args, env, concurrency) {
   const selectedFiles = options.selectedFiles;
   delete options.selectedFiles;
   const reporterEntries = options.reporters;
+  if (process.env.PULLBOARD_TEST_ACTIONS) reporterEntries.push({ reporter: fileURLToPath(new URL('../src/test-action-reporter.js', import.meta.url)), destination: '/dev/null' });
   delete options.reporters;
   const loadedReporters = [];
   for (const entry of reporterEntries) {
