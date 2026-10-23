@@ -58,7 +58,7 @@ test('four runs never hold more test files than cores, and the longest-recorded 
   for (const file of files) writeFileSync(join(root, file), timedFile(file, 300));
   const runs = await Promise.all([1, 2, 3, 4].map(run => runFixtureChildAsync(process.execPath, [runner, ...files],
     { cwd: root, env: { ...env, FIXTURE_RUN: String(run) } })));
-  for (const result of runs) assert.equal(result.status, 0, result.failure ?? result.stdout);
+  for (const result of runs) assert.equal(result.status, 0, `${result.failure ?? ""}\n${result.stdout.slice(-3000)}`);
   const events = log();
   assert.equal(events.filter(event => event.at === 'start').length, 24, 'every file of every run ran');
   assert.ok(peak(events) <= 4, `at most 4 files at once on 4 cores, saw ${peak(events)}`);

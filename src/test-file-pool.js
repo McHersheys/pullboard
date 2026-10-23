@@ -26,6 +26,8 @@ export const TEST_FILE_CORES_ENV = 'PULLBOARD_TEST_FILE_CORES';
 // free, or once a second to prune rows of processes that have gone.
 const POLL_MS = 25;
 const PRUNE_MS = 1_000;
+// Budget: a new pool's one-time setup waits out other files setting it up this long before it fails.
+const SETUP_LOCK_MS = 10_000;
 
 /**
  * Read the pool a test-file process belongs to, or null outside a run-tests run.
@@ -79,17 +81,28 @@ async function openPool(home) {
   mkdirSync(home, { recursive: true });
   const DatabaseSync = await databaseSync();
   const db = new DatabaseSync(join(home, 'test-file-pool.sqlite'));
-  db.exec(`PRAGMA busy_timeout = 10000;
-    PRAGMA journal_mode = WAL;
+  db.exec('PRAGMA busy_timeout = 10000');
+  // Switching a new pool to WAL takes an exclusive lock that SQLite may refuse at once, without the busy wait,
+  // when many files open the same new pool together; wait the lock out like any other.
+  for (let deadline = Date.now() + SETUP_LOCK_MS; ; await new Promise(next => setTimeout(next, POLL_MS))) {
+    try { db.exec('PRAGMA journal_mode = WAL'); break; }
+    catch (error) { if (!/locked|busy/iu.test(error.message) || Date.now() > deadline) throw error; }
+  }
+  db.exec(`
     PRAGMA synchronous = NORMAL;
     CREATE TABLE IF NOT EXISTS file_holder(pid INTEGER PRIMARY KEY, since INTEGER NOT NULL, lender INTEGER);
     CREATE TABLE IF NOT EXISTS file_waiter(ticket INTEGER PRIMARY KEY AUTOINCREMENT, pid INTEGER NOT NULL UNIQUE);
     CREATE TABLE IF NOT EXISTS file_call(call TEXT PRIMARY KEY, lender INTEGER NOT NULL, closing INTEGER NOT NULL DEFAULT 0);`);
   // A pool made by an earlier build of this module gains the columns it lacks; a missing value reads as none.
-  const columns = table => db.prepare(`PRAGMA table_info(${table})`).all().map(column => column.name);
-  if (!columns('file_holder').includes('lender')) db.exec('ALTER TABLE file_holder ADD COLUMN lender INTEGER');
-  if (!columns('file_holder').includes('call')) db.exec('ALTER TABLE file_holder ADD COLUMN call TEXT');
-  if (!columns('file_call').includes('closing')) db.exec('ALTER TABLE file_call ADD COLUMN closing INTEGER NOT NULL DEFAULT 0');
+  // Another file may add the same column first; its addition is as good as ours.
+  const addColumn = (table, column, type) => {
+    if (db.prepare(`PRAGMA table_info(${table})`).all().some(entry => entry.name === column)) return;
+    try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`); }
+    catch (error) { if (!/duplicate column/iu.test(error.message)) throw error; }
+  };
+  addColumn('file_holder', 'lender', 'INTEGER');
+  addColumn('file_holder', 'call', 'TEXT');
+  addColumn('file_call', 'closing', 'INTEGER NOT NULL DEFAULT 0');
   return db;
 }
 
