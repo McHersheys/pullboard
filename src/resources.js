@@ -600,7 +600,7 @@ function pause(ms) { return new Promise((resolvePromise) => setTimeout(resolvePr
  *   memory, when given, is read before each admission: a held verdict keeps the whole queue
  *   waiting in place, local, remote and short slots alike, and an unchecked one is passed to onWait once
  *   so the caller can warn.
- * @returns {Promise<{ name: string, scope: string, token: string, pool: string, browser: boolean, slotClass: 'gate'|'short', runner?: {host:string,slots:number,browser:number}, waitMs: number, release: () => void, renew: () => void, requeueRunner?: () => Promise<object> }>}
+ * @returns {Promise<{ name: string, scope: string, token: string, pool: string, browser: boolean, slotClass: 'gate'|'short', runner?: {host:string,slots:number,browser:number}, waitMs: number, release: () => void, renew: () => void, requeueRunner?: (reason?: string, options?: { local?: boolean }) => Promise<object> }>}
  */
 export async function takeResource(options) {
   const { name, capacity, scope = 'machine', root = process.cwd(), allowIdleCapacityUpdate = false } = options;
@@ -788,8 +788,8 @@ export async function takeResource(options) {
             throw new Refused('RESOURCE_LEASE_LOST', `resource lease for "${name}" is no longer held`);
           }
         };
-        /** Quarantine a failed remote host and retry this exact ticket on another executor. */
-        const requeueRunner = async () => {
+        /** Quarantine a failed remote host and retry this exact ticket on another executor, or only locally. */
+        const requeueRunner = async (reason = 'transport-lost', { local = false } = {}) => {
           if (!acquired.runner) throw new Refused('LOCAL_RUNNER_REQUEUE', 'only a remote lease can be returned to the runner queue');
           if (released || transferred || lost) throw new Refused('RESOURCE_LEASE_LOST', `resource lease for "${name}" is no longer held`);
           transferred = true;
@@ -799,7 +799,7 @@ export async function takeResource(options) {
           try {
             update(db, () => {
               db.prepare('INSERT INTO runner_unavailable(host, since, detail) VALUES (?, ?, ?) ON CONFLICT(host) DO UPDATE SET since = excluded.since, detail = excluded.detail')
-                .run(acquired.runner.host, new Date().toISOString(), 'TRANSPORT_LOST');
+                .run(acquired.runner.host, new Date().toISOString(), reason === 'cleanup-unverified' ? 'CLEANUP_UNVERIFIED' : 'TRANSPORT_LOST');
               const holderName = runnerResourceName(acquired.runner.host);
               const holder = db.prepare('SELECT token FROM holder WHERE token = ? AND name = ? AND runner = ?').get(token, holderName, acquired.runner.host);
               if (!holder) throw new Refused('RESOURCE_LEASE_LOST', `remote lease for "${name}" is no longer held`);
@@ -820,7 +820,7 @@ export async function takeResource(options) {
               }
               db.prepare('DELETE FROM holder WHERE token = ?').run(token);
               db.prepare('INSERT INTO waiter(ticket, token, name, pid, started, agent, repo, since, heartbeat, landing, item_check, diagnostic, browser, item, kind, remote, classed, release_aware, board_key, release_rank, queue_ticket, short_eligible) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-                .run(requeueTicket, token, name, pid, started, agent, repo, queuedAt, Date.now(), Number(landing), Number(itemCheck || diagnostic), Number(diagnostic), Number(browser), item, kind, Number(remote), marker, 1, boardKey, releaseRank, requeueOpportunity, Number(shortEligible));
+                .run(requeueTicket, token, name, pid, started, agent, repo, queuedAt, Date.now(), Number(landing), Number(itemCheck || diagnostic), Number(diagnostic), Number(browser), item, kind, Number(remote && !local), marker, 1, boardKey, releaseRank, requeueOpportunity, Number(shortEligible));
             });
           } catch (error) {
             transferred = false;
@@ -828,7 +828,7 @@ export async function takeResource(options) {
             throw error;
           }
           db.close();
-          return takeResource({ ...options, _resume: { token, ticket: requeueTicket ?? acquired.ticket, queueTicket: requeueOpportunity,
+          return takeResource({ ...options, ...(local ? { remote: false } : {}), _resume: { token, ticket: requeueTicket ?? acquired.ticket, queueTicket: requeueOpportunity,
             queuedAt, requestedAt, priorWaitMs: acquiredWaitMs, waitStartedAt: Date.now() } });
         };
         return { name, scope, token, pool, browser, slotClass: acquired.shortSlot ? 'short' : 'gate', ...(acquired.runner ? { runner: acquired.runner } : {}),

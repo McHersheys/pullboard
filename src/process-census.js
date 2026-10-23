@@ -28,3 +28,22 @@ export function parseProcessCensus(stdout) {
   }
   return rows.size ? rows : null;
 }
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/**
+ * Whether a census row's process started at the given moment, from a census read with TZ=UTC. The census gives
+ * whole seconds, and a process starts at most a moment before the record of it, so the window is one second before
+ * that second to three after, for a loaded host. Hosts hand out pids in order, so a reused pid cannot start inside it.
+ *
+ * @param {{started: string}} row - A row from parseProcessCensus.
+ * @param {number} ms - When the job's own record says the process started, in epoch milliseconds.
+ * @returns {boolean}
+ */
+export function bornNear(row, ms) {
+  const match = /^[A-Z][a-z]{2} ([A-Z][a-z]{2}) (\d{1,2}) (\d{2}):(\d{2}):(\d{2}) (\d{4})$/u.exec(row?.started ?? '');
+  const month = match ? MONTHS.indexOf(match[1]) : -1;
+  if (month < 0 || !Number.isFinite(ms)) return false;
+  const second = Date.UTC(Number(match[6]), month, Number(match[2]), Number(match[3]), Number(match[4]), Number(match[5]));
+  return second - 1_000 <= ms && ms < second + 3_000;
+}

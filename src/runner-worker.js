@@ -37,6 +37,7 @@ import {
   pathToFileURL,
 } from 'node:url';
 import * as resourceApi from './resources.js';
+import { bornNear } from './process-census.js';
 import { parseProcessCensus } from './process-census.js';
 import {
   gateStages,
@@ -340,7 +341,7 @@ function record(value) {
     overflow = true;
   }
 }
-record({ type: 'boot', pid: process.pid, ppid: process.ppid, instance });
+record({ type: 'boot', pid: process.pid, ppid: process.ppid, instance, started: Math.round(performance.timeOrigin) });
 const channel = diagnostics.channel('child_process');
 const seen = new WeakSet();
 channel.subscribe(message => {
@@ -351,7 +352,7 @@ channel.subscribe(message => {
     const writeReceipt = () => {
       if (!Number.isSafeInteger(child.pid) || child.pid < 1) return;
       const commandSha256 = createHash('sha256').update(JSON.stringify({ command: child.spawnfile ?? '', args: child.spawnargs ?? [] })).digest('hex');
-      record({ type: 'spawn', pid: child.pid, ppid: process.pid, instance, commandSha256 });
+      record({ type: 'spawn', pid: child.pid, ppid: process.pid, instance, commandSha256, at: Date.now() });
     };
     if (Number.isSafeInteger(child.pid)) writeReceipt();
     else child.once('spawn', writeReceipt);
@@ -384,6 +385,8 @@ function createDescendantTracker(directory) {
   const offsets = new Map();
   const partial = new Map();
   const instancePids = new Map();
+  // Each job Node process's own boot record: its pid and start time, written into this job's private journal.
+  const boots = new Map();
   const overflowPath = journal.overflowPath;
   let current = baseline;
   let uncertain = false;
@@ -400,6 +403,20 @@ function createDescendantTracker(directory) {
     uncertain = true;
     uncertainReason ||= message;
     reason ||= message;
+  }
+
+  /**
+   * Take custody of a live process proven to be this job's, and of the group it runs in. A group lives inside one
+   * session, and a session holds only descendants of the job process that made it, so that group is the job's too.
+   * A group led by a process that was here before the job never becomes the job's (#1063).
+   */
+  function adopt(row, commandSha256, ownedPids) {
+    known.set(row.pid, { ...row, commandSha256, root: false, group: row.pgid });
+    const leader = current.get(row.pgid);
+    const foreign = leader && baseline.get(row.pgid)?.birth === leader.birth;
+    if (!detachedGroups.has(row.pgid) && !foreign) detachedGroups.set(row.pgid, leader?.birth ?? '');
+    pendingIdentities.delete(row.pid);
+    ownedPids.add(row.pid);
   }
 
   function readJournal() {
@@ -439,6 +456,8 @@ function createDescendantTracker(directory) {
         try { record = JSON.parse(line); } catch { markUncertain('child spawn journal record is invalid'); continue; }
         if (record.type === 'boot' && Number.isSafeInteger(record.pid) && record.pid > 0 && typeof record.instance === 'string') {
           instancePids.set(record.instance, record.pid);
+          // A boot record without its start time still binds receipts; it only proves nothing by itself.
+          if (Number.isFinite(record.started)) boots.set(record.pid, [...(boots.get(record.pid) ?? []), record.started].slice(-4));
         } else if (record.type === 'spawn' && Number.isSafeInteger(record.pid) && record.pid > 0
           && Number.isSafeInteger(record.ppid) && record.ppid > 0
           && typeof record.instance === 'string' && /^[a-f0-9]{64}$/u.test(record.commandSha256)) {
@@ -491,7 +510,13 @@ function createDescendantTracker(directory) {
         if (retired.has(`${pid}:${row.birth}`)) { markUncertain('a retired process identity reappeared'); continue; }
         if (!launched) rootLaunchIdentities.set(pid, row);
         known.set(pid, { ...row, commandSha256: prior?.commandSha256 ?? '', root: true, group: pid });
+        if (!detachedGroups.has(pid)) detachedGroups.set(pid, row.birth);
         ownedPids.add(pid);
+      }
+      // Every identity the job already proved stays owned while it lives, even after its parent exits (#1063).
+      for (const [pid, identity] of known) {
+        const row = current.get(pid);
+        if (row && row.birth === identity.birth && !/^Z/u.test(row.state) && !retired.has(`${pid}:${row.birth}`)) ownedPids.add(pid);
       }
 
       for (const row of current.values()) {
@@ -506,6 +531,13 @@ function createDescendantTracker(directory) {
           if (retired.has(`${row.pid}:${row.birth}`)) { markUncertain('a retired process identity reappeared'); continue; }
           if (prior && prior.birth === row.birth) { consumedEvents.add(event.eventId); ownedPids.add(row.pid); continue; }
           if (!prior && baseline.get(row.pid)?.birth === row.birth) { consumedEvents.add(event.eventId); continue; }
+          // The receipt and the census both carry a start time. A process born when a job process spawned it is that
+          // child, even if its parent exited before any census saw the two together; a reused pid starts later (#1063).
+          if ((row.ppid !== event.ppid || !ownedPids.has(event.ppid)) && bornNear(row, event.at)) {
+            adopt(row, event.commandSha256, ownedPids);
+            consumedEvents.add(event.eventId);
+            continue;
+          }
           // A spawn receipt must be observed while its exact parent instance still owns it.
           // A same-numbered PID first seen after reparenting is ambiguous and never adopted.
           if (row.ppid !== event.ppid) {
@@ -539,6 +571,16 @@ function createDescendantTracker(directory) {
         }
       }
 
+      // A Node process that wrote its own boot record into this job's private journal is the job's, once the
+      // census shows it born when it said it was (#1063).
+      for (const [pid, starts] of boots) {
+        const row = current.get(pid);
+        if (!row || /^Z/u.test(row.state) || ownedPids.has(pid) || retired.has(`${pid}:${row.birth}`)) continue;
+        if (baseline.get(pid)?.birth === row.birth) continue;
+        if (known.get(pid)?.birth === row.birth) ownedPids.add(pid);
+        else if (starts.some(started => bornNear(row, started))) adopt(row, '', ownedPids);
+      }
+
       // Process ancestry captures non-Node children; journal receipts retain ownership after reparenting.
       let changed = true;
       while (changed) {
@@ -562,28 +604,24 @@ function createDescendantTracker(directory) {
           ownedPids.add(row.pid); changed = true;
         }
       }
-      // Detached children establish a private process group; census every member even
-      // after the original launcher is reparented or exits.
-      for (const row of current.values()) {
-        if (/^Z/u.test(row.state)) continue;
-        const leaderStarted = detachedGroups.get(row.pgid);
-        if (!leaderStarted) continue;
-        const leader = current.get(row.pgid);
-        if (leader && leader.birth !== leaderStarted) {
+      // Every member of a group the job owns is the job's (see adopt), so census each one even after its launcher
+      // exited. The kernel reuses a leader's number for a new group only once the old group is gone, so a reused
+      // leader ends that custody; a proven member still inside it would contradict that, and stays uncertain (#1063).
+      for (const [pgid, leaderStarted] of detachedGroups) {
+        const leader = current.get(pgid);
+        if (!leader || !leaderStarted || leader.birth === leaderStarted) continue;
+        if ([...current.values()].some(row => row.pgid === pgid && row.pid !== pgid && !/^Z/u.test(row.state) && known.get(row.pid)?.birth === row.birth)) {
           markUncertain('detached process group identity was reused');
-          continue;
         }
+        detachedGroups.delete(pgid);
+      }
+      for (const row of current.values()) {
+        if (/^Z/u.test(row.state) || !detachedGroups.has(row.pgid)) continue;
         const prior = known.get(row.pid);
         if (retired.has(`${row.pid}:${row.birth}`)) { markUncertain('a retired process identity reappeared'); continue; }
         if (prior && prior.birth === row.birth) { ownedPids.add(row.pid); continue; }
-        if (!prior && baseline.get(row.pid)?.birth === row.birth) continue;
-        if ((!prior || prior.birth !== row.birth) && !ownedPids.has(row.ppid)) {
-          pendingIdentities.set(row.pid, { birth: row.birth, eventIds: new Set() });
-          reason ||= 'detached process group contains an unidentified member';
-          continue;
-        }
-        known.set(row.pid, { ...row, commandSha256: '', root: false, group: row.pgid });
-        ownedPids.add(row.pid);
+        if (baseline.get(row.pid)?.birth === row.birth) continue;
+        adopt(row, '', ownedPids);
       }
       // A recorded PGID does not prove an unseen member belongs to this job. Keep
       // the lease fail-closed when a root group contains a process lacking identity evidence.
