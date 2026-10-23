@@ -1,16 +1,31 @@
 /** Parent discovery reads the invoking runtime record and preserves unknown identity [V1,B3]. */
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { joinParentSession, parentSessionDigest, runtimeParentSession } from '../src/parent-session.js';
+import {
+  joinParentSession,
+  parentSessionDigest,
+  runtimeParentSession,
+} from '../src/parent-session.js';
 import * as store from '../src/board.js';
 import { runFixtureGit } from './fixture-child.js';
 import { submitFixture } from './board-submit-fixture.js';
 import { workQueue } from '../src/queue.js';
-import { prepareEngineMove, applyEngineMove } from '../src/engine.js';
-import { exportBoard, importBoard } from '../src/exchange.js';
+import {
+  prepareEngineMove,
+  applyEngineMove,
+} from '../src/engine.js';
+import {
+  exportBoard,
+  importBoard,
+} from '../src/exchange.js';
 import { effectiveAgentParent } from '../src/seats.js';
 
 test('[V1,B3] parent discovery reads only matching own runtime metadata and agrees with --parent', (t) => {
@@ -24,6 +39,8 @@ test('[V1,B3] parent discovery reads only matching own runtime metadata and agre
   writeFileSync(join(sessions, 'rollout-2026-10-23-other-session.jsonl'), '{foreign unreadable metadata');
   assert.equal(runtimeParentSession(environment), 'root-session');
   assert.equal(joinParentSession(undefined, environment), joinParentSession('root-session', {}));
+  writeFileSync(own, JSON.stringify({ type: 'session_meta', payload: { id: 'own-session', source: { subagent: { thread_spawn: { parent_thread_id: 'root-session' } } } } }) + '\n');
+  assert.equal(runtimeParentSession(environment), 'root-session', 'the runtime thread_spawn shape declares the same parent');
   writeFileSync(own, JSON.stringify({ type: 'session_meta', payload: { id: 'other-session', parent_thread_id: 'foreign-parent' } }) + '\n');
   assert.equal(runtimeParentSession(environment), null, 'a filename alone cannot authenticate another session record');
   assert.equal(joinParentSession(undefined, {}), null, 'missing runtime metadata remains unknown');

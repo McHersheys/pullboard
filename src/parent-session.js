@@ -1,5 +1,10 @@
 /** Stable parent identities recorded at join, from an explicit declaration or this runtime's own session metadata [V1,B3]. */
-import { closeSync, openSync, readSync, readdirSync } from 'node:fs';
+import {
+  closeSync,
+  openSync,
+  readSync,
+  readdirSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Refused } from './refused.js';
@@ -53,7 +58,8 @@ export function runtimeSessionIdentity(environment = process.env, home = homedir
     if (!entry.isFile() || !entry.name.endsWith(`-${session}.jsonl`)) continue;
     const metadata = ownSessionMetadata(join(entry.parentPath, entry.name), session);
     if (!metadata) continue;
-    try { return { session: parentIdentity(session), parent: metadata.parent_thread_id ? parentIdentity(metadata.parent_thread_id) : null }; }
+    const parent = metadata.parent_thread_id ?? metadata.source?.subagent?.thread_spawn?.parent_thread_id;
+    try { return { session: parentIdentity(session), parent: parent ? parentIdentity(parent) : null }; }
     catch { /* An invalid runtime record cannot declare another identity. */ }
   }
   return null;

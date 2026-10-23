@@ -74,7 +74,10 @@ import { LOCAL_LANDING_ENGINE } from './land-engine.js';
 import { SPEC_APPROVAL_ENGINE } from './spec-approval-engine.js';
 import { Refused } from './refused.js';
 import { PARENT_SESSION_ENGINE } from './parent-session-engine.js';
-import { canonicalSessionDigest, parentSessionDigest } from './parent-session.js';
+import {
+  canonicalSessionDigest,
+  parentSessionDigest,
+} from './parent-session.js';
 import { itemAuthorProblem } from './item-authors.js';
 import { refuseMaskedExit } from './check-mask.js';
 import {
