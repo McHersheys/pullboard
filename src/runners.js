@@ -56,7 +56,10 @@ import {
   readStages,
 } from './gate-stages.js';
 import { remoteFileDenial } from './sandbox-denial.js';
-import { carriedBrowserByLaunch, readMachineSettingsFile } from './queue-settings.js';
+import {
+  carriedBrowserByLaunch,
+  readMachineSettingsFile,
+} from './queue-settings.js';
 
 // Budget: 64 MiB bounds worst-case JSON bridge escaping below Node string limits.
 const MAX_OUTPUT_BYTES = 64 * 1024 ** 2;
