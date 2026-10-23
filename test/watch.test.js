@@ -225,12 +225,22 @@ test('watch --work announces a claimable item and a review left waiting [A2,N26]
 
   // A released claim makes the item claimable again.
   box.cli(builder.path, 'claim', String(waiting.item_id));
+  // A later existing event acknowledges the preceding claim's work check, not merely its printed raw line.
+  box.cli(box.root, 'check', 'accept', String(added.item_id)); // #728's person acceptance also supplies the ordered barrier.
+  const claimObserved = lastSequence(box);
+  await watch.line((line) => JSON.parse(line).sequence === claimObserved && JSON.parse(line).kind === 'check_accept',
+    5_000, 'event after the claim work check'); // budget: hang ceiling for an exact event, not a latency claim.
   box.cli(builder.path, 'release', String(waiting.item_id));
-  const released = JSON.parse((await watch.line((line) => JSON.parse(line).kind === 'claimable' && JSON.parse(line).item === waiting.item_id, 5_000, 'claimable notice after release')).line); // budget: hang ceiling for one line, not a latency claim.
+  const releaseSequence = lastSequence(box);
+  await watch.line((line) => JSON.parse(line).kind === 'release' && JSON.parse(line).sequence === releaseSequence,
+    5_000, 'release event'); // budget: hang ceiling for an exact event, not a latency claim.
+  // A work check may see the new board state while processing the preceding barrier event.
+  const released = JSON.parse((await watch.line((line) => JSON.parse(line).kind === 'claimable' && JSON.parse(line).item === waiting.item_id
+    && JSON.parse(line).sequence >= claimObserved && JSON.parse(line).sequence <= releaseSequence,
+    5_000, 'claimable notice after release')).line); // budget: hang ceiling for one line, not a latency claim.
   assert.equal(released.detail, 'app: Waits on another item');
 
   // A submission nobody reserves is announced once it has waited past --review-wait (1.2 s here).
-  box.cli(box.root, 'check', 'accept', String(added.item_id)); // #728 holds a check already green on main until the person accepts it.
   box.cli(builder.path, 'claim', String(added.item_id));
   mkdirSync(join(builder.path, 'app'), { recursive: true });
   writeFileSync(join(builder.path, 'app', 'work.txt'), 'built\n');
@@ -260,11 +270,16 @@ test('watch --work announces a claimable item and a review left waiting [A2,N26]
   const secondCommit = box.cli(builder.path, 'submit', String(waiting.item_id)).commit;
   runFixtureGit(['switch', '-q', '--detach', secondCommit], { cwd: reviewer, env: box.env, stdio: 'pipe' });
   box.cli(reviewer, 'next', '--verify', String(waiting.item_id));
+  // The reserve line follows the submit work check while the item is still submitted, before reject reopens it.
+  const submissionObserved = lastSequence(box);
+  await watch.line((line) => JSON.parse(line).sequence === submissionObserved && JSON.parse(line).kind === 'reserve',
+    5_000, 'event after the submit work check'); // budget: hang ceiling for an exact event, not a latency claim.
   box.cli(reviewer, 'verify', String(waiting.item_id), 'reject', '--reason', 'TEST_FAILURE', '--note', 'the fixture sends it back');
-  const rejected = watch.out.lines.filter(({ line }) => JSON.parse(line).kind === 'claimable' && JSON.parse(line).item === waiting.item_id).length;
-  await watch.line((line) => JSON.parse(line).kind === 'reject', 5_000, 'reject line'); // budget: hang ceiling for one line, not a latency claim.
+  const rejectSequence = lastSequence(box);
+  await watch.line((line) => JSON.parse(line).kind === 'reject' && JSON.parse(line).sequence === rejectSequence, 5_000, 'reject line'); // budget: hang ceiling for one line, not a latency claim.
   const again = await watch.line((line) => JSON.parse(line).kind === 'claimable' && JSON.parse(line).item === waiting.item_id
-    && watch.out.lines.filter((entry) => JSON.parse(entry.line).kind === 'claimable' && JSON.parse(entry.line).item === waiting.item_id).length > rejected, 5_000, 'claimable notice after reject'); // budget: hang ceiling for one line, not a latency claim.
+    && JSON.parse(line).sequence >= submissionObserved && JSON.parse(line).sequence <= rejectSequence,
+    5_000, 'claimable notice after reject'); // budget: hang ceiling for one line, not a latency claim.
   assert.equal(JSON.parse(again.line).detail, 'app: Waits on another item');
 
   // Main moving is a notice too.
@@ -280,7 +295,7 @@ test('watch --work announces a claimable item and a review left waiting [A2,N26]
     'a waiting review is announced once');
   assert.ok(kinds.includes('accept') && kinds.includes('reject'), 'the verdicts print as events too');
   const moves = events(box).slice(before).map(event => event.event_kind);
-  assert.deepEqual(moves, ['add', 'add', 'claim', 'release', 'check_accept', 'claim', 'submit', 'join', 'reserve', 'accept', 'claim', 'submit', 'reserve', 'reject'],
+  assert.deepEqual(moves, ['add', 'add', 'claim', 'check_accept', 'release', 'claim', 'submit', 'join', 'reserve', 'accept', 'claim', 'submit', 'reserve', 'reject'],
     'watch wrote no event: the new ones are exactly the moves this test made');
 });
 
