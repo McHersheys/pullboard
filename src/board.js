@@ -129,7 +129,6 @@ import {
   landingWaiverKind,
 } from './landing-exceptions.js';
 import { parseSpec } from './spec.js';
-import { quarantineWaivers } from './quarantine.js';
 import { invariantEvidence } from './submit-invariants.js';
 import { landingBatches } from './landing-batch-history.js';
 import {
@@ -142,6 +141,7 @@ import { validateLandingRevision } from './submit-invariants.js';
 import { submissionProof } from './submit-invariants.js';
 import { SUBMISSION_PROOF_ENGINE } from './submit-invariants.js';
 export { landingFlakes, landingWaiverCovers, landingWaiverKind };
+export { landingWaivers, landingWaiverFor, waivedLandingProof } from './landing-waivers.js';
 export { acceptCheck } from './check-accept.js';
 export { declareJob, recordJobRun } from './recurring-jobs.js';
 export { proposeSentinel, decideSentinel, beginSentinelRun, finishSentinelRun } from './sentinels.js';
@@ -2720,20 +2720,6 @@ export function recordLandingWaiver(board, { agentId, channel, id, test, until, 
   });
 }
 
-/** Read every person waiver, retaining expired entries as evidence [B3,R3]. */
-export function landingWaivers(board) {
-  return board.db.prepare("SELECT event_by,event_detail FROM event WHERE event_kind = 'landing_waiver' ORDER BY event_id").all()
-    .filter((row) => row.event_by === PERSON)
-    .map((row) => JSON.parse(row.event_detail).waiver).concat(quarantineWaivers(board)); // A proven flake's quarantine, when on [C7,D1].
-}
-
-/** Find a live person's waiver and derive its match kind without rewriting history [B3,R3,H16]. */
-export function landingWaiverFor(board, failure) {
-  const waiver = landingWaivers(board).findLast((entry) => Date.parse(entry.until) > board.clock.now().getTime()
-    && landingWaiverCovers(entry, failure));
-  return waiver ? { ...waiver, kind: waiver.kind ?? landingWaiverKind(waiver.test) } : null;
-}
-
 /** File one durable defect per flaky test and retain its source digest [B3,R3]. */
 export function recordLandingFlake(board, { agentId, test, hash, names, lane, batchId }) {
   coordinatorOnly(agentId, 'files landing flakes');
@@ -2749,17 +2735,6 @@ export function recordLandingFlake(board, { agentId, test, hash, names, lane, ba
     logEvent(board, agentId, 'landing_flake', item, { flake });
     return flake;
   });
-}
-
-/** Validate a distinct waived landing proof without creating an ordinary gate stamp [B3,R3]. */
-export function waivedLandingProof(board, tree) {
-  return landingBatches(board).findLast((batch) => ['ready', 'pushed', 'landed'].includes(batch.state)
-    && batch.proof?.tree === tree && Array.isArray(batch.proof.failures) && batch.proof.failures.length > 0
-    && batch.proof.failures.every((failure) => {
-      const waiver = landingWaivers(board).find((entry) => entry.id === failure.waiver);
-      return waiver && Date.parse(waiver.until) > board.clock.now().getTime()
-        && landingWaiverCovers(waiver, failure);
-    })) ?? null;
 }
 
 /** Atomically record a pushed batch's first-containing merges and one main-moved receipt [B3,R3]. */
