@@ -494,6 +494,27 @@ export function codexHasMcpServer(contents, name) {
 }
 
 /**
+ * Whether a Codex config.toml defines mcp_servers itself as an inline table (`mcp_servers = { ... }`). TOML never adds
+ * to an inline table, so an appended [mcp_servers.<name>] table would make the whole file invalid (#961).
+ *
+ * @param {string} contents
+ * @returns {boolean}
+ */
+export function codexMcpServersInline(contents) {
+  let table = [];
+  for (const raw of String(contents).split(/\r?\n/u)) {
+    const line = withoutTomlComment(raw).trim();
+    const header = /^\[\[?(.+?)\]\]?$/u.exec(line);
+    if (header) { table = tomlKeyParts(header[1]) ?? []; continue; }
+    const equals = line.indexOf('=');
+    if (equals < 1) continue;
+    const path = [...table, ...(tomlKeyParts(line.slice(0, equals)) ?? [null])];
+    if (path.length === 1 && path[0] === 'mcp_servers' && line.slice(equals + 1).trim().startsWith('{')) return true;
+  }
+  return false;
+}
+
+/**
  * Register pullboard mcp for Claude Code (.mcp.json) and Codex (.codex/config.toml), merging with any servers already
  * there and never replacing a pullboard entry or a file it cannot read, so an agent can work the loop through MCP (#961).
  *
@@ -523,6 +544,9 @@ function writeMcpConfig(root, onWrite) {
   const contents = existsSync(codex) ? readFileSync(codex, 'utf8') : '';
   if (codexHasMcpServer(contents, 'pullboard')) {
     notes.push('kept the Codex MCP server in .codex/config.toml');
+  } else if (codexMcpServersInline(contents)) {
+    // Rewriting the person's inline table would change bytes they wrote; they add the entry where TOML allows it.
+    notes.push(`kept .codex/config.toml, whose mcp_servers is an inline table; add pullboard = { command = "sh", args = ["-c", ${JSON.stringify(MCP_COMMAND)}] } inside it so Codex runs pullboard mcp`);
   } else {
     // A new table at the end is valid TOML after any existing content, so nothing already there is rewritten.
     const prefix = contents && !contents.endsWith('\n') ? `${contents}\n` : contents;

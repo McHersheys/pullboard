@@ -223,3 +223,18 @@ test('init keeps an existing Codex pullboard server in any TOML form and adds no
   assert.ok(after.startsWith(other), 'the existing config is kept');
   assert.match(after.slice(other.length), /^\n\[mcp_servers\.pullboard\]\ncommand = "sh"\n/u, 'the pullboard server is appended once');
 });
+
+test('init leaves an inline mcp_servers table as written and names the entry to add [A9,I1]', (t) => {
+  // TOML never adds to an inline table, so appending [mcp_servers.pullboard] after one makes the file invalid.
+  for (const existing of ['mcp_servers = { other = { command = "other-server", args = ["serve"] } }\n', 'mcp_servers = {}\n']) {
+    const box = initFixture(t);
+    mkdirSync(join(box.root, '.codex'), { recursive: true });
+    writeFileSync(join(box.root, '.codex', 'config.toml'), existing);
+    const initialized = box.init();
+    assert.equal(initialized.code, 0, initialized.stderr);
+    assert.equal(readFileSync(join(box.root, '.codex', 'config.toml'), 'utf8'), existing, 'the inline table is byte for byte as it was');
+    const note = initialized.document.notes.find(entry => entry.startsWith('kept .codex/config.toml, whose mcp_servers is an inline table'));
+    assert.ok(note, 'init says why it kept the file');
+    assert.match(note, /add pullboard = \{ command = "sh", args = \["-c", "[^\n]+"\] \} inside it/u, 'and names the exact entry to add');
+  }
+});
