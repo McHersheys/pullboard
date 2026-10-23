@@ -40,11 +40,11 @@ function fixture(spec = SPEC) {
     writeFileSync(join(root, 'test', `${file}.test.js`), `import { test } from 'node:test';\ntest('${file}', () => {});\n`);
   }
   box.git(root, 'add', '-A');
-  box.git(root, 'commit', '-q', '-m', 'initialize rule proof fixture');
+  box.git(root, 'commit', '-q', '-m', 'chore(fixture): initialize rule proof fixture');
   const original = box.git(root, 'rev-parse', 'HEAD').trim();
   writeFileSync(join(root, 'advance.txt'), 'a new trunk tree\n');
   box.git(root, 'add', 'advance.txt');
-  box.git(root, 'commit', '-q', '-m', 'advance the fixture trunk');
+  box.git(root, 'commit', '-q', '-m', 'chore(fixture): advance the rule proof trunk');
   const head = box.git(root, 'rev-parse', 'HEAD').trim();
   const board = store.openBoard(join(root, '.git', 'pullboard', 'board.sqlite'), undefined, { isMain: true });
   return { ...box, root, board, original, head };
