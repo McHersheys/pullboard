@@ -16,9 +16,9 @@ const FREE = "import { test } from 'node:test';\nimport { spawnSync } from 'node
 // Browser-bound under either classifier: a process starter beside a Chrome executable name.
 const CHROME = "import { test } from 'node:test';\nimport { spawnSync } from 'node:child_process';\nconst chrome = 'google-chrome';\n"
   + "test('browser-bound file ran', () => { if (process.env.PULLBOARD_FIXTURE_NEVER_SET) spawnSync(chrome, ['--version']); });\n";
-// A stand-in for a runner whose own run refuses the file for want of a browser slot.
-const REFUSED = "import { test } from 'node:test';\n"
-  + "test('refused file ran', () => { if (process.cwd().includes('.pullboard-runner')) throw new Error('[BROWSER_SLOT_REQUIRED] the runner held no browser slot for this file'); });\n";
+// A stand-in for a runner whose own run refuses the file for want of a browser slot; it fails only under the stand-in's home.
+const refusedSource = remoteHome => "import { test } from 'node:test';\n"
+  + `test('refused file ran', () => { if (process.cwd().startsWith(${JSON.stringify(remoteHome)})) throw new Error('[BROWSER_SLOT_REQUIRED] the runner held no browser slot for this file'); });\n`;
 
 /** Count the stand-in's dispatched and returned markers. */
 function phases(file) {
@@ -60,7 +60,7 @@ export async function browserFreeRunnerCheck(t, { cli, git }) {
   cpSync(join(SOURCE, 'bin'), join(repo, 'bin'), { recursive: true });
   writeFileSync(join(repo, 'test', 'free.test.js'), FREE);
   writeFileSync(join(repo, 'test', 'chrome.test.js'), CHROME);
-  writeFileSync(join(repo, 'test', 'refused.test.js'), REFUSED);
+  writeFileSync(join(repo, 'test', 'refused.test.js'), refusedSource(remoteHome));
   git(repo, env, 'add', 'package.json', 'pullboard.json', 'src', 'bin', 'test');
   git(repo, env, 'commit', '-q', '-m', 'test: commit a browser-free runner fixture');
   installSshStandIn({ bin, worker, home: remoteHome, machineHome: remoteMachineHome, requests });
