@@ -1,7 +1,7 @@
 /** Test the CI-like test runner against real Git and PATH behavior [C7, S13]. */
 import assert from 'node:assert/strict';
 import { runFixtureExecFile as execFileSync, runFixtureChild as spawnSync } from './fixture-child.js';
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -121,7 +121,7 @@ function copyRunnerImports(sourceRoot, root) {
 
 /** Build the runner-discovery fixture from a source checkout. */
 function discoveryFixture(t, sourceRoot = fileURLToPath(new URL('../', import.meta.url))) {
-  const root = mkdtempSync(join(tmpdir(), 'pullboard-runner-discovery-'));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-runner-discovery-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const bin = join(root, 'bin');
   const tests = join(root, 'test');
