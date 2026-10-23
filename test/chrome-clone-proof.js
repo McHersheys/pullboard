@@ -1,9 +1,9 @@
 /** Compare a native unflagged control with the actual test harness arguments [C7]. */
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, watch } from 'node:fs';
 import { hostname, loadavg, tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { chromeCloneSnapshot, newChromeClones } from '../src/chrome-clone-check.js';
+import { dirname, join } from 'node:path';
+import { chromeCloneDirectories, chromeCloneSnapshot, newChromeClones } from '../src/chrome-clone-check.js';
 import { findChromeExecutable, launchChromeProcess } from './chrome-fixture.js';
 import { chromeLaunchArgs } from './chrome-launch-args.js';
 
@@ -15,6 +15,45 @@ async function waitUntil(predicate, timeoutMs, message) {
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   assert.fail(message);
+}
+
+/** Observe native directory creation as well as leftovers; no observation ever authorizes deletion. */
+function creationMonitor(before) {
+  const known = new Set(before);
+  const created = new Set();
+  const directories = chromeCloneDirectories();
+  const watchers = new Map();
+  const errors = [];
+  /** Capture the native event's specific directory without repeatedly statting every historical clone. */
+  const capture = (directory, name) => {
+    if (!/^code_sign_clone\.[A-Za-z0-9._-]{6}$/u.test(name)) return;
+    try {
+      const path = join(directory, name);
+      const stat = lstatSync(path);
+      if (stat.isDirectory() && !stat.isSymbolicLink()) {
+        const identity = `${realpathSync(directory)}/${name}:${stat.dev}:${stat.ino}`;
+        if (!known.has(identity)) created.add(identity);
+      }
+    } catch (error) { if (error.code !== 'ENOENT') errors.push(error.code ?? 'unknown'); }
+  };
+  /** A platform without an event filename still receives a conservative complete scan. */
+  const scan = directory => {
+    try { for (const name of readdirSync(directory)) capture(directory, name); }
+    catch (error) { if (error.code !== 'ENOENT') errors.push(error.code ?? 'unknown'); }
+  };
+  /** A first launch may create its namespace after the initial empty snapshot. */
+  const install = () => {
+    for (const directory of directories) {
+      if (watchers.has(directory) || !existsSync(directory)) continue;
+      const observer = watch(directory, { persistent: false }, (_event, name) => name ? capture(directory, String(name)) : scan(directory));
+      observer.on('error', error => errors.push(error.code ?? 'unknown'));
+      watchers.set(directory, observer);
+    }
+  };
+  install();
+  const parent = watch(dirname(directories[0]), { persistent: false }, install);
+  parent.on('error', error => errors.push(error.code ?? 'unknown'));
+  return { created, errors, close() { parent.close(); for (const observer of watchers.values()) observer.close(); } };
 }
 
 /** Ask only this private profile's browser to exit gracefully, preserving Chromium's own cleanup. */
@@ -38,9 +77,11 @@ async function gracefulClose(profile, launched) {
 export async function assertNoKilledChromeClone(t) {
   t.diagnostic(JSON.stringify({ host: hostname(), node: process.version, load: loadavg(), chrome: findChromeExecutable() }));
   const initial = chromeCloneSnapshot();
+  t.diagnostic(JSON.stringify({ initialCloneCount: initial.length, directories: chromeCloneDirectories() }));
   for (const control of [true, false]) {
     const profile = mkdtempSync(join(tmpdir(), 'pullboard-clone-proof-'));
     const before = chromeCloneSnapshot();
+    const monitor = creationMonitor(before);
     const args = chromeLaunchArgs(profile).filter(arg => !control || arg !== '--disable-features=MacAppCodeSignClone');
     // Force the native feature on in both arms; the harness disable switch must take precedence.
     args.unshift('--enable-features=MacAppCodeSignClone');
@@ -48,23 +89,27 @@ export async function assertNoKilledChromeClone(t) {
     try {
       await waitUntil(() => existsSync(join(profile, 'DevToolsActivePort')), 15_000, 'real Chrome did not publish its private DevTools port');
       if (control) {
-        await waitUntil(() => newChromeClones(before).length > 0, 5_000, 'unflagged native Chrome must create a clone for the control');
-        t.diagnostic(JSON.stringify({ phase: 'unflagged-control', newClones: newChromeClones(before).length }));
+        await new Promise(resolve => setTimeout(resolve, 1_000)); // budget: let the native background clone task start before graceful shutdown drains it.
         await gracefulClose(profile, launched);
+        await waitUntil(() => monitor.created.size > 0, 5_000, 'unflagged native Chrome must create a clone for the control');
+        assert.deepEqual(monitor.errors, []);
+        t.diagnostic(JSON.stringify({ phase: 'unflagged-control', createdClones: monitor.created.size, remainingClones: newChromeClones(before).length }));
         await waitUntil(() => newChromeClones(before).length === 0, 5_000, 'Chromium must clean its own control clone after graceful shutdown');
       } else {
         // Give the same native startup path time to create the clone that the positive control demonstrated.
         await new Promise(resolve => setTimeout(resolve, 1_000)); // budget: observe the native clone after DevTools readiness, before deliberate SIGKILL.
         launched.child.kill('SIGKILL');
         await launched.close();
+        assert.deepEqual(monitor.errors, []);
+        assert.equal(monitor.created.size, 0, 'the harness must prevent native clone creation');
         assert.deepEqual(newChromeClones(before), [], 'the harness must prevent clones even when its Chrome is SIGKILLed');
       }
     } catch (error) {
-      t.diagnostic(JSON.stringify({ phase: control ? 'unflagged-control' : 'harness', args, stderr: launched.stderr.slice(-2_000), newClones: newChromeClones(before).length }));
+      t.diagnostic(JSON.stringify({ phase: control ? 'unflagged-control' : 'harness', args, stderr: launched.stderr.slice(-2_000), createdClones: monitor.created.size, newClones: newChromeClones(before).length, observerErrors: monitor.errors }));
       throw error;
     } finally {
       try { await gracefulClose(profile, launched); }
-      finally { await launched.close(); rmSync(profile, { recursive: true, force: true }); }
+      finally { monitor.close(); await launched.close(); rmSync(profile, { recursive: true, force: true }); }
     }
   }
   assert.deepEqual(newChromeClones(initial), [], 'the native control and killed test launch leave no new clone');

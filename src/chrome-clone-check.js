@@ -10,14 +10,18 @@ import {
   join,
 } from 'node:path';
 
-/** Snapshot directory identities so concurrent old-clone removal cannot conceal a newly created clone. */
-export function chromeCloneSnapshot() {
+/** Locate only the current account's native Chrome clone namespaces. */
+export function chromeCloneDirectories() {
   if (process.platform !== 'darwin') return [];
   const user = execFileSync('/usr/bin/getconf', ['DARWIN_USER_DIR'], { encoding: 'utf8', timeout: 2_000 }).trim();
   const root = join(dirname(user.replace(/\/$/u, '')), 'X');
+  return ['com.google.Chrome', 'org.chromium.Chromium'].map(bundle => join(root, `${bundle}.code_sign_clone`));
+}
+
+/** Snapshot directory identities so concurrent old-clone removal cannot conceal a newly created clone. */
+export function chromeCloneSnapshot() {
   const result = [];
-  for (const bundle of ['com.google.Chrome', 'org.chromium.Chromium']) {
-    const directory = join(root, `${bundle}.code_sign_clone`);
+  for (const directory of chromeCloneDirectories()) {
     let names;
     let canonical;
     try { names = readdirSync(directory); canonical = realpathSync(directory); }
