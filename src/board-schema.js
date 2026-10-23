@@ -10,7 +10,10 @@ import {
   join,
   resolve,
 } from 'node:path';
-import { codeIsFromMain } from './git.js';
+import {
+  codeIsFromMain,
+  codeUsesRepository,
+} from './git.js';
 import { Refused } from './refused.js';
 
 const reported = new Set();
@@ -79,9 +82,10 @@ const declarations = new WeakMap();
 export function sharedSchemaOwner(file, hint) {
   let owner = isRepositoryBoard(file) ? hint !== false && codeIsFromMain() : hint;
   if (file !== ':memory:' && owner === false && !existsSync(file)) {
-    // Linked repositories need trunk to initialize their common board; a fresh private project
-    // has no existing shared schema to replace.
-    if (isRepositoryBoard(file) && existsSync(join(dirname(dirname(file)), 'worktrees'))) {
+    // Unmerged source cannot initialize its own shared board. A separate fresh project has no
+    // existing schema to replace, even when it created linked worktrees before its first command.
+    const commonDir = dirname(dirname(file));
+    if (isRepositoryBoard(file) && existsSync(join(commonDir, 'worktrees')) && codeUsesRepository(commonDir)) {
       throw new Refused('UNMERGED_SCHEMA', 'the shared board is missing; run pullboard status from the main checkout to initialize it before using this worktree');
     }
     owner = true;
