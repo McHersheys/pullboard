@@ -171,6 +171,7 @@ async function readSpec() {
     || (value.browserByLaunch !== undefined && typeof value.browserByLaunch !== 'boolean')
     || !value.runtime || typeof value.runtime !== 'object' || !value.runtime.files || typeof value.runtime.files !== 'object'
     || typeof value.runtime.sha256 !== 'string') throw new Error('invalid work specification');
+  if (value.timeoutMs !== undefined && (value.landing !== true || !Number.isSafeInteger(value.timeoutMs) || value.timeoutMs < 1 || value.timeoutMs > 2_147_483_647)) throw new Error('invalid landing timeout');
   if (value.stageMarker !== undefined && !/^PULLBOARD_STAGE_[a-f0-9]{32}$/u.test(value.stageMarker)) throw new Error('invalid stage marker');
   if (value.waivers !== undefined && (!Array.isArray(value.waivers) || value.waivers.some(entry => !entry || !['file', 'name'].includes(entry.kind) || typeof entry.test !== 'string' || !entry.test || Object.keys(entry).some(key => !['kind', 'test'].includes(key))))) throw new Error('invalid continuation projection');
   if (value.origin !== undefined) {
@@ -711,7 +712,16 @@ async function runCommand(spec, root, env, sink, tracker) {
     if (!outputError) writes = writes.then(() => { denials.push(part); return sink.write(part); }).then(() => stream.resume()).catch(error => { outputError = error; onDrop(); });
   });
   forward(child.stdout); forward(child.stderr);
+  let timedOut = false;
+  let timeoutDrain;
+  const timeout = spec.timeoutMs ? setTimeout(() => {
+    timedOut = true; beginCleanup();
+    timeoutDrain = tracker.stopDescendants().then(() => drainOwned(owned, true));
+    timeoutDrain.catch(() => {});
+  }, spec.timeoutMs) : null;
   const result = await closed;
+  clearTimeout(timeout);
+  if (timeoutDrain) await timeoutDrain;
   beginCleanup();
   cleanupStage = 'command output';
   await writes;
@@ -728,7 +738,7 @@ async function runCommand(spec, root, env, sink, tracker) {
   let pipeStatuses = pipes ? readPipes(split, pipes, 8 * 1024 ** 2) : null;
   // Accounting beyond this bound fails closed; it never turns an unaccounted failure green.
   if (Buffer.byteLength(JSON.stringify(pipeStatuses)) > 8 * 1024 ** 2) pipeStatuses = null;
-  return { code, signal: result.signal ?? null, ...(spec.stageMarker ? { pipeStatuses } : {}), ...(denial ? { denial } : {}) };
+  return { code: timedOut ? 1 : code, signal: result.signal ?? null, ...(timedOut ? { timedOut: true } : {}), ...(spec.stageMarker ? { pipeStatuses } : {}), ...(denial ? { denial } : {}) };
 }
 
 /** Send the single nonce-bound result line after the complete merged output has drained. */
@@ -738,7 +748,7 @@ async function receipt(spec, fields, sink) {
     runtimeSha256: spec.runtime.sha256, toolingSha256: spec.tooling.sha256, root: fields.root ?? '', outputSha256: sink.hash.digest('hex'), wallMs: Math.max(0, Date.now() - sink.wallStart),
     // The execution host's load and the pinned main this run used, so a paired rerun here can be judged (#925).
     main: typeof spec.main === 'string' ? spec.main : null, load: { average: loadavg(), cpus: availableParallelism(), freeMB: Math.floor(freemem() / 1048576) },
-    ...(spec.stageMarker ? { pipeStatuses: fields.pipeStatuses ?? null } : {}), ...(fields.refused ? { refused: fields.refused } : {}), ...(fields.browserRefused ? { browserRefused: true } : {}), ...(fields.denial ? { denial: fields.denial } : {}) };
+    ...(spec.stageMarker ? { pipeStatuses: fields.pipeStatuses ?? null } : {}), ...(fields.timedOut ? { timedOut: true } : {}), ...(fields.refused ? { refused: fields.refused } : {}), ...(fields.browserRefused ? { browserRefused: true } : {}), ...(fields.denial ? { denial: fields.denial } : {}) };
   const encoded = Buffer.from(JSON.stringify(body)).toString('base64');
   await new Promise((resolveWrite, rejectWrite) => process.stderr.write(`${RECEIPT} ${spec.id} ${encoded}\n`, error => error ? rejectWrite(error) : resolveWrite()));
 }
