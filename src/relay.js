@@ -63,10 +63,7 @@ import {
   withSeatName,
 } from './relay-seats.js';
 import { syncApprovers } from './relay-approvers.js';
-import {
-  ENGINE_VERSION,
-  VERIFIER_STANDING_ENGINE,
-} from './machine.js';
+import { ENGINE_VERSION } from './machine.js';
 import {
   presentationDigest,
   relayPresentation,
@@ -109,6 +106,7 @@ import {
   queueMove,
 } from './relay-outbox.js';
 import { stampCoordinatorHolder } from './coordinator-hold.js';
+import { relayFiles } from './local-state.js';
 import { Refused } from './refused.js';
 import { refusalFromReceipt } from './recorded-refusal.js';
 import { relayNotices } from './relay-notices.js';
@@ -189,10 +187,10 @@ export function originRepository(root, { optional = false } = {}) {
   return repository;
 }
 /** Find the shared local link metadata without opening a board or connecting for an unlinked repo. */
-function linkFile(root) { return join(repoInfo(root).commonDir, 'pullboard', 'relay.json'); }
+function linkFile(root) { return relayFiles(repoInfo(root).commonDir).link; }
 
 /** Locate the credential-free reason an independently deleted copy no longer syncs. */
-function deletedLinkFile(root) { return join(repoInfo(root).commonDir, 'pullboard', 'relay-deleted.json'); }
+function deletedLinkFile(root) { return relayFiles(repoInfo(root).commonDir).deleted; }
 
 /** Read only a private, bounded deletion marker; it never supplies credentials or an outbound destination. */
 function deletedLink(root) {

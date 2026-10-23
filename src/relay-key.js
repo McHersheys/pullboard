@@ -11,12 +11,12 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
   decodeBoardKey,
   encodeBoardKey,
 } from './seal.js';
+import { relayKeyDirectory } from './local-state.js';
 import { Refused } from './refused.js';
 
 /** Validate a persistent board identity before using it as a file or credential name. */
@@ -27,7 +27,7 @@ function identity(boardId) {
 
 /** Locate the owner-only key under the machine pullboard home, outside repositories. */
 function keyFile(boardId) {
-  return join(process.env.PULLBOARD_HOME || join(homedir(), '.pullboard'), 'relay-keys', identity(boardId) + '.key');
+  return join(relayKeyDirectory(), identity(boardId) + '.key');
 }
 
 /** Probe an available operating-system credential service without requiring a particular shell. */

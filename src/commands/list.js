@@ -11,7 +11,7 @@ import {
   context,
   itemLine,
   withBoard,
-} from '../cli.js';
+} from '../cli-context.js';
 
 /** Run `pullboard list` and return its exit code. */
 export function run(io, { first, values }) {

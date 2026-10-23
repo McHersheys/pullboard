@@ -276,11 +276,11 @@ export function openBoardReadOnly(file) {
  *
  * @param {string} file
  * @param {{ now: () => Date }} [clock]
- * @param {{ isMain?: boolean }} [options] Only the main checkout may upgrade a shared board.
+ * @param {{ isMain?: boolean | (() => boolean) }} [options] Only the main checkout may upgrade a shared board; a function is asked only of a board behind this code.
  * @returns {{ db: DatabaseSync, clock: { now: () => Date } }}
  */
 export function openBoard(file, clock = systemClock, { isMain } = {}) {
-  if (file !== ':memory:' && isMain === false) {
+  if (file !== ':memory:' && (isMain === false || typeof isMain === 'function')) {
     let boardVersion = 0;
     let logVersion = 0;
     if (existsSync(file)) {
@@ -295,13 +295,13 @@ export function openBoard(file, clock = systemClock, { isMain } = {}) {
       } finally {
         current?.close();
       }
-      if (SCHEMA_VERSION > boardVersion) {
+      if (SCHEMA_VERSION > boardVersion && (isMain === false || isMain() === false)) {
         throw new Refused(
           'UNMERGED_SCHEMA',
           `this worktree expects board schema ${SCHEMA_VERSION}, newer than the shared board's version ${boardVersion}; merge this code into the main checkout first, or test it against a throwaway board`,
         );
       }
-      if (EVENT_LOG_VERSION > logVersion) {
+      if (EVENT_LOG_VERSION > logVersion && (isMain === false || isMain() === false)) {
         throw new Refused('UNMERGED_SCHEMA', `this worktree expects event log ${EVENT_LOG_VERSION}, newer than the shared board's version ${logVersion}; merge this code into the main checkout first, or test it against a throwaway board`);
       }
     }

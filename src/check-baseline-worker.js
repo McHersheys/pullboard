@@ -24,6 +24,10 @@ import {
   relayLinked,
   relayOperation,
 } from './relay.js';
+import {
+  BASELINE_RECEIPT,
+  baselineReceiptDirectory,
+} from './local-state.js';
 import { Refused } from './refused.js';
 
 const WORKER = resolve(import.meta.dirname, '../bin/check-baseline.js');
@@ -31,7 +35,7 @@ const WORKER = resolve(import.meta.dirname, '../bin/check-baseline.js');
 /** Resolve private completion storage beside this repository's shared board. */
 function locations(root) {
   const info = repoInfo(root);
-  return { board: join(info.commonDir, 'pullboard', 'board.sqlite'), receipts: join(info.commonDir, 'pullboard', 'baseline-results') };
+  return { board: join(info.commonDir, 'pullboard', 'board.sqlite'), receipts: baselineReceiptDirectory(info.commonDir) };
 }
 
 /** Close a real board around one short operation; measurements never hold a database connection. */
@@ -62,7 +66,7 @@ function saveReceipt(root, receipt) {
 export async function retryCheckBaselines(root, io) {
   const directory = locations(root).receipts;
   if (!existsSync(directory)) return;
-  for (const name of readdirSync(directory).filter((name) => /^[a-f0-9-]{36}\.json$/.test(name))) {
+  for (const name of readdirSync(directory).filter((name) => BASELINE_RECEIPT.test(name))) {
     const file = join(directory, name);
     try {
       const receipt = JSON.parse(readFileSync(file, 'utf8'));

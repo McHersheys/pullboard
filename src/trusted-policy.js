@@ -3,9 +3,9 @@ import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import {
   digestOf,
-  sandboxBlockedScanner,
   writeTimingProfile,
-} from './gate.js';
+} from './gate-output.js';
+import { sandboxBlockedScanner } from './sandbox-denial.js';
 import {
   timingFromOutput,
   timingFromLog,

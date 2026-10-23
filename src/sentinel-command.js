@@ -6,16 +6,6 @@ import { sentinels } from './sentinels.js';
 import { runDueSentinels } from './sentinel-runner.js';
 import { healthSentinelEnabled } from './settings.js';
 
-/** The watch command's existing string options, shared with the CLI parser. */
-export const SENTINEL_OPTIONS = {
-  every: { type: 'string' },
-  owner: { type: 'string' },
-  directory: { type: 'string' },
-  timeout: { type: 'string' },
-  next: { type: 'string' },
-  sentinel: { type: 'boolean' },
-};
-
 /** Run due approved watches from ordinary resume, respecting the health switches. */
 export async function resumeSentinels({ ctx, withBoard, whoAmI, ordered }) {
   return withBoard(ctx, async board => {

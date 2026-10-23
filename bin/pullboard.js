@@ -34,7 +34,8 @@ process.stdout.on('error', (error) => {
   process.exit(process.exitCode ?? 0);
 });
 
-const { main } = await import('../src/cli.js');
+// The entry loads only the dispatcher; each command's modules load through its own import() [C7].
+const { main } = await import('../src/cli-main.js');
 process.exitCode = await main(process.argv.slice(2), {
   cwd: process.cwd(),
   stdout: process.stdout,

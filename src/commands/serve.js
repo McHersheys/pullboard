@@ -4,7 +4,7 @@ import {
 } from '../api.js';
 import {
   traceServeStartup,
-} from '../cli-support.js';
+} from '../cli-main.js';
 import {
   loadConfig,
 } from '../config.js';

@@ -1,5 +1,5 @@
 /** @pullboard-test-input source-tree */
-/** @pullboard-test-loads src/cli.js src/commands/*.js */
+/** @pullboard-test-loads src/cli.js src/cli-help.js src/cli-main.js src/commands/*.js */
 /** The layered CLI help stays short, command-specific, and in parity with its declaration [N37,I1]. */
 import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -176,7 +176,8 @@ test('help names come from the command declarations [C7,N37]', async (t) => {
   assert.equal(generated.overview, HELP.overview, 'a new declaration preserves the overview bytes');
   assert.equal(generated.all, HELP.all, 'a new declaration preserves the full-help bytes');
 
-  const original = readFileSync(join(directory, 'cli.js'), 'utf8');
+  // Help and the result-command list are built in cli-help.js, from the same registry dispatch reads.
+  const original = readFileSync(join(directory, 'cli-help.js'), 'utf8');
   const registryUrl = 'data:text/javascript;base64,' + Buffer.from([
     `import { COMMANDS as actual, UNLISTED_COMMANDS } from ${JSON.stringify(pathToFileURL(join(directory, 'commands/index.js')).href)};`,
     "/** A private new command proves help follows actual dispatch declarations. */",
@@ -282,7 +283,9 @@ test('every command comes from its own module [C7,V4]', async () => {
   for (const name of [...resultCommands(), 'mcp']) assert.ok(names.includes(name), `${name} comes from its own module`);
   const cli = readFileSync(join(source, 'cli.js'), 'utf8');
   assert.doesNotMatch(cli, /function (?:setup|read|work)Commands\(/u, 'src/cli.js holds no command table');
-  const dispatch = cli.slice(cli.indexOf('async function runCommand('), cli.indexOf('\n}\n', cli.indexOf('async function runCommand(')));
+  // Dispatch lives in cli-main.js, the entry that loads only the command in hand.
+  const entry = readFileSync(join(source, 'cli-main.js'), 'utf8');
+  const dispatch = entry.slice(entry.indexOf('async function runCommand('), entry.indexOf('\n}\n', entry.indexOf('async function runCommand(')));
   assert.ok(dispatch.includes('COMMANDS[command]'), 'runCommand looks the command up in the registry');
   assert.doesNotMatch(dispatch, /if \(command === '[a-z-]+'(?: && [^)]*)?\) /u, 'runCommand holds no command of its own');
   for (const file of files) {

@@ -551,7 +551,7 @@ test('[A5, A6] a future-schema worktree cannot migrate the shared board; main ca
   box.git(repo, 'worktree', 'add', '-q', unguarded, '-b', 'schema/unguarded', 'schema/future');
   const guardedSource = join(unguarded, 'src/board.js');
   const guardedText = readFileSync(guardedSource, 'utf8');
-  const unguardedText = guardedText.replace(/  if \(file !== ':memory:' && isMain === false\) \{[\s\S]*?\n  \}\n(?=  if \(file !== ':memory:'\) mkdirSync)/, '');
+  const unguardedText = guardedText.replace(/  if \(file !== ':memory:' && \(isMain === false \|\| typeof isMain === 'function'\)\) \{[\s\S]*?\n  \}\n(?=  if \(file !== ':memory:'\) mkdirSync)/, '');
   assert.notEqual(unguardedText, guardedText, 'the mutation removes only the unmerged-schema guard');
   writeFileSync(guardedSource, unguardedText);
   const mutationProbe = join(unguarded, '.schema-mutation-probe.mjs');
