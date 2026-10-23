@@ -332,8 +332,15 @@ The following live SQLite declarations include nullability, defaults, primary an
 <!-- board-indexes:start -->
 | Index | Table | Columns | Unique |
 | --- | --- | --- | --- |
+| `event_by_at` | `event` | `event_by`, `event_at` | no |
 | `event_item_id_event_id` | `event` | `item_id`, `event_id` | no |
+| `event_kind_id` | `event` | `event_kind`, `event_id` | no |
 | `item_lane_status` | `item` | `item_lane`, `item_status` | no |
+| `shout_answers` | `shout` | `shout_answers` | no |
+| `shout_evidence_item` | `shout` | `shout_evidence_item` | no |
+| `shout_from_at` | `shout` | `shout_from`, `shout_at` | no |
+| `shout_open_decision` | `shout` | `shout_decision`, `shout_to` | no |
+| `shout_open_request` | `shout` | `shout_request` | no |
 | `verdict_item_id_verdict_id` | `verdict` | `item_id`, `verdict_id` | no |
 <!-- board-indexes:end -->
 
