@@ -37,6 +37,7 @@ import {
   pathToFileURL,
 } from 'node:url';
 import * as resourceApi from './resources.js';
+import { Refused } from './refused.js';
 import { parseProcessCensus } from './process-census.js';
 import {
   gateStages,
@@ -173,6 +174,7 @@ async function readSpec() {
     || typeof value.pipefail !== 'boolean' || !Number.isSafeInteger(value.slots) || value.slots < 1
     || !Number.isSafeInteger(value.browser) || value.browser < 0
     || typeof value.browserRequired !== 'boolean'
+    || (value.browserByLaunch !== undefined && typeof value.browserByLaunch !== 'boolean')
     || !value.runtime || typeof value.runtime !== 'object' || !value.runtime.files || typeof value.runtime.files !== 'object'
     || typeof value.runtime.sha256 !== 'string') throw new Error('invalid work specification');
   if (value.stageMarker !== undefined && !/^PULLBOARD_STAGE_[a-f0-9]{32}$/u.test(value.stageMarker)) throw new Error('invalid stage marker');
@@ -842,6 +844,30 @@ async function acquireResourceApi(api, options, machineHomePath) {
   }
 }
 
+/**
+ * Size this machine's gate and browser pools to the capacity the controller registered, carried in
+ * the job (#1066). A lower registration waits for an idle pool, and is refused by name until then.
+ */
+function registeredCapacity(api, spec, root, machineHomePath) {
+  const previous = process.env.PULLBOARD_MACHINE_HOME;
+  process.env.PULLBOARD_MACHINE_HOME = machineHomePath;
+  try {
+    /** Set one pool row; a busy pool cannot shrink, so this run is refused rather than oversubscribed. */
+    const size = (name, capacity) => {
+      try { return api.setResourceCapacity({ name, capacity, scope: 'machine', root }).capacity; }
+      catch (error) {
+        if (error?.code !== 'RESOURCE_BUSY') throw error;
+        throw new Refused('RUNNER_CAPACITY_BUSY', `this runner is registered with ${capacity} ${name} slot(s), fewer than its busy pool holds; it shrinks once its running jobs end`);
+      }
+    };
+    // A runner registered with no browsers never receives a browser run, so its browser row is left alone.
+    return { gateCapacity: size('gate', spec.slots), browserCapacity: spec.browser > 0 ? size('browser', spec.browser) : 1 };
+  } finally {
+    if (previous === undefined) delete process.env.PULLBOARD_MACHINE_HOME;
+    else process.env.PULLBOARD_MACHINE_HOME = previous;
+  }
+}
+
 /** Bound Git diagnostics and hide runner-private paths, URL credentials and credential assignments. */
 function safeGitDiagnostic(value, root, env) {
   let text = String(value).replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, '').replace(/\r\n?/gu, '\n').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, '');
@@ -1208,7 +1234,7 @@ async function receipt(spec, fields, sink) {
     runtimeSha256: spec.runtime.sha256, toolingSha256: spec.tooling.sha256, root: fields.root ?? '', outputSha256: sink.hash.digest('hex'), wallMs: Math.max(0, Date.now() - sink.wallStart),
     // The execution host's load and the pinned main this run used, so a paired rerun here can be judged (#925).
     main: typeof spec.main === 'string' ? spec.main : null, load: { average: loadavg(), cpus: availableParallelism(), freeMB: Math.floor(freemem() / 1048576) },
-    ...(spec.stageMarker ? { pipeStatuses: fields.pipeStatuses ?? null } : {}), ...(fields.refused ? { refused: fields.refused } : {}), ...(fields.denial ? { denial: fields.denial } : {}) };
+    ...(spec.stageMarker ? { pipeStatuses: fields.pipeStatuses ?? null } : {}), ...(fields.refused ? { refused: fields.refused } : {}), ...(fields.browserRefused ? { browserRefused: true } : {}), ...(fields.denial ? { denial: fields.denial } : {}) };
   const encoded = Buffer.from(JSON.stringify(body)).toString('base64');
   await new Promise((resolveWrite, rejectWrite) => process.stderr.write(`${RECEIPT} ${spec.id} ${encoded}\n`, error => error ? rejectWrite(error) : resolveWrite()));
 }
@@ -1270,19 +1296,8 @@ async function main() {
     setupPrivatePaths.add(machineHomePath);
     setupStep = 'trusted resource API';
     api = loadResourceApi(spec.runtime);
-    const previousMachineHome = process.env.PULLBOARD_MACHINE_HOME;
-    let resources;
-    try {
-      process.env.PULLBOARD_MACHINE_HOME = machineHomePath;
-      resources = api.listResources({ scope: 'machine', root: runnerRoot });
-    } finally {
-      if (previousMachineHome === undefined) delete process.env.PULLBOARD_MACHINE_HOME;
-      else process.env.PULLBOARD_MACHINE_HOME = previousMachineHome;
-    }
-    const gateCapacity = resources.find(resource => resource.name === 'gate')?.capacity ?? Math.min(spec.slots, 2);
-    // pullboard settings browserSlots writes this row and settings.json under one lock, so the row carries
-    // this machine's setting without reading settings.json; a machine that set nothing keeps one browser slot.
-    const browserCapacity = resources.find(resource => resource.name === 'browser')?.capacity ?? 1;
+    // The registration travels with the job; this machine's own settings never size a runner (#1066).
+    const { gateCapacity, browserCapacity } = registeredCapacity(api, spec, runnerRoot, machineHomePath);
     setupStep = 'job directories';
     const base = join(runnerRoot, 'jobs');
     mkdirSync(base, { recursive: true, mode: 0o700 });
@@ -1316,7 +1331,9 @@ async function main() {
     setupStep = 'committed dependencies';
     await installDependencies(root, runnerRoot, env, tracker);
     setupStep = 'command start';
-    final = { ...(await runCommand(spec, root, { ...env, PULLBOARD_LANDING_RUN: spec.landing === true ? '1' : '0', PULLBOARD_LANDING_WAIVERS: JSON.stringify(spec.landing === true ? spec.waivers ?? [] : []) }, sink, tracker)), root };
+    const browserRefusal = join(runDirectory, 'browser-refusal.json');
+    final = { ...(await runCommand(spec, root, { ...env, PULLBOARD_LANDING_RUN: spec.landing === true ? '1' : '0', [api.BROWSER_REFUSAL_FILE_ENV]: browserRefusal, ...(typeof spec.browserByLaunch === 'boolean' ? { PULLBOARD_TEST_BROWSER_BY_LAUNCH: spec.browserByLaunch ? '1' : '0' } : {}), PULLBOARD_LANDING_WAIVERS: JSON.stringify(spec.landing === true ? spec.waivers ?? [] : []) }, sink, tracker)), root };
+    if (final.code !== 0 && existsSync(browserRefusal)) final.browserRefused = true;
   } catch (error) {
     const refused = setupRefusalCode(error);
     const message = refused ? `${safeSetupMessage(error, setupStep)} [${refused}]` : safeSetupMessage(error, setupStep);
