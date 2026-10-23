@@ -265,7 +265,7 @@ async function postAndApplyMove(box, link, key, sequence, move) {
   return event;
 }
 
-for (const apiVersion of [1, 2]) test('the phone shows moves past its checkpoint as pending (API' + apiVersion + ') [H5,H16]', {
+for (const apiVersion of [1, 2]) test('the phone shows moves past its checkpoint as pending [H5,H16] (API' + apiVersion + ')', {
   skip: !findChromeExecutable() && 'Chrome is not installed',
 }, async t => {
   const box = await relayClientFixture(t);
