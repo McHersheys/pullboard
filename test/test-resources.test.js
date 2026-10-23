@@ -343,6 +343,7 @@ test('only a file that reaches a browser launch takes a browser slot [C7,O5]', a
   assert.equal(listed.status, 0, listed.stderr);
   const tracked = listed.stdout.split('\0').filter(path => /\.test\.(?:js|mjs)$/u.test(path)).sort();
   const bound = await browserBoundFiles(repository, tracked, { byLaunch: true });
+  assert.ok(!bound.includes('test/runners.test.js'), 'runner subprocess fixture source data does not launch a browser in the runner test process');
   const missed = CENSUS_LAUNCHED.filter(file => tracked.includes(file) && !bound.includes(file));
   assert.deepEqual(missed, [], 'every file that launched Chrome in the census is classified browser-bound');
   // Cockpit and journey files stay bound by rule until #741 guards the view fixture; the rest must reach a launch.
