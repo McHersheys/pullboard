@@ -103,6 +103,8 @@ async function openPool(home) {
   addColumn('file_holder', 'lender', 'INTEGER');
   addColumn('file_holder', 'call', 'TEXT');
   addColumn('file_call', 'closing', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('file_call', 'path', 'TEXT');
+  addColumn('file_holder', 'path', 'TEXT');
   return db;
 }
 
@@ -172,7 +174,9 @@ export async function occupiedPlaces(home) {
 /**
  * Admit this process when a place is free and every earlier waiter fits first. A file started inside its caller's
  * open synchronous call steps into the caller's reserved place when no other file of the caller holds it; that
- * leaves the count unchanged. Only a file admitted that way belongs to the call.
+ * leaves the count unchanged. Only a file admitted that way belongs to the call, and it takes the call's path.
+ *
+ * @returns {false | string} false while it must wait; once admitted, its call path ('' outside any call).
  */
 function admit(db, cores, lender, call) {
   return immediate(db, () => {
@@ -184,9 +188,11 @@ function admit(db, cores, lender, call) {
       if (ahead >= cores - taken) return false;
     }
     db.prepare('DELETE FROM file_waiter WHERE pid = ?').run(process.pid);
-    db.prepare('INSERT OR REPLACE INTO file_holder(pid, since, lender, call) VALUES (?, ?, ?, ?)')
-      .run(process.pid, Date.now(), lender ?? null, reserved ? call : null);
-    return true;
+    // A file of a call inherits the call's path, so the call's whole descent stays findable if a file in between dies.
+    const path = reserved ? db.prepare('SELECT path FROM file_call WHERE call = ?').get(call)?.path ?? `/${call}` : null;
+    db.prepare('INSERT OR REPLACE INTO file_holder(pid, since, lender, call, path) VALUES (?, ?, ?, ?, ?)')
+      .run(process.pid, Date.now(), lender ?? null, reserved ? call : null, path);
+    return path ?? '';
   });
 }
 
@@ -204,12 +210,14 @@ export async function takeTestFileToken(env = process.env) {
   const db = await openPool(pool.home);
   immediate(db, () => db.prepare('INSERT OR IGNORE INTO file_waiter(pid) VALUES (?)').run(process.pid));
   let pruned = 0;
+  let path;
   while (true) {
     const { taken, ahead } = standing(db);
     // A dead holder only goes in the write path, so look there at least once a second even when nothing looks free.
     if (pool.call || ahead < pool.cores - taken || Date.now() - pruned >= PRUNE_MS) {
       pruned = Date.now();
-      if (admit(db, pool.cores, pool.lender, pool.call)) break;
+      path = admit(db, pool.cores, pool.lender, pool.call);
+      if (path !== false) break;
     }
     await new Promise(done => setTimeout(done, POLL_MS));
   }
@@ -218,7 +226,7 @@ export async function takeTestFileToken(env = process.env) {
     catch { /* A row left behind is pruned once this process is gone. */ }
   });
   env[TEST_FILE_POOL_ENV] = JSON.stringify({ home: pool.home, cores: pool.cores });
-  lendThroughSyncCalls(pool, env, db);
+  lendThroughSyncCalls(pool, env, db, path);
   return Date.now() - asked;
 }
 
@@ -231,12 +239,13 @@ function pauseSync(ms) {
  * Lend this file's place only across a synchronous child call (spawnSync, execFileSync, execSync), which blocks this
  * file's JavaScript until the call returns. The call is a row: while it is open, one file it starts may fill the
  * place. When the child returns, the call closes to new files, and it returns to this file only once the file that
- * filled the place has exited, so this file never resumes beside it. A run the call leaves behind lends nothing.
+ * filled the place, and every file under it, has exited, so this file never resumes beside them, even when a file in
+ * between died. A run the call leaves behind lends nothing.
  * A child started asynchronously gets no call: this file may keep computing, so it keeps its own token and the nested
  * files take theirs from the pool (#1046). A call whose environment no longer names this pool, as a test that
  * isolates its own pool does, is left exactly as written.
  */
-function lendThroughSyncCalls(pool, env, db) {
+function lendThroughSyncCalls(pool, env, db, path) {
   const ours = env[TEST_FILE_POOL_ENV];
   for (const name of ['spawnSync', 'execFileSync', 'execSync']) {
     const original = childProcess[name];
@@ -249,11 +258,14 @@ function lendThroughSyncCalls(pool, env, db) {
       const lent = JSON.stringify({ home: pool.home, cores: pool.cores, lender: process.pid, call });
       const lending = { ...options, env: { ...childEnv, [TEST_FILE_POOL_ENV]: lent } };
       if (at === -1) args.push(lending); else args[at] = lending;
-      db.prepare('INSERT INTO file_call(call, lender) VALUES (?, ?)').run(call, process.pid);
+      const callPath = `${path}/${call}`;
+      db.prepare('INSERT INTO file_call(call, lender, path) VALUES (?, ?, ?)').run(call, process.pid, callPath);
       try { return original.apply(this, args); }
       finally {
         db.prepare('UPDATE file_call SET closing = 1 WHERE call = ?').run(call);
-        while (db.prepare('SELECT pid FROM file_holder WHERE call = ?').all(call).some(({ pid }) => alive(pid))) pauseSync(POLL_MS);
+        // Every file under this call, not only its own: one whose middle file died is still this call's work.
+        const descent = db.prepare("SELECT pid FROM file_holder WHERE path = ? OR substr(path, 1, ?) = ?");
+        while (descent.all(callPath, callPath.length + 1, `${callPath}/`).some(({ pid }) => alive(pid))) pauseSync(POLL_MS);
         db.prepare('DELETE FROM file_call WHERE call = ?').run(call);
       }
     };

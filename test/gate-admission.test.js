@@ -183,3 +183,27 @@ test('a synchronous call returns only after the file it lent its place to has ex
   assert.ok(innerEnd, 'the nested file ran inside the call');
   assert.ok(resumed >= innerEnd, 'on 1 core, the caller resumed only after the file in its place exited');
 });
+
+test('a call waits for every file under it, even when a file in between dies [C7]', async (t) => {
+  const { root, env, log } = fixture(t, 1);
+  writeFileSync(join(root, 'd.test.js'), timedFile('d.test.js', 2000));
+  // C starts D inside its own call, waits until D is admitted, and is then killed while D still runs.
+  const startD = `${JSON.stringify(process.execPath)} ${JSON.stringify(runner)} d.test.js > /dev/null 2>&1 & until grep -q 'd.test.js","at":"start' ${JSON.stringify(env.FIXTURE_LOG)} 2>/dev/null; do sleep 0.05; done; kill -9 \${PPID_C}`;
+  writeFileSync(join(root, 'c.test.js'), `import { execSync } from 'node:child_process';
+import { test } from 'node:test';
+test('c', () => { execSync(${JSON.stringify(startD)}, { cwd: ${JSON.stringify(root)}, env: { ...process.env, PPID_C: String(process.pid), FIXTURE_RUN: 'd' } }); });
+`);
+  const runC = `const { execSync } = await import('node:child_process');
+  try { execSync(${JSON.stringify(`${JSON.stringify(process.execPath)} ${JSON.stringify(runner)} c.test.js`)}, { cwd: ${JSON.stringify(root)}, env: { ...process.env, FIXTURE_RUN: 'c' }, stdio: 'ignore' }); }
+  catch { /* C was killed, so its run fails; P only resumes. */ }
+  mark('resume');`;
+  writeFileSync(join(root, 'p.test.js'), timedFile('p.test.js', 0, runC));
+  const result = await runFixtureChildAsync(process.execPath, [runner, 'p.test.js'], { cwd: root, env: { ...env, FIXTURE_RUN: 'p' } });
+  assert.equal(result.status, 0, `${result.failure ?? ''}\n${result.stdout.slice(-3000)}`);
+  const deadline = Date.now() + 30_000;
+  while (!log().some(event => event.file === 'd.test.js' && event.at === 'end') && Date.now() < deadline) await new Promise(next => setTimeout(next, 100));
+  const events = log();
+  const dEnd = events.find(event => event.file === 'd.test.js' && event.at === 'end')?.t;
+  assert.ok(dEnd, 'D ran to its end after C died');
+  assert.ok(events.find(event => event.at === 'resume').t >= dEnd, 'on 1 core, P resumed only after D, the file under its call, ended');
+});
