@@ -223,6 +223,7 @@ function testEnvironment(sandbox, gateMarkers = {}) {
   env.PULLBOARD_MACHINE_HOME = join(sandbox, 'machine');
   // init and resume start a background view by default; a test opts back in by deleting this.
   env.PULLBOARD_VIEW_BACKGROUND = '0';
+  env.PULLBOARD_TEST_REUSE = '0'; // A runner a test starts runs every file it names; a test opts in to reuse by deleting this.
   env.TMPDIR = sandbox;
   env.TMP = sandbox;
   env.TEMP = sandbox;
