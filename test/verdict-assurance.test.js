@@ -1,5 +1,6 @@
 /** Assurance distinguishes recorded parent independence from procedural review [V1,B3]. */
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import {
   mkdirSync,
   mkdtempSync,
@@ -34,7 +35,9 @@ function fixture(t) {
   mkdirSync(join(root, '.git', 'pullboard'), { recursive: true });
   const board = store.openBoard(join(root, '.git', 'pullboard', 'board.sqlite'), { now: () => new Date('2026-10-23T12:00:00.000Z') });
   t.after(() => store.closeBoard(board));
-  return { root, board, sequence: 0 };
+  const policy = { version: 1, commit: runFixtureGit(['rev-parse', 'HEAD'], { cwd: root }),
+    verify: { policy: 'any', family: 'off' } };
+  return { root, board, policy, sequence: 0 };
 }
 
 /** Build and accept once without inventing a gate execution for the board-state fixture. */
@@ -45,15 +48,16 @@ function accepted(box, builderParent, reviewerParent, { historicalUnknown = fals
   const builder = store.register(box.board, { lane: 'web', path: builderPath, parent: builderParent });
   const reviewer = store.register(box.board, { lane: 'web', path: reviewerPath, parent: reviewerParent });
   const id = store.addItem(box.board, { by: 'coordinator', lane: 'web', title: 'Assurance evidence', criterion: 'Review states its assurance', check: 'true' });
-  const digest = 'f'.repeat(64);
+  const text = JSON.stringify({ rows: [], policy: box.policy });
+  const digest = createHash('sha256').update(text).digest('hex');
   if (historicalUnknown) {
     const prior = store.register(box.board, { lane: 'web', path: join(box.root, `prior-${number}`) });
     store.claim(box.board, id, { agentId: prior, lane: 'web', leaseMs: 3600000,
-      freeze: () => ({ text: JSON.stringify({ rows: [] }), digest }) });
+      freeze: () => ({ text, digest }) });
     store.release(box.board, id, prior);
   }
   store.claim(box.board, id, { agentId: builder, lane: 'web', leaseMs: 3600000,
-    freeze: () => ({ text: JSON.stringify({ rows: [] }), digest }) });
+    freeze: () => ({ text, digest }) });
   const commit = String(id).padStart(40, 'a');
   submitFixture(box.board, id, { agentId: builder, commit, tree: String(id).padStart(40, 'b') });
   const verdict = { agentId: reviewer, decision: 'ACCEPT', policy: 'any', head: commit, digest,
