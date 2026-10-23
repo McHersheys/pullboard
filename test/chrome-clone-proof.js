@@ -74,10 +74,17 @@ async function gracefulClose(profile, launched) {
   try { await new Promise((resolve, reject) => {
     const timer = setTimeout(() => { socket.close(); reject(new Error('private Chrome graceful close timed out')); }, 3_000); // budget: hang ceiling for this private browser's graceful shutdown.
     socket.addEventListener('open', () => { opened = true; socket.send(JSON.stringify({ id: 1, method: 'Browser.close' })); }, { once: true });
-    socket.addEventListener('error', event => { clearTimeout(timer); reject(new Error(`private Chrome close connection failed: ${JSON.stringify({ opened, state: socket.readyState, requestError, message: event.error?.message })}`, { cause: event.error })); }, { once: true });
-    socket.addEventListener('close', () => { clearTimeout(timer); resolve(); }, { once: true });
+    socket.addEventListener('error', event => {
+      clearTimeout(timer);
+      // Browser.close can end the transport without a close frame; a clean process exit below is still required.
+      if (opened) resolve();
+      else reject(new Error(`private Chrome close connection failed: ${JSON.stringify({ opened, state: socket.readyState, requestError, message: event.error?.message })}`, { cause: event.error }));
+    }, { once: true });
+    socket.addEventListener('close', () => { clearTimeout(timer); if (opened) resolve(); else reject(new Error('private Chrome closed before Browser.close could be sent')); }, { once: true });
   }); } finally { errors.unsubscribe(observeError); }
   await waitUntil(() => launched.child.exitCode !== null || launched.child.signalCode !== null, 3_000, 'native Chrome did not exit after Browser.close');
+  assert.equal(launched.child.exitCode, 0, 'the native control must exit cleanly after Browser.close');
+  assert.equal(launched.child.signalCode, null, 'the native control must not be terminated by a signal');
 }
 
 /** Run a real control and SIGKILL the test launch; no code deletes any clone directory. */
