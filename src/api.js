@@ -66,6 +66,10 @@ import {
   projectFit,
 } from './blueprint-fit.js';
 import { Refused } from './refused.js';
+import {
+  BLOCKS_FILE,
+  personBlockWords,
+} from './blocks.js';
 import { verdictProjector } from './verdict-freshness.js';
 import { trunkRevisionReader } from './trunk-revision.js';
 import {
@@ -99,6 +103,8 @@ function stateFileInputs(root, config) {
     { name: 'builtin:standard-doctrine.md', path: new URL('./standard-doctrine.md', import.meta.url) },
     ...['signoffs.jsonl', 'signers', 'first-commit', 'signers.initial'].map(name => ({ name: `approval:${name}`, path: join(root, '.pullboard', name) })),
     { name: 'fit:blueprint-fit.json', path: fitFile(repoInfo(root).commonDir) },
+    // A new block changes Needs you without a board move, so the ledger is a state input [C6].
+    { name: 'blocks:blocks.jsonl', path: join(repoInfo(root).commonDir, BLOCKS_FILE) },
   ];
 }
 
@@ -484,6 +490,7 @@ function buildLocalBoardState(root, boardId, board, codeIsMain, { previous = nul
     state.requests = projectData.requests;
     state.personRequests = projectData.personRequests;
     state.milestones = projectData.milestones;
+    state.blocks = personBlockWords(repoInfo(root).commonDir, board.clock.now()); // Needs you below is recomputed with them [C6].
     const decorated = projectSpecApprovals(projectFit(pendingFit(repoInfo(root).commonDir), projectRowDecisions(projectData.rowDecisions, state)), specApprovalState(root, { board, config }));
     const bases = new Map(decorated.items.map((item) => [item.id, item]));
     for (const id of dirtyIds) {
