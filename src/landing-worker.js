@@ -30,10 +30,10 @@ function census() {
   } catch { return null; }
 }
 
-/** Stop a currently owned group; a recorded worker identity permits cleanup after guardian death without trusting a reused PID. */
-function stop(child, member) {
+/** Stop owned descendants and their group; optional observers exercise census races without signaling foreign processes. */
+export function stop(child, member, { read = census, kill = process.kill } = {}) {
   if (!child.pid) return;
-  const rows = census();
+  const rows = read();
   const root = rows?.get(child.pid);
   const known = member && rows?.get(member.pid);
   const ownsRoot = root && (child.pid === process.pid || root.ppid === process.pid && child.exitCode === null && child.signalCode === null);
@@ -46,20 +46,20 @@ function stop(child, member) {
     changed = false;
     for (const row of rows.values()) if (owned.has(row.ppid) && !owned.has(row.pid)) { owned.add(row.pid); changed = true; }
   } while (changed);
-  const current = census();
+  const current = read();
   if (!current) return; // Missing identity evidence never authorizes a process-group signal.
   // Stop producers first: killing a held gate must not wake its worker into post-gate Git work.
   for (const pid of owned) if (pid !== child.pid && !current.get(pid)?.state.startsWith('Z') && current.get(pid)?.started === rows.get(pid)?.started
     && current.get(pid)?.processSha256 === rows.get(pid)?.processSha256) {
-    try { process.kill(pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
+    try { kill(pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
   }
   // Descendant signals can empty the group; its earlier census is no longer a signal target.
-  const group = census();
+  const group = read();
   if (!group || !runningGroup(group, child.pid)) return;
-  try { process.kill(-child.pid, 'SIGKILL'); }
+  try { kill(-child.pid, 'SIGKILL'); }
   catch (error) {
     if (error.code === 'ESRCH') return;
-    const after = error.code === 'EPERM' ? census() : null;
+    const after = error.code === 'EPERM' ? read() : null;
     if (after && !runningGroup(after, child.pid)) return; // macOS can report EPERM for an already-empty group.
     throw error; // A live group or unknown census never licenses suppressing a permission failure.
   }
