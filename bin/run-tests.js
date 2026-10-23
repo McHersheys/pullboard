@@ -14,6 +14,7 @@ import { Worker } from 'node:worker_threads';
 import { randomUUID } from 'node:crypto';
 import { channel } from 'node:diagnostics_channel';
 import { AGENT_SHELL_MARKERS, SSH_SHELL_MARKERS } from '../src/person.js';
+import { foreignNodeOptions, isolateTestMachine } from '../src/test-isolation.js';
 const runner = fileURLToPath(import.meta.url);
 const LANDING_RUN_ENV = 'PULLBOARD_LANDING_RUN';
 const LANDING_WORKER_STARTS_ENV = 'PULLBOARD_LANDING_WORKER_STARTS';
@@ -221,6 +222,7 @@ function testEnvironment(sandbox, gateMarkers = {}) {
   env.PULLBOARD_HOME = home;
   env.PULLBOARD_MODEL = 'Test Model';
   env.PULLBOARD_MACHINE_HOME = join(sandbox, 'machine');
+  isolateTestMachine(env, sandbox); // #1068: no settings, resources, runners or host markers of the real machine.
   // init and resume start a background view by default; a test opts back in by deleting this.
   env.PULLBOARD_VIEW_BACKGROUND = '0';
   env.TMPDIR = sandbox;
@@ -463,7 +465,7 @@ function parseLandingProcessTable(output) {
 /** Snapshot process identities on POSIX hosts, where the runner can verify process ancestry. */
 function landingProcessTable() {
   if (process.platform === 'win32') return [];
-  const output = execFileSync('ps', ['-axo', 'pid=,ppid=,pgid=,stat=,lstart=,command='], { encoding: 'utf8', timeout: 2000 });
+  const output = execFileSync('ps', ['-axo', 'pid=,ppid=,pgid=,stat=,lstart=,command='], { encoding: 'utf8', timeout: 2000, maxBuffer: 64 << 20 });
   return parseLandingProcessTable(output);
 }
 
@@ -495,7 +497,7 @@ async function landingWorkerIdentity(pid, timeoutMs = LANDING_WORKER_IDENTITY_TI
       try {
         const output = await new Promise((resolveOutput, rejectOutput) => {
           const child = execFile('ps', ['-axo', 'pid=,ppid=,pgid=,stat=,lstart=,command='], {
-            encoding: 'utf8', timeout: Math.min(2000, Math.max(1, remaining)),
+            encoding: 'utf8', timeout: Math.min(2000, Math.max(1, remaining)), maxBuffer: 64 << 20,
           }, (error, stdout) => {
             if (snapshotChild === child) snapshotChild = null;
             error ? rejectOutput(error) : resolveOutput(stdout);
@@ -1308,7 +1310,7 @@ function namesOnlyTestFiles(args) {
     if (!knownNodeOptions.has(option)) return false;
     if (!argument.includes('=')) takesValue = requiresValue;
   }
-  if (takesValue || process.env.NODE_OPTIONS) return false;
+  if (takesValue || foreignNodeOptions(process.env.NODE_OPTIONS)) return false;
   const files = explicitTestFiles(args);
   if (!files.length) return false;
   try {

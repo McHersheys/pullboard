@@ -51,7 +51,7 @@ async function stopView(pid) {
 
 /** The pids of view processes on this test's leased port, listed (never killed) from ps. */
 function viewProcesses(port) {
-  const listed = spawnSync('ps', ['-A', '-o', 'pid=,command='], { encoding: 'utf8' });
+  const listed = spawnSync('ps', ['-A', '-o', 'pid=,command='], { encoding: 'utf8', maxBuffer: 64 << 20 });
   return listed.stdout.split('\n')
     .filter((line) => line.includes('pullboard.js view --no-open') && line.includes(`--port ${port}`))
     .map((line) => Number(line.trim().split(/\s+/u)[0]));

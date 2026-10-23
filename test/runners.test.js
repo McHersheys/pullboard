@@ -733,7 +733,7 @@ console.log('RUNNER_JOURNAL_FILES ' + readdirSync(journal).filter(name => /^chil
 
 /** List live processes whose command line mentions a fixture directory. */
 function processesUnder(dir) {
-  const listed = runFixtureChild('/bin/ps', ['-axo', 'pid=,command='], { encoding: 'utf8' });
+  const listed = runFixtureChild('/bin/ps', ['-axo', 'pid=,command='], { encoding: 'utf8', maxBuffer: 64 << 20 });
   assert.equal(listed.status, 0, listed.context);
   return listed.stdout.split('\n').filter(line => line.includes(dir) && !line.includes('/bin/ps'));
 }
