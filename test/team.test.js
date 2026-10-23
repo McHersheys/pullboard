@@ -25,6 +25,7 @@ import { ENGINE_VERSION as PEOPLE_VERSION } from '../src/machine.js';
 import { relayWorkBudgetMs } from './relay-budget.js';
 import { hostname } from 'node:os';
 import { assertMatchingLandingHost, assertNoCulpritTrunkHold } from './landing-environment-fixture.js';
+import { landingQueueCase } from './landing-queue-fixture.js';
 
 const CLI = join(import.meta.dirname, '..', 'bin', 'pullboard.js');
 
@@ -35,6 +36,23 @@ test('land runs on a matching host [E27,E28,E29]', { timeout: 180_000 }, () => {
   assertMatchingLandingHost(helpers);
   assertNoCulpritTrunkHold(helpers);
 });
+test('a trunk lands one batch at a time [B3,R3,Q1,Q2,E8]', { timeout: 120_000 }, // budget: hang ceiling for real private Git, CLI checks, both gate barriers and cleanup; no speed target.
+  async t => landingQueueCase(t, helpers));
+
+test('a queued landing uses admitted policy and repairs before pinning it [Q1,B3]', { timeout: 120_000 }, // budget: two real CLI landings and bounded recorded-tip repair, not a speed threshold.
+  async t => landingQueueCase(t, helpers, { policyAfterFirst: true }));
+
+test('a queued landing rechecks freshness after its holder moves main [E8,Q1,Q2]', { timeout: 120_000 }, // budget: real private Git/CLI and deterministic gate barrier; no speed target.
+  async t => landingQueueCase(t, helpers, { staleAfterFirst: true }));
+
+test('an abandoned landing drains its blocked gate before adoption [Q1,Q3,B3]', { timeout: 120_000 }, // budget: private CLI death, owned-process cleanup, interrupted-batch adoption and Git; no speed target.
+  async t => landingQueueCase(t, helpers, { killParent: true }));
+
+test('a dead landing guardian cannot leave its blocked worker running [Q1,Q3,B3]', { timeout: 120_000 }, // budget: private guardian death, identity-bound cleanup and explicit adoption; no speed target.
+  async t => landingQueueCase(t, helpers, { killGuardian: true }));
+
+test('a suspended landing owner is fenced before the queued adopter runs [Q1,Q3]', { timeout: 120_000 }, // budget: real 30s authority expiry, independent guardian watchdog, cleanup and adoption; no speed target.
+  async t => landingQueueCase(t, helpers, { suspendParent: true }));
 
 /** Open a fixture's independent board and always close it after its observation or public move. */
 function withBoard(root, action) {

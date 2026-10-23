@@ -6,17 +6,14 @@ import {
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
-  closeSync,
   createReadStream,
   createWriteStream,
   existsSync,
   mkdirSync,
   mkdtempSync,
-  openSync,
   readFileSync,
   readdirSync,
   realpathSync,
-  readSync,
   renameSync,
   rmSync,
   statSync,
@@ -33,14 +30,10 @@ import {
   isAbsolute,
   join,
 } from 'node:path';
-import {
-  fileURLToPath,
-  pathToFileURL,
-} from 'node:url';
+import { fileURLToPath } from 'node:url';
 import * as resourceApi from './resources.js';
+import { createDescendantTracker } from './runner-custody.js';
 import { Refused } from './refused.js';
-import { parseProcessCensus } from './process-census.js';
-import { childJournalPreloadSource } from './child-journal-preload.js';
 import {
   gateStages,
   stagedScript,
@@ -206,7 +199,7 @@ async function readSpec() {
     tagNames.add(tag.name);
     if (tag.chain.length ? tag.chain[0] !== tag.object : tag.object !== tag.peeledCommit) throw new Error('invalid tag manifest');
   }
-  const runtimeNames = ['resources.js', 'git.js', 'machine-home.js', 'refused.js', 'process-census.js', 'queue-settings.js', 'queue-order.js', 'sandbox-denial.js', 'gate-stages.js', 'child-journal-preload.js', 'execution-environment.js'];
+  const runtimeNames = ['runner-custody.js', 'resources.js', 'git.js', 'machine-home.js', 'refused.js', 'process-census.js', 'queue-settings.js', 'queue-order.js', 'sandbox-denial.js', 'gate-stages.js', 'child-journal-preload.js', 'execution-environment.js'];
   if (Object.keys(value.runtime.files).length !== runtimeNames.length
     || runtimeNames.some(name => typeof value.runtime.files[name] !== 'string')) throw new Error('invalid work specification');
   if (createHash('sha256').update(JSON.stringify(value.runtime.files)).digest('hex') !== value.runtime.sha256) throw new Error('invalid trusted runtime');
@@ -282,446 +275,6 @@ function spawnOwned(command, args, options = {}) {
   return record;
 }
 
-/** Read one all-process POSIX census; a failed or malformed census is never interpreted as an empty machine. */
-function processCensus() {
-  const result = spawnSync('/bin/ps', ['-axo', 'pid=,ppid=,pgid=,lstart=,stat=,comm='], {
-    encoding: 'utf8', timeout: 2_000, maxBuffer: 8 * 1024 * 1024,
-    env: { PATH: safePath, LANG: 'C', LC_ALL: 'C', TZ: 'UTC' },
-  });
-  if (result.error || result.status !== 0 || typeof result.stdout !== 'string') return null;
-  return parseProcessCensus(result.stdout);
-}
-
-/** Add a kernel start-time identity when procfs is available; otherwise retain a conservative census tuple. */
-function processIdentity(row) {
-  let birth = '';
-  let exact = false;
-  try {
-    const stat = readFileSync(`/proc/${row.pid}/stat`, 'utf8');
-    const close = stat.lastIndexOf(')');
-    const fields = stat.slice(close + 2).trim().split(/\s+/u);
-    if (close > 0 && Number(fields[1]) === row.ppid && Number(fields[2]) === row.pgid && /^\d+$/u.test(fields[19] ?? '')) {
-      birth = `proc:${fields[19]}`;
-      exact = true;
-    }
-  } catch { /* macOS and other POSIX hosts use the validated census tuple below. */ }
-  if (!birth) birth = `ps:${row.started}`;
-  return { ...row, birth, exact };
-}
-
-/** Make a private Node preload that records only child identity and a one-way command digest. */
-function writeChildJournalPreload(directory) {
-  const journalDirectory = join(directory, 'child-journal');
-  mkdirSync(journalDirectory, { mode: 0o700 });
-  const overflowPath = join(journalDirectory, 'overflow');
-  const source = childJournalPreloadSource(directory);
-  const preload = join(directory, 'child-spawn-preload.mjs');
-  writeFileSync(preload, source, { mode: 0o600, flag: 'wx' });
-  return { preload, journalDirectory, overflowPath, nodeOptions: `--import=${pathToFileURL(preload).href}` };
-}
-
-/** Track job descendants by PID plus OS start identity, joining spawn receipts with fresh census rows. */
-function createDescendantTracker(directory) {
-  const initial = processCensus();
-  if (!initial) throw new Error('initial process identity census failed');
-  const baseline = new Map([...initial].map(([pid, row]) => [pid, processIdentity(row)]));
-  const journal = writeChildJournalPreload(directory);
-  const roots = new Set();
-  const rootLaunchIdentities = new Map();
-  const known = new Map();
-  const retired = new Set();
-  const eventsByChild = new Map();
-  const pendingIdentities = new Map();
-  const consumedEvents = new Set();
-  let eventCount = 0;
-  const detachedGroups = new Map();
-  const offsets = new Map();
-  const partial = new Map();
-  const instancePids = new Map();
-  const overflowPath = journal.overflowPath;
-  let current = baseline;
-  let uncertain = false;
-  let censusFailure = false;
-  let reason = '';
-  let uncertainReason = '';
-  let busy = false;
-  let warned = false;
-  let timer = null;
-  let stoppingPromise = null;
-
-  /** Keep permanent custody failures distinct from earlier, potentially resolved pending observations. */
-  function markUncertain(message) {
-    uncertain = true;
-    uncertainReason ||= message;
-    reason ||= message;
-  }
-
-  function readJournal() {
-    if (existsSync(overflowPath)) { markUncertain('child spawn journal overflow or write failure'); }
-    let total = 0;
-    const files = readdirSync(journal.journalDirectory).filter(name => /^children-\d+\.jsonl$/u.test(name)).sort();
-    // A full suite creates one journal per Node process; align this count with
-    // the event and identity bounds while retaining the byte bounds below.
-    if (files.length > 100_000) { markUncertain('child spawn journal file limit exceeded'); return; }
-    for (const name of files) {
-      const file = join(journal.journalDirectory, name);
-      let size;
-      try { size = statSync(file).size; } catch { markUncertain('child spawn journal could not be inspected'); continue; }
-      total += size;
-      if (!Number.isSafeInteger(size) || size > 131_072 || total > 8 * 1024 * 1024) {
-        markUncertain('child spawn journal size limit exceeded'); continue;
-      }
-      const offset = offsets.get(name) ?? 0;
-      if (size < offset) { markUncertain('child spawn journal changed unexpectedly'); continue; }
-      if (size === offset) continue;
-      const length = size - offset;
-      const fd = openSync(file, 'r');
-      let text;
-      try {
-        const bytes = Buffer.alloc(length);
-        const read = readSync(fd, bytes, 0, length, offset);
-        if (read !== length) { markUncertain('child spawn journal read was incomplete'); continue; }
-        text = (partial.get(name) ?? '') + bytes.toString('utf8');
-      } finally { closeSync(fd); }
-      offsets.set(name, size);
-      const lines = text.split('\n');
-      partial.set(name, lines.pop() ?? '');
-      for (const line of lines) {
-        if (!line) continue;
-        if (line.length > 4_096) { markUncertain('child spawn journal record is oversized'); continue; }
-        let record;
-        try { record = JSON.parse(line); } catch { markUncertain('child spawn journal record is invalid'); continue; }
-        if (record.type === 'boot' && Number.isSafeInteger(record.pid) && record.pid > 0 && typeof record.instance === 'string') {
-          instancePids.set(record.instance, record.pid);
-        } else if (record.type === 'spawn' && Number.isSafeInteger(record.pid) && record.pid > 0
-          && Number.isSafeInteger(record.ppid) && record.ppid > 0
-          && typeof record.instance === 'string' && /^[a-f0-9]{64}$/u.test(record.commandSha256)) {
-          const childEvents = eventsByChild.get(record.pid) ?? [];
-          eventCount += 1;
-          childEvents.push({ ...record, eventId: `${name}:${eventCount}` });
-          eventsByChild.set(record.pid, childEvents);
-          if (eventCount > 100_000) { markUncertain('child spawn journal event limit exceeded'); return; }
-        } else { markUncertain('child spawn journal identity is invalid'); }
-      }
-    }
-  }
-
-  function observe() {
-    if (busy) return current;
-    busy = true;
-    try {
-      readJournal();
-      const rawCensus = processCensus();
-      if (!rawCensus) { censusFailure = true; return null; }
-      censusFailure = false;
-      const census = new Map([...rawCensus].map(([pid, row]) => [pid, processIdentity(row)]));
-      current = census;
-      // A process first seen without its recorded parent stays unowned while alive.
-      // Once a later census proves that exact birth identity gone, retire its receipts
-      // so a reused PID cannot be adopted from stale launch evidence.
-      for (const [pid, pending] of pendingIdentities) {
-        const row = current.get(pid);
-        if (row?.birth === pending.birth && !/^Z/u.test(row.state)) continue;
-        for (const eventId of pending.eventIds) consumedEvents.add(eventId);
-        pendingIdentities.delete(pid);
-      }
-      for (const [pid, identity] of known) {
-        const row = current.get(pid);
-        if (!row || row.birth !== identity.birth) retired.add(`${pid}:${identity.birth}`);
-        else if (retired.has(`${pid}:${identity.birth}`)) {
-          markUncertain('a previously observed process identity reappeared');
-        }
-      }
-      const ownedPids = new Set();
-      for (const pid of roots) {
-        const row = current.get(pid);
-        if (!row) continue;
-        const prior = known.get(pid);
-        const launched = rootLaunchIdentities.get(pid);
-        if (prior && prior.birth !== row.birth) continue;
-        if (launched && launched.birth !== row.birth) continue;
-        if (!launched && row.ppid !== process.pid) continue;
-        if (!launched && row.pgid !== pid) continue;
-        if (retired.has(`${pid}:${row.birth}`)) { markUncertain('a retired process identity reappeared'); continue; }
-        if (!launched) rootLaunchIdentities.set(pid, row);
-        known.set(pid, { ...row, commandSha256: prior?.commandSha256 ?? '', root: true, group: pid });
-        ownedPids.add(pid);
-      }
-
-      for (const row of current.values()) {
-        if (/^Z/u.test(row.state)) continue;
-        for (const event of eventsByChild.get(row.pid) ?? []) {
-          if (consumedEvents.has(event.eventId)) continue;
-          const parentPid = instancePids.get(event.instance);
-          // A preload instance exists only in the private job environment. The receipt
-          // binds its child to that exact process instance even after the parent exits.
-          if (!parentPid || parentPid !== event.ppid) continue;
-          const prior = known.get(row.pid);
-          if (retired.has(`${row.pid}:${row.birth}`)) { markUncertain('a retired process identity reappeared'); continue; }
-          if (prior && prior.birth === row.birth) { consumedEvents.add(event.eventId); ownedPids.add(row.pid); continue; }
-          if (!prior && baseline.get(row.pid)?.birth === row.birth) { consumedEvents.add(event.eventId); continue; }
-          // A spawn receipt must be observed while its exact parent instance still owns it.
-          // A same-numbered PID first seen after reparenting is ambiguous and never adopted.
-          if (row.ppid !== event.ppid) {
-            const pending = pendingIdentities.get(row.pid);
-            if (!pending || pending.birth !== row.birth) pendingIdentities.set(row.pid, { birth: row.birth, eventIds: new Set() });
-            pendingIdentities.get(row.pid).eventIds.add(event.eventId);
-            consumedEvents.add(event.eventId);
-            reason ||= 'spawned process was first observed after reparenting';
-            continue;
-          }
-          if (!ownedPids.has(event.ppid)) {
-            pendingIdentities.set(row.pid, { birth: row.birth, eventIds: new Set([event.eventId]) });
-            consumedEvents.add(event.eventId);
-            reason ||= 'spawn receipt parent has not been independently identified';
-            continue;
-          }
-          const parent = known.get(event.ppid);
-          const inheritedGroup = parent?.group ?? [...roots].find(rootPid => known.get(rootPid)?.group === row.pgid);
-          const group = row.pgid === row.pid ? row.pid : inheritedGroup;
-          if (group === undefined) {
-            pendingIdentities.set(row.pid, { birth: row.birth, eventIds: new Set([event.eventId]) });
-            consumedEvents.add(event.eventId);
-            reason ||= 'spawned process group has no owned parent';
-            continue;
-          }
-          if (row.pgid === row.pid) detachedGroups.set(row.pid, row.birth);
-          known.set(row.pid, { ...row, commandSha256: event.commandSha256, root: false, group });
-          consumedEvents.add(event.eventId);
-          pendingIdentities.delete(row.pid);
-          ownedPids.add(row.pid);
-        }
-      }
-
-      // Process ancestry captures non-Node children; journal receipts retain ownership after reparenting.
-      let changed = true;
-      while (changed) {
-        changed = false;
-        for (const row of current.values()) {
-          if (!ownedPids.has(row.ppid)) continue;
-          const prior = known.get(row.pid);
-          if (retired.has(`${row.pid}:${row.birth}`)) { markUncertain('a retired process identity reappeared'); continue; }
-          if (prior && prior.birth === row.birth) { ownedPids.add(row.pid); continue; }
-          if (!prior && baseline.get(row.pid)?.birth === row.birth) continue;
-          const parent = known.get(row.ppid);
-          const group = row.pgid === row.pid ? row.pid : parent?.group;
-          if (group === undefined) {
-            pendingIdentities.set(row.pid, { birth: row.birth, eventIds: new Set() });
-            reason ||= 'descendant process group has no owned parent';
-            continue;
-          }
-          if (row.pgid === row.pid) detachedGroups.set(row.pid, row.birth);
-          known.set(row.pid, { ...row, commandSha256: '', root: false, group });
-          pendingIdentities.delete(row.pid);
-          ownedPids.add(row.pid); changed = true;
-        }
-      }
-      // Detached children establish a private process group; census every member even
-      // after the original launcher is reparented or exits.
-      for (const row of current.values()) {
-        if (/^Z/u.test(row.state)) continue;
-        const leaderStarted = detachedGroups.get(row.pgid);
-        if (!leaderStarted) continue;
-        const leader = current.get(row.pgid);
-        if (leader && leader.birth !== leaderStarted) {
-          markUncertain('detached process group identity was reused');
-          continue;
-        }
-        const prior = known.get(row.pid);
-        if (retired.has(`${row.pid}:${row.birth}`)) { markUncertain('a retired process identity reappeared'); continue; }
-        if (prior && prior.birth === row.birth) { ownedPids.add(row.pid); continue; }
-        if (!prior && baseline.get(row.pid)?.birth === row.birth) continue;
-        if ((!prior || prior.birth !== row.birth) && !ownedPids.has(row.ppid)) {
-          pendingIdentities.set(row.pid, { birth: row.birth, eventIds: new Set() });
-          reason ||= 'detached process group contains an unidentified member';
-          continue;
-        }
-        known.set(row.pid, { ...row, commandSha256: '', root: false, group: row.pgid });
-        ownedPids.add(row.pid);
-      }
-      // A recorded PGID does not prove an unseen member belongs to this job. Keep
-      // the lease fail-closed when a root group contains a process lacking identity evidence.
-      for (const rootPid of roots) {
-        for (const row of current.values()) {
-          if (row.pgid !== rootPid || /^Z/u.test(row.state)) continue;
-          const identity = known.get(row.pid);
-          if (identity?.birth === row.birth) continue;
-          if (baseline.get(row.pid)?.birth === row.birth) continue;
-          pendingIdentities.set(row.pid, { birth: row.birth, eventIds: new Set() });
-          reason ||= 'owned process group contains an unidentified member';
-        }
-      }
-      if (known.size > 100_000) { markUncertain('owned process identity limit exceeded'); }
-      // Refresh live PGID/start data only when the PID still has the same start identity.
-      for (const pid of ownedPids) {
-        const row = current.get(pid);
-        const prior = known.get(pid);
-        if (!row || prior?.birth !== row.birth) continue;
-        Object.assign(prior, row);
-        // A detached child is forked into its parent's group and calls setsid a moment later. A census in that window
-        // records the parent's group; once this proven identity leads its own group, track that group instead (#888).
-        if (!prior.root && row.pgid === row.pid && prior.group !== row.pid) {
-          prior.group = row.pid;
-          detachedGroups.set(row.pid, row.birth);
-        }
-      }
-      return current;
-    } catch {
-      censusFailure = true; return null;
-    } finally { busy = false; }
-  }
-
-  function registerRoot(pid) {
-    if (!Number.isSafeInteger(pid) || pid < 1) return;
-    roots.add(pid);
-    // Bind the spawned leader while its actual parent is still this worker; later
-    // group membership alone is never sufficient to adopt an unknown process.
-    const census = processCensus();
-    const row = census?.get(pid);
-    if (row && row.ppid === process.pid && row.pgid === pid) rootLaunchIdentities.set(pid, processIdentity(row));
-  }
-
-  function liveDescendants() {
-    const active = [];
-    for (const [pid, identity] of known) {
-      if (identity.root) continue;
-      const row = current.get(pid);
-      if (row && row.birth === identity.birth && !retired.has(`${pid}:${identity.birth}`) && !/^Z/u.test(row.state)) active.push({ ...identity });
-    }
-    return active;
-  }
-
-  function signalOwnedGroup(pgid, signal) {
-    const census = observe();
-    reportCleanupTimeout();
-    if (!census || censusFailure) return null;
-    // A journal error does not revoke known ownership, but an unidentified live
-    // member prevents signaling the whole group until its identity is resolved.
-    if ([...pendingIdentities].some(([pid, identity]) => {
-      const row = current.get(pid);
-      return row?.pgid === pgid && row.birth === identity.birth && !/^Z/u.test(row.state);
-    })) return null;
-    const ownedMember = [...known].some(([pid, identity]) => {
-      const row = current.get(pid);
-      return row && row.pgid === pgid && row.birth === identity.birth && !/^Z/u.test(row.state);
-    });
-    if (!ownedMember) return false;
-    try { process.kill(-pgid, signal); }
-    catch (error) {
-      if (error.code === 'ESRCH') return false;
-      // macOS answers EPERM for a group whose members exited but are not yet reaped. Throwing here escaped cleanup and
-      // skipped the lease release (#888, and the load flake in #850); retry on a fresh census instead, and say so.
-      if (error.code === 'EPERM') {
-        process.stderr.write(`runner: signal to process group ${pgid} answered EPERM; its members have exited, so the next census decides\n`);
-        return null;
-      }
-      throw error;
-    }
-    return true;
-  }
-
-  async function stopDescendantsLoop() {
-    // Retry through ambiguous censuses rather than releasing the host lease on an unproven drain.
-    for (;;) {
-      const census = observe();
-      reportCleanupTimeout();
-      if (!census) {
-        if (!warned) { process.stderr.write(`PULLBOARD_RUNNER_CLEANUP_UNVERIFIED ${workerId} ${reason}\n`); warned = true; }
-        await new Promise(resolvePause => setTimeout(resolvePause, 1_000));
-        continue;
-      }
-      if (censusFailure) { await new Promise(resolvePause => setTimeout(resolvePause, 250)); continue; }
-      const live = liveDescendants();
-      if (!live.length && !pendingIdentities.size && (!uncertain || cleanupTimedOut)) return;
-      if ((pendingIdentities.size || uncertain) && !warned) {
-        process.stderr.write(`PULLBOARD_RUNNER_CLEANUP_UNVERIFIED ${workerId} ${reason || 'unresolved process identity remains live'}\n`);
-        warned = true;
-      }
-      if (!live.length) { await new Promise(resolvePause => setTimeout(resolvePause, 250)); continue; }
-      // Signal each confirmed owned process group once; use PID signals only with exact kernel identity.
-      const signaledGroups = new Set();
-      for (const identity of live) {
-        const row = current.get(identity.pid);
-        if (!row || row.birth !== identity.birth || retired.has(`${identity.pid}:${identity.birth}`) || /^Z/u.test(row.state)) continue;
-        const ownedGroup = identity.group;
-        if (Number.isSafeInteger(ownedGroup) && row.pgid === ownedGroup && !signaledGroups.has(ownedGroup)) {
-          const result = signalOwnedGroup(ownedGroup, 'SIGTERM');
-          if (result === null) { censusFailure = true; break; }
-          if (result) signaledGroups.add(ownedGroup);
-          continue;
-        }
-        if (!identity.exact) { markUncertain('descendant lacks a safe process-group identity'); break; }
-        try { process.kill(identity.pid, 'SIGTERM'); }
-        catch (error) { if (error.code !== 'ESRCH') { markUncertain('owned descendant could not be stopped safely'); } }
-      }
-      const deadline = Date.now() + 2_000;
-      while (Date.now() < deadline) {
-        await new Promise(resolvePause => setTimeout(resolvePause, 50));
-        if (!observe()) break;
-        if (!liveDescendants().length) break;
-      }
-      if (!current || !liveDescendants().length) continue;
-      const killedGroups = new Set();
-      for (const identity of liveDescendants()) {
-        const row = current.get(identity.pid);
-        if (!row || row.birth !== identity.birth || retired.has(`${identity.pid}:${identity.birth}`) || /^Z/u.test(row.state)) continue;
-        const ownedGroup = identity.group;
-        if (Number.isSafeInteger(ownedGroup) && row.pgid === ownedGroup && !killedGroups.has(ownedGroup)) {
-          const result = signalOwnedGroup(ownedGroup, 'SIGKILL');
-          if (result === null) { censusFailure = true; break; }
-          if (result) killedGroups.add(ownedGroup);
-          continue;
-        }
-        if (!identity.exact) { markUncertain('descendant lacks a safe process-group identity'); break; }
-        try { process.kill(identity.pid, 'SIGKILL'); }
-        catch (error) { if (error.code !== 'ESRCH') { markUncertain('owned descendant could not be killed safely'); } }
-      }
-      await new Promise(resolvePause => setTimeout(resolvePause, 100));
-    }
-  }
-
-  function stopDescendants() {
-    if (!stoppingPromise) {
-      stoppingPromise = stopDescendantsLoop().finally(() => { stoppingPromise = null; });
-    }
-    return stoppingPromise;
-  }
-
-  async function verifyAfterGroups() {
-    for (;;) {
-      const census = observe();
-      reportCleanupTimeout();
-      if (census && (!uncertain || cleanupTimedOut) && !censusFailure) {
-        const liveRoots = [...roots].some(pid => {
-          const row = current.get(pid);
-          const knownRoot = known.get(pid);
-          return row && knownRoot?.birth === row.birth && !/^Z/u.test(row.state);
-        });
-        if (!liveRoots && !liveDescendants().length && !pendingIdentities.size) return;
-      }
-      if (!warned) { process.stderr.write(`PULLBOARD_RUNNER_CLEANUP_UNVERIFIED ${workerId} ${reason || 'owned process identity remains live'}\n`); warned = true; }
-      await new Promise(resolvePause => setTimeout(resolvePause, 1_000));
-    }
-  }
-
-  timer = setInterval(() => { if (!busy) observe(); }, 250);
-  timer.unref();
-  return {
-    nodeOptions: journal.nodeOptions,
-    /** Describe the last observed cleanup state without treating it as a fresh ownership proof. */
-    cleanupState() {
-      return { reason: uncertainReason || reason, uncertain, censusFailure, knownCount: known.size,
-        pending: [...pendingIdentities].slice(0, 16).map(([pid, identity]) => ({ pid, birth: identity.birth })),
-        live: liveDescendants().slice(0, 16).map(({ pid, birth, group }) => ({ pid, birth, group })) };
-    },
-    registerRoot,
-    stopDescendants,
-    /** Revalidate a process group immediately before signaling; null means census ambiguity. */
-    signalOwnedGroup,
-    verifyAfterGroups,
-    stopMonitoring() { clearInterval(timer); },
-  };
-}
 
 /** Stop and fully drain one owned process group before its gate lease can be released. */
 function drainOwned(record, terminate = false, tracker = activeDescendantTracker) {
@@ -1275,7 +828,10 @@ async function main() {
       onWait: () => assertTransportLive(),
     }, machineHomePath);
     const canonicalMachineHome = machineHomePath;
-    tracker = createDescendantTracker(runDirectory);
+    tracker = createDescendantTracker(runDirectory, {
+      tick: reportCleanupTimeout, timedOut: () => cleanupTimedOut,
+      warn: reason => process.stderr.write(`PULLBOARD_RUNNER_CLEANUP_UNVERIFIED ${workerId} ${reason}\n`),
+    });
     cleanupDetails = tracker.cleanupState;
     activeDescendantTracker = tracker;
     const env = scopedEnvironment(privateHome, temporary, canonicalMachineHome, lease, api, tracker.nodeOptions);

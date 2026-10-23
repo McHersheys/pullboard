@@ -217,7 +217,7 @@ export function addRunner(value) {
   });
 }
 
-/** Remove one registered runner while serialized against its active remote leases. */
+/** Stop dispatching to a runner immediately; admitted jobs keep their leases until they finish. */
 export function removeRunner(host) {
   return updateRunnerSettings(host, () => {
     const current = readMachineSettingsFile(machineSettingsFile()) ?? {};
@@ -231,5 +231,5 @@ export function removeRunner(host) {
     const [runner] = runners.splice(index, 1);
     writeMachineSettings({ ...current, runners });
     return runner;
-  });
+  }, { drain: true });
 }

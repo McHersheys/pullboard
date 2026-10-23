@@ -68,6 +68,7 @@ import { COORDINATOR_HOLD_ENGINE } from './coordinator-hold-engine.js';
 import { requireCoordinatorHold } from './coordinator-hold.js';
 import { LANDING_ENVIRONMENT_ENGINE } from './landing-environment-engine.js';
 import { carriesLandingEnvironment } from './execution-environment.js';
+import { LANDING_LEASE_ENGINE } from './landing-lease-engine.js';
 
 const ITEM_ID_FIRST_ARGUMENT = new Set(['acceptCheck', 'editItem', 'escalate', 'recordAttempt', 'claim', 'release', 'submit', 'reserveReview', 'verify', 'merged', 'withdraw', 'refreeze', 'reopen', 'appendFact']);
 
@@ -80,7 +81,7 @@ export const ENGINE_OPERATIONS = Object.freeze([
   'recordRowDecisions', 'applyRowDecisions', 'draftSpecRow', 'appendFact', 'recordSpecApprovalBaseline',
   'recordLandingBatch', 'recordLandingWaiver', 'recordLandingFlake', 'recordLandingTestDefect', 'finishLandingBatch', 'acceptCheck',
   'recordHealthFindings', 'proposeSentinel', 'decideSentinel', 'beginSentinelRun', 'finishSentinelRun',
-  'recordFlakeObservation', 'recordGateRun', 'declareJob', 'recordJobRun', 'takeCoordinator',
+  'recordFlakeObservation', 'recordGateRun', 'declareJob', 'recordJobRun', 'takeCoordinator', 'landingLeaseMove',
 ]);
 
 /** Engine version at which each ordered operation first has stable replay semantics. */
@@ -93,9 +94,11 @@ function minimumOperationEngine(operation, args, board, at) {
     || operation === 'recordGateRun' && Object.hasOwn(args[0]?.receipt ?? {}, 'environment')
     || operation === 'recordLandingBatch' && carriesLandingEnvironment(args[0]?.batch)) return LANDING_ENVIRONMENT_ENGINE;
   if (board && ['recordLandingBatch', 'finishLandingBatch'].includes(operation)) {
+    if (store.landingTestDefects(board).length) return LANDING_ENVIRONMENT_ENGINE;
     const id = operation === 'recordLandingBatch' ? args[0]?.batch?.id : args[0]?.id;
     if (store.landingBatches(board).some(batch => batch.id === id && carriesLandingEnvironment(batch))) return LANDING_ENVIRONMENT_ENGINE;
   }
+  if (operation === 'landingLeaseMove' || args[0]?.landingFence !== undefined) return LANDING_LEASE_ENGINE;
   if (['verify', 'reopen'].includes(operation) && args[1]?.reopenFirstRefusalMinutes !== undefined
     || ['claim', 'release'].includes(operation) && board && firstRefusal(board, args[0], at)) return REOPEN_FIRST_REFUSAL_ENGINE;
   // A batch landed on the local trunk before it is published (#801).
