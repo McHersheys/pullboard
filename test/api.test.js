@@ -23,6 +23,8 @@ import { join, dirname, resolve, basename, delimiter } from 'node:path';
 import { after, test } from 'node:test';
 import { main, resultCommands } from '../src/cli.js';
 import { createLocalApiHandler } from '../src/api.js';
+import { serveApi } from '../src/api.js';
+import * as apiExports from '../src/api.js';
 import { addItem as addBoardItem, allShouts, EVENT_LOG_VERSION, closeBoard, events as boardEvents, openBoard, verdictsFor } from '../src/board.js';
 import { presentationShout, relayPresentation } from '../src/relay-presentation.js';
 import { JSON_SHAPES } from '../src/json.js';
@@ -45,6 +47,27 @@ const SPEC = `# API fixture
 ## G · Goals
 - G1 [approved, must] The fixture keeps its board. | gate: true
 `;
+
+test('apiBoardListing is exported and matches the board list [A2]', async (t) => {
+  const apiBoardListing = apiExports.apiBoardListing;
+  assert.equal(typeof apiBoardListing, 'function', 'the existing API listing classifier is exported');
+  const box = project();
+  const unreadableRoot = join(box.dir, 'unreadable');
+  mkdirSync(unreadableRoot);
+  const projects = () => [
+    { root: box.repo, name: 'Readable fixture', project: 'API parity', added: '2026-10-23T00:00:00.000Z' },
+    { root: unreadableRoot, name: 'Unreadable fixture', project: 'API parity', added: '2026-10-23T00:00:00.000Z' },
+  ];
+  const api = await serveApi({ runCommand: main, projects });
+  t.after(() => api.close());
+  const address = new URL(api.url);
+  const response = await apiFetch({ origin: address.origin, secret: address.searchParams.get('k') }, '/api/v1/boards');
+  assert.equal(response.status, 200);
+  const listed = await response.json();
+  assert.deepEqual(apiBoardListing(projects), listed);
+  assert.deepEqual(listed.boards.map(({ root }) => root), [box.repo]);
+  assert.deepEqual(listed.warnings.map(({ root, error }) => [root, error.error.code]), [[unreadableRoot, 'BOARD_UNAVAILABLE']]);
+});
 
 test('[A5] append-only event records expose format version one', () => {
   assert.equal(EVENT_LOG_VERSION, 1);
