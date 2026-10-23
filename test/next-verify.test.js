@@ -144,3 +144,24 @@ test('a lone newcomer starts a reviewer with one command [V1,B26]', t => {
     assert.notEqual(item.item_review_by, item.item_built_by);
   } finally { store.closeBoard(board); }
 });
+
+
+test('[V1,B3] next never offers a review to a seat sharing a parent with an author', async (t) => {
+  const box = await project(t);
+  store.register(box.board, { lane: 'web', path: box.builder, parent: 'fixture-parent-P' });
+  store.register(box.board, { lane: 'review', path: box.reviewer, parent: 'fixture-parent-P' });
+  const second = store.register(box.board, { lane: 'web', path: join(box.root, 'second-builder'), parent: 'fixture-parent-P' });
+  const outsider = store.register(box.board, { lane: 'review', path: join(box.root, 'outside-reviewer'), parent: 'fixture-parent-Q' });
+  const id = claimed(box);
+  store.release(box.board, id, box.builderId);
+  store.claim(box.board, id, { agentId: second, lane: 'web', leaseMs: HOUR,
+    freeze: () => ({ text: 'fixture criterion', digest: createHash('sha256').update('fixture criterion').digest('hex') }) });
+  submitFixture(box.board, id, { agentId: second, commit: String(id).padStart(40, 'a'), tree: String(id).padStart(40, 'b') });
+  const sibling = await run(box, box.reviewer, ['next', '--verify']);
+  assert.equal(sibling.code, 1, sibling.stdout + sibling.stderr);
+  assert.equal(store.getItem(box.board, id).item_review_by, null, 'a sibling never reserves its parent’s submission');
+  assert.throws(() => store.verify(box.board, id, { agentId: box.reviewerId, decision: 'ACCEPT', policy: 'any' }),
+    { code: 'SELF_SESSION_VERIFY' });
+  const independent = store.nextFor(box.board, { agentId: outsider, lane: 'review', verify: true, policy: 'any' });
+  assert.equal(independent.item.item_id, id, 'another parent can reserve the same submission');
+});
