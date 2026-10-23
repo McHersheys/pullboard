@@ -5,11 +5,10 @@
  * Measured 22 Oct: 28 runs at --test-concurrency=10 kept 54 file processes live on 14 cores, and passing files
  * ran 18.5 times slower in landings than alone. A per-run limit cannot see the other runs; this pool can.
  *
- * A test file that starts its own run-tests with a synchronous call (so it is blocked until the run exits) lends its
- * token to that nested run: while the nested run lives, its parent counts as waiting, not running, so the nested
- * files take the parent's place and never a second core. The parent's place stays reserved while none of its nested
- * files holds one, so it resumes into it. A run started asynchronously gets no loan, since its parent may compute.
- * Two nested runs of one parent share its one place; neither can wait forever on the token its own parent holds.
+ * A test file that starts a nested run with a synchronous call is blocked until that call returns, so it lends its
+ * place for the call: the call's files fill that place one at a time and never take a second core, and the call
+ * returns only after the last of them exits, so the file resumes into its own place. Nothing it starts can wait
+ * forever on the token it holds. A run started asynchronously, or left behind by the call, borrows nothing.
  */
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
