@@ -1,6 +1,10 @@
 /** Event-derived submission, rejection and merge counts preserve historical acceptance proof [R1,R2]. */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { mkdtempSync } from 'node:fs';
+import { rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { submitFixture } from './board-submit-fixture.js';
 import { addItem } from '../src/board.js';
 import { atomic } from '../src/board.js';
@@ -100,6 +104,47 @@ function importedBoard(t, document) {
   t.after(() => closeBoard(board));
   importBoard(board, document);
   return board;
+}
+
+/** Commit a writer between the reader's cursor and shard queries on a real WAL database. */
+function concurrentCounterRead(t) {
+  const directory = mkdtempSync(join(tmpdir(), 'pullboard-stats-snapshot-'));
+  const path = join(directory, 'board.sqlite');
+  const reader = openBoard(path);
+  const writer = openBoard(path);
+  t.after(() => { closeBoard(writer); closeBoard(reader); rmSync(directory, { recursive: true }); });
+  register(writer, { lane: 'coordinator', path: '/fixture/concurrent-coordinator' });
+  const id = addItem(writer, { by: 'coordinator', lane: 'web', title: 'Concurrent stats', criterion: 'one snapshot' });
+  const options = { now: Date.parse('2027-01-01T00:00:00Z') };
+  const before = legacyProofStats(reader, options);
+  let injected = false;
+  const db = new Proxy(reader.db, {
+    /** Bind native SQLite methods and insert the concurrent write at the chosen read boundary. */
+    get(target, key) {
+      if (key === 'prepare') return sql => {
+        const statement = target.prepare(sql);
+        if (!sql.includes('coalesce(max(event_id),0)')) return statement;
+        return new Proxy(statement, {
+          /** Return the old cursor after the second connection has committed its new event. */
+          get(native, method) {
+            if (method === 'get') return (...args) => {
+              const row = native.get(...args);
+              if (!injected) { injected = true; logEvent(writer, 'coordinator', 'submit', id, { commit: COMMIT_ONE }); }
+              return row;
+            };
+            const value = Reflect.get(native, method, native);
+            return typeof value === 'function' ? value.bind(native) : value;
+          },
+        });
+      };
+      const value = Reflect.get(target, key, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  reader.db.exec('PRAGMA query_only=ON');
+  assert.deepEqual(proofStats({ ...reader, db }, options), before, 'one response must use one SQLite read snapshot');
+  assert.equal(injected, true, 'the second connection actually committed between the reader queries');
+  assert.deepEqual(proofStats(reader, options), legacyProofStats(writer, options), 'the next response observes the committed event');
 }
 
 /** Re-number an edited private event history and its SQLite AUTOINCREMENT counter. */
@@ -273,4 +318,5 @@ test('[R1,R2,C7] proof stats counters match a full re-parse after every event', 
     throw new Error('rollback fixture');
   }), /rollback fixture/u);
   assert.deepEqual(proofStats(board, { now: 1_770_000_000_000 }), before, 'rollback preserves the prior projection');
+  concurrentCounterRead(t);
 });
