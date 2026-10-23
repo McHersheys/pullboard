@@ -66,7 +66,7 @@ test('the tabs fit one row on a phone [N26]', async () => {
     assert.match(phone, /\.tab \{ display: grid; justify-items: center; align-content: center;/, 'each tab centres its label in its share');
     assert.match(style, /\n\.tabs \{ display: flex; flex-wrap: wrap; gap: 2px; \}\n/, 'wider, the tabs keep the row they have');
     const tabs = [...html.matchAll(/<button class="tab" data-tab="([a-z]+)" type="button">([A-Za-z]+)<\/button>/g)];
-    assert.deepEqual(tabs.map((match) => match[2]), ['Items', 'Shouts', 'Spec', 'Doctrine', 'Activity', 'Roadmap'], 'six tabs, each its label alone: their counts are in the status bar');
+    assert.deepEqual(tabs.map((match) => match[2]), ['Home', 'Items', 'Shouts', 'Spec', 'Doctrine', 'Activity', 'Roadmap'], 'seven tabs, each its label alone: their counts are in the status bar');
   } finally {
     await view.stop();
   }
