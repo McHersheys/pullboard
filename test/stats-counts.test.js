@@ -2,8 +2,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { submitFixture } from './board-submit-fixture.js';
-import { addItem, claim, closeBoard, getItem, merged, openBoard, register, verify } from '../src/board.js';
+import { addItem, atomic, claim, closeBoard, events, getItem, logEvent, merged, openBoard, register, verify } from '../src/board.js';
 import { exportBoard, importBoard } from '../src/exchange.js';
+import { proofStats as legacyProofStats } from './fixtures/proof-stats-legacy.js';
+import { proofStats } from '../src/stats.js';
 import { eventCounts } from '../src/stats.js';
 
 const COMMIT_ONE = '1'.repeat(40);
@@ -186,4 +188,62 @@ test('[R1,R2] imported historical merges without a matching current acceptance r
   assert.equal(getItem(staleBoard, id).item_status, 'verified');
   assert.equal(eventCounts(staleBoard).mergedWithoutAccept, 1,
     'a new submit invalidates a previously accepted commit even when the current row remains verified');
+});
+
+
+test('[R1,R2,C7] proof stats counters match a full re-parse after every event', t => {
+  const f = fixture(t);
+  const { board } = f;
+  let parsed = [];
+  board.onProofStatsEvent = event => parsed.push(event.event_id);
+  let id;
+  /** Compare independent full-history results at the same observation time and several windows. */
+  const same = current => {
+    const now = Date.parse('2026-02-01T00:00:00Z');
+    for (const since of [undefined, '2026-01-04', '2026-01-20']) {
+      assert.deepEqual(proofStats(current, { since, now }), legacyProofStats(current, { since, now }));
+    }
+  };
+  const steps = [
+    () => { id = addAndClaim(f, 'Incrementally counted lifecycle'); },
+    () => submitAt(f, id, COMMIT_ONE, TREE_ONE, '2026-01-03T10:00:00Z'),
+    () => verdictAt(f, id, 'REJECT', COMMIT_ONE, '2026-01-04T10:00:00Z'),
+    () => { f.setTime('2026-01-04T11:00:00Z'); claim(board, id, { agentId: 'web-1', lane: 'web', leaseMs: 86_400_000, freeze: freezeCriterion }); },
+    () => submitAt(f, id, COMMIT_TWO, TREE_TWO, '2026-01-05T10:00:00Z'),
+    () => verdictAt(f, id, 'ACCEPT', COMMIT_TWO, '2026-01-06T10:00:00Z'),
+    () => { f.setTime('2026-01-07T10:00:00Z'); merged(board, id, { agentId: 'coordinator', commit: MAIN_MERGE }); },
+    () => logEvent(board, 'web-1', 'join', null, { lane: 'web', family: 'changed-family' }),
+    () => logEvent(board, 'coordinator', 'edit', id, { reason: 'the original bar was wrong', barCorrection: { fields: ['check'], reject: { verdict: 1 } } }),
+    () => logEvent(board, 'coordinator', 'reopen', id, { conflict: { files: ['src/example.js'] } }),
+    () => logEvent(board, 'coordinator', 'refreeze', id, {}),
+    () => logEvent(board, 'web-2', 'reject', id, { commit: COMMIT_ONE, reason: 'TEST_FAILURE' }),
+    () => logEvent(board, 'coordinator', 'merged', id, { commit: MAIN_MERGE }),
+    () => logEvent(board, 'coordinator', 'test-quarantine', null, { file: 'test/example.test.js', name: 'a historical flake', tree: TREE_ONE }),
+    () => logEvent(board, 'sentinel', 'health-failure', null, { subject: 'unresolved obligation', cause: 'refusal:STUCK' }),
+  ];
+  for (const step of steps) {
+    const previous = events(board).at(-1)?.event_id ?? 0;
+    parsed = [];
+    step();
+    const appended = events(board).filter(event => event.event_id > previous).map(event => event.event_id);
+    assert.deepEqual(parsed, appended, 'each appended event is decoded once into its counters');
+    same(board);
+    assert.deepEqual(parsed, appended, 'reading counters never reparses earlier event details');
+  }
+  const document = exportBoard(board);
+  assert.equal(document.tables.board_meta.some(row => row.meta_key.startsWith('local:proof-stats:')), false,
+    'derived counters are not native exported state');
+  const restored = importedBoard(t, document);
+  same(restored);
+  const restoredParses = [];
+  restored.onProofStatsEvent = event => restoredParses.push(event.event_id);
+  logEvent(restored, 'web-1', 'shout', null, {});
+  assert.deepEqual(restoredParses, [events(restored).at(-1).event_id], 'restored counters continue with one new event');
+  same(restored);
+  const before = proofStats(board, { now: 1_770_000_000_000 });
+  assert.throws(() => atomic(board, () => {
+    logEvent(board, 'web-1', 'submit', id, { commit: 'f'.repeat(40) });
+    throw new Error('rollback fixture');
+  }), /rollback fixture/u);
+  assert.deepEqual(proofStats(board, { now: 1_770_000_000_000 }), before, 'rollback preserves the prior projection');
 });
