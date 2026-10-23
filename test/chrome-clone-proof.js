@@ -1,5 +1,6 @@
 /** Compare a native unflagged control with the actual test harness arguments [C7]. */
 import assert from 'node:assert/strict';
+import { channel } from 'node:diagnostics_channel';
 import { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, watch } from 'node:fs';
 import { hostname, loadavg, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -63,13 +64,19 @@ async function gracefulClose(profile, launched) {
   assert.match(port, /^\d+$/u);
   assert.match(browserPath, /^\/devtools\/browser\/[A-Za-z0-9-]+$/u);
   // Chrome publishes the owned browser endpoint here; a second HTTP discovery is unnecessary.
+  let requestError;
+  let opened = false;
+  const errors = channel('undici:request:error');
+  /** Keep only transport failure codes and messages, never headers or private browser URLs. */
+  const observeError = ({ error }) => { requestError = { code: error.code, message: error.message, cause: error.cause?.message }; };
+  errors.subscribe(observeError);
   const socket = new WebSocket(`ws://127.0.0.1:${port}${browserPath}`);
-  await new Promise((resolve, reject) => {
+  try { await new Promise((resolve, reject) => {
     const timer = setTimeout(() => { socket.close(); reject(new Error('private Chrome graceful close timed out')); }, 3_000); // budget: hang ceiling for this private browser's graceful shutdown.
-    socket.addEventListener('open', () => socket.send(JSON.stringify({ id: 1, method: 'Browser.close' })), { once: true });
-    socket.addEventListener('error', event => { clearTimeout(timer); reject(new Error('private Chrome close connection failed', { cause: event.error })); }, { once: true });
+    socket.addEventListener('open', () => { opened = true; socket.send(JSON.stringify({ id: 1, method: 'Browser.close' })); }, { once: true });
+    socket.addEventListener('error', event => { clearTimeout(timer); reject(new Error(`private Chrome close connection failed: ${JSON.stringify({ opened, state: socket.readyState, requestError, message: event.error?.message })}`, { cause: event.error })); }, { once: true });
     socket.addEventListener('close', () => { clearTimeout(timer); resolve(); }, { once: true });
-  });
+  }); } finally { errors.unsubscribe(observeError); }
   await waitUntil(() => launched.child.exitCode !== null || launched.child.signalCode !== null, 3_000, 'native Chrome did not exit after Browser.close');
 }
 
