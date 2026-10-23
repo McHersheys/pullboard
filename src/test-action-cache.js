@@ -49,6 +49,8 @@ const FILTER_OPTION = /^--test[-_](?:name|skip)[-_]pattern(?:=|$)|^--test[-_]onl
 const PROSE = new Set(['CHANGELOG.md']);
 // Whole trees are inputs only by declaration (`@pullboard-test-input`), never because a fixture names `src`.
 const TREE_DECLARATIONS = [['test-tree', ['test/']], ['source-tree', ['src/', 'bin/']], ['docs-tree', ['docs/']]];
+// Git commands that read history; a test that declares it reads its own checkout and names one reads that history.
+const HISTORY = new Set(['log', 'rev-list', 'shortlog', 'blame', 'reflog', 'whatchanged', 'describe']);
 const TOP_TREES = new Set(['', '.', 'src', 'bin', 'test', 'docs']);
 const URL_LITERAL = /new\s+URL\(\s*(['"`])([^'"`\\$\r\n]+)\1\s*,\s*import\.meta\.url\s*\)/gu;
 const STRING = /(['"])(?:\\[\s\S]|(?!\1)[^\\\r\n])*\1|`(?:\\[\s\S]|[^`\\])*`/uy;
@@ -112,21 +114,37 @@ function namedFiles(file, source, testSide, index) {
   return [...named].filter(path => !MODULE.test(path) && !PROSE.has(path));
 }
 
-/** The non-module files a test's closure reads: the trees its test declares and every module's named files. */
-function nonModuleInputs(test, files, modules, index) {
+/**
+ * What a test's closure reads beyond its imports. A declared tree (`@pullboard-test-input`) is read as data, so every
+ * file under it counts, JavaScript included: a comment can change a scanner's verdict without changing any import.
+ * Every module adds the files it names. A test that declares it reads its own checkout and names `ls-files` reads the
+ * list of tracked paths, so that list counts too; one that names a history command reads commits no tree holds, so it
+ * has no key and always runs (fail closed).
+ *
+ * @returns {{ inputs: string[], listing: boolean, history: boolean }}
+ */
+function declaredReads(test, files, modules, index) {
   const inputs = new Set();
   const header = (modules.get(test) ?? '').split(/\r?\n/u);
+  let declared = false;
   for (const [name, prefixes] of TREE_DECLARATIONS) {
     if (!header.includes(`/** @pullboard-test-input ${name} */`)) continue;
-    for (const prefix of prefixes) for (const path of index.under(prefix)) if (!MODULE.test(path) && !PROSE.has(path)) inputs.add(path);
+    declared = true;
+    for (const prefix of prefixes) for (const path of index.under(prefix)) inputs.add(path);
   }
+  let listing = false, history = false;
   for (const file of files) {
     const testSide = file.startsWith('test/') || file === test;
     const memo = `${testSide ? 't' : 's'}:${file}`;
     if (!index.named.has(memo)) index.named.set(memo, namedFiles(file, modules.get(file) ?? '', testSide, index));
     for (const path of index.named.get(memo)) inputs.add(path);
+    if (!declared || !testSide) continue;
+    if (!index.literals.has(file)) index.literals.set(file, stringLiterals(modules.get(file) ?? ''));
+    const literals = index.literals.get(file);
+    listing ||= literals.has('ls-files');
+    history ||= [...HISTORY].some(command => literals.has(command));
   }
-  return [...inputs].sort();
+  return { inputs: [...inputs].sort(), listing, history };
 }
 
 /** Index the tracked tree: every file, every folder, files by their own name, and the files under any folder. */
@@ -148,7 +166,7 @@ function treeIndex(blobs) {
     if (!cache.has(prefix)) cache.set(prefix, sorted.filter(path => path.startsWith(prefix)));
     return cache.get(prefix);
   };
-  return { files, folders, byName, under, named: new Map() };
+  return { files, folders, byName, under, sorted, named: new Map(), literals: new Map() };
 }
 
 /**
@@ -174,10 +192,12 @@ export async function testActionKeys(root, { commit = 'HEAD', options = [], env 
   const keys = new Map();
   for (const [test, closure] of closures) {
     if (!closure.files) { keys.set(test, { key: null, reason: closure.reason }); continue; }
-    const inputs = nonModuleInputs(test, closure.files, modules, index);
+    const reads = declaredReads(test, closure.files, modules, index);
+    if (reads.history) { keys.set(test, { key: null, reason: 'it reads the git history of its own checkout' }); continue; }
     keys.set(test, { key: digest({ ...shared, test,
       closure: closure.files.map(path => [path, blobs.get(path) ?? null]),
-      inputs: inputs.map(path => [path, blobs.get(path)]) }), reason: '' });
+      inputs: reads.inputs.map(path => [path, blobs.get(path)]),
+      tracked: reads.listing ? digest(index.sorted) : null }), reason: '' });
   }
   return keys;
 }

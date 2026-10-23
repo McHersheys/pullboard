@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { runFixtureChild, runFixtureGit } from './fixture-child.js';
 import { suiteProven } from '../src/test-action-cache.js';
+import { testActionKeys } from '../src/test-action-cache.js';
 
 const runner = fileURLToPath(new URL('../bin/run-tests.js', import.meta.url));
 const source = fileURLToPath(new URL('../src', import.meta.url));
@@ -23,6 +24,15 @@ test('${name} [C7]', check);
 `;
 }
 
+/** A fixture test that declares the source tree and scans one source file as data, which no test imports. */
+const SCAN_TEST = `/** @pullboard-test-input source-tree */
+import { appendFileSync, readFileSync } from 'node:fs';
+import { test } from 'node:test';
+/** Record that this file ran, then scan the probe's text. */
+function scan() { appendFileSync(process.env.PULLBOARD_ACTION_CAPTURE, 'd\\n'); if (readFileSync(new URL('../src/probe.js', import.meta.url), 'utf8').includes('forbidden')) throw new Error('d found a forbidden word'); }
+test('d [C7]', scan);
+`;
+
 /** A committed repository with the real runner, three tests and their modules: A imports shared, B and C stand alone. */
 function makeFixture(t) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-test-actions-')));
@@ -37,6 +47,8 @@ function makeFixture(t) {
   writeFileSync(join(root, 'lib', 'b.js'), "export const value = 'green';\n");
   writeFileSync(join(root, 'lib', 'c.js'), "export const value = 'red';\n");
   for (const name of ['a', 'b', 'c']) writeFileSync(join(root, 'test', `${name}.test.js`), fixtureTest(name, name));
+  writeFileSync(join(root, 'test', 'd.test.js'), SCAN_TEST);
+  writeFileSync(join(root, 'src', 'probe.js'), "// A probe source file.\nexport const probe = 1;\n");
   const capture = join(root, 'machine', 'ran.txt');
   const env = { ...process.env, PULLBOARD_MACHINE_HOME: join(root, 'machine'), PULLBOARD_ACTION_CAPTURE: capture, PULLBOARD_LANDING_RUN: '0',
     GIT_AUTHOR_NAME: 'Action Fixture', GIT_AUTHOR_EMAIL: 'action@example.test', GIT_COMMITTER_NAME: 'Action Fixture', GIT_COMMITTER_EMAIL: 'action@example.test' };
@@ -46,9 +58,10 @@ function makeFixture(t) {
   const git = (...args) => runFixtureGit(args, { cwd: root, env });
   git('init', '-q', '-b', 'main');
   git('add', '.gitignore', 'package.json', 'lib', 'test');
+  git('add', '-f', 'src/probe.js');
   git('commit', '-q', '-m', 'fixture');
-  /** Commit one module's new text. */
-  const change = (path, text) => { writeFileSync(join(root, path), text); git('commit', '-q', '-m', `change ${path}`, '--', path); };
+  /** Commit one file's new text. */
+  const change = (path, text) => { writeFileSync(join(root, path), text); git('add', '-f', '--', path); git('commit', '-q', '-m', `change ${path}`, '--', path); };
   /** Run the whole suite through the real runner; return its status, output and the files that ran. */
   const run = () => {
     writeFileSync(capture, '');
@@ -64,7 +77,7 @@ test('an unchanged closure reuses its green result and a changed import reruns i
   const fixture = makeFixture(t);
   const first = fixture.run();
   assert.equal(first.status, 1, `C is red, so the first run fails\n${first.output}`);
-  assert.deepEqual(first.ran, ['a', 'b', 'c'], 'every file runs when nothing is stored');
+  assert.deepEqual(first.ran, ['a', 'b', 'c', 'd'], 'every file runs when nothing is stored');
 
   // 1. A module only B imports changes: B runs, A is reused, C runs because a red result is never reused (3).
   fixture.change('lib/b.js', "export const value = 'green'; // edited\n");
@@ -83,22 +96,46 @@ test('an unchanged closure reuses its green result and a changed import reruns i
   // 4. A missing entry (A) and a corrupt entry (B) both run their file; C turns green under a new key and runs.
   const entries = readdirSync(join(fixture.store, 'green'))
     .map(name => [name, JSON.parse(readFileSync(join(fixture.store, 'green', name), 'utf8')).file]);
-  assert.deepEqual([...new Set(entries.map(([, file]) => file))].sort(), ['test/a.test.js', 'test/b.test.js'], 'only green files are stored');
+  assert.deepEqual([...new Set(entries.map(([, file]) => file))].sort(), ['test/a.test.js', 'test/b.test.js', 'test/d.test.js'], 'only green files are stored');
   for (const [name, file] of entries) {
     if (file === 'test/a.test.js') rmSync(join(fixture.store, 'green', name));
-    else writeFileSync(join(fixture.store, 'green', name), '{"version":1,"key":');
+    else if (file === 'test/b.test.js') writeFileSync(join(fixture.store, 'green', name), '{"version":1,"key":');
   }
   fixture.change('lib/c.js', "export const value = 'green';\n");
   const fourth = fixture.run();
   assert.equal(fourth.status, 0, fourth.output);
   assert.deepEqual(fourth.ran, ['a', 'b', 'c'], fourth.output);
+  assert.match(fourth.output, /^# reused [0-9a-f]{64} from \S+ [0-9a-f]{40} \(test\/d\.test\.js\)$/mu, 'D reads only the source tree, which no change touched');
 
   // Nothing changed since a green run: no file runs and the suite is proven from reused results alone.
   const fifth = fixture.run();
   assert.equal(fifth.status, 0, fifth.output);
   assert.deepEqual(fifth.ran, [], fifth.output);
-  assert.equal(fifth.output.match(/^# reused /gmu)?.length, 3, fifth.output);
-  assert.match(fifth.output, /^# all 3 test files reused; none ran$/mu);
+  assert.equal(fifth.output.match(/^# reused /gmu)?.length, 4, fifth.output);
+  assert.match(fifth.output, /^# all 4 test files reused; none ran$/mu);
+
+  // Cached versus fresh: only a comment changes, in a source file nothing imports. D reads it as data, so D runs and
+  // its fresh verdict differs from the green it would otherwise have reused.
+  fixture.change('src/probe.js', "// A probe source file with a forbidden word.\nexport const probe = 1;\n");
+  const sixth = fixture.run();
+  assert.deepEqual(sixth.ran, ['d'], sixth.output);
+  assert.equal(sixth.status, 1, `the fresh scan finds the word the stored green never saw\n${sixth.output}`);
+});
+
+test('a test that reads its own checkout history is never keyed [C7]', async (t) => {
+  const fixture = makeFixture(t);
+  writeFileSync(join(fixture.root, 'test', 'h.test.js'), `/** @pullboard-test-input source-tree */
+import { execFileSync } from 'node:child_process';
+import { test } from 'node:test';
+/** Read this checkout's commit subjects. */
+function history() { execFileSync('git', ['log', '--format=%s'], { cwd: new URL('..', import.meta.url) }); }
+test('h [C7]', history);
+`);
+  fixture.change('test/h.test.js', readFileSync(join(fixture.root, 'test', 'h.test.js'), 'utf8'));
+  const keys = await testActionKeys(fixture.root);
+  assert.equal(keys.get('test/h.test.js').key, null, 'commits are not in any tree a key hashes');
+  assert.match(keys.get('test/h.test.js').reason, /git history/u);
+  assert.match(keys.get('test/d.test.js').key, /^[0-9a-f]{64}$/u, 'a scanner without history keeps its key');
 });
 
 test('only passing results under the current key prove the whole suite [C7]', () => {
