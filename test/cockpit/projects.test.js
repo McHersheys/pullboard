@@ -538,7 +538,8 @@ test('a machine with no board says how to start one [N26]', async () => {
     const page = await openPage(view);
     const style = await styleOf(view);
     // Agents start boards, so the view offers no form for it.
-    assert.doesNotMatch(page.html, /init-form|init-path|Start a board|<details/, 'no form to start a board');
+    assert.equal(page.run("document.querySelector('form, details, #init-form, #init-path')"), null,
+      'the rendered page has no form or disclosure for starting a board');
     assert.doesNotMatch(style, /\.start\b/);
 
     const classes = (on) => ['loading', 'boardless'].filter((name) => on.run(`document.body.classList.contains('${name}')`));
@@ -766,6 +767,8 @@ test('a migration-refused project stays quiet beside a normal board [A5,A6,N26]'
     assert.match(sidebar, /merge this code into the main checkout first, or test it against a throwaway board/,
       'the quiet card tells the person the next step');
     assert.doesNotMatch(sidebar, /class="small bad"|class="bad"|stack trace/);
+    assert.doesNotMatch(sidebar, /class="unreadable-projects"|data-forget-unreadable/,
+      'a valid board refused for its schema is not classified as missing or offered for forgetting');
     assert.ok(projectRows(sidebar).some(row => row.name === 'Normal board'), 'a healthy project stays beside the refusal');
     assert.match(page.show('chain'), /Readable beside the refused board/, 'the healthy project still renders its actual item');
     unchanged();

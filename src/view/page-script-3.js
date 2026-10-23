@@ -201,7 +201,8 @@ async function boardState(root, mark, fresh = null) {
   if (!data) {
     // Names are already known: a slow board must not leave the project picker blank.
     const projects = listed.boards.map((board) => ({ ...board, ok: true, loading: true }));
-    projects.push(...(listed.warnings || []).map((warning) => ({ ...warning, ok: false, error: warning.error.error.message })));
+    projects.push(...(listed.warnings || []).map((warning) => ({ ...warning, ok: false,
+      warningCode: warning.error?.error?.code, error: warning.error?.error?.message || 'This board could not be read.' })));
     data = { root: null, project: null, group: null, projects, groups: projectGroups(projects) };
     renderSide();
     $('project-loading').hidden = projects.length === 0;
@@ -222,7 +223,8 @@ async function boardState(root, mark, fresh = null) {
       return { ...board, ok: false, error: String(error.message || error) };
     }
   }));
-  projects.push(...(listed.warnings || []).map((warning) => ({ ...warning, ok: false, error: warning.error.error.message })));
+  projects.push(...(listed.warnings || []).map((warning) => ({ ...warning, ok: false,
+    warningCode: warning.error?.error?.code, error: warning.error?.error?.message || 'This board could not be read.' })));
   const groups = projectGroups(projects);
   const group = groups.find((entry) => entry.key === root);
   return {

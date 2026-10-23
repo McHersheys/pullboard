@@ -648,8 +648,8 @@ function renderSide() {
     return '<button class="proj repo' + (on ? ' on' : '') + '"' + (on ? ' aria-current="true"' : '') + ' data-root="' + esc(x.root) + '" title="' + esc(x.root) + '" type="button"><span class="pname">' + (x.owner ? '<span class="owner">' + esc(x.owner) + '/</span>' : '') + esc(x.name) + '</span><small>' + (hosted.local && x.source ? '<span class="src">' + (x.source === 'relay' ? 'shared' : 'this computer') + '</span> · ' : '') + line + '</small></button>';
   };
   const readableProjects = data.projects.filter((repo) => repo.ok);
-  const unreadableProjects = data.projects.filter((repo) => !repo.ok && !repo.id);
-  const otherErrors = data.projects.filter((repo) => !repo.ok && repo.id).map(repoButton).join('');
+  const unreadableProjects = data.projects.filter((repo) => !repo.ok && repo.warningCode === 'BOARD_UNAVAILABLE');
+  const otherErrors = data.projects.filter((repo) => !repo.ok && repo.warningCode !== 'BOARD_UNAVAILABLE').map(repoButton).join('');
   const groups = projectGroups(readableProjects);
   const groupedRoots = new Set(groups.flatMap((group) => group.repos.map((repo) => repo.root)));
   const grouped = groups.map((group) => {
