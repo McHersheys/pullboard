@@ -37,6 +37,7 @@ import {
   pathToFileURL,
 } from 'node:url';
 import * as resourceApi from './resources.js';
+import { Refused } from './refused.js';
 import { parseProcessCensus } from './process-census.js';
 import {
   gateStages,
@@ -843,6 +844,30 @@ async function acquireResourceApi(api, options, machineHomePath) {
   }
 }
 
+/**
+ * Size this machine's gate and browser pools to the capacity the controller registered, carried in
+ * the job (#1066). A lower registration waits for an idle pool, and is refused by name until then.
+ */
+function registeredCapacity(api, spec, root, machineHomePath) {
+  const previous = process.env.PULLBOARD_MACHINE_HOME;
+  process.env.PULLBOARD_MACHINE_HOME = machineHomePath;
+  try {
+    /** Set one pool row; a busy pool cannot shrink, so this run is refused rather than oversubscribed. */
+    const size = (name, capacity) => {
+      try { return api.setResourceCapacity({ name, capacity, scope: 'machine', root }).capacity; }
+      catch (error) {
+        if (error?.code !== 'RESOURCE_BUSY') throw error;
+        throw new Refused('RUNNER_CAPACITY_BUSY', `this runner is registered with ${capacity} ${name} slot(s), fewer than its busy pool holds; it shrinks once its running jobs end`);
+      }
+    };
+    // A runner registered with no browsers never receives a browser run, so its browser row is left alone.
+    return { gateCapacity: size('gate', spec.slots), browserCapacity: spec.browser > 0 ? size('browser', spec.browser) : 1 };
+  } finally {
+    if (previous === undefined) delete process.env.PULLBOARD_MACHINE_HOME;
+    else process.env.PULLBOARD_MACHINE_HOME = previous;
+  }
+}
+
 /** Bound Git diagnostics and hide runner-private paths, URL credentials and credential assignments. */
 function safeGitDiagnostic(value, root, env) {
   let text = String(value).replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, '').replace(/\r\n?/gu, '\n').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, '');
@@ -1271,19 +1296,8 @@ async function main() {
     setupPrivatePaths.add(machineHomePath);
     setupStep = 'trusted resource API';
     api = loadResourceApi(spec.runtime);
-    const previousMachineHome = process.env.PULLBOARD_MACHINE_HOME;
-    let resources;
-    try {
-      process.env.PULLBOARD_MACHINE_HOME = machineHomePath;
-      resources = api.listResources({ scope: 'machine', root: runnerRoot });
-    } finally {
-      if (previousMachineHome === undefined) delete process.env.PULLBOARD_MACHINE_HOME;
-      else process.env.PULLBOARD_MACHINE_HOME = previousMachineHome;
-    }
-    const gateCapacity = resources.find(resource => resource.name === 'gate')?.capacity ?? Math.min(spec.slots, 2);
-    // pullboard settings browserSlots writes this row and settings.json under one lock, so the row carries
-    // this machine's setting without reading settings.json; a machine that set nothing keeps one browser slot.
-    const browserCapacity = resources.find(resource => resource.name === 'browser')?.capacity ?? 1;
+    // The registration travels with the job; this machine's own settings never size a runner (#1066).
+    const { gateCapacity, browserCapacity } = registeredCapacity(api, spec, runnerRoot, machineHomePath);
     setupStep = 'job directories';
     const base = join(runnerRoot, 'jobs');
     mkdirSync(base, { recursive: true, mode: 0o700 });
