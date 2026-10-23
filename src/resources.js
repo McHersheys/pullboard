@@ -464,12 +464,15 @@ function gateAdmission(db, ticket, capacity, shortCapacity, runners, order = ARR
       return { host: '', slots: capacity, browser: waiter.browser === 1 ? 1 : 0, shortSlot: false };
     }
     if (waiter.remote === 1) {
-      for (const runner of runners) {
-        if (unavailable.has(runner.host) || (waiter.browser === 1 && runner.browser < 1)) continue;
+      const compatible = runners.filter(runner => {
+        if (unavailable.has(runner.host) || (waiter.browser === 1 && runner.browser < 1)) return false;
         const used = usage.get(runner.host);
-        if (used.slots >= runner.slots || (waiter.browser === 1 && used.browsers >= runner.browser)) continue;
-        return { ...runner, shortSlot: false };
-      }
+        return used.slots < runner.slots && (waiter.browser !== 1 || used.browsers < runner.browser);
+      });
+      // A landing spreads its active shards before filling another slot on the same runner.
+      // Choose under this transaction's holder snapshot, so concurrent acquisitions cannot tie on stale use.
+      if (waiter.landing === 1) compatible.sort((left, right) => usage.get(left.host).slots - usage.get(right.host).slots);
+      if (compatible.length) return { ...compatible[0], shortSlot: false };
     }
     const earlierLanding = waiters.some(other => other.landing === 1 && other.ticket < waiter.ticket);
     if (waiter.shortEligible === 1 && !earlierLanding && localShortUsed < shortCapacity
@@ -699,11 +702,6 @@ function pause(ms) { return new Promise((resolvePromise) => setTimeout(resolvePr
  */
 export async function takeResource(options) {
   const { name, capacity, scope = 'machine', root = process.cwd(), allowIdleCapacityUpdate = false } = options;
-  if (scope === 'board' && name === 'landing' && capacity === 1 && options.board && typeof options.write === 'function') {
-    // Ordinary machine/repo users must initialize without importing the board/gate cycle.
-    const { takeLandingResource } = await import('./landing-resource.js');
-    return takeLandingResource(options);
-  }
   if (typeof name !== 'string' || !name.trim() || name.trim() !== name) throw new Refused('BAD_RESOURCE_NAME', 'resource name must be nonempty trimmed text');
   if (name.startsWith('runner:')) throw new Refused('RESERVED_RUNNER_RESOURCE', 'runner resource rows are managed by the machine gate; request name "gate"');
   if (!Number.isSafeInteger(capacity) || capacity < 1) throw new Refused('BAD_RESOURCE_CAPACITY', 'resource capacity must be a positive integer');

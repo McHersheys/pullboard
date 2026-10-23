@@ -112,12 +112,13 @@ export function checkRulesAt(root, revision, name = DOCTRINE_FILE) {
  * @param {string} cwd
  * @param {string} command
  * @param {number} timeoutMs
+ * @param {NodeJS.ProcessEnv} [gateEnvironment] Child markers supplied by an actual acquired gate lease.
  * @returns {{ problems: string[], broken: string, seconds: number }}
  */
-export function runRuleCheck(cwd, command, timeoutMs = DEFAULT_TIMEOUT_MS) {
+export function runRuleCheck(cwd, command, timeoutMs = DEFAULT_TIMEOUT_MS, gateEnvironment = {}) {
   const started = Date.now();
   const result = spawnSync(`(\n${command}\n) 2>&1`, {
-    cwd, env: gitChildEnv(cwd), shell: true, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8',
+    cwd, env: { ...gitChildEnv(cwd), ...gateEnvironment }, shell: true, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8',
     timeout: timeoutMs, killSignal: 'SIGKILL', maxBuffer: 64 * 1024 * 1024,
   });
   invalidateGitFacts();
