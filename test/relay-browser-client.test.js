@@ -6,7 +6,7 @@ import { tmpdir, userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { gzipSync } from 'node:zlib';
-import { findChromeExecutable, relayWorkBudgetMs, startChrome } from './relay-browser-fixture.js';
+import { findChromeExecutable, startChrome } from './relay-browser-fixture.js';
 
 /** The hosted page's real secure origin, answered from memory: no network is used. */
 const ORIGIN = 'https://app.pullboard.dev/';
@@ -211,6 +211,36 @@ test('the sealed gzip snapshot decodes through a Response body, the way WebKit a
   t.diagnostic('WebKit ran: ' + webkit);
 });
 
+/** Publish the later checkpoint with the real API2 CLI writer inside the private fixture. */
+async function publishApi2Checkpoint(box, boardId, sequence) {
+  const before = relaySnapshot(box.root);
+  assert.equal(before.presentation.state.items.filter(item => item.title.startsWith('PHONE_PENDING_')).length, 3,
+    'the local native projection contains all three acknowledged moves before publishing');
+
+  // The actual CLI runs inside relayClientFixture's isolated HOME/PULLBOARD_HOME and publishes through
+  // the configured production page writer; it never touches the user's page-cache directory.
+  const published = await box.cli('status');
+  assert.equal(published.code, 0, published.document?.error?.message);
+
+  const link = JSON.parse(readFileSync(box.linkFile, 'utf8'));
+  assert.equal(link.snapshotApiVersion, 2, 'the private board used the API2 paged snapshot writer');
+  const pageWrites = box.calls.filter(call => call.method === 'PUT'
+    && /^\/api\/v2\/boards\/[0-9a-f]{32}\/uploads\/[A-Za-z0-9-]+\/objects\/[0-9a-f]{64}$/u.test(call.path));
+  const publishes = box.calls.filter(call => call.method === 'POST'
+    && /^\/api\/v2\/boards\/[0-9a-f]{32}\/uploads\/[A-Za-z0-9-]+\/publish$/u.test(call.path));
+  assert.ok(pageWrites.length > 0 && publishes.length > 0,
+    'actual API2 page objects and the root publish reached the private relay');
+
+  const state = await fetch(box.origin + '/api/v2/boards/' + boardId + '/state', {
+    headers: { authorization: 'Bearer ' + link.token, 'x-pullboard-engine': String(ENGINE_VERSION) },
+  });
+  assert.equal(state.status, 200, 'the private relay serves its API2 published head');
+  const head = await state.json();
+  assert.equal(head.state.apiVersion, 2);
+  assert.equal(head.state.sequence, sequence, 'the API2 root covers the exact final move position');
+  return head.state;
+}
+
 /** Add one genuine sealed move to the private loopback relay and replay its acknowledged receipt locally. */
 async function postAndApplyMove(box, link, key, sequence, move) {
   const sealed = Buffer.from(await seal(key, new TextEncoder().encode(JSON.stringify(move)), {
@@ -235,11 +265,11 @@ async function postAndApplyMove(box, link, key, sequence, move) {
   return event;
 }
 
-test('the phone shows moves past its checkpoint as pending [H5,H16]', {
+for (const apiVersion of [1, 2]) test('the phone shows moves past its checkpoint as pending (API' + apiVersion + ') [H5,H16]', {
   skip: !findChromeExecutable() && 'Chrome is not installed',
 }, async t => {
   const box = await relayClientFixture(t);
-  box.legacySnapshotApi(); // This case explicitly publishes sealed API1 checkpoints.
+  if (apiVersion === 1) box.legacySnapshotApi(); // Keep explicit historical and current paged wire coverage.
   const initialTitle = 'PHONE_CHECKPOINT_INITIAL_1113';
   const pendingTitles = ['PHONE_PENDING_ONE_1113', 'PHONE_PENDING_TWO_1113', 'PHONE_PENDING_THREE_1113'];
   assert.equal((await box.cli('add', box.lane, initialTitle)).code, 0);
@@ -247,7 +277,7 @@ test('the phone shows moves past its checkpoint as pending [H5,H16]', {
   const link = JSON.parse(readFileSync(box.linkFile, 'utf8'));
   const key = decodeBoardKey(readFileSync(box.keyFile, 'utf8').trim());
   const credential = link.agentTokens.coordinator.token;
-  const stateResponse = await fetch(box.origin + '/api/v1/boards/' + link.board + '/state', {
+  const stateResponse = await fetch(box.origin + '/api/v' + apiVersion + '/boards/' + link.board + '/state', {
     headers: { authorization: 'Bearer ' + credential, 'x-pullboard-engine': String(ENGINE_VERSION) },
   });
   assert.equal(stateResponse.status, 200, 'the checkpoint at N is present before phone startup');
@@ -291,16 +321,18 @@ test('the phone shows moves past its checkpoint as pending [H5,H16]', {
   const checkpointN3 = relaySnapshot(box.root);
   assert.equal(checkpointN3.presentation.state.items.filter(item => pendingTitles.includes(item.title)).length, 3,
     'the later native checkpoint includes all three acknowledged operations');
-  const sealedCheckpoint = Buffer.from(await seal(key, new TextEncoder().encode(JSON.stringify(checkpointN3)), {
-    boardId: link.board, kind: 'snapshot', sequence: checkpointN + 3,
-  })).toString('base64url');
-  const published = await fetch(box.origin + '/api/v1/boards/' + link.board + '/state', {
-    method: 'PUT', headers: {
-      authorization: 'Bearer ' + credential,
-      'x-pullboard-engine': String(ENGINE_VERSION), 'content-type': 'application/json',
-    }, body: JSON.stringify({ sequence: checkpointN + 3, sealed: sealedCheckpoint }),
-  });
-  assert.equal(published.status, 200, 'the private relay accepts checkpoint N+3');
+  if (apiVersion === 1) {
+    const sealedCheckpoint = Buffer.from(await seal(key, new TextEncoder().encode(JSON.stringify(checkpointN3)), {
+      boardId: link.board, kind: 'snapshot', sequence: checkpointN + 3,
+    })).toString('base64url');
+    const published = await fetch(box.origin + '/api/v1/boards/' + link.board + '/state', {
+      method: 'PUT', headers: {
+        authorization: 'Bearer ' + credential,
+        'x-pullboard-engine': String(ENGINE_VERSION), 'content-type': 'application/json',
+      }, body: JSON.stringify({ sequence: checkpointN + 3, sealed: sealedCheckpoint }),
+    });
+    assert.equal(published.status, 200, 'the private relay accepts checkpoint N+3');
+  } else await publishApi2Checkpoint(box, link.board, checkpointN + 3);
   await chrome.waitFor(pendingTitles.map(title => 'document.querySelector("#chain")?.textContent.includes(' + JSON.stringify(title) + ')').join(' && '));
   const settledView = await chrome.evaluate(`(() => ({
     items: Array.from(document.querySelectorAll('#chain [data-item]'), row => ({ id: row.dataset.item, title: row.getAttribute('title') })),
