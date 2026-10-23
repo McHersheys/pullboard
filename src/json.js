@@ -15,7 +15,7 @@ export const JSON_SHAPES = {
   commands: {
     help: shape({ help: 'string' }),
     version: shape({ release: 'string' }),
-    init: shape({ root: 'string', notes: 'array', proposedLanes: 'array' }),
+    init: shape({ root: 'string', notes: 'array', proposedLanes: 'array', mcp: 'object' }),
     hooks: shape({ notes: 'array' }),
     join: shape({ agent: 'string', lane: 'string', route: 'string', path: 'string', model: 'string', displayName: 'string' }),
     takeover: shape({ agent: 'string', path: 'string' }),
