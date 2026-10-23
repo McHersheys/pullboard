@@ -9,6 +9,8 @@
  */
 import { RECORDED_GENERIC_NEXT } from './recorded-refusal.js';
 import { Refused } from './refused.js';
+import { recordBlock } from './blocks.js';
+import { repoInfo } from './git.js';
 
 /** Describe the queue's actual outstanding reviews and submission age [Q1,V15]. */
 export function reviewQueueLine(ctx, queue, span) {
@@ -215,6 +217,8 @@ export const NEXT_STEPS = Object.freeze({
   BRIEF_LANE: 'split the item by lane, or add the other lane\'s part as its own item and wait on it with --after',
   BRIEF_TOO_LONG: 'shorten the brief and point to a longer doc by path, or pass --brief-file <file>',
   BROWSER_SLOT_REQUIRED: 'release the gate lease and take it again with browser: true',
+  RUNNER_CAPACITY_BUSY: 'nothing to do on that runner: rerun once its running jobs end, and it runs at its new registered size',
+  RUNNER_BROWSER_SLOT_REQUIRED: 'nothing to do: the run reruns on a local gate slot; if it repeats, set gate.browserByLaunch the same on this machine and that runner',
   CANNOT_SIGN: 'sign only approved rows: pullboard spec signoff <approved ids>',
   CHECKOUT_SESSION: 'run pullboard takeover from the agent session that owns this checkout',
   CHECKOUT_BUSY: 'let the named command finish, or stop it if it is stuck, then commit again',
@@ -515,6 +519,7 @@ export const NEXT_STEPS = Object.freeze({
   RESOURCE_BUSY: 'check the holder and queue with pullboard resources, wait for the resource to become free, then retry',
   RESOURCE_CAPACITY_MISMATCH: 'check the configured capacity with pullboard settings, then retry using that capacity',
   RESOURCE_LEASE_LOST: 'take the resource again, then retry',
+  SLOT_DB_LOCKED: 'the run never started, so it is not a red; rerun the same command once the named process releases the slot database',
   REVIEW_COOLDOWN: 'take another review: pullboard next --verify',
   REVIEW_NOT_READY: 'wait for the submit with pullboard watch, or check back: pullboard next --verify',
   REVIEW_HELD: 'take another review: pullboard next --verify',
@@ -643,4 +648,112 @@ export function nextStepFor(error, message, options = {}) {
   if (code === 'SPEC_BEHIND_MAIN') return NEXT_STEPS.SPEC_BEHIND_MAIN;
   return personRequestStep(stepInMessage(message) ?? NEXT_STEPS[code]
     ?? `ask the service owner about refusal code ${code || '(unknown)'}, including the displayed refusal`, options);
+}
+
+/** Refusals no move recovers from by itself: a typo is not Pullboard blocking anyone. */
+const NOT_BLOCKS = new Set(['USAGE', 'UNKNOWN_COMMAND']);
+
+/**
+ * Who clears each refusal that is not the blocked agent's own to clear, by code, beside the steps
+ * above: the person (a person-only move) or the coordinator. Every other code is the agent's.
+ * test/blocks.test.js sends every person code here through to Needs you [C6,B26].
+ *
+ * @type {Readonly<Record<string, 'person'|'coordinator'|'either'>>}
+ */
+export const BLOCK_AUDIENCE = Object.freeze({
+  AGENT_APPROVAL_REQUIRED: 'person',
+  B26_PERSON_APPROVAL: 'person',
+  B26_PERSON_CHANNEL: 'person',
+  CHECK_ACCEPT_PERSON_ONLY: 'person',
+  HUMAN_REQUIRED: 'person',
+  LAND_PERSON_ONLY: 'person',
+  NOT_APPROVER: 'person',
+  PHONE_APPROVAL_PENDING: 'person',
+  RELAY_PERSON_ONLY: 'person',
+  RIGOR_PERSON_ONLY: 'person',
+  B26_PERSON_ANSWER: 'coordinator',
+  B26_PERSON_DECISION: 'coordinator',
+  COORDINATOR_CHECK: 'coordinator',
+  COORDINATOR_ONLY: 'coordinator',
+  COORDINATOR_VERIFIES: 'coordinator',
+  JOB_CADENCE_COORDINATOR_ONLY: 'coordinator',
+  SPEC_APPROVAL_BASELINE: 'coordinator',
+  TOKEN_REVOKED: 'coordinator',
+  // One code, two holders: the coordinator's own token is reissued by the person, a seat's by the coordinator.
+  TOKEN_EXPIRED: 'either',
+});
+
+/**
+ * Who can take a refusal's step, from its code alone. Only a code that serves both audiences
+ * reads its message, and only to tell which of the two raised it.
+ *
+ * @param {string} code
+ * @param {string} message
+ * @returns {'person'|'coordinator'|'agent'}
+ */
+export function blockAudience(code, message) {
+  const audience = BLOCK_AUDIENCE[code] ?? 'agent';
+  if (audience !== 'either') return audience;
+  return /\bthe coordinator relay token\b/iu.test(message) ? 'person' : 'coordinator';
+}
+
+/** Plain words: no bracketed rule code, no backticks, one line [P4]. */
+function plain(text) {
+  return String(text).split('\n')[0].replace(/\[[A-Z][A-Z0-9_]*\]\s*/gu, '').replaceAll('`', '').replace(/\s+/gu, ' ').trim();
+}
+
+/**
+ * One block from a refusal that stopped a command: its code, command, who was stopped, who can
+ * clear it, and a plain one-line reason and step. Null for a usage slip, which blocks nobody.
+ *
+ * @param {{ code?: string, message: string, next?: string }} error
+ * @param {{ command: string, by: string, path: string, at: Date, caller?: string }} context
+ */
+export function blockNotice(error, { command, by, path, at, caller }) {
+  const code = typeof error?.code === 'string' ? error.code : 'INTERNAL';
+  if (NOT_BLOCKS.has(code)) return null;
+  const message = String(error.message).replace(/^\[[A-Z][A-Z0-9_]*\] /u, '');
+  const step = plain(nextStepFor(error, message, { caller }));
+  const first = plain(message);
+  const cut = first.indexOf(step.slice(0, 24));
+  const reason = (cut > 0 ? first.slice(0, cut) : first).replace(/[\s;:,.]+$/u, '') || first;
+  const audience = blockAudience(code, message);
+  // The person never needs to know how the relay works: a relay token is their sign-in [C6].
+  const said = audience === 'person' ? reason.replace(/\b(?:the )?coordinator relay token\b/giu, 'your sign-in for the coordinator').replace(/\brelay token\b/giu, 'sign-in') : reason;
+  return { at: at.toISOString(), code, command: `pullboard ${command}`.trim(), by, path, audience, reason: said, step };
+}
+
+/**
+ * The line a stopped command prints after its refusal, aimed at whoever can take the step. The
+ * agent's own step is already the refusal's next line, so only a step for someone else adds one.
+ *
+ * @param {ReturnType<typeof blockNotice>} block
+ * @returns {string | null}
+ */
+export function blockLine(block) {
+  if (block?.audience === 'person') return 'pullboard: only the person can clear this; it is in their Needs you list now';
+  if (block?.audience === 'coordinator') return `pullboard: only the coordinator can clear this; tell them: pullboard shout coordinator "blocked by ${block.code} on ${block.command}: ${block.reason.replaceAll('"', "'")}"`;
+  return null;
+}
+
+/**
+ * Record a refusal that stopped a command and print the line aimed at whoever can clear it. A
+ * ledger that cannot be written says so; it never hides the refusal it was recording.
+ *
+ * @param {any} io
+ * @param {{ code?: string, message: string, next?: string }} error
+ * @param {{ command: string, info?: { commonDir: string, root: string, isMain: boolean }, now?: Date }} context - info defaults to the checkout at io.cwd
+ */
+export function reportBlock(io, error, { command, info: given, now = io.clock?.now?.() ?? new Date() }) {
+  let info = given;
+  try { info ??= repoInfo(io.cwd); } catch { return null; /* Outside a repository there is no board to record on. */ }
+  const caller = io.callerRole?.();
+  const block = blockNotice(error, { command, at: now, path: info.root, caller,
+    by: caller === 'person' ? 'person' : info.isMain ? 'coordinator' : 'agent' });
+  if (!block) return null;
+  try { recordBlock(info.commonDir, block); }
+  catch (failure) { io.err(`pullboard: this block was not recorded (${failure.message}); the refusal above still stands`); }
+  const line = blockLine(block);
+  if (line) io.err(line);
+  return block;
 }

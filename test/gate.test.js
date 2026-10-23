@@ -22,7 +22,11 @@ import { prepareEngineMove } from '../src/engine.js';
 import { mainPolicy } from '../src/trusted-policy.js';
 import { ENGINE_VERSION } from '../src/machine.js';
 import { submitFixture } from './board-submit-fixture.js';
+import { createE2eHelpers } from './e2e-helpers.js';
 import { BROWSER_SLOT_HELD_ENV, GATE_SLOT_HELD_ENV, GATE_SLOT_POOL_ENV, GATE_SLOT_TOKEN_ENV } from '../src/resources.js';
+
+const e2e = createE2eHelpers();
+after(e2e.cleanup);
 
 const PRIVATE_WORKER = resolve(import.meta.dirname, '../src/private-check-worker.js');
 
@@ -773,4 +777,130 @@ test('a hand-recorded run never quarantines a test [C7,D1]', async (t) => {
   }
   assert.equal(store.listItems(reopened, { all: true }).length, 0, 'one real red and no green proves nothing');
   assert.equal(waivedFailures(reopened, [FLAKY]), null, 'no landing block is removed');
+});
+
+/** A web project whose one source file is imported by thirty test files, each recording its own run. */
+function largeSelectionProject(deferAbove, { inline = false } = {}) {
+  const box = e2e.project('true');
+  const config = JSON.parse(readFileSync(join(box.repo, 'pullboard.json'), 'utf8'));
+  writeFileSync(join(box.repo, 'pullboard.json'), JSON.stringify({ ...config, submitGate: 'landing', affectedTests: 'node --test',
+    submitInvariants: ['web/guard.test.js'], ...(inline ? { gate: 'node --test web/gate-check.test.js' } : { landing: { publish: 'separate' } }), ...(deferAbove ? { submitDeferAbove: deferAbove } : {}) }, null, 2));
+  if (inline) {
+    // An inline landing pushes its gated tip, so it needs a remote; its gate only checks for a red marker file.
+    box.git(box.dir, 'init', '-q', '--bare', join(box.dir, 'origin.git'));
+    box.git(box.repo, 'remote', 'add', 'origin', join(box.dir, 'origin.git'));
+  }
+  writeFileSync(join(box.repo, 'package.json'), '{"type":"module"}\n');
+  mkdirSync(join(box.repo, 'web'), { recursive: true });
+  writeFileSync(join(box.repo, 'web/core.js'), 'export const value = 1;\n');
+  writeFileSync(join(box.repo, 'web/fix.js'), 'export const fixed = false;\n');
+  const record = () => `import { appendFileSync } from 'node:fs';\nimport { test } from 'node:test';\nimport assert from 'node:assert/strict';\n`;
+  writeFileSync(join(box.repo, 'web/gate-check.test.js'), `${record()}import { existsSync } from 'node:fs';\n`
+    + `test('no red marker [G1]', () => assert.equal(existsSync(new URL('./RED', import.meta.url)), false));\n`);
+  writeFileSync(join(box.repo, 'web/guard.test.js'), `${record()}test('guard [G1]', () => { appendFileSync(process.env.DEFER_MARKER, 'guard\\n'); });\n`);
+  for (let index = 0; index < 30; index += 1) {
+    writeFileSync(join(box.repo, `web/selected-${String(index).padStart(2, '0')}.test.js`), `${record()}import { value } from './core.js';\nimport { fixed } from './fix.js';\n`
+      + `test('selected ${index} [G1]', () => { appendFileSync(process.env.DEFER_MARKER, '${index}\\n'); assert.notEqual(value, 'red'); assert.ok(value !== 'needs-fix' || fixed); });\n`);
+  }
+  box.git(box.repo, 'add', '-A');
+  box.git(box.repo, 'commit', '-q', '-m', 'chore: thirty tests import one source');
+  box.git(box.web, 'merge', '-q', '--ff-only', 'main');
+  box.env.DEFER_MARKER = join(box.dir, 'ran.log');
+  delete box.env.NODE_TEST_CONTEXT;
+  const ran = () => existsSync(box.env.DEFER_MARKER) ? readFileSync(box.env.DEFER_MARKER, 'utf8').trim().split('\n').filter(Boolean) : [];
+  /** Add, claim, change the shared source and submit one item, returning its receipt and what ran. */
+  const submitChange = (value, { cwd = box.web, files = [] } = {}) => {
+    const added = box.run(box.repo, 'add', 'web', `Set the value to ${value}`, '--specs', 'G1', '--criterion', 'The source exists.', '--check', 'test -f web/core.js', '--wait', '--json');
+    assert.equal(added.code, 0, added.err);
+    const id = JSON.parse(added.out).item.item_id;
+    assert.equal(box.run(cwd, 'claim', String(id)).code, 0);
+    for (const [path, text] of files) writeFileSync(join(cwd, path), text);
+    assert.equal(e2e.commitFile(box, cwd, files.length ? files[0][0] : 'web/core.js', files.length ? files[0][1] : `export const value = ${JSON.stringify(value)};\n`, `feat(web): set the value [G1]`).status, 0);
+    rmSync(box.env.DEFER_MARKER, { force: true });
+    const submitted = box.run(cwd, 'submit', String(id), '--json');
+    assert.equal(submitted.code, 0, submitted.err + submitted.out);
+    const receipt = JSON.parse(submitted.out);
+    const proof = onLocalBoard(box, board => JSON.parse(store.events(board, { itemId: id }).findLast(row => row.event_kind === 'submit').event_detail));
+    return { id, receipt, proof, ran: ran() };
+  };
+  /** Accept one submitted item as the coordinator, at its exact commit. */
+  const accept = (id, commit) => {
+    box.git(box.repo, 'switch', '-q', '--detach', commit);
+    try { assert.equal(box.run(box.repo, 'verify', String(id), 'accept', '--as', 'coordinator', '--note', 'The source exists.').code, 0); }
+    finally { box.git(box.repo, 'switch', '-q', 'main'); }
+  };
+  return { box, ran, submitChange, accept };
+}
+
+/** Read a fixture's real board through its public interface. */
+function onLocalBoard(box, action) {
+  const board = store.openBoard(join(box.repo, '.git/pullboard/board.sqlite'));
+  try { return action(board); } finally { store.closeBoard(board); }
+}
+
+test('a large affected selection is deferred to landing at submit [C7]', () => {
+  const selected = Array.from({ length: 30 }, (_, index) => `web/selected-${String(index).padStart(2, '0')}.test.js`);
+  const all = [...Array.from({ length: 30 }, (_, index) => String(index)), 'guard'].sort();
+  const on = largeSelectionProject(20);
+  const green = on.submitChange(2);
+  assert.equal(green.receipt.gate.full, false);
+  assert.equal(green.receipt.gate.deferred, true);
+  assert.deepEqual(green.ran, ['guard'], 'submit ran the frozen check, static checks and the invariant file only');
+  assert.deepEqual(green.proof.submissionProof.files, ['web/guard.test.js'], 'the receipt names what actually ran');
+  assert.deepEqual(green.proof.submissionProof.deferredFiles, selected, 'the submission records the thirty deferred files');
+  assert.match(green.proof.note, /30 affected test files deferred to the landing gate/u, 'reviewers see the deferral');
+  assert.match(green.receipt.gate.report, /30 affected test files deferred to the landing gate/u);
+  on.accept(green.id, green.receipt.commit);
+  rmSync(on.box.env.DEFER_MARKER, { force: true });
+  const landed = on.box.run(on.box.repo, 'land', '--json');
+  assert.equal(landed.code, 0, landed.err + landed.out);
+  assert.deepEqual(JSON.parse(landed.out).landed, [green.id]);
+  assert.deepEqual(on.ran().sort(), all, 'landing ran every deferred file before the item landed');
+
+  const red = on.submitChange('red');
+  assert.deepEqual(red.ran, ['guard'], 'a red deferred file is not run at submit');
+  on.accept(red.id, red.receipt.commit);
+  const blocked = on.box.run(on.box.repo, 'land', '--json');
+  assert.equal(blocked.code, 0, blocked.err + blocked.out);
+  assert.deepEqual(JSON.parse(blocked.out).landed, [], 'a red deferred selection lands nothing');
+  const reopened = JSON.parse(on.box.run(on.box.repo, 'show', String(red.id), '--json').out);
+  assert.notEqual(reopened.item_status, 'verified', 'the red item is sent back like a red submit');
+  assert.equal(reopened.item_merged_commit, null);
+  assert.ok(reopened.thread.some(entry => entry.kind === 'reopen' && /web\/selected-00\.test\.js/u.test(entry.detail.note)), 'the reopen names the failing deferred file');
+
+  const inline = largeSelectionProject(20, { inline: true });
+  const inlineRed = inline.submitChange('red');
+  assert.deepEqual(inlineRed.ran, ['guard']);
+  inline.accept(inlineRed.id, inlineRed.receipt.commit);
+  const inlineLanding = inline.box.run(inline.box.repo, 'land', '--json');
+  assert.equal(inlineLanding.code, 0, inlineLanding.err + inlineLanding.out);
+  assert.deepEqual(JSON.parse(inlineLanding.out).landed, [], 'an inline landing whose gate passes anything still runs the deferred files and lands nothing on red');
+  const inlineItem = JSON.parse(inline.box.run(inline.box.repo, 'show', String(inlineRed.id), '--json').out);
+  assert.notEqual(inlineItem.item_status, 'verified', 'the inline red item is sent back');
+  assert.equal(inlineItem.item_merged_commit, null);
+  assert.ok(inline.ran().length > 1, 'the inline landing ran the deferred files');
+
+  // Item A carries the fix B's deferred files need, and also turns the gate red; bisect removes A and rebuilds B alone.
+  const split = largeSelectionProject(20, { inline: true });
+  const second = join(split.box.dir, 'web-2');
+  split.box.git(split.box.repo, 'worktree', 'add', '-q', second, '-b', 'web/two');
+  assert.equal(split.box.run(second, 'join', 'web').code, 0);
+  const itemA = split.submitChange('a', { files: [['web/fix.js', 'export const fixed = true;\n'], ['web/RED', 'red\n']] });
+  const itemB = split.submitChange('needs-fix', { cwd: second });
+  split.accept(itemA.id, itemA.receipt.commit);
+  split.accept(itemB.id, itemB.receipt.commit);
+  const splitLanding = split.box.run(split.box.repo, 'land', '--json');
+  assert.equal(splitLanding.code, 0, splitLanding.err + splitLanding.out);
+  assert.deepEqual(JSON.parse(splitLanding.out).landed, [], 'B does not land on a rebuilt tree that lost A\'s fix');
+  for (const id of [itemA.id, itemB.id]) {
+    const shown = JSON.parse(split.box.run(split.box.repo, 'show', String(id), '--json').out);
+    assert.notEqual(shown.item_status, 'verified', `#${id} is sent back`);
+    assert.equal(shown.item_merged_commit, null);
+  }
+  const reopenedB = JSON.parse(split.box.run(split.box.repo, 'show', String(itemB.id), '--json').out);
+  assert.ok(reopenedB.thread.some(entry => entry.kind === 'reopen' && /web\/selected-\d\d\.test\.js/u.test(entry.detail.note)), 'B is sent back for its own deferred files');
+
+  const off = largeSelectionProject(null).submitChange(2);
+  assert.equal(off.proof.submissionProof.deferredFiles, undefined);
+  assert.deepEqual(off.ran.sort(), all, 'with the setting off, submit runs all thirty as today');
 });

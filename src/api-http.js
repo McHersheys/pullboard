@@ -1,4 +1,5 @@
 /** API v1's shared HTTP boundary; local and relay adapters supply the same board operations (A2). */
+import { createHash } from 'node:crypto';
 import { Refused } from './refused.js';
 import { relayStorage } from './relay-storage.js';
 import { refusalDocument } from './json.js';
@@ -21,11 +22,33 @@ function json(res, status, value) {
   res.end(JSON.stringify({ version: 1, ...value }));
 }
 
-/** Emit a local adapter's pre-serialized state inside the unchanged API v1 envelope. */
-function jsonState(res, status, state, eventLogVersion) {
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer', 'x-content-type-options': 'nosniff' });
+/** A local adapter's pre-serialized state inside the unchanged API v1 envelope. */
+function stateText(state, eventLogVersion) {
   const version = eventLogVersion === undefined ? '' : ',"eventLogVersion":' + JSON.stringify(eventLogVersion);
-  res.end('{"version":1,"state":' + state + version + '}');
+  return '{"version":1,"state":' + state + version + '}';
+}
+
+/**
+ * Send a state reply. A tagging server (the local one) tags it with a digest of its text and answers
+ * 304 Not Modified with no body when the caller's If-None-Match already names it, so a poll of an
+ * unchanged board sends nothing (#1040). The digest blanks the clock readings stamped afresh on every
+ * read (flow asOf, queue ageMinutes), as the view's own board comparison does (#644). Replies stay
+ * no-store: the browser never answers a poll from its cache, so a page that wants the newest clock
+ * readings still gets them by not asking If-None-Match.
+ */
+function sendState(req, res, text, tagged) {
+  const headers = { 'cache-control': 'no-store', 'referrer-policy': 'no-referrer', 'x-content-type-options': 'nosniff' };
+  if (tagged) {
+    const board = text.replace(/"(asOf|ageMinutes)":(?:"[^"]*"|[-+.0-9eE]+|null)/gu, '"$1":null');
+    Object.assign(headers, { etag: '"' + createHash('sha256').update(board).digest('base64url').slice(0, 32) + '"' });
+    const held = String(req.headers['if-none-match'] ?? '').split(',').map((tag) => tag.trim().replace(/^W\//u, ''));
+    if (held.includes(headers.etag)) {
+      res.writeHead(304, headers);
+      return res.end();
+    }
+  }
+  res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', ...headers });
+  res.end(text);
 }
 
 /** Read a bounded JSON object, draining oversize requests so a refusal reaches the caller. */
@@ -109,7 +132,7 @@ function stateDetail(value) {
 }
 
 /** Create the common API router; an adapter controls authorization and board storage. */
-export function createApiHandler(adapter, { pollMs = 200 } = {}) {
+export function createApiHandler(adapter, { pollMs = 200, tagState = false } = {}) {
   if (!Number.isInteger(pollMs) || pollMs < 10 || pollMs > 60_000) throw new Refused('API_POLL', 'use a poll interval from 10 to 60000 milliseconds');
   const streams = new Set();
 
@@ -297,17 +320,18 @@ export function createApiHandler(adapter, { pollMs = 200 } = {}) {
           const since = sinceCursor(url.searchParams.get('since'));
           if (options.detail === 'full') throw new Refused('BAD_REQUEST', 'a delta brings item summaries up to date; use since=N without detail=full');
           if (typeof adapter.delta !== 'function') throw new Refused('DELTA_NOT_AVAILABLE', 'this API adapter does not answer since=N; use its board state');
-          return json(res, 200, await adapter.delta(board, who, seen, { since, eventLogVersion: url.searchParams.get('eventLogVersion') }));
+          const delta = await adapter.delta(board, who, seen, { since, eventLogVersion: url.searchParams.get('eventLogVersion') });
+          return sendState(req, res, JSON.stringify({ version: 1, ...delta }), tagState);
         }
         if (typeof adapter.stateJson === 'function') {
           const state = await adapter.stateJson(board, who, seen, options);
           if (typeof state !== 'string') throw new TypeError('the local state serializer must return JSON text');
           const eventLogVersion = await adapter.eventLogVersion?.(board, who);
-          return jsonState(res, 200, state, eventLogVersion);
+          return sendState(req, res, stateText(state, eventLogVersion), tagState);
         }
         const state = await adapter.state(board, who, seen, options);
         const eventLogVersion = await adapter.eventLogVersion?.(board, who);
-        return json(res, 200, { state, ...(eventLogVersion === undefined ? {} : { eventLogVersion }) });
+        return sendState(req, res, JSON.stringify({ version: 1, state, ...(eventLogVersion === undefined ? {} : { eventLogVersion }) }), tagState);
       }
       if (req.method === 'GET' && route[2] === 'code') {
         if (typeof adapter.code !== 'function') throw new Refused('CODE_NOT_AVAILABLE', 'this API adapter does not provide committed-code previews; use the local view or a local API server');
