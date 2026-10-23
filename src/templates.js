@@ -144,7 +144,7 @@ The coordinator merges verified items into the main line; builders never merge. 
 
 For recurring checks, \`pullboard sentinels\` lists this board's watches, their approvals and their latest results. Propose one with \`pullboard sentinel propose <name> --check "<command>" --every hourly --owner coordinator\`; a proposal does not run until the person approves its exact command, directory and schedule. Only the person runs \`pullboard sentinel approve <name>\` or \`pullboard sentinel decline <name> --reason "<why>"\` from their own terminal or Pullboard View. Agents never approve their own proposals; send the decision to the coordinator.
 
-For spare test capacity, use \`pullboard runner add <ssh-host> --slots <n> --browser <n>\`. It registers SSH capacity on this machine; \`pullboard resources\` shows runners and their usage. Only committed source goes to a runner, and board moves stay here. To see whether this board is linked to the relay, and for which GitHub account, run \`pullboard relay status\`.
+For spare test capacity, use \`pullboard runner add <ssh-host> --slots <n> --browser <n>\`. It registers SSH capacity on this machine; \`pullboard runner list\` shows each runner's registered slots and browsers, and \`pullboard resources\` shows their usage. Only committed source goes to a runner, and board moves stay here. To see whether this board is linked to the relay, and for which GitHub account, run \`pullboard relay status\`.
 
 If your item needs code another lane owns and it is not there yet, shout that lane and take another item. Never copy their code into your lane, and never build another lane's item, even one that was rejected and blocks you: shout that lane and the coordinator. A claim refused as BLOCKED names the item it waits on.
 
