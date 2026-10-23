@@ -515,6 +515,7 @@ export const NEXT_STEPS = Object.freeze({
   RESOURCE_BUSY: 'check the holder and queue with pullboard resources, wait for the resource to become free, then retry',
   RESOURCE_CAPACITY_MISMATCH: 'check the configured capacity with pullboard settings, then retry using that capacity',
   RESOURCE_LEASE_LOST: 'take the resource again, then retry',
+  SLOT_DB_LOCKED: 'the run never started, so it is not a red; rerun the same command once the named process releases the slot database',
   REVIEW_COOLDOWN: 'take another review: pullboard next --verify',
   REVIEW_NOT_READY: 'wait for the submit with pullboard watch, or check back: pullboard next --verify',
   REVIEW_HELD: 'take another review: pullboard next --verify',
