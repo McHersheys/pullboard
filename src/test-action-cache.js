@@ -370,11 +370,13 @@ export function settleTestActions(runDir, { store, stage, commit, landing, code 
 /**
  * In a test file's own process: record its outcome when it exits. Exit 0 stages a green for the parent to promote; any
  * other exit marks the key red at once, so it is never reused. A process killed for a timeout records nothing, so its
- * file runs again. The marker leaves the environment here, so nothing this file starts records as it.
+ * file runs again. The marker leaves the environment here, so nothing this file starts records as it, and any runner
+ * this file starts runs every file it names (a test opts in to reuse by deleting PULLBOARD_TEST_REUSE).
  *
  * @param {string} file the test file's path, as the process received it
  */
 export function recordTestAction(file) {
+  process.env.PULLBOARD_TEST_REUSE = '0';
   const runDir = process.env[TEST_ACTIONS_ENV];
   delete process.env[TEST_ACTIONS_ENV];
   if (!runDir || process.env.NODE_TEST_CONTEXT !== 'child-v8') return;

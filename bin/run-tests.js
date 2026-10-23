@@ -225,7 +225,6 @@ function testEnvironment(sandbox, gateMarkers = {}) {
   isolateTestMachine(env, sandbox); // #1068: no settings, resources, runners or host markers of the real machine.
   // init and resume start a background view by default; a test opts back in by deleting this.
   env.PULLBOARD_VIEW_BACKGROUND = '0';
-  env.PULLBOARD_TEST_REUSE = '0'; // A runner a test starts runs every file it names; a test opts in to reuse by deleting this.
   env.TMPDIR = sandbox;
   env.TMP = sandbox;
   env.TEMP = sandbox;
@@ -1444,7 +1443,6 @@ async function main(args) {
     const { testsNeedBrowser } = await import('../src/browser-admission.js');
     browser = await testsNeedBrowser(process.cwd(), explicitTestFiles(args));
   }
-  // A test file whose inputs did not change since a green run is reused, not run again (#1045).
   const actions = await (await import('../src/test-action-cache.js')).planTestActions(process.cwd(), args, { fullSuite, landing: process.env[LANDING_RUN_ENV] === '1', listFiles: () => fullSuite ? trackedDefaultTestFiles(process.cwd(), process.env) : explicitTestFiles(args) });
   if (actions.done) return;
   let signal = null;
@@ -1536,7 +1534,7 @@ if (process.argv[1] && resolve(process.argv[1]) === runner) {
   await main(process.argv.slice(2));
 } else if (process.argv[1]) {
   process.env.PULLBOARD_TEST_FILE = process.argv[1];
-  if (process.env.PULLBOARD_TEST_ACTIONS) (await import('../src/test-action-cache.js')).recordTestAction(process.argv[1]);
+  (await import('../src/test-action-cache.js')).recordTestAction(process.argv[1]); // #1045: reuse off below; record this file.
   const fileTimes = process.env[LANDING_FILE_TIMES_ENV];
   // Only this test file reports; anything it starts is not one of the shard's files.
   delete process.env[LANDING_FILE_TIMES_ENV];
