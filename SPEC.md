@@ -228,6 +228,8 @@ Statuses: approved = decided · draft = proposed · pending = open question · f
 - H17 [approved, must] A phone or machine joins a board by pairing once, from a code or QR a linked machine prints. | gate: test/relay.test.js | serves: H15
 - H18 [approved, must] The relay keeps a board only while linked: unlinking deletes it; 90 idle days delete it; backups last 14 days. | gate: test/relay.test.js | serves: H7
 - H19 [draft, aim] Without the relay, a phone sees and acts on a board through the view on the local network, after scanning a pairing code. | gate: test/cockpit/lan.test.js
+- H21 [draft, aim] A linked board reads and moves locally whether or not the relay answers: every move returns at once and is sent when the relay is reachable, and a conflict found on sync is refused loudly naming the winner (revises H10 for #1013). | gate: test/relay-local-first.test.js
+- H22 [draft, aim] A linked board stays linked: the person signs in once per machine, and only relay off or a revoke unlinks it. | gate: review
 
 ## E · Teams: many people, one board
 
