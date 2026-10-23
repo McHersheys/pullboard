@@ -15,7 +15,8 @@ import { assertStartupBudgets } from './cli-startup-budget-fixture.js';
 const REPO = resolve(import.meta.dirname, '..');
 const BIN = join(REPO, 'bin', 'pullboard.js');
 /** Modules a read must never load: the gate runner, the relay client and the landing machinery. */
-const HEAVY = ['src/gate.js', 'src/relay.js', 'src/land.js', 'src/commands/gate.js', 'src/commands/relay.js', 'src/commands/land.js'];
+const HEAVY = ['src/gate.js', 'src/relay.js', 'src/land.js', 'src/commands/gate.js', 'src/commands/relay.js', 'src/commands/land.js',
+  'src/trusted-policy.js', 'src/check-baseline.js', 'src/shell-run.js', 'src/hooks.js', 'src/resources.js'];
 
 /** Find the real Git executable before the fixture puts its counting shim first on PATH. */
 function realGitPath() {

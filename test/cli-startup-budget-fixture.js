@@ -72,6 +72,9 @@ export async function assertStartupBudgets(t) {
     const code=resolve(import.meta.dirname,'../bin/pullboard.js');
     const initial=boardDigest(db);
     const expectedItems=JSON.parse(JSON.stringify(store.listItems({db,clock:store.systemClock})));
+    const board={db,clock:store.systemClock};
+    const expectedShow=JSON.parse(JSON.stringify({version:1,...store.getItem(board,4),verdicts:store.verdictsFor(board,4),
+      thread:store.itemThread(board,4),agentApproved:[],approvalQualification:''}));
     const samples={version:[],show:[],status:[],list:[]};
     const childEnvironment={...process.env,PULLBOARD_HOME:join(root,'private-home'),PULLBOARD_MACHINE_HOME:join(root,'private-machine'),GIT_CONFIG_GLOBAL:'/dev/null',GIT_CONFIG_NOSYSTEM:'1'};
     for(const name of ['PULLBOARD_RELAY_TOKEN','PULLBOARD_RELAY_KEY']) delete childEnvironment[name];
@@ -83,7 +86,7 @@ export async function assertStartupBudgets(t) {
       assert.equal(result.status,0,`${name} round ${round}: ${result.error?.message ?? result.stderr ?? result.stdout}`);
       const data=JSON.parse(result.stdout);
       assert.equal(data.version,1);
-      if(name==='show') assert.equal(data.item_id,4);
+      if(name==='show') assert.deepEqual(data,expectedShow,'the complete item, verdicts and thread survive the startup optimization');
       if(name==='status') assert.equal(data.stats.items.submitted,10);
       if(name==='list') {
         assert.equal(data.items.length,1000);
