@@ -196,6 +196,16 @@ test('a name pattern that matches no test fails with NO_TESTS_MATCHED [C7,S13]',
   assert.equal(quietMatch.status, 0, `${quietMatch.stdout}${quietMatch.stderr}`);
   assert.equal(quietMatch.stdout, '', 'observing selection adds no public reporter output');
   assert.equal(readFileSync(box.marker, 'utf8'), 'xxx');
+  const output = join(box.root, 'default-reporter.tap');
+  const defaultDestination = execute('--test-name-pattern', 'one discovered test',
+    '--test-reporter-destination', output, file);
+  assert.equal(defaultDestination.status, 0, `${defaultDestination.stdout}${defaultDestination.stderr}`);
+  assert.match(readFileSync(output, 'utf8'), /ok 1 - one discovered test/u);
+  assert.equal(readFileSync(box.marker, 'utf8'), 'xxxx');
+  const absentWithDestination = execute('--test-reporter-destination=' + output,
+    '--test-name-pattern=absent default reporter case 1018', file);
+  assert.notEqual(absentWithDestination.status, 0, `${absentWithDestination.stdout}${absentWithDestination.stderr}`);
+  assert.match(absentWithDestination.stderr, /NO_TESTS_MATCHED/u);
 });
 
 
@@ -219,4 +229,40 @@ test('a name pattern that matches no test fails with NO_TESTS_MATCHED in a landi
   assert.equal(matched.status, 0, `${matched.stdout}${matched.stderr}`);
   assert.equal(readFileSync(output, 'utf8'), '', 'the selected reporter destination stays silent');
   assert.equal(readFileSync(box.marker, 'utf8'), 'x');
+});
+
+
+test('runner option values that resemble a name pattern remain values [C7,S13]', (t) => {
+  const box = discoveryFixture(t);
+  const empty = join(box.root, 'test', 'empty.test.js');
+  writeFileSync(empty, 'export {};\n');
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const result = spawnSync(process.execPath, [join(box.bin, 'run-tests.js'),
+    '--test-skip-pattern', '--test-name-pattern=absent option value 1018', empty],
+  { cwd: box.root, env, encoding: 'utf8' });
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+  assert.doesNotMatch(result.stderr, /NO_TESTS_MATCHED/u, 'a skip-regex value is not a name-filter option');
+});
+
+
+test('a name pattern with sharded discovery keeps its filter [C7,S13]', (t) => {
+  const box = discoveryFixture(t);
+  writeFileSync(join(box.root, 'pullboard.json'), JSON.stringify({ landingShards: 2 }));
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: box.root });
+  execFileSync('git', ['add', 'test/one.test.js', 'pullboard.json'], { cwd: box.root });
+  execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test',
+    'commit', '-q', '-m', 'test: seed tracked discovery case'], { cwd: box.root });
+  const env = { ...process.env, PULLBOARD_LANDING_RUN: '1' };
+  delete env.NODE_TEST_CONTEXT;
+  /** Exercise configured discovery without explicit files, so the landing-shard branch is reached. */
+  const execute = (pattern) => spawnSync(process.execPath, [join(box.bin, 'run-tests.js'),
+    '--test-name-pattern', pattern], { cwd: box.root, env, encoding: 'utf8' });
+  const absent = execute('absent sharded case 1018');
+  assert.notEqual(absent.status, 0, `${absent.stdout}${absent.stderr}`);
+  assert.match(absent.stderr, /NO_TESTS_MATCHED/u);
+  assert.equal(existsSync(box.marker), false, 'a discarded filter must never run the tracked case');
+  const present = execute('one discovered test');
+  assert.equal(present.status, 0, `${present.stdout}${present.stderr}`);
+  assert.equal(readFileSync(box.marker, 'utf8'), 'x', 'matching discovery runs the selected case once');
 });
