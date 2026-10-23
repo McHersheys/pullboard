@@ -110,6 +110,9 @@ import {
 } from './relay-outbox.js';
 import { stampCoordinatorHolder } from './coordinator-hold.js';
 import { Refused } from './refused.js';
+import { landingRelayCallbacks } from './landing-relay.js';
+import { relayOrigin } from './relay-origin.js';
+export { relayOrigin };
 import { refusalFromReceipt } from './recorded-refusal.js';
 import { relayNotices } from './relay-notices.js';
 import {
@@ -156,16 +159,6 @@ const DELETION_NOTICES = new WeakSet();
 const ORDERED_MOVE_COMMANDS = new Set(['add', 'edit', 'fact', 'escalate', 'run', 'sweep', 'next', 'claim', 'hold', 'release',
   'submit', 'done', 'verify', 'merged', 'land', 'withdraw', 'refreeze', 'shout', 'answer', 'pass', 'import', 'milestone', 'takeover', 'forget', 'join', 'worktree']);
 
-/** Require a trusted origin; HTTP exists only for loopback development and test relays. */
-export function relayOrigin(address) {
-  let url;
-  try { url = new URL(address); } catch { throw new Refused('RELAY_URL', 'use an HTTPS relay address, such as https://app.pullboard.dev'); }
-  if (url.username || url.password || url.search || url.hash || url.pathname !== '/' ||
-      (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)))) {
-    throw new Refused('RELAY_URL', 'use an HTTPS origin without credentials, a path, query or fragment; loopback HTTP is allowed for a local relay');
-  }
-  return url.origin;
-}
 /** Resolve the actual GitHub origin; optional discovery leaves ineligible local projects alone. */
 export function originRepository(root, { optional = false } = {}) {
   const remote = tryGit(root, ['remote', 'get-url', 'origin']);
@@ -1150,10 +1143,11 @@ export async function relayOperation(root, operation, args, io, command, applyLo
   const file = linkFile(root);
   return locked(file, async () => {
     const state = loadLink(file);
-    /** Apply through the CLI's existing board handle so local events and guards remain unchanged. */
-    const applyPausedMoveLocally = () => typeof applyLocally === 'function'
-      ? applyLocally()
-      : localRecords(root, (board) => store[operation](board, ...args));
+    const guarded = landingRelayCallbacks(operation, args, {
+      apply: () => typeof applyLocally === 'function' ? applyLocally() : localRecords(root, (board) => store[operation](board, ...args)),
+      queue: (error, move, apply) => queueMove(outboxLink(root, file, state, io), { operation, args, command, move, error, applyLocally: apply }),
+    });
+    const applyPausedMoveLocally = guarded.apply;
     if (!state && deletedRecovery(root)) return deletedMoveResult(root, operation, args, command, io, applyPausedMoveLocally);
     if (!state || state.unlinking) throw new Refused('RELAY_UNLINK_PENDING', 'finish unlinking this device with pullboard relay off before sending a move');
     if (state.recovery) throw new Refused('RELAY_RECOVERY_PENDING', `finish the saved recovery for sequence ${state.recovery.skip} before sending a linked move`);
@@ -1166,7 +1160,7 @@ export async function relayOperation(root, operation, args, io, command, applyLo
     moves.add(state.board);
     try {
       let ordered;
-      const queue = (error, move) => queueMove(outboxLink(root, file, state, io), { operation, args, command, move, error, applyLocally: applyPausedMoveLocally });
+      const queue = guarded.queue;
       try { ordered = await ensureOrdered(root, file, state, io); }
       catch (error) {
         if (outboxQueueable(state, error, operation, io)) return await queue(error);

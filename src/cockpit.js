@@ -15,6 +15,7 @@ import {
 } from './view/star.js';
 import { commandPhrases } from './help.js';
 import { personNeeds } from './needs.js';
+import { homeRules } from './view/home.js';
 import {
   drawHosted,
   hostedBrowser,
@@ -101,7 +102,7 @@ export function cockpitPage(key = '', { snapshot = false, readOnly = false, requ
   const releaseInfo = hostedReleaseInfo(hostedReleaseVersion, hostedReleaseVersions, releaseHosted);
   const css = stylesheet ?? (snapshot ? 'view.css' : transportModule ? '/view.css' : '/view.css?k=' + encodeURIComponent(key));
   const cssAttribute = css.replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
-  const pageScope = { STAR_KEY, applyStateDelta, closePageDialog, connection, drawHosted, hostedBrowser, hostedOptions, hostedReleaseDistance, hostedReleaseNote, hostedState, lifecycle, moduleOption, openPageDialog, pageStartup, paths, personNeeds, readOnly, releaseHosted, releaseInfo, requestMode, roadmapBlock, roadmapHeaders, roadmapSummary, sharingPresentation, snapshot, staleChip, tabValue, transportModule };
+  const pageScope = { STAR_KEY, applyStateDelta, closePageDialog, connection, drawHosted, hostedBrowser, hostedOptions, hostedReleaseDistance, hostedReleaseNote, homeRules, hostedState, lifecycle, moduleOption, openPageDialog, pageStartup, paths, personNeeds, readOnly, releaseHosted, releaseInfo, requestMode, roadmapBlock, roadmapHeaders, roadmapSummary, sharingPresentation, snapshot, staleChip, tabValue, transportModule };
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -131,6 +132,7 @@ ${hostedLocal && !snapshot ? '<div class="hosted-mark" aria-hidden="true"><svg v
 <div class="body">
 <header class="top">
   <nav class="tabs" id="tabs" aria-label="Board">
+    <button class="tab" data-tab="home" type="button">Home</button>
     <button class="tab" data-tab="items" type="button">Items</button>
     <button class="tab" data-tab="shouts" type="button">Shouts</button>
     <button class="tab" data-tab="spec" type="button">Spec</button>
@@ -166,6 +168,7 @@ ${hostedLocal && !snapshot ? '<div class="hosted-mark" aria-hidden="true"><svg v
     <section class="card-panel group-panel"><h2>Activity</h2><div class="feed" id="group-activity"></div></section>
   </section>
   <section class="card-panel person-requests" id="person-requests" aria-label="Your requests" aria-live="polite" hidden></section>
+  <section data-pane="home" class="home" aria-label="Home"><section class="card-panel home-card" id="home-rules" aria-label="Your rules"></section><section class="card-panel home-card" aria-label="Needs you"><h2>Needs you</h2><ol class="needs home-needs" id="home-needs"></ol><p class="empty" id="home-calm" hidden>Nothing needs you.</p></section></section>
   <section data-pane="items" class="two">
     <div class="primary">
       <section class="card-panel proof-stats" id="proof-stats" aria-label="Board proof stats" hidden></section>
@@ -801,7 +804,9 @@ function milestoneItem(entry, p) {
   const source = root === view.root ? p : root ? named[0] : null;
   const label = local ? '#' + entry.id : String(entry.id);
   const expanded = view.tab === 'roadmap' && view.roadmapOpen.get(JSON.stringify([view.root, 'i:' + label])) === true;
-  const detail = item && expanded ? detailOf(source, item, true, root) : null;
+  // A folded row holds whatever detail is already kept, so it opens in place whole (#1039).
+  const detail = item ? detailOf(source, item, expanded, root) : null;
+  if (item && !expanded) roadmapAhead.set('i:' + label, () => detailOf(source, item, 'ahead', root));
   // A status the lifecycle declares; the roadmap says unavailable or missing for an item it could not read.
   const read = item || (FLOW.states.some((state) => state.id === entry.status) ? { status: entry.status, verdict: null } : null);
   return {
@@ -815,8 +820,10 @@ function milestoneItem(entry, p) {
       holds: root === view.root ? source.holds : source.laneHolds, items: source.items, agents: source.agents, state: stateOf,
       address: (id) => itemAddress(id, root), board: root === view.root ? null : root,
       releases: (p.milestones || []).filter((milestone) => milestone.items.some((ref) => ref.id === entry.id)).map((milestone) => milestone.name),
-      loading: detail?.loading, error: detail?.error,
+      error: expanded ? detail?.error : undefined,
     }) : null,
+    // Until its omitted fields arrive, an expanded row paints what its summary holds and fills the rest in place (#1039).
+    pending: expanded && Boolean(detail?.loading),
     stage: entry.state === 'landed' ? 'merged' : entry.state === 'accepted' ? 'accepted' : item ? pipelineStage(item) : entry.status,
     word: entry.status,
     open: item ? { root, id } : null,
@@ -830,6 +837,7 @@ function milestoneItem(entry, p) {
 function updateRoadmapPanel() {
   const panel = $('roadmap-panel');
   if (!panel || view.tab !== 'roadmap') return;
+  aheadRoadmapRows();
   const entries = [...panel.querySelectorAll('[data-roadmap-jump]')].map((button) => ({
     key: button.dataset.roadmapJump,
     target: $('roadmap-list').querySelector('[data-key="' + CSS.escape(button.dataset.roadmapJump) + '"]'),
@@ -884,7 +892,7 @@ function milestoneRow(row, titles) {
   const detail = row.block ? row.block.detail : '<p>' + esc(row.why || row.word) + '</p>';
   // Every row stays on the Roadmap; only its explicit Open in Items link navigates (#605).
   return '<li><div ' + toggle + ' role="button" tabindex="0">' + inner + '</div>'
-    + '<div class="milestone-why"' + (open ? '' : ' hidden') + '>' + detail + '</div></li>';
+    + '<div class="milestone-why"' + (open ? '' : ' hidden') + (row.pending ? ' aria-busy="true"' : '') + '>' + detail + '</div></li>';
 }
 
 /** Read supplied landed counts and explicit shipments; keep old exports readable and omit withdrawn rows. */
@@ -1100,6 +1108,7 @@ function render() {
   // Every refresh redraws the Roadmap. Left alone, that would send the phone's release chips back to their start
   // and the panel back to its top under a person mid-scroll, so both keep where they were.
   const chipsAt = $('roadmap-releases')?.scrollLeft ?? 0, panelAt = $('roadmap-panel')?.scrollTop ?? 0;
+  roadmapAhead.clear();
   $('roadmap').innerHTML = roadmapCards(p, titles);
   // The mark sets its chip in bold, which widens it, and the fresh row has no mark yet. Restored first, the scroll
   // would clamp to a row narrower by that bold and leave the chips short of where they were (#452).
@@ -1128,11 +1137,16 @@ function render() {
     + (at ? '<span class="row-age">' + age(at) + '</span>' : '') + '<div class="meta"><span class="why"><b>NEEDS YOU</b> ' + esc(kind) + '</span></div></div><span class="chip warn">' + esc(action) + '</span></li>';
   const needKind = (entry) => entry[3] === 'decide' ? needRow([entry[0], '', entry[2], entry[3], entry[4]], 'a decision, asked by ' + entry[1], 'decide')
     : entry[0].startsWith('spec:') ? needRow(entry, 'an open question in SPEC.md', 'answer') : needRow(entry, entry[3], 'release');
-  $('needs').innerHTML = needs.map(needKind).join('')
+  const needsHtml = needs.map(needKind).join('')
     + rigorDrafts.map(row => needRow([row.target, row.ref, row.text], 'a proved Rigor draft', 'Approve or Decline')).join('')
     + sentinelDrafts.map(row => sentinelDraftRow(row)).join('')
     + agentApprovals.map(row => agentApprovalRow(row)).join('')
     + (drafts ? needRow(['tab:spec', String(drafts), 'draft spec rows to approve or drop'], 'Spec rows waiting on you', 'review') : '');
+  $('needs').innerHTML = needsHtml;
+  // Home reads the rules first, then the same calls (#967).
+  $('home-rules').innerHTML = homeRules(p.spec);
+  $('home-needs').innerHTML = needsHtml;
+  $('home-calm').hidden = Boolean(needsHtml);
 
   const lanes = p.lanes;
   const working = lanes.filter((l) => l !== 'coordinator');
@@ -1232,8 +1246,11 @@ function render() {
   $('detail').hidden = adding;
   if (!selected) $('detail').innerHTML = '<div class="empty">' + (view.tab === 'items' && view.addressDetail !== null && view.addressDetail !== 'pipeline' ? 'No item #' + esc(view.addressDetail) + ' exists here.' : 'Pick an item to see its criterion, verdicts and history.') + '</div>';
   const opened = selected && !view.adding ? detailOf(p, selected, view.tab === 'items' && data.root === view.root) : null;
-  if (opened && !opened.item) $('detail').innerHTML = '<div class="stack"><p class="detail-wait muted" role="status">'
-    + (opened.error ? 'Could not load #' + selected.id + ': ' + esc(opened.error) : 'Loading #' + selected.id + '…') + '</p></div>';
+  /** An item's heading: its id, title, state, lane and route, all of which its summary holds. */
+  const head = (item, s = stateOf(item)) => '<div><h2><span>#' + item.id + '</span>' + rich(item.title, titles) + '</h2><div class="meta spaced">' + (s === 'open' ? openChip(item) : chip(s)) + staleChip(item) + '<span class="chip">' + esc(item.lane) + '</span><span class="chip">' + esc(item.route) + '</span></div></div>';
+  if (opened?.error) $('detail').innerHTML = '<div class="stack"><p class="detail-wait muted" role="status">Could not load #' + selected.id + ': ' + esc(opened.error) + '</p></div>';
+  // Until its omitted fields arrive, an opened item paints its heading from its summary and fills the rest in place (#1039).
+  else if (opened?.loading) $('detail').innerHTML = '<div class="stack" aria-busy="true">' + head(selected) + '</div>';
   const item = opened?.item;
   if (item) {
     const s = stateOf(item);
@@ -1260,7 +1277,7 @@ function render() {
     // Why it came back is the first thing the person reads; the verdicts before it stay below.
     const back = rejected(item);
     const earlier = back ? item.verdicts.slice(0, -1) : item.verdicts;
-    $('detail').innerHTML = '<div class="stack"><div><h2><span>#' + item.id + '</span>' + rich(item.title, titles) + '</h2><div class="meta spaced">' + (s === 'open' ? openChip(item) : chip(s)) + staleChip(item) + '<span class="chip">' + esc(item.lane) + '</span><span class="chip">' + esc(item.route) + '</span></div></div>'
+    $('detail').innerHTML = '<div class="stack">' + head(item, s)
       + (back ? '<div class="sentback"><h3>Sent back' + (s === 'building' ? ', being reworked' : s === 'verify' ? ', resubmitted' : s === 'withdrawn' ? ', then withdrawn' : '') + '</h3>' + verdictHtml(item.verdict, titles) + '</div>' : '')
       + (item.criterion ? '<div><h3>Criterion</h3><div class="text">' + rich(item.criterion, titles) + '</div></div>' : '')
       + (item.check ? '<div><h3>Check</h3><dl class="kv"><dt>command</dt><dd><code>' + esc(item.check) + '</code></dd><dt>baseline</dt><dd><span class="chip ' + baselineClass + '">' + esc(baseline?.result ?? 'not recorded') + '</span></dd></dl>'

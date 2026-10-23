@@ -338,9 +338,8 @@ export function projectState(root, { seen = null, board: providedBoard = null, i
     // A decline's text is its reason. Keep the inherited rule available so the page strikes the
     // rule itself, while showing the repo's reason beside it.
     const inherited = new Map(standardDoctrine().rows.map((row) => [row.id, row.text]));
-    const log = store.events(board);
-    // When each agent last moved on the board: the log is in order, so the last write wins.
-    const lastMove = new Map(log.map((event) => [event.event_by, event.event_at]));
+    const log = store.recentEvents(board, 80);
+    const lastMove = store.lastMoves(board);
     const state = projectRowDecisions(store.rowDecisions(board), {
       root: info.root,
       releaseNotes: viewReleaseNotes(),
@@ -357,7 +356,7 @@ export function projectState(root, { seen = null, board: providedBoard = null, i
       // person's to answer here, and the rest with who holds them (B26).
       decisions: store.openDecisions(board, store.PERSON),
       asked: store.openDecisions(board).filter((ask) => ask.shout_to !== store.PERSON),
-      events: log.slice(-80).reverse(),
+      events: log,
       agents: store.listAgents(board).map((agent) => ({ ...agent, model: agent.agent_model ?? 'unknown', displayName: displayAgentName(agent, config.agents.names), lastMoveAt: lastMove.get(agent.agent_id) ?? null })),
       holds: store.laneHolds(board),
       spec: rows(config.spec),
