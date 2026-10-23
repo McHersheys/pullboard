@@ -17,7 +17,7 @@ import { createE2eHelpers } from './e2e-helpers.js';
 import { capacityChangeCases } from './resources-capacity-fixture.js';
 import { checkNeedsBrowser } from '../src/browser-admission.js';
 import { releaseQueueProof } from './resources-release-fixture.js';
-import { queuedLeaseProof } from './resources-lease-fixture.js';
+import { openPrivateScopedView, queuedLeaseProof, resourceNames, resourceWorkerSources } from './resources-lease-fixture.js';
 import { checkProject, verificationProject } from './resources-verify-fixture.js';
 
 const TEMP = [];
@@ -29,67 +29,10 @@ const PRE_RUNNER_MODULE = pathToFileURL(resolve(import.meta.dirname, './fixtures
 const SETTINGS_MODULE = pathToFileURL(resolve(import.meta.dirname, '../src/settings.js')).href;
 const BIN = resolve(import.meta.dirname, '../bin/pullboard.js');
 const TEST_RUNNER = resolve(import.meta.dirname, '../bin/run-tests.js');
-const POOL_MODULE_WORKER = `
-import { takeResource } from ${JSON.stringify(MODULE)};
-import { loadMachineSettings } from ${JSON.stringify(SETTINGS_MODULE)};
-let announced = false;
-const [root, agent, browserText, item, kind, landingText] = process.argv.slice(1);
-const lease = await takeResource({
-  name: 'gate', capacity: 2, scope: 'machine', root, agent,
-  browserCapacityProvider: () => loadMachineSettings().browserSlots,
-  browser: browserText === 'true', item, kind, itemCheck: kind === 'review',
-  diagnostic: kind === 'diagnostic', landing: landingText === 'true',
-  onWait: (state) => {
-    if (!announced) { announced = true; console.log(JSON.stringify({ queued: state })); }
-  },
-});
-try {
-  console.log(JSON.stringify({ acquired: agent }));
-  for await (const line of process.stdin) {
-    if (String(line).trim() === 'release') break;
-  }
-} finally { lease.release(); }
-`;
-const SUBMIT_CHECK = `
-import { runSubmitGate } from ${JSON.stringify(GATE_MODULE)};
-const [root, base, check] = process.argv.slice(1);
-const result = await runSubmitGate(root, { gate: 'true', affectedTests: 'node bin/run-tests.js test/cpu-check.test.js' }, {
-  base, changed: ['test/cpu-check.test.js'], check, agent: 'submit-check', item: '636',
-});
-process.stdout.write(JSON.stringify({ green: result.isGreen, full: result.full, reason: result.reason, files: result.files, checkGreen: result.check.green }) + '\\n');
-`;
 const PROCESS_INFO_POLICY = '(version 1)(allow default)(deny process-info*)';
 const SANDBOX_EXEC = process.platform === 'darwin' && existsSync('/usr/bin/sandbox-exec');
 const PERL_FORK = process.platform === 'darwin' && existsSync('/usr/bin/perl');
-const WORKER = `
-import { takeResource } from ${JSON.stringify(MODULE)};
-const [name, capacity, scope, root, agent, stallMs, landingText] = process.argv.slice(1);
-let lastWait = '';
-const lease = await takeResource({ name, capacity: Number(capacity), scope, root, agent, landing: landingText === 'true', onWait: ({position, holders, line, rejoined}) => {
-  const state = JSON.stringify({waiting:position, holders, line, rejoined:rejoined ?? false});
-  if (!lastWait || rejoined) { lastWait = state; console.log(state); }
-} });
-console.log(JSON.stringify({acquired:agent}));
-let secondLease;
-if (Number(stallMs) > 0) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(stallMs));
-  console.log(JSON.stringify({resumed:true}));
-}
-process.stdin.setEncoding('utf8');
-for await (const line of process.stdin) {
-  if (line.trim() === 'second') {
-    takeResource({ name, capacity: Number(capacity), scope, root, agent, landing: true }).then((nextLease) => {
-      secondLease = nextLease;
-      console.log(JSON.stringify({secondAcquired: agent}));
-    });
-  }
-  if (line.trim() === 'renew') {
-    try { lease.renew(); console.log(JSON.stringify({renewed:true})); }
-    catch (error) { console.log(JSON.stringify({renewError:error.code})); }
-  }
-  if (line.trim() === 'release') { lease.release(); secondLease?.release(); break; }
-}
-`;
+const { POOL_MODULE_WORKER, SUBMIT_CHECK, WORKER } = resourceWorkerSources({ resourcesModule: MODULE, gateModule: GATE_MODULE, settingsModule: SETTINGS_MODULE });
 
 /** Create isolated machine storage and a pair of real Git repositories. */
 function fixture() {
@@ -1873,4 +1816,59 @@ test('a verification with a frozen check still waits for its slot [C7,V4]', asyn
   assert.equal(completed.status, 0, completed.failure ?? completed.stderr);
   assert.equal(JSON.parse(completed.stdout).check, 'green');
   assert.equal(readFileSync(marker, 'utf8'), 'check-ran', 'the unchanged frozen command ran after admission');
+});
+
+test('a stopped view leaves no view-port row [C7]', async () => {
+  const box = fixture();
+  const name = (port) => `view-port-${port}`;
+  const names = () => resourceNames(box.home);
+  const leases = [];
+  let dead, holder, waiter, view;
+  try {
+    privateList(box);
+    const baseline = names().filter((entry) => entry.startsWith('view-port-')).length;
+    view = await openPrivateScopedView(box);
+    const stopped = await privateTake(box, { name: name(view.port), capacity: 1, agent: 'view-port-stopped' });
+    leases.push(stopped);
+    assert.ok(names().includes(stopped.name), 'the running view has a resource row for its bound port');
+    await view.close(); view = null;
+    stopped.release(); leases.pop();
+    assert.equal(names().filter((entry) => entry.startsWith('view-port-')).length, baseline,
+      'stopping the view and releasing its final lease returns to the prior view-port count');
+
+    dead = worker(box, { name: name(4892), agent: 'view-port-dead' });
+    await acquired(dead);
+    dead.kill('SIGKILL'); await dead.finished; dead.lines.close();
+    assert.ok(!privateList(box).some(({ name: entry }) => entry === name(4892)), 'the next resource read sweeps a dead view and its empty port row');
+
+    holder = worker(box, { name: name(4893), agent: 'view-port-holder' });
+    await acquired(holder);
+    waiter = worker(box, { name: name(4893), agent: 'view-port-waiter' });
+    await waitUntil(() => privateList(box).find(({ name: entry }) => entry === name(4893))?.line.some(({ agent }) => agent === 'view-port-waiter'),
+      'a same-port view waits behind the live holder');
+    assert.ok(names().includes(name(4893)), 'a live holder and queued view retain their port row');
+    await release(holder); holder = null;
+    await acquired(waiter);
+    assert.ok(names().includes(name(4893)), 'the waiting view keeps the row when it acquires the released port');
+    await release(waiter); waiter = null;
+    assert.ok(!names().includes(name(4893)), 'releasing the final view removes its port row');
+
+    for (const resource of ['gate', 'ordinary', 'View-Port-4894']) {
+      const lease = await privateTake(box, { name: resource, capacity: 1, agent: `${resource}-fixture` });
+      leases.push(lease); lease.release(); leases.pop();
+    }
+    const db = new DatabaseSync(join(box.home, 'resources.sqlite'));
+    try { db.prepare('INSERT INTO resource(name, capacity) VALUES (?, ?)').run('runner:fixture-host', 2); }
+    finally { db.close(); }
+    privateList(box);
+    const kept = names();
+    assert.ok(kept.includes('gate') && kept.includes('ordinary') && kept.includes('View-Port-4894') && kept.includes('runner:fixture-host'),
+      'empty gate, ordinary, case-distinct view-like, and runner definitions are preserved');
+  } finally {
+    try {
+      for (const lease of leases.reverse()) lease.release();
+      if (dead && !dead.exitResult) { dead.kill('SIGKILL'); await dead.finished; dead.lines.close(); }
+      for (const child of [holder, waiter]) if (child && !child.exitResult) await release(child);
+    } finally { if (view) await view.close(); }
+  }
 });

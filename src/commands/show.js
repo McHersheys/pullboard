@@ -31,7 +31,7 @@ import {
   idArg,
   itemLine,
   sayBrief,
-  withBoard,
+  withBoardRead,
 } from '../cli.js';
 import { relayStatus } from '../relay.js';
 
@@ -39,7 +39,7 @@ import { relayStatus } from '../relay.js';
 export function run(io, { first, values }) {
   const ctx = context(io);
   const id = idArg(first);
-  const { item, verdicts, moves, thread, related, reviewer, agents, mainMerge, infra, approval } = withBoard(ctx, (board) => ({
+  const { item, verdicts, moves, thread, related, reviewer, agents, mainMerge, infra, approval } = withBoardRead(ctx, (board) => ({
     item: verdictProjector(ctx.info.root, board).project(store.getItem(board, id)),
     verdicts: store.verdictsFor(board, id),
     moves: store.events(board, { itemId: id }).filter((event) => ['attempt', 'escalate'].includes(event.event_kind)),

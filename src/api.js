@@ -673,7 +673,14 @@ const VERSION = 1;
 function withBoard(root, read, isMain) {
   const info = repoInfo(root);
   loadConfig(info.root);
-  const board = store.openBoard(join(info.commonDir, 'pullboard', 'board.sqlite'), undefined, { isMain: isMain !== false && codeIsFromMain() });
+  const file = join(info.commonDir, 'pullboard', 'board.sqlite');
+  // A read takes no write lock and never migrates (#1047): main code reads an older board as it is,
+  // branch code keeps the schema guard, and a read that writes after all runs again on a write open.
+  const opened = store.openBoardForRead(file);
+  const main = () => isMain !== false && codeIsFromMain();
+  if (opened && (opened.current || main())) try { return read(opened, info); } catch (error) { if (!store.writeRefused(error)) throw error; } finally { store.closeBoard(opened); }
+  else if (opened) store.closeBoard(opened);
+  const board = store.openBoard(file, undefined, { isMain: main() });
   try { return read(board, info); } finally { store.closeBoard(board); }
 }
 

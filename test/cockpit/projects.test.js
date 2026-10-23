@@ -673,17 +673,17 @@ test('a migration-refused project stays quiet beside a normal board [A5,A6,N26]'
   box.git(primary, 'worktree', 'add', '-q', '-b', 'view/future', linked, 'main');
   const boardSource = join(linked, 'src/board.js');
   const original = readFileSync(boardSource, 'utf8');
-  const future = original.replace('export const SCHEMA_VERSION = 2;', 'export const SCHEMA_VERSION = 3;');
+  const future = original.replace('export const SCHEMA_VERSION = 3;', 'export const SCHEMA_VERSION = 4;');
   assert.notEqual(future, original, 'only the linked running code expects the future schema');
   writeFileSync(boardSource, future);
   const file = join(refused.repo, '.git/pullboard/board.sqlite');
   const before = createHash('sha256').update(readFileSync(file)).digest('hex');
   const ordinary = new DatabaseSync(join(normal.repo, '.git/pullboard/board.sqlite'));
-  try { ordinary.exec('PRAGMA user_version = 3'); } finally { ordinary.close(); }
+  try { ordinary.exec('PRAGMA user_version = 4'); } finally { ordinary.close(); }
   /** Check the persistent shared board through a read-only connection and its exact bytes. */
   const unchanged = () => {
     const db = new DatabaseSync(file, { readOnly: true });
-    try { assert.equal(db.prepare('PRAGMA user_version').get().user_version, 2, 'refused board schema is not migrated'); }
+    try { assert.equal(db.prepare('PRAGMA user_version').get().user_version, 3, 'refused board schema is not migrated'); }
     finally { db.close(); }
     assert.equal(createHash('sha256').update(readFileSync(file)).digest('hex'), before, 'refused board file is byte-identical');
   };
@@ -706,7 +706,7 @@ test('a migration-refused project stays quiet beside a normal board [A5,A6,N26]'
     assert.equal(document.warnings.length, 1, 'the migration refusal remains visible in the listing');
     assert.equal(document.warnings[0].root, refused.repo);
     assert.equal(document.warnings[0].error.error.code, 'UNMERGED_SCHEMA');
-    assert.match(document.warnings[0].error.error.message, /schema 3.*version 2.*merge.*main checkout.*throwaway board/);
+    assert.match(document.warnings[0].error.error.message, /schema 4.*version 3.*merge.*main checkout.*throwaway board/);
     unchanged();
   };
   try {
@@ -718,7 +718,7 @@ test('a migration-refused project stays quiet beside a normal board [A5,A6,N26]'
     await listing(view.base, view.key);
     const page = await openPage(view);
     const sidebar = page.show('proj-list');
-    assert.match(sidebar, /class="repo-error" role="status"><b>Refused board:<\/b> this worktree expects board schema 3/,
+    assert.match(sidebar, /class="repo-error" role="status"><b>Refused board:<\/b> this worktree expects board schema 4/,
       'the refused project has a quiet status card naming the schema refusal');
     assert.match(sidebar, /merge this code into the main checkout first, or test it against a throwaway board/,
       'the quiet card tells the person the next step');
