@@ -10,6 +10,18 @@ import { Refused } from './refused.js';
 /** A waiting run moves up one class after this many minutes, unless the machine sets agingMinutes. */
 export const DEFAULT_QUEUE_AGING_MINUTES = 30;
 
+/**
+ * The test classifier override this process inherited, or null when it inherited none. A run started
+ * on a runner carries the classification its controller used, so the runner never reclassifies from its
+ * own machine settings (#1043).
+ *
+ * @returns {boolean|null}
+ */
+export function carriedBrowserByLaunch() {
+  const carried = process.env.PULLBOARD_TEST_BROWSER_BY_LAUNCH;
+  return carried === '1' ? true : carried === '0' ? false : null;
+}
+
 /** Resolve the separate machine settings file. */
 export function machineSettingsFile() {
   return join(machineHome(), 'settings.json');

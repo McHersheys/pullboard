@@ -510,7 +510,21 @@ function hasPipeline(command) {
  * @param {{ landing?: boolean, itemCheck?: boolean, shortEligible?: boolean, diagnostic?: boolean, browser?: boolean, remote?: boolean, agent?: string, item?: string|number, kind?: string, onWait?: (state: object) => void, onReceipt?: (receipt: object) => void, readMemory?: typeof readMachineMemory }} [options] - Queue class, short-slot eligibility, remote eligibility, progress reporter, the run's receipt once its slot is released (#836) and, for tests, the machine memory reader.
  * @returns {Promise<any>} The action's result after releasing its lease.
  */
-export async function withGateSlot(root, action, { landing = false, itemCheck = false, shortEligible = false, diagnostic = false, browser = false, remote = true, agent, item = '', kind = '', onWait, onReceipt, readMemory = readMachineMemory } = {}) {
+export async function withGateSlot(root, action, options = {}) {
+  try { return await withOneGateSlot(root, action, options); }
+  catch (error) {
+    if (error?.code !== 'RUNNER_BROWSER_SLOT_REQUIRED' || options.remote === false) throw error;
+    // The runner's red attempt stays on record beside the local rerun.
+    const attempt = error.runnerAttempt ?? { host: '', exitCode: null, output: '' };
+    process.stderr.write(`${error.message}; its attempt (exit ${attempt.exitCode}):\n${attempt.output}${attempt.output.endsWith('\n') || !attempt.output ? '' : '\n'}rerunning it locally with a browser slot\n`);
+    const result = await withOneGateSlot(root, action, { ...options, remote: false, browser: true });
+    if (result && typeof result === 'object') result.runnerAttempt = attempt;
+    return result;
+  }
+}
+
+/** One gate admission and its action; withGateSlot may call it again for a local rerun. */
+async function withOneGateSlot(root, action, { landing = false, itemCheck = false, shortEligible = false, diagnostic = false, browser = false, remote = true, agent, item = '', kind = '', onWait, onReceipt, readMemory = readMachineMemory } = {}) {
   const tracker = startReceipt();
   const receiptKind = kind || (landing ? 'landing' : 'gate');
   /** Hand the run its receipt tracker and slot, then record its receipt once the slot is released (#836). */
