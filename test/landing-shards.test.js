@@ -16,6 +16,44 @@ const BIN = join(SOURCE, 'bin', 'pullboard.js');
 const HOST = 'fixture-host';
 const NAMES = ['a', 'b', 'c', 'd', 'e', 'f'];
 
+test('six shards land on six different runners [C7,V4]', (t) => {
+  const box = fixture({ runner: false });
+  t.after(() => rmSync(box.dir, { recursive: true, force: true }));
+  const hosts = NAMES.map(name => `fixture-${name}`);
+  for (const host of hosts) {
+    const added = runFixtureChild(process.execPath, [BIN, 'runner', 'add', host, '--slots', '4', '--browser', '4', '--json'],
+      { cwd: box.repo, env: box.env, encoding: 'utf8' });
+    assert.equal(added.status, 0, added.context);
+  }
+  const script = `import { withGateSlot } from ${JSON.stringify(pathToFileURL(join(SOURCE, 'src/gate.js')).href)};
+import { runLandingShards } from ${JSON.stringify(pathToFileURL(join(SOURCE, 'src/landing-shards.js')).href)};
+const root = ${JSON.stringify(box.repo)};
+const calls = [];
+let release;
+const allStarted = new Promise(resolve => { release = resolve; });
+const remoteRun = async (_root, _command, options) => {
+  calls.push(options.runner.host);
+  if (calls.length === 6) release();
+  await allStarted;
+  return { isGreen: true, output: '' };
+};
+// Hold the two real local slots, so all six shards must acquire actual registered runner leases.
+const result = await withGateSlot(root, () => withGateSlot(root, () => runLandingShards({ root,
+  runner: ${JSON.stringify(join(box.repo, 'bin/run-tests.js'))},
+  files: ${JSON.stringify(NAMES.map(name => `./test/${name}.test.js`))}, count: 6, remoteRun, write: () => {},
+}), { remote: false, kind: 'check' }), { remote: false, kind: 'check' });
+process.stdout.write(JSON.stringify({ green: result.isGreen, calls }));`;
+  const env = { ...box.env };
+  delete env.NODE_TEST_CONTEXT;
+  const result = runFixtureChild(process.execPath, ['--input-type=module', '-e', script],
+    { cwd: box.repo, env, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.context);
+  const measured = JSON.parse(result.stdout);
+  assert.equal(measured.green, true);
+  assert.equal(measured.calls.length, 6, 'all six shards used the registered runner admission path');
+  assert.deepEqual([...new Set(measured.calls)].sort(), hosts, 'every runner gets a shard before another gets two');
+});
+
 /** Run Git in a fixture repository and fail with its context. */
 function git(cwd, env, ...args) {
   const result = runFixtureChild('git', args, { cwd, env, encoding: 'utf8' });
