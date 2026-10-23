@@ -7,8 +7,8 @@
  *
  * A test file that starts its own run-tests and waits on it lends its token to that nested run: while the nested
  * run lives, its parent counts as waiting, not running, so the nested files take the parent's place and never a
- * second core. Running files are holders minus lending parents, and that stays at or under the cores. Two nested
- * runs of one parent share its one place; neither can wait forever on the token its own parent holds.
+ * second core. The parent's place stays reserved while none of its nested files holds one, so it resumes into it.
+ * Two nested runs of one parent share its one place; neither can wait forever on the token its own parent holds.
  */
 import { mkdirSync } from 'node:fs';
 import { availableParallelism } from 'node:os';
@@ -42,15 +42,16 @@ export function testFilePool(env = process.env) {
 }
 
 /**
- * The pool value a run passes to its test files: an inherited one, so a nested run shares its parent's pool, or
- * this machine's pool sized to its cores.
+ * The pool value a run passes to its test files: an inherited one, so a nested run shares its parent's pool and
+ * lender, or this machine's pool sized to its cores.
  *
  * @param {NodeJS.ProcessEnv} env
  * @returns {string}
  */
 export function testFilePoolValue(env = process.env) {
   const pool = testFilePool(env);
-  if (pool) return JSON.stringify({ home: pool.home, cores: pool.cores });
+  // A nested run's files keep the file that started it as their lender, so they take its place.
+  if (pool) return JSON.stringify({ home: pool.home, cores: pool.cores, ...(pool.lender ? { lender: pool.lender } : {}) });
   const override = Number(env[TEST_FILE_CORES_ENV]);
   const cores = Number.isSafeInteger(override) && override > 0 ? override : Math.max(1, availableParallelism());
   return JSON.stringify({ home: machineHome(), cores });
@@ -77,9 +78,11 @@ async function openPool(home) {
   db.exec(`PRAGMA busy_timeout = 10000;
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = NORMAL;
-    CREATE TABLE IF NOT EXISTS file_holder(pid INTEGER PRIMARY KEY, since INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS file_holder(pid INTEGER PRIMARY KEY, since INTEGER NOT NULL, lender INTEGER);
     CREATE TABLE IF NOT EXISTS file_waiter(ticket INTEGER PRIMARY KEY AUTOINCREMENT, pid INTEGER NOT NULL UNIQUE);
     CREATE TABLE IF NOT EXISTS file_loan(runner INTEGER PRIMARY KEY, lender INTEGER NOT NULL);`);
+  // A pool made before holders named their lender gains the column; a missing lender reads as none.
+  if (!db.prepare('PRAGMA table_info(file_holder)').all().some(column => column.name === 'lender')) db.exec('ALTER TABLE file_holder ADD COLUMN lender INTEGER');
   return db;
 }
 
@@ -115,26 +118,46 @@ function prune(db) {
   }
 }
 
-/** How many files are running and how many waiters are ahead of this one, read without a write lock. */
+/**
+ * The places taken: each holder that is not lending, plus one for each lending holder none of whose nested files
+ * holds a place. A lender's place passes to its nested files and comes back to it when the last one exits, before
+ * its run does, so no other file can take it in between and the lender resumes into its own place.
+ */
+function occupied(db) {
+  return db.prepare(`WITH lending AS (SELECT DISTINCT lender AS pid FROM file_loan WHERE lender IN (SELECT pid FROM file_holder))
+    SELECT (SELECT count(*) FROM file_holder WHERE pid NOT IN (SELECT pid FROM lending))
+      + (SELECT count(*) FROM lending WHERE NOT EXISTS (SELECT 1 FROM file_holder WHERE file_holder.lender = lending.pid)) AS n`).get().n;
+}
+
+/** How many places are taken and how many waiters are ahead of this one, read without a write lock. */
 function standing(db) {
-  const holders = db.prepare('SELECT count(*) AS n FROM file_holder').get().n;
-  const lending = db.prepare('SELECT count(DISTINCT lender) AS n FROM file_loan WHERE lender IN (SELECT pid FROM file_holder)').get().n;
   const mine = db.prepare('SELECT ticket FROM file_waiter WHERE pid = ?').get(process.pid)?.ticket;
   const ahead = db.prepare('SELECT count(*) AS n FROM file_waiter WHERE ticket < ?').get(mine).n;
-  return { running: holders - lending, ahead };
+  return { taken: occupied(db), ahead };
 }
 
 /**
- * Admit this process when a core is free and every earlier waiter fits first. Running files are holders less the
- * holders lending to a live nested run.
+ * The places taken in a pool, for a test that builds its rows by hand.
+ *
+ * @param {string} home
+ * @returns {Promise<number>}
  */
-function admit(db, cores) {
+export async function occupiedPlaces(home) {
+  const db = await openPool(home);
+  try { prune(db); return occupied(db); } finally { db.close(); }
+}
+
+/** Admit this process when a place is free and every earlier waiter fits first. */
+function admit(db, cores, lender) {
   return immediate(db, () => {
     prune(db);
-    const { running, ahead } = standing(db);
-    if (ahead >= cores - running) return false;
+    // A nested file steps into its lender's reserved place when no sibling holds it; that leaves the count unchanged.
+    const reserved = lender && db.prepare(`SELECT 1 FROM file_loan WHERE lender = ? AND lender IN (SELECT pid FROM file_holder)
+      AND NOT EXISTS (SELECT 1 FROM file_holder WHERE lender = ?)`).get(lender, lender);
+    const { taken, ahead } = standing(db);
+    if (!reserved && ahead >= cores - taken) return false;
     db.prepare('DELETE FROM file_waiter WHERE pid = ?').run(process.pid);
-    db.prepare('INSERT OR REPLACE INTO file_holder(pid, since) VALUES (?, ?)').run(process.pid, Date.now());
+    db.prepare('INSERT OR REPLACE INTO file_holder(pid, since, lender) VALUES (?, ?, ?)').run(process.pid, Date.now(), lender ?? null);
     return true;
   });
 }
@@ -154,11 +177,11 @@ export async function takeTestFileToken(env = process.env) {
   immediate(db, () => db.prepare('INSERT OR IGNORE INTO file_waiter(pid) VALUES (?)').run(process.pid));
   let pruned = 0;
   while (true) {
-    const { running, ahead } = standing(db);
+    const { taken, ahead } = standing(db);
     // A dead holder only goes in the write path, so look there at least once a second even when nothing looks free.
-    if (ahead < pool.cores - running || Date.now() - pruned >= PRUNE_MS) {
+    if (pool.lender || ahead < pool.cores - taken || Date.now() - pruned >= PRUNE_MS) {
       pruned = Date.now();
-      if (admit(db, pool.cores)) break;
+      if (admit(db, pool.cores, pool.lender)) break;
     }
     await new Promise(done => setTimeout(done, POLL_MS));
   }

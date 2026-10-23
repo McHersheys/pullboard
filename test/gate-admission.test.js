@@ -5,8 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
-import { runFixtureChild, runFixtureChildAsync } from './fixture-child.js';
-import { TEST_FILE_CORES_ENV, TEST_FILE_POOL_ENV } from '../src/test-file-pool.js';
+import { DatabaseSync } from 'node:sqlite';
+import { runFixtureChild, runFixtureChildAsync, startFixtureChild } from './fixture-child.js';
+import { TEST_FILE_CORES_ENV, TEST_FILE_POOL_ENV, occupiedPlaces } from '../src/test-file-pool.js';
 
 const runner = fileURLToPath(new URL('../bin/run-tests.js', import.meta.url));
 
@@ -89,4 +90,30 @@ test('a file waiting on a nested run lends its place, so saturated parents still
   const events = log();
   assert.equal(events.filter(event => event.at === 'start').length, 4, 'both inner files ran under both outer files');
   assert.ok(peak(events) <= 2, `two saturated outer files with nested runs still run at most 2 files, saw ${peak(events)}`);
+});
+
+test('a lender keeps its place between its last nested file and its nested run ending, so no other file takes it [C7]', async (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'pullboard-file-pool-race-'));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  /** A live process to stand in for one pool row; the pool prunes rows of processes that have gone. */
+  const live = () => {
+    const child = startFixtureChild('sleep', ['30']);
+    t.after(() => child.kill('SIGKILL'));
+    return child.pid;
+  };
+  assert.equal(await occupiedPlaces(home), 0);
+  const db = new DatabaseSync(join(home, 'test-file-pool.sqlite'));
+  t.after(() => db.close());
+  const [parent, runner, unrelated, child] = [live(), live(), live(), live()];
+  const hold = (pid, lender = null) => db.prepare('INSERT INTO file_holder(pid, since, lender) VALUES (?, ?, ?)').run(pid, Date.now(), lender);
+  hold(parent);
+  hold(unrelated);
+  db.prepare('INSERT INTO file_loan(runner, lender) VALUES (?, ?)').run(runner, parent);
+  assert.equal(await occupiedPlaces(home), 2, 'a lender with no nested file yet keeps its place');
+  hold(child, parent);
+  assert.equal(await occupiedPlaces(home), 2, 'its nested file runs in that place');
+  db.prepare('DELETE FROM file_holder WHERE pid = ?').run(child);
+  assert.equal(await occupiedPlaces(home), 2, 'the last nested file gone, the place is the lender\'s again, not free');
+  db.prepare('DELETE FROM file_loan WHERE runner = ?').run(runner);
+  assert.equal(await occupiedPlaces(home), 2, 'the nested run ended, the lender resumes in its own place');
 });
