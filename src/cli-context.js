@@ -25,7 +25,7 @@ import {
   tryGit,
 } from './git.js';
 import { Refused } from './refused.js';
-import { mainPolicy } from './trusted-policy.js';
+import { mainPolicy } from './trusted-policy-read.js';
 import { MAIN_MERGE_LABEL } from './trunk-conflict.js';
 
 /**

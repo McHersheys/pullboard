@@ -202,7 +202,7 @@ async function rememberTrunk(io, { repoInfo, mainCheckout }) {
   }
   if (!info.isMain) return;
   const primary = mainCheckout(info.root);
-  if (primary?.branch) (await import('./trusted-policy.js')).trunkRef(info.root, primary.branch);
+  if (primary?.branch) (await import('./trusted-policy-read.js')).trunkRef(info.root, primary.branch);
 }
 
 /** Whether a parsed command line only prints version or help, which asks Git nothing. */

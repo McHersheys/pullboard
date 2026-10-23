@@ -5,7 +5,7 @@ import {
   cleanGitEnvironment,
   mainCheckout,
 } from './git.js';
-import { trunkRef } from './trusted-policy.js';
+import { trunkRef } from './trusted-policy-read.js';
 import { Refused } from './refused.js';
 import { trunkRevisionReader } from './trunk-revision.js';
 

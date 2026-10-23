@@ -15,7 +15,7 @@ import {
 } from '../spec-approval.js';
 import {
   sayCheckBaseline,
-} from '../check-baseline.js';
+} from '../check-baseline-format.js';
 import * as infraNotes from '../infra-note.js';
 import {
   mainMergeFor,
@@ -39,17 +39,17 @@ import { relayStateExists } from '../local-state.js';
 export async function run(io, { first, values }) {
   const ctx = context(io);
   const id = idArg(first);
-  const { item, verdicts, moves, thread, related, reviewer, agents, mainMerge, infra, approval } = withBoardRead(ctx, (board) => ({
-    item: verdictProjector(ctx.info.root, board).project(store.getItem(board, id)),
-    verdicts: store.verdictsFor(board, id),
-    moves: store.events(board, { itemId: id }).filter((event) => ['attempt', 'escalate'].includes(event.event_kind)),
-    thread: store.itemThread(board, id),
-    related: store.relatedItems(board, store.getItem(board, id)),
-    reviewer: store.reviewHolder(board, store.getItem(board, id)),
-    agents: store.listAgents(board), mainMerge: mainMergeFor(board, id), infra: infraNotes.infraNoteOf(store.events(board, { itemId: id })),
-    approval: specApprovalState(ctx.info.root, { board, config: ctx.config }),
-  }));
-  const agentName = (id) => displayAgentName(agents.find((agent) => agent.agent_id === id) ?? { agent_id: id }, ctx.config.agents.names);
+  const { item, verdicts, moves, thread, related, reviewer, agents, mainMerge, infra, approval } = withBoardRead(ctx, (board) => {
+    const item = verdictProjector(ctx.info.root, board).project(store.getItem(board, id));
+    const result = { item, verdicts: store.verdictsFor(board, id), thread: store.itemThread(board, id),
+      approval: specApprovalState(ctx.info.root, { board, config: ctx.config }) };
+    // JSON retains every public detail field; text-only labels and related-item searches add nothing to it.
+    if (values.json) return result;
+    const history = store.events(board, { itemId: id });
+    return { ...result, moves: history.filter((event) => ['attempt', 'escalate'].includes(event.event_kind)),
+      related: store.relatedItems(board, item), reviewer: store.reviewHolder(board, item),
+      agents: store.listAgents(board), mainMerge: mainMergeFor(board, id), infra: infraNotes.infraNoteOf(history) };
+  });
   const agentApproved = itemAgentApprovals(item, approval);
   const approvalQualification = agentApprovalLine(agentApproved);
   // #922: moves on this item made while the relay was down wait in this machine's relay outbox until it answers.
@@ -60,6 +60,7 @@ export async function run(io, { first, values }) {
     io.result({ ...item, verdicts, thread, agentApproved, approvalQualification, ...(relayPending.length ? { relayPending } : {}) });
     return 0;
   }
+  const agentName = (id) => displayAgentName(agents.find((agent) => agent.agent_id === id) ?? { agent_id: id }, ctx.config.agents.names);
   io.say(itemLine(item, agentName, Boolean(mainMerge)));
   if (item.item_status === 'verified' && approvalQualification) io.say(approvalQualification);
   if (item.item_verdict_state) io.say(staleVerdictRefusal(item, item.item_verdict_state).message);
