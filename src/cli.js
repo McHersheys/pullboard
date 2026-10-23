@@ -2358,7 +2358,7 @@ async function runMain(argv, streams) {
     if (code === 0) await checkoutSession?.finish?.();
     if (sync && code === 0) await retry();
     const status = io.exitCode(code);
-    if (status === 0 && !parsed?.values.help && !parsed?.values.version && !parsed?.values['dry-run']) clearCompletedBlocks(io);
+    if (status === 0 && needsRepo && !parsed?.values['dry-run']) clearCompletedBlocks(io);
     io.flush(status);
     return status;
   } finally {
