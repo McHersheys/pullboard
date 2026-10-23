@@ -282,7 +282,7 @@ export function landingSource(root) {
 }
 
 /** Runner refusals that mean the host could not run the shard right now, so a local rerun is sound. */
-const RERUN_REFUSALS = new Set(['RUNNER_SETUP_REFUSED', 'RESOURCE_LEASE_LOST']);
+const RERUN_REFUSALS = new Set(['RUNNER_SETUP_REFUSED', 'RESOURCE_LEASE_LOST', 'RUNNER_BROWSER_SLOT_REQUIRED']);
 
 /**
  * How a sharded landing answers a runner that gave no test result. A lost host or transport, or a

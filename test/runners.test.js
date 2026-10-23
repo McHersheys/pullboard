@@ -22,6 +22,7 @@ import { SECRET, HOST, shellQuote, installSshStandIn } from './runner-ssh-fixtur
 import { sourceSetupFailureFixture } from './runner-source-setup-fixture.js';
 import { runnerSourceRefusalCases } from './runner-source-refusal-fixture.js';
 import { writeCacheProbe, writeProbe } from './runner-probe-fixture.js';
+import { browserFreeRunnerCheck } from './runner-browser-free-fixture.js';
 
 /** Per-phase deadlines for one runner round trip; together they stay near the 60-second hang ceiling. */
 const ROUND_TRIP_DEADLINES = { dispatch: 20_000, 'remote run': 30_000, 'result return': 10_000 }; // budget: a stuck runner fails by name in about a minute, far under the 660-second per-test limit.
@@ -1847,6 +1848,8 @@ test('review655 a registered runner honors the same live person waiver at landin
     if (priorMachine === undefined) delete process.env.PULLBOARD_MACHINE_HOME; else process.env.PULLBOARD_MACHINE_HOME = priorMachine;
   }
 });
+test('a browser-free check on a runner with no browser slots passes [C7]', { timeout: 180_000 }, t => browserFreeRunnerCheck(t, { cli, git })); // budget: three runner round trips and two local runs.
+
 test('a refused runner checkout names its failed Git step and stderr [C6,C7]', async t => {
   for (const mode of ['lock', 'missing', 'large', 'filesystem', 'index', 'custom-filesystem']) {
     await t.test(mode, child => sourceSetupFailureFixture(child, { cli, git, runThroughGate, gateResult }, mode));

@@ -173,6 +173,7 @@ async function readSpec() {
     || typeof value.pipefail !== 'boolean' || !Number.isSafeInteger(value.slots) || value.slots < 1
     || !Number.isSafeInteger(value.browser) || value.browser < 0
     || typeof value.browserRequired !== 'boolean'
+    || (value.browserByLaunch !== undefined && typeof value.browserByLaunch !== 'boolean')
     || !value.runtime || typeof value.runtime !== 'object' || !value.runtime.files || typeof value.runtime.files !== 'object'
     || typeof value.runtime.sha256 !== 'string') throw new Error('invalid work specification');
   if (value.stageMarker !== undefined && !/^PULLBOARD_STAGE_[a-f0-9]{32}$/u.test(value.stageMarker)) throw new Error('invalid stage marker');
@@ -1316,7 +1317,7 @@ async function main() {
     setupStep = 'committed dependencies';
     await installDependencies(root, runnerRoot, env, tracker);
     setupStep = 'command start';
-    final = { ...(await runCommand(spec, root, { ...env, PULLBOARD_LANDING_RUN: spec.landing === true ? '1' : '0', PULLBOARD_LANDING_WAIVERS: JSON.stringify(spec.landing === true ? spec.waivers ?? [] : []) }, sink, tracker)), root };
+    final = { ...(await runCommand(spec, root, { ...env, PULLBOARD_LANDING_RUN: spec.landing === true ? '1' : '0', ...(typeof spec.browserByLaunch === 'boolean' ? { PULLBOARD_TEST_BROWSER_BY_LAUNCH: spec.browserByLaunch ? '1' : '0' } : {}), PULLBOARD_LANDING_WAIVERS: JSON.stringify(spec.landing === true ? spec.waivers ?? [] : []) }, sink, tracker)), root };
   } catch (error) {
     const refused = setupRefusalCode(error);
     const message = refused ? `${safeSetupMessage(error, setupStep)} [${refused}]` : safeSetupMessage(error, setupStep);

@@ -56,6 +56,7 @@ import {
   readStages,
 } from './gate-stages.js';
 import { remoteFileDenial } from './sandbox-denial.js';
+import { readMachineSettingsFile } from './queue-settings.js';
 
 // Budget: 64 MiB bounds worst-case JSON bridge escaping below Node string limits.
 const MAX_OUTPUT_BYTES = 64 * 1024 ** 2;
@@ -486,6 +487,8 @@ function requestFor(root, command, { runner, source, browser = false, pipefail =
     if (secretsIn([{ path: 'runner continuation', line: 1, text: JSON.stringify(projection) }]).length) throw new Refused('RUNNER_SECRET', 'the continuation projection contains a possible secret; keep this run local');
     const spec = { version: 1, id: randomUUID(), repoId, ...(originBase ? { origin, originBase } : {}), runtime, tooling, tags, ...current, command, pipefail, slots: runner.slots,
       browser: runner.browser, browserRequired: browser, landing: metadata.landing === true,
+      // The runner classifies test files as this controller did, not by its own settings (#1043).
+      browserByLaunch: readMachineSettingsFile()?.gate?.browserByLaunch === true,
       ...(stages ? { stageMarker: `PULLBOARD_STAGE_${randomUUID().replaceAll('-', '')}` } : {}), waivers: projection,
       itemCheck: metadata.itemCheck === true, diagnostic: metadata.diagnostic === true,
       item: String(metadata.item ?? ''), kind: String(metadata.kind ?? ''), ...(runner.root ? { root: runner.root } : {}),
@@ -541,7 +544,11 @@ function resultFrom(request, result) {
           ? pipes[index] : null } : stage) };
     }
   }
-  return { isGreen: receipt.code === 0 && !receipt.signal, output: staged?.output ?? output.toString('utf8'), sandboxBlocked,
+  const text = staged?.output ?? output.toString('utf8');
+  if (!request.spec.browserRequired && receipt.code !== 0 && text.includes('[BROWSER_SLOT_REQUIRED]')) {
+    throw new Refused('RUNNER_BROWSER_SLOT_REQUIRED', `runner ${request.runner.host} ran this without a browser slot and answered BROWSER_SLOT_REQUIRED`);
+  }
+  return { isGreen: receipt.code === 0 && !receipt.signal, output: text, sandboxBlocked,
     ...(request.spec.stageMarker ? { stages: staged?.stages ?? null } : {}),
     seconds: Math.round(receipt.wallMs / 1000), exitCode: receipt.code,
     executionRunner: request.runner.host, executionRoot: receipt.root, remoteWallMs: receipt.wallMs,
