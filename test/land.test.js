@@ -12,6 +12,8 @@ import { startFixtureChild, runFixtureChild } from './fixture-child.js';
 import { assertNoRemoteLanding } from './land-no-remote-fixture.js';
 import { MARKER_NOT_YET, readMarker } from './land-marker-fixture.js';
 import { assertLandingStopIdentity } from './land-stop-fixture.js';
+import { assertLandingDoctrineCounts } from './land-doctrine-fixture.js';
+import { onBoard, events, calls } from './land-board-fixture.js';
 
 const e2e = createE2eHelpers();
 after(e2e.cleanup);
@@ -22,23 +24,14 @@ test('a landing stop never signals a reused process group [Q1,Q3,C7]', async () 
   await assertLandingStopIdentity();
 });
 
+test('a landing records a falling doctrine count and holds a rising count [B3,R3,D1,D3]', () => {
+  assertLandingDoctrineCounts({ landProject, itemWorktree, submitItem, acceptItem });
+});
+
 test('a repo with no remote lands into the local trunk and status reads as normal [I1,B3,R3,H5]', () => {
   assertNoRemoteLanding(sandbox, commitFile);
 });
 
-/** Read a private board through public functions, never by mutating its database. */
-function onBoard(box, action, clock) {
-  const board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'), clock);
-  try { return action(board); } finally { store.closeBoard(board); }
-}
-
-/** Return append-only public events for receipt and replay assertions. */
-function events(box) { return onBoard(box, (board) => store.events(board)); }
-
-/** Parse the gate's actual command arguments to distinguish full runs from single-file diagnoses. */
-function calls(box) {
-  return existsSync(box.calls) ? readFileSync(box.calls, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [];
-}
 
 /** Start a separate process holding an exclusive write transaction on the fixture board. */
 function startExclusiveBoardWriter(box, boardFile, name) {
