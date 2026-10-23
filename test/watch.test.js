@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { hostname, loadavg, tmpdir } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { after, test } from 'node:test';
@@ -201,6 +201,17 @@ test('a dropped watch resumes from its last event [A2,N26]', async (t) => {
 });
 
 test('watch --work announces a claimable item and a review left waiting [A2,N26]', async (t) => {
+  // Keep the executing host's load in the frozen check output, including when ordinary admission selects a runner.
+  const samples = [];
+  const sampleLoad = () => samples.push({ at: new Date().toISOString(), oneMinute: loadavg()[0] });
+  sampleLoad();
+  const sampling = setInterval(sampleLoad, 1_000);
+  sampling.unref();
+  t.after(() => {
+    clearInterval(sampling);
+    sampleLoad();
+    t.diagnostic(JSON.stringify({ host: hostname(), node: process.version, loadSamples: samples }));
+  });
   const box = project();
   const builder = box.cli(box.root, 'worktree', 'app', '--model', 'watch-builder');
   const waiting = box.cli(box.root, 'add', 'app', 'Waits on another item', '--criterion', 'waits', '--specs', 'G1', '--check', 'true', '--wait').item;
