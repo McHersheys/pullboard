@@ -26,6 +26,11 @@ export function agentAt(board, path) {
   return withModel(board, agent);
 }
 
+/** Read one seat and its model without loading every registered seat and model on the board. */
+export function agentById(board, id) {
+  return withModel(board, board.db.prepare('SELECT * FROM agent WHERE agent_id = ?').get(id));
+}
+
 /** Read the model label kept beside other board metadata, avoiding any board-schema migration. */
 export function agentModel(board, id) {
   return board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?').get(`agent_model:${id}`)?.meta_value ?? null;
@@ -53,7 +58,8 @@ export function saveAgentModel(board, id, model) {
  * @returns {any[]}
  */
 export function listAgents(board) {
-  return board.db.prepare('SELECT * FROM agent ORDER BY rowid').all().map((agent) => withModel(board, agent));
+  return board.db.prepare(`SELECT agent.*, board_meta.meta_value AS agent_model FROM agent
+    LEFT JOIN board_meta ON board_meta.meta_key='agent_model:' || agent.agent_id ORDER BY agent.rowid`).all().map(agent => ({ ...agent }));
 }
 
 /**

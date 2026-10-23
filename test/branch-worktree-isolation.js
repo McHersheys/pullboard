@@ -1,7 +1,7 @@
 /** Private-Git regression helper for a branch source whose unversioned DDL must not install [A5,A6,C7]. */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -50,10 +50,14 @@ export async function assertBranchWorktreeBoardIsolation(t, sourceRoot) {
   git('add', '-A');
   git('commit', '-q', '-m', 'chore: initialize board isolation fixture');
 
-  const initialized = cli(repo, 'init');
-  assert.equal(initialized.status, 0, initialized.stderr + initialized.stdout);
   const linked = run('git', ['worktree', 'add', '-q', '-b', 'schema/drift', branch, 'main'], repo, env);
   assert.equal(linked.status, 0, linked.stderr + linked.stdout);
+  const missing = cli(branch, 'status');
+  assert.equal(missing.status, 1, missing.stderr + missing.stdout);
+  assert.equal(JSON.parse(missing.stdout).error.code, 'UNMERGED_SCHEMA', 'branch source still cannot initialize its own missing shared board');
+  assert.equal(existsSync(join(repo, '.git', 'pullboard', 'board.sqlite')), false, 'the refused open creates no shared database');
+  const initialized = cli(repo, 'init');
+  assert.equal(initialized.status, 0, initialized.stderr + initialized.stdout);
   const joined = cli(branch, 'join', 'web', '--model', 'fixture-worker');
   assert.equal(joined.status, 0, joined.stderr + joined.stdout);
   const joinedDocument = JSON.parse(joined.stdout);

@@ -36,8 +36,9 @@ import {
   mainLaneWork,
   refuseNextIdle,
   reportBlock,
+  reviewerStartup,
 } from './next-steps.js';
-import { reviewerStartup } from './next-steps.js';
+import { clearCompletedBlocks } from './blocks.js';
 import { environmentAgent } from './relay-environment.js';
 import { judgeTrunkMove } from './verdict-trunk.js';
 import * as gateReceipt from './gate-receipt.js';
@@ -432,7 +433,6 @@ function closestHelpCommand(input) {
   };
   return Object.keys(HELP.commands).sort((a, b) => distance(needle, a) - distance(needle, b) || a.localeCompare(b))[0];
 }
-
 /** Render one command's usage, one-line flags and a pasteable example from the help declaration. */
 function commandHelp(name) {
   const entry = HELP.commands[name];
@@ -730,7 +730,6 @@ export function personMode(ctx, me, values) {
   }
   return true;
 }
-
 /**
  * Refuse a build item in a lane that owns no files, such as review: whoever claims it there can
  * commit nothing, so the item strands its builder. A review item, one that waits on the work it
@@ -1039,7 +1038,7 @@ export function whoAmI(ctx, board) {
   if (seat) return { id: seat.agent_id, lane: seat.agent_lane, route: seat.agent_route, family: seat.agent_family ?? null, model: seat.agent_model ?? 'unknown', displayName: displayAgentName(seat, ctx.config.agents.names) };
   if (ctx.info.isMain) {
     ctx.io.caller?.('coordinator', ctx.info.root);
-    const registered = store.listAgents(board).find((agent) => agent.agent_id === COORDINATOR);
+    const registered = store.agentById(board, COORDINATOR);
     const linked = relayLinked(ctx.info.root);
     if (linked && !registered) throw new Refused('NO_AGENT', 'the linked snapshot has no coordinator; restore a consistent relay snapshot before acting');
     const id = linked ? COORDINATOR : store.ensureCoordinator(board, ctx.info.root);
@@ -2353,6 +2352,7 @@ async function runMain(argv, streams) {
     if (code === 0) await checkoutSession?.finish?.();
     if (sync && code === 0) await retry();
     const status = io.exitCode(code);
+    if (status === 0 && needsRepo && !parsed?.values['dry-run']) clearCompletedBlocks(io);
     io.flush(status);
     return status;
   } finally {
