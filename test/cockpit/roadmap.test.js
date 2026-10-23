@@ -1414,7 +1414,8 @@ test('expanding a roadmap row paints its detail within 100 ms [N26]', { timeout:
       && !each.closest('[hidden]') && each.dataset.roadmapKey !== ${JSON.stringify(far)})?.dataset.roadmapKey`);
     assert.ok(near, 'the roadmap has another folded row');
     await chrome.stable(`${row(near)}.scrollIntoView({ block: 'center', behavior: 'instant' }); true`);
-    await chrome.waitFor(`window.__answered.some((path) => path.endsWith(${JSON.stringify('/items/' + near.slice(3))})) && window.__asked.length === window.__answered.length`, 20_000); // budget: hang ceiling for the read ahead queue.
+    // Read ahead and drawn into the folded row once the queue drains.
+    await chrome.waitFor(`window.__answered.some((path) => path.endsWith(${JSON.stringify('/items/' + near.slice(3))})) && !!${why(near)}.querySelector('.roadmap-criterion')`, 20_000); // budget: hang ceiling for the read ahead queue.
     const ahead = await expand(near);
     assert.ok(ahead.fields.includes('Criterion') && !ahead.loading && ahead.ms < 100, `a row read ahead paints whole at once: ${JSON.stringify(ahead)}`);
     assert.equal((await reads()).asked.filter((path) => path.endsWith(farPath)).length, 1, 'the far row was read once');
