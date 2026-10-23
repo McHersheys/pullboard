@@ -38,7 +38,7 @@ export function agentModel(board, id) {
 
 /** Attach an agent's model to a row from the legacy stable agent table. */
 export function withModel(board, agent) {
-  return agent ? { ...agent, agent_model: agentModel(board, agent.agent_id) } : agent;
+  return agent ? { ...agent, agent_model: agentModel(board, agent.agent_id), agent_parent_session: agentParent(board, agent.agent_id) } : agent;
 }
 
 /** Save or clear a model label without changing the shared SQLite schema. */
@@ -59,7 +59,7 @@ export function saveAgentModel(board, id, model) {
  */
 export function listAgents(board) {
   return board.db.prepare(`SELECT agent.*, board_meta.meta_value AS agent_model FROM agent
-    LEFT JOIN board_meta ON board_meta.meta_key='agent_model:' || agent.agent_id ORDER BY agent.rowid`).all().map(agent => ({ ...agent }));
+    LEFT JOIN board_meta ON board_meta.meta_key='agent_model:' || agent.agent_id ORDER BY agent.rowid`).all().map(agent => ({ ...agent, agent_parent_session: agentParent(board, agent.agent_id) }));
 }
 
 /**
@@ -225,4 +225,33 @@ export function standingProblem(board, verifier, builder, itemId) {
     }
     seat = creator;
   }
+}
+
+/** Read a seat's immutable parent session digest; unknown parents remain separate seats. */
+export function agentParent(board, id) {
+  return board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?').get(`agent_parent_session:${id}`)?.meta_value ?? null;
+}
+
+/** A root session is its own parent, even while its missing parent is displayed as unknown. */
+export function effectiveAgentParent(board, id) {
+  return agentParent(board, id)
+    ?? board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?').get(`agent_session:${id}`)?.meta_value
+    ?? `seat:${id}`;
+}
+
+/** Persist the joined session independently of its parent, so a root and its children share independence. */
+export function saveAgentSession(board, id, digest) {
+  const key = `agent_session:${id}`;
+  const previous = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?').get(key)?.meta_value;
+  if (previous && previous !== digest) throw new Refused('PARENT_SESSION_CHANGED', 'this seat already belongs to another session; create a fresh worktree and join there');
+  if (!previous) board.db.prepare('INSERT INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run(key, digest);
+}
+
+/** Persist a parent once, preserving author independence across later joins. */
+export function saveAgentParent(board, id, digest) {
+  const previous = agentParent(board, id);
+  if (previous && previous !== digest) throw new Refused('PARENT_SESSION_CHANGED', 'this seat already belongs to another parent session; create a fresh worktree and join there');
+  const own = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?').get(`agent_session:${id}`)?.meta_value;
+  if (!previous && own && own !== digest) throw new Refused('PARENT_SESSION_CHANGED', 'this seat already joined as its own parent session; create a fresh worktree to declare another parent');
+  if (!previous) board.db.prepare('INSERT INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run(`agent_parent_session:${id}`, digest);
 }
