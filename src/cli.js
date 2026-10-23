@@ -34,7 +34,6 @@ import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import {
   mainLaneWork,
-  reviewQueueLine,
   refuseNextIdle,
   reportBlock,
 } from './next-steps.js';
@@ -46,6 +45,8 @@ import * as itemSessions from './item-sessions.js';
 import * as seatCheckout from './seat-checkout.js';
 import { submitPreflight } from './submit-preflight.js';
 import * as store from './board.js';
+import { withBoardRead } from './board-read.js';
+export { withBoardRead };
 import * as nativeFlakes from './native-flake-cli.js';
 import {
   COMMANDS,
@@ -835,10 +836,11 @@ function configHere(info) {
  * @template T
  * @param {any} ctx
  * @param {(board: any) => T} work
+ * @param {any} [opened] an already-open board, as withBoardRead passes
  * @returns {T}
  */
-export function withBoard(ctx, work) {
-  const board = store.openBoard(ctx.file, ctx.clock, { isMain: ctx.allowSchemaUpgrade,
+export function withBoard(ctx, work, opened) {
+  const board = opened ?? store.openBoard(ctx.file, ctx.clock, { isMain: ctx.allowSchemaUpgrade,
     /** Report each source mismatch once through this invocation's text or JSON diagnostics. */
     onDiagnostic(message) {
       ctx.io.schemaDiagnostics ??= new Set();
@@ -1966,30 +1968,15 @@ async function nextSeatContext(ctx, board, me, item, seats) {
  * @returns {{ item?: any, held?: boolean, retry?: boolean, reasons?: string[] }}
  */
 export async function nextOnce(ctx, values) {
+  // Select on a read-only board; only a claim, or a review reservation, opens it for writing (#1047).
+  const looked = values.verify ? { claim: true } : withBoardRead(ctx, (board) => nextPick(ctx, board, values));
+  if (!looked.claim) return looked;
   return await withBoard(ctx, async (board) => {
     if (values.verify) checkMainVerifier(ctx, board, values);
-    const me = whoAmI(ctx, board);
-    if (values.verify) return nextReview(ctx, board, me, values, { ordered: (operation, args) => ordered(ctx, board, operation, args), idArg, trunkMerge });
-    const warm = warmFiles(ctx, board, me);
-    const seats = nextSessionSeats(ctx, board);
-    // A claim belongs to the seat that made it: seats of one session share its environment, so a sibling's claim is
-    // never this seat's to resume or be pointed at (#958).
-    const heldItem = seats ? store.listItems(board).find((item) => item.item_status === 'claimed'
-      && item.item_parent_id === null && item.item_owner === me.id
-      && store.ROUTES.indexOf(item.item_route) <= store.ROUTES.indexOf(me.route)) : undefined;
-    const { item, reasons, shared } = heldItem ? { item: heldItem, reasons: [], shared: [] }
-      : store.nextFor(board, { agentId: me.id, lane: me.lane, runnable: values.runnable, routes: values.routes, warm,
-        ...(seats ? { lanes: laneNames(ctx.config).filter((lane) => lane !== COORDINATOR) } : {}),
-        priority: mainRedReworkItems(ctx.info.root, board) });
-    const held = item?.item_status === 'claimed';
-    /** Offer only reviews this seat may give; a linked board previews its engine-27 verifier standing (#579). */
-    const findOffer = () => store.reviewOffer(board, { agentId: me.id, lane: me.lane, policy: ctx.config.verify.policy,
-      familyPolicy: ctx.config.verify.family, ratio: ctx.config.verify.reviewRatio, runnable: values.runnable, routes: values.routes });
-    const offer = held ? null : relayLinked(ctx.info.root) ? store.withVerifierStanding(board, { root: true }, findOffer) : findOffer();
-    if (offer && !values.build) return { item: offer.item, offer, build: item ?? null };
-    if (!item) return { reasons, laneWork: ctx.info.isMain ? mainLaneWork(store.listItems(board)) : null };
-    const reviewSkipped = values.build && !held
-      ? { offeredItem: offer?.item.item_id ?? null, ratio: ctx.config.verify.reviewRatio, ...store.reviewQueue(board) } : null;
+    if (values.verify) return nextReview(ctx, board, whoAmI(ctx, board), values, { ordered: (operation, args) => ordered(ctx, board, operation, args), idArg, trunkMerge });
+    const picked = nextPick(ctx, board, values);
+    if (!picked.claim) return picked;
+    const { me, item, held, shared, reasons, reviewSkipped, seats } = picked;
     const routed = seats ? await nextSeatContext(ctx, board, me, item, seats) : { context: ctx };
     const target = routed.context;
     const holder = whoAmI(target, board);
@@ -2004,34 +1991,30 @@ export async function nextOnce(ctx, values) {
   });
 }
 
-
-/** Print an unreserved review first, then the build available through an explicit opt-out. */
-export function sayReviewOffer(ctx, found) {
-  const command = `pullboard next --verify ${found.item.item_id}${ctx.info.isMain ? ' --as coordinator' : ''}`;
-  const offer = { item: found.item.item_id, command, queue: found.offer.queue, ratio: found.offer.ratio };
-  ctx.io.result?.({ item: found.item, review: true, held: false, shared: [], offer, build: found.build });
-  ctx.io.say(`${reviewQueueLine(ctx, offer.queue, span)}; ratio ${offer.ratio} reached (zero active reviewers counts as one)`);
-  const agents = withBoard(ctx, (board) => store.listAgents(board));
-  ctx.io.say(`review offered: #${found.item.item_id} ${found.item.item_title}, built by ${agentDisplayName(agents, ctx.config, found.item.item_built_by)}; reserve it explicitly: ${command}`);
-  if (found.build) ctx.io.say(`build available: #${found.build.item_id} ${found.build.item_title}; claim it explicitly: pullboard next --build`);
-  else ctx.io.say('no build is currently free in your lane; this review is available');
-}
-
-
-/**
- * A review search that found nothing while another agent is still building: say so, with the wait,
- * so a reviewer who starts first is not told NOTHING_FREE as if the board were idle [C7,P4].
- *
- * @param {any} ctx
- */
-export function refuseWhileBuilding(ctx) {
-  const building = withBoard(ctx, (board) => {
-    const me = whoAmI(ctx, board).id;
-    const items = store.listItems(board);
-    if (items.some((item) => item.item_status === 'submitted' && item.item_built_by !== me)) return [];
-    return items.filter((item) => item.item_status === 'claimed' && item.item_owner !== me).map((item) => `#${item.item_id}`).reverse();
-  });
-  if (building.length) throw new Refused('REVIEW_NOT_READY', `nothing to review yet; the builder is still working on ${building.join(', ')}`);
+/** The selection half of one next loop: the item to claim, or what to print instead. It only reads (#1047). */
+function nextPick(ctx, board, values) {
+  const me = whoAmI(ctx, board);
+  const warm = warmFiles(ctx, board, me);
+  const seats = nextSessionSeats(ctx, board);
+  // A claim belongs to the seat that made it: seats of one session share its environment, so a sibling's claim is
+  // never this seat's to resume or be pointed at (#958).
+  const heldItem = seats ? store.listItems(board).find((item) => item.item_status === 'claimed'
+    && item.item_parent_id === null && item.item_owner === me.id
+    && store.ROUTES.indexOf(item.item_route) <= store.ROUTES.indexOf(me.route)) : undefined;
+  const { item, reasons, shared } = heldItem ? { item: heldItem, reasons: [], shared: [] }
+    : store.nextFor(board, { agentId: me.id, lane: me.lane, runnable: values.runnable, routes: values.routes, warm,
+      ...(seats ? { lanes: laneNames(ctx.config).filter((lane) => lane !== COORDINATOR) } : {}),
+      priority: mainRedReworkItems(ctx.info.root, board) });
+  const held = item?.item_status === 'claimed';
+  /** Offer only reviews this seat may give; a linked board previews its engine-27 verifier standing (#579). */
+  const findOffer = () => store.reviewOffer(board, { agentId: me.id, lane: me.lane, policy: ctx.config.verify.policy,
+    familyPolicy: ctx.config.verify.family, ratio: ctx.config.verify.reviewRatio, runnable: values.runnable, routes: values.routes });
+  const offer = held ? null : relayLinked(ctx.info.root) ? store.withVerifierStanding(board, { root: true }, findOffer) : findOffer();
+  if (offer && !values.build) return { item: offer.item, offer, build: item ?? null };
+  if (!item) return { reasons, laneWork: ctx.info.isMain ? mainLaneWork(store.listItems(board)) : null };
+  const reviewSkipped = values.build && !held
+    ? { offeredItem: offer?.item.item_id ?? null, ratio: ctx.config.verify.reviewRatio, ...store.reviewQueue(board) } : null;
+  return { claim: true, me, item, held, shared, reasons, reviewSkipped, seats };
 }
 
 
