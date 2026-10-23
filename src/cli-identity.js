@@ -17,7 +17,7 @@ export function identifyCaller(ctx, board, { environmentAgent, relayLinked }) {
   if (seat) return { id: seat.agent_id, lane: seat.agent_lane, route: seat.agent_route, family: seat.agent_family ?? null, model: seat.agent_model ?? 'unknown', displayName: displayAgentName(seat, ctx.config.agents.names) };
   if (ctx.info.isMain) {
     ctx.io.caller?.('coordinator', ctx.info.root);
-    const registered = store.listAgents(board).find((agent) => agent.agent_id === COORDINATOR);
+    const registered = store.agentById(board, COORDINATOR);
     const linked = relayLinked(ctx.info.root);
     if (linked && !registered) throw new Refused('NO_AGENT', 'the linked snapshot has no coordinator; restore a consistent relay snapshot before acting');
     const id = linked ? COORDINATOR : store.ensureCoordinator(board, ctx.info.root);

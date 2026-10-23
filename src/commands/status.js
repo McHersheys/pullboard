@@ -35,10 +35,10 @@ export async function run(io, { values }) {
   const summary = withBoardRead(ctx, (board) => {
     const me = identifyCaller(ctx, board, { environmentAgent: environment?.environmentAgent ?? (() => null),
       relayLinked: relay?.relayLinked ?? (() => false) });
-    const mine = store.listItems(board).filter((item) => item.item_status === 'claimed' && item.item_owner === me.id);
+    const mine = store.itemsInStatus(board, 'claimed', me.id);
     const approvalState = personNeedsSummary(ctx.info.root, { board, config: ctx.config });
     return { me, mine, needs: approvalState.needs, specApprovalBaseline: approvalState.specApprovalBaseline, specApprovalEvidenceErrors: approvalState.specApprovalEvidenceErrors, stats: store.stats(board), reviewQueue: { ...store.reviewQueue(board), ...store.reviewQueueBreakdown(board) }, unread: store.unreadCount(board, me.id), relay: relay ? relay.relayStatus(ctx.info.root) : unlinkedRelayStatus(),
-      submitInvariantProposals: submitInvariantProposals(store.eventsOfKinds(board, ['submit', 'landing_batch']), ctx.config) };
+      submitInvariantProposals: submitInvariantProposals(store.submitInvariantEvents(board, ctx.config), ctx.config) };
   });
   if (values.json) {
     io.result(summary);
