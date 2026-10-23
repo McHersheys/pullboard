@@ -1,7 +1,9 @@
 /** Machine and repository queues persist leases; landings first, then arrival order, or by class (landing, review, submit, other) aging up over time where the machine opts in [Q1,Q2,Q3]. */
 import {
+  existsSync,
   mkdirSync,
   realpathSync,
+  writeFileSync,
 } from 'node:fs';
 import {
   execFile,
@@ -41,12 +43,21 @@ const HEARTBEAT_MS = 3_000;
 const POLL_MS = 40;
 const PROCESS_IDENTITY_CACHE_MS = 3_000;
 const processIdentities = new Map();
+const SLOT_DB_BUSY_MS = 10_000;
+/** How long a queued run keeps retrying a locked slot database before it stops, never having run. */
+export const SLOT_DB_LOCK_DEADLINE_MS = 300_000;
+/** Overrides that deadline in milliseconds; tests use it to reach the deadline quickly. */
+export const SLOT_DB_LOCK_ENV = 'PULLBOARD_SLOT_DB_LOCK_MS';
+/** The exit status of a run that never started because the slot database stayed locked (EX_TEMPFAIL). */
+export const NEVER_RAN_EXIT_CODE = 75;
 
 /** Mark child commands whose parent already owns a machine gate slot. */
 export const GATE_SLOT_HELD_ENV = 'PULLBOARD_GATE_SLOT_HELD';
 export const GATE_SLOT_POOL_ENV = 'PULLBOARD_GATE_SLOT_POOL';
 export const GATE_SLOT_TOKEN_ENV = 'PULLBOARD_GATE_SLOT_TOKEN';
 export const BROWSER_SLOT_HELD_ENV = 'PULLBOARD_BROWSER_SLOT_HELD';
+/** Where a runner asks the lease guard to record its own browser-slot refusal (#1043). */
+export const BROWSER_REFUSAL_FILE_ENV = 'PULLBOARD_BROWSER_REFUSAL_FILE';
 
 /** Reserve a distinct resource row for each configured remote host. */
 function runnerResourceName(host) { return `runner:${host}`; }
@@ -104,7 +115,7 @@ function open(file, machine = false) {
 function openQueue(file) {
   mkdirSync(dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
-  db.exec('PRAGMA busy_timeout = 10000');
+  db.exec(`PRAGMA busy_timeout = ${Math.min(SLOT_DB_BUSY_MS, slotLockDeadlineMs())}`);
   let transaction = false;
   try {
     db.exec('BEGIN IMMEDIATE');
@@ -156,6 +167,56 @@ function openQueue(file) {
     throw error;
   }
   return db;
+}
+
+/** The configured slot-database lock deadline, or the default when unset or invalid. */
+function slotLockDeadlineMs() {
+  const value = Number(process.env[SLOT_DB_LOCK_ENV]);
+  return Number.isSafeInteger(value) && value > 0 ? value : SLOT_DB_LOCK_DEADLINE_MS;
+}
+
+/** Recognize SQLite's busy or locked failure, which a later attempt can pass. */
+function slotDatabaseLocked(error) {
+  const code = Number.isInteger(error?.errcode) ? error.errcode & 0xff : null;
+  return code === 5 || code === 6 || /database is locked/iu.test(error?.message ?? '');
+}
+
+/** Name other processes with the database open; SQLite does not record which one holds its lock. lsof scans every process, slowly on a loaded machine, so it gets 10 s. */
+function slotDatabaseOpeners(file) {
+  const lsof = ['/usr/sbin/lsof', '/usr/bin/lsof'].find(path => existsSync(path));
+  if (!lsof) return [];
+  let output = '';
+  try { output = execFileSync(lsof, ['-n', '-P', '-F', 'pc', '--', file], { encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'ignore'] }); }
+  catch (error) { output = typeof error.stdout === 'string' ? error.stdout : ''; }
+  const openers = [];
+  for (const line of output.split('\n')) {
+    if (line.startsWith('p')) openers.push({ pid: Number(line.slice(1)), command: '' });
+    else if (line.startsWith('c') && openers.length) openers.at(-1).command = line.slice(1);
+  }
+  return openers.filter(({ pid }) => Number.isSafeInteger(pid) && pid !== process.pid);
+}
+
+/** Retry a slot-database step while another process holds the lock, with a bounded backoff, until the deadline. */
+async function retryLockedSlotDatabase(file, work) {
+  const deadline = slotLockDeadlineMs();
+  const startedAt = Date.now();
+  let backoff = POLL_MS;
+  while (true) {
+    try { return work(); }
+    catch (error) {
+      if (!slotDatabaseLocked(error)) throw error;
+      const elapsed = Date.now() - startedAt;
+      if (elapsed >= deadline) {
+        const openers = slotDatabaseOpeners(file);
+        const holder = openers.length ? `held by one of: ${openers.map(({ pid, command }) => `pid ${pid}${command ? ` (${command})` : ''}`).join(', ')}` : 'lock holder unknown';
+        const stopped = new Refused('SLOT_DB_LOCKED', `never ran: the gate slot database ${file} stayed locked for ${elapsed}ms, past the ${deadline}ms deadline (${holder}). The run did not start, so this is not a test failure; rerun it.`);
+        stopped.neverRanExitCode = NEVER_RAN_EXIT_CODE;
+        throw stopped;
+      }
+      await pause(Math.min(backoff, deadline - elapsed));
+      backoff = Math.min(backoff * 2, 2_000);
+    }
+  }
 }
 
 /** Check whether the operating system still recognizes this process ID. */
@@ -646,7 +707,8 @@ export async function takeResource(options) {
   if (shortEligible && (name !== 'gate' || scope !== 'machine' || landing || diagnostic)) throw new Refused('BAD_SHORT_SLOT_REQUEST', 'short gate slots are only available to named non-landing, non-diagnostic machine gate runs');
   if (diagnostic && (landing || itemCheck)) throw new Refused('BAD_RESOURCE_PRIORITY', 'a diagnostic slot cannot also be a landing or an item check');
   const file = databaseFile(scope, root);
-  const db = open(file, scope === 'machine');
+  // A queued run waits out a locked database in place; only a lock past the deadline stops it, as never ran.
+  const db = await retryLockedSlotDatabase(file, () => open(file, scope === 'machine'));
   let pool;
   try { pool = canonicalResourceFile(file); }
   catch (error) { db.close(); throw error; }
@@ -669,14 +731,14 @@ export async function takeResource(options) {
         throw new Refused('BAD_RESOURCE_METADATA', 'the waiting item renewal must return a valid leaseUntil timestamp');
       }
       leaseUntil = result.leaseUntil;
-      const changed = update(db, () => db.prepare(`UPDATE ${table} SET lease_until = ? WHERE token = ? AND pid = ? AND started = ?`)
-        .run(leaseUntil, token, pid, started));
+      const changed = await retryLockedSlotDatabase(file, () => update(db, () => db.prepare(`UPDATE ${table} SET lease_until = ? WHERE token = ? AND pid = ? AND started = ?`)
+        .run(leaseUntil, token, pid, started)));
       if (changed.changes !== 1) throw new Refused('RESOURCE_LEASE_LOST', 'the queued resource lease disappeared during item renewal; retry the command');
     }
   };
   try {
     let initialTicket = resume?.ticket;
-    update(db, () => {
+    await retryLockedSlotDatabase(file, () => update(db, () => {
       const currentCapacity = options.capacityProvider?.() ?? capacity;
       const currentShortCapacity = options.shortCapacityProvider?.() ?? 0;
       if (!Number.isSafeInteger(currentCapacity) || currentCapacity < 1) throw new Refused('BAD_RESOURCE_CAPACITY', 'resource capacity must be a positive integer');
@@ -712,7 +774,7 @@ export async function takeResource(options) {
         const inserted = db.prepare('INSERT INTO waiter(token, name, pid, started, agent, repo, since, heartbeat, landing, item_check, diagnostic, browser, item, kind, remote, classed, release_aware, board_key, release_rank, queue_ticket, short_eligible) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(token, name, pid, started, agent, repo, queuedAt, Date.now(), Number(landing), Number(itemCheck || diagnostic), Number(diagnostic), Number(browser), item, kind, Number(remote), classedMarker(queueOrder(scope)), 1, boardKey, releaseRank, resume?.queueTicket ?? null, Number(shortEligible));
         initialTicket = Number(inserted.lastInsertRowid);
       }
-    });
+    }));
     let memoryWarned = false;
     while (true) {
       const memory = options.memory ? await options.memory() : null;
@@ -722,7 +784,7 @@ export async function takeResource(options) {
         await keepItemLease({ holders: [], line: [], position: 0, memory }, 'waiter');
       }
       const order = queueOrder(scope);
-      const acquired = update(db, () => {
+      const acquired = await retryLockedSlotDatabase(file, () => update(db, () => {
         const now = Date.now();
         // The machine-settings provider performs a bounded local JSON read. Read it
         // after taking the same SQLite write lock used by updateRunnerSettings so an
@@ -758,7 +820,7 @@ export async function takeResource(options) {
           return { acquired: true, state: { ...spot, position: 0 }, ticket: waiter.ticket, queueTicket, runner: executor.host ? executor : undefined, shortSlot: executor.shortSlot === true };
         }
         return { acquired: false, state: { ...spot, position: reportPosition } };
-      });
+      }));
       if (acquired.acquired) {
         // Only item-lease callbacks opt into admission. Await them so no renewal remains in
         // flight during the run, and restart the ordinary item expiry from this boundary.
@@ -869,6 +931,9 @@ export async function takeResource(options) {
  * (namedFiles) may reuse one, so a whole suite started under a short check queues for a real slot.
  */
 export function inheritedGateSlot({ root = process.cwd(), browser = false, namedFiles = false } = {}) {
+  // Taken by the first guard in this process, so nothing it starts (a test body) can write the receipt.
+  const refusalFile = process.env[BROWSER_REFUSAL_FILE_ENV] ?? '';
+  delete process.env[BROWSER_REFUSAL_FILE_ENV];
   const markedPool = process.env[GATE_SLOT_POOL_ENV] ?? '';
   const token = process.env[GATE_SLOT_TOKEN_ENV] ?? '';
   if (!markedPool && !token) return null;
@@ -888,6 +953,7 @@ export function inheritedGateSlot({ root = process.cwd(), browser = false, named
   if (slotClass === 'short' && !namedFiles) throw new Refused('SHORT_SLOT_FULL_SUITE', 'a run that does not name its test files cannot reuse a short gate slot; start it outside the short check so it queues for an ordinary slot');
   const expectedBrowserMarker = holder.browser === 1 ? '1' : '';
   if (process.env[BROWSER_SLOT_HELD_ENV] !== expectedBrowserMarker) throw new Refused('GATE_SLOT_MARKER_INVALID', 'the inherited browser marker does not match its live gate lease; restart the child with gateSlotEnvironment(lease)');
+  if (browser && holder.browser !== 1 && refusalFile) writeFileSync(refusalFile, '{"code":"BROWSER_SLOT_REQUIRED"}\n', { mode: 0o600 });
   if (browser && holder.browser !== 1) throw new Refused('BROWSER_SLOT_REQUIRED', 'the inherited gate lease does not hold the browser slot; release it and reacquire gate with browser: true before launching Chrome');
   return {
     name: 'gate', scope: 'machine', token, pool, browser: holder.browser === 1, slotClass, waitMs: 0,

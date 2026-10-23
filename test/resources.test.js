@@ -1717,6 +1717,54 @@ test('[Q4] a red gate releases its lease before the same process starts another 
 });
 
 
+/** A write lock on the slot database delays a queued run; only a lock past the deadline stops it, as never ran [C7]. */
+test('a gate-slot waiter retries a locked slot database [C7]', async () => {
+  const box = fixture();
+  mkdirSync(box.home, { recursive: true });
+  const released = join(box.dir, 'lock-released');
+  // The waiter's test passes only if the lock was already released when it ran.
+  writeFileSync(join(box.first, 'ran.test.js'), `import assert from 'node:assert/strict';\nimport { existsSync } from 'node:fs';\nimport { test } from 'node:test';\ntest('the waiter ran', () => assert.ok(existsSync(${JSON.stringify(released)})));\n`);
+  const env = { ...box.env, PULLBOARD_SLOT_DB_LOCK_MS: '6000' };
+  for (const key of ['PULLBOARD_GATE_SLOT_HELD', 'PULLBOARD_GATE_SLOT_POOL', 'PULLBOARD_GATE_SLOT_TOKEN', 'PULLBOARD_BROWSER_SLOT_HELD']) delete env[key];
+  /** Hold a write lock on the machine slot database from another process for `ms`; wrapped so awaiting it waits only for the lock. */
+  const holdLock = async (ms) => {
+    const marker = join(box.dir, `locked-${ms}`);
+    const locker = runFixtureChildAsync(process.execPath, ['--input-type=module', '-e', `
+      import { DatabaseSync } from 'node:sqlite';
+      import { writeFileSync } from 'node:fs';
+      const [file, marker, ms, released] = process.argv.slice(1);
+      const db = new DatabaseSync(file);
+      db.exec('BEGIN IMMEDIATE');
+      db.exec('CREATE TABLE IF NOT EXISTS lock_probe (x)');
+      writeFileSync(marker, 'locked');
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(ms));
+      db.exec('COMMIT');
+      writeFileSync(released, 'released');`, join(box.home, 'resources.sqlite'), marker, String(ms), released], { env });
+    await waitForMarker(marker);
+    return { done: locker, pid: locker.child.pid, stop: () => locker.child.kill('SIGKILL') };
+  };
+  /** Run one named test file through the real runner, which waits for a machine gate slot. */
+  const runWaiter = () => runFixtureChildAsync(process.execPath, [TEST_RUNNER, 'ran.test.js'], { cwd: box.first, env });
+
+  const shortLock = await holdLock(3_000);
+  const kept = await runWaiter();
+  assert.equal((await shortLock.done).status, 0, 'the 3 s lock was taken and released');
+  assert.equal(kept.status, 0, `${kept.context}\n${kept.stdout}`);
+  assert.match(kept.stdout, /ok \d+ - the waiter ran/u);
+  assert.match(kept.stdout, /^# fail 0$/mu);
+
+  rmSync(released);
+  const longLock = await holdLock(60_000);
+  try {
+    const stopped = await runWaiter();
+    assert.equal(stopped.status, 75, stopped.context);
+    assert.match(stopped.stderr, /never ran/u);
+    assert.match(stopped.stderr, /not a test failure/u);
+    assert.match(stopped.stderr, new RegExp(`pid ${longLock.pid}\\b`, 'u'), 'names the process holding the lock');
+    assert.doesNotMatch(stopped.stdout, /the waiter ran/u);
+  } finally { longLock.stop(); await longLock.done; }
+});
+
 const capacityCases = capacityChangeCases({ fixture, worker, event, acquired, release, privateList, poolWorker, POOL_MODULE_WORKER, configureBrowserSlots });
 
 /** Existing queued processes observe a raised limit without restarting their holders [Q1,Q2,Q4]. */

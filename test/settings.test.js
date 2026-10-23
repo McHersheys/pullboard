@@ -49,9 +49,12 @@ test('[Q4] the machine pool ignores board and HOME overrides unless explicitly s
   const script = `import { machineHome } from ${JSON.stringify(MACHINE_HOME_MODULE)}; process.stdout.write(machineHome());`;
   const env = { ...process.env, HOME: '/private/home', PULLBOARD_HOME: '/private/board' };
   delete env.PULLBOARD_MACHINE_HOME;
+  delete env.PULLBOARD_ACCOUNT_HOME;
   const defaultHome = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', env });
   assert.equal(defaultHome.status, 0, defaultHome.stderr);
   assert.equal(defaultHome.stdout, join(userInfo().homedir, '.pullboard'));
+  const account = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', env: { ...env, PULLBOARD_ACCOUNT_HOME: '/private/account' } });
+  assert.equal(account.stdout, join('/private/account', '.pullboard'), 'a test run substitutes its own account home [C7]');
 
   const override = join(tmpdir(), 'pullboard-private-machine-home');
   const privateHome = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
