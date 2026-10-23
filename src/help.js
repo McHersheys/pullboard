@@ -58,6 +58,7 @@ Set up
   pullboard relay recover --skip <sequence>  person-only recovery of one blocked next relay position
   pullboard resume                      where you are: your claim, branch, uncommitted work, what came back,
                                         unread shouts, what to do next; run it to start any session
+  pullboard badge                       write board-derived Shields endpoint JSON to docs/badges/
   pullboard hooks                       reinstall the git hooks (e.g. after a fresh clone)
 
 Work
