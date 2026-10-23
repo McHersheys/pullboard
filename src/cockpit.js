@@ -141,7 +141,7 @@ ${hostedLocal && !snapshot ? '<div class="hosted-mark" aria-hidden="true"><svg v
   <div class="top-find"><input id="q" type="search" placeholder="Search" aria-label="Search items, Spec, Doctrine and shouts" autocomplete="off"><div class="find-results" id="find-results" role="listbox" aria-label="Search results" hidden></div></div>
 </header>
 <main>
-  <section class="card-panel first" hidden>
+  <section class="card-panel first">
     <h2>No boards yet</h2>
     <p>Run <code>pullboard init</code> in a git repo, or ask an agent to. Its board shows up here by itself.</p>
   </section>
@@ -1073,8 +1073,6 @@ function render() {
   // flashes them; with no board to show, one message says how a board starts, in their place.
   document.body.classList.remove('loading');
   document.body.classList.toggle('boardless', !p && !group);
-  // The card starts hidden, so even a page whose stylesheet is late never says it before the list is known empty.
-  document.querySelector('main > .first').hidden = Boolean(p || group);
   $('group-view').hidden = !group;
   $('tabs').hidden = Boolean(group);
   document.querySelectorAll('[data-pane]').forEach((pane) => { pane.hidden = Boolean(group) || pane.dataset.pane !== view.tab; });
