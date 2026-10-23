@@ -24,11 +24,10 @@ const SHOUTS = 23_000;
 const SEATS = 800;
 const sandboxes = [];
 // Reads that fold the whole history by design, so no index can serve them, each with the item that
-// rewrites it: coordinator resume's undrafted Rigor in personNeedsState (#1052), resume's proofStats
-// (#1051) and the view state's projectState (#1055, which uses
-// lastMoves and recentEvents). The test fails if one stops scanning while still listed, so the list
-// can only shrink.
-const WHOLE_HISTORY = ['personNeedsState', 'projectState', 'proofStats'];
+// rewrites it: coordinator resume's undrafted Rigor in personNeedsState (#1052) and resume's
+// proofStats (#1051). The test fails if one stops scanning while still listed, so the list can only
+// shrink.
+const WHOLE_HISTORY = ['personNeedsState', 'proofStats'];
 
 after(() => {
   for (const dir of sandboxes) rmSync(dir, { recursive: true, force: true });
