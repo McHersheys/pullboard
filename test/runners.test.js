@@ -16,7 +16,8 @@ import { readRemoteGateHolders, waitForCondition } from './runner-fixture-state.
 import { assertAttemptDeadlineReset, assertRedispatchDeadlineAccounting, runPairedRerun, startRunnerCpuStandIn } from './runner-paired-rerun-fixture.js';
 import { assertFixtureGroupEpermControls, stopGroup } from './runner-process-group.js';
 import { parentDeathDrainFixture } from './runner-parent-death-fixture.js';
-import { runnerOrphanFixture } from './runner-orphan-fixture.js';
+import { reusedGroupFixture, runnerOrphanFixture } from './runner-orphan-fixture.js';
+import { createDescendantTracker } from '../src/runner-custody.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { refuseSandboxBlocked } from '../src/gate.js';
 import { SECRET, HOST, shellQuote, installSshStandIn } from './runner-ssh-fixture.js';
@@ -1507,6 +1508,8 @@ test('a queued run executes on a registered runner and its result comes back [C7
 const orphanTools = { cli, git, installSshStandIn, observe, startToolingCli, processIsAlive, HOST };
 test('a runner job leaves no process behind, detached ones included [C7]',
   { timeout: 150_000 }, t => runnerOrphanFixture(t, orphanTools)); // budget: one plain runner round trip, then the declared 30-second remote cleanup timeout and a local rerun.
+test('a runner job leaves no process behind, and never signals a group whose number was reused [C7]',
+  { timeout: 30_000 }, t => reusedGroupFixture(t, { createDescendantTracker, parseProcessCensus })); // budget: scripted census, no real processes.
 
 /** Read one machine pool's browser row through the public resource API, selecting that machine's home. */
 function browserPoolAt(machineHome, root) {

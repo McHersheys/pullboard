@@ -139,3 +139,49 @@ export async function runnerOrphanFixture(t, tools) {
   assert.match(readFileSync(join(remoteStateRoot, 'jobs', retained[0], 'cleanup-timeout.json'), 'utf8'), /child spawn journal overflow/u);
   await waitForCondition(() => readRemoteGateHolders(remoteDatabase).length === 0, 'the runner gate holder releases after its cleanup timeout');
 }
+
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** One census row as `ps -axo pid=,ppid=,pgid=,lstart=,stat=,comm=` prints it under TZ=UTC. */
+function censusLine(pid, ppid, pgid, ms) {
+  const d = new Date(ms);
+  const time = [d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()].map(part => String(part).padStart(2, '0')).join(':');
+  return `${pid} ${ppid} ${pgid} ${DAYS[d.getUTCDay()]} ${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()} ${time} ${d.getUTCFullYear()} S node`;
+}
+
+/**
+ * Drive the runner's custody through a scripted census and a recording kill. A job orphan is proven by its own boot
+ * record while its group's leader is already gone; it exits, and a foreign leader and member then take that group
+ * number. The runner must never adopt or signal the foreign group (#1063). Pids sit above any real pid_max.
+ */
+export async function reusedGroupFixture(t, { createDescendantTracker, parseProcessCensus }) {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-runner-reused-group-')));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const self = 9_000_001;
+  const group = 9_000_100;
+  const orphan = 9_000_101;
+  const foreign = [group, 9_000_102];
+  const now = Date.now();
+  let rows = [censusLine(self, 1, self, now - 60_000)];
+  const kills = [];
+  const census = () => parseProcessCensus(rows.join('\n'));
+  const kill = (pid, signal) => {
+    kills.push({ pid, signal });
+    // A signalled process leaves the census, as a killed one would.
+    rows = rows.filter(line => { const [rowPid, , rowGroup] = line.split(' ').map(Number); return pid < 0 ? rowGroup !== -pid : rowPid !== pid; });
+  };
+  const tracker = createDescendantTracker(dir, { census, kill, selfPid: self, intervalMs: 3_600_000 });
+  t.after(() => tracker.stopMonitoring());
+  writeFileSync(join(dir, 'child-journal', `children-${orphan}.jsonl`), JSON.stringify({ type: 'boot', pid: orphan, ppid: 1, instance: 'fixture-orphan', started: now }) + '\n');
+  rows = [...rows, censusLine(orphan, 1, group, now)];
+  tracker.observe();
+  assert.deepEqual(tracker.cleanupState().live.map(row => row.pid), [orphan], 'the orphan is the job\'s by its own boot record');
+  rows = [rows[0], censusLine(foreign[0], 1, group, now + 5_000), censusLine(foreign[1], foreign[0], group, now + 5_000)];
+  tracker.observe();
+  let timer;
+  await Promise.race([tracker.stopDescendants(), new Promise(done => { timer = setTimeout(done, 3_000); })]); // budget: a stop that adopts nothing returns at once.
+  clearTimeout(timer);
+  assert.deepEqual(kills.filter(({ pid }) => pid === -group || foreign.includes(pid)), [], 'the runner never signals a group it cannot prove is the job\'s');
+  assert.deepEqual(tracker.cleanupState().live, [], 'no foreign process is taken into custody');
+}
