@@ -101,7 +101,7 @@ export function healthReport({ db, root, config, now }) {
   }
   const items = db.prepare('SELECT * FROM item ORDER BY item_id').all();
   const byId = new Map(items.map((item) => [item.item_id, item]));
-  const history = itemHistory(db);
+  const history = itemHistory(db, items.map((item) => item.item_id));
   const trunk = trunkTip(root);
   const releases = roadmap(board);
   const found = (list, finding) => list.push(finding);
@@ -481,10 +481,12 @@ function releaseOverdue(db, root, now, deadlineMs, history) {
  * finalizes an unreferenced statement when garbage collection runs mid-iterate, which crashed
  * resume with "statement has been finalized" on a large board. Exported for that regression test.
  */
-export function itemHistory(db) {
+export function itemHistory(db, itemIds) {
   const history = new Map();
-  const statement = db.prepare('SELECT event_id, event_at, event_by, event_kind, item_id, event_detail FROM event WHERE item_id IS NOT NULL ORDER BY event_id');
-  try { readItemHistory(statement.iterate(), history); }
+  const statement = db.prepare('SELECT event_id, event_at, event_by, event_kind, item_id, event_detail FROM event WHERE item_id = ? ORDER BY event_id');
+  try {
+    for (const itemId of itemIds) readItemHistory(statement.iterate(itemId), history);
+  }
   finally { keepAlive(statement); }
   return history;
 }

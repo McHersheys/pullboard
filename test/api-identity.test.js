@@ -82,7 +82,7 @@ test('[A2] an older board gains one identity during in-place upgrade without los
     try {
       id = store.boardId(upgraded);
       assert.match(id, /^[0-9a-f]{32}$/);
-      assert.equal(upgraded.db.prepare('PRAGMA user_version').get().user_version, 2);
+      assert.equal(upgraded.db.prepare('PRAGMA user_version').get().user_version, 3);
       assert.deepEqual(upgraded.db.prepare('SELECT * FROM agent ORDER BY agent_id').all(), before.agents);
       assert.deepEqual(upgraded.db.prepare('SELECT * FROM item ORDER BY item_id').all(), before.items);
       assert.deepEqual(upgraded.db.prepare('SELECT * FROM event ORDER BY event_id').all(), before.events);

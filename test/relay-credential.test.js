@@ -32,6 +32,7 @@ test('every current operation selects its native actor credential without a seco
     if (operation === 'declareJob') args = [{ agentId: actor, name: 'credential-job', every: '10m', owner: actor }];
     if (operation === 'recordJobRun') args = [{ agentId: actor, name: 'credential-job' }];
     if (operation === 'takeCoordinator') args = [{ agentId: actor, machine: 'credential-machine' }];
+    if (operation === 'landingLeaseMove') args = [{ agentId: actor, action: 'renew', token: 'credential-lease', branch: 'main', pid: 1, generation: 0 }];
     if (operation === 'proposeSentinel') args = [{ agentId: actor,
       row: { name: 'credential-watch', check: 'true', every: 'hourly', owner: actor } }];
     if (['beginSentinelRun', 'finishSentinelRun'].includes(operation)) {

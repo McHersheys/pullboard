@@ -1,6 +1,6 @@
 /** Exercise landing against real private Git worktrees, hooks, SQLite and bare remotes [B3,R3]. */
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { after, test } from 'node:test';
 import * as store from '../src/board.js';
@@ -569,9 +569,13 @@ test('land bisects a real red, blocks stale proof and refuses an unverified stac
   assert.equal(box.git(box.remote, 'rev-parse', 'main'), result.batch.tip);
   assert.notEqual(result.batch.tip, base);
   const afterCalls = calls(box).length;
+  const beforeEmptyEvents = events(box);
+  const beforeEmptyLease = onBoard(box, board => store.landingLeaseState(board));
   const again = box.run(box.repo, 'land', '--json');
   assert.equal(again.code, 1, again.out + again.err);
   assert.equal(JSON.parse(again.out).error.code, 'STALE_VERDICT', 'an all-blocked queue refuses instead of suggesting an empty successful land');
+  assert.deepEqual(events(box), beforeEmptyEvents, 'an idle all-blocked selection adds no lease events');
+  assert.deepEqual(onBoard(box, board => store.landingLeaseState(board)), beforeEmptyLease, 'a stale refusal takes no lease');
   assert.equal(json(box, box.repo, 'show', String(entries[2].item)).item_status, 'open', 'the known red is returned to its builder and is no longer a verified landing candidate');
   assert.equal(calls(box).length, afterCalls, 'known unchanged red is not retried');
 });
@@ -590,6 +594,13 @@ test('land names sibling conflicts whose reviews share the unchanged main [B3,R3
   assert.deepEqual(result.landed, [entries[0].item]);
   assert.deepEqual(result.conflicts, [{ id: entries[1].item, files: [FILES[0]] }], 'the actual batch names the collision between the two fresh siblings');
 });
+
+/** Keep the complete private diagnostic refusal in a failing assertion before fixture cleanup deletes its logs. */
+function diagnosticOutput(batch) {
+  const directory = dirname(batch.logPath);
+  return readdirSync(directory).filter(file => file.startsWith('diagnostic-') && file.endsWith('.log'))
+    .map(file => readFileSync(join(directory, file), 'utf8')).join('\n');
+}
 
 test('land diagnostics inherit their browser gate lease [C7]', () => {
   const box = landProject();
@@ -623,7 +634,7 @@ test('land diagnostics inherit their browser gate lease [C7]', () => {
     delete box.env.LAND_SUPPRESS_RED;
   }
   const result = json(box, box.repo, 'land');
-  assert.equal(result.batch.state, 'flaky', 'the full gate is red while its isolated diagnosis passes');
+  assert.equal(result.batch.state, 'flaky', `the full gate is red while its isolated diagnosis passes: ${diagnosticOutput(result.batch)}`);
   assert.deepEqual(result.flakes.map(({ test: file }) => file), [FILES[0]]);
   const inherited = JSON.parse(readFileSync(marker, 'utf8'));
   assert.equal(inherited.file, FILES[0]);

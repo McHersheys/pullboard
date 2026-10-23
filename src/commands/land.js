@@ -17,9 +17,6 @@ import {
   Refused,
 } from '../refused.js';
 import {
-  mainPolicy,
-} from '../trusted-policy.js';
-import {
   staleVerdictRefusal,
 } from '../verdict-freshness.js';
 import {
@@ -45,7 +42,7 @@ export async function run(io, { first, second, rest, values }) {
     return 0;
   }
   if (values.until !== undefined || values.reason !== undefined || values.max !== undefined && (!/^[1-9][0-9]*$/u.test(values.max) || !Number.isSafeInteger(Number(values.max)))) throw new Refused('USAGE', 'use --max with a positive item count, or --waive with --until and --reason');
-  const result = await land({ root: ctx.info.root, board, config: mainPolicy(ctx.info.root).config,
+  const result = await land({ root: ctx.info.root, board,
     write: (operation, parameters) => ordered(ctx, board, operation, parameters), say: io.say, owner: agentSessionDigest() ?? `pid-${process.pid}`,
     maximum: values.max === undefined ? Infinity : Number(values.max), dryRun: Boolean(values['dry-run']), adopt: Boolean(values.adopt), onWait: gateWaitReporter(io) });
   io.result?.(result);
