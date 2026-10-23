@@ -6,7 +6,9 @@
  */
 #relay-screen { display: none; }
 #relay-screen [hidden] { display: none !important; }
-:root[data-relay-screen] body > :not(#relay-screen) { display: none !important; }
+:root[data-relay-screen="removed"] body > :not(#relay-removed) { display: none !important; }
+:root[data-relay-screen="removed"] #relay-removed { display: block; margin: 32px auto; max-width: 440px; }
+:root[data-relay-screen]:not([data-relay-screen="removed"]) body > :not(#relay-screen) { display: none !important; }
 :root[data-relay-screen="sign-in"] #relay-screen, :root[data-relay-screen="share"] #relay-screen {
   display: grid; place-items: center; min-height: 100vh; min-height: 100dvh; padding: 32px 20px; background: var(--ground);
 }

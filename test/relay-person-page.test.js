@@ -33,7 +33,7 @@ test('a signed-in phone names its empty-board blocker and one next step [N26,H5,
     const shown = await emptyPhoneScreen(box.chrome);
     assert.match(shown.text, /not paired/iu);
     assert.match(shown.text, /open.*link.*here/iu);
-    assert.ok(shown.commands.includes('pullboard relay pair'));
+    assert.ok(shown.commands.includes('pullboard relay pair --new-browser'));
     assert.equal(shown.text.includes('pullboard relay on --all'), false);
   });
   await t.test('known board key but no first copy', async t => {
@@ -52,16 +52,16 @@ test('a signed-in phone names its empty-board blocker and one next step [N26,H5,
     const shown = await emptyPhoneScreen(box.chrome);
     assert.match(shown.text, /linked boards.*none.*read/iu);
     assert.match(shown.text, /keys/iu);
-    assert.ok(shown.commands.includes('pullboard relay pair'));
+    assert.ok(shown.commands.includes('pullboard relay pair --new-browser'));
     assert.equal(shown.text.includes('pullboard relay on --all'), false);
   });
 });
 
 test('a signed-in second computer names a linked board blocker without asking to share again [H5,H17]', chromeOptions, async t => {
   for (const [name, options, command] of [
-    ['unpaired', {}, 'pullboard relay pair'],
+    ['unpaired', {}, 'pullboard relay pair --new-browser'],
     ['first copy missing', { savedKey: true }, 'pullboard relay status'],
-    ['paired without grants', { enrolled: true }, 'pullboard relay pair'],
+    ['paired without grants', { enrolled: true }, 'pullboard relay pair --new-browser'],
   ]) await t.test(name, async t => {
     const box = await emptyPhoneFixture(t, { ...options, phone: false });
     await box.chrome.waitFor("document.querySelector('#relay-notice')?.textContent.includes('fixture/empty-project')");
@@ -80,7 +80,7 @@ test('a phone shows its account quota warning while its already-linked board sti
   assert.equal(shown.visible, true);
   assert.ok(shown.text.includes(message), 'the actual quota warning is visible in the phone screen, not hidden under it');
   assert.match(shown.text, /not paired/iu, 'the independently observed pairing blocker still names its own step');
-  assert.ok(shown.commands.includes('pullboard relay pair'));
+  assert.ok(shown.commands.includes('pullboard relay pair --new-browser'));
   assert.equal(shown.text.includes('pullboard relay on --all'), false, 'a linked board is not asked to share again');
 });
 

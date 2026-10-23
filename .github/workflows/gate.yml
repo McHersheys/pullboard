@@ -74,6 +74,16 @@ jobs:
           node-version: '24'
       - name: Run the matrix outside the gate
         run: npm run hosted-shapes
+        env:
+          # Each cell's words, commands and durations, so a red cell says what the page showed (#1003).
+          PULLBOARD_SHAPES_REPORT: ${{ runner.temp }}/hosted-shapes-report.jsonl
+      - name: Keep the per-cell report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hosted-shapes-report
+          path: ${{ runner.temp }}/hosted-shapes-report.jsonl
+          if-no-files-found: ignore
 
   perf:
     name: view performance (3000 items, eight projects)

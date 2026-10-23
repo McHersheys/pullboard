@@ -266,6 +266,7 @@ catalogCase('[A1] command results match the catalog across roots and subcommands
   await json(box, repo, 'hooks');
   await json(box, repo, 'whoami');
   await json(box, repo, 'lanes');
+  assert.ok(Array.isArray((await json(box, repo, 'agents')).agents));
   await json(box, repo, 'resources');
   assert.equal((await json(box, repo, 'settings')).settings.gateSlots, 2);
   assert.equal((await json(box, repo, 'settings', ['gateSlots', '1'])).settings.gateSlots, 1);

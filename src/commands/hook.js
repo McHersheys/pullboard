@@ -76,7 +76,12 @@ export async function hookCommand(io, { first, second }) {
     const spec = withRowDrafts(loadSpec(info.root, ctx.config), hookRead(ctx, (board) => store.rowDrafts(board)));
     commitCitationWarnings(message, { spec, doctrine: ctx.doctrine })
       .forEach((warning) => io.say(`pullboard commit-msg: warning: ${warning}`));
-    problems = commitMsgProblems(message, { rules: ctx.config.commits, spec, doctrine: ctx.doctrine });
+    const claimedItems = spec.rows.some(row => row.status === 'approved') ? [] : (hookRead(ctx, board => {
+      const agent = store.agentAt(board, info.root);
+      return agent ? store.listItems(board, { lane: agent.agent_lane }).filter(item =>
+        item.item_status === 'claimed' && item.item_owner === agent.agent_id).map(item => item.item_id) : [];
+    }) ?? []);
+    problems = commitMsgProblems(message, { rules: ctx.config.commits, spec, doctrine: ctx.doctrine, claimedItems });
   } else if (first === 'pre-push') {
     const refsText = await readStdin(io.stdin);
     problems = prePushProblems(info.root, refsText);

@@ -39,6 +39,8 @@ import { pageScriptPart1 } from './view/page-script-1.js';
 import { pageScriptPart2 } from './view/page-script-2.js';
 import { pageScriptPart3 } from './view/page-script-3.js';
 import { pageScriptPart4 } from './view/page-script-4.js';
+import { settingsMarkup } from './view/settings-page.js';
+import { settingsPageScript } from './view/settings-page.js';
 import { agentApprovalScript } from './view/agent-approval.js';
 import { historyLoadingScript } from './view/history-loading.js';
 
@@ -120,6 +122,7 @@ ${hostedLocal && !snapshot ? '<div class="hosted-mark" aria-hidden="true"><svg v
     <button class="theme-btn" id="theme" type="button" title="Theme: system"><svg class="sys" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.5"/><path fill="currentColor" d="M8 2a6 6 0 0 1 0 12Z"/></svg><svg class="sun" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3" fill="none" stroke="currentColor" stroke-width="1.5"/><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" d="M8 1.5v1.2M8 13.3v1.2M1.5 8h1.2M13.3 8h1.2M3.4 3.4l.85.85M11.75 11.75l.85.85M3.4 12.6l.85-.85M11.75 4.25l.85-.85"/></svg><svg class="moon" viewBox="0 0 16 16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" d="M13.6 9.6A6 6 0 1 1 6.4 2.4a5.2 5.2 0 0 0 7.2 7.2Z"/></svg></button>
   </div>
   <div class="side-body" id="side-body">
+    <button class="ghost" data-tab="settings" type="button">Settings</button>
     <div class="label">Projects</div>
     <nav id="proj-list" aria-label="Projects on this machine"></nav>
     <button class="share-again" id="share-again" type="button" hidden>Link boards to pullboard.dev&hellip;</button>
@@ -144,6 +147,7 @@ ${hostedLocal && !snapshot ? '<div class="hosted-mark" aria-hidden="true"><svg v
     <h2>No boards yet</h2>
     <p>Run <code>pullboard init</code> in a git repo, or ask an agent to. Its board shows up here by itself.</p>
   </section>
+  <p class="machine-settings-entry"><button class="ghost" data-settings-open type="button">Settings for this machine</button></p>
   <p class="empty" id="project-loading" role="status" hidden>Loading project…</p>
   ${hostedMarkup('http://127.0.0.1:4890', { looking: Boolean(hostedLocal) && !snapshot, signIn })}
   <div class="share-card" id="share-note" hidden><span class="share-ic" aria-hidden="true"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="13" height="10" rx="1.5"/><path d="M7 18h5M9.5 14v4"/><rect x="17" y="9" width="5" height="10" rx="1"/></svg></span><span class="share-txt"><b>Open your boards on any device</b><span>Sign in to use pullboard.dev while on the go.</span> <a href="https://pullboard.dev/relay/" target="_blank" rel="noopener">How the relay works</a></span><button class="ob-gh share-gh" id="share-start" type="button"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>Sign in with GitHub</button><button class="share-x" id="share-hide" type="button" aria-label="Hide this; bring it back from the projects list" title="Hide this; bring it back from the projects list">&times;</button></div>
@@ -213,6 +217,7 @@ ${hostedLocal && !snapshot ? '<div class="hosted-mark" aria-hidden="true"><svg v
     <button class="ghost flow-show" id="flow-show" type="button" hidden>Show the lifecycle</button>
     <div class="card-panel feed" id="activity"></div>
   </section>
+  ${settingsMarkup()}
   <section data-pane="roadmap" class="roadmap-layout" id="roadmap" aria-label="Roadmap"></section>
   ${hostedLocal && !snapshot ? starMarkup() : ''}
 </main>
@@ -1077,6 +1082,7 @@ function render() {
   renderHostedReleaseNote(p);
   renderPersonRequests(p);
   renderCredentials();
+  if (view.tab === 'settings') { $('group-view').hidden = true; showTab(); return; }
   if (group) { renderGroup(group); return; }
   if (!p) return;
   $('proof-stats').hidden = false;
@@ -1461,7 +1467,7 @@ function render() {
  * it, so it stays closed across reloads, and across restarts of the view, which serves from the
  * same address again, until they open it. While hidden it is not drawn.
  */
-${agentApprovalScript()}${pageScriptPart4(pageScope)}${historyLoadingScript()}</script>
+${settingsPageScript()}${agentApprovalScript()}${pageScriptPart4(pageScope)}${historyLoadingScript()}</script>
 </body>
 </html>`;
 }

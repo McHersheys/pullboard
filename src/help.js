@@ -18,9 +18,11 @@ Set up
   pullboard join coordinator --model <name>                                 declare the main checkout's coordinator model
                                         pullboard.json agents.names: suffix (default) or prefix
   pullboard whoami | lanes | status     who you are, the lanes, the board at a glance
+  pullboard agents                      each agent with its seats and helpers, and what each holds
   pullboard lane add <name> --owns <path>[,<path>]   add a lane that owns those folders to pullboard.json
                                         refuses a lane name or a path that is already owned, naming the owner
   pullboard takeover                   rebind this checkout when the same agent starts a new session
+                                        in a linked main checkout it also takes the board's coordinator here
   pullboard resources                  local resource holders and their FIFO queues
   pullboard settings [gateSlots <n> | browserSlots <n>]  view or set machine capacity (gate default 2; browser default 1)
                                         browser-free check slots are opt-in: gate.browserFreeChecks in ~/.pullboard/settings.json (default false)
@@ -43,6 +45,7 @@ Set up
   pullboard relay [status|on|off|pair|join <code>] [--url <address>]  link, inspect or unlink this board's sealed relay
                                         on signs in through GitHub; the address defaults to https://app.pullboard.dev
                                         pair prints a one-use machine code; join stores it in another clone
+  pullboard relay pair --new-browser    sign in and pair one more browser; existing browsers stay paired
   pullboard relay on --all [--url <address>]  link every registered project after one sign-in; pair the phone once
                                         keep this command open until pairing finishes; later projects link on registration
   pullboard relay devices [--verbose]   paired phones and joined computers by name, with paired date, last seen and boards
@@ -306,6 +309,7 @@ const HELP_ALIASES = {
   version: { usage: 'pullboard version', source: null },
   whoami: { usage: 'pullboard whoami', source: 'whoami' },
   lanes: { usage: 'pullboard lanes', source: 'whoami' },
+  agents: { usage: 'pullboard agents', source: 'whoami' },
   lane: { usage: 'pullboard lane add <name> --owns <path>[,<path>]', source: 'lane add' },
   status: { usage: 'pullboard status', source: 'whoami' },
   done: { usage: 'pullboard done <id>', source: 'submit <id>' },

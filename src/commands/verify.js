@@ -71,13 +71,13 @@ import {
   landNext,
   ordered,
   queuedItemLease,
-  recordedRecovery,
   refuseUnverifiedStack,
   resourceAgent,
   textArg,
   whoAmI,
   withBoard,
 } from '../cli.js';
+import { recordedRecovery } from '../recorded-recovery.js';
 
 /**
  * Verify from this checkout (V3, V7): the submitted commit must be here, at or under HEAD, and the

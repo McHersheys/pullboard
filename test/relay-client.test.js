@@ -952,7 +952,8 @@ async function competingReplicaClaims(fixture, timing) {
   let next;
   try {
     next = appliedSequence(board) + 1;
-    earlier = prepareEngineMove(board, 'addItem', [{ by: 'coordinator', lane: 'web', title: 'Earlier remote item' }]);
+    // Clone A's own coordinator sent it from another session; one main checkout coordinates at a time (E19, #347).
+    earlier = { ...prepareEngineMove(board, 'addItem', [{ by: 'coordinator', lane: 'web', title: 'Earlier remote item' }]), holder: 'machine-clone-1' };
   } finally { store.closeBoard(board); }
   const earlierSealed = Buffer.from(await timing.wait('seal the earlier coordinator move', () => seal(key, new TextEncoder().encode(JSON.stringify(earlier)), {
     boardId, kind: 'move', sequence: next,
@@ -1121,6 +1122,8 @@ async function recoverReplicaReplies(fixture, timing) {
   assert.equal(mergeRetry.commit, originalCommit);
   assert.equal(relay.uploads.length, beforeMerge + 1, 'merge retries report the original full commit after its ref disappears');
 
+  // One main checkout coordinates at a time (E19, #347): clone C takes the coordinator before it adds.
+  await timing.wait('pass the coordinator to clone C', () => cli(clones[2], envs[2], 'takeover'));
   const beforeAutomatic = relay.uploads.length;
   relay.dropNextReply();
   const automatic = await timing.wait('recover a dropped reply automatically on clone C', () => cli(clones[2], envs[2], 'add', 'web', 'Automatically recovered reply'));
@@ -1128,6 +1131,7 @@ async function recoverReplicaReplies(fixture, timing) {
   assert.equal(relay.uploads.length, beforeAutomatic + 1, 'automatic recovery keeps one ordered move');
   assert.equal(JSON.parse(readFileSync(join(commonDir(clones[2], envs[2]), 'pullboard', 'relay.json'), 'utf8')).recovered,
     undefined, 'automatic success consumes its recovered outcome');
+  await timing.wait('pass the coordinator back to clone A', () => cli(clones[0], envs[0], 'takeover'));
 
   await timing.wait('sync all worktrees before recovered-stack scenarios', () => Promise.all(worktrees.map((root, index) => cli(root, envs[index], 'status'))));
 

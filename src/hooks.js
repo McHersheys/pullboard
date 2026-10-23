@@ -119,10 +119,10 @@ function citationGuide(spec, type) {
  * Every rule a commit message breaks (C1, C2). Merges, reverts and fixups git wrote are exempt.
  *
  * @param {string} raw - The message as git hands it, comments included.
- * @param {{ rules: any, spec: any }} context
+ * @param {{ rules: any, spec: any, doctrine?: any, claimedItems?: number[] }} context
  * @returns {string[]}
  */
-export function commitMsgProblems(raw, { rules, spec, doctrine = null }) {
+export function commitMsgProblems(raw, { rules, spec, doctrine = null, claimedItems = [] }) {
   const lines = raw.split('\n').filter((line) => !line.startsWith('#'));
   while (lines.length && !lines.at(-1)?.trim()) lines.pop();
   const [header = '', second, ...body] = lines;
@@ -134,7 +134,10 @@ export function commitMsgProblems(raw, { rules, spec, doctrine = null }) {
       (problem) => `cite only rows that exist and are live, separated by commas (${problem}); ${citationGuide(spec, type)}`,
     ),
   );
-  if (type && rules.requireIds.includes(type) && !ids.length) {
+  const itemCitations = [...header.matchAll(/(?:^|\s)#([1-9]\d*)(?=\s|$)/gu)].map(match => Number(match[1]));
+  const firstItem = !spec.rows.some(row => row.status === 'approved')
+    && itemCitations.some(id => claimedItems.includes(id));
+  if (type && rules.requireIds.includes(type) && !ids.length && !firstItem) {
     problems.push(
       citationGuide(spec, type),
     );

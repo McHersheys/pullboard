@@ -11,6 +11,9 @@ import {
 } from './machine.js';
 import { Refused } from './refused.js';
 
+/** The board's coordinator hold travels with its seats: one main checkout coordinates a linked board (#347). */
+export { coordinatorHolder, takeCoordinator } from './coordinator-hold.js';
+
 /**
  * The agent registered for a worktree path, if any.
  *

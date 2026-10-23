@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+/** @pullboard-module-loads ** */
+// Custom reporters are user-selected: ** covers every committed module, not a finite reporter list.
 /**
  * Run the test suite with a private home, no inherited Git identity or config, and a refusing CLI shim.
  */
@@ -12,7 +14,6 @@ import { Worker } from 'node:worker_threads';
 import { randomUUID } from 'node:crypto';
 import { channel } from 'node:diagnostics_channel';
 import { AGENT_SHELL_MARKERS, SSH_SHELL_MARKERS } from '../src/person.js';
-
 const runner = fileURLToPath(import.meta.url);
 const LANDING_RUN_ENV = 'PULLBOARD_LANDING_RUN';
 const LANDING_WORKER_STARTS_ENV = 'PULLBOARD_LANDING_WORKER_STARTS';
@@ -26,7 +27,6 @@ export const DEFAULT_TEST_FILE_TIMEOUT_MS = 30_000;
 // Worker identity startup retries stay below the ordinary per-file ceiling even if ps is unavailable.
 const LANDING_WORKER_IDENTITY_TIMEOUT_MS = 12_000;
 const LANDING_CHILD_CUSTODY_TIMEOUT_MS = 12_000;
-
 const watchdogSource = `
 const { parentPort } = require('node:worker_threads');
 const { writeSync } = require('node:fs');

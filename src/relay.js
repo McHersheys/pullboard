@@ -62,6 +62,7 @@ import {
   seatReceipt,
   withSeatName,
 } from './relay-seats.js';
+import { syncApprovers } from './relay-approvers.js';
 import {
   ENGINE_VERSION,
   VERIFIER_STANDING_ENGINE,
@@ -88,6 +89,7 @@ import {
   unseal,
 } from './seal.js';
 import { terminalQr } from './qr.js';
+import { environmentLink } from './relay-environment.js';
 import { locked } from './relay-lock.js';
 import {
   decideUncertainBaseline,
@@ -106,6 +108,7 @@ import {
   outboxQueueable,
   queueMove,
 } from './relay-outbox.js';
+import { stampCoordinatorHolder } from './coordinator-hold.js';
 import { Refused } from './refused.js';
 import { refusalFromReceipt } from './recorded-refusal.js';
 import { relayNotices } from './relay-notices.js';
@@ -854,12 +857,11 @@ async function replayRelayRecord(board, key, state, record) {
     if (record.kind === 'request') return receivePersonRequest(board, move, { sequence: record.event_id, at: record.event_at, sender: record.sender });
     return applyRelayMove(board, move, { sequence: record.event_id, at: record.event_at, sender: record.sender, kind: record.kind,
       digest: createHash('sha256').update(record.sealed).digest('hex'), registration: record.registration });
-  } catch (error) {
-    if (!(error instanceof Refused) || !['RELAY_MOVE', 'RELAY_RESPONSE', 'SEAL_FORMAT', 'SEAL_AUTH_FAILED'].includes(error.code)) throw error;
-    return refuseRelayMove(board, move, { sequence: record.event_id, at: record.event_at, sender: record.sender, kind: record.kind,
-      code: error.code === 'SEAL_AUTH_FAILED' ? 'RELAY_SEAL' : error.code,
+  } catch (error) { // A seal no key opens, from an engine no newer than this one, is junk: set aside, never a stop [E20].
+    if (!(error instanceof Refused) || !(['RELAY_MOVE', 'RELAY_RESPONSE', 'SEAL_FORMAT', 'SEAL_AUTH_FAILED'].includes(error.code) || error.code === 'SEAL_VERSION' && record.sender?.engine <= ENGINE_VERSION)) throw error;
+    return refuseRelayMove(board, move, { sequence: record.event_id, at: record.event_at, sender: record.sender, kind: record.kind, code: ['SEAL_AUTH_FAILED', 'SEAL_VERSION'].includes(error.code) ? 'RELAY_SEAL' : error.code,
       digest: createHash('sha256').update(String(record.sealed)).digest('hex'),
-      refusal: error.code === 'SEAL_AUTH_FAILED'
+      refusal: ['SEAL_AUTH_FAILED', 'SEAL_VERSION'].includes(error.code)
         ? new Refused('RELAY_SEAL', 'this relay record failed authentication and was logged as refused; run pullboard relay to continue with the next ordered record')
         : error });
   }
@@ -964,14 +966,14 @@ async function ensureOrdered(root, file, state, io) {
 }
 
 /** Restore a compacted, authenticated native prefix before receiving any following operations. */
-async function restoreCheckpoint(root, state, io, key) {
+export async function restoreCheckpoint(root, state, io, key, restore = restoreRelaySnapshot) {
   const document = await request(state, '/api/v1/boards/' + state.board + '/state', {}, io);
   const snapshot = document.state;
   if (!snapshot || !Number.isSafeInteger(snapshot.sequence) || snapshot.sequence < 0) throw new Refused('RELAY_RESPONSE', 'the relay snapshot has no valid coverage sequence; fetch it again');
   const senderProblem = relaySenderProblem(null, snapshot.sender, 'snapshot');
   if (senderProblem) throw senderProblem;
   const native = await decoded(key, snapshot, state, 'snapshot', snapshot.sequence);
-  localRecords(root, (board) => restoreRelaySnapshot(board, native, snapshot.sequence));
+  localRecords(root, (board) => restore(board, native, snapshot.sequence));
 }
 
 /**
@@ -1203,7 +1205,7 @@ export async function relayOperation(root, operation, args, io, command, applyLo
       try {
         if (!move) {
           const sent = withSeatName(root, operation, args);
-          move = localRecords(root, (board) => prepareEngineMove(board, operation, sent, io.personRequestMoveId ? { id: io.personRequestMoveId } : {}));
+          move = stampCoordinatorHolder(localRecords(root, (board) => prepareEngineMove(board, operation, sent, io.personRequestMoveId ? { id: io.personRequestMoveId } : {})), state.machine);
           if (io.personRequest) move.personRequest = structuredClone(io.personRequest);
           const problem = move.personRequest && localRecords(root, board => requestMoveProblem(board, move, { checkExecutorLease: false }));
           if (problem) throw problem;
@@ -1259,11 +1261,10 @@ export async function relayOperation(root, operation, args, io, command, applyLo
 /** Catch up an opted-in replica before/after a CLI command; offline reads retain local evidence. */
 export async function syncRelay(root, io) {
   // Reuse Git discovery only within this command; still re-read the link before each retry.
-  let files = LINK_FILES.get(io);
-  if (!files) { files = new Map(); LINK_FILES.set(io, files); }
+  const files = LINK_FILES.get(io) ?? LINK_FILES.set(io, new Map()).get(io);
   const file = files.get(root) ?? linkFile(root);
   files.set(root, file);
-  if (!existsSync(file)) return null;
+  if (!await environmentLink(root, file, io) && !existsSync(file)) return null; // a CI or cloud session links from its environment [E18]
   return locked(file, async () => {
     const state = loadLink(file);
     if (!state) return null;
@@ -1648,7 +1649,7 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
     delete state.personReauth;
     saveLink(file, state);
     // The person's own sign-in sets up the coordinator's token, so no agent can mint it (#579).
-    if (/^ps_[A-Za-z0-9_-]{43}$/u.test(signed.token ?? '')) await ensurePersonCoordinator(file, state, signed.token, io);
+    if (/^ps_[A-Za-z0-9_-]{43}$/u.test(signed.token ?? '')) { await ensurePersonCoordinator(file, state, signed.token, io); await syncApprovers(root, state, signed.token, io); }
     let result;
     try {
       let ready = true;

@@ -67,13 +67,13 @@ import {
   idArg,
   ordered,
   queuedItemLease,
-  recordedRecovery,
   refuseUnverifiedStack,
   reportSubmission,
   resourceAgent,
   whoAmI,
   withBoard,
 } from '../cli.js';
+import { recordedRecovery } from '../recorded-recovery.js';
 
 /**
  * Submit: a clean tree, nothing untracked, the gate green at HEAD, then the board (V4).

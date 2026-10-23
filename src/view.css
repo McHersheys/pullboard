@@ -1015,6 +1015,22 @@ code.inline.long { white-space: break-spaces; overflow-wrap: anywhere; }
 .hosted-page.loading .hosted-mark { display: grid; place-items: center; min-height: 100vh; color: var(--ink-muted); }
 .hosted-page.loading .hosted-mark svg { width: 56px; height: 56px; }
 
+/* Settings are literal API data: readable on narrow screens, with no editable fields. */
+#settings-pane { padding: 20px; }
+#settings-content [role="tablist"] { display: flex; flex-wrap: wrap; gap: 8px; margin-block: 16px; }
+#settings-content [aria-selected="true"] { font-weight: 700; border-color: var(--accent); }
+#settings-content table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+#settings-content th, #settings-content td { padding: 12px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+#settings-content td { max-width: 40ch; overflow-wrap: anywhere; white-space: pre-wrap; }
+
+.boardless [data-pane="settings"]:not([hidden]) { display: block; }
+
+#settings-content .settings-table { overflow-x: auto; }
+#settings-content { overflow-wrap: anywhere; }
+
+.machine-settings-entry { display: none; }
+.boardless .machine-settings-entry { display: block; }
+
 /* Approval provenance is literal text, including an unabridged commit on a phone. */
 .agent-approval p { margin: 6px 0; overflow-wrap: anywhere; }
 .agent-approval .actions { display: flex; flex-wrap: wrap; gap: 8px; }

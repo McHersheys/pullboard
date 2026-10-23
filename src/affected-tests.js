@@ -22,6 +22,7 @@ const SOURCE_TREE_INPUT = '/** @pullboard-test-input source-tree */';
 const DOCS_TREE_INPUT = '/** @pullboard-test-input docs-tree */';
 // A computed-import test may declare the repository modules it can load, in its leading comment header only.
 const LOADS = /^\/\*\* @pullboard-test-loads (.+?) \*\/$/u;
+const SOURCE_LOADS = /^\/\*\* @pullboard-module-loads (.+?) \*\/$/u;
 const COMMAND_REGISTRY = 'src/commands/index.js';
 const GLOBAL = new Set(['bin/run-tests.js', 'package.json', 'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'pnpm-lock.yaml', 'src/gate.js', 'src/cli.js', 'src/hooks.js', 'src/trusted-policy.js', 'src/affected-tests.js', 'src/module-imports.js']);
 
@@ -52,22 +53,31 @@ function globPattern(glob) {
 }
 
 /**
- * The repository modules a computed-import test declares in its header that it can load, normalized, with globs
- * expanded over the committed modules; anything outside the repository is ignored. A glob form this cannot expand
- * makes the whole declaration unusable (null), so the caller falls back to the whole suite (#803).
+ * The repository modules a computed loader declares in its leading header, with globs expanded over committed
+ * modules. Tests retain legacy outside-path filtering; strict source declarations require every target to exist
+ * and every glob to match. Invalid declarations return null so unknown imports still require the full suite.
  *
  * @returns {string[] | null}
  */
-function declaredLoads(source, modulePaths) {
-  const declared = headerLines(source).map(line => LOADS.exec(line)).filter(Boolean)
-    .flatMap(match => match[1].trim().split(/\s+/u)).map(path => posix.normalize(path))
-    .filter(path => !path.startsWith('../') && !path.startsWith('/'));
+function declaredLoads(source, modulePaths, declaration = LOADS, strict = false) {
+  const header = headerLines(source);
+  if (strict && header.some(line => line.includes('@pullboard-module-loads') && !declaration.test(line))) return null;
+  const declared = header.map(line => declaration.exec(line)).filter(Boolean)
+    .flatMap(match => match[1].trim().split(/\s+/u)).map(path => posix.normalize(path));
+  if (strict && declared.some(path => path.startsWith('../') || path.startsWith('/'))) return null;
+  const inRepo = declared.filter(path => !path.startsWith('../') && !path.startsWith('/'));
   const loads = [];
-  for (const path of declared) {
-    if (!/[*?[\]{}]/u.test(path)) { if (MODULE.test(path)) loads.push(path); continue; }
+  for (const path of inRepo) {
+    if (!/[*?[\]{}]/u.test(path)) {
+      if (strict && (!MODULE.test(path) || !modulePaths.includes(path))) return null;
+      if (MODULE.test(path)) loads.push(path);
+      continue;
+    }
     const pattern = globPattern(path);
     if (!pattern) return null;
-    loads.push(...modulePaths.filter(module => pattern.test(module)));
+    const matches = modulePaths.filter(module => pattern.test(module));
+    if (strict && !matches.length) return null;
+    loads.push(...matches);
   }
   return loads;
 }
@@ -285,6 +295,17 @@ function graphAt(root, commit, changedDocs = []) {
           reverse.get(load).add(path);
         }
         continue;
+      }
+      // Source loaders explicitly declare their committed module universe; unknown loaders still fail closed.
+      if (target === '(computed)' && !TEST.test(path)) {
+        const loads = declaredLoads(modules.get(path), paths, SOURCE_LOADS, true);
+        if (loads?.length) {
+          for (const load of loads) {
+            if (!reverse.has(load)) reverse.set(load, new Set());
+            reverse.get(load).add(path);
+          }
+          continue;
+        }
       }
       // The command registry loads its sibling modules by discovery; synthetic edges below stand for those imports (#804).
       if (target === '(computed)' && path === COMMAND_REGISTRY) continue;

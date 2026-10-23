@@ -73,7 +73,7 @@ function removeKeychainValue(service, id) {
   if (removed.status !== 0 && !absent) throw new Refused('RELAY_KEYCHAIN', 'unlock the system keychain to finish moving this board key');
 }
 
-/** Read device storage first, migrating legacy keychain values before using an environment fallback. */
+/** Read device storage first; a CI or cloud session then uses its environment key, and any other session migrates a legacy keychain value before the environment fallback. */
 export function readBoardKey(boardId) {
   const id = identity(boardId);
   const file = keyFile(id);
@@ -92,6 +92,10 @@ export function readBoardKey(boardId) {
     }
     return key;
   }
+  // A CI or cloud session, with an agent token and the key in its environment, uses that key as given: it never reads
+  // a keychain or writes a key file [E18]. A person's machine still migrates a legacy keychain value first.
+  const environmentSession = process.env.PULLBOARD_RELAY_TOKEN !== undefined && process.env.PULLBOARD_RELAY_KEY !== undefined;
+  if (environmentSession) return decodeBoardKey(process.env.PULLBOARD_RELAY_KEY);
   const service = keychain();
   if (service) {
     const args = service === 'security'

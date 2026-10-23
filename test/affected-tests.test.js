@@ -1,9 +1,11 @@
+/** @pullboard-test-input source-tree */
 /** Documentation input selection remains conservative across committed trees [V4,C7]. */
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { runFixtureChild, runFixtureGit } from './fixture-child.js';
 import { selectAffectedTests } from '../src/affected-tests.js';
 
@@ -357,4 +359,29 @@ test('runtime discovery and the selector agree on which files are engines and co
     assert.ok(selected.full || selected.files.includes(reader), `${file} reaches ${reader} or falls back to the full suite, never selects nothing`);
     base = commit;
   }
+});
+
+
+test('a src change selects only its importers despite run-tests.js [V4,C7]', (t) => {
+  const box = graph(t);
+  const sourceRoot = fileURLToPath(new URL('../', import.meta.url));
+  const modules = runFixtureGit(['ls-files', '-z', '--', 'src', 'bin'], { cwd: sourceRoot })
+    .split('\0').filter(path => /\.[cm]?js$/u.test(path));
+  for (const path of modules) box.put(path, readFileSync(new URL('../' + path, import.meta.url), 'utf8'));
+  box.put('test/api.test.js', "import assert from 'node:assert/strict'; assert.ok(true);\n");
+  box.put('test/person.test.js', "import '../src/person.js';\n");
+  box.put('test/runner-reader.test.js', "import '../bin/run-tests.js';\n");
+  box.put('test/unrelated.test.js', "import assert from 'node:assert/strict'; assert.ok(true);\n");
+  const base = box.commit();
+  box.put('src/person.js', readFileSync(new URL('../src/person.js', import.meta.url), 'utf8') + '\n// ordinary source change\n');
+  const commit = box.commit();
+  const selected = selectAffectedTests(box.root, { base, commit, changed: ['src/person.js'] });
+  assert.equal(selected.full, false, selected.reason);
+  assert.deepEqual(selected.files, ['test/person.test.js', 'test/runner-reader.test.js']);
+  box.put('src/unresolved-reader.js', "import './person.js'; export const load = () => import(process.env.UNKNOWN_MODULE);\n");
+  box.put('test/unresolved-reader.test.js', "import '../src/unresolved-reader.js';\n");
+  const unresolved = box.commit();
+  const fallback = selectAffectedTests(box.root, { base: unresolved, commit: unresolved, changed: ['src/person.js'] });
+  assert.equal(fallback.full, true, 'a genuinely unresolved reached helper still requires the full suite');
+  assert.match(fallback.reason, /non-literal dynamic import in reached file src\/unresolved-reader\.js/u);
 });
