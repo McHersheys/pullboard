@@ -1,3 +1,4 @@
+import { recordVerdict } from './verdict-assurance.js';
 import { logEvent } from './board-event-log.js';
 export { logEvent };
 /**
@@ -1586,16 +1587,7 @@ export function verify(board, id, { agentId, decision, reason, note = '', cause,
         noteGiven: () => (note.trim() ? null : new Refused('NOTE_REQUIRED', 'a reject says what failed: --note "..."')),
         causeWellFormed: () => causeProblem(cause),
       },
-      before: (found) => {
-        const family = board.db.prepare('SELECT agent_family FROM agent WHERE agent_id = ?').get(agentId)?.agent_family ?? null;
-        board.db
-          .prepare(
-            `INSERT INTO verdict (item_id, verdict_by, verdict_decision, verdict_reason, verdict_note,
-               verdict_commit, verdict_digest, verdict_head, verdict_verifier_family, verdict_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          )
-          .run(id, agentId, decision, code, note.trim(), found.item_commit, digest, head, family, now(board));
-      },
+      before: (found) => recordVerdict(board, found, { agentId, decision, reason: code, note, digest, head }),
       set: (found) => ({ item_verdict: decision, item_verified_by: isAccept ? agentId : null, item_owner: isAccept ? found.item_owner : null }),
     });
     const returnedAt = !isAccept && engine >= REOPEN_FIRST_REFUSAL_ENGINE && reopenFirstRefusalMinutes > 0 && item.item_built_by ? board.clock.now() : undefined;
