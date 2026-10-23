@@ -1,3 +1,5 @@
+import { appendProofCounter } from './proof-counters.js';
+import { ensureProofCounters } from './proof-counters.js';
 /**
  * The board (B1–B7, V1–V8, R1–R3): items, claims, submissions, verdicts and shouts in one SQLite
  * file in the git common dir, so every worktree sees the same board and nothing is committed.
@@ -522,15 +524,25 @@ export function atomic(board, work) {
  * @param {Date} [at] An enabled move may share one instant with its deadline.
  */
 export function logEvent(board, by, kind, itemId, detail = {}, at) {
-  const model = agentModel(board, by);
-  const isAgent = Boolean(board.db.prepare('SELECT 1 FROM agent WHERE agent_id = ?').get(by));
-  const recorded = { ...detail, ...((board.executionEngineVersion ?? ENGINE_VERSION) >= 8 && isAgent ? { model: model ?? 'unknown' } : {}),
-    ...(board.movePerson ? { person: board.movePerson } : {}) }; // The person behind a relayed move, from engine 73 (engine.js) [E3].
-  const inserted = board.db
-    .prepare('INSERT INTO event (event_at, event_by, event_kind, item_id, event_detail) VALUES (?, ?, ?, ?, ?)')
-    .run(at ? at.toISOString() : now(board), by, kind, itemId, JSON.stringify(recorded));
-  board.lastEvent = board.db.prepare('SELECT * FROM event WHERE event_id = ?').get(inserted.lastInsertRowid);
-  (board.emittedEvents ??= []).push(board.lastEvent);
+  board.db.exec('SAVEPOINT proof_event_append');
+  try {
+    ensureProofCounters(board);
+    const model = agentModel(board, by);
+    const isAgent = Boolean(board.db.prepare('SELECT 1 FROM agent WHERE agent_id = ?').get(by));
+    const recorded = { ...detail, ...((board.executionEngineVersion ?? ENGINE_VERSION) >= 8 && isAgent ? { model: model ?? 'unknown' } : {}),
+      ...(board.movePerson ? { person: board.movePerson } : {}) }; // The person behind a relayed move, from engine 73 (engine.js) [E3].
+    const inserted = board.db
+      .prepare('INSERT INTO event (event_at, event_by, event_kind, item_id, event_detail) VALUES (?, ?, ?, ?, ?)')
+      .run(at ? at.toISOString() : now(board), by, kind, itemId, JSON.stringify(recorded));
+    const event = board.db.prepare('SELECT * FROM event WHERE event_id = ?').get(inserted.lastInsertRowid);
+    appendProofCounter(board, event);
+    board.db.exec('RELEASE proof_event_append');
+    board.lastEvent = event;
+    (board.emittedEvents ??= []).push(event);
+  } catch (error) {
+    board.db.exec('ROLLBACK TO proof_event_append; RELEASE proof_event_append');
+    throw error;
+  }
 }
 
 /** Log an authenticated relay refusal without making an item, shout or verdict move [H2,H16]. */

@@ -1,3 +1,4 @@
+import { counterCaught } from './proof-counter-read.js';
 /**
  * `pullboard digest`: a short Markdown briefing of one board, for a person or a chat assistant
  * that can read the repo but never the board [A2,N26].
@@ -217,7 +218,7 @@ function render(db, { name, now, root, config }) {
   const stuck = health.stuck.map((entry) => `- ${entry.item ? label(entry.item) : text(entry.subject, 60)}: ${text(entry.title, 240)}, since ${text(entry.since, 40)}: ${text(entry.why, 400)}\n  Next, ${owner(entry.owner)}: ${text(entry.next, 300)}`);
   // What the board caught in the last month, from moves it already recorded; shown here and never pushed.
   const windowStart = new Date(now.getTime() - CAUGHT_DAYS * 86_400_000).toISOString();
-  const caught = caughtFrom(db.prepare('SELECT * FROM event ORDER BY event_id').all(), db.prepare('SELECT * FROM verdict ORDER BY verdict_id').all(), windowStart);
+  const caught = counterCaught({ db }, windowStart) ?? caughtFrom(db.prepare('SELECT * FROM event ORDER BY event_id').all(), db.prepare('SELECT * FROM verdict ORDER BY verdict_id').all(), windowStart);
   const caughtLabels = new Map(CAUGHT_KINDS.map(({ kind, label }) => [kind, label]));
   const caughtEntries = caught.entries.slice().reverse().map((entry) =>
     `- ${caughtLabels.get(entry.kind)}: ${entry.item === null ? 'no item' : label(entry.item)}, ${text(entry.at, 40)}: ${text(entry.text, 400)}`);
