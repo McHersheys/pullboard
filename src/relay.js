@@ -111,6 +111,8 @@ import {
 import { stampCoordinatorHolder } from './coordinator-hold.js';
 import { Refused } from './refused.js';
 import { landingRelayCallbacks } from './landing-relay.js';
+import { relayOrigin } from './relay-origin.js';
+export { relayOrigin };
 import { refusalFromReceipt } from './recorded-refusal.js';
 import { relayNotices } from './relay-notices.js';
 import {
@@ -157,16 +159,6 @@ const DELETION_NOTICES = new WeakSet();
 const ORDERED_MOVE_COMMANDS = new Set(['add', 'edit', 'fact', 'escalate', 'run', 'sweep', 'next', 'claim', 'hold', 'release',
   'submit', 'done', 'verify', 'merged', 'land', 'withdraw', 'refreeze', 'shout', 'answer', 'pass', 'import', 'milestone', 'takeover', 'forget', 'join', 'worktree']);
 
-/** Require a trusted origin; HTTP exists only for loopback development and test relays. */
-export function relayOrigin(address) {
-  let url;
-  try { url = new URL(address); } catch { throw new Refused('RELAY_URL', 'use an HTTPS relay address, such as https://app.pullboard.dev'); }
-  if (url.username || url.password || url.search || url.hash || url.pathname !== '/' ||
-      (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)))) {
-    throw new Refused('RELAY_URL', 'use an HTTPS origin without credentials, a path, query or fragment; loopback HTTP is allowed for a local relay');
-  }
-  return url.origin;
-}
 /** Resolve the actual GitHub origin; optional discovery leaves ineligible local projects alone. */
 export function originRepository(root, { optional = false } = {}) {
   const remote = tryGit(root, ['remote', 'get-url', 'origin']);
