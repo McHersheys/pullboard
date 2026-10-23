@@ -3,12 +3,24 @@ import { closeSync, openSync, readSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Refused } from './refused.js';
+import { createHash } from 'node:crypto';
 
 /** Accept an opaque identity, never a path, whitespace, credential or arbitrary session metadata. */
 export function parentIdentity(value) {
   if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value)) {
     throw new Refused('BAD_PARENT', 'a parent session is a stable id of at most 128 letters, numbers, dots, colons, underscores or hyphens; join again with --parent <session-id>');
   }
+  return value;
+}
+
+/** Use one digest domain for explicit parents, discovered parents and a root's own session identity. */
+export function parentSessionDigest(value) {
+  return createHash('sha256').update(JSON.stringify(['parent-session', parentIdentity(value)])).digest('hex');
+}
+
+/** Validate canonical identities received in ordered registration, without rehashing them. */
+export function canonicalSessionDigest(value) {
+  if (typeof value !== 'string' || !/^[a-f0-9]{64}$/u.test(value)) throw new Refused('BAD_PARENT', 'the recorded parent session digest is invalid; join again from the runtime session');
   return value;
 }
 

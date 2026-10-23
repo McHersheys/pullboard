@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { joinParentSession, runtimeParentSession } from '../src/parent-session.js';
+import { joinParentSession, parentSessionDigest, runtimeParentSession } from '../src/parent-session.js';
 import * as store from '../src/board.js';
 import { runFixtureGit } from './fixture-child.js';
 import { submitFixture } from './board-submit-fixture.js';
@@ -36,7 +36,8 @@ test('[V1,B3] ordered parent registration survives replay and board export witho
   const boards = ['source', 'replica', 'imported'].map(name => store.openBoard(join(root, `${name}.sqlite`)));
   t.after(() => boards.forEach(board => store.closeBoard(board)));
   const [source, replica, imported] = boards;
-  const move = prepareEngineMove(source, 'register', [{ lane: 'web', path: '/fixture/child', parent: 'parent-P', session: 'child-C' }]);
+  const move = prepareEngineMove(source, 'register', [{ lane: 'web', path: '/fixture/child', parentDigest: parentSessionDigest('parent-P'), sessionDigest: parentSessionDigest('child-C') }]);
+  assert.doesNotMatch(JSON.stringify(move), /parent-P|child-C/u, 'ordered registration exposes only canonical digests');
   const receipt = applyEngineMove(replica, move, { sequence: 1, at: '2026-10-23T12:00:00.000Z' });
   assert.equal(receipt.error, undefined);
   const registered = store.agentAt(replica, '/fixture/child');

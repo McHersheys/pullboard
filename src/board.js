@@ -16,7 +16,6 @@ export { verdictReviewProblem, verdictsFor, acceptedVerdict, checkedLandingCommi
 export { landingLeaseMove, landingLeaseState } from './landing-lease.js';
 import { guardLandingWrite } from './landing-lease.js';
 import {
-  createHash,
   randomBytes,
   randomUUID,
 } from 'node:crypto';
@@ -75,7 +74,7 @@ import { LOCAL_LANDING_ENGINE } from './land-engine.js';
 import { SPEC_APPROVAL_ENGINE } from './spec-approval-engine.js';
 import { Refused } from './refused.js';
 import { PARENT_SESSION_ENGINE } from './parent-session-engine.js';
-import { parentIdentity } from './parent-session.js';
+import { canonicalSessionDigest, parentSessionDigest } from './parent-session.js';
 import { itemAuthorProblem } from './item-authors.js';
 import { refuseMaskedExit } from './check-mask.js';
 import {
@@ -610,14 +609,14 @@ function current(board, item) {
  * @param {{ lane: string, path: string, route?: string, family?: string | null, model?: string | null, parent?: string | null, session?: string | null, createdBy?: string, id?: string }} who
  * @returns {string} The agent's id.
  */
-export function register(board, { lane, path, route = 'strong', family, model, parent, session, createdBy, id: named }) {
+export function register(board, { lane, path, route = 'strong', family, model, parent, session, parentDigest: recordedParent, sessionDigest: recordedSession, createdBy, id: named }) {
   const engine = board.executionEngineVersion ?? ENGINE_VERSION;
   if (engine < 8) model = undefined;
   if (engine < VERIFIER_STANDING_ENGINE) { createdBy = undefined; named = undefined; }
-  const parentDigest = engine >= PARENT_SESSION_ENGINE && parent != null
-    ? createHash('sha256').update(JSON.stringify(['parent-session', parentIdentity(parent)])).digest('hex') : null;
-  const sessionDigest = engine >= PARENT_SESSION_ENGINE && session != null
-    ? createHash('sha256').update(JSON.stringify(['parent-session', parentIdentity(session)])).digest('hex') : null;
+  const parentDigest = engine < PARENT_SESSION_ENGINE ? null
+    : recordedParent != null ? canonicalSessionDigest(recordedParent) : parent != null ? parentSessionDigest(parent) : null;
+  const sessionDigest = engine < PARENT_SESSION_ENGINE ? null
+    : recordedSession != null ? canonicalSessionDigest(recordedSession) : session != null ? parentSessionDigest(session) : null;
   checkRoute(route);
   if (lane === COORDINATOR && route !== 'strong') {
     throw new Refused('BAD_ROUTE', 'the coordinator plans, merges and verifies; it is always strong');
