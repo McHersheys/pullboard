@@ -19,8 +19,10 @@ import { machineHome } from './machine-home.js';
 export const TEST_FILE_POOL_ENV = 'PULLBOARD_TEST_FILE_POOL';
 /** Overrides the pool size; a test models a smaller machine with it. */
 export const TEST_FILE_CORES_ENV = 'PULLBOARD_TEST_FILE_CORES';
-// Budget: a waiting file looks again this often; admission is one short transaction.
-const POLL_MS = 20;
+// Budget: a waiting file looks again this often with one read; it takes the write lock only when a place looks
+// free, or once a second to prune rows of processes that have gone.
+const POLL_MS = 25;
+const PRUNE_MS = 1_000;
 
 /**
  * Read the pool a test-file process belongs to, or null outside a run-tests run.
@@ -73,6 +75,8 @@ async function openPool(home) {
   const DatabaseSync = await databaseSync();
   const db = new DatabaseSync(join(home, 'test-file-pool.sqlite'));
   db.exec(`PRAGMA busy_timeout = 10000;
+    PRAGMA journal_mode = WAL;
+    PRAGMA synchronous = NORMAL;
     CREATE TABLE IF NOT EXISTS file_holder(pid INTEGER PRIMARY KEY, since INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS file_waiter(ticket INTEGER PRIMARY KEY AUTOINCREMENT, pid INTEGER NOT NULL UNIQUE);
     CREATE TABLE IF NOT EXISTS file_loan(runner INTEGER PRIMARY KEY, lender INTEGER NOT NULL);`);
@@ -111,6 +115,15 @@ function prune(db) {
   }
 }
 
+/** How many files are running and how many waiters are ahead of this one, read without a write lock. */
+function standing(db) {
+  const holders = db.prepare('SELECT count(*) AS n FROM file_holder').get().n;
+  const lending = db.prepare('SELECT count(DISTINCT lender) AS n FROM file_loan WHERE lender IN (SELECT pid FROM file_holder)').get().n;
+  const mine = db.prepare('SELECT ticket FROM file_waiter WHERE pid = ?').get(process.pid)?.ticket;
+  const ahead = db.prepare('SELECT count(*) AS n FROM file_waiter WHERE ticket < ?').get(mine).n;
+  return { running: holders - lending, ahead };
+}
+
 /**
  * Admit this process when a core is free and every earlier waiter fits first. Running files are holders less the
  * holders lending to a live nested run.
@@ -118,12 +131,8 @@ function prune(db) {
 function admit(db, cores) {
   return immediate(db, () => {
     prune(db);
-    const holders = db.prepare('SELECT count(*) AS n FROM file_holder').get().n;
-    const lending = db.prepare('SELECT count(DISTINCT lender) AS n FROM file_loan WHERE lender IN (SELECT pid FROM file_holder)').get().n;
-    const free = cores - (holders - lending);
-    const mine = db.prepare('SELECT ticket FROM file_waiter WHERE pid = ?').get(process.pid)?.ticket;
-    const ahead = db.prepare('SELECT count(*) AS n FROM file_waiter WHERE ticket < ?').get(mine).n;
-    if (ahead >= free) return false;
+    const { running, ahead } = standing(db);
+    if (ahead >= cores - running) return false;
     db.prepare('DELETE FROM file_waiter WHERE pid = ?').run(process.pid);
     db.prepare('INSERT OR REPLACE INTO file_holder(pid, since) VALUES (?, ?)').run(process.pid, Date.now());
     return true;
@@ -135,19 +144,30 @@ function admit(db, cores) {
  * of anything it starts.
  *
  * @param {NodeJS.ProcessEnv} env - Changed in place: descendants see this file as their lender.
- * @returns {Promise<void>}
+ * @returns {Promise<number>} How long this file waited for its token, in ms.
  */
 export async function takeTestFileToken(env = process.env) {
   const pool = testFilePool(env);
-  if (!pool) return;
+  if (!pool) return 0;
+  const asked = Date.now();
   const db = await openPool(pool.home);
   immediate(db, () => db.prepare('INSERT OR IGNORE INTO file_waiter(pid) VALUES (?)').run(process.pid));
-  while (!admit(db, pool.cores)) await new Promise(done => setTimeout(done, POLL_MS));
+  let pruned = 0;
+  while (true) {
+    const { running, ahead } = standing(db);
+    // A dead holder only goes in the write path, so look there at least once a second even when nothing looks free.
+    if (ahead < pool.cores - running || Date.now() - pruned >= PRUNE_MS) {
+      pruned = Date.now();
+      if (admit(db, pool.cores)) break;
+    }
+    await new Promise(done => setTimeout(done, POLL_MS));
+  }
   process.once('exit', () => {
     try { db.prepare('DELETE FROM file_holder WHERE pid = ?').run(process.pid); db.close(); }
     catch { /* A row left behind is pruned once this process is gone. */ }
   });
   env[TEST_FILE_POOL_ENV] = JSON.stringify({ home: pool.home, cores: pool.cores, lender: process.pid });
+  return Date.now() - asked;
 }
 
 /**

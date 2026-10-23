@@ -1575,13 +1575,15 @@ if (process.argv[1] && resolve(process.argv[1]) === runner) {
   process.env.PULLBOARD_TEST_FILE = process.argv[1];
   (await import('../src/test-action-cache.js')).recordTestAction(process.argv[1]); // #1045: reuse off below; record this file.
   const fileTimes = process.env[LANDING_FILE_TIMES_ENV];
+  let tokenWaitMs = 0;
   // Only this test file reports; anything it starts is not one of the shard's files.
   delete process.env[LANDING_FILE_TIMES_ENV];
   if (fileTimes && process.env.NODE_TEST_CONTEXT === 'child-v8') {
     // One line per test file process: its wall time from start to exit, for the next shard plan.
     const timedFile = relative(process.cwd(), resolve(process.argv[1]));
     process.once('exit', () => {
-      try { appendFileSync(fileTimes, `${JSON.stringify({ file: timedFile, ms: Math.round(process.uptime() * 1000) })}\n`); }
+      // The file's own time, not its wait for a token: the next shard plan weighs work, not this run's queue (#1046).
+      try { appendFileSync(fileTimes, `${JSON.stringify({ file: timedFile, ms: Math.round(process.uptime() * 1000 - tokenWaitMs) })}\n`); }
       catch { /* A missing time only weakens the next shard plan. */ }
     });
   }
@@ -1636,6 +1638,6 @@ if (process.argv[1] && resolve(process.argv[1]) === runner) {
     }
   }
   // After any browser wait, so a file never holds a core while it queues for a browser (#1046).
-  if (process.env.NODE_TEST_CONTEXT === 'child-v8') await takeTestFileToken();
+  if (process.env.NODE_TEST_CONTEXT === 'child-v8') tokenWaitMs = await takeTestFileToken();
   if (!landingWorker) installTestWatchdog();
 }
