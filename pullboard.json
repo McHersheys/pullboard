@@ -3,6 +3,7 @@
   "gate": "npm run gate",
   "affectedTests": "node bin/run-tests.js",
   "submitGate": "landing",
+  "landingShards": 6,
   "submit": { "requireInfraNote": true },
   "claim": { "reopenFirstRefusalMinutes": 30 },
   "submitInvariants": [
