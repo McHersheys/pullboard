@@ -11,7 +11,9 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { after, test } from 'node:test';
+import { submitFixture } from './board-submit-fixture.js';
 import * as store from '../src/board.js';
+import { healthReport } from '../src/health.js';
 import { runFixtureChild, runFixtureGit } from './fixture-child.js';
 
 const BIN = resolve(import.meta.dirname, '../bin/pullboard.js');
@@ -22,11 +24,11 @@ const SHOUTS = 23_000;
 const SEATS = 800;
 const sandboxes = [];
 // Reads that fold the whole history by design, so no index can serve them, each with the item that
-// rewrites it: health's itemHistory (#1053), coordinator resume's undrafted Rigor in personNeedsState
-// (#1052), resume's proofStats (#1051) and the view state's projectState (#1055, which uses
+// rewrites it: coordinator resume's undrafted Rigor in personNeedsState (#1052), resume's proofStats
+// (#1051) and the view state's projectState (#1055, which uses
 // lastMoves and recentEvents). The test fails if one stops scanning while still listed, so the list
 // can only shrink.
-const WHOLE_HISTORY = ['itemHistory', 'personNeedsState', 'projectState', 'proofStats'];
+const WHOLE_HISTORY = ['personNeedsState', 'projectState', 'proofStats'];
 
 after(() => {
   for (const dir of sandboxes) rmSync(dir, { recursive: true, force: true });
@@ -201,5 +203,59 @@ test('hot board queries never scan events or shouts [C7]', () => {
     console.log(`# openDecisions median ${median.toFixed(2)} ms; ${timings.join('; ')}`);
   } finally {
     store.closeBoard(board);
+  }
+});
+
+test('health reads item history by index [C7]', () => {
+  const box = fixture();
+  seed(box.board);
+  const board = store.openBoard(box.board, { now: () => new Date('2026-10-22T22:30:00.000Z') });
+  const rejectAt = '2026-10-22T21:00:00.000Z';
+  const reopenAt = '2026-10-22T22:00:00.000Z';
+  const submitAt = '2026-10-22T23:00:00.000Z';
+  try {
+    store.claim(board, 2, { agentId: 'web-100', lane: 'web', leaseMs: 60_000,
+      freeze: (item) => ({ text: item.item_title, digest: `digest:${item.item_title}` }) });
+    submitFixture(board, 2, { agentId: 'web-100', commit: 'a'.repeat(40), tree: 'b'.repeat(40) });
+    const event = board.db.prepare('INSERT INTO event (event_at, event_by, event_kind, item_id, event_detail) VALUES (?, ?, ?, ?, ?)');
+    event.run(rejectAt, 'web-100', 'reject', 1, JSON.stringify({ reason: 'TEST_FAILURE' }));
+    event.run(reopenAt, 'coordinator', 'reopen', 1, '{}');
+    event.run(submitAt, 'web-100', 'submit', 2, JSON.stringify({ commit: 'a'.repeat(40) }));
+  } finally {
+    store.closeBoard(board);
+  }
+
+  const originalPrepare = DatabaseSync.prototype.prepare;
+  let historyPlans = 0;
+  DatabaseSync.prototype.prepare = function (sql, ...args) {
+    if (/\bSELECT\s+event_id\s*,\s*event_at\s*,\s*event_by\s*,\s*event_kind\s*,\s*item_id\s*,\s*event_detail\s+FROM event\b/iu.test(sql)) {
+      const explanation = originalPrepare.call(this, `EXPLAIN QUERY PLAN ${sql}`);
+      const plan = (sql.includes('?') ? explanation.all(1) : explanation.all()).map((row) => row.detail);
+      historyPlans += 1;
+      assert.ok(plan.some((detail) => /\bSEARCH event USING INDEX event_item_id_event_id\b/u.test(detail)),
+        `health item history must search its index before reading: ${sql}\n${plan.join('\n')}`);
+      assert.ok(!plan.some((detail) => /^SCAN event\b/u.test(detail)),
+        `health item history must not scan the event table: ${sql}\n${plan.join('\n')}`);
+    }
+    return originalPrepare.call(this, sql, ...args);
+  };
+  try {
+    const db = store.openBoardReadOnly(box.board);
+    try {
+      const started = performance.now();
+      const report = healthReport({ db, root: box.repo, now: new Date('2026-10-23T00:00:00.000Z') });
+      const elapsed = performance.now() - started;
+      assert.ok(historyPlans > 0, 'health planned its item-history statement');
+      assert.ok(elapsed < 1_000, `health on 45,000 events took ${elapsed.toFixed(2)} ms, over 1 s`); // budget: approved row C7 requires health under 1s on the seeded board.
+      const rework = report.stuck.find((entry) => entry.key === 'REWORK_UNCLAIMED:item:1');
+      assert.equal(rework?.since, reopenAt, 'health keeps the latest lifecycle event for the open item');
+      assert.deepEqual(rework?.detail, { move: 'reopen', by: 'coordinator' });
+      const unreviewed = report.stuck.find((entry) => entry.key === 'NO_REVIEWER:item:2');
+      assert.equal(unreviewed?.since, submitAt, 'health keeps the latest submit event for the submitted item');
+    } finally {
+      db.close();
+    }
+  } finally {
+    DatabaseSync.prototype.prepare = originalPrepare;
   }
 });
