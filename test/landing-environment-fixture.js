@@ -1,6 +1,6 @@
 /** Public Git/CLI cells for landing hosts and a trunk held by a test defect [E27,E28,E29]. */
 import assert from 'node:assert/strict';
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as store from '../src/board.js';
 import { applyEngineMove, prepareEngineMove } from '../src/engine.js';
@@ -38,6 +38,8 @@ function commit(box, root, message) {
 /** A real Node test passes for either item alone and fails when their changes meet. */
 function fixture(helpers) {
   const box = helpers.project('node --test web/landing.test.js');
+  // This is an independent Node runner; an inherited worker context makes Node skip recursive runs.
+  delete box.env.NODE_TEST_CONTEXT;
   mkdirSync(join(box.repo, 'web'), { recursive: true });
   writeFileSync(join(box.repo, 'web/landing.test.js'), [
     "import { test } from 'node:test';",
@@ -53,7 +55,19 @@ function fixture(helpers) {
   box.git(box.dir, 'init', '-q', '--bare', remote);
   box.git(box.repo, 'remote', 'add', 'origin', remote);
   box.git(box.repo, 'push', '-q', '-u', 'origin', 'main');
+  const output = readFileSync(join(box.repo, '.git', 'pullboard-gate.log'), 'utf8');
+  assert.match(output, /^ok 1 - the two changes coexist/mu, 'the fixture gate actually executes its named test');
+  assert.match(output, /^# tests 1$/mu);
+  assert.match(output, /^# pass 1$/mu);
+  assert.match(output, /^# skipped 0$/mu, 'an empty or recursively skipped gate is not a positive control');
   return { ...box, remote };
+}
+
+/** Keep actual nested gate output in a failed assertion before the private sandbox is removed. */
+function landingEvidence(result) {
+  const gates = (result.batch?.gateResults ?? []).map(gate => ({ tree: gate.tree, isGreen: gate.isGreen,
+    output: gate.logPath && existsSync(gate.logPath) ? readFileSync(gate.logPath, 'utf8').slice(0, 16 * 1024) : '(no retained log)' }));
+  return JSON.stringify({ result, gates });
 }
 
 /** Build and independently verify a fixture item at its actual committed head. */
@@ -178,7 +192,7 @@ export function assertNoCulpritTrunkHold(helpers) {
   const entries = [verified(box, 'a', { touchTest: true }), verified(box, 'b')];
   const base = box.git(box.repo, 'rev-parse', 'HEAD');
   const held = success(box, box.repo, 'land');
-  assert.deepEqual(held.landed, []);
+  assert.deepEqual(held.landed, [], landingEvidence(held));
   assert.deepEqual(held.culprits, [], 'both bisection halves pass; neither item is a proved culprit');
   assert.equal(box.git(box.repo, 'rev-parse', 'HEAD'), base);
   assert.equal(box.git(box.remote, 'rev-parse', 'main'), base);
