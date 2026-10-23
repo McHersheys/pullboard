@@ -18,7 +18,10 @@ export function run(io, { first, values }) {
   const ctx = context(io);
   const { items, agents, merging } = withBoardRead(ctx, (board) => {
     const rows = store.listItems(board, { lane: first, all: values.all });
-    return { items: rows.map(verdictProjector(ctx.info.root, board).project), agents: store.listAgents(board),
+    const items = rows.map(verdictProjector(ctx.info.root, board).project);
+    // JSON returns these complete rows; agent names and merge labels belong only to the text rendering.
+    if (values.json) return { items };
+    return { items, agents: store.listAgents(board),
       merging: new Set(rows.filter(item => !['verified', 'withdrawn'].includes(item.item_status) && mainMergeFor(board, item.item_id)).map(item => item.item_id)) };
   });
   const filtered = items.filter((item) => !values.route || item.item_route === values.route);
