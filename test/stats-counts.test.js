@@ -1,9 +1,29 @@
 /** Event-derived submission, rejection and merge counts preserve historical acceptance proof [R1,R2]. */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { mkdtempSync } from 'node:fs';
+import { rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { submitFixture } from './board-submit-fixture.js';
-import { addItem, claim, closeBoard, getItem, merged, openBoard, register, verify } from '../src/board.js';
-import { exportBoard, importBoard } from '../src/exchange.js';
+import { addItem } from '../src/board.js';
+import { atomic } from '../src/board.js';
+import { claim } from '../src/board.js';
+import { closeBoard } from '../src/board.js';
+import { events } from '../src/board.js';
+import { getItem } from '../src/board.js';
+import { logEvent } from '../src/board.js';
+import { merged } from '../src/board.js';
+import { openBoard } from '../src/board.js';
+import { register } from '../src/board.js';
+import { verify } from '../src/board.js';
+import { exportBoard } from '../src/exchange.js';
+import { importBoard } from '../src/exchange.js';
+import { restoreRelaySnapshot } from '../src/exchange.js';
+import { semanticBoardDigest } from '../src/exchange.js';
+import { ENGINE_VERSION } from '../src/machine.js';
+import { proofStats as legacyProofStats } from './fixtures/proof-stats-legacy.js';
+import { proofStats } from '../src/stats.js';
 import { eventCounts } from '../src/stats.js';
 
 const COMMIT_ONE = '1'.repeat(40);
@@ -84,6 +104,47 @@ function importedBoard(t, document) {
   t.after(() => closeBoard(board));
   importBoard(board, document);
   return board;
+}
+
+/** Commit a writer between the reader's cursor and shard queries on a real WAL database. */
+function concurrentCounterRead(t) {
+  const directory = mkdtempSync(join(tmpdir(), 'pullboard-stats-snapshot-'));
+  const path = join(directory, 'board.sqlite');
+  const reader = openBoard(path);
+  const writer = openBoard(path);
+  t.after(() => { closeBoard(writer); closeBoard(reader); rmSync(directory, { recursive: true }); });
+  register(writer, { lane: 'coordinator', path: '/fixture/concurrent-coordinator' });
+  const id = addItem(writer, { by: 'coordinator', lane: 'web', title: 'Concurrent stats', criterion: 'one snapshot' });
+  const options = { now: Date.parse('2027-01-01T00:00:00Z') };
+  const before = legacyProofStats(reader, options);
+  let injected = false;
+  const db = new Proxy(reader.db, {
+    /** Bind native SQLite methods and insert the concurrent write at the chosen read boundary. */
+    get(target, key) {
+      if (key === 'prepare') return sql => {
+        const statement = target.prepare(sql);
+        if (!sql.includes('coalesce(max(event_id),0)')) return statement;
+        return new Proxy(statement, {
+          /** Return the old cursor after the second connection has committed its new event. */
+          get(native, method) {
+            if (method === 'get') return (...args) => {
+              const row = native.get(...args);
+              if (!injected) { injected = true; logEvent(writer, 'coordinator', 'submit', id, { commit: COMMIT_ONE }); }
+              return row;
+            };
+            const value = Reflect.get(native, method, native);
+            return typeof value === 'function' ? value.bind(native) : value;
+          },
+        });
+      };
+      const value = Reflect.get(target, key, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  reader.db.exec('PRAGMA query_only=ON');
+  assert.deepEqual(proofStats({ ...reader, db }, options), before, 'one response must use one SQLite read snapshot');
+  assert.equal(injected, true, 'the second connection actually committed between the reader queries');
+  assert.deepEqual(proofStats(reader, options), legacyProofStats(writer, options), 'the next response observes the committed event');
 }
 
 /** Re-number an edited private event history and its SQLite AUTOINCREMENT counter. */
@@ -186,4 +247,76 @@ test('[R1,R2] imported historical merges without a matching current acceptance r
   assert.equal(getItem(staleBoard, id).item_status, 'verified');
   assert.equal(eventCounts(staleBoard).mergedWithoutAccept, 1,
     'a new submit invalidates a previously accepted commit even when the current row remains verified');
+});
+
+
+test('[R1,R2,C7] proof stats counters match a full re-parse after every event', t => {
+  const f = fixture(t);
+  const { board } = f;
+  let parsed = [];
+  board.onProofStatsEvent = event => parsed.push(event.event_id);
+  let id;
+  /** Compare independent full-history results at the same observation time and several windows. */
+  const same = current => {
+    const now = Date.parse('2026-02-01T00:00:00Z');
+    for (const since of [undefined, '2026-01-04', '2026-01-20']) {
+      assert.deepEqual(proofStats(current, { since, now }), legacyProofStats(current, { since, now }));
+    }
+  };
+  const steps = [
+    () => { id = addAndClaim(f, 'Incrementally counted lifecycle'); },
+    () => submitAt(f, id, COMMIT_ONE, TREE_ONE, '2026-01-03T10:00:00Z'),
+    () => verdictAt(f, id, 'REJECT', COMMIT_ONE, '2026-01-04T10:00:00Z'),
+    () => { f.setTime('2026-01-04T11:00:00Z'); claim(board, id, { agentId: 'web-1', lane: 'web', leaseMs: 86_400_000, freeze: freezeCriterion }); },
+    () => submitAt(f, id, COMMIT_TWO, TREE_TWO, '2026-01-05T10:00:00Z'),
+    () => verdictAt(f, id, 'ACCEPT', COMMIT_TWO, '2026-01-06T10:00:00Z'),
+    () => { f.setTime('2026-01-07T10:00:00Z'); merged(board, id, { agentId: 'coordinator', commit: MAIN_MERGE }); },
+    () => logEvent(board, 'web-1', 'join', null, { lane: 'web', family: 'changed-family' }),
+    () => logEvent(board, 'coordinator', 'edit', id, { reason: 'the original bar was wrong', barCorrection: { fields: ['check'], reject: { verdict: 1 } } }),
+    () => logEvent(board, 'coordinator', 'reopen', id, { conflict: { files: ['src/example.js'] } }),
+    () => logEvent(board, 'coordinator', 'refreeze', id, {}),
+    () => logEvent(board, 'web-2', 'reject', id, { commit: COMMIT_ONE, reason: 'TEST_FAILURE' }),
+    () => logEvent(board, 'coordinator', 'merged', id, { commit: MAIN_MERGE }),
+    () => logEvent(board, 'coordinator', 'test-quarantine', null, { file: 'test/example.test.js', name: 'a historical flake', tree: TREE_ONE }),
+    () => logEvent(board, 'sentinel', 'health-failure', null, { subject: 'unresolved obligation', cause: 'refusal:STUCK' }),
+  ];
+  for (const step of steps) {
+    const previous = events(board).at(-1)?.event_id ?? 0;
+    parsed = [];
+    step();
+    const appended = events(board).filter(event => event.event_id > previous).map(event => event.event_id);
+    assert.deepEqual(parsed, appended, 'each appended event is decoded once into its counters');
+    same(board);
+    assert.deepEqual(parsed, appended, 'reading counters never reparses earlier event details');
+  }
+  const document = exportBoard(board);
+  assert.equal(document.tables.board_meta.some(row => row.meta_key.startsWith('local:proof-stats:')), false,
+    'derived counters are not native exported state');
+  const restored = importedBoard(t, document);
+  same(restored);
+  const restoredParses = [];
+  restored.onProofStatsEvent = event => restoredParses.push(event.event_id);
+  logEvent(restored, 'web-1', 'shout', null, {});
+  assert.deepEqual(restoredParses, [events(restored).at(-1).event_id], 'restored counters continue with one new event');
+  same(restored);
+  const replacement = exportBoard(board);
+  const changedJoin = replacement.tables.event.find(event => event.event_kind === 'join' && event.event_by === 'web-1');
+  changedJoin.event_detail = JSON.stringify({ ...JSON.parse(changedJoin.event_detail), family: 'restored-family' });
+  const semantic = semanticBoardDigest(replacement);
+  replacement.tables.board_meta.push({ meta_key: 'local:proof-stats:v1:summary', meta_value: 'untrusted supplied projection' });
+  assert.equal(semanticBoardDigest(replacement), semantic, 'native digests ignore local projections');
+  replacement.tables.board_meta.push({ meta_key: 'relay_applied_sequence', meta_value: '1' },
+    { meta_key: 'relay_engine_version', meta_value: String(ENGINE_VERSION) });
+  restoreRelaySnapshot(board, replacement, 1);
+  same(board);
+  board.db.exec('PRAGMA query_only=ON');
+  try { same(board); }
+  finally { board.db.exec('PRAGMA query_only=OFF'); }
+  const before = proofStats(board, { now: 1_770_000_000_000 });
+  assert.throws(() => atomic(board, () => {
+    logEvent(board, 'web-1', 'submit', id, { commit: 'f'.repeat(40) });
+    throw new Error('rollback fixture');
+  }), /rollback fixture/u);
+  assert.deepEqual(proofStats(board, { now: 1_770_000_000_000 }), before, 'rollback preserves the prior projection');
+  concurrentCounterRead(t);
 });
