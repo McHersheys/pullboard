@@ -181,8 +181,10 @@ export function isRunnerCommand(command) {
   const text = String(command);
   if (!/(?:^|[\s/])bin\/run-tests\.js(?:\s|$)/u.test(text)) return false;
   if (/(?:^|\s)--test(?:\s|$)/u.test(text)) return false;
-  // The import value runs up to the next option, so a path with spaces still counts as one value.
-  return !/(?:^|\s)--import[=\s](?:(?!\s--)[^])*?bin\/run-tests\.js(?:\s|$)/u.test(text);
+  // Each import value runs to the first module file name that ends it, so a folder with spaces stays inside the value
+  // while `--import ./instrumentation.mjs bin/run-tests.js` still names the runner as the script (#896).
+  const imports = [...text.matchAll(/(?:^|\s)--import[=\s](.*?\.(?:[mc]?js|ts))(?=\s|$)/gu)].map((match) => match[1]);
+  return !imports.some((value) => /(?:^|[\s/:])bin\/run-tests\.js$/u.test(value));
 }
 
 /**

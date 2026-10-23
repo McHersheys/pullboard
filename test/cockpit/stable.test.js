@@ -60,9 +60,11 @@ function stopRecorded(profile, pids) {
 test('the runner is bin/run-tests.js with any options, and its workers are not [C7]', () => {
   const at = '/Users/someone/Code/Open Source/repo';
   for (const command of [`node bin/run-tests.js test/a.test.js`, `node bin/run-tests.js --test-concurrency=1 test/a.test.js`,
-    `/usr/local/bin/node ${at}/bin/run-tests.js --test-concurrency=1 ${at}/test/a.test.js`]) assert.equal(isRunnerCommand(command), true, command);
+    `/usr/local/bin/node ${at}/bin/run-tests.js --test-concurrency=1 ${at}/test/a.test.js`,
+    `node --import ./instrumentation.mjs bin/run-tests.js test/a.test.js`, `node --import=./instrumentation.mjs ${at}/bin/run-tests.js`]) assert.equal(isRunnerCommand(command), true, command);
   for (const command of [`node --disable-warning=ExperimentalWarning --import ${at}/bin/run-tests.js ${at}/test/a.test.js`,
-    `node --import=${at}/bin/run-tests.js ${at}/test/a.test.js`, `node --test test/a.test.js bin/run-tests.js`, `node test/a.test.js`]) assert.equal(isRunnerCommand(command), false, command);
+    `node --import=${at}/bin/run-tests.js ${at}/test/a.test.js`, `node --import ./trace.mjs --import ${at}/bin/run-tests.js ${at}/test/a.test.js`,
+    `node --test test/a.test.js bin/run-tests.js`, `node test/a.test.js`]) assert.equal(isRunnerCommand(command), false, command);
 });
 
 /** How each killed process starts the probe: the owner directly, or the runner, with and without its own options. */
