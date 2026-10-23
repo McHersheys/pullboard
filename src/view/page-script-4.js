@@ -804,10 +804,17 @@ document.addEventListener('click', (event) => {
   }
   if (t.dataset.itemsView) { view.itemsView = t.dataset.itemsView; view.addressDetail = null; address(); render(); return; }
   if ('roadmapKey' in t.dataset) {
-    const key = t.dataset.roadmapKey;
-    view.roadmapOpen.set(JSON.stringify([view.root, key]), t.getAttribute('aria-expanded') !== 'true');
-    render();
-    [...$('roadmap').querySelectorAll('[data-roadmap-key]')].find((head) => head.dataset.roadmapKey === key)?.focus({ preventScroll: true });
+    const key = t.dataset.roadmapKey, open = t.getAttribute('aria-expanded') !== 'true';
+    view.roadmapOpen.set(JSON.stringify([view.root, key]), open);
+    // The row or release opens in place, its block already drawn from the summary, and paints in this frame; the
+    // full redraw, which fills its detail, follows that paint, so click to paint never waits on it (#1039).
+    const panel = t.classList.contains('milestone-item') ? t.nextElementSibling : t.parentElement.querySelector(':scope > .milestone-body');
+    t.setAttribute('aria-expanded', String(open));
+    if (panel) panel.hidden = !open;
+    requestAnimationFrame(() => setTimeout(() => {
+      render();
+      [...$('roadmap').querySelectorAll('[data-roadmap-key]')].find((head) => head.dataset.roadmapKey === key)?.focus({ preventScroll: true });
+    }));
     return;
   }
   if ('roadmapAll' in t.dataset) { view.roadmapOnly = null; render(); return; }
