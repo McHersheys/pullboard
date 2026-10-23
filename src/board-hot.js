@@ -1,0 +1,86 @@
+/**
+ * The indexes and bounded reads behind the board's hot queries [C7]. Status, list, show, next, resume,
+ * health and the view read events and shouts by kind, sender, answer and recency; on a board of tens of
+ * thousands of rows each of those was a full scan (openDecisions 796 ms, health's agent activity 11 s).
+ */
+
+/** Each index a hot query needs; IF NOT EXISTS lets an existing board gain them on its next open. */
+const HOT_INDEXES = [
+  'CREATE INDEX IF NOT EXISTS shout_answers ON shout (shout_answers)',
+  'CREATE INDEX IF NOT EXISTS shout_open_decision ON shout (shout_decision, shout_to) WHERE shout_decision = 1',
+  'CREATE INDEX IF NOT EXISTS shout_open_request ON shout (shout_request) WHERE shout_request = 1',
+  'CREATE INDEX IF NOT EXISTS shout_evidence_item ON shout (shout_evidence_item) WHERE shout_evidence_item IS NOT NULL',
+  'CREATE INDEX IF NOT EXISTS shout_from_at ON shout (shout_from, shout_at)',
+  'CREATE INDEX IF NOT EXISTS event_by_at ON event (event_by, event_at)',
+  'CREATE INDEX IF NOT EXISTS event_kind_id ON event (event_kind, event_id)',
+];
+
+/**
+ * Create the hot-query indexes. They index columns that migrate() adds to older boards, so this runs
+ * after it, never inside the table schema.
+ *
+ * @param {import('node:sqlite').DatabaseSync} db
+ */
+export function ensureHotIndexes(db) {
+  for (const sql of HOT_INDEXES) db.exec(sql);
+}
+
+/**
+ * Events of the given kinds, oldest first, read through the kind index instead of the whole log.
+ *
+ * @param {any} board
+ * @param {string[]} kinds
+ * @returns {any[]}
+ */
+export function eventsOfKinds(board, kinds) {
+  if (!kinds.length) return [];
+  return board.db.prepare(`SELECT * FROM event WHERE event_kind IN (${kinds.map(() => '?').join(', ')}) ORDER BY event_id`).all(...kinds);
+}
+
+/**
+ * The newest events, newest first. The id bound states the range read, so the plan seeks from the
+ * end of the log rather than scanning it.
+ *
+ * @param {any} board
+ * @param {number} limit
+ * @returns {any[]}
+ */
+export function recentEvents(board, limit) {
+  return board.db.prepare('SELECT * FROM event WHERE event_id > 0 ORDER BY event_id DESC LIMIT ?').all(limit);
+}
+
+/**
+ * The newest shouts on the board, newest first, read without marking anything read (N26), seeking
+ * from the end of the table the same way as recentEvents.
+ *
+ * @param {any} board
+ * @param {number} [limit]
+ * @returns {any[]}
+ */
+export function recentShouts(board, limit = 40) {
+  return board.db.prepare('SELECT * FROM shout WHERE shout_id > 0 ORDER BY shout_id DESC LIMIT ?').all(limit);
+}
+
+/**
+ * When each agent last moved on the board, one index seek per agent.
+ *
+ * @param {any} board
+ * @returns {Map<string, string>}
+ */
+export function lastMoves(board) {
+  const rows = board.db.prepare('SELECT agent_id, (SELECT MAX(event_at) FROM event WHERE event_by = agent.agent_id) AS at FROM agent').all();
+  return new Map(rows.filter((row) => row.at).map((row) => [row.agent_id, row.at]));
+}
+
+/**
+ * The shouts the coordinator's resume reads: every decision ask and every integration evidence shout,
+ * oldest first, through their partial indexes rather than the whole shout table. A UNION, because
+ * SQLite uses no partial index for one arm of an OR, and the order outside it, or SQLite scans for it.
+ *
+ * @param {any} board
+ * @returns {any[]}
+ */
+export function decisionAndEvidenceShouts(board) {
+  return board.db.prepare(`SELECT * FROM (SELECT * FROM shout WHERE shout_decision = 1
+    UNION SELECT * FROM shout WHERE shout_evidence_item > 0) ORDER BY shout_id`).all();
+}
