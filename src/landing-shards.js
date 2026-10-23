@@ -394,7 +394,7 @@ export async function runLandingShards({ root, runner, files, count, inherited =
       }
       // Infrastructure, not a test result: the runner could not give this shard a complete answer.
       return { attempt: number, host, outcome: failure.action === 'fail' ? 'refused' : 'infrastructure', reason: failure.reason,
-        output: '', wallMs: Date.now() - started };
+        output: error.runnerAttempt?.output ?? '', wallMs: Date.now() - started };
     }
   };
 

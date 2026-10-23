@@ -4,9 +4,10 @@ import assert from 'node:assert/strict';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { listResources, takeResource } from '../src/resources.js';
 import { runFixtureChild, runFixtureChildAsync } from './fixture-child.js';
-import { HOST, installSshStandIn } from './runner-ssh-fixture.js';
+import { HOST, installSshStandIn, shellQuote } from './runner-ssh-fixture.js';
 
 const SOURCE = resolve(import.meta.dirname, '..');
 
@@ -16,9 +17,9 @@ const FREE = "import { test } from 'node:test';\nimport { spawnSync } from 'node
 // Browser-bound under either classifier: a process starter beside a Chrome executable name.
 const CHROME = "import { test } from 'node:test';\nimport { spawnSync } from 'node:child_process';\nconst chrome = 'google-chrome';\n"
   + "test('browser-bound file ran', () => { if (process.env.PULLBOARD_FIXTURE_NEVER_SET) spawnSync(chrome, ['--version']); });\n";
-// A stand-in for a runner whose own run refuses the file for want of a browser slot; it fails only under the stand-in's home.
-const refusedSource = remoteHome => "import { test } from 'node:test';\n"
-  + `test('refused file ran', () => { if (process.cwd().startsWith(${JSON.stringify(remoteHome)})) throw new Error('[BROWSER_SLOT_REQUIRED] the runner held no browser slot for this file'); });\n`;
+// A test body that prints and throws the refusal text: an ordinary red, never a lease refusal.
+const MARKER = "import { test } from 'node:test';\n"
+  + "test('marker file ran', () => { console.log('[BROWSER_SLOT_REQUIRED] printed by a test'); throw new Error('[BROWSER_SLOT_REQUIRED] thrown by a test'); });\n";
 
 /** Count the stand-in's dispatched and returned markers. */
 function phases(file) {
@@ -35,8 +36,8 @@ async function until(condition, what) {
   }
 }
 
-/** Drive bin/run-tests.js against a stand-in SSH runner registered with --browser 0. */
-export async function browserFreeRunnerCheck(t, { cli, git }) {
+/** Build a committed repo, a stand-in runner registered with --browser 0, and a held local slot; run body, then restore. */
+async function withNoBrowserRunner(t, { cli, git }, body) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-runner-browser-free-')));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const [home, repo, worker, bin, remoteHome] = ['home', 'repo', 'second-machine', 'bin', 'worker-home'].map(name => join(dir, name));
@@ -60,7 +61,7 @@ export async function browserFreeRunnerCheck(t, { cli, git }) {
   cpSync(join(SOURCE, 'bin'), join(repo, 'bin'), { recursive: true });
   writeFileSync(join(repo, 'test', 'free.test.js'), FREE);
   writeFileSync(join(repo, 'test', 'chrome.test.js'), CHROME);
-  writeFileSync(join(repo, 'test', 'refused.test.js'), refusedSource(remoteHome));
+  writeFileSync(join(repo, 'test', 'marker.test.js'), MARKER);
   git(repo, env, 'add', 'package.json', 'pullboard.json', 'src', 'bin', 'test');
   git(repo, env, 'commit', '-q', '-m', 'test: commit a browser-free runner fixture');
   installSshStandIn({ bin, worker, home: remoteHome, machineHome: remoteMachineHome, requests });
@@ -71,49 +72,90 @@ export async function browserFreeRunnerCheck(t, { cli, git }) {
   const previousMachineHome = process.env.PULLBOARD_MACHINE_HOME;
   process.env.PULLBOARD_HOME = home;
   process.env.PULLBOARD_MACHINE_HOME = machineHome;
-  const marks = `${requests}.phases`;
-  const runTests = file => runFixtureChildAsync(process.execPath, ['bin/run-tests.js', file], { cwd: repo, env });
-  const show = result => `${result.context}\nstdout:\n${result.stdout}`;
-  let held;
-  try {
+  const slot = { lease: null };
+  const fixture = {
+    repo, env, slot, marks: `${requests}.phases`,
+    phases: () => phases(`${requests}.phases`),
+    runTests: file => runFixtureChildAsync(process.execPath, ['bin/run-tests.js', file], { cwd: repo, env }),
+    show: result => `${result.context}\nstdout:\n${result.stdout}`,
     // Fill the controller's only gate slot so a remote-capable run goes to the runner.
-    const hold = () => takeResource({ name: 'gate', capacity: 1, scope: 'machine', root: repo,
-      agent: 'browser-free-local-holder', item: 'local-holder', kind: 'force-registered-runner' });
-    held = await hold();
-
-    const free = await runTests('test/free.test.js');
-    assert.doesNotMatch(free.stdout + free.stderr, /BROWSER_SLOT_REQUIRED/u, show(free));
-    assert.equal(free.status, 0, show(free));
-    assert.match(free.stdout, /^ok 1 - browser-free file ran/mu, show(free));
-    assert.deepEqual(phases(marks), { dispatched: 1, returned: 1 }, 'the browser-free file ran on the no-browser runner');
-
-    // A runner's BROWSER_SLOT_REQUIRED answer reruns the file here once a local slot frees.
-    const refused = runTests('test/refused.test.js');
-    await until(() => phases(marks).returned === 2, 'the runner answers the refused file');
-    held.release();
-    held = undefined;
-    const rerun = await refused;
-    assert.equal(rerun.status, 0, show(rerun));
-    assert.match(rerun.stderr, /BROWSER_SLOT_REQUIRED.*rerunning it locally/u, show(rerun));
-    assert.match(rerun.stdout, /^ok 1 - refused file ran/mu, show(rerun));
-    assert.deepEqual(phases(marks), { dispatched: 2, returned: 2 }, 'the local rerun never went back to the runner');
-
-    // A browser-bound file waits for a local slot rather than going to a runner with no browser slots.
-    held = await hold();
-    const bound = runTests('test/chrome.test.js');
-    const waiting = () => listResources({ scope: 'machine', root: repo }).find(resource => resource.name === 'gate')?.line.length === 1;
-    await until(waiting, 'the browser-bound run queues');
-    await new Promise(resolveWait => setTimeout(resolveWait, 1_000)); // budget: several admission polls in which a runner could take it.
-    assert.equal(waiting(), true, 'the browser-bound run still waits for a local slot');
-    held.release();
-    held = undefined;
-    const local = await bound;
-    assert.equal(local.status, 0, show(local));
-    assert.match(local.stdout, /^ok 1 - browser-bound file ran/mu, show(local));
-    assert.deepEqual(phases(marks), { dispatched: 2, returned: 2 }, 'the browser-bound file never reached the runner');
-  } finally {
-    held?.release();
+    hold: async () => { slot.lease = await takeResource({ name: 'gate', capacity: 1, scope: 'machine', root: repo,
+      agent: 'browser-free-local-holder', item: 'local-holder', kind: 'force-registered-runner' }); },
+    free: () => { slot.lease?.release(); slot.lease = null; },
+  };
+  try { await body(fixture); }
+  finally {
+    fixture.free();
     if (previousHome === undefined) delete process.env.PULLBOARD_HOME; else process.env.PULLBOARD_HOME = previousHome;
     if (previousMachineHome === undefined) delete process.env.PULLBOARD_MACHINE_HOME; else process.env.PULLBOARD_MACHINE_HOME = previousMachineHome;
   }
+}
+
+/** Run one command through the repo's own gate API, as an item check does, with no browser slot asked. */
+function gateRun({ repo, env }, command) {
+  const gateUrl = pathToFileURL(join(repo, 'src', 'gate.js')).href;
+  const script = `const { runProfiledShell, withGateSlot } = await import(${JSON.stringify(gateUrl)});
+const result = await withGateSlot(${JSON.stringify(repo)}, lease => runProfiledShell(${JSON.stringify(repo)}, ${JSON.stringify(command)}, { gateLease: lease }),
+  { browser: false, item: '1043', kind: 'check', itemCheck: true, agent: 'browser-free-fixture' });
+process.stdout.write(result.output);
+process.stdout.write('PULLBOARD_RUN_RESULT ' + JSON.stringify({ isGreen: result.isGreen, runner: result.profile.executionRunner ?? null, runnerAttempt: result.runnerAttempt ?? null }) + '\\n');
+process.exitCode = result.isGreen ? 0 : 1;
+`;
+  return runFixtureChildAsync(process.execPath, ['--input-type=module', '-e', script], { cwd: repo, env });
+}
+
+/** A browser-free file runs green on the no-browser runner; a lease refusal reruns locally; a browser-bound file stays local. */
+export async function browserFreeRunnerCheck(t, helpers) {
+  await withNoBrowserRunner(t, helpers, async (fixture) => {
+    const { runTests, show, hold, free } = fixture;
+    await hold();
+    const ran = await runTests('test/free.test.js');
+    assert.doesNotMatch(ran.stdout + ran.stderr, /BROWSER_SLOT_REQUIRED/u, show(ran));
+    assert.equal(ran.status, 0, show(ran));
+    assert.match(ran.stdout, /^ok 1 - browser-free file ran/mu, show(ran));
+    assert.deepEqual(fixture.phases(), { dispatched: 1, returned: 1 }, 'the browser-free file ran on the no-browser runner');
+
+    // A runner whose own run classifies more broadly than this controller (here the command forces the
+    // broad classifier) has its lease guard refuse; the guard's receipt, not any text, reruns it locally.
+    const command = `PULLBOARD_TEST_BROWSER_BY_LAUNCH=0 node bin/run-tests.js ${shellQuote('test/free.test.js')}`;
+    const pending = gateRun(fixture, command);
+    await until(() => fixture.phases().returned === 2, 'the runner answers the refused run');
+    free();
+    const rerun = await pending;
+    assert.equal(rerun.status, 0, show(rerun));
+    assert.match(rerun.stderr, /RUNNER_BROWSER_SLOT_REQUIRED[^\n]*its attempt \(exit 1\):\n[^]*run-tests: \[BROWSER_SLOT_REQUIRED\][^]*rerunning it locally with a browser slot/u, show(rerun));
+    const record = JSON.parse(rerun.stdout.split('\n').findLast(line => line.startsWith('PULLBOARD_RUN_RESULT ')).slice('PULLBOARD_RUN_RESULT '.length));
+    assert.equal(record.runner, null, 'the green result is the local rerun');
+    assert.equal(record.runnerAttempt.host, HOST, 'the runner attempt is kept beside it');
+    assert.match(record.runnerAttempt.output, /\[BROWSER_SLOT_REQUIRED\] the inherited gate lease does not hold the browser slot/u);
+    assert.match(rerun.stdout, /^ok 1 - browser-free file ran/mu, show(rerun));
+    assert.deepEqual(fixture.phases(), { dispatched: 2, returned: 2 }, 'the local rerun never went back to the runner');
+
+    // A browser-bound file waits for a local slot rather than going to a runner with no browser slots.
+    await hold();
+    const bound = runTests('test/chrome.test.js');
+    const waiting = () => listResources({ scope: 'machine', root: fixture.repo }).find(resource => resource.name === 'gate')?.line.length === 1;
+    await until(waiting, 'the browser-bound run queues');
+    await new Promise(resolveWait => setTimeout(resolveWait, 1_000)); // budget: several admission polls in which a runner could take it.
+    assert.equal(waiting(), true, 'the browser-bound run still waits for a local slot');
+    free();
+    const local = await bound;
+    assert.equal(local.status, 0, show(local));
+    assert.match(local.stdout, /^ok 1 - browser-bound file ran/mu, show(local));
+    assert.deepEqual(fixture.phases(), { dispatched: 2, returned: 2 }, 'the browser-bound file never reached the runner');
+  });
+}
+
+/** Control: a test that prints or throws the refusal text on a runner stays red and is never rerun. */
+export async function browserRefusalTextStaysRed(t, helpers) {
+  await withNoBrowserRunner(t, helpers, async (fixture) => {
+    const { runTests, show, hold } = fixture;
+    await hold();
+    const red = await runTests('test/marker.test.js');
+    assert.equal(red.status, 1, show(red));
+    assert.match(red.stdout, /^not ok 1 - marker file ran/mu, show(red));
+    assert.match(red.stdout, /\[BROWSER_SLOT_REQUIRED\] thrown by a test/u, show(red));
+    assert.doesNotMatch(red.stderr, /RUNNER_BROWSER_SLOT_REQUIRED|rerunning it locally/u, show(red));
+    assert.deepEqual(fixture.phases(), { dispatched: 1, returned: 1 }, 'the red came from the runner, once');
+  });
 }

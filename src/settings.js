@@ -14,6 +14,7 @@ import {
 import { validateRunner } from './runners.js';
 import { Refused } from './refused.js';
 import {
+  carriedBrowserByLaunch,
   gateQueueSettings,
   machineSettingsFile,
   readMachineSettingsFile,
@@ -85,10 +86,7 @@ export function browserFreeChecksEnabled() {
  * machine; off, any path to the Chrome fixture or an unfollowed process starter takes a browser slot.
  */
 export function browserByLaunchEnabled() {
-  // A runner's command carries its controller's setting, since the runner machine's own may differ (#1043).
-  const carried = process.env.PULLBOARD_TEST_BROWSER_BY_LAUNCH;
-  if (carried === '1' || carried === '0') return carried === '1';
-  return loadMachineSettings().gate?.browserByLaunch === true;
+  return carriedBrowserByLaunch() ?? loadMachineSettings().gate?.browserByLaunch === true;
 }
 
 /**

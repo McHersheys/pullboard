@@ -514,8 +514,12 @@ export async function withGateSlot(root, action, options = {}) {
   try { return await withOneGateSlot(root, action, options); }
   catch (error) {
     if (error?.code !== 'RUNNER_BROWSER_SLOT_REQUIRED' || options.remote === false) throw error;
-    process.stderr.write(`${error.message}; rerunning it locally\n`);
-    return withOneGateSlot(root, action, { ...options, remote: false });
+    // The runner's red attempt stays on record beside the local rerun.
+    const attempt = error.runnerAttempt ?? { host: '', exitCode: null, output: '' };
+    process.stderr.write(`${error.message}; its attempt (exit ${attempt.exitCode}):\n${attempt.output}${attempt.output.endsWith('\n') || !attempt.output ? '' : '\n'}rerunning it locally with a browser slot\n`);
+    const result = await withOneGateSlot(root, action, { ...options, remote: false, browser: true });
+    if (result && typeof result === 'object') result.runnerAttempt = attempt;
+    return result;
   }
 }
 

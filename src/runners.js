@@ -56,7 +56,7 @@ import {
   readStages,
 } from './gate-stages.js';
 import { remoteFileDenial } from './sandbox-denial.js';
-import { readMachineSettingsFile } from './queue-settings.js';
+import { carriedBrowserByLaunch, readMachineSettingsFile } from './queue-settings.js';
 
 // Budget: 64 MiB bounds worst-case JSON bridge escaping below Node string limits.
 const MAX_OUTPUT_BYTES = 64 * 1024 ** 2;
@@ -465,7 +465,7 @@ function anonymousOrigin(root) {
 }
 
 /** Prepare the pinned request before negotiating history; cleanup owns only its scratch directory. */
-function requestFor(root, command, { runner, source, browser = false, pipefail = false, stages = false, waivers = [], metadata = {} }) {
+function requestFor(root, command, { runner, source, browser = false, byLaunch, pipefail = false, stages = false, waivers = [], metadata = {} }) {
   runner = validateRunner(runner);
   const current = runnerSource(root);
   if (!current || (source && (current.commit !== source.commit || current.tree !== source.tree))) {
@@ -487,8 +487,8 @@ function requestFor(root, command, { runner, source, browser = false, pipefail =
     if (secretsIn([{ path: 'runner continuation', line: 1, text: JSON.stringify(projection) }]).length) throw new Refused('RUNNER_SECRET', 'the continuation projection contains a possible secret; keep this run local');
     const spec = { version: 1, id: randomUUID(), repoId, ...(originBase ? { origin, originBase } : {}), runtime, tooling, tags, ...current, command, pipefail, slots: runner.slots,
       browser: runner.browser, browserRequired: browser, landing: metadata.landing === true,
-      // The runner classifies test files as this controller did, not by its own settings (#1043).
-      browserByLaunch: readMachineSettingsFile()?.gate?.browserByLaunch === true,
+      // The classification this controller used, so the runner never reclassifies by its own settings (#1043).
+      browserByLaunch: byLaunch ?? carriedBrowserByLaunch() ?? readMachineSettingsFile()?.gate?.browserByLaunch === true,
       ...(stages ? { stageMarker: `PULLBOARD_STAGE_${randomUUID().replaceAll('-', '')}` } : {}), waivers: projection,
       itemCheck: metadata.itemCheck === true, diagnostic: metadata.diagnostic === true,
       item: String(metadata.item ?? ''), kind: String(metadata.kind ?? ''), ...(runner.root ? { root: runner.root } : {}),
@@ -545,8 +545,12 @@ function resultFrom(request, result) {
     }
   }
   const text = staged?.output ?? output.toString('utf8');
-  if (!request.spec.browserRequired && receipt.code !== 0 && text.includes('[BROWSER_SLOT_REQUIRED]')) {
-    throw new Refused('RUNNER_BROWSER_SLOT_REQUIRED', `runner ${request.runner.host} ran this without a browser slot and answered BROWSER_SLOT_REQUIRED`);
+  if (receipt.browserRefused !== undefined && (receipt.browserRefused !== true || receipt.code === 0 || request.spec.browserRequired)) throw new RunnerDropped(request.runner.host);
+  // Only the lease guard's own receipt counts; text a test prints is never a refusal (#1043).
+  if (receipt.browserRefused === true) {
+    const refused = new Refused('RUNNER_BROWSER_SLOT_REQUIRED', `runner ${request.runner.host} refused this run's lease for want of a browser slot (BROWSER_SLOT_REQUIRED)`);
+    refused.runnerAttempt = { host: request.runner.host, exitCode: receipt.code, output: text };
+    throw refused;
   }
   return { isGreen: receipt.code === 0 && !receipt.signal, output: text, sandboxBlocked,
     ...(request.spec.stageMarker ? { stages: staged?.stages ?? null } : {}),
@@ -575,7 +579,7 @@ process.on('SIGTERM',abort); process.on('SIGHUP',abort); process.stdout.on('erro
 const parentWatch=setInterval(()=>{if(process.ppid!==request.parentPid)abort();},1000);
 if(process.ppid!==request.parentPid)abort();
 try { process.stdout.write(JSON.stringify({result:await runOnRunnerAsync(request.root,request.command,{...request.options,signal:canceled.signal})})); }
-catch(error) { process.stdout.write(JSON.stringify({error:{name:error.name,code:error.code,message:error.message,host:error.host}})); process.exitCode=1; }
+catch(error) { process.stdout.write(JSON.stringify({error:{name:error.name,code:error.code,message:error.message,host:error.host,runnerAttempt:error.runnerAttempt}})); process.exitCode=1; }
 finally {clearInterval(parentWatch);}`;
   const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
     cwd: root, input: JSON.stringify({ root, command, options, parentPid: process.pid }), encoding: 'utf8', maxBuffer: MAX_OUTPUT_BYTES * 6 + 1024 ** 2,
@@ -585,7 +589,9 @@ finally {clearInterval(parentWatch);}`;
   try { reply = JSON.parse(child.stdout); } catch { throw new RunnerDropped(options.runner.host); }
   if (reply.error?.name === 'Refused') {
     const prefix = `[${reply.error.code}] `;
-    throw new Refused(reply.error.code, reply.error.message.startsWith(prefix) ? reply.error.message.slice(prefix.length) : reply.error.message);
+    const refused = new Refused(reply.error.code, reply.error.message.startsWith(prefix) ? reply.error.message.slice(prefix.length) : reply.error.message);
+    if (reply.error.runnerAttempt) refused.runnerAttempt = reply.error.runnerAttempt;
+    throw refused;
   }
   if (reply.error || child.error || child.status !== 0) throw new RunnerDropped(options.runner.host);
   return reply.result;

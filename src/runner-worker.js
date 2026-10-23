@@ -1209,7 +1209,7 @@ async function receipt(spec, fields, sink) {
     runtimeSha256: spec.runtime.sha256, toolingSha256: spec.tooling.sha256, root: fields.root ?? '', outputSha256: sink.hash.digest('hex'), wallMs: Math.max(0, Date.now() - sink.wallStart),
     // The execution host's load and the pinned main this run used, so a paired rerun here can be judged (#925).
     main: typeof spec.main === 'string' ? spec.main : null, load: { average: loadavg(), cpus: availableParallelism(), freeMB: Math.floor(freemem() / 1048576) },
-    ...(spec.stageMarker ? { pipeStatuses: fields.pipeStatuses ?? null } : {}), ...(fields.refused ? { refused: fields.refused } : {}), ...(fields.denial ? { denial: fields.denial } : {}) };
+    ...(spec.stageMarker ? { pipeStatuses: fields.pipeStatuses ?? null } : {}), ...(fields.refused ? { refused: fields.refused } : {}), ...(fields.browserRefused ? { browserRefused: true } : {}), ...(fields.denial ? { denial: fields.denial } : {}) };
   const encoded = Buffer.from(JSON.stringify(body)).toString('base64');
   await new Promise((resolveWrite, rejectWrite) => process.stderr.write(`${RECEIPT} ${spec.id} ${encoded}\n`, error => error ? rejectWrite(error) : resolveWrite()));
 }
@@ -1317,7 +1317,9 @@ async function main() {
     setupStep = 'committed dependencies';
     await installDependencies(root, runnerRoot, env, tracker);
     setupStep = 'command start';
-    final = { ...(await runCommand(spec, root, { ...env, PULLBOARD_LANDING_RUN: spec.landing === true ? '1' : '0', ...(typeof spec.browserByLaunch === 'boolean' ? { PULLBOARD_TEST_BROWSER_BY_LAUNCH: spec.browserByLaunch ? '1' : '0' } : {}), PULLBOARD_LANDING_WAIVERS: JSON.stringify(spec.landing === true ? spec.waivers ?? [] : []) }, sink, tracker)), root };
+    const browserRefusal = join(runDirectory, 'browser-refusal.json');
+    final = { ...(await runCommand(spec, root, { ...env, PULLBOARD_LANDING_RUN: spec.landing === true ? '1' : '0', [api.BROWSER_REFUSAL_FILE_ENV]: browserRefusal, ...(typeof spec.browserByLaunch === 'boolean' ? { PULLBOARD_TEST_BROWSER_BY_LAUNCH: spec.browserByLaunch ? '1' : '0' } : {}), PULLBOARD_LANDING_WAIVERS: JSON.stringify(spec.landing === true ? spec.waivers ?? [] : []) }, sink, tracker)), root };
+    if (final.code !== 0 && existsSync(browserRefusal)) final.browserRefused = true;
   } catch (error) {
     const refused = setupRefusalCode(error);
     const message = refused ? `${safeSetupMessage(error, setupStep)} [${refused}]` : safeSetupMessage(error, setupStep);
