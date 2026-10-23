@@ -24,6 +24,7 @@ import {
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { boardNotWritable } from './board-access.js';
+import { ensureHotIndexes } from './board-hot.js';
 import {
   briefFiles,
   briefSections,
@@ -315,6 +316,8 @@ export function openBoard(file, clock = systemClock, { isMain } = {}) {
     if (file !== ':memory:') db.exec('PRAGMA journal_mode = WAL');
     migrateEventLogVersion(db);
     migrate(db);
+    // Only trunk code adds indexes to a shared board; a worktree reads it as the trunk left it (#1044).
+    if (isMain !== false) ensureHotIndexes(db);
     db.prepare('INSERT OR IGNORE INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run('board_id', randomBytes(16).toString('hex'));
     const board = { db, clock };
     guardStore(board);
@@ -2662,16 +2665,7 @@ export function peekShouts(board, agentId, limit = 2) {
     .reverse();
 }
 
-/**
- * The newest shouts on the board, newest first, read without marking anything read (N26).
- *
- * @param {any} board
- * @param {number} [limit]
- * @returns {any[]}
- */
-export function recentShouts(board, limit = 40) {
-  return board.db.prepare('SELECT * FROM shout ORDER BY shout_id DESC LIMIT ?').all(limit);
-}
+export { recentShouts, eventsOfKinds, recentEvents, lastMoves, decisionAndEvidenceShouts } from './board-hot.js';
 
 export { stats } from './board-stats.js';
 

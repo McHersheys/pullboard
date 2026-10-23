@@ -1452,7 +1452,7 @@ export function verifiedMergeGroups(root, items, shouts, now) {
 
 /** Capture coordinator-only decision sections with stable ages and answers from the board. */
 export function coordinatorDecisionSections(board, ctx) {
-  const shouts = store.allShouts(board);
+  const shouts = store.decisionAndEvidenceShouts(board);
   const openDecisions = store.openDecisions(board, COORDINATOR).map((ask) => ({
     id: ask.shout_id, asker: ask.shout_from, question: ask.shout_text, at: ask.shout_at, age: span(ctx, ask.shout_at),
   }));
