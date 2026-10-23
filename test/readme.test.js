@@ -100,8 +100,8 @@ function wordCount(text) {
 
 test('README has the approved centered header, logo and one-line facts [I10,I12]', () => {
   assert.match(README, /^<p align="center">\n  <picture>\n    <source media="\(prefers-color-scheme: dark\)" srcset="docs\/img\/logo-dark\.svg">\n    <img src="docs\/img\/logo\.svg" alt="" width="72">\n  <\/picture>\n<\/p>\n\n<h1 align="center">Pullboard<\/h1>/u);
-  assert.match(README, /<p align="center"><a href="https:\/\/pullboard\.dev"><b>pullboard\.dev<\/b><\/a> · lives in your git repo · no account · no dependencies · never calls a model<\/p>/u, 'the centered header pins the product facts in one line');
-  for (const badge of ['gate', 'npm', 'node', 'MIT license']) assert.match(README, new RegExp(`alt="${badge}"`), `${badge} badge remains in the header`);
+  assert.match(README, /<p align="center"><a href="https:\/\/pullboard\.dev"><b>pullboard\.dev<\/b><\/a> · lives in your git repo · no dependencies · <b>Walk away, and it builds\.<\/b><\/p>/u, 'the centered header pins the product facts and the tagline in one line');
+  for (const badge of ['pullboard', 'agent-verified', 'npm', 'MIT license']) assert.match(README, new RegExp(`alt="${badge}(?:: [^"]+)?"`), `${badge} badge remains in the header`);
   assert.ok(readFileSync(join(ROOT, 'docs/img/logo.svg'), 'utf8').startsWith('<svg '), 'the approved light logo is present');
   assert.ok(readFileSync(join(ROOT, 'docs/img/logo-dark.svg'), 'utf8').startsWith('<svg '), 'the approved dark logo is present');
 });
@@ -307,9 +307,9 @@ test('README pins its approved Philosophy, Key concepts and Why structure [I10,I
   const whyStart = README.indexOf('### Why', concepts);
   const nextTopLevel = README.indexOf('\n## ', philosophy + 1);
   assert.ok(philosophy >= 0 && philosophy < concepts && concepts < whyStart && whyStart < nextTopLevel, 'Philosophy contains Key concepts and Why before the next top-level section');
-  const approvedOpening = "**Accumulated judgement for agents.** Agents are good at tasks and bad at projects: every new session starts without what you decided, so you become the glue. The agents scale; your judgement doesn't. Pullboard is a structural approach to orchestrating agents coherently over long-term builds, so you can trust your agentic workforce to fill in the blanks the way you would, without re-prompting them.";
+  const approvedOpening = 'Pullboard keeps agents building **true to your intent**, with a second agent checking every change. Your judgement carries across every agent and every session, so a complex project stays coherent for months. It\'s a coordination queue for serious software: you decide what matters once, and many agents build, check and land the work.';
   const openingWithFigure = `${approvedOpening}\n\n${figureMarkup('docs/img/holds.svg', 'How it holds. Your decision becomes a bar each piece of work is frozen against; a second agent checks the exact commit; the board keeps what passed, what failed and why; the next agent starts from there.')}\n\n**Vibe code a real product.**`;
-  assert.ok(README.includes(openingWithFigure), 'the approved opening and holds figure sit directly before the unchanged lead');
+  assert.ok(README.includes(openingWithFigure), 'the approved opening, then the holds figure, then the lead');
   assert.equal(README.split(approvedOpening).length - 1, 1, 'the approved opening appears exactly once');
   assert.doesNotMatch(`${approvedOpening} ${FIGURES.holds()}`, /\b(?:memory|remember)\b/iu, 'the opening and its figure avoid those terms');
   const section = README.slice(philosophy, nextTopLevel);

@@ -36,6 +36,7 @@ import {
   mainLaneWork,
   reviewQueueLine,
   refuseNextIdle,
+  reportBlock,
 } from './next-steps.js';
 import { reviewerStartup } from './next-steps.js';
 import { environmentAgent } from './relay-environment.js';
@@ -837,7 +838,16 @@ function configHere(info) {
  * @returns {T}
  */
 export function withBoard(ctx, work) {
-  const board = store.openBoard(ctx.file, ctx.clock, { isMain: ctx.allowSchemaUpgrade });
+  const board = store.openBoard(ctx.file, ctx.clock, { isMain: ctx.allowSchemaUpgrade,
+    /** Report each source mismatch once through this invocation's text or JSON diagnostics. */
+    onDiagnostic(message) {
+      ctx.io.schemaDiagnostics ??= new Set();
+      const key = ctx.file + '\n' + message;
+      if (ctx.io.schemaDiagnostics.has(key)) return;
+      ctx.io.schemaDiagnostics.add(key);
+      ctx.io.err(message);
+    },
+  });
   // Whether a proven flake stops blocking a landing is the coordinator's setting, read from accepted main on first use.
   let quarantine;
   board.quarantineEnabled = () => quarantine ??= mainPolicy(ctx.info.root).config.flakes?.quarantine === true;
@@ -1452,7 +1462,7 @@ export function verifiedMergeGroups(root, items, shouts, now) {
 
 /** Capture coordinator-only decision sections with stable ages and answers from the board. */
 export function coordinatorDecisionSections(board, ctx) {
-  const shouts = store.allShouts(board);
+  const shouts = store.decisionAndEvidenceShouts(board);
   const openDecisions = store.openDecisions(board, COORDINATOR).map((ask) => ({
     id: ask.shout_id, asker: ask.shout_from, question: ask.shout_text, at: ask.shout_at, age: span(ctx, ask.shout_at),
   }));
@@ -2235,6 +2245,7 @@ async function runCommand(argv, io) {
     if (error instanceof Refused) {
       io.refusal?.(error);
       io.err(`pullboard: ${displayedRefusal(io, error)}\nnext: ${io.refusalDocument(error).error.next}`);
+      reportBlock(io, error, { command });
       return 1;
     }
     throw error;
@@ -2331,6 +2342,7 @@ async function runMain(argv, streams) {
       if (!(error instanceof Refused)) throw error;
       io.refusal(error);
       io.err(`pullboard: ${displayedRefusal(io, error)}\nnext: ${io.refusalDocument(error).error.next}`);
+      reportBlock(io, error, { command: parsed.positionals[0] });
       io.flush(1);
       return 1;
     }

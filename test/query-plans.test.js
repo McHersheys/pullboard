@@ -1,0 +1,205 @@
+/** @pullboard-test-input source-tree */
+/**
+ * Every query the hot commands run reaches events and shouts through an index, never a full scan, on a
+ * seeded board of 1,000 items, 45,000 events and 23,000 shouts [C7]. The commands run as the real CLI
+ * with a preload that records each statement they prepare; each is then planned with EXPLAIN QUERY PLAN.
+ */
+import assert from 'node:assert/strict';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
+import { after, test } from 'node:test';
+import * as store from '../src/board.js';
+import { runFixtureChild, runFixtureGit } from './fixture-child.js';
+
+const BIN = resolve(import.meta.dirname, '../bin/pullboard.js');
+const SERVE = pathToFileURL(resolve(import.meta.dirname, '../src/serve.js')).href;
+const ITEMS = 1_000;
+const EVENTS = 45_000;
+const SHOUTS = 23_000;
+const SEATS = 800;
+const sandboxes = [];
+// Reads that fold the whole history by design, so no index can serve them, each with the item that
+// rewrites it: health's itemHistory (#1053), coordinator resume's undrafted Rigor in personNeedsState
+// (#1052), resume's proofStats (#1051) and the view state's projectState (#1055, which uses
+// lastMoves and recentEvents). The test fails if one stops scanning while still listed, so the list
+// can only shrink.
+const WHOLE_HISTORY = ['itemHistory', 'personNeedsState', 'projectState', 'proofStats'];
+
+after(() => {
+  for (const dir of sandboxes) rmSync(dir, { recursive: true, force: true });
+});
+
+/** Make a real repo with a coordinator and one joined builder, and return how to run the CLI there with a statement log. */
+function fixture() {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-query-plans-')));
+  sandboxes.push(dir);
+  const log = join(dir, 'statements.log');
+  const preload = join(dir, 'record.mjs');
+  // Record every statement any connection prepares, so the test plans exactly what the command ran.
+  writeFileSync(preload, `import { DatabaseSync } from 'node:sqlite';
+import { appendFileSync } from 'node:fs';
+const prepare = DatabaseSync.prototype.prepare;
+DatabaseSync.prototype.prepare = function (sql, ...rest) {
+  // The function that asked: past the events() helper and serve's withProject wrapper.
+  const caller = new Error().stack.split('\\n').slice(2).map((line) => /at (?:Module\\.)?([\\w$.]+) \\(/u.exec(line)?.[1])
+    .find((name) => name && name !== 'events' && name !== 'withProject');
+  appendFileSync(process.env.PULLBOARD_QUERY_LOG, JSON.stringify({ sql, caller }) + '\\n');
+  return prepare.call(this, sql, ...rest);
+};
+`);
+  const shims = join(dir, 'bin');
+  mkdirSync(shims);
+  writeFileSync(join(shims, 'pullboard'), `#!/bin/sh\nexec "${process.execPath}" "${BIN}" "$@"\n`, { mode: 0o755 });
+  chmodSync(join(shims, 'pullboard'), 0o755);
+  const env = {
+    ...process.env,
+    PATH: `${shims}:${process.env.PATH}`,
+    GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1',
+    GIT_AUTHOR_NAME: 'Test Agent', GIT_AUTHOR_EMAIL: 'agent@example.com',
+    GIT_COMMITTER_NAME: 'Test Agent', GIT_COMMITTER_EMAIL: 'agent@example.com',
+    PULLBOARD_HOME: join(dir, 'home'), PULLBOARD_MACHINE_HOME: join(dir, 'machine-home'),
+    PULLBOARD_MODEL: 'Test Model',
+  };
+  delete env.PULLBOARD_RELAY_TOKEN;
+  const repo = join(dir, 'repo');
+  mkdirSync(repo);
+  const git = (...args) => runFixtureGit(args, { cwd: repo, env });
+  /** Run the CLI, or a node script, in a checkout; `record` adds the statement-recording preload. */
+  const run = (cwd, args, { record = false, node = false } = {}) => {
+    const argv = [...(record ? ['--import', pathToFileURL(preload).href] : []), ...(node ? [] : [BIN]), ...args];
+    const result = runFixtureChild(process.execPath, argv, { cwd, env: { ...env, PULLBOARD_QUERY_LOG: log }, encoding: 'utf8' });
+    return { code: result.status, out: result.stdout ?? '', err: result.failure ?? result.stderr ?? '' };
+  };
+  git('init', '-q', '-b', 'main');
+  assert.equal(run(repo, ['init']).code, 0);
+  writeFileSync(join(repo, 'pullboard.json'), JSON.stringify({
+    gate: 'true', spec: 'SPEC.md', verify: 'any', lease: '2h',
+    lanes: { web: { owns: ['web/'], specs: ['G1'] } },
+  }, null, 2));
+  writeFileSync(join(repo, 'SPEC.md'), '# Plans fixture\n\n## G · Goals\n- G1 [approved, must] The feature works. | gate: test\n');
+  mkdirSync(join(repo, 'web'));
+  writeFileSync(join(repo, 'web', 'a.txt'), 'base\n');
+  git('add', '-A');
+  git('commit', '-q', '-m', 'chore: create plans fixture');
+  const made = run(repo, ['worktree', 'web', '--route', 'strong', '--json']);
+  assert.equal(made.code, 0, `${made.err}\n${made.out}`);
+  const board = join(git('rev-parse', '--path-format=absolute', '--git-common-dir').trim(), 'pullboard', 'board.sqlite');
+  return { dir, repo, web: JSON.parse(made.out).path, board, log, run };
+}
+
+/** Fill the board to the measured scale: seats, items, an event log, shouts, and decisions half answered. */
+function seed(file) {
+  const db = new DatabaseSync(file);
+  const at = (n) => new Date(Date.UTC(2026, 9, 1) + n * 1000).toISOString();
+  db.exec('BEGIN');
+  const seat = db.prepare('INSERT INTO agent (agent_id, agent_lane, agent_path, agent_created_at) VALUES (?, ?, ?, ?)');
+  for (let n = 0; n < SEATS; n += 1) seat.run(`web-${n + 100}`, 'web', `/gone/web-${n + 100}`, at(n));
+  const item = db.prepare(`INSERT INTO item (item_lane, item_title, item_criterion, item_created_by, item_created_at, item_updated_at)
+    VALUES ('web', ?, 'The feature works.', 'coordinator', ?, ?)`);
+  for (let n = 0; n < ITEMS; n += 1) item.run(`Item ${n}`, at(n), at(n));
+  const event = db.prepare('INSERT INTO event (event_at, event_by, event_kind, item_id, event_detail) VALUES (?, ?, ?, ?, ?)');
+  const kinds = ['add', 'claim', 'renew', 'shout', 'edit'];
+  for (let n = 0; n < EVENTS; n += 1) event.run(at(n), `web-${100 + (n % SEATS)}`, kinds[n % kinds.length], n % 10 ? 1 + (n % ITEMS) : null, '{}');
+  const shout = db.prepare('INSERT INTO shout (shout_from, shout_to, shout_text, shout_at, shout_decision, shout_answers) VALUES (?, ?, ?, ?, ?, ?)');
+  for (let n = 0; n < SHOUTS; n += 1) {
+    const asks = n % 10 === 0;
+    const to = asks ? (n % 20 === 0 ? 'coordinator' : 'person') : 'all';
+    // Every other coordinator ask gets its answer two shouts later (shout ids start at 1).
+    const answers = n % 40 === 2 ? n - 1 : null;
+    shout.run(`web-${100 + (n % SEATS)}`, to, `shout ${n}`, at(n), asks ? 1 : 0, answers);
+  }
+  db.exec('COMMIT');
+  db.close();
+}
+
+/** Add each recorded statement to `statements`, with the commands and the functions that ran it. */
+function record(statements, log, command) {
+  for (const line of readFileSync(log, 'utf8').split('\n').filter(Boolean)) {
+    const { sql, caller } = JSON.parse(line);
+    const seen = statements.get(sql) ?? { commands: new Set(), callers: new Set() };
+    seen.commands.add(command);
+    seen.callers.add(caller ?? 'unknown');
+    statements.set(sql, seen);
+  }
+}
+
+/** The aliases a statement gives the event and shout tables, besides their own names. */
+function scanNames(sql) {
+  const names = new Set(['event', 'shout', 'ask', 'reply']);
+  for (const match of sql.matchAll(/\b(?:event|shout)\s+(?:AS\s+)?([A-Za-z_]\w*)/giu)) {
+    if (!/^(?:WHERE|ORDER|GROUP|LIMIT|JOIN|LEFT|INNER|ON|USING|SET|VALUES|AND|OR|WHEN|INDEXED|NOT)$/iu.test(match[1])) names.add(match[1]);
+  }
+  return names;
+}
+
+test('hot board queries never scan events or shouts [C7]', () => {
+  const box = fixture();
+  seed(box.board);
+  // The commands run worktree code, which never changes a shared board's schema, so the board gets
+  // its indexes the way the trunk's next open gives them.
+  store.closeBoard(store.openBoard(box.board));
+  const commands = [
+    [box.repo, ['status']], [box.repo, ['list']], [box.repo, ['show', '1']], [box.repo, ['next']],
+    [box.repo, ['resume']], [box.repo, ['health']],
+    [box.web, ['status']], [box.web, ['list']], [box.web, ['show', '1']], [box.web, ['next']], [box.web, ['resume']],
+  ];
+  const statements = new Map();
+  const timings = [];
+  for (const [cwd, args] of commands) {
+    writeFileSync(box.log, '');
+    const started = performance.now();
+    const result = box.run(cwd, args, { record: true });
+    timings.push(`${cwd === box.repo ? 'coordinator' : 'builder'} ${args[0]} ${Math.round(performance.now() - started)} ms`);
+    assert.ok(result.code === 0 || result.code === 1, `${args.join(' ')} crashed: ${result.err}`);
+    record(statements, box.log, args.join(' '));
+  }
+  // The view's state, as the page polls it.
+  writeFileSync(box.log, '');
+  const view = join(box.dir, 'view-state.mjs');
+  writeFileSync(view, `const { projectState } = await import(${JSON.stringify(SERVE)});\nprojectState(process.argv[2]);\n`);
+  const state = box.run(box.repo, [view, box.repo], { record: true, node: true });
+  assert.equal(state.code, 0, state.err);
+  record(statements, box.log, 'view state');
+  assert.ok(statements.size > 20, `only ${statements.size} statements were recorded`);
+
+  const board = store.openBoard(box.board);
+  try {
+    const scans = [];
+    const wholeHistory = new Set();
+    for (const [sql, { commands, callers }] of statements) {
+      if (!/\b(?:event|shout)\b/iu.test(sql)) continue;
+      const plan = board.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all().map((row) => row.detail);
+      const names = scanNames(sql);
+      // A full scan, or an automatic index, which SQLite builds by scanning the table on every run.
+      const scanned = plan.filter((detail) => {
+        const match = /^(?:SCAN (\w+)|SEARCH (\w+) USING AUTOMATIC)/u.exec(detail);
+        return match && names.has(match[1] ?? match[2]);
+      });
+      if (!scanned.length) continue;
+      if ([...callers].every((caller) => WHOLE_HISTORY.includes(caller))) {
+        for (const caller of callers) wholeHistory.add(caller);
+        continue;
+      }
+      scans.push(`${[...commands].join(', ')} (${[...callers].join(', ')}): ${sql.replace(/\s+/gu, ' ').slice(0, 200)}\n    ${plan.join('\n    ')}`);
+    }
+    assert.deepEqual(scans, [], `${scans.length} hot statements scan events or shouts:\n${scans.join('\n')}`);
+    assert.deepEqual([...wholeHistory].sort(), WHOLE_HISTORY, 'a whole-history read stopped scanning: remove it from WHOLE_HISTORY');
+
+    store.openDecisions(board, 'coordinator');
+    const runs = [];
+    for (let n = 0; n < 5; n += 1) {
+      const started = performance.now();
+      const open = store.openDecisions(board, 'coordinator');
+      runs.push(performance.now() - started);
+      assert.equal(open.length, 575);
+    }
+    const median = runs.sort((a, b) => a - b)[2];
+    assert.ok(median < 5, `openDecisions took ${median.toFixed(2)} ms, over 5 ms`);
+    console.log(`# openDecisions median ${median.toFixed(2)} ms; ${timings.join('; ')}`);
+  } finally {
+    store.closeBoard(board);
+  }
+});

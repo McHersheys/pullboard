@@ -18,11 +18,12 @@ function projectFile(value) {
 export function submissionProof(value) {
   if (!value || value.version !== 1 || typeof value.full !== 'boolean'
     || typeof value.deferred !== 'boolean' || typeof value.reason !== 'string'
-    || value.reason.length > 8192 || !Array.isArray(value.files) || value.files.some(file => !projectFile(file))) {
+    || value.reason.length > 8192 || !Array.isArray(value.files) || value.files.some(file => !projectFile(file))
+    || value.deferredFiles !== undefined && (!value.deferred || !Array.isArray(value.deferredFiles) || value.deferredFiles.some(file => !projectFile(file)))) {
     throw new Refused('SUBMISSION_PROOF', 'a submission proof needs its version, selected project files, full-fallback reason and deferred flag; rerun submit with the current CLI');
   }
   return { version: 1, files: [...new Set(value.files)].sort(), full: value.full,
-    deferred: value.deferred, reason: value.reason };
+    deferred: value.deferred, reason: value.reason, ...(value.deferredFiles ? { deferredFiles: [...new Set(value.deferredFiles)].sort() } : {}) };
 }
 
 /** Accept only measured finite nonnegative durations; unavailable is always null. */

@@ -51,7 +51,7 @@ async function stopView(pid) {
 
 /** The pids of view processes on this test's leased port, listed (never killed) from ps. */
 function viewProcesses(port) {
-  const listed = spawnSync('ps', ['-A', '-o', 'pid=,command='], { encoding: 'utf8' });
+  const listed = spawnSync('ps', ['-A', '-o', 'pid=,command='], { encoding: 'utf8', maxBuffer: 64 << 20 });
   return listed.stdout.split('\n')
     .filter((line) => line.includes('pullboard.js view --no-open') && line.includes(`--port ${port}`))
     .map((line) => Number(line.trim().split(/\s+/u)[0]));
@@ -101,7 +101,7 @@ test('init leaves a view running for pullboard.dev [H5,N26]', async (t) => {
   const lines = viewLines(init.out);
   assert.equal(lines.length, 1, `init prints one line about the view:\n${init.out}`);
   const log = join(box.env.PULLBOARD_HOME, `view-${port}.log`);
-  assert.equal(lines[0], `Pullboard view is running at http://127.0.0.1:${port}.`);
+  assert.equal(lines[0], 'Pullboard view is running; open https://app.pullboard.dev to see your board.');
   assert.doesNotMatch(init.out, /\b(?:kill\s+\d+|taskkill\s+\/PID\s+\d+)/iu, 'init does not advise killing the live view');
   assert.ok(!init.out.includes(record.secret), 'the line names where the view is, never its secret');
 
@@ -146,7 +146,7 @@ test('resume starts the view once and the setting turns it off [H5,N26]', async 
   const record = sessionRecord(box, port);
   started.push(record.pid);
   assert.equal(viewLines(first.out).length, 1, `resume says it started the view:\n${first.out}`);
-  assert.match(viewLines(first.out)[0], new RegExp(`^Pullboard view is running in the background at http://127\\.0\\.0\\.1:${port},.* To stop it: kill ${record.pid};`, 'u'));
+  assert.match(viewLines(first.out)[0], new RegExp(`^Pullboard view is running in the background, so https://app\\.pullboard\\.dev finds .* To stop it: kill ${record.pid};`, 'u'));
   assert.equal((await answers(port, record.secret))?.status, 200);
 
   const second = box.run(repo, 'resume', '--json');
