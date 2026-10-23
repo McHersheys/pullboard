@@ -514,6 +514,27 @@ export function codexMcpServersInline(contents) {
   return false;
 }
 
+/** The one [mcp_servers.pullboard] block init writes, or prints for the person when it cannot write it (#961). */
+export const CODEX_MCP_BLOCK = `[mcp_servers.pullboard]\ncommand = "sh"\nargs = ["-c", ${JSON.stringify(MCP_COMMAND)}]`;
+
+/** How a note begins when Codex needs the person: an inline mcp_servers table that init leaves byte-identical. */
+export const CODEX_MANUAL_NOTE = 'kept .codex/config.toml as written: its mcp_servers is an inline table, which TOML cannot extend from outside it.';
+
+/**
+ * How init left each client's MCP server, read from its notes: added, kept (already there), or manual (the person adds
+ * it). --json reports this so a script can tell a Codex setup that needs the person (#961).
+ *
+ * @param {string[]} notes
+ * @returns {{ claude: 'added'|'kept'|'manual', codex: 'added'|'kept'|'manual' }}
+ */
+export function mcpSetup(notes) {
+  const has = (start) => notes.some((note) => note.startsWith(start));
+  return {
+    claude: has('added pullboard mcp to .mcp.json') ? 'added' : has('kept the Claude Code MCP server') ? 'kept' : 'manual',
+    codex: has(CODEX_MANUAL_NOTE) ? 'manual' : has('added pullboard mcp to .codex/config.toml') ? 'added' : 'kept',
+  };
+}
+
 /**
  * Register pullboard mcp for Claude Code (.mcp.json) and Codex (.codex/config.toml), merging with any servers already
  * there and never replacing a pullboard entry or a file it cannot read, so an agent can work the loop through MCP (#961).
@@ -546,11 +567,11 @@ function writeMcpConfig(root, onWrite) {
     notes.push('kept the Codex MCP server in .codex/config.toml');
   } else if (codexMcpServersInline(contents)) {
     // Rewriting the person's inline table would change bytes they wrote; they add the entry where TOML allows it.
-    notes.push(`kept .codex/config.toml, whose mcp_servers is an inline table; add pullboard = { command = "sh", args = ["-c", ${JSON.stringify(MCP_COMMAND)}] } inside it so Codex runs pullboard mcp`);
+    notes.push(`${CODEX_MANUAL_NOTE} To run pullboard mcp in Codex, move those servers into [mcp_servers.<name>] tables, then add:\n${CODEX_MCP_BLOCK}`);
   } else {
     // A new table at the end is valid TOML after any existing content, so nothing already there is rewritten.
     const prefix = contents && !contents.endsWith('\n') ? `${contents}\n` : contents;
-    const table = `${prefix ? `${prefix}\n` : ''}[mcp_servers.pullboard]\ncommand = "sh"\nargs = ["-c", ${JSON.stringify(MCP_COMMAND)}]\n`;
+    const table = `${prefix ? `${prefix}\n` : ''}${CODEX_MCP_BLOCK}\n`;
     mkdirSync(join(root, '.codex'), { recursive: true });
     writeFileSync(codex, table);
     onWrite('.codex/config.toml');

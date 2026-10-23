@@ -224,8 +224,8 @@ test('init keeps an existing Codex pullboard server in any TOML form and adds no
   assert.match(after.slice(other.length), /^\n\[mcp_servers\.pullboard\]\ncommand = "sh"\n/u, 'the pullboard server is appended once');
 });
 
-test('init leaves an inline mcp_servers table as written and names the entry to add [A9,I1]', (t) => {
-  // TOML never adds to an inline table, so appending [mcp_servers.pullboard] after one makes the file invalid.
+test('init leaves an inline mcp_servers table as written, prints the exact block and marks Codex manual [A9,I1]', (t) => {
+  // TOML never adds to an inline table from outside it, so init writes nothing and the person adds the block.
   for (const existing of ['mcp_servers = { other = { command = "other-server", args = ["serve"] } }\n', 'mcp_servers = {}\n']) {
     const box = initFixture(t);
     mkdirSync(join(box.root, '.codex'), { recursive: true });
@@ -233,8 +233,20 @@ test('init leaves an inline mcp_servers table as written and names the entry to 
     const initialized = box.init();
     assert.equal(initialized.code, 0, initialized.stderr);
     assert.equal(readFileSync(join(box.root, '.codex', 'config.toml'), 'utf8'), existing, 'the inline table is byte for byte as it was');
-    const note = initialized.document.notes.find(entry => entry.startsWith('kept .codex/config.toml, whose mcp_servers is an inline table'));
+    assert.equal(initialized.document.mcp.codex, 'manual', '--json marks Codex as manual');
+    assert.equal(initialized.document.mcp.claude, 'added');
+    const note = initialized.document.notes.find(entry => entry.startsWith('kept .codex/config.toml as written: its mcp_servers is an inline table'));
     assert.ok(note, 'init says why it kept the file');
-    assert.match(note, /add pullboard = \{ command = "sh", args = \["-c", "[^\n]+"\] \} inside it/u, 'and names the exact entry to add');
+    assert.match(note, /\n\[mcp_servers\.pullboard\]\ncommand = "sh"\nargs = \["-c", "[^\n]+"\]$/u, 'and prints the one exact block to add');
   }
+  // The plain command prints the block too, without --verbose.
+  const box = initFixture(t);
+  mkdirSync(join(box.root, '.codex'), { recursive: true });
+  writeFileSync(join(box.root, '.codex', 'config.toml'), 'mcp_servers = {}\n');
+  const plain = runFixtureChild(process.execPath, [BIN, 'init'], { cwd: box.root, env: box.env, encoding: 'utf8' });
+  assert.equal(plain.status, 0, plain.stderr);
+  assert.match(plain.stdout, /\[mcp_servers\.pullboard\]\ncommand = "sh"\nargs = \["-c", /u, 'the plain output shows the block');
+  // A config init can extend says added.
+  const ordinary = initFixture(t);
+  assert.equal(ordinary.init().document.mcp.codex, 'added');
 });
