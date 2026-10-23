@@ -1,3 +1,4 @@
+import { identifyCaller } from './cli-identity.js';
 /**
  * The pullboard command line: every command, bound to who is asking (B3, R3). The main checkout is the
  * coordinator; every other worktree is the agent that joined from it.
@@ -58,6 +59,7 @@ import {
   sayBrief,
   setupFiles,
   shellWord,
+  span,
   uncommittedSetup,
   withBoard,
 } from './cli-context.js';
@@ -75,7 +77,7 @@ import {
 // Commands and tests import these from here; each lives in the module a read can load without the rest.
 export {
   agentDisplayName, cdTo, CHECKOUT_LEASES, context, firstLineOf, HELP, idArg, idList, itemLine, main, printHelp,
-  resultCommands, sayBrief, shellWord, uncommittedSetup, unknownCommand, withBoard,
+  resultCommands, sayBrief, shellWord, span, uncommittedSetup, unknownCommand, withBoard,
 };
 import {
   CONFIG_FILE,
@@ -683,32 +685,9 @@ export function refuseRemoteCoordinatorModel(ctx, command) {
   throw new Refused('REMOTE_COORDINATOR_MODEL', `the coordinator's model is declared on the coordinator's own checkout (${name}); run pullboard ${command} there`);
 }
 
-/**
- * Who is asking: the coordinator in the main checkout, or the agent this worktree joined as.
- *
- * @param {any} ctx
- * @param {any} board
- * @returns {{ id: string, lane: string, route?: string, family: string | null, model: string | null, displayName: string }}
- */
+/** Resolve the caller with the existing environment and relay identity checks. */
 export function whoAmI(ctx, board) {
-  // A CI or cloud session works as the agent its environment token names, on that one board [E18].
-  const seat = environmentAgent(ctx.info.root, board);
-  if (seat) return { id: seat.agent_id, lane: seat.agent_lane, route: seat.agent_route, family: seat.agent_family ?? null, model: seat.agent_model ?? 'unknown', displayName: displayAgentName(seat, ctx.config.agents.names) };
-  if (ctx.info.isMain) {
-    ctx.io.caller?.('coordinator', ctx.info.root);
-    const registered = store.listAgents(board).find((agent) => agent.agent_id === COORDINATOR);
-    const linked = relayLinked(ctx.info.root);
-    if (linked && !registered) throw new Refused('NO_AGENT', 'the linked snapshot has no coordinator; restore a consistent relay snapshot before acting');
-    const id = linked ? COORDINATOR : store.ensureCoordinator(board, ctx.info.root);
-    const agent = registered ?? store.agentAt(board, ctx.info.root);
-    return { id, lane: COORDINATOR, family: agent?.agent_family ?? null, model: agent?.agent_model ?? 'unknown', displayName: displayAgentName(agent ?? { agent_id: id }, ctx.config.agents.names) };
-  }
-  const agent = store.agentAt(board, ctx.info.root);
-  if (!agent) {
-    throw new Refused('NOT_JOINED', 'this worktree has not joined a lane: pullboard join <lane> --model "<model name>" (see: pullboard lanes)');
-  }
-  ctx.io.caller?.('seat', ctx.info.root);
-  return { id: agent.agent_id, lane: agent.agent_lane, route: agent.agent_route, family: agent.agent_family ?? null, model: agent.agent_model ?? 'unknown', displayName: displayAgentName(agent, ctx.config.agents.names) };
+  return identifyCaller(ctx, board, { environmentAgent, relayLinked });
 }
 
 /**
@@ -920,20 +899,6 @@ export function refuseUnverifiedStack(root, board, item, commit, trunk) {
       `#${item.item_id} includes unverified item #${stacked.item_id} at ${stacked.item_commit}; wait for #${stacked.item_id} to be accepted or rebuild without its commits before continuing`,
     );
   }
-}
-
-/**
- * How long ago an ISO time was, or how long until it, in the board's clock: 45m, 3h, 2d.
- *
- * @param {any} ctx
- * @param {string} iso
- * @returns {string}
- */
-export function span(ctx, iso) {
-  const minutes = Math.round(Math.abs(ctx.clock.now().getTime() - Date.parse(iso)) / 60_000);
-  if (minutes < 60) return `${minutes}m`;
-  if (minutes < 48 * 60) return `${Math.round(minutes / 60)}h`;
-  return `${Math.round(minutes / 1440)}d`;
 }
 
 /**

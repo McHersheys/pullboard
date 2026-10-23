@@ -284,3 +284,17 @@ export function uncommittedSetup(mainRoot, config) {
     stage: `${cdTo(mainRoot)} git add${force} -- ${words}`,
   };
 }
+
+/**
+ * How long ago an ISO time was, or how long until it, in the board's clock: 45m, 3h, 2d.
+ *
+ * @param {any} ctx
+ * @param {string} iso
+ * @returns {string}
+ */
+export function span(ctx, iso) {
+  const minutes = Math.round(Math.abs(ctx.clock.now().getTime() - Date.parse(iso)) / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  if (minutes < 48 * 60) return `${Math.round(minutes / 60)}h`;
+  return `${Math.round(minutes / 1440)}d`;
+}

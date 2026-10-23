@@ -10,6 +10,7 @@ import { delimiter, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { runFixtureChild } from './fixture-child.js';
+import { assertStartupBudgets } from './cli-startup-budget-fixture.js';
 
 const REPO = resolve(import.meta.dirname, '..');
 const BIN = join(REPO, 'bin', 'pullboard.js');
@@ -106,7 +107,7 @@ function fixture(t) {
   return { run, runIn, worktree };
 }
 
-test('a read command loads only its own modules [C7]', (t) => {
+test('a read command loads only its own modules [C7]', async (t) => {
   const box = fixture(t);
   const version = box.run('--version');
   assert.match(version.stdout, /^\d+\.\d+\.\d+/u);
@@ -125,4 +126,5 @@ test('a read command loads only its own modules [C7]', (t) => {
   assert.equal(here.length, 1, `claim asked the worktree for repo facts ${here.length} times: ${here.join(' | ')}`);
   assert.ok(revParses.length <= 2, `claim started ${revParses.length} rev-parse processes: ${revParses.join(' | ')}`);
   assert.ok(claim.gitCalls.length <= 10, `claim started ${claim.gitCalls.length} Git processes: ${claim.gitCalls.join(' | ')}`);
+  await assertStartupBudgets(t);
 });
