@@ -8,7 +8,7 @@
  * keeps one upload in flight; moves during an upload are covered by the next one.
  */
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -52,6 +52,25 @@ export function checkpointFiles(file) {
   return { due: join(directory, 'relay-checkpoint.due'), pid: join(directory, 'relay-checkpoint.pid'), log: join(directory, 'relay-checkpoint.log') };
 }
 
+// Budget: a publisher refreshes its claim on every pass, far more often than this; an older claim belongs to a
+// process that died and whose number may since have been reused.
+const CLAIM_STALE_MS = 600_000;
+
+/**
+ * The live publisher holding a board's claim, or 0: a claim counts only while its process lives and it was
+ * refreshed recently, so a reused process number never keeps the board without a publisher.
+ *
+ * @param {string} pidFile
+ * @returns {number}
+ */
+export function publisherHolding(pidFile) {
+  try {
+    if (Date.now() - statSync(pidFile).mtimeMs > CLAIM_STALE_MS) return 0;
+    const holder = Number(readFileSync(pidFile, 'utf8'));
+    return alive(holder) ? holder : 0;
+  } catch { return 0; }
+}
+
 /** Whether a process is alive; a process another user owns still is. */
 export function alive(pid) {
   if (!Number.isSafeInteger(pid) || pid < 1) return false;
@@ -69,8 +88,7 @@ export function alive(pid) {
 export function scheduleCheckpoint(root, file) {
   const { due, pid } = checkpointFiles(file);
   writeFileSync(due, `${Date.now()}\n`, { mode: 0o600 });
-  const holder = existsSync(pid) ? Number(readFileSync(pid, 'utf8')) : 0;
-  if (alive(holder)) return;
+  if (publisherHolding(pid)) return;
   const child = spawn(process.execPath, [WORKER, root, file], { cwd: root, detached: true, stdio: 'ignore', env: process.env });
   child.unref();
 }

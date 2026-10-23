@@ -5,8 +5,8 @@
  *
  * Usage (spawned by scheduleCheckpoint): node relay-checkpoint-worker.js <root> <relay link file>
  */
-import { appendFileSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { alive, checkpointFiles, checkpointQuietMs } from './relay-checkpoint.js';
+import { appendFileSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { checkpointFiles, checkpointQuietMs, publisherHolding } from './relay-checkpoint.js';
 import { publishLatestCheckpoint } from './relay.js';
 
 const [root, file] = process.argv.slice(2);
@@ -23,9 +23,8 @@ function claim() {
     try { writeFileSync(pid, `${process.pid}\n`, { flag: 'wx', mode: 0o600 }); return true; }
     catch (error) {
       if (error.code !== 'EEXIST') throw error;
-      let holder = 0;
-      try { holder = Number(readFileSync(pid, 'utf8')); } catch { /* Gone between the two reads: try again. */ }
-      if (alive(holder) && holder !== process.pid) return false;
+      const holder = publisherHolding(pid);
+      if (holder && holder !== process.pid) return false;
       rmSync(pid, { force: true });
     }
   }
@@ -42,6 +41,8 @@ const io = {
 async function publishUntilQuiet() {
   const quiet = checkpointQuietMs();
   for (;;) {
+    // Refresh the claim, so a scheduler never takes this live publisher for a dead one.
+    try { utimesSync(pid, new Date(), new Date()); } catch { /* A removed claim is re-made by the next pass. */ }
     const moved = lastMove();
     const wait = quiet - (Date.now() - moved);
     if (wait > 0) { await new Promise(next => setTimeout(next, wait)); continue; }

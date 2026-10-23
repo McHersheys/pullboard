@@ -864,8 +864,26 @@ async function replayRelayRecord(board, key, state, record) {
   }
 }
 
-/** Persist the exact checkpoint before uploading, so a lost reply retries identical ciphertext. */
-async function publishCheckpoint(root, file, state, io) {
+/**
+ * Read and seal this board's checkpoint: the expensive part of publishing, which needs no relay lock.
+ *
+ * @param {string} root
+ * @param {any} state - The relay link, for the board's identity and key.
+ * @returns {Promise<{ sequence: number, digest: string, sealed: string }>}
+ */
+async function prepareCheckpoint(root, state) {
+  const document = relaySnapshot(root);
+  const sequence = Number(document.tables.board_meta.find((row) => row.meta_key === 'relay_applied_sequence')?.meta_value ?? 0);
+  return { sequence, digest: presentationDigest(document.presentation),
+    sealed: await sealedRecord(readBoardKey(state.board), document, state, 'snapshot', sequence) };
+}
+
+/**
+ * Persist the exact checkpoint before uploading, so a lost reply retries identical ciphertext. `prepared`, sealed
+ * outside the lock by the background publisher, stands in for reading the board again; an older one never replaces
+ * a newer saved checkpoint.
+ */
+async function publishCheckpoint(root, file, state, io, prepared = null) {
   if (!state.token?.startsWith('pm_') || process.env.PULLBOARD_RELAY_TOKEN) return;
   const resumed = Boolean(state.checkpointRefusal);
   if (state.checkpointRefusal && uploadPauseType(state.checkpointRefusal)) {
@@ -875,13 +893,11 @@ async function publishCheckpoint(root, file, state, io) {
     delete state.checkpointRefusal;
     saveLink(file, state);
   } else {
-    const document = relaySnapshot(root);
-    const sequence = Number(document.tables.board_meta.find((row) => row.meta_key === 'relay_applied_sequence')?.meta_value ?? 0);
-    const digest = presentationDigest(document.presentation);
-    if (!state.checkpoint || state.checkpoint.sequence !== sequence || state.checkpointPresentationDigest !== digest) {
+    const fresh = prepared && !(state.checkpoint?.sequence > prepared.sequence) ? prepared : await prepareCheckpoint(root, state);
+    if (!state.checkpoint || state.checkpoint.sequence !== fresh.sequence || state.checkpointPresentationDigest !== fresh.digest) {
       delete state.checkpointRefusal;
-      state.checkpointPresentationDigest = digest;
-      state.checkpoint = { sequence, sealed: await sealedRecord(readBoardKey(state.board), document, state, 'snapshot', sequence) };
+      state.checkpointPresentationDigest = fresh.digest;
+      state.checkpoint = { sequence: fresh.sequence, sealed: fresh.sealed };
       saveLink(file, state);
     }
     // A definitive rejection retries only a fresh image after the board changes.
@@ -905,8 +921,9 @@ async function publishCheckpoint(root, file, state, io) {
 }
 
 /**
- * Publish this board's checkpoint once, under the relay lock: the background publisher's one step (#1014). A board
- * whose link is gone or being removed publishes nothing.
+ * Publish this board's checkpoint once: the background publisher's one step (#1014). The board is read and sealed
+ * before the relay lock; only saving and uploading the sealed record hold it, since the upload may record the relay's
+ * API version and storage in the link. A board whose link is gone or being removed publishes nothing.
  *
  * @param {string} root
  * @param {{ err: (line: string) => void, say: (line: string) => void }} io
@@ -914,10 +931,14 @@ async function publishCheckpoint(root, file, state, io) {
  */
 export async function publishLatestCheckpoint(root, io) {
   const file = linkFile(root);
+  const linked = loadLink(file);
+  if (!linked || linked.unlinking) return false;
+  // Reading and sealing a large board takes about a second; it happens before the lock, so moves never wait on it.
+  const prepared = await prepareCheckpoint(root, linked);
   return locked(file, async () => {
     const state = loadLink(file);
-    if (!state || state.unlinking) return false;
-    await publishCheckpoint(root, file, state, io);
+    if (!state || state.unlinking || state.board !== linked.board) return false;
+    await publishCheckpoint(root, file, state, io, prepared);
     return true;
   }, io);
 }
