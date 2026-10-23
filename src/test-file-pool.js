@@ -85,11 +85,12 @@ async function openPool(home) {
     PRAGMA synchronous = NORMAL;
     CREATE TABLE IF NOT EXISTS file_holder(pid INTEGER PRIMARY KEY, since INTEGER NOT NULL, lender INTEGER);
     CREATE TABLE IF NOT EXISTS file_waiter(ticket INTEGER PRIMARY KEY AUTOINCREMENT, pid INTEGER NOT NULL UNIQUE);
-    CREATE TABLE IF NOT EXISTS file_loan(runner INTEGER PRIMARY KEY, lender INTEGER NOT NULL, call TEXT);
-    CREATE TABLE IF NOT EXISTS file_call(call TEXT PRIMARY KEY, lender INTEGER NOT NULL);`);
-  // A pool made before holders named their lender gains the column; a missing lender reads as none.
-  if (!db.prepare('PRAGMA table_info(file_holder)').all().some(column => column.name === 'lender')) db.exec('ALTER TABLE file_holder ADD COLUMN lender INTEGER');
-  if (!db.prepare('PRAGMA table_info(file_loan)').all().some(column => column.name === 'call')) db.exec('ALTER TABLE file_loan ADD COLUMN call TEXT');
+    CREATE TABLE IF NOT EXISTS file_call(call TEXT PRIMARY KEY, lender INTEGER NOT NULL, closing INTEGER NOT NULL DEFAULT 0);`);
+  // A pool made by an earlier build of this module gains the columns it lacks; a missing value reads as none.
+  const columns = table => db.prepare(`PRAGMA table_info(${table})`).all().map(column => column.name);
+  if (!columns('file_holder').includes('lender')) db.exec('ALTER TABLE file_holder ADD COLUMN lender INTEGER');
+  if (!columns('file_holder').includes('call')) db.exec('ALTER TABLE file_holder ADD COLUMN call TEXT');
+  if (!columns('file_call').includes('closing')) db.exec('ALTER TABLE file_call ADD COLUMN closing INTEGER NOT NULL DEFAULT 0');
   return db;
 }
 
@@ -112,7 +113,7 @@ function immediate(db, work) {
   }
 }
 
-/** Drop rows whose process has gone, so a crashed file or run never holds a place. */
+/** Drop rows whose process has gone, so a crashed file or call never holds a place. */
 function prune(db) {
   for (const { pid } of db.prepare('SELECT pid FROM file_holder').all()) {
     if (!alive(pid)) db.prepare('DELETE FROM file_holder WHERE pid = ?').run(pid);
@@ -120,24 +121,22 @@ function prune(db) {
   for (const { pid } of db.prepare('SELECT pid FROM file_waiter').all()) {
     if (!alive(pid)) db.prepare('DELETE FROM file_waiter WHERE pid = ?').run(pid);
   }
-  for (const { runner } of db.prepare('SELECT runner FROM file_loan').all()) {
-    if (!alive(runner)) db.prepare('DELETE FROM file_loan WHERE runner = ?').run(runner);
-  }
   for (const { lender } of db.prepare('SELECT DISTINCT lender FROM file_call').all()) {
     if (!alive(lender)) db.prepare('DELETE FROM file_call WHERE lender = ?').run(lender);
   }
 }
 
 /**
- * The places taken: each holder that is not lending, plus one for each lending holder none of whose nested files
- * holds a place. A lender's place passes to its nested files and comes back to it when the last one exits, before
- * its run does, so no other file can take it in between and the lender resumes into its own place.
+ * The places taken. A holder inside a synchronous call is blocked, so it takes no place of its own: it reserves one
+ * place, which one file of that call fills. Every other holder takes one place. The reserved place comes back to the
+ * caller when its file exits, and the call returns only after that (see lendThroughSyncCalls), so no other file can
+ * take it in between and the caller resumes into its own place.
  */
 function occupied(db) {
-  return db.prepare(`WITH lending AS (SELECT DISTINCT lender AS pid FROM file_loan WHERE lender IN (SELECT pid FROM file_holder)
-    AND call IN (SELECT call FROM file_call))
-    SELECT (SELECT count(*) FROM file_holder WHERE pid NOT IN (SELECT pid FROM lending))
-      + (SELECT count(*) FROM lending WHERE NOT EXISTS (SELECT 1 FROM file_holder WHERE file_holder.lender = lending.pid)) AS n`).get().n;
+  return db.prepare(`WITH calling AS (SELECT DISTINCT lender AS pid FROM file_call WHERE lender IN (SELECT pid FROM file_holder))
+    SELECT (SELECT count(*) FROM file_holder WHERE pid NOT IN (SELECT pid FROM calling))
+      + (SELECT count(*) FROM calling WHERE NOT EXISTS (SELECT 1 FROM file_holder
+          WHERE file_holder.call IN (SELECT call FROM file_call WHERE file_call.lender = calling.pid))) AS n`).get().n;
 }
 
 /** How many places are taken and how many waiters are ahead of this one, read without a write lock. */
@@ -158,26 +157,32 @@ export async function occupiedPlaces(home) {
   try { prune(db); return occupied(db); } finally { db.close(); }
 }
 
-/** Admit this process when a place is free and every earlier waiter fits first. */
-function admit(db, cores, lender) {
+/**
+ * Admit this process when a place is free and every earlier waiter fits first. A file started inside its caller's
+ * open synchronous call steps into the caller's reserved place when no other file of the caller holds it; that
+ * leaves the count unchanged. Only a file admitted that way belongs to the call.
+ */
+function admit(db, cores, lender, call) {
   return immediate(db, () => {
     prune(db);
-    // A nested file steps into its lender's reserved place when no sibling holds it; that leaves the count unchanged.
-    const reserved = lender && db.prepare(`SELECT 1 FROM file_loan WHERE lender = ? AND lender IN (SELECT pid FROM file_holder) AND call IN (SELECT call FROM file_call)
-      AND NOT EXISTS (SELECT 1 FROM file_holder WHERE lender = ?)`).get(lender, lender);
-    const { taken, ahead } = standing(db);
-    if (!reserved && ahead >= cores - taken) return false;
+    const reserved = call && db.prepare(`SELECT 1 FROM file_call WHERE call = ? AND closing = 0 AND lender IN (SELECT pid FROM file_holder)
+      AND NOT EXISTS (SELECT 1 FROM file_holder WHERE file_holder.call IN (SELECT call FROM file_call WHERE lender = ?))`).get(call, lender);
+    if (!reserved) {
+      const { taken, ahead } = standing(db);
+      if (ahead >= cores - taken) return false;
+    }
     db.prepare('DELETE FROM file_waiter WHERE pid = ?').run(process.pid);
-    db.prepare('INSERT OR REPLACE INTO file_holder(pid, since, lender) VALUES (?, ?, ?)').run(process.pid, Date.now(), lender ?? null);
+    db.prepare('INSERT OR REPLACE INTO file_holder(pid, since, lender, call) VALUES (?, ?, ?, ?)')
+      .run(process.pid, Date.now(), lender ?? null, reserved ? call : null);
     return true;
   });
 }
 
 /**
- * Take this test-file process's token and hold it until the process exits; then name this process as the lender
- * of anything it starts.
+ * Take this test-file process's token and hold it until the process exits; then lend its place through its
+ * synchronous child calls.
  *
- * @param {NodeJS.ProcessEnv} env - Changed in place: descendants see this file as their lender.
+ * @param {NodeJS.ProcessEnv} env - Changed in place: descendants see this file's pool, without a lender.
  * @returns {Promise<number>} How long this file waited for its token, in ms.
  */
 export async function takeTestFileToken(env = process.env) {
@@ -190,9 +195,9 @@ export async function takeTestFileToken(env = process.env) {
   while (true) {
     const { taken, ahead } = standing(db);
     // A dead holder only goes in the write path, so look there at least once a second even when nothing looks free.
-    if (pool.lender || ahead < pool.cores - taken || Date.now() - pruned >= PRUNE_MS) {
+    if (pool.call || ahead < pool.cores - taken || Date.now() - pruned >= PRUNE_MS) {
       pruned = Date.now();
-      if (admit(db, pool.cores, pool.lender)) break;
+      if (admit(db, pool.cores, pool.lender, pool.call)) break;
     }
     await new Promise(done => setTimeout(done, POLL_MS));
   }
@@ -205,12 +210,19 @@ export async function takeTestFileToken(env = process.env) {
   return Date.now() - asked;
 }
 
+/** Block this thread for a moment without spinning: the caller is inside a synchronous call anyway. */
+function pauseSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 /**
- * Lend this file's place only to what it starts with a synchronous child call (spawnSync, execFileSync, execSync).
- * Such a call blocks this file's JavaScript until the child exits, so the file is waiting for as long as the loan
- * lasts. A child started asynchronously gets no lender: the file may keep computing, so it keeps its own token and
- * the nested files take theirs from the pool (#1046). A call whose environment no longer names this pool, as a test
- * that isolates its own pool does, is left exactly as written.
+ * Lend this file's place only across a synchronous child call (spawnSync, execFileSync, execSync), which blocks this
+ * file's JavaScript until the call returns. The call is a row: while it is open, one file it starts may fill the
+ * place. When the child returns, the call closes to new files, and it returns to this file only once the file that
+ * filled the place has exited, so this file never resumes beside it. A run the call leaves behind lends nothing.
+ * A child started asynchronously gets no call: this file may keep computing, so it keeps its own token and the nested
+ * files take theirs from the pool (#1046). A call whose environment no longer names this pool, as a test that
+ * isolates its own pool does, is left exactly as written.
  */
 function lendThroughSyncCalls(pool, env, db) {
   const ours = env[TEST_FILE_POOL_ENV];
@@ -221,35 +233,20 @@ function lendThroughSyncCalls(pool, env, db) {
       const options = at === -1 ? {} : args[at];
       const childEnv = options.env ?? env;
       if (childEnv[TEST_FILE_POOL_ENV] !== ours) return original.apply(this, args);
-      // The loan is this call: it counts only while the call row exists, so a run the call leaves behind lends nothing.
       const call = randomUUID();
       const lent = JSON.stringify({ home: pool.home, cores: pool.cores, lender: process.pid, call });
       const lending = { ...options, env: { ...childEnv, [TEST_FILE_POOL_ENV]: lent } };
       if (at === -1) args.push(lending); else args[at] = lending;
       db.prepare('INSERT INTO file_call(call, lender) VALUES (?, ?)').run(call, process.pid);
       try { return original.apply(this, args); }
-      finally { db.prepare('DELETE FROM file_call WHERE call = ?').run(call); }
+      finally {
+        db.prepare('UPDATE file_call SET closing = 1 WHERE call = ?').run(call);
+        while (db.prepare('SELECT pid FROM file_holder WHERE call = ?').all(call).some(({ pid }) => alive(pid))) pauseSync(POLL_MS);
+        db.prepare('DELETE FROM file_call WHERE call = ?').run(call);
+      }
     };
   }
   syncBuiltinESMExports();
-}
-
-/**
- * Mark this run as nested in a test file, so that file counts as waiting while the run lives. A run started
- * outside a test file lends nothing.
- *
- * @param {NodeJS.ProcessEnv} env
- * @returns {Promise<void>}
- */
-export async function lendParentToken(env = process.env) {
-  const pool = testFilePool(env);
-  if (!pool?.lender) return;
-  const db = await openPool(pool.home);
-  immediate(db, () => db.prepare('INSERT OR REPLACE INTO file_loan(runner, lender, call) VALUES (?, ?, ?)').run(process.pid, pool.lender, pool.call ?? null));
-  process.once('exit', () => {
-    try { db.prepare('DELETE FROM file_loan WHERE runner = ?').run(process.pid); db.close(); }
-    catch { /* A row left behind is pruned once this run is gone. */ }
-  });
 }
 
 /**

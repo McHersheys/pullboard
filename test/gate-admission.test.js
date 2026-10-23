@@ -92,7 +92,7 @@ test('a file waiting on a nested run lends its place, so saturated parents still
   assert.ok(peak(events) <= 2, `two saturated outer files with nested runs still run at most 2 files, saw ${peak(events)}`);
 });
 
-test('a lender keeps its place between its last nested file and its nested run ending, so no other file takes it [C7]', async (t) => {
+test('a caller keeps its place while its synchronous call is open, so no other file takes it [C7]', async (t) => {
   const home = mkdtempSync(join(tmpdir(), 'pullboard-file-pool-race-'));
   t.after(() => rmSync(home, { recursive: true, force: true }));
   /** A live process to stand in for one pool row; the pool prunes rows of processes that have gone. */
@@ -104,20 +104,20 @@ test('a lender keeps its place between its last nested file and its nested run e
   assert.equal(await occupiedPlaces(home), 0);
   const db = new DatabaseSync(join(home, 'test-file-pool.sqlite'));
   t.after(() => db.close());
-  const [parent, runner, unrelated, child] = [live(), live(), live(), live()];
-  const hold = (pid, lender = null) => db.prepare('INSERT INTO file_holder(pid, since, lender) VALUES (?, ?, ?)').run(pid, Date.now(), lender);
+  const [parent, unrelated, child] = [live(), live(), live()];
+  const hold = (pid, lender = null, call = null) => db.prepare('INSERT INTO file_holder(pid, since, lender, call) VALUES (?, ?, ?, ?)').run(pid, Date.now(), lender, call);
   hold(parent);
   hold(unrelated);
-  // The parent is inside the synchronous call that started its nested run.
   db.prepare('INSERT INTO file_call(call, lender) VALUES (?, ?)').run('call-1', parent);
-  db.prepare('INSERT INTO file_loan(runner, lender, call) VALUES (?, ?, ?)').run(runner, parent, 'call-1');
-  assert.equal(await occupiedPlaces(home), 2, 'a lender with no nested file yet keeps its place');
-  hold(child, parent);
-  assert.equal(await occupiedPlaces(home), 2, 'its nested file runs in that place');
+  assert.equal(await occupiedPlaces(home), 2, 'a caller with no file of its call yet keeps its place');
+  hold(child, parent, 'call-1');
+  assert.equal(await occupiedPlaces(home), 2, 'the file of its call runs in that place');
+  db.prepare('UPDATE file_call SET closing = 1 WHERE call = ?').run('call-1');
+  assert.equal(await occupiedPlaces(home), 2, 'a closing call still counts its file in the caller\'s place');
   db.prepare('DELETE FROM file_holder WHERE pid = ?').run(child);
-  assert.equal(await occupiedPlaces(home), 2, 'the last nested file gone, the place is the lender\'s again, not free');
-  db.prepare('DELETE FROM file_loan WHERE runner = ?').run(runner);
-  assert.equal(await occupiedPlaces(home), 2, 'the nested run ended, the lender resumes in its own place');
+  assert.equal(await occupiedPlaces(home), 2, 'that file gone, the place is the caller\'s again, not free');
+  db.prepare('DELETE FROM file_call WHERE call = ?').run('call-1');
+  assert.equal(await occupiedPlaces(home), 2, 'the call returned, the caller runs in its own place');
 });
 
 test('a parent that starts its nested run asynchronously keeps its own token, so its nested files take separate ones [C7]', async (t) => {
@@ -162,4 +162,23 @@ test('a run a synchronous call leaves behind lends nothing once the call returns
   const innerStarts = events.filter(event => event.run === 'inner' && event.at === 'start').map(event => event.t);
   assert.equal(innerStarts.length, 2, 'the detached run finished both files');
   assert.ok(innerStarts.every(at => at >= parentEnd), 'on 1 core, the detached run waited for the parent instead of borrowing its place');
+});
+
+test('a synchronous call returns only after the file it lent its place to has exited [C7]', async (t) => {
+  const { root, env, log } = fixture(t, 1);
+  writeFileSync(join(root, 'inner.test.js'), timedFile('inner.test.js', 2000));
+  // The shell starts a run, waits until its file is surely admitted inside the open call, then returns.
+  const lingering = `const { execSync } = await import('node:child_process');
+  execSync(${JSON.stringify(`${JSON.stringify(process.execPath)} ${JSON.stringify(runner)} inner.test.js > /dev/null 2>&1 & sleep 1`)}, { cwd: ${JSON.stringify(root)}, env: { ...process.env, FIXTURE_RUN: 'inner' } });
+  mark('resume');`;
+  writeFileSync(join(root, 'parent.test.js'), timedFile('parent.test.js', 0, lingering));
+  const result = await runFixtureChildAsync(process.execPath, [runner, 'parent.test.js'], { cwd: root, env: { ...env, FIXTURE_RUN: 'outer' } });
+  assert.equal(result.status, 0, result.failure ?? result.stdout);
+  const deadline = Date.now() + 30_000;
+  while (!log().some(event => event.file === 'inner.test.js' && event.at === 'end') && Date.now() < deadline) await new Promise(next => setTimeout(next, 100));
+  const events = log();
+  const innerEnd = events.find(event => event.file === 'inner.test.js' && event.at === 'end')?.t;
+  const resumed = events.find(event => event.at === 'resume').t;
+  assert.ok(innerEnd, 'the nested file ran inside the call');
+  assert.ok(resumed >= innerEnd, 'on 1 core, the caller resumed only after the file in its place exited');
 });

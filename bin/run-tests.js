@@ -19,7 +19,7 @@ import { channel } from 'node:diagnostics_channel';
 import { AGENT_SHELL_MARKERS, SSH_SHELL_MARKERS } from '../src/person.js';
 import { isLandingWorkerIdentityTimeout, landingWorkerIdentityQuery, parseLandingWorkerIdentity } from '../src/landing-worker-identity.js';
 import { foreignNodeOptions, isolateTestMachine } from '../src/test-isolation.js';
-import { TEST_FILE_POOL_ENV, lendParentToken, longestFirst, takeTestFileToken, testFilePoolValue } from '../src/test-file-pool.js';
+import { TEST_FILE_POOL_ENV, longestFirst, takeTestFileToken, testFilePoolValue } from '../src/test-file-pool.js';
 const runner = fileURLToPath(import.meta.url);
 const LANDING_RUN_ENV = 'PULLBOARD_LANDING_RUN';
 const LANDING_WORKER_STARTS_ENV = 'PULLBOARD_LANDING_WORKER_STARTS';
@@ -1470,8 +1470,6 @@ async function main(args) {
     process.exitCode = 1;
     return;
   }
-  // A run started by a test file stands in for that file while it lives, so the file waits without a core (#1046).
-  await lendParentToken();
   const sharding = shardArguments(args);
   if (sharding.error) {
     process.stderr.write(`run-tests: ${sharding.error}\n`);
