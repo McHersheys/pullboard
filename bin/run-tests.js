@@ -1521,7 +1521,7 @@ async function main(args) {
     }
   } catch (error) {
     process.stderr.write(`run-tests: ${error.message}\n`);
-    process.exitCode = 1;
+    process.exitCode = error.neverRanExitCode ?? 1; // A run stopped before it started exits distinctly, never as a red.
     return;
   }
   if (signal) process.kill(process.pid, signal);
