@@ -85,14 +85,16 @@ function boundSeats(info, digest) {
 
 /**
  * Refuse a verdict from the agent session that built or submitted the item: its digest is on the item's ledger, or it
- * is bound right now to the seat that built it. A shell with no agent session (the person's terminal) is never refused.
+ * is bound right now to any seat in its recorded author history. A shell with no agent session (the person's terminal) is never refused.
  *
  * @param {{ commonDir: string }} info
  * @param {{ item_id: number, item_built_by?: string|null, item_owner?: string|null }} item
+ * @param {string|null} [digest] - Current local session digest.
+ * @param {string[]} [authors] - Historical author seats from the board's claim and submit events.
  */
-export function refuseSelfSession(info, item, digest = agentSessionDigest()) {
+export function refuseSelfSession(info, item, digest = agentSessionDigest(), authors = []) {
   if (!digest) return;
-  const builders = [item.item_built_by, item.item_owner].filter(Boolean);
+  const builders = [item.item_built_by, item.item_owner, ...authors].filter(Boolean);
   const seats = boundSeats(info, digest);
   if (!ledgerDigests(info, item.item_id).has(digest) && !builders.some((builder) => seats.has(builder))) return;
   throw new Refused('SELF_SESSION_VERIFY', `this agent session built or submitted #${item.item_id}, so its verdict would be its own work under another seat's name`,

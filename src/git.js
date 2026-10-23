@@ -576,6 +576,12 @@ export function codeIsFromMain(root = CODE_ROOT) {
   return fact(key, () => readCodeIsFromMain(root));
 }
 
+/** Identify the running source's repository without letting an inherited hook redirect Git. */
+export function codeUsesRepository(commonDir, root = CODE_ROOT) {
+  const info = tryGit(root, ['rev-parse', '--path-format=absolute', '--git-common-dir'], { env: gitChildEnv(root) });
+  return info.status === 0 && realpathSync.native(info.stdout.trim()) === realpathSync.native(commonDir);
+}
+
 /** Determine whether the code is from its main checkout, retaining the non-repository fallback. */
 function readCodeIsFromMain(root) {
   // The same variables `git rev-parse --local-env-vars` names, cleared without a Git process to ask.
