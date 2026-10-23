@@ -11,11 +11,117 @@ import {
   reportBlock,
 } from '../src/next-steps.js';
 import { Refused } from '../src/refused.js';
+import {
+  personBlockWords,
+  readBlocks,
+} from '../src/blocks.js';
 import { relayPresentation } from '../src/relay-presentation.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 
 const e2e = createE2eHelpers();
 after(e2e.cleanup);
+
+test('a block clears when its audience completes the same move [C6,N26]', async t => {
+  const box = e2e.project();
+  const ask = text => {
+    const result = box.run(box.repo, 'shout', 'person', text, '--decision', '--json');
+    assert.equal(result.code, 0, `${result.err}\n${result.out}`);
+    return JSON.parse(result.out).id;
+  };
+  const first = ask('First choice?');
+  const second = ask('Another choice?');
+  const info = repoInfo(box.repo);
+  box.env.CLAUDECODE = '1';
+  const blocked = box.run(box.repo, 'answer', String(first), 'yes', '--as', 'person');
+  assert.equal(blocked.code, 1, blocked.err);
+  const needs = () => personNeedsState(box.repo).needs.filter(row => row.kind === 'block');
+  assert.equal(needs().length, 1, 'the stopped person move appears in Needs you');
+  const api = await serveApi({ secret: 'blocks-test', runCommand: async () => 0, isMain: true,
+    projects: () => [{ root: box.repo, name: 'blocks-clear', project: '', added: '2026-10-22T00:00:00.000Z' }] });
+  t.after(() => api.close());
+  assert.equal((await apiNeeds(api, box.repo)).blocks.length, 1, 'the API caches the initial block');
+  const wrongActor = box.run(box.repo, 'answer', String(first), 'agent answer');
+  assert.equal(wrongActor.code, 1, wrongActor.err);
+  assert.ok(readBlocks(info.commonDir).some(block => block.owner === 'coordinator'),
+    'the refused default answer leaves a coordinator-audience block');
+  assert.ok(needs().length > 0, 'a different actor cannot clear the person move');
+  delete box.env.CLAUDECODE;
+  for (const option of ['--help', '--version']) {
+    const informational = box.run(box.repo, 'answer', String(first), option);
+    assert.equal(informational.code, 0, informational.err);
+    assert.ok(needs().length > 0, `${option} does not complete the stopped move`);
+  }
+  const other = box.run(box.repo, 'answer', String(second), 'yes', '--as', 'person');
+  assert.equal(other.code, 0, other.err);
+  assert.ok(needs().length > 0, 'success on another item leaves the first block');
+  const completed = box.run(box.repo, 'answer', String(first), 'yes', '--as', 'person');
+  assert.equal(completed.code, 0, completed.err);
+  assert.deepEqual(needs(), [], 'the matching completed move clears Needs you at once');
+  assert.deepEqual((await apiNeeds(api, box.repo)).blocks, [], 'the clear invalidates the cached API projection');
+  const health = JSON.parse(box.run(box.repo, 'health', '--json').out);
+  assert.deepEqual(health.blocks.codes, [], 'health no longer counts resolved blocks');
+  assert.deepEqual(readBlocks(info.commonDir), [], 'the active ledger view excludes explicit clears');
+
+  const waiting = ask('Still waiting?');
+  box.env.CLAUDECODE = '1';
+  assert.equal(box.run(box.repo, 'answer', String(waiting), 'yes', '--as', 'person').code, 1);
+  delete box.env.CLAUDECODE;
+  assert.equal(personBlockWords(info.commonDir, new Date()).length, 1, 'an unmatched block remains');
+  assert.equal(personBlockWords(info.commonDir, new Date(Date.now() + 86_400_001)).length, 0,
+    'an unmatched block still expires after 24 hours');
+
+  const specBox = e2e.project();
+  const specInfo = repoInfo(specBox.repo);
+  specBox.env.CLAUDECODE = '1';
+  const blockedSet = specBox.run(specBox.repo, 'spec', 'approve', 'G1,G2');
+  assert.equal(blockedSet.code, 1, blockedSet.err);
+  delete specBox.env.CLAUDECODE;
+  assert.equal(readBlocks(specInfo.commonDir).length, 1, 'the two-row approval is one stopped move');
+  const firstRow = specBox.run(specBox.repo, 'spec', 'approve', 'G1');
+  assert.equal(firstRow.code, 0, `${firstRow.err}\n${firstRow.out}`);
+  assert.equal(readBlocks(specInfo.commonDir).length, 1, 'one completed target leaves the other pending');
+  const secondRow = specBox.run(specBox.repo, 'spec', 'approve', 'G2');
+  assert.equal(secondRow.code, 0, `${secondRow.err}\n${secondRow.out}`);
+  assert.deepEqual(readBlocks(specInfo.commonDir), [], 'separate later successes complete the blocked set');
+
+  const milestones = e2e.project();
+  const milestoneInfo = repoInfo(milestones.repo);
+  for (const name of ['First release', 'Second release']) {
+    const added = milestones.run(milestones.repo, 'milestone', 'add', name);
+    assert.equal(added.code, 0, `${added.err}\n${added.out}`);
+  }
+  const stopped = milestones.run(milestones.repo, 'milestone', 'edit', 'First release', '--target', 'not-a-date');
+  assert.equal(stopped.code, 1, stopped.err);
+  assert.equal(readBlocks(milestoneInfo.commonDir).length, 1, 'the named milestone edit is blocked');
+  const different = milestones.run(milestones.repo, 'milestone', 'edit', 'Second release', '--note', 'Updated');
+  assert.equal(different.code, 0, `${different.err}\n${different.out}`);
+  assert.equal(readBlocks(milestoneInfo.commonDir).length, 1, 'editing a different named milestone leaves the block');
+  const same = milestones.run(milestones.repo, 'milestone', 'edit', 'First release', '--note', 'Updated');
+  assert.equal(same.code, 0, `${same.err}\n${same.out}`);
+  assert.deepEqual(readBlocks(milestoneInfo.commonDir), [], 'the matching named milestone success clears it');
+});
+
+test('a successful edit clears only its own item [C6]', () => {
+  const box = e2e.project();
+  const add = title => {
+    const result = box.run(box.repo, 'add', 'web', title, '--json');
+    assert.equal(result.code, 0, `${result.err}\n${result.out}`);
+    return JSON.parse(result.out).item.item_id;
+  };
+  const first = add('First item');
+  const second = add('Second item');
+  const info = repoInfo(box.repo);
+  const blocked = box.run(box.repo, 'edit', String(second), '--route', 'not-a-route');
+  assert.equal(blocked.code, 1, blocked.err);
+  const before = readBlocks(info.commonDir);
+  assert.equal(before.length, 1, 'the refused edit is recorded');
+  const unrelated = box.run(box.repo, 'edit', String(first), '--brief', 'First updated');
+  assert.equal(unrelated.code, 0, unrelated.err);
+  assert.equal(readBlocks(info.commonDir).length, 1, 'editing another item leaves the blocked edit');
+  const completed = box.run(box.repo, 'edit', `#${second}`, '--brief', 'Second updated');
+  assert.equal(completed.code, 0, completed.err);
+  assert.deepEqual(readBlocks(info.commonDir), [], 'the same item clears across its accepted #id spelling');
+});
 
 /** Needs you as the local API serves it, read in full so every person call is present. */
 async function apiNeeds(api, root) {
