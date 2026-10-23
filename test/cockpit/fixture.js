@@ -72,7 +72,7 @@ function machine() {
  * A project registered on the machine: a repo set up by `pullboard init`, one web lane, and a
  * worktree joined to it as web-1. `extra` adds to its pullboard.json, such as products.
  */
-function project(box, name, spec = SPEC, extra = {}) {
+function project(box, name, spec = SPEC, extra = {}, { agentApproved = false } = {}) {
   const repo = join(box.dir, name);
   mkdirSync(repo);
   box.git(repo, 'init', '-q', '-b', 'main');
@@ -80,8 +80,9 @@ function project(box, name, spec = SPEC, extra = {}) {
   delete initEnv.PULLBOARD_MODEL;
   // Set the fixture-only opt-out in the machine home that this exact init environment will use.
   disableFixtureBackgroundView(initEnv, box.dir);
-  // The spec is in place before init, so the board's approval baseline holds its approved rows as the person's (#960).
-  writeFileSync(join(repo, 'SPEC.md'), spec);
+  // The spec is in place before init, so the board's approval baseline holds its approved rows as the person's (#960);
+  // agentApproved writes it after init instead, so its approved rows read as an agent's.
+  if (!agentApproved) writeFileSync(join(repo, 'SPEC.md'), spec);
   box.runWithEnv(repo, initEnv, 'init');
   const config = { gate: 'true', spec: 'SPEC.md', verify: 'any', lease: '2h', lanes: { web: { owns: ['web/'], specs: ['G'] } }, shared: [], ...extra };
   writeFileSync(join(repo, 'pullboard.json'), JSON.stringify(config, null, 2));

@@ -3,13 +3,16 @@
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, cpSync, readdirSync, lstatSync, renameSync, symlinkSync } from 'node:fs';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { after, test } from 'node:test';
 import * as store from '../src/board.js';
 import { exportBoard, importBoard } from '../src/exchange.js';
 import { applyEngineMove, prepareEngineMove } from '../src/engine.js';
+import { relayClientFixture as sessionRelay, relayFixtureChild as sessionChild, relayClientFixture, relayFixtureChild } from './relay-client-fixture.js';
+import { runFixtureGit as sessionGit, runFixtureGit } from './fixture-child.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { serveApi } from '../src/api.js';
 import { main } from '../src/cli.js';
@@ -17,6 +20,12 @@ import { fetchFresh } from './http-fixture.js';
 import { relaySnapshot, presentationDigest } from '../src/relay-presentation.js';
 import { snapshotState } from '../relay/browser-model.js';
 import { unpackRelease } from './release-archive.js';
+import { decodeBoardKey, seal } from '../src/seal.js';
+import { ENGINE_VERSION as PEOPLE_VERSION } from '../src/machine.js';
+import { relayWorkBudgetMs } from './relay-budget.js';
+import { hostname } from 'node:os';
+
+const CLI = join(import.meta.dirname, '..', 'bin', 'pullboard.js');
 
 const helpers = createE2eHelpers();
 after(helpers.cleanup);
@@ -40,8 +49,8 @@ async function holdForReviewQueue(box) {
   const ready = join(box.dir, 'review-gate-held');
   const observed = join(box.dir, 'review-was-queued');
   const source = `
-import {writeFileSync} from 'node:fs';
 import {setTimeout as pause} from 'node:timers/promises';
+import {writeFileSync} from 'node:fs';
 import {takeResource,listResources} from ${JSON.stringify(new URL('../src/resources.js', import.meta.url).href)};
 import {loadMachineSettings} from ${JSON.stringify(new URL('../src/settings.js', import.meta.url).href)};
 const [root,ready,observed]=process.argv.slice(1);
@@ -467,3 +476,346 @@ test('an older pushed landing shows stale checked proof and a correction path ac
       'a later correction containing the checked composition clears the derived warning without rewriting the old landing');
     assert.equal(withBoard(box.repo, board => store.getItem(board, 1)).item_merged_commit, submitted);
   });
+
+/** A person's own session, through the stand-in GitHub's real OAuth, signed in as `login`. */
+async function personSession(box, login) {
+  box.providerState.signer = login;
+  try {
+    const start = await fetch(box.origin + '/auth/github/start', { redirect: 'manual' });
+    const binding = start.headers.getSetCookie().find((value) => value.startsWith('pb_oauth_binding=')).split(';')[0];
+    const approved = await fetch(start.headers.get('location'), { redirect: 'manual' });
+    const callback = await fetch(approved.headers.get('location'), { redirect: 'manual', headers: { cookie: binding } });
+    assert.equal(callback.status, 303, `${login} signs in`);
+    return callback.headers.getSetCookie().find((value) => value.startsWith('pb_session=')).split(';')[0].slice('pb_session='.length);
+  } finally { box.providerState.signer = 'alice'; }
+}
+
+/** Call the relay as one credential, returning the status and document. */
+async function relayCall(box, token, method, path, body) {
+  const response = await fetch(box.origin + path, { method, headers: { authorization: 'Bearer ' + token, 'x-pullboard-engine': String(PEOPLE_VERSION),
+    ...(body ? { 'content-type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  let document = null;
+  try { document = await response.json(); } catch { /* An empty answer stays null. */ }
+  return { status: response.status, document };
+}
+
+/** Seal one phone request the way the paired view does and send it with this person's session. */
+async function phoneRequest(box, session, move) {
+  const link = JSON.parse(readFileSync(box.linkFile, 'utf8'));
+  const head = await relayCall(box, session, 'GET', '/api/v2/boards/' + link.board + '/state');
+  assert.equal(head.status, 200, `this person reads the board: ${JSON.stringify(head.document)}`);
+  const events = await relayCall(box, session, 'GET', `/api/v1/boards/${link.board}/events?after=${head.document.state.sequence}`);
+  const sequence = Math.max(head.document.state.sequence, ...(events.document.events ?? []).map((event) => event.event_id)) + 1;
+  const document = { version: 1, type: 'person-request', id: randomUUID(), move };
+  const key = decodeBoardKey(readFileSync(box.keyFile, 'utf8').trim());
+  const sealed = Buffer.from(await seal(key, new TextEncoder().encode(JSON.stringify(document)), { boardId: link.board, kind: 'request', sequence })).toString('base64url');
+  const sent = await relayCall(box, session, 'POST', `/api/v1/boards/${link.board}/requests`, { sequence, sealed });
+  assert.equal(sent.status, 200, `the relay stores the sealed request: ${JSON.stringify(sent.document)}`);
+  return document.id;
+}
+
+/** The phone requests this board has received, by id. */
+async function receivedRequests(box) {
+  assert.equal((await box.cli('status')).code, 0, 'the coordinator reads the relay');
+  const meta = (await box.cli('export')).document.tables.board_meta.find((row) => row.meta_key === 'relay_person_requests');
+  return Object.fromEntries((meta ? JSON.parse(meta.meta_value) : []).map((record) => [record.id, record]));
+}
+
+/** Two people with write access to the fixture repository, alice and bob, and alice's linked board. */
+async function teamBoard(t, approvers) {
+  const box = await relayClientFixture(t);
+  Object.assign(box.providerState, { people: { alice: { id: 7, permission: 'write' }, bob: { id: 8, permission: 'write' } }, signer: 'alice' });
+  if (approvers) {
+    const file = join(box.root, 'pullboard.json');
+    writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), approvers }, null, 2) + '\n');
+    runFixtureGit(['add', 'pullboard.json'], { cwd: box.root, env: box.env });
+    runFixtureGit(['-c', 'core.hooksPath=/dev/null', 'commit', '-q', '-m', 'chore: name the approvers'], { cwd: box.root, env: box.env });
+  }
+  assert.equal((await box.link()).code, 0, 'alice links the board, signed in as herself');
+  return box;
+}
+
+test('the board knows its people: events name them, approvers decide [E3,E4,E20]', { timeout: 180_000 }, async (t) => { // budget: hang ceiling for two people's real CLI runs and relay calls; not a speed target.
+  const box = await teamBoard(t, ['alice']);
+  const link = JSON.parse(readFileSync(box.linkFile, 'utf8'));
+  const alice = await personSession(box, 'alice');
+  const bob = await personSession(box, 'bob');
+  assert.deepEqual((await relayCall(box, alice, 'GET', `/api/v1/boards/${link.board}/approvers`)).document.approvers, ['alice'], 'relay on gave the relay the approvers pullboard.json names');
+
+  // S4c: every move records the person who made it, and the agent if one did.
+  assert.equal((await box.cli('add', box.lane, 'An item alice adds')).code, 0);
+  const bobRoot = join(box.root, '..', 'bob-clone');
+  runFixtureGit(['clone', '-q', box.root, bobRoot], { cwd: box.root, env: box.env });
+  runFixtureGit(['remote', 'set-url', 'origin', 'git@github.com:fixture/repository.git'], { cwd: bobRoot, env: box.env });
+  const bobHome = join(box.root, '..', 'bob-home');
+  const bobEnv = { ...box.env, HOME: bobHome, PULLBOARD_HOME: join(bobHome, '.pullboard'), PULLBOARD_MACHINE_HOME: join(bobHome, 'machine') };
+  cpSync(join(box.root, '.git', 'pullboard'), join(bobRoot, '.git', 'pullboard'), { recursive: true, filter: (path) => !path.endsWith('.lock') });
+  mkdirSync(join(bobEnv.PULLBOARD_HOME, 'relay-keys'), { recursive: true, mode: 0o700 });
+  cpSync(box.keyFile, join(bobEnv.PULLBOARD_HOME, 'relay-keys', link.board + '.key'));
+  box.providerState.signer = 'bob';
+  const bobOn = await relayFixtureChild(bobRoot, bobEnv, [CLI, 'relay', 'on', '--url', box.origin, '--json']);
+  box.providerState.signer = 'alice';
+  assert.equal(bobOn.code, 0, `bob signs in as himself on his own computer: ${bobOn.stderr}`);
+  // One coordinator per board [E19]: bob's main checkout takes the coordinator to act, then alice takes it back.
+  const bobTakes = await relayFixtureChild(bobRoot, bobEnv, [CLI, 'takeover', '--json']);
+  assert.equal(bobTakes.code, 0, `bob's main checkout takes the coordinator: ${JSON.stringify(bobTakes.document?.error ?? null)}`);
+  const bobAdd = await relayFixtureChild(bobRoot, bobEnv, [CLI, 'add', box.lane, 'An item bob adds', '--json']);
+  assert.equal(bobAdd.code, 0, `bob adds an item: ${JSON.stringify(bobAdd.document?.error ?? null)}`);
+  assert.equal((await box.cli('takeover')).code, 0, 'alice’s main checkout takes the coordinator back');
+  const exported = (await box.cli('export')).document.tables;
+  const events = exported.event;
+  const madeBy = (title) => {
+    const id = exported.item.find((item) => item.item_title === title)?.item_id;
+    return events.filter((event) => event.event_kind === 'add' && event.item_id === id).map((event) => JSON.parse(event.event_detail).person);
+  };
+  assert.deepEqual(madeBy('An item alice adds'), ['alice'], 'alice’s move names alice');
+  assert.deepEqual(madeBy('An item bob adds'), ['bob'], 'bob’s move names bob');
+  assert.ok(events.filter((event) => event.event_kind === 'add').every((event) => event.event_by), 'each move still names the agent or seat that made it');
+
+  // S4b: only an approver answers the person's decisions, and only an approver decides rows.
+  const asked = await box.cli('shout', 'person', 'Ship the health endpoint as plain text or JSON?', '--decision');
+  assert.equal(asked.code, 0);
+  const decision = asked.document.id ?? asked.document.shout_id ?? asked.document.result?.id;
+  const fromBob = await phoneRequest(box, bob, { verb: 'answer', item: Number(decision), args: { text: 'JSON' } });
+  const fromAlice = await phoneRequest(box, alice, { verb: 'answer', item: Number(decision), args: { text: 'JSON' } });
+  const requests = await receivedRequests(box);
+  assert.equal(requests[fromBob].status, 'refused', 'bob, a writer but not an approver, cannot answer as the person');
+  assert.equal(requests[fromBob].error.code, 'NOT_APPROVER');
+  assert.notEqual(requests[fromAlice].status, 'refused', 'alice, an approver, answers as the person');
+  const rowFromBob = await phoneRequest(box, bob, { verb: 'spec-approve', args: { ids: 'G1' } });
+  assert.equal((await receivedRequests(box))[rowFromBob].error?.code, 'NOT_APPROVER', 'bob cannot approve a row');
+
+  // E4: a change to the list takes effect only once an existing approver makes it.
+  assert.equal((await relayCall(box, bob, 'PUT', `/api/v1/boards/${link.board}/approvers`, { approvers: ['bob'] })).document.error?.code, 'NOT_APPROVER', 'bob cannot make himself an approver');
+  assert.deepEqual((await relayCall(box, bob, 'GET', `/api/v1/boards/${link.board}/approvers`)).document.approvers, ['alice']);
+
+  // S9: a move no member can open is set aside, and only an approver unlinks the board or replaces its snapshot.
+  const bobMachine = JSON.parse(readFileSync(join(bobRoot, '.git', 'pullboard', 'relay.json'), 'utf8')).token;
+  const head = await relayCall(box, alice, 'GET', '/api/v2/boards/' + link.board + '/state');
+  const after = await relayCall(box, alice, 'GET', `/api/v1/boards/${link.board}/events?after=${head.document.state.sequence}`);
+  const next = Math.max(head.document.state.sequence, ...(after.document.events ?? []).map((event) => event.event_id)) + 1;
+  const junk = await relayCall(box, bobMachine, 'POST', `/api/v1/boards/${link.board}/moves`, { sequence: next, sealed: randomBytes(64).toString('base64url') });
+  assert.equal(junk.status, 200, 'a member’s credential can store bytes no key opens');
+  const afterJunk = await box.cli('add', box.lane, 'After the junk');
+  assert.equal(afterJunk.code, 0, `replay sets the unopenable move aside and the board moves on: ${afterJunk.stderr ?? ''}${JSON.stringify(afterJunk.document ?? {}).slice(0, 600)}`);
+  assert.ok((await box.cli('export')).document.tables.event.some((event) => event.event_kind === 'relay_refused' && JSON.parse(event.event_detail).sequence === next), 'the set-aside move is on the record');
+  const deleted = await relayCall(box, bob, 'DELETE', `/api/v1/boards/${link.board}`);
+  assert.equal(deleted.document?.error?.code, 'NOT_APPROVER', 'bob cannot unlink the board');
+  const replaced = await relayCall(box, bobMachine, 'PUT', `/api/v1/boards/${link.board}/state`, { sequence: next, sealed: randomBytes(64).toString('base64url') });
+  assert.equal(replaced.document?.error?.code, 'NOT_APPROVER', 'bob’s computer cannot replace the snapshot');
+  assert.equal((await box.cli('status')).code, 0, 'alice’s board still reads');
+});
+
+test('the board knows its people: a phone move names the phone’s person, refused or not [E3,E4]', { timeout: 180_000 }, async (t) => { // budget: hang ceiling for real CLI runs and relay calls; not a speed target.
+  const box = await teamBoard(t, ['alice']);
+  const bob = await personSession(box, 'bob');
+  // Bob's phone adds an item; alice's computer carries it out, so the move is sent with alice's credential.
+  const title = 'An item from bob’s phone';
+  const added = await phoneRequest(box, bob, { verb: 'add', args: { lane: box.lane, title } });
+  const asked = await box.cli('shout', 'person', 'Plain text or JSON?', '--decision');
+  assert.equal(asked.code, 0);
+  const decision = asked.document.id ?? asked.document.shout_id ?? asked.document.result?.id;
+  const denied = await phoneRequest(box, bob, { verb: 'answer', item: Number(decision), args: { text: 'JSON' } });
+  const requests = await receivedRequests(box);
+  assert.equal(requests[added].status, 'done', 'bob’s phone adds the item');
+  assert.equal(requests[denied].error?.code, 'NOT_APPROVER', 'bob’s phone cannot answer as the person');
+  const tables = (await box.cli('export')).document.tables;
+  const id = tables.item.find((item) => item.item_title === title)?.item_id;
+  const add = tables.event.find((event) => event.event_kind === 'add' && event.item_id === id);
+  const refused = tables.event.find((event) => event.event_kind === 'relay_refused' && JSON.parse(event.event_detail).sequence === requests[denied].sequence);
+  assert.ok(add && refused, 'both are on the record');
+  assert.equal(JSON.parse(add.event_detail).person, 'bob', 'the add names bob, whose phone asked for it, not alice, whose computer carried it out');
+  assert.equal(JSON.parse(refused.event_detail).person, 'bob', 'the refused answer still names bob, who tried it');
+});
+
+test('a board that names no approvers takes person moves as before [E4]', { timeout: 120_000 }, async (t) => { // budget: hang ceiling for real CLI runs and relay calls; not a speed target.
+  const box = await teamBoard(t, null);
+  const link = JSON.parse(readFileSync(box.linkFile, 'utf8'));
+  const bob = await personSession(box, 'bob');
+  assert.equal((await relayCall(box, bob, 'GET', `/api/v1/boards/${link.board}/approvers`)).document.approvers, null, 'the relay holds no approvers for this board');
+  const asked = await box.cli('shout', 'person', 'Plain text or JSON?', '--decision');
+  const decision = asked.document.id ?? asked.document.shout_id ?? asked.document.result?.id;
+  const fromBob = await phoneRequest(box, bob, { verb: 'answer', item: Number(decision), args: { text: 'JSON' } });
+  assert.notEqual((await receivedRequests(box))[fromBob].status, 'refused', 'any writer’s session answers as the person, as today');
+});
+
+
+/** Every file under a directory, so a test can prove no secret was written anywhere in it. */
+function filesUnder(directory) {
+  if (!existsSync(directory)) return [];
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => entry.isDirectory() ? filesUnder(join(directory, entry.name)) : [join(directory, entry.name)]);
+}
+
+test('every session reads and moves: terminal, SSH, agent, job or CI [E9,E18]', { timeout: 240_000 }, async (t) => { // budget: hang ceiling for real CLI runs on three homes and a loopback relay; not a speed target.
+  const box = await sessionRelay(t);
+  const cli = join(import.meta.dirname, '..', 'bin', 'pullboard.js');
+
+  // S6d: on a machine with a keychain, relay on keeps the key in the owner-only file every session can read.
+  const keychainBin = join(box.root, '..', 'keychain-bin');
+  mkdirSync(keychainBin, { mode: 0o700 });
+  for (const name of readdirSync(box.env.PATH)) symlinkSync(join(box.env.PATH, name), join(keychainBin, name));
+  const keychainLog = join(box.root, '..', 'keychain-calls.log');
+  for (const name of ['security', 'secret-tool']) {
+    writeFileSync(join(keychainBin, name), `#!/bin/sh\necho "$1" >> ${JSON.stringify(keychainLog)}\n[ "$1" = search ] && exit 1\nexit 0\n`, { mode: 0o755 });
+  }
+  const plainPath = box.env.PATH;
+  box.env.PATH = keychainBin;
+  assert.equal((await box.link()).code, 0, 'relay on links the board on a machine with a keychain');
+  box.env.PATH = plainPath;
+  const keys = join(box.env.PULLBOARD_HOME, 'relay-keys');
+  assert.deepEqual(readdirSync(keys).filter((name) => name.endsWith('.key')).length, 1, 'the key sits in one owner-only file');
+  assert.equal(statSyncMode(box.keyFile), 0o600, 'the key file is owner-only');
+  const writes = existsSync(keychainLog) ? readFileSync(keychainLog, 'utf8').split('\n').filter((call) => ['add-generic-password', 'store'].includes(call)) : [];
+  assert.deepEqual(writes, [], 'relay on never writes the key to the keychain');
+
+  // S6b: a session that cannot read the key (SSH, a scheduled job, a locked keychain) still reads the whole board.
+  assert.equal((await box.cli('add', box.lane, 'Read from any session')).code, 0);
+  renameSync(keys, keys + '.parked');
+  try {
+    for (const command of [['list'], ['show', '1'], ['inbox'], ['whoami'], ['status'], ['resume'], ['log']]) {
+      const read = await box.cli(...command);
+      assert.equal(read.code, 0, `${command[0]} reads without the key: ${JSON.stringify(read.document?.error ?? null)}`);
+    }
+    const move = await box.cli('add', box.lane, 'Needs the key');
+    assert.equal(move.document?.error?.code, 'RELAY_KEY_MISSING', 'a move without the key is refused, never sent or lost');
+  } finally { renameSync(keys + '.parked', keys); }
+
+  // S6c: a CI or cloud session, with an agent token and the board key in its environment and no key file, reads and moves.
+  // The project's committed setup is what every checkout, CI's included, gets.
+  sessionGit(['add', '-A'], { cwd: box.root, env: box.env });
+  sessionGit(['-c', 'core.hooksPath=/dev/null', 'commit', '-q', '-m', 'chore: set up pullboard'], { cwd: box.root, env: box.env });
+  const seatRoot = join(box.root, '..', 'ci-seat');
+  sessionGit(['worktree', 'add', '-q', '-b', 'ci-seat', seatRoot], { cwd: box.root, env: box.env });
+  const joined = await box.cliAt(seatRoot, 'join', box.lane, '--model', 'fixture-model');
+  assert.equal(joined.code, 0, `the person gives CI its own seat: ${JSON.stringify(joined.document?.error ?? null)}`);
+  const seat = (await box.cliAt(seatRoot, 'whoami')).document;
+  assert.equal((await box.cliAt(seatRoot, 'shout', 'coordinator', 'the CI seat is ready')).code, 0, 'the seat moves once, which mints its token');
+  const link = JSON.parse(readFileSync(box.linkFile, 'utf8'));
+  const token = link.agentTokens?.[seat.id]?.token;
+  assert.match(token ?? '', /^pa_/u, 'the seat holds its own agent token');
+  const ciRoot = join(box.root, '..', 'ci-clone');
+  sessionGit(['clone', '-q', box.root, ciRoot], { cwd: box.root, env: box.env });
+  sessionGit(['remote', 'set-url', 'origin', 'git@github.com:fixture/repository.git'], { cwd: ciRoot, env: box.env });
+  const ciHome = join(box.root, '..', 'ci-home');
+  mkdirSync(ciHome, { mode: 0o700 });
+  const key = readFileSync(box.keyFile, 'utf8').trim();
+  // The CI machine also has a keychain holding a legacy copy of the key; the session must not move it into a file.
+  const ciKeychainBin = join(ciHome, 'keychain-bin');
+  mkdirSync(ciKeychainBin, { mode: 0o700 });
+  for (const name of readdirSync(box.env.PATH)) symlinkSync(join(box.env.PATH, name), join(ciKeychainBin, name));
+  for (const name of ['security', 'secret-tool']) {
+    writeFileSync(join(ciKeychainBin, name), '#!/bin/sh\ncase "$1" in search) exit 1;; find-generic-password|lookup) printf %s "$PULLBOARD_RELAY_KEY"; exit 0;; esac\nexit 0\n', { mode: 0o755 });
+  }
+  const ciEnv = { ...box.env, HOME: ciHome, PULLBOARD_HOME: join(ciHome, '.pullboard'), PULLBOARD_MACHINE_HOME: join(ciHome, 'machine'), PATH: ciKeychainBin,
+    PULLBOARD_RELAY_TOKEN: token, PULLBOARD_RELAY_KEY: key, PULLBOARD_RELAY_URL: box.origin };
+  const ci = (...args) => sessionChild(ciRoot, ciEnv, [cli, ...args, '--json']);
+  const status = await ci('status');
+  assert.equal(status.code, 0, 'CI reads the board');
+  const listed = await ci('list', '--all');
+  assert.ok(listed.document.items.some((item) => (item.title ?? item.item_title) === 'Read from any session'),
+    `CI reads the board’s items: ${JSON.stringify(listed.document.items?.map((item) => item.title ?? item.item_title))} ${JSON.stringify(status.document).replaceAll(token, '<token>').replaceAll(key, '<key>').slice(0, 900)}`);
+  const added = await ci('add', box.lane, 'Added from CI');
+  assert.equal(added.code, 0, `CI moves on the board: ${JSON.stringify(added.document?.error ?? null)}`);
+  assert.equal((await box.cli('status')).code, 0);
+  const items = (await box.cli('export')).document.tables.item;
+  assert.ok(items.some((item) => item.item_title === 'Added from CI'), 'the CI move reaches the person’s board');
+  assert.equal(filesUnder(join(ciEnv.PULLBOARD_HOME, 'relay-keys')).length, 0, 'CI keeps no key file');
+  const written = [...filesUnder(join(ciRoot, '.git', 'pullboard')), ...filesUnder(ciHome)].map((file) => readFileSync(file)).map((bytes) => bytes.toString('latin1'));
+  assert.equal(written.some((text) => text.includes(token) || text.includes(key)), false, 'neither the token nor the key is written to disk');
+  for (const output of [status, listed, added]) {
+    const shown = JSON.stringify(output.document) + (output.failure ?? '');
+    assert.equal(shown.includes(token) || shown.includes(key), false, 'no output repeats a secret');
+  }
+  // A clone already linked to another board keeps its link: the environment never overwrites it.
+  const otherLink = join(ciRoot, '.git', 'pullboard', 'relay.json');
+  const elsewhere = JSON.stringify({ ...JSON.parse(readFileSync(otherLink, 'utf8')), board: 'f'.repeat(32) });
+  writeFileSync(otherLink, elsewhere, { mode: 0o600 });
+  const warned = await ci('status');
+  assert.match(JSON.stringify(warned.document?.diagnostics ?? []), /RELAY_LINKED/u, 'the environment names the link to another board and the read goes on');
+  const relayRead = await ci('relay', 'status');
+  assert.equal(relayRead.code, 0, `relay status is a read too, so it goes on: ${JSON.stringify(relayRead.document?.error?.code ?? null)}`);
+  assert.match(JSON.stringify(relayRead.document?.diagnostics ?? []), /RELAY_LINKED/u, 'relay status names the link to another board');
+  const refused = await ci('add', box.lane, 'Added across boards');
+  assert.notEqual(refused.code, 0, 'a session on another board’s link does not move');
+  for (const output of [warned, relayRead, refused]) {
+    const shown = JSON.stringify(output.document) + (output.failure ?? '');
+    assert.equal(shown.includes(token) || shown.includes(key), false, 'the refusal repeats no secret');
+  }
+  assert.equal(readFileSync(otherLink, 'utf8'), elsewhere, 'the other board’s link is left as it was');
+});
+
+/** A file's permission bits. */
+function statSyncMode(file) { return lstatSync(file).mode & 0o777; }
+
+test('one coordinator per board across machines [E19]', { timeout: relayWorkBudgetMs(12) }, async t => { // budget: hang ceiling for two linked devices' real CLI and relay round trips; not a speed target.
+  const box = await relayClientFixture(t);
+  await box.link();
+  const pairing = await box.cli('relay', 'pair');
+  const other = await box.otherDeviceJoin(pairing.document.code);
+  /** A refusal's code and message as the CLI reports them. */
+  const refusal = result => ({ code: result.document?.error?.code, message: String(result.document?.error?.message ?? '') });
+
+  // The first device to act as coordinator holds it; the board keeps working there as it does today.
+  assert.equal((await box.cli('add', box.lane, 'Planned on the first machine')).code, 0, 'the first machine coordinates');
+  assert.equal((await box.cli('add', box.lane, 'Still planned on the first machine')).code, 0, 'the holder keeps coordinating');
+
+  // On one machine, the main checkout is held by one agent session at a time; takeover passes it between sessions.
+  /** Run the first machine's real CLI from a named agent session. */
+  const inSession = (session, ...args) => relayFixtureChild(box.root, { ...box.env, CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: session },
+    [resolve(import.meta.dirname, '../bin/pullboard.js'), ...args, '--json']);
+  assert.equal((await inSession('first-session', 'add', box.lane, 'Planned in the first session')).code, 0, 'one agent session coordinates');
+  assert.equal(refusal(await inSession('second-session', 'add', box.lane, 'Planned in a second session')).code, 'NOT_YOUR_CHECKOUT',
+    'a second session acting as coordinator in the same main checkout is refused');
+  assert.equal((await inSession('second-session', 'takeover')).code, 0, 'takeover passes the main checkout to the second session');
+  assert.equal((await inSession('second-session', 'add', box.lane, 'Planned in the second session after takeover')).code, 0, 'the new session coordinates');
+  assert.equal(refusal(await inSession('first-session', 'add', box.lane, 'Planned again in the first session')).code, 'NOT_YOUR_CHECKOUT',
+    'the earlier session is refused after the takeover');
+
+  // A second machine's main checkout acting as coordinator is refused, by name.
+  const second = await other.cli('add', box.lane, 'Planned on the second machine');
+  assert.notEqual(second.code, 0, 'a second coordinator is refused');
+  assert.equal(refusal(second).code, 'COORDINATOR_HELD');
+  const firstName = `computer ${JSON.parse(readFileSync(box.linkFile, 'utf8')).machine.slice(-8)}`;
+  const secondName = `computer ${other.machine.slice(-8)}`;
+  assert.notEqual(firstName, secondName, 'the two linked computers have different names');
+  assert.ok(refusal(second).message.includes(firstName), `the refusal names the holding computer: ${refusal(second).message}`);
+  assert.doesNotMatch(refusal(second).message, new RegExp(hostname(), 'u'), 'the name carries no host name');
+  assert.match(refusal(second).message, /pullboard takeover/u, 'the refusal names the takeover');
+
+  // Takeover passes the coordinator to the second machine, and the first is then refused by name.
+  const taken = await other.cli('takeover');
+  assert.equal(taken.code, 0, `takeover passes the coordinator: ${JSON.stringify(taken.document)}`);
+  assert.equal(taken.document.coordinator, secondName, 'takeover reports the new holder');
+  assert.equal(taken.document.previous, firstName, 'takeover reports the holder it replaced');
+  assert.equal((await other.cli('add', box.lane, 'Planned on the second machine after takeover')).code, 0, 'the new holder coordinates');
+  const first = await box.cli('add', box.lane, 'Planned again on the first machine');
+  assert.equal(refusal(first).code, 'COORDINATOR_HELD', 'the earlier holder is now the second coordinator');
+  assert.ok(refusal(first).message.includes(secondName), `the refusal names the new holder: ${refusal(first).message}`);
+
+  // Both replicas agree on the items each holder made, and on no others.
+  for (const device of [box, other]) {
+    const titles = (await device.cli('list')).document.items.map(item => item.item_title);
+    assert.deepEqual(titles.filter(title => title.startsWith('Planned') || title.startsWith('Still')).sort(),
+      ['Planned in the first session', 'Planned in the second session after takeover', 'Planned on the first machine',
+        'Planned on the second machine after takeover', 'Still planned on the first machine']);
+  }
+});
+
+test('an agent session on a computer that does not hold the coordinator takes it over [E19]', { timeout: relayWorkBudgetMs(12) }, async t => { // budget: hang ceiling for two linked devices' real CLI and relay round trips; not a speed target.
+  const box = await relayClientFixture(t);
+  await box.link();
+  const pairing = await box.cli('relay', 'pair');
+  const other = await box.otherDeviceJoin(pairing.document.code);
+  /** Run the second computer's real CLI from a named agent session. */
+  const inSession = (...args) => relayFixtureChild(other.root, { ...other.env, CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'second-computer-session' },
+    [resolve(import.meta.dirname, '../bin/pullboard.js'), ...args, '--json']);
+  assert.equal((await box.cli('add', box.lane, 'Planned on the holding computer')).code, 0, 'the first computer holds the coordinator');
+  const held = await inSession('add', box.lane, 'Planned before the takeover');
+  assert.equal(held.document?.error?.code, 'COORDINATOR_HELD', 'the second computer is refused by name');
+  assert.match(held.document.error.message, /pullboard takeover/u, 'the refusal names the takeover');
+  const taken = await inSession('takeover');
+  assert.equal(taken.code, 0, `the takeover the refusal names succeeds from the agent session: ${JSON.stringify(taken.document)}`);
+  assert.equal(taken.document.coordinator, `computer ${other.machine.slice(-8)}`, 'the second computer now holds the coordinator');
+  assert.equal((await inSession('add', box.lane, 'Planned after the takeover')).code, 0, 'the new holder coordinates');
+  assert.equal((await box.cli('add', box.lane, 'Planned again on the first computer')).document?.error?.code, 'COORDINATOR_HELD', 'the earlier holder is refused');
+});

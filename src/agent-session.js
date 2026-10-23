@@ -131,3 +131,58 @@ export function localSessionSeats(info, { agents, digest }) {
   }
   return seats;
 }
+
+/** Keep a helper seat's parent record in its own Git directory, beside its session binding. */
+export function parentSessionFile(info) {
+  return join(info.gitDir, 'pullboard-parent-session.json');
+}
+
+/**
+ * Record which agent opened a helper seat, from inside that agent's session [N2,B13]. The record is local to the machine
+ * and holds only the parent's id and session digest, so it can never lend the parent's claims to the helper: the helper
+ * still claims and submits as itself.
+ */
+export function recordParentSession(info, { parent, digest }) {
+  const file = parentSessionFile(info);
+  const pending = file + '.' + process.pid + '.tmp';
+  writeFileSync(pending, JSON.stringify({ version: 1, parent, digest, at: new Date().toISOString() }) + '\n', { mode: 0o600 });
+  renameSync(pending, file);
+}
+
+/** Record the parent of a just-made helper seat; a note that cannot be written never undoes the seat. */
+export function noteHelperParent(info, link) {
+  try { recordParentSession(info, link); } catch { /* The seat still works without its parent note. */ }
+}
+
+/** Walk the board's linked checkouts and hand each registered agent's Git directory to visit. */
+function eachSeatGitDir(info, agents, visit) {
+  const directory = join(info.commonDir, 'worktrees');
+  if (!existsSync(directory)) return;
+  const registered = new Map(agents.filter((agent) => agent.agent_lane !== 'coordinator').map((agent) => [agent.agent_path, agent]));
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const gitDir = join(directory, entry.name);
+    try {
+      const agent = registered.get(realpathSync(dirname(readFileSync(join(gitDir, 'gitdir'), 'utf8').trim())));
+      if (agent) visit(agent, gitDir);
+    } catch { /* A gone or half-removed checkout is not a seat to list. */ }
+  }
+}
+
+/**
+ * Map each helper agent's id to the id of the agent that opened it, and each agent's id to its session digest. Unreadable
+ * or damaged records are skipped: they only mean the board lists that agent without a parent.
+ */
+export function seatLinks(info, agents) {
+  const parents = new Map();
+  const digests = new Map();
+  eachSeatGitDir(info, agents, (agent, gitDir) => {
+    for (const [name, field, into] of [['pullboard-parent-session.json', 'parent', parents], ['pullboard-checkout-session.json', 'digest', digests]]) {
+      try {
+        const value = JSON.parse(readFileSync(join(gitDir, name), 'utf8'));
+        if (value.version === 1 && typeof value[field] === 'string') into.set(agent.agent_id, value[field]);
+      } catch { /* No record, or a damaged one: no link. */ }
+    }
+  });
+  return { parents, digests };
+}

@@ -29,3 +29,17 @@ export function boardNotWritable(file, error, environment = process.env) {
   return new Refused('BOARD_NOT_WRITABLE',
     `Cannot write the board in "${folder}". Give the agent write access to that folder, the repo's .git/pullboard, or run the command outside the sandbox.`);
 }
+
+/**
+ * Replace SQLite's bare lock error with the board path and elapsed wait when the wait expires.
+ *
+ * @param {string} file
+ * @param {number} startedAt
+ * @param {Error & { errcode?: number }} error
+ * @returns {Error}
+ */
+export function boardBusyError(file, startedAt, error) {
+  const sqliteCode = Number.isInteger(error.errcode) ? error.errcode & 0xff : null;
+  if (sqliteCode !== 5 && error.code !== 'SQLITE_BUSY' && !/database is locked/iu.test(error.message ?? '')) return error;
+  return new Refused('BOARD_BUSY', `board file ${file} remained held by another process after ${Date.now() - startedAt}ms; wait for it to finish and retry`);
+}

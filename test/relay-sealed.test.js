@@ -910,7 +910,9 @@ test('person recovery explicitly skips one future-engine blocker and publishes a
   const futureSequence = appliedSequence(beforeHeader) + 1;
   store.closeBoard(beforeHeader);
   const futureSealHeader = Buffer.from([2]).toString('base64url');
-  assert.equal((await append(futureSequence, 'move', futureSealHeader, box.one.token)).status, 200);
+  // The record comes from a newer engine, as a real newer seal would: from an engine no newer, it is junk, set aside (#343).
+  assert.equal((await box.call(box.path + '/moves', { method: 'POST', token: box.one.token, headers: { 'x-pullboard-engine': String(ENGINE_VERSION + 1) },
+    body: { sequence: futureSequence, sealed: futureSealHeader } })).status, 200);
   const sealBlocked = await replayClient(box.root, { ...box.env, PULLBOARD_HOME: box.home }, 'relay');
   assert.ok(sealBlocked.diagnostics.some(line => line.includes('SEAL_VERSION')));
   const atEight = store.openBoard(join(box.root, '.git/pullboard/board.sqlite'));
@@ -1257,7 +1259,7 @@ test('relay stores engine-4 sealed background completions opaquely [V2,H16]', as
   assert.equal(read.status, 200);
   assert.equal(read.body.events.length, 1);
   const [record] = read.body.events;
-  assert.deepEqual(record.sender, { kind: 'agent', userId: box.person.user.id, agent: 'client-one', policy: VERIFIER_STANDING_ENGINE });
+  assert.deepEqual(record.sender, { kind: 'agent', userId: box.person.user.id, agent: 'client-one', policy: VERIFIER_STANDING_ENGINE, login: box.person.user.login, engine: ENGINE_VERSION });
   assert.deepEqual(box.clientOpen(record.sealed, record.kind, record.event_id), move);
 });
 
@@ -1358,7 +1360,7 @@ test('[A4,H7] malformed or unauthorized calls cannot store clear records, keys o
   });
   assert.equal(request.status, 200);
   assert.equal(request.body.event.kind, 'request');
-  assert.deepEqual(request.body.event.sender, { kind: 'agent', userId: box.person.user.id, agent: 'client-one', policy: VERIFIER_STANDING_ENGINE });
+  assert.deepEqual(request.body.event.sender, { kind: 'agent', userId: box.person.user.id, agent: 'client-one', policy: VERIFIER_STANDING_ENGINE, login: box.person.user.login, engine: ENGINE_VERSION });
   assert.deepEqual(box.clientOpen(request.body.event.sealed, request.body.event.kind, request.body.event.event_id), { request: true });
   assert.throws(() => box.clientOpen(request.body.event.sealed, 'move', request.body.event.event_id));
 
@@ -1387,7 +1389,8 @@ test('[A4,H2,H7,H16] trusted sender attribution exposes impersonation and agent 
     method: 'POST', body: { sequence: 1, sealed: box.clientSeal(forged, 'move', 1) },
   });
   assert.equal(reply.status, 200, 'the relay stores opaque bytes without reading their claimed agent');
-  const expected = { kind: 'agent', userId: box.person.user.id, agent: 'client-one', policy: VERIFIER_STANDING_ENGINE };
+  // Each record also names the GitHub login behind it and the engine its sender declared (#343) [E3].
+  const expected = { kind: 'agent', userId: box.person.user.id, agent: 'client-one', policy: VERIFIER_STANDING_ENGINE, login: box.person.user.login, engine: ENGINE_VERSION };
   assert.deepEqual(reply.body.event.sender, expected, 'the sender comes from the credential, not sealed contents');
   const events = (await box.call(box.path + '/events?after=0')).body.events;
   assert.equal(events.length, 1);
@@ -1411,7 +1414,7 @@ test('[A4,H2,H7,H16] trusted sender attribution exposes impersonation and agent 
     method: 'POST', token: box.person.token,
     body: { sequence: 2, sealed: box.clientSeal({ person: true }, 'move', 2) },
   });
-  assert.deepEqual(personMove.body.event.sender, { kind: 'person', userId: box.person.user.id, policy: VERIFIER_STANDING_ENGINE });
+  assert.deepEqual(personMove.body.event.sender, { kind: 'person', userId: box.person.user.id, policy: VERIFIER_STANDING_ENGINE, login: box.person.user.login, engine: ENGINE_VERSION });
   assert.equal((await box.call(box.path, { method: 'DELETE', token: box.person.token })).status, 200);
 });
 

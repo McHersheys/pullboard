@@ -4,6 +4,14 @@ Notable changes to Pullboard, for people using it. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+### Added
+
+- You can pair a second phone or browser with the command the page shows. (#978)
+
+### Fixed
+
+- A browser you removed now says so, instead of a blank page or a sign-in screen. (#981)
+
 ## [0.9.2] - 2026-10-21
 
 ### Your board catches its own repeats

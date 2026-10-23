@@ -7,6 +7,7 @@ import { Refused } from '../src/refused.js';
 import { repositoryName } from './github.js';
 import { approvalContext } from '../src/relay-approval.js';
 import { VERIFIER_STANDING_ENGINE } from '../src/machine.js';
+import { PEOPLE_ENGINE } from '../src/people-engine.js';
 
 export const ACCESS_WINDOW_MS = 10 * 60_000;
 const MAX_TTL = 30 * 24 * 3600_000;
@@ -80,6 +81,10 @@ export function createRelayAuth({ database, github, now = Date.now, sessionTTL =
     }
     if (!db.prepare('PRAGMA table_info(relay_boards)').all().some((column) => column.name === 'storage_account')) {
       db.exec('ALTER TABLE relay_boards ADD COLUMN storage_account TEXT REFERENCES relay_users(id)');
+    }
+    // A board's approvers (#343): GitHub logins as a JSON array, or NULL for a board that names none.
+    if (!db.prepare('PRAGMA table_info(relay_boards)').all().some((column) => column.name === 'approvers')) {
+      db.exec('ALTER TABLE relay_boards ADD COLUMN approvers TEXT');
     }
     db.prepare('UPDATE relay_boards SET linked_at=? WHERE linked_at IS NULL').run(now());
     db.prepare('DELETE FROM relay_deleted_credentials WHERE expires<=?').run(now());
@@ -593,9 +598,54 @@ export function createRelayAuth({ database, github, now = Date.now, sessionTTL =
     minimumEngineVersion(board) {
       open();
       identifier(board, 'BAD_BOARD');
+      // Only an engine that enforces approvers may read or write a board that names them [E4,E20].
+      if (auth.boardApprovers(board)) return PEOPLE_ENGINE;
       // Machine and agent credentials now carry engine-48 seat provenance; older clients would skip it.
       if (db.prepare("SELECT 1 FROM relay_credentials WHERE board=? AND kind IN ('machine','board') LIMIT 1").get(board)) return VERIFIER_STANDING_ENGINE;
       return db.prepare("SELECT 1 FROM relay_credentials WHERE board=? AND kind='board' LIMIT 1").get(board) ? 3 : 1;
+    },
+    /**
+     * The GitHub logins this board names as its approvers, or null when it names none and behaves as before [E4].
+     *
+     * @param {string} board
+     * @returns {string[] | null}
+     */
+    boardApprovers(board) {
+      open();
+      const row = db.prepare('SELECT approvers FROM relay_boards WHERE id=?').get(board);
+      return row?.approvers ? JSON.parse(row.approvers) : null;
+    },
+    /**
+     * Whether this principal may act for a board that names approvers: true or false when it names them, null when
+     * it names none. A machine or agent credential acts for the person who minted it [E4,E20].
+     */
+    isApprover(board, principal) {
+      const approvers = auth.boardApprovers(board);
+      return approvers ? approvers.includes(principal.user.login) : null;
+    },
+    /**
+     * Set a board's approvers from its pullboard.json, signed in as a person. The first list is the linking person's
+     * to set; after that only a current approver changes it, so a change takes effect only once an approver makes
+     * it. An empty list removes them, and the board behaves as before [E4].
+     *
+     * @param {string} token - a person session
+     * @param {string} board
+     * @param {string[]} approvers - GitHub logins
+     */
+    async setBoardApprovers(token, board, approvers) {
+      identifier(board, 'BAD_BOARD');
+      if (!Array.isArray(approvers) || approvers.length > 50 || new Set(approvers).size !== approvers.length
+        || approvers.some((login) => typeof login !== 'string' || !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/u.test(login))) {
+        throw new Refused('BAD_APPROVERS', 'name approvers as distinct GitHub logins, at most fifty');
+      }
+      const principal = await auth.authenticate(token, { board, write: true });
+      if (principal.kind !== 'session') throw new Refused('HUMAN_REQUIRED', 'set approvers signed in as yourself');
+      const current = auth.boardApprovers(board);
+      const linker = db.prepare('SELECT storage_account FROM relay_boards WHERE id=?').get(board)?.storage_account;
+      const allowed = current ? current.includes(principal.user.login) : linker === null || linker === undefined || linker === principal.user.id;
+      if (!allowed) throw new Refused('NOT_APPROVER', `${principal.user.login} is not an approver of this board; an approver signs in and runs pullboard relay on to change the list`);
+      db.prepare('UPDATE relay_boards SET approvers=? WHERE id=?').run(approvers.length ? JSON.stringify([...approvers].sort()) : null, board);
+      return { board, approvers: approvers.length ? [...approvers].sort() : null };
     },
     /** Give a foreground person one board-bound machine delegate, never another person credential. */
     async issueMachine(token, { board, machine, host, expiresIn = MAX_TTL }) {

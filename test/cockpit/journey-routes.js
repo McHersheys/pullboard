@@ -24,9 +24,9 @@ export function journeyApiPathKind(pathname) {
  * @param {object} chrome - The browser B connection.
  * @param {{url: string, headers: object}} asked - The paused request.
  * @param {{cookieless?: boolean}|null} condition - The CI stand-in, if any.
- * @param {object[]} pauses - Bounded record of API pauses: path kind and 'paused', 'restored' or 'none'.
+ * @param {object[]} pauses - Bounded record of API pauses: path kind and 'paused', 'restored', 'replanted' or 'none'.
  */
-export async function journeyForwardHeaders(chrome, asked, condition, pauses) {
+export async function journeyForwardHeaders(chrome, asked, condition, pauses, planted = null) {
   const address = new URL(asked.url);
   const api = address.pathname.startsWith('/api/');
   let headers = Object.entries(asked.headers).filter(([name]) => !['host', 'content-length'].includes(name.toLowerCase()));
@@ -37,8 +37,13 @@ export async function journeyForwardHeaders(chrome, asked, condition, pauses) {
     const { cookies } = await chrome.send('Network.getCookies', { urls: [asked.url] });
     if (cookies.length > 0) { headers.push(['Cookie', cookies.map(({ name, value }) => name + '=' + value).join('; ')]); restored = true; }
   }
+  // A restart of Chrome's network service empties its in-memory jar. Production's pb_session is persistent (Max-Age)
+  // and survives once flushed; the fixture's was planted moments ago, so the journey keeps forwarding it, and counts
+  // each time it had to (#902). The document needs it too: the server renders a signed-out page without it.
+  let replanted = false;
+  if (!paused && !restored && planted) { headers.push(['Cookie', planted]); replanted = true; }
   if (api && pauses.length < 128) {
-    pauses.push({ pathKind: journeyApiPathKind(address.pathname), cookie: paused ? 'paused' : restored ? 'restored' : 'none' });
+    pauses.push({ pathKind: journeyApiPathKind(address.pathname), cookie: paused ? 'paused' : restored ? 'restored' : replanted ? 'replanted' : 'none' });
   }
   return headers;
 }
@@ -75,6 +80,8 @@ export async function routeJourneyOrigins(chrome, site, view, slow = null, pause
   let navigatedAt = -Infinity;
   // Each harness navigation arms one commit; a commit the page makes on its own never counts (#935 review).
   let awaitingCommit = false;
+  // The session cookie this journey planted, forwarded when a network-service restart has emptied the jar (#902).
+  const session = { planted: null };
   const listener = ({ data }) => {
     const message = JSON.parse(String(data));
     // A main-frame commit after the harness navigated replaces the document whose paused reads Chrome then retires.
@@ -90,7 +97,7 @@ export async function routeJourneyOrigins(chrome, site, view, slow = null, pause
       if (address.origin === JOURNEY_HOSTED && address.pathname.startsWith('/api/')) {
         // Every hosted API request goes on to the owned site, as live streams always did. Answering one by hand raced
         // the browser for paged object reads, which then failed at Fetch.fulfillRequest with Invalid InterceptionId (#935).
-        const headers = (await journeyForwardHeaders(chrome, asked, slow, pauses)).map(([name, value]) => ({ name, value }));
+        const headers = (await journeyForwardHeaders(chrome, asked, slow, pauses, session.planted)).map(([name, value]) => ({ name, value }));
         await chrome.send('Fetch.continueRequest', {
           requestId, url: site.base + address.pathname + address.search, headers,
         });
@@ -108,7 +115,7 @@ export async function routeJourneyOrigins(chrome, site, view, slow = null, pause
         return;
       }
       if (address.origin !== JOURNEY_HOSTED) throw new Error('unexpected fixture browser origin');
-      const headers = Object.fromEntries(await journeyForwardHeaders(chrome, asked, slow, pauses));
+      const headers = Object.fromEntries(await journeyForwardHeaders(chrome, asked, slow, pauses, session.planted));
       const response = await fetchLive(site.base + address.pathname + address.search, {
         method: asked.method, headers, redirect: 'manual',
         ...(asked.postData === undefined ? {} : { body: asked.postData }),
@@ -154,6 +161,8 @@ export async function routeJourneyOrigins(chrome, site, view, slow = null, pause
     assert.deepEqual(failures, [], `owned hosted and loopback HTTP routes finish without cancelling event streams (orphaned by navigation: ${JSON.stringify(orphaned)})`);
   };
   /** Navigate the page, marking the moment so requests already paused for the old document are known as orphaned. */
+  /** Record the session cookie the journey planted, as name=value, for forwarding after a jar reset (#902). */
+  stop.plant = (cookie) => { session.planted = cookie; };
   stop.navigate = async (url) => {
     navigatedAt = performance.now();
     awaitingCommit = true;

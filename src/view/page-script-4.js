@@ -18,11 +18,12 @@ function showTab() {
   document.querySelectorAll('.tab').forEach((button) => button.classList.toggle('on', button.dataset.tab === view.tab));
   countUnseen();
   if (view.tab === 'shouts') foldShouts();
+  if (view.tab === 'settings') void showSettings();
 }
 
 /** Read the selected repo, tab and detail from a path or the hosted page's fragment. */
 function placeAtAddress(page = data) {
-  const tabs = ['items', 'shouts', 'spec', 'doctrine', 'activity', 'roadmap'];
+  const tabs = ['items', 'shouts', 'spec', 'doctrine', 'activity', 'roadmap', 'settings'];
   const hash = location.hash || '';
   let path = routed ? location.pathname || '/' : hash.slice(1);
   if (hash === '#items/pipeline' || hash === '#roadmap') path = hash.slice(1);

@@ -9,8 +9,15 @@ import {
 } from '../config.js';
 import {
   git,
+  repoInfo,
   tryGit,
 } from '../git.js';
+import {
+  agentSessionDigest,
+} from '../person.js';
+import {
+  noteHelperParent,
+} from '../agent-session.js';
 import {
   isLane,
   laneNames,
@@ -50,9 +57,10 @@ import {
  * @param {string} route
  * @param {string | null} family
  * @param {string | undefined} model
+ * @param {boolean} helper - false for the caller's own seat (`next`); a helper's seat records its parent [N2,B13]
  * @returns {Promise<number>}
  */
-export async function worktreeFor(io, lane, route, family = null, model) {
+export async function worktreeFor(io, lane, route, family = null, model, helper = true) {
   const ctx = context(io);
   if (!lane || lane === COORDINATOR || !isLane(ctx.config, lane)) {
     throw new Refused('NO_LANE', `no lane "${lane ?? ''}"; lanes: ${laneNames(ctx.config).slice(1).join(', ') || 'none yet, declare them in pullboard.json'}`);
@@ -88,6 +96,9 @@ export async function worktreeFor(io, lane, route, family = null, model) {
     else io.err(`pullboard: registration failed; the changed worktree was preserved at ${root}`);
     throw error;
   }
+  const digest = helper ? agentSessionDigest() : null;
+  const parent = digest ? (ctx.info.isMain ? COORDINATOR : withBoard(ctx, (board) => store.agentAt(board, ctx.info.root)?.agent_id)) : null;
+  if (parent) noteHelperParent(repoInfo(root), { parent, digest });
   const displayName = displayAgentName({ agent_id: id, agent_model: model }, ctx.config.agents.names);
   const modelWord = shellWord(model);
   const prompt = `You are ${displayName}, in the ${lane} lane. Work only in ${shellWord(root)}, and start every command with ${cdTo(root)}\nModel: ${modelWord}. This worktree joined with --model ${modelWord}. For another worktree using the same model, pass --model ${modelWord} or set PULLBOARD_MODEL=${modelWord}; for a different agent, use that agent's actual model label.\nRead ${shellWord(join(root, 'AGENTS.md'))} first. Its rules govern this work, over any other repo's instructions you were given.`;

@@ -97,7 +97,7 @@ export function hostedBrowser(agent) {
  * Your browser said no and Where are your projects? on a computer, and #757's two screens, Your boards, on your phone
  * and One step on your computer, for a phone and for a person signed in with nothing shared.
  *
- * @param {string|null} state - looking, local-open, asking, blocked, not-running, mismatch, problem, signed-out, no-linked, unpaired, linked-failed or local-failed.
+ * @param {string|null} state - looking, local-open, asking, blocked, not-running, mismatch, problem, signed-out, no-linked, unpaired, signed-out-paired, linked-failed or local-failed.
  * @param {{phone?: boolean, detail?: string, linked?: string[], localNavigationOnly?: boolean, listed?: boolean, signedIn?: boolean, localOriginKnown?: boolean}} [facts] - The device, refusal, linked boards and whether local boards need their own page beside a listed relay board.
  * @returns {null|{state: string, kind: string, heading: string, text?: string, parts: string[], command?: string, ask?: string, small?: string, live?: string, lead?: string, help?: string, detail?: string}}
  */
@@ -133,6 +133,8 @@ export function hostedState(state, facts = {}) {
     // screen says to open that link or scan its QR, as the screen before it did.
     'unpaired': { ...share, text: 'On the computer with your projects, open a terminal and run this, then open the link it prints here or scan its QR:', ask: opening,
       small: 'Your account shares ' + (shared.join(', ') || 'your boards') + '. This browser opens ' + (shared.length === 1 ? 'it' : 'them') + ' from that link.' },
+    // A browser paired here before whose relay session ended: its shared boards cannot load, so it says why (#902).
+    'signed-out-paired': { kind: 'note', heading: 'Signed out of pullboard.dev', text: 'Your session here ended, so your shared boards cannot open. Sign in again to see them; the boards on this computer stay open.', parts: ['github'] },
     'linked-failed': { kind: 'note', heading: 'Shared boards did not load', text: 'They show here by themselves once they answer.', parts: [], detail: facts.detail },
     'local-failed': { kind: 'note', heading: 'This computer\'s boards did not load', text: 'They show here by themselves once Pullboard answers.', parts: [], detail: facts.detail },
   };

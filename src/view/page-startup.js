@@ -32,6 +32,10 @@ export function pageStartup(root) {
       status.textContent = text;
       return true;
     },
+    /** Whether this browser keeps relay board keys, so it was paired and signed in here before (#902). */
+    pairedBefore() {
+      try { return Object.keys(JSON.parse(localStorage.getItem('pullboard.relay.keys.v1') || '{}')).length > 0; } catch { return false; }
+    },
     /** Await load(), failing with message after ms; the timer is cleared either way, so it never outlives the load. */
     within(load, ms, message) {
       let timer;

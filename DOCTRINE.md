@@ -18,7 +18,7 @@ Statuses: approved = in force · draft = proposed · wont = considered and decli
 - C4 [approved, must] Refusals throw Refused(code, message); nothing else exits the process except the bin. | gate: review
 - C5 [approved, must] Text from files or users is escaped before it reaches a page. | gate: test/view.test.js
 - C6 [draft, aim] Functions under 60 lines and files under 1,000. | gate: review
-- C9 [approved, must] Source and test files stay under 1500 lines; existing excess can only fall. Why: bounded files keep changes and reviews manageable. | gate: check node bin/checks/file-size.js | count: 54
+- C9 [approved, must] Source and test files stay under 1500 lines; existing excess can only fall. Why: bounded files keep changes and reviews manageable. | gate: check node bin/checks/file-size.js | count: 53
 - C8 [approved, must] No bare empty catch hides a failure; existing cases can only fall. Why: failures need handling or an explicit reason to ignore them. | gate: check node bin/checks/empty-catch.js | count: 13
 - C10 [draft, must] No silent catch or fallback: each one logs a specific line that names its subject. Rigor names each catch clause and .catch handler a change adds to a source file that neither throws nor writes a line; a fallback written with a default operator is review. | gate: check node bin/pullboard.js rigor quality --rule silent-catch | count: 0 | source: rigor-quality:silent-catch
 - C11 [draft, must] A file over the 1500-line cap, or a change that grows code past its 400-line budget, is named. Rigor names each changed source file that ends over 1500 lines and grew, and a change whose non-test code grows by more than 400 lines net, or the board's rigor.budget setting, at the file that grew most. | gate: check node bin/pullboard.js rigor quality --rule size-budget | count: 0 | source: rigor-quality:size-budget
@@ -29,7 +29,7 @@ Statuses: approved = in force · draft = proposed · wont = considered and decli
 - T3 [approved, must] The suite passes on Node 22, 24 and 26 before a release. | gate: release check
 - T4 [draft, must] A check that guards a rule is shown failing on a broken copy before anyone trusts it. | gate: review
 - T5 [approved, must] Every test name cites the spec rows it proves; existing omissions can only fall. Why: a passing test must name the requirement it checks. | gate: check node bin/checks/test-names.js | count: 15
-- T6 [approved, must] Tests declare the source files they read; existing omissions can only fall. Why: affected-test selection must see those dependencies. | gate: check node bin/checks/test-inputs.js | count: 19
+- T6 [approved, must] Tests declare the source files they read; existing omissions can only fall. Why: affected-test selection must see those dependencies. | gate: check node bin/checks/test-inputs.js | count: 18
 - T7 [draft, must] A fix ships with a test that reproduces the original failure. Rigor names each fix commit that changes no test file, at the first line it changes; whether the test reproduces the failure is the root-cause-control rule. | gate: check node bin/pullboard.js rigor quality --rule fix-test | count: 0 | source: rigor-quality:fix-test
 - T8 [draft, must] A new gate or check has a test that fails closed when it has no data. Rigor names a new file under checks/ or gates/, or named *-check or *-gate, that no test changed in the same change names; whether that test feeds it no data and expects a refusal is review, since no command can read what a test asserts. | gate: check node bin/pullboard.js rigor quality --rule fails-closed | count: 0 | source: rigor-quality:fails-closed
 - T9 [draft, must] A guard test fails when the guard is deleted. Rigor turns each throw a change adds to a source file into a no-op, one at a time, and runs the test files the change touches; a guard they still pass without is named. | gate: check node bin/pullboard.js rigor quality --rule guard-mutation | count: 0 | source: rigor-quality:guard-mutation
@@ -39,7 +39,10 @@ Statuses: approved = in force · draft = proposed · wont = considered and decli
 - G1 [approved, must] `npm run gate` (spec check and tests) passes before every push. | gate: pre-push hook
 - G2 [approved, must] Never bypass a hook. Never rewrite the main line, except to remove a secret. | gate: review
 - G3 [approved, must] This repo's hooks run the source in this checkout. | gate: .githooks
+- G4 [draft, must] Every outside issue and pull request gets a first reply within 3 days. Source: tests-85 shout #23059, 22 Oct | gate: review
 
 ## S · Security
 - S1 [approved, must] No secrets and no env files in git; test fixtures build fake secrets at run time. | gate: pre-commit secret scan
 - S2 [approved, must] The board never stores source code, only ids, commits and digests. | gate: review
+- S22 [draft, must] Outside contributions are MIT, carry a DCO sign-off, and are verified like any work, only in a sandbox with no credentials and no network. Source: tests-85 shout #23059, 22 Oct | gate: review
+- S23 [draft, must] A change from outside that touches a sensitive path (relay, sealing, signing, person moves, hooks) lands only with the owner's approval. Source: tests-85 shout #23059, 22 Oct | gate: review

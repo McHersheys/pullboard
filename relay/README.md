@@ -103,6 +103,14 @@ see their boards. Board actions and minting or revoking board tokens require
 write, maintain, or admin permission, checked again on every such operation. Repository ids are pinned so a
 replacement repository cannot inherit a board link.
 
+A board may name approvers: the GitHub logins its `pullboard.json` lists. `pullboard relay on`, signed in as a person,
+sends them with `PUT /api/v1/boards/:board/approvers` (`{approvers: [...]}`; an empty list removes them), and
+`GET` on the same path returns them. The person who linked the board sets the first list; after that only a
+current approver changes it (`NOT_APPROVER`). On such a board only an approver deletes the relay copy or replaces
+its snapshot, from a session or that person's machine credential; each person record says whether its sender is
+an approver, and every replica refuses person moves and phone requests from anyone else. A board that names none
+works as before, and naming them raises its minimum engine to 71.
+
 SQLite stores account/repository identities and SHA-256 hashes of relay-issued
 credentials, never their plaintext. Sessions expire in seven days by default;
 board tokens in one day (configurable up to thirty days). Revocation persists
@@ -158,7 +166,7 @@ The client owns the encryption format and engine-version checks.
 All responses and refusals retain envelope `version: 1`. Moves use the shared
 100,000 byte JSON-body limit. Legacy API1 snapshots allow a bounded 90,000,000
 byte JSON body and 64,000,000 decoded bytes; API2 uses the bounded objects below. One private SQLite journal per board stores only its
-identity, format, head cursor, receive times, public sender identities and sealed payloads. Compaction
+identity, format, head cursor, receive times, public sender identities (account, GitHub login, declared engine and, on a board that names approvers, whether a person sender is one) and sealed payloads. Compaction
 keeps the head cursor, so the next move never reuses an earlier sequence.
 
 ### Paged snapshots and account storage

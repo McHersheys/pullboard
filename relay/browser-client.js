@@ -182,7 +182,8 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
       : 'Sign in again and get a fresh pairing link from a linked Mac.');
     const signIn = document.createElement('a'); signIn.href = '/auth/github/start'; signIn.textContent = 'Sign in with GitHub';
     panel.append(document.createElement('br'), signIn);
-    document.querySelector('main')?.replaceChildren(panel);
+    document.documentElement.dataset.relayScreen = 'removed';
+    document.body.append(panel);
   }
 
   /** Render only authorized board names, safe warnings and pairing guidance into the generic page. */
@@ -694,6 +695,11 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
     if (await enrollPhone((path, options) => documentAt(path, denied, options))) keepPairingStorage();
     await listing();
   } catch (error) {
+    if (error?.code === 'DEVICE_PAIR_EXPIRED') {
+      // A stale local enrollment must not hide a newer revocation of this browser.
+      try { await documentAt('/api/v1/devices/session', denied); } catch { /* Keep the original pairing error unless access was lost. */ }
+      if (accessLost) throw accessError;
+    }
     failure = error.message || 'Your boards did not open. Try opening this page again.';
     notice();
     throw error;

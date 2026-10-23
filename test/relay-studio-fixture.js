@@ -95,7 +95,8 @@ export function readApprovalCard(chrome, request) {
       const range = document.createRange(); range.selectNodeContents(node);
       return [...range.getClientRects()].map(rect => ({ left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom }));
     });
-    return { text: card.innerText.replace(/[\\u00a0\\u202f]/gu, ' '), pad, lines,
+    return { title: card.querySelector('.phone-approval-title')?.innerText.replace(/[\\u00a0\\u202f]/gu, ' ') ?? null,
+      text: card.innerText.replace(/[\\u00a0\\u202f]/gu, ' '), pad, lines,
       inside: lines.length > 0 && lines.every(rect => rect.left >= inner.left - 0.5 && rect.right <= inner.right + 0.5 &&
         rect.top >= inner.top - 0.5 && rect.bottom <= inner.bottom + 0.5),
       action: card.querySelector('button')?.innerText ?? null };

@@ -250,6 +250,8 @@ const CENSUS_LAUNCHED = [
   'test/relay-agent.test.js', 'test/relay-approval-delivery.test.js', 'test/relay-browser-fixture.test.js', 'test/relay-browser.test.js',
   'test/relay-device-confirmation.test.js', 'test/relay-person-actions.test.js', 'test/relay-person-credential.test.js',
   'test/relay-person-outbox.test.js', 'test/relay-person-page.test.js', 'test/relay-person-requests.test.js',
+  // Later addition: #978's independently proven two-Chrome pairing case (outside ACCEPT 1443).
+  'test/relay-pairing.test.js',
   'test/relay-setup-once.test.js', 'test/relay-snapshot-recovery.test.js', 'test/relay-snapshot-size.test.js', 'test/seal.test.js',
 ];
 
@@ -346,7 +348,8 @@ test('only a file that reaches a browser launch takes a browser slot [C7,O5]', a
   // Cockpit and journey files stay bound by rule until #741 guards the view fixture; the rest must reach a launch.
   const reached = bound.filter(file => !file.startsWith('test/cockpit/') && file !== 'test/journeys.test.js');
   // 21 Oct: 21, since #977's relay-local-origin.test.js really launches WebKit and Chrome to prove the Safari local route.
-  assert.ok(reached.length <= 21,
+  // 22 Oct: 22, since #978's relay-pairing.test.js really launches two Chromes to pair a second browser.
+  assert.ok(reached.length <= 22,
     `about 42 of ${tracked.length} test files are browser-bound by launch (the census's 15 non-cockpit launchers, plus cockpit and journey files until #741); got ${bound.length}, ${reached.length} outside cockpit: ${reached.join(', ')}`);
 
   const runner = runnerFixture(t, {
@@ -452,4 +455,21 @@ test('spawned starts a Node child that starts the browser', () => {
   for (const [method, input] of [['spawnSync', ['git', ['status']]], ['execSync', ['printf chrome-fixture.js']], ['spawn', [process.execPath, ['-e', 'google-chrome']]]]) {
     assert.equal(browserInCall(method, input), null, `${method} ${JSON.stringify(input)} is not a browser`);
   }
+});
+
+
+test('the actual runner preload stays browser-free while real direct launches stay bound [C7,O5]', async t => {
+  const root = sourceFixture(t, {
+    'package.json': '{"type":"module"}',
+    'test/plain.test.js': "import '../bin/run-tests.js';\n",
+    'test/direct.test.js': "import { spawnSync } from 'node:child_process'; spawnSync(process.env.PULLBOARD_CHROME, ['--version']);\n",
+  });
+  cpSync(resolve(import.meta.dirname, '../src'), join(root, 'src'), { recursive: true });
+  mkdirSync(join(root, 'bin'));
+  copyFileSync(TEST_RUNNER, join(root, 'bin/run-tests.js'));
+  commitSourceFixture(root);
+  assert.equal(await testsNeedBrowser(root, ['test/plain.test.js'], { byLaunch: true }), false,
+    'importing the actual runner and its refusal-only guard must not claim a browser slot');
+  assert.equal(await testsNeedBrowser(root, ['test/direct.test.js'], { byLaunch: true }), true,
+    'a real direct browser launcher still needs its browser slot');
 });

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /** The Pullboard repository's source-only preflight; no browser fixtures run [C7]. */
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { importStyleViolations } from '../src/static-import-style.js';
@@ -12,7 +12,12 @@ import { PULLBOARD_COMMANDS } from '../src/cockpit.js';
 
 const root = process.cwd();
 let failed = false;
-const sources = ['src/cli.js', 'src/cockpit.js', 'src/serve.js'].map(file => ({ file, source: readFileSync(join(root, file), 'utf8') }));
+const sources = readdirSync(join(root, 'src'), { recursive: true })
+  .filter(file => file.endsWith('.js'))
+  .map(file => {
+    const path = join('src', file);
+    return { file: path, source: readFileSync(join(root, path), 'utf8') };
+  });
 for (const row of importStyleViolations(sources)) {
   console.error(`${row.file}:${row.line}: one import binding per line (${row.count} bindings)`);
   failed = true;

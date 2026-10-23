@@ -455,6 +455,7 @@ import { hostedEngines } from './hosted-browsers.js';
 import { openEngine } from './hosted-browsers.js';
 import {
   BOARDS,
+  HOSTED,
   READ_SCREEN,
   STORED,
   boardView,
@@ -479,92 +480,8 @@ import {
  * its cause, and the matrix then requires those cells to pass; a listed cell that passes fails the run, so the lists
  * stay true.
  */
-const CAUSES = [
-  {
-    item: 976,
-    cause: "WebKit cannot decode the gzip snapshot piped from a Blob stream, so a paired browser never opens a linked board",
-    cells: [
-      'webkit:board-no-view/signed-in/paired/approval/fresh',
-      'webkit:board-no-view/signed-in/paired/healthy/fresh',
-      'webkit:board-no-view/signed-in/paired/mixed/fresh',
-      'webkit:other-computer/signed-in/paired/approval/fresh',
-      'webkit:other-computer/signed-in/paired/healthy/fresh',
-      'webkit:other-computer/signed-in/paired/mixed/fresh',
-      'webkit:phone/signed-in/paired/approval/fresh',
-      'webkit:phone/signed-in/paired/healthy/fresh',
-      'webkit:phone/signed-in/paired/mixed/fresh',
-    ],
-  },
-  {
-    item: 978,
-    cause: "the page tells an unpaired browser to run pullboard relay pair, which does not pair it",
-    cells: [
-      'chromium:board-no-view/signed-in/paired/approval/stale-key',
-      'chromium:board-no-view/signed-in/paired/healthy/stale-key',
-      'chromium:board-no-view/signed-in/paired/mixed/stale-key',
-      'chromium:board-no-view/signed-in/unpaired/approval/fresh',
-      'chromium:board-no-view/signed-in/unpaired/approval/stale-key',
-      'chromium:board-no-view/signed-in/unpaired/healthy/fresh',
-      'chromium:board-no-view/signed-in/unpaired/healthy/stale-key',
-      'chromium:board-no-view/signed-in/unpaired/mixed/fresh',
-      'chromium:board-no-view/signed-in/unpaired/mixed/stale-key',
-      'chromium:board-no-view/signed-in/unpaired/oversize/fresh',
-      'chromium:other-computer/signed-in/paired/approval/stale-key',
-      'chromium:other-computer/signed-in/paired/healthy/stale-key',
-      'chromium:other-computer/signed-in/paired/mixed/stale-key',
-      'chromium:other-computer/signed-in/unpaired/approval/fresh',
-      'chromium:other-computer/signed-in/unpaired/approval/stale-key',
-      'chromium:other-computer/signed-in/unpaired/healthy/fresh',
-      'chromium:other-computer/signed-in/unpaired/healthy/stale-key',
-      'chromium:other-computer/signed-in/unpaired/mixed/fresh',
-      'chromium:other-computer/signed-in/unpaired/mixed/stale-key',
-      'chromium:other-computer/signed-in/unpaired/oversize/fresh',
-      'chromium:phone/signed-in/paired/approval/stale-key',
-      'chromium:phone/signed-in/paired/healthy/stale-key',
-      'chromium:phone/signed-in/paired/mixed/stale-key',
-      'chromium:phone/signed-in/unpaired/approval/fresh',
-      'chromium:phone/signed-in/unpaired/approval/stale-key',
-      'chromium:phone/signed-in/unpaired/healthy/fresh',
-      'chromium:phone/signed-in/unpaired/healthy/stale-key',
-      'chromium:phone/signed-in/unpaired/mixed/fresh',
-      'chromium:phone/signed-in/unpaired/mixed/stale-key',
-      'chromium:phone/signed-in/unpaired/oversize/fresh',
-      'webkit:board-no-view/signed-in/paired/approval/stale-key',
-      'webkit:board-no-view/signed-in/paired/healthy/stale-key',
-      'webkit:board-no-view/signed-in/paired/mixed/stale-key',
-      'webkit:board-no-view/signed-in/unpaired/approval/fresh',
-      'webkit:board-no-view/signed-in/unpaired/approval/stale-key',
-      'webkit:board-no-view/signed-in/unpaired/healthy/fresh',
-      'webkit:board-no-view/signed-in/unpaired/healthy/stale-key',
-      'webkit:board-no-view/signed-in/unpaired/mixed/fresh',
-      'webkit:board-no-view/signed-in/unpaired/mixed/stale-key',
-      'webkit:board-no-view/signed-in/unpaired/oversize/fresh',
-      'webkit:other-computer/signed-in/paired/approval/stale-key',
-      'webkit:other-computer/signed-in/paired/healthy/stale-key',
-      'webkit:other-computer/signed-in/paired/mixed/stale-key',
-      'webkit:other-computer/signed-in/unpaired/approval/fresh',
-      'webkit:other-computer/signed-in/unpaired/approval/stale-key',
-      'webkit:other-computer/signed-in/unpaired/healthy/fresh',
-      'webkit:other-computer/signed-in/unpaired/healthy/stale-key',
-      'webkit:other-computer/signed-in/unpaired/mixed/fresh',
-      'webkit:other-computer/signed-in/unpaired/mixed/stale-key',
-      'webkit:other-computer/signed-in/unpaired/oversize/fresh',
-      'webkit:phone/signed-in/paired/approval/stale-key',
-      'webkit:phone/signed-in/paired/healthy/stale-key',
-      'webkit:phone/signed-in/paired/mixed/stale-key',
-      'webkit:phone/signed-in/unpaired/approval/fresh',
-      'webkit:phone/signed-in/unpaired/approval/stale-key',
-      'webkit:phone/signed-in/unpaired/healthy/fresh',
-      'webkit:phone/signed-in/unpaired/healthy/stale-key',
-      'webkit:phone/signed-in/unpaired/mixed/fresh',
-      'webkit:phone/signed-in/unpaired/mixed/stale-key',
-      'webkit:phone/signed-in/unpaired/oversize/fresh',
-    ],
-  },
-  {
-    item: 981,
-    cause: "a revoked browser gets a blank page on a computer (the removed notice sits under the share screen) and a sign-in screen on a phone",
-    cells: [
+/** Exact 72 revoked keys retained from the committed #981 cause, independent of later defect removal. */
+const REVOKED_981_CELLS = [
       'chromium:board-no-view/signed-in/revoked/approval/fresh',
       'chromium:board-no-view/signed-in/revoked/approval/stale-key',
       'chromium:board-no-view/signed-in/revoked/approval/stale-pairing',
@@ -637,6 +554,58 @@ const CAUSES = [
       'webkit:phone/signed-in/revoked/oversize/fresh',
       'webkit:phone/signed-in/revoked/oversize/stale-key',
       'webkit:phone/signed-in/revoked/oversize/stale-pairing',
+    ];
+
+const CAUSES = [
+  {
+    item: 976,
+    cause: "WebKit cannot decode the gzip snapshot piped from a Blob stream, so a paired browser never opens a linked board",
+    cells: [
+      'webkit:board-no-view/signed-in/paired/approval/fresh',
+      'webkit:board-no-view/signed-in/paired/healthy/fresh',
+      'webkit:board-no-view/signed-in/paired/mixed/fresh',
+      'webkit:other-computer/signed-in/paired/approval/fresh',
+      'webkit:other-computer/signed-in/paired/healthy/fresh',
+      'webkit:other-computer/signed-in/paired/mixed/fresh',
+      'webkit:phone/signed-in/paired/approval/fresh',
+      'webkit:phone/signed-in/paired/healthy/fresh',
+      'webkit:phone/signed-in/paired/mixed/fresh',
+    ],
+  },
+  {
+    item: 978,
+    cause: "the page tells an unpaired browser to run pullboard relay pair, which does not pair it",
+    cells: [
+      'webkit:board-no-view/signed-in/paired/approval/stale-key',
+      'webkit:board-no-view/signed-in/paired/healthy/stale-key',
+      'webkit:board-no-view/signed-in/paired/mixed/stale-key',
+      'webkit:board-no-view/signed-in/unpaired/approval/fresh',
+      'webkit:board-no-view/signed-in/unpaired/approval/stale-key',
+      'webkit:board-no-view/signed-in/unpaired/healthy/fresh',
+      'webkit:board-no-view/signed-in/unpaired/healthy/stale-key',
+      'webkit:board-no-view/signed-in/unpaired/mixed/fresh',
+      'webkit:board-no-view/signed-in/unpaired/mixed/stale-key',
+      'webkit:board-no-view/signed-in/unpaired/oversize/fresh',
+      'webkit:other-computer/signed-in/paired/approval/stale-key',
+      'webkit:other-computer/signed-in/paired/healthy/stale-key',
+      'webkit:other-computer/signed-in/paired/mixed/stale-key',
+      'webkit:other-computer/signed-in/unpaired/approval/fresh',
+      'webkit:other-computer/signed-in/unpaired/approval/stale-key',
+      'webkit:other-computer/signed-in/unpaired/healthy/fresh',
+      'webkit:other-computer/signed-in/unpaired/healthy/stale-key',
+      'webkit:other-computer/signed-in/unpaired/mixed/fresh',
+      'webkit:other-computer/signed-in/unpaired/mixed/stale-key',
+      'webkit:other-computer/signed-in/unpaired/oversize/fresh',
+      'webkit:phone/signed-in/paired/approval/stale-key',
+      'webkit:phone/signed-in/paired/healthy/stale-key',
+      'webkit:phone/signed-in/paired/mixed/stale-key',
+      'webkit:phone/signed-in/unpaired/approval/fresh',
+      'webkit:phone/signed-in/unpaired/approval/stale-key',
+      'webkit:phone/signed-in/unpaired/healthy/fresh',
+      'webkit:phone/signed-in/unpaired/healthy/stale-key',
+      'webkit:phone/signed-in/unpaired/mixed/fresh',
+      'webkit:phone/signed-in/unpaired/mixed/stale-key',
+      'webkit:phone/signed-in/unpaired/oversize/fresh',
     ],
   },
   {
@@ -810,6 +779,8 @@ function causeOf(key) {
  * the landing gate or a submit's affected tests: only with this variable set.
  */
 const OWN_JOB = process.env.PULLBOARD_HOSTED_SHAPES === '1';
+/** Explicit scoped acceptance, independent of the full matrix and ordinary cross-platform test cadence. */
+const REVOKED_PROOF = process.env.PULLBOARD_REVOKED_PROOF === '1';
 
 /** How many unpaired cells one engine runs at once; each is its own browser context. */
 const PARALLEL = 4;
@@ -1039,3 +1010,144 @@ for (const boards of BOARDS) {
     assert.deepEqual(unexpected, [], 'every cell shows its board or names its blocker, or is a filed defect');
   });
 }
+
+
+test('a revoked browser sees the removed screen on a computer and a phone [H5,H17,N26]', {
+  timeout: 900_000, // budget: hang ceiling for the 72 scoped revoked cells, including real enrollment and both engines.
+  skip: !REVOKED_PROOF && 'scoped acceptance: set PULLBOARD_REVOKED_PROOF=1; both real engines remain required',
+}, async t => {
+  const available = hostedEngines();
+  for (const name of ['chromium', 'webkit']) {
+    assert.ok(available.find(engine => engine.name === name)?.available, name + ' is required for the revoked-cell proof');
+  }
+  const engines = [];
+  t.after(async () => {
+    const outcomes = await Promise.allSettled(engines.map(engine => engine.close()));
+    for (const outcome of outcomes) if (outcome.status === 'rejected') throw outcome.reason;
+  });
+  for (const name of ['chromium', 'webkit']) engines.push(await openEngine(name));
+  const visited = [];
+  for (const boards of ['healthy', 'oversize', 'approval', 'mixed']) await t.test(boards, async scope => {
+    const built = await buildBoards(scope, boards, engines);
+    scope.after(async () => {
+      const outcomes = await Promise.allSettled(Object.values(built.revoked).map(identity => identity.context.close()));
+      for (const outcome of outcomes) if (outcome.status === 'rejected') throw outcome.reason;
+    });
+    const boardIds = built.linked.map(({ id }) => id);
+    for (const engine of engines) {
+      const identity = built.revoked[engine.name];
+      for (const key of REVOKED_981_CELLS.filter(key => key.startsWith(engine.name + ':') && key.split('/')[3] === boards)) {
+        const cell = cells().find(cell => engine.name + ':' + cell.id === key);
+        assert.ok(cell, key + ' is an actual committed matrix cell');
+        const page = await identity.context.newPage({ route: built.front.route(identity.session, null),
+          phone: cell.where === 'phone', bootstrap: storedScript(cell.stored, { keys: null, boards: boardIds }) });
+        try {
+          await page.navigate(HOSTED + '/');
+          const removed = await page.poll(`(() => {
+            const seen = node => { if (!node) return false; const rect = node.getBoundingClientRect();
+              const style = getComputedStyle(node); return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden'; };
+            const panel = document.getElementById('relay-removed');
+            if (!seen(panel)) return false;
+            return { words: panel.innerText, competing: ['#relay-screen', '#relay-notice', '#local-note', '.first']
+              .filter(selector => seen(document.querySelector(selector))),
+              otherSignIns: [...document.querySelectorAll('a,button')].filter(node => !panel.contains(node) && seen(node) && /sign in with github/i.test(node.textContent)).length,
+              actions: [...panel.querySelectorAll('a,button')].filter(seen)
+              .map(node => ({ text: node.textContent.trim(), href: node.getAttribute('href') })) };
+          })()`, 8_000); // budget: existing matrix blocker-settle ceiling, not a performance assertion.
+          assert.ok(removed, key + ': visible removed screen required; ' + JSON.stringify(await page.evaluate(READ_SCREEN)));
+          assert.match(removed.words, /removed/iu, key);
+          assert.deepEqual(removed.competing, [], key + ': removed screen has priority over other blocker panels');
+          assert.equal(removed.otherSignIns, 0, key + ': no competing sign-in action outside the removed screen');
+          assert.deepEqual(removed.actions, [{ text: 'Sign in with GitHub', href: '/auth/github/start' }], key + ': exactly one actionable recovery step');
+          const screen = await page.evaluate(READ_SCREEN);
+          assert.equal(screen.board, false, key + ': revoked identity cannot display private board content');
+          visited.push(key);
+        } finally { await page.close(); }
+      }
+    }
+  });
+  assert.deepEqual(visited.sort(), [...REVOKED_981_CELLS].sort(), 'every one of the exact 72 revoked keys ran once');
+});
+
+
+/** Read private identity only inside this fixture; assertion messages never include its values. */
+async function savedIdentity(page) {
+  await page.evaluate(`(() => { delete window.__identityRead981;
+    const request = indexedDB.open('pullboard-relay-device-v1', 1);
+    request.onsuccess = () => { const db = request.result;
+      try { const read = db.transaction('keys').objectStore('keys').get('device');
+        read.onsuccess = () => { try { const device = read.result; window.__identityRead981 = { id: device?.deviceId,
+          extractable: device?.privateKey?.extractable, keys: localStorage.getItem('pullboard.relay.keys.v1') }; }
+          catch { window.__identityRead981 = { failed: true }; } finally { db.close(); } };
+        read.onerror = () => { db.close(); window.__identityRead981 = { failed: true }; };
+      } catch { db.close(); window.__identityRead981 = { failed: true }; } };
+    request.onerror = () => { window.__identityRead981 = { failed: true }; }; })()`);
+  try {
+    const identity = await page.poll('window.__identityRead981', 8_000); // budget: existing hosted blocker-settle ceiling.
+    assert.ok(identity && !identity.failed, 'fixture identity read completed');
+    return identity;
+  } finally { await page.evaluate('delete window.__identityRead981'); }
+}
+
+test('an expired saved pairing preserves a valid identity when its session probe succeeds or is unavailable [H5,H17,N26]', {
+  skip: !REVOKED_PROOF && 'scoped acceptance: set PULLBOARD_REVOKED_PROOF=1',
+}, async t => {
+  assert.ok(hostedEngines().find(engine => engine.name === 'chromium')?.available, 'real Chromium is required');
+  const box = await relayClientFixture(t);
+  box.env.PULLBOARD_MACHINE_HOME = box.env.PULLBOARD_HOME;
+  const front = await hostedFront(box.origin);
+  let engine;
+  let context;
+  t.after(async () => {
+    const outcomes = await Promise.allSettled([context?.close(), engine?.close(), front.close()]);
+    for (const outcome of outcomes) if (outcome.status === 'rejected') throw outcome.reason;
+  });
+  engine = await openEngine('chromium');
+  context = await engine.newContext();
+  const session = await freshSession(box);
+  let enrolled;
+  let first;
+  try {
+    await relayOnAll(box, async link => {
+      first = await context.newPage({ route: front.route(session, null), phone: true });
+      await first.navigate(link);
+    });
+    assert.ok(await first.poll(`Boolean(document.querySelector('#chain')?.textContent.includes('private cleanup fixture item')
+      && Object.keys(JSON.parse(localStorage.getItem('pullboard.relay.keys.v1') || '{}')).length)`, 8_000), // budget: existing hosted blocker-settle ceiling.
+    'the actual enrolled phone renders its seeded board and saves local keys');
+    enrolled = await savedIdentity(first);
+    assert.ok(enrolled.id, 'real enrollment saved a device identity');
+    assert.equal(enrolled.extractable, false, 'real enrollment saved a nonextractable private key');
+    assert.ok(enrolled.keys, 'real enrollment saved board keys');
+  } finally { if (first) await first.close(); }
+  for (const unavailable of [false, true]) await t.test(unavailable ? 'unavailable probe' : 'valid session', async () => {
+    let probes = 0;
+    const route = front.route(session, null);
+    const page = await context.newPage({ phone: true, bootstrap: storedScript('stale-pairing'), route: async request => {
+      if (new URL(request.url).pathname === '/api/v1/devices/session') {
+        probes += 1;
+        if (unavailable) return { kind: 'fulfill', status: 503, headers: { 'content-type': 'application/json' },
+          body: Buffer.from(JSON.stringify({ version: 1, error: { code: 'RELAY_UNAVAILABLE', message: 'fixture session probe unavailable' } })) };
+      }
+      return route(request);
+    } });
+    try {
+      await page.navigate(HOSTED + '/');
+      const failure = await page.poll(`(() => { const node = document.querySelector('#relay-screen .relay-live span');
+        return node?.textContent.includes('fresh phone pairing link') && node.textContent; })()`, 8_000); // budget: existing hosted blocker-settle ceiling.
+      assert.ok(failure, 'the original expired pairing guidance remains observable on the phone');
+      assert.match(failure, /pullboard relay on --all/u);
+      assert.doesNotMatch(failure, /fixture session probe unavailable/u, 'probe errors do not replace the original pairing refusal');
+      assert.equal(probes, 1, 'only the cause-specific session probe ran');
+      const screen = await page.evaluate(READ_SCREEN);
+      assert.doesNotMatch(screen.words, /browser was removed/iu, 'a valid or unavailable session is not a revocation');
+      assert.equal(await page.evaluate("document.getElementById('relay-removed') !== null"), false);
+      assert.equal(await page.evaluate("sessionStorage.getItem('pullboard.relay.device-pair.v1')"), null, 'the expired pending code is discarded normally');
+      const retained = await savedIdentity(page);
+      assert.ok(retained.id === enrolled.id, 'the existing device identity is retained');
+      assert.equal(retained.extractable, false, 'the existing private key remains nonextractable');
+      assert.ok(retained.keys === enrolled.keys, 'unrelated valid board keys are retained');
+      assert.ok(enrolledDevices(box).includes(enrolled.id), 'the real enrolled device remains active');
+    } finally { await page.close(); }
+  });
+});

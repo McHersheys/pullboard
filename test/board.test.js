@@ -19,7 +19,7 @@ import { main } from '../src/cli.js';
 import { briefFiles } from '../src/brief.js';
 import { JSON_SHAPES } from '../src/json.js';
 import { AUTO_ESCALATE_ENGINE, ENGINE_VERSION, STRONG_REJECTION_NOTICE_ENGINE } from '../src/machine.js';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import { unpackRelease } from './release-archive.js';
 
 const HOUR = 3_600_000;
@@ -1250,6 +1250,8 @@ test('[O3] declared families travel from join through submit and verdict, and ab
   writeFileSync(join(repo, 'SPEC.md'), '# Family test\n\n## G · Goals\n- G1 [approved, must] Families are recorded. | gate: true\n');
   git(repo, 'add', '-A');
   git(repo, 'commit', '-q', '-m', 'chore: initialize family test');
+  const initialBoard = await runMain(repo, ['status', '--json']);
+  assert.equal(initialBoard.code, 0, initialBoard.stderr || initialBoard.stdout);
 
   const savedWorktreeModel = process.env.PULLBOARD_MODEL;
   delete process.env.PULLBOARD_MODEL;
@@ -1454,4 +1456,17 @@ test('[O2,O3] family policy controls review order and refuses unknown or matchin
     agentId: 'api-1', decision: 'ACCEPT', head: SHA_A, digest: 'digest:Page', policy: 'any', familyPolicy: 'require',
     note: 'checked unknown verifier family',
   }), /O2_FAMILY_MATCH/);
+});
+
+
+// The helper copies real candidate source into an isolated Git repository and linked worktree.
+test("a branch worktree never changes the shared board's schema or triggers [A5,A6,C7]", async t => {
+  const { assertBranchWorktreeBoardIsolation } = await import('./branch-worktree-isolation.js');
+  await assertBranchWorktreeBoardIsolation(t, fileURLToPath(new URL('..', import.meta.url)));
+});
+
+
+test('direct branch board opens preserve shared DDL while private databases still migrate [A5,A6,C7]', async t => {
+  const { assertDirectOpenBoardIsolation } = await import('./direct-open-board-regression.js');
+  assertDirectOpenBoardIsolation(t, fileURLToPath(new URL('..', import.meta.url)));
 });

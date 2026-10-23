@@ -101,10 +101,18 @@ function seatReceipt(body, who) {
 /** Give a snapshot its coverage cursor; clients unseal it and replay the following sealed events. */
 function state(row) { return { sequence: row.sequence, receivedAt: row.receivedAt, sender: row.sender, sealed: row.bytes.toString('base64url') }; }
 
-/** Project a freshly authenticated credential to public sender metadata, never taking body fields. */
+/**
+ * Project a freshly authenticated credential to public sender metadata, never taking body fields. Every record names
+ * the GitHub login behind it [E3]; on a board that names approvers, a person's record also says whether they are one,
+ * and only an approver unlinks the board or replaces its snapshot [E4,E20].
+ */
 function sender(who, personOnly = false) {
   if (personOnly && who.kind !== 'session' && !(personOnly === 'snapshot' && who.kind === 'machine')) throw new Refused('HUMAN_REQUIRED', 'approve this person action from the paired phone');
+  if (personOnly && who.approver === false) throw new Refused('NOT_APPROVER', `${who.user.login} is not an approver of this board; only an approver unlinks it or replaces its snapshot`);
   return { kind: who.kind === 'session' ? 'person' : who.kind === 'machine' ? 'machine' : 'agent', userId: who.user.id,
+    ...(typeof who.user.login === 'string' ? { login: who.user.login } : {}), ...(who.kind === 'session' && typeof who.approver === 'boolean' ? { approver: who.approver } : {}),
+    // The engine the sender declared: a seal no replica opens, from an engine no newer than the replica's, is junk to set aside [E20].
+    ...(Number.isSafeInteger(who.engineVersion) && who.engineVersion > 0 ? { engine: who.engineVersion } : {}),
     ...(who.kind === 'board' ? { agent: who.agent } : who.kind === 'machine' ? { machine: who.machine } : {}),
     ...(personOnly === 'snapshot' ? {} : { policy: VERIFIER_STANDING_ENGINE,
       ...(who.root === true ? { root: true, ...(who.lineage ? { lineage: who.lineage } : {}) } : {}) }) };
@@ -143,7 +151,9 @@ export function createRelayHandler({ directory, auth, pollMs = 200, publicOrigin
   async function authorized(token, id, write = false) {
     const who = deviceStore.authorizeSession(await auth.authenticate(token, { board: identity(id), write }));
     if (retention.expire(id)) throw new Refused('NO_BOARD', 'this inactive link expired; link and upload the local board again');
-    return who;
+    // Whether this person is one of the board's approvers, or undefined for a board that names none [E4].
+    const approver = auth.isApprover?.(identity(id), who);
+    return typeof approver === 'boolean' ? { ...who, approver } : who;
   }
 
   const deviceStore = createDeviceStore({ directory: root, now });
@@ -258,7 +268,7 @@ export function createRelayHandler({ directory, auth, pollMs = 200, publicOrigin
     const bytes = sealed(body, kind === 'move');
     if (!Number.isSafeInteger(body.sequence) || body.sequence < 1) throw new Refused('BAD_SEQUENCE', 'seal this move for the next positive sequence after the latest committed prefix');
     const authenticated = await authorized(who.credential, board.id, true);
-    const principal = sender(authenticated);
+    const principal = sender({ ...authenticated, engineVersion: who.engineVersion });
     if (body.registration === undefined) {
       return withJournal(board.id, (journal) => {
         const row = body.sequence <= journal.latest() ? journal.append(body.sequence, bytes, kind, principal)
@@ -340,6 +350,17 @@ export function createRelayHandler({ directory, auth, pollMs = 200, publicOrigin
       let url;
       try { url = new URL(req.url ?? '/', 'http://127.0.0.1'); }
       catch { throw new Refused('BAD_REQUEST', 'use a valid path under /api/v1/boards'); }
+      const approvers = /^\/api\/v1\/boards\/([^/]+)\/approvers$/.exec(url.pathname);
+      if (approvers && req.method === 'GET') {
+        const id = identity(approvers[1]);
+        await authorizedRequest(req, id);
+        return apiJson(res, 200, { board: id, approvers: auth.boardApprovers(id) });
+      }
+      if (approvers && req.method === 'PUT') {
+        const id = identity(approvers[1]);
+        const body = await readApiBody(req, { maxBytes: 8_192 });
+        return apiJson(res, 200, await auth.setBoardApprovers(credential(req, origin, true), id, body.approvers));
+      }
       const snapshot = /^\/api\/v1\/boards\/([^/]+)\/state$/.exec(url.pathname);
       const deletion = /^\/api\/v1\/boards\/([^/]+)$/.exec(url.pathname);
       if (req.method === 'GET' && snapshot) {
