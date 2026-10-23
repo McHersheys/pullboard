@@ -4,11 +4,14 @@ import {
   writeFileSync,
 } from 'node:fs';
 
-/** Read the same name-pattern spellings the ordinary runner accepts. */
-export function testSelectionPatterns(args) {
+/** Read name-pattern options, skipping values with the runner's own Node option-arity parser. */
+export function testSelectionPatterns(args, takesValue) {
   const patterns = [];
   for (let index = 0; index < args.length && args[index] !== '--'; index++) {
-    if (!/^--test[-_]name[-_]pattern(?:=|$)/u.test(args[index])) continue;
+    if (!/^--test[-_]name[-_]pattern(?:=|$)/u.test(args[index])) {
+      if (args[index].startsWith('-') && !args[index].includes('=') && takesValue(args[index])) index += 1;
+      continue;
+    }
     const value = args[index].includes('=') ? args[index].slice(args[index].indexOf('=') + 1) : args[++index];
     if (value !== undefined) patterns.push(value);
   }
