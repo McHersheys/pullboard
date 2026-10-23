@@ -73,6 +73,7 @@ import {
 import { LOCAL_LANDING_ENGINE } from './land-engine.js';
 import { SPEC_APPROVAL_ENGINE } from './spec-approval-engine.js';
 import { Refused } from './refused.js';
+import { itemAuthorProblem } from './item-authors.js';
 import { refuseMaskedExit } from './check-mask.js';
 import {
   ROUTES,
@@ -88,7 +89,6 @@ import {
   routeOf,
   saveAgentModel,
   seatLineage,
-  standingProblem,
 } from './seats.js';
 import {
   newRigorNotices,
@@ -1470,8 +1470,7 @@ export function reviewOffer(board, { agentId, lane, policy = 'any', familyPolicy
 function reviewerChecks(board, { agentId, policy, familyPolicy = 'off' }) {
   const family = board.db.prepare('SELECT agent_family FROM agent WHERE agent_id = ?').get(agentId)?.agent_family ?? null;
   return {
-    notBuilder: (found) => (found.item_built_by === agentId ? new Refused('SELF_VERIFY', 'the builder never verifies its own work; another agent must')
-      : standingProblem(board, agentId, found.item_built_by, found.item_id)),
+    notBuilder: (found) => itemAuthorProblem(board, found, agentId),
     routeAllows: (found) => {
       const route = routeOf(board, agentId);
       return canTake(route, found.item_route) ? null : new Refused('ROUTE', `item #${found.item_id} needs a ${found.item_route} verifier; you joined on the ${route} route`);
@@ -2313,8 +2312,8 @@ export function nextFor(board, { agentId, lane, verify = false, policy = 'any', 
     const family = board.db.prepare('SELECT agent_family FROM agent WHERE agent_id = ?').get(agentId)?.agent_family ?? null;
     const hasDifferentFamily = (entry) => Boolean(family && entry.item_builder_family && family !== entry.item_builder_family);
     const unrelated = items.filter((entry) => entry.item_status === 'submitted' && entry.item_built_by !== agentId && !skipIds.includes(entry.item_id));
-    const standingRefusal = unrelated.map((entry) => standingProblem(board, agentId, entry.item_built_by, entry.item_id)).find(Boolean);
-    let reviewable = unrelated.filter((entry) => !standingProblem(board, agentId, entry.item_built_by, entry.item_id));
+    const standingRefusal = unrelated.map((entry) => itemAuthorProblem(board, entry, agentId)).find(Boolean);
+    let reviewable = unrelated.filter((entry) => !itemAuthorProblem(board, entry, agentId));
     if (policy === COORDINATOR && agentId !== COORDINATOR) reviewable = reviewable.filter((entry) => entry.item_lane === COORDINATOR);
     if (familyPolicy === 'require') reviewable = reviewable.filter(hasDifferentFamily);
     if (familyPolicy === 'prefer') reviewable.sort((first, second) => Number(hasDifferentFamily(second)) - Number(hasDifferentFamily(first)));
