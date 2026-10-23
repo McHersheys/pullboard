@@ -229,8 +229,9 @@ test('[A5] board opens upgrade older event logs and refuse future event logs bef
   const release = join(box.dir, 'installed-release');
   mkdirSync(release);
   for (const name of ['bin', 'src', 'package.json']) cpSync(resolve(import.meta.dirname, '..', name), join(release, name), { recursive: true });
-  const older = spawnSync(process.execPath, [join(release, 'bin/pullboard.js'), 'status', '--json'], { cwd: box.repo, env: box.env, encoding: 'utf8' });
-  assert.equal(older.status, 0, older.stderr);
+  // Only a command that writes upgrades a board; a read never does (#1047).
+  const older = spawnSync(process.execPath, [join(release, 'bin/pullboard.js'), 'shout', 'all', 'board upgrade', '--json'], { cwd: box.repo, env: box.env, encoding: 'utf8' });
+  assert.equal(older.status, 0, older.stderr + older.stdout);
   assert.equal(readEventLogVersion(file), String(EVENT_LOG_VERSION), 'an installed release opens an older event log and upgrades its marker in place');
 });
 
@@ -377,7 +378,8 @@ test('[A5, A6] a future-schema worktree cannot migrate the shared board; main ca
   const olderInstalled = new DatabaseSync(dbFile);
   olderInstalled.exec('ALTER TABLE item DROP COLUMN item_files; PRAGMA user_version = 1');
   olderInstalled.close();
-  const installedRun = spawnSync(process.execPath, [join(installed, 'bin/pullboard.js'), 'status', '--json'], {
+  // Only a command that writes upgrades a board; a read never does (#1047).
+  const installedRun = spawnSync(process.execPath, [join(installed, 'bin/pullboard.js'), 'shout', 'app', 'board upgrade', '--json'], {
     cwd: repo, env: box.env, encoding: 'utf8',
   });
   assert.equal(installedRun.status, 0, installedRun.stderr + installedRun.stdout);
@@ -390,7 +392,7 @@ test('[A5, A6] a future-schema worktree cannot migrate the shared board; main ca
   const older = new DatabaseSync(dbFile);
   older.exec('ALTER TABLE item DROP COLUMN item_files; PRAGMA user_version = 1');
   older.close();
-  const upgraded = runFixture(repo, 'status', '--json');
+  const upgraded = runFixture(repo, 'shout', 'app', 'board upgrade', '--json');
   assert.equal(upgraded.status, 0, upgraded.stderr + upgraded.stdout);
   const migrated = new DatabaseSync(dbFile, { readOnly: true });
   assert.equal(migrated.prepare('PRAGMA user_version').get().user_version, 2);
@@ -451,7 +453,7 @@ test('[A5, A6] a future-schema worktree cannot migrate the shared board; main ca
   const olderForHook = new DatabaseSync(dbFile);
   olderForHook.exec('ALTER TABLE item DROP COLUMN item_files; PRAGMA user_version = 1');
   olderForHook.close();
-  const mainFromHook = spawnSync(process.execPath, [join(repo, 'bin/pullboard.js'), 'status', '--json'], {
+  const mainFromHook = spawnSync(process.execPath, [join(repo, 'bin/pullboard.js'), 'shout', 'app', 'board upgrade', '--json'], {
     cwd: linked, env: inheritedLinked, encoding: 'utf8',
   });
   assert.equal(mainFromHook.status, 0, mainFromHook.stderr + mainFromHook.stdout);

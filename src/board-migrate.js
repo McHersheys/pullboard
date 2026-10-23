@@ -102,6 +102,11 @@ export function recordSchemaStamp(db, digest) {
   db.exec(`PRAGMA application_id = ${schemaStamp(db, digest)}`);
 }
 
+/** True when a read met a board older than this code: a column or table it does not have yet. */
+export function schemaMissing(error) {
+  return /no such (?:column|table)/u.test(error?.message ?? '');
+}
+
 /** True when SQLite refused a write because the board was opened read-only. */
 export function writeRefused(error) {
   return (error?.errcode & 0xff) === 8;

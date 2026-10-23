@@ -1,5 +1,5 @@
 /** @pullboard-test-input source-tree */
-/** @pullboard-test-loads src/cli.js src/board.js src/board-migrate.js src/commands/status.js src/commands/show.js */
+/** @pullboard-test-loads src/cli.js src/board.js src/board-migrate.js src/board-read.js src/commands/status.js src/commands/show.js */
 /** A read command opens the board read-only, so a writer holding the lock never stalls it [C7]. */
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
@@ -97,10 +97,18 @@ test('a read answers while a writer holds the lock [C7]', async (t) => {
   db.close();
   const release = join(box.dir, 'release');
   for (const path of ['src', 'bin', 'package.json']) cpSync(resolve(import.meta.dirname, '..', path), join(release, path), { recursive: true });
-  const write = runFixtureChild(process.execPath, [join(release, 'bin', 'pullboard.js'), 'add', 'web', 'Footer', '--specs', 'G1', '--criterion', 'renders'],
-    { cwd: box.repo, env: box.env, encoding: 'utf8' });
+  const released = (...argv) => runFixtureChild(process.execPath, [join(release, 'bin', 'pullboard.js'), ...argv], { cwd: box.repo, env: box.env, encoding: 'utf8' });
+  /** The board's PRAGMA user_version, read without touching it. */
+  const version = () => {
+    const board = store.openBoardReadOnly(file);
+    try { return board.prepare('PRAGMA user_version').get().user_version; } finally { board.close(); }
+  };
+  // A read on the older board answers as it is and leaves it older, even from code that may migrate.
+  const read = released('status');
+  assert.equal(read.status, 0, read.failure ?? read.stderr);
+  assert.match(read.stdout, /board: 1 open/u);
+  assert.equal(version(), 1, 'status never migrates the board');
+  const write = released('add', 'web', 'Footer', '--specs', 'G1', '--criterion', 'renders');
   assert.equal(write.status, 0, write.failure ?? write.stderr);
-  const migrated = store.openBoardReadOnly(file);
-  try { assert.equal(migrated.prepare('PRAGMA user_version').get().user_version, store.SCHEMA_VERSION); }
-  finally { migrated.close(); }
+  assert.equal(version(), store.SCHEMA_VERSION, 'the next write command migrates it');
 });

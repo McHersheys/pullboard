@@ -36,7 +36,7 @@ import {
   recordSchemaStamp,
   schemaDigest,
 } from './board-migrate.js';
-export { writeRefused } from './board-migrate.js';
+export { schemaMissing, writeRefused } from './board-migrate.js';
 import {
   briefFiles,
   briefSections,
@@ -257,17 +257,15 @@ const SCHEMA = `
 const SCHEMA_DIGEST = schemaDigest(SCHEMA, EVENT_LOG_VERSION);
 
 /**
- * Open the board for a command that only reads: read-only, with no write lock and no migration, so
- * a writer holding the lock never stalls it (#1047). Null when there is no board yet or it needs a
- * migration, which only a write open runs.
+ * Open an existing board for a command that only reads: read-only, with no write lock and no
+ * migration, so a writer holding the lock never stalls it (#1047). `current` says whether this
+ * code's migration has run on it; only a write open migrates. Null when there is no board yet.
  */
-export function openCurrentBoardReadOnly(file, clock = systemClock) {
+export function openBoardForRead(file, clock = systemClock) {
   if (file === ':memory:' || !existsSync(file)) return null;
   const db = openBoardReadOnly(file);
-  let current = false;
-  try { current = boardIsCurrent(db, SCHEMA_DIGEST, SCHEMA_VERSION); }
-  finally { if (!current) db.close(); }
-  return current ? { db, clock, readOnly: true } : null;
+  try { readEventLogVersion(db); return { db, clock, readOnly: true, current: boardIsCurrent(db, SCHEMA_DIGEST, SCHEMA_VERSION) }; }
+  catch (error) { db.close(); throw error; }
 }
 
 /** Open an existing board without migrations, waiting for the same locks as openBoard. */
