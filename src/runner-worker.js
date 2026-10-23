@@ -241,7 +241,8 @@ function childEnvironment(home, temporary, machineHomePath = '', nodeOptions = '
     GIT_OPTIONAL_LOCKS: '0',
     NPM_CONFIG_USERCONFIG: join(home, 'npm-userconfig'),
     NPM_CONFIG_GLOBALCONFIG: join(home, 'npm-globalconfig'),
-    ...(nodeOptions ? { NODE_OPTIONS: nodeOptions } : {}),
+    // The spawn-journal preload is declared so a test's NODE_OPTIONS classifier knows it is the runner's own.
+    ...(nodeOptions ? { NODE_OPTIONS: nodeOptions, PULLBOARD_RUNNER_PRELOAD: nodeOptions } : {}),
     ...(machineHomePath ? { PULLBOARD_MACHINE_HOME: machineHomePath } : {}),
   };
 }
