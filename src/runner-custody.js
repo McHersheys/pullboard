@@ -48,7 +48,37 @@ export function processIdentity(row) {
   return { ...row, birth, exact };
 }
 
-/** Make a private Node preload that records only child identity and a one-way command digest. */
+// Print a process's kernel start time to the microsecond through sysctl KERN_PROC_PID (kinfo_proc opens with it).
+const PERL_START = `my $mib = pack('l4', 1, 14, 1, $ARGV[0]); my $buf = "\\0" x 1024; my $len = pack('Q', length $buf);
+exit 1 if syscall(202, $mib, 4, $buf, $len, 0, 0) != 0 || unpack('Q', $len) < 16;
+my ($sec, $usec) = unpack('q l', substr($buf, 0, 16)); printf("%d.%06d\\n", $sec, $usec);`;
+
+/**
+ * A process's exact kernel start time, or '' when it cannot be read: procfs start ticks on Linux, microseconds through
+ * sysctl on macOS. With its pid it names one process, so a reused pid never matches (#1063).
+ *
+ * @param {number} pid
+ * @returns {string}
+ */
+export function exactStart(pid) {
+  if (!Number.isSafeInteger(pid) || pid < 1) return '';
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const close = stat.lastIndexOf(')');
+    const field = stat.slice(close + 2).trim().split(/\s+/u)[19];
+    return close > 0 && /^\d+$/u.test(field ?? '') ? `proc:${field}` : '';
+  } catch (error) {
+    if (process.platform !== 'darwin' || error.code !== 'ENOENT') return '';
+  }
+  const result = spawnSync('/usr/bin/perl', ['-e', PERL_START, String(pid)], { encoding: 'utf8', timeout: 2_000, env: { PATH: '/usr/bin:/bin', LANG: 'C' } });
+  const text = typeof result.stdout === 'string' ? result.stdout.trim() : '';
+  return !result.error && result.status === 0 && /^\d+\.\d{6}$/u.test(text) ? `mac:${text}` : '';
+}
+
+/**
+ * Make a private Node preload that records only child identity and a one-way command digest. Each spawn receipt also
+ * carries the child's exact start, read in the spawn tick: the child is not yet reaped, so its pid is still its own.
+ */
 function writeChildJournalPreload(directory) {
   const journalDirectory = join(directory, 'child-journal');
   mkdirSync(journalDirectory, { mode: 0o700 });
@@ -58,6 +88,7 @@ import diagnostics from 'node:diagnostics_channel';
 import { closeSync, openSync, statSync, writeSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { exactStart } from ${JSON.stringify(import.meta.url)};
 const directory = ${JSON.stringify(journalDirectory)};
 const overflowPath = ${JSON.stringify(overflowPath)};
 const instance = randomUUID();
@@ -87,23 +118,32 @@ function record(value) {
 record({ type: 'boot', pid: process.pid, ppid: process.ppid, instance });
 const channel = diagnostics.channel('child_process');
 const seen = new WeakSet();
+// The spawn event comes a tick later; a parent that exits in the same tick still owes those children a receipt.
+const unrecorded = new Map();
 channel.subscribe(message => {
   try {
     const child = message?.process;
     if (!child || typeof child.once !== 'function' || seen.has(child)) return;
     seen.add(child);
     const writeReceipt = () => {
-      if (!Number.isSafeInteger(child.pid) || child.pid < 1) return;
+      if (!unrecorded.delete(child) || !Number.isSafeInteger(child.pid) || child.pid < 1) return;
       const commandSha256 = createHash('sha256').update(JSON.stringify({ command: child.spawnfile ?? '', args: child.spawnargs ?? [] })).digest('hex');
-      record({ type: 'spawn', pid: child.pid, ppid: process.pid, instance, commandSha256 });
+      const start = exactStart(child.pid);
+      record({ type: 'spawn', pid: child.pid, ppid: process.pid, instance, commandSha256, ...(start ? { start } : {}) });
     };
+    unrecorded.set(child, writeReceipt);
+    child.once('error', () => unrecorded.delete(child));
     if (Number.isSafeInteger(child.pid)) writeReceipt();
     else child.once('spawn', writeReceipt);
   } catch {
     try { writeFileSync(overflowPath, 'child receipt could not be recorded\\n', { flag: 'wx', mode: 0o600 }); } catch {}
   }
 });
-process.once('exit', () => { try { closeSync(fd); } catch {} });
+process.once('exit', () => {
+  // Still unreaped while this process exits, so each pid is still its child's own.
+  for (const writeReceipt of [...unrecorded.values()]) writeReceipt();
+  try { closeSync(fd); } catch {}
+});
 `;
   const preload = join(directory, 'child-spawn-preload.mjs');
   writeFileSync(preload, source, { mode: 0o600, flag: 'wx' });
@@ -116,10 +156,11 @@ process.once('exit', () => { try { closeSync(fd); } catch {} });
  *
  * @param {string} directory - The job's private run directory, where the child journal lives.
  * @param {{ census?: () => Map<number, object>|null, kill?: (pid: number, signal: string|number) => void, selfPid?: number,
- *   tick?: () => void, timedOut?: () => boolean, warn?: (reason: string) => void, intervalMs?: number }} [hooks]
+ *   tick?: () => void, timedOut?: () => boolean, warn?: (reason: string) => void, intervalMs?: number,
+ *   startOf?: (pid: number) => string }} [hooks]
  */
 export function createDescendantTracker(directory, { census: processCensusHook = processCensus, kill = (pid, signal) => process.kill(pid, signal),
-  selfPid = process.pid, tick = () => {}, timedOut = () => false, warn = () => {}, intervalMs = 250 } = {}) {
+  selfPid = process.pid, tick = () => {}, timedOut = () => false, warn = () => {}, intervalMs = 250, startOf = exactStart } = {}) {
   const initial = processCensusHook();
   if (!initial) throw new Error('initial process identity census failed');
   const baseline = new Map([...initial].map(([pid, row]) => [pid, processIdentity(row)]));
@@ -219,7 +260,8 @@ export function createDescendantTracker(directory, { census: processCensusHook =
           instancePids.set(record.instance, record.pid);
         } else if (record.type === 'spawn' && Number.isSafeInteger(record.pid) && record.pid > 0
           && Number.isSafeInteger(record.ppid) && record.ppid > 0
-          && typeof record.instance === 'string' && /^[a-f0-9]{64}$/u.test(record.commandSha256)) {
+          && typeof record.instance === 'string' && /^[a-f0-9]{64}$/u.test(record.commandSha256)
+          && (record.start === undefined || /^(?:proc|mac):\d+(?:\.\d{6})?$/u.test(record.start))) {
           const childEvents = eventsByChild.get(record.pid) ?? [];
           eventCount += 1;
           childEvents.push({ ...record, eventId: `${name}:${eventCount}` });
@@ -290,6 +332,16 @@ export function createDescendantTracker(directory, { census: processCensusHook =
           if (retired.has(`${row.pid}:${row.birth}`)) { markUncertain('a retired process identity reappeared'); continue; }
           if (prior && prior.birth === row.birth) { consumedEvents.add(event.eventId); ownedPids.add(row.pid); continue; }
           if (!prior && baseline.get(row.pid)?.birth === row.birth) { consumedEvents.add(event.eventId); continue; }
+          // A receipt names its child by pid and exact start, read before the child could be reaped. The same pid with
+          // the same exact start is that child, even once its parent exited unseen; a reused pid starts later (#1063).
+          if (event.start && (row.ppid !== event.ppid || !ownedPids.has(event.ppid)) && startOf(row.pid) === event.start) {
+            if (row.pgid === row.pid) detachedGroups.set(row.pid, row.birth);
+            known.set(row.pid, { ...row, commandSha256: event.commandSha256, root: false, group: row.pgid });
+            consumedEvents.add(event.eventId);
+            pendingIdentities.delete(row.pid);
+            ownedPids.add(row.pid);
+            continue;
+          }
           // A spawn receipt must be observed while its exact parent instance still owns it.
           // A same-numbered PID first seen after reparenting is ambiguous and never adopted.
           if (row.ppid !== event.ppid) {
@@ -467,7 +519,9 @@ export function createDescendantTracker(directory, { census: processCensusHook =
       }
       if (censusFailure) { await new Promise(resolvePause => setTimeout(resolvePause, 250)); continue; }
       const live = liveDescendants();
-      if (!live.length && !pendingIdentities.size && (!uncertain || timedOut())) return;
+      // Once the budget is spent and reported, an unidentified process is left alone, never waited on forever: the
+      // controller already reruns the work locally, and a worker left waiting is itself a process left behind (#1063).
+      if (!live.length && ((!pendingIdentities.size && !uncertain) || timedOut())) return;
       if ((pendingIdentities.size || uncertain) && !warned) {
         warn(reason || 'unresolved process identity remains live');
         warned = true;
@@ -532,7 +586,7 @@ export function createDescendantTracker(directory, { census: processCensusHook =
           const knownRoot = known.get(pid);
           return row && knownRoot?.birth === row.birth && !/^Z/u.test(row.state);
         });
-        if (!liveRoots && !liveDescendants().length && !pendingIdentities.size) return;
+        if (!liveRoots && !liveDescendants().length && (!pendingIdentities.size || timedOut())) return;
       }
       if (!warned) { warn(reason || 'owned process identity remains live'); warned = true; }
       await new Promise(resolvePause => setTimeout(resolvePause, 1_000));
