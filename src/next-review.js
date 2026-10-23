@@ -5,6 +5,7 @@
 import * as store from './board.js';
 import { Refused } from './refused.js';
 import { refuseSelfSession } from './item-sessions.js';
+import { itemAuthors } from './item-authors.js';
 import { shownPath } from './trunk-conflict.js';
 
 /**
@@ -48,7 +49,7 @@ export async function returnUnmergeable(root, board, me, { ordered, trunkMerge }
  */
 export function ownSessionReviews(info, board) {
   return store.listItems(board).filter((item) => item.item_status === 'submitted').flatMap((item) => {
-    try { refuseSelfSession(info, item); return []; }
+    try { refuseSelfSession(info, item, undefined, itemAuthors(board, item)); return []; }
     catch (error) { if (error instanceof Refused && error.code === 'SELF_SESSION_VERIFY') return [item.item_id]; throw error; }
   });
 }
@@ -71,7 +72,8 @@ export async function nextReview(ctx, board, me, values, { ordered, idArg, trunk
   const reservation = { agentId: me.id, leaseMs: ctx.config.reviewLeaseMs, policy: ctx.config.verify.policy, familyPolicy: ctx.config.verify.family };
   if (values.verifyId !== undefined) {
     const id = idArg(values.verifyId, 'an item id after --verify');
-    refuseSelfSession(ctx.info, store.getItem(board, id));
+    const item = store.getItem(board, id);
+    refuseSelfSession(ctx.info, item, undefined, itemAuthors(board, item));
     return { item: await ordered('reserveReview', [id, reservation]), reasons: [] };
   }
   return await ordered('reserveNextReview', [{ agentId: me.id, lane: me.lane, leaseMs: ctx.config.reviewLeaseMs, policy: ctx.config.verify.policy,

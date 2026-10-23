@@ -76,9 +76,9 @@ function makeFixture(t) {
   /** Commit one file's new text. */
   const change = (path, text) => { writeFileSync(join(root, path), text); git('add', '-f', '--', path); git('commit', '-q', '-m', `change ${path}`, '--', path); };
   /** Run the whole suite through the real runner; return its status, output and the files that ran. */
-  const run = () => {
+  const run = (files = []) => {
     writeFileSync(capture, '');
-    const result = runFixtureChild(process.execPath, ['bin/run-tests.js'], { cwd: root, env, encoding: 'utf8', timeout: 25_000 });
+    const result = runFixtureChild(process.execPath, ['bin/run-tests.js', ...files], { cwd: root, env, encoding: 'utf8', timeout: 25_000 });
     const ran = readFileSync(capture, 'utf8').trim().split('\n').filter(Boolean).sort();
     return { status: result.status, output: `${result.stdout}\n${result.stderr}`, ran, context: result.context };
   };
@@ -141,6 +141,36 @@ test('an unchanged closure reuses its green result and a changed import reruns i
   assert.deepEqual(sixth.ran, ['d', 'e'], sixth.output);
   assert.equal(sixth.status, 1, sixth.output);
   assert.match(sixth.output, /d found a forbidden word/u, 'the fresh scan finds the word the stored green never saw');
+});
+
+test('a reused result prints the same TAP as a fresh run [C7]', (t) => {
+  const fixture = makeFixture(t);
+  fixture.change('test/b.test.js', `${fixtureTest('b', 'b')}
+test('skipped # proof', { skip: 'not selected by the fixture' }, () => {});
+test('nested proof', async t => { await t.test('child proof', () => {}); });
+`);
+  const first = fixture.run(['test/b.test.js']);
+  assert.equal(first.status, 0, first.output);
+  assert.deepEqual(first.ran, ['b']);
+  const second = fixture.run(['test/b.test.js']);
+  assert.equal(second.status, 0, second.output);
+  assert.deepEqual(second.ran, [], 'the receipt is replayed, not another execution');
+  assert.match(second.output, /^# reused [0-9a-f]{64} from focused [0-9a-f]{40} \(test\/b\.test\.js\)$/mu);
+  /** Extract only the exact proof lines the criterion promises to retain. */
+  const proof = output => output.split('\n').filter(line => /^\s*ok \d+(?: |$)|^# (?:pass|fail|skipped) \d+$/u.test(line));
+  assert.deepEqual(proof(second.output), proof(first.output));
+  assert.match(second.output, /^# pass 3$/mu);
+  assert.match(second.output, /^# fail 0$/mu);
+  assert.match(second.output, /^# skipped 1$/mu);
+  const entries = readdirSync(join(fixture.store, 'green'));
+  assert.equal(entries.length, 1);
+  const path = join(fixture.store, 'green', entries[0]);
+  const legacy = JSON.parse(readFileSync(path, 'utf8'));
+  delete legacy.tap;
+  writeFileSync(path, JSON.stringify(legacy));
+  const oldEntry = fixture.run(['test/b.test.js']);
+  assert.equal(oldEntry.status, 0, oldEntry.output);
+  assert.deepEqual(oldEntry.ran, ['b'], 'a pre-upgrade status-only entry has no replayable proof and runs fresh');
 });
 
 test('a test that reads its own checkout history is never keyed [C7]', async (t) => {
