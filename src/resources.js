@@ -665,6 +665,11 @@ function pause(ms) { return new Promise((resolvePromise) => setTimeout(resolvePr
  */
 export async function takeResource(options) {
   const { name, capacity, scope = 'machine', root = process.cwd(), allowIdleCapacityUpdate = false } = options;
+  if (scope === 'board' && name === 'landing' && capacity === 1 && options.board && typeof options.write === 'function') {
+    // Ordinary machine/repo users must initialize without importing the board/gate cycle.
+    const { takeLandingResource } = await import('./landing-resource.js');
+    return takeLandingResource(options);
+  }
   if (typeof name !== 'string' || !name.trim() || name.trim() !== name) throw new Refused('BAD_RESOURCE_NAME', 'resource name must be nonempty trimmed text');
   if (name.startsWith('runner:')) throw new Refused('RESERVED_RUNNER_RESOURCE', 'runner resource rows are managed by the machine gate; request name "gate"');
   if (!Number.isSafeInteger(capacity) || capacity < 1) throw new Refused('BAD_RESOURCE_CAPACITY', 'resource capacity must be a positive integer');

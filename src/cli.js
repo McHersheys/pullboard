@@ -982,7 +982,7 @@ async function bindCheckoutSession(io, positionals, values) {
     CHECKOUT_BOARD_ONLY.set(io, command);
     return;
   }
-  const lease = await bindLocalSession(info, { agent: agent ?? 'unjoined agent', digest, takeover: command === 'takeover', keepLease: !['run', 'next'].includes(command), waitLimitMs: command === 'hook' ? HOOK_CHECKOUT_WAIT_MS : 0,
+  const lease = await bindLocalSession(info, { agent: agent ?? 'unjoined agent', digest, takeover: command === 'takeover', keepLease: !['run', 'next', 'land'].includes(command), waitLimitMs: command === 'hook' ? HOOK_CHECKOUT_WAIT_MS : 0,
     /** Record the takeover; a linked main checkout takes the board's coordinator before its receipt shout, which the hold would refuse (#347). */
     recordTakeover: async () => (await import('./commands/takeover.js')).recordCheckoutTakeover(io, info),
   });
