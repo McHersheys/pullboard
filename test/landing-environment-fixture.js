@@ -37,7 +37,7 @@ function commit(box, root, message) {
 
 /** A real Node test passes for either item alone and fails when their changes meet. */
 function fixture(helpers) {
-  const box = helpers.project('node --test web/landing.test.js');
+  const box = helpers.project('node --test --test-reporter=tap web/landing.test.js');
   // This is an independent Node runner; an inherited worker context makes Node skip recursive runs.
   delete box.env.NODE_TEST_CONTEXT;
   mkdirSync(join(box.repo, 'web'), { recursive: true });
@@ -48,7 +48,7 @@ function fixture(helpers) {
     "test('the two changes coexist [E27,E29]', () => assert.equal(existsSync('web/a.txt') && existsSync('web/b.txt'), false));",
   ].join('\n') + '\n');
   const config = JSON.parse(readFileSync(join(box.repo, 'pullboard.json'), 'utf8'));
-  config.affectedTests = 'node --test';
+  config.affectedTests = 'node --test --test-reporter=tap';
   writeFileSync(join(box.repo, 'pullboard.json'), JSON.stringify(config, null, 2) + '\n');
   commit(box, box.repo, 'chore: prepare the landing host fixture');
   const remote = join(box.dir, 'origin.git');
