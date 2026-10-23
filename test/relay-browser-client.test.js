@@ -310,8 +310,11 @@ for (const apiVersion of [1, 2]) test('the phone shows moves past its checkpoint
   const pendingView = await chrome.evaluate(`(() => ({
     items: Array.from(document.querySelectorAll('#chain [data-item]'), row => ({ id: row.dataset.item, title: row.getAttribute('title') })),
     activity: document.querySelector('#relay-notice')?.textContent ?? '',
+    pending: Array.from(document.querySelectorAll('#relay-notice p')).filter(row => row.textContent.startsWith('Pending event #')).length,
     body: document.body.innerText,
   }))()`);
+  assert.equal(pendingView.pending, 3, 'each received move has its own pending mark');
+  assert.doesNotMatch(pendingView.body, /snapshot has not caught up|event prefix is incomplete/iu, 'pending moves are not displayed as a failed board read');
   assert.deepEqual(pendingView.items, checkpointItems, 'the phone keeps checkpoint N authoritative while later events are pending');
   for (const title of pendingTitles) assert.ok(pendingView.activity.includes(title), 'the pending-event notice shows pending event ' + title);
   assert.match(pendingView.body, /pending event/iu, 'the UI identifies the received events as pending rather than checkpoint-derived state');
@@ -327,7 +330,7 @@ for (const apiVersion of [1, 2]) test('the phone shows moves past its checkpoint
     })).toString('base64url');
     const published = await fetch(box.origin + '/api/v1/boards/' + link.board + '/state', {
       method: 'PUT', headers: {
-        authorization: 'Bearer ' + credential,
+        authorization: 'Bearer ' + link.token,
         'x-pullboard-engine': String(ENGINE_VERSION), 'content-type': 'application/json',
       }, body: JSON.stringify({ sequence: checkpointN + 3, sealed: sealedCheckpoint }),
     });
@@ -337,6 +340,7 @@ for (const apiVersion of [1, 2]) test('the phone shows moves past its checkpoint
   const settledView = await chrome.evaluate(`(() => ({
     items: Array.from(document.querySelectorAll('#chain [data-item]'), row => ({ id: row.dataset.item, title: row.getAttribute('title') })),
     activity: document.querySelector('#relay-notice')?.textContent ?? '',
+    pending: Array.from(document.querySelectorAll('#relay-notice p')).filter(row => row.textContent.startsWith('Pending event #')).length,
     body: document.body.innerText,
   }))()`);
   for (const title of pendingTitles) assert.ok(settledView.items.some(row => row.title === title), 'checkpoint N+3 makes ' + title + ' authoritative');
