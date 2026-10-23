@@ -152,7 +152,7 @@ export async function resumeHere(io, view) {
       catch (error) { if (!(error instanceof Refused) || error.code !== 'HEALTH_SCAN_STALE') throw error; }
     }
   });
-  await resumeSentinels({ ctx, withBoard, whoAmI, ordered });
+  resumeSentinels({ ctx, withBoard });
   const { root, isMain } = ctx.info;
   const mainRoot = primaryCheckoutRoot(ctx.info);
   const worktreeConfig = mainRoot ? (isMain ? ctx.config : loadConfig(mainRoot)) : null;

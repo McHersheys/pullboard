@@ -212,10 +212,13 @@ test('a sentinel draft waits in Needs-you with its evidence [A6,D1,D3]', async t
   assert.deepEqual(after, ['staging-site'], 'the person’s approval closes the call');
   const watched = sentinels(box.board).find(row => row.name === 'rigor-row-a6');
   assert.equal(watched.status, 'approved');
-  assert.equal(watched.lastRun?.green, true, 'approving it starts it: the next resume runs the watch, now green');
+  assert.equal(watched.lastRun, null, 'approval and resume leave execution to the scheduled command');
+  const explicit = await box.cli(['sentinel', 'run']);
+  assert.equal(explicit.code, 0, explicit.error || JSON.stringify(explicit.document));
+  assert.equal(sentinels(box.board).find(row => row.name === 'rigor-row-a6').lastRun?.green, true);
 });
 
-test('an approved sentinel runs by itself and reports to its owner once [A6,D1,D3]', async t => {
+test('an approved sentinel execution reports to its owner once [A6,D1,D3]', async t => {
   const box = fixture(t);
   mkdirSync(join(box.root, 'watch'));
   const check = checker(box, "import {existsSync,appendFileSync} from 'node:fs'; appendFileSync('runs','run\\n'); console.log('check receipt'); process.exit(existsSync('green')?0:1);");
@@ -227,7 +230,7 @@ test('an approved sentinel runs by itself and reports to its owner once [A6,D1,D
   const approved = await box.cli(['sentinel', 'approve', 'staging'], 'view');
   assert.equal(approved.code, 0, approved.error);
   assert.equal(approved.document.sentinel.status, 'approved');
-  assert.equal((await box.cli(['resume'])).code, 0, 'the real automatic resume caller executes the due approved watch');
+  await box.run();
   let notices = store.allShouts(box.board).filter(row => row.shout_from === 'sentinel');
   assert.equal(notices.length, 1); assert.equal(notices[0].shout_to, box.agent);
   assert.match(notices[0].shout_text, /staging[\s\S]*check receipt[\s\S]*Next: repair the staging check/u);
@@ -465,7 +468,7 @@ test('a successful watch drains a descendant that ignores TERM before publishing
   assert.ok(!remaining || remaining.state.startsWith('Z'), 'no receipt precedes the stubborn descendant shutdown');
 });
 
-test('the background observer runs an approved board watch through its real resume child [A6,D3]', async t => {
+test('the background observer leaves approved board watches for explicit runs [A6,D3]', async t => {
   const box = fixture(t);
   const check = checker(box, "import {appendFileSync} from 'node:fs'; appendFileSync('background-runs','run\\n'); console.log('background receipt'); process.exit(1);");
   const row = store.proposeSentinel(box.board, { agentId: box.agent, row: { name: 'background', check, every: '10m', owner: box.agent } });
@@ -497,13 +500,13 @@ test('the background observer runs an approved board watch through its real resu
   writeFileSync(settingsFile, settings);
   await tick();
   assert.deepEqual(errors, []);
-  assert.equal(readFileSync(runs, 'utf8'), 'run\n', 'the default background callback launches the real resume child');
+  assert.equal(existsSync(runs), false, 'the real background resume child never executes an approved watch');
   const notices = store.allShouts(box.board).filter(shout => shout.shout_text.startsWith('Sentinel failed: background'));
-  assert.equal(notices.length, 1);
-  assert.equal(notices[0].shout_to, box.agent);
-  assert.match(notices[0].shout_text, /background receipt/u);
+  assert.equal(notices.length, 0, 'resume cannot invent a result or owner alert');
+  assert.equal(sentinels(box.board)[0].lastRun, null);
+  assert.equal(store.events(box.board).some(row => row.event_kind === 'sentinel-start'), false);
   await tick();
-  assert.equal(readFileSync(runs, 'utf8'), 'run\n', 'the next callback honors the recorded due time');
+  assert.equal(existsSync(runs), false, 'a second health callback still leaves the watch to its scheduled command');
   await observer.close();
   assert.equal(cancelled, true);
 });
