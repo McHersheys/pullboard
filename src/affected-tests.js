@@ -346,7 +346,7 @@ function graphAt(root, commit, changedDocs = []) {
  *
  * @param {string} root
  * @param {string} [commit]
- * @returns {{ closures: Map<string, { files: string[] | null, reason: string }>, modules: Map<string, string>, blobs: Map<string, string> }}
+ * @returns {{ closures: Map<string, { files: string[] | null, helpers?: string[], reason: string }>, modules: Map<string, string>, blobs: Map<string, string> }}
  */
 export function testClosures(root, commit = 'HEAD') {
   const graph = graphAt(root, commit);
@@ -369,7 +369,12 @@ export function testClosures(root, commit = 'HEAD') {
         if (!reached.has(dependency)) { reached.add(dependency); queue.push(dependency); }
       }
     }
-    closures.set(test, reason ? { files: null, reason } : { files: [...reached].sort(), reason: '' });
+    // The test and the test/ helpers it reaches without passing through product code: its own test-side reads.
+    const helpers = new Set([test]);
+    for (const path of helpers) {
+      for (const dependency of forward.get(path) ?? []) if (dependency.startsWith('test/')) helpers.add(dependency);
+    }
+    closures.set(test, reason ? { files: null, reason } : { files: [...reached].sort(), helpers: [...helpers].sort(), reason: '' });
   }
   return { closures, modules: graph.modules, blobs: graph.blobs };
 }

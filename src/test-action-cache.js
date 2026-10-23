@@ -45,7 +45,8 @@ const DECLARED_ENVIRONMENT = ['NODE_OPTIONS', 'PULLBOARD_HOSTED_SHAPES', 'PULLBO
 const NEUTRAL_OPTION = /^--(?:test[-_]concurrency|test[-_]reporter(?:[-_]destination)?|test[-_]shard)(?:=|$)/u;
 // A run that selects tests inside a file proves only those tests, so it neither reuses nor records.
 const FILTER_OPTION = /^--test[-_](?:name|skip)[-_]pattern(?:=|$)|^--test[-_]only$/u;
-// Release notes are prose: src reads them for headlines that tests prove against their own fixture copies.
+// Release notes are prose: src reads them for headlines that tests prove against their own fixture copies. A test that
+// lists and reads them itself has no key at all (listsOwnCheckout).
 const PROSE = new Set(['CHANGELOG.md']);
 // Whole trees are inputs only by declaration (`@pullboard-test-input`), never because a fixture names `src`.
 const TREE_DECLARATIONS = [['test-tree', ['test/']], ['source-tree', ['src/', 'bin/']], ['docs-tree', ['docs/']]];
@@ -115,15 +116,34 @@ function namedFiles(file, source, testSide, index) {
 }
 
 /**
+ * True when a module lists the tracked files of its own checkout: a git call naming `ls-files` whose working folder is
+ * this checkout, either by default (no cwd) or through an expression built from import.meta or a ROOT constant. A
+ * listing in a fixture repository (`cwd: fixture.root`, a helper's own git) is not this checkout's.
+ */
+function listsOwnCheckout(source) {
+  for (const match of source.matchAll(/(['"])ls-files\1/gu)) {
+    const start = Math.max(source.lastIndexOf(';', match.index), source.lastIndexOf('\n\n', match.index));
+    const end = source.indexOf(';', match.index);
+    const statement = source.slice(start + 1, end === -1 ? source.length : end);
+    if (!/(['"])git\1/u.test(statement)) continue;
+    const cwd = /\bcwd\s*:\s*([^,}]+)/u.exec(statement)?.[1].trim();
+    if (!cwd || /import\.meta|\bROOT\b/u.test(cwd)) return true;
+    if (/^[A-Za-z_$][\w$]*$/u.test(cwd) && new RegExp(`\\b(?:const|let|var)\\s+${cwd}\\s*=[^;\\n]*(?:import\\.meta|\\bROOT\\b)`, 'u').test(source)) return true;
+  }
+  return false;
+}
+
+/**
  * What a test's closure reads beyond its imports. A declared tree (`@pullboard-test-input`) is read as data, so every
  * file under it counts, JavaScript included: a comment can change a scanner's verdict without changing any import.
  * Every module adds the files it names. A test that declares it reads its own checkout and names `ls-files` reads the
  * list of tracked paths, so that list counts too; one that names a history command reads commits no tree holds, so it
- * has no key and always runs (fail closed).
+ * has no key and always runs (fail closed). So does a test that lists its own checkout's tracked files without declaring
+ * any tree: what it then reads (CHANGELOG.md included) is known to no key.
  *
- * @returns {{ inputs: string[], listing: boolean, history: boolean }}
+ * @returns {{ inputs: string[], listing: boolean, history: boolean, undeclaredListing: boolean }}
  */
-function declaredReads(test, files, modules, index) {
+function declaredReads(test, files, modules, index, helpers = [test]) {
   const inputs = new Set();
   const header = (modules.get(test) ?? '').split(/\r?\n/u);
   let declared = false;
@@ -132,19 +152,26 @@ function declaredReads(test, files, modules, index) {
     declared = true;
     for (const prefix of prefixes) for (const path of index.under(prefix)) inputs.add(path);
   }
-  let listing = false, history = false;
+  let listing = false, history = false, undeclaredListing = false;
   for (const file of files) {
     const testSide = file.startsWith('test/') || file === test;
     const memo = `${testSide ? 't' : 's'}:${file}`;
     if (!index.named.has(memo)) index.named.set(memo, namedFiles(file, modules.get(file) ?? '', testSide, index));
     for (const path of index.named.get(memo)) inputs.add(path);
-    if (!declared || !testSide) continue;
+    if (!testSide) continue;
+    if (!declared) {
+      // Only the test and the helpers it reaches directly: a checker that product code imports lists for its caller.
+      if (!helpers.includes(file)) continue;
+      if (!index.listers.has(file)) index.listers.set(file, listsOwnCheckout(modules.get(file) ?? ''));
+      undeclaredListing ||= index.listers.get(file);
+      continue;
+    }
     if (!index.literals.has(file)) index.literals.set(file, stringLiterals(modules.get(file) ?? ''));
     const literals = index.literals.get(file);
     listing ||= literals.has('ls-files');
     history ||= [...HISTORY].some(command => literals.has(command));
   }
-  return { inputs: [...inputs].sort(), listing, history };
+  return { inputs: [...inputs].sort(), listing, history, undeclaredListing };
 }
 
 /** Index the tracked tree: every file, every folder, files by their own name, and the files under any folder. */
@@ -166,7 +193,7 @@ function treeIndex(blobs) {
     if (!cache.has(prefix)) cache.set(prefix, sorted.filter(path => path.startsWith(prefix)));
     return cache.get(prefix);
   };
-  return { files, folders, byName, under, sorted, named: new Map(), literals: new Map() };
+  return { files, folders, byName, under, sorted, named: new Map(), literals: new Map(), listers: new Map() };
 }
 
 /**
@@ -192,8 +219,9 @@ export async function testActionKeys(root, { commit = 'HEAD', options = [], env 
   const keys = new Map();
   for (const [test, closure] of closures) {
     if (!closure.files) { keys.set(test, { key: null, reason: closure.reason }); continue; }
-    const reads = declaredReads(test, closure.files, modules, index);
+    const reads = declaredReads(test, closure.files, modules, index, closure.helpers);
     if (reads.history) { keys.set(test, { key: null, reason: 'it reads the git history of its own checkout' }); continue; }
+    if (reads.undeclaredListing) { keys.set(test, { key: null, reason: 'it lists the tracked files of its own checkout without declaring them' }); continue; }
     keys.set(test, { key: digest({ ...shared, test,
       closure: closure.files.map(path => [path, blobs.get(path) ?? null]),
       inputs: reads.inputs.map(path => [path, blobs.get(path)]),

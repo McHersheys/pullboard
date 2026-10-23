@@ -33,6 +33,17 @@ function scan() { appendFileSync(process.env.PULLBOARD_ACTION_CAPTURE, 'd\\n'); 
 test('d [C7]', scan);
 `;
 
+/** A fixture test that lists this checkout's tracked release notes without declaring them, then scans them. */
+const NOTES_TEST = `import { appendFileSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { join } from 'node:path';
+import { test } from 'node:test';
+const root = join(import.meta.dirname, '..');
+/** Record that this file ran, then scan every listed note. */
+function scanNotes() { appendFileSync(process.env.PULLBOARD_ACTION_CAPTURE, 'e\\n'); const tracked = execFileSync('git', ['ls-files', 'CHANGELOG.md'], { cwd: root, encoding: 'utf8' }).trim().split('\\n'); for (const name of tracked) if (readFileSync(join(root, name), 'utf8').includes('forbidden')) throw new Error('e found a forbidden word'); }
+test('e [C7]', scanNotes);
+`;
+
 /** A committed repository with the real runner, three tests and their modules: A imports shared, B and C stand alone. */
 function makeFixture(t) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-test-actions-')));
@@ -48,6 +59,8 @@ function makeFixture(t) {
   writeFileSync(join(root, 'lib', 'c.js'), "export const value = 'red';\n");
   for (const name of ['a', 'b', 'c']) writeFileSync(join(root, 'test', `${name}.test.js`), fixtureTest(name, name));
   writeFileSync(join(root, 'test', 'd.test.js'), SCAN_TEST);
+  writeFileSync(join(root, 'test', 'e.test.js'), NOTES_TEST);
+  writeFileSync(join(root, 'CHANGELOG.md'), '# Changelog\n');
   writeFileSync(join(root, 'src', 'probe.js'), "// A probe source file.\nexport const probe = 1;\n");
   const capture = join(root, 'machine', 'ran.txt');
   const env = { ...process.env, PULLBOARD_MACHINE_HOME: join(root, 'machine'), PULLBOARD_ACTION_CAPTURE: capture, PULLBOARD_LANDING_RUN: '0',
@@ -57,7 +70,7 @@ function makeFixture(t) {
   /** Run one fixture git command under the private environment. */
   const git = (...args) => runFixtureGit(args, { cwd: root, env });
   git('init', '-q', '-b', 'main');
-  git('add', '.gitignore', 'package.json', 'lib', 'test');
+  git('add', '.gitignore', 'package.json', 'CHANGELOG.md', 'lib', 'test');
   git('add', '-f', 'src/probe.js');
   git('commit', '-q', '-m', 'fixture');
   /** Commit one file's new text. */
@@ -77,19 +90,20 @@ test('an unchanged closure reuses its green result and a changed import reruns i
   const fixture = makeFixture(t);
   const first = fixture.run();
   assert.equal(first.status, 1, `C is red, so the first run fails\n${first.output}`);
-  assert.deepEqual(first.ran, ['a', 'b', 'c', 'd'], 'every file runs when nothing is stored');
+  assert.deepEqual(first.ran, ['a', 'b', 'c', 'd', 'e'], 'every file runs when nothing is stored');
 
-  // 1. A module only B imports changes: B runs, A is reused, C runs because a red result is never reused (3).
+  // 1. A module only B imports changes: B runs, A is reused, C runs because a red result is never reused (3). E lists
+  // this checkout's tracked files without declaring them, so it has no key and runs every time (fail closed).
   fixture.change('lib/b.js', "export const value = 'green'; // edited\n");
   const second = fixture.run();
-  assert.deepEqual(second.ran, ['b', 'c'], second.output);
+  assert.deepEqual(second.ran, ['b', 'c', 'e'], second.output);
   assert.match(second.output, /^# reused [0-9a-f]{64} from \S+ [0-9a-f]{40} \(test\/a\.test\.js\)$/mu);
   assert.doesNotMatch(second.output, /reused .*\(test\/(?:b|c)\.test\.js\)/u);
 
   // 2. A module A imports changes: A runs and B is reused; C still runs.
   fixture.change('lib/shared.js', "export const shared = 'green'; // edited\n");
   const third = fixture.run();
-  assert.deepEqual(third.ran, ['a', 'c'], third.output);
+  assert.deepEqual(third.ran, ['a', 'c', 'e'], third.output);
   assert.match(third.output, /^# reused [0-9a-f]{64} from \S+ [0-9a-f]{40} \(test\/b\.test\.js\)$/mu);
   assert.equal(readdirSync(join(fixture.store, 'red')).length, 1, 'C has one red key, written once and kept');
 
@@ -104,22 +118,29 @@ test('an unchanged closure reuses its green result and a changed import reruns i
   fixture.change('lib/c.js', "export const value = 'green';\n");
   const fourth = fixture.run();
   assert.equal(fourth.status, 0, fourth.output);
-  assert.deepEqual(fourth.ran, ['a', 'b', 'c'], fourth.output);
+  assert.deepEqual(fourth.ran, ['a', 'b', 'c', 'e'], fourth.output);
   assert.match(fourth.output, /^# reused [0-9a-f]{64} from \S+ [0-9a-f]{40} \(test\/d\.test\.js\)$/mu, 'D reads only the source tree, which no change touched');
 
-  // Nothing changed since a green run: no file runs and the suite is proven from reused results alone.
+  // Nothing changed since a green run: only the unkeyed lister runs; every keyed file is reused.
   const fifth = fixture.run();
   assert.equal(fifth.status, 0, fifth.output);
-  assert.deepEqual(fifth.ran, [], fifth.output);
+  assert.deepEqual(fifth.ran, ['e'], fifth.output);
   assert.equal(fifth.output.match(/^# reused /gmu)?.length, 4, fifth.output);
-  assert.match(fifth.output, /^# all 4 test files reused; none ran$/mu);
+
+  // Cached versus fresh: a forbidden word reaches only CHANGELOG.md. E lists and reads it, so E runs and turns red.
+  fixture.change('CHANGELOG.md', '# Changelog\n\nA forbidden word.\n');
+  const notes = fixture.run();
+  assert.deepEqual(notes.ran, ['e'], notes.output);
+  assert.equal(notes.status, 1, notes.output);
+  assert.match(notes.output, /e found a forbidden word/u);
 
   // Cached versus fresh: only a comment changes, in a source file nothing imports. D reads it as data, so D runs and
   // its fresh verdict differs from the green it would otherwise have reused.
   fixture.change('src/probe.js', "// A probe source file with a forbidden word.\nexport const probe = 1;\n");
   const sixth = fixture.run();
-  assert.deepEqual(sixth.ran, ['d'], sixth.output);
-  assert.equal(sixth.status, 1, `the fresh scan finds the word the stored green never saw\n${sixth.output}`);
+  assert.deepEqual(sixth.ran, ['d', 'e'], sixth.output);
+  assert.equal(sixth.status, 1, sixth.output);
+  assert.match(sixth.output, /d found a forbidden word/u, 'the fresh scan finds the word the stored green never saw');
 });
 
 test('a test that reads its own checkout history is never keyed [C7]', async (t) => {
@@ -136,6 +157,7 @@ test('h [C7]', history);
   assert.equal(keys.get('test/h.test.js').key, null, 'commits are not in any tree a key hashes');
   assert.match(keys.get('test/h.test.js').reason, /git history/u);
   assert.match(keys.get('test/d.test.js').key, /^[0-9a-f]{64}$/u, 'a scanner without history keeps its key');
+  assert.equal(keys.get('test/e.test.js').key, null, 'an undeclared listing of this checkout has no key');
 });
 
 test('only passing results under the current key prove the whole suite [C7]', () => {
