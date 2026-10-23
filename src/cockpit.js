@@ -1124,7 +1124,8 @@ function render() {
   const needs = personalNeeds.filter((row) => !['draft', 'rigor-draft', 'sentinel-draft', 'agent-approved'].includes(row.kind)).map((row) => row.kind === 'decision'
     ? ['decide:' + row.id, row.ref, row.text, 'decide', row.at]
     : row.kind === 'pending' ? ['spec:' + row.id, row.ref, row.text, 'answer ' + row.ref] // the person's words; agents get the command (#875)
-      : ['tab:shouts', row.ref, row.text, row.what, p.holds.find((hold) => hold.hold_lane === row.id)?.hold_at]);
+      : row.kind === 'block' ? [null, row.ref, row.text, row.what, row.at, 'block']
+        : ['tab:shouts', row.ref, row.text, row.what, p.holds.find((hold) => hold.hold_lane === row.id)?.hold_at]);
   const drafts = personalNeeds.find((row) => row.kind === 'draft')?.count ?? 0;
   const rigorDrafts = personalNeeds.filter((row) => row.kind === 'rigor-draft');
   const sentinelDrafts = personalNeeds.filter((row) => row.kind === 'sentinel-draft');
@@ -1133,10 +1134,11 @@ function render() {
   // its kind where an item has its lane, and what to do at the right. Every call is a row; the draft rows are one row
   // with their count. Read-only, a row is its words, opening nothing.
   $('needs').hidden = (!needs.length && !drafts && !rigorDrafts.length && !sentinelDrafts.length && !agentApprovals.length) || view.state !== 'active' || Boolean(view.lane);
-  const needRow = ([target, ref, text, what, at], kind, action) => '<li class="row ask"' + (readOnly ? '' : ' data-go="' + esc(target) + '"') + '><span class="dot ask"></span><div><div class="t">' + (ref ? '<span>' + esc(ref) + '</span>' : '') + rich(text, titles, !readOnly) + '</div>'
+  const needRow = ([target, ref, text, what, at], kind, action) => '<li class="row ask"' + (readOnly || !target ? '' : ' data-go="' + esc(target) + '"') + '><span class="dot ask"></span><div><div class="t">' + (ref ? '<span>' + esc(ref) + '</span>' : '') + rich(text, titles, !readOnly) + '</div>'
     + (at ? '<span class="row-age">' + age(at) + '</span>' : '') + '<div class="meta"><span class="why"><b>NEEDS YOU</b> ' + esc(kind) + '</span></div></div><span class="chip warn">' + esc(action) + '</span></li>';
-  const needKind = (entry) => entry[3] === 'decide' ? needRow([entry[0], '', entry[2], entry[3], entry[4]], 'a decision, asked by ' + entry[1], 'decide')
-    : entry[0].startsWith('spec:') ? needRow(entry, 'an open question in SPEC.md', 'answer') : needRow(entry, entry[3], 'release');
+  const needKind = (entry) => entry[5] === 'block' ? needRow(entry, entry[3], 'next step')
+    : entry[3] === 'decide' ? needRow([entry[0], '', entry[2], entry[3], entry[4]], 'a decision, asked by ' + entry[1], 'decide')
+      : entry[0].startsWith('spec:') ? needRow(entry, 'an open question in SPEC.md', 'answer') : needRow(entry, entry[3], 'release');
   const needsHtml = needs.map(needKind).join('')
     + rigorDrafts.map(row => needRow([row.target, row.ref, row.text], 'a proved Rigor draft', 'Approve or Decline')).join('')
     + sentinelDrafts.map(row => sentinelDraftRow(row)).join('')
