@@ -10,7 +10,7 @@ export function relayMoveActor(move) {
   if (move.operation === 'addItem') return args[0]?.by ?? null;
   if (move.operation === 'shout') return args[0]?.from ?? null;
   if (['proposeSentinel', 'decideSentinel', 'beginSentinelRun', 'finishSentinelRun'].includes(move.operation)) return args[0]?.agentId ?? null;
-  if (['recordHealthFindings', 'recordFlakeObservation', 'recordGateRun', 'declareJob', 'recordJobRun'].includes(move.operation)) return args[0]?.agentId ?? null;
+  if (['recordHealthFindings', 'recordFlakeObservation', 'recordGateRun', 'declareJob', 'recordJobRun', 'takeCoordinator'].includes(move.operation)) return args[0]?.agentId ?? null;
   if (['holdLane', 'releaseLane'].includes(move.operation) && args[1]?.asPerson) return 'person';
   if (move.operation === 'release') return args[1] ?? null;
   if (['reserveNextReview', 'addMilestone', 'recordRowDecisions', 'applyRowDecisions', 'draftSpecRow', 'recordSpecApprovalBaseline', 'recordLandingBatch', 'recordLandingWaiver', 'recordLandingFlake', 'finishLandingBatch'].includes(move.operation)) return args[0]?.agentId ?? null;
@@ -26,7 +26,20 @@ export function validRelaySender(sender) {
     (sender.kind !== 'machine' || (typeof sender.machine === 'string' && sender.machine.length > 0 && sender.machine.length <= 256)) &&
     (sender.policy === undefined || Number.isSafeInteger(sender.policy) && sender.policy > 0) &&
     (sender.root === undefined || sender.root === true) &&
-    (sender.lineage === undefined || typeof sender.lineage === 'string' && sender.lineage.length > 0 && sender.lineage.length <= 64));
+    (sender.lineage === undefined || typeof sender.lineage === 'string' && sender.lineage.length > 0 && sender.lineage.length <= 64) &&
+    (sender.login === undefined || typeof sender.login === 'string' && /^[A-Za-z0-9-]{1,39}$/u.test(sender.login)) &&
+    (sender.approver === undefined || typeof sender.approver === 'boolean') &&
+    (sender.engine === undefined || Number.isSafeInteger(sender.engine) && sender.engine > 0));
+}
+
+/**
+ * True for a move only the person may make: a row decision, a sentinel decision, an answer or hold as the person, a
+ * person fact or request, or any move whose actor is the person. On a board that names approvers, only an approver's
+ * session makes one [E4].
+ */
+function personAuthority(move) {
+  return personFact(move) || ['recordRowDecisions', 'decideSentinel'].includes(move?.operation) || move?.operation === 'answerDecision' && Boolean(move.args?.[1]?.asPerson) ||
+    move?.operation === 'shout' && Boolean(move.args?.[0]?.request) || relayMoveActor(move) === 'person';
 }
 
 /**
@@ -51,7 +64,11 @@ export function relaySenderProblem(move, sender, kind, { phoneReceipt = false } 
   if (move?.operation === 'shout' && move.args?.[0]?.answers != null) {
     return new Refused('RELAY_ANSWER', 'a sealed shout cannot answer or pass a decision; use pullboard answer <id> "<answer>" or pullboard pass <id> --note "<reason>" so the decision rules are checked');
   }
-  if (sender.kind === 'person') return null;
+  if (sender.kind === 'person') {
+    // The relay stamps whether the person is one of the board's approvers; a board that names none stamps nothing [E4,E20].
+    return sender.approver === false && (kind === 'snapshot' || personAuthority(move))
+      ? new Refused('NOT_APPROVER', `${sender.login ?? 'this person'} is not an approver of this board; only an approver it names answers person decisions, approves rows or replaces its snapshot`) : null;
+  }
   if (personFact(move)) {
     return new Refused('RELAY_PERSON_ONLY', `${sender.kind === 'agent' ? `agent ${sender.agent}` : 'a machine'} cannot record the person's never-again; the person marks it from their own session`);
   }

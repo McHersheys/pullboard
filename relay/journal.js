@@ -84,7 +84,10 @@ export function createRelayJournal({ directory, boardId, maxBytes = DEFAULT_BYTE
     db.prepare('UPDATE journal_meta SET value=? WHERE key=?').run(String(FORMAT), 'format');
     // Engine-27 attribution (#579): the relay's policy stamp, the person-set coordinator flag and a
     // seat receipt. Older records keep these empty, so they replay exactly as they did.
-    for (const [column, type] of [['sender_policy', 'INTEGER'], ['sender_root', 'INTEGER'], ['sender_lineage', 'TEXT'], ['registration', 'TEXT']]) {
+    // Engine-73 people (#343): the GitHub login behind each record, and whether that person was one of the
+    // board's approvers when it arrived. Older records keep them empty and replay as they did.
+    for (const [column, type] of [['sender_policy', 'INTEGER'], ['sender_root', 'INTEGER'], ['sender_lineage', 'TEXT'], ['registration', 'TEXT'],
+      ['sender_login', 'TEXT'], ['sender_approver', 'INTEGER'], ['sender_engine', 'INTEGER']]) {
       if (!db.prepare('PRAGMA table_info(journal_record)').all().some((saved) => saved.name === column)) db.exec(`ALTER TABLE journal_record ADD COLUMN ${column} ${type}`);
     }
     // A published seat receipt claims its target for good: compaction keeps it, so no later machine
@@ -131,7 +134,9 @@ export function createRelayJournal({ directory, boardId, maxBytes = DEFAULT_BYTE
       sender: { kind: row.sender_kind, userId: row.sender_user,
         ...(row.sender_kind === 'agent' ? { agent: row.sender_agent } : row.sender_kind === 'machine' ? { machine: row.sender_agent } : {}),
         ...(row.sender_policy ? { policy: row.sender_policy } : {}), ...(row.sender_root ? { root: true } : {}),
-        ...(row.sender_lineage ? { lineage: row.sender_lineage } : {}) },
+        ...(row.sender_lineage ? { lineage: row.sender_lineage } : {}),
+        ...(row.sender_login ? { login: row.sender_login } : {}), ...(row.sender_approver === null || row.sender_approver === undefined ? {} : { approver: row.sender_approver === 1 }),
+        ...(row.sender_engine ? { engine: row.sender_engine } : {}) },
       ...(row.registration ? { registration: JSON.parse(row.registration) } : {}),
       ...(row.api_version === 2 ? { apiVersion: 2, pageBytes: row.page_bytes } : {}), bytes: Buffer.from(row.payload) };
   }
@@ -146,11 +151,14 @@ export function createRelayJournal({ directory, boardId, maxBytes = DEFAULT_BYTE
     }
     if (personOnly && !['person', 'machine'].includes(value.kind)) throw new Refused('HUMAN_REQUIRED', 'use this board’s machine credential to replace its snapshot');
     if ((value.policy !== undefined && (!Number.isSafeInteger(value.policy) || value.policy < 1)) || (value.root !== undefined && value.root !== true) ||
-        (value.lineage !== undefined && (typeof value.lineage !== 'string' || !/^[0-9a-f-]{36}$/.test(value.lineage)))) {
+        (value.lineage !== undefined && (typeof value.lineage !== 'string' || !/^[0-9a-f-]{36}$/.test(value.lineage))) ||
+        (value.login !== undefined && (typeof value.login !== 'string' || !/^[A-Za-z0-9-]{1,39}$/u.test(value.login))) ||
+        (value.approver !== undefined && typeof value.approver !== 'boolean') || (value.engine !== undefined && (!Number.isSafeInteger(value.engine) || value.engine < 1))) {
       throw new Refused('RELAY_PRINCIPAL', 'supply the relay policy stamp as a positive engine number');
     }
     return { kind: value.kind, userId: value.userId, agent: value.kind === 'agent' ? value.agent : value.kind === 'machine' ? value.machine : null,
-      policy: value.policy ?? null, root: value.root === true ? 1 : null, lineage: value.lineage ?? null };
+      policy: value.policy ?? null, root: value.root === true ? 1 : null, lineage: value.lineage ?? null,
+      login: value.login ?? null, approver: value.approver === undefined ? null : value.approver ? 1 : 0, engine: value.engine ?? null };
   }
 
   /** Keep a seat receipt to its four public fields: target, creator, sequence and ciphertext digest. */
@@ -200,8 +208,8 @@ export function createRelayJournal({ directory, boardId, maxBytes = DEFAULT_BYTE
       if (sequence > next) throw new Refused('SEQUENCE_GAP', 'send the next sequence after the latest committed record before later uploads');
       const at = now();
       if (!(at instanceof Date) || !Number.isFinite(at.getTime())) throw new Refused('RELAY_CONFIG', 'the journal clock must return a valid Date');
-      db.prepare('INSERT INTO journal_record (sequence,received_at,kind,payload,sender_kind,sender_user,sender_agent,sender_policy,sender_root,sender_lineage,registration) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
-        .run(sequence, at.toISOString(), kind, sealed, who.kind, who.userId, who.agent, who.policy, who.root, who.lineage, stored);
+      db.prepare('INSERT INTO journal_record (sequence,received_at,kind,payload,sender_kind,sender_user,sender_agent,sender_policy,sender_root,sender_lineage,registration,sender_login,sender_approver,sender_engine) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+        .run(sequence, at.toISOString(), kind, sealed, who.kind, who.userId, who.agent, who.policy, who.root, who.lineage, stored, who.login, who.approver, who.engine);
       if (stored) {
         const claim = JSON.parse(stored);
         if (db.prepare('SELECT 1 FROM journal_registration WHERE target=?').get(claim.target)) {

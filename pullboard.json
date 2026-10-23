@@ -1,7 +1,6 @@
 {
   "name": "pullboard",
   "gate": "npm run gate",
-  "landingShards": 6,
   "affectedTests": "node bin/run-tests.js",
   "submitGate": "landing",
   "submit": { "requireInfraNote": true },
@@ -98,5 +97,6 @@
   "staticChecks": "node --experimental-vm-modules --disable-warning=ExperimentalWarning bin/static-style-checks.js",
   "flakes": {
     "rerun": true
-  }
+  },
+  "relay": { "outbox": true }
 }

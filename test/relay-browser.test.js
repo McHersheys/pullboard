@@ -962,7 +962,7 @@ test('the link approval card names the computer and the board [H17,H5]', {
   await chrome.navigate(box.origin);
   await chrome.waitFor(`document.querySelector('.phone-approval[data-request="${proposal.context.id}"] button') !== null`);
   const card = await readApprovalCard(chrome, proposal.context.id);
-  assert.match(card.text, /^Link notes from studio\?$/mu, 'the card asks in words which computer links which board');
+  assert.match(card.title, /^Link notes from studio\?$/u, 'the card asks in words which computer links which board');
   assert.equal(card.text.includes('fixture/repository'), true, 'the card names the repository being linked');
   assert.equal(card.text.includes('expires ' + phoneExpiry(proposal.context.expires)), true, 'the expiry is in the phone\'s local time');
   assert.equal(card.text.includes(new Date(proposal.context.expires).toISOString()), false, 'no UTC timestamp on the card');
@@ -990,7 +990,7 @@ test('the delete card names the board and confirms the delete [H17,H5]', {
   const selector = `.phone-approval[data-request="${context.id}"]`;
   await chrome.waitFor(`document.querySelector('${selector} button') !== null`);
   const card = await readApprovalCard(chrome, context.id);
-  assert.match(card.text, /^Delete notes from the relay\?$/mu, 'the delete card names the board');
+  assert.match(card.title, /^Delete notes from the relay\?$/u, 'the delete card names the board');
   assert.equal(card.text.includes('studio'), true, 'the delete card names the computer that asked');
   assert.doesNotMatch(card.text, /[0-9a-f]{32}/u, 'no raw board id on the delete card');
   assert.equal(card.inside, true, 'the delete card keeps its text inside its padding');

@@ -199,3 +199,20 @@ export function addRunner(value) {
     return runner;
   });
 }
+
+/** Remove one registered runner while serialized against its active remote leases. */
+export function removeRunner(host) {
+  return updateRunnerSettings(host, () => {
+    const current = readMachineSettingsFile(machineSettingsFile()) ?? {};
+    const runners = loadMachineSettings().runners ?? [];
+    const index = runners.findIndex(runner => runner.host === host);
+    if (index < 0) {
+      const registered = runners.map(runner => runner.host);
+      throw new Refused('RUNNER_NOT_REGISTERED', `runner ${host} is not registered`,
+        registered.length ? `registered runners: ${registered.join(', ')}` : 'run pullboard runner add <ssh-host> --slots <n> --browser <n> first');
+    }
+    const [runner] = runners.splice(index, 1);
+    writeMachineSettings({ ...current, runners });
+    return runner;
+  });
+}

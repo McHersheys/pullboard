@@ -301,9 +301,10 @@ function waitForPairingPoll(signal) {
 }
 
 /** Publish a one-use locator and wait in this command; cancellation never undoes linked boards. */
-async function pairFirstDevice(session, board, linked, io, { signal, onPairingURL } = {}) {
+async function pairFirstDevice(session, board, linked, io, { signal, onPairingURL, pairAdditional = false } = {}) {
+  const retryCommand = pairAdditional ? 'pullboard relay pair --new-browser' : 'pullboard relay on --all';
   if (signal?.aborted) {
-    io.say('Boards linked; phone pairing cancelled. Run pullboard relay on --all for a fresh code.');
+    io.say(pairAdditional ? 'Boards linked; browser pairing cancelled. Run ' + retryCommand + ' for a fresh code.' : 'Boards linked; phone pairing cancelled. Run pullboard relay on --all for a fresh code.');
     return { paired: false, interrupted: false, pairingOutcome: 'cancelled', pairingCleanup: 'not-published' };
   }
   const pending = beginDeviceEnrollment(board, session);
@@ -328,12 +329,12 @@ async function pairFirstDevice(session, board, linked, io, { signal, onPairingUR
     if (signal?.aborted || interrupted) pairingOutcome = 'cancelled';
     else if (onPairingURL) onPairingURL({ url: link, expires: pending.expires });
     else {
-      io.say('Now waiting for a phone to pair. On your phone, scan the code below or open this link.');
-      io.say('Pair your phone once: ' + link);
+      io.say(pairAdditional ? 'Now waiting for another browser to pair. Open this link in that browser, or scan the code on your phone.' : 'Now waiting for a phone to pair. On your phone, scan the code below or open this link.');
+      io.say((pairAdditional ? 'Pair this browser: ' : 'Pair your phone once: ') + link);
       try { io.say(terminalQr(link)); }
       catch (error) { if (error.code !== 'PAIR_LINK_LONG') throw error; io.say('Open the pairing link above.'); }
       // Ctrl-C reaches the stop handler above, which keeps every linked board and exits cleanly.
-      io.say(`To skip pairing, press Ctrl-C. The linked boards stay linked, and pullboard relay on --all gives a fresh code later. This code works until ${new Date(pending.expires).toISOString()}.`);
+      io.say(`To skip pairing, press Ctrl-C. The linked boards stay linked, and ${retryCommand} gives a fresh code later. This code works until ${new Date(pending.expires).toISOString()}.`);
     }
     while (!signal?.aborted && !interrupted && Date.now() < pending.expires) {
       let result;
@@ -352,7 +353,7 @@ async function pairFirstDevice(session, board, linked, io, { signal, onPairingUR
         locatorMayExist = false;
         pairingCleanup = 'confirmed';
         for (const project of linked) await deliverDeviceWraps(project.root, io);
-        io.say('Phone paired; current and future linked boards will appear here.');
+        io.say(pairAdditional ? 'Browser paired; current and future linked boards will appear here.' : 'Phone paired; current and future linked boards will appear here.');
         deviceId = device.deviceId;
         pairingOutcome = 'paired';
         break;
@@ -375,14 +376,14 @@ async function pairFirstDevice(session, board, linked, io, { signal, onPairingUR
   }
   if (pairingOutcome === 'paired') return { paired: true, deviceId, pairingOutcome, pairingCleanup };
   io.say((onPairingURL
-    ? `Boards linked; phone pairing ${pairingOutcome}. Run pullboard relay on --all for a fresh code.`
-    : 'Boards linked; phone pairing stopped. Run pullboard relay on --all for a fresh code.')
+    ? `Boards linked; ${pairAdditional ? 'browser' : 'phone'} pairing ${pairingOutcome}. Run ${retryCommand} for a fresh code.`
+    : 'Boards linked; ' + (pairAdditional ? 'browser' : 'phone') + ' pairing stopped. Run ' + retryCommand + ' for a fresh code.')
     + (pairingCleanup === 'unconfirmed' ? ' The relay may retain this request until it expires.' : ''));
   return { paired: false, interrupted: interrupted || Boolean(signal?.aborted), pairingOutcome, pairingCleanup };
 }
 
 /** Explicit foreground sign-in repairs links; only board machine credentials survive this command. */
-export async function relayOnAll(address, io, { signal, onPairingURL, onSignIn, onLinking, onBoardOutcome } = {}) {
+export async function relayOnAll(address, io, { signal, onPairingURL, onSignIn, onLinking, onBoardOutcome, pairAdditional = false } = {}) {
   requirePersonChannel(io.personChannel);
   // A cancelled or declined sign-in must not migrate machine state or scrub existing board links.
   const owner = relayMachineOwner();
@@ -412,9 +413,9 @@ export async function relayOnAll(address, io, { signal, onPairingURL, onSignIn, 
   updateRelayMachine(state => { state.autoLink = true; state.owner = { account: session.account, url: session.url }; state.approvals = state.approvals.filter(entry => waitingIds.has(entry.context.id)); });
   const result = await linkProjects(session, io, { onBoardOutcome, waiting: new Set(waiting.map(entry => entry.root)) });
   const devices = readRelayMachine().devices.filter(device => device.account === session.account && device.url === session.url);
-  if (devices.length) io.say('Your phone is already paired; the linked boards appear there.');
-  const pairing = devices.length || !result.linked.length ? { paired: devices.length > 0 }
-    : await pairFirstDevice(session, result.linked[0].board, result.linked, io, { signal, onPairingURL });
+  if (devices.length && !pairAdditional) io.say('Your phone is already paired; the linked boards appear there.');
+  const pairing = (devices.length && !pairAdditional) || !result.linked.length ? { paired: devices.length > 0 }
+    : await pairFirstDevice(session, result.linked[0].board, result.linked, io, { signal, onPairingURL, pairAdditional });
   const approved = await waitForLinkApprovals(waiting, io, { signal });
   result.linked.push(...approved.linked);
   result.failed.push(...approved.failed);
@@ -428,15 +429,16 @@ export async function relayOnAll(address, io, { signal, onPairingURL, onSignIn, 
  *
  * @param {string | undefined} address - The relay to use; the machine's saved relay when omitted.
  * @param {any} io
+ * @param {{pairAdditional?: boolean}} options - Explicitly enroll one more browser; default setup stays idempotent.
  * @returns {Promise<number>}
  */
-export async function relayOnAllCommand(address, io) {
+export async function relayOnAllCommand(address, io, { pairAdditional = false } = {}) {
   const controller = new AbortController();
   const cancelSignIn = () => controller.abort();
   process.once('SIGINT', cancelSignIn);
   process.once('SIGTERM', cancelSignIn);
   let result;
-  try { result = await relayOnAll(address, io, { signal: controller.signal }); }
+  try { result = await relayOnAll(address, io, { signal: controller.signal, pairAdditional }); }
   finally { process.off('SIGINT', cancelSignIn); process.off('SIGTERM', cancelSignIn); }
   io.result?.(result);
   if (result.outcome) {

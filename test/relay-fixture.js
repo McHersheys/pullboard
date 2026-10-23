@@ -10,7 +10,9 @@ export async function githubFixture(t) {
   const state = { access: true, permission: 'write', public: false, installed: true, repositoryID: 100, repositories: ['repository'], accountID: 7, permissionAccountID: 7, deviceAuthorized: false, deviceDeclined: false, deviceExpired: false, slow: false, redirect: null, beforeDevicePoll: null, beforeUser: null };
   const calls = [];
   const codes = new Map();
-  const userTokens = new Set();
+  // Each user credential remembers who signed in. state.signer picks the next person and state.people gives each
+  // one an id and repository role; without them there is one person, fixture-user, as before.
+  const userTokens = new Map();
   const installationTokens = new Set();
   const deviceCode = randomBytes(24).toString('base64url');
   const clientSecret = randomBytes(24).toString('base64url');
@@ -34,7 +36,7 @@ export async function githubFixture(t) {
   /** Issue synthetic user credentials; only in-memory Sets ever retain their plaintext. */
   function userCredential() {
     const token = 'ghu_' + randomBytes(32).toString('base64url');
-    userTokens.add(token);
+    userTokens.set(token, state.signer ?? 'fixture-user');
     return { access_token: token, token_type: 'bearer', scope: '', expires_in: 3600 };
   }
 
@@ -92,7 +94,8 @@ export async function githubFixture(t) {
     if (url.pathname === '/user') {
       if (state.redirect) { res.writeHead(302, { location: state.redirect }); return res.end(); }
       if (state.beforeUser) await state.beforeUser();
-      return reply(res, isUser ? 200 : 401, { id: state.accountID, login: 'fixture-user' });
+      const login = userTokens.get(bearer) ?? 'fixture-user';
+      return reply(res, isUser ? 200 : 401, { id: state.people?.[login]?.id ?? state.accountID, login });
     }
     const repositoryPath = url.pathname.match(/^\/repos\/fixture\/([^/]+)(?:\/(.*))?$/u);
     const repositoryName = repositoryPath?.[1];
@@ -109,9 +112,11 @@ export async function githubFixture(t) {
       return reply(res, 201, { token, expires_at: new Date(Date.now() + 3600_000).toISOString() });
     }
     if (allowedRepository && !repositoryPath[2]) return reply(res, isInstallation || state.public ? 200 : 404, { id: state.repositoryID + state.repositories.indexOf(repositoryName), full_name: 'fixture/' + repositoryName, private: !state.public });
-    if (allowedRepository && repositoryPath[2] === 'collaborators/fixture-user/permission') {
+    const asked = /^collaborators\/([^/]+)\/permission$/u.exec(repositoryPath?.[2] ?? '')?.[1];
+    if (allowedRepository && asked && (asked === 'fixture-user' || state.people?.[asked])) {
       if (state.beforePermission) await state.beforePermission();
-      const role = state.access ? state.permission : 'none';
+      const person = state.people?.[asked];
+      const role = person ? person.permission : state.access ? state.permission : 'none';
       const permission = { triage: 'read', maintain: 'write' }[role] || role;
       const permissions = state.permissions ?? {
         pull: ['read', 'triage', 'write', 'maintain', 'admin'].includes(role),
@@ -119,7 +124,7 @@ export async function githubFixture(t) {
         push: ['write', 'maintain', 'admin'].includes(role),
         maintain: ['maintain', 'admin'].includes(role), admin: role === 'admin',
       };
-      const answer = { permission, user: { id: state.permissionAccountID } };
+      const answer = { permission, user: { id: person ? person.id : state.permissionAccountID } };
       if (!state.legacyOnly) {
         answer.role_name = state.roleName ?? role;
         answer.user.permissions = permissions;
@@ -134,5 +139,6 @@ export async function githubFixture(t) {
   await once(server, 'listening');
   origin = 'http://127.0.0.1:' + server.address().port;
   t.after(() => { server.closeAllConnections(); server.close(); });
-  return { state, calls, origin, userTokens, installationTokens, config: { clientId: 'fixture-app', clientSecret, privateKey: privateKey.export({ type: 'pkcs8', format: 'pem' }), oauthBase: origin, apiBase: origin, callbackURL: origin + '/callback' } };
+  // Callers see the issued user tokens themselves, as before; who signed in with each stays inside the stand-in.
+  return { state, calls, origin, userTokens: { [Symbol.iterator]: () => userTokens.keys(), has: (token) => userTokens.has(token) }, installationTokens, config: { clientId: 'fixture-app', clientSecret, privateKey: privateKey.export({ type: 'pkcs8', format: 'pem' }), oauthBase: origin, apiBase: origin, callbackURL: origin + '/callback' } };
 }

@@ -4,10 +4,20 @@ import {
 } from '../refused.js';
 import {
   addRunner,
+  removeRunner,
 } from '../settings.js';
 
-/** Register machine-level SSH capacity without requiring a board identity or a runner account. */
+/** Add or remove machine-level SSH capacity without requiring a board identity or runner account. */
 export function runnerCommand(io, { first, second, rest, values }) {
+  if (first === 'remove') {
+    if (!second || second.trim() !== second || rest.length || Object.keys(values).some(key => key !== 'json')) {
+      throw new Refused('USAGE', 'pullboard runner remove <ssh-host>');
+    }
+    const runner = removeRunner(second);
+    io.result?.({ runner });
+    io.say(`removed runner ${runner.host}`);
+    return 0;
+  }
   if (first !== 'add' || !second || rest.length || !/^[1-9]\d*$/u.test(values.slots ?? '')
     || !/^(?:0|[1-9]\d*)$/u.test(values.browser ?? '')) {
     throw new Refused('USAGE', 'pullboard runner add <ssh-host> --slots <positive integer> --browser <integer from zero through slots>');

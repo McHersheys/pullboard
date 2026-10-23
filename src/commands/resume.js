@@ -88,7 +88,7 @@ import {
   coordinatorNext,
   dirtyFiles,
   firstLine,
-  ordered,
+  ordered as sendOrdered,
   primaryCheckoutRoot,
   resumeReleaseNotes,
   reworkNext,
@@ -104,6 +104,27 @@ import {
 } from '../cli.js';
 
 /**
+ * Resume's own moves (the approval baseline, health findings, due watches) are bookkeeping: a session that cannot
+ * reach the board key (SSH, a scheduled job, a locked keychain) still reads the whole card, and the moves wait for a
+ * session that can. Every read works without the key [E9].
+ *
+ * @param {typeof sendOrdered} send
+ * @returns {typeof sendOrdered}
+ */
+function keylessBookkeeping(send) {
+  let noted = false;
+  return async (ctx, board, operation, args) => {
+    try { return await send(ctx, board, operation, args); }
+    catch (error) {
+      if (!(error instanceof Refused) || error.code !== 'RELAY_KEY_MISSING') throw error;
+      if (!noted) ctx.io.err?.('pullboard: the board key is not reachable in this session, so resume reads the local board and leaves its bookkeeping moves to a session that holds the key');
+      noted = true;
+      return null;
+    }
+  };
+}
+
+/**
  * `pullboard resume` (N19): one short card that puts an agent back to work after a fresh start,
  * a restart or a compaction, from the board rather than from a summary.
  *
@@ -113,6 +134,7 @@ import {
  */
 export async function resumeHere(io, view) {
   const ctx = context(io);
+  const ordered = keylessBookkeeping(sendOrdered);
   await withBoard(ctx, async board => {
     const me = whoAmI(ctx, board);
     // Bootstrap is an ordered move: observe health only after it, so the first legacy scan is not stale.

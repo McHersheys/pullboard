@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +13,9 @@ import {
 } from '../src/relay-outbox.js';
 import { runFixtureGit } from './fixture-child.js';
 import { relayClientFixture } from './relay-client-fixture.js';
+import { relayFixtureChild } from './relay-client-fixture.js';
+
+const CLI = fileURLToPath(new URL('../bin/pullboard.js', import.meta.url));
 
 /** Turn the board's committed relay.outbox setting on, as its coordinator would. */
 function enableOutbox(box) {
@@ -28,6 +32,20 @@ function enableOutbox(box) {
 /** The shout texts a board export holds, in board order. */
 function shoutTexts(exported) {
   return exported.tables.shout.map((row) => row.shout_text);
+}
+
+/**
+ * An agent seat on the other machine. Its moves are its own, so it adds while the first machine's main checkout
+ * keeps the coordinator: one main checkout coordinates a board at a time (E19, #347).
+ */
+async function otherAgent(box, other) {
+  const path = join(dirname(other.root), 'other-agent');
+  runFixtureGit(['worktree', 'add', '-q', '-b', 'agent/other', path], { cwd: other.root, env: other.env });
+  /** Run the real CLI in the other machine's agent worktree. */
+  const run = (...args) => relayFixtureChild(path, other.env, [CLI, ...args, '--json']);
+  const joined = await run('join', box.lane, '--model', 'fixture-model');
+  assert.equal(joined.code, 0, joined.failure);
+  return run;
 }
 
 /** Two machines on one accepted relay board with the outbox on, and an item added before the outage. */
@@ -63,21 +81,27 @@ test('a move on an accepted relay link waits in the ordered outbox while the rel
   assert.ok(shoutTexts(local.document).includes('queued last while the relay is down'), 'this machine keeps working on its queued moves');
 
   await box.restartRelay();
+  // One main checkout coordinates at a time (E19, #347): the other machine takes the coordinator before it withdraws.
+  const taken = await other.cli('takeover');
+  assert.equal(taken.code, 0, taken.failure);
   const raced = await other.cli('withdraw', String(contested), 'the other machine withdrew it first');
   assert.equal(raced.code, 0, raced.failure);
 
   const replayed = await box.cli('status');
   assert.equal(replayed.code, 0, replayed.failure);
   assert.equal(replayed.document.relay.outbox, undefined, 'the outbox is empty once it replays');
-  const [refused] = replayed.document.relay.outboxRefusals;
-  assert.equal(replayed.document.relay.outboxRefusals.length, 1, 'only the conflicting move is refused');
-  assert.match(refused.move, new RegExp(`^withdraw #${contested}`), 'the refusal names the queued move');
-  assert.ok(refused.earlier.some((earlier) => earlier.move.startsWith(`withdraw #${contested}`)), 'the refusal names the move another machine made first');
+  const refusals = replayed.document.relay.outboxRefusals;
+  assert.deepEqual(refusals.map((refused) => refused.move.split(' ')[0]), ['shout', 'withdraw', 'shout'], 'each queued move replays in the order it was made');
+  for (const refused of refusals) {
+    assert.equal(refused.code, 'COORDINATOR_HELD', 'a queued coordinator move from the machine that no longer holds the coordinator is refused');
+    assert.ok(refused.message.includes(`computer ${other.machine.slice(-8)}`), 'the refusal names the machine that holds the coordinator');
+  }
+  assert.ok(refusals[1].earlier.some((earlier) => earlier.move.startsWith(`withdraw #${contested}`)), 'the refusal names the move another machine made first');
 
   const there = await other.cli('export');
   const here = await box.cli('export');
   const sent = shoutTexts(there.document).filter((text) => /while the relay is down/u.test(text));
-  assert.deepEqual(sent, ['queued first while the relay is down', 'queued last while the relay is down'], 'the other machine receives the queued moves in order');
+  assert.deepEqual(sent, [], 'no queued coordinator move reaches the other machine');
   assert.deepEqual(shoutTexts(here.document), shoutTexts(there.document), 'both machines hold the same shouts in the same order');
   const item = (exported) => exported.tables.item.find((row) => row.item_id === contested);
   assert.deepEqual(item(here.document), item(there.document), 'both machines agree on the contested item');
@@ -96,7 +120,7 @@ test('an item added while the relay is down keeps its queued moves when another 
   assert.equal(withdrawn.code, 0, withdrawn.failure);
 
   await box.restartRelay();
-  const first = await other.cli('add', box.lane, 'Added there first');
+  const first = await (await otherAgent(box, other))('add', box.lane, 'Added there first');
   assert.equal(first.code, 0, first.failure);
   assert.equal(first.document.item.item_id, local, 'the other machine takes the number this machine used offline');
 
@@ -121,7 +145,8 @@ test('an offline item stays bound to its queued moves through a replay that stop
   const first = (await box.cli('add', box.lane, 'First item added here offline')).document.item.item_id;
   const second = (await box.cli('add', box.lane, 'Second item added here offline')).document.item.item_id;
   await box.restartRelay();
-  assert.equal((await other.cli('add', box.lane, 'Remote item takes the first number')).document.item.item_id, first);
+  const agent = await otherAgent(box, other);
+  assert.equal((await agent('add', box.lane, 'Remote item takes the first number')).document.item.item_id, first);
   // The relay takes the first replayed add, then stops answering reads, so the replay stops part way.
   box.beforeNextMove(() => { box.refuseReads(true); });
   await box.cli('status');
@@ -130,7 +155,7 @@ test('an offline item stays bound to its queued moves through a replay that stop
   const withdrawn = await box.cli('withdraw', String(shown), 'withdrawn here at the number this machine shows');
   assert.equal(withdrawn.code, 0, withdrawn.failure);
   box.refuseReads(false);
-  assert.equal((await other.cli('add', box.lane, 'Remote item takes the shown number')).document.item.item_id, shown,
+  assert.equal((await agent('add', box.lane, 'Remote item takes the shown number')).document.item.item_id, shown,
     'the other machine takes the number this machine showed');
 
   const replayed = await box.cli('status');
@@ -222,7 +247,7 @@ test('a milestone edit naming an offline item follows that item when another mac
   const listed = await box.cli('milestone', 'items', 'next', '--add', String(local));
   assert.equal(listed.code, 0, listed.failure);
   await box.restartRelay();
-  assert.equal((await other.cli('add', box.lane, 'Added there first')).document.item.item_id, local, 'the other machine takes the number used offline');
+  assert.equal((await (await otherAgent(box, other))('add', box.lane, 'Added there first')).document.item.item_id, local, 'the other machine takes the number used offline');
 
   const replayed = await box.cli('status');
   assert.equal(replayed.code, 0, replayed.failure);

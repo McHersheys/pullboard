@@ -134,6 +134,7 @@ At the start of every coordinator cycle, check the flow from the `flow:` line in
 ## Commands by coordination task
 
 - When registering the main checkout as coordinator, run `pullboard join coordinator --model <name>`; when joining a lane, run `pullboard join <lane> --model <name>`. After the same agent starts a new session, run `pullboard takeover`; confirm the active identity with `pullboard whoami`.
+- When you need to see who works for whom, run `pullboard agents`: each agent with its seats and the helpers it opened, and what each holds.
 - When you need current syntax, run `pullboard help` or `pullboard help <command>`; check the installed release with `pullboard version`. Use `pullboard tour` to walk a person through the scripted example in a throwaway repo.
 - When checking machine gate capacity, run `pullboard resources`; change the configured slot count with `pullboard settings gateSlots <n>`, `pullboard settings browserSlots <n>` or `pullboard settings gate.shortSlots <n>` only when the team has agreed to that machine-wide setting.
 - When an item needs its frozen check, run `pullboard check <id>`; use `pullboard claim <id>` to take or renew a specific lease and `pullboard release <id>` when you cannot continue. `pullboard done <id>` is the submit alias.
@@ -146,5 +147,6 @@ At the start of every coordinator cycle, check the flow from the `flow:` line in
 - When hooks are missing after a clone, run `pullboard hooks` to reinstall them; when diagnosing one hook directly, run `pullboard hook pre-commit`, `pullboard hook pre-merge-commit`, `pullboard hook commit-msg`, or `pullboard hook pre-push` for the hook in question.
 - When linking this board to the relay, run `pullboard relay on`; use `pullboard relay off` to unlink it, `pullboard relay pair` to print a one-use code, and `pullboard relay join <code>` in the clone that receives that code. Run `pullboard relay` to inspect link state.
 - When checking paired-device or agent-token metadata, run `pullboard relay devices` or `pullboard relay tokens`; use `pullboard relay revoke <id>` only when authorized to revoke that device or token. When a blocked relay position needs recovery, hand it to the person because recovery is reserved for their action.
+- For an additional phone or browser, the person runs `pullboard relay pair --new-browser` on the linked computer and opens its fresh one-use link in that browser. Bare `pullboard relay pair` still creates the computer-clone code; `pullboard relay on --all` keeps its first-phone-only behavior.
 - When opening the local board in a browser, run `pullboard view`; use `pullboard view --export <dir>` for a static snapshot and `pullboard serve` when a local script needs the authenticated API.
 - When keeping a versioned board backup, run `pullboard export`; restore it only into an empty board with `pullboard import <file>`. When removing a repository from this machine's registered project list, run `pullboard forget <path>`.
