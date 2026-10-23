@@ -12,7 +12,8 @@
  * Two nested runs of one parent share its one place; neither can wait forever on the token its own parent holds.
  */
 import { mkdirSync } from 'node:fs';
-import { createRequire, syncBuiltinESMExports } from 'node:module';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import { availableParallelism } from 'node:os';
 import { join } from 'node:path';
 import { machineHome } from './machine-home.js';
@@ -206,7 +207,6 @@ export async function takeTestFileToken(env = process.env) {
 function lendThroughSyncCalls(pool, env) {
   const ours = env[TEST_FILE_POOL_ENV];
   const lent = JSON.stringify({ home: pool.home, cores: pool.cores, lender: process.pid });
-  const childProcess = createRequire(import.meta.url)('node:child_process');
   for (const name of ['spawnSync', 'execFileSync', 'execSync']) {
     const original = childProcess[name];
     childProcess[name] = function lendingSyncCall(...args) {
