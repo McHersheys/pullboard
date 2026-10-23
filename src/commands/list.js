@@ -10,13 +10,13 @@ import {
   agentDisplayName,
   context,
   itemLine,
-  withBoard,
+  withBoardRead,
 } from '../cli.js';
 
 /** Run `pullboard list` and return its exit code. */
 export function run(io, { first, values }) {
   const ctx = context(io);
-  const { items, agents, merging } = withBoard(ctx, (board) => {
+  const { items, agents, merging } = withBoardRead(ctx, (board) => {
     const rows = store.listItems(board, { lane: first, all: values.all });
     return { items: rows.map(verdictProjector(ctx.info.root, board).project), agents: store.listAgents(board),
       merging: new Set(rows.filter(item => !['verified', 'withdrawn'].includes(item.item_status) && mainMergeFor(board, item.item_id)).map(item => item.item_id)) };

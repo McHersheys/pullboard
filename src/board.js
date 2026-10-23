@@ -13,6 +13,8 @@ import {
   checkedLandingCommit,
 } from './verdict-reviews.js';
 export { verdictReviewProblem, verdictsFor, acceptedVerdict, checkedLandingCommit };
+export { landingLeaseMove, landingLeaseState } from './landing-lease.js';
+import { guardLandingWrite } from './landing-lease.js';
 import {
   randomBytes,
   randomUUID,
@@ -31,6 +33,15 @@ import { boardNotWritable } from './board-access.js';
 import { ensureHotIndexes } from './board-hot.js';
 import { boardBusyError } from './board-access.js';
 export { boardBusyError } from './board-access.js';
+import {
+  boardIsCurrent,
+  boardStanding,
+  migrate,
+  recordSchemaStamp,
+  reportDrift,
+  schemaDigest,
+} from './board-migrate.js';
+export { schemaMissing, writeRefused } from './board-migrate.js';
 import {
   briefFiles,
   briefSections,
@@ -247,6 +258,21 @@ const SCHEMA = `
   );
 `;
 
+/** This code's schema digest: a board stamped with it and its present shape needs no migration. */
+const SCHEMA_DIGEST = schemaDigest(SCHEMA, EVENT_LOG_VERSION);
+
+/**
+ * Open an existing board for a command that only reads: read-only, with no write lock and no
+ * migration, so a writer holding the lock never stalls it (#1047). `current` says whether this
+ * code's migration has run on it; only a write open migrates. Null when there is no board yet.
+ */
+export function openBoardForRead(file, clock = systemClock) {
+  if (file === ':memory:' || !existsSync(file)) return null;
+  const db = openBoardReadOnly(file);
+  try { readEventLogVersion(db); return { db, clock, readOnly: true, current: boardIsCurrent(db, SCHEMA_DIGEST, SCHEMA_VERSION) }; }
+  catch (error) { db.close(); throw error; }
+}
+
 /** Open an existing board without migrations, waiting for the same locks as openBoard. */
 export function openBoardReadOnly(file) {
   const startedAt = Date.now();
@@ -309,11 +335,17 @@ export function openBoard(file, clock = systemClock, { isMain, onDiagnostic } = 
     if (file !== ':memory:' && isMain !== false) db.exec('PRAGMA journal_mode = WAL');
     const board = { db, clock };
     if (isMain !== false || file === ':memory:') {
-      migrateEventLogVersion(db);
-      migrate(db);
-      ensureHotIndexes(db);
-      db.prepare('INSERT OR IGNORE INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run('board_id', randomBytes(16).toString('hex'));
-      guardStore(board);
+      // Migrate and audit only a board whose version is behind; a drifted shape is reported and left alone (#1047).
+      const standing = boardStanding(db, SCHEMA_DIGEST, SCHEMA_VERSION, readEventLogVersion(db) < EVENT_LOG_VERSION);
+      if (standing === 'behind') {
+        migrateEventLogVersion(db);
+        migrate(db);
+        ensureHotIndexes(db);
+        db.prepare('INSERT OR IGNORE INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run('board_id', randomBytes(16).toString('hex'));
+        guardStore(board);
+      }
+      if (standing === 'behind' || standing === 'unstamped') recordSchemaStamp(db, SCHEMA_DIGEST);
+      if (standing === 'drifted') reportDrift(file, onDiagnostic);
     } else {
       // Read compatibility before any local effect; persistent schema belongs to trunk alone.
       readEventLogVersion(db);
@@ -348,7 +380,7 @@ function guardMoves(board) {
 }
 
 /** The board's PRAGMA user_version once its triggers are in: losing one after that is news. */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 const GUARDED = 1;
 
 /**
@@ -384,44 +416,6 @@ function guardStore(board) {
     if (board.db.prepare('PRAGMA user_version').get().user_version >= GUARDED) logEvent(board, 'board', 'guards', null, found);
     if (board.db.prepare('PRAGMA user_version').get().user_version < SCHEMA_VERSION) board.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   });
-}
-
-/**
- * Bring a board made by an older version up to the current schema, one added column at a time, so
- * an upgrade never needs a fresh board.
- *
- * @param {DatabaseSync} db
- */
-function migrate(db) {
-  const added = [
-    ['item', 'item_after', "TEXT NOT NULL DEFAULT ''"],
-    ['item', 'item_brief', "TEXT NOT NULL DEFAULT ''"],
-    ['item', 'item_route', "TEXT NOT NULL DEFAULT 'strong'"],
-    ['item', 'item_check', "TEXT NOT NULL DEFAULT ''"],
-    ['agent', 'agent_route', "TEXT NOT NULL DEFAULT 'strong'"],
-    ['agent', 'agent_family', 'TEXT'],
-    ['item', 'item_builder_family', 'TEXT'],
-    ['verdict', 'verdict_verifier_family', 'TEXT'],
-    ['item', 'item_claim_head', 'TEXT'],
-    ['item', 'item_files', "TEXT NOT NULL DEFAULT ''"],
-    ['item', 'item_review_by', 'TEXT'],
-    ['item', 'item_review_until', 'TEXT'],
-    ['item', 'item_hold_reason', 'TEXT'],
-    ['item', 'item_hold_by', 'TEXT'],
-    ['item', 'item_hold_at', 'TEXT'],
-    ['shout', 'shout_decision', 'INTEGER NOT NULL DEFAULT 0'],
-    ['shout', 'shout_answers', 'INTEGER'],
-    ['shout', 'shout_evidence_kind', 'TEXT'],
-    ['shout', 'shout_evidence_outcome', 'TEXT'],
-    ['shout', 'shout_evidence_item', 'INTEGER'],
-    ['shout', 'shout_evidence_commit', 'TEXT'],
-    ['shout', 'shout_request', 'INTEGER NOT NULL DEFAULT 0'],
-    ['shout', 'shout_request_outcome', "TEXT NOT NULL DEFAULT ''"],
-  ];
-  for (const [table, column, type] of added) {
-    const columns = db.prepare(`PRAGMA table_info(${table})`).all().map((entry) => entry.name);
-    if (!columns.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
-  }
 }
 
 /**
@@ -2678,7 +2672,7 @@ export { stats } from './board-stats.js';
 export { landingBatches };
 
 /** Append one coordinator-owned batch revision without changing the board schema [B3,R3]. */
-export function recordLandingBatch(board, { agentId, batch, revision = 0 }) {
+export function recordLandingBatch(board, { agentId, batch, revision = 0, landingFence }) {
   coordinatorOnly(agentId, 'records landing batches');
   if (carriesFlakeDiagnostics(batch) && (board.executionEngineVersion ?? ENGINE_VERSION) < NATIVE_FLAKE_ENGINE) {
     throw new Refused('ENGINE_VERSION', `typed landing diagnostics require engine ${NATIVE_FLAKE_ENGINE}; upgrade Pullboard`);
@@ -2691,6 +2685,7 @@ export function recordLandingBatch(board, { agentId, batch, revision = 0 }) {
     throw new Refused('LAND_BATCH', 'a landing batch needs its exact base, tip, items, state, owner and log path; run pullboard land');
   }
   return atomic(board, () => {
+    guardLandingWrite(board, landingFence);
     const previous = landingBatches(board).find((entry) => entry.id === batch.id);
     preserveInvariantEvidence(previous, evidence, board.executionEngineVersion ?? ENGINE_VERSION);
     validateLandingRevision(previous, batch, revision);
@@ -2763,9 +2758,10 @@ export function waivedLandingProof(board, tree) {
 }
 
 /** Atomically record a pushed batch's first-containing merges and one main-moved receipt [B3,R3]. */
-export function finishLandingBatch(board, { agentId, id, tip }) {
+export function finishLandingBatch(board, { agentId, id, tip, landingFence }) {
   coordinatorOnly(agentId, 'finishes a landing');
   return atomic(board, () => {
+    guardLandingWrite(board, landingFence);
     const batch = landingBatches(board).find((entry) => entry.id === id);
     if (!batch || batch.tip !== tip) throw new Refused('LAND_BATCH', 'the pushed tip must match its recorded batch; run pullboard land --adopt');
     if (batch.state === 'landed') return batch;
@@ -2795,6 +2791,6 @@ export function finishLandingBatch(board, { agentId, id, tip }) {
       if (!item.item_merged_commit) merged(board, entry.id, { agentId, commit: entry.merge });
     }
     logEvent(board, agentId, 'main-moved', null, { sha: tip, batch: id, items: batch.items.map((entry) => entry.id) });
-    return recordLandingBatch(board, { agentId, batch: { ...batch, state: 'landed' }, revision: batch.revision });
+    return recordLandingBatch(board, { agentId, batch: { ...batch, state: 'landed' }, revision: batch.revision, landingFence });
   });
 }

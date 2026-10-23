@@ -16,6 +16,8 @@ import { readRemoteGateHolders, waitForCondition } from './runner-fixture-state.
 import { assertAttemptDeadlineReset, assertRedispatchDeadlineAccounting, runPairedRerun, startRunnerCpuStandIn } from './runner-paired-rerun-fixture.js';
 import { assertFixtureGroupEpermControls, stopGroup } from './runner-process-group.js';
 import { parentDeathDrainFixture } from './runner-parent-death-fixture.js';
+import { runnerOrphanFixture, unprovenProcessFixture } from './runner-orphan-fixture.js';
+import { createDescendantTracker } from '../src/runner-custody.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { refuseSandboxBlocked } from '../src/gate.js';
 import { SECRET, HOST, shellQuote, installSshStandIn } from './runner-ssh-fixture.js';
@@ -24,6 +26,7 @@ import { runnerSourceRefusalCases } from './runner-source-refusal-fixture.js';
 import { writeCacheProbe, writeProbe } from './runner-probe-fixture.js';
 import { browserFreeRunnerCheck, browserRefusalTextStaysRed } from './runner-browser-free-fixture.js';
 import { runnerUsesRegisteredCapacity } from './runner-capacity-fixture.js';
+import { removingBusyRunnerDrains, runnerRemoveKeepsSettings } from './runner-drain-fixture.js';
 
 /** Per-phase deadlines for one runner round trip; together they stay near the 60-second hang ceiling. */
 const ROUND_TRIP_DEADLINES = { dispatch: 20_000, 'remote run': 30_000, 'result return': 10_000 }; // budget: a stuck runner fails by name in about a minute, far under the 660-second per-test limit.
@@ -311,36 +314,9 @@ test("the runner's trusted runtime list is closed under its relative imports [C7
   }
 });
 
-test('runner remove deletes one runner and keeps the rest [C7]', (t) => {
-  const box = e2e.project();
-  const settingsFile = join(box.env.PULLBOARD_MACHINE_HOME, 'settings.json');
-  const removed = { host: 'runner-one.example.invalid', slots: 2, browser: 1, node: 'node', root: '/srv/runner-one' };
-  const remaining = { host: 'runner-two.example.invalid', slots: 1, browser: 0 };
-  const original = { gateSlots: 3, browserSlots: 2, gate: { shortSlots: 1, queue: { reviewsFirst: true } },
-    relay: { offerAtInit: true }, custom: { keep: 'unchanged' } };
-  mkdirSync(box.env.PULLBOARD_MACHINE_HOME, { recursive: true });
-  writeFileSync(settingsFile, JSON.stringify(original, null, 2));
-  const firstAdded = box.run(box.repo, 'runner', 'add', removed.host, '--slots', String(removed.slots), '--browser', String(removed.browser),
-    '--node', removed.node, '--root', removed.root);
-  assert.equal(firstAdded.code, 0, firstAdded.err);
-  const secondAdded = box.run(box.repo, 'runner', 'add', remaining.host, '--slots', String(remaining.slots), '--browser', String(remaining.browser));
-  assert.equal(secondAdded.code, 0, secondAdded.err);
-  const registered = { ...original, runners: [removed, remaining] };
-  assert.deepEqual(JSON.parse(readFileSync(settingsFile, 'utf8')), registered);
+test('runner remove deletes one runner and keeps the rest [C7]', (t) => runnerRemoveKeepsSettings(t, e2e));
 
-  const result = box.run(box.repo, 'runner', 'remove', removed.host);
-  assert.equal(result.code, 0, result.err);
-  assert.ok(result.out.includes(`removed runner ${removed.host}`), result.out);
-  assert.deepEqual(JSON.parse(readFileSync(settingsFile, 'utf8')), { ...original, runners: [remaining] });
-
-  const missing = box.run(box.repo, 'runner', 'remove', removed.host, '--json');
-  assert.equal(missing.code, 1, missing.err);
-  const refusal = JSON.parse(missing.out).error;
-  assert.equal(refusal.code, 'RUNNER_NOT_REGISTERED');
-  assert.ok(refusal.next.includes(remaining.host), refusal.next);
-  assert.ok(!refusal.next.includes(removed.host), refusal.next);
-  assert.deepEqual(JSON.parse(readFileSync(settingsFile, 'utf8')), { ...original, runners: [remaining] });
-});
+test('removing a busy runner drains it [C7]', (t) => removingBusyRunnerDrains(t, { cli, git, observe, startQueueController, gateResult }));
 
 test('a queued run executes on a registered runner and its result comes back (host checkout isolation) [C7]', async (t) => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-runner-tooling-isolation-')));
@@ -1506,114 +1482,11 @@ test('a queued run executes on a registered runner and its result comes back [C7
 test('a queued run executes on a registered runner and its result comes back [C7] (parent death drains a child that leaves its group after the first census)',
   { timeout: 90_000 }, t => parentDeathDrainFixture(t, parentDeathTools, { lateGroup: true })); // budget: same fixture ceiling as the ordinary parent-death case.
 
-test('a queued run executes on a registered runner and its result comes back [C7] (unverified cleanup times out as a named red result)', { timeout: 90_000 }, async (t) => { // budget: bounded 30-second remote cleanup timeout plus startup, transport and fixture cleanup ceiling.
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-runner-cleanup-timeout-')));
-  const home = join(dir, 'home');
-  const machineHome = join(home, '.pullboard');
-  const remoteHome = join(dir, 'worker-home');
-  const remoteStateRoot = join(remoteHome, '.pullboard-runner');
-  const remoteMachineHome = join(remoteHome, '.pullboard');
-  const remoteDatabase = join(remoteMachineHome, 'resources.sqlite');
-  const repo = join(dir, 'repo');
-  const worker = join(dir, 'second-machine');
-  const bin = join(dir, 'bin');
-  const requests = join(dir, 'ssh-requests.jsonl');
-  const bodyRan = join(remoteStateRoot, 'cleanup-timeout-body-ran');
-  const starts = join(dir, 'ssh-starts.jsonl');
-  let commandChild;
-  t.after(async () => {
-    if (commandChild && commandChild.exitCode === null && commandChild.signalCode === null) {
-      try { process.kill(-commandChild.pid, 'SIGTERM'); }
-      catch (error) { if (error.code !== 'ESRCH') t.diagnostic(`fixture process-group cleanup: ${error.message}`); }
-      await once(commandChild, 'close').catch(error => t.diagnostic(`fixture child close: ${error.message}`));
-    }
-    if (existsSync(remoteDatabase)) {
-      try { await waitForCondition(() => readRemoteGateHolders(remoteDatabase).length === 0,
-        'fixture remote physical gate holder cleanup'); }
-      catch (error) { t.diagnostic(error.message); }
-    }
-    rmSync(dir, { recursive: true, force: true });
-  });
-  for (const folder of [repo, worker, bin, home, machineHome, remoteHome, remoteStateRoot, remoteMachineHome]) {
-    mkdirSync(folder, { recursive: true });
-  }
-  writeFileSync(join(machineHome, 'settings.json'), JSON.stringify({ gateSlots: 1 }));
-  const env = {
-    ...process.env, HOME: home, PULLBOARD_HOME: home, PULLBOARD_MACHINE_HOME: machineHome,
-    PATH: `${bin}:${process.env.PATH}`, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1',
-    GIT_AUTHOR_NAME: 'Runner Cleanup Fixture', GIT_AUTHOR_EMAIL: 'runner-cleanup@example.invalid',
-    GIT_COMMITTER_NAME: 'Runner Cleanup Fixture', GIT_COMMITTER_EMAIL: 'runner-cleanup@example.invalid',
-  };
-  const initialized = runFixtureChild('git', ['init', '-q', '-b', 'main'], { cwd: repo, env, encoding: 'utf8' });
-  assert.equal(initialized.status, 0, initialized.context);
-  writeFileSync(join(repo, 'pullboard.json'), JSON.stringify({ gate: 'node runner-cleanup-timeout.js' }));
-  writeFileSync(join(repo, 'tracked.txt'), 'cleanup timeout fixture\n');
-  writeFileSync(join(repo, 'runner-cleanup-timeout.js'), `import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-const option = /(?:^|\\s)--import=(?:"([^"]+)"|'([^']+)'|(\\S+))/u.exec(process.env.NODE_OPTIONS || '');
-if (!option) throw new Error('runner preload path was not passed to the committed job');
-const preload = fileURLToPath(option[1] || option[2] || option[3]);
-const runDirectory = dirname(preload);
-const journalDirectory = join(runDirectory, 'child-journal');
-const runnerRoot = dirname(dirname(runDirectory));
-if (!existsSync(journalDirectory)) throw new Error('private child journal is missing');
-mkdirSync(runnerRoot, { recursive: true });
-writeFileSync(join(journalDirectory, 'overflow'), 'fixture journal overflow\\n');
-writeFileSync(join(runnerRoot, 'cleanup-timeout-body-ran'), 'ran\\n');
-console.log('RUNNER_CLEANUP_TIMEOUT_BODY_RAN');
-`);
-  git(repo, env, 'add', 'pullboard.json', 'tracked.txt', 'runner-cleanup-timeout.js');
-  git(repo, env, 'commit', '-q', '-m', 'test: prepare runner cleanup timeout fixture');
-  installSshStandIn({ bin, worker, home: remoteHome, machineHome: remoteMachineHome, requests, starts });
-  const added = cli(repo, env, 'runner', 'add', HOST, '--slots', '1', '--browser', '1', '--json');
-  assert.equal(added.status, 0, added.context);
-
-  const previousHome = process.env.PULLBOARD_HOME;
-  const previousMachineHome = process.env.PULLBOARD_MACHINE_HOME;
-  process.env.PULLBOARD_HOME = home;
-  process.env.PULLBOARD_MACHINE_HOME = machineHome;
-  let held;
-  try {
-    held = await takeResource({ name: 'gate', capacity: 1, scope: 'machine', root: repo,
-      agent: 'cleanup-timeout-local-holder', item: 'cleanup-timeout-local-holder', kind: 'fixture-hold', browser: true });
-    // The real CLI must refuse this one response as RUNNER_CLEANUP_TIMEOUT; a missing or
-    // incomplete transport result would take the retry path and could incorrectly run locally.
-    commandChild = startToolingCli(repo, env, ['gate', '--json'], { detached: true });
-    const command = observe(commandChild);
-    const completed = await command.closed;
-    assert.equal(completed.status, 1, `${completed.stderr}\n${completed.stdout}`);
-    const response = JSON.parse(completed.stdout.trim());
-    assert.equal(response.error?.code, 'RUNNER_CLEANUP_TIMEOUT', JSON.stringify(response));
-    assert.match(response.error.message, /child spawn journal overflow or write failure/u,
-      'the named refusal retains the worker reason instead of losing it at the controller');
-    const jobId = /inspect job ([A-Za-z0-9_-]+)/u.exec(response.error.message)?.[1];
-    assert.ok(jobId, 'the refusal identifies the exact failed job for inspection');
-    const retained = readdirSync(join(remoteStateRoot, 'jobs')).find(name => name.startsWith(jobId + '-'));
-    assert.ok(retained, 'a cleanup timeout retains its private job diagnostics');
-    const diagnosis = JSON.parse(readFileSync(join(remoteStateRoot, 'jobs', retained, 'cleanup-timeout.json'), 'utf8'));
-    assert.equal(diagnosis.id, jobId);
-    assert.match(diagnosis.reason, /child spawn journal overflow or write failure/u);
-    assert.ok(diagnosis.stage, 'the timeout records which cleanup step was running');
-    assert.ok(existsSync(bodyRan), 'the committed command ran to completion and wrote its own overflow marker');
-    assert.equal(readFileSync(starts, 'utf8').trim().split('\n').length, 1, 'the refused cleanup result is not retried or sent to a local runner');
-    await waitForCondition(() => readRemoteGateHolders(remoteDatabase).length === 0,
-      'remote physical gate holder releases after the named cleanup timeout');
-    assert.equal(readRemoteGateHolders(join(machineHome, 'resources.sqlite')).length, 1,
-      'the separate local fixture holder remains intact until explicitly released');
-  } finally {
-    if (commandChild && commandChild.exitCode === null && commandChild.signalCode === null) {
-      try { process.kill(-commandChild.pid, 'SIGTERM'); }
-      catch (error) { if (error.code !== 'ESRCH') throw error; }
-      await once(commandChild, 'close').catch(() => {});
-    }
-    if (held) held.release();
-    if (previousHome === undefined) delete process.env.PULLBOARD_HOME;
-    else process.env.PULLBOARD_HOME = previousHome;
-    if (previousMachineHome === undefined) delete process.env.PULLBOARD_MACHINE_HOME;
-    else process.env.PULLBOARD_MACHINE_HOME = previousMachineHome;
-  }
-});
+const orphanTools = { cli, git, installSshStandIn, observe, startToolingCli, processIsAlive, HOST };
+test('a runner job leaves no process behind, detached ones included [C7]',
+  { timeout: 150_000 }, t => runnerOrphanFixture(t, orphanTools)); // budget: one plain runner round trip, then the declared 30-second remote cleanup timeout and a local rerun.
+test('a runner job leaves no process behind, and never signals a process it cannot prove is the job\'s [C7]',
+  { timeout: 30_000 }, t => unprovenProcessFixture(t, { createDescendantTracker, parseProcessCensus })); // budget: scripted census, no real processes.
 
 test('a runner uses the capacity it was registered with [C7,O5]', { timeout: 180_000 }, t => runnerUsesRegisteredCapacity(t, { cli, git, observe, startQueueController, gateResult })); // budget: two rounds of four concurrent runner round trips.
 

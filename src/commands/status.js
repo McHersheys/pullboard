@@ -24,13 +24,13 @@ import {
   context,
   span,
   whoAmI,
-  withBoard,
+  withBoardRead,
 } from '../cli.js';
 
 /** Run `pullboard status` and return its exit code. */
 export function run(io, { values }) {
   const ctx = context(io);
-  const summary = withBoard(ctx, (board) => {
+  const summary = withBoardRead(ctx, (board) => {
     const me = whoAmI(ctx, board);
     const mine = store.itemsInStatus(board, 'claimed', me.id);
     const approvalState = personNeedsSummary(ctx.info.root, { board, config: ctx.config });
@@ -55,7 +55,7 @@ export function run(io, { values }) {
     io.say('optional: add a GitHub origin and run pullboard relay on to link this board');
   }
   if (Object.keys(ctx.config.products).length) {
-    const all = withBoard(ctx, (board) => store.listItems(board, { all: true }));
+    const all = withBoardRead(ctx, (board) => store.listItems(board, { all: true }));
     productSummaries(ctx.config, loadSpec(ctx.info.root, ctx.config), all).forEach((product) => io.say(productLine(product)));
   }
   return 0;

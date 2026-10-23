@@ -24,6 +24,7 @@ import {
   headCommit,
   headTree,
   isClean,
+  invalidateGitFacts,
   mainCheckout,
   repoInfo,
   tryGit,
@@ -41,8 +42,15 @@ import {
 } from './gate-run-receipt.js';
 import { testsNeedBrowser } from './browser-admission.js';
 import { laneOf } from './lanes.js';
+import { takeResource } from './resources.js';
+import {
+  landingLeaseState,
+  requireConfirmedLanding,
+} from './landing-lease.js';
+import { runLandingWorker } from './landing-worker.js';
 import { Refused } from './refused.js';
 import { browserFreeChecksEnabled } from './settings.js';
+import { policyAt } from './trusted-policy.js';
 import { landingFileTimes } from './submit-invariants.js';
 import {
   flakeSource,
@@ -123,8 +131,8 @@ function landingEntry(item) {
     ...(item.item_landing_commit !== item.item_commit ? { reviewedCommit: item.item_landing_commit } : {}) };
 }
 
-/** Select verified, unmerged candidates in verdict order, retaining dependency order [B3,R3]. */
-function candidates(board, root, base, maximum) {
+/** Select in verdict order; a read-only preflight may stop at its first eligible item [B3,R3]. */
+function candidates(board, root, base, maximum, { firstReady = false } = {}) {
   const all = store.listItems(board, { all: true });
   const projector = verdictProjector(root, board, { main: base });
   const pending = all.filter((item) => item.item_status === 'verified' && !item.item_merged_commit);
@@ -153,7 +161,10 @@ function candidates(board, root, base, maximum) {
       blocked.push({ id: item.item_id, code: 'STACKED_UNVERIFIED', stacked: stacked.item_id });
       continue;
     }
-    if (ready.length < maximum) ready.push(item);
+    if (ready.length < maximum) {
+      ready.push(item);
+      if (firstReady) break;
+    }
   }
   return { ready, blocked };
 }
@@ -167,12 +178,14 @@ async function save(state, patch) {
 
 /** Merge one ordered group from the immutable batch base, preserving each first-containing commit. */
 async function mergeGroup(state, items) {
+  await state.checkLease();
   const { batch } = state;
   if (!isClean(batch.root) || untracked(batch.root).length) throw new Refused('LAND_DIRTY', 'the landing worktree has unfinished edits; inspect its recorded path before adopting');
   git(batch.root, ['checkout', '--detach', batch.base]);
   const merged = [];
   const conflicts = [];
   for (const entry of items) {
+    await state.checkLease();
     const item = store.getItem(state.board, entry.id ?? entry.item_id);
     if (item.item_status !== 'verified' || item.item_commit !== (entry.commit ?? item.item_commit)) throw new Refused('LAND_ITEM_MOVED', `item #${item.item_id} changed; rebuild the batch from current verified work`);
     const checked = store.checkedLandingCommit(state.board, item);
@@ -570,9 +583,8 @@ function requirePushTarget(root, branch) {
     `add one with git remote add ${missing} <url> and run pullboard land again, or merge each verified commit on the trunk with git merge --no-ff and record it with pullboard merged <id> <commit>`);
 }
 
-/** Push the exact gated tip before recording receipts, then fast-forward only a clean unchanged main. */
-async function publish(state) {
-  let batch = state.batch;
+/** Recheck immutable publication inputs after the last awaited canonical operation. */
+function publicationInputs(state, batch) {
   for (const entry of batch.items) {
     const item = store.getItem(state.board, entry.id);
     if (item.item_status !== 'verified' || item.item_commit !== entry.commit
@@ -580,6 +592,14 @@ async function publish(state) {
       throw new Refused('LAND_ITEM_MOVED', `item #${entry.id} changed its checked composition; rebuild the landing before publishing`);
     }
   }
+  if (batch.proof?.failures?.some(failure => !store.landingWaiverFor(state.board, failure))) throw new Refused('LAND_WAIVER', 'the landing proof has an expired or missing person waiver; ask the person for a new expiring waiver, then adopt the batch');
+  if (headCommit(batch.root) !== batch.tip || !isClean(batch.root) || untracked(batch.root).length) throw new Refused('LAND_MOVED', 'the gated landing tree changed; inspect the batch and adopt it again');
+  if (mainCheckout(state.root)?.commit !== batch.base) throw new Refused('LAND_TRUNK_MOVED', 'main moved during the landing; rebuild the batch from its new tip');
+}
+
+/** Push the exact gated tip before recording receipts, then fast-forward only a clean unchanged main. */
+async function publish(state) {
+  let batch = state.batch;
   const remote = requirePushTarget(state.root, batch.branch);
   if (batch.proof?.failures?.length && batch.state !== 'pushed') {
     const failures = batch.proof.failures.map((failure) => ({ ...failure, waiver: store.landingWaiverFor(state.board, failure)?.id }));
@@ -587,11 +607,11 @@ async function publish(state) {
     batch = await save(state, { proof: { ...batch.proof, failures } });
   }
   if (batch.state !== 'pushed') {
-    if (headCommit(batch.root) !== batch.tip || !isClean(batch.root) || untracked(batch.root).length) throw new Refused('LAND_MOVED', 'the gated landing tree changed; inspect the batch and adopt it again');
-    const current = mainCheckout(state.root);
-    if (current?.commit !== batch.base) throw new Refused('LAND_TRUNK_MOVED', 'main moved during the landing; rebuild the batch from its new tip');
+    await state.checkLease();
+    publicationInputs(state, batch);
     const alreadyPushed = tryGit(batch.root, ['ls-remote', remote, batch.branch]).stdout.split(/\s+/u)[0] === batch.tip;
     if (!alreadyPushed) {
+      state.checkLeaseNow();
       const pushed = tryGit(batch.root, ['push', remote, `HEAD:${batch.branch}`]);
       if (pushed.status !== 0) throw pushRefused(pushed.stderr || pushed.stdout);
     }
@@ -601,6 +621,7 @@ async function publish(state) {
     throw new Refused('LAND_REMOTE_MOVED', 'the remote no longer names the pushed batch tip; inspect it before adopting, without rewriting the remote');
   }
   state.batch = await state.write('finishLandingBatch', [{ agentId: 'coordinator', id: state.batch.id, tip: state.batch.tip }]);
+  await state.checkLease();
   const main = mainCheckout(state.root);
   if (main?.commit === state.batch.base && isClean(state.root) && !untracked(state.root).length) git(state.root, ['merge', '--ff-only', state.batch.tip]);
   state.say(`landed ${state.batch.items.map((entry) => `#${entry.id}`).join(', ')} at ${state.batch.tip}`);
@@ -702,23 +723,105 @@ async function landOnTrunk(state) {
 /** Record a tier-1 batch's merged receipts and move the local trunk to it; an adopted 'trunk' batch resumes here (#801). */
 async function finishTrunk(state) {
   state.batch = await state.write('finishLandingBatch', [{ agentId: 'coordinator', id: state.batch.id, tip: state.batch.tip }]);
+  await state.checkLease();
   const main = mainCheckout(state.root);
   if (main?.commit === state.batch.base && isClean(state.root) && !untracked(state.root).length) git(state.root, ['merge', '--ff-only', state.batch.tip]);
   state.say(`landed ${state.batch.items.map((entry) => `#${entry.id}`).join(', ')} at ${state.batch.tip} on the local trunk; pullboard publish pushes it once the whole suite passes`);
 }
 
+/** Skip admission only when no queued owner, interrupted batch or recorded Git repair needs it. */
+function idleLanding(board, trunk) {
+  const lease = landingLeaseState(board);
+  if (lease.holder || lease.line.length) return false;
+  return !store.landingBatches(board).some(batch =>
+    (batch.state !== 'landed' && batch.state !== 'blocked')
+      || (batch.state === 'landed' && batch.base === trunk));
+}
+
+/** Preserve the existing empty selection's refusal, blocked reports and result shape. */
+function emptyLanding(selected, say) {
+  const stale = selected.blocked.find(item => item.code === 'STALE_VERDICT');
+  if (stale) throw staleVerdictRefusal({ item_id: stale.id }, stale);
+  for (const entry of selected.blocked) say(`${entry.code} #${entry.id}${entry.stacked ? ` carries #${entry.stacked}` : ''}`);
+  return { batch: null, landed: [], conflicts: [], blocked: selected.blocked, culprits: [], flakes: [] };
+}
+
 /** Build, gate, diagnose and durably land one coordinator batch; all external actions stay in its worktree. */
-export async function land({ root, board, config, write, say, owner, maximum = Infinity, dryRun = false, adopt = false, onWait }) {
-  // Quarantine is read from the accepted main policy this landing runs under, never from a branch.
-  board.quarantineEnabled = () => config.flakes?.quarantine === true;
+export async function land(options) {
+  if (options.dryRun) return runLandingBatch(options);
+  invalidateGitFacts();
+  const trunk = mainCheckout(options.root);
+  const branch = trunk?.branch;
+  if (!branch) throw new Refused('LAND_TRUNK', 'landing needs the coordinator’s primary branch; return its checkout to the trunk');
+  if (trunk.commit && !options.adopt && idleLanding(options.board, trunk.commit)) {
+    requireConfirmedLanding(options.board);
+    // Only accepted trunk policy may inform this read-only preflight.
+    const config = policyAt(options.root, trunk.commit).config;
+    options.board.quarantineEnabled = () => config.flakes?.quarantine === true;
+    const selected = candidates(options.board, options.root, trunk.commit, options.maximum ?? Infinity, { firstReady: true });
+    invalidateGitFacts();
+    const current = mainCheckout(options.root);
+    if (!selected.ready.length && current?.commit === trunk.commit && current.branch === branch
+      && idleLanding(options.board, trunk.commit)) {
+      requireConfirmedLanding(options.board);
+      return emptyLanding(selected, options.say);
+    }
+  }
+  let lastWait = '';
+  const controller = new AbortController();
+  const lease = await takeResource({ name: 'landing', scope: 'board', capacity: 1, board: options.board, write: options.write, branch,
+    onLost: error => controller.abort(error),
+    /** Report a real ordered holder, without allocating machine test capacity to this waiter. */
+    onWait({ holders, position }) {
+      const message = `landing waiting: ${branch} held by ${holders[0]?.label ?? 'the previous landing'}; queued at place ${position}`;
+      if (message !== lastWait) options.say(message);
+      lastWait = message;
+    } });
+  let failed = false;
+  try {
+    await lease.assertHeld();
+    invalidateGitFacts(); // The holder may have moved main while this command waited.
+    /** Bind each batch transition to this acknowledged grant, never to an optimistic local result. */
+    const write = async (operation, args) => {
+      await lease.assertHeld();
+      const values = ['recordLandingBatch', 'finishLandingBatch'].includes(operation)
+        ? [{ ...args[0], landingFence: lease.fence }, ...args.slice(1)] : args;
+      return options.write(operation, values);
+    };
+    /** Relay catch-up can change proof or trunk facts while a renewal awaits its receipt. */
+    const checkLease = async () => { await lease.assertHeld(); invalidateGitFacts(); };
+    const batchOptions = { root: options.root, config: options.config, owner: options.owner, maximum: Number.isFinite(options.maximum) ? options.maximum : null,
+      adopt: options.adopt, fence: lease.fence };
+    if (batchOptions.maximum === null) delete batchOptions.maximum;
+    return await runLandingWorker(batchOptions, { write, checkLease, checkLeaseNow: lease.assertCurrent,
+      bindWorker: lease.bindWorker, watchDeadline: lease.watchDeadline, onWait: options.onWait, say: options.say, signal: controller.signal });
+  } catch (error) { failed = true; throw error; }
+  finally {
+    try { await lease.release(); }
+    catch (error) {
+      if (!failed) throw error;
+      options.say(`landing lease release was not acknowledged: ${error.code ?? 'ERROR'}; inspect pullboard resume before adopting`);
+    }
+  }
+}
+
+/** Select only after admission, retaining the existing batch, proof and adoption rules. */
+export async function runLandingBatch({ root, board, config, write, say, owner, maximum = Infinity, dryRun = false, adopt = false, onWait, checkLease, checkLeaseNow, fence }) {
   let trunk = mainCheckout(root);
+  if (fence && trunk?.branch !== fence.branch) throw new Refused('LAND_LEASE_LOST', 'the trunk branch changed while landing waited; start a new land command for its current branch');
+  const unfinished = store.landingBatches(board).findLast((batch) => batch.state !== 'landed' && batch.state !== 'blocked');
+  if (fence && unfinished && unfinished.branch !== fence.branch) throw new Refused('LAND_LEASE_LOST', 'the interrupted batch belongs to another trunk branch; restore that branch and start a fresh land --adopt');
   const recorded = store.landingBatches(board).findLast((batch) => batch.state === 'landed' && batch.base === trunk?.commit);
+  if (fence && recorded && recorded.branch !== fence.branch) throw new Refused('LAND_LEASE_LOST', 'the recorded Git repair belongs to another trunk branch; restore that branch before landing');
   if (!dryRun && recorded && isClean(root) && !untracked(root).length) {
+    await checkLease();
     git(root, ['merge', '--ff-only', recorded.tip]);
     trunk = mainCheckout(root);
   }
   if (!trunk?.commit) throw new Refused('LAND_TRUNK', 'landing needs the coordinator’s primary branch; return its checkout to the trunk');
-  const unfinished = store.landingBatches(board).findLast((batch) => batch.state !== 'landed' && batch.state !== 'blocked');
+  // Pin accepted policy after any recorded-landed repair, never before admission or from candidate files.
+  config ??= policyAt(root, trunk.commit).config;
+  board.quarantineEnabled = () => config.flakes?.quarantine === true;
   const selected = candidates(board, root, trunk.commit, maximum);
   const stale = selected.blocked.find(item => item.code === 'STALE_VERDICT');
   if (!selected.ready.length && stale) throw staleVerdictRefusal({ item_id: stale.id }, stale);
@@ -750,10 +853,7 @@ export async function land({ root, board, config, write, say, owner, maximum = I
     await write('recordLandingBatch', [{ agentId: 'coordinator', batch: { ...batch, state: 'blocked', supersededByMain: trunk.commit }, revision: batch.revision }]);
     batch = null;
   }
-  if (!batch && !selected.ready.length) {
-    for (const entry of selected.blocked) say(`${entry.code} #${entry.id}${entry.stacked ? ` carries #${entry.stacked}` : ''}`);
-    return { batch: null, landed: [], conflicts: [], blocked: selected.blocked, culprits: [], flakes: [] };
-  }
+  if (!batch && !selected.ready.length) return emptyLanding(selected, say);
   if (!batch) {
     if (!landsOnTrunk(config)) requirePushTarget(root, trunk.branch);
     const id = randomUUID();
@@ -766,7 +866,7 @@ export async function land({ root, board, config, write, say, owner, maximum = I
     mkdirSync(directory, { recursive: true });
     git(root, ['worktree', 'add', '--detach', batch.root, batch.base]);
   }
-  const state = { root, board, config, write, say, onWait, batch, culprits: batch.culprits ?? [], flaky: false, gates: new Map((batch.gateResults ?? []).map((result) => [result.tree, result])), diagnosed: new Map((batch.diagnostics ?? []).map((result) => [result.test, result.isGreen])) };
+  const state = { root, board, config, write, say, onWait, checkLease, checkLeaseNow, batch, culprits: batch.culprits ?? [], flaky: false, gates: new Map((batch.gateResults ?? []).map((result) => [result.tree, result])), diagnosed: new Map((batch.diagnostics ?? []).map((result) => [result.test, result.isGreen])) };
   await save(state, { owner });
   await returnCulprits(state);
   if (state.batch.state === 'trunk') await finishTrunk(state);

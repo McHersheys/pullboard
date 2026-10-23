@@ -30,6 +30,18 @@ const CHROME_FIXTURE = 'test/chrome-fixture.js';
 const FIXTURE_CHILD = 'test/fixture-child.js';
 const JOURNEYS_TEST = 'test/journeys.test.js';
 const TEST_RUNNER = 'bin/run-tests.js';
+/** Fixed source-only entry points belong to this tool's repository, never to a project's labels. */
+const SOURCE_CHECKS = [
+  { args: ['bin/static-style-checks.js'], file: 'bin/static-style-checks.js', doctrine: true },
+  { args: ['--experimental-vm-modules', '--disable-warning=ExperimentalWarning', 'bin/static-style-checks.js'], file: 'bin/static-style-checks.js', doctrine: true },
+  { args: ['bin/pullboard.js', 'doctrine', 'check'], file: 'bin/pullboard.js', doctrine: true },
+  { args: ['bin/pullboard.js', 'spec', 'check'], file: 'bin/pullboard.js' },
+  { args: ['bin/checks/file-size.js'], file: 'bin/checks/file-size.js' },
+  { args: ['bin/checks/empty-catch.js'], file: 'bin/checks/empty-catch.js' },
+  { args: ['bin/checks/test-names.js'], file: 'bin/checks/test-names.js' },
+  { args: ['bin/checks/test-inputs.js'], file: 'bin/checks/test-inputs.js' },
+];
+const DOCTRINE_CHECKS = new Set(['bin/checks/file-size.js', 'bin/checks/empty-catch.js', 'bin/checks/test-names.js', 'bin/checks/test-inputs.js']);
 /**
  * Chrome fixture exports that neither start a browser nor yield a browser path or launch arguments; any
  * other binding, findChromeExecutable and a new export included, counts as a launch. These six only work
@@ -287,10 +299,79 @@ function browserFallback(onFallback, file, reason) {
   return true;
 }
 
+/** Identify a real repository root and its shared Git directory without inherited Git selectors. */
+async function sourceRepository(root) {
+  const fields = git(root, ['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-common-dir'], {
+    env: cleanGitEnvironment(),
+  }).split('\n');
+  if (fields.length !== 2 || await realpath(fields[0]) !== await realpath(root)) return null;
+  return realpath(fields[1]);
+}
+
+/** Require a regular committed entry or a non-symlink working entry contained in its repository. */
+async function regularCheckSource(root, file, committed) {
+  if (committed) return committedSource(root, committed, file) !== null;
+  const absolute = resolve(root, file);
+  const info = await lstat(absolute);
+  return info.isFile() && !info.isSymbolicLink() && await staysInside(root, absolute);
+}
+
+/** Read the exact executable doctrine rules without running them; only the fixed readers qualify. */
+async function sourceOnlyDoctrine(root, committed, commit, env) {
+  const [{ configFromSource, loadConfig }, { parseSpec }, { checkRule }] = await Promise.all([
+    import('./config.js'), import('./spec.js'), import('./doctrine-checks.js'),
+  ]);
+  const config = commit ? configFromSource(committedSource(root, committed, 'pullboard.json')) : loadConfig(root);
+  let file = config.practice;
+  if (['DOCTRINE.md', 'PRACTICE.md'].includes(file)) {
+    const names = ['DOCTRINE.md', 'PRACTICE.md'].filter(name => committed.has(name));
+    if (names.length !== 1) return false;
+    [file] = names;
+  }
+  if (repositoryPath(root, file) !== file) return false;
+  const source = committedSource(root, committed, file);
+  if (source === null) return false;
+  const parsed = parseSpec(source, { strictGrammarVersion: false });
+  if (parsed.problems.length) return false;
+  for (const row of parsed.rows.filter(row => row.status === 'approved')) {
+    const rule = checkRule(row);
+    if (!rule) {
+      if (/^check(?:\s|$)/u.test(row.gate)) return false;
+      continue;
+    }
+    const words = literalShellWords(rule.command);
+    if (words?.length !== 2 || !DOCTRINE_CHECKS.has(words[1])) return false;
+    const node = resolveExecutable(words[0], env.PATH);
+    if (!node || await realpath(node) !== await realpath(process.execPath)) return false;
+    if (!await regularCheckSource(root, words[1], commit ? committed : null)) return false;
+  }
+  return true;
+}
+
+/** Recognize only this tool's own fixed source commands; every uncertain identity keeps browser admission. */
+async function ownSourceCheck(root, words, { commit, env }) {
+  const known = SOURCE_CHECKS.find(entry => entry.args.length === words.length - 1
+    && entry.args.every((word, index) => word === words[index + 1]));
+  if (!known) return false;
+  try {
+    const node = resolveExecutable(words[0], env.PATH);
+    if (!node || await realpath(node) !== await realpath(process.execPath)) return false;
+    const own = await sourceRepository(resolve(import.meta.dirname, '..'));
+    if (!own || own !== await sourceRepository(root)) return false;
+    const revision = commit ?? git(root, ['rev-parse', '--verify', 'HEAD'], { env: cleanGitEnvironment() });
+    const committed = committedFiles(root, revision);
+    if (!committed || !await regularCheckSource(root, known.file, commit ? committed : null)) return false;
+    return !known.doctrine || await sourceOnlyDoctrine(root, committed, commit, env);
+  } catch {
+    return false; // Missing, foreign or unreadable source must keep the existing browser-required fallback.
+  }
+}
+
 /** Parse the frozen check and classify its explicit test files, failing closed on unknown shell. */
 export async function checkNeedsBrowser(root, command, { commit, env = process.env, onFallback } = {}) {
   if (foreignNodeOptions(env.NODE_OPTIONS, env)) return browserFallback(onFallback, '<frozen check>', 'NODE_OPTIONS may load an unclassified module');
   let words = literalShellWords(command);
+  if (words && await ownSourceCheck(root, words, { commit, env })) return false;
   if (!words) {
     const inner = capturedRunner(command);
     if (!inner) return browserFallback(onFallback, '<frozen check>', 'shell syntax is outside the supported literal capture form');

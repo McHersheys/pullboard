@@ -738,6 +738,8 @@ test('an older board gets the triggers quietly on its next open; one dropped by 
     tampered.exec('DROP TRIGGER machine_proof_verified');
     tampered.exec('DROP TRIGGER machine_item_move');
     tampered.exec('CREATE TRIGGER machine_item_move BEFORE UPDATE OF item_status ON item WHEN 0 BEGIN SELECT 1; END');
+    // Only a board whose user_version is behind is audited on open (#1047); a guarded older board still reports.
+    tampered.exec('PRAGMA user_version = 1');
     tampered.close();
 
     const restored = store.openBoard(lab.file);
@@ -1172,7 +1174,7 @@ test('next --verify reserves the review for the reviewLease and says until when;
     assert.equal(git(holder, 'rev-parse', '--path-format=absolute', '--git-common-dir'), commonDir,
       'the verifier worktree reads the builder repo common dir');
     const sharedBoard = new DatabaseSync(join(commonDir, 'pullboard', 'board.sqlite'), { readOnly: true });
-    assert.equal(sharedBoard.prepare('PRAGMA user_version').get().user_version, 2,
+    assert.equal(sharedBoard.prepare('PRAGMA user_version').get().user_version, 3,
       'the main repo creates the shared board before the verifier opens it');
     sharedBoard.close();
 
