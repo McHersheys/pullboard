@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { findChromeExecutable, isRunnerCommand } from '../chrome-fixture.js';
+import { RUNNER_PID_ENV, findChromeExecutable, findRunnerAncestor } from '../chrome-fixture.js';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const PROBE = join(ROOT, 'test/cockpit/chrome-owner-probe.mjs');
@@ -57,14 +57,14 @@ function stopRecorded(profile, pids) {
   for (const pid of pids) { try { process.kill(pid, 'SIGKILL'); } catch { /* Already gone. */ } }
 }
 
-test('the runner is bin/run-tests.js with any options, and its workers are not [C7]', () => {
-  const at = '/work/Code Space/repo';
-  for (const command of [`node bin/run-tests.js test/a.test.js`, `node bin/run-tests.js --test-concurrency=1 test/a.test.js`,
-    `/usr/local/bin/node ${at}/bin/run-tests.js --test-concurrency=1 ${at}/test/a.test.js`,
-    `node --import ./instrumentation.mjs bin/run-tests.js test/a.test.js`, `node --import=./instrumentation.mjs ${at}/bin/run-tests.js`]) assert.equal(isRunnerCommand(command), true, command);
-  for (const command of [`node --disable-warning=ExperimentalWarning --import ${at}/bin/run-tests.js ${at}/test/a.test.js`,
-    `node --import=${at}/bin/run-tests.js ${at}/test/a.test.js`, `node --import ./trace.mjs --import ${at}/bin/run-tests.js ${at}/test/a.test.js`,
-    `node --test test/a.test.js bin/run-tests.js`, `node test/a.test.js`]) assert.equal(isRunnerCommand(command), false, command);
+test('a test finds its runner by the pid the runner gave it, never by its command line [C7]', () => {
+  // A parent chain this process -> 700 -> 600 -> 500 -> 1, as ps would report it.
+  const chain = new Map([[process.pid, 700], [700, 600], [600, 500], [500, 1]]);
+  const parentOf = (pid) => chain.get(pid) ?? null;
+  assert.equal(findRunnerAncestor({ env: { [RUNNER_PID_ENV]: '600' }, parentOf }), 600, 'the named runner is found up the chain');
+  assert.equal(findRunnerAncestor({ env: { [RUNNER_PID_ENV]: '900' }, parentOf }), null, 'a pid that is not an ancestor is never guarded');
+  assert.equal(findRunnerAncestor({ env: {}, parentOf }), null, 'with no runner, only the owner is guarded');
+  assert.equal(findRunnerAncestor({ env: { [RUNNER_PID_ENV]: '1' }, parentOf }), null, 'init is never a runner');
 });
 
 /** How each killed process starts the probe: the owner directly, or the runner, with and without its own options. */
@@ -72,6 +72,8 @@ const VICTIMS = {
   owner: [],
   runner: ['bin/run-tests.js'],
   'runner started with --test-concurrency=1': ['bin/run-tests.js', '--test-concurrency=1'],
+  // A data: import before the runner, which no reading of ps text tells from a worker (#896).
+  'runner started after a data: import': ['--import', 'data:text/javascript,globalThis.__probe=1', 'bin/run-tests.js'],
 };
 
 for (const [launcher, name] of Object.entries(LAUNCHERS)) {

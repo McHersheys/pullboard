@@ -169,44 +169,41 @@ setInterval(() => {
 
 let runnerAncestor;
 
-/**
- * Whether a process command line is the test runner itself, bin/run-tests.js with any options, and not one of its
- * workers: a worker carries bin/run-tests.js only as its --import value, or runs under a standalone --test flag.
- * Options such as --test-concurrency=1 belong to the runner and never make it a worker (#896). Paths may hold spaces.
- *
- * @param {string} command - The command line as ps prints it.
- * @returns {boolean}
- */
-export function isRunnerCommand(command) {
-  const text = String(command);
-  if (!/(?:^|[\s/])bin\/run-tests\.js(?:\s|$)/u.test(text)) return false;
-  if (/(?:^|\s)--test(?:\s|$)/u.test(text)) return false;
-  // Each import value runs to the first module file name that ends it, so a folder with spaces stays inside the value
-  // while `--import ./instrumentation.mjs bin/run-tests.js` still names the runner as the script (#896).
-  const imports = [...text.matchAll(/(?:^|\s)--import[=\s](.*?\.(?:[mc]?js|ts))(?=\s|$)/gu)].map((match) => match[1]);
-  return !imports.some((value) => /(?:^|[\s/:])bin\/run-tests\.js$/u.test(value));
-}
+/** The environment variable bin/run-tests.js sets to its own pid for every test it runs (#896). */
+export const RUNNER_PID_ENV = 'PULLBOARD_TEST_RUNNER_PID';
 
 /**
- * Find the test runner above this process: the nearest ancestor whose command runs bin/run-tests.js itself.
- * The walk uses `ps -o ppid=,command= -p <pid>`, which macOS and Linux share, runs once per process,
- * and answers null for a direct `node --test`, where only the owner is guarded.
+ * Find the test runner above this process: the pid bin/run-tests.js left in this process's environment, kept
+ * only while it is a real ancestor of this process. Why not read command lines: ps prints argv without quoting,
+ * so no parser tells a runner started with `--import data:…` or a path with spaces from one of its workers (#896).
+ * The walk reads parent pids only, which macOS and Linux both print; no runner, or a stale pid from another tree,
+ * answers null, and only the owner is guarded.
+ *
+ * @param {{ env?: NodeJS.ProcessEnv, parentOf?: (pid: number) => number | null }} [options]
+ * @returns {number | null}
  */
-export function findRunnerAncestor() {
-  if (runnerAncestor !== undefined) return runnerAncestor;
-  runnerAncestor = null;
-  try {
+export function findRunnerAncestor({ env = process.env, parentOf = parentPid } = {}) {
+  if (env === process.env && runnerAncestor !== undefined) return runnerAncestor;
+  let found = null;
+  const runner = Number(env[RUNNER_PID_ENV]);
+  if (Number.isSafeInteger(runner) && runner > 1) {
     let pid = process.pid;
-    for (let depth = 0; depth < 32 && pid > 1; depth += 1) {
-      const row = execFileSync('ps', ['-o', 'ppid=,command=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-      const match = /^(\d+)\s+(.*)$/su.exec(row);
-      if (!match) break;
-      pid = Number(match[1]);
-      const ancestor = execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-      if (isRunnerCommand(ancestor.trim())) { runnerAncestor = pid; break; }
+    for (let depth = 0; depth < 64 && pid > 1; depth += 1) {
+      pid = parentOf(pid);
+      if (pid === null) break;
+      if (pid === runner) { found = runner; break; }
     }
-  } catch { /* No readable ancestry means the guardian watches the owner alone. */ }
-  return runnerAncestor;
+  }
+  if (env === process.env) runnerAncestor = found;
+  return found;
+}
+
+/** A process's parent pid from ps, or null when it cannot be read. */
+function parentPid(pid) {
+  try {
+    const value = Number(execFileSync('ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim());
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
+  } catch { return null; /* An ended process has no parent to read. */ }
 }
 
 /**
