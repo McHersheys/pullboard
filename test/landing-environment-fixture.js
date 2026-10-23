@@ -1,10 +1,11 @@
 /** Public Git/CLI cells for landing hosts and a trunk held by a test defect [E27,E28,E29]. */
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as store from '../src/board.js';
 import { applyEngineMove, prepareEngineMove } from '../src/engine.js';
-import { receiptBinds, receiptBody, receiptFields, receiptStore } from '../src/gate-run-receipt.js';
+import { readGateReceipt, receiptBinds, receiptBody, receiptFields, receiptStore } from '../src/gate-run-receipt.js';
+import { gateRuns } from '../src/gate-control.js';
 
 /** Read the private board through its public store without rewriting historical receipts. */
 function boardRead(box, action, clock) {
@@ -95,10 +96,15 @@ export function assertMatchingLandingHost(helpers) {
   assert.deepEqual(JSON.parse(accepted.event_detail).environment, environment,
     'a machine-run verdict records the environment that actually ran its frozen check');
   success(box, box.repo, 'gate');
-  const run = boardRead(box, board => store.events(board).findLast(event => event.event_kind === 'gate-run'));
-  assert.deepEqual(JSON.parse(run.event_detail).run.environment, environment,
+  // The fixture's initial push ran the real pre-push gate. A cached CLI gate creates no new run event.
+  assert.deepEqual(gateRuns(box.repo).at(-1)?.environment, environment,
     'a real gate receipt records its executor environment');
-  const receipt = JSON.parse(run.event_detail).run;
+  const receipts = receiptStore(box.repo);
+  const head = box.git(box.repo, 'rev-parse', 'HEAD');
+  const receipt = readdirSync(receipts).map(file => readGateReceipt(receipts, file.replace(/\.json$/u, '')))
+    .find(run => run?.kind === 'gate' && run.head === head);
+  assert.ok(receipt, 'the actual pre-push gate retained its canonical receipt for the committed trunk');
+  assert.deepEqual(receipt.environment, environment);
   assert.equal(receiptBinds(receiptStore(box.repo), receipt), true);
   assert.equal(receiptBinds(receiptStore(box.repo), { ...receipt, environment: { ...environment, node: '0.0.1' } }), false,
     'changing an executor identity breaks the real gate receipt binding');
