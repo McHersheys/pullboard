@@ -367,6 +367,7 @@ const HELP_NOTES = {
     'Schedule this command with cron on a server or a scheduled CI job that already has ordinary board access.',
     'For example: 0 * * * * cd /path/to/project && pullboard sentinel run',
     'Each run prepares committed local trunk; resume and the background view never execute watch commands.',
+    'It also refreshes work-health findings; resume shows only the indexed findings and their recorded time.',
   ],
   watch: [
     'Claude Code: run pullboard watch --to <your id> under the Monitor tool, and each event line wakes the seat.',

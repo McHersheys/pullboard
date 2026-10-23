@@ -7,6 +7,9 @@ import { sentinels } from './sentinels.js';
 import { runDueSentinels } from './sentinel-runner.js';
 import { withSentinelTrunk } from './sentinel-runner.js';
 import { healthSentinelEnabled } from './settings.js';
+import { recordedHealthFindings } from './health-sentinel.js';
+import { scanHealthSentinel } from './health-sentinel.js';
+import { initialSpecApprovalBaseline } from './spec-approval-bootstrap.js';
 
 /** The watch command's existing string options, shared with the CLI parser. */
 export const SENTINEL_OPTIONS = {
@@ -30,14 +33,30 @@ export function resumeSentinels({ ctx, withBoard }) {
 async function runSentinels({ ctx, withBoard, whoAmI, ordered }) {
   return withBoard(ctx, async board => {
     const me = whoAmI(ctx, board);
-    if (!healthSentinelEnabled(ctx.config) || !dueSentinels(board).length) {
-      ctx.io.result?.({ sentinels: [] });
+    const enabled = healthSentinelEnabled(ctx.config);
+    if (enabled) {
+      // Preserve bootstrap-before-observation ordering so the compatibility move cannot stale the scan.
+      const baseline = initialSpecApprovalBaseline(ctx, board, 'recordHealthFindings');
+      if (baseline) {
+        const io = ctx.io.personRequest || ctx.io.personRequestMoveId
+          ? { ...ctx.io, personRequest: undefined, personRequestMoveId: undefined } : ctx.io;
+        await ordered({ ...ctx, io }, board, 'recordSpecApprovalBaseline', [{ agentId: 'coordinator', baseline }]);
+      }
+      const observation = scanHealthSentinel(ctx.file, { root: ctx.info.root, config: ctx.config, now: ctx.clock.now() });
+      if (observation) {
+        try { await ordered(ctx, board, 'recordHealthFindings', [{ agentId: me.id, ...observation }]); }
+        catch (error) { if (!(error instanceof Refused) || error.code !== 'HEALTH_SCAN_STALE') throw error; }
+      }
+    }
+    const health = recordedHealthFindings(board);
+    if (!enabled || !dueSentinels(board).length) {
+      ctx.io.result?.({ sentinels: [], health });
       ctx.io.say('No enabled sentinel is due.');
       return 0;
     }
     const { results, trunk } = await withSentinelTrunk(ctx.info.root, root => runDueSentinels({ root, board, agentId: me.id,
       ordered: (operation, args) => ordered(ctx, board, operation, args) }));
-    ctx.io.result?.({ sentinels: results, trunk });
+    ctx.io.result?.({ sentinels: results, trunk, health });
     ctx.io.say(`Sentinels: ${results.length} run from trunk ${trunk.branch}@${trunk.commit.slice(0, 12)}.`);
     for (const row of results) ctx.io.say(`${row.name}: ${row.lastRun.green ? 'green' : 'red'}; owner ${row.owner}`);
     return 0;

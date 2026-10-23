@@ -28,7 +28,7 @@ import {
   worktreeEntries,
 } from '../git.js';
 import {
-  scanHealthSentinel,
+  recordedHealthFindings,
 } from '../health-sentinel.js';
 import {
   unwiredHookProblems,
@@ -101,11 +101,12 @@ import {
   viewSetupComplete,
   whoAmI,
   withBoard,
+  withBoardRead,
   worktreeLocation,
 } from '../cli.js';
 
 /**
- * Resume's own moves (the approval baseline, health findings, due watches) are bookkeeping: a session that cannot
+ * Resume's one compatibility move (the approval baseline) is bookkeeping: a session that cannot
  * reach the board key (SSH, a scheduled job, a locked keychain) still reads the whole card, and the moves wait for a
  * session that can. Every read works without the key [E9].
  *
@@ -136,30 +137,24 @@ function keylessBookkeeping(send) {
 export async function resumeHere(io, view) {
   const ctx = context(io);
   const ordered = keylessBookkeeping(sendOrdered);
-  await withBoard(ctx, async board => {
-    const me = whoAmI(ctx, board);
-    // Bootstrap is an ordered move: observe health only after it, so the first legacy scan is not stale.
-    const initialBaseline = initialSpecApprovalBaseline(ctx, board, 'recordHealthFindings');
-    if (initialBaseline) {
-      const baselineIo = ctx.io.personRequest || ctx.io.personRequestMoveId
-        ? { ...ctx.io, personRequest: undefined, personRequestMoveId: undefined } : ctx.io;
-      await ordered({ ...ctx, io: baselineIo }, board, 'recordSpecApprovalBaseline', [{
-        agentId: COORDINATOR, baseline: initialBaseline,
-      }]);
-    }
-    const observation = scanHealthSentinel(ctx.file, { root: ctx.info.root, config: ctx.config, now: ctx.clock.now() });
-    if (observation) {
-      try { await ordered(ctx, board, 'recordHealthFindings', [{ agentId: me.id, ...observation }]); }
-      catch (error) { if (!(error instanceof Refused) || error.code !== 'HEALTH_SCAN_STALE') throw error; }
-    }
+  const initialBaseline = withBoardRead(ctx, board => {
+    whoAmI(ctx, board);
+    return initialSpecApprovalBaseline(ctx, board, 'recordHealthFindings');
   });
-  resumeSentinels({ ctx, withBoard });
+  if (initialBaseline) {
+    const baselineIo = ctx.io.personRequest || ctx.io.personRequestMoveId
+      ? { ...ctx.io, personRequest: undefined, personRequestMoveId: undefined } : ctx.io;
+    await withBoard(ctx, board => ordered({ ...ctx, io: baselineIo }, board, 'recordSpecApprovalBaseline', [{
+      agentId: COORDINATOR, baseline: initialBaseline,
+    }]));
+  }
+  resumeSentinels({ ctx, withBoard: withBoardRead });
   const { root, isMain } = ctx.info;
   const mainRoot = primaryCheckoutRoot(ctx.info);
   const worktreeConfig = mainRoot ? (isMain ? ctx.config : loadConfig(mainRoot)) : null;
   let setupScope;
   let doctrine;
-  const card = withBoard(ctx, (board) => {
+  const card = withBoardRead(ctx, (board) => {
     setupScope = setupIdentity(board);
     doctrine = agentDoctrine(ctx, board);
     const me = whoAmI(ctx, board);
@@ -174,6 +169,7 @@ export async function resumeHere(io, view) {
     const needsState = personNeedsSummary(root, { board, config: ctx.config, includeFit: true, includeRigorUndrafted: me.id === COORDINATOR });
     return {
       me,
+      health: recordedHealthFindings(board),
       all,
       needsYou: personNeeds(needsState),
       ...(me.id === COORDINATOR ? { rigor: { undrafted: needsState.rigorUndrafted } } : {}),
@@ -229,12 +225,16 @@ export async function resumeHere(io, view) {
   for (const problem of card.hookProblems) say(`${problem.message}; ${problem.next}`);
   const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
   say(`resume: ${me.displayName}${me.family ? ` [family ${me.family}]` : ''}, ${me.lane} lane${isMain ? ', the main checkout' : ''}, at ${root}`);
+  if (card.health.recordedAt) {
+    say(`Health recorded ${card.health.recordedAt}: ${card.health.findings.length} finding${card.health.findings.length === 1 ? '' : 's'}; refresh with pullboard sentinel run.`);
+    for (const finding of card.health.findings) say(`  ${finding.subject}: ${finding.why}; next: ${finding.next}`);
+  } else say('No health findings have been recorded; schedule pullboard sentinel run to refresh them.');
   card.view = view;
   // A view left running needs no line at every session start; a start, a busy port or a failure does.
   if (view.state !== 'running' && backgroundViewLine(view)) say(backgroundViewLine(view));
   if (card.inbox) for (const line of coordinatorInboxLines(card.inbox, name, (at) => span(ctx, at), firstLine)) say(line);
   say(`New agent worktrees: ${card.newWorktreeLocation}`);
-  card.setup = withBoard(ctx, board => withStarterWork(boardSetup(ctx, card, setupScope), { board, me, main: isMain, config: ctx.config, root, seat: ctx.io.callerRole() === 'seat' }));
+  card.setup = withBoardRead(ctx, board => withStarterWork(boardSetup(ctx, card, setupScope), { board, me, main: isMain, config: ctx.config, root, seat: ctx.io.callerRole() === 'seat' }));
   if (!loadSpec(root, ctx.config).rows.length && card.all.length) say('Spec rows are optional; add a requirement later: pullboard spec draft "<text>".');
   if (card.setup) {
     say(`Setting up: step ${card.setup.step} of 5`);
