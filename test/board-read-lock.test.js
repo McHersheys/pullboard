@@ -79,7 +79,7 @@ test('a read answers while a writer holds the lock [C7]', async (t) => {
   const { status, show } = await reads(box);
   const heldFor = performance.now() - startedAt;
   assert.equal((await holder.closed).code, 0, 'the holder kept the lock and committed');
-  assert.ok(heldFor < 3000, `every read finished inside the 3 s hold (${Math.round(heldFor)} ms)`);
+  assert.ok(heldFor < 3000, `every read finished inside the 3 s hold (${Math.round(heldFor)} ms)`); // budget: ceiling is the 3 s hold declared above; a read that waits out the lock ends after it
   assert.equal(status.code, 0, status.err);
   assert.match(status.out, /board: 1 open/u);
   assert.equal(show.code, 0, show.err);
