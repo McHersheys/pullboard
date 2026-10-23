@@ -206,7 +206,7 @@ test('the sidebar lists every project and what needs the person [N26]', async ()
   }
 });
 
-test('projects group repos with combined needs and activity, while ungrouped and unreadable repos stay clear [N33, N34, N36]', async () => {
+test('unreadable boards collapse to one line with Forget all while projects group readable repos with combined needs and activity [N33, N34, N36]', async () => {
   const box = machine();
   const core = project(box, 'core', `${SPEC}- G3 [pending] Should #1 greet in French?\n`, { name: 'Core API', project: 'Atlas' });
   box.run(core.repo, 'add', 'web', 'Core target #1', '--specs', 'G1', '--criterion', 'greets');
@@ -218,16 +218,22 @@ test('projects group repos with combined needs and activity, while ungrouped and
   box.run(web.repo, 'shout', 'person', 'Ship #1 today?', '--decision');
   const standalone = project(box, 'standalone', SPEC, { name: 'Scratchpad' });
   const broken = project(box, 'broken', SPEC, { name: 'Broken repo', project: 'Atlas' });
+  const brokenTwo = project(box, 'broken-two', SPEC, { name: 'Broken repo two', project: 'Atlas' });
+  const brokenThree = project(box, 'broken-three', SPEC, { name: 'Broken repo three', project: 'Elsewhere' });
+  const recoveredConfig = readFileSync(join(brokenThree.repo, 'pullboard.json'));
   const view = await startView(box);
   try {
     const headers = { 'x-pullboard-key': view.key };
     let response = await fetchLive(`${view.base}/api/v1/boards`, { headers });
     let state = await response.json();
-    assert.deepEqual(state.boards.filter((repo) => repo.project === 'Atlas').map((repo) => repo.name), ['Core API', 'Web UI', 'Broken repo']);
+    assert.deepEqual(state.boards.filter((repo) => repo.project === 'Atlas').map((repo) => repo.name), ['Core API', 'Web UI', 'Broken repo', 'Broken repo two']);
     writeFileSync(join(broken.repo, 'pullboard.json'), '{not valid json');
+    writeFileSync(join(brokenTwo.repo, 'pullboard.json'), '{not valid json');
+    writeFileSync(join(brokenThree.repo, 'pullboard.json'), '{not valid json');
     response = await fetchLive(`${view.base}/api/v1/boards`, { headers });
     state = await response.json();
     const unreadable = state.warnings.find((repo) => repo.root === broken.repo);
+    assert.equal(state.warnings.length, 3);
     assert.equal(unreadable.error.version, 1);
     assert.equal(unreadable.error.error.code, 'BOARD_UNAVAILABLE');
     assert.match(unreadable.error.error.message, /cannot be read/);
@@ -241,8 +247,45 @@ test('projects group repos with combined needs and activity, while ungrouped and
     assert.match(side, /Core API/);
     assert.match(side, /Web UI/);
     assert.match(side, /Scratchpad/);
-    assert.match(side, /class="repo-error" role="status"><b>Broken repo:<\/b> registered project [^<]+ cannot be read; restore the repo or run pullboard forget/);
+    assert.match(side, /<summary>3 boards can no longer be found<\/summary>/);
+    const disclosure = side.indexOf('<details class="unreadable-projects">');
+    assert.ok(disclosure >= 0, 'the path list stays collapsed until opened');
+    for (const root of [broken.repo, brokenTwo.repo, brokenThree.repo]) assert.ok(!side.slice(0, disclosure).includes(root), 'paths are disclosed only in the expanded list');
+    assert.match(side, /<b>Broken repo<\/b> <code>[^<]+<\/code>/);
+    assert.match(side, /<b>Broken repo two<\/b> <code>[^<]+<\/code>/);
+    assert.match(side, /<b>Broken repo three<\/b> <code>[^<]+<\/code>/);
+    assert.doesNotMatch(side, /registered project [^<]+ cannot be read/);
+    assert.match(side, /data-forget-unreadable>Forget all<\/button>/);
     assert.doesNotMatch(side, /class="small bad"|class="bad"/);
+
+    response = await fetchLive(`${view.base}/api/v1/projects/forget-unreadable`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ confirm: true }),
+    });
+    assert.equal(response.status, 403, 'the mutation requires this view session key');
+    response = await fetchLive(`${view.base}/api/v1/projects/forget-unreadable`, {
+      method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ confirm: true, roots: [broken.repo] }),
+    });
+    assert.equal(response.status, 400, 'the browser cannot choose project roots');
+
+    page.run('globalThis.__forgetConfirmCalls = 0; globalThis.confirm = () => { globalThis.__forgetConfirmCalls++; return false; }');
+    await page.click({ forgetUnreadable: '' });
+    assert.equal(page.run('globalThis.__forgetConfirmCalls'), 1);
+    assert.equal(page.requests.filter((request) => request.path === '/api/v1/projects/forget-unreadable').length, 0, 'cancel leaves the registry unchanged');
+
+    // A stale disclosure cannot forget a board that became readable after the page listed it.
+    writeFileSync(join(brokenThree.repo, 'pullboard.json'), recoveredConfig);
+    page.run('globalThis.confirm = () => { globalThis.__forgetConfirmCalls++; return true; }');
+    await page.click({ forgetUnreadable: '' });
+    assert.equal(page.run('globalThis.__forgetConfirmCalls'), 2);
+    assert.ok(page.requests.some((request) => request.path === '/api/v1/projects/forget-unreadable' && request.method === 'POST' && request.body?.confirm === true));
+    assert.ok(page.requests.filter((request) => request.path === '/api/v1/projects/forget-unreadable').every((request) => Object.keys(request.body).length === 1), 'the browser sends confirmation, never project paths');
+    assert.doesNotMatch(page.show('proj-list'), /unreadable-projects|<b>Broken repo<\/b>|<b>Broken repo two<\/b>/);
+    assert.match(page.show('proj-list'), /Broken repo three/);
+    response = await fetchLive(`${view.base}/api/v1/boards`, { headers });
+    state = await response.json();
+    assert.equal(state.warnings.length, 0);
+    assert.ok(state.boards.some((repo) => repo.root === brokenThree.repo && repo.name === 'Broken repo three'));
+    assert.ok(state.boards.some((repo) => repo.root === core.repo), 'healthy registered boards are preserved');
 
     await page.click({ root: 'group:Atlas' });
     assert.equal(page.element('group-view').hidden, false);
