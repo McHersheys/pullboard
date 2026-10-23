@@ -1,11 +1,12 @@
 /** Test the CI-like test runner against real Git and PATH behavior [C7, S13]. */
 import assert from 'node:assert/strict';
 import { runFixtureExecFile as execFileSync, runFixtureChild as spawnSync } from './fixture-child.js';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
+import { importsIn } from '../src/module-imports.js';
 
 test('tests run without inherited Git identity or config and refuse ambient pullboard [C7, S13]', (t) => {
   assert.equal(process.env.GIT_CONFIG_GLOBAL, '/dev/null');
@@ -92,7 +93,34 @@ test('reports its sandbox and person-terminal markers', () => writeFileSync(${JS
   assert.match(failed.stdout, /forward this failure/);
 });
 
-test('default discovery runs one fixture and does not recurse into the runner [C7, S13]', (t) => {
+/** Copy the runner and its transitive local imports without evaluating their code. */
+function copyRunnerImports(sourceRoot, root) {
+  const copied = new Set();
+  let pending = ['bin/run-tests.js'];
+  while (pending.length) {
+    const files = [...new Set(pending)].filter((file) => !copied.has(file));
+    pending = [];
+    if (!files.length) continue;
+    // Imported JSON is leaf data, not an ES module for V8 to parse.
+    const sources = files.map((file) => file.endsWith('.json') ? 'export {};' : readFileSync(join(sourceRoot, file), 'utf8'));
+    const imports = importsIn(sources);
+    for (const [index, file] of files.entries()) {
+      copied.add(file);
+      mkdirSync(dirname(join(root, file)), { recursive: true });
+      copyFileSync(join(sourceRoot, file), join(root, file));
+      for (const request of imports[index]) {
+        if (!request.startsWith('./') && !request.startsWith('../')) continue;
+        const target = relative(sourceRoot, resolve(sourceRoot, dirname(file), request));
+        assert.ok(target && target !== '..' && !target.startsWith('..' + sep) && !isAbsolute(target),
+          `runner fixture import must stay in its source checkout: ${request}`);
+        pending.push(target);
+      }
+    }
+  }
+}
+
+/** Build the runner-discovery fixture from a source checkout. */
+function discoveryFixture(t, sourceRoot = fileURLToPath(new URL('../', import.meta.url))) {
   const root = mkdtempSync(join(tmpdir(), 'pullboard-runner-discovery-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const bin = join(root, 'bin');
@@ -100,18 +128,17 @@ test('default discovery runs one fixture and does not recurse into the runner [C
   mkdirSync(bin);
   mkdirSync(tests);
   writeFileSync(join(root, 'package.json'), JSON.stringify({ type: 'module' }));
-  const runner = fileURLToPath(new URL('../bin/run-tests.js', import.meta.url));
-  copyFileSync(runner, join(bin, 'run-tests.js'));
-  const source = join(root, 'src');
-  mkdirSync(source);
-  for (const name of ['child-journal-preload.js', 'config.js', 'person.js', 'refused.js', 'test-isolation.js']) {
-    copyFileSync(fileURLToPath(new URL('../src/' + name, import.meta.url)), join(source, name));
-  }
+  copyRunnerImports(sourceRoot, root);
   const marker = join(root, 'ran-once');
   writeFileSync(join(tests, 'one.test.js'), `import { test } from 'node:test';
 import { appendFileSync } from 'node:fs';
 test('one discovered test', () => appendFileSync(${JSON.stringify(marker)}, 'x'));
 `);
+  return { root, bin, marker };
+}
+
+/** Run default discovery and require exactly one fixture execution. */
+function runDiscovery({ root, bin, marker }) {
   const launchEnv = { ...process.env };
   delete launchEnv.NODE_TEST_CONTEXT;
   const result = spawnSync(process.execPath, ['--test', '--import', join(bin, 'run-tests.js')], {
@@ -121,4 +148,20 @@ test('one discovered test', () => appendFileSync(${JSON.stringify(marker)}, 'x')
   });
   assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
   assert.equal(readFileSync(marker, 'utf8'), 'x', 'one test ran exactly once under default discovery');
+}
+
+test('default discovery runs one fixture and does not recurse into the runner [C7, S13]', (t) => {
+  runDiscovery(discoveryFixture(t));
+});
+
+test('discovery follows a new runner src import and its transitive dependency [C7, S13]', (t) => {
+  const source = mkdtempSync(join(tmpdir(), 'pullboard-discovery-source-'));
+  t.after(() => rmSync(source, { recursive: true, force: true }));
+  mkdirSync(join(source, 'bin'));
+  cpSync(fileURLToPath(new URL('../src', import.meta.url)), join(source, 'src'), { recursive: true });
+  const runner = readFileSync(fileURLToPath(new URL('../bin/run-tests.js', import.meta.url)), 'utf8');
+  writeFileSync(join(source, 'bin/run-tests.js'), runner.replace('\n', "\nimport '../src/discovery-extra.js';\n"));
+  writeFileSync(join(source, 'src/discovery-extra.js'), "import { value } from './discovery-nested.js';\nif (value !== 'closure') throw new Error('transitive import failed');\n");
+  writeFileSync(join(source, 'src/discovery-nested.js'), "export const value = 'closure';\n");
+  runDiscovery(discoveryFixture(t, source));
 });
