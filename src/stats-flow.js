@@ -1,3 +1,4 @@
+import { proofEventDetail } from './proof-event-detail.js';
 /** Flow times, queues and recommendations from recorded lifecycle evidence [R1,R2]. */
 const MINUTE = 60_000;
 const STAGES = ['build', 'reviewWait', 'review', 'mergeWait'];
@@ -19,7 +20,7 @@ function interval(start, end) {
 }
 
 /** Identify role-bearing moves without guessing a role from an agent's lane. */
-function roleOf(kind, detail) {
+export function roleOf(kind, detail) {
   if (['reserve', 'accept', 'reject', 'verify'].includes(kind) || kind === 'release' && detail.review) return 'verifier';
   if (['claim', 'submit'].includes(kind) || kind === 'release' && !detail.review) return 'builder';
   return null;
@@ -34,7 +35,7 @@ function expireClaim(item, at) {
 }
 
 /** Replay one lifecycle move; its first claim and first merge survive rework and repeated receipts. */
-function move(item, event, detail, at) {
+export function moveFlowItem(item, event, detail, at) {
   expireClaim(item, at);
   switch (event.event_kind) {
     case 'add':
@@ -150,7 +151,7 @@ export function prepareFlowHistory(history) {
   const actors = new Map();
   const dailyEvents = [];
   for (const event of history) {
-    const detail = JSON.parse(event.event_detail);
+    const detail = proofEventDetail(event);
     const at = Date.parse(event.event_at);
     const id = event.event_by;
     if (!['board', 'person', 'clock'].includes(id)) {
@@ -165,7 +166,7 @@ export function prepareFlowHistory(history) {
     const item = items.get(event.item_id);
     if (event.event_kind === 'add') dailyEvents.push({ at, kind: 'added' });
     if (event.event_kind === 'merged' && item.mergeAt === undefined) dailyEvents.push({ at, kind: 'merged' });
-    move(item, event, detail, at);
+    moveFlowItem(item, event, detail, at);
   }
   const frozenItems = [...items.values()].map((item) => Object.freeze({
     ...item,
