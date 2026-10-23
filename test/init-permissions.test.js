@@ -196,48 +196,51 @@ test('init grants the agent the permissions the Pullboard loop needs [I1,I2]', t
   assert.equal(readFileSync(skipCodexPath, 'utf8'), skipCodexBytes, '--no-permissions preserves existing Codex rules byte-for-byte');
 });
 
-test('init keeps an existing Codex pullboard server in any TOML form and adds no second one [A9,I1]', (t) => {
-  const forms = {
-    'a trailing comment': '[mcp_servers.pullboard] # the team runs it here\ncommand = "pullboard"\nargs = ["mcp"]\n',
-    'a single-quoted key': "[mcp_servers.'pullboard']\ncommand = \"pullboard\"\nargs = [\"mcp\"]\n",
-    'an inline table': 'mcp_servers = { pullboard = { command = "pullboard", args = ["mcp"] } }\n',
-    'an inline table under [mcp_servers]': '[mcp_servers]\npullboard = { command = "pullboard", args = ["mcp"] }\n',
-    'dotted keys': 'mcp_servers.pullboard.command = "pullboard"\nmcp_servers.pullboard.args = ["mcp"]\n',
-  };
-  for (const [form, existing] of Object.entries(forms)) {
+test('init edits a simple Codex config and keeps a pullboard server already there [A9,I1]', (t) => {
+  // Every line is in the simple subset, so init appends the table once, or keeps the file when pullboard is there.
+  for (const [existing, codex] of [
+    ['[mcp_servers.pullboard] # the team runs it here\ncommand = "pullboard"\nargs = ["mcp"]\n', 'kept'],
+    ["[mcp_servers.'pullboard']\ncommand = \"pullboard\"\n", 'kept'],
+    ['mcp_servers.pullboard.command = "pullboard"\n', 'kept'],
+    ['[mcp_servers]\npullboard.command = "pullboard"\n', 'kept'],
+    ['# [mcp_servers.pullboard] was here once\n[mcp_servers.other]\ncommand = "pullboard"\n', 'added'],
+    ['[mcp_servers."\\U0001F600"]\ncommand = "smile"\n', 'added'],
+    ['model = "o3"\nlimits = [1, 2.5, true, "x"] # trailing\n', 'added'],
+  ]) {
     const box = initFixture(t);
     mkdirSync(join(box.root, '.codex'), { recursive: true });
     writeFileSync(join(box.root, '.codex', 'config.toml'), existing);
     const initialized = box.init();
-    assert.equal(initialized.code, 0, `${form}: ${initialized.stderr}`);
-    assert.equal(readFileSync(join(box.root, '.codex', 'config.toml'), 'utf8'), existing, `${form}: the config is byte for byte as it was, with no duplicate server`);
-    assert.ok(initialized.document.notes.includes('kept the Codex MCP server in .codex/config.toml'), `${form}: init says it kept the server`);
+    assert.equal(initialized.code, 0, `${existing}\n${initialized.stderr}`);
+    assert.equal(initialized.document.mcp.codex, codex, existing);
+    const after = readFileSync(join(box.root, '.codex', 'config.toml'), 'utf8');
+    if (codex === 'kept') assert.equal(after, existing, 'a pullboard server already there is kept byte for byte');
+    else {
+      assert.ok(after.startsWith(existing), 'everything already there is kept');
+      assert.match(after.slice(existing.length), /^\n\[mcp_servers\.pullboard\]\ncommand = "sh"\nargs = \["-c", "[^\n]+"\]\n$/u, 'the pullboard table is appended once');
+    }
   }
-  // A server by another name, or pullboard named only inside a string or a comment, still gets the pullboard table.
-  const box = initFixture(t);
-  const other = '# [mcp_servers.pullboard] was here once\n[mcp_servers.other]\ncommand = "pullboard"\n';
-  mkdirSync(join(box.root, '.codex'), { recursive: true });
-  writeFileSync(join(box.root, '.codex', 'config.toml'), other);
-  assert.equal(box.init().code, 0);
-  const after = readFileSync(join(box.root, '.codex', 'config.toml'), 'utf8');
-  assert.ok(after.startsWith(other), 'the existing config is kept');
-  assert.match(after.slice(other.length), /^\n\[mcp_servers\.pullboard\]\ncommand = "sh"\n/u, 'the pullboard server is appended once');
 });
 
-test('init leaves an inline mcp_servers table as written, prints the exact block and marks Codex manual [A9,I1]', (t) => {
-  // TOML never adds to an inline table from outside it, so init writes nothing and the person adds the block.
-  for (const existing of ['mcp_servers = { other = { command = "other-server", args = ["serve"] } }\n', 'mcp_servers = {}\n']) {
+test('init leaves a Codex config outside the simple subset as written, prints the exact block and marks Codex manual [A9,I1]', (t) => {
+  // Outside the subset init never rewrites the person's TOML; it prints the one block for them to add.
+  for (const existing of [
+    'mcp_servers = { other = { command = "other-server", args = ["serve"] } }\n',
+    'mcp_servers = {}\n',
+    'mcp_servers = { pullboard = { command = "pullboard" } }\n',
+    'note = """\n[mcp_servers.pullboard]\n"""\n[mcp_servers.other]\ncommand = "other"\n',
+    'released = 1979-05-27\n',
+    '[[profiles]]\nname = "x"\n',
+  ]) {
     const box = initFixture(t);
     mkdirSync(join(box.root, '.codex'), { recursive: true });
     writeFileSync(join(box.root, '.codex', 'config.toml'), existing);
     const initialized = box.init();
-    assert.equal(initialized.code, 0, initialized.stderr);
-    assert.equal(readFileSync(join(box.root, '.codex', 'config.toml'), 'utf8'), existing, 'the inline table is byte for byte as it was');
-    assert.equal(initialized.document.mcp.codex, 'manual', '--json marks Codex as manual');
-    assert.equal(initialized.document.mcp.claude, 'added');
-    const note = initialized.document.notes.find(entry => entry.startsWith('kept .codex/config.toml as written: its mcp_servers is an inline table'));
-    assert.ok(note, 'init says why it kept the file');
-    assert.match(note, /\n\[mcp_servers\.pullboard\]\ncommand = "sh"\nargs = \["-c", "[^\n]+"\]$/u, 'and prints the one exact block to add');
+    assert.equal(initialized.code, 0, `${existing}\n${initialized.stderr}`);
+    assert.equal(readFileSync(join(box.root, '.codex', 'config.toml'), 'utf8'), existing, `${existing}: byte for byte as it was`);
+    assert.equal(initialized.document.mcp.codex, 'manual', `${existing}: --json marks Codex as manual`);
+    const note = initialized.document.notes.find(entry => entry.startsWith('kept .codex/config.toml as written:'));
+    assert.match(note ?? '', /\n\[mcp_servers\.pullboard\]\ncommand = "sh"\nargs = \["-c", "[^\n]+"\]$/u, `${existing}: the one exact block to add`);
   }
   // The plain command prints the block too, without --verbose.
   const box = initFixture(t);
@@ -246,26 +249,4 @@ test('init leaves an inline mcp_servers table as written, prints the exact block
   const plain = runFixtureChild(process.execPath, [BIN, 'init'], { cwd: box.root, env: box.env, encoding: 'utf8' });
   assert.equal(plain.status, 0, plain.stderr);
   assert.match(plain.stdout, /\[mcp_servers\.pullboard\]\ncommand = "sh"\nargs = \["-c", /u, 'the plain output shows the block');
-  // A config init can extend says added.
-  const ordinary = initFixture(t);
-  assert.equal(ordinary.init().document.mcp.codex, 'added');
-});
-
-test('init reads no table inside a multi-line string and reads every TOML escape in a key [A9,I1]', (t) => {
-  // A header written inside a multi-line string is text, so the pullboard server is still added; a \U escape never crashes.
-  for (const existing of [
-    'note = """\n[mcp_servers.pullboard]\n"""\n[mcp_servers.other]\ncommand = "other"\n',
-    "note = '''\n[mcp_servers.pullboard]\n'''\n",
-    '[mcp_servers."\\U0001F600"]\ncommand = "smile"\n',
-  ]) {
-    const box = initFixture(t);
-    mkdirSync(join(box.root, '.codex'), { recursive: true });
-    writeFileSync(join(box.root, '.codex', 'config.toml'), existing);
-    const initialized = box.init();
-    assert.equal(initialized.code, 0, `${existing}\n${initialized.stderr}`);
-    assert.equal(initialized.document.mcp.codex, 'added', existing);
-    const after = readFileSync(join(box.root, '.codex', 'config.toml'), 'utf8');
-    assert.ok(after.startsWith(existing), 'everything already there is kept');
-    assert.match(after.slice(existing.length), /^\n\[mcp_servers\.pullboard\]\ncommand = "sh"\n/u, 'the pullboard table is appended once');
-  }
 });

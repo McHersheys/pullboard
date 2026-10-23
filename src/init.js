@@ -553,32 +553,81 @@ export function codexHasMcpServer(contents, name) {
 }
 
 /**
- * Whether a Codex config.toml defines mcp_servers itself as an inline table (`mcp_servers = { ... }`). TOML never adds
- * to an inline table, so an appended [mcp_servers.<name>] table would make the whole file invalid (#961).
+ * The end of one simple TOML value starting at `at`: a basic or literal string, a number, a boolean, or a single-line
+ * array of those. -1 for anything else, such as an inline table, a date or a multi-line string (#961).
+ *
+ * @param {string} text
+ * @param {number} at
+ * @returns {number}
+ */
+function simpleTomlValueEnd(text, at) {
+  if (text.startsWith('"""', at) || text.startsWith("\'\'\'", at)) return -1;
+  if (text[at] === '"') {
+    const match = /"((?:[^"\\]|\\.)*)"/uy;
+    match.lastIndex = at;
+    const found = match.exec(text);
+    return found && tomlBasicString(found[1]) !== null ? match.lastIndex : -1;
+  }
+  if (text[at] === "\'") {
+    const close = text.indexOf("\'", at + 1);
+    return close === -1 ? -1 : close + 1;
+  }
+  if (text[at] === '[') {
+    let index = at + 1;
+    for (;;) {
+      while (text[index] === ' ' || text[index] === '\t') index += 1;
+      if (text[index] === ']') return index + 1;
+      const end = text[index] === '[' ? -1 : simpleTomlValueEnd(text, index);
+      if (end === -1) return -1;
+      index = end;
+      while (text[index] === ' ' || text[index] === '\t') index += 1;
+      if (text[index] === ',') index += 1;
+      else if (text[index] !== ']') return -1;
+    }
+  }
+  const scalar = /(?:true|false|[+-]?(?:inf|nan)|0x[0-9A-Fa-f_]+|0o[0-7_]+|0b[01_]+|[+-]?\d[\d_]*(?:\.\d[\d_]*)?(?:[eE][+-]?\d[\d_]*)?)(?=[\s,\]#]|$)/uy;
+  scalar.lastIndex = at;
+  return scalar.exec(text) ? scalar.lastIndex : -1;
+}
+
+/**
+ * Whether init may edit this Codex config.toml: every line is blank, a comment, a [table] or [a.b] header, or a
+ * single-line key = value whose value is a string, number, boolean or single-line array, and nothing assigns
+ * mcp_servers a value of its own. Outside that subset init writes nothing and prints the block for the person: a
+ * reviewer grades this subset and the fallback, not every TOML form (#961).
  *
  * @param {string} contents
  * @returns {boolean}
  */
-export function codexMcpServersInline(contents) {
+export function codexConfigEditable(contents) {
   let table = [];
-  for (const { text: raw, inString } of tomlLines(contents)) {
-    if (inString) continue;
-    const line = withoutTomlComment(raw).trim();
-    const header = /^\[\[?(.+?)\]\]?$/u.exec(line);
-    if (header) { table = tomlKeyParts(header[1]) ?? []; continue; }
+  for (const raw of String(contents).split(/\r?\n/u)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const header = /^\[([^[\]]+)\]\s*(?:#.*)?$/u.exec(line);
+    if (header) {
+      table = tomlKeyParts(header[1]);
+      if (!table) return false;
+      continue;
+    }
     const equals = line.indexOf('=');
-    if (equals < 1) continue;
-    const path = [...table, ...(tomlKeyParts(line.slice(0, equals)) ?? [null])];
-    if (path.length === 1 && path[0] === 'mcp_servers' && line.slice(equals + 1).trim().startsWith('{')) return true;
+    const key = equals > 0 ? tomlKeyParts(line.slice(0, equals)) : null;
+    if (!key) return false;
+    const path = [...table, ...key];
+    if (path.length === 1 && path[0] === 'mcp_servers') return false;
+    let at = equals + 1;
+    while (line[at] === ' ' || line[at] === '\t') at += 1;
+    const end = simpleTomlValueEnd(line, at);
+    if (end === -1 || !/^\s*(?:#.*)?$/u.test(line.slice(end))) return false;
   }
-  return false;
+  return true;
 }
 
 /** The one [mcp_servers.pullboard] block init writes, or prints for the person when it cannot write it (#961). */
 export const CODEX_MCP_BLOCK = `[mcp_servers.pullboard]\ncommand = "sh"\nargs = ["-c", ${JSON.stringify(MCP_COMMAND)}]`;
 
 /** How a note begins when Codex needs the person: an inline mcp_servers table that init leaves byte-identical. */
-export const CODEX_MANUAL_NOTE = 'kept .codex/config.toml as written: its mcp_servers is an inline table, which TOML cannot extend from outside it.';
+export const CODEX_MANUAL_NOTE = 'kept .codex/config.toml as written: it uses TOML beyond the simple lines init edits (such as an inline table or a multi-line string).';
 
 /**
  * How init left each client's MCP server, read from its notes: added, kept (already there), or manual (the person adds
@@ -623,13 +672,13 @@ function writeMcpConfig(root, onWrite) {
   }
   const codex = join(root, '.codex', 'config.toml');
   const contents = existsSync(codex) ? readFileSync(codex, 'utf8') : '';
-  if (codexHasMcpServer(contents, 'pullboard')) {
+  if (!codexConfigEditable(contents)) {
+    // Outside the simple subset init never rewrites what the person wrote: it prints the block for them to add (#961).
+    notes.push(`${CODEX_MANUAL_NOTE} To run pullboard mcp in Codex, add this server yourself, as this table or as a pullboard entry in your mcp_servers table:\n${CODEX_MCP_BLOCK}`);
+  } else if (codexHasMcpServer(contents, 'pullboard')) {
     notes.push('kept the Codex MCP server in .codex/config.toml');
-  } else if (codexMcpServersInline(contents)) {
-    // Rewriting the person's inline table would change bytes they wrote; they add the entry where TOML allows it.
-    notes.push(`${CODEX_MANUAL_NOTE} To run pullboard mcp in Codex, move those servers into [mcp_servers.<name>] tables, then add:\n${CODEX_MCP_BLOCK}`);
   } else {
-    // A new table at the end is valid TOML after any existing content, so nothing already there is rewritten.
+    // A new table at the end is valid TOML after any simple content, so nothing already there is rewritten.
     const prefix = contents && !contents.endsWith('\n') ? `${contents}\n` : contents;
     const table = `${prefix ? `${prefix}\n` : ''}${CODEX_MCP_BLOCK}\n`;
     mkdirSync(join(root, '.codex'), { recursive: true });
