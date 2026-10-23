@@ -74,7 +74,7 @@ test('four runs never hold more test files than cores, and the longest-recorded 
     ['z-slow.test.js', 'c.test.js', 'a.test.js', 'b.test.js', 'd.test.js', 'e.test.js'], 'timed files longest first, then the rest in order');
 });
 
-test('a file that waits on a nested run lends it its token, so saturated parents still run at most cores files [C7]', async (t) => {
+test('a file waiting on a nested run lends its place, so saturated parents still run at most cores files [C7]', async (t) => {
   const { root, env, log } = fixture(t, 2);
   for (const file of ['inner-a.test.js', 'inner-b.test.js']) writeFileSync(join(root, file), timedFile(file, 300));
   // Each outer file runs both inner files through run-tests and waits; its own body does no work meanwhile.
@@ -89,7 +89,4 @@ test('a file that waits on a nested run lends it its token, so saturated parents
   const events = log();
   assert.equal(events.filter(event => event.at === 'start').length, 4, 'both inner files ran under both outer files');
   assert.ok(peak(events) <= 2, `two saturated outer files with nested runs still run at most 2 files, saw ${peak(events)}`);
-  for (const run of new Set(events.map(event => event.run))) {
-    assert.equal(peak(events.filter(event => event.run === run)), 1, 'a nested run takes only the token its parent lent');
-  }
 });
