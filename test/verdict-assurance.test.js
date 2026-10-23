@@ -13,6 +13,10 @@ import * as store from '../src/board.js';
 import { main } from '../src/cli.js';
 import { runFixtureGit } from './fixture-child.js';
 import { submitFixture } from './board-submit-fixture.js';
+import {
+  exportBoard,
+  importBoard,
+} from '../src/exchange.js';
 
 /** Real Git and SQLite, with one item per independently declared parent pair. */
 function fixture(t) {
@@ -30,7 +34,7 @@ function fixture(t) {
 }
 
 /** Build and accept once without inventing a gate execution for the board-state fixture. */
-function accepted(box, builderParent, reviewerParent) {
+function accepted(box, builderParent, reviewerParent, { historicalUnknown = false, engine } = {}) {
   const number = store.listAgents(box.board).length;
   const builderPath = join(box.root, `builder-${number}`);
   const reviewerPath = join(box.root, `reviewer-${number}`);
@@ -38,13 +42,23 @@ function accepted(box, builderParent, reviewerParent) {
   const reviewer = store.register(box.board, { lane: 'web', path: reviewerPath, parent: reviewerParent });
   const id = store.addItem(box.board, { by: 'coordinator', lane: 'web', title: 'Assurance evidence', criterion: 'Review states its assurance', check: 'true' });
   const digest = 'f'.repeat(64);
+  if (historicalUnknown) {
+    const prior = store.register(box.board, { lane: 'web', path: join(box.root, `prior-${number}`) });
+    store.claim(box.board, id, { agentId: prior, lane: 'web', leaseMs: 3600000,
+      freeze: () => ({ text: JSON.stringify({ rows: [] }), digest }) });
+    store.release(box.board, id, prior);
+  }
   store.claim(box.board, id, { agentId: builder, lane: 'web', leaseMs: 3600000,
     freeze: () => ({ text: JSON.stringify({ rows: [] }), digest }) });
   const commit = String(id).padStart(40, 'a');
   submitFixture(box.board, id, { agentId: builder, commit, tree: String(id).padStart(40, 'b') });
-  store.verify(box.board, id, { agentId: reviewer, decision: 'ACCEPT', policy: 'any', head: commit, digest,
-    note: 'Changed the private fixture edge; its assertion failed, then passed when restored.' });
-  return { id, reviewerPath };
+  // A historical engine predates parent assurance even when seats are known today.
+  if (engine !== undefined) box.board.executionEngineVersion = engine;
+  try {
+    store.verify(box.board, id, { agentId: reviewer, decision: 'ACCEPT', policy: 'any', head: commit, digest,
+      note: 'Changed the private fixture edge; its assertion failed, then passed when restored.' });
+  } finally { delete box.board.executionEngineVersion; }
+  return { id, builderPath, reviewerPath };
 }
 
 test('[V1,B3] verdicts record independent assurance only for recorded different parents and show prints the tier', async (t) => {
@@ -54,7 +68,22 @@ test('[V1,B3] verdicts record independent assurance only for recorded different 
   for (const parents of [[undefined, 'parent-Q'], ['parent-P', undefined], [undefined, undefined]]) {
     const procedural = accepted(box, ...parents);
     assert.equal(store.verdictsFor(box.board, procedural.id)[0].assurance, 'procedural');
+    if (parents.every(parent => parent === undefined)) {
+      store.register(box.board, { lane: 'web', path: procedural.builderPath, parent: 'parent-P' });
+      store.register(box.board, { lane: 'web', path: procedural.reviewerPath, parent: 'parent-Q' });
+      assert.equal(store.verdictsFor(box.board, procedural.id)[0].assurance, 'procedural', 'later parent enrollment cannot upgrade an old verdict');
+    }
   }
+  const historical = accepted(box, 'parent-P', 'parent-Q', { historicalUnknown: true });
+  assert.equal(store.verdictsFor(box.board, historical.id)[0].assurance, 'procedural', 'an earlier unknown author still limits assurance');
+  const legacy = accepted(box, 'parent-P', 'parent-Q', { engine: 80 });
+  assert.equal(store.verdictsFor(box.board, legacy.id)[0].assurance, 'procedural', 'old verdicts never invent parent assurance');
+  const restored = store.openBoard(join(box.root, 'restored.sqlite'));
+  try {
+    importBoard(restored, exportBoard(box.board));
+    assert.equal(store.verdictsFor(restored, independent.id)[0].assurance, 'independent');
+    assert.equal(store.verdictsFor(restored, historical.id)[0].assurance, 'procedural');
+  } finally { store.closeBoard(restored); }
   let stdout = '';
   let stderr = '';
   const code = await main(['show', String(independent.id)], { cwd: box.root,
