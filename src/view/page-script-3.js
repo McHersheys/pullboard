@@ -263,35 +263,82 @@ const fullItems = (project) => project.items.every((item) => Array.isArray(item.
 /** Text available locally for an item before the API searches criteria omitted from summaries. */
 const searchedText = (item) => ('#' + item.id + ' ' + item.title + ' ' + item.lane + ' ' + item.specs.join(' ') + ' ' + (item.criterion || '')).toLowerCase();
 
-/** Whether the board has a gap in its retained events or an item event newer than a detail read. */
+/** Whether the board's retained events hold an event of this item newer than a detail read. */
 function movedSince(project, id, cursor) {
-  const events = project.events || [];
-  if (!events.length || events[0].event_id <= cursor) return false;
-  if (events.at(-1).event_id > cursor + 1) return true;
-  return events.some((event) => event.event_id > cursor && event.item_id === id);
+  return (project.events || []).some((event) => event.event_id > cursor && event.item_id === id);
 }
 
-/** Load one opened item's omitted fields, retaining them only while its summary and event cursor stay current. */
+/**
+ * What says an item has moved: its last update, status and counts. A whole summary can differ between two polls of an
+ * item that has not moved, and an event gap says nothing about this item, so neither drops a detail it read (#1039).
+ */
+const movedKey = (item) => JSON.stringify([item.id, item.updatedAt, item.status, item.counts]);
+
+// Reads ahead of an expand, two at a time, so they never crowd out one the person asked for (#1039).
+const aheadQueue = [];
+let aheadBusy = 0;
+
+/** Start the next queued reads ahead while fewer than two are on their way. */
+function aheadNext() {
+  while (aheadBusy < 2 && aheadQueue.length) {
+    const entry = aheadQueue.shift();
+    if (!entry.start) continue;
+    aheadBusy++;
+    entry.start().finally(() => { aheadBusy--; aheadNext(); });
+  }
+}
+
+/**
+ * Load one item's omitted fields, retaining them while the item has not moved. ask is true for an item on show and
+ * 'ahead' for a Roadmap row on screen, read in the background so its expand fills at once (#1039).
+ */
 function detailOf(project, item, ask, root = view.root) {
   if (Array.isArray(item.history)) return { item };
-  const drawnRoot = view.root, key = root + '\\n' + item.id, summary = JSON.stringify(item);
+  const drawnRoot = view.root, key = root + '\\n' + item.id, moved = movedKey(item), shows = ask && ask !== 'ahead';
   const kept = itemDetails.get(key);
   /** Keep the prior detail visible during a refresh, or return the short initial loading state. */
   const waiting = (entry) => (entry?.shown ? { item: { ...item, ...entry.shown } } : { loading: true });
-  if (kept?.loading) return waiting(kept);
-  if (kept && kept.summary === summary && !movedSince(project, item.id, kept.cursor) && !(ask && kept.error && Date.now() - kept.failedAt >= 2_500)) {
+  if (kept?.loading) {
+    // Asked for while it waits in the queue ahead, it starts now and draws when it lands.
+    if (shows && !kept.wanted) { kept.wanted = true; if (kept.start) detailRead = kept.start(); }
+    return waiting(kept);
+  }
+  if (kept && kept.moved === moved && !movedSince(project, item.id, kept.cursor) && !(shows && kept.error && Date.now() - kept.failedAt >= 2_500)) {
     return kept.error ? { error: kept.error } : { item: { ...item, ...kept.detail } };
   }
   if (!ask) return waiting(kept && { shown: kept.detail });
-  const entry = { loading: true, summary, cursor: project.events?.[0]?.event_id ?? 0, detail: null, error: null, shown: kept?.detail ?? null };
+  const entry = { loading: true, wanted: shows, moved, cursor: project.events?.[0]?.event_id ?? 0, detail: null, error: null, shown: kept?.detail ?? null };
   itemDetails.set(key, entry);
-  detailRead = api(boardPath(root) + '/items/' + encodeURIComponent(String(item.id))).then((reply) => { entry.detail = reply.item; },
-    // A failed read is not the answer: while this item stays open it reads again in 3 s, so a dropped request recovers (#908).
-    (error) => { entry.error = String(error.message || error); entry.failedAt = Date.now(); setTimeout(() => { if (view.root === drawnRoot && view.item === item.id) render(); }, 3_000); }).finally(() => {
-    entry.loading = false;
-    if (view.root === drawnRoot && ((root === view.root && view.item === item.id) || view.tab === 'roadmap')) render();
-  });
+  entry.start = () => {
+    entry.start = null;
+    return api(boardPath(root) + '/items/' + encodeURIComponent(String(item.id))).then((reply) => { entry.detail = reply.item; }, (error) => {
+      // A read ahead that fails is forgotten, so the expand reads again; one on show reads again in 3 s while this item stays open (#908).
+      if (!entry.wanted) { if (itemDetails.get(key) === entry) itemDetails.delete(key); return; }
+      entry.error = String(error.message || error); entry.failedAt = Date.now(); setTimeout(() => { if (view.root === drawnRoot && view.item === item.id) render(); }, 3_000);
+    }).finally(() => {
+      entry.loading = false;
+      if (entry.wanted && view.root === drawnRoot && ((root === view.root && view.item === item.id) || view.tab === 'roadmap')) render();
+    });
+  };
+  if (shows) detailRead = entry.start();
+  else { aheadQueue.push(entry); aheadNext(); }
   return waiting(entry);
+}
+
+// The rows the last Roadmap draw can read ahead, by row key (#1039).
+const roadmapAhead = new Map();
+let aheadFrame = 0;
+
+/** Read ahead the detail of each folded Roadmap row on screen, once per frame, so its first expand fills at once (#1039). */
+function aheadRoadmapRows() {
+  if (aheadFrame || view.tab !== 'roadmap') return;
+  aheadFrame = requestAnimationFrame(() => {
+    aheadFrame = 0;
+    for (const row of document.querySelectorAll('#roadmap .milestone-item[aria-expanded=false]')) {
+      const box = row.getBoundingClientRect();
+      if (box.height && box.bottom > 0 && box.top < innerHeight) roadmapAhead.get(row.dataset.roadmapKey)?.();
+    }
+  });
 }
 
 /** Search full snapshots locally and summary states through the API, once per query and board. */
