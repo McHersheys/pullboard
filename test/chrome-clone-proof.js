@@ -42,6 +42,8 @@ export async function assertNoKilledChromeClone(t) {
     const profile = mkdtempSync(join(tmpdir(), 'pullboard-clone-proof-'));
     const before = chromeCloneSnapshot();
     const args = chromeLaunchArgs(profile).filter(arg => !control || arg !== '--disable-features=MacAppCodeSignClone');
+    // Force the native feature on in both arms; the harness disable switch must take precedence.
+    args.unshift('--enable-features=MacAppCodeSignClone');
     const launched = launchChromeProcess({ executable: findChromeExecutable(), args });
     try {
       await waitUntil(() => existsSync(join(profile, 'DevToolsActivePort')), 15_000, 'real Chrome did not publish its private DevTools port');
@@ -57,6 +59,9 @@ export async function assertNoKilledChromeClone(t) {
         await launched.close();
         assert.deepEqual(newChromeClones(before), [], 'the harness must prevent clones even when its Chrome is SIGKILLed');
       }
+    } catch (error) {
+      t.diagnostic(JSON.stringify({ phase: control ? 'unflagged-control' : 'harness', args, stderr: launched.stderr.slice(-2_000), newClones: newChromeClones(before).length }));
+      throw error;
     } finally {
       try { await gracefulClose(profile, launched); }
       finally { await launched.close(); rmSync(profile, { recursive: true, force: true }); }
