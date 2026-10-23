@@ -125,6 +125,7 @@ function openQueue(file) {
       CREATE INDEX IF NOT EXISTS holder_name ON holder(name);
       CREATE TABLE IF NOT EXISTS waiter (ticket INTEGER PRIMARY KEY AUTOINCREMENT, token TEXT UNIQUE NOT NULL, name TEXT NOT NULL, pid INTEGER NOT NULL, started TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL, repo TEXT NOT NULL, since TEXT NOT NULL, heartbeat INTEGER NOT NULL, landing INTEGER NOT NULL DEFAULT 0, item_check INTEGER NOT NULL DEFAULT 0, browser INTEGER NOT NULL DEFAULT 0, item TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT '', remote INTEGER NOT NULL DEFAULT 0, short_eligible INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS runner_unavailable (host TEXT PRIMARY KEY, since TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '');
+      CREATE TABLE IF NOT EXISTS runner_draining (host TEXT PRIMARY KEY, runner TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS waiter_name_ticket ON waiter(name, ticket);`);
     for (const table of ['holder', 'waiter']) {
       const columns = db.prepare(`PRAGMA table_info(${table})`).all().map(({ name }) => name);
@@ -452,7 +453,7 @@ function gateAdmission(db, ticket, capacity, shortCapacity, runners, order = ARR
       browsers: remoteHolders.filter(holder => holder.browser === 1).length,
     }];
   }));
-  const unavailable = new Set(db.prepare('SELECT host FROM runner_unavailable').all().map(row => row.host));
+  const unavailable = new Set(db.prepare('SELECT host FROM runner_unavailable UNION SELECT host FROM runner_draining').all().map(row => row.host));
   /** Keep an already holding process from taking another slot ahead of a different landing. */
   const blockedByLanding = waiter => holders.some(holder => holder.pid === waiter.pid)
     && waiters.some(other => other.landing === 1 && other.pid !== waiter.pid);
@@ -499,18 +500,25 @@ export function runnerResourceStatus(runners) {
   const configured = validatedRunners(runners);
   const db = open(machineResourceFile());
   try {
-    return update(db, () => configured.map(runner => {
-      const holders = db.prepare('SELECT agent, repo, since, browser, item, kind, runner FROM holder WHERE name = ? ORDER BY since, token')
-        .all(runnerResourceName(runner.host));
-      const unavailable = db.prepare('SELECT since, detail FROM runner_unavailable WHERE host = ?').get(runner.host);
-      return { ...runner, inUse: holders.length, browserInUse: holders.filter(holder => holder.browser === 1).length,
-        unavailable: Boolean(unavailable), ...(unavailable ? { unavailableSince: unavailable.since, unavailableReason: unavailable.detail } : {}), holders };
-    }));
+    return update(db, () => {
+      const visible = new Map(configured.map(runner => [runner.host, runner]));
+      for (const row of db.prepare('SELECT host, runner FROM runner_draining').all()) {
+        visible.set(row.host, { ...JSON.parse(row.runner), draining: true });
+      }
+      return [...visible.values()].flatMap(runner => {
+        const holders = db.prepare('SELECT agent, repo, since, browser, item, kind, runner FROM holder WHERE name = ? ORDER BY since, token')
+          .all(runnerResourceName(runner.host));
+        if (runner.draining && !holders.length) return [];
+        const unavailable = db.prepare('SELECT since, detail FROM runner_unavailable WHERE host = ?').get(runner.host);
+        return [{ ...runner, inUse: holders.length, browserInUse: holders.filter(holder => holder.browser === 1).length,
+          unavailable: Boolean(unavailable), ...(unavailable ? { unavailableSince: unavailable.since, unavailableReason: unavailable.detail } : {}), holders }];
+      });
+    });
   } finally { db.close(); }
 }
 
-/** Serialize runner-setting changes against active remote leases and clear that host's quarantine. */
-export function updateRunnerSettings(host, persist) {
+/** Serialize runner changes with admission; removal may drain active leases instead of refusing. */
+export function updateRunnerSettings(host, persist, { drain = false } = {}) {
   if (typeof host !== 'string' || !host.trim() || host.trim() !== host || typeof persist !== 'function') {
     throw new Refused('BAD_RUNNER_SETTINGS', 'a runner host and settings persistence callback are required');
   }
@@ -519,13 +527,23 @@ export function updateRunnerSettings(host, persist) {
     return update(db, () => {
       const resourceName = runnerResourceName(host);
       const held = db.prepare('SELECT COUNT(*) AS count FROM holder WHERE name = ?').get(resourceName).count;
-      if (held) throw new Refused('RUNNER_BUSY', `runner ${host} has ${held} active slot(s); wait for them to finish before changing its settings`);
+      if (held && !drain) throw new Refused('RUNNER_BUSY', `runner ${host} has ${held} active slot(s); wait for them to finish before changing its settings`);
+      const draining = drain && held && db.prepare('SELECT runner FROM runner_draining WHERE host = ?').get(host);
+      if (draining) return { ...JSON.parse(draining.runner), draining: true };
       const result = persist();
+      if (drain && held) {
+        // Dispatch settings no longer name this host. Keep its tombstone even after the last
+        // release, so a stale provider cannot offer it again; explicit registration clears it.
+        db.prepare('INSERT INTO runner_draining(host, runner) VALUES (?, ?) ON CONFLICT(host) DO UPDATE SET runner = excluded.runner')
+          .run(host, JSON.stringify(result));
+        return { ...result, draining: true };
+      }
       if (Number.isSafeInteger(result?.slots) && result.slots > 0) {
         db.prepare('INSERT INTO resource(name, capacity) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET capacity = excluded.capacity')
           .run(resourceName, result.slots);
       }
       db.prepare('DELETE FROM runner_unavailable WHERE host = ?').run(host);
+      db.prepare('DELETE FROM runner_draining WHERE host = ?').run(host);
       return result;
     });
   } finally { db.close(); }

@@ -26,6 +26,7 @@ import { runnerSourceRefusalCases } from './runner-source-refusal-fixture.js';
 import { writeCacheProbe, writeProbe } from './runner-probe-fixture.js';
 import { browserFreeRunnerCheck, browserRefusalTextStaysRed } from './runner-browser-free-fixture.js';
 import { runnerUsesRegisteredCapacity } from './runner-capacity-fixture.js';
+import { removingBusyRunnerDrains, runnerRemoveKeepsSettings } from './runner-drain-fixture.js';
 
 /** Per-phase deadlines for one runner round trip; together they stay near the 60-second hang ceiling. */
 const ROUND_TRIP_DEADLINES = { dispatch: 20_000, 'remote run': 30_000, 'result return': 10_000 }; // budget: a stuck runner fails by name in about a minute, far under the 660-second per-test limit.
@@ -313,36 +314,9 @@ test("the runner's trusted runtime list is closed under its relative imports [C7
   }
 });
 
-test('runner remove deletes one runner and keeps the rest [C7]', (t) => {
-  const box = e2e.project();
-  const settingsFile = join(box.env.PULLBOARD_MACHINE_HOME, 'settings.json');
-  const removed = { host: 'runner-one.example.invalid', slots: 2, browser: 1, node: 'node', root: '/srv/runner-one' };
-  const remaining = { host: 'runner-two.example.invalid', slots: 1, browser: 0 };
-  const original = { gateSlots: 3, browserSlots: 2, gate: { shortSlots: 1, queue: { reviewsFirst: true } },
-    relay: { offerAtInit: true }, custom: { keep: 'unchanged' } };
-  mkdirSync(box.env.PULLBOARD_MACHINE_HOME, { recursive: true });
-  writeFileSync(settingsFile, JSON.stringify(original, null, 2));
-  const firstAdded = box.run(box.repo, 'runner', 'add', removed.host, '--slots', String(removed.slots), '--browser', String(removed.browser),
-    '--node', removed.node, '--root', removed.root);
-  assert.equal(firstAdded.code, 0, firstAdded.err);
-  const secondAdded = box.run(box.repo, 'runner', 'add', remaining.host, '--slots', String(remaining.slots), '--browser', String(remaining.browser));
-  assert.equal(secondAdded.code, 0, secondAdded.err);
-  const registered = { ...original, runners: [removed, remaining] };
-  assert.deepEqual(JSON.parse(readFileSync(settingsFile, 'utf8')), registered);
+test('runner remove deletes one runner and keeps the rest [C7]', (t) => runnerRemoveKeepsSettings(t, e2e));
 
-  const result = box.run(box.repo, 'runner', 'remove', removed.host);
-  assert.equal(result.code, 0, result.err);
-  assert.ok(result.out.includes(`removed runner ${removed.host}`), result.out);
-  assert.deepEqual(JSON.parse(readFileSync(settingsFile, 'utf8')), { ...original, runners: [remaining] });
-
-  const missing = box.run(box.repo, 'runner', 'remove', removed.host, '--json');
-  assert.equal(missing.code, 1, missing.err);
-  const refusal = JSON.parse(missing.out).error;
-  assert.equal(refusal.code, 'RUNNER_NOT_REGISTERED');
-  assert.ok(refusal.next.includes(remaining.host), refusal.next);
-  assert.ok(!refusal.next.includes(removed.host), refusal.next);
-  assert.deepEqual(JSON.parse(readFileSync(settingsFile, 'utf8')), { ...original, runners: [remaining] });
-});
+test('removing a busy runner drains it [C7]', (t) => removingBusyRunnerDrains(t, { cli, git, observe, startQueueController, gateResult }));
 
 test('a queued run executes on a registered runner and its result comes back (host checkout isolation) [C7]', async (t) => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-runner-tooling-isolation-')));
