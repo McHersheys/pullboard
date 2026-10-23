@@ -1,7 +1,7 @@
 /** Count real Git child processes and prove command-scoped facts refresh after a commit [C7]. */
 import assert from 'node:assert/strict';
 import { runFixtureExecFile as execFileSync, runFixtureChild as spawnSync, runFixtureChild } from './fixture-child.js';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { delimiter, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
@@ -107,7 +107,7 @@ function readFactScenario(box, root, body) {
   return JSON.parse(result.stdout.trim());
 }
 
-test('help starts no Git and linked-worktree status and resume use at most four Git processes [C7,N19]', (t) => {
+test('help starts no Git and linked-worktree status spawns at most four Git processes [C7]', (t) => {
   const box = fixture(t);
   const version = resetAndCount(box, box.dir, '--version');
   assert.equal(version.count, 0, '--version has no repository work to do');
@@ -116,11 +116,17 @@ test('help starts no Git and linked-worktree status and resume use at most four 
   const status = resetAndCount(box, box.worker, 'status', '--json');
   assert.ok(status.count <= 4, `linked-worktree status started ${status.count} Git processes`);
   assert.equal(JSON.parse(status.result.stdout).me.id, 'core-1');
+
+});
+
+/** Keep the ordinary work card on indexed reads and four fresh Git children, with diagnostics explicit. */
+test('ordinary resume reads its indexed work card with at most four Git processes [N19,N26,C7]', t => {
+  const box = fixture(t);
   const resumed = resetAndCount(box, box.worker, 'resume', '--json');
   assert.ok(resumed.count <= 4, `linked-worktree resume started ${resumed.count} Git processes`);
   const card = JSON.parse(resumed.result.stdout);
   assert.equal(card.me.id, 'core-1');
-  assert.equal(card.root, box.worker);
+  assert.equal(realpathSync(card.root), realpathSync(box.worker));
   assert.equal(card.diagnostics.command, 'pullboard resume --diagnostics');
   for (const name of ['setup', 'hookProblems', 'dirty', 'staleVerdicts']) {
     assert.equal(Object.hasOwn(card, name), false, `${name} remains an explicit diagnostic`);
