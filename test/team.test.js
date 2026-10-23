@@ -69,6 +69,7 @@ async function holdForReviewQueue(box) {
   const observed = join(box.dir, 'review-was-queued');
   const source = `
 import {setTimeout as pause} from 'node:timers/promises';
+import {writeFileSync} from 'node:fs';
 import {takeResource,listResources} from ${JSON.stringify(new URL('../src/resources.js', import.meta.url).href)};
 import {loadMachineSettings} from ${JSON.stringify(new URL('../src/settings.js', import.meta.url).href)};
 const [root,ready,observed]=process.argv.slice(1);
