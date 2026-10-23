@@ -31,6 +31,7 @@ import {
   parseImplies,
 } from '../implies.js';
 import * as itemSessions from '../item-sessions.js';
+import { itemAuthors } from '../item-authors.js';
 import * as nativeFlakes from '../native-flake-cli.js';
 import {
   Refused,
@@ -116,7 +117,7 @@ export async function verifyHere(ctx, id, { second, values }) {
       return await ordered(ctx, board, 'verify', recovered.args);
     }
     const item = store.getItem(board, id);
-    itemSessions.refuseSelfSession(ctx.info, item);
+    itemSessions.refuseSelfSession(ctx.info, item, undefined, itemAuthors(board, item));
     const reReview = item.item_status === 'verified' && !item.item_merged_commit;
     const stale = reReview ? verdictProjector(root, board).state(item) : null;
     if (item.item_status !== 'submitted' && !stale) {

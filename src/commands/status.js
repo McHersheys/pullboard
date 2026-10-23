@@ -34,11 +34,11 @@ export function run(io, { values }) {
   const ctx = context(io);
   const summary = withBoardRead(ctx, (board) => {
     const me = whoAmI(ctx, board);
-    const mine = store.listItems(board).filter((item) => item.item_status === 'claimed' && item.item_owner === me.id);
+    const mine = store.itemsInStatus(board, 'claimed', me.id);
     const approvalState = personNeedsSummary(ctx.info.root, { board, config: ctx.config });
     const rows = projectRowDecisions(store.rowDecisions(board), { root: ctx.info.root, spec: loadSpec(ctx.info.root, ctx.config).rows }).spec;
     return { me, mine, ruleCounts: ruleProofCounts(ctx.info.root, board, rows), needs: approvalState.needs, specApprovalBaseline: approvalState.specApprovalBaseline, specApprovalEvidenceErrors: approvalState.specApprovalEvidenceErrors, stats: store.stats(board), reviewQueue: { ...store.reviewQueue(board), ...store.reviewQueueBreakdown(board) }, unread: store.unreadCount(board, me.id), relay: relayStatus(ctx.info.root),
-      submitInvariantProposals: submitInvariantProposals(store.eventsOfKinds(board, ['submit', 'landing_batch']), ctx.config) };
+      submitInvariantProposals: submitInvariantProposals(store.submitInvariantEvents(board, ctx.config), ctx.config) };
   });
   if (values.json) {
     io.result(summary);
