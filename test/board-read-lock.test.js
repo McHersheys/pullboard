@@ -1,5 +1,5 @@
 /** @pullboard-test-input source-tree */
-/** @pullboard-test-loads src/cli.js src/board.js src/board-migrate.js src/board-read.js src/commands/status.js src/commands/show.js src/commands/list.js src/commands/version.js */
+/** @pullboard-test-loads src/cli.js src/board.js src/board-hot.js src/board-migrate.js src/board-read.js src/commands/status.js src/commands/show.js src/commands/list.js src/commands/version.js */
 /** A read command opens the board read-only, so a writer holding the lock never stalls it [C7]. */
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
@@ -96,6 +96,9 @@ function seed(file) {
   } finally { db.close(); }
 }
 
+/** #1044's hot-path indexes (src/board-hot.js), which reach an existing board with schema version 3. */
+const HOT_INDEXES = ['shout_answers', 'shout_open_decision', 'shout_open_request', 'shout_evidence_item', 'shout_from_at', 'event_by_at', 'event_kind_id'];
+
 const READS = [['version'], ['show', '1'], ['status'], ['list']];
 const RUNS = 5;
 
@@ -129,11 +132,20 @@ test('a read answers while a writer holds the lock [C7]', async (t) => {
     assert.ok(held - free < 100, `${argv[0]}: a held writer added ${Math.round(held - free)} ms to the median`); // budget: approved row criterion bar, under 100 ms over the unlocked median (shout #23649)
   }
 
-  // An older board is still migrated by the next command that writes, from the released copy.
+  // A version-2 board, from before #1044's hot-path indexes, is still migrated by the next command
+  // that writes, from the released copy: it gains them then, and never on a read.
   const db = new DatabaseSync(file);
-  db.exec('PRAGMA user_version = 1');
+  db.exec(`${HOT_INDEXES.map((name) => `DROP INDEX ${name};`).join(' ')} PRAGMA user_version = 2`);
   db.close();
   const cli = (...argv) => runFixtureChild(process.execPath, [join(box.release, 'bin', 'pullboard.js'), ...argv], { cwd: box.repo, env: box.env, encoding: 'utf8' });
+  /** The hot-path indexes the board has, read without touching it. */
+  const hotIndexes = () => {
+    const board = store.openBoardReadOnly(file);
+    try {
+      return board.prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND name IN (${HOT_INDEXES.map(() => '?').join(', ')}) ORDER BY name`)
+        .all(...HOT_INDEXES).map((row) => row.name);
+    } finally { board.close(); }
+  };
   /** The board's PRAGMA user_version, read without touching it. */
   const version = () => {
     const board = store.openBoardReadOnly(file);
@@ -143,10 +155,13 @@ test('a read answers while a writer holds the lock [C7]', async (t) => {
   const read = cli('status');
   assert.equal(read.status, 0, read.failure ?? read.stderr);
   assert.match(read.stdout, /board: 1001 open/u);
-  assert.equal(version(), 1, 'status never migrates the board');
+  assert.equal(version(), 2, 'status never migrates the board');
+  assert.deepEqual(hotIndexes(), [], 'status adds no index');
   const write = cli('add', 'web', 'Footer', '--specs', 'G1', '--criterion', 'renders');
   assert.equal(write.status, 0, write.failure ?? write.stderr);
   assert.equal(version(), store.SCHEMA_VERSION, 'the next write command migrates it');
+  assert.equal(store.SCHEMA_VERSION, 3, 'the version that carries the hot-path indexes');
+  assert.deepEqual(hotIndexes(), [...HOT_INDEXES].sort(), 'the write gave the version-2 board every hot-path index');
 
   // At the current version, a shape changed outside pullboard is reported once and left as it is.
   const drifted = new DatabaseSync(file);

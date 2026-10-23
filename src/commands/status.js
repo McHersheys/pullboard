@@ -35,7 +35,7 @@ export function run(io, { values }) {
     const mine = store.listItems(board).filter((item) => item.item_status === 'claimed' && item.item_owner === me.id);
     const approvalState = personNeedsSummary(ctx.info.root, { board, config: ctx.config });
     return { me, mine, needs: approvalState.needs, specApprovalBaseline: approvalState.specApprovalBaseline, specApprovalEvidenceErrors: approvalState.specApprovalEvidenceErrors, stats: store.stats(board), reviewQueue: { ...store.reviewQueue(board), ...store.reviewQueueBreakdown(board) }, unread: store.unreadCount(board, me.id), relay: relayStatus(ctx.info.root),
-      submitInvariantProposals: submitInvariantProposals(store.events(board), ctx.config) };
+      submitInvariantProposals: submitInvariantProposals(store.eventsOfKinds(board, ['submit', 'landing_batch']), ctx.config) };
   });
   if (values.json) {
     io.result(summary);

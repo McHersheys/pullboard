@@ -28,6 +28,7 @@ import { sharedSchemaDiagnostic } from './board-schema.js';
 import { reportSharedSchema } from './board-schema.js';
 import { DatabaseSync } from 'node:sqlite';
 import { boardNotWritable } from './board-access.js';
+import { ensureHotIndexes } from './board-hot.js';
 import { boardBusyError } from './board-access.js';
 export { boardBusyError } from './board-access.js';
 import {
@@ -337,6 +338,7 @@ export function openBoard(file, clock = systemClock, { isMain, onDiagnostic } = 
       if (standing === 'behind') {
         migrateEventLogVersion(db);
         migrate(db);
+        ensureHotIndexes(db);
         db.prepare('INSERT OR IGNORE INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run('board_id', randomBytes(16).toString('hex'));
         guardStore(board);
       }
@@ -376,7 +378,7 @@ function guardMoves(board) {
 }
 
 /** The board's PRAGMA user_version once its triggers are in: losing one after that is news. */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 const GUARDED = 1;
 
 /**
@@ -2653,16 +2655,7 @@ export function peekShouts(board, agentId, limit = 2) {
     .reverse();
 }
 
-/**
- * The newest shouts on the board, newest first, read without marking anything read (N26).
- *
- * @param {any} board
- * @param {number} [limit]
- * @returns {any[]}
- */
-export function recentShouts(board, limit = 40) {
-  return board.db.prepare('SELECT * FROM shout ORDER BY shout_id DESC LIMIT ?').all(limit);
-}
+export { recentShouts, eventsOfKinds, recentEvents, lastMoves, decisionAndEvidenceShouts } from './board-hot.js';
 
 export { stats } from './board-stats.js';
 

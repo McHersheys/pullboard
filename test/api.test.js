@@ -368,7 +368,7 @@ test('[A5, A6] a future-schema worktree cannot migrate the shared board; main ca
   assert.equal(initialized.status, 0, initialized.stderr + initialized.stdout);
   const dbFile = join(repo, '.git', 'pullboard', 'board.sqlite');
   const prior = new DatabaseSync(dbFile, { readOnly: true });
-  assert.equal(prior.prepare('PRAGMA user_version').get().user_version, 2);
+  assert.equal(prior.prepare('PRAGMA user_version').get().user_version, 3);
   prior.close();
 
   const installed = join(box.dir, 'installed-pullboard');
@@ -384,7 +384,7 @@ test('[A5, A6] a future-schema worktree cannot migrate the shared board; main ca
   });
   assert.equal(installedRun.status, 0, installedRun.stderr + installedRun.stdout);
   const migratedInstalled = new DatabaseSync(dbFile, { readOnly: true });
-  assert.equal(migratedInstalled.prepare('PRAGMA user_version').get().user_version, 2,
+  assert.equal(migratedInstalled.prepare('PRAGMA user_version').get().user_version, 3,
     'a copied installed release without Git metadata can upgrade an older board');
   assert.ok(migratedInstalled.prepare('PRAGMA table_info(item)').all().some((column) => column.name === 'item_files'));
   migratedInstalled.close();
@@ -395,7 +395,7 @@ test('[A5, A6] a future-schema worktree cannot migrate the shared board; main ca
   const upgraded = runFixture(repo, 'shout', 'app', 'board upgrade', '--json');
   assert.equal(upgraded.status, 0, upgraded.stderr + upgraded.stdout);
   const migrated = new DatabaseSync(dbFile, { readOnly: true });
-  assert.equal(migrated.prepare('PRAGMA user_version').get().user_version, 2);
+  assert.equal(migrated.prepare('PRAGMA user_version').get().user_version, 3);
   assert.ok(migrated.prepare('PRAGMA table_info(item)').all().some((column) => column.name === 'item_files'));
   migrated.close();
 
@@ -412,7 +412,7 @@ test('[A5, A6] a future-schema worktree cannot migrate the shared board; main ca
   });
   assert.equal(mainCodeFromWorktree.status, 0, mainCodeFromWorktree.stderr + mainCodeFromWorktree.stdout);
   const migratedFromWorktree = new DatabaseSync(dbFile, { readOnly: true });
-  assert.equal(migratedFromWorktree.prepare('PRAGMA user_version').get().user_version, 2,
+  assert.equal(migratedFromWorktree.prepare('PRAGMA user_version').get().user_version, 3,
     'the main checkout code may upgrade its shared board even when cwd is a linked worktree');
   assert.ok(migratedFromWorktree.prepare('PRAGMA table_info(item)').all().some((column) => column.name === 'item_files'));
   migratedFromWorktree.close();
@@ -422,11 +422,11 @@ test('[A5, A6] a future-schema worktree cannot migrate the shared board; main ca
   const oldSource = readFileSync(boardSource, 'utf8');
   const oldMigrations = readFileSync(migrateSource, 'utf8');
   const migration = "  ['shout', 'shout_request_outcome', \"TEXT NOT NULL DEFAULT ''\"],\n];";
-  assert.ok(oldSource.includes('export const SCHEMA_VERSION = 2;'));
+  assert.ok(oldSource.includes('export const SCHEMA_VERSION = 3;'));
   assert.ok(oldMigrations.includes(migration));
-  const newSource = oldSource.replace('export const SCHEMA_VERSION = 2;', 'export const SCHEMA_VERSION = 3;');
+  const newSource = oldSource.replace('export const SCHEMA_VERSION = 3;', 'export const SCHEMA_VERSION = 4;');
   const newMigrations = oldMigrations.replace(migration, migration.replace('\n];', "\n  ['item', 'item_unmerged_probe', 'INTEGER NOT NULL DEFAULT 0'],\n];"));
-  assert.notEqual(newMigrations, oldMigrations, 'the unmerged worktree carries a real schema-3 migration');
+  assert.notEqual(newMigrations, oldMigrations, 'the unmerged worktree carries a real schema-4 migration');
   writeFileSync(boardSource, newSource);
   writeFileSync(migrateSource, newMigrations);
   box.git(linked, 'add', 'src/board.js', 'src/board-migrate.js');
@@ -458,7 +458,7 @@ test('[A5, A6] a future-schema worktree cannot migrate the shared board; main ca
   });
   assert.equal(mainFromHook.status, 0, mainFromHook.stderr + mainFromHook.stdout);
   const upgradedFromHook = new DatabaseSync(dbFile, { readOnly: true });
-  assert.equal(upgradedFromHook.prepare('PRAGMA user_version').get().user_version, 2,
+  assert.equal(upgradedFromHook.prepare('PRAGMA user_version').get().user_version, 3,
     'main source upgrades even when a linked-worktree hook exports its Git directory');
   upgradedFromHook.close();
   before = readFileSync(dbFile);
@@ -503,7 +503,7 @@ test('[A5, A6] a future-schema worktree cannot migrate the shared board; main ca
   assert.equal(relayRecords.status, 0, relayRecords.stderr + relayRecords.stdout);
   const relayRefusal = JSON.parse(relayRecords.stdout);
   assert.equal(relayRefusal.code, 'UNMERGED_SCHEMA', 'relay localRecords uses its source worktree identity even from main cwd');
-  assert.match(relayRefusal.message, /worktree expects board schema 3, newer than the shared board's version 2/);
+  assert.match(relayRefusal.message, /worktree expects board schema 4, newer than the shared board's version 3/);
   assert.deepEqual(readFileSync(dbFile), before, 'relay localRecords refuses before it can migrate the shared board');
 
   const specCheck = runFixture(linked, 'spec', 'check', '--json');
@@ -542,11 +542,11 @@ test('[A5, A6] a future-schema worktree cannot migrate the shared board; main ca
   assert.equal(refused.stderr, '');
   const document = JSON.parse(refused.stdout);
   assert.equal(document.error.code, 'UNMERGED_SCHEMA');
-  assert.match(document.error.message, /worktree expects board schema 3, newer than the shared board's version 2/);
+  assert.match(document.error.message, /worktree expects board schema 4, newer than the shared board's version 3/);
   assert.match(document.error.next, /merge this code into the main checkout first, or test it against a throwaway board/);
   assert.deepEqual(readFileSync(dbFile), before, 'the newer branch must leave every shared-board byte alone');
   const unchanged = new DatabaseSync(dbFile, { readOnly: true });
-  assert.equal(unchanged.prepare('PRAGMA user_version').get().user_version, 2);
+  assert.equal(unchanged.prepare('PRAGMA user_version').get().user_version, 3);
   assert.equal(unchanged.prepare('PRAGMA table_info(item)').all().some((column) => column.name === 'item_unmerged_probe'), false,
     'the branch migration would have installed this column without the refusal');
   unchanged.close();
@@ -574,10 +574,10 @@ test('[A5, A6] a future-schema worktree cannot migrate the shared board; main ca
   });
   assert.equal(mutation.status, 0, mutation.stderr + mutation.stdout);
   const mutated = new DatabaseSync(dbFile, { readOnly: true });
-  assert.equal(mutated.prepare('PRAGMA user_version').get().user_version, 3,
+  assert.equal(mutated.prepare('PRAGMA user_version').get().user_version, 4,
     'removing the guard makes the linked worktree silently migrate the shared board');
   assert.ok(mutated.prepare('PRAGMA table_info(item)').all().some((column) => column.name === 'item_unmerged_probe'),
-    'the guard-removal mutation installs its real schema-3 probe column');
+    'the guard-removal mutation installs its real schema-4 probe column');
   mutated.close();
 });
 

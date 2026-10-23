@@ -1174,7 +1174,7 @@ test('next --verify reserves the review for the reviewLease and says until when;
     assert.equal(git(holder, 'rev-parse', '--path-format=absolute', '--git-common-dir'), commonDir,
       'the verifier worktree reads the builder repo common dir');
     const sharedBoard = new DatabaseSync(join(commonDir, 'pullboard', 'board.sqlite'), { readOnly: true });
-    assert.equal(sharedBoard.prepare('PRAGMA user_version').get().user_version, 2,
+    assert.equal(sharedBoard.prepare('PRAGMA user_version').get().user_version, 3,
       'the main repo creates the shared board before the verifier opens it');
     sharedBoard.close();
 

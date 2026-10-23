@@ -282,7 +282,7 @@ export function landingSource(root) {
 }
 
 /** Runner refusals that mean the host could not run the shard right now, so a local rerun is sound. */
-const RERUN_REFUSALS = new Set(['RUNNER_SETUP_REFUSED', 'RESOURCE_LEASE_LOST']);
+const RERUN_REFUSALS = new Set(['RUNNER_SETUP_REFUSED', 'RESOURCE_LEASE_LOST', 'RUNNER_BROWSER_SLOT_REQUIRED']);
 
 /**
  * How a sharded landing answers a runner that gave no test result. A lost host or transport, or a
@@ -394,7 +394,7 @@ export async function runLandingShards({ root, runner, files, count, inherited =
       }
       // Infrastructure, not a test result: the runner could not give this shard a complete answer.
       return { attempt: number, host, outcome: failure.action === 'fail' ? 'refused' : 'infrastructure', reason: failure.reason,
-        output: '', wallMs: Date.now() - started };
+        output: error.runnerAttempt?.output ?? '', wallMs: Date.now() - started };
     }
   };
 
