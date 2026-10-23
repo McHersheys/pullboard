@@ -812,6 +812,26 @@ async function jsonRequest(path, body, base, headers, cache, format = 'json') {
   return json;
 }
 
+// The list is only a preview: the local view checks the registry again after this one confirmation.
+document.addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-forget-unreadable]');
+  if (!button || snapshot || pageReadOnly) return;
+  if (!confirm('Forget the boards that are unreadable now? Boards recovered since this list was shown will be kept.')) return;
+  button.disabled = true;
+  try {
+    const base = hosted.local ? localReadBase : connection.base;
+    const headers = hosted.local ? localReadHeaders : connection.headers;
+    const result = await jsonRequest('/api/v1/projects/forget-unreadable', { confirm: true }, base, headers);
+    await refresh();
+    $('live').textContent = result.forgotten
+      ? 'Forgot ' + result.forgotten + ' unreadable ' + (result.forgotten === 1 ? 'board.' : 'boards.')
+      : 'No unreadable boards needed forgetting.';
+  } catch (error) {
+    $('live').textContent = String(error.message || error);
+    button.disabled = false;
+  }
+});
+
 /** Read only this machine's authenticated view, including when its page is hosted elsewhere. */
 function sharingApi(body) {
   return jsonRequest('/api/v1/view-link', body, hosted.local ? localReadBase : connection.base,
