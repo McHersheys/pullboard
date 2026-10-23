@@ -17,14 +17,19 @@ export default async function* recordActionTap(events) {
   const directory = process.env.PULLBOARD_TEST_ACTIONS;
   const plan = JSON.parse(readFileSync(join(directory, 'keys.json'), 'utf8'));
   const reports = new Map();
+  let publishing = null;
   for await (const event of events) {
     const file = event.data?.file;
-    if (!file) continue;
-    const path = relative(plan.root, file).split(sep).join('/');
+    // Node publishes a file's buffered outcomes and then its root summary in order. That root has no source loc;
+    // its summary therefore has no file either. Never attribute the final aggregate summary after this boundary.
+    const summary = event.type === 'test:summary';
+    const path = file ? relative(plan.root, file).split(sep).join('/') : summary ? publishing : null;
+    if (summary) publishing = null;
     if (!plan.files[path]) continue;
     if (!reports.has(path)) reports.set(path, { lines: [], counts: null, observedTests: 0 });
     const report = reports.get(path);
     if (event.type === 'test:pass' || event.type === 'test:fail') {
+      publishing = path;
       if (event.data.details?.type !== 'suite') report.observedTests += 1;
       // Node supplies the escaping, nesting and numbering used by the public TAP reporter.
       for await (const chunk of tap([event])) {
