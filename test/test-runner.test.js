@@ -249,8 +249,9 @@ test('runner option values that resemble a name pattern remain values [C7,S13]',
 test('a name pattern with sharded discovery keeps its filter [C7,S13]', (t) => {
   const box = discoveryFixture(t);
   writeFileSync(join(box.root, 'pullboard.json'), JSON.stringify({ landingShards: 2 }));
+  writeFileSync(join(box.root, '.gitignore'), 'ran-once\n');
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: box.root });
-  execFileSync('git', ['add', 'test/one.test.js', 'pullboard.json'], { cwd: box.root });
+  execFileSync('git', ['add', 'test/one.test.js', 'pullboard.json', '.gitignore'], { cwd: box.root });
   execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test',
     'commit', '-q', '-m', 'test: seed tracked discovery case'], { cwd: box.root });
   const env = { ...process.env, PULLBOARD_LANDING_RUN: '1' };
