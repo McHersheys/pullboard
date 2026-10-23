@@ -291,6 +291,22 @@ function update(db, action) {
   }
 }
 
+/** Remove a view-port definition only after its last lease has left the resource queue. */
+function removeEmptyViewPortResource(db, name) {
+  if (!name.startsWith('view-port-')) return;
+  db.prepare(`DELETE FROM resource WHERE name = ?
+    AND NOT EXISTS (SELECT 1 FROM holder WHERE name = ?)
+    AND NOT EXISTS (SELECT 1 FROM waiter WHERE name = ?)`)
+    .run(name, name, name);
+}
+
+/** Sweep only empty view-port definitions after callers have pruned dead lease rows. */
+function removeEmptyViewPortResources(db) {
+  db.exec(`DELETE FROM resource WHERE name GLOB 'view-port-*'
+    AND NOT EXISTS (SELECT 1 FROM holder WHERE holder.name = resource.name)
+    AND NOT EXISTS (SELECT 1 FROM waiter WHERE waiter.name = resource.name)`);
+}
+
 /**
  * The admission order a pool uses now. Only the machine pool follows the machine settings
  * (gate.queue.reviewsFirst, currentReleaseFirst and agingMinutes); it is read on every poll so each process
@@ -840,7 +856,10 @@ export async function takeResource(options) {
         /** Commit this holder's deletion before closing; a failed update remains live and retryable. */
         const release = () => {
           if (released || transferred) return;
-          update(db, () => db.prepare('DELETE FROM holder WHERE token = ?').run(token));
+          update(db, () => {
+            db.prepare('DELETE FROM holder WHERE token = ?').run(token);
+            removeEmptyViewPortResource(db, name);
+          });
           released = true;
           clearInterval(heartbeat);
           db.close();
@@ -983,6 +1002,9 @@ export function listResources({ scope = 'machine', root = process.cwd() } = {}) 
   const order = queueOrder(scope);
   const db = open(databaseFile(scope, root), scope === 'machine');
   try {
-    return update(db, () => db.prepare('SELECT name, capacity FROM resource ORDER BY name').all().map(({ name, capacity }) => ({ name, capacity, ...snapshot(db, name, order) })));
+    return update(db, () => {
+      removeEmptyViewPortResources(db);
+      return db.prepare('SELECT name, capacity FROM resource ORDER BY name').all().map(({ name, capacity }) => ({ name, capacity, ...snapshot(db, name, order) }));
+    });
   } finally { db.close(); }
 }
