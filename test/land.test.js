@@ -10,12 +10,17 @@ import { landingFailures, landingSubject } from '../src/land.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { startFixtureChild, runFixtureChild } from './fixture-child.js';
 import { assertNoRemoteLanding } from './land-no-remote-fixture.js';
+import { assertLandingDoctrineCounts } from './land-doctrine-fixture.js';
 
 const e2e = createE2eHelpers();
 after(e2e.cleanup);
 const { sandbox, project, commitFile, waitFor, BIN } = e2e;
 const FILES = [1, 2, 3, 4].map((n) => `web/land-${n}.test.js`);
 const MARKER_NOT_YET = Symbol('marker not yet written');
+
+test('a landing records a falling doctrine count and holds a rising count [B3,R3,D1,D3]', () => {
+  assertLandingDoctrineCounts({ landProject, itemWorktree, submitItem, acceptItem });
+});
 
 test('a repo with no remote lands into the local trunk and status reads as normal [I1,B3,R3,H5]', () => {
   assertNoRemoteLanding(sandbox, commitFile);
