@@ -203,8 +203,14 @@ export function configProblems(config) {
     problems.push('"landingShards" is a whole number from 1 to 64: how many shards the landing gate splits its test files into');
   }
   if (typeof config.staticChecks !== 'string') problems.push('"staticChecks" is an optional project static-check command');
-  if (config.landing !== undefined && (typeof config.landing !== 'object' || config.landing === null || Object.keys(config.landing).some(key => key !== 'publish') || ![undefined, 'separate'].includes(config.landing.publish))) {
-    problems.push('"landing" is optional; { "publish": "separate" } lands on the local trunk and pushes only through pullboard publish');
+  if (config.landing !== undefined && (typeof config.landing !== 'object' || config.landing === null || Object.keys(config.landing).some(key => !['publish', 'timeout', 'cadence'].includes(key)) || ![undefined, 'separate'].includes(config.landing.publish))) {
+    problems.push('"landing" has optional "timeout" and "cadence" durations, and "publish": "separate" to land locally and push through pullboard publish');
+  }
+  for (const key of ['timeout', 'cadence']) {
+    const value = config.landing?.[key];
+    const match = typeof value === 'string' ? CHECK_TIMEOUT_RE.exec(value) : null;
+    const ms = match ? Number(match[1]) * CHECK_TIMEOUT_MS[match[2]] : NaN;
+    if (value !== undefined && (!Number.isFinite(ms) || ms <= 0 || ms > MAX_CHECK_TIMEOUT_MS)) problems.push(`"landing.${key}" is a positive duration no longer than 2,147,483,647ms, like "2s"`);
   }
   if (config.positiveControl !== undefined && (typeof config.positiveControl !== 'string' || !config.positiveControl.trim())) {
     problems.push('"positiveControl" is a nonempty command for a known-good case the gate must pass, like "node --test test/known-good.test.js"');
@@ -325,6 +331,7 @@ export function configFromSource(source) {
   return {
     ...config,
     check: { ...config.check, timeoutMs: Number(timeout[1]) * CHECK_TIMEOUT_MS[timeout[2]] },
+    ...(config.landing ? { landing: { ...config.landing, ...Object.fromEntries(['timeout', 'cadence'].filter(key => config.landing[key] !== undefined).map(key => { const value = CHECK_TIMEOUT_RE.exec(config.landing[key]); return [`${key}Ms`, Number(value[1]) * CHECK_TIMEOUT_MS[value[2]]]; })) } } : {}),
     leaseMs: durationMs(config.lease),
     reviewLeaseMs: durationMs(config.reviewLease, 'reviewLease'),
   };
