@@ -1,5 +1,9 @@
 /** The block ledger: refusals that stopped someone's command. Not in refused.js, which the browser loads [C6]. */
-import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  existsSync,
+  readFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 
 /** The ledger of refusals that stopped someone's command, beside the board in Git's common folder. */
