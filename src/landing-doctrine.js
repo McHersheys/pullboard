@@ -13,6 +13,7 @@ import {
 } from './doctrine-checks.js';
 import { checkNeedsBrowser } from './browser-admission.js';
 import { withGateSlot } from './gate.js';
+import { gateSlotEnvironment } from './resources.js';
 import {
   git,
   headCommit,
@@ -30,8 +31,8 @@ export async function tightenLandingDoctrine(root, config, { onWait } = {}) {
   if ((!isClean(root) || untracked(root).length)) throw new Refused('LAND_DIRTY', 'the merged landing tree changed before its doctrine counts were measured');
   const browser = (await Promise.all(rules.map(rule => checkNeedsBrowser(root, rule.command)))).some(Boolean);
   // Counts describe this exact merged checkout. A remote immutable checkout cannot carry its derived edits.
-  const reports = await withGateSlot(root, () => rules.map(rule => ({ rule,
-    ...runRuleCheck(root, rule.command, config.check?.timeoutMs) })),
+  const reports = await withGateSlot(root, lease => rules.map(rule => ({ rule,
+    ...runRuleCheck(root, rule.command, config.check?.timeoutMs, gateSlotEnvironment(lease)) })),
   { browser, remote: false, agent: 'coordinator', kind: 'doctrine', itemCheck: true, onWait });
   if (headCommit(root) !== head || (!isClean(root) || untracked(root).length)) throw new Refused('LAND_DIRTY', 'a doctrine check changed the merged landing tree; inspect it before adopting');
   const uncounted = reports.filter(report => report.broken);
