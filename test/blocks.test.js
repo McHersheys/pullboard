@@ -5,6 +5,8 @@ import { serveApi } from '../src/api.js';
 import { repoInfo } from '../src/git.js';
 import { personNeedsState } from '../src/needs-state.js';
 import {
+  BLOCK_AUDIENCE,
+  NEXT_STEPS,
   blockAudience,
   reportBlock,
 } from '../src/next-steps.js';
@@ -55,9 +57,8 @@ test('a Pullboard block reaches whoever can clear it and repeats are counted [C6
   assert.equal(raise(new Refused('TOKEN_EXPIRED', 'the coordinator relay token expired; the person reissues it: run pullboard relay on in the main checkout'), 'shout').audience, 'person');
   assert.equal(raise(new Refused('TOKEN_EXPIRED', 'the relay token of web-1 expired, and only a seat\'s own current token or its creator renews it; ask the coordinator for a fresh worktree: pullboard worktree <lane> --model "<model name>"'), 'claim').audience, 'coordinator');
   assert.equal(said.filter(line => /only the person can clear this/u.test(line)).length, 2);
-  // A step the agent takes stays the agent's even when it mentions the person as an alternative.
-  assert.equal(blockAudience('RATCHET_ROSE', 'C9 rose to 54, was 53; fix the new problems, commit, and submit again; only the person can sign an increased count',
-    'fix the new doctrine problems named in the report, commit, and submit again; only the person can sign an increased count'), 'agent');
+  // A refusal outside the table stays the agent's, whatever its wording says about the person.
+  assert.equal(blockAudience('RATCHET_ROSE', 'C9 rose to 54, was 53; fix the new problems, commit, and submit again; only the person can sign an increased count'), 'agent');
   const personRows = personNeedsState(box.repo).needs.filter(row => row.kind === 'block');
   assert.deepEqual(personRows.map(row => row.text).sort(), [
     'Pullboard stopped a request that only you can clear: send this person action from the paired phone',
@@ -105,4 +106,19 @@ test('a Pullboard block reaches whoever can clear it and repeats are counted [C6
   const added = box.run(box.repo, 'add', draft.lane, draft.title, '--brief', draft.brief, '--json');
   assert.equal(added.code, 0, added.err);
   assert.equal(JSON.parse(added.out).item.item_title, draft.title);
+
+  // Every person-only code in the catalog lands in Needs you, B26_PERSON_APPROVAL with its real words.
+  const personCodes = Object.keys(BLOCK_AUDIENCE).filter(code => BLOCK_AUDIENCE[code] === 'person');
+  assert.ok(personCodes.includes('B26_PERSON_APPROVAL'));
+  for (const code of Object.keys(NEXT_STEPS).filter(code => /PERSON_ONLY$/u.test(code))) assert.equal(BLOCK_AUDIENCE[code], 'person', code);
+  for (const code of personCodes) {
+    assert.ok(NEXT_STEPS[code], `${code} has a step in the catalog`);
+    const words = code === 'B26_PERSON_APPROVAL'
+      ? 'only the person from the main checkout approves or declines a spec row; use pullboard view for the person to decide'
+      : `the ${code.toLowerCase().replaceAll('_', ' ')} rule stops this`;
+    assert.equal(raise(new Refused(code, words), `sweep ${code.toLowerCase()}`).audience, 'person', code);
+  }
+  const swept = new Set(personNeedsState(box.repo).needs.filter(row => row.kind === 'block' && row.id.includes(' pullboard sweep ')).map(row => row.id.split(' ')[0].slice('block:'.length)));
+  assert.deepEqual([...swept].sort(), [...personCodes].sort());
+  assert.ok((await apiNeeds(api, box.repo)).needs.some(row => row.id.startsWith('block:B26_PERSON_APPROVAL ')));
 });

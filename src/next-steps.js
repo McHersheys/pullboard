@@ -651,26 +651,47 @@ export function nextStepFor(error, message, options = {}) {
 const NOT_BLOCKS = new Set(['USAGE', 'UNKNOWN_COMMAND']);
 
 /**
- * Who can take a refusal's step: the person (a person-only move), the coordinator (a step that
- * asks the coordinator), or the agent that ran the command. Read from the code and the same step
- * this catalog gives, so the audience never disagrees with the step shown [P4].
+ * Who clears each refusal that is not the blocked agent's own to clear, by code, beside the steps
+ * above: the person (a person-only move) or the coordinator. Every other code is the agent's.
+ * test/blocks.test.js sends every person code here through to Needs you [C6,B26].
+ *
+ * @type {Readonly<Record<string, 'person'|'coordinator'|'either'>>}
+ */
+export const BLOCK_AUDIENCE = Object.freeze({
+  AGENT_APPROVAL_REQUIRED: 'person',
+  B26_PERSON_APPROVAL: 'person',
+  B26_PERSON_CHANNEL: 'person',
+  CHECK_ACCEPT_PERSON_ONLY: 'person',
+  HUMAN_REQUIRED: 'person',
+  LAND_PERSON_ONLY: 'person',
+  NOT_APPROVER: 'person',
+  PHONE_APPROVAL_PENDING: 'person',
+  RELAY_PERSON_ONLY: 'person',
+  RIGOR_PERSON_ONLY: 'person',
+  B26_PERSON_ANSWER: 'coordinator',
+  B26_PERSON_DECISION: 'coordinator',
+  COORDINATOR_CHECK: 'coordinator',
+  COORDINATOR_ONLY: 'coordinator',
+  COORDINATOR_VERIFIES: 'coordinator',
+  JOB_CADENCE_COORDINATOR_ONLY: 'coordinator',
+  SPEC_APPROVAL_BASELINE: 'coordinator',
+  TOKEN_REVOKED: 'coordinator',
+  // One code, two holders: the coordinator's own token is reissued by the person, a seat's by the coordinator.
+  TOKEN_EXPIRED: 'either',
+});
+
+/**
+ * Who can take a refusal's step, from its code alone. Only a code that serves both audiences
+ * reads its message, and only to tell which of the two raised it.
  *
  * @param {string} code
  * @param {string} message
- * @param {string} step
  * @returns {'person'|'coordinator'|'agent'}
  */
-export function blockAudience(code, message, step) {
-  const person = /\blet the person act\b|\bbring it to the person\b|\bthe person (?:reissues|runs|sends|approves)\b|\bfrom the paired phone\b|\bthe person['’]s terminal\b/iu;
-  const coordinator = /\bask (?:the|your) coordinator\b|^the coordinator\b/iu;
-  if (/_PERSON_ONLY$|^B26_PERSON_CHANNEL$|^HUMAN_REQUIRED$/u.test(code)) return 'person';
-  // The raise site's own words name who acts before the catalog's general step does: an expired
-  // coordinator token says the person reissues it, while a seat's says to ask the coordinator.
-  if (person.test(message)) return 'person';
-  if (coordinator.test(message) || /(?:^|_)COORDINATOR_ONLY$/u.test(code)) return 'coordinator';
-  if (person.test(step)) return 'person';
-  if (/^(?:ask (?:the|your) coordinator|the coordinator)\b/iu.test(step)) return 'coordinator';
-  return 'agent';
+export function blockAudience(code, message) {
+  const audience = BLOCK_AUDIENCE[code] ?? 'agent';
+  if (audience !== 'either') return audience;
+  return /\bthe coordinator relay token\b/iu.test(message) ? 'person' : 'coordinator';
 }
 
 /** Plain words: no bracketed rule code, no backticks, one line [P4]. */
@@ -693,7 +714,7 @@ export function blockNotice(error, { command, by, path, at, caller }) {
   const first = plain(message);
   const cut = first.indexOf(step.slice(0, 24));
   const reason = (cut > 0 ? first.slice(0, cut) : first).replace(/[\s;:,.]+$/u, '') || first;
-  const audience = blockAudience(code, message, step);
+  const audience = blockAudience(code, message);
   // The person never needs to know how the relay works: a relay token is their sign-in [C6].
   const said = audience === 'person' ? reason.replace(/\b(?:the )?coordinator relay token\b/giu, 'your sign-in for the coordinator').replace(/\brelay token\b/giu, 'sign-in') : reason;
   return { at: at.toISOString(), code, command: `pullboard ${command}`.trim(), by, path, audience, reason: said, step };
