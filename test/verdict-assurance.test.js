@@ -21,6 +21,8 @@ function fixture(t) {
   runFixtureGit(['init', '-q', '-b', 'main'], { cwd: root });
   writeFileSync(join(root, 'pullboard.json'), JSON.stringify({ gate: 'true', lanes: { web: { owns: ['web/'] } } }));
   writeFileSync(join(root, 'SPEC.md'), '# Assurance fixture\n## G\n- G1 [approved, must] Reviews state their assurance. | gate: true\n');
+  runFixtureGit(['add', 'pullboard.json', 'SPEC.md'], { cwd: root });
+  runFixtureGit(['-c', 'user.name=Assurance fixture', '-c', 'user.email=assurance@example.invalid', 'commit', '-q', '-m', 'chore: initialize assurance fixture'], { cwd: root });
   mkdirSync(join(root, '.git', 'pullboard'), { recursive: true });
   const board = store.openBoard(join(root, '.git', 'pullboard', 'board.sqlite'));
   t.after(() => store.closeBoard(board));
