@@ -14,6 +14,7 @@ import { Worker } from 'node:worker_threads';
 import { randomUUID } from 'node:crypto';
 import { channel } from 'node:diagnostics_channel';
 import { AGENT_SHELL_MARKERS, SSH_SHELL_MARKERS } from '../src/person.js';
+import { isLandingWorkerIdentityTimeout, landingWorkerIdentityQuery, parseLandingWorkerIdentity } from '../src/landing-worker-identity.js';
 import { foreignNodeOptions, isolateTestMachine } from '../src/test-isolation.js';
 const runner = fileURLToPath(import.meta.url);
 const LANDING_RUN_ENV = 'PULLBOARD_LANDING_RUN';
@@ -222,6 +223,8 @@ function testEnvironment(sandbox, gateMarkers = {}) {
   env.PULLBOARD_HOME = home;
   env.PULLBOARD_MODEL = 'Test Model';
   env.PULLBOARD_MACHINE_HOME = join(sandbox, 'machine');
+  // A test finds its runner by this pid, never by parsing ps text; a nested runner sets its own (#1073).
+  env.PULLBOARD_TEST_RUNNER_PID = String(process.pid);
   isolateTestMachine(env, sandbox); // #1068: no settings, resources, runners or host markers of the real machine.
   // init and resume start a background view by default; a test opts back in by deleting this.
   env.PULLBOARD_VIEW_BACKGROUND = '0';
@@ -479,6 +482,7 @@ function landingWorkerCancellationError(cause) {
 /** Retry a worker's initial process-identity receipt without blocking its event loop or exceeding the file-start ceiling. */
 async function landingWorkerIdentity(pid, timeoutMs = LANDING_WORKER_IDENTITY_TIMEOUT_MS) {
   if (process.platform === 'win32') return null;
+  const { args: snapshotArgs } = landingWorkerIdentityQuery(pid);
   const deadline = Date.now() + timeoutMs;
   let lastError = null;
   let retryNoticeReported = false;
@@ -496,8 +500,8 @@ async function landingWorkerIdentity(pid, timeoutMs = LANDING_WORKER_IDENTITY_TI
       if (remaining <= 0) break;
       try {
         const output = await new Promise((resolveOutput, rejectOutput) => {
-          const child = execFile('ps', ['-axo', 'pid=,ppid=,pgid=,stat=,lstart=,command='], {
-            encoding: 'utf8', timeout: Math.min(2000, Math.max(1, remaining)), maxBuffer: 64 << 20,
+          const child = execFile('ps', snapshotArgs, {
+            encoding: 'utf8', timeout: Math.min(2000, Math.max(1, remaining)),
           }, (error, stdout) => {
             if (snapshotChild === child) snapshotChild = null;
             error ? rejectOutput(error) : resolveOutput(stdout);
@@ -506,8 +510,8 @@ async function landingWorkerIdentity(pid, timeoutMs = LANDING_WORKER_IDENTITY_TI
           if (stopping) child.kill('SIGTERM');
         });
         if (stopping) throw landingWorkerCancellationError();
-        const identity = parseLandingProcessTable(output).find(processInfo => processInfo.pid === pid);
-        if (identity) {
+        const identity = parseLandingWorkerIdentity(output);
+        if (identity?.pid === pid) {
           if (stopping) throw landingWorkerCancellationError();
           return identity;
         }
@@ -516,8 +520,7 @@ async function landingWorkerIdentity(pid, timeoutMs = LANDING_WORKER_IDENTITY_TI
         lastError = error;
         if (!retryNoticeReported) {
           retryNoticeReported = true;
-          const timedOut = error.code === 'ETIMEDOUT' || (error.killed === true && error.signal === 'SIGTERM'
-            && error.cmd === 'ps -axo pid=,ppid=,pgid=,stat=,lstart=,command=');
+          const timedOut = isLandingWorkerIdentityTimeout(error, pid);
           process.stderr.write(timedOut
             ? 'run-tests: worker identity snapshot timed out; retrying before file execution\n'
             : `run-tests: worker identity snapshot failed (${error.code ?? 'unknown'}); retrying before file execution\n`);
@@ -1247,7 +1250,6 @@ function optionTakesValue(argument) {
         if (signature.includes('=') && !signature.includes('[=')) nodeOptionsWithValues.add(option[0]);
       }
     }
-
   }
   return nodeOptionsWithValues.has(argument.replaceAll('_', '-'));
 }
@@ -1444,6 +1446,8 @@ async function main(args) {
     const { testsNeedBrowser } = await import('../src/browser-admission.js');
     browser = await testsNeedBrowser(process.cwd(), explicitTestFiles(args));
   }
+  const actions = await (await import('../src/test-action-cache.js')).planTestActions(process.cwd(), args, { fullSuite, landing: process.env[LANDING_RUN_ENV] === '1', listFiles: () => fullSuite ? trackedDefaultTestFiles(process.cwd(), process.env) : explicitTestFiles(args) });
+  if (actions.done) return;
   let signal = null;
   /** Keep sandbox lifetime inside the held lease, including the complete child process. */
   const shardLabel = process.env[LANDING_SHARD_ENV];
@@ -1453,7 +1457,7 @@ async function main(args) {
     const fileTimes = shardLabel ? join(sandbox, 'landing-file-times.jsonl') : '';
     if (fileTimes) process.env[LANDING_FILE_TIMES_ENV] = fileTimes;
     try {
-      const result = await executeTests(args, sandbox, gateMarkers, fullSuite, concurrency);
+      const result = await executeTests(actions.args, sandbox, gateMarkers, fullSuite && !actions.files, concurrency);
       signal = result.signal;
       process.exitCode = result.status ?? 1;
       if (fileTimes) (await import('../src/landing-shards.js')).printShardFileTimes(fileTimes);
@@ -1468,7 +1472,7 @@ async function main(args) {
       const { landingShardCount } = await import('../src/gate.js');
       const count = landingShardCount(process.cwd());
       if (count > 1) {
-        const files = isGitWorkTree(process.cwd(), process.env) ? trackedDefaultTestFiles(process.cwd(), process.env) : [];
+        const files = actions.files ?? (isGitWorkTree(process.cwd(), process.env) ? trackedDefaultTestFiles(process.cwd(), process.env) : []);
         if (!files.length) throw new Error('a sharded landing gate needs tracked Node test files; commit them or set landingShards to 1');
         const inherited = scopedMarker ? inheritedGateSlot({ root: process.cwd(), browser }) : null;
         const { runLandingShards } = await import('../src/landing-shards.js');
@@ -1502,7 +1506,7 @@ async function main(args) {
         const { runOnRunner } = await import('../src/runners.js');
         /** Quote the unchanged runner arguments for the remote command shell. */
         const word = value => `'${String(value).replaceAll("'", "'\\''")}'`;
-        const command = ['node', `./${runnerPath}`, ...args].map(word).join(' ');
+        const command = ['node', `./${runnerPath}`, ...actions.args].map(word).join(' ');
         const result = runOnRunner(process.cwd(), command, { runner: lease.runner, source: lease.source,
           browser, metadata: lease.runMetadata });
         process.stdout.write(result.output);
@@ -1533,6 +1537,7 @@ if (process.argv[1] && resolve(process.argv[1]) === runner) {
   await main(process.argv.slice(2));
 } else if (process.argv[1]) {
   process.env.PULLBOARD_TEST_FILE = process.argv[1];
+  (await import('../src/test-action-cache.js')).recordTestAction(process.argv[1]); // #1045: reuse off below; record this file.
   const fileTimes = process.env[LANDING_FILE_TIMES_ENV];
   // Only this test file reports; anything it starts is not one of the shard's files.
   delete process.env[LANDING_FILE_TIMES_ENV];

@@ -1,3 +1,4 @@
+import { withBoardRead } from '../board-read.js';
 /** The pullboard show command, in its own module so an item adding another command never edits these lines. */
 import {
   displayAgentName,
@@ -31,7 +32,6 @@ import {
   idArg,
   itemLine,
   sayBrief,
-  withBoard,
 } from '../cli-context.js';
 import { relayStateExists } from '../local-state.js';
 
@@ -39,7 +39,7 @@ import { relayStateExists } from '../local-state.js';
 export async function run(io, { first, values }) {
   const ctx = context(io);
   const id = idArg(first);
-  const { item, verdicts, moves, thread, related, reviewer, agents, mainMerge, infra, approval } = withBoard(ctx, (board) => ({
+  const { item, verdicts, moves, thread, related, reviewer, agents, mainMerge, infra, approval } = withBoardRead(ctx, (board) => ({
     item: verdictProjector(ctx.info.root, board).project(store.getItem(board, id)),
     verdicts: store.verdictsFor(board, id),
     moves: store.events(board, { itemId: id }).filter((event) => ['attempt', 'escalate'].includes(event.event_kind)),

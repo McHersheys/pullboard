@@ -139,10 +139,11 @@ function configHere(info) {
  * @template T
  * @param {any} ctx
  * @param {(board: any) => T} work
+ * @param {any} [opened] an already-open board, as withBoardRead passes
  * @returns {T}
  */
-export function withBoard(ctx, work) {
-  const board = store.openBoard(ctx.file, ctx.clock, { isMain: ctx.allowSchemaUpgrade,
+export function withBoard(ctx, work, opened) {
+  const board = opened ?? store.openBoard(ctx.file, ctx.clock, { isMain: ctx.allowSchemaUpgrade,
     /** Report each source mismatch once through this invocation's text or JSON diagnostics. */
     onDiagnostic(message) {
       ctx.io.schemaDiagnostics ??= new Set();

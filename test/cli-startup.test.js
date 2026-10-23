@@ -117,6 +117,12 @@ test('a read command loads only its own modules [C7]', async (t) => {
   assert.match(show.stdout, /^#1 {2}/u);
   assert.deepEqual(show.modules.filter((path) => HEAVY.includes(path)), [], 'show loads no gate, relay or land module');
   assert.ok(show.gitCalls.length <= 2, `show started ${show.gitCalls.length} Git processes: ${show.gitCalls.join(' | ')}`);
+  const status = box.run('status', '--json');
+  assert.equal(JSON.parse(status.stdout).stats.items.open, 1);
+  assert.deepEqual(status.modules.filter((path) => HEAVY.includes(path)), [], 'offline status loads no gate, relay or land module');
+  const list = box.run('list', '--json');
+  assert.equal(JSON.parse(list.stdout).items.length, 1);
+  assert.deepEqual(list.modules.filter((path) => HEAVY.includes(path)), [], 'list loads no gate, relay or land module');
   // One rev-parse in the worktree answers top level, Git dirs, HEAD and the primary checkout for the whole process;
   // the only other is the code's own checkout, asked once where the running code came from.
   const claim = box.runIn(box.worktree, 'claim', '1');

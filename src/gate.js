@@ -220,6 +220,8 @@ export function runProfiledShell(root, command, { waitMs = 0, artifactDirectory,
     ...(gateLease && !gateLease.runner ? gateSlotEnvironment(gateLease) : gateSlotHeld ? { [GATE_SLOT_HELD_ENV]: '1' } : {}),
     [LANDING_RUN_ENV]: landing ? '1' : '0',
     [LANDING_WAIVERS_ENV]: landing ? JSON.stringify(waivers) : '[]',
+    // A reused test result names the stage that ran it (#1045).
+    PULLBOARD_TEST_STAGE: gateLease?.receiptKind ?? (landing ? 'land' : 'gate'),
   };
   // The registered worker returns the same complete stage/component accounting as a local run.
   gateLease?.tracker?.mark('runAt');
@@ -263,6 +265,7 @@ export async function runProfiledShellAsync(root, command, { waitMs = 0, gateSlo
   const inherited = {
     ...(gateLease ? gateSlotEnvironment(gateLease) : gateSlotHeld ? { [GATE_SLOT_HELD_ENV]: '1' } : {}),
     [LANDING_RUN_ENV]: landing ? '1' : '0',
+    PULLBOARD_TEST_STAGE: gateLease?.receiptKind ?? (landing ? 'land' : 'gate'),
   };
   const env = { ...gitChildEnv(root), ...inherited };
   const child = spawn(`(\n${command}\n) 2>&1`, { cwd: root, env, shell: true, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -401,11 +404,13 @@ async function withOneGateSlot(root, action, { landing = false, itemCheck = fals
       timed(lease).tracker.mark('actionAt');
       try { return await action(lease); }
       catch (error) {
-        if (!(error instanceof RunnerDropped) || !lease.runner || !lease.requeueRunner) throw error;
-        const runnerUnavailable = { host: lease.runner.host, reason: 'transport lost before a complete result', until: 'the host is checked and re-registered' };
+        // A cleanup the runner could not verify is the runner's failure, not the run's: rerun it locally (#1063).
+        const cleanup = error instanceof Refused && error.code === 'RUNNER_CLEANUP_TIMEOUT';
+        if (!(error instanceof RunnerDropped || cleanup) || !lease.runner || !lease.requeueRunner) throw error;
+        const runnerUnavailable = { host: lease.runner.host, reason: cleanup ? error.message : 'transport lost before a complete result', until: 'the host is checked and re-registered' };
         if (onWait) await onWait({ holders: [], line: [], position: 0, runnerUnavailable });
-        else process.stderr.write(`runner ${runnerUnavailable.host} unavailable: ${runnerUnavailable.reason}; until ${runnerUnavailable.until}; requeueing the run\n`);
-        lease = await lease.requeueRunner('transport-lost');
+        else process.stderr.write(`runner ${runnerUnavailable.host} unavailable: ${runnerUnavailable.reason}; until ${runnerUnavailable.until}; ${cleanup ? 'rerunning it locally' : 'requeueing the run'}\n`);
+        lease = await lease.requeueRunner(cleanup ? 'cleanup-unverified' : 'transport-lost', { local: cleanup });
       }
     }
   } finally {

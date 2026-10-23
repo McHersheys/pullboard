@@ -76,12 +76,12 @@ export function assertDirectOpenBoardIsolation(t, sourceRoot) {
   const sharedFile = join(main, '.git', 'pullboard', 'board.sqlite');
   const privateFile = join(directory, 'private.sqlite');
 
-  const boardSourcePath = join(branch, 'src', 'board.js');
+  const boardSourcePath = join(branch, 'src', 'board-migrate.js');
   const originalBoardSource = readFileSync(boardSourcePath, 'utf8');
-  const migration = "    ['item', 'item_after', \"TEXT NOT NULL DEFAULT ''\"],";
+  const migration = "  ['item', 'item_after', \"TEXT NOT NULL DEFAULT ''\"],";
   assert.ok(originalBoardSource.includes(migration), 'candidate source contains the stable migration insertion point');
   const driftedBoardSource = originalBoardSource.replace(migration,
-    `${migration}\n    ['item', 'item_branch_probe', \"TEXT NOT NULL DEFAULT ''\"],`);
+    `${migration}\n  ['item', 'item_branch_probe', \"TEXT NOT NULL DEFAULT ''\"],`);
   assert.notEqual(driftedBoardSource, originalBoardSource);
   writeFileSync(boardSourcePath, driftedBoardSource);
   const machineSourcePath = join(branch, 'src', 'machine.js');
@@ -90,7 +90,7 @@ export function assertDirectOpenBoardIsolation(t, sourceRoot) {
   const branchTriggerBody = "refuse('UNDECLARED_MOVE', `branch fixture moves are ${moves.join(', ')}`)";
   assert.ok(originalMachineSource.includes(triggerBody), 'candidate trigger source contains the expected clause');
   writeFileSync(machineSourcePath, originalMachineSource.replace(triggerBody, branchTriggerBody));
-  git(branch, 'add', 'src/board.js', 'src/machine.js');
+  git(branch, 'add', 'src/board-migrate.js', 'src/machine.js');
   git(branch, 'commit', '-q', '-m', 'feat: simulate branch-local schema declarations');
 
   /** Observe shared DDL and effect evidence without invoking an opener. */
@@ -156,6 +156,9 @@ export function assertDirectOpenBoardIsolation(t, sourceRoot) {
   assert.deepEqual(sharedAfter.triggers, sharedBefore.triggers);
   assert.equal(sharedAfter.events, sharedBefore.events + 1, 'the normal claim still has its shared-board effect');
 
+  // A private database migrates only when its user_version is behind (#1047), as an older board's is.
+  const lowered = new DatabaseSync(privateFile);
+  try { lowered.exec('PRAGMA user_version = 1'); } finally { lowered.close(); }
   const privateProbe = run(process.execPath, ['--input-type=module', '-e', `
     import { openBoard, closeBoard } from './src/board.js';
     const board = openBoard(${JSON.stringify(privateFile)});
@@ -167,5 +170,5 @@ export function assertDirectOpenBoardIsolation(t, sourceRoot) {
     'a private database still receives the branch migration');
   assert.ok(privateAfter.triggers.find(row => row.name === 'machine_item_move').sql.includes('branch fixture moves'),
     'a private database still receives the branch machine trigger declaration');
-  assert.equal(privateAfter.version, privateBefore.version, 'same-version private migration remains supported');
+  assert.equal(privateAfter.version, privateBefore.version, 'an older private database migrates back to the current version');
 }

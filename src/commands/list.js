@@ -1,3 +1,4 @@
+import { withBoardRead } from '../board-read.js';
 /** The pullboard list command, in its own module so an item adding another command never edits these lines. */
 import * as store from '../board.js';
 import {
@@ -10,13 +11,12 @@ import {
   agentDisplayName,
   context,
   itemLine,
-  withBoard,
 } from '../cli-context.js';
 
 /** Run `pullboard list` and return its exit code. */
 export function run(io, { first, values }) {
   const ctx = context(io);
-  const { items, agents, merging } = withBoard(ctx, (board) => ({
+  const { items, agents, merging } = withBoardRead(ctx, (board) => ({
     items: store.listItems(board, { lane: first, all: values.all }).map(verdictProjector(ctx.info.root, board).project),
     agents: store.listAgents(board), merging: new Set(store.listItems(board, { lane: first }).filter((item) => mainMergeFor(board, item.item_id)).map((item) => item.item_id)),
   }));
