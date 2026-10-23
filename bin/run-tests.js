@@ -222,6 +222,8 @@ function testEnvironment(sandbox, gateMarkers = {}) {
   env.PULLBOARD_HOME = home;
   env.PULLBOARD_MODEL = 'Test Model';
   env.PULLBOARD_MACHINE_HOME = join(sandbox, 'machine');
+  // A test finds its runner by this pid, never by parsing ps text; a nested runner sets its own (#1073).
+  env.PULLBOARD_TEST_RUNNER_PID = String(process.pid);
   isolateTestMachine(env, sandbox); // #1068: no settings, resources, runners or host markers of the real machine.
   // init and resume start a background view by default; a test opts back in by deleting this.
   env.PULLBOARD_VIEW_BACKGROUND = '0';
