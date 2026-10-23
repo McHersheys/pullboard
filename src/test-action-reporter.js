@@ -41,7 +41,7 @@ export default async function* recordActionTap(events) {
   for (const [file, report] of reports) {
     // A helper can register tests at another source location. Without every outcome's attribution, run fresh.
     if (!report.counts || report.observedTests !== report.counts.tests) continue;
-    const name = createHash('sha256').update(file).digest('hex');
+    const name = createHash('sha256').update(JSON.stringify(file)).digest('hex');
     const path = join(directory, `${name}.tap.json`);
     const temporary = `${path}.${process.pid}.tmp`;
     writeFileSync(temporary, JSON.stringify(report), { mode: 0o600 });
