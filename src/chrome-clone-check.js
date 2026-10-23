@@ -1,5 +1,5 @@
 /** Observe macOS Chrome clone growth without deleting or attributing directories [C7]. */
-import { execFileSync } from 'node:child_process';
+import { nativeUserDirectory } from './native-user-directory.js';
 import {
   lstatSync,
   readdirSync,
@@ -13,7 +13,7 @@ import {
 /** Locate only the current account's native Chrome clone namespaces. */
 export function chromeCloneDirectories() {
   if (process.platform !== 'darwin') return [];
-  const user = execFileSync('/usr/bin/getconf', ['DARWIN_USER_DIR'], { encoding: 'utf8', timeout: 2_000 }).trim();
+  const user = nativeUserDirectory();
   const root = join(dirname(user.replace(/\/$/u, '')), 'X');
   return ['com.google.Chrome', 'org.chromium.Chromium'].map(bundle => join(root, `${bundle}.code_sign_clone`));
 }
