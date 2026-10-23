@@ -62,11 +62,22 @@ function testHash(root, file) {
   catch { return null; }
 }
 
-/** Derive failing test identities from TAP names and source locations, refusing unknown paths. */
+/** Derive failing test identities from TAP or spec reporter names and source locations, refusing unknown paths. */
 export function landingFailures(output, root, { excludeCancelled = false } = {}) {
   const failures = [];
   let active = null;
+  /** A reported path relative to the root, or null when it lies outside it. */
+  const inRoot = (path) => {
+    const file = isAbsolute(path) ? relative(root, path) : path.replace(/^\.\//u, '');
+    return file && !file.startsWith('../') && !file.includes('\\') ? file : null;
+  };
+  // The spec reporter (Node 24's default for node --test) names each failure as "test at <file>:<line>" then "✖ <name>".
+  let specFile;
   for (const line of output.split('\n')) {
+    const at = /^\s*test at (.+?):\d+(?::\d+)?\s*$/u.exec(line);
+    if (at) { specFile = inRoot(at[1]); active = null; continue; }
+    const spec = specFile !== undefined ? /^\s*\u2716 (.+?)(?: \([\d.]+m?s\))?\s*$/u.exec(line) : null;
+    if (spec) { failures.push({ name: spec[1], file: specFile }); specFile = undefined; continue; }
     const failed = /^\s*not ok\s+\d+\s+-\s+(.*)$/u.exec(line);
     if (failed) {
       active = { name: failed[1].replace(/\s+#.*$/u, ''), file: null };
@@ -75,9 +86,8 @@ export function landingFailures(output, root, { excludeCancelled = false } = {})
     }
     const location = /^\s*location:\s*['"]?(.+?):\d+(?::\d+)?['"]?\s*$/u.exec(line);
     if (active && location) {
-      const path = location[1];
-      const file = isAbsolute(path) ? relative(root, path) : path.replace(/^\.\//u, '');
-      if (file && !file.startsWith('../') && !file.includes('\\')) active.file = file;
+      const file = inRoot(location[1]);
+      if (file) active.file = file;
     }
     if (excludeCancelled && active && /^\s*failureType:\s*['"]?(?:cancelledByParent|subtestsFailed)['"]?\s*$/u.test(line)) active.omit = true;
   }
