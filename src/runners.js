@@ -491,6 +491,7 @@ function requestFor(root, command, { runner, source, browser = false, byLaunch, 
     if (secretsIn([{ path: 'runner continuation', line: 1, text: JSON.stringify(projection) }]).length) throw new Refused('RUNNER_SECRET', 'the continuation projection contains a possible secret; keep this run local');
     const spec = { version: 1, id: randomUUID(), repoId, ...(originBase ? { origin, originBase } : {}), runtime, tooling, tags, ...current, command, pipefail, slots: runner.slots,
       browser: runner.browser, browserRequired: browser, landing: metadata.landing === true,
+      ...(metadata.landing === true && metadata.timeoutMs ? { timeoutMs: metadata.timeoutMs } : {}),
       // The classification this controller used, so the runner never reclassifies by its own settings (#1043).
       browserByLaunch: byLaunch ?? carriedBrowserByLaunch() ?? readMachineSettingsFile()?.gate?.browserByLaunch === true,
       ...(stages ? { stageMarker: `PULLBOARD_STAGE_${randomUUID().replaceAll('-', '')}` } : {}), waivers: projection,
@@ -528,6 +529,7 @@ function resultFrom(request, result) {
     || receipt.outputSha256 !== createHash('sha256').update(output).digest('hex')) {
     throw new RunnerDropped(request.runner.host);
   }
+  if (receipt.timedOut !== undefined && (receipt.timedOut !== true || !request.spec.timeoutMs || receipt.code === 0)) throw new RunnerDropped(request.runner.host);
   if (receipt.refused !== undefined) {
     if (typeof receipt.refused !== 'string' || !/^[A-Z][A-Z0-9_]{0,63}$/u.test(receipt.refused) || receipt.code === 0) throw new RunnerDropped(request.runner.host);
     // The runner answered, so this is a named failure, not a dropped transport to requeue.
@@ -557,7 +559,7 @@ function resultFrom(request, result) {
     refused.runnerAttempt = { host: request.runner.host, exitCode: receipt.code, output: text };
     throw refused;
   }
-  return { isGreen: receipt.code === 0 && !receipt.signal, output: text, sandboxBlocked,
+  return { isGreen: receipt.code === 0 && !receipt.signal, output: text, sandboxBlocked, ...(receipt.timedOut ? { timedOut: true } : {}),
     environment: receipt.environment ?? null,
     ...(request.spec.stageMarker ? { stages: staged?.stages ?? null } : {}),
     seconds: Math.round(receipt.wallMs / 1000), exitCode: receipt.code,

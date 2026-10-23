@@ -266,10 +266,10 @@ export function isStampedGreen(root) {
  *
  * @param {string} root
  * @param {string} command
- * @param {{ pipefail?: boolean, env?: NodeJS.ProcessEnv, stages?: boolean }} [options] - Gate-only pipefail, additional child environment values and per-stage accounting.
+ * @param {{ pipefail?: boolean, env?: NodeJS.ProcessEnv, stages?: boolean, timeoutMs?: number }} [options] - Gate-only pipefail, additional child environment values and per-stage accounting.
  * @returns {{ isGreen: boolean, output: string, seconds: number, sandboxBlocked: string|null, stages?: Array<{ status: number|null, output: string, pipeline?: Array<{ status: number|null, output: string|null }> }> | null }}
  */
-export function runShell(root, command, { pipefail = false, env = {}, stages = false } = {}) {
+export function runShell(root, command, { pipefail = false, env = {}, stages = false, timeoutMs } = {}) {
   const started = Date.now();
   const environment = executionEnvironment();
   const options = { cwd: root, env: { ...gitChildEnv(root), ...env }, shell: true, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', maxBuffer: 2 ** 30 };
@@ -286,19 +286,28 @@ export function runShell(root, command, { pipefail = false, env = {}, stages = f
   const marker = `PULLBOARD_STAGE_${randomUUID().replaceAll('-', '')}`;
   const pipes = split?.some((stage) => stage.pipeline.length > 1) ? mkdtempSync(join(tmpdir(), 'pullboard-pipes-')) : null;
   // Newlines, not spaces, around the command, so a trailing comment in it cannot swallow the `)`.
-  const result = spawnSync(`${prefix}(\n${split ? stagedScript(split, marker, pipes) : command}\n) 2>&1`, options);
+  const script = `${prefix}(\n${split ? stagedScript(split, marker, pipes) : command}\n) 2>&1`;
+  const timedDirectory = timeoutMs ? mkdtempSync(join(tmpdir(), 'pullboard-timed-output-')) : null;
+  const outputFile = timedDirectory ? join(timedDirectory, 'output.log') : null;
+  const timed = timeoutMs ? spawnSync(process.execPath, [fileURLToPath(new URL('./timed-shell-worker.js', import.meta.url))], { ...options, shell: false, stdio: ['pipe', 'pipe', 'pipe'], input: JSON.stringify({ command: script, timeoutMs, outputFile }) }) : null;
+  if (timed && (timed.status !== 0 || timed.error)) throw new Refused('LAND_TIMEOUT_CUSTODY', 'the timed gate worker did not prove cleanup; inspect its owned processes before landing again');
+  const result = timed ? { ...JSON.parse(timed.stdout || '{}'), stdout: '', stderr: timed.stderr } : spawnSync(script, options);
+  if (timed && result.error) throw new Refused('LAND_GATE_OUTPUT', `the timed gate stopped and drained after its output failed (${result.error}); inspect free disk space and ${timedDirectory} before landing again`);
+  if (timed) result.stdout = readFileSync(outputFile, 'utf8') + (result.timedOut ? `\n[LAND_GATE_TIMEOUT] landing gate exceeded ${timeoutMs}ms; its owned processes are stopped\n` : '');
+  if (timedDirectory) rmSync(timedDirectory, { recursive: true, force: true });
+  if (result.timedOut || result.overflow || result.error) result.status = 1;
   invalidateGitFacts();
   const pipeStatuses = pipes ? readPipes(split, pipes) : null;
   if (pipes) rmSync(pipes, { recursive: true, force: true });
   const raw = `${result.stdout ?? ''}${result.stderr ?? ''}`;
   const seconds = Math.round((Date.now() - started) / 1000);
   const blocked = (output) => (result.status === 0 ? null : sandboxBlockedOperation(root, output));
-  if (!stages) return { isGreen: result.status === 0, output: raw, seconds, environment, sandboxBlocked: blocked(raw) };
-  if (!split) return { isGreen: result.status === 0, output: raw, seconds, environment, stages: null, sandboxBlocked: blocked(raw) };
+  if (!stages) return { isGreen: result.status === 0, output: raw, seconds, environment, ...(timed ? { timedOut: result.timedOut } : {}), sandboxBlocked: blocked(raw) };
+  if (!split) return { isGreen: result.status === 0, output: raw, seconds, environment, ...(timed ? { timedOut: result.timedOut } : {}), stages: null, sandboxBlocked: blocked(raw) };
   const staged = readStages(raw, marker, split.length);
   // Each pipeline component's own status rides on its stage, so no failing producer hides behind a later one.
   const withPipes = staged.stages.map((stage, index) => (pipeStatuses?.[index] ? { ...stage, pipeline: pipeStatuses[index] } : stage));
-  return { isGreen: result.status === 0, seconds, environment, ...staged, stages: withPipes, sandboxBlocked: blocked(staged.output) };
+  return { isGreen: result.status === 0, seconds, environment, ...(timed ? { timedOut: result.timedOut } : {}), ...staged, stages: withPipes, sandboxBlocked: blocked(staged.output) };
 }
 
 /** Refuse an environment-blocked proof after its ordinary raw logs and timings are persisted. */
@@ -319,9 +328,9 @@ function safeLog(output) {
 /** Run the unchanged caller command and profile only timings already present in its output.
  * @param {string} root
  * @param {string} command
- * @param {{ waitMs?: number, artifactDirectory?: string, artifactPrefix?: string, persistLog?: boolean, profileFile?: string, pipefail?: boolean, gateSlotHeld?: boolean, gateLease?: object, landing?: boolean, stages?: boolean, waivers?: Array<{ kind: string, test: string }> }} [options]
+ * @param {{ waitMs?: number, artifactDirectory?: string, artifactPrefix?: string, persistLog?: boolean, profileFile?: string, pipefail?: boolean, gateSlotHeld?: boolean, gateLease?: object, landing?: boolean, stages?: boolean, timeoutMs?: number, waivers?: Array<{ kind: string, test: string }> }} [options]
  */
-export function runProfiledShell(root, command, { waitMs = 0, artifactDirectory, artifactPrefix = 'pullboard-gate', persistLog = false, profileFile, pipefail = false, gateSlotHeld = false, gateLease, landing = false, stages = false, waivers = [] } = {}) {
+export function runProfiledShell(root, command, { waitMs = 0, artifactDirectory, artifactPrefix = 'pullboard-gate', persistLog = false, profileFile, pipefail = false, gateSlotHeld = false, gateLease, landing = false, stages = false, waivers = [], timeoutMs } = {}) {
   const directory = artifactDirectory ?? dirname(gitPath(root, LOG));
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const id = randomUUID();
@@ -338,8 +347,8 @@ export function runProfiledShell(root, command, { waitMs = 0, artifactDirectory,
   // The registered worker returns the same complete stage/component accounting as a local run.
   gateLease?.tracker?.mark('runAt');
   const run = gateLease?.runner ? { ...runOnRunner(root, command, { runner: gateLease.runner, source: gateLease.source,
-    browser: gateLease.browser, pipefail, stages, waivers: landing ? waivers : [], metadata: { ...(gateLease.runMetadata ?? {}), landing } }) }
-    : runShell(root, command, { pipefail, env: inherited, stages });
+    browser: gateLease.browser, pipefail, stages, waivers: landing ? waivers : [], metadata: { ...(gateLease.runMetadata ?? {}), landing, ...(timeoutMs ? { timeoutMs } : {}) } }) }
+    : runShell(root, command, { pipefail, env: inherited, stages, timeoutMs });
   gateLease?.tracker?.mark('ranAt');
   if (gateLease) gateLease.environment = run.environment ?? null;
   const sandboxBlocked = run.isGreen ? null : run.sandboxBlocked ?? (run.executionRunner
@@ -637,7 +646,7 @@ export async function runGate(root, config, { trustStamp = true, onWait, landing
   return await withGateSlot(root, async (lease) => {
     pinRunMain(lease, onFailure);
     const run = fullGateRun(root, config, trustStamp, { waitMs: lease.waitMs, gateLease: lease, landing, stages, waivers, kind: landing ? 'land' : 'gate' });
-    if (!run.isGreen && onFailure) await onFailure(run, { root, command: config.gate, lease });
+    if (!run.isGreen && !run.timedOut && onFailure) await onFailure(run, { root, command: config.gate, lease });
     await recordRun(onFailure, run);
     return run;
   }, {
@@ -685,7 +694,7 @@ function leaveRunReceipt(root, config, run, { before, kind }) {
 function fullGateRun(root, config, trustStamp = false, { waitMs = 0, log = gitPath(root, LOG), gateLease, landing = false, stages = false, waivers = [], kind = 'gate' } = {}) {
   if (trustStamp && isStampedGreen(root)) return { isGreen: true, isCached: true, output: '', seconds: 0, log: '' };
   const before = committedTree(root);
-  const run = runProfiledShell(root, config.gate, { waitMs, pipefail: true, profileFile: `${log}.profile.json`, gateLease, landing, stages, waivers });
+  const run = runProfiledShell(root, config.gate, { waitMs, pipefail: true, profileFile: `${log}.profile.json`, gateLease, landing, stages, waivers, timeoutMs: landing ? config.landing?.timeoutMs : undefined });
   const { isGreen, output, seconds, profile, profilePath } = run;
   writeFileSync(log, output);
   // The environment refusing a run says nothing about the gate, so only a real result is recorded (U41).
@@ -693,7 +702,7 @@ function fullGateRun(root, config, trustStamp = false, { waitMs = 0, log = gitPa
   const receiptId = run.sandboxBlocked ? null : leaveRunReceipt(root, config, run, { before, kind });
   refuseSandboxBlocked(run);
   if (isGreen && before !== null && committedTree(root) === before) writeFileSync(gitPath(root, STAMP), `${before}\n`);
-  return { isGreen, isCached: false, output, seconds, log, profile, profilePath, receiptId, environment: run.environment ?? null, ...(run.executionRoot ? { executionRoot: run.executionRoot } : {}),
+  return { isGreen, isCached: false, output, seconds, log, profile, profilePath, receiptId, ...(run.timedOut ? { timedOut: true } : {}), environment: run.environment ?? null, ...(run.executionRoot ? { executionRoot: run.executionRoot } : {}),
     // A remote run's host load and pinned main reach the flake diagnostics with it (#925).
     ...(run.executionRunner ? { executionRunner: run.executionRunner, executionMain: run.executionMain ?? null, executionLoad: run.executionLoad ?? null } : {}), ...(stages ? { stages: run.stages } : {}) };
 }
