@@ -39,8 +39,10 @@ import {
   readGateReceipt,
   receiptStore,
 } from './gate-run-receipt.js';
+import { testsNeedBrowser } from './browser-admission.js';
 import { laneOf } from './lanes.js';
 import { Refused } from './refused.js';
+import { browserFreeChecksEnabled } from './settings.js';
 import { landingFileTimes } from './submit-invariants.js';
 import {
   flakeSource,
@@ -615,13 +617,49 @@ async function quickGuards(state) {
   if (!run.isGreen) throw new Refused('GATE_RED', `the submit invariants are red on the merged tree: ${invariants.join(', ')}`);
 }
 
+/** The affected test files each batch item's submission moved to the landing gate, read from its exact submit. */
+function deferredSelections(state) {
+  return state.batch.items.flatMap((entry) => {
+    const event = store.events(state.board, { itemId: entry.id }).findLast((row) => row.event_kind === 'submit');
+    const detail = event ? JSON.parse(event.event_detail) : null;
+    const files = detail?.commit === entry.commit ? detail.submissionProof?.deferredFiles ?? [] : [];
+    return files.length ? [{ entry, files }] : [];
+  });
+}
+
+/**
+ * Run every affected test file a submit deferred over submitDeferAbove on the merged tree, before anything lands.
+ * A red sends back each item whose own deferred selection holds a failing file, the way a red submit would.
+ */
+async function deferredGuards(state) {
+  const root = state.batch.root;
+  const deferred = deferredSelections(state);
+  if (!deferred.length) return;
+  const files = [...new Set(deferred.flatMap((row) => row.files))].sort();
+  const browser = !browserFreeChecksEnabled() || await testsNeedBrowser(root, files);
+  const run = await withGateSlot(root, lease => runProfiledShell(root, `${state.config.affectedTests} ${files.map(quote).join(' ')}`, { waitMs: lease.waitMs, gateLease: lease, stages: true }),
+    { agent: 'coordinator', kind: 'gate', landing: true, browser, onWait: state.onWait });
+  state.say(`deferred affected tests: ${files.length} file(s) ${run.isGreen ? 'green' : 'red'} on the merged tree`);
+  if (run.isGreen) return;
+  const failures = landingFailures(run.output, root);
+  const failed = new Set(failures.map((failure) => failure.file).filter(Boolean));
+  for (const { entry, files: own } of deferred) {
+    if (!own.some((file) => failed.has(file)) || state.culprits.some((culprit) => culprit.id === entry.id)) continue;
+    state.culprits.push({ id: entry.id, commit: entry.commit, ...(entry.reviewedCommit ? { reviewedCommit: entry.reviewedCommit } : {}),
+      mergeCommit: state.batch.tip, tests: failures.filter((failure) => own.includes(failure.file)) });
+  }
+  await save(state, { culprits: state.culprits });
+  await returnCulprits(state);
+  throw new Refused('GATE_RED', `the deferred affected tests are red on the merged tree: ${[...failed].join(', ') || 'no failing file was named; inspect the merged tree'}`);
+}
+
 /**
  * Tier 1 (#801): after a clean merge and its quick guards, the batch lands on the local trunk in seconds, with each
  * item's merged receipt; nothing is pushed. pullboard publish runs the whole suite on the trunk head and pushes it.
  */
 async function landOnTrunk(state) {
   await save(state, { state: 'gating', tip: headCommit(state.batch.root) });
-  try { await quickGuards(state); } catch (error) {
+  try { await quickGuards(state); await deferredGuards(state); } catch (error) {
     if (!(error instanceof Refused)) throw error;
     await save(state, { state: 'blocked' });
     state.say(`nothing landed: ${error.message}`);

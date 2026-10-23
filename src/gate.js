@@ -723,6 +723,8 @@ export async function runSubmitGate(root, config, { base, trunk, changed, check,
     : { full: true, reason: 'affected-test selection is not enabled for this project', files: [] };
   const deferred = config.submitGate === 'landing';
   const deferFullFallback = deferred && selection.full;
+  // A selection over submitDeferAbove files moves to the landing gate, which runs every recorded file before the item lands.
+  const deferSelection = deferred && !selection.full && Number.isSafeInteger(config.submitDeferAbove) && selection.files.length > config.submitDeferAbove;
   const invariants = deferred ? [...new Set(config.submitInvariants ?? [])].sort() : [];
   if (invariants.length && !config.affectedTests?.trim()) {
     throw new Refused('BAD_CONFIG', 'submitInvariants requires the project affectedTests runner');
@@ -732,10 +734,10 @@ export async function runSubmitGate(root, config, { base, trunk, changed, check,
     try { file = statSync(join(root, path)).isFile(); } catch { /* Missing or unreadable invariants refuse rather than silently disappearing. */ }
     if (!file) throw new Refused('BAD_CONFIG', `submitInvariants file ${path} is missing or unreadable; restore it or update the list on accepted main`);
   }
-  const proofFiles = [...new Set([...(deferFullFallback ? [] : selection.files), ...invariants])].sort();
+  const proofFiles = [...new Set([...(deferFullFallback || deferSelection ? [] : selection.files), ...invariants])].sort();
   const allowBrowserFreeChecks = browserFreeChecksEnabled();
   const checkUsesBrowser = check ? (!allowBrowserFreeChecks || await checkNeedsBrowser(root, check, { onFallback: onBrowserFallback })) : false;
-  const proofUsesBrowser = deferFullFallback
+  const proofUsesBrowser = deferFullFallback || deferSelection
     ? (proofFiles.length > 0 && (!allowBrowserFreeChecks || await testsNeedBrowser(root, proofFiles, { onFallback: onBrowserFallback })))
     : (selection.full || !allowBrowserFreeChecks || await testsNeedBrowser(root, proofFiles, { onFallback: onBrowserFallback }));
   const browser = checkUsesBrowser || proofUsesBrowser;
@@ -765,7 +767,8 @@ export async function runSubmitGate(root, config, { base, trunk, changed, check,
           executionSource: profiles.find(value => value.executionSource)?.executionSource } : {}),
       });
       refuseSandboxBlocked(proof);
-      return { ...proof, log, seconds: criterion.seconds + proof.seconds, ...selection, ...(deferred ? { files: proofFiles, submitInvariants: invariants } : {}), deferred, deferFullFallback, check: receipt,
+      return { ...proof, log, seconds: criterion.seconds + proof.seconds, ...selection, ...(deferred ? { files: proofFiles, submitInvariants: invariants } : {}),
+        ...(deferSelection ? { deferredFiles: selection.files, deferAbove: config.submitDeferAbove } : {}), deferred, deferFullFallback, check: receipt,
         profile, profilePath, proofProfilePath: proof.profilePath, proofLog: proof.log };
     };
     if (!criterion.isGreen) {
@@ -784,13 +787,20 @@ export async function runSubmitGate(root, config, { base, trunk, changed, check,
       proof = { ...runProfiledShell(root, command, { waitMs: proofWait, profileFile: `${proofLog}.profile.json`, gateLease: lease, stages: true }), isCached: false, log: proofLog };
       writeFileSync(proofLog, proof.output);
     }
-    const phase = deferFullFallback ? `submit invariants: ${invariants.length ? invariants.join(', ') : 'none'}; full suite deferred to the landing gate` : selection.full ? 'full gate' : 'affected tests';
+    const phase = deferFullFallback || deferSelection
+      ? `submit invariants: ${invariants.length ? invariants.join(', ') : 'none'}; ${deferSelection ? `${selection.files.length} affected test files` : 'full suite'} deferred to the landing gate`
+      : selection.full ? 'full gate' : 'affected tests';
     writeFileSync(log, `item check:\n${criterion.output}\n${phase}:\n${proof.output}`);
     if (!proof.isGreen && onFailure) await onFailure(proof, { root,
       command: !deferFullFallback && selection.full ? config.gate : `${config.affectedTests.trimEnd()} ${proofFiles.map(path => commandWord('./' + path)).join(' ')}`, lease });
     await recordRun(onFailure, proof);
     return finish(proof);
   }, { browser, agent, item, kind, itemCheck: true, onWait });
+}
+
+/** The durable words a submission and its reviewers read for an affected selection moved to the landing gate. */
+export function deferredSelectionNote(files) {
+  return `${files.length} affected test files deferred to the landing gate`;
 }
 
 /** Describe precisely which submission proof ran, including absent checks and full fallbacks. */
@@ -800,10 +810,14 @@ export function submitGateReport(gate) {
     const reason = gate.reason ? `: ${gate.reason}` : '';
     const timings = timingDigest(gate.profile);
     const detail = timings ? `\n${timings}\ntiming profile: ${gate.profilePath}` : '';
+    const invariantsOnly = gate.deferFullFallback || Boolean(gate.deferredFiles);
+    const invariants = gate.submitInvariants?.length ? 'submit invariants: ' + gate.submitInvariants.join(', ') + '; ' : '';
     const proof = gate.deferFullFallback
-      ? `${gate.submitInvariants?.length ? 'submit invariants: ' + gate.submitInvariants.join(', ') + '; ' : ''}full suite deferred to the landing gate${reason}`
-      : `affected tests: ${gate.files.length ? gate.files.join(', ') : 'none'}; full suite deferred to the landing gate${gate.submitInvariants?.length ? '; submit invariants: ' + gate.submitInvariants.join(', ') : ''}`;
-    const result = gate.deferFullFallback && !gate.submitInvariants?.length ? '' : `; ${gate.isGreen ? `${gate.deferFullFallback ? 'submit invariants' : 'affected tests'} green in ${gate.seconds}s` : gateReport(gate)}`;
+      ? `${invariants}full suite deferred to the landing gate${reason}`
+      : gate.deferredFiles
+        ? `${invariants}${deferredSelectionNote(gate.deferredFiles)} (over submitDeferAbove ${gate.deferAbove}): ${gate.deferredFiles.join(', ')}`
+        : `affected tests: ${gate.files.length ? gate.files.join(', ') : 'none'}; full suite deferred to the landing gate${gate.submitInvariants?.length ? '; submit invariants: ' + gate.submitInvariants.join(', ') : ''}`;
+    const result = invariantsOnly && !gate.submitInvariants?.length ? '' : `; ${gate.isGreen ? `${invariantsOnly ? 'submit invariants' : 'affected tests'} green in ${gate.seconds}s` : gateReport(gate)}`;
     return `${check}; ${proof}${result}${detail}`;
   }
   const selection = gate.full ? `full gate: ${gate.reason}` : `affected tests: ${gate.files.length ? gate.files.join(', ') : 'none'}`;
