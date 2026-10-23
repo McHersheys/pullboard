@@ -124,6 +124,7 @@ For example: `flow: review wait average 61 min (1 measured; > 60 min); bottlenec
 | `run` | `version:number`, `messages:array` |
 | `sweep` | `version:number`, `messages:array` |
 | `next` | `version:number`, `item:object`, `review:boolean`, `held:boolean`, `shared:array` |
+| `badge` | `version:number`, `items:number`, `checked:number`, `percent:number\|null`, `changed:array` |
 | `check` | `version:number`, `id:number`, `green:boolean`, `seconds:number`, `check:string`, `receipt:object`, `report:string` |
 | `check accept` | `version:number`, `id:number`, `digest:string`, `check:string` |
 | `claim` | `version:number`, `id:number`, `renewed:boolean`, `leaseUntil:string`, `digest:string` |
