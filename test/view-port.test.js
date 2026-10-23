@@ -418,7 +418,7 @@ function readFixtureViewIdentity(pid) {
 
 /** Run one bounded process inspection while suppressing stderr and never dumping command output. */
 function runFixtureProcessTool(command, args) {
-  return execFileSync(command, args, { encoding: 'utf8', timeout: 1_500, stdio: ['ignore', 'pipe', 'ignore'] });
+  return execFileSync(command, args, { encoding: 'utf8', timeout: 1_500, maxBuffer: 64 << 20, stdio: ['ignore', 'pipe', 'ignore'] });
 }
 
 /** Run a bounded ps query for the test's own process identity checks. */
