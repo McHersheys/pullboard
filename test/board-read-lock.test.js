@@ -1,5 +1,5 @@
 /** @pullboard-test-input source-tree */
-/** @pullboard-test-loads src/cli.js src/board.js src/board-migrate.js src/board-read.js src/commands/status.js src/commands/show.js */
+/** @pullboard-test-loads src/cli.js src/board.js src/board-migrate.js src/board-read.js src/commands/status.js src/commands/show.js src/commands/list.js src/commands/version.js */
 /** A read command opens the board read-only, so a writer holding the lock never stalls it [C7]. */
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
@@ -8,7 +8,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { cpSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import * as store from '../src/board.js';
-import { main } from '../src/cli.js';
+import { pathToFileURL } from 'node:url';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { runFixtureChild, startFixtureChild as spawn } from './fixture-child.js';
 
@@ -41,10 +41,21 @@ async function holdWriteLock(file, ms) {
 const HOMES = ['PULLBOARD_HOME', 'PULLBOARD_MACHINE_HOME'];
 
 /**
- * Run one CLI command in this process under the fixture's homes, with the time it took. Why in
- * process: a fresh node's startup varies by hundreds of ms on a loaded machine, the lock does not.
+ * Copy this source outside any checkout, as a release is installed. Why: only trunk code opens a
+ * shared board for writing (#1031), so code run from a branch worktree would never meet the lock.
+ */
+function released(box) {
+  const release = join(box.dir, 'release');
+  for (const path of ['src', 'bin', 'package.json']) cpSync(resolve(import.meta.dirname, '..', path), join(release, path), { recursive: true });
+  return release;
+}
+
+/**
+ * Run one command of the released code in this process under the fixture's homes, with the time it
+ * took. Why in process: a fresh node's startup varies by hundreds of ms on a loaded machine.
  */
 async function timed(box, cwd, ...argv) {
+  const { main } = await import(pathToFileURL(join(box.release, 'src', 'cli.js')).href);
   const saved = HOMES.map((name) => process.env[name]);
   for (const name of HOMES) process.env[name] = box.env[name];
   let out = '';
@@ -58,57 +69,95 @@ async function timed(box, cwd, ...argv) {
   }
 }
 
-/** The fastest of two runs of each read, so one scheduling stall is not read as the lock. */
-async function reads(box) {
-  const runs = [];
-  for (let round = 0; round < 2; round += 1) runs.push([await timed(box, box.repo, 'status'), await timed(box, box.repo, 'show', '1')]);
-  const fastest = (index) => runs.map((pair) => pair[index]).reduce((best, run) => (run.ms < best.ms ? run : best));
-  return { status: fastest(0), show: fastest(1) };
+/** The median of an odd list of numbers. */
+const median = (values) => [...values].sort((x, y) => x - y)[Math.floor(values.length / 2)];
+
+const ITEMS = 1_000;
+const EVENTS = 45_000;
+const SHOUTS = 23_000;
+
+/**
+ * Seed the board to our size (22 Oct: about 1,000 items, 45,000 events, 23,000 shouts) in one
+ * transaction of plain inserts, so the timing below reads a board as big as the real one.
+ */
+function seed(file) {
+  const db = new DatabaseSync(file);
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    const at = '2026-10-22T00:00:00.000Z';
+    db.prepare(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
+      INSERT INTO item (item_lane, item_title, item_criterion, item_created_by, item_created_at, item_updated_at)
+      SELECT 'web', 'Seeded item ' || i, 'renders', 'coordinator', ?, ? FROM n`).run(ITEMS, at, at);
+    db.prepare(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
+      INSERT INTO event (event_at, event_by, event_kind, item_id, event_detail) SELECT ?, 'coordinator', 'note', 1 + i % ?, '{}' FROM n`).run(EVENTS, at, ITEMS);
+    db.prepare(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
+      INSERT INTO shout (shout_from, shout_to, shout_text, shout_at) SELECT 'coordinator', 'web', 'seeded shout ' || i, ? FROM n`).run(SHOUTS, at);
+    db.exec('COMMIT');
+  } finally { db.close(); }
+}
+
+const READS = [['version'], ['show', '1'], ['status'], ['list']];
+const RUNS = 5;
+
+/** Each read's median over RUNS in-process runs, failing on any refusal. */
+async function medians(box, argv) {
+  const times = [];
+  for (let run = 0; run < RUNS; run += 1) {
+    const result = await timed(box, box.repo, ...argv);
+    assert.equal(result.code, 0, `${argv.join(' ')}: ${result.err}`);
+    times.push(result.ms);
+  }
+  return median(times);
 }
 
 test('a read answers while a writer holds the lock [C7]', async (t) => {
   const box = e2e.project();
+  box.release = released(box);
   assert.equal(box.run(box.repo, 'add', 'web', 'Page', '--specs', 'G1', '--criterion', 'renders').code, 0);
   const file = join(box.repo, '.git', 'pullboard', 'board.sqlite');
-  // Both reads without a writer first: what is left over under the lock is the lock's cost.
-  const free = await reads(box);
-  for (const [name, run] of Object.entries(free)) assert.equal(run.code, 0, `${name}: ${run.err}`);
-
-  const holder = await holdWriteLock(file, 3000);
-  const startedAt = performance.now();
-  const { status, show } = await reads(box);
-  const heldFor = performance.now() - startedAt;
-  assert.equal((await holder.closed).code, 0, 'the holder kept the lock and committed');
-  assert.ok(heldFor < 3000, `every read finished inside the 3 s hold (${Math.round(heldFor)} ms)`); // budget: ceiling is the 3 s hold declared above; a read that waits out the lock ends after it
-  assert.equal(status.code, 0, status.err);
-  assert.match(status.out, /board: 1 open/u);
-  assert.equal(show.code, 0, show.err);
-  assert.match(show.out, /^#1 /mu);
-  for (const [name, run] of Object.entries({ status, show })) {
-    const waited = run.ms - free[name].ms;
-    t.diagnostic(`${name}: ${Math.round(run.ms)} ms under a held write lock, ${Math.round(free[name].ms)} ms unlocked`);
-    assert.ok(run.ms < 200 || waited < 200, `${name} under a held write lock took ${Math.round(run.ms)} ms, ${Math.round(waited)} ms more than unlocked`);
+  seed(file);
+  for (const argv of READS) {
+    const free = await medians(box, argv);
+    // Each read gets its own 3 s hold, so all five locked runs fall inside it.
+    const holder = await holdWriteLock(file, 3000);
+    const startedAt = performance.now();
+    const held = await medians(box, argv);
+    const heldFor = performance.now() - startedAt;
+    assert.equal((await holder.closed).code, 0, 'the holder kept the lock and committed');
+    assert.ok(heldFor < 3000, `every ${argv[0]} run finished inside the 3 s hold (${Math.round(heldFor)} ms)`); // budget: ceiling is the 3 s hold declared above; a read that waits out the lock ends after it
+    t.diagnostic(`${argv[0]}: median ${Math.round(held)} ms with a writer holding the lock, ${Math.round(free)} ms without, over ${RUNS} runs`);
+    assert.ok(held - free < 100, `${argv[0]}: a held writer added ${Math.round(held - free)} ms to the median`); // budget: approved row criterion bar, under 100 ms over the unlocked median (shout #23649)
   }
 
-  // An older board is still migrated by the next command that writes. Only trunk code migrates a
-  // shared board, so the write runs from a released copy outside any checkout.
+  // An older board is still migrated by the next command that writes, from the released copy.
   const db = new DatabaseSync(file);
   db.exec('PRAGMA user_version = 1');
   db.close();
-  const release = join(box.dir, 'release');
-  for (const path of ['src', 'bin', 'package.json']) cpSync(resolve(import.meta.dirname, '..', path), join(release, path), { recursive: true });
-  const released = (...argv) => runFixtureChild(process.execPath, [join(release, 'bin', 'pullboard.js'), ...argv], { cwd: box.repo, env: box.env, encoding: 'utf8' });
+  const cli = (...argv) => runFixtureChild(process.execPath, [join(box.release, 'bin', 'pullboard.js'), ...argv], { cwd: box.repo, env: box.env, encoding: 'utf8' });
   /** The board's PRAGMA user_version, read without touching it. */
   const version = () => {
     const board = store.openBoardReadOnly(file);
     try { return board.prepare('PRAGMA user_version').get().user_version; } finally { board.close(); }
   };
   // A read on the older board answers as it is and leaves it older, even from code that may migrate.
-  const read = released('status');
+  const read = cli('status');
   assert.equal(read.status, 0, read.failure ?? read.stderr);
-  assert.match(read.stdout, /board: 1 open/u);
+  assert.match(read.stdout, /board: 1001 open/u);
   assert.equal(version(), 1, 'status never migrates the board');
-  const write = released('add', 'web', 'Footer', '--specs', 'G1', '--criterion', 'renders');
+  const write = cli('add', 'web', 'Footer', '--specs', 'G1', '--criterion', 'renders');
   assert.equal(write.status, 0, write.failure ?? write.stderr);
   assert.equal(version(), store.SCHEMA_VERSION, 'the next write command migrates it');
+
+  // At the current version, a shape changed outside pullboard is reported once and left as it is.
+  const drifted = new DatabaseSync(file);
+  drifted.exec('DROP INDEX event_item_id_event_id; PRAGMA application_id = 7');
+  drifted.close();
+  const reported = cli('add', 'web', 'Header', '--specs', 'G1', '--criterion', 'renders');
+  assert.equal(reported.status, 0, reported.failure ?? reported.stderr);
+  assert.equal(reported.stderr.match(/different shape/gu)?.length, 1, reported.stderr);
+  const left = store.openBoardReadOnly(file);
+  try {
+    assert.equal(left.prepare('PRAGMA application_id').get().application_id, 7, 'no migration restamped the drifted board');
+    assert.equal(left.prepare("SELECT 1 FROM sqlite_master WHERE name = 'event_item_id_event_id'").get(), undefined, 'no migration rebuilt its index');
+  } finally { left.close(); }
 });

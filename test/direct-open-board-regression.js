@@ -156,6 +156,9 @@ export function assertDirectOpenBoardIsolation(t, sourceRoot) {
   assert.deepEqual(sharedAfter.triggers, sharedBefore.triggers);
   assert.equal(sharedAfter.events, sharedBefore.events + 1, 'the normal claim still has its shared-board effect');
 
+  // A private database migrates only when its user_version is behind (#1047), as an older board's is.
+  const lowered = new DatabaseSync(privateFile);
+  try { lowered.exec('PRAGMA user_version = 1'); } finally { lowered.close(); }
   const privateProbe = run(process.execPath, ['--input-type=module', '-e', `
     import { openBoard, closeBoard } from './src/board.js';
     const board = openBoard(${JSON.stringify(privateFile)});
@@ -167,5 +170,5 @@ export function assertDirectOpenBoardIsolation(t, sourceRoot) {
     'a private database still receives the branch migration');
   assert.ok(privateAfter.triggers.find(row => row.name === 'machine_item_move').sql.includes('branch fixture moves'),
     'a private database still receives the branch machine trigger declaration');
-  assert.equal(privateAfter.version, privateBefore.version, 'same-version private migration remains supported');
+  assert.equal(privateAfter.version, privateBefore.version, 'an older private database migrates back to the current version');
 }

@@ -78,18 +78,42 @@ function schemaStamp(db, digest) {
 }
 
 /**
- * True when the board already carries this code's schema: its user_version is current and its
- * PRAGMA application_id holds the stamp of `digest` and its present shape. Reads only, so it takes
- * no write lock. The stamp lives in the file header, not in board_meta, so exports never see it.
+ * Where the board stands against this code. 'behind': its user_version or event log version is older,
+ * the only case a write open migrates and audits. Otherwise its PRAGMA application_id decides:
+ * 'current' when it holds the stamp of `digest` and the present shape, 'unstamped' when it was never
+ * stamped, 'drifted' when the shape changed outside pullboard, which is reported and left alone.
+ * Reads only, so it takes no write lock. The stamp lives in the file header, so exports never see it.
  *
  * @param {import('node:sqlite').DatabaseSync} db
  * @param {string} digest
  * @param {number} schemaVersion
- * @returns {boolean}
+ * @param {boolean} [logBehind] whether the event log version is older than this code's
+ * @returns {'behind' | 'current' | 'unstamped' | 'drifted'}
  */
+export function boardStanding(db, digest, schemaVersion, logBehind = false) {
+  if (logBehind || db.prepare('PRAGMA user_version').get().user_version < schemaVersion) return 'behind';
+  const stamp = db.prepare('PRAGMA application_id').get().application_id;
+  return stamp === schemaStamp(db, digest) ? 'current' : stamp === 0 ? 'unstamped' : 'drifted';
+}
+
+/** True when the board carries this code's schema and stamp, so a read may trust its shape. */
 export function boardIsCurrent(db, digest, schemaVersion) {
-  if (db.prepare('PRAGMA user_version').get().user_version < schemaVersion) return false;
-  return db.prepare('PRAGMA application_id').get().application_id === schemaStamp(db, digest);
+  return boardStanding(db, digest, schemaVersion) === 'current';
+}
+
+const reportedDrift = new Set();
+
+/**
+ * Say once per board file, on stderr or the caller's diagnostics, that its shape changed outside
+ * pullboard at this schema version. Why once: every command opens the board, and one line is news.
+ *
+ * @param {string} file
+ * @param {(message: string) => void} [onDiagnostic]
+ */
+export function reportDrift(file, onDiagnostic = (message) => process.stderr.write(`${message}\n`)) {
+  if (reportedDrift.has(file)) return;
+  reportedDrift.add(file);
+  onDiagnostic(`pullboard: the board at ${file} has this version's schema number but a different shape (a table, index or trigger changed outside pullboard); it is left as it is`);
 }
 
 /**

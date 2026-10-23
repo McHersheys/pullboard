@@ -18,13 +18,12 @@ import {
   displayedWait,
   idArg,
   nextOnce,
-  refuseWhileBuilding,
   sayBrief,
-  sayReviewOffer,
   span,
   withBoard,
   withBoardRead,
 } from '../cli.js';
+import { refuseWhileBuilding, sayReviewOffer } from '../next-say.js';
 
 /**
  * `pullboard next` (N2): the whole start of an agent's loop in one command. With --wait, it keeps

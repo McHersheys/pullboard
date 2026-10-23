@@ -32,8 +32,10 @@ import { boardBusyError } from './board-access.js';
 export { boardBusyError } from './board-access.js';
 import {
   boardIsCurrent,
+  boardStanding,
   migrate,
   recordSchemaStamp,
+  reportDrift,
   schemaDigest,
 } from './board-migrate.js';
 export { schemaMissing, writeRefused } from './board-migrate.js';
@@ -330,14 +332,16 @@ export function openBoard(file, clock = systemClock, { isMain, onDiagnostic } = 
     if (file !== ':memory:' && isMain !== false) db.exec('PRAGMA journal_mode = WAL');
     const board = { db, clock };
     if (isMain !== false || file === ':memory:') {
-      // A board this code already migrated skips the migration, its write lock and the trigger audit (#1047).
-      if (!boardIsCurrent(db, SCHEMA_DIGEST, SCHEMA_VERSION)) {
+      // Migrate and audit only a board whose version is behind; a drifted shape is reported and left alone (#1047).
+      const standing = boardStanding(db, SCHEMA_DIGEST, SCHEMA_VERSION, readEventLogVersion(db) < EVENT_LOG_VERSION);
+      if (standing === 'behind') {
         migrateEventLogVersion(db);
         migrate(db);
         db.prepare('INSERT OR IGNORE INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run('board_id', randomBytes(16).toString('hex'));
         guardStore(board);
-        recordSchemaStamp(db, SCHEMA_DIGEST);
       }
+      if (standing === 'behind' || standing === 'unstamped') recordSchemaStamp(db, SCHEMA_DIGEST);
+      if (standing === 'drifted') reportDrift(file, onDiagnostic);
     } else {
       // Read compatibility before any local effect; persistent schema belongs to trunk alone.
       readEventLogVersion(db);
