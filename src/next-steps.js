@@ -9,7 +9,12 @@
  */
 import { RECORDED_GENERIC_NEXT } from './recorded-refusal.js';
 import { Refused } from './refused.js';
-import { recordBlock } from './blocks.js';
+import {
+  blockMoveKey,
+  blockMoveKeys,
+  blockOwner,
+  recordBlock,
+} from './blocks.js';
 import { repoInfo } from './git.js';
 
 /** Describe the queue's actual outstanding reviews and submission age [Q1,V15]. */
@@ -327,6 +332,9 @@ export const NEXT_STEPS = Object.freeze({
   LAND_LEASE_LOST: 'stop this landing command, read pullboard resume, then adopt only after the current holder finishes',
   LAND_LEASE_REQUEST: 'start a new pullboard land command from the coordinator main checkout',
   LAND_RELAY_REQUIRED: 'restore the linked relay connection, then run pullboard land again',
+  LAND_TIMEOUT_CUSTODY: 'inspect the saved timed gate cleanup state and stop only its proven owned processes before starting another landing',
+  LAND_GATE_OUTPUT: 'inspect the retained timed gate output directory and free disk space, then start another landing',
+  LAND_GATE_TIMEOUT: 'read the recorded landing log, correct the gate or its configured landing timeout, then start another landing after its cadence',
   LAND_WORKER: 'read pullboard resume and the saved landing logs, stop any owned gate still running, then run pullboard land --adopt',
   RELAY_CONFIRMATION_PENDING: 'wait for the local moves to receive ordered relay receipts before running pullboard land',
   LAND_BATCH: 'adopt the recorded batch: pullboard land --adopt',
@@ -684,6 +692,9 @@ export const BLOCK_AUDIENCE = Object.freeze({
   COORDINATOR_ONLY: 'coordinator',
   COORDINATOR_VERIFIES: 'coordinator',
   JOB_CADENCE_COORDINATOR_ONLY: 'coordinator',
+  LAND_TIMEOUT_CUSTODY: 'coordinator',
+  LAND_GATE_OUTPUT: 'coordinator',
+  LAND_GATE_TIMEOUT: 'coordinator',
   SPEC_APPROVAL_BASELINE: 'coordinator',
   TOKEN_REVOKED: 'coordinator',
   // One code, two holders: the coordinator's own token is reissued by the person, a seat's by the coordinator.
@@ -758,6 +769,8 @@ export function reportBlock(io, error, { command, info: given, now = io.clock?.n
   const block = blockNotice(error, { command, at: now, path: info.root, caller,
     by: caller === 'person' ? 'person' : info.isMain ? 'coordinator' : 'agent' });
   if (!block) return null;
+  const moveKey = blockMoveKey(io);
+  if (moveKey) Object.assign(block, { moveKey, moveKeys: blockMoveKeys(io), owner: blockOwner(block.audience, info) });
   try { recordBlock(info.commonDir, block); }
   catch (failure) { io.err(`pullboard: this block was not recorded (${failure.message}); the refusal above still stands`); }
   const line = blockLine(block);
