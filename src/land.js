@@ -50,6 +50,7 @@ import {
 import { runLandingWorker } from './landing-worker.js';
 import { Refused } from './refused.js';
 import { browserFreeChecksEnabled } from './settings.js';
+import { tightenLandingDoctrine } from './landing-doctrine.js';
 import { policyAt } from './trusted-policy.js';
 import { landingFileTimes } from './submit-invariants.js';
 import {
@@ -207,7 +208,15 @@ async function mergeGroup(state, items) {
       .find((commit) => tryGit(batch.root, ['merge-base', '--is-ancestor', checked, commit]).status === 0);
     merged.push({ id: item.item_id, commit: item.item_commit, ...(checked !== item.item_commit ? { reviewedCommit: checked } : {}), merge: first });
   }
-  return { items: merged, conflicts, tip: headCommit(batch.root) };
+  let doctrineCounts = [];
+  try {
+    if (merged.length) doctrineCounts = await tightenLandingDoctrine(batch.root, state.config, { onWait: state.onWait });
+  } catch (error) {
+    await save(state, { state: 'blocked', items: merged, conflicts, tip: headCommit(batch.root), doctrineCounts: [] });
+    throw error;
+  }
+  for (const change of doctrineCounts) state.say(`doctrine ${change.id}: ${change.before} -> ${change.count}`);
+  return { items: merged, conflicts, tip: headCommit(batch.root), doctrineCounts };
 }
 
 /** Read positive TAP completion counts while rejecting the canonical runner's incomplete accounts. */

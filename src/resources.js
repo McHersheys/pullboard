@@ -464,12 +464,15 @@ function gateAdmission(db, ticket, capacity, shortCapacity, runners, order = ARR
       return { host: '', slots: capacity, browser: waiter.browser === 1 ? 1 : 0, shortSlot: false };
     }
     if (waiter.remote === 1) {
-      for (const runner of runners) {
-        if (unavailable.has(runner.host) || (waiter.browser === 1 && runner.browser < 1)) continue;
+      const compatible = runners.filter(runner => {
+        if (unavailable.has(runner.host) || (waiter.browser === 1 && runner.browser < 1)) return false;
         const used = usage.get(runner.host);
-        if (used.slots >= runner.slots || (waiter.browser === 1 && used.browsers >= runner.browser)) continue;
-        return { ...runner, shortSlot: false };
-      }
+        return used.slots < runner.slots && (waiter.browser !== 1 || used.browsers < runner.browser);
+      });
+      // A landing spreads its active shards before filling another slot on the same runner.
+      // Choose under this transaction's holder snapshot, so concurrent acquisitions cannot tie on stale use.
+      if (waiter.landing === 1) compatible.sort((left, right) => usage.get(left.host).slots - usage.get(right.host).slots);
+      if (compatible.length) return { ...compatible[0], shortSlot: false };
     }
     const earlierLanding = waiters.some(other => other.landing === 1 && other.ticket < waiter.ticket);
     if (waiter.shortEligible === 1 && !earlierLanding && localShortUsed < shortCapacity
