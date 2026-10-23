@@ -9,7 +9,12 @@
  */
 import { RECORDED_GENERIC_NEXT } from './recorded-refusal.js';
 import { Refused } from './refused.js';
-import { recordBlock } from './blocks.js';
+import {
+  blockMoveKey,
+  blockMoveKeys,
+  blockOwner,
+  recordBlock,
+} from './blocks.js';
 import { repoInfo } from './git.js';
 
 /** Describe the queue's actual outstanding reviews and submission age [Q1,V15]. */
@@ -751,6 +756,8 @@ export function reportBlock(io, error, { command, info: given, now = io.clock?.n
   const block = blockNotice(error, { command, at: now, path: info.root, caller,
     by: caller === 'person' ? 'person' : info.isMain ? 'coordinator' : 'agent' });
   if (!block) return null;
+  const moveKey = blockMoveKey(io);
+  if (moveKey) Object.assign(block, { moveKey, moveKeys: blockMoveKeys(io), owner: blockOwner(block.audience, info) });
   try { recordBlock(info.commonDir, block); }
   catch (failure) { io.err(`pullboard: this block was not recorded (${failure.message}); the refusal above still stands`); }
   const line = blockLine(block);

@@ -37,8 +37,9 @@ import {
   reviewQueueLine,
   refuseNextIdle,
   reportBlock,
+  reviewerStartup,
 } from './next-steps.js';
-import { reviewerStartup } from './next-steps.js';
+import { clearCompletedBlocks } from './blocks.js';
 import { environmentAgent } from './relay-environment.js';
 import { judgeTrunkMove } from './verdict-trunk.js';
 import * as gateReceipt from './gate-receipt.js';
@@ -430,7 +431,6 @@ function closestHelpCommand(input) {
   };
   return Object.keys(HELP.commands).sort((a, b) => distance(needle, a) - distance(needle, b) || a.localeCompare(b))[0];
 }
-
 /** Render one command's usage, one-line flags and a pasteable example from the help declaration. */
 function commandHelp(name) {
   const entry = HELP.commands[name];
@@ -728,7 +728,6 @@ export function personMode(ctx, me, values) {
   }
   return true;
 }
-
 /**
  * Refuse a build item in a lane that owns no files, such as review: whoever claims it there can
  * commit nothing, so the item strands its builder. A review item, one that waits on the work it
@@ -2376,6 +2375,7 @@ async function runMain(argv, streams) {
     if (code === 0) await checkoutSession?.finish?.();
     if (sync && code === 0) await retry();
     const status = io.exitCode(code);
+    if (status === 0 && !parsed?.values.help && !parsed?.values.version && !parsed?.values['dry-run']) clearCompletedBlocks(io);
     io.flush(status);
     return status;
   } finally {
