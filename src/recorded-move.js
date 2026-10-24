@@ -1,14 +1,21 @@
 /** A completed durable move must never be repeated because later command work refused [C6,N26]. */
 import { Refused } from './refused.js';
 
-/** Preserve the refusal code while distinguishing a partial recorded command from an unrecorded attempt. */
+/** Remove only advice to repeat this original command, retaining named pairing, key and recovery actions. */
+function recordedRecovery(text) {
+  return text?.replace(/run this command where the key is available, or pair this device/gu, 'restore access to the key or pair this device')
+    .replace(/then retry with PULLBOARD_RELAY_TOKEN/gu, 'then use PULLBOARD_RELAY_TOKEN for later work')
+    .replace(/\b(?:run|retry|repeat) (?:the |this |original )?(?:command|move)(?: again)?\b/giu, 'inspect the recorded work with pullboard status')
+    .replace(/\brun it again once the relay answers\b/giu, 'inspect the recorded work once the relay answers');
+}
+/** Preserve actionable storage/auth recovery; only transient transport retry instructions get replaced. */
 export function recordedMoveRefusal(io, error) {
   if (!io.recordedMove || !(error instanceof Refused) || !/^(?:RELAY_|AUTH_|TOKEN_)/u.test(error.code)) return error;
-  if (/^(?:AUTH_|TOKEN_)/u.test(error.code)) return new Refused(error.code,
-    error.message.replace(/^\[[A-Z0-9_]+\] /u, '') + '; a move from this command was already recorded; do not repeat the original command', error.next);
-  return new Refused(error.code,
-    'a move from this command was already recorded; any pending relay work remains queued locally. Do not repeat the command',
-    'run pullboard status to inspect the recorded work and pending relay sync; do not repeat the original command');
+  const recorded = 'a move from this command was already recorded; any pending relay work remains queued locally; do not repeat the original command';
+  const next = 'run pullboard status to inspect the recorded work and pending relay sync; do not repeat the original command';
+  if (['RELAY_BUSY', 'RELAY_UNAVAILABLE', 'RELAY_RESPONSE'].includes(error.code)) return new Refused(error.code, recorded, next);
+  return new Refused(error.code, recordedRecovery(error.message.replace(/^\[[A-Z0-9_]+\] /u, '')) + '; ' + recorded,
+    recordedRecovery(error.next) ?? next);
 }
 
 /** Match the actual parsed command's requested effects, excluding check attempts and other preflight bookkeeping. */
