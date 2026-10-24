@@ -89,6 +89,23 @@ test('an outside commit without a sign-off is refused with its fix [C1,C7]', () 
     '-m', 'Signed-off-by: Outside Person <outside@example.com>');
   const accepted = check();
   assert.equal(accepted.status, 0, accepted.failure || accepted.stderr);
+
+  const signedHead = box.git(incoming, 'rev-parse', 'HEAD').trim();
+  box.git(incoming, 'checkout', '-q', '--detach', base);
+  writeFileSync(join(incoming, 'other.txt'), 'A separately signed parent.\n');
+  box.git(incoming, 'add', 'other.txt');
+  box.git(incoming, 'commit', '-q', '-m', 'chore: signed other parent',
+    '-m', 'Signed-off-by: Outside Person <outside@example.com>');
+  const otherParent = box.git(incoming, 'rev-parse', 'HEAD').trim();
+  box.git(incoming, 'checkout', '-q', '--detach', signedHead);
+  box.env.GIT_AUTHOR_NAME = 'Merge Bot';
+  box.env.GIT_AUTHOR_EMAIL = 'merge-bot@example.com';
+  box.git(incoming, 'merge', '--no-ff', '--no-edit', otherParent);
+  assert.equal(check().status, 0, 'a merge wrapper is checked through both non-merge parents');
+  writeFileSync(join(incoming, 'bot.txt'), 'A bot contribution.\n');
+  box.git(incoming, 'add', 'bot.txt');
+  box.git(incoming, 'commit', '-q', '-m', 'chore: unsigned bot work');
+  assert.equal(check().status, 1, 'a non-member bot commit still needs its own author sign-off');
 });
 
 /** Require a real CLI move to succeed before a dependent fixture step. */

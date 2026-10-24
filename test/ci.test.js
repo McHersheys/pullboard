@@ -91,6 +91,9 @@ function job(name) {
 
 test('CI runs the gate on every push and pull request, Node 22.13 and 24, on Linux and, once public, macOS [C7]', () => {
   assert.match(WORKFLOW, /\non:\n {2}push:\n {4}branches: \[main\]\n {2}pull_request:\n/, 'pushes to main and pull requests');
+  assert.match(job('signoffs'), /if: github\.event_name == 'push' \|\| github\.event_name == 'pull_request'/u);
+  assert.match(job('signoffs'), /fetch-depth: 0/u, 'the sign-off job can read every incoming commit');
+  assert.match(job('signoffs'), /run: node bin\/check-signoffs\.js/u, 'CI runs the range checker against its structured event');
   for (const [name, system] of [['linux', 'ubuntu-latest'], ['macos', 'macos-latest']]) {
     const text = job(name);
     assert.ok(text.includes(`\n    runs-on: ${system}\n`), `${name} runs on ${system}`);

@@ -20,6 +20,19 @@ permissions:
   contents: read
 
 jobs:
+  signoffs:
+    name: contributor sign-offs
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.13'
+      - run: node bin/check-signoffs.js
+
   linux:
     name: linux (${{ matrix.node }}) ${{ matrix.shard }}/${{ matrix.shards }}
     runs-on: ubuntu-latest
