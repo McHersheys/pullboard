@@ -1,7 +1,10 @@
 /** Real private CLI sessions prove bar signing, freezing and takeover attribution [B4,V1,V2,H16]. */
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
+import { runFixtureChild } from './fixture-child.js';
 import { join } from 'node:path';
 import { createE2eHelpers } from './e2e-helpers.js';
 import * as store from '../src/board.js';
@@ -16,15 +19,29 @@ function act(box, session, cwd, ...args) {
 }
 /** Keep command diagnostics attached to every successful private move. */
 function succeeds(result) { assert.equal(result.code,0,`${result.out}\n${result.err}`); return result; }
-/** The unchanged witness is outside this item's Files list, so it needs no extra whole-file obligation. */
-function setup() {
+/** A real historical green whole file can be measured before the named main-red baseline is created. */
+function setup(wholeCoverage = false) {
   const sandbox=fixtures.sandbox();delete sandbox.env.NODE_TEST_CONTEXT;
   sandbox.env.PULLBOARD_MODEL='Private fixture';
   const box=fixtures.project('true',sandbox);
   succeeds(act(box,'private-author-a',box.repo,'join','coordinator','--model','Private author'));
   mkdirSync(join(box.repo,'test'));
-  writeFileSync(join(box.repo,'test','witness.test.mjs'), "import { test } from 'node:test';\nimport assert from 'node:assert/strict';\nimport { existsSync } from 'node:fs';\ntest('named witness',()=>assert.ok(existsSync('web/ready.txt')));\n");
-  box.git(box.repo,'add','test/witness.test.mjs');box.git(box.repo,'commit','-qm','test: private named witness');
+  writeFileSync(join(box.repo,'test','witness.test.mjs'), "import { test } from 'node:test';\nimport assert from 'node:assert/strict';\nimport { existsSync } from 'node:fs';\ntest('named witness',()=>assert.ok(existsSync('web/ready.txt')));\ntest('neighbor witness',()=>assert.ok(true));\n");
+  if (wholeCoverage) {
+    const config=JSON.parse(readFileSync(join(box.repo,'pullboard.json'),'utf8'));
+    config.affectedTests='node --test';config.check={timeout:'5m'};config.shared.push('test/');
+    writeFileSync(join(box.repo,'pullboard.json'),JSON.stringify(config));
+    mkdirSync(join(box.repo,'web'));writeFileSync(join(box.repo,'web','ready.txt'),'ready');
+  }
+  box.git(box.repo,'add','-A');box.git(box.repo,'commit','-qm','test: private named witness');
+  if (wholeCoverage) {
+    const started=performance.now();
+    const ran=runFixtureChild(process.execPath,['--test','test/witness.test.mjs'],{cwd:box.repo,env:box.env,encoding:'utf8'});
+    const durationMs=performance.now()-started;assert.equal(ran.status,0,ran.failure??ran.stderr);assert.match(ran.stdout,/# pass 2/);
+    const ref=join(box.dir,'whole-green.log');writeFileSync(ref,ran.stdout);
+    box.wholeEvidence={durationMs,selection:'whole-file',ref,sha256:createHash('sha256').update(ran.stdout).digest('hex'),source:box.git(box.repo,'rev-parse','HEAD'),runtime:process.version,outcome:'pass'};
+    rmSync(join(box.repo,'web','ready.txt'));box.git(box.repo,'add','-A');box.git(box.repo,'commit','-qm','test: reproduce missing output at main');
+  }
   succeeds(act(box,'private-author-a',box.repo,'bar','ready','on'));
   return box;
 }
@@ -32,7 +49,7 @@ function setup() {
 function add(box,author) {
   const check='node --test --test-name-pattern "named witness" test/witness.test.mjs';
   const result=succeeds(act(box,author,box.repo,'add','web','Ready output','--criterion','web/ready.txt exists','--specs','G1','--route','mid','--check',check,'--wait',
-    '--brief','Files: web/ready.txt\nTest: named witness asserts the output exists\nNamed test: named witness\nMeasurements: no quantitative bounds\nReviewer edges: absent output and restart','--json'));
+    '--brief',`Files: web/ready.txt${box.wholeEvidence ? ', test/witness.test.mjs' : ''}\nTest: named witness asserts the output exists\nNamed test: named witness\nMeasurements: no quantitative bounds\nReviewer edges: absent output and restart`,'--json'));
   const item=JSON.parse(result.out).item;
   assert.equal(item.item_check_baseline.result,'red');
   assert.ok(item.item_check_baseline.testEvidence.failed.some(name=>name.includes('named witness')));
@@ -45,7 +62,7 @@ function readItem(box,id) {
 }
 
 test('[B4,V1,V2,H16] real native sessions sign and freeze one bar before normal submit and review',()=>{
-  const box=setup();const id=add(box,'private-author-a');
+  const box=setup(true);const id=add(box,'private-author-a');
   box.git(box.web,'merge','--ff-only','main');
   succeeds(act(box,'private-builder',box.web,'join','web','--model','Private builder'));
   const unsigned=act(box,'private-builder',box.web,'claim',String(id));
@@ -54,10 +71,17 @@ test('[B4,V1,V2,H16] real native sessions sign and freeze one bar before normal 
   assert.notEqual(self.code,0);assert.match(self.err,/BAR_SELF_SIGN/);
   const reviewer=join(box.dir,'outside-review');box.git(box.repo,'worktree','add','-qb','api/outside',reviewer,'main');
   succeeds(act(box,'private-reviewer',reviewer,'join','api','--model','Private reviewer'));
-  succeeds(act(box,'private-reviewer',reviewer,'bar','sign',String(id),'--note','Builder can meet this witness; two reviewers can grade absent and present output alike.'));
+  const unknownDuration=act(box,'private-reviewer',reviewer,'bar','sign',String(id),'--note','Whole coverage still needs measured evidence.');
+  assert.notEqual(unknownDuration.code,0);assert.match(unknownDuration.err,/BAR_COVERAGE/);
+  const baseline=readItem(box,id).item_check_baseline;
+  const baselineRef=join(box.dir,'named-red.json');const baselineText=JSON.stringify(baseline);writeFileSync(baselineRef,baselineText);
+  const coverageFile=join(box.dir,'coverage.json');
+  writeFileSync(coverageFile,JSON.stringify({files:[{path:'test/witness.test.mjs',mode:'whole',evidence:box.wholeEvidence}],
+    named:{durationMs:baseline.seconds*1000,selection:'named-check',ref:baselineRef,sha256:createHash('sha256').update(baselineText).digest('hex'),source:baseline.main,runtime:process.version,outcome:'fail'}}));
+  succeeds(act(box,'private-reviewer',reviewer,'bar','sign',String(id),'--coverage-file',coverageFile,'--note','Builder can meet this witness; measured whole-file coverage fits and two reviewers can grade absent and present output alike.'));
   succeeds(act(box,'private-builder',box.web,'claim',String(id)));
   const frozen=JSON.parse(readItem(box,id).item_frozen);
-  assert.match(frozen.sourceCheck,/named witness/);assert.deepEqual(frozen.barCoverage.required,[]);
+  assert.match(frozen.sourceCheck,/named witness/);assert.deepEqual(frozen.barCoverage.required,['test/witness.test.mjs']);assert.match(frozen.check,/node --test '.\/test\/witness\.test\.mjs'/);assert.equal(frozen.barCoverage.files[0].evidence.sha256,box.wholeEvidence.sha256);
   mkdirSync(join(box.web,'web'),{recursive:true});writeFileSync(join(box.web,'web','ready.txt'),'ready');
   box.git(box.web,'add','web/ready.txt');box.git(box.web,'commit','-qm','feat(web): ready output [G1]');
   succeeds(act(box,'private-builder',box.web,'submit',String(id)));

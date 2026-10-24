@@ -1,2 +1,3 @@
-/** Ordered bar readiness, signing and activation [U113,H16]. */
-export const BAR_READY_ENGINE = 91;
+/** Ordered bar readiness, signing and activation [B4,V1,V2,H16]. */
+import { unassignedEngine } from './engine-next.js';
+export const BAR_READY_ENGINE = unassignedEngine();
