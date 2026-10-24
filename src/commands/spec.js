@@ -1,4 +1,5 @@
 /** The pullboard spec command, in its own module so an item adding another command never edits these lines. */
+import { verifiedPasskeyRowDecision } from '../person-signing.js';
 import {
   fitCommand,
 } from '../blueprint-fit-command.js';
@@ -221,7 +222,7 @@ export async function specCommand(io, { first, second, rest, values }) {
       const signedDecision = personSigning(board).signed;
       const kept = first === 'approve' ? pendingAnswers(ctx.info.root, ctx.config, ids, store.rowDecisions(board)) : new Map();
       if (signedDecision && values.text === undefined && kept.size) throw new Refused('STALE_ROW_DECISION', 'this row has a pending answer different from the original shown source', 'approve one row with --text containing the exact pending answer you want your passkey to confirm');
-      const decide = { decision: first, reason: values.reason, by: signedDecision ? 'person' : values.by, sshSign: !signedDecision, on: new Date().toISOString(), commit: headCommit(ctx.info.root) ?? '' };
+      const decide = { decision: first, reason: values.reason, by: signedDecision ? 'person' : values.by, sshSign: !signedDecision, passkeyRequest: signedDecision ? io.personRequest?.id : undefined, on: new Date().toISOString(), commit: headCommit(ctx.info.root) ?? '' };
       const records = values.text === undefined && kept.size ? ids.flatMap((id) => prepareRowDecisions(ctx.info.root, ctx.config, { ...decide, ids: [id], text: kept.get(id)?.text }))
         : prepareRowDecisions(ctx.info.root, ctx.config, { ...decide, ids, text: values.text });
       const decisions = await ordered(ctx, board, 'recordRowDecisions', [{ agentId: store.PERSON, channel: io.personChannel ?? 'terminal', decisions: records }]);
@@ -275,7 +276,7 @@ export async function specCommand(io, { first, second, rest, values }) {
       if (row.status !== 'pending') throw new Refused('SPEC_ANSWER', `${second} is ${row.status}, not a pending question`, `read it with pullboard spec show ${second}; only a pending row takes an answer`);
       if (personSigning(board).signed) requireShownRows(board, io.personRequest, [row], [second]);
       const { text } = answerQuestion(row.text, given, second);
-      const records = prepareRowDecisions(ctx.info.root, ctx.config, { ids: [second], decision: 'approve', text, sshSign: !personSigning(board).signed, by: personSigning(board).signed ? 'person' : undefined, on: new Date().toISOString(), commit: headCommit(ctx.info.root) ?? '' });
+      const records = prepareRowDecisions(ctx.info.root, ctx.config, { ids: [second], decision: 'approve', text, sshSign: !personSigning(board).signed, passkeyRequest: personSigning(board).signed ? io.personRequest?.id : undefined, by: personSigning(board).signed ? 'person' : undefined, on: new Date().toISOString(), commit: headCommit(ctx.info.root) ?? '' });
       const decisions = await ordered(ctx, board, 'recordRowDecisions', [{ agentId: store.PERSON, channel: io.personChannel ?? 'terminal', decisions: records }]);
       // The answer reported is read back from the signed text, never carried as a field of its own.
       const answered = decisions.map((record) => ({ ...record, answer: decisionAnswer(record) }));
@@ -293,7 +294,7 @@ export async function specCommand(io, { first, second, rest, values }) {
       const drafted = pendingRowDrafts(loadSpec(ctx.info.root, ctx.config), store.rowDrafts(board)).map((draft) => draftRow(ctx.info.root, ctx.config, { target: 'spec', text: draft.text, gate: draft.gate, tier: draft.tier, section: /^(.*?)\d+$/u.exec(draft.id)[1], id: draft.id }));
       drafted.forEach((row) => io.say(`${row.file}: ${row.id} drafted from a lane, for the person to approve`));
       clashingRowDrafts(loadSpec(ctx.info.root, ctx.config), store.rowDrafts(board)).forEach((draft) => io.say(`${ctx.config.spec}: ${draft.id} holds other text, so the draft by ${draft.by} was not written; shout ${draft.by} to run pullboard spec draft again and cite the new id`));
-      const plan = planRowApply(ctx.info.root, ctx.config, store.rowDecisions(board));
+      const plan = planRowApply(ctx.info.root, ctx.config, store.rowDecisions(board), { passkeyDecision: record => verifiedPasskeyRowDecision(board, record) });
       writeRowApply(ctx.info.root, plan);
       let applied;
       try { applied = await ordered(ctx, board, 'applyRowDecisions', [{ agentId: me.id, events: plan.records.map((record) => record.event) }]); }

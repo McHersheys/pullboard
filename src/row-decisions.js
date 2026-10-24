@@ -23,8 +23,11 @@ import {
   hasSignerFile,
   signRowDecision,
   verifyRowDecision,
+  verifySignedRecords,
+  readRawRecords,
 } from './signature.js';
 import { Refused } from './refused.js';
+import { rowDecisionReplacement } from './row-decision-text.js';
 import { rowDecisionContext } from './row-decision-state.js';
 import { staleRowDecision } from './row-decision-state.js';
 
@@ -49,7 +52,7 @@ function decisionRows(root, config, ids) {
  * a pending question is an approval of its answered text and carries no separate answer field: the
  * answer shown is read back from the signed source and text by decisionAnswer.
  */
-export function prepareRowDecisions(root, config, { ids, decision, reason = '', text: proposedText, by, on, commit = '', note = '', sshSign = true }) {
+export function prepareRowDecisions(root, config, { ids, decision, reason = '', text: proposedText, by, on, commit = '', note = '', sshSign = true, passkeyRequest }) {
   if (!ids.length) throw new Refused('USAGE', 'name rows: pullboard spec approve <ids> or spec decline <ids> --reason "why"');
   if (!['approve', 'decline'].includes(decision)) throw new Refused('ROW_DECISION', 'use pullboard spec approve or decline');
   if (decision === 'decline' && (!reason.trim() || /[\r\n|]/u.test(reason))) throw new Refused('ROW_DECISION', 'a decline needs a one-line reason without a field separator; use --reason "why"');
@@ -59,9 +62,8 @@ export function prepareRowDecisions(root, config, { ids, decision, reason = '', 
   return decisionRows(root, config, ids).map(({ kind, file, row, source }) => {
     const status = decision === 'approve' ? 'approved' : 'wont';
     const text = decision === 'approve' ? proposedText?.trim() ?? row.text : row.text;
-    const replacement = source.replace(/\[([a-z]+)(,\s*[a-z]+)?\]/u, (_, old, tier = '') => `[${status}${tier}]`)
-      .replace(/(\]\s+)([^|]*)(?=\s*\||$)/u, (_, prefix, old) => `${prefix}${text}${old.match(/\s+$/u)?.[0] ?? ''}`);
-    const record = { version: 1, type: 'row-decision', kind, file, id: row.id, source, replacement, text, decision, reason: decision === 'decline' ? reason.trim() : '', by: principal, on, commit, note };
+    const replacement = rowDecisionReplacement(source, decision, text);
+    const record = { ...(passkeyRequest ? { passkeyRequest } : {}), version: 1, type: 'row-decision', kind, file, id: row.id, source, replacement, text, decision, reason: decision === 'decline' ? reason.trim() : '', by: principal, on, commit, note };
     return signed ? signRowDecision(root, record) : record;
   });
 }
@@ -176,11 +178,13 @@ export function handAnsweredQuestions(before, after, readDecisions) {
 function decisionReceipt({ event, at, applied, appliedAt, ...record }) { return record; }
 
 /** Preflight every file and signature before an apply writes even its first byte. */
-export function planRowApply(root, config, records) {
+export function planRowApply(root, config, records, { passkeyDecision = () => false } = {}) {
   const pending = records.filter((record) => !record.applied);
   const files = new Map();
   for (const record of pending) {
-    verifyRowDecision(root, record);
+    const verifiedPasskey = passkeyDecision(record);
+    if (verifiedPasskey) verifySignedRecords(root, readRawRecords(root));
+    else verifyRowDecision(root, record);
     const file = record.kind === 'spec' ? config.spec : loadDoctrine(root, config).name;
     const aliases = new Set(['DOCTRINE.md', 'PRACTICE.md']);
     if (file !== record.file && !(record.kind === 'doctrine' && aliases.has(file) && aliases.has(record.file))) throw new Refused('STALE_ROW_DECISION', `${record.id}'s file changed; ask the person to approve its current row again`);
@@ -189,6 +193,7 @@ export function planRowApply(root, config, records) {
     const lines = (change.after ?? change.before).split('\n');
     const parsed = loadSpec(root, { ...config, spec: file });
     const matches = parsed.rows.filter((row) => row.id === record.id);
+    if (verifiedPasskey && matches[0]?.signers?.length) throw new Refused('PERSON_SIGNER_REQUIRED', `${record.id} names its SSH signers ${matches[0].signers.join(', ')}`, 'a passkey does not claim any named SSH identity');
     const index = matches.length === 1 ? matches[0].line - 1 : -1;
     const source = index < 0 ? '' : lines[index].replace(/\r$/u, '');
     if (source !== record.source && source !== record.replacement) throw new Refused('STALE_ROW_DECISION', `${record.id}'s exact row changed after the person's decision; ask the person to approve its current text again`);
