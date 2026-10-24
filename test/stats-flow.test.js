@@ -215,6 +215,35 @@ test('flow windows retain recorded idle after reopen and builder release [R1,R2]
   assert.equal(window.stages.build.totalMinutes, 50, 'released building work remains measured');
 });
 
+test('flow windows never substitute a merge receipt for an unrecorded stage end [R1,R2]', t => {
+  const commit = 'a'.repeat(40);
+  const { board, stats } = fixture(t, [
+    [0, 'coordinator', 'add', 1, { lane: 'core' }],
+    [10, 'core-1', 'claim', 1, { leaseUntil: at(1000) }],
+    [50, 'coordinator', 'merged', 1],
+    [0, 'coordinator', 'add', 2, { lane: 'core' }],
+    [10, 'core-2', 'submit', 2, { commit }],
+    [50, 'coordinator', 'merged', 2],
+    [0, 'coordinator', 'add', 3, { lane: 'core' }],
+    [0, 'core-3', 'claim', 3, { leaseUntil: at(1000) }],
+    [10, 'core-3', 'submit', 3, { commit }],
+    [20, 'review-1', 'reserve', 3, { until: at(1000) }],
+    [50, 'coordinator', 'merged', 3],
+    [0, 'coordinator', 'add', 4, { lane: 'core' }],
+    [0, 'core-4', 'claim', 4, { leaseUntil: at(1000) }],
+    [10, 'core-4', 'submit', 4, { commit }],
+    [20, 'review-1', 'reserve', 4, { until: at(1000) }],
+    [30, 'review-1', 'reject', 4, { commit }],
+    [50, 'coordinator', 'merged', 4],
+  ], 100);
+  const window = flowStats(store.events(board), null, BASE + 100 * 60_000, stats(), { windowMinutes: 100 }).window;
+  assert.equal(window.stages.build.count, 2, 'a merge without a submit cannot finish building');
+  assert.equal(window.stages.reviewWait.count, 2, 'a merge without a reservation cannot finish waiting');
+  assert.equal(window.stages.review.count, 1, 'a merge without a verdict cannot finish reviewing');
+  assert.equal(window.stages.sendBackIdle.count, 0, 'a merge without a reclaim cannot finish sent-back idle');
+  assert.equal(window.stages.mergeWait.count, 0, 'no acceptance-to-landing interval was recorded');
+});
+
 test('flow numbers match a hand computation through rework, released reviews and every live queue [R1,R2]', t => {
   const a = 'a'.repeat(40), b = 'b'.repeat(40), c = 'c'.repeat(40);
   const entries = [

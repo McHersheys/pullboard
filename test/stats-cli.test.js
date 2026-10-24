@@ -6,6 +6,7 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 import * as store from '../src/board.js';
 import { main } from '../src/cli.js';
 import { proofStats } from '../src/stats.js';
@@ -240,4 +241,31 @@ test('[R1,R2,A1] stats window exposes measured tails in text and JSON without re
   assert.equal(ambiguous.code, 1);
   assert.equal(ambiguous.data.error.code, 'USAGE');
   assert.deepEqual(store.events(board), before);
+});
+
+
+test('[R1,R2,A1] stats window and ordinary counters share one SQLite snapshot while another seat appends', async t => {
+  const { root, board } = fixture(t);
+  const clock = { now: () => new Date('2026-10-08T13:00:00Z') };
+  const original = DatabaseSync.prototype.exec;
+  let injected = false;
+  DatabaseSync.prototype.exec = function (sql) {
+    const result = original.call(this, sql);
+    if (!injected && sql === 'RELEASE proof_stats_read') {
+      injected = true;
+      const id = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'Concurrent landing' });
+      store.logEvent(board, 'coordinator', 'merged', id, { commit: 'f'.repeat(40) });
+    }
+    return result;
+  };
+  let json;
+  try { json = await run(root, ['stats', '--window', '6h', '--json'], clock); }
+  finally { DatabaseSync.prototype.exec = original; }
+  assert.equal(json.code, 0, json.stderr);
+  assert.equal(injected, true, 'the separate writer committed at the recorded read boundary');
+  assert.equal(json.data.stats.merged, 1);
+  assert.equal(json.data.window.landedItems, 1, 'one response cannot combine old counters and a newer window');
+  const next = await run(root, ['stats', '--window', '6h', '--json'], clock);
+  assert.equal(next.data.stats.merged, 2);
+  assert.equal(next.data.window.landedItems, 2, 'the next observation sees both committed receipts');
 });
