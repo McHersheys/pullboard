@@ -39,6 +39,7 @@ import {
   runStaticChecks,
   withGateSlot,
   isStampedGreen,
+  withLandingGateSlot,
 } from './gate.js';
 import {
   readGateReceipt,
@@ -54,6 +55,11 @@ import {
 import { runLandingWorker } from './landing-worker.js';
 import { runLandingCandidateWorker } from './landing-candidates.js';
 import { Refused } from './refused.js';
+import { requireLandingHost } from './landing-host.js';
+import {
+  environmentLabel,
+  sameEnvironment,
+} from './execution-environment.js';
 import { browserFreeChecksEnabled } from './settings.js';
 import { tightenLandingDoctrine } from './landing-doctrine.js';
 import { policyAt } from './trusted-policy.js';
@@ -74,6 +80,30 @@ function quote(value) { return `'${String(value).replaceAll("'", "'\\''")}'`; }
 function testHash(root, file) {
   try { return createHash('sha256').update(readFileSync(join(root, file))).digest('hex'); }
   catch { return null; }
+}
+
+/** Read a committed test identity; an uncommitted edit cannot release a trunk hold. */
+function testBlob(root, commit, file) {
+  const result = tryGit(root, ['rev-parse', '--verify', `${commit}:${file}`]);
+  return result.status === 0 ? result.stdout : null;
+}
+
+/** A test defect holds every batch on its trunk until the committed test changes or every failure is waived. */
+function heldTestDefects(root, board, trunk) {
+  return store.landingTestDefects(board).filter(defect => {
+    if (defect.branch !== trunk.branch) return false;
+    const blob = testBlob(root, trunk.commit, defect.test);
+    return !(blob && blob !== defect.blob && blob !== defect.trunkBlob) && !defect.names.every(name => store.landingWaiverFor(board, { file: defect.test, name }));
+  });
+}
+
+/** Keep each verdict's recorded executor distinct from the actual landing host. */
+function environmentWarnings(board, items, environment) {
+  return items.flatMap(entry => {
+    const verdict = store.acceptedVerdict(board, store.getItem(board, entry.id));
+    const recorded = verdict?.environment ?? null;
+    return sameEnvironment(recorded, environment) ? [] : [{ item: entry.id, recorded, landing: environment }];
+  });
 }
 
 /** Derive failing test identities from TAP or spec reporter names and source locations, refusing unknown paths. */
@@ -341,9 +371,11 @@ async function gateGroup(state, label) {
     submissions: state.batch.items.map(({ id, commit }) => ({ id, commit })),
     failures: [...new Set(landingFailures(gate.output, state.batch.root, { excludeCancelled: true }).map(failure => failure.file).filter(Boolean))],
     fileTimes: landingFileTimes(state.batch.root, gate.profile) };
-  await save(state, { gateResults: [...state.gates.values()].map(({ tree: testedTree, isGreen, failures, accounted, complete, requiresGreen, logPath: log, flakeDiagnostics, timedOut }) =>
+  const warnings = gate.environment ? environmentWarnings(state.board, state.batch.items, gate.environment) : [];
+  for (const warning of warnings) state.say(`#${warning.item} was checked on ${environmentLabel(warning.recorded)}; this landing ran on ${environmentLabel(warning.landing)}`);
+  await save(state, { environmentWarnings: warnings, gateResults: [...state.gates.values()].map(({ tree: testedTree, isGreen, failures, accounted, complete, requiresGreen, logPath: log, flakeDiagnostics, environment: executor, timedOut }) =>
     ({ tree: testedTree, isGreen, ...(timedOut ? { timedOut: true } : {}), failures, accounted: accounted ?? null, complete: complete ?? null, requiresGreen: Boolean(requiresGreen), logPath: log,
-      ...(flakeDiagnostics ? { flakeDiagnostics } : {}) })),
+      environment: executor ?? null, ...(flakeDiagnostics ? { flakeDiagnostics } : {}) })),
     invariantEvidence: { ...evidence, gates: [...evidence.gates, tested] } });
   if (gate.timedOut) {
     await save(state, { state: 'blocked', timedOut: true });
@@ -602,7 +634,7 @@ async function diagnose(state, failures, gate) {
     if (!runner) throw new Refused('LAND_DIAGNOSTIC', `no runner can isolate ${file}; configure affectedTests for the project’s test runner`);
     const commit = headCommit(state.batch.root);
     const tree = headTree(state.batch.root);
-    const result = await withGateSlot(state.batch.root, (lease) => runProfiledShell(state.batch.root, `${runner} ${quote(file)}`, {
+    const result = await withLandingGateSlot(state.batch.root, (lease) => runProfiledShell(state.batch.root, `${runner} ${quote(file)}`, {
       waitMs: lease.waitMs, artifactDirectory: dirname(state.batch.logPath), artifactPrefix: 'diagnostic', persistLog: true, pipefail: true, gateLease: lease,
     }), { landing: true, browser: true, agent: 'coordinator', kind: 'land-diagnostic', onWait: state.onWait });
     if (headCommit(state.batch.root) !== commit || headTree(state.batch.root) !== tree || !isClean(state.batch.root)) {
@@ -807,6 +839,24 @@ async function fileFlakes(state, gate, files) {
   state.say(`flake: ${files.join(', ')}; nothing landed; fix the test or ask the person for an expiring waiver`);
 }
 
+/** File a neutral test defect for the exact no-culprit red and leave its proof available for a waiver. */
+async function fileTestDefects(state, gate) {
+  const defects = [];
+  const files = [...new Set(gate.failures.map(failure => failure.file).filter(Boolean))];
+  if (!files.length) throw new Refused('LAND_DIAGNOSTIC', 'the no-culprit gate did not identify a failing test file');
+  for (const file of files) {
+    const owner = laneOf(state.config, file);
+    const lane = owner === 'coordinator' ? store.getItem(state.board, state.batch.items[0].id).item_lane : owner;
+    defects.push(await state.write('recordLandingTestDefect', [{ agentId: 'coordinator', test: file,
+      hash: testHash(state.batch.root, file), blob: testBlob(state.batch.root, state.batch.tip, file),
+      trunkBlob: testBlob(state.root, state.batch.base, file),
+      names: gate.failures.filter(failure => failure.file === file).map(failure => failure.name),
+      lane, batchId: state.batch.id, branch: state.batch.branch }]));
+  }
+  await save(state, { state: 'test-defect', failures: gate.failures, testDefects: defects });
+  state.say(`the trunk is held by a test defect: ${files.join(', ')}; correct the test or ask an approver for an expiring waiver`);
+}
+
 /** Name the remote a landing pushes the trunk to: the trunk branch's own remote, else origin [B3]. */
 function landingRemoteName(root, branch) {
   return tryGit(root, ['config', '--get', `branch.${branch.replace(/^refs\/heads\//u, '')}.remote`]).stdout || 'origin';
@@ -949,7 +999,7 @@ async function deferredGuards(state) {
   const tree = headTree(root);
   const commit = headCommit(root);
   const browser = !browserFreeChecksEnabled() || await testsNeedBrowser(root, files);
-  const run = await withGateSlot(root, lease => runProfiledShell(root, `${state.config.affectedTests} ${files.map(quote).join(' ')}`, { waitMs: lease.waitMs, gateLease: lease, stages: true }),
+  const run = await withLandingGateSlot(root, lease => runProfiledShell(root, `${state.config.affectedTests} ${files.map(quote).join(' ')}`, { waitMs: lease.waitMs, gateLease: lease, stages: true }),
     { agent: 'coordinator', kind: 'gate', landing: true, browser, onWait: state.onWait });
   // The same pin as the full landing gate: a result only counts for the exact merged tree it ran on.
   if (headCommit(root) !== commit || headTree(root) !== tree || !isClean(root)) {
@@ -1117,6 +1167,9 @@ export async function runLandingBatch({ root, board, config, write, say, owner, 
   // Pin accepted policy after any recorded-landed repair, never before admission or from candidate files.
   config ??= policyAt(root, trunk.commit).config;
   board.quarantineEnabled = () => config.flakes?.quarantine === true;
+  const environment = dryRun ? null : requireLandingHost(store.boardId(board), config);
+  const testDefects = heldTestDefects(root, board, trunk);
+  if (!dryRun && testDefects.length) throw new Refused('LAND_TEST_DEFECT', `this trunk is held by ${testDefects.map(defect => `#${defect.item} (${defect.test})`).join(', ')}; correct the committed test or ask an approver for an expiring waiver`);
   if (!dryRun && !adopt && !unfinished) {
     const deferred = cadenceDeferral(board, config, trunk.branch, say);
     if (deferred) return deferred;
@@ -1137,7 +1190,7 @@ export async function runLandingBatch({ root, board, config, write, say, owner, 
     }
     return { batch: null, landed: [], conflicts, blocked: selected.blocked, culprits: [], flakes: [], items: selected.ready.map((item) => item.item_id) };
   }
-  if (unfinished && !adopt && unfinished.state !== 'flaky') throw new Refused('LAND_ADOPT', `batch ${unfinished.id} is ${unfinished.state}; inspect pullboard resume, then run pullboard land --adopt`);
+  if (unfinished && !adopt && !['flaky', 'test-defect'].includes(unfinished.state)) throw new Refused('LAND_ADOPT', `batch ${unfinished.id} is ${unfinished.state}; inspect pullboard resume, then run pullboard land --adopt`);
   if (adopt && !unfinished) throw new Refused('LAND_ADOPT', 'there is no interrupted landing batch; run pullboard land');
   let batch = unfinished;
   if (batch?.state === 'flaky') {
@@ -1158,6 +1211,7 @@ export async function runLandingBatch({ root, board, config, write, say, owner, 
     const id = randomUUID();
     const directory = join(repoInfo(root).commonDir, 'pullboard', 'landings', id);
     batch = { version: 1, id, startedAt: new Date().toISOString(), base: trunk.commit, tip: trunk.commit, branch: trunk.branch, root: join(directory, 'worktree'),
+      ...(environment ? { environment } : {}),
       candidates: selected.ready.map(landingEntry),
       items: selected.ready.map(landingEntry), conflicts: [], blocked: selected.blocked,
       state: 'merging', owner, logPath: join(directory, 'logs', 'batch.log'), revision: 0 };
@@ -1205,8 +1259,11 @@ export async function runLandingBatch({ root, board, config, write, say, owner, 
                 gate = await gateGroup(state, 'green-items');
                 proof = gate.isGreen ? null : waivedProof(state, gate);
                 if (!gate.isGreen && !proof) {
-                  await save(state, { state: 'blocked', failures: gate.failures, culprits: state.culprits });
-                  throw new Refused('LAND_INTERACTION', 'the individually green items fail together; nothing retries or lands; inspect the batch’s failing tests');
+                  if (!state.culprits.length) { await fileTestDefects(state, gate); state.flaky = true; }
+                  else {
+                    await save(state, { state: 'blocked', failures: gate.failures, culprits: state.culprits });
+                    throw new Refused('LAND_INTERACTION', 'the individually green items fail together; nothing retries or lands; inspect the batch’s failing tests');
+                  }
                 }
               }
             } else if (!state.flaky) await save(state, { state: 'blocked', culprits: state.culprits });

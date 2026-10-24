@@ -23,17 +23,18 @@ import {
   DEFAULT_VIEW_PORT,
 } from './view-port.js';
 import { Refused } from './refused.js';
+import { environmentProblem } from './execution-environment.js';
 
 const MACHINE_DEFAULTS = {
   gateSlots: 2, browserSlots: 1, 'gate.shortSlots': 0,
   'gate.queue.reviewsFirst': false, 'gate.queue.currentReleaseFirst': false, 'gate.queue.agingMinutes': 30,
   'gate.memoryFloorMB': null, 'gate.browserFreeChecks': false, 'gate.browserByLaunch': false,
-  'health.sentinel': true, 'view.background': true, 'relay.offerAtInit': true, runners: [],
+  'health.sentinel': true, 'view.background': true, 'relay.offerAtInit': true, runners: [], 'landing.pools': [],
 };
 const OPTIONAL_REPO_DEFAULTS = {
   project: null, name: null, 'checks.provesNothing': 'warn', 'verify.unrelatedTrunkMoves': false, 'verify.composeAtAdmission': false,
   'flakes.rerun': false, 'flakes.quarantine': false, 'rigor.budget': 400, 'relay.outbox': false,
-  submitGate: null, submitDeferAbove: null, landingShards: 1, 'landing.publish': null, positiveControl: null, affectedTests: null,
+  submitGate: null, submitDeferAbove: null, landingShards: 1, 'landing.publish': null, 'landing.environment': null, positiveControl: null, affectedTests: null,
   'health.sentinel': true, 'testConcurrency.browser': 2, approvers: null,
 };
 
@@ -59,6 +60,8 @@ function fields(value, names) {
 
 /** Project structured settings without returning unknown nested metadata or credential fields. */
 function safeValue(key, value) {
+  if (key === 'landing.environment' && value !== null && environmentProblem(value)) throw new Refused('BAD_SETTINGS', 'landing.environment needs exact platform, arch and Node version');
+  if (key === 'landing.pools' && (!Array.isArray(value) || value.some(id => typeof id !== 'string' || !/^[a-f0-9]{32}$/u.test(id)))) throw new Refused('BAD_SETTINGS', 'landing.pools lists board identifiers');
   const strings = entries => Array.isArray(entries) && entries.every(entry => typeof entry === 'string');
   if (key === 'products' && !Object.values(value).every(strings)) throw new Refused('BAD_SETTINGS', 'products must map names to spec-id lists');
   if (key === 'runners') return value.map(runner => fields(runner, ['host', 'slots', 'browser', 'node', 'root']));
@@ -78,7 +81,7 @@ function leaves(value, prefix = '') {
 
 /** Refuse malformed supported scalar settings without echoing credential-bearing input. */
 function checkedValue(key, value, fallback) {
-  const expected = fallback === null ? (key === 'gate.memoryFloorMB' || key.startsWith('resources.') ? 'number' : 'string') : typeof fallback;
+  const expected = key === 'landing.environment' ? 'object' : fallback === null ? (key === 'gate.memoryFloorMB' || key.startsWith('resources.') ? 'number' : 'string') : typeof fallback;
   if (value !== null && expected !== 'object' && typeof value !== expected) {
     throw new Refused('BAD_SETTINGS', `setting ${key} has an unsupported type; restore its documented value`);
   }
