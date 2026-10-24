@@ -104,7 +104,7 @@ export function barReadiness(board, item, { signature = true } = {}) {
   const evidence = baseline?.testEvidence;
   const namedRed = witness && evidence && !evidence.passed.some(name => name.includes(witness))
     && (evidence.failed.some(name => name.includes(witness)) || evidence.noTestsMatched && item.item_check.includes(witness));
-  if (!baseline || baseline.result !== 'red' || baseline.command !== item.item_check || !baseline.main || !namedRed) missing.push('a recorded red check baseline at main for the Named test (an absent named case counts; unrelated shell failures do not)');
+  if (!baseline || baseline.result !== 'red' || baseline.command !== item.item_check || !baseline.main || !namedRed) missing.push('a recorded red check baseline at main for the Named test (emit named TAP/JUnit cases with timing; an absent named case counts, unrelated shell failures do not)');
   if (!notes.measurements) missing.push('Measurements: a method beside each quantitative bound, or an explicit statement that there are none');
   if (!notes['reviewer edges']) missing.push('Reviewer edges: cases a reviewer should try');
   if (!revision || revision.digest !== barDigest(item)) missing.push('a recorded current bar revision (edit the brief)');
