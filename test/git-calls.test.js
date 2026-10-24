@@ -1,5 +1,11 @@
 /** Count real Git child processes and prove command-scoped facts refresh after a commit [C7]. */
 import assert from 'node:assert/strict';
+import {
+  createHash,
+  randomUUID,
+} from 'node:crypto';
+import * as store from '../src/board.js';
+import { receiptBody } from '../src/gate-run-receipt.js';
 import { runFixtureExecFile as execFileSync, runFixtureChild as spawnSync, runFixtureChild } from './fixture-child.js';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { delimiter, join, resolve } from 'node:path';
@@ -116,6 +122,59 @@ test('help starts no Git and linked-worktree status spawns at most four Git proc
   const status = resetAndCount(box, box.worker, 'status', '--json');
   assert.ok(status.count <= 4, `linked-worktree status started ${status.count} Git processes`);
   assert.equal(JSON.parse(status.result.stdout).me.id, 'core-1');
+});
+
+/** Record schema-valid private fixture history, never represented as a real gate execution. */
+function seedRuleBudgetRun(box, { green = true, days = 0, tree, command, failures = [] } = {}) {
+  const head = box.git(box.repo, 'rev-parse', 'HEAD');
+  const gate = JSON.parse(readFileSync(join(box.repo, 'pullboard.json'), 'utf8')).gate;
+  const receipt = { version: 1, id: randomUUID(), kind: 'gate', head, main: head,
+    tree: tree ?? box.git(box.repo, 'rev-parse', 'HEAD^{tree}'),
+    command: createHash('sha256').update(command ?? gate).digest('hex'), green, failures,
+    at: new Date(Date.now() - days * 86_400_000).toISOString(), load: { average: [0, 0, 0], cpus: 1, freeMB: 100 } };
+  const folder = join(box.repo, '.git', 'pullboard', 'gate-receipts');
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, `${receipt.id}.json`), receiptBody(receipt));
+  const board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'), undefined, { isMain: true });
+  try { store.recordGateRun(board, { agentId: 'coordinator', receipt, lane: 'core' }); }
+  finally { store.closeBoard(board); }
+}
+
+test('populated rule receipt history preserves the linked status Git budget and current proof [C7,S1,A1]', (t) => {
+  const box = fixture(t);
+  const config = JSON.parse(readFileSync(join(box.repo, 'pullboard.json'), 'utf8'));
+  config.gate = 'node --test test/proven.test.js';
+  writeFileSync(join(box.repo, 'pullboard.json'), JSON.stringify(config));
+  writeFileSync(join(box.repo, 'SPEC.md'), '# Rule budget fixture\n\n## C · Core\n' +
+    '- C7 [approved, must] Current trunk proof stays cheap to read. | gate: test/proven.test.js\n' +
+    '- C8 [approved, must] Recent red remains visible. | gate: test/red.test.js\n');
+  mkdirSync(join(box.repo, 'test'));
+  for (const name of ['proven', 'red']) writeFileSync(join(box.repo, 'test', `${name}.test.js`),
+    `import { test } from 'node:test';\ntest('${name}', () => {});\n`);
+  box.git(box.repo, 'add', '-A');
+  box.git(box.repo, 'commit', '-q', '-m', 'test(fixture): add committed rule gates');
+  box.git(box.worker, 'merge', '-q', '--ff-only', 'main');
+  seedRuleBudgetRun(box, { green: false, days: 8, failures: [{ file: 'test/proven.test.js', name: 'expired red' }] });
+  seedRuleBudgetRun(box, { green: false, days: 2, failures: [{ file: 'test/red.test.js', name: 'recent red' }] });
+  seedRuleBudgetRun(box, { tree: 'f'.repeat(40) });
+  seedRuleBudgetRun(box, { command: 'true' });
+  seedRuleBudgetRun(box);
+  const current = resetAndCount(box, box.worker, 'status', '--json');
+  assert.ok(current.count <= 4, `populated linked-worktree status started ${current.count} Git processes`);
+  assert.deepEqual(JSON.parse(current.result.stdout).ruleCounts,
+    { approved: 2, gated: 2, ungated: 0, proven: 1, unproven: 1, contradicted: 1 });
+  box.git(box.repo, 'pack-refs', '--all', '--prune');
+  const packed = resetAndCount(box, box.worker, 'status', '--json');
+  assert.ok(packed.count <= 4, `packed-ref status started ${packed.count} Git processes`);
+  assert.deepEqual(JSON.parse(packed.result.stdout).ruleCounts, JSON.parse(current.result.stdout).ruleCounts);
+  advanceHead(box, 'advance trunk after recorded proof');
+  seedRuleBudgetRun(box, { tree: 'e'.repeat(40) });
+  seedRuleBudgetRun(box, { command: 'true' });
+  const advanced = resetAndCount(box, box.worker, 'status', '--json');
+  assert.ok(advanced.count <= 4, `advanced-trunk status started ${advanced.count} Git processes`);
+  assert.deepEqual(JSON.parse(advanced.result.stdout).ruleCounts,
+    { approved: 2, gated: 2, ungated: 0, proven: 0, unproven: 2, contradicted: 1 },
+    'old green, wrong tree and wrong command prove nothing on the new tip; recent red is independent');
 });
 
 test('a runner sees the new HEAD after it commits its item [C7]', (t) => {
