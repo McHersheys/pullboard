@@ -1693,6 +1693,7 @@ export function refreeze(board, id, { agentId, freeze }) {
     const item = moveItem(board, id, 'refreeze', {
       checks: {
         joined: null,
+        barReady: found => barReadyProblem(board, found),
         coordinatorOnly: () => onlyCoordinator(agentId, 'refreezes a criterion'),
         holderOrCoordinator: (found) => {
           const live = current(board, found);

@@ -1,3 +1,4 @@
+import { normalizeBarCoverage, barCoverageDigest } from './bar-coverage.js';
 /** Readiness is a revision-bound peer judgement, with mechanical prerequisites [U113]. */
 import { createHash } from 'node:crypto';
 import { atomic, itemById, logEvent } from './board.js';
@@ -97,13 +98,17 @@ export function barReadiness(board, item, { signature = true } = {}) {
   const baseline = itemCheckBaseline(board, item);
   const missing = [];
   if (!notes['named test']) missing.push('Named test: the case this check proves');
-  if (!baseline || baseline.result !== 'red' || baseline.command !== item.item_check || !baseline.main) missing.push('a recorded red check baseline at main (an absent named case counts)');
+  const witness = notes['named test'];
+  const evidence = baseline?.testEvidence;
+  const namedRed = witness && evidence && !evidence.passed.some(name => name.includes(witness))
+    && (evidence.failed.some(name => name.includes(witness)) || evidence.noTestsMatched && item.item_check.includes(witness));
+  if (!baseline || baseline.result !== 'red' || baseline.command !== item.item_check || !baseline.main || !namedRed) missing.push('a recorded red check baseline at main for the Named test (an absent named case counts; unrelated shell failures do not)');
   if (!notes.measurements) missing.push('Measurements: a method beside each quantitative bound, or an explicit statement that there are none');
   if (!notes['reviewer edges']) missing.push('Reviewer edges: cases a reviewer should try');
   if (!revision || revision.digest !== barDigest(item)) missing.push('a recorded current bar revision (edit the brief)');
   const signed = read(board, `bar_sign:${item.item_id}`);
   const baselineDigest = createHash('sha256').update(JSON.stringify(baseline)).digest('hex');
-  if (signature && (!signed || signed.revision !== revision?.revision || signed.digest !== revision?.digest || signed.baselineDigest !== baselineDigest)) missing.push('sign-off by another parent session: pullboard bar sign '+item.item_id);
+  if (signature && (!signed || signed.revision !== revision?.revision || signed.digest !== revision?.digest || signed.baselineDigest !== baselineDigest || !signed.coverage || signed.coverageDigest !== barCoverageDigest(signed.coverage))) missing.push('sign-off by another parent session: pullboard bar sign '+item.item_id);
   return { revision, notes, baseline, baselineDigest, signed, missing };
 }
 /** The same board guard protects explicit claim, next, run, renew and submit. */
@@ -113,7 +118,7 @@ export function barReadyProblem(board, item) {
   return status.missing.length ? new Refused('BAR_NOT_READY', `#${item.item_id}'s bar needs ${status.missing.join('; ')}; ask its author to edit the brief, then another session runs pullboard bar sign ${item.item_id}`) : null;
 }
 /** Record the peer's judgement against exact words, author identities and baseline observation. */
-export function signBar(board, id, { agentId, revision, digest, note }) {
+export function signBar(board, id, { agentId, revision, digest, note, coverage }) {
   return atomic(board, () => {
     const item = itemById(board, id);
     if (['verified','withdrawn'].includes(item.item_status)) throw new Refused('CLOSED', `#${id} is ${item.item_status}; sign an open bar`);
@@ -125,7 +130,8 @@ export function signBar(board, id, { agentId, revision, digest, note }) {
     if (!signerParent || authors.some(author => !author.parent)) throw new Refused('BAR_PARENT_UNKNOWN', `#${id} needs known author and signer session identities; join from the real runtime session, then author a new bar revision`);
     if (authors.some(author => author.agent === agentId || author.parent === signerParent)) throw new Refused('BAR_SELF_SIGN', `#${id}'s author and its helpers cannot sign their own bar; ask another parent session`);
     if (typeof note !== 'string' || !note.trim()) throw new Refused('NOTE_REQUIRED', 'say whether a builder can meet this bar and two reviewers would grade it the same: --note "..."');
-    const signed = { revision, digest, baselineDigest: status.baselineDigest, authorParents: authors, signerParent, note: note.trim() };
+    const plan = normalizeBarCoverage(coverage, item);
+    const signed = { revision, digest, coverage: plan, coverageDigest: barCoverageDigest(plan), baselineDigest: status.baselineDigest, authorParents: authors, signerParent, note: note.trim() };
     logEvent(board, agentId, 'bar-sign', id, signed);
     save(board, `bar_sign:${id}`, { ...signed, by: agentId, event: board.lastEvent.event_id });
     return { id, ...signed };

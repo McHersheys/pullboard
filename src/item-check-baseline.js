@@ -24,6 +24,8 @@ export function normalizeCheckBaseline(agentId, command, baseline) {
     || (baseline.result === 'pending' && !baseline.request)
     || (baseline.request !== undefined && (typeof baseline.request !== 'string' || !/^[a-f0-9-]{36}$/.test(baseline.request)))
     || (baseline.reason !== undefined && typeof baseline.reason !== 'string')
+    || (baseline.testEvidence !== undefined && (!baseline.testEvidence || typeof baseline.testEvidence.noTestsMatched !== 'boolean'
+      || !['failed','passed'].every(key => Array.isArray(baseline.testEvidence[key]) && baseline.testEvidence[key].length <= 512 && baseline.testEvidence[key].every(name => typeof name === 'string' && name.length <= 4096))))
     || (baseline.seconds !== undefined && (!Number.isSafeInteger(baseline.seconds) || baseline.seconds < 0))) {
     throw new Refused('BAD_CHECK_BASELINE', 'the check baseline must describe this command at a main commit; set --check again from the coordinator');
   }
@@ -31,6 +33,7 @@ export function normalizeCheckBaseline(agentId, command, baseline) {
     command, main: baseline.main, result: baseline.result,
     ...(baseline.request === undefined ? {} : { request: baseline.request }),
     ...(baseline.reason === undefined ? {} : { reason: baseline.reason }),
+    ...(baseline.testEvidence === undefined ? {} : { testEvidence: { failed: [...baseline.testEvidence.failed], passed: [...baseline.testEvidence.passed], noTestsMatched: baseline.testEvidence.noTestsMatched } }),
     ...(baseline.seconds === undefined ? {} : { seconds: baseline.seconds }),
     ...(baseline.result === 'green' ? { warning: 'CRITERION_PROVES_NOTHING' } : {}),
   };

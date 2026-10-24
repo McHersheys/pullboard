@@ -122,7 +122,9 @@ Work
   pullboard check accept <id>           the person accepts an item's check that already passes on main, as it reads now;
                                         with checks.provesNothing "hold", claim and submit refuse that item until then
   pullboard bar ready on|off           coordinator: opt in to ready bars; existing frozen work needs no backfill
-  pullboard bar sign <id> --note "..."  another parent judges buildability and repeatable grading; edits clear the signature
+  pullboard bar sign <id> --note "..." [--coverage-file <json>]  another parent judges buildability and repeatable grading; edits clear the signature
+                                        claim.barTestFiles configures project test-path globs (Node test/spec files by default)
+                                        coverage rows retain whole-file observations; slow files require named checks and explicit landing coverage
   pullboard bar <id>                    show missing prerequisites and the current revision
   pullboard claim <id>                  take or renew a lease; the first claim freezes the criterion
   pullboard release <id> [--note "why"]  hand it back; a review release needs a one-line reason

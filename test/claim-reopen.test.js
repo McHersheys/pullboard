@@ -197,14 +197,15 @@ function readyAuthors(f) {
 function readyItem(f, result = 'red') {
   return store.addItem(f.board, { by: 'coordinator', lane: 'core', title: 'ready bar', route: 'mid',
     criterion: 'the named behavior works', check: 'node --test --test-name-pattern "named witness" test/a.test.js',
-    checkBaseline: { command: 'node --test --test-name-pattern "named witness" test/a.test.js', main: COMMIT, result },
+    checkBaseline: { command: 'node --test --test-name-pattern "named witness" test/a.test.js', main: COMMIT, result, testEvidence: { failed: ['named witness'], passed: [], noTestsMatched: false } },
     brief: 'Files: src/a.js\nTest: named witness asserts the behavior\nNamed test: named witness\nMeasurements: no quantitative acceptance bounds\nReviewer edges: empty input and concurrent edit' });
 }
 /** Sign the currently read revision, keeping stale requests independently testable. */
 function signReady(f, id, agentId = f.other) {
   const { revision } = barReadiness(f.board, store.getItem(f.board, id));
   return signBar(f.board, id, { agentId, revision: revision.revision, digest: revision.digest,
-    note: 'The builder can meet this bar; two reviewers can use the named witness and listed edges to grade it alike.' });
+    note: 'The builder can meet this bar; two reviewers can use the named witness and listed edges to grade it alike.',
+    coverage: { version: 1, sourceMain: COMMIT, sourceCheck: store.getItem(f.board,id).item_check, timeoutMs: 300000, runner: 'node --test', required: [], files: [] } });
 }
 
 test('[B4,V2,V1,H16] a claim waits for a bar signed by another session', (t) => {
@@ -281,6 +282,22 @@ test('[B4,V1] unknown lineage and a changed baseline cannot masquerade as peer a
   const request = '12345678-1234-1234-1234-123456789abc';
   store.editItem(f.board, fresh, { agentId: 'coordinator', check: command, checkBaseline: { command, main: COMMIT, result: 'pending', request } });
   assert.ok(barReadiness(f.board, store.getItem(f.board, fresh)).missing.some(part => part.includes('red check baseline')));
-  store.completeCheckBaseline(f.board, fresh, { agentId: 'coordinator', expected: { command, main: COMMIT, request }, baseline: { command, main: COMMIT, result: 'red', request } });
+  store.completeCheckBaseline(f.board, fresh, { agentId: 'coordinator', expected: { command, main: COMMIT, request }, baseline: { command, main: COMMIT, result: 'red', request, testEvidence: { failed: ['named witness'], passed: [], noTestsMatched: false } } });
   assert.ok(barReadiness(f.board, store.getItem(f.board, fresh)).missing.some(part => part.includes('sign-off')), 'new baseline observation needs a new sign-off');
+});
+
+
+test('[B4,V1] enabling readiness cannot relabel a retained criterion as the later brief editor', (t) => {
+  const f = fixture(t);
+  readyAuthors(f);
+  const brief = 'Files: src/old.js\nTest: old witness\nNamed test: old witness\nMeasurements: no quantitative bounds\nReviewer edges: empty input';
+  const id = store.addItem(f.board, { by: f.other, lane: 'core', title: 'original author', criterion: 'original judgement', brief });
+  setBarReady(f.board, { agentId: 'coordinator', enabled: true });
+  const check = 'node --test --test-name-pattern "old witness" test/old.test.js';
+  store.editItem(f.board, id, { agentId: 'coordinator', brief: brief+'\nAn additional edge.', check,
+    checkBaseline: { command: check, main: COMMIT, result: 'red', testEvidence: { failed: ['old witness'], passed: [], noTestsMatched: false } } });
+  const status = barReadiness(f.board, store.getItem(f.board, id));
+  assert.equal(status.revision.authors.item_criterion.agent, f.other);
+  assert.equal(status.revision.authors.item_brief.agent, 'coordinator');
+  assert.throws(() => signReady(f, id, f.other), error => error.code === 'BAR_SELF_SIGN');
 });

@@ -1,3 +1,4 @@
+import { barReadySetting } from '../bar-readiness.js';
 /** The pullboard edit command, in its own module so an item adding another command never edits these lines. */
 import * as store from '../board.js';
 import {
@@ -48,7 +49,7 @@ export async function run(io, args) {
   };
   const { item, command } = store.validateItemEdit(board, id, change);
   if (command && command !== item.item_check) refuseCheckSyntax(command);
-  if (command && command !== item.item_check) change.checkBaseline = values.wait ? checkBaseline(ctx.info.root, command) : prepareCheckBaseline(ctx.info.root, command);
+  if (command && (command !== item.item_check || barReadySetting(board).enabled)) change.checkBaseline = values.wait ? checkBaseline(ctx.info.root, command) : prepareCheckBaseline(ctx.info.root, command);
   await ordered(ctx, board, 'editItem', [id, change]);
   if (change.checkBaseline?.result === 'pending') await launchBaseline(ctx, board, id, change.checkBaseline);
   io.result?.({ item: store.getItem(board, id) });

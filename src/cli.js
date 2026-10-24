@@ -1,3 +1,5 @@
+import { barReadinessRequired, barReadiness } from './bar-readiness.js';
+import { barCoverageCommand } from './bar-coverage.js';
 /**
  * The pullboard command line: every command, bound to who is asking (B3, R3). The main checkout is the
  * coordinator; every other worktree is the agent that joined from it.
@@ -519,6 +521,7 @@ const OPTIONS = {
   after: { type: 'string' },
   brief: { type: 'string' },
   'brief-file': { type: 'string' },
+  'coverage-file': { type: 'string' },
   text: { type: 'string' },
   gate: { type: 'string' },
   aim: { type: 'boolean' },
@@ -1083,7 +1086,9 @@ export function freezer(ctx, { captureVerifyPolicy = false, board } = {}) {
     if (board) refuseAgentApprovedRows(ctx.info.root, { board, config, item });
     const frozen = frozenCriterion(loadSpec(ctx.info.root, config), item, doctrine);
     if (!policy) return frozen; // Legacy criteria retain their original digest and committed claim base.
-    const text = JSON.stringify({ ...JSON.parse(frozen.text), policy });
+    const signed = board && barReadinessRequired(board, item) ? barReadiness(board, item).signed : null;
+    const coverage = signed?.coverage;
+    const text = JSON.stringify({ ...JSON.parse(frozen.text), ...(coverage ? { sourceCheck: item.item_check, check: barCoverageCommand(item.item_check, coverage), barCoverage: coverage, barRevision: signed.revision } : {}), policy });
     return { text, digest: createHash('sha256').update(text).digest('hex') };
   };
 }

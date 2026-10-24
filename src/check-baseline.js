@@ -1,3 +1,4 @@
+import { timingFromOutput, timingRunner } from './timing.js';
 /** Observe a proposed check on an isolated copy of main before recording its move [V2,H16]. */
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -36,10 +37,18 @@ export function checkBaseline(root, command, { main = undefined } = {}) {
     const selected = clone.status === 0 && spawnSync('git', ['-c', 'core.hooksPath=/dev/null', 'checkout', '--quiet', '--detach', base.main], { cwd: checkout, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     if (!selected || selected.status !== 0) return { ...base, result: 'unavailable', reason: 'temporary checkout could not be prepared' };
     const ran = runShell(checkout, command);
-    return { ...base, result: ran.isGreen ? 'green' : 'red', seconds: ran.seconds };
+    return { ...base, result: ran.isGreen ? 'green' : 'red', seconds: ran.seconds, testEvidence: baselineTestEvidence(ran.output, command) };
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+}
+
+/** Retain observed case outcomes, distinguishing an absent named case from unrelated shell failure. */
+export function baselineTestEvidence(output, command) {
+  const tests = timingFromOutput(output, timingRunner(command)).tests;
+  return { failed: [...new Set(tests.filter(test => !test.passed).map(test => test.name))].slice(0,512),
+    passed: [...new Set(tests.filter(test => test.passed).map(test => test.name))].slice(0,512),
+    noTestsMatched: /^run-tests: NO_TESTS_MATCHED:/mu.test(output) };
 }
 
 /**
