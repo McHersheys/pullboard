@@ -78,7 +78,7 @@ export async function readOutbox(file, key, boardId) {
   if (!existsSync(file)) return null;
   const plain = await unseal(key, readFileSync(file), { boardId, kind: 'outbox', sequence: 0 });
   const document = JSON.parse(gunzipSync(plain).toString('utf8'));
-  if (document?.version !== 1 || !Array.isArray(document.moves) || !document.base || !Number.isSafeInteger(document.baseSequence)) {
+  if (![1, 2].includes(document?.version) || !Array.isArray(document.moves) || !document.base || !Number.isSafeInteger(document.baseSequence)) {
     throw new Refused('RELAY_OUTBOX', 'the relay outbox on this machine is unreadable; keep it, and ask for help before relinking this board');
   }
   return document;
@@ -86,6 +86,9 @@ export async function readOutbox(file, key, boardId) {
 
 /** Seal and atomically replace the outbox, readable only by this user. */
 export async function writeOutbox(file, key, boardId, document) {
+  // Old clients must refuse richer result bindings rather than treating temporary item numbers as final.
+  if (document.moves.some(entry => entry.created?.some(row => row.resultPath.length)
+      || entry.refs?.some(ref => ref.resultPath?.length))) document.version = 2;
   const sealed = await seal(key, gzipSync(Buffer.from(JSON.stringify(document))), { boardId, kind: 'outbox', sequence: 0 });
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   const temporary = file + '.' + randomUUID() + '.tmp';
