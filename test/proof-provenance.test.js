@@ -9,6 +9,29 @@ import { prepareEngineMove, applyEngineMove } from '../src/engine.js';
 import { boardReceiptStore, receiptBody, receiptFields } from '../src/gate-run-receipt.js';
 import { proofCounts } from '../src/proof-provenance.js';
 import { recordNativeProof } from '../src/proof-cli.js';
+import { createE2eHelpers } from './e2e-helpers.js';
+
+test('a real failed native check records its actual exit without invented test counters [C7,H16]', (t) => {
+  const helpers = createE2eHelpers();
+  t.after(helpers.cleanup);
+  const command = `${JSON.stringify(process.execPath)} -e "process.exit(7)"`;
+  const box = helpers.project(command);
+  const board = store.openBoard(join(box.repo, '.git/pullboard/board.sqlite'));
+  t.after(() => store.closeBoard(board));
+  const id = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'A real red proof',
+    criterion: 'The process exits successfully.', specIds: ['G1'], check: command });
+  const claim = box.run(box.web, 'claim', String(id), '--json');
+  assert.equal(claim.code, 0, claim.err || claim.out);
+  const check = box.run(box.web, 'check', String(id), '--yes', '--json');
+  assert.equal(check.code, 1, check.out);
+  const shown = box.run(box.repo, 'show', String(id), '--json');
+  assert.equal(shown.code, 0, shown.err || shown.out);
+  const [receipt] = JSON.parse(shown.out).proofReceipts;
+  assert.equal(receipt.kind, 'check');
+  assert.equal(receipt.exitCode, 7);
+  assert.deepEqual(receipt.counts, { passed: null, failed: null, skipped: null });
+  assert.deepEqual(receipt.environment, { node: process.versions.node, platform: process.platform, arch: process.arch });
+});
 
 test('proof counters retain explicit totals and do not invent success from missing output [C7,H16]', () => {
   const unknown = { passed: null, failed: null, skipped: null };
