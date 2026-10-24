@@ -1,6 +1,10 @@
 /** Record a replacement on the board without pretending to transfer a chat's private context [B3,N19]. */
 import * as store from '../board.js';
-import { context, idArg, ordered, whoAmI, withBoard } from '../cli.js';
+import { context } from '../cli.js';
+import { idArg } from '../cli.js';
+import { ordered } from '../cli.js';
+import { whoAmI } from '../cli.js';
+import { withBoard } from '../cli.js';
 import { tryGit } from '../git.js';
 import { itemHandoff } from '../handoff-state.js';
 import { Refused } from '../refused.js';
