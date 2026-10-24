@@ -2,6 +2,7 @@ import {
   barReadySetting,
   barReadyProblem,
 } from '../bar-readiness.js';
+import { barCheckWarning } from '../bar-check.js';
 import { requireSubmitComposition } from '../submit-composition.js';
 /** The pullboard submit command, in its own module so an item adding another command never edits these lines. */
 import * as store from '../board.js';
@@ -57,6 +58,10 @@ import * as seatCheckout from '../seat-checkout.js';
 import {
   submitPreflight,
 } from '../submit-preflight.js';
+import {
+  changedLines,
+  oversizeNote,
+} from '../submit-size.js';
 import {
   dependencySnapshots,
   frozenCheck,
@@ -124,6 +129,15 @@ export async function submitHere(ctx, id, infra) {
     if (correction) throw correction;
     return item;
   });
+  const barWarning = await withBoard(ctx, async board => {
+    const warning = barCheckWarning(board, held);
+    if (!warning) return null;
+    await ordered(ctx, board, 'appendFact', [id, { agentId: held.item_owner, kind: 'note', text: `bar.check warning: ${warning}` }]);
+    return warning;
+  });
+  if (barWarning) {
+    ctx.io.say(`bar.check warning: ${barWarning}`);
+  }
   const policy = itemPolicy(root, held);
   const acceptedMain = mainPolicy(root);
   const requireComposition = withBoard(ctx, board => barReadySetting(board).enabled);
@@ -211,6 +225,9 @@ export async function submitHere(ctx, id, infra) {
       submissionProof: { version: 1, files: gate.files, full: gate.full, deferred: gate.deferred, reason: gate.reason, ...(gate.deferredFiles ? { deferredFiles: gate.deferredFiles } : {}) },
       ...(gate.deferred ? { note: gate.deferredFiles ? deferredSelectionNote(gate.deferredFiles) : 'full suite deferred to the landing gate' } : {}) }]);
   });
+  // A large submit still goes through; the note only suggests a chain of smaller items (#1162).
+  const sizeNote = oversizeNote(changedLines(root, currentTrunk.commit, commit), acceptedMain.config.itemSizeBudget);
+  if (sizeNote) ctx.io.say(`note: ${sizeNote}`);
   const report = waived
     ? `submission proof waived, not green: ${waived.length} failure(s), each covered by a live person waiver; the whole output is in ${gate.log}\n${waivedLines.join('\n')}`
     : submitGateReport(gate);
