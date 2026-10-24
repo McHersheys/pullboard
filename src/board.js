@@ -1,4 +1,4 @@
-import { ensureRigorCounters } from './rigor-counters.js';
+import { ensureProofCounters } from './proof-counters.js';
 import { correctedNoVerdictReopen } from './reopen-history.js';
 import {
   getShout,
@@ -341,7 +341,7 @@ export function openBoard(file, clock = systemClock, { isMain, onDiagnostic } = 
     db.exec(`PRAGMA busy_timeout = ${BOARD_BUSY_TIMEOUT_MS}`);
     if (file !== ':memory:' && isMain !== false) db.exec('PRAGMA journal_mode = WAL');
     const board = { db, clock };
-    let warmProjection = true;
+    let warmCounters = true;
     if (isMain !== false || file === ':memory:') {
       // Migrate and audit only a board whose version is behind; a drifted shape is reported and left alone (#1047).
       const standing = boardStanding(db, SCHEMA_DIGEST, SCHEMA_VERSION, readEventLogVersion(db) < EVENT_LOG_VERSION);
@@ -353,14 +353,17 @@ export function openBoard(file, clock = systemClock, { isMain, onDiagnostic } = 
         guardStore(board);
       }
       if (standing === 'behind' || standing === 'unstamped') recordSchemaStamp(db, SCHEMA_DIGEST);
-      if (standing === 'drifted') { warmProjection = false; reportDrift(file, onDiagnostic); }
+      if (standing === 'drifted') { warmCounters = false; reportDrift(file, onDiagnostic); }
     } else {
       // Read compatibility before any local effect; persistent schema belongs to trunk alone.
       readEventLogVersion(db);
       reportSharedSchema(file, sharedSchemaDiagnostic(db, expectedBoardSchema(SCHEMA, migrate, storeTriggers)), onDiagnostic);
     }
     guardMoves(board);
-    if (warmProjection) atomic(board, () => ensureRigorCounters(board));
+    // Writable commands catch up old writers or missing local projections once. Read-only open
+    // never calls this path; drifted stores remain untouched, and invalid history stays invalid.
+    // Proof warming also preserves the Rigor projection, including after a proof-cache rebuild.
+    if (warmCounters) atomic(board, () => ensureProofCounters(board));
     return board;
   } catch (error) {
     try { db?.close(); } catch {}
