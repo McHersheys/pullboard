@@ -12,6 +12,7 @@ export {
   getShout,
   allShouts,
   shoutDetails,
+  decisionAnswers,
   openRequests,
   pendingRefreeze,
   pendingRefreezeProblem,
@@ -32,10 +33,8 @@ import {
 } from './line-order.js';
 export { lineSettings, setLineSetting } from './line-settings.js';
 
-import {
-  applyOutsideIntake,
-  approveOutside as applyOutsideApproval,
-} from './outside-store.js';
+import { applyOutsideIntake } from './outside-store.js';
+import { approveOutside as applyOutsideApproval } from './outside-store.js';
 import {
   outsideSandboxProblem,
   outsideBuildProblem,
@@ -44,16 +43,12 @@ import {
   saveOutsideSource,
 } from './outside-source.js';
 import { FILE_GROWTH_NOTICE_ENGINE } from './file-growth-notice-engine.js';
-import {
-  recordBarRevision,
-  barReadyProblem,
-} from './bar-readiness.js';
+import { recordBarRevision } from './bar-readiness.js';
+import { barReadyProblem } from './bar-readiness.js';
 export { setBarReady, signBar } from './bar-readiness.js';
-import {
-  coordinatorCheck,
-  normalizeCheckBaseline,
-  saveCheckBaseline,
-} from './item-check-baseline.js';
+import { coordinatorCheck } from './item-check-baseline.js';
+import { normalizeCheckBaseline } from './item-check-baseline.js';
+import { saveCheckBaseline } from './item-check-baseline.js';
 export { coordinatorCheck, completeCheckBaseline, itemCheckAuthor } from './item-check-baseline.js';
 import {
   closeBoard,
@@ -367,6 +362,7 @@ export function openBoard(file, clock = systemClock, { isMain, onDiagnostic } = 
     guardMoves(board);
     // Writable commands catch up old writers or missing local projections once. Read-only open
     // never calls this path; drifted stores remain untouched, and invalid history stays invalid.
+    // Proof warming also preserves the Rigor projection, including after a proof-cache rebuild.
     if (warmCounters) atomic(board, () => ensureProofCounters(board));
     return board;
   } catch (error) {
