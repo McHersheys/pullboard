@@ -89,6 +89,8 @@ import {
   timingRunner,
 } from './timing.js';
 import { landingShardProfile } from './landing-shards.js';
+import { localRunnerDescriptor } from './runner-load.js';
+import { sampleRunnerLoad } from './runner-load.js';
 import { receiptLine } from './gate-receipt.js';
 import { receiptOf } from './gate-receipt.js';
 import { recordReceipt } from './gate-receipt.js';
@@ -236,7 +238,7 @@ export function runProfiledShell(root, command, { waitMs = 0, artifactDirectory,
     browser: gateLease.browser, pipefail, stages, waivers: landing ? waivers : [], metadata: { ...(gateLease.runMetadata ?? {}), landing, ...(timeoutMs ? { timeoutMs } : {}) } }) }
     : runShell(root, command, { pipefail, env: inherited, stages, timeoutMs });
   gateLease?.tracker?.mark('ranAt');
-  if (gateLease) gateLease.environment = run.environment ?? null;
+  if (gateLease) { gateLease.environment = run.environment ?? null; gateLease.executionAdmission = run.executionAdmission ?? null; }
   const sandboxBlocked = run.isGreen ? null : run.sandboxBlocked ?? (run.executionRunner
     // The controller cannot realpath remote files; retain the network denial signal without treating remote paths as local paths.
     ? sandboxBlockedOperation(root, run.output, { includeFilePaths: false })
@@ -263,6 +265,7 @@ export async function runProfiledShellAsync(root, command, { waitMs = 0, gateSlo
     const run = await runOnRunnerAsync(root, command, { runner: gateLease.runner, source: gateLease.source,
       browser: gateLease.browser, metadata: { ...(gateLease.runMetadata ?? {}), landing } });
     gateLease.environment = run.environment ?? null;
+    gateLease.executionAdmission = run.executionAdmission ?? null;
     gateLease.tracker?.mark('ranAt');
     const wallMs = Math.max(0, Date.now() - started);
     const profilePath = join(dirname(gitPath(root, LOG)), `pullboard-gate-${randomUUID()}.profile.json`);
@@ -308,7 +311,19 @@ export async function runProfiledShellAsync(root, command, { waitMs = 0, gateSlo
 /** Close a gated run's receipt (#836) as its evidence is written; the slot's release records this same receipt. */
 function settleReceipt(lease) {
   if (!lease?.tracker) return undefined;
-  lease.receipt = { ...receiptOf(lease.tracker, { kind: lease.receiptKind, slot: lease.slot }), environment: lease.environment ?? null };
+  const executor = lease.executionAdmission;
+  const local = !lease.runner;
+  const descriptor = local ? lease.localDescriptor ?? localRunnerDescriptor(lease.capacity ?? null, null)
+    : { id: lease.runner.host, kind: 'ssh', slots: { current: executor?.slots ?? lease.runner.slots, limit: executor?.slots ?? lease.runner.slots, elastic: false },
+      capabilities: { os: lease.environment?.platform ?? null, browser: lease.runner.browser > 0 } };
+  const admittedAt = local ? lease.admittedAt ?? new Date(lease.tracker.marks.admittedAt ?? lease.tracker.marks.requestedAt).toISOString() : executor?.admittedAt ?? null;
+  const finishedAt = local ? new Date().toISOString() : executor?.finishedAt ?? null;
+  const load = local ? { start: lease.startLoad ?? sampleRunnerLoad(), end: sampleRunnerLoad() } : executor?.load ?? null;
+  lease.receipt = { ...receiptOf(lease.tracker, { kind: lease.receiptKind, slot: lease.slot }), environment: lease.environment ?? null,
+    runner: descriptor, admittedAt, finishedAt, timing: lease.timing === true, inherited: lease.inherited === true,
+    occupiedSlots: lease.timing ? descriptor.slots.current : 1, load,
+    ...(local ? lease.timingEvidence?.() ?? { exclusive: false, unfencedClients: [] }
+      : { exclusive: executor?.exclusive === true, unfencedClients: executor?.unfencedClients ?? [] }) };
   return lease.receipt;
 }
 
@@ -342,7 +357,7 @@ function runTiming(run, command) {
  * hold (gate.memoryFloorMB) holds short slots too, since a short run uses the same machine memory.
  *
  * @param {(lease: { waitMs: number, token?: string, pool?: string, browser?: boolean, slotClass?: 'gate'|'short', release: () => void }) => any | Promise<any>} action - Work to perform while holding a slot.
- * @param {{ landing?: boolean, itemCheck?: boolean, shortEligible?: boolean, diagnostic?: boolean, browser?: boolean, gui?: boolean, remote?: boolean, agent?: string, item?: string|number, kind?: string, onWait?: (state: object) => void, onReceipt?: (receipt: object) => void, readMemory?: typeof readMachineMemory }} [options] - Queue class, short-slot eligibility, remote eligibility, progress reporter, the run's receipt once its slot is released (#836) and, for tests, the machine memory reader.
+ * @param {{ landing?: boolean, itemCheck?: boolean, shortEligible?: boolean, diagnostic?: boolean, browser?: boolean, gui?: boolean, remote?: boolean, timing?: boolean, agent?: string, item?: string|number, kind?: string, onWait?: (state: object) => void, onReceipt?: (receipt: object) => void, readMemory?: typeof readMachineMemory }} [options] - Queue class, short-slot eligibility, remote eligibility, progress reporter, the run's receipt once its slot is released (#836) and, for tests, the machine memory reader.
  * @returns {Promise<any>} The action's result after releasing its lease.
  */
 export async function withGateSlot(root, action, options = {}) {
@@ -366,21 +381,27 @@ export async function withLandingGateSlot(root, action, options = {}) {
 }
 
 /** One gate admission and its action; withGateSlot may call it again for a local rerun. */
-async function withOneGateSlot(root, action, { landing = false, itemCheck = false, shortEligible = false, diagnostic = false, browser = false, gui = false, remote = true, agent, item = '', kind = '', onWait, onReceipt, readMemory = readMachineMemory } = {}) {
+async function withOneGateSlot(root, action, { landing = false, itemCheck = false, shortEligible = false, diagnostic = false, browser = false, gui = false, remote = true, timing = false, agent, item = '', kind = '', onWait, onReceipt, readMemory = readMachineMemory } = {}) {
   const tracker = startReceipt();
   const receiptKind = kind || (landing ? 'landing' : 'gate');
   /** Hand the run its receipt tracker and slot, then record its receipt once the slot is released (#836). */
-  const timed = lease => Object.assign(lease, { tracker, receiptKind, slot: slotOf(lease, { browserFree: browserFreeChecksEnabled() }) });
+  const timed = lease => Object.assign(lease, { tracker, receiptKind,
+    ...(!lease.runner ? { startLoad: lease.startLoad ?? sampleRunnerLoad(),
+      localDescriptor: localRunnerDescriptor(lease.capacity ?? null, loadMachineSettings().browserSlots > 0) } : {}),
+    slot: slotOf(lease, { browserFree: browserFreeChecksEnabled() }) });
   const record = lease => {
     const receipt = lease.receipt ?? receiptOf(tracker, { kind: receiptKind, slot: lease.slot });
     recordReceipt(root, receipt);
     onReceipt?.(receipt);
   };
-  const inherited = inheritedGateSlot({ root, browser, namedFiles: shortEligible });
+  const inherited = inheritedGateSlot({ root, browser, namedFiles: shortEligible, timing });
   if (inherited) {
     timed(Object.assign(inherited, { inherited: true })).tracker.mark('actionAt');
     try { return await action(inherited); }
-    finally { inherited.release(); record(inherited); }
+    finally {
+      try { settleReceipt(inherited); } finally { inherited.release(); }
+      record(inherited);
+    }
   }
   const settingsProvider = () => loadMachineSettings();
   const floorMB = memoryFloorMB();
@@ -408,6 +429,7 @@ async function withOneGateSlot(root, action, { landing = false, itemCheck = fals
     diagnostic,
     browser,
     gui,
+    timing,
     allowIdleCapacityUpdate: true,
     remote: remote && Boolean(source),
     runnerProvider: () => loadMachineSettings().runners ?? [],
@@ -419,7 +441,7 @@ async function withOneGateSlot(root, action, { landing = false, itemCheck = fals
   try {
     while (true) {
       lease.source = source;
-      lease.runMetadata = { landing, itemCheck, diagnostic, gui, item: String(item), kind };
+      lease.runMetadata = { landing, itemCheck, diagnostic, gui, timing, item: String(item), kind };
       timed(lease).tracker.mark('actionAt');
       try { return await action(lease); }
       catch (error) {
@@ -433,7 +455,7 @@ async function withOneGateSlot(root, action, { landing = false, itemCheck = fals
       }
     }
   } finally {
-    lease.release();
+    try { settleReceipt(lease); } finally { lease.release(); }
     record(lease);
   }
 }
