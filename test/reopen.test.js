@@ -769,7 +769,7 @@ test('a reviewer withdraws its own accept before landing and the builder gets th
   }
   const { box, reviewer, submitted } = withdrawalFixture(t);
   box.git(box.repo, 'merge', '-q', '--no-edit', submitted.commit);
-  const merged = box.run(box.repo, 'merged', '1', '--json');
+  const merged = box.run(box.repo, 'merged', '1', box.git(box.repo, 'rev-parse', 'HEAD'), '--json');
   assert.equal(merged.code, 0, merged.err + merged.out);
   for (const caller of [box.repo, reviewer]) {
     const refused = box.run(caller, 'reopen', '1', '--withdraw-verdict', '--note', 'too late', '--json');
