@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
+import { awaitNestedRun } from '../src/test-file-pool.js';
 
 const runner = fileURLToPath(new URL('../bin/run-tests.js', import.meta.url));
 
@@ -20,13 +21,14 @@ import { test } from 'node:test';
 test('inner', () => { appendFileSync(${JSON.stringify(seen)}, JSON.stringify({ who: 'inner', runner: process.env.PULLBOARD_TEST_RUNNER_PID }) + '\\n'); });
 `);
   writeFileSync(outer, `import { appendFileSync } from 'node:fs';
+import { awaitNestedRun } from ${JSON.stringify(new URL('../src/test-file-pool.js', import.meta.url).href)};
 import { spawn } from 'node:child_process';
 import { test } from 'node:test';
 test('outer', async () => {
   appendFileSync(${JSON.stringify(seen)}, JSON.stringify({ who: 'outer', runner: process.env.PULLBOARD_TEST_RUNNER_PID }) + '\\n');
   const nested = spawn(process.execPath, [${JSON.stringify(runner)}, ${JSON.stringify(inner)}], { stdio: 'ignore' });
   appendFileSync(${JSON.stringify(seen)}, JSON.stringify({ who: 'nested runner', pid: String(nested.pid) }) + '\\n');
-  const code = await new Promise((done) => nested.once('close', done));
+  const { status: code } = await awaitNestedRun(nested);
   if (code !== 0) throw new Error('the nested run failed with ' + code);
 });
 `);
@@ -34,7 +36,7 @@ test('outer', async () => {
   let output = '';
   child.stdout.setEncoding('utf8').on('data', (part) => { output += part; });
   child.stderr.setEncoding('utf8').on('data', (part) => { output += part; });
-  const code = await new Promise((done) => child.once('close', done));
+  const { status: code } = await awaitNestedRun(child);
   assert.equal(code, 0, output);
   const records = readFileSync(seen, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
   const by = (who) => records.find((record) => record.who === who);

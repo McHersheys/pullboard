@@ -1,6 +1,7 @@
 /** @pullboard-test-input source-tree */
 /** @pullboard-test-loads src/cli.js */
 /** Real-process resource queue and lease coverage [Q1,Q2,Q3]. */
+import { awaitNestedRun } from '../src/test-file-pool.js';
 import assert from 'node:assert/strict';
 import { startFixtureChild as spawn, runFixtureChild as spawnSync, reportFixtureChildFailure, runFixtureChild, runFixtureChildAsync, runFixtureGit } from './fixture-child.js';
 import { performance } from 'node:perf_hooks';
@@ -19,7 +20,6 @@ import { checkNeedsBrowser } from '../src/browser-admission.js';
 import { releaseQueueProof } from './resources-release-fixture.js';
 import { openPrivateScopedView, queuedLeaseProof, resourceNames, resourceWorkerSources } from './resources-lease-fixture.js';
 import { checkProject, verificationProject } from './resources-verify-fixture.js';
-
 const TEMP = [];
 const CHILDREN = new Set();
 const MODULE = pathToFileURL(resolve(import.meta.dirname, '../src/resources.js')).href;
@@ -1744,7 +1744,7 @@ test('a gate-slot waiter retries a locked slot database [C7]', async () => {
     return { done: locker, pid: locker.child.pid, stop: () => locker.child.kill('SIGKILL') };
   };
   /** Run one named test file through the real runner, which waits for a machine gate slot. */
-  const runWaiter = () => runFixtureChildAsync(process.execPath, [TEST_RUNNER, 'ran.test.js'], { cwd: box.first, env });
+  const runWaiter = () => awaitNestedRun(runFixtureChildAsync(process.execPath, [TEST_RUNNER, 'ran.test.js'], { cwd: box.first, env }));
 
   const shortLock = await holdLock(3_000);
   const kept = await runWaiter();
