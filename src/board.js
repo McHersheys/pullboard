@@ -1478,13 +1478,11 @@ export function reopen(board, id, { agentId, note = '', conflict, cause, reopenF
               && Array.isArray(culprit.tests) && culprit.tests.length
               && culprit.tests.every((failure) => typeof failure.file === 'string' && typeof failure.name === 'string'
                 && note.includes(`${failure.file}: ${failure.name}`) && note.includes(culprit.mergeCommit)));
-          const usesQuotedFailure = currentEngine >= QUOTED_LANDING_FAILURE_ENGINE
-            && (quotedLandingFailure === true || manualLandingFailureQuoted(note));
-          const offersQuotedFailureGuidance = currentEngine >= QUOTED_LANDING_FAILURE_ENGINE;
-          const manual = manualLandingFailure(note, { quoted: usesQuotedFailure });
+          const quoted = currentEngine >= QUOTED_LANDING_FAILURE_ENGINE;
+          const manual = manualLandingFailure(note, { quoted: quoted && (quotedLandingFailure === true || manualLandingFailureQuoted(note)) });
           if (!accepted || (!recorded && !manual)) return new Refused('LANDING_FAILURE_REQUIRED',
-            `reopening verified item #${id} needs --note in the format <test file>: <test name>; merge commit <sha>${offersQuotedFailureGuidance ? ', or quote a test name containing a semicolon' : ''}`,
-            offersQuotedFailureGuidance ? NEXT_STEPS.LANDING_FAILURE_REQUIRED : undefined);
+            `reopening verified item #${id} needs --note in the format <test file>: <test name>; merge commit <sha>${quoted ? ', or quote a test name containing a semicolon' : ''}`,
+            quoted ? NEXT_STEPS.LANDING_FAILURE_REQUIRED : undefined);
           supersedes = accepted.event_id;
           landingFailure = recorded
             ? { batch: recorded.batch.id, tests: recorded.culprit.tests, mergeCommit: recorded.culprit.mergeCommit }
