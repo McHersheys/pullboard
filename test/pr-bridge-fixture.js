@@ -86,7 +86,7 @@ export function landBridgeItems(box) {
 
 /** Stand in for GitHub over real HTTP, refusing every merge endpoint. */
 export async function bridgeProvider(t, box) {
-  const state = { requests: [], pulls: [], checks: [], annotations: [], annotationsByRun: {}, next: 1 };
+  const state = { requests: [], pulls: [], checks: [], statuses: [], annotations: [], annotationsByRun: {}, next: 1 };
   const server = createServer(async (req, res) => {
     let raw = '';
     for await (const chunk of req) raw += chunk;
@@ -115,6 +115,11 @@ export async function bridgeProvider(t, box) {
         pull.head.sha = box.git(box.remote, 'rev-parse', `refs/heads/${pull.head.ref}`);
       }
       return reply(200, pull);
+    }
+    const statusRoute = /^\/repos\/fixture\/repository\/statuses\/([a-f0-9]+)$/u.exec(url.pathname);
+    if (statusRoute && req.method === 'POST') {
+      const status = { ...body, sha: statusRoute[1] };
+      state.statuses.push(status); return reply(201, status);
     }
     if (/\/commits\/[a-f0-9]+\/check-runs$/u.test(url.pathname)) return reply(200, { total_count: state.checks.length, check_runs: state.checks });
     const annotations = /\/check-runs\/(\d+)\/annotations$/u.exec(url.pathname);

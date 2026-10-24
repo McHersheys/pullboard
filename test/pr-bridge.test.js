@@ -66,6 +66,21 @@ test("publish opens one pull request with each item's receipt and records the pe
 });
 
 
+test('a pull request carries a verified-by-a-second-agent status and an outside pull request reads not verified [B3,R3]', async t => {
+  const box = bridgeProject(t);
+  landBridgeItems(box);
+  const provider = await bridgeProvider(t, box);
+  const published = await runBridgeCLI(box, 'publish', '--json');
+  assert.equal(published.code, 0, published.err);
+  const pull = provider.pulls[0];
+  const status = provider.statuses.findLast(entry => entry.sha === pull.head.sha
+    && entry.context === 'pullboard/verified-by-second-agent');
+  assert.equal(status?.state, 'failure',
+    'the actual PR must carry not verified while its unreceipted configuration/merge commits lack second-agent proof');
+  assert.equal(status.description, 'not verified');
+});
+
+
 test('publication modes are opt-in and invalid values refuse before a push [B3,R3]', () => {
   assert.equal(configFromSource('{}').publish?.pullRequest ?? false, false);
   for (const mode of [false, 'release', 'item']) {
