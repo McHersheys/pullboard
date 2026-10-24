@@ -11,6 +11,7 @@ import { after, test } from 'node:test';
 import * as store from '../src/board.js';
 import { exportBoard, importBoard } from '../src/exchange.js';
 import { applyEngineMove, prepareEngineMove } from '../src/engine.js';
+import { appliedSequence } from '../src/engine.js';
 import { relayClientFixture as sessionRelay, relayFixtureChild as sessionChild, relayClientFixture, relayFixtureChild } from './relay-client-fixture.js';
 import { runFixtureGit as sessionGit, runFixtureGit } from './fixture-child.js';
 import { createE2eHelpers } from './e2e-helpers.js';
@@ -871,4 +872,47 @@ test('a landing lease renewal or waiter poll writes no board event [Q1,Q2,Q3]', 
   const state = store.landingLeaseState(board);
   assert.equal(state.holder, null);
   assert.equal(state.line.length, 1, 'suppressing polling events does not discard the waiting command');
+});
+
+
+test('an agent grant narrows at claim and expires identically on independent replicas [E21]', () => {
+  const box = helpers.project();
+  for (const title of ['Claimed work', 'Other work']) {
+    run(box, box.repo, 'add', 'web', title, '--specs', 'G1', '--check', 'test -f web/grant-proof');
+  }
+  run(box, box.repo, 'add', 'api', 'Other lane', '--specs', 'G2', '--check', 'test -f api/grant-proof');
+  run(box, box.web, 'claim', '1');
+  const actor = withBoard(box.repo, board => store.listAgents(board).find(agent => agent.agent_path === box.web).agent_id);
+  const held = withBoard(box.repo, board => store.getItem(board, 1));
+  const snapshot = withBoard(box.repo, exportBoard);
+  const peer = join(box.dir, 'grant-replica');
+  box.git(box.dir, 'clone', '-q', box.repo, peer);
+  withBoard(peer, board => importBoard(board, snapshot));
+  const roots = [box.repo, peer];
+  const during = new Date(Date.parse(held.item_lease_until) - 1000).toISOString();
+  const expired = new Date(Date.parse(held.item_lease_until) + 1).toISOString();
+  /** Replay one sealed public engine move on both real SQLite replicas at its ordered receipt time. */
+  const replay = (operation, args, at = during) => {
+    const move = withBoard(box.repo, board => prepareEngineMove(board, operation, args));
+    const outcomes = roots.map(root => withBoard(root, board => applyEngineMove(board, move,
+      { sequence: appliedSequence(board) + 1, at })));
+    assert.deepEqual(outcomes[0], outcomes[1], 'the same move has the same public result on both replicas');
+    return outcomes[0];
+  };
+  /** Facts are ordinary item mutations, not a claim-only or CLI-only permission check. */
+  const fact = (item, text, at) => replay('appendFact', [item, { agentId: actor, kind: 'note', text }], at);
+  assert.equal(fact(1, 'Own claimed item remains writable').error, undefined, 'positive own-item mutation reached the engine');
+  const before = roots.map(root => withBoard(root, board => store.itemThread(board, 2).filter(entry => entry.type === 'fact')));
+  const outside = fact(2, 'This must not reach another item');
+  assert.equal(outside.error?.code, 'AGENT_GRANT_ITEM', 'claim narrows item mutations even inside the same lane');
+  assert.deepEqual(roots.map(root => withBoard(root, board => store.itemThread(board, 2).filter(entry => entry.type === 'fact'))), before,
+    'a refused move cannot leave a fact on either replica');
+  assert.equal(fact(1, 'The expired lease no longer authorizes a move', expired).error?.code,
+    'AGENT_GRANT_EXPIRED', 'ordered receipt time, not the receiving machine clock, ends the grant');
+  // Administrative communication and release cannot be trapped behind the grant being reported.
+  assert.equal(replay('shout', [{ from: actor, to: 'coordinator', text: 'My claim expired; arranging the next work.' }], expired).error,
+    undefined, 'ordinary coordination remains available after expiry');
+  assert.equal(replay('release', [1, actor, 'Done with this claim.'], expired).error, undefined);
+  assert.equal(fact(3, 'An agent cannot mutate another lane', expired).error?.code, 'AGENT_GRANT_LANE',
+    'the unclaimed seat still has only its registered lane');
 });
