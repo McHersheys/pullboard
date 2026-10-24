@@ -713,10 +713,10 @@ function writeSessionHook(root, onWrite) {
   }
   settings.hooks = { ...settings.hooks };
   let changed = false;
-  for (const [event, command] of [['SessionStart', RESUME_HOOK], ['Stop', 'pullboard heartbeat'], ['SessionEnd', 'pullboard heartbeat']]) {
+  for (const [event, command] of [['SessionStart', RESUME_HOOK], ['Stop', RESUME_HOOK.replaceAll(' resume', ' heartbeat')], ['SessionEnd', RESUME_HOOK.replaceAll(' resume', ' heartbeat')]]) {
     const hooks = settings.hooks[event] ?? [];
     if (!Array.isArray(hooks)) continue;
-    if (!JSON.stringify(hooks).includes(command)) {
+    if (!JSON.stringify(hooks).includes(event === 'SessionStart' ? 'pullboard resume' : 'pullboard heartbeat')) {
       settings.hooks[event] = [...hooks, { hooks: [{ type: 'command', command, timeout: 30 }] }];
       changed = true;
     }
