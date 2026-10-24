@@ -8,7 +8,10 @@ import { coordinatorHolder } from './coordinator-hold.js';
 import { Refused } from './refused.js';
 import { ENGINE_VERSION } from './machine.js';
 import { LANDING_LOCAL_LEASE_ENGINE } from './landing-local-lease-engine.js';
-import { localLandingEntry, rememberLocalLanding } from './landing-local-lease.js';
+import {
+  localLandingEntry,
+  rememberLocalLanding,
+} from './landing-local-lease.js';
 
 const KEY = 'landing_lease';
 export const LANDING_LEASE_MS = 30_000;

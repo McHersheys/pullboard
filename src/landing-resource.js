@@ -8,7 +8,11 @@ import {
 } from './landing-lease.js';
 import { Refused } from './refused.js';
 import { coordinatorHolder } from './coordinator-hold.js';
-import { localLandingEntry, rememberLocalLanding, forgetLocalLanding } from './landing-local-lease.js';
+import {
+  localLandingEntry,
+  rememberLocalLanding,
+  forgetLocalLanding,
+} from './landing-local-lease.js';
 
 /** A dead local owner can be released immediately on an unlinked board; never compare foreign PIDs. */
 function deadLocalOwner(holder, local) {
