@@ -252,11 +252,11 @@ test('help covers every dispatched subcommand [N2]', () => {
 test('the settings forms the CLI dispatches have help and reach their own refusal [N2]', () => {
   // The expected forms are written out here, not read from the parser: each one must have help, and
   // each must reach its own value check in settingsCommand, which proves the dispatcher knows it (#824).
-  assert.deepEqual([...helpDeclaration.SETTING_FORMS], ['gateSlots', 'browserSlots', 'gate.shortSlots']);
+  assert.deepEqual([...helpDeclaration.SETTING_FORMS], ['gateSlots', 'browserSlots', 'gate.shortSlots', 'landing.pool']);
   const folder = mkdtempSync(join(tmpdir(), 'pullboard-settings-'));
   sandboxes.push(folder);
   runFixtureGit(['init', '-q'], { cwd: folder });
-  const refusals = { gateSlots: '[USAGE]', browserSlots: '[BAD_BROWSER_SLOTS]', 'gate.shortSlots': '[BAD_SHORT_SLOTS]' };
+  const refusals = { gateSlots: '[USAGE]', browserSlots: '[BAD_BROWSER_SLOTS]', 'gate.shortSlots': '[BAD_SHORT_SLOTS]', 'landing.pool': '[USAGE]' };
   for (const [form, code] of Object.entries(refusals)) {
     const help = run('help', 'settings', form);
     assert.equal(help.status, 0, `help settings ${form} exits 0: ${help.stderr}`);

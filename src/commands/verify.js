@@ -196,6 +196,7 @@ export async function verifyHere(ctx, id, { second, values }) {
       policy: ctx.config.verify.policy,
       familyPolicy: ctx.config.verify.family,
       review,
+      environment: check?.environment ?? null,
       ...(decision === 'ACCEPT' ? { check: check.checked ? 'green' : 'none' } : {}),
       ...(implies ? { implies } : {}),
     }]);

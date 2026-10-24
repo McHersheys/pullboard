@@ -33,6 +33,11 @@ export function loadMachineSettings() {
   const file = machineSettingsFile();
   const value = readMachineSettingsFile(file);
   if (!value) return { gateSlots: DEFAULT_GATE_SLOTS, browserSlots: DEFAULT_BROWSER_SLOTS };
+  if (value.landing !== undefined && (!value.landing || typeof value.landing !== 'object' || Array.isArray(value.landing)
+    || Object.keys(value.landing).some(key => key !== 'pools') || !Array.isArray(value.landing.pools)
+    || value.landing.pools.some(id => typeof id !== 'string' || !/^[a-f0-9]{32}$/u.test(id)))) {
+    throw new Refused('BAD_MACHINE_SETTINGS', `landing.pools in ${file} lists the board identifiers this machine may land`);
+  }
   if (value.health?.sentinel !== undefined && typeof value.health.sentinel !== 'boolean') {
     throw new Refused('BAD_MACHINE_SETTINGS', `health.sentinel in ${file} must be true or false`);
   }
@@ -134,6 +139,17 @@ function writeMachineSettings(settings) {
     writeFileSync(temporary, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
     renameSync(temporary, file);
   } finally { rmSync(temporary, { force: true }); }
+}
+
+/** Opt this machine into one board's landing pool without cancelling any admitted work. */
+export function setLandingPool(board, enabled) {
+  if (!/^[a-f0-9]{32}$/u.test(board) || typeof enabled !== 'boolean') throw new Refused('BAD_MACHINE_SETTINGS', 'a landing pool needs this board identifier and on or off');
+  const settings = loadMachineSettings();
+  const pools = new Set(settings.landing?.pools ?? []);
+  if (enabled) pools.add(board); else pools.delete(board);
+  const next = { ...settings, landing: { pools: [...pools].sort() } };
+  writeMachineSettings(next);
+  return next;
 }
 
 /** Raise machine gate capacity immediately; decreases require an empty durable queue. */
