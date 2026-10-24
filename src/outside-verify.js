@@ -1,3 +1,5 @@
+import { checkNeedsBrowser } from './browser-admission.js';
+import { browserFreeChecksEnabled } from './settings.js';
 import { requireOutsideReceipt } from './outside-proof.js';
 /** Outside verification uses the ordinary native verdict authority but never checks out its executable tree. */
 import {
@@ -31,8 +33,11 @@ export async function outsideVerdict(ctx, board, item, me, decision, values) {
     if (!isClean(ctx.info.root) || untracked(ctx.info.root).length) throw new Refused('DIRTY', 'commit the trusted reviewing checkout before sandbox verification');
     const head = headCommit(ctx.info.root);
     const trunk = requireTrunkMerge(ctx.info.root, item.item_commit);
+    const command = JSON.parse(item.item_frozen).check;
+    const browser = !browserFreeChecksEnabled() || await checkNeedsBrowser(ctx.info.root, command, { commit: item.item_commit })
+      || await checkNeedsBrowser(ctx.info.root, policy.config.gate, { commit: item.item_commit });
     sandbox = await withGateSlot(ctx.info.root, lease => verifyOutsideSandbox(ctx.info.root, item, policy, lease),
-      { remote: false, browser: false, agent: resourceAgent(ctx), item: String(item.item_id), kind: 'review', itemCheck: true });
+      { remote: false, browser, agent: resourceAgent(ctx), item: String(item.item_id), kind: 'review', itemCheck: true });
     requireOutsideReceipt(board, sandbox);
     if (headCommit(ctx.info.root) !== head || !isClean(ctx.info.root) || untracked(ctx.info.root).length) throw new Refused('NOT_AT_COMMIT', 'the trusted reviewing checkout moved during sandbox verification; restore its clean head before reviewing again');
     const after = requireTrunkMerge(ctx.info.root, item.item_commit);
