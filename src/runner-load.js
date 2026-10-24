@@ -11,7 +11,7 @@ export function sampleRunnerLoad() {
 }
 
 /** Describe actual local admission capacity; unreported capabilities stay unknown. */
-export function localRunnerDescriptor(slots, browser) {
+export function localRunnerDescriptor(slots, browser, gui) {
   return { id: `local:${hostname()}`, kind: 'local', slots: { current: slots, limit: slots, elastic: false },
-    capabilities: { os: platform(), browser } };
+    capabilities: { os: platform(), browser, ...(gui === undefined ? {} : { gui }) } };
 }

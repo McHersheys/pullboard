@@ -10,9 +10,9 @@ import { BOARD_SENTINEL_ENGINE } from './sentinel-engine.js';
 import { NATIVE_FLAKE_ENGINE } from './flake-engine.js';
 
 /** The kinds of cause key and their shapes, in the order help and refusals name them. */
-export const CAUSE_FORMS = Object.freeze(['test:<file>::<title>', 'refusal:<CODE>', 'row:<id>', 'doctrine:<id>', 'sentinel:<name>']);
+export const CAUSE_FORMS = Object.freeze(['test:<file>::<title>', 'refusal:<CODE>', 'row:<id>', 'doctrine:<id>', 'sentinel:<name>', 'conflict:<file>']);
 
-const CAUSE = /^(?:test:(?<file>[^\s:][^\r\n:]*)::(?<title>\S[^\r\n]*)|refusal:(?<code>[A-Z][A-Z0-9_]*)|row:(?<row>[A-Z][A-Za-z0-9.]*)|doctrine:(?<doctrine>[A-Z][A-Za-z0-9.]*)|sentinel:(?<sentinel>[a-z0-9][a-z0-9._-]{0,63}))$/u;
+const CAUSE = /^(?:test:(?<file>[^\s:][^\r\n:]*)::(?<title>\S[^\r\n]*)|refusal:(?<code>[A-Z][A-Z0-9_]*)|row:(?<row>[A-Z][A-Za-z0-9.]*)|doctrine:(?<doctrine>[A-Z][A-Za-z0-9.]*)|sentinel:(?<sentinel>[a-z0-9][a-z0-9._-]{0,63})|conflict:(?<conflict>[^\r\n\0]+))$/u;
 
 /** Refusal codes that name a merge conflict: a collision between branches, never a repeated error. */
 const CONFLICT_CODES = new Set(['MERGE_CONFLICT']);
@@ -69,6 +69,7 @@ export function testCause({ file, name }) {
  * @returns {boolean}
  */
 export function isMergeConflict(key) {
+  if (key.startsWith('conflict:')) return true;
   const parts = CAUSE.exec(key)?.groups;
   if (!parts) return false;
   if (parts.code) return CONFLICT_CODES.has(parts.code);
@@ -106,6 +107,9 @@ export function eventCauses(event) {
   if (event.event_kind === 'sentinel-failure' && (event.event_by !== 'sentinel' || detail.engine !== BOARD_SENTINEL_ENGINE)) return [];
   const keys = [];
   if (typeof detail.cause === 'string' && !causeProblem(detail.cause)) keys.push(detail.cause);
+  if (Array.isArray(detail.causes)) for (const cause of detail.causes) {
+    if (typeof cause === 'string' && !causeProblem(cause) && !keys.includes(cause)) keys.push(cause);
+  }
   const tests = Array.isArray(detail.landingFailure?.tests) ? detail.landingFailure.tests : [];
   for (const test of tests) {
     if (typeof test?.file !== 'string' || typeof test?.name !== 'string' || !test.name.trim()) continue;
