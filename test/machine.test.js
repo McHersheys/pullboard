@@ -127,6 +127,9 @@ const CAUGHT = {
   'spec-approval.js#specApprovalState': ['board-query.js#specApprovalBaseline'],
   // Historical decline metadata is parsed inside a non-throwing boundary, covered by the Rigor history control.
   'board.js#reopen': ['rigor-notices.js#declinedRigorSource'],
+  // Only an unsupported historical grammar is ignored; new caller refusals remain audited below.
+  'rigor-auto-source.js#automaticDecisionSource': ['spec.js#parseSpec'],
+  'rigor-auto-source.js#rigorDecisionKey': ['spec.js#parseSpec'],
 };
 
 /**
@@ -550,6 +553,16 @@ test('a broken copy of the code fails the check: a refusal added wherever a move
     'MOON_PHASE is raised by claim but not declared there',
     'MOON_PHASE is raised by refreeze but not declared there',
   ], 'the caller is not exempt: only the exact reader call is inside its catch');
+
+  for (const helper of ['automaticDecisionSource', 'rigorDecisionKey']) {
+    const inHistoricalCaller = editedSource('rigor-auto-source.js',
+      new RegExp(`^export function ${helper}\\(record\\) \\{$`, 'm'),
+      "$&\n  throw new Refused('MOON_PHASE', 'wait for the full moon');");
+    assert.deepEqual(codeProblems(MACHINE, inHistoricalCaller).sort(), [
+      'MOON_PHASE is raised by accept and reject but not declared there',
+      'MOON_PHASE is raised by reopen but not declared there',
+    ], 'a new refusal outside the historical parser catch still reaches lifecycle moves');
+  }
 
   const inFreeze = editedSource('spec.js', /^export function frozenCriterion\(spec, item, doctrine = null\) \{$/m, "$&\n  if (item.item_title === 'moon') throw new Refused('MOON_PHASE', 'wait for the full moon');");
   assert.deepEqual(codeProblems(MACHINE, inFreeze).sort(), [

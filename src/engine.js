@@ -4,6 +4,7 @@ import { OUTSIDE_INTAKE_ENGINE } from './outside-intake-engine.js';
 import { BAR_READY_ENGINE } from './bar-ready-engine.js';
 import { barReadySetting } from './bar-readiness.js';
 import { ITEM_SHOUT_ENGINE } from './item-shout-engine.js';
+import { RIGOR_AUTO_ENGINE } from './rigor-auto-engine.js';
 /** Versioned, deterministic replay through the CLI's existing board engine [H3,H16]. */
 import {
   createHash,
@@ -109,6 +110,7 @@ function minimumOperationEngine(operation, args, board, at) {
 
 /** Preserve each pre-existing move's required feature level when composing outside metadata. */
 function minimumExistingOperationEngine(operation, args, board, at) {
+  if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('conflict:')) return RIGOR_AUTO_ENGINE;
   if (['setBarReady', 'signBar'].includes(operation) || board && ['claim', 'submit', 'editItem', 'addItem', 'refreeze'].includes(operation) && barReadySetting(board).enabled) return BAR_READY_ENGINE;
   if (operation === 'recordPublishFinding') return PR_BRIDGE_ENGINE;
   if (operation === 'setLineSetting' && args[0]?.key === 'collisionFreeBatch') return LAND_COLLISION_ENGINE;

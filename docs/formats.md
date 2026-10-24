@@ -113,7 +113,7 @@ The board file is in the repository's Git common directory at `.git/pullboard/bo
 | `row grammar` | `1` | `SPEC_GRAMMAR_VERSION` in `src/spec.js`; optional `<!-- pullboard-grammar N -->` line in either file (absence means the current grammar) | Both files share the version. A declared version must match; an incompatible grammar change requires a coordinated version bump and compatible files. No automatic conversion occurs. |
 | `board schema` | `3` | `SCHEMA_VERSION` in `src/board.js`, persisted as `PRAGMA user_version` | On a write open of a board whose version is behind: create missing tables and indexes (version 3 adds the hot-path indexes), add missing columns in place with declared defaults, restore missing or changed triggers, and remove stale machine triggers without replacing rows. Read opens never migrate; a board at the current version whose shape differs is reported once on stderr and left as it is. |
 | `event log` | `1` | `EVENT_LOG_VERSION` in `src/board.js`, persisted in `board_meta` as `event_log_version` | Older event-log versions upgrade in place; newer versions are refused with `EVENT_LOG_VERSION`. Preserve event rows when the board schema changes. |
-| `move engine` | `101` | `ENGINE_VERSION` in `src/machine.js`, carried as `engine` in every sealed executable move | Bump when a move's meaning changes, independently of the event log and sealed envelope. A newer engine is refused with `ENGINE_VERSION`, naming both versions and asking you to upgrade Pullboard. |
+| `move engine` | `102` | `ENGINE_VERSION` in `src/machine.js`, carried as `engine` in every sealed executable move | Bump when a move's meaning changes, independently of the event log and sealed envelope. A newer engine is refused with `ENGINE_VERSION`, naming both versions and asking you to upgrade Pullboard. |
 <!-- format-versions:end -->
 
 A builder never picks an engine number (#1101). An item that adds a board move adds its own `src/<name>-engine.js` leaf as `export const NAME_ENGINE = unassignedEngine();` (importing `unassignedEngine` from `./engine-next.js`); on its branch the leaf reads as one above the highest landed engine. The landing merge writes the next number into the leaf, in landing order, inside that item's merge commit, and sets the `move engine` row above to the highest landed number. A landed number never changes, so recorded moves replay as they were written. Moves are recorded under landed numbers only: code with an unnumbered engine is for its branch's own tests, and a move it records on a real board before landing may later read under another item's number, so the item lands before its moves are used.
@@ -424,8 +424,8 @@ The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its ap
 | `submit` | builder | `commit`, `tree`, `policyCommit`, engine-9 `criterionDigest`, engine-38 `submissionProof` |
 | `reserve` | reviewer | `until` |
 | `accept` | reviewer | `reason`, `commit`, engine-20 `implies`, engine-33 `review`, engine-68 `note` |
-| `reject` | reviewer | `reason`, `commit`, engine-20 `implies`, engine-33 `review` |
-| `reopen` | coordinator | `commit`, `note`, `judgment`, engine-10 `supersedes`, `landingFailure`, engine-30 `cause`, engine-52 `conflict` |
+| `reject` | reviewer | `reason`, `commit`, engine-20 `implies`, engine-30 `cause`, engine-33 `review`, automatic-Rigor `causeDerivation` |
+| `reopen` | coordinator | `commit`, `note`, `judgment`, engine-10 `supersedes`, `landingFailure`, engine-30 `cause`, engine-52 `conflict`, automatic-Rigor `causes`, `causeDerivation` |
 | `merged` | coordinator | `commit` |
 | `landing_batch` | coordinator | `batch` |
 | `landing-review-moved` | coordinator | `code`, `batch`, `verdict`, `checked`, `landed` |
@@ -439,7 +439,8 @@ The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its ap
 | `hold_item` | coordinator | `reason` |
 | `unhold_item` | coordinator | `reason` |
 | `guards` | board | `missing`, `changed`, `stale` |
-| `rigor-notice` | rigor | `cause`, `items`, `occurrences`, `neverAgain`, `engine` |
+| `rigor-notice` | rigor | `cause`, `items`, `occurrences`, `neverAgain`, `engine`, automatic-Rigor `drafts` |
+| `rigor-draft` | rigor | `id`, `target`, `cause`, exact typed `source`, `unproved` (always true), `items`, `occurrences`, `engine` |
 | `shout` | sender | `shout`, `to`, `decision`, `request`, `answers` |
 | `flake-observation` | reporting agent | `engine`, `observation` |
 | `flake-repair` | reporting agent | `engine`, `key`, `item` |
@@ -454,7 +455,7 @@ The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its ap
 | `pass` | coordinator | `shout`, `to`, `decision`, `request`, `answers` |
 | `answer` | answerer | `shout`, `to`, `decision`, `request`, `answers`, `outcome`, `channel`, engine-20 `implies`, `supersedes` |
 | `row_decision` | person | `record`, `channel` |
-| `row_draft` | builder | engine-55 `row`, `written` |
+| `row_draft` | builder, or rigor | engine-55 `row`, `written` |
 | `flake-observation` | reporting agent | engine-59 `engine`, `observation` |
 | `flake-repair` | reporting agent | engine-59 `engine`, `key`, `item` |
 | `row_apply` | coordinator | `events` |
@@ -525,6 +526,12 @@ Engine 34 adds the agent/coordinator `orderMilestoneItems` move, carrying a mile
 Engine 43 (`RIGOR_NOTICE_ENGINE`) posts one coordinator shout and one typed `rigor-notice` receipt when a reject, reopen or person never-again fact makes a cause repeat. Both are part of that move’s transaction. Recorded engines through 42 retain their original event streams. A person’s exact row-decision receipt for a typed Rigor source silences that repeat until a new item repeats it; later commits on an already known item do not override the decline.
 
 A proved Rigor draft carries `source: rigor:<percent-encoded JSON>` with `version: 1`, its `key`, `evidence` (`items`, `occurrences`, `neverAgain`) and `proof` (`check`, `red`, `green`). The proof contains actual full commits, executed exit statuses and problem counts. The existing spec and doctrine row grammar reads this field; prose mentioning Rigor is not a typed source. The person uses ordinary Approve or Decline, and the coordinator applies the approved row without a new build item.
+
+`RIGOR_AUTO_ENGINE` adds implicit evidence-only proposals to reject, reopen, person never-again and attributable conflict-hold moves. An omitted cause derives from a current-head structured reviewer failure, structured landing tests, exact conflict files, or a coarse coded verdict/reopen category; notes never identify tests. File keys use `conflict:<URI-escaped path>` and stay architectural advice rather than code-rule failures. Explicit `--cause` wins. Older recorded engines retain their original causes, notices and event streams.
+
+The triggering transaction reserves ordinary board row-draft entries with `written: false`, `gate: review`, `tier: aim`, and a terminal `Source: rigor-auto:<percent-encoded JSON>` in their text. This distinct source has `version: 1`, `unproved: true`, `key` and exact repeat `evidence` (`items`, `occurrences`, `neverAgain`, event ids); it has no executed red/green proof. One receipt names the created drafts. It changes no repository file and approves no rule. Needs you exposes each pending proposal, including a visible collision if another row occupies its id with different fields. `spec apply` explicitly materializes these proposals after preflighting existing person decisions and all automatic row definitions across both files. The existing exact-file person approval/decline then applies. `rigor --draft-splits` prepares existing automatic split advice instead of creating a second proposal. An exact person replacement remains authoritative on later application; a stale or unrelated row cannot impersonate it.
+
+Pending proposals are deduplicated per cause and target. A decline covers all items seen through the actual decision, and only a new item can re-propose that declined cause. The read-only digest restates each unanswered automatic draft once per briefing after `landing.cadence`, defaulting to one day when no cadence is configured. Creation is automatic on relevant new failure moves; this is not a historical backfill, a proof of causation, or an automatic remedy.
 
 Engine 54 replaces the automatic strong-to-strong ceiling escalation with one coordinator notice per rejection pair, naming the builder and both rejection receipts. Ordinary rejection still reopens and clears the owner and lease. Light and mid routes keep engine-50 automatic escalation. Engines 50 through 53 retain their original ceiling escalation when replayed.
 
