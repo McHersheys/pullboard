@@ -330,6 +330,8 @@ export const NEXT_STEPS = Object.freeze({
   BAD_CONFLICT: 'run pullboard reopen <id> --conflict <file> [--conflict <file>] from the main checkout',
   LANE_TAKEN: 'choose a different lane name with pullboard lane add',
   LAND_ADOPT: 'read pullboard resume, then run pullboard land --adopt, or pullboard land when nothing is unfinished',
+  LAND_CANDIDATE: 'read pullboard resume and the saved candidate logs, restore the recorded candidate worktree and board, then run pullboard land --adopt',
+  LAND_PARALLEL_NESTED_GATE: 'run pullboard land from the coordinator main checkout outside a gate command so each candidate can obtain its own slot',
   LAND_LEASE_CORRUPT: 'restore a consistent board export before running pullboard land',
   LAND_LEASE_LOST: 'stop this landing command, read pullboard resume, then adopt only after the current holder finishes',
   LAND_LEASE_REQUEST: 'start a new pullboard land command from the coordinator main checkout',
