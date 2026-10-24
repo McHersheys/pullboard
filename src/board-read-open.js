@@ -39,7 +39,7 @@ export function openBoardReadOnly(file) {
     db.exec(`PRAGMA busy_timeout = ${BOARD_BUSY_TIMEOUT_MS}`);
     return db;
   } catch (error) {
-    try { db?.close(); } catch {}
+    try { db?.close(); } catch { /* Preserve the opening error if cleanup also fails. */ }
     throw boardBusyError(file, startedAt, error);
   }
 }
