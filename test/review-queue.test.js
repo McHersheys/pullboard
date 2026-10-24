@@ -10,6 +10,15 @@ import { join } from 'node:path';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { nextReview } from '../src/next-review.js';
 import { Refused } from '../src/refused.js';
+import { AGENT_GRANT_ENGINE } from '../src/agent-grant-engine.js';
+import {
+  applyEngineMove,
+  prepareEngineMove,
+} from '../src/engine.js';
+import {
+  exportBoard,
+  importBoard,
+} from '../src/exchange.js';
 
 const HOUR = 60 * 60 * 1000;
 const REVIEW_LEASE = 1_000;
@@ -243,4 +252,41 @@ test('a return refused because the head already left review is a race, not a sto
   await run();
   assert.deepEqual(operations, ['reopen', 'reserveNextReview'], 'the loop goes on to the next review');
   assert.equal(store.itemById(board, id).item_status, 'open');
+});
+
+/** Real Git conflicts and independent private SQLite copies distinguish review administration from agent authority. */
+test('a fresh same-lane seat cannot reopen submitted conflicts under its grant [E21,V2,H16]', t => {
+  const copies = [];
+  t.after(() => copies.forEach(board => store.closeBoard(board)));
+  const { box, json, conflicted } = staleHeadFixture(t);
+  const fresh = join(box.dir, 'fresh-web-conflict-seat');
+  box.git(box.repo, 'worktree', 'add', '-q', '--detach', fresh, 'main');
+  const actor = json(box.run(fresh, 'join', 'web', '--json')).agent;
+  const source = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
+  let snapshot;
+  try { snapshot = exportBoard(source); } finally { store.closeBoard(source); }
+  for (const name of ['coordinator-one', 'coordinator-two', 'agent-one', 'agent-two']) {
+    const board = store.openBoard(join(box.dir, `${name}.sqlite`));
+    copies.push(board);
+    importBoard(board, snapshot);
+  }
+  const options = { sequence: 1, at: new Date().toISOString() };
+  const conflict = { files: ['web/list.html'], trunk: box.git(box.repo, 'rev-parse', 'HEAD') };
+  const positiveMove = prepareEngineMove(copies[0], 'reopen', [conflicted, { agentId: 'coordinator', conflict }]);
+  const positive = copies.slice(0, 2).map(board => applyEngineMove(board, positiveMove, options));
+  assert.deepEqual(positive[0], positive[1]);
+  assert.equal(positive[0].error, undefined, 'the coordinator can return this actual conflicting head');
+  const move = prepareEngineMove(copies[2], 'reopen', [conflicted, { agentId: actor, conflict }]);
+  for (const board of copies.slice(2)) {
+    assert.throws(() => applyEngineMove(board, { ...move, engine: AGENT_GRANT_ENGINE - 1 }, options),
+      error => error.code === 'RELAY_MOVE' && error.message.includes(String(AGENT_GRANT_ENGINE)),
+      'a newly joined seat cannot hide its current grant semantics behind an old engine tag');
+  }
+  const refused = copies.slice(2).map(board => applyEngineMove(board, move, options));
+  assert.deepEqual(refused[0], refused[1]);
+  assert.equal(refused[0].error?.code, 'COORDINATOR_ONLY', 'same-lane membership without a prior claim is not conflict-reopen authority');
+  for (const board of copies.slice(2)) {
+    assert.equal(store.getItem(board, conflicted).item_status, 'submitted', 'the refused agent move leaves the submission intact');
+    assert.equal(store.getItem(board, conflicted).item_review_by, null, 'the refused agent move reserves no review');
+  }
 });
