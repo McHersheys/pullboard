@@ -1,5 +1,5 @@
 /** The landing gate splits its test files into shards across local slots and runners [C7,V4]. */
-import { awaitNestedRun } from './fixture-child.js';
+import { awaitNestedRun } from '../src/test-file-pool.js';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';

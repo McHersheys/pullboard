@@ -1,5 +1,5 @@
 /** Keep the view's exact named-port refusal covered in a core-owned file [N26]. */
-import { awaitNestedRun } from './fixture-child.js';
+import { awaitNestedRun } from '../src/test-file-pool.js';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';

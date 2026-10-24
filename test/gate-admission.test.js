@@ -1,5 +1,5 @@
 /** Test files on one machine never outnumber its cores, and the longest files start first [C7]. */
-import { awaitNestedRun } from './fixture-child.js';
+import { awaitNestedRun } from '../src/test-file-pool.js';
 import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

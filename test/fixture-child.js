@@ -1,7 +1,6 @@
 /** Shared private fixture child runner and redacted failure diagnostics [C7]. */
 import { spawn, spawnSync } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
-export { awaitNestedRun } from '../src/test-file-pool.js';
 
 const SENSITIVE_NAME = /(?:token|secret|password|private.?key|access.?key|relay[_ -]?key|pairing.?code|verification.?code)/iu;
 const activeFixtureChildren = new Set();
