@@ -1,5 +1,9 @@
 import { lineWipLimit } from './line-wip-limit.js';
-import { capacitySettings, lineCapacitySnapshot, lineCapacityProblem } from './line-capacity.js';
+import {
+  capacitySettings,
+  lineCapacitySnapshot,
+  lineCapacityProblem,
+} from './line-capacity.js';
 import {
   lineOrderEnabled,
   lineBuildOrder,

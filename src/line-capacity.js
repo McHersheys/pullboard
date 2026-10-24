@@ -4,7 +4,10 @@ import { LINE_CAPACITY_ENGINE } from './line-capacity-engine.js';
 import { lineSettings } from './line-settings.js';
 import { flowWindowBounds } from './stats-flow-window.js';
 import { Refused } from './refused.js';
-import { ACTIVE_REVIEWER_WINDOW_MINUTES, lineWipLimit } from './line-wip-limit.js';
+import {
+  ACTIVE_REVIEWER_WINDOW_MINUTES,
+  lineWipLimit,
+} from './line-wip-limit.js';
 
 /** Old ordered claims keep their original semantics even beside newer recorded controls. */
 export function capacitySettings(board) {
