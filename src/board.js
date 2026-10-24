@@ -1,3 +1,4 @@
+import { LAND_COLLISION_ENGINE } from './landing-collision-engine.js';
 import {
   lineOrderEnabled,
   lineBuildOrder,
@@ -2464,8 +2465,23 @@ export function finishLandingBatch(board, { agentId, id, tip, landingFence }) {
       if (!item.item_merged_commit) merged(board, entry.id, { agentId, commit: entry.merge });
     }
     logEvent(board, agentId, 'main-moved', null, { sha: tip, batch: id, items: batch.items.map((entry) => entry.id) });
+    tellDeferredLandingReviews(board, batch);
     return recordLandingBatch(board, { agentId, batch: { ...batch, state: 'landed' }, revision: batch.revision, landingFence });
   });
+}
+
+/** Notify each deferred item's current audience once, in the landed transition's transaction. */
+function tellDeferredLandingReviews(board, batch) {
+  if ((board.executionEngineVersion ?? ENGINE_VERSION) < LAND_COLLISION_ENGINE) return;
+  for (const deferred of batch.blocked ?? []) {
+    if (deferred.code !== 'LAND_FILE_OVERLAP') continue;
+    const item = board.db.prepare('SELECT * FROM item WHERE item_id=?').get(deferred.id);
+    if (!item || item.item_status !== 'verified' || item.item_merged_commit) continue;
+    const reviewer = item.item_review_by ?? item.item_verified_by ?? 'coordinator';
+    persistShout(board, { from: 'landing', to: `item:${item.item_id}`,
+      text: `#${item.item_id} waited for overlapping files while batch ${batch.id} landed at ${batch.tip}. ${reviewer}: merge current main into the reviewed commit and record a fresh merge-only re-accept before the next batch; no builder cycle or reopening is needed.`,
+      detail: { item: item.item_id, batch: batch.id, files: deferred.files, reviewer } });
+  }
 }
 
 /** File or refresh an outside source through the ordinary ordered engine. */
