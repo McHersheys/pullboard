@@ -386,13 +386,16 @@ test('a shout about an item reaches only the people on it [B7,A2,N19]', async (t
   box.cli(builder.path, 'submit', String(item.item_id));
   box.cli(reviewer.path, 'next', '--verify', String(item.item_id));
   for (const seat of [builder, reviewer, outsider]) box.cli(seat.path, 'inbox');
-  const watches = [builder, reviewer, outsider].map((seat) => startWatch(box, ['--json', '--kinds', 'shout', '--to', seat.agent], { cwd: seat.path }));
+  const watches = [builder, reviewer, outsider].map((seat, index) => startWatch(box,
+    ['--json', '--kinds', 'shout', ...(index < 2 ? ['--to', seat.agent] : [])], { cwd: seat.path }));
   t.after(async () => { for (const watch of watches) await watch.stop(); });
   for (const watch of watches) await watch.note((line) => /following/u.test(line), 10_000, 'directed watch startup'); // budget: startup hang ceiling, not a latency claim.
   box.cli(box.root, 'shout', 'app', 'only this item needs the message', '--item', String(item.item_id));
   const directed = lastSequence(box);
   assert.equal(events(box).find((event) => event.event_id === directed).item_id, item.item_id,
     'the message is an event in the item thread, rather than an unbound lane broadcast');
+  assert.ok(box.cli(box.root, 'show', String(item.item_id)).thread.some((entry) => entry.kind === 'shout'
+    && entry.detail.text === 'only this item needs the message'), 'show exposes the item message in its append-only thread');
   box.cli(box.root, 'shout', 'all', 'ordered delivery barrier');
   const barrier = lastSequence(box);
   for (const watch of watches) await watch.line((line) => JSON.parse(line).sequence === barrier, 5_000, 'ordered barrier after directed message'); // budget: stream hang ceiling, not a latency claim.
