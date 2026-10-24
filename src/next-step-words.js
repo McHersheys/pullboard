@@ -246,7 +246,7 @@ export const NEXT_STEPS = Object.freeze({
   ITEM_LEASE_LOST: 'read pullboard show <id>; if the item is free, claim it again for a build or reserve it with pullboard next --verify <id> for a review, then retry',
   ITEM_NOT_AVAILABLE: 'read the item from this API\'s board state',
   ITEM_NOT_OPEN: 'hold only open or claimed items; see pullboard list',
-  LANDING_FAILURE_REQUIRED: 'reopen with --note "<test file>: <test name>; merge commit <sha>", or with --conflict <file> for each conflicting file when it only conflicts with the trunk',
+  LANDING_FAILURE_REQUIRED: 'reopen with --note "<test file>: <test name>; merge commit <sha>", or with --note \'<test file>: "<test name; with semicolon>"; merge commit <sha>\' when the test name contains a semicolon, or use --conflict <file> for each file that only conflicts with the trunk',
   NOT_CONFLICTING: 'merge it; reopen only after a red landing, with --note "<test file>: <test name>; merge commit <sha>"',
   CONFLICT_FILES: 'name only the files Git reports as conflicting with the trunk: pullboard reopen <id> --conflict <file> [--conflict <file>]',
   NOT_ACCEPTED: 'reopen a submission with --note "why"; --conflict is for accepted work',

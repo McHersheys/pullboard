@@ -81,6 +81,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { boardNotWritable } from './board-access.js';
 import { ensureHotIndexes } from './board-hot.js';
 import { boardBusyError } from './board-access.js';
+import { NEXT_STEPS } from './next-step-words.js';
 export { boardBusyError } from './board-access.js';
 import {
   boardStanding,
@@ -101,6 +102,7 @@ export { itemFiles };
 import { COORDINATOR } from './config.js';
 import {
   manualLandingFailure,
+  manualLandingFailureQuoted,
   firstRefusal,
   firstRefusalProblem,
   firstRefusalReason,
@@ -109,6 +111,7 @@ import {
 } from './claims.js';
 import {
   ENGINE_VERSION,
+  QUOTED_LANDING_FAILURE_ENGINE,
   REOPEN_FIRST_REFUSAL_ENGINE,
   VERDICT_REVIEW_ENGINE,
   MILESTONE_RANK_ENGINE,
@@ -1435,7 +1438,7 @@ export function verify(board, id, { agentId, decision, reason, note = '', cause,
  * @param {{ agentId: string, note: string, cause?: string }} request
  * @returns {{ id: number, commit: string, supersedes?: number, landingFailure?: object }}
  */
-export function reopen(board, id, { agentId, note = '', conflict, cause, reopenFirstRefusalMinutes }) {
+export function reopen(board, id, { agentId, note = '', conflict, cause, reopenFirstRefusalMinutes, quotedLandingFailure }) {
   return atomic(board, () => {
     let submittedCommit = null;
     const forMerge = conflict !== undefined && conflict !== null;
@@ -1468,8 +1471,13 @@ export function reopen(board, id, { agentId, note = '', conflict, cause, reopenF
               && Array.isArray(culprit.tests) && culprit.tests.length
               && culprit.tests.every((failure) => typeof failure.file === 'string' && typeof failure.name === 'string'
                 && note.includes(`${failure.file}: ${failure.name}`) && note.includes(culprit.mergeCommit)));
-          const manual = manualLandingFailure(note);
-          if (!accepted || (!recorded && !manual)) return new Refused('LANDING_FAILURE_REQUIRED', `reopening verified item #${id} needs --note in the format <test file>: <test name>; merge commit <sha>`);
+          const usesQuotedFailure = currentEngine >= QUOTED_LANDING_FAILURE_ENGINE
+            && (quotedLandingFailure === true || manualLandingFailureQuoted(note));
+          const offersQuotedFailureGuidance = currentEngine >= QUOTED_LANDING_FAILURE_ENGINE;
+          const manual = manualLandingFailure(note, { quoted: usesQuotedFailure });
+          if (!accepted || (!recorded && !manual)) return new Refused('LANDING_FAILURE_REQUIRED',
+            `reopening verified item #${id} needs --note in the format <test file>: <test name>; merge commit <sha>${offersQuotedFailureGuidance ? ', or quote a test name containing a semicolon' : ''}`,
+            offersQuotedFailureGuidance ? NEXT_STEPS.LANDING_FAILURE_REQUIRED : undefined);
           supersedes = accepted.event_id;
           landingFailure = recorded
             ? { batch: recorded.batch.id, tests: recorded.culprit.tests, mergeCommit: recorded.culprit.mergeCommit }
