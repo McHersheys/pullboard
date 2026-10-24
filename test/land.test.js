@@ -19,11 +19,15 @@ import {
   calls,
   json,
   mergeSubjects,
+  childOutcome,
 } from './land-board-fixture.js';
 import { landingTimeoutFixture } from './landing-timeout-fixture.js';
 import { assertParallelLanding, assertParallelCliLease, assertParallelNestedGate } from './land-parallel-fixture.js';
 import { landEnginesInOrder } from './land-engine-fixture.js';
-import { assertCollisionFreeLanding } from './land-collision-fixture.js';
+import {
+  assertCollisionFreeLanding,
+  assertDeferredLandingPriority,
+} from './land-collision-fixture.js';
 const e2e = createE2eHelpers();
 after(e2e.cleanup);
 const { sandbox, project, commitFile, waitFor, BIN } = e2e;
@@ -63,14 +67,6 @@ function startExclusiveBoardWriter(box, boardFile, name) {
     cwd: box.repo, env: box.env, detached: true, stdio: ['ignore', 'ignore', 'pipe'],
   });
   return { child, closed: childOutcome(child), ready, release, released };
-}
-/** Resolve when an owned fixture child closes or fails to spawn. */
-function childOutcome(child) {
-  return new Promise((resolveOutcome) => {
-    let spawnError = null;
-    child.once('error', (error) => { spawnError = error; });
-    child.once('close', (code, signal) => resolveOutcome({ code, signal, error: spawnError }));
-  });
 }
 /** Run the real pre-commit hook with a preload observing its agentAt SQLite read. */
 function startHookRead(box, probe, marker) {
@@ -1496,3 +1492,6 @@ test('the landing merge assigns engine numbers in landing order, either order, a
 
 test('a landing batch leaves out an item that touches a file already in the batch [B3,R3,R1,H16]',
 () => assertCollisionFreeLanding({ landProject, itemWorktree, submitItem, acceptItem, json, onBoard }));
+
+test('a deferred landing item keeps its place ahead of newer acceptances after merge-only reaccept [B3,R3,R1,H16]',
+() => assertDeferredLandingPriority({ landProject, itemWorktree, submitItem, acceptItem, json, onBoard }));

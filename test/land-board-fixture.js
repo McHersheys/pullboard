@@ -31,3 +31,12 @@ export function mergeSubjects(box, base, tip) {
   return box.git(box.repo, 'log', '--reverse', '--first-parent', '--format=%s', `${base}..${tip}`).split('\n').filter(Boolean);
 }
 
+
+/** Resolve when an owned fixture child closes or fails to spawn. */
+export function childOutcome(child) {
+  return new Promise((resolveOutcome) => {
+    let spawnError = null;
+    child.once('error', (error) => { spawnError = error; });
+    child.once('close', (code, signal) => resolveOutcome({ code, signal, error: spawnError }));
+  });
+}

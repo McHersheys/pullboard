@@ -55,3 +55,39 @@ export function assertCollisionFreeLanding({ landProject, itemWorktree, submitIt
     assert.equal(box.git(box.remote, 'rev-parse', 'main'), box.git(box.repo, 'rev-parse', 'main'), 'the actual gated tip was pushed');
   }
 }
+
+/** A fresh re-accept must not let newly accepted disjoint work jump a deferred item. */
+export function assertDeferredLandingPriority({ landProject, itemWorktree, submitItem, acceptItem, json, onBoard }) {
+  const box = landProject();
+  const shared = 'web/land-1.test.js';
+  mkdirSync(join(box.repo, 'web'), { recursive: true });
+  writeFileSync(join(box.repo, shared), 'BASE first\nunchanged middle\nBASE last\n');
+  box.git(box.repo, 'add', shared);
+  box.git(box.repo, 'commit', '-q', '-m', 'test: deferred landing base [G1]');
+  const entries = [itemWorktree(box, 1, shared), itemWorktree(box, 2, shared), itemWorktree(box, 3)];
+  submitItem(box, entries[0], 'A first\nunchanged middle\nBASE last\n');
+  submitItem(box, entries[1], 'BASE first\nunchanged middle\nB last\n');
+  submitItem(box, entries[2]);
+  for (const entry of entries) acceptItem(box, entry);
+  onBoard(box, board => store.setLineSetting(board, { agentId: 'coordinator', key: 'collisionFreeBatch', value: true,
+    reason: 'private deferred item retains its queue place', window: { accepted: 3 } }));
+  const first = json(box, box.repo, 'land', '--max', '3');
+  assert.deepEqual(first.landed, [entries[0].item, entries[2].item]);
+  const arrival = itemWorktree(box, 4);
+  submitItem(box, arrival);
+  acceptItem(box, arrival);
+  box.git(box.repo, 'switch', '-q', '--detach', entries[1].commit);
+  box.git(box.repo, 'merge', '--no-edit', 'main');
+  const reviewed = { ...entries[1], commit: box.git(box.repo, 'rev-parse', 'HEAD') };
+  box.git(box.repo, 'switch', '-q', 'main');
+  acceptItem(box, reviewed);
+  const next = json(box, box.repo, 'land', '--max', '1');
+  assert.deepEqual(next.landed, [entries[1].item], 'merge-only reaccept retains the deferred item ahead of the newer acceptance');
+  const last = json(box, box.repo, 'land', '--max', '1');
+  assert.deepEqual(last.landed, [arrival.item]);
+  for (const entry of [...entries, arrival]) {
+    const item = json(box, box.repo, 'show', String(entry.item));
+    assert.equal(item.item_status, 'verified');
+    assert.ok(item.item_merged_commit);
+  }
+}
