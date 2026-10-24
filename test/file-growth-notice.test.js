@@ -4,10 +4,17 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { join } from 'node:path';
 import * as store from '../src/board.js';
-import { appliedSequence, applyEngineMove, prepareEngineMove } from '../src/engine.js';
+import {
+  appliedSequence,
+  applyEngineMove,
+  prepareEngineMove,
+} from '../src/engine.js';
 import { submitFixture } from './board-submit-fixture.js';
 import { FILE_GROWTH_NOTICE_ENGINE } from '../src/file-growth-notice-engine.js';
-import { exportBoard, importBoard } from '../src/exchange.js';
+import {
+  exportBoard,
+  importBoard,
+} from '../src/exchange.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 
 const HOUR = 60 * 60 * 1000;
