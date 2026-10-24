@@ -495,6 +495,8 @@ Migration preserves event rows and adds only schema objects that are missing.
 
 ## Submit test selection
 
+`pullboard.json` may set `"itemSizeBudget"` to a positive whole number of changed lines; it defaults to 100. A successful submit whose diff against current main adds plus deletes more than twice that budget prints one note with the count and suggests splitting into a chain of smaller items. At or below twice the budget it prints no size note. This advice never blocks submission; the budget is read from accepted main.
+
 `pullboard.json` may set `affectedTests` to a command prefix that runs selected test files. When it is absent, `submit` runs the configured `gate` in full. When present and the import graph can safely select a subset, Pullboard appends the selected file paths to this prefix; an uncertain selection still runs the full gate. For example, this repository opts in with `"affectedTests": "node bin/run-tests.js"`. Projects using another test framework can leave the setting out and keep their configured gate, such as `npm test`.
 
 `pullboard.json` may set `worktrees` to `"inside"` or `"beside"`. Fresh `pullboard init` writes `"inside"`, placing new agent worktrees under `.claude/worktrees/<lane>-N`; it also adds `.claude/worktrees/` to `.gitignore` and prints guidance for dot-scanner ignore rules. An omitted setting defaults to `"beside"` to preserve existing sibling paths (`../<repo>-<lane>-N`). `pullboard resume --diagnostics`, JSON v1 `pullboard resume --json`, and `pullboard help worktree` show the active location from the primary checkout's config.
