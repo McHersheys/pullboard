@@ -4,7 +4,26 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { addItem, addMilestone, closeBoard, openBoard } from '../src/board.js';
+import {
+  addItem,
+  addMilestone,
+  buildOrder,
+  claim,
+  closeBoard,
+  getItem,
+  nextFor,
+  openBoard,
+  orderMilestoneItems,
+  register,
+  verify,
+} from '../src/board.js';
+import {
+  sayQueue,
+  workQueue,
+} from '../src/queue.js';
+import { prepareEngineMove } from '../src/engine.js';
+import { submitFixture } from './board-submit-fixture.js';
+import { WORK_ORDER_ENGINE } from '../src/work-order-engine.js';
 import { runFixtureGit } from './fixture-child.js';
 import { captureReleaseQueue, localReleaseRank } from '../src/release-queue.js';
 import { orderedWaiters } from '../src/queue-order.js';
@@ -67,4 +86,83 @@ test('a run from a private clone keeps its release rank [C7,O5]', () => {
     assert.deepEqual(orderedWaiters([ordinary, cloned], now, order).map(entry => entry.ticket), [2, 1], 'the clone-started current-release run is admitted first');
     assert.equal(captureReleaseQueue(dir, current), undefined, 'a directory with no board keeps its queue position');
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('the queue ranks unblockers and quick wins first and keeps coordinator overrides [N22,B13]', (t) => {
+  const board = openBoard(':memory:');
+  t.after(() => closeBoard(board));
+  register(board, { lane: 'coordinator', path: '/coordinator' });
+  const strong = register(board, { lane: 'core', path: '/strong', route: 'strong' });
+  const mid = register(board, { lane: 'core', path: '/mid', route: 'mid' });
+  const light = register(board, { lane: 'core', path: '/light', route: 'light' });
+  const reviewer = register(board, { lane: 'review', path: '/reviewer', route: 'strong' });
+  /** Add one core item on a route, waiting on the given items. */
+  const add = (title, route, after = []) => addItem(board, { by: 'coordinator', lane: 'core', title, route, after,
+    ...(route === 'strong' ? {} : { criterion: 'the item can be built and checked from its brief', check: 'true', brief: `Files: src/fixture-${title.toLowerCase().replace(/\W+/gu, '-')}.js\nTest: the queue order` }) });
+  const strongOneOff = add('Strong one-off', 'strong');
+  const lateStrong = add('Later strong one-off', 'strong');
+  const lightOneOff = add('Light one-off', 'light');
+  const midOneOff = add('Mid one-off', 'mid');
+  const keystone = add('Keystone that 21 items wait on', 'strong');
+  const midUnblocker = add('Mid unblocker', 'mid');
+  const blocked = add('Blocked behind the mid unblocker', 'mid', [midUnblocker]);
+  const waiting = Array.from({ length: 21 }, (_, index) => add(`Waits on the keystone ${index + 1}`, 'strong', [keystone]));
+  addMilestone(board, { agentId: 'coordinator', name: 'now', items: [strongOneOff, lateStrong, lightOneOff, midOneOff, keystone, midUnblocker, blocked] });
+  addMilestone(board, { agentId: 'coordinator', name: 'later', items: waiting });
+  /** The milestone's items in queue order, and the queue rows by id. */
+  const queue = () => {
+    const shown = workQueue(board);
+    return { ids: shown.releases[0].items.map((item) => item.id), rows: new Map(shown.releases[0].items.map((item) => [item.id, item])), shown };
+  };
+  /** Accept one item through the ordinary claim, submit and verify moves. */
+  const land = (id, number) => {
+    const builder = getItem(board, id).item_route === 'strong' ? strong : getItem(board, id).item_route === 'mid' ? mid : light;
+    claim(board, id, { agentId: builder, lane: 'core', leaseMs: 3_600_000, freeze: (item) => ({ text: item.item_title, digest: `digest:${item.item_title}` }) });
+    const commit = String(number).repeat(40);
+    submitFixture(board, id, { agentId: builder, commit, tree: commit });
+    verify(board, id, { agentId: reviewer, decision: 'ACCEPT', policy: 'any', head: commit, digest: getItem(board, id).item_frozen_digest,
+      note: 'Synthetic accepted lifecycle record; no gate execution claimed.' });
+  };
+
+  let { ids, rows, shown } = queue();
+  assert.deepEqual(ids, [keystone, lightOneOff, midUnblocker, midOneOff, strongOneOff, lateStrong, blocked],
+    'unblockers and quick wins alternate at the top, ready work follows by score, blocked work comes last');
+  assert.equal(ids[0], keystone, 'the item 21 others wait on ranks first');
+  assert.ok(ids.indexOf(lightOneOff) < ids.indexOf(strongOneOff), 'a light one-off ranks above a strong one-off');
+  assert.deepEqual([rows.get(keystone).unblocks, rows.get(keystone).effort], [21, 3]);
+  assert.deepEqual([rows.get(lightOneOff).unblocks, rows.get(lightOneOff).effort], [0, 1]);
+  assert.match(rows.get(keystone).why, /unblocks 21/u);
+  assert.match(rows.get(lightOneOff).why, /quick win/u);
+  assert.match(rows.get(blocked).why, /blocked/u);
+  const lines = [];
+  sayQueue({ say: (text) => lines.push(text) }, shown);
+  assert.ok(lines.some((line) => /unblocks 21 · effort 3 · /u.test(line)), `pullboard queue prints each item's unblock count, effort and why:\n${lines.join('\n')}`);
+  assert.deepEqual([strong, mid, light].map((agentId) => nextFor(board, { agentId, lane: 'core' }).item.item_id), [keystone, midUnblocker, lightOneOff],
+    'next follows the computed order within each route, its own tier first');
+
+  land(midUnblocker, 1);
+  ({ ids } = queue());
+  assert.ok(ids.indexOf(blocked) < ids.indexOf(strongOneOff), 'a blocked item rises above ready strong work once its blocker lands');
+  assert.equal(nextFor(board, { agentId: mid, lane: 'core' }).item.item_id, midOneOff, 'the freed quick win joins the mid route in score order');
+
+  orderMilestoneItems(board, 'now', { agentId: 'coordinator', items: [lateStrong], place: 'pin', reason: 'the release notes need it first' });
+  orderMilestoneItems(board, 'now', { agentId: 'coordinator', items: [keystone], place: 'sink', reason: 'waits on a design answer' });
+  ({ ids, rows } = queue());
+  assert.equal(ids[0], lateStrong, 'a pinned item sits above the computed order');
+  assert.equal(ids.at(-1), keystone, 'a sunk item sits below the computed order');
+  assert.match(rows.get(lateStrong).why, /pinned by the coordinator: the release notes need it first/u);
+  assert.match(rows.get(keystone).why, /sunk by the coordinator: waits on a design answer/u);
+  assert.equal(nextFor(board, { agentId: strong, lane: 'core' }).item.item_id, lateStrong, 'next serves the pin');
+  assert.throws(() => orderMilestoneItems(board, 'now', { agentId: strong, items: [strongOneOff], place: 'pin', reason: 'mine first' }), { code: 'COORDINATOR_ONLY' });
+  assert.throws(() => orderMilestoneItems(board, 'now', { agentId: 'coordinator', items: [strongOneOff], place: 'pin' }), { code: 'MILESTONE_REASON' });
+  assert.equal(prepareEngineMove(board, 'orderMilestoneItems', ['now', { agentId: 'coordinator', items: [strongOneOff], place: 'pin', reason: 'r' }]).engine >= WORK_ORDER_ENGINE, true);
+
+  land(lightOneOff, 2);
+  ({ ids } = queue());
+  assert.deepEqual([ids[0], ids.at(-1)], [lateStrong, keystone], 'overrides survive a re-rank');
+  orderMilestoneItems(board, 'now', { agentId: 'coordinator', items: [lateStrong, keystone], place: 'lift' });
+  ({ ids, rows } = queue());
+  assert.equal(ids[0], keystone, 'a lifted override returns to the computed order');
+  assert.doesNotMatch(rows.get(lateStrong).why, /pinned/u);
+  assert.deepEqual(ids, [...ids].sort((a, b) => buildOrder(board)(getItem(board, a), getItem(board, b))), 'the queue is the board\'s own build order');
 });

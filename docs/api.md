@@ -100,6 +100,9 @@ For example: `flow: review wait average 61 min (1 measured; > 60 min); bottlenec
 | `milestone add` | `version:number`, `milestone:object` |
 | `milestone items` | `version:number`, `milestone:object` |
 | `milestone order` | `version:number`, `milestone:object` |
+| `milestone pin` | `version:number`, `milestone:object` |
+| `milestone sink` | `version:number`, `milestone:object` |
+| `milestone lift` | `version:number`, `milestone:object` |
 | `milestone move` | `version:number`, `milestone:object` |
 | `milestone edit` | `version:number`, `milestone:object` |
 | `milestone remove` | `version:number`, `milestone:object` |
@@ -612,6 +615,8 @@ Unavailable Git-object verdict projections are retried on the next read, so fetc
 When the runner's own resource pool refuses the run's setup, the run fails at once with `RUNNER_SETUP_REFUSED`, naming the runner host and the pool's refusal code. It is not retried, and it leaves no holder or waiter on either machine.
 
 Agents and the coordinator can set explicit item ranks with `milestone order <name> <ids>` (comma-separated ids from that milestone). It replaces that milestone’s `order` list in board metadata; other items stay unranked. `next` compares milestone, explicit rank, then its existing route/recent-file/age tie-breaks. A never-ranked board keeps its existing order. Removing an item drops its rank; adding it again leaves it unranked. This does not change newcomer help or person flows.
+
+`queue` and `next` order each milestone's unranked items by themselves (#1017). An item's unblock count is the unfinished items that wait on it, directly or through others; its effort is its route (light 1, mid 2, strong 3); its score is (unblocks + 1) / effort. Ready items that unblock others alternate with quick wins (light or mid items that unblock nothing) while both last, the rest of the ready work follows by score, and each route with ready work gets an item near the top. Blocked items follow in the order their blockers clear, then held items. `next` takes its own route first within that order. The coordinator overrides the order with `milestone pin <name> <ids> --reason "<why>"` (above the computed order, after any `milestone order` ranks) or `milestone sink <name> <ids> --reason "<why>"` (below it), and `milestone lift <name> <ids>` removes either; an override stays through every re-rank until lifted. Pins extend the milestone's `order`, sinks are its `sunk` list, and each reason is in its `reasons` map by item id. Each `queue` item carries `unblocks:number`, `effort:number` and `why:string`, and text `queue` prints them under the item.
 
 `resume` on the coordinator seat includes `rigor: {undrafted: [...]}`, naming each repeated cause that has no live or approved proved draft. Each entry retains the ordinary Rigor cause key, item evidence and commits. The text resume names the proof-bearing `pullboard rigor draft` command. Declined repeats stay quiet until a new item repeats them. `needsYou` may contain an individual `kind: "rigor-draft"` call with `cause`, `evidence`, `proof`, a qualified spec or doctrine `target`, and `what: "Approve or Decline"`. An ordinary draft remains in the existing aggregate count; a Rigor draft is not counted twice. These fields add no person permission: the existing person-only approval and decline channels still apply.
 
