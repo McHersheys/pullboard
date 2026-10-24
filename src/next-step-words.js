@@ -56,7 +56,11 @@ export function personRequestGuidance(message, { caller, leading = false } = {})
 
 /** @type {Readonly<Record<string, string>>} */
 export const NEXT_STEPS = Object.freeze({
+  BAD_VERDICT_WITHDRAW: 'use --withdraw-verdict with a note, or report a conflict separately',
+  VERDICT_WITHDRAW_FORBIDDEN: 'ask the accepting reviewer or coordinator to withdraw this verdict',
+  VERDICT_WITHDRAW_STATE: 'refresh the item; withdraw only a current acceptance before landing',
   LINE_WIP_LIMIT: 'review the oldest eligible waiting submission: pullboard next --verify; if none is eligible, ask the coordinator to arrange a reviewer',
+
   OUTSIDE_NATIVE_BUILD: 'the outside author revises the PR; ask the coordinator to return it, then intake its new exact head',
   CHECK_NO_PROOF: 'strengthen the trusted criterion so it fails before the outside change, then ask the coordinator to refreeze it',
   OUTSIDE_URL: 'use a GitHub issue or pull request URL with owner/repository and its positive number',
@@ -281,7 +285,7 @@ export const NEXT_STEPS = Object.freeze({
   ITEM_LEASE_LOST: 'read pullboard show <id>; if the item is free, claim it again for a build or reserve it with pullboard next --verify <id> for a review, then retry',
   ITEM_NOT_AVAILABLE: 'read the item from this API\'s board state',
   ITEM_NOT_OPEN: 'hold only open or claimed items; see pullboard list',
-  LANDING_FAILURE_REQUIRED: 'reopen with --note "<test file>: <test name>; merge commit <sha>", or with --conflict <file> for each conflicting file when it only conflicts with the trunk',
+  LANDING_FAILURE_REQUIRED: 'reopen with --note "<test file>: <test name>; merge commit <sha>", or with --note \'<test file>: "<test name; with semicolon>"; merge commit <sha>\' when the test name contains a semicolon, or use --conflict <file> for each file that only conflicts with the trunk',
   NOT_CONFLICTING: 'merge it; reopen only after a red landing, with --note "<test file>: <test name>; merge commit <sha>"',
   CONFLICT_FILES: 'name only the files Git reports as conflicting with the trunk: pullboard reopen <id> --conflict <file> [--conflict <file>]',
   NOT_ACCEPTED: 'reopen a submission with --note "why"; --conflict is for accepted work',
