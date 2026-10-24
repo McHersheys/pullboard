@@ -47,6 +47,21 @@ function fixture() {
 import { appendFileSync } from 'node:fs';
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
+// Explicit development profiling preserves the normal command and timing assertion unchanged.
+if (process.env.PULLBOARD_RESUME_CPU_PROFILE) {
+  const { Session } = await import('node:inspector');
+  const { writeFileSync } = await import('node:fs');
+  const session = new Session();
+  session.connect();
+  const post = method => new Promise((resolve, reject) => session.post(method, (error, result) => error ? reject(error) : resolve(result)));
+  await post('Profiler.enable');
+  await post('Profiler.start');
+  process.once('beforeExit', async () => {
+    const { profile } = await post('Profiler.stop');
+    writeFileSync(process.env.PULLBOARD_RESUME_CPU_PROFILE + '.' + process.pid + '.cpuprofile', JSON.stringify(profile));
+    session.disconnect();
+  });
+}
 let gitDepth = 0;
 for (const name of ['spawnSync', 'execFileSync']) {
   const original = childProcess[name];
