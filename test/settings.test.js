@@ -74,9 +74,10 @@ test('a line setting change is a recorded move with its reason and its range [R1
   const { createE2eHelpers } = await import('./e2e-helpers.js');
   const store = await import('../src/board.js');
   const { exportBoard, importBoard } = await import('../src/exchange.js');
-  const { prepareEngineMove, applyRelayMove } = await import('../src/engine.js');
+  const { prepareEngineMove, applyRelayMove, appliedSequence } = await import('../src/engine.js');
   const fixtures = createE2eHelpers();
-  t.after(fixtures.cleanup);
+  let board, replica;
+  t.after(() => { if (replica) store.closeBoard(replica); if (board) store.closeBoard(board); fixtures.cleanup(); });
   const box = fixtures.project('true');
   const initial = box.run(box.repo, 'settings', 'line', '--json');
   const numbers = { windowMinutes: 60, activeReviewers: 2, reviewWaitMedianMinutes: 40 };
@@ -88,9 +89,8 @@ test('a line setting change is a recorded move with its reason and its range [R1
     landingBatchSize: false, landingCadenceMinutes: false };
   assert.deepEqual(JSON.parse(initial.out).lineSettings, defaults, 'all line controls start off, not silently enabled by a machine file');
   assert.equal(JSON.parse(changed.out).lineSettings.reviewsFirst, true);
-  const board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
-  const replica = store.openBoard(join(box.dir, 'line-replay.sqlite'));
-  t.after(() => { store.closeBoard(replica); store.closeBoard(board); });
+  board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
+  replica = store.openBoard(join(box.dir, 'line-replay.sqlite'));
   importBoard(replica, exportBoard(board));
   const first = store.events(board).findLast(event => event.event_kind === 'line_setting');
   assert.ok(first, 'the actual CLI records a native board event, not only a local settings file');
@@ -100,7 +100,7 @@ test('a line setting change is a recorded move with its reason and its range [R1
   const values = [['reviewsFirst', false], ['wipPerReviewer', 1.5], ['wipPerReviewer', 3], ['barReady', true],
     ['takeoverMinutes', 15], ['takeoverMinutes', 60], ['landingBatchSize', 1], ['landingBatchSize', 8],
     ['landingCadenceMinutes', 5], ['landingCadenceMinutes', 30]];
-  let sequence = Number(board.db.prepare("SELECT meta_value FROM board_meta WHERE meta_key = 'relay_applied'").get()?.meta_value ?? 0);
+  let sequence = appliedSequence(board);
   for (const [key, value] of values) {
     const move = prepareEngineMove(board, 'setLineSetting', [{ agentId: 'coordinator', key, value,
       reason: 'Measured fixture policy change', window: numbers }], { id: `line-setting-${++sequence}`, actor: 'coordinator' });
