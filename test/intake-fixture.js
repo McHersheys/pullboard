@@ -33,7 +33,7 @@ export function fixtureJSON(box, cwd, ...args) {
 }
 
 /** Build a real outside commit/ref and an independently initialized trusted receiving board. */
-export function intakeFixture(t) {
+export function intakeFixture(t, { baseFiles = {} } = {}) {
   const helpers = createE2eHelpers();
   t.after(helpers.cleanup);
   const box = helpers.sandbox();
@@ -45,6 +45,14 @@ export function intakeFixture(t) {
   box.env.GH_TOKEN = randomUUID();
   box.env.HOST_SECRET = randomUUID();
   const made = helpers.project('node --test test/contribution.test.js', box);
+  for (const [path, content] of Object.entries(baseFiles)) {
+    mkdirSync(dirname(join(made.repo, path)), { recursive: true });
+    writeFileSync(join(made.repo, path), content);
+  }
+  if (Object.keys(baseFiles).length) {
+    box.git(made.repo, 'add', '-A');
+    box.git(made.repo, 'commit', '-q', '-m', 'chore: seed trusted boundary fixture');
+  }
   const base = box.git(made.repo, 'rev-parse', 'HEAD');
   const fork = join(box.dir, 'outside-fork');
   box.git(box.dir, 'clone', '-q', '--no-hardlinks', made.repo, fork);
