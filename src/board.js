@@ -1,4 +1,5 @@
 import { LAND_COLLISION_ENGINE } from './landing-collision-engine.js';
+import * as capacity from './line-capacity-board.js';
 import {
   lineOrderEnabled,
   lineBuildOrder,
@@ -960,7 +961,7 @@ export function recordAttempt(board, id, { agentId, n, seconds, result }) {
  * @param {{ agentId: string, lane: string, leaseMs: number, freeze: (item: any) => { text: string, digest: string }, head?: string | null, reviewSkipped?: object | null }} who
  * @returns {{ leaseUntil: string, digest: string, renewed: boolean }}
  */
-export function claim(board, id, { agentId, lane, leaseMs, freeze, head = null, reviewSkipped = null }) {
+export function claim(board, id, { agentId, lane, leaseMs, freeze, head = null, reviewSkipped = null, reviewPolicy = 'any', familyPolicy = 'off' }) {
   return atomic(board, () => {
     const leaseUntil = new Date(board.clock.now().getTime() + leaseMs).toISOString();
     const isRenewal = (item) => item.item_owner === agentId && isHeld(board, item);
@@ -1016,6 +1017,7 @@ export function claim(board, id, { agentId, lane, leaseMs, freeze, head = null, 
             ? new Refused('ITEM_HELD', `item #${id} is held by coordinator: ${held.item_hold_reason}; wait for the coordinator to lift it with pullboard hold ${id} --off`)
             : null;
         },
+        lineCapacity: found => capacity.claimProblem(board, isRenewal(found), { agentId, policy: reviewPolicy, familyPolicy }, { reviewerChecks, reviewReleaseCooldown }),
         oneLiveClaim: (found) => {
           if (found.item_parent_id !== null || isRework(found)) return null;
           const other = board.db
@@ -1257,11 +1259,8 @@ export { reviewQueueBreakdown } from './board-query.js';
 export { reviewQueue } from './board-query.js';
 
 /** Offer an eligible review at the queue ratio without claiming or reserving anything [Q1,V15]. */
-export function reviewOffer(board, { agentId, lane, policy = 'any', familyPolicy = 'off', ratio = 3, runnable = false, routes = ROUTES }) {
-  const queue = reviewQueue(board);
-  if (queue.pending < ratio * Math.max(queue.reviewing, 1)) return null;
-  const { item } = nextFor(board, { agentId, lane, verify: true, policy, familyPolicy, runnable, routes });
-  return item ? { item, queue, ratio } : null;
+export function reviewOffer(board, who) {
+  return capacity.reviewOffer(board, who, nextFor);
 }
 
 /**
