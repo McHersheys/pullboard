@@ -738,10 +738,6 @@ function leaveRunReceipt(root, config, run, { before, kind }) {
     if (!receipt) return null;
     mkdirSync(store, { recursive: true, mode: 0o700 });
     writeFileSync(join(store, `${receipt.id}.json`), receiptBody(receipt), { flag: 'wx', mode: 0o600 });
-    if (lease) {
-      lease.proofReceiptIds ??= [];
-      lease.proofReceiptIds.push(receipt.id);
-    }
     return receipt.id;
   } catch { return null; }
 }
