@@ -1,3 +1,4 @@
+import { beginCommandPhase } from './command-phase.js';
 import { recordedMoveRefusal } from './recorded-move.js';
 import {
   recoverySummary,
@@ -120,6 +121,13 @@ import {
 } from './relay-outbox.js';
 import { stampCoordinatorHolder } from './coordinator-hold.js';
 import { relayFiles } from './local-state.js';
+import {
+  archiveRelinkOutbox,
+  finishRelink,
+  plannedRelayBoard,
+  relayRelink,
+  rememberRelink,
+} from './relay-relink.js';
 import { Refused } from './refused.js';
 import { landingRelayCallbacks } from './landing-relay.js';
 import { relayOrigin } from './relay-origin.js';
@@ -339,51 +347,54 @@ async function rawRequest(state, path, { method = 'GET', body, allowMissing = fa
   // Validate first: a refusal below repeats this address, so it must already be credential-free.
   const origin = relayOrigin(state.url);
   const startedAt = Date.now();
-  let requestSignal;
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      requestSignal ??= signal ? AbortSignal.any([signal, AbortSignal.timeout(io?.relayTimeoutMs ?? 10000)]) : AbortSignal.timeout(io?.relayTimeoutMs ?? 10000); // budget: original per-request transport ceiling, shared by a replacement GET.
-      response = await fetch(origin + path, {
-        method, redirect: 'error', signal: requestSignal,
-        headers: { 'x-pullboard-engine': String(ENGINE_VERSION), ...(token ? { authorization: 'Bearer ' + token } : {}), ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...(initialBaseline ? { 'if-none-match': '*' } : {}) },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      });
-      break;
-    } catch (error) {
-      if (signal?.aborted) throw new Refused('OAUTH_CANCELLED', 'GitHub device sign-in was cancelled; no board was linked');
-      // A stale cached connection reports ECONNRESET or EPIPE across supported Node runtimes. Only a read may try once more.
-      if (method === 'GET' && attempt === 0 && ['ECONNRESET', 'EPIPE'].includes(transportFailure(error)) && requestSignal && !requestSignal.aborted) continue;
-      const refusal = new Refused('RELAY_UNAVAILABLE', `the relay ${state.url} did not answer (${transportFailure(error)} after ${Date.now() - startedAt} ms on ${method} ${path.split('?')[0]}); read the local board offline, then retry this move when the relay is reachable`);
-      refusal.transportFailure = transportFailure(error);
-      throw refusal;
+  const finishPhase = beginCommandPhase('waiting-relay');
+  try {
+    let requestSignal;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        requestSignal ??= signal ? AbortSignal.any([signal, AbortSignal.timeout(io?.relayTimeoutMs ?? 10000)]) : AbortSignal.timeout(io?.relayTimeoutMs ?? 10000); // budget: original per-request transport ceiling, shared by a replacement GET.
+        response = await fetch(origin + path, {
+          method, redirect: 'error', signal: requestSignal,
+          headers: { 'x-pullboard-engine': String(ENGINE_VERSION), ...(token ? { authorization: 'Bearer ' + token } : {}), ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...(initialBaseline ? { 'if-none-match': '*' } : {}) },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        });
+        break;
+      } catch (error) {
+        if (signal?.aborted) throw new Refused('OAUTH_CANCELLED', 'GitHub device sign-in was cancelled; no board was linked');
+        // A stale cached connection reports ECONNRESET or EPIPE across supported Node runtimes. Only a read may try once more.
+        if (method === 'GET' && attempt === 0 && ['ECONNRESET', 'EPIPE'].includes(transportFailure(error)) && requestSignal && !requestSignal.aborted) continue;
+        const refusal = new Refused('RELAY_UNAVAILABLE', `the relay ${state.url} did not answer (${transportFailure(error)} after ${Date.now() - startedAt} ms on ${method} ${path.split('?')[0]}); read the local board offline, then retry this move when the relay is reachable`);
+        refusal.transportFailure = transportFailure(error);
+        throw refusal;
+      }
     }
-  }
-  let document;
-  try { document = await response.json(); }
-  catch {
-    if (signal?.aborted) throw new Refused('OAUTH_CANCELLED', 'GitHub device sign-in was cancelled; no board was linked');
-    const error = new Refused('RELAY_RESPONSE', 'the relay returned an invalid response; retry with the configured relay address');
-    error.httpStatus = response.status;
-    throw error;
-  }
-  relayNotices(document, io);
-  // Only off can forget a link after a supported API reports that the board is gone.
-  if (allowMissing && method === 'DELETE' && response.status === 404 && document.version === 1) return { alreadyDeleted: true };
-  if (!response.ok) {
-    const error = new Refused(document.error?.code || 'RELAY_UNAVAILABLE', (document.error?.code === 'AUTH_REQUIRED' ? ((state.agent || token?.startsWith('pa_')) ? 'this agent token is expired or revoked; use a new token issued by the person for this agent, then retry with PULLBOARD_RELAY_TOKEN' : 'the relay sign-in expired or was revoked; run pullboard relay on to sign in again without changing the board key') : (document.error?.message ? `the relay ${state.url}: ${document.error.message}` : null)) || 'the relay refused this send; retry this command explicitly when reachable',
-      document.error?.code === 'AUTH_REQUIRED' ? undefined : document.error?.next);
-    error.httpStatus = response.status;
-    error.relayVersion = document.version;
-    error.relayCode = document.error?.code;
-    error.relayMessage = document.error?.message;
-    if (document.version === 1 && document.error?.code === 'BAD_UPLOAD') error.snapshotLimit = document.error.snapshotLimit;
-    if (/^[0-9a-f]{64}$/u.test(document.error?.page ?? '')) error.page = document.error.page;
-    const storage = relayStorage(document.error?.storage);
-    if (storage) error.storage = storage;
-    throw error;
-  }
-  if (document.version !== 1) throw new Refused('RELAY_VERSION', 'the relay API version is unsupported; upgrade Pullboard before syncing');
-  return document;
+    let document;
+    try { document = await response.json(); }
+    catch {
+      if (signal?.aborted) throw new Refused('OAUTH_CANCELLED', 'GitHub device sign-in was cancelled; no board was linked');
+      const error = new Refused('RELAY_RESPONSE', 'the relay returned an invalid response; retry with the configured relay address');
+      error.httpStatus = response.status;
+      throw error;
+    }
+    relayNotices(document, io);
+    // Only off can forget a link after a supported API reports that the board is gone.
+    if (allowMissing && method === 'DELETE' && response.status === 404 && document.version === 1) return { alreadyDeleted: true };
+    if (!response.ok) {
+      const error = new Refused(document.error?.code || 'RELAY_UNAVAILABLE', (document.error?.code === 'AUTH_REQUIRED' ? ((state.agent || token?.startsWith('pa_')) ? 'this agent token is expired or revoked; use a new token issued by the person for this agent, then retry with PULLBOARD_RELAY_TOKEN' : 'the relay sign-in expired or was revoked; run pullboard relay on to sign in again without changing the board key') : (document.error?.message ? `the relay ${state.url}: ${document.error.message}` : null)) || 'the relay refused this send; retry this command explicitly when reachable',
+        document.error?.code === 'AUTH_REQUIRED' ? undefined : document.error?.next);
+      error.httpStatus = response.status;
+      error.relayVersion = document.version;
+      error.relayCode = document.error?.code;
+      error.relayMessage = document.error?.message;
+      if (document.version === 1 && document.error?.code === 'BAD_UPLOAD') error.snapshotLimit = document.error.snapshotLimit;
+      if (/^[0-9a-f]{64}$/u.test(document.error?.page ?? '')) error.page = document.error.page;
+      const storage = relayStorage(document.error?.storage);
+      if (storage) error.storage = storage;
+      throw error;
+    }
+    if (document.version !== 1) throw new Refused('RELAY_VERSION', 'the relay API version is unsupported; upgrade Pullboard before syncing');
+    return document;
+  } finally { finishPhase(); }
 }
 
 /** Read durable local event rows; their ids are the crash-safe outbox after the saved cursor. */
@@ -1604,13 +1615,15 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
     const url = relayOrigin(address || state?.url || DEFAULT_RELAY);
     if (state && (state.url !== url || state.repository !== repository)) throw new Refused('RELAY_LINKED', 'this board is linked to another relay or repository; run relay off before changing its link');
     const key = state ? readBoardKey(state.board) : await generateBoardKey();
-    const intent = remoteShell ? { board: state?.board ?? localRecords(root, store.boardId), repository,
+    const nextBoard = state?.board ?? plannedRelayBoard(root, localRecords(root, store.boardId));
+    const relink = state ? null : relayRelink(root);
+    const intent = remoteShell ? { board: nextBoard, repository,
       host: hostname(), boardName: basename(root) } : undefined;
     const signed = remoteShell ? await deviceSignIn(url, io, { intent }) : reusableCredential ?? reusableSession ?? await deviceSignIn(url, io);
     if (reusableSession && reusableSession.url !== url) throw new Refused('RELAY_SESSION', 'Sign in again to this relay with pullboard relay on --all.');
     if (!state) {
       const snapshot = localRecords(root, (board) => {
-        startRelayEpoch(board);
+        startRelayEpoch(board, nextBoard);
         return { board: store.boardId(board) };
       });
       snapshot.document = relaySnapshot(root);
@@ -1621,10 +1634,12 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
         cursor: snapshot.document.tables.event.at(-1)?.event_id ?? 0, baselineCursor: snapshot.document.tables.event.at(-1)?.event_id ?? 0,
         baselineAccepted: false, linkPending: true };
       state.snapshot = { sequence: 0, sealed: await sealedRecord(key, snapshot.document, state, 'snapshot', 0) };
+      if (relink) state.previousBoardNotice = relink.previous;
     }
     const account = signed.account ?? signed.user?.id;
     // Persist the exact sealed snapshot and a recoverable link intent before making the remote link.
     saveLink(file, state);
+    if (relink) finishRelink(root);
     if (state.linkPending) {
       if (signed.linkConfirmed && signed.linkedBoard !== state.board) throw new Refused('RELAY_RESPONSE', 'the relay confirmed a different board; sign in again');
       if (!reusableCredential && !signed.linkConfirmed) await request({ ...state, token: signed.token }, '/auth/boards/link', { method: 'POST', body: { board: state.board, repository } }, io);
@@ -1671,6 +1686,12 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
     }
     catch (error) { if (strict || !(error instanceof Refused)) throw error; io.err(`pullboard: ${error.message}; pending records are queued for the next command`); result = summary(root, state, { pairing: !quiet }); }
     if (!quiet) io.say(terminalQr(result.link));
+    if (state.previousBoardNotice) {
+      result.notice = 'Linked a fresh relay board. The old remote copy stays until you delete it from your phone.';
+      io.err(result.notice);
+      delete state.previousBoardNotice;
+      saveLink(file, state);
+    }
     return result;
   });
 }
@@ -1694,6 +1715,8 @@ export async function relayOff(root, io) {
     let proposal;
     try { proposal = await phoneProposal(state, 'delete-board', state.board, { root }); }
     catch { /* Missing key or pairing cannot stop local unlinking. */ }
+    rememberRelink(root, state.board);
+    archiveRelinkOutbox(root, state);
     rmSync(file, { force: true });
     try { forgetBoardKey(state.board, state.keyStorage); }
     catch { /* The local opt-out is complete even when secure key storage is temporarily locked. */ }
