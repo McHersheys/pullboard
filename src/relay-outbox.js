@@ -87,7 +87,8 @@ export async function readOutbox(file, key, boardId) {
 /** Seal and atomically replace the outbox, readable only by this user. */
 export async function writeOutbox(file, key, boardId, document) {
   // Old clients must refuse richer result bindings rather than treating temporary item numbers as final.
-  if (document.moves.some(entry => entry.created?.some(row => row.resultPath.length)
+  if (document.moves.some(entry => (entry.move.operation !== 'addItem' && createsItems(entry.move.operation))
+      || entry.created?.some(row => row.resultPath.length)
       || entry.refs?.some(ref => ref.resultPath?.length))) document.version = 2;
   const sealed = await seal(key, gzipSync(Buffer.from(JSON.stringify(document))), { boardId, kind: 'outbox', sequence: 0 });
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
