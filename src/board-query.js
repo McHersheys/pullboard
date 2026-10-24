@@ -247,6 +247,12 @@ export function rowDecisions(board) {
   return row ? JSON.parse(row.meta_value) : [];
 }
 
+/** The board's recorded row drafts, oldest first, without loading its mutation engine. */
+export function rowDrafts(board) {
+  const row = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get('row_drafts');
+  return row ? JSON.parse(row.meta_value) : [];
+}
+
 /**
  * The SQL that picks an agent's unread shouts: to it, to its lane, or to all, from anyone else.
  */

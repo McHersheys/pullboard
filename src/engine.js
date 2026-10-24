@@ -1,6 +1,7 @@
 import { BAR_READY_ENGINE } from './bar-ready-engine.js';
 import { barReadySetting } from './bar-readiness.js';
 import { ITEM_SHOUT_ENGINE } from './item-shout-engine.js';
+import { RIGOR_AUTO_ENGINE } from './rigor-auto-engine.js';
 /** Versioned, deterministic replay through the CLI's existing board engine [H3,H16]. */
 import {
   createHash,
@@ -96,6 +97,7 @@ const OPERATION_ENGINE = Object.freeze({ draftSpecRow: ROW_DRAFT_ENGINE, orderMi
 
 /** Dependency edits, causes, sealed reviews, submission proofs, trunk conflicts, health observations and milestone targets retain distinct recorded engine meanings. */
 function minimumOperationEngine(operation, args, board, at) {
+  if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('conflict:')) return RIGOR_AUTO_ENGINE;
   if (['setBarReady', 'signBar'].includes(operation) || board && ['claim', 'submit', 'editItem', 'addItem', 'refreeze'].includes(operation) && barReadySetting(board).enabled) return BAR_READY_ENGINE;
   if (operation === 'recordPublishFinding') return PR_BRIDGE_ENGINE;
   if (operation === 'recordLandingTestDefect' || operation === 'verify' && args[1]?.environment !== undefined

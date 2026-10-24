@@ -40,6 +40,10 @@ import {
 import { healthReport } from './health.js';
 import { secretsIn } from './hooks.js';
 import { Refused } from './refused.js';
+import { rowDrafts, rowDecisions } from './board-query.js';
+import { automaticDecisionSource, automaticSourceFromText, rigorDecisionKey, readAutomaticRigorSource } from './rigor-auto-source.js';
+import { rowDecisionContext, staleRowDecision } from './row-decision-state.js';
+import { loadConfig } from './config.js';
 
 /** The briefing stays under 50 KB, counted in UTF-8 bytes. */
 export const DIGEST_MAX_BYTES = 50_000;
@@ -223,6 +227,16 @@ function render(db, { name, now, root, config }) {
   const caughtEntries = caught.entries.slice().reverse().map((entry) =>
     `- ${caughtLabels.get(entry.kind)}: ${entry.item === null ? 'no item' : label(entry.item)}, ${text(entry.at, 40)}: ${text(entry.text, 400)}`);
   const caughtCounts = CAUGHT_KINDS.map(({ kind, label: words }) => `${caught.counts[kind]} ${words}`).join('; ');
+  const draftDecisions = rowDecisions({ db });
+  const cadence = (config ?? (root ? loadConfig(root) : null))?.landing?.cadenceMs ?? 86_400_000;
+  const draftDecisionContext = root && draftDecisions.length ? rowDecisionContext(root, config ?? loadConfig(root)) : null;
+  const unansweredRigor = rowDrafts({ db }).filter(draft => {
+    const source = automaticSourceFromText(draft.text);
+    return source && now.getTime() - Date.parse(draft.at) >= cadence
+      && !draftDecisions.some(record => (!draftDecisionContext || !staleRowDecision(record, draftDecisionContext))
+        && record.kind === draft.target && (record.id === draft.id && automaticDecisionSource(record) === source
+          || record.event > draft.event && rigorDecisionKey(record) === readAutomaticRigorSource(source).key));
+  }).map(draft => `- Rigor draft ${text(draft.id, 40)}: ${text(draft.text.slice(0, draft.text.lastIndexOf(' Source: ')), 700)}\n  Unproved ${text(draft.target, 20)} proposal still waiting on the person; materialize with pullboard spec apply, then approve or decline.`);
   const sections = [
     section('Stuck and who moves it', stuck, stuck.length, 4_000, 'Nothing is stuck.'),
     section('Open work', open.slice(0, ROW_LIMIT).map(work), open.length, 8_000, 'Nothing is open.'),
@@ -231,12 +245,13 @@ function render(db, { name, now, root, config }) {
     section('Recent decisions and answers', decisions.map((row) => row.entry), decisionTotal, 7_000, 'No decisions are recorded yet.'),
     section('Recent verdicts', verdicts, Number(db.prepare('SELECT count(*) AS n FROM verdict').get().n), 5_000, 'No work has been verified yet.'),
     section('Questions waiting on you', questions, Number(db.prepare(`SELECT count(*) AS n ${waiting}`).get().n), 4_500, 'No question waits on you.'),
-    section('Latest shouts to the coordinator', shouts, Number(db.prepare("SELECT count(*) AS n FROM shout WHERE shout_to = 'coordinator'").get().n), 5_000, 'No one has shouted the coordinator yet.'),
+    section('Latest shouts to the coordinator', shouts, Number(db.prepare("SELECT count(*) AS n FROM shout WHERE shout_to = 'coordinator'").get().n), 3_000, 'No one has shouted the coordinator yet.'),
     section('Milestones', roadmap, roadmap.length, 4_000, 'No milestones are set.'),
     section(`What the board caught, last ${CAUGHT_DAYS} days`, caughtEntries, caught.total, 4_000, 'Nothing was caught in this window.'),
+    section('Unanswered Rigor drafts', unansweredRigor, unansweredRigor.length, 2_000, 'No automatic draft is overdue.'),
   ];
   // The per-kind counts sit under the heading, before the lines they count.
-  if (caught.total) sections.at(-1).text = sections.at(-1).text.replace('\n\n', `\n\n${caughtCounts}.\n\n`);
+  if (caught.total) sections[9].text = sections[9].text.replace('\n\n', `\n\n${caughtCounts}.\n\n`);
   const sequence = Number(db.prepare('SELECT coalesce(max(event_id), 0) AS n FROM event').get().n);
   const glance = [
     `- ${landed} items landed and ${accepted} are accepted and wait to land.`,

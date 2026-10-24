@@ -158,6 +158,8 @@ import {
   rigorNoticeText,
 } from './rigor-notices.js';
 import { RIGOR_NOTICE_ENGINE } from './rigor-source.js';
+import { RIGOR_AUTO_ENGINE } from './rigor-auto-engine.js';
+import { deriveRigorCause, recordAutomaticRigorDrafts } from './rigor-auto.js';
 import {
   causeProblem,
   requireNeverAgain,
@@ -1367,7 +1369,9 @@ export function verify(board, id, { agentId, decision, reason, note = '', cause,
     });
     const returnedAt = !isAccept && engine >= REOPEN_FIRST_REFUSAL_ENGINE && reopenFirstRefusalMinutes > 0 && item.item_built_by ? board.clock.now() : undefined;
     const reservation = !isAccept && engine >= REOPEN_FIRST_REFUSAL_ENGINE ? firstRefusalDetail(board, item, reopenFirstRefusalMinutes, returnedAt) : {};
-    const detail = { ...reservation, reason: code, commit: item.item_commit, ...(!isAccept && cause !== undefined && cause !== null ? { cause } : {}) };
+    const derivedCause = !isAccept && engine >= RIGOR_AUTO_ENGINE
+      ? deriveRigorCause(board, item, { cause, reason: code, agentId }) : !isAccept && cause != null ? { cause } : {};
+    const detail = { ...reservation, reason: code, commit: item.item_commit, ...derivedCause };
     if (isAccept && engine >= SPEC_APPROVAL_ENGINE) detail.note = note.trim();
     if (isAccept && check !== undefined) detail.check = check;
     if (environment !== undefined) detail.environment = environment;
@@ -1449,13 +1453,16 @@ export function reopen(board, id, { agentId, note = '', conflict, cause, reopenF
     const returnedAt = (forMerge || landingFailure) && currentEngine >= REOPEN_FIRST_REFUSAL_ENGINE && reopenFirstRefusalMinutes > 0 && item.item_built_by ? board.clock.now() : undefined;
     const reservation = (forMerge || landingFailure) && currentEngine >= REOPEN_FIRST_REFUSAL_ENGINE ? firstRefusalDetail(board, item, reopenFirstRefusalMinutes, returnedAt) : {};
     const returned = forMerge ? { supersedes, ...conflictDetail(conflict) } : supersedes ? { supersedes, landingFailure } : {};
+    const derivedCause = currentEngine >= RIGOR_AUTO_ENGINE
+      ? deriveRigorCause(board, item, { cause, conflict, landingFailure, agentId }) : cause != null ? { cause } : {};
+    const returnedWithCause = currentEngine >= RIGOR_AUTO_ENGINE ? { ...returned, ...derivedCause } : { ...derivedCause, ...returned };
     logEvent(board, agentId, 'reopen', id, { commit: submittedCommit, note: note.trim() || conflictNote(conflict), judgment: null, ...reservation,
-      ...(cause !== undefined && cause !== null ? { cause } : {}), ...returned }, returnedAt);
+      ...returnedWithCause }, returnedAt);
     const trigger = board.lastEvent;
     tellFirstRefusal(board, item, reservation, persistShout);
     if (!reservation.reopenFirstRefusal && forMerge && supersedes === undefined && item.item_built_by) persistShout(board, { from: agentId, to: item.item_built_by, text: returnedHeadNotice(id, submittedCommit, conflict) });
     postRigorNotices(board, trigger);
-    return { id: item.item_id, commit: submittedCommit, ...returned };
+    return { id: item.item_id, commit: submittedCommit, ...returnedWithCause };
   });
 }
 
@@ -1916,6 +1923,10 @@ export function appendFact(board, id, { agentId, kind, text, ref = null, superse
 /** The enclosing move's transaction owns these implicit notices; older replay emits none. */
 function postRigorNotices(board, trigger) {
   if ((board.executionEngineVersion ?? ENGINE_VERSION) < RIGOR_NOTICE_ENGINE) return;
+  if ((board.executionEngineVersion ?? ENGINE_VERSION) >= RIGOR_AUTO_ENGINE) {
+    recordAutomaticRigorDrafts(board, trigger, persistShout);
+    return;
+  }
   for (const cause of newRigorNotices(events(board), trigger, { person: PERSON })) {
     persistShout(board, { from: 'rigor', to: COORDINATOR, text: rigorNoticeText(cause) });
     logEvent(board, 'rigor', 'rigor-notice', null, { cause: cause.key, items: cause.items,
@@ -2186,6 +2197,7 @@ export function holdItem(board, id, { agentId, reason }) {
     const at = now(board);
     setItem(board, id, { item_hold_reason: text, item_hold_by: agentId, item_hold_at: at });
     logEvent(board, agentId, 'hold_item', id, { reason: text });
+    if ((board.executionEngineVersion ?? ENGINE_VERSION) >= RIGOR_AUTO_ENGINE) postRigorNotices(board, board.lastEvent);
     return itemHold(board, id);
   });
 }

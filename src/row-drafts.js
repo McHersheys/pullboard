@@ -21,12 +21,8 @@ import {
 } from './spec.js';
 import { cleanGitEnvironment } from './git.js';
 import { trunkRef } from './trusted-policy-read.js';
-
-/** The board's recorded row drafts, oldest first. */
-export function rowDrafts(board) {
-  const row = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get('row_drafts');
-  return row ? JSON.parse(row.meta_value) : [];
-}
+import { rowDrafts } from './board-query.js';
+export { rowDrafts } from './board-query.js';
 
 /**
  * Reserve one new row's id on the board, and for a lane, record the drafted row itself. Every writer

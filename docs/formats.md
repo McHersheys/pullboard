@@ -440,6 +440,7 @@ The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its ap
 | `unhold_item` | coordinator | `reason` |
 | `guards` | board | `missing`, `changed`, `stale` |
 | `rigor-notice` | rigor | `cause`, `items`, `occurrences`, `neverAgain`, `engine` |
+| `rigor-draft` | rigor | `id`, `target`, `cause`, exact typed `source`, `unproved: true`, `items`, `occurrences`, `engine` |
 | `shout` | sender | `shout`, `to`, `decision`, `request`, `answers` |
 | `flake-observation` | reporting agent | `engine`, `observation` |
 | `flake-repair` | reporting agent | `engine`, `key`, `item` |
@@ -525,6 +526,12 @@ Engine 34 adds the agent/coordinator `orderMilestoneItems` move, carrying a mile
 Engine 43 (`RIGOR_NOTICE_ENGINE`) posts one coordinator shout and one typed `rigor-notice` receipt when a reject, reopen or person never-again fact makes a cause repeat. Both are part of that move’s transaction. Recorded engines through 42 retain their original event streams. A person’s exact row-decision receipt for a typed Rigor source silences that repeat until a new item repeats it; later commits on an already known item do not override the decline.
 
 A proved Rigor draft carries `source: rigor:<percent-encoded JSON>` with `version: 1`, its `key`, `evidence` (`items`, `occurrences`, `neverAgain`) and `proof` (`check`, `red`, `green`). The proof contains actual full commits, executed exit statuses and problem counts. The existing spec and doctrine row grammar reads this field; prose mentioning Rigor is not a typed source. The person uses ordinary Approve or Decline, and the coordinator applies the approved row without a new build item.
+
+`RIGOR_AUTO_ENGINE` adds implicit evidence-only proposals to reject, reopen, person never-again and attributable conflict-hold moves. An omitted cause derives from a current-head structured reviewer failure, structured landing tests, exact conflict files, or a coarse coded verdict/reopen category; notes never identify tests. File keys use `conflict:<URI-escaped path>` and stay architectural advice rather than code-rule failures. Explicit `--cause` wins. Older recorded engines retain their original causes, notices and event streams.
+
+The triggering transaction reserves ordinary `draftSpecRow` entries with `written: false`, `gate: review`, `tier: aim`, and a terminal `Source: rigor-auto:<percent-encoded JSON>` in their text. This distinct source has `version: 1`, `unproved: true`, `key` and exact repeat `evidence` (`items`, `occurrences`, `neverAgain`, event ids); it has no executed red/green proof. One receipt names the created drafts. It changes no repository file and approves no rule. Needs you exposes each pending proposal, including a visible collision if another row occupies its id with different fields. `spec apply` explicitly materializes these proposals after preflighting existing person decisions and all automatic row definitions across both files. The existing exact-file person approval/decline then applies. `rigor --draft-splits` prepares existing automatic split advice instead of creating a second proposal. An exact person replacement remains authoritative on later application; a stale or unrelated row cannot impersonate it.
+
+Pending proposals are deduplicated per cause and target. A decline covers all items seen through the actual decision, and only a new item can re-propose that declined cause. The read-only digest restates each unanswered automatic draft once per briefing after `landing.cadence`, defaulting to one day when no cadence is configured. Creation is automatic on relevant new failure moves; this is not a historical backfill, a proof of causation, or an automatic remedy.
 
 Engine 54 replaces the automatic strong-to-strong ceiling escalation with one coordinator notice per rejection pair, naming the builder and both rejection receipts. Ordinary rejection still reopens and clears the owner and lease. Light and mid routes keep engine-50 automatic escalation. Engines 50 through 53 retain their original ceiling escalation when replayed.
 
