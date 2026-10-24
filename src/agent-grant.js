@@ -36,6 +36,8 @@ export function agentGrantMinimum(board, move) {
 /** Refuse out-of-grant item changes at the same ordered instant on every replica. */
 export function requireAgentGrant(board, move, at = board.clock.now()) {
   if (move.engine < AGENT_GRANT_ENGINE || ADMINISTRATIVE.has(move.operation)) return;
+  // Reopen owns coordinator/reviewer authority; agentGrantMinimum retains the marked-seat/target floor.
+  if (move.operation === 'reopen') return;
   const actor = MOVE_REGISTRY[move.operation]?.actor(move);
   if (typeof actor !== 'string' || ['person', 'coordinator', 'machine'].includes(actor)) return;
   const seat = board.db.prepare('SELECT agent_lane FROM agent WHERE agent_id=?').get(actor);
@@ -44,10 +46,6 @@ export function requireAgentGrant(board, move, at = board.clock.now()) {
   if (!scope) return;
   const item = existingItem(board, scope.item);
   if (!scope.creating && !item) return; // Preserve the operation's own malformed/missing-item refusal.
-  // Correcting the seat's own current acceptance is review administration, independent of its build claim.
-  // The normal withdrawal path still validates options, immutable verdict identity and unmerged state.
-  if (move.operation === 'reopen' && move.args?.[1]?.withdrawVerdict === true
-    && item?.item_status === 'verified' && item.item_verified_by === actor) return;
   // The seat's immutable handoff-open event grants only its own channel facts, not other item work.
   // Replacement fencing runs before this guard, so a taken-over seat keeps only its existing shout path.
   if (move.operation === 'appendFact' && board.db.prepare(

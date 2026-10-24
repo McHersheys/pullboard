@@ -5,6 +5,11 @@ import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import * as store from '../src/board.js';
 import { mkdirSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
+import { rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { pathToFileURL } from 'node:url';
+import { unpackRelease } from './release-archive.js';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createE2eHelpers } from './e2e-helpers.js';
@@ -193,7 +198,10 @@ function staleHeadFixture(t) {
 test('a submitted head that no longer merges is returned to its builder [C7,V4]', (t) => {
   const { box, json, conflicted, reviewer } = staleHeadFixture(t);
   assert.equal(json(box.run(box.repo, 'show', String(conflicted), '--json')).item_status, 'submitted', 'the head waits for review before the trunk check');
-  const next = box.run(reviewer, 'next', '--verify', '--json');
+  const refused = box.run(reviewer, 'next', '--verify', '--json');
+  assert.equal(JSON.parse(refused.out).error.code, 'COORDINATOR_ONLY', 'a reviewer cannot return a conflicting submission');
+  assert.equal(json(box.run(box.repo, 'show', String(conflicted), '--json')).item_status, 'submitted');
+  const next = box.run(box.repo, 'next', '--verify', '--as', 'coordinator', '--json');
   assert.match(next.err, new RegExp(`returned #${conflicted} to its builder unreviewed: it no longer merges onto the trunk \\(web/list\\.html\\)`, 'u'), next.out + next.err);
   const item = json(box.run(box.repo, 'show', String(conflicted), '--json'));
   assert.equal(item.item_status, 'open', 'the head that no longer merges goes back, unreviewed');
@@ -214,6 +222,9 @@ test('next --verify skips a head that does not merge [C7,V4]', (t) => {
   box.git(box.repo, 'worktree', 'add', '-q', second, '-b', 'web/two', 'main');
   json(box.run(second, 'join', 'web', '--json'));
   const clean = build('Show the footer', 'web/footer.html', '<footer>clean</footer>\n', second);
+  // The coordinator returns the conflicting head; the explicit id avoids reserving the clean one.
+  const returned = box.run(box.repo, 'next', '--verify', String(conflicted), '--as', 'coordinator', '--json');
+  assert.equal(JSON.parse(returned.out).error.code, 'NOT_SUBMITTED', 'the returned head cannot receive a review reservation');
   const next = json(box.run(reviewer, 'next', '--verify', '--json'));
   assert.equal(next.item.item_id, clean, 'the reviewer gets the head that merges, though the conflicting one is older');
   assert.equal(json(box.run(box.repo, 'show', String(conflicted), '--json')).item_status, 'open');
@@ -288,5 +299,43 @@ test('a fresh same-lane seat cannot reopen submitted conflicts under its grant [
   for (const board of copies.slice(2)) {
     assert.equal(store.getItem(board, conflicted).item_status, 'submitted', 'the refused agent move leaves the submission intact');
     assert.equal(store.getItem(board, conflicted).item_review_by, null, 'the refused agent move reserves no review');
+  }
+});
+
+
+test('recorded pre-grant submitted-conflict moves retain joined-seat authority [V2,H16]', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'pullboard-legacy-submitted-conflict-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  // Accepted pre-grant source writes its own historical events; no future marker is removed or fabricated.
+  unpackRelease('e4b7c30d674cde73803f8e8cb3f53fb2f9f62621', directory);
+  const legacyStore = await import(pathToFileURL(join(directory, 'src/board.js')).href);
+  const legacyExchange = await import(pathToFileURL(join(directory, 'src/exchange.js')).href);
+  const legacyEngine = await import(pathToFileURL(join(directory, 'src/engine.js')).href);
+  const legacy = legacyStore.openBoard(':memory:');
+  const copies = [store.openBoard(':memory:'), store.openBoard(':memory:')];
+  t.after(() => { legacyStore.closeBoard(legacy); copies.forEach(board => store.closeBoard(board)); });
+  legacyStore.register(legacy, { lane: 'coordinator', path: join(directory, 'main') });
+  const builder = legacyStore.register(legacy, { lane: 'web', path: join(directory, 'builder') });
+  const reporter = legacyStore.register(legacy, { lane: 'web', path: join(directory, 'reporter') });
+  const id = legacyStore.addItem(legacy, { by: 'coordinator', lane: 'web', title: 'Historical conflict', criterion: 'Retain the submitted conflict.' });
+  legacyStore.claim(legacy, id, { agentId: builder, lane: 'web', leaseMs: HOUR, freeze });
+  // Synthetic board-state receipt only; this test makes no gate-execution claim.
+  legacyStore.submit(legacy, id, { agentId: builder, commit: 'a'.repeat(40), tree: 'b'.repeat(40),
+    submissionProof: { version: 1, files: [], full: false, deferred: true, reason: 'synthetic board-state fixture; no gate execution' } });
+  const snapshot = legacyExchange.exportBoard(legacy);
+  assert.ok(snapshot.tables.event.filter(row => ['join', 'claim'].includes(row.event_kind))
+    .every(row => JSON.parse(row.event_detail).grantEngine === undefined), 'the accepted old writer emits no future grant marker');
+  for (const board of copies) importBoard(board, snapshot);
+  const move = legacyEngine.prepareEngineMove(legacy, 'reopen', [id, {
+    agentId: reporter, conflict: { files: ['web/list.html'], trunk: 'c'.repeat(40) },
+  }]);
+  assert.ok(move.engine < AGENT_GRANT_ENGINE, 'the genuine writer predates the new authority fence');
+  const receipt = { sequence: 1, at: new Date().toISOString() };
+  const historical = legacyEngine.applyEngineMove(legacy, move, receipt);
+  assert.equal(historical.error, undefined, 'the accepted historical engine permits its joined-seat report');
+  for (const board of copies) {
+    assert.deepEqual(applyEngineMove(board, move, receipt), historical, 'each current replica preserves the recorded outcome');
+    assert.equal(store.getItem(board, id).item_status, 'open');
+    assert.deepEqual(store.events(board), legacyStore.events(legacy), 'replay preserves historical event bytes');
   }
 });

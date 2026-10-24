@@ -147,7 +147,6 @@ const engine9Source = '314ef28751c44c96186b337cc4ace0fd8bf33d42';
 
 /** Compare verified-item reopen behavior across engines 8 through 10 and the current receiver. */
 async function assertLegacyVerifiedReopen(t, box, item, note) {
-  let engine10Store, engine10Exchange;
   for (const [version, reference] of [[8, 'v0.8.6'], [9, engine9Source], [10, 'v0.8.23']]) {
     const directory = mkdtempSync(join(tmpdir(), `pullboard-engine-${version}-verified-reopen-`));
     t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -637,6 +636,7 @@ test('manual reopen records a timestamp-prefixed failing test after an unrecorde
 });
 
 test('a reopened bar takes the same commit again [V2,V6,H16]', async (t) => {
+  let engine10Store, engine10Exchange;
   const box = project();
   const submitted = submitFixture(box);
   const reviewPath = reserveFixtureReview(box);

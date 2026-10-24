@@ -1452,10 +1452,11 @@ export function reopen(board, id, { agentId, note = '', conflict, cause, reopenF
       checks: {
         joined: null,
         [IN_STATE]: (found) => new Refused('NOT_SUBMITTED', `item #${id} is ${current(board, found).item_status}, not submitted`),
-        // Any joined seat returns a submitted head that no longer merges, with Git's files and trunk (#807).
+        // Historic joined-seat conflict reports keep their authority; current conflicts belong to the coordinator.
         reopenAuthority: (found) => {
           if (forWithdrawal) { withdrawnVerdict = verdictWithdrawal.verdictWithdrawalTarget(board, found, agentId); return null; }
-          return (forMerge && found.item_status === 'submitted' && currentEngine >= SUBMITTED_CONFLICT_ENGINE && listAgents(board).some((agent) => agent.agent_id === agentId)
+          return (forMerge && found.item_status === 'submitted' && currentEngine >= SUBMITTED_CONFLICT_ENGINE
+            && currentEngine < AGENT_GRANT_ENGINE && listAgents(board).some((agent) => agent.agent_id === agentId)
           ? null : onlyCoordinator(agentId, 'reopens submissions'));
         },
         noteGiven: () => (forMerge || note.trim() ? null : new Refused('NOTE_REQUIRED', 'say why the criterion needs correction: --note "why"')),
