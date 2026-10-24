@@ -1027,6 +1027,9 @@ test('an excluded board is named as excluded with the step that includes it [H5,
   assert.ok(publicInventory.exclusions[0].label.trim(), 'only a bounded machine label is public');
   assert.doesNotMatch(JSON.stringify(publicInventory), /fixture\/excluded-board|excluded-project/u,
     'the relay public inventory contains neither repository names nor local paths');
+  const unwrapped = await visit(fresh, { route: front.route(session, null), phone: true }, false);
+  assert.doesNotMatch(unwrapped.words, /fixture\/excluded-board/u,
+    'an existing phone-approval notice cannot disclose an excluded name to an unwrapped browser');
   const named = await visit(paired, { route: front.route(session, null), phone: true }, true);
   assert.equal(named.board, true, 'the healthy board remains readable beside the exclusion');
   assert.match(named.words, /fixture\/excluded-board[^.]*excluded/iu, 'only the device-wrapped browser decrypts the excluded name');
