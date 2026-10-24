@@ -1,5 +1,6 @@
 /** The pullboard relay command, in its own module so an item adding another command never edits these lines. */
 import * as store from '../board.js';
+import { gitSyncLinked } from '../local-state.js';
 import {
   requirePersonChannel,
 } from '../person.js';
@@ -46,6 +47,7 @@ import {
 
 /** Run `pullboard relay` and return its exit code. */
 export async function run(io, { first, second, rest, values }) {
+  if (['on', 'join'].includes(first) && gitSyncLinked(io.cwd)) throw new Refused('GIT_SYNC_LINKED', 'this board already shares moves through Git; it cannot start a second move order', 'keep using pullboard sync for this board');
   if (values['new-browser'] && first !== 'pair') throw new Refused('USAGE', 'pullboard relay pair --new-browser');
   if (first === 'recover') {
     if (second || rest.length || !values.skip || values.url || values.all) throw new Refused('USAGE', 'pullboard relay recover --skip <exact blocked next sequence>');
