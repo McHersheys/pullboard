@@ -14,6 +14,8 @@ import { githubFixture } from './relay-fixture.js';
 import { unwrapDeviceBoardKey, wrapDeviceBoardKey } from '../src/relay-device-keys.js';
 import { test } from 'node:test';
 import { createDeviceKeys } from '../src/relay-device-keys.js';
+import { createDeviceStore } from '../relay/device-store.js';
+import { DatabaseSync } from 'node:sqlite';
 
 /** Load the independent verifier only after proving that the production capability exists. */
 async function personAPI() {
@@ -231,4 +233,25 @@ test('a person-bound challenge gets an opaque wrap and a substituted key, wrong 
     assert.equal(database.includes(Buffer.from(Buffer.from(secret).toString('base64url'))), false);
   }
   assert.equal(JSON.stringify(delivered.document).includes('privateKey'), false);
+});
+
+
+/** The device schema is complete on first ordinary access, without requiring a person's enrollment traffic. */
+test('cold device storage creates person enrollment schema without person traffic [H15]', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'pullboard-person-cold-'));
+  const store = createDeviceStore({ directory });
+  const file = join(directory, 'devices.sqlite');
+  t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
+  assert.equal(existsSync(file), false, 'constructing an unused store still writes nothing');
+  assert.deepEqual(store.status('42', 'unknown'), { seen: null, revoked: null });
+  store.close();
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='person_enrollment'").get(),
+      'first ordinary device access creates the complete enrollment schema');
+    assert.deepEqual(db.prepare('PRAGMA table_info(person_enrollment)').all().map(row => [row.name, row.pk]),
+      [['account', 1], ['nonce', 2], ['device', 0], ['expires', 0], ['payload', 0], ['used', 0], ['wrapped', 0]]);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM person_enrollment').get().count, 0,
+      'schema creation neither fabricates an enrollment nor releases a wrap');
+  } finally { db.close(); }
 });
