@@ -1,8 +1,8 @@
-import { withBoardRead } from '../board-read.js';
+import { withBoardRead } from '../cli-board-read.js';
 /** The pullboard status command, in its own module so an item adding another command never edits these lines. */
-import * as store from '../board.js';
+import * as store from '../board-query.js';
 import { personNeedsSummary } from '../needs-summary.js';
-import { identifyCaller } from '../cli-identity.js';
+import { identifyCaller } from '../cli-read-context.js';
 import { relayStateExists } from '../local-state.js';
 import { unlinkedRelayStatus } from '../relay-status-fields.js';
 import {
@@ -23,7 +23,7 @@ import {
 import {
   context,
   span,
-} from '../cli-context.js';
+} from '../cli-read-context.js';
 
 /** Run `pullboard status` and return its exit code. */
 export async function run(io, { values }) {
@@ -32,9 +32,9 @@ export async function run(io, { values }) {
   const relay = hasRelayState ? await import('../relay.js') : null;
   const environment = hasRelayState && process.env.PULLBOARD_RELAY_TOKEN !== undefined
     ? await import('../relay-environment.js') : null;
-  const summary = withBoardRead(ctx, (board) => {
+  const summary = await withBoardRead(ctx, (board, readers) => {
     const me = identifyCaller(ctx, board, { environmentAgent: environment?.environmentAgent ?? (() => null),
-      relayLinked: relay?.relayLinked ?? (() => false) });
+      relayLinked: relay?.relayLinked ?? (() => false) }, readers);
     const mine = store.itemsInStatus(board, 'claimed', me.id);
     const approvalState = personNeedsSummary(ctx.info.root, { board, config: ctx.config });
     return { me, mine, needs: approvalState.needs, specApprovalBaseline: approvalState.specApprovalBaseline, specApprovalEvidenceErrors: approvalState.specApprovalEvidenceErrors, stats: store.stats(board), reviewQueue: { ...store.reviewQueue(board), ...store.reviewQueueBreakdown(board) }, unread: store.unreadCount(board, me.id), relay: relay ? relay.relayStatus(ctx.info.root) : unlinkedRelayStatus(),
@@ -58,7 +58,7 @@ export async function run(io, { values }) {
     io.say('optional: add a GitHub origin and run pullboard relay on to link this board');
   }
   if (Object.keys(ctx.config.products).length) {
-    const all = withBoardRead(ctx, (board) => store.listItems(board, { all: true }));
+    const all = await withBoardRead(ctx, (board) => store.listItems(board, { all: true }));
     productSummaries(ctx.config, loadSpec(ctx.info.root, ctx.config), all).forEach((product) => io.say(productLine(product)));
   }
   return 0;

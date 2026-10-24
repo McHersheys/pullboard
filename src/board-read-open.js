@@ -1,0 +1,75 @@
+/** Open existing board data without loading move execution [C7]. */
+import { existsSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
+import { boardBusyError } from './board-access.js';
+import { boardIsCurrent } from './board-migrate.js';
+import {
+  BOARD_BUSY_TIMEOUT_MS,
+  EVENT_LOG_VERSION,
+  SCHEMA_DIGEST,
+  SCHEMA_VERSION,
+} from './board-schema-source.js';
+import { Refused } from './refused.js';
+// Preserve eager validation of feature declarations without loading lifecycle guards.
+import './engine-metadata.js';
+
+/**
+ * The clock the board reads, real unless a test passes its own.
+ */
+export const systemClock = { now: () => new Date() };
+
+/**
+ * Open an existing board for a command that only reads: read-only, with no write lock and no
+ * migration, so a writer holding the lock never stalls it (#1047). `current` says whether this
+ * code's migration has run on it; only a write open migrates. Null when there is no board yet.
+ */
+export function openBoardForRead(file, clock = systemClock) {
+  if (file === ':memory:' || !existsSync(file)) return null;
+  const db = openBoardReadOnly(file);
+  try { readEventLogVersion(db); return { db, clock, readOnly: true, current: boardIsCurrent(db, SCHEMA_DIGEST, SCHEMA_VERSION) }; }
+  catch (error) { db.close(); throw error; }
+}
+
+/** Open an existing board without migrations, waiting for the same locks as openBoard. */
+export function openBoardReadOnly(file) {
+  const startedAt = Date.now();
+  let db;
+  try {
+    db = new DatabaseSync(file, { readOnly: true });
+    db.exec(`PRAGMA busy_timeout = ${BOARD_BUSY_TIMEOUT_MS}`);
+    return db;
+  } catch (error) {
+    try { db?.close(); } catch {}
+    throw boardBusyError(file, startedAt, error);
+  }
+}
+
+/**
+ * Read the persisted event format without migrating it, so integrity checks enforce the same
+ * compatibility rule as the writable opener while leaving older or damaged evidence intact.
+ *
+ * @param {DatabaseSync} db
+ * @returns {number}
+ */
+export function readEventLogVersion(db) {
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'board_meta'").get()) return 0;
+  const stored = db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?').get('event_log_version');
+  const version = stored && /^(?:0|[1-9]\d*)$/u.test(stored.meta_value) ? Number(stored.meta_value) : stored ? NaN : 0;
+  if (!Number.isSafeInteger(version) || version < 0) {
+    throw new Refused('EVENT_LOG_VERSION', `event log version ${stored?.meta_value ?? 'missing'} is invalid; restore a valid board or upgrade pullboard`);
+  }
+  if (version > EVENT_LOG_VERSION) {
+    throw new Refused('EVENT_LOG_VERSION', `event log version ${version} is newer than this pullboard version ${EVENT_LOG_VERSION}; upgrade pullboard to open this board`);
+  }
+  return version;
+}
+
+/**
+ * Close the board's file.
+ *
+ * @param {{ db: DatabaseSync }} board
+ */
+export function closeBoard(board) {
+  board.db.close();
+}
+

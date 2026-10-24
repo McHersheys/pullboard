@@ -1,6 +1,6 @@
-import { withBoardRead } from '../board-read.js';
+import { withBoardRead } from '../cli-board-read.js';
 /** The pullboard list command, in its own module so an item adding another command never edits these lines. */
-import * as store from '../board.js';
+import * as store from '../board-query.js';
 import {
   mainMergeFor,
 } from '../trunk-conflict.js';
@@ -11,12 +11,12 @@ import {
   agentDisplayName,
   context,
   itemLine,
-} from '../cli-context.js';
+} from '../cli-read-context.js';
 
 /** Run `pullboard list` and return its exit code. */
-export function run(io, { first, values }) {
+export async function run(io, { first, values }) {
   const ctx = context(io);
-  const { items, agents, merging } = withBoardRead(ctx, (board) => {
+  const { items, agents, merging } = await withBoardRead(ctx, (board) => {
     const rows = store.listItems(board, { lane: first, all: values.all });
     const items = rows.map(verdictProjector(ctx.info.root, board).project);
     // JSON returns these complete rows; agent names and merge labels belong only to the text rendering.

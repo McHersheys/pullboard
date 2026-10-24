@@ -1,3 +1,10 @@
+import {
+  agentAt,
+  agentById,
+  agentModel,
+  withModel,
+  listAgents,
+} from './board-query.js';
 /**
  * Seats (B3, H2, V1): who each registered agent is on the board, read from the agent table and the
  * metadata kept beside it: its model, its route, and from engine 48 the seat that created it, whether
@@ -14,32 +21,13 @@ import { Refused } from './refused.js';
 /** The board's coordinator hold travels with its seats: one main checkout coordinates a linked board (#347). */
 export { coordinatorHolder, takeCoordinator } from './coordinator-hold.js';
 
-/**
- * The agent registered for a worktree path, if any.
- *
- * @param {any} board
- * @param {string} path
- * @returns {any}
- */
-export function agentAt(board, path) {
-  const agent = board.db.prepare('SELECT * FROM agent WHERE agent_path = ?').get(path);
-  return withModel(board, agent);
-}
+export { agentAt } from './board-query.js';
 
-/** Read one seat and its model without loading every registered seat and model on the board. */
-export function agentById(board, id) {
-  return withModel(board, board.db.prepare('SELECT * FROM agent WHERE agent_id = ?').get(id));
-}
+export { agentById } from './board-query.js';
 
-/** Read the model label kept beside other board metadata, avoiding any board-schema migration. */
-export function agentModel(board, id) {
-  return board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?').get(`agent_model:${id}`)?.meta_value ?? null;
-}
+export { agentModel } from './board-query.js';
 
-/** Attach an agent's model to a row from the legacy stable agent table. */
-export function withModel(board, agent) {
-  return agent ? { ...agent, agent_model: agentModel(board, agent.agent_id) } : agent;
-}
+export { withModel } from './board-query.js';
 
 /** Save or clear a model label without changing the shared SQLite schema. */
 export function saveAgentModel(board, id, model) {
@@ -51,16 +39,7 @@ export function saveAgentModel(board, id, model) {
     .run(`agent_model:${id}`, model);
 }
 
-/**
- * Every registered agent, oldest first.
- *
- * @param {any} board
- * @returns {any[]}
- */
-export function listAgents(board) {
-  return board.db.prepare(`SELECT agent.*, board_meta.meta_value AS agent_model FROM agent
-    LEFT JOIN board_meta ON board_meta.meta_key='agent_model:' || agent.agent_id ORDER BY agent.rowid`).all().map(agent => ({ ...agent }));
-}
+export { listAgents } from './board-query.js';
 
 /**
  * The route an agent joined on; strong for the coordinator and for ids the board does not know.

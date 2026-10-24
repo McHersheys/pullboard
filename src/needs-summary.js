@@ -1,5 +1,5 @@
 /** Status obligations without loading the dashboard projection [N26,A9]. */
-import * as store from './board.js';
+import * as store from './board-query.js';
 import { repoInfo } from './git.js';
 import { projectRowDecisions } from './row-decisions.js';
 import { loadSpec } from './spec.js';
@@ -14,7 +14,7 @@ import {
 import {
   sentinelDraftNeeds,
   sentinels,
-} from './sentinels.js';
+} from './board-query.js';
 
 /** Keep status's complete obligation list without dashboard history, Git ages, or release notes. */
 export function personNeedsSummary(root, { board, config }) {

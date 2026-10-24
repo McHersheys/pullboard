@@ -1,4 +1,6 @@
-import { withBoardRead } from '../board-read.js';
+// Pending the legally landed #1114 item-files leaf, keep the existing related-items implementation.
+import { relatedItems } from '../board.js';
+import { withBoardRead } from '../cli-board-read.js';
 /** The pullboard show command, in its own module so an item adding another command never edits these lines. */
 import {
   displayAgentName,
@@ -7,7 +9,7 @@ import {
   barCorrectionLine,
   barCorrections,
 } from '../bar-corrections.js';
-import * as store from '../board.js';
+import * as store from '../board-query.js';
 import {
   agentApprovalLine,
   itemAgentApprovals,
@@ -32,14 +34,14 @@ import {
   idArg,
   itemLine,
   sayBrief,
-} from '../cli-context.js';
+} from '../cli-read-context.js';
 import { relayStateExists } from '../local-state.js';
 
 /** Run `pullboard show` and return its exit code. */
 export async function run(io, { first, values }) {
   const ctx = context(io);
   const id = idArg(first);
-  const { item, verdicts, moves, thread, related, reviewer, agents, mainMerge, infra, approval } = withBoardRead(ctx, (board) => {
+  const { item, verdicts, moves, thread, related, reviewer, agents, mainMerge, infra, approval } = await withBoardRead(ctx, (board) => {
     const item = verdictProjector(ctx.info.root, board).project(store.getItem(board, id));
     const result = { item, verdicts: store.verdictsFor(board, id), thread: store.itemThread(board, id),
       approval: specApprovalState(ctx.info.root, { board, config: ctx.config }) };
@@ -47,7 +49,7 @@ export async function run(io, { first, values }) {
     if (values.json) return result;
     const history = store.events(board, { itemId: id });
     return { ...result, moves: history.filter((event) => ['attempt', 'escalate'].includes(event.event_kind)),
-      related: store.relatedItems(board, item), reviewer: store.reviewHolder(board, item),
+      related: relatedItems(board, item), reviewer: store.reviewHolder(board, item),
       agents: store.listAgents(board), mainMerge: mainMergeFor(board, id), infra: infraNotes.infraNoteOf(history) };
   });
   const agentApproved = itemAgentApprovals(item, approval);
