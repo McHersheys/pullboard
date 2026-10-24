@@ -1,3 +1,4 @@
+import { requestedCommandMove } from './recorded-move.js';
 export { barActorForCommand } from './bar-actor.js';
 import {
   barReadinessRequired,
@@ -594,16 +595,17 @@ export async function ordered(ctx, board, operation, args) {
     ensureSpecApprovalCoordinator(ctx, board, initialBaseline);
     const actor = ctx.info.isMain ? COORDINATOR : store.agentAt(board, ctx.info.root)?.agent_id;
     if (initialBaseline && actor) await recordBaseline(actor);
+    const requested = requestedCommandMove(ctx.io.relayCommand?.cliOperation, operation);
     /** Called only for this requested operation, after its store transaction commits, never for bootstrap. */
     const applyRequested = () => {
       const before = board.lastEvent;
       const result = store[operation](board, ...args);
-      if (board.lastEvent !== before) ctx.io.recordedMove = true;
+      if (requested && board.lastEvent !== before) ctx.io.recordedMove = true;
       return result;
     };
     const result = await withItemSession(ctx.info, operation, args, () => relayLinked(ctx.info.root) || relayRecovered(ctx.info.root)
       ? relayOperation(ctx.info.root, operation, args, ctx.io, command, applyRequested,
-        () => { ctx.io.recordedMove = true; }) : applyRequested());
+        requested ? () => { ctx.io.recordedMove = true; } : undefined) : applyRequested());
     return result;
   };
   const digest = agentSessionDigest();
