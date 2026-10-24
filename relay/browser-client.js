@@ -14,6 +14,8 @@ import { phoneApprovalStatus, placePhoneApprovals, forgetPhoneApprovals } from '
 import { phoneSnapshotPages } from './browser-pages.js';
 import { createPhoneHistory } from './browser-history.js';
 
+const CHECKPOINT_WAIT_MS = 15_000;
+const CHECKPOINT_TIMEOUT = 'The relay snapshot has not caught up to this move. Retry this board.';
 const KEYS = 'pullboard.relay.keys.v1';
 const PENDING = 'pullboard.relay.pair.v1';
 const OUTBOX = 'pullboard.relay.requests.v1.';
@@ -160,6 +162,25 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
     installState(entry, checkpointState(entry, state, sequence));
     entry.checkpointCursor = sequence;
     entry.cursor = Math.max(entry.cursor, sequence);
+    for (const pending of entry.pendingSince?.keys() ?? []) if (pending <= sequence) entry.pendingSince.delete(pending);
+    if (entry.checkpointTimedOut && !pendingCheckpointTimeout(entry)) {
+      entry.checkpointTimedOut = false;
+      if (failureBoard === entry.id && failure === CHECKPOINT_TIMEOUT) { failure = ''; failureBoard = null; }
+      // Reconnect at the authenticated prefix after a timed-out checkpoint, without reloading the page.
+      if (entry.stream) subscribe(entry);
+    }
+  }
+
+  /** Retain the declared checkpoint timeout without blocking reception of later authenticated events. */
+  function pendingCheckpointTimeout(entry) {
+    for (const since of entry.pendingSince?.values() ?? []) {
+      if (Date.now() - since < CHECKPOINT_WAIT_MS) continue;
+      entry.checkpointTimedOut = true;
+      failure = CHECKPOINT_TIMEOUT;
+      failureBoard = entry.id;
+      return true;
+    }
+    return false;
   }
 
   /** Poll in the cursor queue without blocking later events while the native publisher is behind. */
@@ -173,11 +194,14 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
         const previous = entry.checkpointCursor;
         await snapshot(entry);
         if (access.signal.aborted || paired.get(entry.id) !== entry) return;
+        pendingCheckpointTimeout(entry);
         notice();
         if (entry.checkpointCursor !== previous) onUpdate();
       }).catch(error => {
         if (access.signal.aborted || paired.get(entry.id) !== entry) return;
-        failure = error.message; failureBoard = entry.id; notice();
+        // A rejected checkpoint cannot erase the existing timeout or the pending-event marks.
+        if (!pendingCheckpointTimeout(entry)) { failure = error.message; failureBoard = entry.id; }
+        notice();
       }).finally(() => { entry.snapshotPolling = false; pendingCheckpoint(entry); });
     }, 1000);
   }
@@ -414,6 +438,8 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
       entry.cursor = row.event_id;
     } else {
       const title = move.args?.find(value => value && typeof value === 'object' && typeof value.title === 'string')?.title;
+      entry.pendingSince ??= new Map();
+      entry.pendingSince.set(row.event_id, Date.now());
       entry.state.pendingEvents ??= [];
       entry.state.pendingEvents.push({ sequence: row.event_id, operation: move.operation ?? move.event?.event_kind ?? 'move', ...(title ? { title } : {}) });
       entry.cursor = row.event_id;
@@ -473,8 +499,7 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
     }
     if (document.version !== 1) throw new Error('Upgrade this browser client to read the relay API.');
     await receive(entry, document.event);
-    failure = '';
-    failureBoard = null;
+    if (!entry.checkpointTimedOut) { failure = ''; failureBoard = null; }
     notice();
     onUpdate();
   }
@@ -807,7 +832,7 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
         await snapshot(entry);
         await catchUp(entry);
         // A read has authenticated the checkpoint and complete prefix before clearing its failure.
-        if (failureBoard === entry.id) { failure = ''; failureBoard = null; }
+        if (failureBoard === entry.id && !entry.checkpointTimedOut) { failure = ''; failureBoard = null; }
         if (entry.stream?.closed) subscribe(entry);
         notice();
         if (match[2] === 'state') return { version: 1, state: entry.state };
