@@ -21,6 +21,7 @@ import {
 } from 'node:fs';
 import { availableParallelism } from 'node:os';
 import { executionEnvironment } from './execution-environment.js';
+import { sampleRunnerLoad } from './runner-load.js';
 import { freemem } from 'node:os';
 import { loadavg } from 'node:os';
 import { userInfo } from 'node:os';
@@ -169,6 +170,7 @@ async function readSpec() {
     || typeof value.pipefail !== 'boolean' || !Number.isSafeInteger(value.slots) || value.slots < 1
     || !Number.isSafeInteger(value.browser) || value.browser < 0
     || typeof value.browserRequired !== 'boolean'
+    || (value.timing !== undefined && typeof value.timing !== 'boolean')
     || (value.browserByLaunch !== undefined && typeof value.browserByLaunch !== 'boolean')
     || !value.runtime || typeof value.runtime !== 'object' || !value.runtime.files || typeof value.runtime.files !== 'object'
     || typeof value.runtime.sha256 !== 'string') throw new Error('invalid work specification');
@@ -200,7 +202,7 @@ async function readSpec() {
     tagNames.add(tag.name);
     if (tag.chain.length ? tag.chain[0] !== tag.object : tag.object !== tag.peeledCommit) throw new Error('invalid tag manifest');
   }
-  const runtimeNames = ['runner-custody.js', 'resources.js', 'git.js', 'machine-home.js', 'refused.js', 'process-census.js', 'queue-settings.js', 'queue-order.js', 'sandbox-denial.js', 'gate-stages.js', 'child-journal-preload.js', 'execution-environment.js'];
+  const runtimeNames = ['runner-custody.js', 'resources.js', 'git.js', 'machine-home.js', 'refused.js', 'process-census.js', 'queue-settings.js', 'queue-order.js', 'sandbox-denial.js', 'gate-stages.js', 'child-journal-preload.js', 'execution-environment.js', 'runner-load.js'];
   if (Object.keys(value.runtime.files).length !== runtimeNames.length
     || runtimeNames.some(name => typeof value.runtime.files[name] !== 'string')) throw new Error('invalid work specification');
   if (createHash('sha256').update(JSON.stringify(value.runtime.files)).digest('hex') !== value.runtime.sha256) throw new Error('invalid trusted runtime');
@@ -746,7 +748,7 @@ async function runCommand(spec, root, env, sink, tracker) {
 async function receipt(spec, fields, sink) {
   await flushStdout();
   const body = { id: spec.id, commit: spec.commit, tree: spec.tree, code: fields.code, signal: fields.signal,
-    environment: executionEnvironment(),
+    environment: executionEnvironment(), timing: spec.timing === true, executionAdmission: fields.executionAdmission ?? null,
     runtimeSha256: spec.runtime.sha256, toolingSha256: spec.tooling.sha256, root: fields.root ?? '', outputSha256: sink.hash.digest('hex'), wallMs: Math.max(0, Date.now() - sink.wallStart),
     // The execution host's load and the pinned main this run used, so a paired rerun here can be judged (#925).
     main: typeof spec.main === 'string' ? spec.main : null, load: { average: loadavg(), cpus: availableParallelism(), freeMB: Math.floor(freemem() / 1048576) },
@@ -832,11 +834,13 @@ async function main() {
       name: 'gate', capacity: gateCapacity, scope: 'machine', root: runnerRoot,
       repo: runnerRoot, agent: `pullboard-ssh-${spec.id}`,
       landing: spec.landing === true, itemCheck: spec.itemCheck === true,
-      diagnostic: spec.diagnostic === true, browser: spec.browserRequired,
+      diagnostic: spec.diagnostic === true, browser: spec.browserRequired, timing: spec.timing === true,
       browserCapacityProvider: () => browserCapacity,
       item: spec.item ?? '', kind: spec.kind ?? 'remote-command',
       onWait: () => assertTransportLive(),
     }, machineHomePath);
+    const startLoad = sampleRunnerLoad();
+    lease.executionAdmission = { admittedAt: lease.admittedAt, slots: gateCapacity, load: { start: startLoad, end: null } };
     const canonicalMachineHome = machineHomePath;
     tracker = createDescendantTracker(runDirectory, {
       tick: reportCleanupTimeout, timedOut: () => cleanupTimedOut,
@@ -872,7 +876,12 @@ async function main() {
     }
     if (lease) {
       cleanupStage = 'lease release';
-      await releaseDrainedLease(lease);
+      try {
+        if (lease.executionAdmission) {
+          const endLoad = sampleRunnerLoad();
+          final.executionAdmission = { ...lease.executionAdmission, ...lease.timingEvidence(), finishedAt: endLoad.at, load: { ...lease.executionAdmission.load, end: endLoad } };
+        }
+      } finally { await releaseDrainedLease(lease); }
     }
     cleanupStage = 'job files';
     if (runDirectory && !cleanupTimedOut) { try { rmSync(runDirectory, { recursive: true, force: true }); } catch {} }

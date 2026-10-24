@@ -133,3 +133,56 @@ const timer=setInterval(()=>{ if (fs.existsSync(${JSON.stringify(release)})) cle
     else process.env.PULLBOARD_MACHINE_HOME = previousMachineHome;
   }
 }
+
+/** A registered worker enforces timing admission and returns its own sampled load, not the controller's. */
+export async function runnerTimingReceipt(t, { cli, git, runThroughGate, gateResult }) {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-runner-timing-')));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const home = join(dir, 'home');
+  const machineHome = join(home, '.pullboard');
+  const remoteHome = join(dir, 'worker-home');
+  const remoteMachineHome = join(remoteHome, '.pullboard');
+  const repo = join(dir, 'repo');
+  const worker = join(dir, 'second-machine');
+  const bin = join(dir, 'bin');
+  const requests = join(dir, 'requests.jsonl');
+  for (const folder of [home, machineHome, remoteHome, remoteMachineHome, repo, worker, bin]) mkdirSync(folder, { recursive: true });
+  writeFileSync(join(machineHome, 'settings.json'), JSON.stringify({ gateSlots: 1 }));
+  const env = { ...process.env, HOME: home, PULLBOARD_HOME: home, PULLBOARD_MACHINE_HOME: machineHome,
+    PATH: `${bin}:${process.env.PATH}`, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1',
+    GIT_AUTHOR_NAME: 'Timing Fixture', GIT_AUTHOR_EMAIL: 'timing@example.invalid',
+    GIT_COMMITTER_NAME: 'Timing Fixture', GIT_COMMITTER_EMAIL: 'timing@example.invalid' };
+  git(repo, env, 'init', '-q', '-b', 'main');
+  writeFileSync(join(repo, 'pullboard.json'), JSON.stringify({ gate: 'true' }));
+  git(repo, env, 'add', 'pullboard.json');
+  git(repo, env, 'commit', '-q', '-m', 'test: prepare timing worker');
+  installSshStandIn({ bin, worker, home: remoteHome, machineHome: remoteMachineHome, requests });
+  const added = cli(repo, env, 'runner', 'add', HOST, '--slots', '2', '--browser', '0', '--json');
+  assert.equal(added.status, 0, added.context);
+  const previous = process.env.PULLBOARD_MACHINE_HOME;
+  process.env.PULLBOARD_MACHINE_HOME = machineHome;
+  let local;
+  try {
+    local = await takeResource({ name: 'gate', capacity: 1, scope: 'machine', root: repo, agent: 'timing-controller-holder' });
+    const result = await runThroughGate(repo, env, 'node -e "console.log(\'actual timing worker\')"',
+      { timing: true, browser: false, requests, item: 'timing-receipt' });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const actual = gateResult(result.stdout);
+    assert.equal(actual.runner, HOST);
+    const receipt = actual.profile.receipt;
+    assert.equal(receipt.runner.id, HOST);
+    assert.equal(receipt.runner.kind, 'ssh');
+    assert.equal(receipt.runner.slots.current, 2);
+    assert.equal(receipt.timing, true);
+    assert.equal(receipt.exclusive, true);
+    assert.deepEqual(receipt.unfencedClients, []);
+    assert.ok(Date.parse(receipt.load.start.at) >= Date.parse(receipt.admittedAt));
+    assert.equal(receipt.load.end.at, receipt.finishedAt);
+    assert.ok(receipt.load.start.average.every(Number.isFinite));
+    assert.ok(receipt.load.end.average.every(Number.isFinite));
+  } finally {
+    local?.release();
+    if (previous === undefined) delete process.env.PULLBOARD_MACHINE_HOME;
+    else process.env.PULLBOARD_MACHINE_HOME = previous;
+  }
+}

@@ -169,6 +169,10 @@ function laneProblems(name, lane) {
  */
 export function configProblems(config) {
   const problems = [];
+  if (config.publish !== undefined && (!config.publish || typeof config.publish !== 'object' || Array.isArray(config.publish)
+    || Object.keys(config.publish).some(key => key !== 'pullRequest') || ![undefined, false, 'release', 'item'].includes(config.publish.pullRequest))) {
+    problems.push('"publish.pullRequest" is false (default), "release" for one PR per release, or "item" for one PR per item');
+  }
   for (const field of ['project', 'name']) {
     if (config[field] === undefined) continue;
     const value = config[field];

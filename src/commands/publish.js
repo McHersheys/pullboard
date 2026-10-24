@@ -19,7 +19,8 @@ export async function run(io, { first, second, rest }) {
     if (first || second || rest.length) throw new Refused('USAGE', 'pullboard publish');
     const config = mainPolicy(ctx.info.root).config;
     const onFailure = nativeFlakes.observer(ctx, { kind: 'land', board, config }, { ordered, withBoard, resourceAgent });
-    const result = await publishTrunk({ root: ctx.info.root, board, config, say: io.say, onWait: gateWaitReporter(io), onFailure });
+    const result = await publishTrunk({ root: ctx.info.root, board, config, say: io.say, onWait: gateWaitReporter(io), onFailure,
+      write: (operation, args) => ordered(ctx, board, operation, args) });
     io.result?.(result);
     return result.published || result.waiting ? 0 : 1;
   });
