@@ -223,7 +223,7 @@ test('busy parent', async () => {
 
 test('an async parent lends its token through awaitNestedRun [C7]', async (t) => {
   const poolModule = new URL('../src/test-file-pool.js', import.meta.url).href;
-  const api = await import(poolModule);
+  const api = await import('../src/test-file-pool.js');
   assert.equal(typeof api.awaitNestedRun, 'function', 'an explicit yielding-wait helper is available');
   const { root, env, log } = fixture(t, 1);
   writeFileSync(join(root, 'inner.test.js'), timedFile('inner.test.js', 0));
