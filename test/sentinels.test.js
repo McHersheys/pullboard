@@ -1,5 +1,8 @@
 /** Real board watches: exact person approval, automatic execution, owner notices and replay [A6,D1,D3,H16]. */
 import assert from 'node:assert/strict';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+import { takeResumeObservations } from '../src/commands/resume.js';
 import { existsSync } from 'node:fs';
 import { mkdirSync } from 'node:fs';
 import { mkdtempSync } from 'node:fs';
@@ -46,6 +49,34 @@ import { loadSpec } from '../src/spec.js';
 import { parseProcessCensus } from '../src/process-census.js';
 import { requireSupportedEngine as requirePublished55Engine } from './fixtures/engine-55-reader.js';
 
+/** Observe only controlled private fixture Git costs, preserving original process calls. */
+function observePrivateResumeProcesses() {
+  const methods = ['spawnSync', 'execFileSync'];
+  const originals = Object.fromEntries(methods.map(method => [method, childProcess[method]]));
+  const calls = [];
+  for (const method of methods) {
+    /** Delegate identical inputs and retain bounded diagnostic durations, not process output or environment. */
+    childProcess[method] = function (...args) {
+      const started = performance.now();
+      const caller = new Error().stack?.split('\n').slice(2, 7).map(line => line.replace(/file:\/\/[^)]*\/src\//u, 'src/'));
+      try { return Reflect.apply(originals[method], this, args); }
+      finally {
+        if (calls.length < 80) calls.push({ method, program: String(args[0]),
+          ...(String(args[0]).split('/').at(-1) === 'git' ? { args: args[1] } : {}),
+          caller, ms: performance.now() - started });
+      }
+    };
+  }
+  syncBuiltinESMExports();
+  return { calls,
+    /** Restore builtin exports before assertions, output and cleanup. */
+    stop() {
+      for (const method of methods) childProcess[method] = originals[method];
+      syncBuiltinESMExports();
+    },
+  };
+}
+
 /** Isolate actual SQLite, Git, settings and subprocess files; due time is explicitly injected. */
 function fixture(t, { agentRoute } = {}) {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-board-watch-')));
@@ -77,8 +108,22 @@ function fixture(t, { agentRoute } = {}) {
   /** Run the actual CLI against this real board; view means the explicit test person adapter. */
   const cli = async (args, personChannel, cwd = root) => {
     let output = ''; let error = '';
-    const code = await main([...args, '--json'], { cwd, clock, personChannel,
-      stdout: { isTTY: false, write: text => { output += text; } }, stderr: { write: text => { error += text; } } });
+    const observing = args[0] === 'resume';
+    if (observing) takeResumeObservations();
+    const processObserver = observing ? observePrivateResumeProcesses() : null;
+    let code;
+    const observedStarted = performance.now();
+    try {
+      code = await main([...args, '--json'], { cwd, clock, personChannel,
+        stdout: { isTTY: false, write: text => { output += text; } }, stderr: { write: text => { error += text; } } });
+    } finally {
+      processObserver?.stop();
+      if (observing) {
+        const observation = { mainWallMs: performance.now() - observedStarted, spans: takeResumeObservations(), calls: processObserver.calls,
+          qualification: 'ONE coordinator25919 observation; exact args/options/results delegated; observer overhead included; spans disjoint, child calls nested; output after measured command' };
+        t.after(() => t.diagnostic(JSON.stringify(observation)));
+      }
+    }
     return { code, document: output ? JSON.parse(output) : null, error };
   };
   t.after(() => {
