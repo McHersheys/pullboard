@@ -1,3 +1,4 @@
+import { takeoverReady } from './line-capacity.js';
 /** Durable first-refusal windows for reopened work [B13,B5]. */
 import { Refused } from './refused.js';
 
@@ -26,7 +27,7 @@ export function firstRefusalProblem(board, id, agentId) {
 /** Explain ineligible build work without raising an item refusal from review selection. */
 export function firstRefusalReason(board, id, agentId) {
   const window = firstRefusal(board, id);
-  return window && window.builder !== agentId
+  return window && window.builder !== agentId && !takeoverReady(board, id)
     ? `item #${id} waits for ${window.builder} until ${window.until}; claim it after that time, or ask its builder to release it`
     : null;
 }
