@@ -23,6 +23,7 @@ function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'pullboard-rigor-counter-'));
   const file = join(dir, 'board.sqlite');
   const board = store.openBoard(file);
+  store.ensureCoordinator(board, dir);
   const item = store.addItem(board, { lane: 'core', title: 'Old rigor cause', criterion: 'Works.', by: 'coordinator' });
   t.after(() => { store.closeBoard(board); rmSync(dir, { recursive: true, force: true }); });
   return { board, file, item };
