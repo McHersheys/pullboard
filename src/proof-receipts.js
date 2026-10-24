@@ -32,32 +32,38 @@ export function proofReceipts(board, itemId) {
     .map(row => ({ eventId: row.event_id, ...JSON.parse(row.event_detail).receipt }));
 }
 
-/** Record only native facts, resolving the actor and its parent from board-owned registration. */
-export function recordProofRun(board, request) {
-  if ((board.executionEngineVersion ?? ENGINE_VERSION) < PROOF_RUN_ENGINE) {
-    throw new Refused('ENGINE_VERSION', `proof receipts require engine ${PROOF_RUN_ENGINE}; upgrade Pullboard`);
-  }
+/** Validate native facts against current board-owned identities without changing the board. */
+export function proofRunReceipt(board, request) {
   const { agentId, itemId } = request;
   if (!listAgents(board).some(agent => agent.agent_id === agentId)) throw new Refused('NOT_JOINED', 'join before recording a proof run');
   const run = board.executionEngineVersion === undefined ? boundProofReceipt(board, request) : receiptFields(request.receipt);
   if (!run || run.version !== 2 || run.proof.item !== itemId) throw new Refused('PROOF_RUN_UNBOUND', 'the native receipt must name this item; run its check and read pullboard show <id>');
   if (run.proof.seat !== agentId) throw new Refused('PROOF_RUN_ACTOR', 'the native receipt belongs to another seat; use the receipts from your own check');
+  const item = getItem(board, itemId);
+  if (run.proof.frozenDigest !== (item.item_frozen_digest ?? null)) throw new Refused('PROOF_RUN_STALE', 'the criterion changed during this proof; read pullboard show <id> before checking again');
+  const receipt = { id: run.id, kind: run.kind, item: itemId, commit: run.head, tree: run.tree,
+    frozenDigest: run.proof.frozenDigest, environment: run.proof.environment, runner: run.proof.runner,
+    seat: agentId, parentSession: seats.agentParent?.(board, agentId) ?? null, exitCode: run.proof.exitCode,
+    counts: run.proof.counts, durationMs: run.proof.durationMs, sourceClean: run.proof.sourceClean, at: run.at };
+  const existing = proofReceipts(board, itemId).find(value => value.id === receipt.id);
+  if (existing) {
+    const { eventId, ...fields } = existing;
+    // Later registration cannot retroactively upgrade an originally unknown parent.
+    receipt.parentSession = existing.parentSession;
+    if (JSON.stringify(fields) !== JSON.stringify(receipt)) throw new Refused('PROOF_RUN_CHANGED', 'that receipt id already binds different facts; keep the original and run a new check');
+  }
+  return { receipt, existing };
+}
+
+/** Record native facts atomically, revalidating after the native adapter's read-only preflight. */
+export function recordProofRun(board, request) {
+  if ((board.executionEngineVersion ?? ENGINE_VERSION) < PROOF_RUN_ENGINE) {
+    throw new Refused('ENGINE_VERSION', `proof receipts require engine ${PROOF_RUN_ENGINE}; upgrade Pullboard`);
+  }
   return atomic(board, () => {
-    const item = getItem(board, itemId);
-    if (run.proof.frozenDigest !== (item.item_frozen_digest ?? null)) throw new Refused('PROOF_RUN_STALE', 'the criterion changed during this proof; read pullboard show <id> before checking again');
-    const receipt = { id: run.id, kind: run.kind, item: itemId, commit: run.head, tree: run.tree,
-      frozenDigest: run.proof.frozenDigest, environment: run.proof.environment, runner: run.proof.runner,
-      seat: agentId, parentSession: seats.agentParent?.(board, agentId) ?? null, exitCode: run.proof.exitCode,
-      counts: run.proof.counts, durationMs: run.proof.durationMs, sourceClean: run.proof.sourceClean, at: run.at };
-    const existing = proofReceipts(board, itemId).find(value => value.id === receipt.id);
-    if (existing) {
-      const { eventId, ...fields } = existing;
-      // Later registration cannot retroactively upgrade an originally unknown parent.
-      receipt.parentSession = existing.parentSession;
-      if (JSON.stringify(fields) !== JSON.stringify(receipt)) throw new Refused('PROOF_RUN_CHANGED', 'that receipt id already binds different facts; keep the original and run a new check');
-      return existing;
-    }
-    logEvent(board, agentId, 'proof-run', itemId, { engine: PROOF_RUN_ENGINE, receipt });
+    const { receipt, existing } = proofRunReceipt(board, request);
+    if (existing) return existing;
+    logEvent(board, request.agentId, 'proof-run', request.itemId, { engine: PROOF_RUN_ENGINE, receipt });
     return receipt;
   });
 }
