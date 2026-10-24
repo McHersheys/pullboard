@@ -121,7 +121,7 @@ function stageTraffic(items, stage, since, now) {
 /** Project landed item totals and stage traffic from the same prepared canonical lifecycle facts. */
 export function projectFlowWindow(prepared, minutes, now) {
   const bounds = flowWindowBounds(minutes, now);
-  const since = Date.parse(bounds.since);
+  const since = now - minutes * MINUTE;
   const landed = prepared.items.filter(item => item.mergeAt >= since && item.mergeAt <= now);
   const stages = Object.fromEntries(WINDOW_STAGES.map(stage => {
     const measured = landed.map(item => ({ item, minutes: stageMinutes(item, stage) })).filter(row => row.minutes !== null);
