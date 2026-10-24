@@ -719,3 +719,42 @@ test('engine 93 item messages replay and older broadcasts keep their recorded me
       'recorded old broadcast remains global, rather than being reinterpreted by its sender');
   }
 });
+
+test('outside author facts and exact owner approval replay without manufacturing a native builder [H3,H16,B26]', async t => {
+  const { createHash } = await import('node:crypto');
+  const { OUTSIDE_INTAKE_ENGINE } = await import('../src/outside-intake-engine.js');
+  const { copies: [one, two], directory } = engineCopies(t);
+  // These object IDs exercise deterministic storage only; no outside program or sandbox execution is claimed.
+  const text = JSON.stringify({ title: 'Outside replay fixture', criterion: 'record the source', rows: [], check: 'true' });
+  const frozen = { text, digest: createHash('sha256').update(text).digest('hex') };
+  const source = { kind: 'pull-request', repository: 'fixture/project', number: 7, author: 'outside-contributor', state: 'open', maintainerReplied: true,
+    commit: 'a'.repeat(40), tree: 'b'.repeat(40), base: 'c'.repeat(40), files: ['relay/outside.js'], sensitive: true };
+  const move = prepareEngineMove(one, 'intakeOutside', [{ agentId: 'coordinator', source, frozen,
+    item: { lane: 'web', title: 'Outside replay fixture', criterion: 'record the source', check: 'true' } }], { id: 'outside-replay-intake' });
+  for (const board of [one, two]) {
+    const before = exportBoard(board);
+    assert.throws(() => applyEngineMove(board, { ...move, engine: OUTSIDE_INTAKE_ENGINE - 1 }, { sequence: 1, at: CLAIM_AT }), /RELAY_MOVE/);
+    assert.deepEqual(exportBoard(board), before, 'an older engine cannot partially introduce outside semantics');
+  }
+  const ids = [one, two].map(board => applyEngineMove(board, move, { sequence: 1, at: CLAIM_AT }).result);
+  assert.equal(ids[0], ids[1]);
+  const id = ids[0];
+  const item = store.getItem(one, id);
+  assert.equal(item.item_status, 'submitted');
+  assert.equal(item.item_built_by, 'outside:github:outside-contributor');
+  assert.equal(store.listAgents(one).some(agent => agent.agent_id === item.item_built_by), false);
+  const approval = prepareEngineMove(one, 'approveOutside', [id, { agentId: 'person' }], { id: 'outside-replay-approval' });
+  for (const board of [one, two]) {
+    const before = exportBoard(board);
+    assert.throws(() => store.approveOutside(board, id, { agentId: 'web-1' }), /B26_PERSON_CHANNEL/);
+    assert.deepEqual(exportBoard(board), before, 'an agent cannot acquire person approval by naming its own native seat');
+    applyRelayMove(board, approval, { sequence: 2, at: CLAIM_AT, kind: 'move', sender: { kind: 'person', userId: 'fixture-owner', policy: ENGINE_VERSION } });
+    assert.deepEqual(store.getItem(board, id).outside.ownerApproval, { by: 'person', commit: source.commit, at: CLAIM_AT });
+  }
+  assert.deepEqual(exportBoard(one).tables, exportBoard(two).tables);
+  const imported = store.openBoard(join(directory, 'outside-import.sqlite'));
+  try {
+    importBoard(imported, exportBoard(one));
+    assert.deepEqual(store.getItem(imported, id).outside, store.getItem(one, id).outside, 'public facts and approval survive the native export boundary');
+  } finally { store.closeBoard(imported); }
+});
