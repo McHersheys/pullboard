@@ -1,4 +1,7 @@
-import { handoffMoveProblem, requireHandoffActive } from './handoff-state.js';
+import {
+  handoffMoveProblem,
+  requireHandoffActive,
+} from './handoff-state.js';
 import { manualLandingFailureQuoted } from './manual-landing-failure-quoted.js';
 import { lineSettings } from './line-settings.js';
 import { requireOutsideReceipt } from './outside-proof.js';
