@@ -1302,9 +1302,16 @@ async function main(args) {
   const actions = await (await import('../src/test-action-cache.js')).planTestActions(process.cwd(), args, { fullSuite, landing: process.env[LANDING_RUN_ENV] === '1', listFiles: () => fullSuite ? trackedDefaultTestFiles(process.cwd(), process.env) : explicitTestFiles(args) });
   if (actions.done) return;
   const { testsNeedGui } = await import('../src/gui-admission.js');
-  const guiFiles = actions.files ?? (fullSuite
-    ? (isGitWorkTree(process.cwd(), process.env) ? trackedDefaultTestFiles(process.cwd(), process.env) : [])
-    : explicitTestFiles(args));
+  let guiFiles;
+  try {
+    guiFiles = actions.files ?? (fullSuite
+      ? (isGitWorkTree(process.cwd(), process.env) ? trackedDefaultTestFiles(process.cwd(), process.env) : [])
+      : explicitTestFiles(args));
+  } catch (error) {
+    process.stderr.write(`run-tests: could not list tracked test files: ${error.message}\n`);
+    process.exitCode = 1;
+    return;
+  }
   const gui = testsNeedGui(process.cwd(), guiFiles);
   let signal = null;
   /** Keep sandbox lifetime inside the held lease, including the complete child process. */
