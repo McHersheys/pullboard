@@ -268,10 +268,6 @@ export const REJECT_REASONS = [
 
 export { systemClock } from './board-read-open.js';
 
-
-
-
-
 export { openBoardForRead } from './board-read-open.js';
 
 export { openBoardReadOnly } from './board-read-open.js';
@@ -429,8 +425,6 @@ export { boardId } from './board-query.js';
 
 export { closeBoard } from './board-read-open.js';
 
-
-
 const TRANSACTION_DEPTH = new WeakMap();
 
 /**
@@ -499,11 +493,6 @@ export function linkPublishRepair(board, { agentId, item, repair }) {
   }
   setItem(board, repair, { item_parent_id: item });
 }
-
-
-
-
-
 
 /**
  * Register a worktree as an agent (B3): the main checkout as the one coordinator, any other
@@ -1253,8 +1242,6 @@ export function reviewReleaseNoteProblem(board, itemId, agentId, note) {
   return null;
 }
 
-
-
 /** Return a reviewer's active one-hour cooldown, if a later submission has not reset it [V1,R1]. */
 function reviewReleaseCooldown(board, itemId, agentId) {
   if ((board.executionEngineVersion ?? ENGINE_VERSION) < 5) return null;
@@ -1913,8 +1900,6 @@ export function openRequests(board) {
     AND NOT EXISTS (SELECT 1 FROM shout reply WHERE reply.shout_answers = ask.shout_id AND reply.shout_request_outcome IN ('done', 'declined'))
     ORDER BY ask.shout_id`).all();
 }
-
-
 
 /**
  * Unread shouts for an agent, oldest first, then marked read.
