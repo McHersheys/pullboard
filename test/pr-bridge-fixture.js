@@ -4,6 +4,7 @@ import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import * as store from '../src/board.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { startFixtureChild } from './fixture-child.js';
 
@@ -30,7 +31,7 @@ export function bridgeProject(t, mode = 'release') {
     "import { readFileSync, appendFileSync } from 'node:fs';",
     "import { execFileSync } from 'node:child_process';",
     `appendFileSync(${JSON.stringify(gateCalls)}, JSON.stringify({ head: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() }) + '\\n');`,
-    "let red = false; for (const file of ['web/one.js', 'web/two.js']) { try { if (readFileSync(file, 'utf8').includes('RED')) red = true; } catch (error) { if (error.code !== 'ENOENT') throw error; } }",
+    "let red = false; for (const file of ['web/one.js', 'web/two.js', 'web/three.js']) { try { if (readFileSync(file, 'utf8').includes('RED')) red = true; } catch (error) { if (error.code !== 'ENOENT') throw error; } }",
     "console.log('TAP version 13'); console.log((red ? 'not ok' : 'ok') + ' 1 - bridge project content stays green');",
     "console.log('1..1'); console.log('# tests 1'); console.log('# pass ' + (red ? 0 : 1)); console.log('# fail ' + (red ? 1 : 0)); console.log('# skipped 0'); process.exitCode = red ? 1 : 0;",
   ].join('\n'));
@@ -47,14 +48,31 @@ export function bridgeProject(t, mode = 'release') {
   return { ...box, ...helpers, remote, published, gateCalls, mode };
 }
 
+/** Opt in through a real committed coordinator configuration, optionally tied to its native item. */
+function enableBridgeMode(box, companion) {
+  const configPath = join(box.repo, 'pullboard.json');
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  writeFileSync(configPath, JSON.stringify({ ...config, publish: { pullRequest: box.mode }, approvers: ['fixture-person'] }, null, 2));
+  box.git(box.repo, 'add', 'pullboard.json');
+  box.git(box.repo, 'commit', '-q', '-m', 'chore: opt in to private pull request bridge [G1]',
+    ...(companion ? ['-m', `Pullboard-Companion: #${companion}`] : []));
+}
+
 /** Build, verify and locally land two real items before enabling the opt-in publisher. */
-export function landBridgeItems(box) {
+export function landBridgeItems(box, { independent = false } = {}) {
   const entries = [];
   for (const [index, name] of ['one', 'two'].entries()) {
     const path = index === 0 ? box.web : join(box.dir, 'web-two');
     if (index) {
       box.git(box.repo, 'worktree', 'add', '-q', '-b', 'web/two', path, 'main');
       assert.equal(box.run(path, 'join', 'web').code, 0);
+    }
+    if (independent) {
+      const board = store.openBoard(join(box.repo, '.git/pullboard/board.sqlite'));
+      try {
+        store.register(board, { lane: 'coordinator', path: box.repo, parent: 'fixture-pr-reviewer' });
+        store.register(board, { lane: 'web', path, parent: `fixture-pr-builder-${index}` });
+      } finally { store.closeBoard(board); }
     }
     const add = box.run(box.repo, 'add', 'web', `private bridge ${name}`, '--specs', 'G1',
       '--criterion', `private ${name} remains correct`, '--check', 'test ! -f RED', '--json');
@@ -71,16 +89,13 @@ export function landBridgeItems(box) {
       const reviewed = box.run(box.repo, 'verify', String(id), 'accept', '--as', 'coordinator', '--note', 'private bridge proof passed');
       assert.equal(reviewed.code, 0, reviewed.err);
     } finally { box.git(box.repo, 'switch', '-q', 'main'); }
-    box.git(box.repo, 'merge', '-q', '--no-ff', '-m', `chore(merge): private bridge ${name} [G1]`, commit);
+    box.git(box.repo, 'merge', '-q', '--no-ff', '-m', `chore(merge): private bridge ${name} [G1]`, ...(independent ? ['-m', `Pullboard-Item: #${id}`] : []), commit);
     const merged = box.run(box.repo, 'merged', String(id), box.git(box.repo, 'rev-parse', 'HEAD'));
     assert.equal(merged.code, 0, merged.err);
     entries.push({ id, commit, file });
+    if (independent && index === 0) enableBridgeMode(box, id);
   }
-  const configPath = join(box.repo, 'pullboard.json');
-  const config = JSON.parse(readFileSync(configPath, 'utf8'));
-  writeFileSync(configPath, JSON.stringify({ ...config, publish: { pullRequest: box.mode }, approvers: ['fixture-person'] }, null, 2));
-  box.git(box.repo, 'add', 'pullboard.json');
-  box.git(box.repo, 'commit', '-q', '-m', 'chore: opt in to private pull request bridge [G1]');
+  if (!independent) enableBridgeMode(box);
   return entries;
 }
 
@@ -102,9 +117,23 @@ export async function bridgeProvider(t, box) {
         const head = box.git(box.remote, 'rev-parse', `refs/heads/${body.head}`);
         const pull = { number: state.next++, html_url: `https://github.com/fixture/repository/pull/${state.next - 1}`,
           title: body.title, body: body.body, state: 'open', merged: false,
-          head: { ref: body.head, sha: head }, base: { ref: body.base }, merged_by: null, merge_commit_sha: null };
+          head: { ref: body.head, sha: head }, base: { ref: body.base, sha: box.git(box.remote, 'rev-parse', body.base) }, merged_by: null, merge_commit_sha: null };
         state.pulls.push(pull); return reply(201, pull);
       }
+    }
+    const commitsRoute = /^\/repos\/fixture\/repository\/pulls\/(\d+)\/commits$/u.exec(url.pathname);
+    if (commitsRoute) {
+      const pull = state.pulls.find(p => p.number === Number(commitsRoute[1]));
+      const commits = box.git(box.repo, 'rev-list', `${pull.base.sha}..${pull.head.sha}`).split('\n').filter(Boolean);
+      return reply(200, commits.slice((Number(url.searchParams.get('page') ?? 1) - 1) * 100,
+        Number(url.searchParams.get('page') ?? 1) * 100).map(sha => ({ sha })));
+    }
+    if (/\/issues\/\d+\/comments$/u.test(url.pathname) || /\/pulls\/\d+\/reviews$/u.test(url.pathname)) return reply(200, []);
+    const filesRoute = /\/pulls\/(\d+)\/files$/u.exec(url.pathname);
+    if (filesRoute) {
+      const pull = state.pulls.find(p => p.number === Number(filesRoute[1]));
+      const files = box.git(box.repo, 'diff', '--name-only', `${pull.base.sha}...${pull.head.sha}`).split('\n').filter(Boolean);
+      return reply(200, files.map(filename => ({ filename })));
     }
     const pullRoute = /^\/repos\/fixture\/repository\/pulls\/(\d+)$/u.exec(url.pathname);
     if (pullRoute) {
@@ -114,6 +143,7 @@ export async function bridgeProvider(t, box) {
         Object.assign(pull, { title: body.title, body: body.body });
         pull.head.sha = box.git(box.remote, 'rev-parse', `refs/heads/${pull.head.ref}`);
       }
+      pull.commits = box.git(box.repo, 'rev-list', `${pull.base.sha}..${pull.head.sha}`).split('\n').filter(Boolean).length;
       return reply(200, pull);
     }
     const statusRoute = /^\/repos\/fixture\/repository\/statuses\/([a-f0-9]+)$/u.exec(url.pathname);
@@ -124,7 +154,11 @@ export async function bridgeProvider(t, box) {
     if (/\/commits\/[a-f0-9]+\/check-runs$/u.test(url.pathname)) return reply(200, { total_count: state.checks.length, check_runs: state.checks });
     const annotations = /\/check-runs\/(\d+)\/annotations$/u.exec(url.pathname);
     if (annotations) return reply(200, state.annotationsByRun[annotations[1]] ?? state.annotations);
-    if (/\/commits\/[a-f0-9]+\/status$/u.test(url.pathname)) return reply(200, { state: 'success', statuses: [] });
+    if (/\/commits\/[a-f0-9]+\/status$/u.test(url.pathname)) {
+      const sha = url.pathname.split('/').at(-2);
+      const statuses = [...new Map(state.statuses.filter(status => status.sha === sha).map(status => [status.context, status])).values()];
+      return reply(200, { state: statuses.some(status => status.state !== 'success') ? 'failure' : 'success', statuses });
+    }
     return reply(404, { message: 'unexpected private provider endpoint' });
   });
   server.listen(0, '127.0.0.1');
@@ -146,10 +180,15 @@ export async function bridgeProvider(t, box) {
 }
 
 /** Fix only the linked private repair through the same real item lifecycle. */
-export function landBridgeRepair(box, id, file) {
+export function landBridgeRepair(box, id, file, { independent = false } = {}) {
   const path = join(box.dir, `repair-${id}`);
   box.git(box.repo, 'worktree', 'add', '-q', '-b', `web/repair-${id}`, path, 'main');
   assert.equal(box.run(path, 'join', 'web').code, 0);
+  if (independent) {
+    const board = store.openBoard(join(box.repo, '.git/pullboard/board.sqlite'));
+    try { store.register(board, { lane: 'web', path, parent: 'fixture-pr-repair-builder' }); }
+    finally { store.closeBoard(board); }
+  }
   const edited = box.run(box.repo, 'edit', String(id), '--criterion', 'the private CI finding is repaired',
     '--check', 'test ! -f RED', '--brief', 'Change the named private web fixture and retain the linked finding.');
   assert.equal(edited.code, 0, edited.err);
@@ -163,7 +202,7 @@ export function landBridgeRepair(box, id, file) {
     const accepted = box.run(box.repo, 'verify', String(id), 'accept', '--as', 'coordinator', '--note', 'private repair proof passed');
     assert.equal(accepted.code, 0, accepted.err);
   } finally { box.git(box.repo, 'switch', '-q', 'main'); }
-  box.git(box.repo, 'merge', '-q', '--no-ff', '-m', 'chore(merge): land private CI repair [G1]', commit);
+  box.git(box.repo, 'merge', '-q', '--no-ff', '-m', 'chore(merge): land private CI repair [G1]', ...(independent ? ['-m', `Pullboard-Item: #${id}`] : []), commit);
   const merged = box.run(box.repo, 'merged', String(id), box.git(box.repo, 'rev-parse', 'HEAD'));
   assert.equal(merged.code, 0, merged.err);
   return commit;
