@@ -106,7 +106,7 @@ Work
   pullboard sentinel propose <name> --check "<command>" --every 10m|hourly|daily --owner <seat or lane> [--directory <path>] [--timeout <milliseconds>] [--next "<step>"]
                                         propose an exact board watch; only the person may approve it
   pullboard sentinel approve <name>     person: approve this command, directory and schedule
-  pullboard sentinel run                run due approved watches in a prepared trunk checkout
+  pullboard sentinel run [--health-only] run due approved watches, or only scan board health
   pullboard sentinel decline <name> --reason "<why>"   person: prevent future runs
   pullboard sentinels                   approvals, owners and the last result; does not run checks
   pullboard loop declare <name> --every 10m --owner <seat or lane>   coordinator: declare a recurring job's cadence
