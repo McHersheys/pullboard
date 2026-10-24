@@ -1,6 +1,16 @@
 /** Keep explicit local unlinking distinct from joining somebody else's existing remote board [H17]. */
-import { randomBytes, randomUUID } from 'node:crypto';
-import { existsSync, lstatSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  randomBytes,
+  randomUUID,
+} from 'node:crypto';
+import {
+  existsSync,
+  lstatSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { repoInfo } from './git.js';
 import { Refused } from './refused.js';

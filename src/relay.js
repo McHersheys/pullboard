@@ -120,7 +120,13 @@ import {
 } from './relay-outbox.js';
 import { stampCoordinatorHolder } from './coordinator-hold.js';
 import { relayFiles } from './local-state.js';
-import { archiveRelinkOutbox, finishRelink, plannedRelayBoard, relayRelink, rememberRelink } from './relay-relink.js';
+import {
+  archiveRelinkOutbox,
+  finishRelink,
+  plannedRelayBoard,
+  relayRelink,
+  rememberRelink,
+} from './relay-relink.js';
 import { Refused } from './refused.js';
 import { landingRelayCallbacks } from './landing-relay.js';
 import { relayOrigin } from './relay-origin.js';
