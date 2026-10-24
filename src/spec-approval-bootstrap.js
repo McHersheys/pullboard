@@ -9,10 +9,11 @@ import {
   relayRecovered,
 } from './relay.js';
 import { captureSpecApprovalBaseline } from './spec-approval.js';
+import { gitSyncLinked } from './local-state.js';
 
 /** Establish cold local authority inside the checkout lease; linked and recovered moves keep relay authority. */
 export function ensureSpecApprovalCoordinator(ctx, board, baseline) {
-  if (!baseline || !ctx.info.isMain || relayLinked(ctx.info.root) || relayRecovered(ctx.info.root)) return;
+  if (!baseline || !ctx.info.isMain || relayLinked(ctx.info.root) || relayRecovered(ctx.info.root) || gitSyncLinked(ctx.info.root)) return;
   ensureCoordinator(board, ctx.info.root);
 }
 

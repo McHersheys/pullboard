@@ -7,6 +7,10 @@ export { formatSnapshotLimit };
 import { beginCommandPhase } from './command-phase.js';
 import { recordedMoveRefusal } from './recorded-move.js';
 import {
+  publishExcludedBoards,
+  publishOffExclusions,
+} from './relay-excluded.js';
+import {
   recoverySummary,
   unlinkedRelayStatus,
 } from './relay-status-fields.js';
@@ -16,6 +20,7 @@ import {
   clearUploadPauseNotices,
   firstUploadPauseNotice,
   permanentUploadRefusal,
+  safePauseMessage,
   uploadPauseType,
   uploadRetryReady,
 } from './relay-upload-pause.js';
@@ -481,15 +486,6 @@ export function pendingSnapshotSize(root) {
   return snapshotSize(loadLink(linkFile(root)));
 }
 
-/** Keep a permanent refusal only as a bounded, credential-free diagnostic. */
-function safePauseMessage(error) {
-  const message = String(error.relayMessage ?? error.message ?? 'the relay refused the baseline upload')
-    .replace(/https?:\/\/[^\s]+/gu, '[relay]')
-    .replace(/\b(?:Bearer\s+)?(?:ps|pa|pm|pg)_[A-Za-z0-9_-]{20,}\b/gu, '[credential]')
-    .replace(/[\r\n\t\x00-\x1f\x7f]+/gu, ' ')
-    .replace(/\s+/gu, ' ').trim();
-  return message.slice(0, 240) || 'the relay refused the baseline upload';
-}
 
 /** Whether the CLI command will make an ordered move whose refusal should be reported at dispatch. */
 function orderedMoveCommand(io) {
@@ -1657,6 +1653,7 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
         await catchUp(root, file, state, io);
         await deliverDeviceWraps(root, io);
         updateRelayMachine(machine => { machine.excluded = machine.excluded.filter(entry => entry !== repoInfo(root).root); });
+        if (reusableSession === undefined) await publishExcludedBoards({ ...signed, account, url }, io, request);
       }
       result = summary(root, state, { pairing: !quiet });
     }
@@ -1678,7 +1675,7 @@ export async function relayOff(root, io) {
   const file = linkFile(root);
   return locked(file, async () => {
     const state = loadLink(file);
-    if (!state) return summary(root, null);
+    if (!state) { await publishOffExclusions(null, io, { loadLink, linkFile, request: relayDeviceRequest }); return summary(root, null); }
     let joined = [];
     try {
       const roster = await request(state, '/auth/machines?board=' + state.board, {}, io);
@@ -1696,6 +1693,7 @@ export async function relayOff(root, io) {
     rmSync(file, { force: true });
     try { forgetBoardKey(state.board, state.keyStorage); }
     catch { /* The local opt-out is complete even when secure key storage is temporarily locked. */ }
+    await publishOffExclusions(state, io, { loadLink, linkFile, request: relayDeviceRequest });
     let requested = false;
     let remote;
     try {

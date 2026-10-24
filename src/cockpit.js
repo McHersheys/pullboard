@@ -1145,7 +1145,10 @@ function render() {
     : entry[3] === 'decide' ? needRow([entry[0], '', entry[2], entry[3], entry[4]], 'a decision, asked by ' + entry[1], 'decide')
       : entry[0].startsWith('spec:') ? needRow(entry, 'an open question in SPEC.md', 'answer') : needRow(entry, entry[3], 'release');
   const needsHtml = needs.map(needKind).join('')
-    + rigorDrafts.map(row => needRow([row.target, row.ref, row.text], 'a proved Rigor draft', 'Approve or Decline')).join('')
+    + rigorDrafts.map(row => needRow([row.unproved && !row.materialized ? null : row.target, row.ref,
+      row.unproved && !row.materialized ? row.text + ' ' + row.what : row.text],
+    row.unproved ? 'an unproved Rigor proposal' + (row.evidence?.occurrences ? ', repeated ' + row.evidence.occurrences + (row.evidence.occurrences === 1 ? ' time' : ' times') : '') : 'a proved Rigor draft',
+    row.unproved && !row.materialized ? 'prepare review' : 'Approve or Decline')).join('')
     + sentinelDrafts.map(row => sentinelDraftRow(row)).join('')
     + agentApprovals.map(row => agentApprovalRow(row)).join('')
     + (drafts ? needRow(['tab:spec', String(drafts), 'draft spec rows to approve or drop'], 'Spec rows waiting on you', 'review') : '');
