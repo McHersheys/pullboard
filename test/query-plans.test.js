@@ -19,6 +19,13 @@ import { personNeedsSummary } from '../src/needs-summary.js';
 import { resumeNeeds } from '../src/resume-needs.js';
 import { undraftedRigor } from '../src/rigor-notices.js';
 import { runFixtureChild, runFixtureGit } from './fixture-child.js';
+import { applyEngineMove, prepareEngineMove } from '../src/engine.js';
+import { recordSchemaStamp } from '../src/board-migrate.js';
+import { SCHEMA_DIGEST } from '../src/board-schema-source.js';
+import {
+  ensureFactIdentityIndexes,
+  factIdentityExists,
+} from '../src/fact-identity.js';
 
 const BIN = resolve(import.meta.dirname, '../bin/pullboard.js');
 const SERVE = pathToFileURL(resolve(import.meta.dirname, '../src/serve.js')).href;
@@ -30,6 +37,275 @@ const sandboxes = [];
 // Writable open warms both proof and Rigor counters before these hot reads. No whole-history
 // exception remains; cold readers are covered separately without weakening this hot-path check.
 const WHOLE_HISTORY = [];
+
+test('a new fact id is checked by index across current, legacy and archived facts [B29,B31,C7]', (t) => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-fact-index-')));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const file = join(directory, 'board.sqlite');
+  const clock = { now: () => new Date('2026-10-24T00:00:00.000Z') };
+  let board = store.openBoard(file, clock);
+  t.after(() => store.closeBoard(board));
+  store.register(board, { lane: 'coordinator', path: '/synthetic-fact-index' });
+  const first = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'First identity owner' });
+  const second = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Another identity owner' });
+  /** Keep all append options fixed except the identity under test. */
+  const options = (factId) => ({ agentId: 'coordinator', kind: 'note', text: 'Private identity evidence', factId });
+  const insert = board.db.prepare("INSERT INTO event (event_at,event_by,event_kind,item_id,event_detail) VALUES (?,?,?,?,?)");
+  // Explicitly synthetic legacy history, not benchmark data or ordered-move proof.
+  for (let index = 0; index < 400; index += 1) {
+    insert.run(clock.now().toISOString(), 'coordinator', 'fact', first, JSON.stringify({ id: `legacy-${index}`, text: 'Legacy note' }));
+  }
+  const plans = [];
+  const prepare = board.db.prepare.bind(board.db);
+  /** Record plans for actual duplicate checks without substituting their SQLite results. */
+  board.db.prepare = (sql) => {
+    if (/^SELECT\b/iu.test(sql) && /json_(?:extract|valid)/u.test(sql)) {
+      const bindings = sql.includes('?') ? ['fresh-identity'] : [];
+      plans.push({ sql, plan: prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...bindings).map((row) => row.detail) });
+    }
+    return prepare(sql);
+  };
+  store.appendFact(board, first, options('fresh-identity'));
+  board.db.prepare = prepare;
+  const identityPlans = plans.filter(({ sql }) => sql.includes('json_extract'));
+  assert.ok(identityPlans.length > 0, 'the real appendFact executed its identity lookup');
+  assert.ok(identityPlans.every(({ plan }) => plan.some((detail) => /SEARCH event\b.*<expr>=\?/u.test(detail))),
+    `new fact identity must search an expression index, not scan every fact: ${JSON.stringify(plans)}`);
+  const legacyPlans = plans.filter(({ sql }) => sql.includes('NOT json_valid') && sql.includes("typeof(event_detail) = 'text'"));
+  assert.ok(legacyPlans.length > 0 && legacyPlans.every(({ plan }) => plan.some((detail) => /USING (?:COVERING )?INDEX event_fact_malformed_v2\b/u.test(detail))),
+    `legacy detection must read only its partial legacy index: ${JSON.stringify(plans)}`);
+  assert.throws(() => store.appendFact(board, second, options('fresh-identity')), { code: 'BAD_FACT_ID' }, 'identity is global across items');
+  assert.throws(() => store.appendFact(board, second, options('legacy-399')), { code: 'BAD_FACT_ID' });
+
+  store.closeBoard(board);
+  const legacy = new DatabaseSync(file);
+  // A synthetic physical cold partition exercises compatibility without importing unlanded retention code.
+  legacy.exec(`CREATE TABLE event_archive AS SELECT * FROM event WHERE 0;
+    DROP INDEX event_fact_identity_v2; DROP INDEX event_fact_malformed_v2; DROP INDEX event_fact_unknown_v2;
+    CREATE INDEX event_fact_identity ON event(json_extract(event_detail,'$.id')) WHERE event_kind='fact' AND json_valid(event_detail);
+    CREATE INDEX event_fact_legacy ON event(event_id) WHERE event_kind='fact' AND NOT json_valid(event_detail);`);
+  legacy.prepare("INSERT INTO event_archive (event_id,event_at,event_by,event_kind,item_id,event_detail) VALUES (?,?,?,?,?,?)")
+    .run(900000, clock.now().toISOString(), 'coordinator', 'fact', first, JSON.stringify({ id: 'cold-identity', text: 'Cold legacy note' }));
+  legacy.prepare("INSERT INTO event (event_at,event_by,event_kind,item_id,event_detail) VALUES (?,?,?,?,?)")
+    .run(clock.now().toISOString(), 'coordinator', 'fact', second, JSON.stringify({ id: 'legacy-0', text: 'Historical duplicate retained' }));
+  recordSchemaStamp(legacy, SCHEMA_DIGEST);
+  legacy.close();
+  const older = store.openBoard(file, clock, { isMain: false });
+  try {
+    const before = older.db.prepare('SELECT * FROM event ORDER BY event_id').all();
+    const schema = older.db.prepare('SELECT type,name,sql FROM sqlite_master ORDER BY type,name').all();
+    assert.throws(() => store.appendFact(older, second, options('cold-identity')), { code: 'FACT_INDEX_NOT_READY' });
+    assert.throws(() => store.appendFact(older, second, options('before-index-install')), { code: 'FACT_INDEX_NOT_READY' });
+    assert.deepEqual(older.db.prepare('SELECT * FROM event ORDER BY event_id').all(), before, 'readiness refusal writes no native event');
+    assert.deepEqual(older.db.prepare('SELECT type,name,sql FROM sqlite_master ORDER BY type,name').all(), schema, 'nonowner append performs no index DDL');
+  } finally {
+    store.closeBoard(older);
+  }
+  const readonly = store.openBoardReadOnly(file);
+  assert.equal(readonly.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='index' AND name LIKE '%_fact_%_v2'").get().n, 0,
+    'read-only open never installs an additive index');
+  readonly.close();
+  const reader = store.openBoardForRead(file, clock);
+  try {
+    assert.ok(store.listItems(reader).length >= 2, 'legacy reads require no fact index');
+    assert.throws(() => store.appendFact(reader, second, options('readonly-before-index-install')), { code: 'FACT_INDEX_NOT_READY' },
+      'an explicit readonly append receives the owning-open step before attempting a write transaction');
+  } finally { store.closeBoard(reader); }
+  const beforeUpgrade = new DatabaseSync(file);
+  const upgradeSchema = beforeUpgrade.prepare('SELECT type,name,sql FROM sqlite_master ORDER BY type,name').all();
+  const upgradeEvents = beforeUpgrade.prepare('SELECT * FROM event ORDER BY event_id').all();
+  const upgradeMeta = beforeUpgrade.prepare('SELECT * FROM board_meta ORDER BY meta_key').all();
+  beforeUpgrade.close();
+  const originalExec = DatabaseSync.prototype.exec;
+  /** Fail the cold-partition install only after the hot indexes were really created in its transaction. */
+  DatabaseSync.prototype.exec = function (sql) {
+    if (sql.includes('CREATE INDEX IF NOT EXISTS event_archive_fact_identity_v2')) throw new Error('synthetic cold index install failure');
+    return originalExec.call(this, sql);
+  };
+  try { assert.throws(() => store.openBoard(file, clock), /synthetic cold index install failure/u); }
+  finally { DatabaseSync.prototype.exec = originalExec; }
+  const failedUpgrade = new DatabaseSync(file);
+  assert.deepEqual(failedUpgrade.prepare('SELECT type,name,sql FROM sqlite_master ORDER BY type,name').all(), upgradeSchema,
+    'failed install rolls back every new hot/cold index');
+  assert.deepEqual(failedUpgrade.prepare('SELECT * FROM board_meta ORDER BY meta_key').all(), upgradeMeta, 'failed install preserves the schema stamp');
+  failedUpgrade.close();
+  board = store.openBoard(file, clock);
+  assert.deepEqual(board.db.prepare('SELECT * FROM event ORDER BY event_id').all(), upgradeEvents, 'owning-open upgrade preserves every native event');
+  assert.equal(board.db.prepare('PRAGMA user_version').get().user_version, 3, 'index upgrade preserves the existing data schema version');
+  assert.throws(() => store.appendFact(board, second, options('cold-identity')), { code: 'BAD_FACT_ID' }, 'cold identity remains reserved');
+  store.appendFact(board, second, options('after-migration'));
+  const coldPlans = board.db.prepare("EXPLAIN QUERY PLAN SELECT 1 FROM event_archive WHERE event_kind='fact' AND json_valid(event_detail,10) AND json_extract(event_detail,'$.id')=?")
+    .all('cold-identity').map((row) => row.detail);
+  assert.ok(coldPlans.some((detail) => /SEARCH event_archive\b.*<expr>=\?/u.test(detail)), JSON.stringify(coldPlans));
+
+  const move = prepareEngineMove(board, 'appendFact', [second, options('ignored-local-id')], { id: 'sealed-fact-index' });
+  const replay = applyEngineMove(board, move, { sequence: 1, at: clock.now().toISOString() });
+  assert.equal(replay.result.id, move.id);
+  assert.deepEqual(applyEngineMove(board, move, { sequence: 1, at: clock.now().toISOString() }), replay, 'same sealed move retries its receipt');
+  assert.equal(store.events(board).filter((event) => event.event_kind === 'fact' && JSON.parse(event.event_detail).id === move.id).length, 1);
+
+  board.db.prepare("INSERT INTO event (event_at,event_by,event_kind,item_id,event_detail) VALUES (?,?,?,?,?)")
+    .run(clock.now().toISOString(), 'coordinator', 'fact', first, "{id:'legacy-json5',text:'kept'}");
+  assert.throws(() => store.appendFact(board, second, options('legacy-json5')), { code: 'BAD_FACT_ID' }, 'strict-invalid but readable JSON5 keeps its identity');
+  board.db.prepare("INSERT INTO event_archive (event_id,event_at,event_by,event_kind,item_id,event_detail) VALUES (?,?,?,?,?,?)")
+    .run(900001, clock.now().toISOString(), 'coordinator', 'fact', first, "{id:'cold-json5',text:'kept'}");
+  assert.throws(() => store.appendFact(board, second, options('cold-json5')), { code: 'BAD_FACT_ID' }, 'readable cold JSON5 keeps its global identity');
+  const json5Plans = [];
+  const json5Prepare = board.db.prepare.bind(board.db);
+  /** Observe the real post-JSON5 lookup, with no replacement result or inferred pre-legacy plan. */
+  board.db.prepare = (sql) => {
+    if (/^SELECT\b/iu.test(sql) && /json_(?:extract|valid)/u.test(sql)) {
+      const bindings = sql.includes('?') ? ['after-json5'] : [];
+      json5Plans.push({ sql, plan: json5Prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...bindings).map((row) => row.detail) });
+    }
+    return json5Prepare(sql);
+  };
+  try { store.appendFact(board, second, options('after-json5')); }
+  finally { board.db.prepare = json5Prepare; }
+  const json5IdentityPlans = json5Plans.filter(({ sql }) => sql.includes('json_extract'));
+  assert.ok(json5IdentityPlans.length >= 2 && json5IdentityPlans.every(({ plan }) =>
+    plan.some((detail) => /SEARCH event(?:_archive)?\b.*<expr>=\?/u.test(detail)) &&
+    !plan.some((detail) => /SEARCH event(?:_archive)?\b.*event_kind=\?(?!.*<expr>)/u.test(detail))),
+  `both physical partitions must retain indexed new-ID lookups after readable legacy JSON5: ${JSON.stringify(json5Plans)}`);
+
+  // Coordinator27318: arbitrary corrupt binary history is unsupported, never a reason to scan or crash an append.
+  const jsonb = board.db.prepare('SELECT jsonb(?) AS value').get('{"id":"unsupported-id","unused":{"tail":123}}').value;
+  const corrupt = Uint8Array.from(jsonb);
+  corrupt[corrupt.length - 1] = 255;
+  board.db.prepare("INSERT INTO event (event_at,event_by,event_kind,item_id,event_detail) VALUES (?,?,?,?,?)")
+    .run(clock.now().toISOString(), 'coordinator', 'fact', first, corrupt);
+  board.db.prepare("INSERT INTO event_archive (event_id,event_at,event_by,event_kind,item_id,event_detail) VALUES (?,?,?,?,?,?)")
+    .run(900002, clock.now().toISOString(), 'coordinator', 'fact', first, corrupt);
+  const unknownEvents = board.db.prepare("SELECT * FROM event WHERE typeof(event_detail)='blob'").all();
+  const unknownCold = board.db.prepare("SELECT * FROM event_archive WHERE typeof(event_detail)='blob'").all();
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = line => warnings.push(line);
+  try {
+    store.appendFact(board, second, options('unsupported-id'));
+    store.appendFact(board, second, options('after-unknown'));
+  } finally { console.warn = originalWarn; }
+  assert.equal(warnings.length, 1, 'public append emits only one diagnostic for corrupt binary legacy facts');
+  assert.match(warnings[0], /^\[FACT_ID_UNKNOWN\]/u);
+  assert.deepEqual(board.db.prepare("SELECT * FROM event WHERE typeof(event_detail)='blob'").all(), unknownEvents);
+  assert.deepEqual(board.db.prepare("SELECT * FROM event_archive WHERE typeof(event_detail)='blob'").all(), unknownCold);
+
+  const beforeMalformed = board.db.prepare('SELECT count(*) AS n FROM event').get().n;
+  board.db.prepare("INSERT INTO event (event_at,event_by,event_kind,item_id,event_detail) VALUES (?,?,?,?,?)")
+    .run(clock.now().toISOString(), 'coordinator', 'fact', first, '{malformed');
+  assert.throws(() => store.appendFact(board, second, options('after-malformed')), /malformed JSON/iu, 'malformed fact remains a failure, never silently ignored');
+  assert.equal(board.db.prepare('SELECT count(*) AS n FROM event').get().n, beforeMalformed + 1, 'failed append has no partial event');
+});
+
+
+test('legacy fact SQL formats preserve parser outcomes [B29,C7]', (t) => {
+  const db = new DatabaseSync(':memory:');
+  t.after(() => db.close());
+  const jsonb = db.prepare("SELECT jsonb(?) AS value").get('{"id":"blob-id","unused":{"tail":123}}').value;
+  const alteredJsonb = Uint8Array.from(jsonb);
+  alteredJsonb[alteredJsonb.length - 1] = 255;
+  const cases = [
+    ['strict text', '{"id":"text-id"}', 'text-id'],
+    ['JSON5 text', "{id:'json5-id',}", 'json5-id'],
+    ['JSON text BLOB', Buffer.from('{"id":"blob-text-id"}'), 'blob-text-id'],
+    ['JSON5 text BLOB', Buffer.from("{id:'blob-json5-id'}"), 'blob-json5-id'],
+    ['native JSONB', jsonb, 'blob-id'],
+    ['missing identity', '{"text":"note"}', null],
+    ['JSON scalar', 'true', null],
+    ['JSON null', 'null', null],
+    ['malformed text', '{broken', undefined],
+    ['malformed BLOB', Buffer.from('{broken'), undefined],
+    ['altered unused JSONB tail', alteredJsonb, 'observe'],
+  ];
+  const observations = [];
+  for (const [format, value, expected] of cases) {
+    const readable = db.prepare('SELECT json_valid(?,10) AS readable').get(value).readable;
+    let result;
+    try { result = { value: db.prepare("SELECT json_extract(?,'$.id') AS id").get(value).id }; }
+    catch (error) { result = { error: error.message, code: error.code, errcode: error.errcode }; }
+    observations.push({ format, readable, result });
+    if (expected === 'observe') continue;
+    if (expected === undefined) assert.match(result.error, /malformed JSON/iu, format);
+    else {
+      assert.equal(result.value, expected, format);
+      assert.equal(readable, 1, `${format}: proposed predicate retains parser-readable legacy values`);
+    }
+  }
+  console.log(JSON.stringify({ sqlite: db.prepare('SELECT sqlite_version() AS version').get().version, legacyFormatObservations: observations }));
+});
+
+
+test('indexed legacy fact outcomes match the original lookup [B29,B31,C7]', (t) => {
+  /** Preserve the original SQL outcome, including native SQLite errors rather than a rewritten refusal. */
+  const outcome = (work) => {
+    try { return { value: work() }; }
+    catch (error) { return { code: error.code, errcode: error.errcode, message: error.message }; }
+  };
+  const cases = [
+    ['duplicate first', [[1, '{"id":"same"}'], [2, '{broken']], [], 'same'],
+    ['malformed first', [[1, '{broken'], [2, '{"id":"same"}']], [], 'same'],
+    ['new ID with malformed', [[1, '{"id":"other"}'], [2, '{broken']], [], 'new'],
+    ['JSON5 duplicate first', [[1, "{id:'same'}"], [2, '{broken']], [], 'same'],
+    ['hot duplicate before cold malformed', [[9, '{"id":"same"}']], [[1, '{broken']], 'same'],
+    ['hot malformed before cold duplicate', [[9, '{broken']], [[1, '{"id":"same"}']], 'same'],
+    ['cold duplicate first', [[9, '{"id":"other"}']], [[1, '{"id":"same"}'], [2, '{broken']], 'same'],
+    ['cold malformed first', [[9, '{"id":"other"}']], [[1, '{broken'], [2, '{"id":"same"}']], 'same'],
+    ['numeric duplicate order', [[2, '{"id":"same"}'], [3, '{broken'], [10, '{"id":"same"}']], [], 'same'],
+    ['numeric malformed order', [[2, '{broken'], [3, '{"id":"same"}'], [10, '{broken']], [], 'same'],
+    ['large event IDs', [[9007199254740993n, '{"id":"same"}'], [9007199254740994n, '{broken']], [], 'same'],
+    ['JSON text BLOB', [[2, Buffer.from('{"id":"same"}')]], [], 'same'],
+    ['native JSONB hot', [[2, { jsonb: '{"id":"same"}' }]], [], 'same'],
+    ['native JSONB cold', [], [[2, { jsonb: '{"id":"same"}' }]], 'same'],
+    ['JSON5 text BLOB', [], [[2, Buffer.from("{id:'same'}")]], 'same'],
+    ['valid scalar and absent identity', [[2, 'null'], [3, '42'], [10, '{"text":"kept"}']], [], 'new'],
+  ];
+  const observations = [];
+  for (const [name, rows, archive, id] of cases) {
+    const db = new DatabaseSync(':memory:');
+    t.after(() => db.close());
+    db.exec(`CREATE TABLE event(event_id INTEGER PRIMARY KEY,event_kind TEXT,event_detail TEXT NOT NULL);
+      CREATE INDEX event_kind_id ON event(event_kind,event_id);`);
+    if (archive.length) db.exec(`CREATE TABLE event_archive(event_id INTEGER PRIMARY KEY,event_kind TEXT,event_detail TEXT NOT NULL);
+      CREATE INDEX event_archive_kind_id ON event_archive(event_kind,event_id);`);
+    for (const [table, data] of [['event', rows], ['event_archive', archive]]) {
+      if (table === 'event_archive' && !archive.length) continue;
+      for (const [eventId, detail] of data) {
+        const value = detail?.jsonb ? db.prepare('SELECT jsonb(?) AS value').get(detail.jsonb).value : detail;
+        db.prepare(`INSERT INTO ${table} VALUES (?,'fact',?)`).run(eventId, value);
+      }
+    }
+    const history = archive.length ? '(SELECT * FROM event UNION ALL SELECT * FROM event_archive)' : 'event';
+    const old = outcome(() => Boolean(db.prepare(`SELECT 1 FROM ${history} WHERE event_kind='fact' AND json_extract(event_detail,'$.id')=?`).get(id)));
+    const native = db.prepare('SELECT CAST(event_id AS TEXT) AS event_id,event_kind,event_detail FROM event ORDER BY event.event_id').all();
+    ensureFactIdentityIndexes(db);
+    const indexed = outcome(() => factIdentityExists(db, id));
+    observations.push({ name, old, indexed });
+    assert.deepEqual(indexed, old, name);
+    assert.deepEqual(db.prepare('SELECT CAST(event_id AS TEXT) AS event_id,event_kind,event_detail FROM event ORDER BY event.event_id').all(), native,
+      `${name}: installing and looking up the index preserves native rows`);
+  }
+  const unknown = new DatabaseSync(':memory:');
+  t.after(() => unknown.close());
+  unknown.exec(`CREATE TABLE event(event_id INTEGER PRIMARY KEY,event_kind TEXT,event_detail TEXT NOT NULL);
+    CREATE TABLE event_archive(event_id INTEGER PRIMARY KEY,event_kind TEXT,event_detail TEXT NOT NULL);`);
+  const jsonb = unknown.prepare("SELECT jsonb(?) AS value").get('{"id":"unsupported-id","unused":{"tail":123}}').value;
+  const corrupt = Uint8Array.from(jsonb);
+  corrupt[corrupt.length - 1] = 255;
+  unknown.prepare("INSERT INTO event VALUES (2,'fact',?)").run(corrupt);
+  unknown.prepare("INSERT INTO event_archive VALUES (10,'fact',?)").run(corrupt);
+  const messages = [];
+  ensureFactIdentityIndexes(unknown);
+  const unsupportedBefore = unknown.prepare('SELECT * FROM event').all();
+  const observe = { onDiagnostic: line => messages.push(line) };
+  assert.equal(factIdentityExists(unknown, 'unsupported-id', observe), false, 'coordinator27318: corrupt non-TEXT identity is unknown');
+  assert.equal(factIdentityExists(unknown, 'another-id', observe), false);
+  assert.equal(messages.length, 1, 'one named line per open connection, no diagnostic flood');
+  assert.match(messages[0], /^\[FACT_ID_UNKNOWN\]/u);
+  assert.deepEqual(unknown.prepare('SELECT * FROM event').all(), unsupportedBefore, 'unsupported history stays immutable');
+  const plans = unknown.prepare("EXPLAIN QUERY PLAN SELECT 1 FROM event INDEXED BY event_fact_unknown_v2 WHERE event_kind='fact' AND typeof(event_detail)<>'text' AND NOT json_valid(event_detail,10) LIMIT 1").all();
+  assert.ok(plans.some(row => /USING (?:COVERING )?INDEX event_fact_unknown_v2/u.test(row.detail)), JSON.stringify(plans));
+  console.log(JSON.stringify({ legacyOutcomeOracle: observations }));
+});
 
 after(() => {
   for (const dir of sandboxes) rmSync(dir, { recursive: true, force: true });

@@ -355,6 +355,9 @@ The following live SQLite declarations include nullability, defaults, primary an
 | Index | Table | Columns | Unique |
 | --- | --- | --- | --- |
 | `event_by_at` | `event` | `event_by`, `event_at` | no |
+| `event_fact_identity_v2` | `event` | `(expression)`, `event_id` | no |
+| `event_fact_malformed_v2` | `event` | `event_id` | no |
+| `event_fact_unknown_v2` | `event` | `event_id` | no |
 | `event_item_id_event_id` | `event` | `item_id`, `event_id` | no |
 | `event_kind_id` | `event` | `event_kind`, `event_id` | no |
 | `item_lane_status` | `item` | `item_lane`, `item_status` | no |
@@ -365,6 +368,9 @@ The following live SQLite declarations include nullability, defaults, primary an
 | `shout_open_request` | `shout` | `shout_request` | no |
 | `verdict_item_id_verdict_id` | `verdict` | `item_id`, `verdict_id` | no |
 <!-- board-indexes:end -->
+
+`(expression)` denotes an unnamed expression column in SQLite's `index_info`. For `event_fact_identity_v2`, it is `json_extract(event_detail, '$.id')`, followed by `event_id`; the partial index includes fact rows readable by `json_valid(event_detail, 10)`. The malformed index covers invalid TEXT fact rows and the unknown index covers invalid non-TEXT fact rows, both ordered by `event_id`. All three are nonunique additive indexes installed once by the owning writable opener; read opens do not install them. A missing-index append refuses with `FACT_INDEX_NOT_READY` and asks the owning checkout to open the board once.
+
 
 `src/machine.js` declares the lifecycle and retained records. `src/board.js` installs these persistent triggers in the board file:
 
