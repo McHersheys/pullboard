@@ -1,4 +1,10 @@
 import {
+  recoverySummary,
+  unlinkedRelayStatus,
+} from './relay-status-fields.js';
+import { originRepository } from './github-origin.js';
+export { originRepository };
+import {
   clearUploadPauseNotices,
   firstUploadPauseNotice,
   permanentUploadRefusal,
@@ -63,10 +69,7 @@ import {
   withSeatName,
 } from './relay-seats.js';
 import { syncApprovers } from './relay-approvers.js';
-import {
-  ENGINE_VERSION,
-  VERIFIER_STANDING_ENGINE,
-} from './machine.js';
+import { ENGINE_VERSION } from './machine.js';
 import {
   presentationDigest,
   relayPresentation,
@@ -109,6 +112,7 @@ import {
   queueMove,
 } from './relay-outbox.js';
 import { stampCoordinatorHolder } from './coordinator-hold.js';
+import { relayFiles } from './local-state.js';
 import { Refused } from './refused.js';
 import { landingRelayCallbacks } from './landing-relay.js';
 import { relayOrigin } from './relay-origin.js';
@@ -159,33 +163,11 @@ const DELETION_NOTICES = new WeakSet();
 const ORDERED_MOVE_COMMANDS = new Set(['add', 'edit', 'fact', 'escalate', 'run', 'sweep', 'next', 'claim', 'hold', 'release',
   'submit', 'done', 'verify', 'merged', 'land', 'withdraw', 'refreeze', 'shout', 'answer', 'pass', 'import', 'milestone', 'takeover', 'forget', 'join', 'worktree']);
 
-/** Resolve the actual GitHub origin; optional discovery leaves ineligible local projects alone. */
-export function originRepository(root, { optional = false } = {}) {
-  const remote = tryGit(root, ['remote', 'get-url', 'origin']);
-  if (remote.status !== 0 && optional) return null;
-  if (remote.status !== 0) throw new Refused('RELAY_ORIGIN', 'add a GitHub origin remote before running pullboard relay on');
-  let repository;
-  const ssh = /^git@github\.com:([^\s?#]+)$/.exec(remote.stdout);
-  if (ssh) repository = ssh[1];
-  else {
-    try {
-      const url = new URL(remote.stdout);
-      if (url.hostname === 'github.com' && !url.password && !url.search && !url.hash &&
-          ((url.protocol === 'https:' && !url.username) || (url.protocol === 'ssh:' && url.username === 'git')) && !url.port) repository = url.pathname.slice(1);
-    } catch { /* A local path or another host is not a GitHub repository. */ }
-  }
-  repository = repository?.replace(/\.git$/, '');
-  if (!repository || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository) || repository.split('/').some((part) => ['.', '..'].includes(part))) {
-    if (optional) return null;
-    throw new Refused('RELAY_ORIGIN', 'origin must name a GitHub owner/repository using HTTPS or git SSH; fix origin and run pullboard relay on');
-  }
-  return repository;
-}
 /** Find the shared local link metadata without opening a board or connecting for an unlinked repo. */
-function linkFile(root) { return join(repoInfo(root).commonDir, 'pullboard', 'relay.json'); }
+function linkFile(root) { return relayFiles(repoInfo(root).commonDir).link; }
 
 /** Locate the credential-free reason an independently deleted copy no longer syncs. */
-function deletedLinkFile(root) { return join(repoInfo(root).commonDir, 'pullboard', 'relay-deleted.json'); }
+function deletedLinkFile(root) { return relayFiles(repoInfo(root).commonDir).deleted; }
 
 /** Read only a private, bounded deletion marker; it never supplies credentials or an outbound destination. */
 function deletedLink(root) {
@@ -432,18 +414,11 @@ function behind(root, state) {
   return localRecords(root, (board) => board.db.prepare('SELECT COUNT(*) AS count FROM event WHERE event_id > ?').get(state.cursor).count);
 }
 
-/** Expose only the actionable recovery choice; checkpoint ciphertext and local digests stay private. */
-function recoverySummary(state) {
-  const skip = Number.isSafeInteger(state?.recovery?.skip) ? state.recovery.skip : 0;
-  return { pending: skip > 0, skip, next: skip > 0 ? `pullboard relay recover --skip ${skip}` : '' };
-}
-
 /** Expose key-free link status; only an explicit link operation includes its pairing carrier. */
 function summary(root, state, { pairing = false } = {}) {
   if (!state) {
     const deleted = deletedLink(root);
-    return { linked: false, board: deleted?.board ?? '', url: deleted?.url ?? '', link: '', sequence: 0, behind: 0, recovery: recoverySummary(null),
-      ...(deleted ? { deleted: true, notice: 'The relay copy was deleted; your local board is complete. Keep working locally, or run pullboard relay on to link it again.' } : {}) };
+    return unlinkedRelayStatus(deleted);
   }
   if (state.unlinking) return { linked: false, board: state.board, url: state.url, link: '', sequence: state.sequence, behind: 0, cleanup: true, recovery: recoverySummary(state) };
   const fragment = pairing ? '&key=' + encodeBoardKey(readBoardKey(state.board)) : '';

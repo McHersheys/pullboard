@@ -1,7 +1,11 @@
+import {
+  sentinelDraftNeeds,
+  sentinels,
+} from './board-query.js';
 /** Person-approved board watches and their append-only run history [A6,D1,D3]. */
 import { createHash } from 'node:crypto';
 import { atomic } from './board.js';
-import { listAgents } from './board.js';
+import { listAgents } from './board-query.js';
 import { logEvent } from './board.js';
 import { PERSON } from './board.js';
 import { shout } from './board.js';
@@ -63,48 +67,14 @@ export function rigorSentinelName(key) {
   return ('rigor-' + slug).slice(0, 64).replace(/[-._]+$/u, '');
 }
 
-/** Pending watches are the person's calls: one Needs-you entry each, with the evidence that proposed it. */
-export function sentinelDraftNeeds(rows) {
-  return rows.filter(row => row.status === 'pending').map(row => ({
-    kind: 'sentinel-draft', id: `sentinel:${row.name}`, ref: row.name,
-    check: row.check, directory: row.directory, every: row.every, owner: row.owner, digest: row.digest,
-    text: `Sentinel draft: ${row.name} runs ${row.check} ${row.every === 'daily' || row.every === 'hourly' ? row.every : 'every ' + row.every}, reporting to ${row.owner}`,
-    what: `pullboard sentinel approve ${row.name}, or decline it with --reason`, target: `sentinel:${row.name}`,
-    ...(row.evidence ? { cause: row.evidence.key, evidence: row.evidence } : {}),
-  }));
-}
+export { sentinelDraftNeeds } from './board-query.js';
 
 /** Bind approval to every execution and notification field, including schedule and timeout. */
 export function sentinelDigest(value) {
   return createHash('sha256').update(JSON.stringify(sentinelDefinition(value))).digest('hex');
 }
 
-/** Read only allocated receipts; legacy events with similar names never enable command execution. */
-export function sentinels(board) {
-  const rows = new Map();
-  const events = board.db.prepare("SELECT * FROM event WHERE event_kind IN ('sentinel-proposal','sentinel-decision','sentinel-start','sentinel-run') ORDER BY event_id").all();
-  for (const event of events) {
-    const detail = JSON.parse(event.event_detail);
-    if (detail.engine !== BOARD_SENTINEL_ENGINE) continue;
-    if (event.event_kind === 'sentinel-proposal') {
-      rows.set(detail.row.name, { ...detail.row, digest: detail.digest, status: 'pending', proposedBy: event.event_by,
-        proposedAt: event.event_at, evidence: detail.evidence ?? null, lastRun: null, activeRun: null, history: [] });
-      continue;
-    }
-    const row = rows.get(detail.name);
-    if (!row || row.digest !== detail.digest) continue;
-    if (event.event_kind === 'sentinel-decision' && event.event_by === PERSON) {
-      row.status = detail.decision === 'approve' ? 'approved' : 'declined';
-      row.reason = detail.reason; row.decidedAt = event.event_at; row.activeRun = null;
-    } else if (event.event_kind === 'sentinel-start') {
-      row.activeRun = { id: detail.run, by: event.event_by, startedAt: event.event_at, until: detail.until };
-    } else if (event.event_kind === 'sentinel-run' && row.activeRun?.id === detail.run) {
-      row.lastRun = { ...detail.result, id: detail.run, at: event.event_at };
-      row.history.push(row.lastRun); row.activeRun = null;
-    }
-  }
-  return [...rows.values()];
-}
+export { sentinels } from './board-query.js';
 
 /** All mutations retain their allocated replay minimum and require a registered actor. */
 function requireSentinelActor(board, agentId, person = false) {
