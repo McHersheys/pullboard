@@ -149,7 +149,8 @@ test('reviews-first changes a ready shared seat without preempting recorded work
     event_at: new Date(BASE + minute * 60_000).toISOString(), event_kind: kind, item_id: item, event_by: by }));
   const buildsFirst = replayFlow(events, { order: [2, 1], settings: { reviewsFirst: false } });
   const reviewsFirst = replayFlow(events, { order: [2, 1], settings: { reviewsFirst: true } });
-  assert.equal(buildsFirst.replay.items[0].stages.reviewWait, 1);
+  assert.equal(buildsFirst.replay.items[0].stages.reviewWait, 2,
+    'the prioritized second item takes the shared build seat, then the one observed review place');
   assert.equal(reviewsFirst.replay.items[0].stages.reviewWait, 0);
   assert.equal(reviewsFirst.replay.items[1].claimAt, new Date(BASE + 2 * 60_000).toISOString());
 });
