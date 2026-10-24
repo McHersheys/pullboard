@@ -36,8 +36,8 @@ export function requestedCommandMove(command, operation) {
     milestone: ['addMilestone', 'editMilestoneItems', 'orderMilestoneItems', 'moveMilestone', 'editMilestone', 'removeMilestone', 'shipMilestone'],
     land: ['recordLandingBatch', 'recordLandingWaiver', 'finishLandingBatch'],
     sentinel: ['proposeSentinel', 'decideSentinel', 'beginSentinelRun', 'finishSentinelRun'],
-    health: ['recordHealthFindings'], job: ['declareJob', 'recordJobRun'],
-    intake: ['intakeOutside'], approve: ['approveOutside'], publish: ['recordPublishFinding'],
+    health: ['recordHealthFindings'], loop: ['declareJob', 'recordJobRun'],
+    intake: ['intakeOutside', 'approveOutside'], publish: ['recordPublishFinding'],
   };
   return Object.hasOwn(forms, command) && forms[command].includes(operation);
 }
