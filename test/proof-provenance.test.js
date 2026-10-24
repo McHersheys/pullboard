@@ -22,6 +22,8 @@ test('a real failed native check records its actual exit without invented test c
     criterion: 'The process exits successfully.', specIds: ['G1'], check: command });
   const claim = box.run(box.web, 'claim', String(id), '--json');
   assert.equal(claim.code, 0, claim.err || claim.out);
+  mkdirSync(join(box.web, 'web'), { recursive: true });
+  writeFileSync(join(box.web, 'web/uncommitted.txt'), 'not in a commit\n');
   const check = box.run(box.web, 'check', String(id), '--yes', '--json');
   assert.equal(check.code, 1, check.out);
   const shown = box.run(box.repo, 'show', String(id), '--json');
@@ -29,6 +31,9 @@ test('a real failed native check records its actual exit without invented test c
   const [receipt] = JSON.parse(shown.out).proofReceipts;
   assert.equal(receipt.kind, 'check');
   assert.equal(receipt.exitCode, 7);
+  assert.equal(receipt.sourceClean, false);
+  assert.equal(receipt.commit, null, 'a dirty check cannot attest the committed HEAD');
+  assert.equal(receipt.tree, null, 'a dirty check cannot attest the committed tree');
   assert.deepEqual(receipt.counts, { passed: null, failed: null, skipped: null });
   assert.deepEqual(receipt.environment, { node: process.versions.node, platform: process.platform, arch: process.arch });
 });

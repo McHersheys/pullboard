@@ -372,7 +372,8 @@ function proofSourceAt(root, commit = null) {
   invalidateGitFacts(); // The child may have changed Git facts outside this command context.
   const head = commit ?? headCommit(root);
   const tree = head ? tryGit(root, ['rev-parse', '--verify', `${head}^{tree}`], { env: gitChildEnv(root) }) : null;
-  return { head, tree: tree?.status === 0 ? tree.stdout : null, clean: commit !== null || committedTree(root) !== null };
+  const clean = commit !== null || committedTree(root) !== null;
+  return { head: clean ? head : null, tree: clean && tree?.status === 0 ? tree.stdout : null, clean };
 }
 
 /** The private gate writer records process results, never provenance supplied by a CLI argument. */
