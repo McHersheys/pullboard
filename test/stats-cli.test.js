@@ -218,7 +218,7 @@ test('[R1,R2,A1] stats window exposes measured tails in text and JSON without re
   const json = await run(root, ['stats', '--window', '6h', '--json'], clock);
   assert.equal(json.code, 0, json.stderr);
   assert.equal(json.data.version, 1);
-  assert.equal(json.data.window.durationMinutes, 360);
+  assert.equal(json.data.window.durationMinutes, 360); // budget: declared --window 6h configuration, not a wall-clock measurement.
   assert.equal(json.data.window.landedItems, 1);
   assert.equal(json.data.window.stages.build.count, 1);
   assert.equal(json.data.window.stages.build.medianMinutes, 0, 'recorded instantaneous work is a measured zero');
