@@ -1144,7 +1144,8 @@ test('an expired saved pairing preserves a valid identity when its session probe
         assert.ok(await page.poll(`(${READ_SCREEN}).board`, 8_000), 'valid paired identity opens its board despite the expired link'); // budget: fixture settle ceiling.
         assert.doesNotMatch((await page.evaluate(READ_SCREEN)).words, /fresh phone pairing link/u);
       }
-      assert.equal(probes, 1, 'only the cause-specific session probe ran');
+      assert.equal(probes, unavailable ? 1 : 2, unavailable ? 'only the cause-specific session probe ran'
+        : 'startup and the opened cockpit each perform their normal authorized listing');
       const screen = await page.evaluate(READ_SCREEN);
       assert.doesNotMatch(screen.words, /browser was removed/iu, 'a valid or unavailable session is not a revocation');
       assert.equal(await page.evaluate("document.getElementById('relay-removed') !== null"), false);
