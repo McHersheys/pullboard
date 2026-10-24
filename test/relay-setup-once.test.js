@@ -344,8 +344,21 @@ test('set up once links three registered boards, later registration and a persis
     'each explicit relay on --all performs a fresh foreground sign-in');
   assert.equal(box.calls.filter(call => call.method === 'POST' && call.path.startsWith('/api/v1/devices/enrollments/')).length, 1,
     'the paired phone is not enrolled again while excluding a board');
-  assert.equal((await command(fourth, box.env, ['relay', 'on', '--url', box.origin]).done).code, 0,
-    'explicitly linking the board again requires a foreground sign-in');
+  const relinkCallsStart = box.calls.length;
+  const relinked = await command(fourth, box.env, ['relay', 'on', '--url', box.origin]).done;
+  // Keep only named protocol stages and a refusal code: private bodies, URLs and credentials stay private.
+  const relinkStages = box.calls.slice(relinkCallsStart).map(({ method, path }) => {
+    const pathname = new URL(path, box.origin).pathname;
+    const stage = ['/auth/device/start', '/auth/device/poll', '/auth/boards/link', '/auth/machines', '/api/v2', '/api/v1']
+      .find(prefix => pathname === prefix || pathname.startsWith(prefix + '/')) ?? 'other';
+    return { method, stage };
+  }).slice(-32);
+  const errorCode = relinked.document?.error?.code;
+  assert.equal(relinked.code, 0,
+    'explicitly linking the board again requires a foreground sign-in; ' + JSON.stringify({
+      exit: relinked.code, errorCode: /^[A-Z][A-Z0-9_]{0,79}$/u.test(errorCode ?? '') ? errorCode : null,
+      stages: relinkStages,
+    }));
   assert.equal(JSON.parse(readFileSync(machineFile, 'utf8')).excluded.includes(fourth), false,
     'explicit board linking clears its opt-out');
   await pageWait(chrome, 'relinking renders four linked boards', "document.querySelectorAll('#proj-list .proj.repo').length === 4");
