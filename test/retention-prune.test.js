@@ -1,7 +1,7 @@
 /** Local landing cleanup preserves dirty, active and unrelated worktrees [R3,C7]. */
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -130,4 +130,30 @@ test('process cwd census parsing refuses incomplete or malformed observations [R
   assert.equal(parseWorkingDirectoryCensus('p12\0fcwd\0nrelative-path\0\n'), null);
   const parsed = parseWorkingDirectoryCensus('p12\0fcwd\0n/fixture/tree\0\np34\0fcwd\0n/fixture/elsewhere\0\n');
   assert.deepEqual(parsed, [{ pid: 12, path: '/fixture/tree' }, { pid: 34, path: '/fixture/elsewhere' }]);
+});
+
+test('landing prune refuses main caller aliases and a replaced common directory [R3,C7]', async t => {
+  const box = repository(t);
+  const foreign = repository(t);
+  const { pruneRetiredWorktrees } = await pruner();
+  const aliased = box.tree('aliased-seat');
+  const alias = join(box.dir, 'worktree-alias');
+  symlinkSync(aliased.path, alias, 'dir');
+  const changed = box.tree('changed-common-seat');
+  writeFileSync(join(changed.path, '.git'), `gitdir: ${join(foreign.root, '.git')}\n`);
+  const main = { ...aliased, agent: 'main-is-not-a-finished-seat', path: box.root };
+  const result = await pruneRetiredWorktrees(box.root, { tip: box.tip,
+    targets: [main, { ...aliased, path: alias }, changed], revalidate: () => null });
+  assert.equal(result.removed.length, 0);
+  assert.ok(existsSync(box.root));
+  assert.ok(existsSync(aliased.path));
+  assert.ok(existsSync(changed.path));
+  const caller = box.tree('caller-seat');
+  const initialCwd = process.cwd();
+  try {
+    process.chdir(caller.path);
+    const active = await pruneRetiredWorktrees(box.root, { tip: box.tip, targets: [caller], revalidate: () => null });
+    assert.match(active.skipped[0].reason, /caller/u);
+    assert.ok(existsSync(caller.path));
+  } finally { process.chdir(initialCwd); }
 });
