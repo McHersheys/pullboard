@@ -1,8 +1,10 @@
 /** @pullboard-test-input source-tree */
+/** @pullboard-test-loads src/board.js */
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { join, resolve } from 'node:path';
+import { writeFileSync } from 'node:fs';
 import { exportBoard } from '../src/exchange.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { runFixtureChild, startFixtureChild } from './fixture-child.js';
@@ -90,4 +92,84 @@ test('a board write that outwaits the busy timeout is refused by name, never a s
 
 test('a busy ordered item addition leaves no partial item and retries once [C7,P4,B2]', async (t) => {
   await proveBusyWrite(t, ['add', 'web', 'private busy item', '--specs', 'G1', '--criterion', 'the page renders'], 'item');
+});
+
+/** Hold a public store transaction, with an explicit diagnostic identity, until its owner releases it. */
+async function holdNamedWriter(box, file) {
+  const releaseFile = join(box.dir, 'release-named-board-writer');
+  const source = `
+    import * as store from ${JSON.stringify(new URL('../src/board.js', import.meta.url).href)};
+    import { existsSync } from 'node:fs';
+    const board = store.openBoard(process.argv[1], undefined, {
+      writeContext: { command: 'private-lock-holder', seat: 'coordinator' },
+    });
+    try {
+      store.atomic(board, () => {
+        process.send({ kind: 'locked' });
+        const deadline = Date.now() + 30_000; // budget: bound an owned fixture covering the real 10 s SQLite busy timeout.
+        while (!existsSync(process.argv[2])) {
+          if (Date.now() >= deadline) throw new Error('private lock owner was not released');
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+        }
+      });
+    } finally {
+      store.closeBoard(board);
+      if (process.connected) process.disconnect();
+    }
+  `;
+  const child = startFixtureChild(process.execPath, ['--input-type=module', '-e', source, file, releaseFile], {
+    cwd: box.repo, env: box.env, stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+  });
+  let stderr = '';
+  child.stderr?.on('data', chunk => { stderr += chunk; });
+  const closed = new Promise(resolveClosed => child.once('close', (code, signal) => resolveClosed({ code, signal })));
+  let released = false;
+  /** Close and drain only the private holder started above, never another writer or SQLite lock file. */
+  async function release() {
+    if (!released) { released = true; writeFileSync(releaseFile, 'release\n'); }
+    const result = await closed;
+    assert.deepEqual(result, { code: 0, signal: null }, stderr || child.fixtureFailure);
+  }
+  try {
+    await new Promise((resolveReady, rejectReady) => {
+      child.once('error', rejectReady);
+      child.once('close', (code, signal) => rejectReady(new Error(`private named writer exited before readiness: ${code}/${signal}`)));
+      child.on('message', message => { if (message?.kind === 'locked') resolveReady(); });
+    });
+  } catch (error) {
+    await release();
+    throw error;
+  }
+  return { pid: child.pid, release, stderr: () => stderr };
+}
+
+test('a refused writer names the board lock holder [C7,P4,B2]', async t => {
+  const box = e2e.project();
+  const file = join(box.repo, '.git', 'pullboard', 'board.sqlite');
+  const before = snapshot(file);
+  const holder = await holdNamedWriter(box, file);
+  t.after(holder.release);
+  let message;
+  try {
+    const refused = runFixtureChild(process.execPath, [BIN, 'shout', 'all', 'private named-holder contention', '--json'], {
+      cwd: box.repo, env: box.env, encoding: 'utf8',
+    });
+    assert.equal(refused.status, 1, refused.context);
+    const document = JSON.parse(refused.stdout);
+    assert.equal(document.error.code, 'BOARD_BUSY');
+    message = document.error.message;
+    assert.deepEqual(snapshot(file), before, 'contention leaves all native board tables unchanged');
+  } finally {
+    await holder.release();
+  }
+  assert.match(message, /private-lock-holder/u, 'the refusal names the real instrumented command');
+  assert.match(message, /coordinator/u, 'the refusal names the real holder seat');
+  assert.match(message, new RegExp(`\b${holder.pid}\b`, 'u'), 'the refusal names the live holder PID');
+  const lines = holder.stderr().split('\n').filter(line => line.startsWith('pullboard: long board write '));
+  assert.equal(lines.length, 1, 'only the outer transaction emits one long-write line');
+  const record = JSON.parse(lines[0].slice('pullboard: long board write '.length));
+  assert.equal(record.command, 'private-lock-holder');
+  assert.equal(record.seat, 'coordinator');
+  assert.equal(record.pid, holder.pid);
+  assert.ok(record.durationMs > 2_000, 'the real busy timeout held the writer longer than the declared 2 s threshold');
 });
