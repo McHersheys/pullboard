@@ -17,6 +17,11 @@ function act(box, session, cwd, ...args) {
   box.env.CLAUDE_CODE_SESSION_ID=session;
   return box.run(cwd,...args);
 }
+/** Model a person's own terminal only inside this isolated fixture, preserving real admission markers. */
+function personAct(box,cwd,...args) {
+  const previous=box.env.CLAUDE_CODE_SESSION_ID;delete box.env.CLAUDE_CODE_SESSION_ID;
+  try{return box.run(cwd,...args);}finally{box.env.CLAUDE_CODE_SESSION_ID=previous;}
+}
 /** Keep command diagnostics attached to every successful private move. */
 function succeeds(result) { assert.equal(result.code,0,`${result.out}\n${result.err}`); return result; }
 /** A real historical green whole file can be measured before the named main-red baseline is created. */
@@ -46,9 +51,10 @@ function setup(wholeCoverage = false) {
   return box;
 }
 /** Add a buildable bar with a genuine red named-case baseline at private main. */
-function add(box,author) {
+function add(box,author,person = false) {
   const check='node --test --test-name-pattern "named witness" test/witness.test.mjs';
-  const result=succeeds(act(box,author,box.repo,'add','web','Ready output','--criterion','web/ready.txt exists','--specs','G1','--route','mid','--check',check,'--wait',
+  const run=(...args)=>person ? personAct(box,box.repo,...args,'--as','person') : act(box,author,box.repo,...args);
+  const result=succeeds(run('add','web','Ready output','--criterion','web/ready.txt exists','--specs','G1','--route','mid','--check',check,'--wait',
     '--brief',`Files: web/ready.txt${box.wholeEvidence ? ', test/witness.test.mjs' : ''}\nTest: named witness asserts the output exists\nNamed test: named witness\nMeasurements: no quantitative bounds\nReviewer edges: absent output and restart`,'--json'));
   const item=JSON.parse(result.out).item;
   assert.equal(item.item_check_baseline.result,'red');
@@ -112,4 +118,18 @@ test('[V1,H16] a helper takeover with unknown current parent fails closed instea
   succeeds(act(box,'private-helper-after',helper,'takeover'));
   const signed=act(box,'private-helper-after',helper,'bar','sign',String(id),'--note','A restart must not turn a helper into an independent author.');
   assert.notEqual(signed.code,0,`${signed.out}\n${signed.err}`);assert.match(signed.err,/BAR_PARENT_UNKNOWN/);
+});
+
+
+test('[B4,V1,H16,B26] the authenticated person and native agents can sign each other’s bars without invented parents',()=>{
+  const box=setup();const personItem=add(box,'private-author-a',true);
+  const reviewer=join(box.dir,'person-bar-peer');box.git(box.repo,'worktree','add','-qb','api/person-peer',reviewer,'main');
+  succeeds(act(box,'private-person-peer',reviewer,'join','api','--model','Private reviewer','--parent','private-author-a'));
+  succeeds(act(box,'private-person-peer',reviewer,'bar','sign',String(personItem),'--note','The person’s bar has a real red witness and is buildable.'));
+  const personBar=JSON.parse(succeeds(act(box,'private-person-peer',reviewer,'bar',String(personItem),'--json')).out);
+  assert.ok(Object.values(personBar.revision.authors).every(author=>author.authority==='person' && author.parent===null));
+  const agentItem=add(box,'private-author-a');
+  succeeds(personAct(box,box.repo,'bar','sign',String(agentItem),'--as','person','--note','I approve this agent-authored bar.'));
+  const agentBar=JSON.parse(succeeds(personAct(box,box.repo,'bar',String(agentItem),'--json')).out);
+  assert.equal(agentBar.signed.signerAuthority,'person');assert.equal(agentBar.signed.signerParent,null);
 });
