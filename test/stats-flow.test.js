@@ -178,6 +178,43 @@ test('flow windows leave missing starts and empty distributions unmeasured [R1,R
   assert.deepEqual(empty.constraint, { stage: null, overTargetMinutes: 0 });
 });
 
+test('flow windows retain recorded idle after reopen and builder release [R1,R2]', t => {
+  const a = 'a'.repeat(40), b = 'b'.repeat(40);
+  const { board, stats } = fixture(t, [
+    [0, 'coordinator', 'add', 1, { lane: 'core' }],
+    [10, 'core-1', 'claim', 1, { leaseUntil: at(1000) }],
+    [20, 'core-1', 'submit', 1, { commit: a }],
+    [30, 'review-1', 'reserve', 1, { until: at(1000) }],
+    [40, 'review-1', 'accept', 1, { commit: a }],
+    [50, 'coordinator', 'reopen', 1],
+    [80, 'core-1', 'claim', 1, { leaseUntil: at(1000) }],
+    [90, 'core-1', 'submit', 1, { commit: b }],
+    [100, 'review-1', 'reserve', 1, { until: at(1000) }],
+    [110, 'review-1', 'accept', 1, { commit: b }],
+    [120, 'coordinator', 'merged', 1],
+    [0, 'coordinator', 'add', 2, { lane: 'core' }],
+    [10, 'core-2', 'claim', 2, { leaseUntil: at(1000) }],
+    [20, 'core-2', 'release', 2],
+    [60, 'core-2', 'claim', 2, { leaseUntil: at(1000) }],
+    [70, 'core-2', 'submit', 2, { commit: a }],
+    [80, 'review-1', 'reserve', 2, { until: at(1000) }],
+    [90, 'review-1', 'reject', 2, { commit: a }],
+    [100, 'coordinator', 'reopen', 2],
+    [120, 'core-2', 'claim', 2, { leaseUntil: at(1000) }],
+    [130, 'core-2', 'submit', 2, { commit: b }],
+    [140, 'review-1', 'reserve', 2, { until: at(1000) }],
+    [150, 'review-1', 'accept', 2, { commit: b }],
+    [160, 'coordinator', 'merged', 2],
+  ], 200);
+  const window = flowStats(store.events(board), null, BASE + 200 * 60_000, stats(), { windowMinutes: 200 }).window;
+  assert.equal(window.stages.sendBackIdle.count, 2, 'every recorded return-to-work has a measured idle interval');
+  assert.equal(window.stages.sendBackIdle.totalMinutes, 100, '30 reopened plus 40 released plus 30 rejected/reopened');
+  assert.deepEqual(window.stages.sendBackIdle.tail.map(row => [row.id, row.minutes]), [[2, 70], [1, 30]]);
+  assert.equal(window.stages.sendBackIdle.arrivals, 3, 'a repeated open move does not invent another arrival');
+  assert.equal(window.stages.sendBackIdle.completions, 3);
+  assert.equal(window.stages.build.totalMinutes, 50, 'released building work remains measured');
+});
+
 test('flow numbers match a hand computation through rework, released reviews and every live queue [R1,R2]', t => {
   const a = 'a'.repeat(40), b = 'b'.repeat(40), c = 'c'.repeat(40);
   const entries = [
