@@ -107,5 +107,7 @@ export async function readResumeSources(ctx, board, { compareBranch = true, incl
     if (!counts) throw new Refused('NO_POLICY', 'the branch could not be compared with main; run pullboard resume --diagnostics');
     behind = Number(counts[1]); ahead = Number(counts[2]);
   }
-  return { ...await sharedDoctrine(ctx, board, primary, main, includeHeadDoctrine), primary, branch, mainRef: main?.branch, ahead, behind };
+  // Guidance follows Git's listed primary exactly as agentDoctrine does, even when placement cannot be proven.
+  const guidanceRoot = listed[0]?.path;
+  return { ...await sharedDoctrine(ctx, board, guidanceRoot, main, includeHeadDoctrine), primary, branch, mainRef: main?.branch, ahead, behind };
 }

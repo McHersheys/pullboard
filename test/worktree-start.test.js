@@ -148,7 +148,7 @@ test('a new worktree is created inside the repository [I1,I2]', () => {
     'a linked checkout with a separate git dir resolves its registered main root');
   const registryPath = join(box.env.PULLBOARD_HOME, 'projects.json');
   const registryBytes = readFileSync(registryPath);
-  const linkedResume = box.run(linkedPath, 'resume');
+  const linkedResume = box.run(linkedPath, 'resume', '--diagnostics');
   assert.match(linkedResume.out, /New agent worktrees: .*\.claude\/worktrees\/<lane>-N/u);
   assert.deepEqual(readFileSync(registryPath), registryBytes, 'resume reads the registry without refreshing it');
   const linkedHelp = box.run(linkedPath, 'help', 'worktree');
