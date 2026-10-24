@@ -160,7 +160,8 @@ Coordinator
   pullboard merged <id> <commit>        record where verified work landed
   pullboard withdraw <id> <reason>      drop an item nobody should build
   pullboard refreeze <id>               adopt a corrected criterion or changed spec rows
-  pullboard reopen <id> --note "why" [--cause <key>]   return a submission for criterion correction without a verdict
+  pullboard reopen <id> [--withdraw-verdict] --note "why" [--cause <key>]
+                                        withdraw your own accept before landing, or coordinator-return a submission
   pullboard reopen <id> --conflict <file> [--conflict <file>]
                                         return accepted work that conflicts with the trunk for a main merge
   pullboard hold <lane> --reason "..."   pause a lane: next there claims nothing and names the reason

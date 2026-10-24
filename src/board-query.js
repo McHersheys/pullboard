@@ -6,6 +6,7 @@ import {
   unreadShoutBindings,
 } from './shout-audience.js';
 /** Canonical board queries shared by reads and the synchronous write store [C7]. */
+import { verdictWithdrawals } from './verdict-withdrawal.js';
 import { COORDINATOR } from './config.js';
 import { itemFiles } from './item-files.js';
 import { parseSpec } from './spec.js';
@@ -225,9 +226,11 @@ export function events(board, { itemId } = {}) {
 /** Read every move and fact in append order, including superseded facts and full original text [B31,B32]. */
 export function itemThread(board, id) {
   itemById(board, id);
+  const withdrawals = new Map([...verdictWithdrawals(board, id).values()].map(row => [row.acceptEventId, row]));
   return events(board, { itemId: id }).map((event) => event.event_kind === 'fact'
     ? { type: 'fact', ...factFromEvent(event) }
     : { type: 'move', eventId: event.event_id, kind: event.event_kind, by: event.event_by,
+      ...(withdrawals.has(event.event_id) ? { withdrawn: true, withdrawal: withdrawals.get(event.event_id) } : {}),
       at: event.event_at, detail: JSON.parse(event.event_detail) });
 }
 

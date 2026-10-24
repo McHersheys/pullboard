@@ -56,6 +56,9 @@ export function personRequestGuidance(message, { caller, leading = false } = {})
 
 /** @type {Readonly<Record<string, string>>} */
 export const NEXT_STEPS = Object.freeze({
+  BAD_VERDICT_WITHDRAW: 'use --withdraw-verdict with a note, or report a conflict separately',
+  VERDICT_WITHDRAW_FORBIDDEN: 'ask the accepting reviewer or coordinator to withdraw this verdict',
+  VERDICT_WITHDRAW_STATE: 'refresh the item; withdraw only a current acceptance before landing',
   PUBLISH_GITHUB: 'inspect gh auth status and the configured GitHub remote, then publish again',
   PUBLISH_STATE: 'preserve publish-pr.json and ask the coordinator to recover its recorded PR identities',
   PUBLISH_UNPROVEN: 'restore the item’s acceptance at its exact submitted commit before publishing',

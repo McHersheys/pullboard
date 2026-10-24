@@ -5,6 +5,8 @@ import {
   readEventLogVersion,
   systemClock,
 } from './board-read-open.js';
+import { VERDICT_WITHDRAW_ENGINE } from './verdict-withdraw-engine.js';
+import { verdictWithdrawalTarget } from './verdict-withdrawal.js';
 import {
   BOARD_BUSY_TIMEOUT_MS,
   EVENT_LOG_VERSION,
@@ -1446,16 +1448,20 @@ export function verify(board, id, { agentId, decision, reason, note = '', cause,
  *
  * @param {any} board
  * @param {number} id
- * @param {{ agentId: string, note: string, cause?: string }} request
+ * @param {{ agentId: string, note: string, cause?: string, withdrawVerdict?: boolean }} request
  * @returns {{ id: number, commit: string, supersedes?: number, landingFailure?: object }}
  */
-export function reopen(board, id, { agentId, note = '', conflict, cause, reopenFirstRefusalMinutes }) {
+export function reopen(board, id, { agentId, note = '', conflict, cause, reopenFirstRefusalMinutes, withdrawVerdict }) {
   return atomic(board, () => {
     let submittedCommit = null;
     const forMerge = conflict !== undefined && conflict !== null;
     let supersedes;
-    let landingFailure;
+    let landingFailure, withdrawnVerdict;
+    const forWithdrawal = withdrawVerdict === true;
     const currentEngine = board.executionEngineVersion ?? ENGINE_VERSION;
+    if (withdrawVerdict !== undefined && typeof withdrawVerdict !== 'boolean') throw new Refused('BAD_VERDICT_WITHDRAW', 'withdrawVerdict must be a boolean; use --withdraw-verdict');
+    if (forWithdrawal && currentEngine < VERDICT_WITHDRAW_ENGINE) throw new Refused('ENGINE_VERSION', 'update Pullboard before withdrawing a verdict');
+    if (forWithdrawal && forMerge) throw new Refused('BAD_VERDICT_WITHDRAW', 'withdraw a verdict or report a trunk conflict, not both');
     const declaredTransition = MOVES.find((entry) => entry.verb === 'reopen');
     const transition = currentEngine >= 10 ? declaredTransition : { ...declaredTransition, from: ['submitted'] };
     const item = moveItem(board, id, 'reopen', {
@@ -1464,14 +1470,18 @@ export function reopen(board, id, { agentId, note = '', conflict, cause, reopenF
         joined: null,
         [IN_STATE]: (found) => new Refused('NOT_SUBMITTED', `item #${id} is ${current(board, found).item_status}, not submitted`),
         // Any joined seat returns a submitted head that no longer merges, with Git's files and trunk (#807).
-        coordinatorOnly: (found) => (forMerge && found.item_status === 'submitted' && currentEngine >= SUBMITTED_CONFLICT_ENGINE && listAgents(board).some((agent) => agent.agent_id === agentId)
-          ? null : onlyCoordinator(agentId, 'reopens submissions')),
+        reopenAuthority: (found) => {
+          if (forWithdrawal) { withdrawnVerdict = verdictWithdrawalTarget(board, found, agentId); return null; }
+          return (forMerge && found.item_status === 'submitted' && currentEngine >= SUBMITTED_CONFLICT_ENGINE && listAgents(board).some((agent) => agent.agent_id === agentId)
+          ? null : onlyCoordinator(agentId, 'reopens submissions'));
+        },
         noteGiven: () => (forMerge || note.trim() ? null : new Refused('NOTE_REQUIRED', 'say why the criterion needs correction: --note "why"')),
         causeWellFormed: () => causeProblem(cause),
         notMerged: (found) => found.item_status !== 'verified' || !found.item_merged_commit
           ? null
           : new Refused('ALREADY_MERGED', `item #${id} was merged as ${found.item_merged_commit}; merged items cannot be reopened`),
         landingFailureRecorded: (found) => {
+          if (forWithdrawal) { supersedes = withdrawnVerdict.acceptEventId; return null; }
           if (found.item_status !== 'verified' || forMerge) return null;
           const accepted = events(board, { itemId: id }).findLast((event) => {
             if (event.event_kind !== 'accept') return false;
@@ -1505,9 +1515,9 @@ export function reopen(board, id, { agentId, note = '', conflict, cause, reopenF
         };
       },
     });
-    const returnedAt = (forMerge || landingFailure) && currentEngine >= REOPEN_FIRST_REFUSAL_ENGINE && reopenFirstRefusalMinutes > 0 && item.item_built_by ? board.clock.now() : undefined;
-    const reservation = (forMerge || landingFailure) && currentEngine >= REOPEN_FIRST_REFUSAL_ENGINE ? firstRefusalDetail(board, item, reopenFirstRefusalMinutes, returnedAt) : {};
-    const returned = forMerge ? { supersedes, ...conflictDetail(conflict) } : supersedes ? { supersedes, landingFailure } : {};
+    const returnedAt = (forMerge || landingFailure || forWithdrawal) && currentEngine >= REOPEN_FIRST_REFUSAL_ENGINE && reopenFirstRefusalMinutes > 0 && item.item_built_by ? board.clock.now() : undefined;
+    const reservation = (forMerge || landingFailure || forWithdrawal) && currentEngine >= REOPEN_FIRST_REFUSAL_ENGINE ? firstRefusalDetail(board, item, reopenFirstRefusalMinutes, returnedAt) : {};
+    const returned = forWithdrawal ? { supersedes, withdrawnVerdict } : forMerge ? { supersedes, ...conflictDetail(conflict) } : supersedes ? { supersedes, landingFailure } : {};
     logEvent(board, agentId, 'reopen', id, { commit: submittedCommit, note: note.trim() || conflictNote(conflict), judgment: null, ...reservation,
       ...(cause !== undefined && cause !== null ? { cause } : {}), ...returned }, returnedAt);
     const trigger = board.lastEvent;

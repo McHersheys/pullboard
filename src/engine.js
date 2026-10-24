@@ -1,5 +1,6 @@
 import { ITEM_SHOUT_ENGINE } from './item-shout-engine.js';
 /** Versioned, deterministic replay through the CLI's existing board engine [H3,H16]. */
+import { VERDICT_WITHDRAW_ENGINE } from './verdict-withdraw-engine.js';
 import {
   createHash,
   randomUUID,
@@ -94,6 +95,7 @@ const OPERATION_ENGINE = Object.freeze({ draftSpecRow: ROW_DRAFT_ENGINE, orderMi
 
 /** Dependency edits, causes, sealed reviews, submission proofs, trunk conflicts, health observations and milestone targets retain distinct recorded engine meanings. */
 function minimumOperationEngine(operation, args, board, at) {
+  if (operation === 'reopen' && args[1]?.withdrawVerdict === true) return VERDICT_WITHDRAW_ENGINE;
   if (operation === 'recordPublishFinding') return PR_BRIDGE_ENGINE;
   if (operation === 'recordLandingTestDefect' || operation === 'verify' && args[1]?.environment !== undefined
     || operation === 'recordGateRun' && Object.hasOwn(args[0]?.receipt ?? {}, 'environment')
