@@ -36,11 +36,11 @@ export function preparePersonRequest(body, id = crypto.randomUUID(), rows) {
 
 /** Keep shown rows to bounded `{id, text}` pairs, one per decided row. */
 function shownRows(rows) {
-  if (!Array.isArray(rows) || !rows.length || rows.length > 200 || rows.some((row) => !row || typeof row !== 'object' || Object.keys(row).sort().join() !== 'id,text'
-      || typeof row.id !== 'string' || !/^(?:doctrine:)?[A-Za-z][A-Za-z0-9._-]{0,79}$/u.test(row.id) || typeof row.text !== 'string' || row.text.length > 8000)) {
+  if (!Array.isArray(rows) || !rows.length || rows.length > 200 || rows.some((row) => !row || typeof row !== 'object' || Object.keys(row).some(key => !['id', 'text', 'source'].includes(key))
+      || typeof row.id !== 'string' || !/^(?:doctrine:)?[A-Za-z][A-Za-z0-9._-]{0,79}$/u.test(row.id) || typeof row.text !== 'string' || row.text.length > 8000 || row.source !== undefined && (typeof row.source !== 'string' || row.source.length > 16000 || /[\r\n\0]/u.test(row.source)))) {
     throw new Refused('BAD_REQUEST', 'a signed row decision names each row it shows with its id and exact text; reload the paired view and retry');
   }
-  return rows.map(({ id, text }) => ({ id, text }));
+  return rows.map(({ id, text, source }) => ({ id, text, ...(source === undefined ? {} : { source }) }));
 }
 
 /** Refuse malformed or newer request formats before any CLI can interpret their intent. */

@@ -266,6 +266,7 @@ export function recordRequestMove(board, move, outcome, sequence, at) {
   } else if (tag.phase === 'execute') {
     record.result = outcome.result;
     record.resultSequence = sequence;
+    record.resultMove = move.id;
     if (!['spec-approve', 'spec-decline', 'spec-answer'].includes(record.move.verb)) record.status = 'done';
   } else if (tag.phase === 'repo-request') {
     record.coordinatorRequest = outcome.result;

@@ -43,7 +43,7 @@ function sshPublicLine(publicKey) {
 }
 
 /** Exercise actual engine receipt validation and native apply on an owned project, with a separately pinned fixture relay key. */
-export async function optionalPasskeyApply(t, { throughCli = false, fabricatedMetadata = false } = {}) {
+export async function optionalPasskeyApply(t, { throughCli = false, fabricatedMetadata = false, syntheticEvent = false } = {}) {
   const box = await relayClientFixture(t);
   const specFile = join(box.root, 'SPEC.md');
   const text = 'An optional SSH row approved by its exact passkey request.';
@@ -60,7 +60,7 @@ export async function optionalPasskeyApply(t, { throughCli = false, fabricatedMe
   signing.pinAuthority(board, 'https://fixture-relay.invalid', { version: 1, algorithm: 'Ed25519',
     publicKey: authority.publicKey.export({ format: 'der', type: 'spki' }).toString('base64url') });
   signing.setPersonSigning(board, { agentId: 'coordinator', signed: true });
-  const document = preparePersonRequest({ verb: 'spec-approve', args: { ids: 'G21' } }, randomUUID(), [{ id: 'G21', text }]);
+  const document = preparePersonRequest({ verb: 'spec-approve', args: { ids: 'G21' } }, randomUUID(), [{ id: 'G21', text, source: readFileSync(specFile, 'utf8').split(/\r?\n/u).find(line => line.startsWith('- G21 ')) }]);
   const boardId = board.db.prepare("SELECT meta_value FROM board_meta WHERE meta_key='board_id'").get().meta_value;
   const presence = { board: boardId, request: document.id, digest: createHash('sha256').update(JSON.stringify(document)).digest('hex'),
     credential: 'fixture-passkey', at: Date.now() };
@@ -94,7 +94,23 @@ export async function optionalPasskeyApply(t, { throughCli = false, fabricatedMe
     const fabricated = { ...genuine, event: missingEvent, source: genuine.source.replace('gate: review', 'gate: true'),
       replacement: genuine.replacement.replace('gate: review', 'gate: true') };
     assert.notEqual(fabricated.source, genuine.source, 'the attack changes a real row gate, not its signed displayed text');
-    const records = personRequestRecords(board).map(record => record.id === document.id ? { ...record, result: [fabricated] } : record);
+    let syntheticMove;
+    if (syntheticEvent) {
+      const { event, at: recordedAt, applied, appliedAt, ...body } = fabricated;
+      board.db.prepare('INSERT INTO event(event_id,event_at,event_by,event_kind,item_id,event_detail) VALUES (?,?,?,?,?,?)')
+        .run(missingEvent, recordedAt, 'person', 'row_decision', null, JSON.stringify({ record: body, channel: 'view' }));
+      const original = personRequestRecords(board).find(record => record.id === document.id);
+      const receipt = JSON.parse(board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get('relay_receipt_' + original.resultMove).meta_value);
+      syntheticMove = JSON.parse(receipt.move);
+      syntheticMove.id = randomUUID();
+      syntheticMove.args[0].decisions = [body];
+      receipt.move = JSON.stringify(syntheticMove);
+      receipt.outcome.result = [fabricated];
+      receipt.outcome.events = [board.db.prepare('SELECT * FROM event WHERE event_id=?').get(missingEvent)];
+      board.db.prepare('INSERT INTO board_meta(meta_key,meta_value) VALUES (?,?)').run('relay_receipt_' + syntheticMove.id, JSON.stringify(receipt));
+    }
+    const records = personRequestRecords(board).map(record => record.id === document.id
+      ? { ...record, result: [fabricated], ...(syntheticMove ? { resultMove: syntheticMove.id } : {}) } : record);
     board.db.prepare('UPDATE board_meta SET meta_value=? WHERE meta_key=?').run(JSON.stringify(records), 'relay_person_requests');
     board.db.prepare('UPDATE board_meta SET meta_value=? WHERE meta_key=?').run(JSON.stringify([fabricated]), 'row_decisions');
     const before = readFileSync(specFile, 'utf8');
@@ -103,8 +119,8 @@ export async function optionalPasskeyApply(t, { throughCli = false, fabricatedMe
     const status = await box.cli('status');
     assert.equal(status.code, 0, JSON.stringify(status.document));
     assert.equal(status.document.specApprovalBaseline?.pending, false);
-    assert.equal(board.db.prepare('SELECT event_id FROM event WHERE event_id=?').get(missingEvent), undefined,
-      'no real immutable event is ever created for the fabricated metadata');
+    assert.equal(Boolean(board.db.prepare('SELECT event_id FROM event WHERE event_id=?').get(missingEvent)), syntheticEvent,
+      'the control explicitly distinguishes fabricated metadata from a raw-inserted event and fabricated engine receipt');
     assert.deepEqual({ verified: signing.verifiedPasskeyRowDecision(board, fabricated),
       falselyConfirmed: !status.document.needs.some(need => need.kind === 'agent-approved' && need.id === 'G21') },
     { verified: false, falselyConfirmed: false }, 'mutable receipt metadata cannot invent a committed approval or clear its changed gate');
@@ -136,3 +152,6 @@ export function optionalPasskeyApplyThroughCli(t) { return optionalPasskeyApply(
 
 /** A copied valid signature cannot authenticate a fabricated mutable result or nonexistent committed event. */
 export function rejectFabricatedPasskeyMetadata(t) { return optionalPasskeyApply(t, { fabricatedMetadata: true }); }
+
+/** An appended row event and mutable engine receipt still cannot change the source bound by a genuine passkey. */
+export function rejectSyntheticPasskeyEvent(t) { return optionalPasskeyApply(t, { fabricatedMetadata: true, syntheticEvent: true }); }

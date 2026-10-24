@@ -58,6 +58,7 @@ import {
   optionalPasskeyApply,
   optionalPasskeyApplyThroughCli,
   rejectFabricatedPasskeyMetadata,
+  rejectSyntheticPasskeyEvent,
 } from './person-optional-apply-fixture.js';
 import { firstUnpairedAuthorityInsertion } from './person-first-pin-fixture.js';
 import { refuseNamedSigners } from '../src/person-signing-cli.js';
@@ -1226,3 +1227,6 @@ test('person-only moves are signed through native CLI apply [E22,H16]', optional
 
 /** Initial trust and committed execution provenance are separate signing boundaries. */
 test('person-only moves are signed against fabricated receipt metadata [E22,H16]', rejectFabricatedPasskeyMetadata);
+
+/** A local event insertion is not an authenticated execution of a different row source. */
+test('person-only moves are signed against synthetic execution events [E22,H16]', rejectSyntheticPasskeyEvent);
