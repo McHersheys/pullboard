@@ -414,6 +414,23 @@ function recordEventContract() {
   verify(board, conflicting, { agentId: reviewer, decision: 'ACCEPT', reason: ACCEPT_REASON, note: 'checked the conflicting example', head: conflictingCommit, digest: 'conflicting', policy: 'agents' });
   reopen(board, conflicting, { agentId: coordinator, conflict: { files: ['docs/formats.md'], trunk: '2'.repeat(40) } });
 
+  const withdrawnAcceptance = addItem(board, { by: coordinator, lane: 'docs', title: 'Withdrawn acceptance example' });
+  claim(board, withdrawnAcceptance, { agentId: returnedBuilder, lane: 'docs', leaseMs: 60_000, freeze: freeze('withdrawn-acceptance') });
+  const withdrawnCommit = '3'.repeat(40);
+  submitFixture(board, withdrawnAcceptance, { agentId: returnedBuilder, commit: withdrawnCommit, tree: 'e'.repeat(40) });
+  verify(board, withdrawnAcceptance, { agentId: reviewer, decision: 'ACCEPT', reason: ACCEPT_REASON,
+    note: 'checked the withdrawal format example', head: withdrawnCommit, digest: 'withdrawn-acceptance', policy: 'agents' });
+  const originalVerdict = board.db.prepare('SELECT * FROM verdict WHERE item_id = ?').get(withdrawnAcceptance);
+  const originalAccept = events(board).findLast(row => row.item_id === withdrawnAcceptance && row.event_kind === 'accept');
+  reopen(board, withdrawnAcceptance, { agentId: reviewer, withdrawVerdict: true, note: 'correct the accepted interpretation' });
+  const withdrawalDetail = JSON.parse(events(board).findLast(row => row.item_id === withdrawnAcceptance && row.event_kind === 'reopen').event_detail);
+  assert.deepEqual(withdrawalDetail.withdrawnVerdict, { verdictId: originalVerdict.verdict_id, acceptEventId: originalAccept.event_id });
+  assert.equal(withdrawalDetail.supersedes, originalAccept.event_id);
+  assert.deepEqual(board.db.prepare('SELECT * FROM verdict WHERE item_id = ?').get(withdrawnAcceptance), originalVerdict,
+    'the format binding leaves the accepted verdict immutable');
+  assert.deepEqual(events(board).find(row => row.event_id === originalAccept.event_id), originalAccept,
+    'the format binding leaves the original accept event immutable');
+
   const withdrawn = addItem(board, { by: coordinator, lane: 'docs', title: 'Withdrawn example' });
   withdraw(board, withdrawn, { agentId: coordinator, reason: 'duplicate fixture' });
   holdLane(board, 'view', { agentId: coordinator, reason: 'fixture hold' });

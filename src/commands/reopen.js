@@ -22,6 +22,7 @@ export async function run(io, { first, values }) {
   const act = (work) => actOn(io, work);
   return act(async (ctx, board, me) => {
   const result = await ordered(ctx, board, 'reopen', [idArg(first), { agentId: me.id, note: textArg(io, values, 'note') ?? '',
+    ...(values['withdraw-verdict'] === undefined ? {} : { withdrawVerdict: values['withdraw-verdict'] }),
     ...(values.cause !== undefined ? { cause: values.cause } : {}),
     ...(values.conflict === undefined ? {} : { conflict: reopenConflict({ item: store.getItem(board, idArg(first)), coordinator: me.id === COORDINATOR, values: values.conflict, trunkMerge: (commit) => trunkMerge(ctx.info.root, commit) }) }) }]);
   io.result?.(result);
