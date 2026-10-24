@@ -370,3 +370,45 @@ test('help watch and the generated agent instructions teach seats to listen with
   const written = readFileSync(join(box.root, 'AGENTS.md'), 'utf8');
   assert.ok(written.includes(listen), 'pullboard init wrote that paragraph into the repo');
 });
+
+
+test('a shout about an item reaches only the people on it [B7,A2,N19]', async (t) => {
+  const box = project();
+  const builder = box.cli(box.root, 'worktree', 'app', '--model', 'item-message-builder');
+  const reviewer = box.cli(box.root, 'worktree', 'docs', '--model', 'item-message-reviewer');
+  const outsider = box.cli(box.root, 'worktree', 'app', '--model', 'item-message-outsider');
+  const item = box.cli(box.root, 'add', 'app', 'Directed item message', '--criterion', 'a private item thread', '--specs', 'G1').item;
+  box.cli(builder.path, 'claim', String(item.item_id));
+  mkdirSync(join(builder.path, 'app'), { recursive: true });
+  writeFileSync(join(builder.path, 'app', 'message.txt'), 'built\n');
+  runFixtureGit(['add', '-A'], { cwd: builder.path, env: box.env, stdio: 'pipe' });
+  runFixtureGit(['commit', '-q', '-m', 'feat(app): directed message fixture [G1]'], { cwd: builder.path, env: box.env, stdio: 'pipe' });
+  box.cli(builder.path, 'submit', String(item.item_id));
+  box.cli(reviewer.path, 'next', '--verify', String(item.item_id));
+  for (const seat of [builder, reviewer, outsider]) box.cli(seat.path, 'inbox');
+  const watches = [builder, reviewer, outsider].map((seat) => startWatch(box, ['--json', '--kinds', 'shout', '--to', seat.agent], { cwd: seat.path }));
+  t.after(async () => { for (const watch of watches) await watch.stop(); });
+  for (const watch of watches) await watch.note((line) => /following/u.test(line), 10_000, 'directed watch startup'); // budget: startup hang ceiling, not a latency claim.
+  box.cli(box.root, 'shout', 'app', 'only this item needs the message', '--item', String(item.item_id));
+  const directed = lastSequence(box);
+  assert.equal(events(box).find((event) => event.event_id === directed).item_id, item.item_id,
+    'the message is an event in the item thread, rather than an unbound lane broadcast');
+  box.cli(box.root, 'shout', 'all', 'ordered delivery barrier');
+  const barrier = lastSequence(box);
+  for (const watch of watches) await watch.line((line) => JSON.parse(line).sequence === barrier, 5_000, 'ordered barrier after directed message'); // budget: stream hang ceiling, not a latency claim.
+  for (const [index, watch] of watches.entries()) {
+    const records = watch.out.lines.map(({ line }) => JSON.parse(line));
+    assert.equal(records.some((record) => record.sequence === directed), index < 2,
+      'the builder and cross-lane reviewer receive the item message; the same-lane outsider does not');
+  }
+  for (const [index, seat] of [builder, reviewer, outsider].entries()) {
+    const card = box.cli(seat.path, 'resume');
+    assert.equal(card.unread, index < 2 ? 2 : 1, 'resume counts only the item participants plus the public barrier');
+    const inbox = box.cli(seat.path, 'inbox').shouts;
+    assert.equal(inbox.some((shout) => shout.shout_text === 'only this item needs the message'), index < 2,
+      'inbox uses the same item audience as watch and resume');
+  }
+  const refused = box.run(outsider.path, 'shout', 'all', 'unnecessary broadcast', '--json');
+  assert.notEqual(refused.status, 0);
+  assert.equal(JSON.parse(refused.stdout).error.code, 'BROADCAST_FORBIDDEN', 'a seat addresses an item or a seat instead of everybody');
+});
