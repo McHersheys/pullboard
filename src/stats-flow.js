@@ -208,7 +208,7 @@ export function prepareFlowHistory(history, { window = false } = {}) {
 }
 
 /** Project current queues and time windows from compiled facts without mutating the cached snapshot. */
-export function projectFlowStats(prepared, boundary, now, counts, { windowMinutes } = {}) {
+export function projectFlowStats(prepared, boundary, now, counts, { windowMinutes, executionCapacity } = {}) {
   const selected = at => !boundary || at >= Date.parse(boundary);
   const daily = new Map();
   for (const event of prepared.dailyEvents) {
@@ -248,7 +248,11 @@ export function projectFlowStats(prepared, boundary, now, counts, { windowMinute
   } : { stage: null, share: null, completedItems, fullyMeasuredCycles: 0, totalCycleMinutes: 0, lowConfidence: completedItems > 0,
     message: completedItems ? `not enough measured flow to name a bottleneck (${completedItems} items completed since ${boundary ?? 'the beginning'}, none with every stage measured)` :
       `not enough flow to name a bottleneck (0 items completed since ${boundary ?? 'the beginning'})`, recommendation: null };
-  return { ...(windowMinutes === undefined ? {} : { window: projectFlowWindow(prepared, windowMinutes, now) }), asOf: new Date(now).toISOString(), stages, queues: queueData.queues, unreviewed: queueData.unreviewed, daily: [...daily.values()].sort((a, b) => a.date.localeCompare(b.date)),
+  const window = windowMinutes === undefined ? undefined : {
+    ...projectFlowWindow(prepared, windowMinutes, now),
+    ...(executionCapacity ? { executionCapacity } : {}),
+  };
+  return { ...(window === undefined ? {} : { window }), asOf: new Date(now).toISOString(), stages, queues: queueData.queues, unreviewed: queueData.unreviewed, daily: [...daily.values()].sort((a, b) => a.date.localeCompare(b.date)),
     submitsPerMerged: completedItems ? counts.submissions / completedItems : 0, activeAgents, bottleneck };
 }
 
