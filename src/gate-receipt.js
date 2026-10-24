@@ -93,6 +93,34 @@ export function recentReceipts(root, now = Date.now()) {
   });
 }
 
+/** Read receipts relevant to a requested half-open window without the display's last-day limit. */
+export function retainedReceipts(root, { from, to }) {
+  const start = Date.parse(from);
+  const end = Date.parse(to);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return [];
+  const file = receiptLog(root);
+  if (!existsSync(file)) return [];
+  return readFileSync(file, 'utf8').split('\n').flatMap((line) => {
+    if (!line.trim()) return [];
+    try {
+      const receipt = JSON.parse(line);
+      const at = Date.parse(receipt?.at);
+      const admitted = Date.parse(receipt?.admittedAt);
+      const finished = Date.parse(receipt?.finishedAt);
+      const relevant = Number.isFinite(at) && at >= start && at < end
+        || Number.isFinite(admitted) && Number.isFinite(finished) && finished > start && admitted < end;
+      if (!relevant) return Number.isFinite(at) || Number.isFinite(admitted) || Number.isFinite(finished)
+        ? [] : [{ at: from, malformed: true }];
+      if (!Number.isFinite(receipt.waitMs) || receipt.waitMs < 0
+        || !Number.isFinite(receipt.runMs) || receipt.runMs < 0) {
+        // Keep the row so runnerStage marks legacy/incomplete evidence unmeasured.
+        return [receipt];
+      }
+      return [receipt];
+    } catch { return [{ at: from, malformed: true }]; }
+  });
+}
+
 /** The middle value of a list of durations. */
 function median(values) {
   const sorted = [...values].sort((left, right) => left - right);

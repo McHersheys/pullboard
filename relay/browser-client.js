@@ -736,12 +736,28 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
     } finally { approvedBoards.delete(context.board); notice(); }
   }
 
+  /** Discard expired enrollment without withholding an already authorized browser's boards. */
+  async function pairAndList() {
+    try {
+      if (await enrollPhone((path, options) => documentAt(path, denied, options))) keepPairingStorage();
+    } catch (error) {
+      if (error?.code !== 'DEVICE_PAIR_EXPIRED') throw error;
+      try { await listing(); }
+      catch { // Preserve the actionable expiry unless normal authorization detected access loss.
+        if (accessLost) throw accessError;
+        throw error;
+      }
+      if (browserPaired) return;
+      throw error;
+    }
+    await listing();
+  }
+
   /** Pair a link opened in this already-loaded page as well as one opened on a fresh visit. */
   async function pairingChanged() {
     try {
       rememberPairing(); pair = takePairing() ?? pair;
-      if (await enrollPhone((path, options) => documentAt(path, denied, options))) keepPairingStorage();
-      await listing(); onUpdate();
+      await pairAndList(); onUpdate();
     }
     catch { failure = 'The pairing link is invalid. Get a new link from a linked machine.'; failureBoard = null; notice(); }
   }
@@ -754,14 +770,9 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
   try { devicePairing ||= sessionStorage.getItem('pullboard.relay.device-pair.v1') !== null; } catch { /* No storage: no saved pairing. */ }
   if (!pair && !devicePairing && !Object.keys(keys).length) showRelayScreen(document.documentElement, 'share');
   try {
-    if (await enrollPhone((path, options) => documentAt(path, denied, options))) keepPairingStorage();
-    await listing();
+    await pairAndList();
   } catch (error) {
-    if (error?.code === 'DEVICE_PAIR_EXPIRED') {
-      // A stale local enrollment must not hide a newer revocation of this browser.
-      try { await documentAt('/api/v1/devices/session', denied); } catch { /* Keep the original pairing error unless access was lost. */ }
-      if (accessLost) throw accessError;
-    }
+    if (accessLost) throw accessError;
     failure = error.message || 'Your boards did not open. Try opening this page again.';
     notice();
     throw error;

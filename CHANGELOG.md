@@ -8,7 +8,11 @@ Notable changes to Pullboard, for people using it. The format follows [Keep a Ch
 
 - You can pair a second phone or browser with the command the page shows. (#978)
 
+- Teams that work in pull requests can have Pullboard open one pull request per release, carrying each item's proof; merging it ships the release. (#987)
+
 ### Fixed
+
+- An old pairing link no longer blocks a browser that is already paired. (#982)
 
 - A browser you removed now says so, instead of a blank page or a sign-in screen. (#981)
 

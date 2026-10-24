@@ -9,56 +9,7 @@
  * broken copy, and checks the declaration against the refusals board.js and cli.js raise today.
  */
 
-import { fileURLToPath } from 'node:url';
-import {
-  nextEngineNumber,
-  readEngineLeaves,
-} from './engine-numbers.js';
-
-export { AUTO_ESCALATE_ENGINE } from './auto-escalate-engine.js';
-export { ROW_DRAFT_ENGINE } from './row-draft-engine.js';
-export { STRONG_REJECTION_NOTICE_ENGINE } from './strong-rejection-notice-engine.js';
-export { SUBMITTED_CONFLICT_ENGINE } from './submitted-conflict-engine.js';
-export { WITHDRAW_MILESTONE_ENGINE } from './withdraw-milestone-engine.js';
-
-/**
- * Find every feature engine: each src/*-engine.js leaf declares exactly one `export const NAME_ENGINE = n;` line.
- * A feature that raises the engine adds its own new file and no line of any shared one, so two items adding
- * different engines never conflict [C7,V4]. An unlanded leaf says `= unassignedEngine();` and reads as one above
- * the landed engines until the landing merge gives it its number (#1101). The value is read as text because
- * machine.js needs it synchronously.
- *
- * @param {URL} directory the folder holding the *-engine.js leaves
- * @returns {Record<string, number>} engine number by file name, in name order
- */
-export function discoverEngines(directory = new URL('./', import.meta.url)) {
-  const leaves = readEngineLeaves(fileURLToPath(directory));
-  const unlanded = nextEngineNumber(leaves);
-  return Object.fromEntries(leaves.map((leaf) => [leaf.file.slice(0, -'-engine.js'.length), leaf.number ?? unlanded]));
-}
-
-export { REOPEN_FIRST_REFUSAL_ENGINE } from './reopen-first-refusal-engine.js';
-
-/** Every feature engine by name, discovered from the *-engine.js files beside this one. */
-export const ENGINE_REGISTRY = discoverEngines();
-
-/** The highest engine number any feature declares. */
-export const ENGINE_VERSION = Math.max(...Object.values(ENGINE_REGISTRY));
-
-/**
- * The engine whose relay moves carry seat provenance and verifier standing (#579). It is its own
- * constant because engine slots are allotted per item: whoever lands second renumbers this line.
- */
-export const VERIFIER_STANDING_ENGINE = 48;
-
-/** The engine at which reject, reopen and person facts may carry cause keys [D1,H16]. */
-export const CAUSE_ENGINE = 30;
-
-/** First released engine binding the checked composition, review trunk and paths [E8,H16]. */
-export const VERDICT_REVIEW_ENGINE = 33;
-
-/** First engine carrying explicit milestone ranks in build and review selection [N2,B13,H16]. */
-export const MILESTONE_RANK_ENGINE = 34;
+export * from './engine-metadata.js';
 
 /** @typedef {'agent' | 'coordinator' | 'clock'} Role */
 
@@ -173,10 +124,10 @@ export const GUARDS = [
   { id: 'noUnverifiedStack', refuse: 'STACKED_ON_UNVERIFIED', rule: "the candidate range contains no other item's unverified submitted commit", next: 'wait for that item to be accepted, or rebuild without its commits', source: 'cli' },
   { id: 'infraExplained', refuse: 'INFRA_NOTE_REQUIRED', rule: 'edits to tests or gate files that existed at claim carry an explanation', next: 'pullboard submit <id> --infra "<why>"', source: 'cli' },
   { id: 'doctrineHolds', refuse: 'RATCHET_ROSE', alsoRefuses: [{ code: 'RATCHET_UNCOUNTED', next: 'fix the check so it exits 0 or 1 within its timeout, then submit again' }], rule: "every touched doctrine check counts (exit 0 or 1), none rises above its committed count and no changed file gains a problem; watch-mode rules only count", next: "fix the new problems, commit, submit again; only the person's signature raises count:", source: 'cli', when: 'only when accepted main has an approved doctrine rule with gate: check' },
-  { id: 'itemCheckGreen', refuse: 'CHECK_RED', alsoRefuses: [{ code: 'SLOT_DB_LOCKED', next: 'the run never started, so it is not a red; rerun the same command once the named process releases the slot database' }, { code: 'CHECK_UNVERIFIED', next: 'restore the frozen install or check environment and retry' }, { code: 'GUARD_CANNOT_FAIL', next: 'reject: the check stays green with the named guard reverted' }, { code: 'GUARD_NOT_FOUND', next: 'the named guard is not in the submitted commit; ask the coordinator to fix it' }], rule: 'the frozen item check passes at the submitted commit, or its clean reviewed composition for a stale acceptance', next: 'reject the failing behavior; the builder fixes and resubmits', source: 'cli' },
+  { id: 'itemCheckGreen', refuse: 'CHECK_RED', alsoRefuses: [{ code: 'SLOT_DB_LOCKED', next: 'the run never started, so it is not a red; rerun the same command once the named process releases the slot database' }, { code: 'TIMING_SLOT_REQUIRED', next: 'start the timing check outside its inherited ordinary lease and acquire the machine gate with timing true' }, { code: 'CHECK_UNVERIFIED', next: 'restore the frozen install or check environment and retry' }, { code: 'GUARD_CANNOT_FAIL', next: 'reject: the check stays green with the named guard reverted' }, { code: 'GUARD_NOT_FOUND', next: 'the named guard is not in the submitted commit; ask the coordinator to fix it' }], rule: 'the frozen item check passes at the submitted commit, or its clean reviewed composition for a stale acceptance', next: 'reject the failing behavior; the builder fixes and resubmits', source: 'cli' },
 
   { id: 'checkProvesSomething', refuse: 'CRITERION_PROVES_NOTHING', rule: "the item's check does not already pass on main, or the person accepted that exact check", next: 'set a check that fails before the work, or the person runs pullboard check accept <id>', source: 'cli', when: 'only when accepted main sets checks.provesNothing to "hold"' },
-  { id: 'gateGreen', refuse: 'GATE_RED', alsoRefuses: [{ code: 'LAND_TIMEOUT_CUSTODY', next: 'inspect the saved timed gate cleanup state and stop only its proven owned processes before starting another landing' }, { code: 'LAND_GATE_OUTPUT', next: 'inspect the retained timed gate output directory and free disk space, then start another landing' }, { code: 'SLOT_DB_LOCKED', next: 'the run never started, so it is not a red; rerun the same command once the named process releases the slot database' }, { code: 'RUNNER_BROWSER_SLOT_REQUIRED', next: 'nothing to do: the run reruns on a local gate slot; if it repeats, set gate.browserByLaunch the same on this machine and that runner' }, { code: 'PIPEFAIL_UNAVAILABLE', next: 'rewrite the gate without a pipe' }], rule: 'the gate, which submit runs itself every time, is green at HEAD', next: 'fix what the digest names, commit, submit again', source: 'cli' },
+  { id: 'gateGreen', refuse: 'GATE_RED', alsoRefuses: [{ code: 'LAND_TIMEOUT_CUSTODY', next: 'inspect the saved timed gate cleanup state and stop only its proven owned processes before starting another landing' }, { code: 'LAND_GATE_OUTPUT', next: 'inspect the retained timed gate output directory and free disk space, then start another landing' }, { code: 'SLOT_DB_LOCKED', next: 'the run never started, so it is not a red; rerun the same command once the named process releases the slot database' }, { code: 'TIMING_SLOT_REQUIRED', next: 'start the timing check outside its inherited ordinary lease and acquire the machine gate with timing true' }, { code: 'RUNNER_BROWSER_SLOT_REQUIRED', next: 'nothing to do: the run reruns on a local gate slot; if it repeats, set gate.browserByLaunch the same on this machine and that runner' }, { code: 'PIPEFAIL_UNAVAILABLE', next: 'rewrite the gate without a pipe' }], rule: 'the gate, which submit runs itself every time, is green at HEAD', next: 'fix what the digest names, commit, submit again', source: 'cli' },
   { id: 'queuedItemLease', refuse: 'ITEM_LEASE_LOST', alsoRefuses: [{ code: 'A5_GRAMMAR_VERSION', next: 'upgrade Pullboard or restore a spec written for grammar 1, then retry' }, { code: 'SPEC_BEHIND_MAIN', next: 'merge main into this worktree, then renew the claim and retry' }, { code: 'NOT_A_REPO', next: 'restore the worktree Git metadata, then retry the command' }, { code: 'NO_CONFIG', next: 'restore pullboard.json in this worktree, then retry the command' }], rule: 'the caller still owns the same live item claim or review and can renew it against the frozen criterion', next: 'claim or reserve the item again before retrying the command', source: 'cli', when: 'while submit or an accept waits for a machine slot, and once immediately before admission' },
   { id: 'treeStillDuringGate', refuse: 'MOVED_DURING_GATE', rule: 'when the gate ends, HEAD and every tracked file are as they were when it started', next: 'leave the worktree alone until the gate finishes, then submit again', source: 'cli' },
   { id: 'childrenDone', refuse: 'CHILDREN_OPEN', rule: 'every child item is verified or withdrawn', next: 'finish the child items, or the coordinator withdraws them', source: 'board' },

@@ -1,7 +1,7 @@
 /** Approval provenance: a status word is not a person's decision [S1,B26,P6]. */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import * as store from './board.js';
+import * as store from './board-query.js';
 import {
   gitReadSignature,
   tryGit,
