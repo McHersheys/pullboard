@@ -23,7 +23,10 @@ export function replayHistory(events) {
     rows.push({ event_id: id, event_at: new Date(at).toISOString(), event_kind: event.event_kind,
       item_id: event.event_kind === 'join' ? null : item, event_by: by });
   }
-  rows.sort((a, b) => Date.parse(a.event_at) - Date.parse(b.event_at) || a.event_id - b.event_id);
+  rows.sort((a, b) => a.event_id - b.event_id);
+  if (rows.some((row, index) => index > 0 && Date.parse(row.event_at) < Date.parse(rows[index - 1].event_at))) {
+    throw new Refused('USAGE', 'replay history clocks moved backwards in native event order; use a history with nondecreasing recorded times, never reorder or clamp timestamp evidence');
+  }
   return { version: 1, events: rows };
 }
 

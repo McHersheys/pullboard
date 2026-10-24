@@ -34,8 +34,8 @@ test('replay retains rejected work and fixed seats without reading private detai
 });
 
 test('unmeasured cycles are reported rather than invented as zero work [R1,R2]', () => {
-  const input = events([[0, 'add', 1, 'coordinator'], [1, 'claim', 1, 'web-1'], [2, 'submit', 1, 'web-1'],
-    [3, 'accept', 1, 'review-1'], [4, 'merged', 1, 'coordinator'], [0, 'add', 2, 'coordinator']]);
+  const input = events([[0, 'add', 1, 'coordinator'], [0, 'add', 2, 'coordinator'], [1, 'claim', 1, 'web-1'], [2, 'submit', 1, 'web-1'],
+    [3, 'accept', 1, 'review-1'], [4, 'merged', 1, 'coordinator']]);
   const result = replayFlow(input);
   assert.deepEqual(result.replay.items, []);
   assert.deepEqual(result.replay.unmeasured.map(item => item.id), [1, 2]);
@@ -71,4 +71,13 @@ test('show retains its boolean history flag while flow accepts a history file [R
     stderr: { write: text => { err += text; } } });
   assert.equal(code, 0, err);
   assert.match(out, /--history/u);
+});
+
+
+test('a clock rollback refuses replay instead of silently reordering native history [R1,R2]', () => {
+  const input = rework();
+  input[1].event_at = new Date(BASE - 60_000).toISOString();
+  assert.throws(() => replayFlow(input), /clocks moved backwards in native event order/u);
+  assert.throws(() => replayFlow([...input].reverse(), { order: [1] }), /clocks moved backwards/u,
+    'array order cannot hide rollback by placing lower timestamps first');
 });
