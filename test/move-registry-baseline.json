@@ -6102,9 +6102,298 @@
       ],
       "state": "first-refusal",
       "expected": 105
+    },
+    {
+      "operation": "reopen",
+      "args": [
+        null,
+        {
+          "withdrawVerdict": true
+        }
+      ],
+      "state": null,
+      "expected": 106
+    },
+    {
+      "operation": "reopen",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "sentinel:fixture",
+          "withdrawVerdict": true
+        }
+      ],
+      "state": null,
+      "expected": 106
+    },
+    {
+      "operation": "reopen",
+      "args": [
+        1,
+        {
+          "cause": "sentinel:fixture",
+          "withdrawVerdict": true
+        }
+      ],
+      "state": null,
+      "expected": 106
+    },
+    {
+      "operation": "reopen",
+      "args": [
+        1,
+        {
+          "reopenFirstRefusalMinutes": 0,
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          },
+          "withdrawVerdict": true
+        }
+      ],
+      "state": null,
+      "expected": 106
+    },
+    {
+      "operation": "reopen",
+      "args": [
+        1,
+        {
+          "conflict": [],
+          "withdrawVerdict": true
+        }
+      ],
+      "state": null,
+      "expected": 106
+    },
+    {
+      "operation": "reopen",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          },
+          "withdrawVerdict": true
+        }
+      ],
+      "state": null,
+      "expected": 106
+    },
+    {
+      "operation": "reopen",
+      "args": [
+        1,
+        {
+          "quotedLandingFailure": true,
+          "withdrawVerdict": true
+        }
+      ],
+      "state": null,
+      "expected": 106
+    },
+    {
+      "operation": "reopen",
+      "args": [
+        1,
+        {
+          "quotedLandingFailure": true,
+          "cause": "conflict:src/engine.js",
+          "withdrawVerdict": true
+        }
+      ],
+      "state": null,
+      "expected": 106
+    },
+    {
+      "operation": "reopen",
+      "args": [
+        1,
+        {
+          "quotedLandingFailure": true,
+          "cause": "sentinel:fixture",
+          "withdrawVerdict": true
+        }
+      ],
+      "state": null,
+      "expected": 106
+    },
+    {
+      "operation": "reopen",
+      "args": [
+        1,
+        {
+          "quotedLandingFailure": true,
+          "reopenFirstRefusalMinutes": 0,
+          "withdrawVerdict": true
+        }
+      ],
+      "state": null,
+      "expected": 106
+    },
+    {
+      "operation": "reopen",
+      "args": [
+        1,
+        {
+          "quotedLandingFailure": true,
+          "conflict": [],
+          "withdrawVerdict": true
+        }
+      ],
+      "state": null,
+      "expected": 106
+    },
+    {
+      "operation": "reopen",
+      "args": [
+        1,
+        {
+          "quotedLandingFailure": true,
+          "cause": "test:x",
+          "withdrawVerdict": true
+        }
+      ],
+      "state": null,
+      "expected": 106
+    },
+    {
+      "operation": "reopen",
+      "args": [
+        1,
+        {
+          "quotedLandingFailure": false,
+          "cause": "conflict:src/engine.js",
+          "withdrawVerdict": true
+        }
+      ],
+      "state": null,
+      "expected": 106
+    },
+    {
+      "operation": "reopen",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "quotedLandingFailure": true,
+          "withdrawVerdict": true
+        }
+      ],
+      "state": null,
+      "expected": 106
+    },
+    {
+      "operation": "reopen",
+      "args": [
+        1,
+        {
+          "quotedLandingFailure": true,
+          "withdrawVerdict": true
+        }
+      ],
+      "state": "bar-ready",
+      "expected": 106
+    },
+    {
+      "operation": "reopen",
+      "args": [
+        1,
+        {
+          "quotedLandingFailure": true,
+          "withdrawVerdict": true
+        }
+      ],
+      "state": "outside",
+      "expected": 106
+    },
+    {
+      "operation": "reopen",
+      "args": [
+        1,
+        {
+          "quotedLandingFailure": true,
+          "withdrawVerdict": true
+        }
+      ],
+      "state": "batch:trunk",
+      "expected": 106
+    },
+    {
+      "operation": "reopen",
+      "args": [
+        1,
+        {
+          "quotedLandingFailure": true,
+          "withdrawVerdict": true
+        }
+      ],
+      "state": "batch:environment",
+      "expected": 106
+    },
+    {
+      "operation": "reopen",
+      "args": [
+        1,
+        {
+          "quotedLandingFailure": true,
+          "withdrawVerdict": true
+        }
+      ],
+      "state": "batch:invariant",
+      "expected": 106
+    },
+    {
+      "operation": "reopen",
+      "args": [
+        1,
+        {
+          "quotedLandingFailure": true,
+          "withdrawVerdict": true
+        }
+      ],
+      "state": "batch:reviewed",
+      "expected": 106
+    },
+    {
+      "operation": "reopen",
+      "args": [
+        1,
+        {
+          "quotedLandingFailure": true,
+          "withdrawVerdict": true
+        }
+      ],
+      "state": "defects",
+      "expected": 106
+    },
+    {
+      "operation": "reopen",
+      "args": [
+        1,
+        {
+          "quotedLandingFailure": true,
+          "withdrawVerdict": true
+        }
+      ],
+      "state": "first-refusal",
+      "expected": 106
     }
   ],
   "nextSteps": {
+    "BAD_VERDICT_WITHDRAW": "use --withdraw-verdict with a note, or report a conflict separately",
+    "VERDICT_WITHDRAW_FORBIDDEN": "ask the accepting reviewer or coordinator to withdraw this verdict",
+    "VERDICT_WITHDRAW_STATE": "refresh the item; withdraw only a current acceptance before landing",
     "LINE_WIP_LIMIT": "review the oldest eligible waiting submission: pullboard next --verify; if none is eligible, ask the coordinator to arrange a reviewer",
     "OUTSIDE_NATIVE_BUILD": "the outside author revises the PR; ask the coordinator to return it, then intake its new exact head",
     "CHECK_NO_PROOF": "strengthen the trusted criterion so it fails before the outside change, then ask the coordinator to refreeze it",
@@ -7114,7 +7403,7 @@
           },
           {
             "meta_key": "relay_engine_version",
-            "meta_value": "105"
+            "meta_value": "106"
           },
           {
             "meta_key": "relay_receipt_registry-snapshot-2",
@@ -7254,47 +7543,21 @@
     "qualification": "Read-only diagnostic projection: unchanged accepted26 engine imports, OPERATION_ENGINE and both floor-function bodies, relocated imports only and export added. Not production source or independent proof. Snapshot collected before authored product edits."
   },
   "acceptedDelta": {
-    "head": "acb4b367c70c8faeb691adfefc38857394107f2e",
-    "engine": 105,
-    "scope": "Executed accepted-acb reference, source-pinned private Git export + unchanged accepted floor observer. Original26 data inputs/records/outcomes/expected remain; all429 prior floor results and354 old actors unchanged. Two handoff operations inserted before the prior59 preserving their relative order, exact366actor results/455floors/554guidance current. AcceptedExpected uses original3engine100 moves, with ONLY current-engine marker100\u2192105 difference.",
-    "newFloorExpectations": 170,
-    "newRecoveryCode": "RUNNER_GUI_SESSION_REQUIRED",
-    "sourceConditions": [
-      "minimumExistingOperationEngine first: cause.startsWith('conflict:') -> RIGOR_AUTO_ENGINE102",
-      "setLineSetting collisionFreeBatch -> LAND_COLLISION_ENGINE101, beforeorder"
+    "fromMain": "acb4b367c70c8faeb691adfefc38857394107f2e",
+    "toMain": "f0e60800a6c4de84d3a256a36da93b9f2ad25777",
+    "onlyExistingFloorChanges": [],
+    "newFloorVectors": 22,
+    "newGuidance": [
+      "BAD_VERDICT_WITHDRAW",
+      "VERDICT_WITHDRAW_FORBIDDEN",
+      "VERDICT_WITHDRAW_STATE"
     ],
-    "originalReplayInputSHA256": "944bd3a1f53799b01f58b1dddec39c487205b5daf0a2860c30bc7a73e9ddcd5e",
-    "capacityMain": "fd47453359c9d58554a9739d8ac20ddc229a0a5a",
-    "referenceManifestSHA256": "982b43dad076785d3c5e87f312085601462110d117e9f274b9dfb273fd0ae81b",
-    "replayDelta": [
-      {
-        "table": "board_meta",
-        "key": "relay_engine_version",
-        "before": "100",
-        "after": "105"
-      }
-    ],
-    "resolutionManifestSHA256": "91018c557c5bbaf6db2485fecf6be984c2c9bc8ffedd7a6b6b46078e8f143106",
-    "resolutionSummary": {
-      "operations": 61,
-      "actors": 366,
-      "floors": 455,
-      "priorFloors": 429,
-      "guidance": 554,
-      "replayRecords": 3,
-      "replayDelta": [
-        {
-          "table": "board_meta",
-          "key": "relay_engine_version",
-          "before": "100",
-          "after": "105"
-        }
-      ]
+    "engineMetadata": {
+      "original": "100",
+      "priorAccepted": "105",
+      "currentAccepted": "106"
     },
-    "newOperations": [
-      "openHandoff",
-      "takeHandoff"
-    ]
+    "observer": "Actualaccepted f0 immutable Gitexport + exact-source observer, data capture root1136-acceptedf0-resolution-run01; original3 replay moves/receipts/outcomes/retries retained except explicit currentengine metadata. Lateactualf0 whole-source map taken while waiting beforeexecution, all1021 stable after; initialgenerichelper pointedat prioracb explicitlyqualified."
   },
   "historicalOperations": [
     "intakeOutside",
@@ -7903,5 +8166,6 @@
     "WRONG_LANE": "create a worktree in the required lane with pullboard worktree <lane> --model \"<model name>\", or take an item in your lane with pullboard next",
     "RUNNER_GUI_SESSION_REQUIRED": "nothing to do: the run reruns locally; log in to a GUI session on the runner before sending GUI-marked files there",
     "LINE_WIP_LIMIT": "review the oldest eligible waiting submission: pullboard next --verify; if none is eligible, ask the coordinator to arrange a reviewer"
-  }
+  },
+  "acceptedMain": "f0e60800a6c4de84d3a256a36da93b9f2ad25777"
 }
