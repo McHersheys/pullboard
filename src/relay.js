@@ -71,6 +71,11 @@ import {
   withSeatName,
 } from './relay-seats.js';
 import { syncApprovers } from './relay-approvers.js';
+import {
+  namedBoard,
+  writeNamedBoard,
+} from './relay-board-config.js';
+import { handOverBoardKeys } from './relay-handover.js';
 import { ENGINE_VERSION } from './machine.js';
 import {
   presentationDigest,
@@ -967,6 +972,7 @@ async function catchUp(root, file, state, io) {
     if (localRecords(root, appliedSequence) <= after) throw new Refused('RELAY_RESPONSE', 'the relay checkpoint did not advance the missing prefix; fetch a consistent newer snapshot');
     return catchUp(root, file, state, io);
   }
+  if ([remote.warning, ...(remote.warnings ?? [])].some((warning) => warning?.code === 'KEY_REQUESTS')) KEY_REQUESTS_SEEN.add(io);
   if (!Array.isArray(remote.events) || remote.events.some((record, index) => !record || record.event_id !== after + index + 1 || !['move', 'request'].includes(record.kind) || typeof record.sealed !== 'string')) {
     throw new Refused('RELAY_RESPONSE', 'the relay returned an invalid ordered prefix; fetch a consistent relay snapshot');
   }
@@ -1257,6 +1263,7 @@ export async function syncRelay(root, io) {
       if (checkpointInBackground()) { if (state.checkpoint) scheduleCheckpoint(root, file); else requestCheckpointCheck(root, file); }
       else if (state.checkpoint || state.presentationDigest !== presentationDigest(relayPresentation(root))) await publishCheckpoint(root, file, state, io);
       await deliverDeviceWraps(root, io);
+      if (KEY_REQUESTS_SEEN.has(io) && !state.environment) await handOverKeys(state, io); // an agent token never hands over a key
       return summary(root, state);
     }
     catch (error) {
@@ -1275,6 +1282,16 @@ export async function syncRelay(root, io) {
         recovery: recoverySummary(state), ...outboxFields(state) };
     }
   }, io);
+}
+
+/** Commands whose event read named a new device waiting for this board's key. */
+const KEY_REQUESTS_SEEN = new WeakSet();
+
+/** Hand this board's key to member devices that asked; a failure here never fails the command that noticed [E17]. */
+async function handOverKeys(state, io) {
+  KEY_REQUESTS_SEEN.delete(io);
+  try { await handOverBoardKeys(state, readBoardKey(state.board), request, io); }
+  catch (error) { if (!(error instanceof Refused)) throw error; io.err(`pullboard: a new device's key request waits: ${error.message}`); }
 }
 
 /** Return token-management context without opening a board-key pairing link or exposing any credential. */
@@ -1575,6 +1592,14 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
   for (const project of listApiProjects()) { try { loadLink(linkFile(project.root)); } catch { /* Report this command's own link below. */ } }
   const repository = originRepository(root);
   const file = linkFile(root);
+  // A clone whose pullboard.json names another board joins that board instead of linking a second one [E12].
+  const named = loadLink(file) ? null : namedBoard(repoInfo(root).root);
+  const relinking = relayRelink(root);
+  if (named && named !== localRecords(root, store.boardId) && relinking?.previous !== named && relinking?.next !== named) {
+    const url = relayOrigin(address || DEFAULT_RELAY);
+    const { joinNamedBoard } = await import('./relay-join.js');
+    return joinNamedBoard(root, file, { board: named, url, repository, signIn: () => deviceSignIn(url, io) }, io);
+  }
   return locked(file, async () => {
     let state = loadLink(file);
     if (state) requireUnconflictedBaseline(state);
@@ -1601,7 +1626,7 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
         cursor: snapshot.document.tables.event.at(-1)?.event_id ?? 0, baselineCursor: snapshot.document.tables.event.at(-1)?.event_id ?? 0,
         baselineAccepted: false, linkPending: true };
       state.snapshot = { sequence: 0, sealed: await sealedRecord(key, snapshot.document, state, 'snapshot', 0) };
-      if (relink) state.previousBoardNotice = relink.previous;
+      if (relink) { state.previousBoardNotice = relink.previous; state.replaces = relink.previous; }
     }
     const account = signed.account ?? signed.user?.id;
     // Persist the exact sealed snapshot and a recoverable link intent before making the remote link.
@@ -1609,10 +1634,19 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
     if (relink) finishRelink(root);
     if (state.linkPending) {
       if (signed.linkConfirmed && signed.linkedBoard !== state.board) throw new Refused('RELAY_RESPONSE', 'the relay confirmed a different board; sign in again');
-      if (!reusableCredential && !signed.linkConfirmed) await request({ ...state, token: signed.token }, '/auth/boards/link', { method: 'POST', body: { board: state.board, repository } }, io);
+      try {
+        if (!reusableCredential && !signed.linkConfirmed) await request({ ...state, token: signed.token }, '/auth/boards/link', { method: 'POST', body: { board: state.board, repository, ...(state.replaces ? { replaces: state.replaces } : {}) } }, io);
+      } catch (error) {
+        // The repository's board is another one: forget this never-linked intent, so relay on can join that board [E12].
+        if (error.code === 'BOARD_REPO_LINKED') { rmSync(file, { force: true }); try { forgetBoardKey(state.board, state.keyStorage); } catch { /* The refusal names the next step. */ } }
+        throw error;
+      }
       delete state.linkPending;
+      delete state.replaces;
       saveLink(file, state);
     }
+    // Every clone of the repository finds its board in the committed pullboard.json [E12].
+    if (writeNamedBoard(repoInfo(root).root, state.board)) io.err(`pullboard: pullboard.json now names board ${state.board.slice(0, 8)}; commit it so every clone of this repository joins this board`);
     const machine = updateRelayMachine(settings => settings.machine);
     const issued = reusableCredential ?? await request({ ...state, token: signed.token }, '/auth/machines', { method: 'POST', body: { board: state.board, machine } }, io);
     if (!/^pm_[A-Za-z0-9_-]{43}$/u.test(issued.token ?? '') || issued.board !== state.board || issued.machine !== machine) throw new Refused('RELAY_RESPONSE', 'the relay did not issue this board’s machine credential; sign in again');

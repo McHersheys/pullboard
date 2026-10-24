@@ -97,6 +97,9 @@ export async function githubFixture(t) {
       const login = userTokens.get(bearer) ?? 'fixture-user';
       return reply(res, isUser ? 200 : 401, { id: state.people?.[login]?.id ?? state.accountID, login });
     }
+    // The public SSH keys on an account, as GitHub lists them; state.sshKeys maps a login to its key lines [E17].
+    const keysOf = /^\/users\/([^/]+)\/keys$/u.exec(url.pathname)?.[1];
+    if (keysOf) return reply(res, 200, (state.sshKeys?.[decodeURIComponent(keysOf)] ?? []).map((key, index) => ({ id: index + 1, key })));
     const repositoryPath = url.pathname.match(/^\/repos\/fixture\/([^/]+)(?:\/(.*))?$/u);
     const repositoryName = repositoryPath?.[1];
     const allowedRepository = state.repositories.includes(repositoryName);

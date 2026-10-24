@@ -499,10 +499,14 @@ export function createRelayAuth({ database, github, now = Date.now, sessionTTL =
       }
       return { id: row.id, kind: row.kind, user: { id: row.user_id, login: row.login }, ...(row.board ? { board: row.board, ...(row.kind === 'machine' ? { machine: row.agent } : { agent: row.agent }) } : {}), ...(row.root ? { root: true, ...(row.lineage ? { lineage: row.lineage } : {}) } : {}), ...(repository ? { permission: repository.permission, public: repository.public } : {}), expires: row.expires };
     },
-    /** Accept a link only from a signed-in human with current repository write access. */
-    async linkBoard(token, board, repository, deadline = Infinity) {
+    /**
+     * Accept a link only from a signed-in human with current repository write access. A repository has one team
+     * board: a second board for it is refused, unless this link replaces the named board after relay off [E12].
+     */
+    async linkBoard(token, board, repository, deadline = Infinity, replaces = null) {
       identifier(board, 'BAD_BOARD');
       repositoryName(repository);
+      if (replaces !== null && replaces !== undefined) identifier(replaces, 'BAD_BOARD');
       const row = credential(token);
       if (row.kind !== 'session') throw new Refused('HUMAN_REQUIRED', 'sign in as a person to link a board');
       const repo = await github.access({ id: row.user_id, login: row.login }, repository);
@@ -514,6 +518,9 @@ export function createRelayAuth({ database, github, now = Date.now, sessionTTL =
         if (db.prepare('SELECT 1 FROM relay_cleanup WHERE board=?').get(board)) throw new Refused('RELAY_CLEANUP', 'finish pending board cleanup before linking again');
         const existing = db.prepare('SELECT * FROM relay_boards WHERE id=?').get(board);
         if (existing && existing.repository_id !== String(repo.id)) throw new Refused('BOARD_LINK_CONFLICT', 'use a new board identifier for a different repository');
+        const other = db.prepare('SELECT id FROM relay_boards WHERE repository_id=? AND id<>? ORDER BY linked_at DESC, id').all(String(repo.id), board)
+          .find((row) => row.id !== replaces && !db.prepare('SELECT 1 FROM relay_cleanup WHERE board=?').get(row.id));
+        if (other) throw new Refused('BOARD_REPO_LINKED', `${repo.name} already has board ${other.id}, and a repository has one team board; pull pullboard.json from main, which names that board, then run pullboard relay on again to join it`);
         db.prepare('INSERT INTO relay_boards (id,repository,repository_id,linked_at,storage_account) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET repository=excluded.repository,storage_account=COALESCE(relay_boards.storage_account,excluded.storage_account)').run(board, repo.name, String(repo.id), now(), row.user_id);
         permissions.delete(row.user_id + ':' + board);
       });
