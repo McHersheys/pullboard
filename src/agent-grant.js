@@ -12,6 +12,12 @@ function target(move) {
   return null;
 }
 
+/** Resolve existing accepted ids with the mutation's SQLite affinity; defer malformed/missing ids. */
+function existingItem(board, id) {
+  if (!Number.isSafeInteger(id) && typeof id !== 'string') return null;
+  return board.db.prepare('SELECT * FROM item WHERE item_id=?').get(id) ?? null;
+}
+
 /** A version marker is not a grant: it only prevents an older engine bypassing a new seat or claim. */
 export function agentGrantMinimum(board, move) {
   // Communication and review administration neither widen nor replace a claim. An old claim could erase its version marker.
@@ -19,8 +25,8 @@ export function agentGrantMinimum(board, move) {
   const actor = MOVE_REGISTRY[move.operation]?.actor(move);
   if (typeof actor !== 'string' || ['person', 'coordinator', 'machine'].includes(actor)) return 1;
   const event = board.db.prepare("SELECT event_detail FROM event WHERE event_by=? AND event_kind IN ('join','claim','renew') ORDER BY event_id DESC LIMIT 1").get(actor);
-  const item = target(move)?.item ?? (move.operation === 'claim' ? move.args?.[0] : null);
-  const claimed = Number.isSafeInteger(item) ? board.db.prepare("SELECT event_detail FROM event WHERE item_id=? AND event_kind IN ('claim','renew') ORDER BY event_id DESC LIMIT 1").get(item) : null;
+  const item = existingItem(board, target(move)?.item ?? (move.operation === 'claim' ? move.args?.[0] : null));
+  const claimed = item ? board.db.prepare("SELECT event_detail FROM event WHERE item_id=? AND event_kind IN ('claim','renew') ORDER BY event_id DESC LIMIT 1").get(item.item_id) : null;
   return [event, claimed].some(row => {
     const version = row && JSON.parse(row.event_detail).grantEngine;
     return Number.isSafeInteger(version) && version >= AGENT_GRANT_ENGINE;
@@ -36,19 +42,18 @@ export function requireAgentGrant(board, move, at = board.clock.now()) {
   if (!seat) return; // Existing operation validation owns unknown-seat refusals.
   const scope = target(move);
   if (!scope) return;
-  const item = Number.isSafeInteger(scope.item)
-    ? board.db.prepare('SELECT * FROM item WHERE item_id=?').get(scope.item) : null;
+  const item = existingItem(board, scope.item);
   if (!scope.creating && !item) return; // Preserve the operation's own malformed/missing-item refusal.
   // The seat's immutable handoff-open event grants only its own channel facts, not other item work.
   // Replacement fencing runs before this guard, so a taken-over seat keeps only its existing shout path.
   if (move.operation === 'appendFact' && board.db.prepare(
     "SELECT event_id FROM event WHERE item_id=? AND event_by=? AND event_kind='handoff-open' LIMIT 1")
-    .get(scope.item, actor)) return;
+    .get(item.item_id, actor)) return;
   const now = at.toISOString();
   if (item?.item_review_by === actor && item.item_status === 'submitted' && item.item_review_until > now
     && ['verify', 'appendFact'].includes(move.operation)) return;
   const claims = board.db.prepare("SELECT item_id,item_lease_until FROM item WHERE item_owner=? AND item_status='claimed'").all(actor);
-  const own = claims.find(claim => claim.item_id === scope.item);
+  const own = claims.find(claim => claim.item_id === item?.item_id);
   const live = claims.filter(claim => claim.item_lease_until > now);
   const previous = board.db.prepare("SELECT event_id FROM event WHERE event_by=? AND event_kind IN ('claim','renew') ORDER BY event_id DESC LIMIT 1").get(actor);
   if ((own && !(own.item_lease_until > now)) || (previous && !live.length)) {
