@@ -1,6 +1,6 @@
 /** Preserve merged history while recording one linked neutral CI repair [B2,R3]. */
 import { createHash } from 'node:crypto';
-import { addItem, appendFact, atomic, getItem, logEvent } from './board.js';
+import { addItem, appendFact, atomic, getItem, linkPublishRepair, logEvent } from './board.js';
 import { COORDINATOR } from './config.js';
 import { Refused } from './refused.js';
 
@@ -31,7 +31,7 @@ export function recordPublishFinding(board, { agentId, item, repository, pull, h
       brief: `Linked repair of merged item #${item}; GitHub ${repository} PR #${pull}, head ${head}. Keep the original merge and acceptance history. Jobs: ${failures.map(f => `${f.name}: ${f.url}`).join('; ')}` });
     // This new coordinator-only move is the explicit exception for a repair OF a closed item.
     // The ordinary addItem(parentId) guard still refuses a child of any closed parent.
-    if (!old) board.db.prepare('UPDATE item SET item_parent_id=? WHERE item_id=?').run(item, repair);
+    if (!old) linkPublishRepair(board, { agentId, item, repair });
     const detail = { key, repository, pull, head, item, repair, failures: observed };
     const factId = 'pr-ci-' + createHash('sha256').update(JSON.stringify(detail)).digest('hex');
     appendFact(board, item, { agentId, kind: 'capture', factId, text: 'CI finding: ' + JSON.stringify(detail) });

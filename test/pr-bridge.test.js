@@ -55,6 +55,8 @@ test("publish opens one pull request with each item's receipt and records the pe
   pull.merged_by = { login: 'fixture-person', type: 'User', id: 42 };
   const observed = await runBridgeCLI(box, 'publish', '--json');
   assert.equal(observed.code, 0, observed.err);
+  assert.equal(JSON.parse(observed.out).releases[0].recognizedPerson, true);
+  assert.equal(JSON.parse(observed.out).releases[0].personApproval, false);
   const facts = onBoard(box, board => entries.flatMap(entry => store.itemThread(board, entry.id)
     .filter(fact => fact.type === 'fact').map(fact => fact.text)));
   for (const entry of entries) assert.ok(facts.some(text => text.includes(pull.html_url) && text.includes(pull.merge_commit_sha)),
@@ -174,4 +176,5 @@ test('publication findings replay deterministically and ordinary closed-parent g
   assert.throws(() => store.addItem(source, { by: 'coordinator', lane: 'web', title: 'ordinary child',
     criterion: 'ordinary closed parent remains refused', parentId: entries[0].id, route: 'strong' }), { code: 'PARENT_CLOSED' });
   assert.throws(() => store.recordPublishFinding(source, { ...request, agentId: 'web-1' }), { code: 'COORDINATOR_ONLY' });
+  assert.throws(() => store.linkPublishRepair(source, { agentId: 'web-1', item: entries[0].id, repair: entries[1].id }), { code: 'COORDINATOR_ONLY' });
 });
