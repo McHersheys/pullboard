@@ -35,8 +35,15 @@ export function recordedTrunkMerge(gitDirectory, head, trunk) {
     'merge-tree', '--write-tree', '--name-only', '-z', trunk, head], {
     env: cleanGitEnvironment(), encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
   });
+  // Git may return 1 for an invalid/missing merge parent as well as for a real conflict.
+  // Only a merge result carrying its output tree can establish either clean or conflicting state.
+  const output = (result.stdout ?? '').split('\0');
+  if (![0, 1].includes(result.status) || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(output[0].trim())) {
+    throw new Refused('MERGE_CHECK_FAILED', 'fetch the recorded submitted and trunk commits, then resume this move; Git could not verify its immutable conflict');
+  }
   if (result.status === 0) return null;
-  if (result.status !== 1) throw new Refused('MERGE_CHECK_FAILED', 'fetch the recorded submitted and trunk commits, then resume this move; Git could not verify its immutable conflict');
-  const records = result.stdout.split('\0').slice(1), end = records.indexOf('');
-  return records.slice(0, end < 0 ? records.length : end);
+  const records = output.slice(1), end = records.indexOf('');
+  const files = records.slice(0, end < 0 ? records.length : end);
+  if (!files.length) throw new Refused('MERGE_CHECK_FAILED', 'Git did not provide conflict paths for the recorded commits; fetch their complete objects before resuming');
+  return files;
 }
