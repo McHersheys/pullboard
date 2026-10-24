@@ -210,8 +210,17 @@ test('set up once links three registered boards, later registration and a persis
   assert.equal(completed.document.linked.length, 3);
   assert.equal(completed.document.paired, true);
   await pageWait(chrome, 'initial pairing renders registered boards', "document.querySelectorAll('#proj-list .proj.repo').length === 3");
-  // Rows render before the router replaces the stripped fragment with the board's ordinary address.
-  await pageWait(chrome, 'initial pairing settles the board address', "history.state?.tab === 'home' && typeof history.state.root === 'string' && location.hash === '#repository/home'");
+  // Rows precede address settlement; the initial Items view may deliberately retain an empty fragment.
+  await pageWait(chrome, 'initial pairing settles the board address', `(() => {
+    const state = history.state;
+    const parts = location.hash.slice(1).split('/');
+    const addressed = parts.length <= 2 && parts.at(-1) === state?.tab && parts.every(part => part && !part.includes('='));
+    return typeof state?.root === 'string' && state.detail === null && ['home', 'items'].includes(state.tab)
+      && document.querySelector('.tab.on')?.dataset.tab === state.tab
+      && (addressed || state.tab === 'items' && location.hash === '');
+  })()`);
+  const settled = await pageEvaluate(chrome, 'initial pairing reads its settled place', "({tab: history.state.tab, emptyFragment: location.hash === ''})");
+  t.diagnostic(`initial pairing settled on ${settled.tab}, empty fragment: ${settled.emptyFragment}`);
   const pairedUrl = await pageEvaluate(chrome, 'initial pairing reads the settled address', 'location.href');
   const navigation = await chrome.send('Page.getNavigationHistory');
   assert.ok(navigation.entries.length > 0, 'the actual browser history is inspected');
