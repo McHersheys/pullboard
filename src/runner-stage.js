@@ -29,9 +29,11 @@ function normalizedRunner(value, { stage = false } = {}) {
   }
   const os = value.capabilities.os ?? null;
   const browser = value.capabilities.browser ?? null;
+  const gui = value.capabilities.gui ?? null;
   if (!(typeof os === 'string' && os.trim() || os === null)
-    || !(typeof browser === 'boolean' || browser === null)) {
-    invalid('runner OS and browser capability must be reported values or null when unknown');
+    || !(typeof browser === 'boolean' || browser === null)
+    || !(typeof gui === 'boolean' || gui === null)) {
+    invalid('runner OS, browser and GUI capabilities must be reported values or null when unknown');
   }
   for (const key of ['unavailable', 'draining']) {
     if (value[key] !== undefined && typeof value[key] !== 'boolean') invalid(`runner ${key} state must be true or false`);
@@ -52,7 +54,7 @@ function normalizedRunner(value, { stage = false } = {}) {
     id: value.id,
     kind: value.kind,
     slots: { current: value.slots.current, limit: value.slots.limit, elastic: value.slots.elastic },
-    capabilities: { os, browser },
+    capabilities: { os, browser, gui },
   };
   normalized.active = value.active;
   if (value.browserSlots !== undefined) Object.assign(normalized, { browserSlots: value.browserSlots, browserActive: value.browserActive });
@@ -206,12 +208,12 @@ export function runnerStage(runners, receipts, window = {}) {
       slowQuarterMs: quartile(waits, 0.75), worstMs: waits.length ? waits.at(-1) : null, count: waits.length } };
 }
 
-/** Compare requested capabilities; false browser means no browser requirement. */
+/** Compare requested capabilities; false browser or GUI means no corresponding requirement. */
 function capabilityMatch(runner, requested) {
   let unknown = false;
-  for (const key of ['os', 'browser']) {
+  for (const key of ['os', 'browser', 'gui']) {
     if (requested[key] === undefined || requested[key] === null) continue;
-    if (key === 'browser' && requested[key] === false) continue;
+    if (['browser', 'gui'].includes(key) && requested[key] === false) continue;
     const actual = runner.capabilities[key];
     if (actual === null) unknown = true;
     else if (actual !== requested[key]) return 'no';
@@ -239,7 +241,7 @@ function candidateOrder(left, right) {
 /**
  * Return a read-only placement suggestion. It never changes runner capacity or starts a run.
  * @param {{runners:object[],slotWait:object}} stage A value returned by {@link runnerStage}.
- * @param {{capabilities?:{os?:string|null,browser?:boolean|null},slotWaitTargetMs?:number}} request
+ * @param {{capabilities?:{os?:string|null,browser?:boolean|null,gui?:boolean|null},slotWaitTargetMs?:number}} request
  */
 export function placeRunner(stage, request = {}) {
   if (!record(request)) invalid('runner placement request must be an object');
@@ -251,6 +253,7 @@ export function placeRunner(stage, request = {}) {
   if (!record(capabilities) || !(capabilities.os === undefined || capabilities.os === null
     || typeof capabilities.os === 'string' && capabilities.os.trim())
     || !(capabilities.browser === undefined || capabilities.browser === null || typeof capabilities.browser === 'boolean')
+    || !(capabilities.gui === undefined || capabilities.gui === null || typeof capabilities.gui === 'boolean')
     || !Number.isFinite(slotWaitTargetMs) || slotWaitTargetMs < 0) {
     invalid('placement capabilities must be reported values or null and the wait target nonnegative');
   }

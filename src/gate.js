@@ -238,7 +238,11 @@ export function runProfiledShell(root, command, { waitMs = 0, artifactDirectory,
     browser: gateLease.browser, pipefail, stages, waivers: landing ? waivers : [], metadata: { ...(gateLease.runMetadata ?? {}), landing, ...(timeoutMs ? { timeoutMs } : {}) } }) }
     : runShell(root, command, { pipefail, env: inherited, stages, timeoutMs });
   gateLease?.tracker?.mark('ranAt');
-  if (gateLease) { gateLease.environment = run.environment ?? null; gateLease.executionAdmission = run.executionAdmission ?? null; }
+  if (gateLease) {
+    gateLease.environment = run.environment ?? null;
+    gateLease.gui = run.executionCapabilities?.gui ?? null;
+    gateLease.executionAdmission = run.executionAdmission ?? null;
+  }
   const sandboxBlocked = run.isGreen ? null : run.sandboxBlocked ?? (run.executionRunner
     // The controller cannot realpath remote files; retain the network denial signal without treating remote paths as local paths.
     ? sandboxBlockedOperation(root, run.output, { includeFilePaths: false })
@@ -265,6 +269,7 @@ export async function runProfiledShellAsync(root, command, { waitMs = 0, gateSlo
     const run = await runOnRunnerAsync(root, command, { runner: gateLease.runner, source: gateLease.source,
       browser: gateLease.browser, metadata: { ...(gateLease.runMetadata ?? {}), landing } });
     gateLease.environment = run.environment ?? null;
+    gateLease.gui = run.executionCapabilities?.gui ?? null;
     gateLease.executionAdmission = run.executionAdmission ?? null;
     gateLease.tracker?.mark('ranAt');
     const wallMs = Math.max(0, Date.now() - started);
@@ -315,7 +320,7 @@ function settleReceipt(lease) {
   const local = !lease.runner;
   const descriptor = local ? lease.localDescriptor ?? localRunnerDescriptor(lease.capacity ?? null, null)
     : { id: lease.runner.host, kind: 'ssh', slots: { current: executor?.slots ?? lease.runner.slots, limit: executor?.slots ?? lease.runner.slots, elastic: false },
-      capabilities: { os: lease.environment?.platform ?? null, browser: lease.runner.browser > 0 } };
+      capabilities: { os: lease.environment?.platform ?? null, browser: lease.runner.browser > 0, gui: lease.gui ?? null } };
   const admittedAt = local ? lease.admittedAt ?? new Date(lease.tracker.marks.admittedAt ?? lease.tracker.marks.requestedAt).toISOString() : executor?.admittedAt ?? null;
   const finishedAt = local ? new Date().toISOString() : executor?.finishedAt ?? null;
   const load = local ? { start: lease.startLoad ?? sampleRunnerLoad(), end: sampleRunnerLoad() } : executor?.load ?? null;
