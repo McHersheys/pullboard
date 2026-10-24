@@ -24,6 +24,7 @@ import { decodeBoardKey, seal } from '../src/seal.js';
 import { ENGINE_VERSION as PEOPLE_VERSION } from '../src/machine.js';
 import { relayWorkBudgetMs } from './relay-budget.js';
 import { hostname } from 'node:os';
+import { assertMatchingLandingHost, assertNoCulpritTrunkHold } from './landing-environment-fixture.js';
 import { landingQueueCase } from './landing-queue-fixture.js';
 
 const CLI = join(import.meta.dirname, '..', 'bin', 'pullboard.js');
@@ -31,6 +32,10 @@ const CLI = join(import.meta.dirname, '..', 'bin', 'pullboard.js');
 const helpers = createE2eHelpers();
 after(helpers.cleanup);
 
+test('land runs on a matching host [E27,E28,E29]', { timeout: 180_000 }, () => { // budget: hang ceiling for real Git/CLI host checks, bisection and waiver controls; no speed target.
+  assertMatchingLandingHost(helpers);
+  assertNoCulpritTrunkHold(helpers);
+});
 test('a trunk lands one batch at a time [B3,R3,Q1,Q2,E8]', { timeout: 120_000 }, // budget: hang ceiling for real private Git, CLI checks, both gate barriers and cleanup; no speed target.
   async t => landingQueueCase(t, helpers));
 

@@ -8,6 +8,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { Refused } from './refused.js';
+import { environmentProblem } from './execution-environment.js';
 
 export const CONFIG_FILE = 'pullboard.json';
 export const COORDINATOR = 'coordinator';
@@ -203,8 +204,11 @@ export function configProblems(config) {
     problems.push('"landingShards" is a whole number from 1 to 64: how many shards the landing gate splits its test files into');
   }
   if (typeof config.staticChecks !== 'string') problems.push('"staticChecks" is an optional project static-check command');
-  if (config.landing !== undefined && (typeof config.landing !== 'object' || config.landing === null || Object.keys(config.landing).some(key => !['publish', 'timeout', 'cadence'].includes(key)) || ![undefined, 'separate'].includes(config.landing.publish))) {
-    problems.push('"landing" has optional "timeout" and "cadence" durations, and "publish": "separate" to land locally and push through pullboard publish');
+  if (config.landing !== undefined && (typeof config.landing !== 'object' || config.landing === null || Array.isArray(config.landing)
+    || Object.keys(config.landing).some(key => !['publish', 'environment', 'timeout', 'cadence'].includes(key)) || ![undefined, 'separate'].includes(config.landing.publish))) {
+    problems.push('"landing" has optional environment: { platform, arch, node }, "timeout" and "cadence" durations, and "publish": "separate" to land locally and push through pullboard publish');
+  } else if (config.landing?.environment !== undefined && environmentProblem(config.landing.environment)) {
+    problems.push(`"landing.environment" ${environmentProblem(config.landing.environment)}`);
   }
   for (const key of ['timeout', 'cadence']) {
     const value = config.landing?.[key];
