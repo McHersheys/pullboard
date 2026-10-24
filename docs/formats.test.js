@@ -259,9 +259,19 @@ function documentedUpgradeConditions() {
   });
 }
 
-/** Keep the guide's move-engine row aligned with the executable engine declaration. */
+/** Keep the guide at the highest landed engine while allowing one branch-local pending leaf. */
 function assertEngineGuideVersion(guideVersion, leaves, branchVersion) {
-  assert.equal(guideVersion, branchVersion, `move engine guide version ${guideVersion} must match executable engine version ${branchVersion}`);
+  const landed = Math.max(0, ...leaves.flatMap(({ number }) => number === null ? [] : [number]));
+  const pending = leaves.filter(({ number }) => number === null);
+  assert.ok(
+    pending.length <= 1,
+    `two unassigned engine leaves are not allowed: ${pending.map(({ file }) => file).join(', ')}`,
+  );
+  assert.equal(guideVersion, landed, `move engine guide version ${guideVersion} must match highest landed engine ${landed}`);
+  assert.ok(
+    branchVersion === landed || branchVersion === landed + 1,
+    `executable engine version ${branchVersion} must be landed ${landed} or the one pending number ${landed + 1}`,
+  );
 }
 
 /** Create a minimal engine-leaf directory and return its parsed and executable versions. */
