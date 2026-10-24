@@ -62,6 +62,8 @@ export const NEXT_STEPS = Object.freeze({
   PROOF_RUN_ACTOR: 'run the check from your own joined seat and use the native receipt that belongs to that seat',
   PROOF_RUN_STALE: 'read pullboard show <id> for the current frozen criterion, then run a fresh item check',
   PROOF_RUN_CHANGED: 'preserve the original receipt and run a new item check to obtain a new native receipt id',
+  LINE_WIP_LIMIT: 'review the oldest eligible waiting submission: pullboard next --verify; if none is eligible, ask the coordinator to arrange a reviewer',
+
   OUTSIDE_NATIVE_BUILD: 'the outside author revises the PR; ask the coordinator to return it, then intake its new exact head',
   CHECK_NO_PROOF: 'strengthen the trusted criterion so it fails before the outside change, then ask the coordinator to refreeze it',
   OUTSIDE_URL: 'use a GitHub issue or pull request URL with owner/repository and its positive number',
