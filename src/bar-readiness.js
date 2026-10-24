@@ -1,3 +1,8 @@
+import {
+  readBarState as read,
+  barReadySetting,
+} from './bar-ready-setting.js';
+export { barReadySetting };
 import { normalizeBarActor } from './bar-actor.js';
 import {
   normalizeBarCoverage,
@@ -17,11 +22,6 @@ import { BAR_READY_ENGINE } from './bar-ready-engine.js';
 import { Refused } from './refused.js';
 
 const FIELDS = ['item_title', 'item_criterion', 'item_check', 'item_brief', 'item_spec_ids', 'item_after', 'item_route'];
-/** Read a deterministic value kept by ordered moves; the event history retains its provenance. */
-function read(board, key) {
-  const row = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get(key);
-  return row ? JSON.parse(row.meta_value) : null;
-}
 /** Write within the caller's atomic move. */
 function save(board, key, value) {
   board.db.prepare('INSERT INTO board_meta(meta_key,meta_value) VALUES (?,?) ON CONFLICT(meta_key) DO UPDATE SET meta_value=excluded.meta_value').run(key, JSON.stringify(value));
@@ -34,8 +34,6 @@ function parent(board, agent) {
 export function barDigest(item) {
   return createHash('sha256').update(JSON.stringify(FIELDS.map(key => [key, item[key] ?? '']))).digest('hex');
 }
-/** Read the default-off board setting without consulting a replica's local configuration. */
-export function barReadySetting(board) { return read(board, 'bar_ready_setting') ?? { enabled: false, since: 0 }; }
 /** Make activation an ordered boundary; repeating on does not erase earlier obligations. */
 export function setBarReady(board, { agentId, enabled }) {
   if (agentId !== 'coordinator') throw new Refused('COORDINATOR_ONLY', 'only the coordinator changes bar readiness; shout coordinator');
