@@ -34,7 +34,12 @@ export function shoutMatchesAudience(db, to, audience) {
   return [...audience].some((agent) => itemShoutReader(db, item, agent));
 }
 
-/** Existing four inbox parameters stay cursor, seat, lane, seat; indexed parameters reuse the seat identity. */
-export const UNREAD_SHOUT_SQL = `FROM shout WHERE shout_id > ?1 AND shout_from != ?2 AND
-  (shout_to IN ('all', ?3, ?4) OR (shout_to = '${COORDINATION_SHOUT}' AND ?2 IN ('coordinator', 'person')) OR EXISTS (SELECT 1 FROM item WHERE shout_to = 'item:' || item_id AND
-    (?2 = 'coordinator' OR COALESCE(item_owner, item_built_by) = ?2 OR COALESCE(item_review_by, item_verified_by) = ?2)))`;
+/** Positional bindings work on the supported minimum Node SQLite API as well as newer releases. */
+export const UNREAD_SHOUT_SQL = `FROM shout WHERE shout_id > ? AND shout_from != ? AND
+  (shout_to IN ('all', ?, ?) OR (shout_to = '${COORDINATION_SHOUT}' AND ? IN ('coordinator', 'person')) OR EXISTS (SELECT 1 FROM item WHERE shout_to = 'item:' || item_id AND
+    (? = 'coordinator' OR COALESCE(item_owner, item_built_by) = ? OR COALESCE(item_review_by, item_verified_by) = ?)))`;
+
+/** Bind every positional identity occurrence explicitly, including item-role checks. */
+export function unreadShoutBindings(cursor, seat, lane) {
+  return [cursor, seat, lane, seat, seat, seat, seat, seat];
+}

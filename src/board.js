@@ -5,6 +5,7 @@ import {
   itemShoutReader,
   shoutItemId,
   UNREAD_SHOUT_SQL,
+  unreadShoutBindings,
 } from './shout-audience.js';
 import { recordVerdict } from './verdict-assurance.js';
 import { logEvent } from './board-event-log.js';
@@ -2153,7 +2154,7 @@ export function inbox(board, agentId) {
     if (!agent) throw new Refused('NO_AGENT', `no agent ${agentId}`);
     const shouts = board.db
       .prepare(`SELECT * ${UNREAD_SQL} ORDER BY shout_id`)
-      .all(agent.agent_last_shout_id, agentId, agent.agent_lane, agentId);
+      .all(...unreadShoutBindings(agent.agent_last_shout_id, agentId, agent.agent_lane));
     const last = shouts.at(-1)?.shout_id ?? agent.agent_last_shout_id;
     board.db.prepare('UPDATE agent SET agent_last_shout_id = ? WHERE agent_id = ?').run(last, agentId);
     if (agentId !== COORDINATOR) return shouts;
@@ -2175,7 +2176,7 @@ export function unreadCount(board, agentId) {
   if (!agent) return 0;
   const { total } = board.db
     .prepare(`SELECT COUNT(*) AS total ${UNREAD_SQL}`)
-    .get(agent.agent_last_shout_id, agentId, agent.agent_lane, agentId);
+    .get(...unreadShoutBindings(agent.agent_last_shout_id, agentId, agent.agent_lane));
   return total;
 }
 
@@ -2653,7 +2654,7 @@ export function peekShouts(board, agentId, limit = 2) {
   if (!agent) return [];
   return board.db
     .prepare(`SELECT * ${UNREAD_SQL} ORDER BY shout_id DESC LIMIT ?`)
-    .all(agent.agent_last_shout_id, agentId, agent.agent_lane, agentId, limit)
+    .all(...unreadShoutBindings(agent.agent_last_shout_id, agentId, agent.agent_lane), limit)
     .reverse();
 }
 
