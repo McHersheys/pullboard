@@ -8,6 +8,7 @@ import {
 } from './git.js';
 import { personNeeds } from './needs.js';
 import { Refused } from './refused.js';
+import { verifiedPasskeyRowDecision } from './person-row-proof.js';
 import {
   loadSpec,
   readSignoffs,
@@ -67,7 +68,8 @@ function approvalEvidence(root, evidenceErrors) {
 }
 
 /** Check a board decision against local trust without making invalid proof block flag-mode work. */
-function confirmedDecision(root, decision, evidenceErrors) {
+function confirmedDecision(root, board, decision, evidenceErrors) {
+  if (verifiedPasskeyRowDecision(board, decision)) return true;
   try { verifyRowDecision(root, decision); return true; }
   catch (error) {
     if (!(error instanceof Refused)) throw error;
@@ -108,7 +110,7 @@ export function specApprovalState(root, { board, config, spec = loadSpec(root, c
     const decision = decisions.findLast(record => record.id === row.id);
     if (decision) {
       if (!matchesApproval(decision, current)) return true;
-      return !confirmedDecision(root, decision, evidenceErrors);
+      return !confirmedDecision(root, board, decision, evidenceErrors);
     }
     return !matchesApproval(signed.findLast(record => record.kind === 'spec' && record.file === config.spec && record.id === row.id), current);
   });
