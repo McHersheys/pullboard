@@ -20,6 +20,8 @@ import { resumeNeeds } from '../src/resume-needs.js';
 import { undraftedRigor } from '../src/rigor-notices.js';
 import { runFixtureChild, runFixtureGit } from './fixture-child.js';
 import { applyEngineMove, prepareEngineMove } from '../src/engine.js';
+import { recordSchemaStamp } from '../src/board-migrate.js';
+import { SCHEMA_DIGEST } from '../src/board-schema-source.js';
 
 const BIN = resolve(import.meta.dirname, '../bin/pullboard.js');
 const SERVE = pathToFileURL(resolve(import.meta.dirname, '../src/serve.js')).href;
@@ -65,17 +67,28 @@ test('a new fact id is checked by index across current, legacy and archived fact
   assert.ok(identityPlans.length > 0, 'the real appendFact executed its identity lookup');
   assert.ok(identityPlans.every(({ plan }) => plan.some((detail) => /SEARCH event\b.*<expr>=\?/u.test(detail))),
     `new fact identity must search an expression index, not scan every fact: ${JSON.stringify(plans)}`);
+  const legacyPlans = plans.filter(({ sql }) => sql.includes('NOT json_valid'));
+  assert.ok(legacyPlans.length > 0 && legacyPlans.every(({ plan }) => plan.some((detail) => /USING (?:COVERING )?INDEX event_fact_legacy\b/u.test(detail))),
+    `legacy detection must read only its partial legacy index: ${JSON.stringify(plans)}`);
   assert.throws(() => store.appendFact(board, second, options('fresh-identity')), { code: 'BAD_FACT_ID' }, 'identity is global across items');
   assert.throws(() => store.appendFact(board, second, options('legacy-399')), { code: 'BAD_FACT_ID' });
 
   store.closeBoard(board);
   const legacy = new DatabaseSync(file);
   // A synthetic physical cold partition exercises compatibility without importing unlanded retention code.
-  legacy.exec('CREATE TABLE event_archive AS SELECT * FROM event WHERE 0; PRAGMA user_version=2');
+  legacy.exec('CREATE TABLE event_archive AS SELECT * FROM event WHERE 0; DROP INDEX event_fact_identity; DROP INDEX event_fact_legacy');
   legacy.prepare("INSERT INTO event_archive (event_id,event_at,event_by,event_kind,item_id,event_detail) VALUES (?,?,?,?,?,?)")
     .run(900000, clock.now().toISOString(), 'coordinator', 'fact', first, JSON.stringify({ id: 'cold-identity', text: 'Cold legacy note' }));
+  legacy.prepare("INSERT INTO event (event_at,event_by,event_kind,item_id,event_detail) VALUES (?,?,?,?,?)")
+    .run(clock.now().toISOString(), 'coordinator', 'fact', second, JSON.stringify({ id: 'legacy-0', text: 'Historical duplicate retained' }));
+  recordSchemaStamp(legacy, SCHEMA_DIGEST);
   legacy.close();
+  const readonly = store.openBoardReadOnly(file);
+  assert.equal(readonly.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='index' AND name LIKE '%_fact_%'").get().n, 0,
+    'read-only open never installs an additive index');
+  readonly.close();
   board = store.openBoard(file, clock);
+  assert.equal(board.db.prepare('PRAGMA user_version').get().user_version, 3, 'index upgrade preserves the existing data schema version');
   assert.throws(() => store.appendFact(board, second, options('cold-identity')), { code: 'BAD_FACT_ID' }, 'cold identity remains reserved');
   store.appendFact(board, second, options('after-migration'));
   const coldPlans = board.db.prepare("EXPLAIN QUERY PLAN SELECT 1 FROM event_archive WHERE event_kind='fact' AND json_valid(event_detail) AND json_extract(event_detail,'$.id')=?")
@@ -87,6 +100,11 @@ test('a new fact id is checked by index across current, legacy and archived fact
   assert.equal(replay.result.id, move.id);
   assert.deepEqual(applyEngineMove(board, move, { sequence: 1, at: clock.now().toISOString() }), replay, 'same sealed move retries its receipt');
   assert.equal(store.events(board).filter((event) => event.event_kind === 'fact' && JSON.parse(event.event_detail).id === move.id).length, 1);
+
+  board.db.prepare("INSERT INTO event (event_at,event_by,event_kind,item_id,event_detail) VALUES (?,?,?,?,?)")
+    .run(clock.now().toISOString(), 'coordinator', 'fact', first, "{id:'legacy-json5',text:'kept'}");
+  assert.throws(() => store.appendFact(board, second, options('legacy-json5')), { code: 'BAD_FACT_ID' }, 'strict-invalid but readable JSON5 keeps its identity');
+  store.appendFact(board, second, options('after-json5'));
 
   const beforeMalformed = board.db.prepare('SELECT count(*) AS n FROM event').get().n;
   board.db.prepare("INSERT INTO event (event_at,event_by,event_kind,item_id,event_detail) VALUES (?,?,?,?,?)")

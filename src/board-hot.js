@@ -1,3 +1,5 @@
+import { ensureFactIdentityIndexes } from './fact-identity.js';
+
 /**
  * The indexes and bounded reads behind the board's hot queries [C7]. Status, list, show, next, resume,
  * health and the view read events and shouts by kind, sender, answer and recency; on a board of tens of
@@ -23,6 +25,7 @@ const HOT_INDEXES = [
  */
 export function ensureHotIndexes(db) {
   for (const sql of HOT_INDEXES) db.exec(sql);
+  ensureFactIdentityIndexes(db);
 }
 
 /**
