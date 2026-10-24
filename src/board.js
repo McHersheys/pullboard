@@ -11,6 +11,7 @@ export {
   getShout,
   allShouts,
   shoutDetails,
+  decisionAnswers,
   openRequests,
   pendingRefreeze,
   pendingRefreezeProblem,

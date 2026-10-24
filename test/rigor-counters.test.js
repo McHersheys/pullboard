@@ -16,6 +16,8 @@ import { RIGOR_TAIL_LIMIT } from '../src/rigor-counters.js';
 import { undraftedRigor } from '../src/rigor-notices.js';
 import { rigorSource } from '../src/rigor-source.js';
 import { parseSpec } from '../src/spec.js';
+import { coordinatorDecisionSections } from '../src/cli.js';
+import { agentParent } from '../src/board-query.js';
 
 const PREFIX = 'local:proof-stats:rigor:v1:';
 
@@ -260,4 +262,33 @@ test('invalid historical cause and decline grammar remain data during a current 
   assert.equal(store.events(board).length, before + 1);
   assert.deepEqual(resumeRigorCounters(board, {}).causes, oracle);
   assert.equal(resumeRigorCounters(board, {}).notice, null);
+});
+
+
+test('resume batches first decision answers and parent identities without changing their meaning [C7,N19,H16]', t => {
+  const { board } = fixture(t);
+  const insert = board.db.prepare('INSERT INTO shout(shout_at,shout_from,shout_to,shout_text,shout_decision,shout_answers) VALUES(?,?,?,?,?,?)');
+  const now = Date.parse('2026-10-24T12:00:00.000Z');
+  const asks = [];
+  for (let n = 0; n < 12; n += 1) {
+    const ask = Number(insert.run('2026-10-22T00:00:00.000Z', 'coordinator', 'coordinator', `question ${n}`, 1, null).lastInsertRowid);
+    asks.push(ask);
+    if (n === 0) continue;
+    const at = new Date(now + (n === 1 ? -2 * 86400000 : n === 2 ? 1000 : -1000)).toISOString();
+    insert.run(at, 'coordinator', 'coordinator', `first ${n}`, 0, ask);
+    insert.run(new Date(now).toISOString(), 'coordinator', 'coordinator', `later ${n}`, 0, ask);
+  }
+  const expected = asks.flatMap(id => {
+    const { decision_answer: answer } = store.shoutDetails(board, id);
+    return answer ? [answer] : [];
+  });
+  assert.deepEqual(store.decisionAnswers(board), expected, 'the oldest answer stays authoritative, including historical duplicate replies');
+  const rows = coordinatorDecisionSections(board, { clock: { now: () => new Date(now) } });
+  assert.deepEqual(rows.recentAnswers.map(row => row.answer), expected.filter(row => {
+    const age = now - Date.parse(row.shout_at);
+    return age >= 0 && age <= 86400000;
+  }).map(row => row.shout_text));
+  board.db.prepare('INSERT INTO board_meta(meta_key,meta_value) VALUES(?,?)').run('agent_parent_session:coordinator', 'original-parent');
+  assert.deepEqual(store.listAgents(board).map(row => row.agent_parent_session),
+    store.listAgents(board).map(row => agentParent(board, row.agent_id)));
 });
