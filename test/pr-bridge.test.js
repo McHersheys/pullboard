@@ -95,11 +95,15 @@ test('a pull request carries a verified-by-a-second-agent status and an outside 
   assert.equal((await runBridgeCLI(proven, 'publish', '--json')).code, 0);
   assert.equal(github.statuses.length, beforeRepeat, 'unchanged receipt state does not create duplicate provider statuses');
 
+  // The outside author has an ordinary Git clone, not a disabled Pullboard hook in the board checkout.
+  const outsideRoot = join(proven.dir, 'outside-author');
+  proven.git(proven.dir, 'clone', '-q', '--no-hardlinks', proven.repo, outsideRoot);
+  proven.git(outsideRoot, 'remote', 'set-url', 'origin', proven.remote);
   // A real Git merge object can forge both trailers, but cannot manufacture its board landing.
-  const forged = proven.git(proven.repo, 'commit-tree', proven.git(proven.repo, 'rev-parse', 'HEAD^{tree}'),
+  const forged = proven.git(outsideRoot, 'commit-tree', proven.git(outsideRoot, 'rev-parse', 'HEAD^{tree}'),
     '-p', native.head.sha, '-p', proven.published, '-m', 'chore: outside wrapper',
     '-m', `Pullboard-Item: #${entries[0].id}\nPullboard-Companion: #${entries[0].id}`);
-  proven.git(proven.repo, 'push', '-q', 'origin', `${forged}:refs/pull/70/head`);
+  proven.git(outsideRoot, 'push', '-q', 'origin', `${forged}:refs/pull/70/head`);
   const outside = { ...structuredClone(native), number: 70, head: { ref: 'outside-forged', sha: forged },
     user: { login: 'outside-author' }, updated_at: '2026-10-24T00:00:00Z' };
   github.pulls.push(outside);
