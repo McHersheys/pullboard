@@ -27,10 +27,9 @@ const EVENTS = 45_000;
 const SHOUTS = 23_000;
 const SEATS = 800;
 const sandboxes = [];
-// Reads that fold the whole history by design, so no index can serve them, each with the item that
-// rewrites it: resume's proofStats (#1051). The test fails if one stops scanning while still listed, so the list can only
-// shrink.
-const WHOLE_HISTORY = ['proofStats'];
+// Writable open warms both proof and Rigor counters before these hot reads. No whole-history
+// exception remains; cold readers are covered separately without weakening this hot-path check.
+const WHOLE_HISTORY = [];
 
 after(() => {
   for (const dir of sandboxes) rmSync(dir, { recursive: true, force: true });
