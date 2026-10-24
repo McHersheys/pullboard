@@ -1,6 +1,9 @@
 /** Publish only exact native independent review coverage, never a PR author's proof claims [B3,R3]. */
 import * as store from './board.js';
-import { git, tryGit } from './git.js';
+import {
+  git,
+  tryGit,
+} from './git.js';
 import { Refused } from './refused.js';
 import { outsideSource } from './outside-source.js';
 
