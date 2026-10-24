@@ -664,7 +664,21 @@ test('the engine version is the highest feature engine [C7,V4]', () => {
   const source = new URL('../src/', import.meta.url);
   const files = readdirSync(source).filter((file) => /-engine\.js$/u.test(file));
   assert.deepEqual(Object.keys(ENGINE_REGISTRY), files.map((file) => file.slice(0, -'-engine.js'.length)).sort(), 'every src/*-engine.js leaf is a feature engine, discovered by its file name');
-  for (const file of files) assert.match(readFileSync(new URL(file, source), 'utf8'), /^export const [A-Z][A-Z0-9_]*_ENGINE = \d+;$/mu, `${file} declares its one engine constant`);
+  const pending = [], landed = [];
+  for (const file of files) {
+    const text = readFileSync(new URL(file, source), 'utf8');
+    const declarations = text.split('\n').filter(line => /^export const /u.test(line));
+    assert.equal(declarations.length, 1, `${file} declares exactly one engine constant`);
+    const match = /^export const [A-Z][A-Z0-9_]*_ENGINE = (?:(\d+)|unassignedEngine\(\));$/u.exec(declarations[0]);
+    assert.ok(match, `${file} declares a landed number or the native landing placeholder`);
+    if (match[1] !== undefined) landed.push(Number(match[1]));
+    else {
+      assert.ok(text.split('\n').includes("import { unassignedEngine } from './engine-next.js';"), `${file} imports the actual placeholder resolver`);
+      pending.push(file.slice(0, -'-engine.js'.length));
+    }
+  }
+  for (const name of pending) assert.equal(ENGINE_REGISTRY[name], Math.max(0, ...landed) + 1,
+    `${name} resolves to the next landed engine until its own merge assigns a permanent number`);
   assert.doesNotMatch(readFileSync(new URL('machine.js', source), 'utf8'), /Math\.max\([A-Z_]+ENGINE,/u, 'src/machine.js lists no engine by name');
 });
 

@@ -95,7 +95,7 @@ test('a line setting change is a recorded move with its reason and its range [R1
   const first = store.events(board).findLast(event => event.event_kind === 'line_setting');
   assert.ok(first, 'the actual CLI records a native board event, not only a local settings file');
   assert.deepEqual(JSON.parse(first.event_detail), { key: 'reviewsFirst', value: true,
-    reason: 'Review waiting exceeds the target', window: numbers });
+    reason: 'Review waiting exceeds the target', window: numbers, model: 'unknown' });
   assert.equal(first.event_by, 'coordinator');
   const values = [['reviewsFirst', false], ['wipPerReviewer', 1.5], ['wipPerReviewer', 3], ['barReady', true],
     ['takeoverMinutes', 15], ['takeoverMinutes', 60], ['landingBatchSize', 1], ['landingBatchSize', 8],
