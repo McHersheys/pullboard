@@ -1,3 +1,5 @@
+import { proofReceipts } from './board-query.js';
+export { proofReceipts };
 /** Stamp the gate's own immutable receipt with the board's seat and recorded parent [C7,H16]. */
 import {
   atomic,
@@ -24,12 +26,6 @@ export function boundProofReceipt(board, request) {
     throw new Refused('PROOF_RUN_UNBOUND', 'proof provenance comes from the gate receipt it stored; run the check, then read pullboard show <id>');
   }
   return stored;
-}
-
-/** Every stamped receipt for one item, in recorded order. */
-export function proofReceipts(board, itemId) {
-  return board.db.prepare("SELECT event_id, event_detail FROM event WHERE item_id = ? AND event_kind = 'proof-run' ORDER BY event_id").all(itemId)
-    .map(row => ({ eventId: row.event_id, ...JSON.parse(row.event_detail).receipt }));
 }
 
 /** Validate native facts against current board-owned identities without changing the board. */

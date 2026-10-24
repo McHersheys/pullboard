@@ -1,3 +1,4 @@
+import { withBoardRead } from '../cli-board-read.js';
 /** The pullboard show command, in its own module so an item adding another command never edits these lines. */
 import {
   displayAgentName,
@@ -6,7 +7,7 @@ import {
   barCorrectionLine,
   barCorrections,
 } from '../bar-corrections.js';
-import * as store from '../board.js';
+import * as store from '../board-query.js';
 import {
   agentApprovalLine,
   itemAgentApprovals,
@@ -14,7 +15,7 @@ import {
 } from '../spec-approval.js';
 import {
   sayCheckBaseline,
-} from '../check-baseline.js';
+} from '../check-baseline-format.js';
 import * as infraNotes from '../infra-note.js';
 import {
   mainMergeFor,
@@ -31,34 +32,37 @@ import {
   idArg,
   itemLine,
   sayBrief,
-  withBoardRead,
-} from '../cli.js';
-import { relayStatus } from '../relay.js';
+} from '../cli-read-context.js';
+import { relayStateExists } from '../local-state.js';
 
 /** Run `pullboard show` and return its exit code. */
-export function run(io, { first, values }) {
+export async function run(io, { first, values }) {
   const ctx = context(io);
   const id = idArg(first);
-  const { item, verdicts, moves, thread, related, reviewer, agents, mainMerge, infra, approval, proofReceipts } = withBoardRead(ctx, (board) => ({
-    item: verdictProjector(ctx.info.root, board).project(store.getItem(board, id)),
-    verdicts: store.verdictsFor(board, id),
-    moves: store.events(board, { itemId: id }).filter((event) => ['attempt', 'escalate'].includes(event.event_kind)),
-    thread: store.itemThread(board, id),
-    related: store.relatedItems(board, store.getItem(board, id)),
-    reviewer: store.reviewHolder(board, store.getItem(board, id)),
-    agents: store.listAgents(board), mainMerge: mainMergeFor(board, id), infra: infraNotes.infraNoteOf(store.events(board, { itemId: id })),
-    approval: specApprovalState(ctx.info.root, { board, config: ctx.config }),
-    proofReceipts: store.proofReceipts(board, id),
-  }));
-  const agentName = (id) => displayAgentName(agents.find((agent) => agent.agent_id === id) ?? { agent_id: id }, ctx.config.agents.names);
+  const { item, verdicts, moves, thread, related, reviewer, agents, mainMerge, infra, approval, proofReceipts } = await withBoardRead(ctx, (board) => {
+    const item = verdictProjector(ctx.info.root, board).project(store.getItem(board, id));
+    const result = { item, verdicts: store.verdictsFor(board, id), thread: store.itemThread(board, id),
+      proofReceipts: store.proofReceipts(board, id),
+      approval: specApprovalState(ctx.info.root, { board, config: ctx.config }) };
+    // JSON retains every public detail field; text-only labels and related-item searches add nothing to it.
+    if (values.json) return result;
+    const history = store.events(board, { itemId: id });
+    return { ...result, moves: history.filter((event) => ['attempt', 'escalate'].includes(event.event_kind)),
+      related: store.relatedItems(board, item), reviewer: store.reviewHolder(board, item),
+      agents: store.listAgents(board), mainMerge: mainMergeFor(board, id), infra: infraNotes.infraNoteOf(history) };
+  });
+
   const agentApproved = itemAgentApprovals(item, approval);
   const approvalQualification = agentApprovalLine(agentApproved);
   // #922: moves on this item made while the relay was down wait in this machine's relay outbox until it answers.
-  const relayPending = (relayStatus(ctx.info.root).outbox ?? []).filter((move) => move.item === id);
+  // Without a relay link or deleted-copy notice there is no outbox to read, so the relay client never loads.
+  const outbox = relayStateExists(ctx.info.commonDir) ? (await import('../relay.js')).relayStatus(ctx.info.root).outbox : undefined;
+  const relayPending = (outbox ?? []).filter((move) => move.item === id);
   if (values.json) {
     io.result({ ...item, verdicts, thread, proofReceipts, agentApproved, approvalQualification, ...(relayPending.length ? { relayPending } : {}) });
     return 0;
   }
+  const agentName = (id) => displayAgentName(agents.find((agent) => agent.agent_id === id) ?? { agent_id: id }, ctx.config.agents.names);
   io.say(itemLine(item, agentName, Boolean(mainMerge)));
   if (item.item_status === 'verified' && approvalQualification) io.say(approvalQualification);
   if (item.item_verdict_state) io.say(staleVerdictRefusal(item, item.item_verdict_state).message);

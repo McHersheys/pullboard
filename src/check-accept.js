@@ -3,7 +3,7 @@
  * until the person accepts that exact check [V2,V4,B26].
  */
 import { createHash } from 'node:crypto';
-import { provingCheck } from './check-baseline.js';
+import { provingCheck } from './check-baseline-format.js';
 import {
   PERSON,
   atomic,
@@ -14,7 +14,7 @@ import {
 import { COORDINATOR } from './config.js';
 import { requirePersonChannel } from './person.js';
 import { Refused } from './refused.js';
-import { mainPolicy } from './trusted-policy.js';
+import { mainPolicy } from './trusted-policy-read.js';
 
 /** The engine that first replays a person's check acceptance; older engines refuse the move unread [H16]. */
 export const CHECK_ACCEPT_ENGINE = 24;

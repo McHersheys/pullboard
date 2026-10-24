@@ -1,12 +1,19 @@
+import {
+  mainPolicy,
+  policyAt,
+  policyGit,
+  trunkRef,
+} from './trusted-policy-read.js';
+export { mainPolicy, policyAt, trunkRef } from './trusted-policy-read.js';
 /** Coordinator policy and immutable submission checks cannot come from a builder's candidate [V4,V16,L3,M3]. */
 import { randomUUID } from 'node:crypto';
 import { environmentProblem } from './execution-environment.js';
 import { spawnSync } from 'node:child_process';
 import {
   digestOf,
-  sandboxBlockedScanner,
   writeTimingProfile,
-} from './gate.js';
+} from './gate-output.js';
+import { sandboxBlockedScanner } from './sandbox-denial.js';
 import {
   timingFromOutput,
   timingFromLog,
@@ -33,11 +40,8 @@ import {
   GATE_SLOT_HELD_ENV,
   gateSlotEnvironment,
 } from './resources.js';
-import { configFromSource } from './config.js';
 import {
   cleanGitEnvironment,
-  gitConfig,
-  invalidateGitFacts,
   mainCheckout,
   refuseGrafts,
 } from './git.js';
@@ -45,35 +49,6 @@ import { secretsIn } from './hooks.js';
 import { outOfLane } from './lanes.js';
 import { Refused } from './refused.js';
 import { proofCounts } from './proof-provenance.js';
-
-/** Read raw Git output, retaining NUL-delimited names without exposing Git diagnostics. */
-function policyGit(root, args) {
-  const result = spawnSync('git', ['-c', 'core.quotepath=false', ...args], { cwd: root, env: cleanGitEnvironment(), encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
-  if (result.status !== 0) throw new Refused('NO_POLICY', 'the committed coordinator policy or claim base is missing; restore its Git objects or ask the coordinator to refreeze the item');
-  return result.stdout;
-}
-
-/** Resolve the primary checkout's committed HEAD, independently of a linked or detached checkout. */
-export function mainPolicy(root) {
-  const checkout = mainCheckout(root);
-  if (!checkout) throw new Refused('NO_POLICY', 'the coordinator checkout is detached for review; ask it to return to its main branch before claiming or running the project gate');
-  if (!checkout.commit) throw new Refused('NO_POLICY', 'the coordinator checkout has no commit on ' + checkout.branch + '; create its first commit before claiming or running the project gate');
-  return policyAt(root, checkout.commit);
-}
-
-/** Retain the local primary branch outside replicated board data and read-only diagnostics [B34,V6]. */
-export function trunkRef(root, branch) {
-  const read = gitConfig(root, 'pullboard.trunk', { local: true, clean: true, flags: false, noReplace: true });
-  if (read.status !== 0 && read.status !== 1) throw new Refused('NO_POLICY', 'the retained trunk cannot be read; restore the local Git configuration and retry');
-  const current = read.status === 0 ? read.stdout.trim() : null;
-  if (branch === undefined || branch === current) return current;
-  const saved = spawnSync('git', ['--no-replace-objects', 'config', '--local', '--replace-all', 'pullboard.trunk', branch], {
-    cwd: root, env: cleanGitEnvironment(), encoding: 'utf8',
-  });
-  invalidateGitFacts();
-  if (saved.status !== 0) throw new Refused('NO_POLICY', 'the trunk branch cannot be recorded; restore writable local Git configuration and retry');
-  return branch;
-}
 
 /** Resolve the trunk snapshot and refuse a conflict without touching an index or worktree [B34,V6].
  *
@@ -113,13 +88,6 @@ export function trunkMerge(root, commit, retainedRef = trunkRef(root)) {
   const records = result.stdout.split('\0').slice(1);
   const end = records.indexOf('');
   return { ref: branchRef, commit: tip.stdout.trim(), files: records.slice(0, end < 0 ? records.length : end) };
-}
-
-/** Re-read coordinator settings from a pinned Git object; never from the candidate filesystem. */
-export function policyAt(root, commit) {
-  if (!/^[0-9a-f]{40,64}$/.test(commit ?? '')) throw new Refused('NO_POLICY', 'this item has no recorded claim base; ask the coordinator to refreeze it and claim it again');
-  const config = configFromSource(policyGit(root, ['show', commit + ':pullboard.json']));
-  return { version: 1, commit, config };
 }
 
 /** Use new claims' frozen policy; legacy claims retain their committed claim-base settings. */

@@ -10,6 +10,8 @@ Notable changes to Pullboard, for people using it. The format follows [Keep a Ch
 
 ### Fixed
 
+- An old pairing link no longer blocks a browser that is already paired. (#982)
+
 - A browser you removed now says so, instead of a blank page or a sign-in screen. (#981)
 
 ## [0.9.2] - 2026-10-21
