@@ -231,7 +231,7 @@ test('[R1,R2,A1] stats window exposes measured tails in text and JSON without re
   const help = await run(root, ['stats', '--help']);
   assert.match(help.stdout, /--window <duration>/u);
   for (const duration of ['0h', '-1h', '6', 'forever', '999999999999999999999d']) {
-    const bad = await run(root, ['stats', '--window', duration, '--json'], clock);
+    const bad = await run(root, ['stats', `--window=${duration}`, '--json'], clock);
     assert.equal(bad.code, 1);
     assert.equal(bad.data.error.code, 'USAGE');
     assert.match(bad.data.error.next, /--window 6h/u);
