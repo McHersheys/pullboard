@@ -928,10 +928,14 @@ test('a forced hosted cell failure captures its final page state without raising
   const cell = cells().find(entry => entry.id === 'board-view/signed-in/paired/approval/fresh');
   assert.ok(cell, 'the control selects one actual committed matrix cell');
   // Only this control's fresh contexts hide the seeded chain: the real page, relay and local view still run.
-  const forced = { name: engine.name, async newContext() {
+  const forced = { name: engine.name,
+    /** Open a genuine fresh browser context with only this control's display fault. */
+    async newContext() {
     const context = await engine.newContext();
     const open = context.newPage.bind(context);
-    return { ...context, newPage(options) {
+    return { ...context,
+      /** Keep the real browser page and add the owned chain-hiding bootstrap. */
+      newPage(options) {
       const hide = `document.addEventListener('DOMContentLoaded', () => {
         const style = document.createElement('style');
         style.textContent = '#chain { display: none !important; }';
