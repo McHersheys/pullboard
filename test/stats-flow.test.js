@@ -114,6 +114,70 @@ test('a flow window reports stage quartiles and the slowest items with their cau
   assert.deepEqual(store.events(board), history, 'statistics append no synthetic measurement moves');
 });
 
+test('flow windows retain released reviews, lease boundaries and repeated accept evidence [R1,R2]', t => {
+  const commit = 'a'.repeat(40);
+  const { board, stats } = fixture(t, [
+    [0, 'coordinator', 'add', 1, { lane: 'core' }],
+    [10, 'core-1', 'claim', 1, { leaseUntil: at(1000) }],
+    [20, 'core-1', 'submit', 1, { commit }],
+    [30, 'review-1', 'reserve', 1, { until: at(35) }],
+    [40, 'review-2', 'reserve', 1, { until: at(50) }],
+    [50, 'review-2', 'release', 1, { review: true }],
+    [60, 'review-1', 'reserve', 1, { until: at(70) }],
+    [70, 'review-1', 'accept', 1, { commit }],
+    [80, 'review-1', 'accept', 1, { commit }],
+    [90, 'coordinator', 'merged', 1],
+    [0, 'coordinator', 'add', 2, { lane: 'core' }],
+    [10, 'core-2', 'claim', 2, { leaseUntil: at(25) }],
+    [0, 'coordinator', 'add', 3, { lane: 'core' }],
+    [10, 'core-3', 'claim', 3, { leaseUntil: at(1000) }],
+    [20, 'core-3', 'submit', 3, { commit }],
+    [30, 'review-2', 'reserve', 3, { until: at(40) }],
+  ], 100);
+  const history = store.events(board);
+  const prepared = prepareFlowHistory(history, { window: true });
+  const before = JSON.stringify(prepared);
+  const window = projectFlowStats(prepared, null, BASE + 100 * 60_000, stats(), { windowMinutes: 100 }).window;
+  assert.equal(window.landedItems, 1);
+  assert.equal(window.stages.build.medianMinutes, 10);
+  assert.equal(window.stages.reviewWait.medianMinutes, 25, 'wait is 20-30 plus 35-40 plus 50-60');
+  assert.equal(window.stages.review.medianMinutes, 25, 'review ends at recorded expiry or release; a verdict at expiry remains valid');
+  assert.equal(window.stages.mergeWait.medianMinutes, 20, 'repeated acceptance cannot erase the first acceptance');
+  assert.deepEqual(window.stages.review.seats, ['review-1', 'review-2']);
+  assert.equal(window.stages.review.completions, 4, 'includes the still-submitted item reservation expiry');
+  assert.equal(window.stages.build.completions, 3, 'includes a claim expiring without another move');
+  assert.equal(window.stages.reviewWait.arrivals, 5, 'includes observed waiting after expiry');
+  assert.equal(JSON.stringify(prepared), before, 'time-specific expiry observation does not mutate reusable history');
+  assert.deepEqual(store.events(board), history);
+});
+
+test('flow windows leave missing starts and empty distributions unmeasured [R1,R2]', t => {
+  const commit = 'a'.repeat(40);
+  const { board, stats } = fixture(t, [
+    [0, 'coordinator', 'add', 1, { lane: 'core' }],
+    [10, 'core-1', 'submit', 1, { commit }],
+    [20, 'review-1', 'reject', 1, { commit }],
+    [30, 'core-1', 'claim', 1, { leaseUntil: at(1000) }],
+    [40, 'core-1', 'submit', 1, { commit: 'b'.repeat(40) }],
+    [50, 'review-1', 'reserve', 1, { until: at(1000) }],
+    [60, 'review-1', 'accept', 1, { commit: 'b'.repeat(40) }],
+    [70, 'coordinator', 'merged', 1],
+  ], 100);
+  const history = store.events(board);
+  const window = flowStats(history, null, BASE + 100 * 60_000, stats(), { windowMinutes: 100 }).window;
+  assert.equal(window.stages.build.count, 0, 'one measured rework cannot fill a missing original start');
+  assert.equal(window.stages.build.medianMinutes, null);
+  assert.equal(window.stages.reviewWait.count, 0, 'an unreserved original verdict leaves the whole item total incomplete');
+  assert.equal(window.stages.reviewWait.arrivals, 2, 'a missing close cannot erase a known arrival');
+  assert.equal(window.stages.sendBackIdle.medianMinutes, 10);
+  const empty = flowStats(history, null, BASE + 100 * 60_000, stats(), { windowMinutes: 10 }).window;
+  assert.equal(empty.landedItems, 0);
+  assert.equal(empty.stages.build.count, 0);
+  assert.equal(empty.stages.build.worstMinutes, null);
+  assert.deepEqual(empty.stages.build.tail, []);
+  assert.deepEqual(empty.constraint, { stage: null, overTargetMinutes: 0 });
+});
+
 test('flow numbers match a hand computation through rework, released reviews and every live queue [R1,R2]', t => {
   const a = 'a'.repeat(40), b = 'b'.repeat(40), c = 'c'.repeat(40);
   const entries = [

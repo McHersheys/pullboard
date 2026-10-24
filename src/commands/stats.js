@@ -7,7 +7,15 @@ import { caughtLines } from '../caught.js';
 import * as gateReceipt from '../gate-receipt.js';
 import {
   flowLines,
+  flowStats,
 } from '../stats-flow.js';
+import {
+  flowWindowLines,
+  flowWindowMinutes,
+} from '../stats-flow-window.js';
+import {
+  Refused,
+} from '../refused.js';
 import {
   proofStats,
 } from '../stats.js';
@@ -20,9 +28,19 @@ import {
 /** Run `pullboard stats` and return its exit code. */
 export function run(io, { values }) {
   const ctx = context(io);
-  const { stats, agents } = withBoard(ctx, (board) => ({ stats: proofStats(board, { since: values.since }), agents: store.listAgents(board) }));
+  if (values.since !== undefined && values.window !== undefined) {
+    throw new Refused('USAGE', 'choose either --since <date> or --window <duration>, for example pullboard stats --window 6h');
+  }
+  const windowMinutes = values.window === undefined ? undefined : flowWindowMinutes(values.window);
+  const now = ctx.clock.now().getTime();
+  const { stats, agents, window } = withBoard(ctx, (board) => {
+    const stats = proofStats(board, { since: values.since, now });
+    return { stats, agents: store.listAgents(board), ...(windowMinutes === undefined ? {} : {
+      window: flowStats(store.events(board), null, now, stats, { windowMinutes }).window,
+    }) };
+  });
   const waits = gateReceipt.gateWaitStats(ctx.info.root);
-  io.result?.({ stats, gateWaits: waits.stats });
+  io.result?.({ stats, gateWaits: waits.stats, ...(window ? { window } : {}) });
   io.say(`${stats.submissions} submissions · ${stats.rejections} rejections · ${(stats.rejectionShare * 100).toFixed(1)}% sent back`);
   io.say(`${stats.merged} items merged · ${stats.mergedWithoutAccept} merged without an accept`);
   io.say(`${stats.agentCount} agents · ${stats.familyCount} family buckets: ${stats.families.map((family) => `${family.name} (${family.agents} agents, ${family.moves} moves)`).join('; ') || 'none'}`);
@@ -30,7 +48,7 @@ export function run(io, { values }) {
   io.say(`events: ${stats.firstEventAt ?? 'none'} to ${stats.lastEventAt ?? 'none'}${stats.since ? ` (since ${stats.since})` : ''}`);
   for (const line of barStatsLines(stats.bars)) io.say(line);
   for (const line of caughtLines(stats.caught)) io.say(line);
-  for (const line of flowLines(stats.flow)) io.say(line);
+  for (const line of window ? flowWindowLines(window) : flowLines(stats.flow)) io.say(line);
   for (const line of waits.lines) io.say(line);
   return 0;
 }

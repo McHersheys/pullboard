@@ -13,10 +13,10 @@ import { serveApi } from '../src/api.js';
 import { fetchFresh } from './http-fixture.js';
 
 /** Capture the real CLI without spawning a second model or changing the machine's registry. */
-async function run(root, args) {
+async function run(root, args, clock) {
   let stdout = '';
   let stderr = '';
-  const code = await main(args, { cwd: root,
+  const code = await main(args, { cwd: root, ...(clock ? { clock } : {}),
     stdout: { isTTY: false, write: (text) => { stdout += text; } },
     stderr: { write: (text) => { stderr += text; } } });
   return { code, stdout, stderr, data: args.includes('--json') ? JSON.parse(stdout) : null };
@@ -207,4 +207,37 @@ test('[N26,D1] the caught list never interrupts', async (t) => {
   await run(root, ['digest']);
   assert.deepEqual(store.events(board), before, 'asking for the list records nothing');
   assert.equal(board.db.prepare('SELECT count(*) AS n FROM shout').get().n, shouts, 'a catch pushes no shout, banner or notification');
+});
+
+
+test('[R1,R2,A1] stats window exposes measured tails in text and JSON without recording moves', async t => {
+  const { root, board } = fixture(t);
+  const clock = { now: () => new Date('2026-10-08T13:00:00Z') };
+  const before = store.events(board);
+  const json = await run(root, ['stats', '--window', '6h', '--json'], clock);
+  assert.equal(json.code, 0, json.stderr);
+  assert.equal(json.data.version, 1);
+  assert.equal(json.data.window.durationMinutes, 360);
+  assert.equal(json.data.window.landedItems, 1);
+  assert.equal(json.data.window.stages.build.count, 1);
+  assert.equal(json.data.window.stages.build.medianMinutes, 0, 'recorded instantaneous work is a measured zero');
+  assert.equal(json.data.window.stages.review.medianMinutes, null, 'the fixture has no reservation evidence');
+  assert.deepEqual(json.data.stats, proofStats(board, { now: clock.now().getTime() }));
+  const text = await run(root, ['stats', '--window', '6h'], clock);
+  assert.equal(text.code, 0, text.stderr);
+  assert.match(text.stdout, /flow window:.*1 landed/u);
+  assert.match(text.stdout, /in review: 0 measured.*median unmeasured/u);
+  assert.match(text.stdout, /#1: 0 min/u);
+  const help = await run(root, ['stats', '--help']);
+  assert.match(help.stdout, /--window <duration>/u);
+  for (const duration of ['0h', '-1h', '6', 'forever', '999999999999999999999d']) {
+    const bad = await run(root, ['stats', '--window', duration, '--json'], clock);
+    assert.equal(bad.code, 1);
+    assert.equal(bad.data.error.code, 'USAGE');
+    assert.match(bad.data.error.next, /--window 6h/u);
+  }
+  const ambiguous = await run(root, ['stats', '--window', '6h', '--since', '2026-10-08', '--json'], clock);
+  assert.equal(ambiguous.code, 1);
+  assert.equal(ambiguous.data.error.code, 'USAGE');
+  assert.deepEqual(store.events(board), before);
 });
