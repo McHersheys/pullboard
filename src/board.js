@@ -187,7 +187,10 @@ import {
 import { LOCAL_LANDING_ENGINE } from './land-engine.js';
 import { SPEC_APPROVAL_ENGINE } from './spec-approval-engine.js';
 import { SPEC_REVISION_ENGINE } from './spec-revision-engine.js';
-import { validRevisionApproval } from './spec-revisions.js';
+import {
+  markAppliedRevisions,
+  validRevisionApproval,
+} from './spec-revisions.js';
 export { decideSpecRevisions } from './spec-revisions.js';
 import * as landingEnvironment from './landing-environment-guards.js';
 import { Refused } from './refused.js';
@@ -2241,6 +2244,7 @@ export function applyRowDecisions(board, { agentId, events }) {
     if (!applied.length) return [];
     const at = now(board);
     writeRowDecisions(board, records.map((record) => events.includes(record.event) ? { ...record, applied: true, appliedAt: at } : record));
+    markAppliedRevisions(board, applied, at);
     logEvent(board, agentId, 'row_apply', null, { events: applied.map((record) => record.event) });
     return applied.map((record) => ({ ...record, applied: true, appliedAt: at }));
   });

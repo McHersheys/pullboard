@@ -79,6 +79,7 @@ test('a proposed change to an approved row waits in Needs you and applies only w
   succeeds(box.run(box.repo, 'spec', 'approve', retired.id));
   succeeds(box.run(box.repo, 'spec', 'apply'));
   assert.equal(row(box, 'G1').status, 'retired', 'the person can approve an explicit status revision');
+  assert.ok(!personNeedsState(box.repo).needs.some(entry => [proposal.id, retired.id].includes(entry.id)), 'older applied revisions stay closed after the target gets a newer decision');
   assert.notEqual(box.run(box.web, 'spec', 'draft', 'Change a retired row.', '--revises', 'G1', '--reason', 'Not approved.').code, 0);
 
 });
@@ -93,7 +94,12 @@ test('[P6,B23,N39] revisions require a reason and stale proposals cannot change 
   succeeds(box.run(box.repo, 'spec', 'decline', statusOnly.id, '--reason', 'Keep it.'));
   const first = JSON.parse(succeeds(box.run(box.web, 'spec', 'draft', 'An obsolete proposal.', '--revises', 'G1', '--reason', 'First idea.', '--json')).out);
   const second = JSON.parse(succeeds(box.run(box.web, 'spec', 'draft', 'The replacement the person chooses.', '--revises', 'G1', '--reason', 'Better idea.', '--json')).out);
+  assert.notEqual(box.run(box.repo, 'spec', 'approve', first.id, second.id).code, 0, 'one batch cannot overwrite two proposals for the same target');
+  for (const id of [first.id, second.id]) {
+    assert.equal(personNeedsState(box.repo).needs.find(entry => entry.id === id).what, 'approve or decline revision', 'a refused batch records no partial approval');
+  }
   succeeds(box.run(box.repo, 'spec', 'approve', second.id));
+  assert.notEqual(box.run(box.repo, 'spec', 'approve', first.id).code, 0, 'a later command cannot orphan an unapplied approval');
   succeeds(box.run(box.repo, 'spec', 'apply'));
   const approved = readFileSync(join(box.repo, 'SPEC.md'), 'utf8');
   assert.notEqual(box.run(box.repo, 'spec', 'approve', first.id).code, 0, 'a stale source cannot be approved over a different current row');

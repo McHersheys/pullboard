@@ -7,7 +7,10 @@ import {
   PERSON,
   recordRowDecisions,
 } from './board.js';
-import { rowDrafts } from './board-query.js';
+import {
+  rowDecisions,
+  rowDrafts,
+} from './board-query.js';
 import { Refused } from './refused.js';
 import {
   defaultPrincipal,
@@ -71,10 +74,12 @@ export function validSpecRevision(row) {
 /** Accept only the exact approved effect of a still-pending board proposal. */
 export function validRevisionApproval(board, record) {
   const draft = rowDrafts(board).find(entry => entry.id === record.revision?.proposal);
-  return Boolean(draft && !draft.decision && validSpecRevision(draft) && record.decision === 'approve'
+  return Boolean(draft && !draft.decision && !draft.applied && validSpecRevision(draft) && record.decision === 'approve'
     && record.kind === 'spec' && record.id === draft.revises && record.file === draft.file
     && record.source === draft.source && record.replacement === draft.replacement && record.text === draft.text
-    && JSON.stringify(record.revision) === JSON.stringify(revisionReference(draft)));
+    && JSON.stringify(record.revision) === JSON.stringify(revisionReference(draft))
+    && !rowDecisions(board).some(current => current.kind === 'spec' && current.file === draft.file
+      && current.id === draft.revises && !current.applied));
 }
 
 /** Build exact person decisions, retaining normal optional SSH signatures and current-source checks. */
@@ -82,7 +87,7 @@ export function prepareSpecRevisionDecisions(root, config, drafts, { ids, decisi
   const signed = decision === 'approve' && hasSignerFile(root);
   return ids.map(id => {
     const draft = drafts.find(entry => entry.id === id && entry.revises);
-    if (!draft || draft.decision) throw new Refused('SPEC_REVISION', `${id} is not an undecided revision proposal; read Needs you`);
+    if (!draft || draft.decision || draft.applied) throw new Refused('SPEC_REVISION', `${id} is not an undecided revision proposal; read Needs you`);
     if (decision === 'approve') {
       const current = approvedSource(root, config, draft.revises);
       if (draft.file !== config.spec || current.source !== draft.source) throw new Refused('STALE_ROW_DECISION', `${draft.revises} changed after ${id} was proposed; draft a fresh revision`);
@@ -103,9 +108,11 @@ export function decideSpecRevisions(board, { agentId, channel, decisions }) {
   return atomic(board, () => {
     let drafts = rowDrafts(board);
     const seen = new Set();
-    const results = decisions.map(record => {
+    const targets = new Set();
+    const pending = rowDecisions(board).filter(record => !record.applied);
+    const planned = decisions.map(record => {
       const draft = drafts.find(entry => entry.id === record?.revision?.proposal);
-      if (!draft || !validSpecRevision(draft) || draft.decision || seen.has(draft.id)
+      if (!draft || !validSpecRevision(draft) || draft.decision || draft.applied || seen.has(draft.id)
         || record.kind !== 'spec' || record.version !== 1 || record.type !== 'row-decision'
         || JSON.stringify(record.revision) !== JSON.stringify(revisionReference(draft))
         || record.id !== draft.revises || record.file !== draft.file || record.source !== draft.source
@@ -113,6 +120,16 @@ export function decideSpecRevisions(board, { agentId, channel, decisions }) {
         || !['approve', 'decline'].includes(record.decision)
         || (record.decision === 'decline' && !String(record.reason ?? '').trim())) throw new Refused('SPEC_REVISION', 'the decision must match one undecided revision exactly; refresh Needs you');
       seen.add(draft.id);
+      const target = JSON.stringify([draft.file, draft.revises]);
+      if (record.decision === 'approve') {
+        if (targets.has(target) || pending.some(current => current.kind === 'spec' && current.file === draft.file && current.id === draft.revises)) {
+          throw new Refused('SPEC_REVISION', `${draft.revises} already has a pending approval or is named by two proposals; apply the first decision before approving another`);
+        }
+        targets.add(target);
+      }
+      return { record, draft };
+    });
+    const results = planned.map(({ record, draft }) => {
       const approved = record.decision === 'approve' ? recordRowDecisions(board, { agentId, channel, decisions: [record] })[0] : null;
       logEvent(board, PERSON, 'spec_revision_decision', null, { proposal: draft.id, record, channel });
       drafts = drafts.map(entry => entry.id === draft.id ? { ...entry, decision: record.decision,
@@ -124,11 +141,22 @@ export function decideSpecRevisions(board, { agentId, channel, decisions }) {
   });
 }
 
+/** Keep completed proposal history closed even after a newer target decision replaces its index entry. */
+export function markAppliedRevisions(board, records, at) {
+  const ids = new Set(records.map(record => record.revision?.proposal).filter(Boolean));
+  if (!ids.size) return;
+  const drafts = rowDrafts(board).map(draft => ids.has(draft.id) ? { ...draft, applied: true, appliedAt: at } : draft);
+  board.db.prepare('UPDATE board_meta SET meta_value=? WHERE meta_key=?').run(JSON.stringify(drafts), 'row_drafts');
+}
+
 /** Expose both sides of each outstanding revision through the shared person projection. */
 export function projectSpecRevisions(state, drafts, decisions) {
-  const revisions = drafts.filter(draft => draft.revises && draft.decision !== 'decline'
-    && !(draft.decision === 'approve' && decisions.some(record => record.event === draft.decisionEvent && record.applied)))
-    .map(draft => ({ ...draft, old: parseSpec(`## Revision\n${draft.source}\n`).rows[0],
+  const approvals = new Map(decisions.filter(record => record.decision === 'approve' && record.revision)
+    .map(record => [record.revision.proposal, record]));
+  const revisions = drafts.filter(draft => draft.revises && !draft.applied && draft.decision !== 'decline'
+    && !approvals.get(draft.id)?.applied)
+    .map(draft => ({ ...draft, ...(approvals.has(draft.id) ? { decision: 'approve', decisionEvent: approvals.get(draft.id).event } : {}),
+      old: parseSpec(`## Revision\n${draft.source}\n`).rows[0],
       proposed: parseSpec(`## Revision\n${draft.replacement}\n`).rows[0] }));
   return { ...state, specRevisions: revisions };
 }
