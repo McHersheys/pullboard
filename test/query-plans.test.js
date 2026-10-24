@@ -181,7 +181,7 @@ test('coordinator resume never reads the whole event history for rigor [C7,D1,N1
     assert.ok(gitMs <= wallMs, 'only actual nonoverlapping synchronous Git durations are excluded');
     const excludingGit = wallMs - gitMs;
     console.log(`# coordinator resume wall ${wallMs.toFixed(2)} ms; actual Git ${gitMs.toFixed(2)} ms; excluding Git ${excludingGit.toFixed(2)} ms`);
-    assert.ok(excludingGit < 1000, `coordinator resume excluding actual Git took ${excludingGit.toFixed(2)} ms, over 1000 ms`);
+    assert.ok(excludingGit < 1000, `coordinator resume excluding actual Git took ${excludingGit.toFixed(2)} ms, over 1000 ms`); // budget: declared #1052 steady-state bound is 1 s excluding actual Git.
   } finally { store.closeBoard(board); }
 });
 
