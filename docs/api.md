@@ -657,6 +657,7 @@ The incoming agent joins a new worktree and runs `pullboard handoff --take <id>`
 `activity: { entries, digests, cursor }`. Entries carry their original event id, timestamp, kind
 and item reference where relevant. They select the caller's active builds/reviews and their
 upstream/downstream dependencies, files from its plan or actual Git diff, cited row decisions,
+drafts/applications and committed row-content changes,
 and addressed messages. Other lane activity is summarized. Explicit coordinator/person
 `shout all <text> --news` announcements appear in a one-line digest at session start;
 untyped broadcasts are direct. A missing Git object reports unknown overlap, never zero.

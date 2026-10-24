@@ -2,6 +2,7 @@ import { itemById } from './board-item-read.js';
 import {
   activityEventDetail,
   activityInterests,
+  isActivityNews,
   itemActivity,
   projectAgentActivity,
 } from './activity-feed.js';
@@ -459,7 +460,9 @@ export function agentActivity(board, agentId, { after = 0, newsAfter = 0, workin
     throw new Refused('BAD_ACTIVITY_CURSOR', 'activity cursors are nonnegative event ids; remove the damaged local inbox cursor and read inbox again');
   }
   // Freeze a high-water mark before any Git seam or other query; later events must remain pending.
-  const cursor = board.db.prepare('SELECT COALESCE(MAX(event_id),0) AS id FROM event').get().id;
+  const { cursor, shoutCursor } = board.db.prepare(`SELECT
+    (SELECT COALESCE(MAX(event_id),0) FROM event) AS cursor,
+    (SELECT COALESCE(MAX(shout_id),0) FROM shout) AS shoutCursor`).get();
   const items = listItems(board, { all: true });
   const builds = items.filter(item => item.item_status === 'claimed' && item.item_owner === agentId);
   const observed = typeof workingFiles === 'function' ? workingFiles(builds) : workingFiles;
@@ -476,21 +479,22 @@ export function agentActivity(board, agentId, { after = 0, newsAfter = 0, workin
   for (const event of board.db.prepare(`SELECT * FROM event WHERE event_id>? AND event_id<=?
     AND event_kind IN ('main-moved','row_decision','row_apply','row_draft','shout','pass','answer') ORDER BY event_id`).all(after, cursor)) rows.set(event.event_id, event);
   if (sessionStart) for (const event of board.db.prepare(`SELECT * FROM event WHERE event_id>? AND event_id<=? AND event_kind='shout'
-    AND json_valid(event_detail) AND json_extract(event_detail,'$.news')=1
-    AND json_extract(event_detail,'$.newsFormat')=1 ORDER BY event_id`).all(newsAfter, cursor)) rows.set(event.event_id, event);
-  const shoutCursor = Math.max(0, ...['shout', 'answer', 'pass'].map(kind => board.db.prepare(
-    `SELECT json_extract(event_detail,'$.shout') AS id FROM event WHERE event_kind=? AND event_id<=? ORDER BY event_id DESC LIMIT 1`)
-    .get(kind, cursor)?.id ?? 0));
+    AND json_extract(CASE WHEN json_valid(event_detail) THEN event_detail ELSE '{}' END,'$.news')=1
+    AND json_extract(CASE WHEN json_valid(event_detail) THEN event_detail ELSE '{}' END,'$.newsFormat')=1
+    ORDER BY event_id`).all(newsAfter, cursor)) rows.set(event.event_id, event);
   const messages = board.db.prepare(`SELECT * ${UNREAD_SQL} AND shout_id<=? ORDER BY shout_id`)
     .all(...unreadShoutBindings(agent.agent_last_shout_id, agentId, agent.agent_lane), shoutCursor);
   // News delivery uses its own cursor so ordinary inbox reads cannot consume a future session's digest.
-  const newsIds = [...rows.values()].filter(event => event.event_kind === 'shout'
+  const possibleNewsIds = [...rows.values()].filter(event => event.event_kind === 'shout'
     && activityEventDetail(event)?.news === true && activityEventDetail(event)?.newsFormat === 1)
-    .map(event => activityEventDetail(event).shout);
-  for (let offset = 0; offset < newsIds.length; offset += 500) {
-    const ids = newsIds.slice(offset, offset + 500);
+    .map(event => activityEventDetail(event).shout).filter(id => Number.isSafeInteger(id) && id > 0);
+  for (let offset = 0; offset < possibleNewsIds.length; offset += 500) {
+    const ids = possibleNewsIds.slice(offset, offset + 500);
     messages.push(...board.db.prepare(`SELECT * FROM shout WHERE shout_id IN (${ids.map(() => '?').join(',')}) AND shout_to='all'`).all(...ids));
   }
+  const byShout = new Map(messages.map(message => [message.shout_id, message]));
+  const newsIds = [...rows.values()].filter(event => isActivityNews(event, byShout.get(activityEventDetail(event)?.shout)))
+    .map(event => activityEventDetail(event).shout);
   for (const event of rows.values()) if (event.event_kind === 'main-moved') event.activityBase = activityBatchBase(board, event);
   for (const event of rows.values()) if (event.event_kind === 'row_apply') {
     const ids = activityEventDetail(event)?.events;

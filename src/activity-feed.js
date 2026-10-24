@@ -69,6 +69,15 @@ function activityEntry(event, text, extra = {}) {
     ...(event.item_id === null ? {} : { item: event.item_id }), text, ...extra };
 }
 
+/** Treat only a versioned authorized announcement as news; old arbitrary metadata stays direct. */
+export function isActivityNews(event, message) {
+  const detail = activityEventDetail(event);
+  return event.event_kind === 'shout' && detail?.news === true && detail.newsFormat === 1
+    && event.item_id === null && ['coordinator', 'person'].includes(message?.shout_from)
+    && event.event_by === message.shout_from && message.shout_to === 'all'
+    && !message.shout_decision && !message.shout_request && message.shout_answers === null;
+}
+
 /** Select one read-only activity stream and compact digests without changing native history or audiences. */
 export function projectAgentActivity({ agent, interests, events, shouts, changesForMain,
   sessionStart = false, after = 0, newsAfter = 0, cursor }) {
@@ -83,7 +92,7 @@ export function projectAgentActivity({ agent, interests, events, shouts, changes
       } else if (interests.byId.get(event.item_id)?.item_lane === interests.lane) { laneCount++; laneItems.add(event.item_id); }
       continue;
     }
-    if (event.event_kind === 'shout' && detail.news === true && detail.newsFormat === 1) {
+    if (isActivityNews(event, messages.get(detail.shout))) {
       if (sessionStart && event.event_id > newsAfter && messages.has(detail.shout)) announcements.push(messages.get(detail.shout));
       continue;
     }

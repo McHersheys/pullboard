@@ -217,6 +217,12 @@ test('activity cursors leave events arriving during an observation pending [N26]
   assert.equal(unknown.entries.some(entry => entry.text === 'Governing messages survive unknown old detail'), true);
   assert.deepEqual(exportBoard(board), intact, 'unknown legacy detail is reported without rewriting it');
   assert.throws(() => store.inbox(board, 'web-1', { through: -1 }), error => error.code === 'BAD_ACTIVITY_CURSOR');
+  const oldMessage = store.shout(board, { from: 'coordinator', to: 'all', text: 'A legacy message still has its body', lanes: ['web'] });
+  const oldEvent = board.db.prepare("SELECT event_id FROM event WHERE event_kind='shout' ORDER BY event_id DESC LIMIT 1").get();
+  board.db.prepare('UPDATE event SET event_detail=? WHERE event_id=?').run('{broken legacy message event', oldEvent.event_id);
+  const legacy = store.agentActivity(board, 'web-1', { after: unknown.cursor });
+  assert.ok(store.inbox(board, 'web-1', { through: legacy.shoutCursor }).some(shout => shout.shout_id === oldMessage),
+    'a corrupt old event cannot block delivery from the canonical message table');
 });
 
 test('inbox delivery uses real Git paths and board-bound cursors without consuming later news [R2,N26,H16]', () => {
@@ -296,7 +302,14 @@ test('old ordinary shout replay does not become newly typed news [H16,N26]', (t)
   const move = prepareEngineMove(board, 'shout', [{ from: 'coordinator', to: 'all', lanes: ['web'],
     text: 'Historical metadata is not a new delivery instruction.', detail: { news: true } }]);
   applyEngineMove(board, { ...move, engine: 1 }, { sequence: 1, at: new Date().toISOString() });
+  const agentMove = prepareEngineMove(board, 'shout', [{ from: 'web-1', to: 'all', lanes: ['web'],
+    text: 'Legacy agent metadata cannot hide a direct message.', detail: { news: true, newsFormat: 1 } }]);
+  applyEngineMove(board, { ...agentMove, engine: 1 }, { sequence: 2, at: new Date().toISOString() });
   const feed = store.agentActivity(board, 'web-1', { sessionStart: true });
   assert.ok(feed.entries.some(entry => entry.text === 'Historical metadata is not a new delivery instruction.'));
   assert.deepEqual(feed.digests, [], 'only the new versioned explicit representation is digested');
+  // The sender does not read its own broadcast; the coordinator must still receive it directly.
+  const coordinator = store.agentActivity(board, 'coordinator', { sessionStart: true });
+  assert.ok(coordinator.entries.some(entry => entry.text === 'Legacy agent metadata cannot hide a direct message.'));
+  assert.deepEqual(coordinator.digests, []);
 });
