@@ -29,6 +29,7 @@ import { projectState, serveView } from '../src/serve.js';
 import { registerProject } from '../src/projects.js';
 import { SSH_SHELL_MARKERS } from '../src/person.js';
 import { fetchFresh } from './http-fixture.js';
+import { fixtureJSON as intakeFixtureJSON, intakeFixture } from './intake-fixture.js';
 
 const BIN = resolve(import.meta.dirname, '../bin/pullboard.js');
 const TEMP_DIRS = [];
@@ -221,6 +222,16 @@ async function json(box, cwd, command, args = [], subcommand) {
   } else assert.equal(result.stderr, '', `${command} --json must keep stderr empty`);
   assert.equal(document.version, 1, `${command} --json has a version 1 envelope`);
   assertRequiredShape(document, shapeFor(command, subcommand).required, command);
+  return document;
+}
+
+/** Run a real CLI root whose result shape predates the versioned shape catalog. */
+async function uncataloguedRootJSON(box, cwd, command, args = []) {
+  const result = await box.run(cwd, command, ...args, '--json');
+  assert.equal(result.status, 0, `${command} ${args.join(' ')}: ${result.stderr}${result.stdout}`);
+  assert.equal(result.stderr, '', `${command} --json must keep stderr empty`);
+  const document = parseOneDocument(result.stdout);
+  coveredRoots.add(command);
   return document;
 }
 
@@ -685,6 +696,9 @@ catalogCase('[A1] catalog commands keep their real repository exercises', async 
   assert.deepEqual(await json(source, source.repo, 'relay', ['status']), await json(source, source.repo, 'relay'), 'relay status reports what plain relay reports');
   await json(source, source.repo, 'relay', ['off']);
   const catalog = (await json(source, source.repo, 'add', ['app', 'Catalog item', '--criterion', 'catalog coverage'], 'add')).item;
+  const bar = await uncataloguedRootJSON(source, source.repo, 'bar', [String(catalog.item_id)]);
+  assert.equal(bar.id, catalog.item_id);
+  assert.ok(Array.isArray(bar.missing), 'bar reports current readiness omissions for this item');
   const landing = await json(source, source.repo, 'land', ['--dry-run']);
   assert.equal(landing.batch, null);
   assert.deepEqual(landing.landed, []);
@@ -772,6 +786,25 @@ catalogCase('[A1] catalog commands keep their real repository exercises', async 
   assert.deepEqual(runner.runner, { host: 'fixture-runner', slots: 2, browser: 1 });
   const projectGate = JSON.parse(readFileSync(join(source.repo, 'pullboard.json'), 'utf8')).gate;
   assert.equal((await json(source, source.repo, 'gate', ['set', projectGate], 'set')).gate, projectGate);
+
+  const handoffPath = join(source.dir, 'catalog-handoff');
+  await source.git(source.repo, 'worktree', 'add', '--detach', '--quiet', handoffPath, 'HEAD');
+  const joined = await json(source, handoffPath, 'join', ['app', '--model', 'gpt-6-luna', '--route', 'light']);
+  assert.equal(joined.lane, 'app');
+  const handoff = await uncataloguedRootJSON(source, handoffPath, 'handoff');
+  assert.ok(Number.isSafeInteger(handoff.handoff.item), 'handoff opens a replacement item from the joined worktree');
+  assert.equal(handoff.resume.agent, joined.agent);
+});
+
+catalogCase('[A1] intake records a real outside pull request through the CLI', async (t) => {
+  const box = intakeFixture(t);
+  const document = intakeFixtureJSON(box, box.repo, 'intake', box.pull.html_url,
+    '--criterion', 'the outside fixture is recorded without running its code',
+    '--check', 'node --test test/contribution.test.js');
+  coveredRoots.add('intake');
+  assert.ok(Number.isSafeInteger(document.item.item_id));
+  assert.equal(document.item.item_status, 'submitted');
+  assert.equal(document.item.item_commit, box.commit);
 });
 
 test('[A1] every catalog command and subcommand has a real CLI exercise', { concurrency: true }, async (t) => {

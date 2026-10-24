@@ -1,3 +1,5 @@
+import { appendRigorCounter } from './rigor-counters.js';
+import { ensureRigorCounters } from './rigor-counters.js';
 import { NATIVE_FLAKE_ENGINE } from './flake-engine.js';
 /** Rebuildable, local proof projections maintained with the event that produced them [R1,R2]. */
 import { moveFlowItem } from './stats-flow.js';
@@ -106,6 +108,7 @@ function keepCatch(event, detail) {
 
 /** Fold exactly this event into affected item/actor shards and the small aggregate. */
 export function appendProofCounter(board, event) {
+  appendRigorCounter(board, event);
   const summary = proofCounter(board, 'summary') ?? emptySummary();
   board.onProofStatsEvent?.(event);
   let detail;
@@ -157,12 +160,14 @@ function replayProofTail(board, cursor) {
 /** Rebuild from authoritative history inside the caller's existing write transaction. */
 export function rebuildProofCounters(board) {
   clearProofCounters(board);
+  ensureRigorCounters(board);
   put(board, 'summary', emptySummary());
   replayProofTail(board, 0);
 }
 
 /** Catch up an older writer once; ordinary current-writer appends then decode only their new event. */
 export function ensureProofCounters(board) {
+  ensureRigorCounters(board);
   const summary = proofCounter(board, 'summary');
   if (!summary) { rebuildProofCounters(board); return; }
   replayProofTail(board, summary.last);
