@@ -20,3 +20,20 @@ export function landingChangedFiles(root, base, commit) {
   }
   return fields.filter((_, index) => index % 2 === 1);
 }
+
+/** Retain deferred queue places only for the identical accepted source and frozen bar. */
+export function deferredLandingPriorities(batches, items) {
+  const pending = new Map(items.map(item => [item.item_id, item]));
+  const priorities = new Map();
+  for (const batch of batches) {
+    if (batch.state !== 'landed') continue;
+    for (const entry of batch.blocked ?? []) {
+      const item = pending.get(entry.id);
+      if (entry.code !== 'LAND_FILE_OVERLAP' || !item || item.item_status !== 'verified' || item.item_merged_commit
+        || typeof entry.commit !== 'string' || entry.commit !== item.item_commit
+        || typeof entry.frozenDigest !== 'string' || entry.frozenDigest !== item.item_frozen_digest) continue;
+      if (!priorities.has(entry.id)) priorities.set(entry.id, priorities.size);
+    }
+  }
+  return priorities;
+}

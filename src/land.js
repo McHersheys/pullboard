@@ -1,5 +1,8 @@
 import { requireOutsideOwner } from './outside-source.js';
-import { landingChangedFiles } from './land-collisions.js';
+import {
+  landingChangedFiles,
+  deferredLandingPriorities,
+} from './land-collisions.js';
 /** Coordinator landing batches retain exact Git and gate receipts across interruptions [B3,R3]. */
 import { assignEngineNumbers } from './engine-numbers.js';
 import {
@@ -182,12 +185,23 @@ function candidates(board, root, base, maximum, { firstReady = false } = {}) {
   const pending = all.filter((item) => item.item_status === 'verified' && !item.item_merged_commit);
   const order = new Map();
   for (const event of store.events(board)) if (event.event_kind === 'accept') order.set(event.item_id, event.event_id);
-  pending.sort((left, right) => (order.get(left.item_id) ?? Infinity) - (order.get(right.item_id) ?? Infinity) || left.item_id - right.item_id);
+  const collisionFree = store.lineSettings(board).collisionFreeBatch === true;
+  const batches = store.landingBatches(board);
+  const priorities = collisionFree ? deferredLandingPriorities(batches, pending) : new Map();
+  pending.sort((left, right) => {
+    const leftPriority = priorities.get(left.item_id);
+    const rightPriority = priorities.get(right.item_id);
+    if (leftPriority !== undefined || rightPriority !== undefined) {
+      if (leftPriority === undefined) return 1;
+      if (rightPriority === undefined) return -1;
+      if (leftPriority !== rightPriority) return leftPriority - rightPriority;
+    }
+    return (order.get(left.item_id) ?? Infinity) - (order.get(right.item_id) ?? Infinity) || left.item_id - right.item_id;
+  });
   const ready = [];
   const blocked = [];
-  const collisionFree = store.lineSettings(board).collisionFreeBatch === true;
   const touched = new Map();
-  const knownReds = store.landingBatches(board).flatMap((batch) => batch.culprits ?? []);
+  const knownReds = batches.flatMap((batch) => batch.culprits ?? []);
   for (const original of pending) {
     const item = { ...original, item_landing_commit: store.checkedLandingCommit(board, original) };
     const stale = projector.state(item);
@@ -212,6 +226,7 @@ function candidates(board, root, base, maximum, { firstReady = false } = {}) {
       const shared = files.filter(file => touched.has(file));
       if (shared.length) {
         blocked.push({ id: item.item_id, code: 'LAND_FILE_OVERLAP', files: shared,
+          commit: item.item_commit, frozenDigest: item.item_frozen_digest,
           with: [...new Set(shared.map(file => touched.get(file)))] });
         continue; // Verdict order is unchanged; this item leads the next eligible batch.
       }
