@@ -339,6 +339,17 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
     return entry.history;
   }
 
+  /** Read an optional authenticated size diagnosis without holding up a missing board's waiting screen. */
+  function sizeNotice(entry) {
+    const waiting = waitingBoards;
+    void readUploadSize(path => documentAt(path, undefined, { signal: access.signal }), entry).then(size => {
+      if (accessLost || waitingBoards !== waiting || !waiting.has(entry.id)) return;
+      if (size) sizeProblems.set(entry.id, size);
+      else sizeProblems.delete(entry.id);
+      notice();
+    }).catch(() => { /* An unavailable or invalid optional notice is not evidence of a size or authorization problem. */ });
+  }
+
   /** Authenticate the latest native snapshot before installing its presentation in this device. */
   async function snapshot(entry) {
     let path = '/api/v' + (entry.snapshotApiVersion === 2 ? '2' : '1') + '/boards/' + entry.id + '/state';
@@ -356,7 +367,10 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
     if (response.status === 304 && entry.state) return;
     if (!response.ok) {
       await checkAuthorization(path, response.status, denied, document.error);
-      if (document.error?.code === 'NO_BOARD' || document.error?.code === 'NO_SNAPSHOT') waitForFirstSnapshot(entry);
+      if (document.error?.code === 'NO_BOARD' || document.error?.code === 'NO_SNAPSHOT') {
+        waitForFirstSnapshot(entry);
+        sizeNotice(entry);
+      }
       throw new Error(document.error ? '[' + document.error.code + '] ' + document.error.message : 'The relay snapshot is unavailable. Retry.');
     }
     if (document.version !== 1) throw new Error('This relay API version is unsupported. Upgrade this browser client.');
@@ -577,8 +591,6 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
       if (!encoded) continue;
       try {
         const entry = { id: board.id, repository: board.repository, key: decodeBoardKey(encoded), cursor: -1, checkpointCursor: -1, state: null, shouts: null, outbox: null };
-        const size = await readUploadSize(path => documentAt(path, denied), entry);
-        if (size) sizeProblems.set(board.id, size);
         await snapshot(entry);
         sizeProblems.delete(board.id);
         await catchUp(entry);
