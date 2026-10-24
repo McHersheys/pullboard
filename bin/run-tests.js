@@ -16,6 +16,10 @@ import { after, afterEach, beforeEach } from 'node:test';
 import { Worker } from 'node:worker_threads';
 import { randomUUID } from 'node:crypto';
 import { channel } from 'node:diagnostics_channel';
+import {
+  selectedTestResult,
+  testSelectionPatterns,
+} from '../src/test-selection.js';
 import { AGENT_SHELL_MARKERS, SSH_SHELL_MARKERS } from '../src/person.js';
 import { isLandingWorkerIdentityTimeout, landingWorkerIdentityQuery, parseLandingWorkerIdentity } from '../src/landing-worker-identity.js';
 import { foreignNodeOptions, isolateTestMachine } from '../src/test-isolation.js';
@@ -308,6 +312,15 @@ function runTests(args, env, concurrency) {
     } else selectors.push(argument);
   }
   const reporter = args.some((argument) => argument === '--test-reporter' || argument.startsWith('--test-reporter='));
+  const selectionReporter = [];
+  if (env.PULLBOARD_TEST_SELECTION) {
+    const reporters = placed.filter(argument => /^--test-reporter(?:=|$)/u.test(argument)).length;
+    const destinations = placed.filter(argument => /^--test-reporter-destination(?:=|$)/u.test(argument)).length;
+    if (destinations && destinations !== (reporters || 1)) throw new Error('each --test-reporter requires a matching --test-reporter-destination');
+    if (reporter && !destinations) for (let index = 0; index < reporters; index++) selectionReporter.push('--test-reporter-destination=stdout');
+    if (!reporter && !env.PULLBOARD_TEST_ACTIONS && !destinations) selectionReporter.push('--test-reporter-destination=stdout');
+    selectionReporter.push(`--test-reporter=${fileURLToPath(new URL('../src/test-selection.js', import.meta.url))}`, `--test-reporter-destination=${devNull}`);
+  }
   const nodeArgs = [
     '--disable-warning=ExperimentalWarning',
     '--test',
@@ -316,6 +329,7 @@ function runTests(args, env, concurrency) {
     '--import',
     runner,
     ...placed,
+    ...selectionReporter,
     ...selectors,
   ];
   return spawnSync(process.execPath, nodeArgs, { env, stdio: 'inherit' });
@@ -899,6 +913,7 @@ async function runLandingTests(args, env, concurrency) {
   delete options.selectedFiles;
   const reporterEntries = options.reporters;
   if (process.env.PULLBOARD_TEST_ACTIONS) reporterEntries.push({ reporter: fileURLToPath(new URL('../src/test-action-reporter.js', import.meta.url)), destination: devNull });
+  if (testEnv.PULLBOARD_TEST_SELECTION) reporterEntries.push({ reporter: fileURLToPath(new URL('../src/test-selection.js', import.meta.url)), destination: devNull });
   delete options.reporters;
   const loadedReporters = [];
   for (const entry of reporterEntries) {
@@ -1419,6 +1434,9 @@ function shardArguments(args) {
 /** Run tests in the disposable environment, preserving a marker only when a parent holds the slot. */
 async function executeTests(args, sandbox, gateMarkers, fullSuite, concurrency) {
   const env = testEnvironment(sandbox, gateMarkers);
+  const patterns = testSelectionPatterns(args, optionTakesValue);
+  if (patterns.length) env.PULLBOARD_TEST_SELECTION = join(sandbox, 'selected-tests.json');
+  else delete env.PULLBOARD_TEST_SELECTION;
   // This is an inner file limit; the real machine gate/browser lease remains unchanged.
   env.PULLBOARD_TEST_BROWSER_RESOURCE = 'test-browser-files:' + randomUUID();
   env.PULLBOARD_TEST_BROWSER_CAPACITY = String(concurrency.browser);
@@ -1451,7 +1469,7 @@ async function executeTests(args, sandbox, gateMarkers, fullSuite, concurrency) 
     ? await runLandingTests(selectedArgs, env, concurrency)
     : runTests(selectedArgs, env, concurrency);
   if (result.error) throw result.error;
-  return result;
+  return selectedTestResult(result, env.PULLBOARD_TEST_SELECTION, patterns, explicitTestFiles(selectedArgs));
 }
 
 /**
@@ -1522,8 +1540,9 @@ async function main(args) {
     const { GATE_SLOT_HELD_ENV, GATE_SLOT_POOL_ENV, GATE_SLOT_TOKEN_ENV, gateSlotEnvironment, inheritedGateSlot } = await import('../src/resources.js');
     const scopedMarker = process.env[GATE_SLOT_POOL_ENV] || process.env[GATE_SLOT_TOKEN_ENV];
     const legacyHeld = process.env[GATE_SLOT_HELD_ENV] === '1';
-    // A full landing run with landingShards above 1 fans its files out instead of running them here.
-    if (fullSuite && process.env[LANDING_RUN_ENV] === '1' && !shardLabel) {
+    // Shard payloads carry files only; filtered discovery keeps the existing admitted run and its name filter.
+    const filteredByName = testSelectionPatterns(actions.args, optionTakesValue).length > 0;
+    if (fullSuite && process.env[LANDING_RUN_ENV] === '1' && !shardLabel && !filteredByName) {
       const { landingShardCount } = await import('../src/gate.js');
       const count = landingShardCount(process.cwd());
       if (count > 1) {
