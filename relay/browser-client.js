@@ -13,6 +13,8 @@ import { browserJSON, withBrowserDeadline } from './browser-deadline.js';
 import { phoneApprovalStatus, placePhoneApprovals, forgetPhoneApprovals } from './browser-approval-card.js';
 import { phoneSnapshotPages } from './browser-pages.js';
 import { createPhoneHistory } from './browser-history.js';
+import { readUploadSize } from './browser-upload-status.js';
+import { deviceExcludedBoards } from './browser-devices.js';
 
 const CHECKPOINT_WAIT_MS = 15_000;
 const KEYS = 'pullboard.relay.keys.v1';
@@ -113,6 +115,9 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
   const approvedBoards = new Set();
   let pendingLinks = [];
   let pendingLinksFailure = '';
+  let sizeProblems = new Map();
+  let exclusions = [];
+  let exclusionsFailure = '';
   let warnings = [];
   let failure = '';
   let failureBoard = null;
@@ -223,7 +228,7 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
       entry.key = null;
     }
     paired.clear();
-    available = []; waitingBoards.clear(); pendingLinks = []; pendingLinksFailure = ''; warnings = []; pair = null;
+    available = []; waitingBoards.clear(); sizeProblems.clear(); pendingLinks = []; pendingLinksFailure = ''; exclusions = []; exclusionsFailure = ''; warnings = []; pair = null;
     for (const id of Object.keys(keys)) delete keys[id];
     document.querySelector('main')?.replaceChildren();
     if (error?.code !== 'DEVICE_REVOKED') { location.replace('/'); return; }
@@ -259,8 +264,8 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
       try { state = storedOwnedRequestState(localStorage, key, entry.state?.personRequests); } catch { /* Missing device storage can only hide this device's own notice. */ }
       ownedRequestIds.set(id, state.owned);
     }
-    const lines = noticeLines({ available, paired, ownedRequestIds, waitingBoards, approvedBoards, pendingLinks, warnings,
-      failure: failure || pendingLinksFailure });
+    const lines = noticeLines({ available, paired, ownedRequestIds, waitingBoards, sizeProblems, approvedBoards, pendingLinks, warnings, exclusions,
+      failure: failure || pendingLinksFailure || exclusionsFailure });
     for (const text of lines) {
       const paragraph = document.createElement('p');
       paragraph.textContent = text;
@@ -275,7 +280,7 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
     // A phone has no local-view screen to fall back to: keep its shell and the real reason until a board is readable.
     const root = document.documentElement;
     const phoneWaiting = root.dataset.relayDevice === 'phone' && (!rendered || paired.size === 0);
-    const step = emptyBoardStep({ available, waitingBoards, approvedBoards, loaded: inventoryLoaded, browserPaired, failure });
+    const step = emptyBoardStep({ available, waitingBoards, sizeProblems, approvedBoards, loaded: inventoryLoaded, browserPaired, failure, exclusions });
     showRelayScreen(root, phoneWaiting || paired.size === 0 ? 'share' : null,
       phoneWaiting && (failure || waitingBoards.size || warnings.some(value => ['ACCOUNT_STORAGE_WARNING', 'ACCOUNT_STORAGE_LIMIT'].includes(value?.code))) ? lines.join(' ') : '', step);
     placePhoneApprovals(document);
@@ -337,6 +342,17 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
     return entry.history;
   }
 
+  /** Read an optional authenticated size diagnosis without holding up a missing board's waiting screen. */
+  function sizeNotice(entry) {
+    const waiting = waitingBoards;
+    void readUploadSize(path => documentAt(path, undefined, { signal: access.signal }), entry).then(size => {
+      if (accessLost || waitingBoards !== waiting || !waiting.has(entry.id)) return;
+      if (size) sizeProblems.set(entry.id, size);
+      else sizeProblems.delete(entry.id);
+      notice();
+    }).catch(() => { /* An unavailable or invalid optional notice is not evidence of a size or authorization problem. */ });
+  }
+
   /** Authenticate the latest native snapshot before installing its presentation in this device. */
   async function snapshot(entry) {
     let path = '/api/v' + (entry.snapshotApiVersion === 2 ? '2' : '1') + '/boards/' + entry.id + '/state';
@@ -354,7 +370,10 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
     if (response.status === 304 && entry.state) return;
     if (!response.ok) {
       await checkAuthorization(path, response.status, denied, document.error);
-      if (document.error?.code === 'NO_BOARD' || document.error?.code === 'NO_SNAPSHOT') waitForFirstSnapshot(entry);
+      if (document.error?.code === 'NO_BOARD' || document.error?.code === 'NO_SNAPSHOT') {
+        waitForFirstSnapshot(entry);
+        sizeNotice(entry);
+      }
       throw new Error(document.error ? '[' + document.error.code + '] ' + document.error.message : 'The relay snapshot is unavailable. Retry.');
     }
     if (document.version !== 1) throw new Error('This relay API version is unsupported. Upgrade this browser client.');
@@ -557,6 +576,14 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
     if (accessLost) throw accessError;
     const device = await deviceBoardKeyState((path, options) => documentAt(path, denied, options));
     if (accessLost) throw accessError;
+    exclusions = [];
+    exclusionsFailure = '';
+    try { exclusions = await deviceExcludedBoards((path, options) => documentAt(path, denied, options)); }
+    catch {
+      if (accessLost) throw accessError;
+      exclusionsFailure = 'Excluded-board status could not be checked. Refresh to retry.';
+    }
+    if (accessLost) throw accessError;
     Object.assign(keys, stored(localStorage, KEYS, {}), device.keys);
     browserPaired = device.paired || Boolean(pair) || Object.values(keys).some(value => {
       try { decodeBoardKey(value); return true; } catch { return false; }
@@ -565,6 +592,7 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
     available = document.boards.filter(board => BOARD.test(board.id) && typeof board.repository === 'string');
     inventoryLoaded = true;
     waitingBoards = new Map();
+    sizeProblems = new Map();
     warnings = document.warnings ?? [];
     const visible = new Set(available.map(board => board.id));
     for (const [id, entry] of paired) if (!visible.has(id)) { entry.stream?.close(); entry.history?.close(); entry.pageCache?.clear(); paired.delete(id); }
@@ -575,6 +603,7 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
       try {
         const entry = { id: board.id, repository: board.repository, key: decodeBoardKey(encoded), cursor: -1, checkpointCursor: -1, state: null, shouts: null, outbox: null };
         await snapshot(entry);
+        sizeProblems.delete(board.id);
         await catchUp(entry);
         if (accessLost) throw new Error('Sign in again to read this board.');
         paired.get(board.id)?.stream?.close(); paired.get(board.id)?.history?.close(); paired.get(board.id)?.pageCache?.clear();

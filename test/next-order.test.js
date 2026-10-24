@@ -7,6 +7,8 @@ import { workQueue } from '../src/queue.js';
 import { applyEngineMove, applyRelayMove, prepareEngineMove } from '../src/engine.js';
 import { ENGINE_VERSION, MILESTONE_RANK_ENGINE } from '../src/machine.js';
 import { LINE_ORDER_ENGINE } from '../src/line-order-engine.js';
+import { setLineSetting } from '../src/line-settings.js';
+import { FOCUS_MILESTONE_ENGINE } from '../src/focus-milestone-engine.js';
 import { exportBoard, importBoard } from '../src/exchange.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
@@ -824,4 +826,133 @@ test('line capacity offers reviews before builds when reviews pile up [N2,B13,H1
     'taking over appends history and never rewrites the rejected work');
   setting('reviewsFirst', false);
   assert.equal(store.reviewOffer(board, { agentId: reviewer, lane: 'review', ratio: 99 }), null, 'off restores the old ratio');
+});
+
+/** Public next commands use a private Git/SQLite board; no seeded state claims a gate execution. */
+test('next offers the focus milestone first and explains a claimable outside fallback [N2,B16]', t => {
+  const box = crossLaneFixture(t);
+  const owner = box.seat('focus-owner', 'web', box.session);
+  const peer = box.seat('focus-peer', 'web', 'focus-peer-session');
+  const outside = box.add('web', 'Earlier roadmap outside work');
+  const focused = box.add('web', 'Named focus work');
+  box.milestone('0.9.4', outside);
+  box.milestone('0.9.3', focused);
+  const ordinary = box.json(box.runAs(box.session, owner.root, 'next', '--build', '--json'));
+  assert.equal(ordinary.item.item_id, outside, 'unset retains the existing roadmap order');
+  box.json(box.runAs(box.session, owner.root, 'release', String(outside), '--json'));
+
+  box.json(box.run(box.repo, 'settings', 'line', 'focusMilestone', '0.9.3',
+    '--reason', 'Finish the named release before later work', '--window', '{"activeItems":2}', '--json'));
+  const picked = box.json(box.runAs(box.session, owner.root, 'next', '--build', '--json'));
+  assert.equal(picked.item.item_id, focused, 'the named focus overrides an earlier roadmap milestone');
+  box.json(box.runAs(box.session, owner.root, 'release', String(focused), '--json'));
+  box.json(box.runAs('focus-peer-session', peer.root, 'claim', String(focused), '--json'));
+  const fallback = box.runAs(box.session, owner.root, 'next', '--build');
+  assert.equal(fallback.code, 0, `${fallback.out}\n${fallback.err}`);
+  const focusLines = fallback.out.split('\n').filter(line => /focus.*0\.9\.3|0\.9\.3.*focus/iu.test(line));
+  assert.equal(focusLines.length, 1, 'one line explains why next leaves the named focus');
+  const board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
+  try {
+    assert.equal(store.getItem(board, outside).item_owner, owner.agent, 'a peer-held focus does not starve claimable outside work');
+    assert.equal(store.getItem(board, focused).item_owner, peer.agent, 'focus never steals another seat’s claim');
+  } finally { store.closeBoard(board); }
+  box.json(box.runAs(box.session, owner.root, 'release', String(outside), '--json'));
+  box.json(box.runAs('focus-peer-session', peer.root, 'release', String(focused), '--json'));
+  box.json(box.run(box.repo, 'settings', 'line', 'focusMilestone', 'off',
+    '--reason', 'Restore ordinary roadmap selection', '--window', '{"activeItems":2}', '--json'));
+  const restored = box.json(box.runAs(box.session, owner.root, 'next', '--build', '--json'));
+  assert.equal(restored.item.item_id, outside, 'turning focus off restores the original order');
+});
+
+/** Review eligibility still owns held reservations; focus changes preference, not authority. */
+test('next offers the focus milestone first for eligible reviews without taking a held reservation [N2,B16]', t => {
+  const { board, builder, reviewer } = boardFixture();
+  t.after(() => store.closeBoard(board));
+  const outside = submitted(board, builder, 'Outside earlier roadmap review', 'strong', 1);
+  const focused = submitted(board, builder, 'Named focus review', 'strong', 2);
+  store.addMilestone(board, { agentId: 'coordinator', name: '0.9.4', items: [outside] });
+  store.addMilestone(board, { agentId: 'coordinator', name: '0.9.3', items: [focused] });
+  assert.equal(store.nextFor(board, { agentId: reviewer, lane: 'review', verify: true, policy: 'any' }).item.item_id,
+    outside, 'unset review selection keeps the roadmap order');
+  setLineSetting(board, { agentId: 'coordinator', key: 'focusMilestone', value: '0.9.3',
+    reason: 'Complete the current release', window: { activeReviews: 2 } });
+  const selected = store.reserveNextReview(board, { agentId: reviewer, lane: 'review', leaseMs: HOUR, policy: 'any' });
+  assert.equal(selected.item.item_id, focused, 'normal reserve-next selects the named focus');
+  const peer = store.register(board, { lane: 'review', path: '/focus-review-peer', route: 'strong' });
+  const fallback = store.reserveNextReview(board, { agentId: peer, lane: 'review', leaseMs: HOUR, policy: 'any' });
+  assert.equal(fallback.item.item_id, outside, 'an unavailable focused review permits eligible outside work');
+  assert.equal(fallback.reasons.filter(reason => /focus.*0\.9\.3|0\.9\.3.*focus/iu.test(reason)).length, 1,
+    'review-only fallback carries the same one-line explanation');
+  assert.equal(store.getItem(board, focused).item_verified_by, null, 'a reservation is not a verdict');
+  assert.equal(store.nextFor(board, { agentId: reviewer, lane: 'review', verify: true, policy: 'any' }).item.item_id,
+    focused, 'the original reviewer retains its own reservation');
+});
+
+/** Native offers are observed against real private Git and SQLite, with synthetic lifecycle records explicitly not gate proofs. */
+test('next offers the focus milestone first across review and build modes [N2,B16]', t => {
+  const box = crossLaneFixture(t);
+  const owner = box.seat('mixed-owner', 'web', box.session);
+  const author = box.seat('mixed-author', 'api', 'mixed-author-session');
+  const outside = box.add('api', 'Outside review');
+  const moreOutside = [box.add('api', 'Outside review two'), box.add('api', 'Outside review three')];
+  const focused = box.add('web', 'Focused build');
+  box.milestone('0.9.4', outside);
+  box.milestone('0.9.3', focused);
+  const board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
+  try {
+    for (const id of [outside, ...moreOutside]) {
+      store.claim(board, id, { agentId: author.agent, lane: 'api', leaseMs: HOUR, freeze: FREEZE });
+      submitFixture(board, id, { agentId: author.agent, commit: box.git(box.repo, 'rev-parse', 'HEAD'),
+        tree: box.git(box.repo, 'rev-parse', 'HEAD^{tree}') });
+    }
+  } finally { store.closeBoard(board); }
+  const ordinary = box.json(box.runAs(box.session, owner.root, 'next', '--json'));
+  assert.equal(ordinary.review, true, 'three waiting reviews meet the unchanged offer threshold');
+  assert.equal(ordinary.item.item_id, outside);
+  box.json(box.run(box.repo, 'settings', 'line', 'focusMilestone', '0.9.3',
+    '--reason', 'Focus across both kinds of next work', '--window', '{"activeItems":2}', '--json'));
+  const picked = box.json(box.runAs(box.session, owner.root, 'next', '--json'));
+  assert.equal(picked.item.item_id, focused, 'a focused build outranks an outside review');
+  assert.equal(picked.review, false);
+  box.json(box.runAs(box.session, owner.root, 'release', String(focused), '--json'));
+  const review = box.json(box.runAs(box.session, owner.root, 'next', '--verify', '--json'));
+  assert.equal(review.item.item_id, outside, 'review-only next never silently claims the focused build');
+  assert.equal(review.review, true);
+  box.json(box.runAs(box.session, owner.root, 'release', String(outside), '--note', 'Continue the private focus ordering control', '--json'));
+  const focusedReview = box.add('api', 'Focused review before focused build');
+  const updated = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
+  try {
+    store.editMilestoneItems(updated, '0.9.3', { agentId: 'coordinator', add: [focusedReview] });
+    store.claim(updated, focusedReview, { agentId: author.agent, lane: 'api', leaseMs: HOUR, freeze: FREEZE });
+    submitFixture(updated, focusedReview, { agentId: author.agent, commit: box.git(box.repo, 'rev-parse', 'HEAD'),
+      tree: box.git(box.repo, 'rev-parse', 'HEAD^{tree}') });
+  } finally { store.closeBoard(updated); }
+  const preferredReview = box.json(box.runAs(box.session, owner.root, 'next', '--json'));
+  assert.equal(preferredReview.item.item_id, focusedReview, 'an eligible focused review precedes the focused build');
+  assert.equal(preferredReview.review, true);
+});
+
+/** A newer recorded control must not alter historical selection when replaying an older move. */
+test('focus milestone policy survives export while old reserve-next retains its ordering [N2,B16,H16]', t => {
+  const { board, builder, reviewer } = boardFixture();
+  t.after(() => store.closeBoard(board));
+  const outside = submitted(board, builder, 'Old roadmap review', 'strong', 1);
+  const focused = submitted(board, builder, 'New focus review', 'strong', 2);
+  store.addMilestone(board, { agentId: 'coordinator', name: 'outside', items: [outside] });
+  store.addMilestone(board, { agentId: 'coordinator', name: 'focus', items: [focused] });
+  const change = { agentId: 'coordinator', key: 'focusMilestone', value: 'focus',
+    reason: 'Recorded focus for replay', window: { activeReviews: 2 } };
+  const settingMove = prepareEngineMove(board, 'setLineSetting', [change]);
+  assert.throws(() => applyEngineMove(board, { ...settingMove, engine: FOCUS_MILESTONE_ENGINE - 1 },
+    { sequence: 1, at: '2026-10-24T00:00:00Z' }), { code: 'RELAY_MOVE' }, 'older engines cannot claim to write the new policy');
+  setLineSetting(board, change);
+  const replica = store.openBoard(':memory:');
+  t.after(() => store.closeBoard(replica));
+  importBoard(replica, exportBoard(board));
+  assert.equal(store.nextFor(replica, { agentId: reviewer, lane: 'review', verify: true }).item.item_id,
+    focused, 'the policy is board data and travels with export');
+  const move = prepareEngineMove(replica, 'reserveNextReview', [{ agentId: reviewer, lane: 'review', leaseMs: HOUR, policy: 'any' }]);
+  const historical = applyEngineMove(replica, { ...move, engine: FOCUS_MILESTONE_ENGINE - 1 },
+    { sequence: 1, at: '2026-10-24T00:00:00Z' });
+  assert.equal(historical.result.item.item_id, outside, 'a historical reservation keeps its previous roadmap order');
 });
