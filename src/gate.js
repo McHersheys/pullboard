@@ -398,7 +398,7 @@ function leaveProofReceipt(root, command, run, before, context, lease) {
       load: run.executionLoad ?? (remote || lease?.runner ? null : localLoad), at: new Date().toISOString(),
       proof: { item: context.item, frozenDigest: context.frozenDigest ?? null, seat: context.seat,
         environment, runner: remote ?? (lease?.runner ? null : 'local'), exitCode: run.exitCode,
-        counts: proofCounts(run.outputPath ? logLines(run.outputPath) : run.output ?? ''),
+        counts: run.proofCounts ?? proofCounts(run.outputPath ? logLines(run.outputPath) : run.output ?? ''),
         durationMs: Math.max(0, Math.round(run.remoteWallMs ?? run.profile?.wallMs ?? run.seconds * 1000)), sourceClean } });
     if (!receipt) return null;
     mkdirSync(store, { recursive: true, mode: 0o700 });
