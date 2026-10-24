@@ -63,7 +63,7 @@ function project() {
 /** Read the fixture board's events straight from its SQLite file, read-only. */
 function events(box) {
   const db = new DatabaseSync(join(box.root, '.git', 'pullboard', 'board.sqlite'), { readOnly: true });
-  try { return db.prepare('SELECT event_id, event_kind, item_id, event_by FROM event ORDER BY event_id').all(); }
+  try { return db.prepare('SELECT event_id, event_kind, item_id, event_by, event_detail FROM event ORDER BY event_id').all(); }
   finally { db.close(); }
 }
 
