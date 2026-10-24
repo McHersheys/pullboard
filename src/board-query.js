@@ -1,3 +1,4 @@
+import { withSeatPresence } from './seat-presence.js';
 import { itemById } from './board-item-read.js';
 export { itemById };
 import { outsideSource } from './outside-source.js';
@@ -277,7 +278,7 @@ export function agentModel(board, id) {
 
 /** Attach an agent's model to a row from the legacy stable agent table. */
 export function withModel(board, agent) {
-  return agent ? { ...agent, agent_model: agentModel(board, agent.agent_id), agent_parent_session: agentParent(board, agent.agent_id) } : agent;
+  return agent ? withSeatPresence(board, [{ ...agent, agent_model: agentModel(board, agent.agent_id), agent_parent_session: agentParent(board, agent.agent_id) }])[0] : agent;
 }
 
 /**
@@ -287,9 +288,9 @@ export function withModel(board, agent) {
  * @returns {any[]}
  */
 export function listAgents(board) {
-  return board.db.prepare(`SELECT agent.*, model.meta_value AS agent_model, parent.meta_value AS agent_parent_session FROM agent
+  return withSeatPresence(board, board.db.prepare(`SELECT agent.*, model.meta_value AS agent_model, parent.meta_value AS agent_parent_session FROM agent
     LEFT JOIN board_meta model ON model.meta_key='agent_model:' || agent.agent_id
-    LEFT JOIN board_meta parent ON parent.meta_key='agent_parent_session:' || agent.agent_id ORDER BY agent.rowid`).all();
+    LEFT JOIN board_meta parent ON parent.meta_key='agent_parent_session:' || agent.agent_id ORDER BY agent.rowid`).all());
 }
 
 /** The optional engine-20 fields of a fact, present only when its event set them. */

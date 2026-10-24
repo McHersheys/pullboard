@@ -711,9 +711,17 @@ function writeSessionHook(root, onWrite) {
       return 'kept .claude/settings.json, which is not a JSON object; add a SessionStart hook that runs pullboard resume';
     }
   }
-  const starts = settings.hooks?.SessionStart ?? [];
-  if (JSON.stringify(starts).includes('pullboard resume')) return 'kept the Claude Code session hook';
-  settings.hooks = { ...settings.hooks, SessionStart: [...starts, { hooks: [{ type: 'command', command: RESUME_HOOK, timeout: 30 }] }] };
+  settings.hooks = { ...settings.hooks };
+  let changed = false;
+  for (const [event, command] of [['SessionStart', RESUME_HOOK], ['Stop', 'pullboard heartbeat'], ['SessionEnd', 'pullboard heartbeat']]) {
+    const hooks = settings.hooks[event] ?? [];
+    if (!Array.isArray(hooks)) continue;
+    if (!JSON.stringify(hooks).includes(command)) {
+      settings.hooks[event] = [...hooks, { hooks: [{ type: 'command', command, timeout: 30 }] }];
+      changed = true;
+    }
+  }
+  if (!changed) return 'kept the Claude Code session hook';
   mkdirSync(join(root, '.claude'), { recursive: true });
   writeFileSync(file, `${JSON.stringify(settings, null, 2)}\n`);
   onWrite('.claude/settings.json');

@@ -1,3 +1,4 @@
+import { heartbeatSeat } from './seat-presence.js';
 import { ensureProofCounters } from './proof-counters.js';
 import { correctedNoVerdictReopen } from './reopen-history.js';
 import {
@@ -593,6 +594,7 @@ export function register(board, who) {
       if (lineage) board.db.prepare('INSERT INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run(`agent_lineage:${id}`, lineage);
     }
     logEvent(board, id, 'join', null, route === 'strong' ? { lane } : { lane, route });
+    if (board.executionEngineVersion === undefined) heartbeatSeat(board, id);
     return id;
   });
 }
