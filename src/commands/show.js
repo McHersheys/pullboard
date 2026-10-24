@@ -1,5 +1,3 @@
-// Pending the legally landed #1114 item-files leaf, keep the existing related-items implementation.
-import { relatedItems } from '../board.js';
 import { withBoardRead } from '../cli-board-read.js';
 /** The pullboard show command, in its own module so an item adding another command never edits these lines. */
 import {
@@ -49,7 +47,7 @@ export async function run(io, { first, values }) {
     if (values.json) return result;
     const history = store.events(board, { itemId: id });
     return { ...result, moves: history.filter((event) => ['attempt', 'escalate'].includes(event.event_kind)),
-      related: relatedItems(board, item), reviewer: store.reviewHolder(board, item),
+      related: store.relatedItems(board, item), reviewer: store.reviewHolder(board, item),
       agents: store.listAgents(board), mainMerge: mainMergeFor(board, id), infra: infraNotes.infraNoteOf(history) };
   });
   const agentApproved = itemAgentApprovals(item, approval);

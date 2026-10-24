@@ -1,5 +1,6 @@
 /** Canonical board queries shared by reads and the synchronous write store [C7]. */
 import { COORDINATOR } from './config.js';
+import { itemFiles } from './item-files.js';
 import { parseSpec } from './spec.js';
 import { BOARD_SENTINEL_ENGINE } from './sentinel-engine.js';
 import { Refused } from './refused.js';
@@ -389,4 +390,26 @@ export function ensureCoordinator(board, path) {
   const existing = agentById(board, COORDINATOR);
   if (!existing || existing.agent_path !== path) throw new ReadNeedsWrite('coordinator registration or path update requires the write store');
   return COORDINATOR;
+}
+
+/**
+ * Finished items that touched the same files as this one, most shared first (N21). A builder
+ * starting cold reads how its neighbours were done instead of rediscovering it. File overlap, not
+ * word similarity: in one real build, an item shared a source file with one of the three before it
+ * in its lane 56% of the time.
+ *
+ * @param {any} board
+ * @param {any} item
+ * @param {number} [limit]
+ * @returns {{ item: any, shared: string[] }[]}
+ */
+export function relatedItems(board, item, limit = 3) {
+  const mine = new Set(itemFiles(item));
+  if (!mine.size) return [];
+  return listItems(board, { all: true })
+    .filter((other) => other.item_id !== item.item_id && other.item_status === 'verified')
+    .map((other) => ({ item: other, shared: itemFiles(other).filter((path) => mine.has(path)) }))
+    .filter((entry) => entry.shared.length)
+    .sort((first, second) => second.shared.length - first.shared.length || second.item.item_id - first.item.item_id)
+    .slice(0, limit);
 }
