@@ -54,7 +54,7 @@ export function takeHandoff(board, { agentId, item }) {
     if (!active || active.item !== item || active.takenAt) throw new Refused('NO_HANDOFF', 'this is not the outgoing agent’s active hand-off; read its current hand-off before taking it');
     logEvent(board, agentId, 'handoff-take', item, { outgoing: handoff.outgoing, engine: HANDOFF_ENGINE });
     const taken = itemHandoff(board, item);
-    appendFact(board, item, { agentId, kind: 'takeover', factId: `handoff-take-${item}`,
+    appendFact(board, item, { agentId, kind: 'note', factId: `handoff-take-${item}`,
       text: `${agentId} took over from ${handoff.outgoing} at ${taken.takenAt}. The outgoing agent now only answers shouts on this hand-off item.` });
     return taken;
   });

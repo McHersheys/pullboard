@@ -84,11 +84,11 @@ test('handoff takeover prints real work and retires only the outgoing seat [B3,N
   assert.equal(fact.code, 0, fact.error);
   box.clock.value += 1_000;
   const taken = await box.cli(1, ['handoff', '--take', String(id)]);
-  assert.equal(taken.code, 0, taken.error);
+  assert.equal(taken.code, 0, taken.error || JSON.stringify(taken.document));
   assert.equal(taken.document.handoff.takenAt, box.clock.now().toISOString());
   assert.equal(taken.document.resume.agent, outgoing);
   assert.ok(taken.document.facts.some(row => row.text.includes('Outside scratch')));
-  assert.ok(taken.document.facts.some(row => row.kind === 'takeover' && row.text.includes(box.clock.now().toISOString())));
+  assert.ok(taken.document.facts.some(row => row.kind === 'note' && row.text.includes(box.clock.now().toISOString())));
   assert.equal(store.getItem(box.board, item).item_owner, outgoing, 'takeover reports claims; it does not silently reassign work');
   const blocked = await box.cli(0, ['fact', String(id), 'note', 'not a permitted post-takeover move']);
   assert.equal(blocked.document.error.code, 'AGENT_REPLACED');
@@ -109,7 +109,7 @@ test('handoff takeover is first-wins and cannot be forged by facts or an authent
   assert.equal(opened.error, undefined);
   const id = opened.result.item;
   assert.equal(box.replay('takeHandoff', [{ agentId: outgoing, item: id }], outgoing).error.code, 'HANDOFF_SELF');
-  store.appendFact(box.board, id, { agentId: incoming, kind: 'takeover', text: 'I took over at an invented time.' });
+  store.appendFact(box.board, id, { agentId: incoming, kind: 'note', text: 'I took over at an invented time.' });
   const beforeTake = box.replay('addItem', [{ by: outgoing, lane: 'core', title: 'Still active', route: 'strong' }], outgoing, 1);
   assert.equal(beforeTake.error, undefined, 'historical pre-takeover engine semantics remain valid');
   assert.equal(box.replay('takeHandoff', [{ agentId: incoming, item: id }], outgoing).error.code, 'RELAY_SENDER_MISMATCH');
