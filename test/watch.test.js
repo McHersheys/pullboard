@@ -6,6 +6,7 @@ import { hostname, loadavg, tmpdir } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { after, test } from 'node:test';
+import { openBoard, reserveReview } from '../src/board.js';
 import { runFixtureChild, runFixtureGit, startFixtureChild } from './fixture-child.js';
 
 const BIN = resolve(import.meta.dirname, '../bin/pullboard.js');
@@ -384,7 +385,10 @@ test('a shout about an item reaches only the people on it [B7,A2,N19]', async (t
   runFixtureGit(['add', '-A'], { cwd: builder.path, env: box.env, stdio: 'pipe' });
   runFixtureGit(['commit', '-q', '-m', 'feat(app): directed message fixture [G1]'], { cwd: builder.path, env: box.env, stdio: 'pipe' });
   box.cli(builder.path, 'submit', String(item.item_id));
-  box.cli(reviewer.path, 'next', '--verify', String(item.item_id));
+  // Fixture setup uses the public board API: routing needs a reviewer role, not a second runtime session's verdict.
+  const board = openBoard(join(box.root, '.git', 'pullboard', 'board.sqlite'));
+  try { reserveReview(board, item.item_id, { agentId: reviewer.agent, leaseMs: 60_000, policy: 'any' }); }
+  finally { board.db.close(); }
   for (const seat of [builder, reviewer, outsider]) box.cli(seat.path, 'inbox');
   const watches = [builder, reviewer, outsider].map((seat, index) => startWatch(box,
     ['--json', '--kinds', 'shout', ...(index < 2 ? ['--to', seat.agent] : [])], { cwd: seat.path }));
