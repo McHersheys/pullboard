@@ -57,6 +57,7 @@ import {
 import {
   optionalPasskeyApply,
   optionalPasskeyApplyThroughCli,
+  rejectFabricatedPasskeyMetadata,
 } from './person-optional-apply-fixture.js';
 import { firstUnpairedAuthorityInsertion } from './person-first-pin-fixture.js';
 import { refuseNamedSigners } from '../src/person-signing-cli.js';
@@ -1222,3 +1223,6 @@ test('person-only moves are signed through optional SSH apply [E22,H16]', option
 
 /** The actual CLI applies and projects the recorded passkey approval even with optional SSH enabled. */
 test('person-only moves are signed through native CLI apply [E22,H16]', optionalPasskeyApplyThroughCli);
+
+/** Initial trust and committed execution provenance are separate signing boundaries. */
+test('person-only moves are signed against fabricated receipt metadata [E22,H16]', rejectFabricatedPasskeyMetadata);

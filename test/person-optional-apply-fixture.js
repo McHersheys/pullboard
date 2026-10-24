@@ -43,7 +43,7 @@ function sshPublicLine(publicKey) {
 }
 
 /** Exercise actual engine receipt validation and native apply on an owned project, with a separately pinned fixture relay key. */
-export async function optionalPasskeyApply(t, { throughCli = false } = {}) {
+export async function optionalPasskeyApply(t, { throughCli = false, fabricatedMetadata = false } = {}) {
   const box = await relayClientFixture(t);
   const specFile = join(box.root, 'SPEC.md');
   const text = 'An optional SSH row approved by its exact passkey request.';
@@ -86,6 +86,30 @@ export async function optionalPasskeyApply(t, { throughCli = false } = {}) {
   decisions.forEach(record => { record.passkeyRequest = document.id; });
   assert.equal(decisions[0].signature, undefined, 'optional passkey approval does not invoke SSH signing');
   execute('recordRowDecisions', [{ agentId: 'person', channel: 'view', decisions }], 'execute');
+  if (fabricatedMetadata) {
+    const genuine = store.rowDecisions(board)[0];
+    assert.equal(signing.verifiedPasskeyRowDecision(board, genuine), true, 'the genuine committed receipt is a positive control');
+    const missingEvent = board.db.prepare('SELECT MAX(event_id) AS id FROM event').get().id + 1000;
+    assert.equal(board.db.prepare('SELECT event_id FROM event WHERE event_id=?').get(missingEvent), undefined);
+    const fabricated = { ...genuine, event: missingEvent, source: genuine.source.replace('gate: review', 'gate: true'),
+      replacement: genuine.replacement.replace('gate: review', 'gate: true') };
+    assert.notEqual(fabricated.source, genuine.source, 'the attack changes a real row gate, not its signed displayed text');
+    const records = personRequestRecords(board).map(record => record.id === document.id ? { ...record, result: [fabricated] } : record);
+    board.db.prepare('UPDATE board_meta SET meta_value=? WHERE meta_key=?').run(JSON.stringify(records), 'relay_person_requests');
+    board.db.prepare('UPDATE board_meta SET meta_value=? WHERE meta_key=?').run(JSON.stringify([fabricated]), 'row_decisions');
+    const before = readFileSync(specFile, 'utf8');
+    assert.ok(before.includes(genuine.source));
+    writeFileSync(specFile, before.replace(genuine.source, fabricated.replacement));
+    const status = await box.cli('status');
+    assert.equal(status.code, 0, JSON.stringify(status.document));
+    assert.equal(status.document.specApprovalBaseline?.pending, false);
+    assert.equal(board.db.prepare('SELECT event_id FROM event WHERE event_id=?').get(missingEvent), undefined,
+      'no real immutable event is ever created for the fabricated metadata');
+    assert.deepEqual({ verified: signing.verifiedPasskeyRowDecision(board, fabricated),
+      falselyConfirmed: !status.document.needs.some(need => need.kind === 'agent-approved' && need.id === 'G21') },
+    { verified: false, falselyConfirmed: false }, 'mutable receipt metadata cannot invent a committed approval or clear its changed gate');
+    return;
+  }
   if (throughCli) {
     const applied = await box.cli('spec', 'apply');
     assert.equal(applied.code, 0, JSON.stringify(applied.document));
@@ -109,3 +133,6 @@ export async function optionalPasskeyApply(t, { throughCli = false } = {}) {
 
 /** Reuse real engine intake and exercise the ordinary native command and approval projection. */
 export function optionalPasskeyApplyThroughCli(t) { return optionalPasskeyApply(t, { throughCli: true }); }
+
+/** A copied valid signature cannot authenticate a fabricated mutable result or nonexistent committed event. */
+export function rejectFabricatedPasskeyMetadata(t) { return optionalPasskeyApply(t, { fabricatedMetadata: true }); }
