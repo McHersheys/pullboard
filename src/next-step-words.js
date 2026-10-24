@@ -56,6 +56,20 @@ export function personRequestGuidance(message, { caller, leading = false } = {})
 
 /** @type {Readonly<Record<string, string>>} */
 export const NEXT_STEPS = Object.freeze({
+  OUTSIDE_URL: 'use a GitHub issue or pull request URL with owner/repository and its positive number',
+  OUTSIDE_FETCH: 'restore read-only gh API and Git fetch access, then intake the exact source again',
+  OUTSIDE_SOURCE: 'fetch the exact GitHub source metadata and its immutable commit/tree before intake',
+  OUTSIDE_HEAD_CHANGED: 'ask the coordinator to reopen the old outside submission before intaking its new exact head',
+  OUTSIDE_OWNER_APPROVAL: 'the owner runs pullboard intake approve <id> from the person terminal or view',
+  OUTSIDE_SANDBOX_REQUIRED: 'read the exact PR diff, then run pullboard verify <id> accept --sandbox with the configured container provider',
+  SANDBOX_PROVIDER_REQUIRED: 'commit sandbox.provider docker with an absolute executable, explicit Unix endpoint and pinned minimum/current images in trusted main pullboard.json',
+  SANDBOX_IMAGE_REQUIRED: 'preload the exact configured digest in the configured Docker daemon; verification does not pull automatically',
+  SANDBOX_RUNTIME: 'correct the pinned official image so its actual Linux Node environment matches the configured minimum/current role',
+  SANDBOX_EXPORT: 'restore Git access to the exact recorded commit and independent private export before verifying',
+  SANDBOX_EXECUTION: 'restore the Docker daemon and inspect the named owned container before another verification',
+  SANDBOX_CLEANUP_REQUIRED: 'restore Docker and remove the exact named owned container before another verification',
+  SANDBOX_CHECK_REQUIRED: 'set a trusted full gate and frozen causal criterion before intake',
+
   ACCOUNT_STORAGE_LIMIT: 'remove an unneeded relay copy through the approved phone flow, or ask the relay operator to increase the account quota; uploads resume when space is available',
   BAD_PAGE: 'retry the saved upload with a current linked CLI; send only its original bounded encrypted objects',
   BAD_PAGE_PATH: 'refresh the board on the phone, then follow the encrypted references from its new read pin',

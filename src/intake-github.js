@@ -24,7 +24,8 @@ export function githubSource(root, url) {
   const prefix = `repos/${source.repository}`;
   const data = read(root, `${prefix}/${source.kind === 'pull-request' ? 'pulls' : 'issues'}/${source.number}`);
   const comments = read(root, `${prefix}/issues/${source.number}/comments?per_page=100`);
-  const replies = Array.isArray(comments) ? comments : [];
+  const reviews = source.kind === 'pull-request' ? read(root, `${prefix}/pulls/${source.number}/reviews?per_page=100`) : [];
+  const replies = [...(Array.isArray(comments) ? comments : []), ...(Array.isArray(reviews) ? reviews : [])];
   const common = { ...source, url, title: String(data.title ?? ''), author: data.user?.login, state: data.state,
     maintainerReplied: replies.some(comment => ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(comment.author_association)), updatedAt: data.updated_at };
   if (source.kind === 'issue') return common;
