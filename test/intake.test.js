@@ -49,7 +49,7 @@ test('an intaken pull request is verified only in the sandbox [V1,V2,V3,B26]', t
   assert.equal(item.outside.sandbox.tree, box.tree);
   assert.deepEqual(item.outside.sandbox.runs.map(run => run.environment.node), ['22.13.1', '24.21.0']);
   assert.equal(item.outside.ownerApproval, null);
-  refusal(box.run(box.repo, 'land', id, '--json'), 'OUTSIDE_OWNER_APPROVAL');
+  refusal(box.run(box.repo, 'land', '--json'), 'OUTSIDE_OWNER_APPROVAL');
   assert.equal(box.git(box.repo, 'rev-parse', 'HEAD') === box.commit, false, 'sensitive PR never reaches the local trunk without its owner');
   fixtureJSON(box, box.repo, 'intake', 'approve', id);
   item = fixtureJSON(box, box.repo, 'show', id);

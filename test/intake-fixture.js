@@ -68,7 +68,7 @@ export function intakeFixture(t) {
     user: { login: 'issue-author' }, html_url: 'https://github.com/fixture/project/issues/6', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-02T00:00:00Z' } }));
   executable(box, 'gh', `const fs=require('node:fs'); const args=process.argv.slice(2); fs.appendFileSync(${JSON.stringify(ghLog)},JSON.stringify(args)+'\\n');
 const facts=JSON.parse(fs.readFileSync(${JSON.stringify(facts)},'utf8'));
-const route=(args.find(arg=>arg.startsWith('repos/')||arg.startsWith('/repos/'))||'').replace(/^\\//,'');
+const route=(args.find(arg=>arg.startsWith('repos/')||arg.startsWith('/repos/'))||'').replace(/^\\//,'').split('?')[0];
 let value;
 if(args[0]==='repo'&&args[1]==='view') value={nameWithOwner:'fixture/project',defaultBranchRef:{name:'main'}};
 else if(args[0]!=='api'||args.includes('--method')||args.includes('-X')) { process.stderr.write('fixture refuses posting or unknown commands'); process.exit(2); }
@@ -80,7 +80,7 @@ else if(route==='repos/fixture/project/issues/6/comments') value=facts.issueComm
 else if(route==='repos/fixture/project/issues/7/comments') value=[{user:{login:'maintainer'},author_association:'MEMBER',body:'Recorded for review.'}];
 else if(route==='repos/fixture/project') value={full_name:'fixture/project',default_branch:'main',owner:{login:'fixture'}};
 else { process.stderr.write('unrecognized fixture GitHub route '+route); process.exit(2); }
-process.stdout.write(JSON.stringify(value));\n`);
+process.stdout.write(JSON.stringify(args.includes('--slurp')?[value]:value));\n`);
   return { ...made, ...box, base, commit, tree, fork, origin, facts, ghLog, pull };
 }
 
@@ -98,7 +98,7 @@ else if(args[0]==='version') process.stdout.write('29.0.0');
 else if(args[0]==='run') {
   const cid=args.indexOf('--cidfile'); if(cid>=0) fs.writeFileSync(args[cid+1],'c'.repeat(64));
   if(args.includes('--version')) process.stdout.write(minimum?'v22.13.1':'v24.21.0');
-  else if(args.includes('-p')||args.includes('--eval')) process.stdout.write(JSON.stringify({node:minimum?'22.13.1':'24.21.0',platform:'linux',arch:'arm64'}));
+  else if(args.includes('-p')||args.includes('--eval')||args.some(arg=>arg.includes('node -p '))) process.stdout.write(JSON.stringify({node:minimum?'22.13.1':'24.21.0',platform:'linux',arch:'arm64'}));
   else { const baseline=args.includes('pullboard.sandbox.stage=baseline'); process.stdout.write('TAP version 13\\n'+(baseline?'not ok':'ok')+' 1 - fixture sandbox stage\\n1..1\\n# tests 1\\n# pass '+(baseline?'0':'1')+'\\n# fail '+(baseline?'1':'0')+'\\n# skipped 0\\n'); if(baseline) process.exitCode=1; }
 } else if(args[0]==='inspect') process.stdout.write('[]');
 else if(!['rm','kill'].includes(args[0])) { process.stderr.write('unknown fixture Docker command'); process.exit(2); }\n`);

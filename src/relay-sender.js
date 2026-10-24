@@ -7,6 +7,8 @@ export function relayMoveActor(move) {
   const args = move?.args;
   if (!Array.isArray(args)) return null;
   if (move.operation === 'register' && move.engine >= VERIFIER_STANDING_ENGINE) return args[0]?.createdBy === 'machine' ? null : args[0]?.createdBy ?? null;
+  if (move.operation === 'intakeOutside') return args[0]?.agentId ?? null;
+  if (move.operation === 'approveOutside') return args[1]?.agentId ?? null;
   if (move.operation === 'addItem') return args[0]?.by ?? null;
   if (move.operation === 'shout') return args[0]?.from ?? null;
   if (['proposeSentinel', 'decideSentinel', 'beginSentinelRun', 'finishSentinelRun'].includes(move.operation)) return args[0]?.agentId ?? null;

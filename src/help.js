@@ -8,6 +8,12 @@ export const VERSION = packageData.version;
 const ALL_HELP = `pullboard ${VERSION}: the local-first work board for teams of coding agents.
 Nothing ships until a second agent verifies it.
 
+Outside contributions
+  pullboard intake <GitHub PR URL> --criterion "behavior" --check "command" [--lane <lane>]  record exact outside author/commit, already submitted; never execute it here
+  pullboard intake <GitHub issue URL>  record author, source state and maintainer reply; repeating intake refreshes metadata
+  pullboard verify <id> accept --sandbox --note "proof"  configured Docker only, no network/credentials, Node22.13 and24; missing provider refuses
+  pullboard intake approve <id>        owner/person approval for the exact sensitive outside commit; every PR result post still needs separate person OK
+
 Set up
   pullboard tour                        see it work: a reject and its rework, scripted, in thirty seconds
   pullboard init [--model <name>] [--blueprint <name or file>]... [--no-permissions] [--yes] [--verbose]  short setup summary; --verbose shows recipes; --yes commits only setup's own files with your Git identity
@@ -279,6 +285,7 @@ const HELP_EXAMPLES = {
   'sentinel propose': 'pullboard sentinel propose "Run the checks" --check "npm test" --every hourly --owner web',
   tour: 'pullboard tour', init: 'pullboard init --blueprint web-app', worktree: 'pullboard worktree web --model "my-model"',
   join: 'pullboard join web --model "my-model"', resume: 'pullboard resume',
+  intake: 'pullboard intake https://github.com/owner/repo/pull/7 --criterion "behavior" --check "npm test"',
   add: ADD_EXAMPLE, list: 'pullboard list web', show: 'pullboard show 12',
   claim: 'pullboard claim 12', submit: 'pullboard submit 12', 'next --verify': 'pullboard next --verify',
   fact: 'pullboard fact 12 measurement "The check passes in 8 seconds"',

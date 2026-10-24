@@ -1,3 +1,4 @@
+import { outsideVerdict } from '../outside-verify.js';
 /** The pullboard verify command, in its own module so an item adding another command never edits these lines. */
 import * as store from '../board.js';
 import {
@@ -123,6 +124,7 @@ export async function verifyHere(ctx, id, { second, values }) {
     if (item.item_status !== 'submitted' && !stale) {
       throw new Refused('NOT_SUBMITTED', `item #${id} is ${item.item_status}, not submitted`);
     }
+    if (item.outside) return outsideVerdict(ctx, board, item, me, decision, values);
     // Name an unknown implied item before the frozen check runs, not after it.
     if (implies) checkImplies(board, implies);
     const policy = itemPolicy(root, item);
