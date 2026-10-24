@@ -106,12 +106,12 @@ test('a new worktree is created inside the repository [I1,I2]', () => {
     assert.equal(newIdentity.code, 0, newIdentity.err || newIdentity.out);
     assert.equal(JSON.parse(newIdentity.out).lane, 'api');
     assert.ok(existsSync(join(result.path, '.githooks', 'pre-commit')), 'the new worktree has its commit hook');
-    const resumed = box.run(web, 'resume');
+    const resumed = box.run(web, 'resume', '--diagnostics');
     assert.equal(resumed.code, 0, resumed.err);
     assert.match(resumed.out, mode === 'inside'
       ? /New agent worktrees: .*\.claude\/worktrees\/<lane>-N/u
       : /New agent worktrees: .*repo-<lane>-N/u);
-    const resumedJson = box.run(web, 'resume', '--json');
+    const resumedJson = box.run(web, 'resume', '--diagnostics', '--json');
     assert.equal(JSON.parse(resumedJson.out).newWorktreeLocation, mode === 'inside'
       ? join(repo, '.claude', 'worktrees', '<lane>-N')
       : join(dirname(repo), `${basename(repo)}-<lane>-N`));
@@ -148,7 +148,7 @@ test('a new worktree is created inside the repository [I1,I2]', () => {
     'a linked checkout with a separate git dir resolves its registered main root');
   const registryPath = join(box.env.PULLBOARD_HOME, 'projects.json');
   const registryBytes = readFileSync(registryPath);
-  const linkedResume = box.run(linkedPath, 'resume');
+  const linkedResume = box.run(linkedPath, 'resume', '--diagnostics');
   assert.match(linkedResume.out, /New agent worktrees: .*\.claude\/worktrees\/<lane>-N/u);
   assert.deepEqual(readFileSync(registryPath), registryBytes, 'resume reads the registry without refreshing it');
   const linkedHelp = box.run(linkedPath, 'help', 'worktree');

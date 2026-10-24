@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** Recover a native checkpoint timeout through the actual relay page [H16]. The timeout is an API1 checkpoint PUT, so
  * the case runs on the legacy wire (#903). */
 import assert from 'node:assert/strict';

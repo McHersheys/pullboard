@@ -47,7 +47,7 @@ import { parseProcessCensus } from '../src/process-census.js';
 import { requireSupportedEngine as requirePublished55Engine } from './fixtures/engine-55-reader.js';
 
 /** Isolate actual SQLite, Git, settings and subprocess files; due time is explicitly injected. */
-function fixture(t) {
+function fixture(t, { agentRoute } = {}) {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-board-watch-')));
   const root = join(directory, 'repo'); mkdirSync(root);
   const overrides = { PULLBOARD_HOME: join(directory, 'home'), PULLBOARD_MACHINE_HOME: join(directory, 'machine'),
@@ -67,7 +67,7 @@ function fixture(t) {
   const clock = { time: Date.parse('2026-10-18T03:00:00Z'), now() { return new Date(this.time); } };
   const board = store.openBoard(join(root, '.git/pullboard/board.sqlite'), clock);
   store.register(board, { lane: 'coordinator', path: root });
-  const agent = store.register(board, { lane: 'core', path: join(directory, 'agent') });
+  const agent = store.register(board, { lane: 'core', path: join(directory, 'agent'), route: agentRoute });
   /** Apply the actual ordered board engine with deterministic injected receipt time. */
   const ordered = async (operation, args) => {
     const move = prepareEngineMove(board, operation, args);
@@ -75,9 +75,9 @@ function fixture(t) {
     assert.equal(receipt.error, undefined, JSON.stringify(receipt)); return receipt.result;
   };
   /** Run the actual CLI against this real board; view means the explicit test person adapter. */
-  const cli = async (args, personChannel) => {
+  const cli = async (args, personChannel, cwd = root) => {
     let output = ''; let error = '';
-    const code = await main([...args, '--json'], { cwd: root, clock, personChannel,
+    const code = await main([...args, '--json'], { cwd, clock, personChannel,
       stdout: { isTTY: false, write: text => { output += text; } }, stderr: { write: text => { error += text; } } });
     return { code, document: output ? JSON.parse(output) : null, error };
   };
@@ -125,6 +125,57 @@ function repeatedCause(box) {
   return { red, green, items, check: 'test -f up.txt' };
 }
 
+test('resume never runs a sentinel and sentinel run runs the due ones [N26,A6,D3]', async t => {
+  const box = fixture(t, { agentRoute: 'mid' });
+  const marker = join(box.directory, 'explicit-run.json');
+  writeFileSync(join(box.root, 'value.txt'), 'committed trunk input');
+  writeFileSync(join(box.root, 'slow-check.mjs'), `import {readFileSync,writeFileSync} from 'node:fs';
+import {setTimeout} from 'node:timers/promises';
+const value=readFileSync('value.txt','utf8');
+writeFileSync(${JSON.stringify(marker)},JSON.stringify({cwd:process.cwd(),value}));
+await setTimeout(30_000);
+console.log('explicit trunk receipt: '+value);
+`);
+  runFixtureGit(['add', 'slow-check.mjs', 'value.txt'], { cwd: box.root, env: box.env });
+  runFixtureGit(['commit', '-q', '-m', 'test: committed sentinel input [N26,A6]'], { cwd: box.root, env: box.env });
+  const agentRoot = join(box.directory, 'agent');
+  runFixtureGit(['worktree', 'add', '--quiet', '--detach', agentRoot, 'main'], { cwd: box.root, env: box.env });
+  const joined = await box.cli(['join', 'core', '--model', 'gpt-6.1-sol', '--route', 'mid'], undefined, agentRoot);
+  assert.equal(joined.code, 0, joined.error || JSON.stringify(joined.document));
+  writeFileSync(join(agentRoot, 'value.txt'), 'uncommitted agent input');
+  const command = `${quote(process.execPath)} slow-check.mjs`;
+  const proposed = await box.cli(['sentinel', 'propose', 'slow-trunk', '--check', command, '--every', 'hourly', '--owner', box.agent, '--timeout', '35000']);
+  assert.equal(proposed.code, 0, proposed.error || JSON.stringify(proposed.document));
+  const approved = await box.cli(['sentinel', 'approve', 'slow-trunk'], 'view');
+  assert.equal(approved.code, 0, approved.error || JSON.stringify(approved.document));
+
+  // The frozen bar measures ordinary in-process handling after setup, not module loading or cold CLI startup.
+  const began = performance.now();
+  const resumed = await box.cli(['resume'], undefined, agentRoot);
+  const elapsed = performance.now() - began;
+  assert.equal(resumed.code, 0, resumed.error || JSON.stringify(resumed.document));
+  assert.ok(elapsed < 100, `resume took ${elapsed.toFixed(3)} ms with a due 30 s sentinel`); // budget: declared by item #1042 and coordinator24324: in-process resume under100ms after setup.
+  assert.equal(existsSync(marker), false, 'resume neither runs the watch nor detaches a checker into the agent session');
+  assert.equal(sentinels(box.board)[0].lastRun, null);
+  assert.equal(store.events(box.board).some(row => row.event_kind === 'sentinel-start'), false);
+
+  const run = await box.cli(['sentinel', 'run'], undefined, agentRoot);
+  assert.equal(run.code, 0, run.error || JSON.stringify(run.document));
+  const executed = JSON.parse(readFileSync(marker, 'utf8'));
+  assert.notEqual(executed.cwd, agentRoot, 'the explicit runner never uses the agent checkout');
+  assert.notEqual(executed.cwd, box.root, 'the runner prepares a separate checkout rather than using live trunk');
+  assert.equal(executed.value, 'committed trunk input', 'the run reads trunk, not the dirty agent file');
+  assert.equal(existsSync(executed.cwd), false, 'the prepared checkout is cleaned after its owned check finishes');
+  const watched = sentinels(box.board)[0];
+  assert.equal(watched.lastRun.green, true);
+  assert.match(watched.lastRun.output, /explicit trunk receipt: committed trunk input/u);
+  assert.equal(watched.check, command, 'the approved command is not rewritten for the new execution directory');
+  assert.equal(readFileSync(join(agentRoot, 'value.txt'), 'utf8'), 'uncommitted agent input');
+  const help = await box.cli(['sentinel', 'run', '--help']);
+  assert.equal(help.code, 0, help.error);
+  assert.match(JSON.stringify(help.document), /cron|scheduled CI/iu);
+});
+
 test('a repeated cause can be drafted as a sentinel [A6,D1,D3]', async t => {
   const box = fixture(t);
   const cause = repeatedCause(box);
@@ -167,10 +218,13 @@ test('a sentinel draft waits in Needs-you with its evidence [A6,D1,D3]', async t
   assert.deepEqual(after, ['staging-site'], 'the person’s approval closes the call');
   const watched = sentinels(box.board).find(row => row.name === 'rigor-row-a6');
   assert.equal(watched.status, 'approved');
-  assert.equal(watched.lastRun?.green, true, 'approving it starts it: the next resume runs the watch, now green');
+  assert.equal(watched.lastRun, null, 'approval and resume leave execution to the scheduled command');
+  const explicit = await box.cli(['sentinel', 'run']);
+  assert.equal(explicit.code, 0, explicit.error || JSON.stringify(explicit.document));
+  assert.equal(sentinels(box.board).find(row => row.name === 'rigor-row-a6').lastRun?.green, true);
 });
 
-test('an approved sentinel runs by itself and reports to its owner once [A6,D1,D3]', async t => {
+test('an approved sentinel execution reports to its owner once [A6,D1,D3]', async t => {
   const box = fixture(t);
   mkdirSync(join(box.root, 'watch'));
   const check = checker(box, "import {existsSync,appendFileSync} from 'node:fs'; appendFileSync('runs','run\\n'); console.log('check receipt'); process.exit(existsSync('green')?0:1);");
@@ -182,7 +236,7 @@ test('an approved sentinel runs by itself and reports to its owner once [A6,D1,D
   const approved = await box.cli(['sentinel', 'approve', 'staging'], 'view');
   assert.equal(approved.code, 0, approved.error);
   assert.equal(approved.document.sentinel.status, 'approved');
-  assert.equal((await box.cli(['resume'])).code, 0, 'the real automatic resume caller executes the due approved watch');
+  await box.run();
   let notices = store.allShouts(box.board).filter(row => row.shout_from === 'sentinel');
   assert.equal(notices.length, 1); assert.equal(notices[0].shout_to, box.agent);
   assert.match(notices[0].shout_text, /staging[\s\S]*check receipt[\s\S]*Next: repair the staging check/u);
@@ -420,7 +474,7 @@ test('a successful watch drains a descendant that ignores TERM before publishing
   assert.ok(!remaining || remaining.state.startsWith('Z'), 'no receipt precedes the stubborn descendant shutdown');
 });
 
-test('the background observer runs an approved board watch through its real resume child [A6,D3]', async t => {
+test('the background observer leaves approved board watches for explicit runs [A6,D3]', async t => {
   const box = fixture(t);
   const check = checker(box, "import {appendFileSync} from 'node:fs'; appendFileSync('background-runs','run\\n'); console.log('background receipt'); process.exit(1);");
   const row = store.proposeSentinel(box.board, { agentId: box.agent, row: { name: 'background', check, every: '10m', owner: box.agent } });
@@ -452,13 +506,13 @@ test('the background observer runs an approved board watch through its real resu
   writeFileSync(settingsFile, settings);
   await tick();
   assert.deepEqual(errors, []);
-  assert.equal(readFileSync(runs, 'utf8'), 'run\n', 'the default background callback launches the real resume child');
+  assert.equal(existsSync(runs), false, 'the real background resume child never executes an approved watch');
   const notices = store.allShouts(box.board).filter(shout => shout.shout_text.startsWith('Sentinel failed: background'));
-  assert.equal(notices.length, 1);
-  assert.equal(notices[0].shout_to, box.agent);
-  assert.match(notices[0].shout_text, /background receipt/u);
+  assert.equal(notices.length, 0, 'resume cannot invent a result or owner alert');
+  assert.equal(sentinels(box.board)[0].lastRun, null);
+  assert.equal(store.events(box.board).some(row => row.event_kind === 'sentinel-start'), false);
   await tick();
-  assert.equal(readFileSync(runs, 'utf8'), 'run\n', 'the next callback honors the recorded due time');
+  assert.equal(existsSync(runs), false, 'a second health callback still leaves the watch to its scheduled command');
   await observer.close();
   assert.equal(cancelled, true);
 });

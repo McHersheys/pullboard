@@ -20,6 +20,7 @@ import { tryGit } from './git.js';
 import { landingFailures } from './land.js';
 import { landingRemote } from './land.js';
 import { Refused } from './refused.js';
+import { publishPullRequests } from './pr-publish.js';
 
 /** Where publish remembers the last head it found red, so the same head is not run again. */
 function stateFile(root) {
@@ -64,7 +65,7 @@ function touchedBy(root, board, published, head, files) {
  * @param {{ root: string, board: any, config: any, say: (line: string) => void, onWait?: Function, onFailure?: Function }} options
  * @returns {Promise<{ head: string, published: boolean, red: Array<{ file: string|null, name: string, items: number[] }>, waiting?: boolean }>}
  */
-export async function publishTrunk({ root, board, config, say, onWait, onFailure }) {
+export async function publishTrunk({ root, board, config, say, onWait, onFailure, write }) {
   const trunk = mainCheckout(root);
   if (!trunk?.commit) throw new Refused('LAND_TRUNK', 'publish needs the coordinator’s primary branch; return its checkout to the trunk');
   const branch = trunk.branch.replace(/^refs\/heads\//u, '');
@@ -72,6 +73,8 @@ export async function publishTrunk({ root, board, config, say, onWait, onFailure
   if (!remote) throw new Refused('LAND_PUSH', `the landing push failed: this repo has no remote to push ${branch} to; add one with git remote add origin <url> and run pullboard publish again`);
   const head = trunk.commit;
   const published = remoteHead(root, remote, branch);
+  if (config.publish?.pullRequest) return await publishPullRequests({ root, board, config, say, onWait, onFailure, write,
+    branch, remote, head, published });
   if (published === head) {
     say(`${branch} at ${head.slice(0, 12)} is already published`);
     return { head, published: true, red: [] };

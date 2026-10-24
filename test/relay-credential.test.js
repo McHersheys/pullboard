@@ -19,11 +19,15 @@ test('every current operation selects its native actor credential without a seco
     let kind = 'agent';
     if (operation === 'register') { args = [{ lane: box.lane, path: '/private/credential-enrollment' }]; kind = 'machine'; }
     if (operation === 'ensureCoordinator') { args = [box.root]; kind = 'machine'; }
+    if (operation === 'intakeOutside') args = [{ agentId: actor }];
+    if (operation === 'approveOutside') { args = [999999, { agentId: 'person' }]; kind = 'person'; }
     if (operation === 'addItem') args = [{ by: actor, lane: box.lane, title: 'credential actor fixture' }];
     if (operation === 'shout') args = [{ from: actor, to: 'all', text: 'credential actor fixture', lanes: [box.lane] }];
     if (operation === 'release') args = [999999, actor];
     if (['claim', 'refreeze'].includes(operation)) args = [box.before.tables.item[0].item_id, options];
     if (operation === 'reserveNextReview') args = [options];
+    if (operation === 'setLineSetting') args = [{ agentId: actor, key: 'reviewsFirst', value: true, reason: 'credential fixture', window: { windowMinutes: 60, activeReviewers: 1 } }];
+    if (operation === 'setBarReady') args = [{ agentId: actor, enabled: false }];
     if (operation === 'recordHealthFindings') args = [{ agentId: actor, observedRevision: 0, findings: [] }];
     if (operation === 'recordSpecApprovalBaseline') args = [{ agentId: actor, baseline: { version: 1, file: 'SPEC.md', anchor: null, rows: [] } }];
     if (operation === 'recordFlakeObservation') args = [{ agentId: actor, lane: box.lane, observation: syntheticFlakeObservation('credential-fixture') }];
@@ -33,6 +37,9 @@ test('every current operation selects its native actor credential without a seco
     if (operation === 'recordJobRun') args = [{ agentId: actor, name: 'credential-job' }];
     if (operation === 'takeCoordinator') args = [{ agentId: actor, machine: 'credential-machine' }];
     if (operation === 'landingLeaseMove') args = [{ agentId: actor, action: 'renew', token: 'credential-lease', branch: 'main', pid: 1, generation: 0 }];
+    if (operation === 'recordPublishFinding') args = [{ agentId: actor, item: 999999, repository: 'fixture/repository',
+      pull: 1, head: 'a'.repeat(40), failures: [{ id: 1, name: 'credential fixture',
+        url: 'https://github.com/fixture/repository/actions/runs/1', files: ['test/fixture.test.js'] }] }];
     if (operation === 'proposeSentinel') args = [{ agentId: actor,
       row: { name: 'credential-watch', check: 'true', every: 'hourly', owner: actor } }];
     if (['beginSentinelRun', 'finishSentinelRun'].includes(operation)) {
@@ -60,6 +67,7 @@ test('every current operation selects its native actor credential without a seco
     return { operation, args, kind, ...(kind === 'person' ? { sent: false } : {}) };
   });
   cases.push(
+    { operation: 'recordPublishFinding', args: [{ item: 999999 }], kind: 'agent', sent: false, expected: 'RELAY_ACTOR' },
     { operation: 'recordHealthFindings', args: [{ observedRevision: 0, findings: [] }], kind: 'agent', sent: false, expected: 'RELAY_ACTOR' },
     { operation: 'recordSpecApprovalBaseline', args: [{ baseline: { version: 1, file: 'SPEC.md', anchor: null, rows: [] } }], kind: 'agent', sent: false, expected: 'RELAY_ACTOR' },
     { operation: 'recordFlakeObservation', args: [{ lane: box.lane, observation: syntheticFlakeObservation('missing-actor') }], kind: 'agent', sent: false, expected: 'RELAY_ACTOR' },
@@ -176,6 +184,9 @@ test('a person-only move is refused before the relay is asked [H2,H9,H16]', asyn
   writeFileSync(box.linkFile, JSON.stringify(state), { mode: 0o600 });
 
   const personCases = [
+    ['addItem', [{ by: 'coordinator', lane: box.lane, title: 'Person-authored bar', barActor: { authority: 'person', session: null, parent: null } }]],
+    ['editItem', [1, { agentId: 'coordinator', brief: 'Person correction', barActor: { authority: 'person', session: null, parent: null } }]],
+    ['signBar', [1, { agentId: 'coordinator', barActor: { authority: 'person', session: null, parent: null } }]],
     ['recordLandingWaiver', [{ agentId: 'person', channel: 'terminal', reason: 'fixture' }]],
     ['recordRowDecisions', [{ agentId: 'person', channel: 'terminal', decisions: [] }]],
     ['answerDecision', [1, { agentId: 'person', asPerson: true, channel: 'terminal' }]],

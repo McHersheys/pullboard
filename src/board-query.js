@@ -1,3 +1,4 @@
+import { outsideSource } from './outside-source.js';
 import {
   COORDINATION_SHOUT,
   itemShoutReader,
@@ -105,7 +106,8 @@ export function itemById(board, id) {
 export function getItem(board, id) {
   const item = current(board, itemById(board, id));
   const baseline = itemCheckBaseline(board, item);
-  return baseline ? { ...item, item_check_baseline: baseline } : item;
+  const source = outsideSource(board, id);
+  return { ...item, ...(baseline ? { item_check_baseline: baseline } : {}), ...(source ? { outside: source } : {}) };
 }
 
 /**
@@ -244,6 +246,12 @@ export function laneHolds(board) {
 /** Current person decisions, including applied receipts, stored without checkout-dependent state. */
 export function rowDecisions(board) {
   const row = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get('row_decisions');
+  return row ? JSON.parse(row.meta_value) : [];
+}
+
+/** The board's recorded row drafts, oldest first, without loading its mutation engine. */
+export function rowDrafts(board) {
+  const row = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get('row_drafts');
   return row ? JSON.parse(row.meta_value) : [];
 }
 

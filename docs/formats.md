@@ -113,7 +113,7 @@ The board file is in the repository's Git common directory at `.git/pullboard/bo
 | `row grammar` | `1` | `SPEC_GRAMMAR_VERSION` in `src/spec.js`; optional `<!-- pullboard-grammar N -->` line in either file (absence means the current grammar) | Both files share the version. A declared version must match; an incompatible grammar change requires a coordinated version bump and compatible files. No automatic conversion occurs. |
 | `board schema` | `3` | `SCHEMA_VERSION` in `src/board.js`, persisted as `PRAGMA user_version` | On a write open of a board whose version is behind: create missing tables and indexes (version 3 adds the hot-path indexes), add missing columns in place with declared defaults, restore missing or changed triggers, and remove stale machine triggers without replacing rows. Read opens never migrate; a board at the current version whose shape differs is reported once on stderr and left as it is. |
 | `event log` | `1` | `EVENT_LOG_VERSION` in `src/board.js`, persisted in `board_meta` as `event_log_version` | Older event-log versions upgrade in place; newer versions are refused with `EVENT_LOG_VERSION`. Preserve event rows when the board schema changes. |
-| `move engine` | `94` | `ENGINE_VERSION` in `src/machine.js`, carried as `engine` in every sealed executable move | Bump when a move's meaning changes, independently of the event log and sealed envelope. A newer engine is refused with `ENGINE_VERSION`, naming both versions and asking you to upgrade Pullboard. |
+| `move engine` | `103` | `ENGINE_VERSION` in `src/machine.js`, carried as `engine` in every sealed executable move | Bump when a move's meaning changes, independently of the event log and sealed envelope. A newer engine is refused with `ENGINE_VERSION`, naming both versions and asking you to upgrade Pullboard. |
 <!-- format-versions:end -->
 
 A builder never picks an engine number (#1101). An item that adds a board move adds its own `src/<name>-engine.js` leaf as `export const NAME_ENGINE = unassignedEngine();` (importing `unassignedEngine` from `./engine-next.js`); on its branch the leaf reads as one above the highest landed engine. The landing merge writes the next number into the leaf, in landing order, inside that item's merge commit, and sets the `move engine` row above to the highest landed number. A landed number never changes, so recorded moves replay as they were written. Moves are recorded under landed numbers only: code with an unnumbered engine is for its branch's own tests, and a move it records on a real board before landing may later read under another item's number, so the item lands before its moves are used.
@@ -209,6 +209,14 @@ An optional `landing.environment` in `pullboard.json` requires all three exact f
 Engine 85 also adds `recordLandingTestDefect`. A red batch whose bisection finds no item culprit records a neutral repair item and a `landing-test-defect` event with its test path, content hash, red-tree blob, original trunk blob, failure names, batch ID and trunk branch. Its batch remains `test-defect`, and further landings on that trunk stop before another gate runs. A committed correction to the test on the trunk, or live existing waivers covering every recorded failure, releases the hold. Candidate-only changes and uncommitted edits do not release it. A waiver keeps the red tree and its waived failures explicit. Existing culprit and flake diagnosis retain their meanings; older engines cannot revise or finish a batch carrying these fields.
 
 Engine 90 records the parent session a seat joined under and stamps each verdict with its assurance: independent when the builder's and reviewer's recorded parents differ, procedural when either is unknown (#1102). Review eligibility, next and the queue exclude any seat sharing a parent with an author. Older engines replay their recorded verdicts with no parent recorded.
+
+`BAR_READY_ENGINE` introduces ordered `setBarReady` and `signBar` moves; its unassigned leaf is numbered by the landing merge. Readiness defaults off. `pullboard bar ready on` is coordinator-only and snapshots already-frozen bars, which remain grandfathered until their words change. Older engine moves retain their recorded behavior. Enabling readiness makes later bars require an observed main-red named case (including an absent named case), `Named test:`, `Measurements:` and `Reviewer edges:` sections, and an outside-parent signature. Section presence is enforced; the signer judges whether the methods and edge cases are adequate. The named-case witness currently reads captured TAP or JUnit case records with per-case timing. Configure the project’s own reporter to emit those records to the captured output; a pretty summary or an XML file that is never emitted does not establish a named failure. Unsupported output remains unknown and refuses readiness, rather than inferring a named failure from the process exit. This opt-in evidence requirement does not change ordinary workflow with readiness off.
+
+Semantic add/edit moves capture the current native author session and parent in their ordered arguments, preserving authors of unchanged fields. Signing likewise captures the current signer; replay never consults a replica's environment. A current session's explicit joined parent is used when native parent metadata is unavailable. Taking over a known helper seat without current parent metadata refuses rather than declaring that helper independent. Unknown historical agent identities cannot establish independence. The authenticated person has `authority: "person"`, with null session and parent, and is a distinct authority: an agent may sign a person-authored bar and the person may sign an agent-authored bar. Unknown agent authors still fail closed. Terminal person actions use `--as person` on `add`, `edit` or `bar sign`; the authenticated coordinator view records that authority directly. Ordered transport selects person credentials for this provenance, while retaining normal agent credentials for agent authors; no parent is invented for the person. These captures do not rewrite historical seat identity. Each `bar-revision` event binds the exact title, criterion, check, brief, citations, dependencies and route; `bar-sign` additionally binds its event revision, baseline digest, coverage plan, author parents, signer and note. Editing away and back still requires a new signature. Additive `board_meta` keys `bar_ready_setting`, `bar_grandfather:<id>`, `bar_revision:<id>` and `bar_sign:<id>` hold the current indexes; the events retain history.
+
+`pullboard bar sign <id> --coverage-file <json> --note "..."` records whole-file obligations for existing committed test files in the brief's `Files` list. `claim.barTestFiles` defaults to Node test/spec filename globs; projects can explicitly provide their own globs. The file supplies `files: [{path, mode: "whole"|"landing", evidence}]`, a `named` observation, and an install observation when accepted main configures an install. Each observation retains `durationMs`, `selection` (`whole-file`, `named-check` or `install`), `ref`, `sha256`, full source commit, runtime and outcome. Whole mode requires a completed green whole-file observation. Landing mode requires a recorded whole-file duration exceeding the unchanged available review budget, explicit landing coverage in the brief and retained `namedCases`; unknown or named-only durations cannot establish that exception. Named, install and appended whole-file durations must fit the existing timeout together. References and hashes are signer-attested metadata; Pullboard validates their shape and budget, and does not independently open evidence artifacts during replay or prove the accuracy of a signer's account.
+
+Accepted main determines the test inventory, `affectedTests` runner, install and timeout. A changed inventory or execution policy requires a new signature; unrelated main changes do not. The frozen criterion retains `sourceCheck`, `barCoverage` and `barRevision` and one effective `check`: the original shell command, grouped intact, followed by the project's own runner over signed whole-file paths. Check, submit and verification consume that same frozen command; Pullboard adds no framework or test suite to another project. With readiness enabled, normal submission also requires a committed candidate containing the exact current main used for its proof, unchanged through execution; `MAIN_NOT_COMPOSED` names the merge-and-submit recovery. Unrecorded recovered submissions cannot reuse proof from an older main snapshot.
 
 The CLI declares its engine in every relay request's `X-Pullboard-Engine` header.
 A linked board requires at least engine 48 after issuing any agent token or machine credential, including
@@ -416,8 +424,8 @@ The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its ap
 | `submit` | builder | `commit`, `tree`, `policyCommit`, engine-9 `criterionDigest`, engine-38 `submissionProof` |
 | `reserve` | reviewer | `until` |
 | `accept` | reviewer | `reason`, `commit`, engine-20 `implies`, engine-33 `review`, engine-68 `note` |
-| `reject` | reviewer | `reason`, `commit`, engine-20 `implies`, engine-33 `review` |
-| `reopen` | coordinator | `commit`, `note`, `judgment`, engine-10 `supersedes`, `landingFailure`, engine-30 `cause`, engine-52 `conflict` |
+| `reject` | reviewer | `reason`, `commit`, engine-20 `implies`, engine-30 `cause`, engine-33 `review`, automatic-Rigor `causeDerivation` |
+| `reopen` | coordinator | `commit`, `note`, `judgment`, engine-10 `supersedes`, `landingFailure`, engine-30 `cause`, engine-52 `conflict`, automatic-Rigor `causes`, `causeDerivation` |
 | `merged` | coordinator | `commit` |
 | `landing_batch` | coordinator | `batch` |
 | `landing-review-moved` | coordinator | `code`, `batch`, `verdict`, `checked`, `landed` |
@@ -431,7 +439,8 @@ The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its ap
 | `hold_item` | coordinator | `reason` |
 | `unhold_item` | coordinator | `reason` |
 | `guards` | board | `missing`, `changed`, `stale` |
-| `rigor-notice` | rigor | `cause`, `items`, `occurrences`, `neverAgain`, `engine` |
+| `rigor-notice` | rigor | `cause`, `items`, `occurrences`, `neverAgain`, `engine`, automatic-Rigor `drafts` |
+| `rigor-draft` | rigor | `id`, `target`, `cause`, exact typed `source`, `unproved` (always true), `items`, `occurrences`, `engine` |
 | `shout` | sender | `shout`, `to`, `decision`, `request`, `answers` |
 | `flake-observation` | reporting agent | `engine`, `observation` |
 | `flake-repair` | reporting agent | `engine`, `key`, `item` |
@@ -446,7 +455,7 @@ The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its ap
 | `pass` | coordinator | `shout`, `to`, `decision`, `request`, `answers` |
 | `answer` | answerer | `shout`, `to`, `decision`, `request`, `answers`, `outcome`, `channel`, engine-20 `implies`, `supersedes` |
 | `row_decision` | person | `record`, `channel` |
-| `row_draft` | builder | engine-55 `row`, `written` |
+| `row_draft` | builder, or rigor | engine-55 `row`, `written` |
 | `flake-observation` | reporting agent | engine-59 `engine`, `observation` |
 | `flake-repair` | reporting agent | engine-59 `engine`, `key`, `item` |
 | `row_apply` | coordinator | `events` |
@@ -480,7 +489,7 @@ Migration preserves event rows and adds only schema objects that are missing.
 
 `pullboard.json` may set `affectedTests` to a command prefix that runs selected test files. When it is absent, `submit` runs the configured `gate` in full. When present and the import graph can safely select a subset, Pullboard appends the selected file paths to this prefix; an uncertain selection still runs the full gate. For example, this repository opts in with `"affectedTests": "node bin/run-tests.js"`. Projects using another test framework can leave the setting out and keep their configured gate, such as `npm test`.
 
-`pullboard.json` may set `worktrees` to `"inside"` or `"beside"`. Fresh `pullboard init` writes `"inside"`, placing new agent worktrees under `.claude/worktrees/<lane>-N`; it also adds `.claude/worktrees/` to `.gitignore` and prints guidance for dot-scanner ignore rules. An omitted setting defaults to `"beside"` to preserve existing sibling paths (`../<repo>-<lane>-N`). `pullboard resume` and `pullboard help worktree` show the active location from the primary checkout's config.
+`pullboard.json` may set `worktrees` to `"inside"` or `"beside"`. Fresh `pullboard init` writes `"inside"`, placing new agent worktrees under `.claude/worktrees/<lane>-N`; it also adds `.claude/worktrees/` to `.gitignore` and prints guidance for dot-scanner ignore rules. An omitted setting defaults to `"beside"` to preserve existing sibling paths (`../<repo>-<lane>-N`). `pullboard resume --diagnostics`, JSON v1 `pullboard resume --json`, and `pullboard help worktree` show the active location from the primary checkout's config.
 
 A project with `"submitGate": "landing"` can also set `"submitInvariants": ["test/guard.test.js"]` to run a small set of project guard files on every submit, even when uncertain selection defers the full suite. The list defaults to empty and requires the project's explicit `affectedTests` runner; no framework or test files are added by default. Submit reads the list and its runner from accepted main, so a candidate cannot remove or replace its required files. Named affected tests and invariants run once per file, with their paths and results in the receipt. Missing invariant files refuse the submit, and subset passes never stamp the full gate. The coordinator still runs the configured full suite at landing.
 
@@ -518,6 +527,12 @@ Engine 43 (`RIGOR_NOTICE_ENGINE`) posts one coordinator shout and one typed `rig
 
 A proved Rigor draft carries `source: rigor:<percent-encoded JSON>` with `version: 1`, its `key`, `evidence` (`items`, `occurrences`, `neverAgain`) and `proof` (`check`, `red`, `green`). The proof contains actual full commits, executed exit statuses and problem counts. The existing spec and doctrine row grammar reads this field; prose mentioning Rigor is not a typed source. The person uses ordinary Approve or Decline, and the coordinator applies the approved row without a new build item.
 
+`RIGOR_AUTO_ENGINE` adds implicit evidence-only proposals to reject, reopen, person never-again and attributable conflict-hold moves. An omitted cause derives from a current-head structured reviewer failure, structured landing tests, exact conflict files, or a coarse coded verdict/reopen category; notes never identify tests. File keys use `conflict:<URI-escaped path>` and stay architectural advice rather than code-rule failures. Explicit `--cause` wins. Older recorded engines retain their original causes, notices and event streams.
+
+The triggering transaction reserves ordinary board row-draft entries with `written: false`, `gate: review`, `tier: aim`, and a terminal `Source: rigor-auto:<percent-encoded JSON>` in their text. This distinct source has `version: 1`, `unproved: true`, `key` and exact repeat `evidence` (`items`, `occurrences`, `neverAgain`, event ids); it has no executed red/green proof. One receipt names the created drafts. It changes no repository file and approves no rule. Needs you exposes each pending proposal, including a visible collision if another row occupies its id with different fields. `spec apply` explicitly materializes these proposals after preflighting existing person decisions and all automatic row definitions across both files. The existing exact-file person approval/decline then applies. `rigor --draft-splits` prepares existing automatic split advice instead of creating a second proposal. An exact person replacement remains authoritative on later application; a stale or unrelated row cannot impersonate it.
+
+Pending proposals are deduplicated per cause and target. A decline covers all items seen through the actual decision, and only a new item can re-propose that declined cause. The read-only digest restates each unanswered automatic draft once per briefing after `landing.cadence`, defaulting to one day when no cadence is configured. Creation is automatic on relevant new failure moves; this is not a historical backfill, a proof of causation, or an automatic remedy.
+
 Engine 54 replaces the automatic strong-to-strong ceiling escalation with one coordinator notice per rejection pair, naming the builder and both rejection receipts. Ordinary rejection still reopens and clears the owner and lease. Light and mid routes keep engine-50 automatic escalation. Engines 50 through 53 retain their original ceiling escalation when replayed.
 
 ## Approval provenance
@@ -540,7 +555,99 @@ The default policy, `{"order":"recorded"}`, keeps recorded stage starts, duratio
 
 Native `event_id` order is canonical, even when an input array is shuffled. A history whose recorded timestamps decrease in that order is refused explicitly: the bench never reorders lifecycle events by a clock, clamps timestamps, or presents contradictory clock evidence as an exact reproduction.
 
+## Recorded board line settings
+
+`pullboard settings line --json` reads eight board-owned controller inputs. All default to `false` (off), independently of machine `gate.queue` or `pullboard.json`. `pullboard settings line <name> <on|off|number> --reason "why" --window '{"windowMinutes":60,"activeReviewers":2}'` records a coordinator-owned `setLineSetting` move. The window is a nonempty object of named finite nonnegative numbers, with `null` retaining an unknown measurement. A nonempty reason is required.
+
+| Setting | Enabled values | Off |
+| --- | --- | --- |
+| `order` | `true` (`on`) | `false` |
+| `reviewsFirst` | `true` (`on`) | `false` |
+| `wipPerReviewer` | 1.5 through 3 | `false` |
+| `barReady` | `true` (`on`) | `false` |
+| `takeoverMinutes` | whole minutes 15 through 60 | `false` |
+| `collisionFreeBatch` | `true` (`on`) | `false` |
+| `landingBatchSize` | whole numbers 1 through 8 | `false` |
+| `landingCadenceMinutes` | whole minutes 5 through 30 | `false` |
+
+`order` opts into next ordering: a builder’s own send-back, scarce review eligibility, release, downstream demand, signed-bar readiness, then coordinator rank. The readiness tier stays inert until the signed-readiness predicate is available (#1110); it never guesses a sign-off from prose. The other inputs retain their separate meanings; `reviewsFirst` selects review versus build and does not turn ordering on. Takeover and landing behavior are separate changes. The move carries `{agentId,key,value,reason,window}`; its native `line_setting` event carries `{key,value,reason,window}` with the board's actor and time outside that detail. Latest values live under `board_meta` keys `line_setting:<name>`, and ordered engine replay updates them and appends the same evidence. The unassigned `LINE_SETTINGS_ENGINE` leaf receives its permanent number at landing. Older engine records cannot request this new operation. Range, unknown-key, missing-reason and invalid-window refusals have named codes. The existing settings API reports each input as `scope: "board"`, key `line.<name>`, with off as its default and the board SQLite file as its source; it does not expose reason text or evidence payloads through that inventory.
+
+With `collisionFreeBatch` on, landing selection previews each reviewed commit against the immutable trunk and reads the resulting Git changed paths, including both rename paths. Overlapping later verdicts wait without reopening; disjoint items still join the current batch. Deferred items keep their recorded place ahead of newer acceptances, even after merge-only re-acceptance. This priority applies only while the setting is on and the item remains accepted and unlanded with the identical submitted commit and frozen digest; new source or a new bar loses that old priority. Once the first batch lands, each deferred item receives one item-addressed reviewer notice in the same atomic landed transition. Existing verdict freshness is unchanged: if main touched the deferred review, its reviewer merges the new trunk and records a merge-only re-accept without a builder cycle or reopening. The default off path keeps existing composition. The control has its own replay-engine boundary; it does not infer paths from briefs.
+
+
 Landing queue grants, first queue entries and releases are shared ordered transitions. New landing-local-heartbeat engine moves leave renewal and repeated-poll events out of history; old engine receipts keep their recorded meaning. `local:landing-lease:<token>` board metadata binds a physical board id, token/generation, process, branch and coordinator lineage to its local deadline. It is excluded from exports, imports and semantic digests and is retained only on the receiving physical board during a same-board relay snapshot restore. A linked foreign holder has no clock-based expiry: release or coordinator takeover fences it; local heartbeat deadlines never authorize another machine to merge.
 
 
 Engine 93 adds item-addressed shouts. A shout move's optional `item` names an existing item; its event belongs to that item and includes the message text. Its canonical `shout_to` is `item:<id>`, read by the item's current builder and reviewer and the coordinator. Inbox, resume and seat watch use the same audience; an explicit seat or lane destination with `--item` still uses the item's audience. An item decision is answerable by its current participants or coordinator; replies stay in its thread and audience. The coordinator can still pass it to the person through the existing decision flow. A registered seat's shout to `all` is accepted and stored at reserved address `coordinator+person`, read only by coordination audiences. The plus sign cannot occur in valid lane names or their derived seat ids. Coordinator and person broadcasts retain `all` and reach everyone; recorded older-engine `all` rows retain their original global meaning without a retrospective sender filter. Main-checkout watch remains the person's board-wide observer. A joined seat's default watch filters shouts to its own address, lane, items and `all`, while ordinary lifecycle events remain visible.
+
+### Outside intake and sandbox receipts
+
+`pullboard intake <GitHub PR URL> --criterion "behavior" --check "command"`
+reads GitHub metadata and fetches the exact server-owned pull ref. It records an
+outside author (`outside:github:<login>`), commit, tree, source state and maintainer
+reply, and enters `submitted` without claiming that a native builder gated the PR.
+No contributor program is checked out or executed on the host. An issue URL records
+an open local source item; the GitHub issue closing does not accept the local item.
+Repeating intake refreshes source state and replies. A PR head can change only after
+normal return to open; re-intake invalidates its earlier sandbox proof and owner
+approval. Native agents cannot claim or submit an outside PR as their own build.
+
+Public source facts are in `board_meta` under `outside:<item-id>` and appear as
+`outside` on `show` JSON. Ordered `intakeOutside` and `approveOutside` moves retain
+`outside-intake`, `outside-refresh` and `outside-owner-approval` events. Approval is
+person authority bound to the exact commit, not an agent or parent-session claim.
+These facts survive board export and ordered replay. The local container logs are
+beside the board in `outside-check-output/<item-id>/<receipt-id>`; an ordered accept
+must match the executor's exact local receipt and output digests before transport.
+
+Sandbox verification reads operational provider settings from committed trusted
+main, not from the PR's configuration. `sandbox.provider` is `docker`,
+`sandbox.executable` is an absolute Docker-compatible CLI path, `sandbox.endpoint`
+is an explicit Unix daemon socket, and `sandbox.images.minimum` and
+`sandbox.images.current` are immutable `<image>@sha256:<digest>` references selected by trusted main.
+Prebuilt Node+Chrome images are supported for browser gates; outside heads cannot
+choose runtime images, and actual container Node versions must still match both roles. Images
+must already be present; verification uses `--pull never`. The actual container
+must report Linux Node 22.13.x and Node 24.x respectively, the two roles in the
+committed CI matrix; this is not a claim about the latest global Node release.
+Each role executes the trusted full gate and frozen criterion, with the criterion
+also required to fail at the recorded base. Protocol stand-ins in unit tests are
+not evidence of real containment or actual image execution.
+
+Every container has no network, an empty temporary HOME, a read-only root and
+private source export, no added capabilities, and no host credential environment.
+The Docker client has a fresh empty configuration and explicitly constructed
+environment. The source export contains independent exact-commit Git objects and
+files, never an operational checkout, its board database, worktree pointer,
+alternates or credential state. It is copied into a temporary writable container
+work directory. Exports default beside the native board under `sandbox-exports`;
+`sandbox.exportRoot` may name a private absolute directory shared with a VM-backed
+Docker daemon. Only a newly created child is exported and cleaned up. Missing
+runtime, inaccessible export or cleanup failure refuses; no host-process fallback
+is available. Normal physical gate/browser admission still applies.
+
+Owner-sensitive reasons are retained as `outside.sensitivity`, each with `path`,
+`rule` and `detail`; `outside.sensitive` is true when any reason matches. Defaults
+cover relay, sealing/signing/keys, person-move and hook code, hook configuration,
+`bin/`, CI workflows and command-bearing package fields. Trusted main may extend
+this with `intake.sensitivePaths`, relative exact files or trailing-slash prefixes;
+contributions cannot remove the defaults. Newly added process imports/calls or
+shell-runner calls and unreadable changed files also require approval. Renames
+retain both old and new touched paths. Ordinary source is not sensitive merely
+because it is source. The owner runs `pullboard intake approve <id>` through the
+person channel before sensitive work can land. Intake has no autonomous posting
+operation; each future result post still needs the person's separate OK.
+
+`FILE_GROWTH_NOTICE_ENGINE` adds atomic notices to an ordered brief edit: newly named
+files on a claimed or submitted item are checked against lease-normalized claimed,
+submitted and accepted-not-landed work. Each distinct holder receives one system
+notice per overlapping item, linked to its item thread; the edit remains allowed.
+Unchanged paths, prose, reordered lists and removals do not resend notices. Older
+recorded edits retain their silent behavior. The unassigned feature leaf receives
+its number at landing; no event-log or envelope format changes.
+
+### Line capacity decisions
+
+With `reviewsFirst` on, ordinary `next` offers an eligible review before a build when outstanding submissions exceed `wipPerReviewer` times the active-reviewer count (or ratio 3 while that numeric control is off). No permanent builder/reviewer seat type or role flag is required. Active reviewers are distinct registered seats with a reservation or verdict inside the flow window; its default is the last hour, and an empty window counts as one reviewer. The window uses the same validated boundaries as `stats --window`; its native duration is the shared `ACTIVE_REVIEWER_WINDOW_MINUTES` constant (60), not the measurement metadata or a new board setting.
+
+With numeric `wipPerReviewer` on, a new claim that would exceed that limit is refused as `LINE_WIP_LIMIT`, naming the oldest eligible pending review when there is one. Live claimed items and outstanding submissions count; expired claims do not. The shared pure `lineWipLimit` function computes the total cap without rounding, using at least one observed reviewer. Renewals remain possible. The native claim carries the configured verifier and family policies so its suggested review never relaxes those guards. With `takeoverMinutes` on, a sent-back item's idle interval can end its original builder's first-refusal window early; a live claim is never stolen, and normal claim appends preserve the old history. Disabled controls retain the previous behavior. New claims under these controls carry a true `lineCapacity` argument and the line-capacity engine floor; marker-absent older recorded claims keep their historical meaning during replay.

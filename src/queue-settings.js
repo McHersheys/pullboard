@@ -85,3 +85,30 @@ export function gateQueueSettings() {
   const queue = value.gate?.queue;
   return { reviewsFirst: queue?.reviewsFirst === true, currentReleaseFirst: queue?.currentReleaseFirst === true, agingMinutes: queue?.agingMinutes ?? DEFAULT_QUEUE_AGING_MINUTES };
 }
+
+/** Board-owned controller inputs; false means off, independently of machine gate settings. */
+export const LINE_SETTING_DEFINITIONS = Object.freeze({
+  order: Object.freeze({ type: 'boolean' }),
+  reviewsFirst: Object.freeze({ type: 'boolean' }),
+  wipPerReviewer: Object.freeze({ type: 'number', min: 1.5, max: 3, integer: false }),
+  barReady: Object.freeze({ type: 'boolean' }),
+  takeoverMinutes: Object.freeze({ type: 'number', min: 15, max: 60, integer: true }),
+  collisionFreeBatch: Object.freeze({ type: 'boolean' }),
+  landingBatchSize: Object.freeze({ type: 'number', min: 1, max: 8, integer: true }),
+  landingCadenceMinutes: Object.freeze({ type: 'number', min: 5, max: 30, integer: true }),
+});
+
+/** Refuse unknown controls and out-of-range values without changing any live queue behavior. */
+export function validateLineSetting(key, value) {
+  if (!Object.hasOwn(LINE_SETTING_DEFINITIONS, key)) throw new Refused('LINE_SETTING_UNKNOWN', 'choose a known board line setting from pullboard settings line');
+  validateKnownLineSetting(key, value);
+}
+
+/** Validate a value after the caller establishes its key belongs to the shared registry. */
+export function validateKnownLineSetting(key, value) {
+  const definition = LINE_SETTING_DEFINITIONS[key];
+  if (value === false || definition.type === 'boolean' && value === true) return;
+  if (definition.type === 'number' && typeof value === 'number' && Number.isFinite(value)
+    && value >= definition.min && value <= definition.max && (!definition.integer || Number.isSafeInteger(value))) return;
+  throw new Refused('LINE_SETTING_RANGE', `${key} accepts off or ${definition.type === 'boolean' ? 'on' : `${definition.integer ? 'whole numbers ' : 'numbers '}${definition.min} to ${definition.max}`}; read pullboard settings line`);
+}

@@ -125,10 +125,13 @@ function openQueue(file) {
       CREATE INDEX IF NOT EXISTS holder_name ON holder(name);
       CREATE TABLE IF NOT EXISTS waiter (ticket INTEGER PRIMARY KEY AUTOINCREMENT, token TEXT UNIQUE NOT NULL, name TEXT NOT NULL, pid INTEGER NOT NULL, started TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL, repo TEXT NOT NULL, since TEXT NOT NULL, heartbeat INTEGER NOT NULL, landing INTEGER NOT NULL DEFAULT 0, item_check INTEGER NOT NULL DEFAULT 0, browser INTEGER NOT NULL DEFAULT 0, item TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT '', remote INTEGER NOT NULL DEFAULT 0, short_eligible INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS runner_unavailable (host TEXT PRIMARY KEY, since TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '');
+      CREATE TABLE IF NOT EXISTS runner_gui (host TEXT PRIMARY KEY, gui INTEGER, observed_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS runner_draining (host TEXT PRIMARY KEY, runner TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS waiter_name_ticket ON waiter(name, ticket);`);
     for (const table of ['holder', 'waiter']) {
       const columns = db.prepare(`PRAGMA table_info(${table})`).all().map(({ name }) => name);
+      if (!columns.includes('timing_aware')) db.exec(`ALTER TABLE ${table} ADD COLUMN timing_aware INTEGER NOT NULL DEFAULT 0`);
+      if (!columns.includes('timing')) db.exec(`ALTER TABLE ${table} ADD COLUMN timing INTEGER NOT NULL DEFAULT 0`);
       if (!columns.includes('started')) db.exec(`ALTER TABLE ${table} ADD COLUMN started TEXT NOT NULL DEFAULT ''`);
       if (!columns.includes('landing')) db.exec(`ALTER TABLE ${table} ADD COLUMN landing INTEGER NOT NULL DEFAULT 0`);
       if (!columns.includes('item_check')) db.exec(`ALTER TABLE ${table} ADD COLUMN item_check INTEGER NOT NULL DEFAULT 0`);
@@ -139,9 +142,26 @@ function openQueue(file) {
       if (!columns.includes('lease_until')) db.exec(`ALTER TABLE ${table} ADD COLUMN lease_until TEXT NOT NULL DEFAULT ''`);
       if (table === 'holder' && !columns.includes('runner')) db.exec("ALTER TABLE holder ADD COLUMN runner TEXT NOT NULL DEFAULT ''");
       if (table === 'holder' && !columns.includes('short_slot')) db.exec('ALTER TABLE holder ADD COLUMN short_slot INTEGER NOT NULL DEFAULT 0');
+      if (table === 'waiter' && !columns.includes('gui')) db.exec('ALTER TABLE waiter ADD COLUMN gui INTEGER NOT NULL DEFAULT 0');
       if (table === 'waiter' && !columns.includes('remote')) db.exec('ALTER TABLE waiter ADD COLUMN remote INTEGER NOT NULL DEFAULT 0');
       if (table === 'waiter' && !columns.includes('short_eligible')) db.exec('ALTER TABLE waiter ADD COLUMN short_eligible INTEGER NOT NULL DEFAULT 0');
     }
+    // Older clients insert the default zero. A database trigger witnesses even short legacy
+    // arrivals between the timing owner's polls; no old client has to understand the new flag.
+    db.exec(`CREATE TABLE IF NOT EXISTS timing_client_observation (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, agent TEXT NOT NULL, pid INTEGER NOT NULL, started TEXT NOT NULL);
+      CREATE TRIGGER IF NOT EXISTS timing_unaware_holder AFTER INSERT ON holder
+      WHEN NEW.name = 'gate' AND NEW.timing_aware = 0 BEGIN
+        INSERT INTO timing_client_observation(agent,pid,started) VALUES (NEW.agent,NEW.pid,NEW.started);
+      END;
+      CREATE TRIGGER IF NOT EXISTS timing_unaware_waiter AFTER INSERT ON waiter
+      WHEN NEW.name = 'gate' AND NEW.timing_aware = 0 BEGIN
+        INSERT INTO timing_client_observation(agent,pid,started) VALUES (NEW.agent,NEW.pid,NEW.started);
+      END;`);
+    // No live timing admission can need observations once its holder and waiter rows are gone.
+    db.exec(`DELETE FROM timing_client_observation
+      WHERE NOT EXISTS (SELECT 1 FROM holder WHERE timing = 1)
+        AND NOT EXISTS (SELECT 1 FROM waiter WHERE timing = 1)`);
     // Marks a waiter whose process admits by class; an older pullboard leaves it 0.
     if (!db.prepare('PRAGMA table_info(waiter)').all().some(({ name }) => name === 'classed')) {
       db.exec('ALTER TABLE waiter ADD COLUMN classed INTEGER NOT NULL DEFAULT 0');
@@ -324,18 +344,18 @@ function queueOrder(scope) {
 
 /** Read the complete resource line with the metadata every admission view orders identically. */
 function queuedWaiters(db, name) {
-  return db.prepare('SELECT ticket, pid, agent, repo, since, landing, item_check AS itemCheck, diagnostic, browser, remote, item, kind, lease_until AS leaseUntil, classed, release_aware, board_key, release_rank, queue_ticket, short_eligible AS shortEligible FROM waiter WHERE name = ?').all(name);
+  return db.prepare('SELECT ticket, pid, agent, repo, since, landing, item_check AS itemCheck, diagnostic, browser, gui, remote, item, kind, lease_until AS leaseUntil, classed, release_aware, board_key, release_rank, queue_ticket, short_eligible AS shortEligible, timing FROM waiter WHERE name = ?').all(name);
 }
 
 /** Current holders and the waiting line in admission order, each waiter naming its class (aged only while class order is on). */
 function snapshot(db, name, order = ARRIVAL_ORDER, now = Date.now()) {
   /** Preserve older public entries while naming diagnostics as a distinct queue class. */
-  const project = ({ diagnostic, browser, remote, runner, item, kind, leaseUntil, shortSlot, shortEligible, ...entry }) => ({ ...entry, landing: entry.landing === 1,
+  const project = ({ diagnostic, browser, gui, remote, runner, item, kind, leaseUntil, shortSlot, shortEligible, timing, ...entry }) => ({ ...entry, landing: entry.landing === 1,
     itemCheck: entry.itemCheck === 1 && diagnostic !== 1, ...(diagnostic === 1 ? { diagnostic: true } : {}),
     ...(['gate', 'browser'].includes(name) && shortSlot === 1 ? { slot: 'short' } : {}),
     ...(['gate', 'browser'].includes(name) && shortSlot === 0 ? { slot: 'gate' } : {}),
     ...(['gate', 'browser'].includes(name) && shortEligible === 1 ? { requestedSlot: 'short-eligible' } : {}),
-    ...(browser === 1 ? { browser: true } : {}), ...(remote === 1 ? { remote: true } : {}),
+    ...(timing === 1 ? { timing: true } : {}), ...(browser === 1 ? { browser: true } : {}), ...(gui === 1 ? { gui: true } : {}), ...(remote === 1 ? { remote: true } : {}),
     ...(runner ? { runner } : {}), ...(item ? { item } : {}), ...(kind ? { kind } : {}), ...(leaseUntil ? { leaseUntil } : {}) });
   // Browser is an additional capability on a gate lease, not a second partially held row.
   const where = name === 'browser' ? 'name = ? AND browser = 1' : 'name = ?';
@@ -343,7 +363,7 @@ function snapshot(db, name, order = ARRIVAL_ORDER, now = Date.now()) {
   const runnerHost = name.startsWith('runner:') ? name.slice('runner:'.length) : '';
   const holderWhere = runnerHost ? 'name = ?' : where;
   const holderValues = [sourceName];
-  const holders = db.prepare(`SELECT agent, repo, since, landing, item_check AS itemCheck, diagnostic, browser, runner, item, kind, lease_until AS leaseUntil, short_slot AS shortSlot FROM holder WHERE ${holderWhere} ORDER BY since, token`).all(...holderValues).map(project);
+  const holders = db.prepare(`SELECT agent, repo, since, landing, item_check AS itemCheck, diagnostic, browser, runner, item, kind, lease_until AS leaseUntil, short_slot AS shortSlot, timing FROM holder WHERE ${holderWhere} ORDER BY since, token`).all(...holderValues).map(project);
   const queued = queuedWaiters(db, sourceName);
   const ageMs = order.reviewsFirst ? order.ageMs : Infinity;
   const line = orderedWaiters(queued, now, order)
@@ -410,11 +430,11 @@ function validatedRunners(value) {
     if (!runner || typeof runner.host !== 'string' || !runner.host.trim() || runner.host.trim() !== runner.host
       || !Number.isSafeInteger(runner.slots) || runner.slots < 1
       || !Number.isSafeInteger(runner.browser) || runner.browser < 0 || runner.browser > runner.slots
-      || seen.has(runner.host)) {
+      || seen.has(runner.host) || runner.gui !== undefined && runner.gui !== null && typeof runner.gui !== 'boolean') {
       throw new Refused('BAD_RUNNER_POOL', 'runners require unique nonempty hosts, positive slots, and browser capacity from zero through slots');
     }
     seen.add(runner.host);
-    return { host: runner.host, slots: runner.slots, browser: runner.browser,
+    return { host: runner.host, slots: runner.slots, browser: runner.browser, ...(runner.gui !== undefined ? { gui: runner.gui } : {}),
       ...(typeof runner.node === 'string' ? { node: runner.node } : {}),
       ...(typeof runner.root === 'string' ? { root: runner.root } : {}) };
   });
@@ -439,7 +459,7 @@ function validatedRunners(value) {
  */
 function gateAdmission(db, ticket, capacity, shortCapacity, runners, order = ARRIVAL_ORDER, now = Date.now()) {
   const waiters = orderedWaiters(queuedWaiters(db, 'gate'), now, order);
-  const holders = db.prepare("SELECT pid, landing, browser, short_slot AS shortSlot FROM holder WHERE name = 'gate'").all();
+  const holders = db.prepare("SELECT pid, landing, browser, short_slot AS shortSlot, timing FROM holder WHERE name = 'gate'").all();
   const localUsed = holders.filter(holder => holder.shortSlot !== 1).length;
   const localShortUsed = holders.filter(holder => holder.shortSlot === 1).length;
   const localBrowsers = holders.filter(holder => holder.browser === 1).length;
@@ -447,9 +467,10 @@ function gateAdmission(db, ticket, capacity, shortCapacity, runners, order = ARR
   const usage = new Map(runners.map(runner => {
     // The reserved namespace is authoritative even for an older generic holder that
     // predates the name guard and has no runner column value.
-    const remoteHolders = db.prepare('SELECT browser FROM holder WHERE name = ?').all(runnerResourceName(runner.host));
+    const remoteHolders = db.prepare('SELECT browser, timing FROM holder WHERE name = ?').all(runnerResourceName(runner.host));
     return [runner.host, {
       slots: remoteHolders.length,
+      timing: remoteHolders.some(holder => holder.timing === 1),
       browsers: remoteHolders.filter(holder => holder.browser === 1).length,
     }];
   }));
@@ -460,22 +481,30 @@ function gateAdmission(db, ticket, capacity, shortCapacity, runners, order = ARR
   /** Find a currently free compatible slot without reserving it for later queue entries. */
   function available(waiter) {
     if (blockedByLanding(waiter)) return null;
-    if (localUsed < capacity && (waiter.browser !== 1 || localBrowsers < browserCapacity)) {
+    if (!holders.some(holder => holder.timing === 1) && (waiter.timing !== 1 || holders.length === 0)
+      && localUsed < capacity && (waiter.browser !== 1 || localBrowsers < browserCapacity)) {
       return { host: '', slots: capacity, browser: waiter.browser === 1 ? 1 : 0, shortSlot: false };
     }
     if (waiter.remote === 1) {
       const compatible = runners.filter(runner => {
-        if (unavailable.has(runner.host) || (waiter.browser === 1 && runner.browser < 1)) return false;
+        const observed = db.prepare('SELECT gui FROM runner_gui WHERE host = ?').get(runner.host);
+        const gui = observed ? observed.gui === 1 : runner.gui === true;
+        if (unavailable.has(runner.host) || (waiter.browser === 1 && runner.browser < 1) || (waiter.gui === 1 && !gui)) return false;
         const used = usage.get(runner.host);
-        return used.slots < runner.slots && (waiter.browser !== 1 || used.browsers < runner.browser);
+        return !used.timing && (waiter.timing !== 1 || used.slots === 0)
+          && used.slots < runner.slots && (waiter.browser !== 1 || used.browsers < runner.browser);
       });
       // A landing spreads its active shards before filling another slot on the same runner.
       // Choose under this transaction's holder snapshot, so concurrent acquisitions cannot tie on stale use.
       if (waiter.landing === 1) compatible.sort((left, right) => usage.get(left.host).slots - usage.get(right.host).slots);
-      if (compatible.length) return { ...compatible[0], shortSlot: false };
+      if (compatible.length) {
+        const observed = db.prepare('SELECT gui FROM runner_gui WHERE host = ?').get(compatible[0].host);
+        return { ...compatible[0], ...(observed ? { gui: observed.gui === null ? null : observed.gui === 1 } : {}), shortSlot: false };
+      }
     }
     const earlierLanding = waiters.some(other => other.landing === 1 && other.ticket < waiter.ticket);
-    if (waiter.shortEligible === 1 && !earlierLanding && localShortUsed < shortCapacity
+    if (waiter.timing !== 1 && !holders.some(holder => holder.timing === 1)
+      && waiter.shortEligible === 1 && !earlierLanding && localShortUsed < shortCapacity
       && (waiter.browser !== 1 || localBrowsers < browserCapacity)) {
       return { host: '', slots: shortCapacity, browser: waiter.browser === 1 ? 1 : 0, shortSlot: true };
     }
@@ -509,15 +538,25 @@ export function runnerResourceStatus(runners) {
         visible.set(row.host, { ...JSON.parse(row.runner), draining: true });
       }
       return [...visible.values()].flatMap(runner => {
-        const holders = db.prepare('SELECT agent, repo, since, browser, item, kind, runner FROM holder WHERE name = ? ORDER BY since, token')
+        const holders = db.prepare('SELECT agent, repo, since, browser, item, kind, runner, timing FROM holder WHERE name = ? ORDER BY since, token')
           .all(runnerResourceName(runner.host));
         if (runner.draining && !holders.length) return [];
         const unavailable = db.prepare('SELECT since, detail FROM runner_unavailable WHERE host = ?').get(runner.host);
-        return [{ ...runner, inUse: holders.length, browserInUse: holders.filter(holder => holder.browser === 1).length,
+        const observed = db.prepare('SELECT gui, observed_at FROM runner_gui WHERE host = ?').get(runner.host);
+        return [{ ...runner, gui: runner.gui ?? null, ...(observed ? { gui: observed.gui === null ? null : observed.gui === 1, guiObservedAt: observed.observed_at } : {}), inUse: holders.length, browserInUse: holders.filter(holder => holder.browser === 1).length,
           unavailable: Boolean(unavailable), ...(unavailable ? { unavailableSince: unavailable.since, unavailableReason: unavailable.detail } : {}), holders }];
       });
     });
   } finally { db.close(); }
+}
+
+/** Persist only an authenticated worker's fresh GUI observation; unknown replaces stale positive capability. */
+export function recordRunnerGui(host, gui) {
+  if (typeof host !== 'string' || !host.trim() || ![true, false, null].includes(gui)) throw new Refused('BAD_RUNNER_POOL', 'runner GUI observations require a host and true, false, or unknown');
+  const db = open(machineResourceFile());
+  try { update(db, () => db.prepare('INSERT INTO runner_gui(host, gui, observed_at) VALUES (?, ?, ?) ON CONFLICT(host) DO UPDATE SET gui = excluded.gui, observed_at = excluded.observed_at')
+    .run(host, gui === null ? null : Number(gui), new Date().toISOString())); }
+  finally { db.close(); }
 }
 
 /** Serialize runner changes with admission; removal may drain active leases instead of refusing. */
@@ -694,7 +733,7 @@ function pause(ms) { return new Promise((resolvePromise) => setTimeout(resolvePr
 /**
  * Join the queue in its admission class (landing, review, submit, other), aging up over time; FIFO by ticket within a class.
  *
- * @param {{ name: string, capacity: number, capacityProvider?: () => number, shortCapacityProvider?: () => number, browserCapacityProvider?: () => number, scope?: 'machine'|'repo'|'board', root?: string, agent?: string, repo?: string, landing?: boolean, itemCheck?: boolean, shortEligible?: boolean, diagnostic?: boolean, browser?: boolean, remote?: boolean, runnerProvider?: () => Array<{host:string,slots:number,browser:number}>, item?: string, kind?: string, onWait?: (state: object) => any | Promise<any>, allowIdleCapacityUpdate?: boolean, memory?: () => Promise<{ checked: boolean, held: boolean, line: string, warning?: string }>, _resume?: object }} options - Resource identity, queue class, short-slot eligibility, optional remote executor pool and memory check. An awaited wait callback may return {leaseUntil} and then receives a final {admitted:true} callback before work starts.
+ * @param {{ name: string, capacity: number, capacityProvider?: () => number, shortCapacityProvider?: () => number, browserCapacityProvider?: () => number, scope?: 'machine'|'repo'|'board', root?: string, agent?: string, repo?: string, landing?: boolean, itemCheck?: boolean, shortEligible?: boolean, diagnostic?: boolean, browser?: boolean, remote?: boolean, timing?: boolean, runnerProvider?: () => Array<{host:string,slots:number,browser:number}>, item?: string, kind?: string, onWait?: (state: object) => any | Promise<any>, allowIdleCapacityUpdate?: boolean, memory?: () => Promise<{ checked: boolean, held: boolean, line: string, warning?: string }>, _resume?: object }} options - Resource identity, queue class, short-slot eligibility, optional remote executor pool and memory check. An awaited wait callback may return {leaseUntil} and then receives a final {admitted:true} callback before work starts.
  *   memory, when given, is read before each admission: a held verdict keeps the whole queue
  *   waiting in place, local, remote and short slots alike, and an unchecked one is passed to onWait once
  *   so the caller can warn.
@@ -708,8 +747,10 @@ export async function takeResource(options) {
   const landing = options.landing === true;
   const itemCheck = options.itemCheck === true;
   const shortEligible = options.shortEligible === true;
+  const timing = options.timing === true;
   const diagnostic = options.diagnostic === true;
   const browser = options.browser === true;
+  const gui = options.gui === true;
   const remote = options.remote === true;
   // This synchronous provider is used inside the admission transaction; callers must
   // limit it to a bounded local configuration read, never Git, process inspection or network work.
@@ -719,6 +760,8 @@ export async function takeResource(options) {
   // withGateSlot supplies a once-captured board rank; raw resource clients may leave it unknown.
   const boardKey = typeof options.releaseContext?.board === 'string' ? options.releaseContext.board : '';
   const releaseRank = Number.isSafeInteger(options.releaseContext?.rank) && options.releaseContext.rank >= 0 ? options.releaseContext.rank : Number.MAX_SAFE_INTEGER;
+  if (timing && (name !== 'gate' || scope !== 'machine')) throw new Refused('BAD_RESOURCE_METADATA', 'timing admission requires the machine gate; request name gate with scope machine and timing true');
+  if (options.timing !== undefined && typeof options.timing !== 'boolean') throw new Refused('BAD_RESOURCE_METADATA', 'timing must be an explicit boolean');
   if (browser && name !== 'gate') throw new Refused('BAD_BROWSER_RESOURCE', 'browser capacity can only be acquired together with the machine gate; request name "gate" with browser: true');
   if ((remote || runnerProvider !== undefined) && name !== 'gate') throw new Refused('BAD_REMOTE_RESOURCE', 'remote executors can only be acquired together with the machine gate');
   if (runnerProvider !== undefined && typeof runnerProvider !== 'function') throw new Refused('BAD_RUNNER_POOL', 'runnerProvider must be a function returning configured runners');
@@ -733,6 +776,18 @@ export async function takeResource(options) {
   let pool;
   try { pool = canonicalResourceFile(file); }
   catch (error) { db.close(); throw error; }
+  const awarenessCursor = db.prepare('SELECT COALESCE(MAX(id), 0) AS id FROM timing_client_observation').get().id;
+  const unfenced = new Map();
+  /** Preserve every observed unfenced client throughout this admission and execution. */
+  const timingEvidence = () => {
+    if (!timing) return { exclusive: false, unfencedClients: [] };
+    const observations = db.prepare(`SELECT agent,pid,started FROM timing_client_observation WHERE id > ?
+      UNION SELECT agent,pid,started FROM holder WHERE name = 'gate' AND timing_aware = 0
+      UNION SELECT agent,pid,started FROM waiter WHERE name = 'gate' AND timing_aware = 0`).all(awarenessCursor);
+    for (const client of observations) unfenced.set(`${client.pid}:${client.started}:${client.agent}`, { ...client });
+    return { exclusive: unfenced.size === 0, unfencedClients: [...unfenced.values()] };
+  };
+  timingEvidence();
   const resume = options._resume;
   const token = resume?.token ?? randomUUID();
   const requestedAt = resume?.requestedAt ?? Date.now();
@@ -792,7 +847,7 @@ export async function takeResource(options) {
       if (!resume) {
         // Remote eligibility is metadata on this same ticket; the kind and flags decide the
         // admission class, and the ticket keeps arrival order within it.
-        const inserted = db.prepare('INSERT INTO waiter(token, name, pid, started, agent, repo, since, heartbeat, landing, item_check, diagnostic, browser, item, kind, remote, classed, release_aware, board_key, release_rank, queue_ticket, short_eligible) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(token, name, pid, started, agent, repo, queuedAt, Date.now(), Number(landing), Number(itemCheck || diagnostic), Number(diagnostic), Number(browser), item, kind, Number(remote), classedMarker(queueOrder(scope)), 1, boardKey, releaseRank, resume?.queueTicket ?? null, Number(shortEligible));
+        const inserted = db.prepare('INSERT INTO waiter(token, name, pid, started, agent, repo, since, heartbeat, landing, item_check, diagnostic, browser, item, kind, remote, classed, release_aware, board_key, release_rank, queue_ticket, short_eligible, gui, timing, timing_aware) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(token, name, pid, started, agent, repo, queuedAt, Date.now(), Number(landing), Number(itemCheck || diagnostic), Number(diagnostic), Number(browser), item, kind, Number(remote), classedMarker(queueOrder(scope)), 1, boardKey, releaseRank, resume?.queueTicket ?? null, Number(shortEligible), Number(gui), Number(timing), 1);
         initialTicket = Number(inserted.lastInsertRowid);
       }
     }));
@@ -814,11 +869,11 @@ export async function takeResource(options) {
         const waiter = db.prepare('SELECT ticket FROM waiter WHERE token = ?').get(token);
         if (!waiter) {
           if (resume && initialTicket) {
-            db.prepare('INSERT OR IGNORE INTO waiter(ticket, token, name, pid, started, agent, repo, since, heartbeat, landing, item_check, diagnostic, browser, item, kind, remote, classed, release_aware, board_key, release_rank, queue_ticket, short_eligible) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(initialTicket, token, name, pid, started, agent, repo, queuedAt, Date.now(), Number(landing), Number(itemCheck || diagnostic), Number(diagnostic), Number(browser), item, kind, Number(remote), classedMarker(order), 1, boardKey, releaseRank, resume?.queueTicket ?? null, Number(shortEligible));
+            db.prepare('INSERT OR IGNORE INTO waiter(ticket, token, name, pid, started, agent, repo, since, heartbeat, landing, item_check, diagnostic, browser, item, kind, remote, classed, release_aware, board_key, release_rank, queue_ticket, short_eligible, gui, timing, timing_aware) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(initialTicket, token, name, pid, started, agent, repo, queuedAt, Date.now(), Number(landing), Number(itemCheck || diagnostic), Number(diagnostic), Number(browser), item, kind, Number(remote), classedMarker(order), 1, boardKey, releaseRank, resume?.queueTicket ?? null, Number(shortEligible), Number(gui), Number(timing), 1);
             return { acquired: false, state: { ...snapshot(db, name, order), position: waiterPosition(db, name, initialTicket, { order, shortCapacity: options.shortCapacityProvider?.() ?? 0 }), rejoined: true } };
           }
           queuedAt = new Date().toISOString();
-          const rejoined = db.prepare('INSERT INTO waiter(token, name, pid, started, agent, repo, since, heartbeat, landing, item_check, diagnostic, browser, item, kind, remote, classed, release_aware, board_key, release_rank, queue_ticket, short_eligible) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(token, name, pid, started, agent, repo, queuedAt, Date.now(), Number(landing), Number(itemCheck || diagnostic), Number(diagnostic), Number(browser), item, kind, Number(remote), classedMarker(order), 1, boardKey, releaseRank, resume?.queueTicket ?? null, Number(shortEligible));
+          const rejoined = db.prepare('INSERT INTO waiter(token, name, pid, started, agent, repo, since, heartbeat, landing, item_check, diagnostic, browser, item, kind, remote, classed, release_aware, board_key, release_rank, queue_ticket, short_eligible, gui, timing, timing_aware) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(token, name, pid, started, agent, repo, queuedAt, Date.now(), Number(landing), Number(itemCheck || diagnostic), Number(diagnostic), Number(browser), item, kind, Number(remote), classedMarker(order), 1, boardKey, releaseRank, resume?.queueTicket ?? null, Number(shortEligible), Number(gui), Number(timing), 1);
           initialTicket = Number(rejoined.lastInsertRowid);
           return { acquired: false, state: { ...snapshot(db, name, order), position: waiterPosition(db, name, initialTicket, { order, shortCapacity: options.shortCapacityProvider?.() ?? 0 }), rejoined: true } };
         }
@@ -837,8 +892,8 @@ export async function takeResource(options) {
           db.prepare('DELETE FROM waiter WHERE token = ?').run(token);
           const acquiredAt = new Date().toISOString();
           const holderName = executor.host ? runnerResourceName(executor.host) : name;
-          db.prepare('INSERT INTO holder(token, name, pid, started, agent, repo, since, heartbeat, landing, item_check, diagnostic, browser, item, kind, runner, short_slot) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(token, holderName, pid, started, agent, repo, acquiredAt, Date.now(), Number(landing), Number(itemCheck || diagnostic), Number(diagnostic), Number(browser), item, kind, executor.host, Number(executor.shortSlot === true));
-          return { acquired: true, state: { ...spot, position: 0 }, ticket: waiter.ticket, queueTicket, runner: executor.host ? executor : undefined, shortSlot: executor.shortSlot === true };
+          db.prepare('INSERT INTO holder(token, name, pid, started, agent, repo, since, heartbeat, landing, item_check, diagnostic, browser, item, kind, runner, short_slot, timing, timing_aware) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(token, holderName, pid, started, agent, repo, acquiredAt, Date.now(), Number(landing), Number(itemCheck || diagnostic), Number(diagnostic), Number(browser), item, kind, executor.host, Number(executor.shortSlot === true), Number(timing), 1);
+          return { acquired: true, state: { ...spot, position: 0 }, ticket: waiter.ticket, queueTicket, runner: executor.host ? executor : undefined, shortSlot: executor.shortSlot === true, capacity: limit, admittedAt: acquiredAt };
         }
         return { acquired: false, state: { ...spot, position: reportPosition } };
       }));
@@ -921,8 +976,8 @@ export async function takeResource(options) {
                 requeueOpportunity = requeueTicket;
               }
               db.prepare('DELETE FROM holder WHERE token = ?').run(token);
-              db.prepare('INSERT INTO waiter(ticket, token, name, pid, started, agent, repo, since, heartbeat, landing, item_check, diagnostic, browser, item, kind, remote, classed, release_aware, board_key, release_rank, queue_ticket, short_eligible) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-                .run(requeueTicket, token, name, pid, started, agent, repo, queuedAt, Date.now(), Number(landing), Number(itemCheck || diagnostic), Number(diagnostic), Number(browser), item, kind, Number(remote && !local), marker, 1, boardKey, releaseRank, requeueOpportunity, Number(shortEligible));
+              db.prepare('INSERT INTO waiter(ticket, token, name, pid, started, agent, repo, since, heartbeat, landing, item_check, diagnostic, browser, item, kind, remote, classed, release_aware, board_key, release_rank, queue_ticket, short_eligible, gui, timing, timing_aware) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+                .run(requeueTicket, token, name, pid, started, agent, repo, queuedAt, Date.now(), Number(landing), Number(itemCheck || diagnostic), Number(diagnostic), Number(browser), item, kind, Number(remote && !local), marker, 1, boardKey, releaseRank, requeueOpportunity, Number(shortEligible), Number(gui), Number(timing), 1);
             });
           } catch (error) {
             transferred = false;
@@ -933,8 +988,8 @@ export async function takeResource(options) {
           return takeResource({ ...options, ...(local ? { remote: false } : {}), _resume: { token, ticket: requeueTicket ?? acquired.ticket, queueTicket: requeueOpportunity,
             queuedAt, requestedAt, priorWaitMs: acquiredWaitMs, waitStartedAt: Date.now() } });
         };
-        return { name, scope, token, pool, browser, slotClass: acquired.shortSlot ? 'short' : 'gate', ...(acquired.runner ? { runner: acquired.runner } : {}),
-          waitMs: acquiredWaitMs, release, renew,
+        return { name, scope, token, pool, browser, timing, admittedAt: acquired.admittedAt, capacity: acquired.capacity, slotClass: acquired.shortSlot ? 'short' : 'gate', ...(acquired.runner ? { runner: acquired.runner } : {}),
+          waitMs: acquiredWaitMs, release, renew, timingEvidence,
           ...(acquired.runner ? { requeueRunner } : {}) };
       }
       await keepItemLease(acquired.state, 'waiter');
@@ -951,7 +1006,7 @@ export async function takeResource(options) {
  * The live holder row says whether the lease is a short slot; only a run that names its test files
  * (namedFiles) may reuse one, so a whole suite started under a short check queues for a real slot.
  */
-export function inheritedGateSlot({ root = process.cwd(), browser = false, namedFiles = false } = {}) {
+export function inheritedGateSlot({ root = process.cwd(), browser = false, namedFiles = false, timing = false } = {}) {
   // Taken by the first guard in this process, so nothing it starts (a test body) can write the receipt.
   const refusalFile = process.env[BROWSER_REFUSAL_FILE_ENV] ?? '';
   delete process.env[BROWSER_REFUSAL_FILE_ENV];
@@ -967,9 +1022,10 @@ export function inheritedGateSlot({ root = process.cwd(), browser = false, named
   const db = open(pool, true);
   let holder;
   try {
-    holder = update(db, () => db.prepare("SELECT browser, short_slot AS shortSlot FROM holder WHERE name = 'gate' AND token = ?").get(token));
+    holder = update(db, () => db.prepare("SELECT browser, short_slot AS shortSlot, timing, timing_aware AS timingAware FROM holder WHERE name = 'gate' AND token = ?").get(token));
   } finally { db.close(); }
   if (!holder) throw new Refused('GATE_SLOT_LEASE_LOST', 'the inherited gate lease is missing or expired; remove stale gate markers or let the parent reacquire the gate slot');
+  if (timing && (holder.timing !== 1 || holder.timingAware !== 1)) throw new Refused('TIMING_SLOT_REQUIRED', 'the inherited ordinary lease is not exclusive; start the timing check outside it and acquire timing true');
   const slotClass = holder.shortSlot === 1 ? 'short' : 'gate';
   if (slotClass === 'short' && !namedFiles) throw new Refused('SHORT_SLOT_FULL_SUITE', 'a run that does not name its test files cannot reuse a short gate slot; start it outside the short check so it queues for an ordinary slot');
   const expectedBrowserMarker = holder.browser === 1 ? '1' : '';
@@ -977,7 +1033,7 @@ export function inheritedGateSlot({ root = process.cwd(), browser = false, named
   if (browser && holder.browser !== 1 && refusalFile) writeFileSync(refusalFile, '{"code":"BROWSER_SLOT_REQUIRED"}\n', { mode: 0o600 });
   if (browser && holder.browser !== 1) throw new Refused('BROWSER_SLOT_REQUIRED', 'the inherited gate lease does not hold the browser slot; release it and reacquire gate with browser: true before launching Chrome');
   return {
-    name: 'gate', scope: 'machine', token, pool, browser: holder.browser === 1, slotClass, waitMs: 0,
+    name: 'gate', scope: 'machine', token, pool, browser: holder.browser === 1, timing: holder.timing === 1, slotClass, waitMs: 0,
     release() {}, renew() {},
   };
 }

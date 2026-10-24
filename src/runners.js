@@ -1,4 +1,5 @@
 /** Exact committed source and bounded, credential-free SSH execution for machine runners [C7]. */
+export { placeRunner, runnerStage } from './runner-stage.js';
 import {
   spawn,
   spawnSync,
@@ -52,6 +53,7 @@ import {
   untracked,
 } from './git.js';
 import { Refused } from './refused.js';
+import { recordRunnerGui } from './resources.js';
 import {
   gateStages,
   readStages,
@@ -68,7 +70,7 @@ const MAX_BLOB_BYTES = 8 * 1024 ** 2;
 const MAX_HISTORY_TAGS = 1_024;
 const MAX_TAG_CHAIN = 8;
 const TOOL_ROOT = fileURLToPath(new URL('../', import.meta.url));
-const RUNTIME_NAMES = ['runner-custody.js', 'resources.js', 'git.js', 'machine-home.js', 'refused.js', 'process-census.js', 'queue-settings.js', 'queue-order.js', 'sandbox-denial.js', 'gate-stages.js', 'child-journal-preload.js', 'execution-environment.js'];
+const RUNTIME_NAMES = ['runner-custody.js', 'resources.js', 'git.js', 'machine-home.js', 'refused.js', 'process-census.js', 'queue-settings.js', 'queue-order.js', 'sandbox-denial.js', 'gate-stages.js', 'child-journal-preload.js', 'execution-environment.js', 'runner-load.js', 'gui-session.js'];
 
 /** Validate an SSH destination as one argument, never a command or an SSH option. */
 export function validateRunner(value) {
@@ -77,13 +79,14 @@ export function validateRunner(value) {
     || !Number.isSafeInteger(value.browser) || value.browser < 0 || value.browser > value.slots) {
     throw new Refused('BAD_RUNNER', 'use an SSH host or alias, positive --slots, and --browser from zero through slots');
   }
+  if (value.gui !== undefined && value.gui !== null && typeof value.gui !== 'boolean') throw new Refused('BAD_RUNNER', 'runner gui must be true, false, or unknown');
   for (const key of ['node', 'root']) {
     if (value[key] !== undefined && (typeof value[key] !== 'string' || /[\u0000-\u001f\u007f]/u.test(value[key])
       || !(value[key].startsWith('/') && value[key].length > 1 || key === 'node' && value[key] === 'node'))) {
       throw new Refused('BAD_RUNNER', `runner ${key} must be an absolute remote path${key === 'node' ? ' or node' : ''}`);
     }
   }
-  return { host: value.host, slots: value.slots, browser: value.browser,
+  return { host: value.host, slots: value.slots, browser: value.browser, ...(value.gui !== undefined ? { gui: value.gui } : {}),
     ...(value.node ? { node: value.node } : {}), ...(value.root ? { root: value.root } : {}) };
 }
 
@@ -490,12 +493,12 @@ function requestFor(root, command, { runner, source, browser = false, byLaunch, 
     const projection = metadata.landing === true && Array.isArray(waivers) ? waivers.filter(entry => ['file', 'name'].includes(entry?.kind) && typeof entry.test === 'string' && entry.test).map(({ kind, test }) => ({ kind, test })) : [];
     if (secretsIn([{ path: 'runner continuation', line: 1, text: JSON.stringify(projection) }]).length) throw new Refused('RUNNER_SECRET', 'the continuation projection contains a possible secret; keep this run local');
     const spec = { version: 1, id: randomUUID(), repoId, ...(originBase ? { origin, originBase } : {}), runtime, tooling, tags, ...current, command, pipefail, slots: runner.slots,
-      browser: runner.browser, browserRequired: browser, landing: metadata.landing === true,
+      browser: runner.browser, browserRequired: browser, guiRequired: metadata.gui === true, landing: metadata.landing === true,
       ...(metadata.landing === true && metadata.timeoutMs ? { timeoutMs: metadata.timeoutMs } : {}),
       // The classification this controller used, so the runner never reclassifies by its own settings (#1043).
       browserByLaunch: byLaunch ?? carriedBrowserByLaunch() ?? readMachineSettingsFile()?.gate?.browserByLaunch === true,
       ...(stages ? { stageMarker: `PULLBOARD_STAGE_${randomUUID().replaceAll('-', '')}` } : {}), waivers: projection,
-      itemCheck: metadata.itemCheck === true, diagnostic: metadata.diagnostic === true,
+      itemCheck: metadata.itemCheck === true, diagnostic: metadata.diagnostic === true, timing: metadata.timing === true,
       item: String(metadata.item ?? ''), kind: String(metadata.kind ?? ''), ...(runner.root ? { root: runner.root } : {}),
       ...(typeof metadata.main === 'string' && /^[0-9a-f]{40,64}$/u.test(metadata.main) ? { main: metadata.main } : {}) };
     const encodedSpec = Buffer.from(JSON.stringify(spec));
@@ -529,6 +532,15 @@ function resultFrom(request, result) {
     || receipt.outputSha256 !== createHash('sha256').update(output).digest('hex')) {
     throw new RunnerDropped(request.runner.host);
   }
+  if (receipt.gui !== undefined && ![true, false, null].includes(receipt.gui)) throw new RunnerDropped(request.runner.host);
+  // This field is bound to this exact request and output digest, never read from command text.
+  recordRunnerGui(request.runner.host, receipt.gui ?? null);
+  if (receipt.refused === 'RUNNER_GUI_SESSION_REQUIRED') {
+    if (!request.spec.guiRequired || receipt.gui === true || receipt.code === 0) throw new RunnerDropped(request.runner.host);
+    const refused = new Refused('RUNNER_GUI_SESSION_REQUIRED', `runner ${request.runner.host} has no confirmed GUI session at job start; rerun this GUI-marked file locally or register a logged-in GUI runner`);
+    refused.runnerAttempt = { host: request.runner.host, exitCode: receipt.code, output: output.toString('utf8'), gui: receipt.gui ?? null };
+    throw refused;
+  }
   if (receipt.timedOut !== undefined && (receipt.timedOut !== true || !request.spec.timeoutMs || receipt.code === 0)) throw new RunnerDropped(request.runner.host);
   if (receipt.refused !== undefined) {
     if (typeof receipt.refused !== 'string' || !/^[A-Z][A-Z0-9_]{0,63}$/u.test(receipt.refused) || receipt.code === 0) throw new RunnerDropped(request.runner.host);
@@ -553,6 +565,8 @@ function resultFrom(request, result) {
   const text = staged?.output ?? output.toString('utf8');
   if (receipt.environment !== undefined && environmentProblem(receipt.environment)) throw new RunnerDropped(request.runner.host);
   if (receipt.browserRefused !== undefined && (receipt.browserRefused !== true || receipt.code === 0 || request.spec.browserRequired)) throw new RunnerDropped(request.runner.host);
+  const admission = remoteAdmission(receipt.executionAdmission);
+  if (request.spec.timing === true && (receipt.timing !== true || !admission)) throw new RunnerDropped(request.runner.host);
   // Only the lease guard's own receipt counts; text a test prints is never a refusal (#1043).
   if (receipt.browserRefused === true) {
     const refused = new Refused('RUNNER_BROWSER_SLOT_REQUIRED', `runner ${request.runner.host} refused this run's lease for want of a browser slot (BROWSER_SLOT_REQUIRED)`);
@@ -560,12 +574,32 @@ function resultFrom(request, result) {
     throw refused;
   }
   return { isGreen: receipt.code === 0 && !receipt.signal, output: text, sandboxBlocked, ...(receipt.timedOut ? { timedOut: true } : {}),
-    environment: receipt.environment ?? null,
+    environment: receipt.environment ?? null, executionCapabilities: { gui: receipt.gui ?? null },
     ...(request.spec.stageMarker ? { stages: staged?.stages ?? null } : {}),
     seconds: Math.round(receipt.wallMs / 1000), exitCode: receipt.code,
     executionRunner: request.runner.host, executionRoot: receipt.root, remoteWallMs: receipt.wallMs,
     executionSource: { commit: receipt.commit, tree: receipt.tree, tooling: request.spec.tooling },
-    executionMain: request.spec.main && receipt.main === request.spec.main ? receipt.main : null, executionLoad: remoteLoad(receipt.load) };
+    executionMain: request.spec.main && receipt.main === request.spec.main ? receipt.main : null, executionLoad: remoteLoad(receipt.load), executionAdmission: admission };
+}
+
+/** Validate executor-sampled admission intervals and both load timestamps before trusting timing isolation. */
+function remoteAdmission(value) {
+  if (!value || !Number.isSafeInteger(value.slots) || value.slots < 1) return null;
+  const admitted = Date.parse(value.admittedAt);
+  const finished = Date.parse(value.finishedAt);
+  const startAt = Date.parse(value.load?.start?.at);
+  const endAt = Date.parse(value.load?.end?.at);
+  const start = remoteLoad(value.load?.start);
+  const end = remoteLoad(value.load?.end);
+  if (![admitted, finished, startAt, endAt].every(Number.isFinite) || finished < admitted
+    || startAt < admitted || endAt < startAt || finished !== endAt || !start || !end) return null;
+  if (typeof value.exclusive !== 'boolean' || !Array.isArray(value.unfencedClients)
+    || value.unfencedClients.some(client => !client || typeof client.agent !== 'string'
+      || !Number.isSafeInteger(client.pid) || client.pid < 1 || typeof client.started !== 'string')
+    || value.exclusive && value.unfencedClients.length > 0) return null;
+  return { slots: value.slots, admittedAt: value.admittedAt, finishedAt: value.finishedAt,
+    exclusive: value.exclusive, unfencedClients: value.unfencedClients,
+    load: { start: { at: value.load.start.at, ...start }, end: { at: value.load.end.at, ...end } } };
 }
 
 /** The execution host's load from a receipt, or null when any part of it is missing or malformed (#925). */

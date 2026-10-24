@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** Real-input addresses, rendered places and browser history [N38,N26]. */
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';

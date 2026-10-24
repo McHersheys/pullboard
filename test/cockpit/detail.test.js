@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** Cockpit item detail checks: lists from summaries, detail on demand, using the shared real-board fixtures [N26,A2]. */
 import assert from 'node:assert/strict';
 import { join } from 'node:path';

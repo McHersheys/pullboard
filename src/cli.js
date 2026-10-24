@@ -1,3 +1,12 @@
+export { barActorForCommand } from './bar-actor.js';
+import {
+  barReadinessRequired,
+  barReadiness,
+} from './bar-readiness.js';
+import {
+  barCoverageCommand,
+  barCoverageForPolicy,
+} from './bar-coverage.js';
 import { identifyCaller } from './cli-identity.js';
 /**
  * The pullboard command line: every command, bound to who is asking (B3, R3). The main checkout is the
@@ -604,7 +613,8 @@ export async function ordered(ctx, board, operation, args) {
 /** Order a claim on every route (claim, next, run) only after a check green on main is not held [V4]. */
 export async function claimOrdered(ctx, board, args) {
   refuseClaimProvesNothing(ctx.info.root, board, args[0]);
-  return await ordered(ctx, board, 'claim', args);
+  return await ordered(ctx, board, 'claim', [args[0], { ...args[1],
+    reviewPolicy: ctx.config.verify.policy, familyPolicy: ctx.config.verify.family }]);
 }
 
 /**
@@ -721,7 +731,9 @@ export function freezer(ctx, { captureVerifyPolicy = false, board } = {}) {
     if (board) refuseAgentApprovedRows(ctx.info.root, { board, config, item });
     const frozen = frozenCriterion(loadSpec(ctx.info.root, config), item, doctrine);
     if (!policy) return frozen; // Legacy criteria retain their original digest and committed claim base.
-    const text = JSON.stringify({ ...JSON.parse(frozen.text), policy });
+    const signed = board && barReadinessRequired(board, item) ? barReadiness(board, item).signed : null;
+    const coverage = signed?.coverage ? barCoverageForPolicy(ctx.info.root, item, signed.coverage, { commit: policy.commit, config }) : null;
+    const text = JSON.stringify({ ...JSON.parse(frozen.text), ...(coverage ? { sourceCheck: item.item_check, check: barCoverageCommand(item.item_check, coverage), barCoverage: coverage, barRevision: signed.revision } : {}), policy });
     return { text, digest: createHash('sha256').update(text).digest('hex') };
   };
 }
@@ -757,7 +769,7 @@ function prepareClaimSpec(ctx, item) {
   } catch {
     throw specBehindMain(policy.config.spec, missing);
   }
-  Object.assign(ctx, context(ctx.io));
+  Object.defineProperties(ctx, Object.getOwnPropertyDescriptors(context(ctx.io)));
   return missing;
 }
 
@@ -1109,11 +1121,11 @@ export function recordSetupState(ctx, identity, state) {
   renameSync(temporary, file);
 }
 
-/** Derive the next setup question from the real requirements, config, items and view receipt. */
-export function boardSetup(ctx, card, identity) {
+/** Derive setup from real inputs; a caller may share its already-read current decision snapshot. */
+export function boardSetup(ctx, card, identity, { decisions: capturedDecisions } = {}) {
   const rows = loadSpec(ctx.info.root, ctx.config).rows;
   const approved = rows.filter(row => row.status === 'approved');
-  const decisions = withBoard(ctx, (board) => store.rowDecisions(board));
+  const decisions = capturedDecisions ?? withBoard(ctx, (board) => store.rowDecisions(board));
   const open = setupDecisionRows(ctx.info.root, ctx.config, decisions, rows);
   const toApply = open.filter(row => row.decision);
   const drafted = open.filter(row => !row.decision);
@@ -1525,7 +1537,7 @@ function nextPick(ctx, board, values) {
   if (offer && !values.build) return { item: offer.item, offer, build: item ?? null };
   if (!item) return { reasons, laneWork: ctx.info.isMain ? mainLaneWork(store.listItems(board)) : null };
   const reviewSkipped = values.build && !held
-    ? { offeredItem: offer?.item.item_id ?? null, ratio: ctx.config.verify.reviewRatio, ...store.reviewQueue(board) } : null;
+    ? { offeredItem: offer?.item.item_id ?? null, ratio: offer?.ratio ?? ctx.config.verify.reviewRatio, ...store.reviewQueue(board) } : null;
   return { claim: true, me, item, held, shared, reasons, reviewSkipped, seats };
 }
 
@@ -1735,4 +1747,3 @@ export function privateNames(root, board, spec) {
   add(hostname().split('.')[0]);
   return { names: [...names], parts: [...parts] };
 }
-
