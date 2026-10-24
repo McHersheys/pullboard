@@ -172,7 +172,7 @@ test('a refused writer names the board lock holder [C7,P4,B2]', async t => {
   assert.equal(record.command, 'private-lock-holder');
   assert.equal(record.seat, 'coordinator');
   assert.equal(record.pid, holder.pid);
-  assert.ok(record.durationMs > 2_000, 'the real busy timeout held the writer longer than the declared 2 s threshold');
+  assert.ok(record.durationMs > 2_000, 'the real busy timeout held the writer longer than the declared 2 s threshold'); // budget: declared #1197 over-2s logging threshold.
 });
 
 
@@ -207,7 +207,7 @@ test('a nested rolled-back writer logs once and leaves no live advisory record [
   assert.equal(records.length, 1, 'nested savepoints do not duplicate the outer hold');
   assert.equal(records[0].command, 'private-rollback');
   assert.equal(records[0].outcome, 'rolled-back');
-  assert.ok(records[0].durationMs > 2_000);
+  assert.ok(records[0].durationMs > 2_000); // budget: declared #1197 over-2s logging threshold.
   assert.equal(boardWriteHolderText(file), '', 'released writers do not remain current');
   assert.deepEqual(snapshot(file), before, 'diagnostic metadata never changes native board state');
   const stale = join(file + '.write-holders', `${process.pid}-deadbeef.json`);
@@ -252,7 +252,7 @@ test('a real CLI writer labels its long transaction without changing JSON or nat
   assert.equal(records[0].seat, 'web-1');
   assert.equal(records[0].outcome, 'committed');
   assert.ok(Number.isSafeInteger(records[0].pid));
-  assert.ok(records[0].durationMs > 2_000);
+  assert.ok(records[0].durationMs > 2_000); // budget: declared #1197 over-2s logging threshold.
   const after = snapshot(file);
   assert.equal(after.tables.shout.length, before.tables.shout.length + 1);
   assert.equal(after.tables.event.length, before.tables.event.length + 1);
