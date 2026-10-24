@@ -234,6 +234,7 @@ export const NEXT_STEPS = Object.freeze({
   RELAY_CONFIG: 'ask the relay operator to repair the named service setting and restart; retain the local board and pending upload',
   RELAY_PAGE_CACHE: 'close other local Pullboard commands, then restore the private relay-pages cache permissions or remove only that device cache and retry; keep the board, relay link and key',
   INFRA_NOTE_REQUIRED: 'run pullboard submit <id> --infra "<why>" with the reason the edit to an existing test or gate file is needed',
+  TIMING_SLOT_REQUIRED: 'start the timing check outside its inherited ordinary lease and acquire the machine gate with timing true',
   SHORT_SLOT_FULL_SUITE: 'run the whole suite outside the short check, where it queues for an ordinary gate slot; short slots are only for runs that name their test files',
   GIT_GRAFTS: 'ask the coordinator to remove the git graft file: pullboard shout coordinator "please remove .git/info/grafts"',
   HEAD_NOT_NEW: 'commit the rework, then pullboard submit <id>',
