@@ -52,6 +52,7 @@ export function createRelayBrowserHandler({ authenticate }) {
     ['/relay/relay-limits.js', ['text/javascript', readFileSync(new URL('../src/relay-limits.js', import.meta.url), 'utf8')]],
     ['/relay/sign-in.js', ['text/javascript', SIGN_IN_TRANSPORT]],
     ['/relay/browser-notice.js', ['text/javascript', readFileSync(new URL('./browser-notice.js', import.meta.url), 'utf8')]],
+    ['/relay/browser-upload-status.js', ['text/javascript', readFileSync(new URL('./browser-upload-status.js', import.meta.url), 'utf8')]],
     ['/relay/browser-deadline.js', ['text/javascript', readFileSync(new URL('./browser-deadline.js', import.meta.url), 'utf8').replace("'../src/refused.js'", "'./refused.js'")]],
     ['/relay/browser-stream.js', ['text/javascript', readFileSync(new URL('./browser-stream.js', import.meta.url), 'utf8')]],
     ['/relay/browser-pages.js', ['text/javascript', readFileSync(new URL('./browser-pages.js', import.meta.url), 'utf8').replaceAll("'../src/relay-page-layout.js'", "'./page-layout.js'").replaceAll("'../src/sealed-pages.js'", "'./sealed-pages.js'").replaceAll("'../src/refused.js'", "'./refused.js'")]],

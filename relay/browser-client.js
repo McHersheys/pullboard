@@ -13,6 +13,7 @@ import { browserJSON, withBrowserDeadline } from './browser-deadline.js';
 import { phoneApprovalStatus, placePhoneApprovals, forgetPhoneApprovals } from './browser-approval-card.js';
 import { phoneSnapshotPages } from './browser-pages.js';
 import { createPhoneHistory } from './browser-history.js';
+import { readUploadSize } from './browser-upload-status.js';
 
 const CHECKPOINT_WAIT_MS = 15_000;
 const KEYS = 'pullboard.relay.keys.v1';
@@ -113,6 +114,7 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
   const approvedBoards = new Set();
   let pendingLinks = [];
   let pendingLinksFailure = '';
+  let sizeProblems = new Map();
   let warnings = [];
   let failure = '';
   let failureBoard = null;
@@ -223,7 +225,7 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
       entry.key = null;
     }
     paired.clear();
-    available = []; waitingBoards.clear(); pendingLinks = []; pendingLinksFailure = ''; warnings = []; pair = null;
+    available = []; waitingBoards.clear(); sizeProblems.clear(); pendingLinks = []; pendingLinksFailure = ''; warnings = []; pair = null;
     for (const id of Object.keys(keys)) delete keys[id];
     document.querySelector('main')?.replaceChildren();
     if (error?.code !== 'DEVICE_REVOKED') { location.replace('/'); return; }
@@ -259,7 +261,7 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
       try { state = storedOwnedRequestState(localStorage, key, entry.state?.personRequests); } catch { /* Missing device storage can only hide this device's own notice. */ }
       ownedRequestIds.set(id, state.owned);
     }
-    const lines = noticeLines({ available, paired, ownedRequestIds, waitingBoards, approvedBoards, pendingLinks, warnings,
+    const lines = noticeLines({ available, paired, ownedRequestIds, waitingBoards, sizeProblems, approvedBoards, pendingLinks, warnings,
       failure: failure || pendingLinksFailure });
     for (const text of lines) {
       const paragraph = document.createElement('p');
@@ -275,7 +277,7 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
     // A phone has no local-view screen to fall back to: keep its shell and the real reason until a board is readable.
     const root = document.documentElement;
     const phoneWaiting = root.dataset.relayDevice === 'phone' && (!rendered || paired.size === 0);
-    const step = emptyBoardStep({ available, waitingBoards, approvedBoards, loaded: inventoryLoaded, browserPaired, failure });
+    const step = emptyBoardStep({ available, waitingBoards, sizeProblems, approvedBoards, loaded: inventoryLoaded, browserPaired, failure });
     showRelayScreen(root, phoneWaiting || paired.size === 0 ? 'share' : null,
       phoneWaiting && (failure || waitingBoards.size || warnings.some(value => ['ACCOUNT_STORAGE_WARNING', 'ACCOUNT_STORAGE_LIMIT'].includes(value?.code))) ? lines.join(' ') : '', step);
     placePhoneApprovals(document);
@@ -565,6 +567,7 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
     available = document.boards.filter(board => BOARD.test(board.id) && typeof board.repository === 'string');
     inventoryLoaded = true;
     waitingBoards = new Map();
+    sizeProblems = new Map();
     warnings = document.warnings ?? [];
     const visible = new Set(available.map(board => board.id));
     for (const [id, entry] of paired) if (!visible.has(id)) { entry.stream?.close(); entry.history?.close(); entry.pageCache?.clear(); paired.delete(id); }
@@ -574,7 +577,10 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
       if (!encoded) continue;
       try {
         const entry = { id: board.id, repository: board.repository, key: decodeBoardKey(encoded), cursor: -1, checkpointCursor: -1, state: null, shouts: null, outbox: null };
+        const size = await readUploadSize(path => documentAt(path, denied), entry);
+        if (size) sizeProblems.set(board.id, size);
         await snapshot(entry);
+        sizeProblems.delete(board.id);
         await catchUp(entry);
         if (accessLost) throw new Error('Sign in again to read this board.');
         paired.get(board.id)?.stream?.close(); paired.get(board.id)?.history?.close(); paired.get(board.id)?.pageCache?.clear();

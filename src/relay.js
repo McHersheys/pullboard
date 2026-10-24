@@ -376,6 +376,7 @@ async function rawRequest(state, path, { method = 'GET', body, allowMissing = fa
     error.relayVersion = document.version;
     error.relayCode = document.error?.code;
     error.relayMessage = document.error?.message;
+    if (document.version === 1 && document.error?.code === 'BAD_UPLOAD') error.snapshotLimit = document.error.snapshotLimit;
     if (/^[0-9a-f]{64}$/u.test(document.error?.page ?? '')) error.page = document.error.page;
     const storage = relayStorage(document.error?.storage);
     if (storage) error.storage = storage;
@@ -450,6 +451,33 @@ function snapshotSize(state) {
   const bytes = Buffer.from(sealed, 'base64url');
   if (bytes.toString('base64url') !== sealed || bytes.byteLength <= SEALED_SNAPSHOT_LIMIT) return null;
   return { board: state.board, sealedBytes: bytes.byteLength, limit: SEALED_SNAPSHOT_LIMIT };
+}
+
+/** Accept a structured relay limit only when its measurement matches the exact refused ciphertext. */
+function reportedSnapshotSize(error, state) {
+  const value = error.snapshotLimit;
+  if (!value || Object.keys(value).sort().join(',') !== 'limit,sealedBytes'
+      || !Number.isSafeInteger(value.sealedBytes) || !Number.isSafeInteger(value.limit)
+      || value.limit < 1 || value.limit > SEALED_SNAPSHOT_LIMIT || value.sealedBytes <= value.limit
+      || ![400, 413].includes(error.httpStatus) || typeof state.snapshot?.sealed !== 'string') return null;
+  const bytes = Buffer.from(state.snapshot.sealed, 'base64url');
+  if (bytes.toString('base64url') !== state.snapshot.sealed || bytes.byteLength !== value.sealedBytes) return null;
+  return { sealedBytes: bytes.byteLength, limit: value.limit };
+}
+
+/** Publish only an actually received, measured refusal, sealed to the existing board key. */
+async function publishSnapshotSize(state, io) {
+  const pause = state.baselinePause;
+  if (!pause?.reportedSize || pause.sizeNoticePublished) return;
+  const value = { version: 1, kind: 'snapshot-size-refusal', board: state.board, engine: ENGINE_VERSION, ...pause.size };
+  try {
+    const sealed = Buffer.from(await seal(readBoardKey(state.board), new TextEncoder().encode(JSON.stringify(value)),
+      { boardId: state.board, kind: 'snapshot', sequence: 0 })).toString('base64url');
+    await rawRequest(state, '/api/v1/boards/' + state.board + '/upload-status', { method: 'PUT', body: { sealed } }, io);
+    pause.sizeNoticePublished = true;
+    const file = STATE_FILES.get(state);
+    if (file) saveLink(file, state);
+  } catch { io.err('The board is paused locally; its sealed size notice could not reach the relay. Retry when the relay is reachable.'); }
 }
 
 /** Return the local pending snapshot's oversize details without contacting the relay. */
@@ -669,15 +697,18 @@ async function uploadInitialBaseline(root, file, state, io) {
       rememberBaselineFailure(io, file, uncertain);
       throw uncertain;
     }
-    const size = pendingSnapshotSize(root);
+    const reported = reportedSnapshotSize(error, state);
+    const size = reported ?? pendingSnapshotSize(root);
     state.baselinePause = {
       status: error.httpStatus,
       code: safePauseCode(error),
       message: safePauseMessage(error),
       ...(size ? { size: { sealedBytes: size.sealedBytes, limit: size.limit } } : {}),
+      ...(reported ? { reportedSize: true } : {}),
     };
     // Retain the refused ciphertext and its source cursor; blocked commands do not re-seal it.
     saveLink(file, state);
+    await publishSnapshotSize(state, io);
     reportBaselinePause(state, io);
     return false;
   }
@@ -688,6 +719,7 @@ async function retryPausedBaseline(root, file, state, io) {
   if (!(state.baselinePause || state.baselineStale) || attemptedBaselineThisCommand(io, file)) return !(state.baselinePause || state.baselineStale);
   try {
     if (!await uploadRetryReady(state, state.baselinePause, path => request(state, path, {}, io))) {
+      await publishSnapshotSize(state, io);
       saveLink(file, state); reportBaselinePause(state, io); return false;
     }
     const document = relaySnapshot(root);
