@@ -11,6 +11,8 @@ import { TEST_FILE_CORES_ENV, TEST_FILE_POOL_ENV, occupiedPlaces } from '../src/
 import { GATE_SLOT_HELD_ENV, GATE_SLOT_POOL_ENV, GATE_SLOT_TOKEN_ENV, BROWSER_SLOT_HELD_ENV } from '../src/resources.js';
 
 const runner = fileURLToPath(new URL('../bin/run-tests.js', import.meta.url));
+// Keep generated launch code as data: this classifier test never launches the browser it describes.
+const browserFixtureSource = ["import { spawn } from 'node:child_process';\nspawn('Google", " Chrome');\n"].join('');
 
 test('a shell check is admitted by the test files it runs [C7,Q1,Q3]', async (t) => {
   const { root, env } = fixture(t, 2);
@@ -18,7 +20,7 @@ test('a shell check is admitted by the test files it runs [C7,Q1,Q3]', async (t)
   mkdirSync(join(root, 'test'));
   writeFileSync(join(root, 'bin/run-tests.js'), "throw new Error('classification must not execute the runner');\n");
   writeFileSync(join(root, 'test/core.test.js'), "import { test } from 'node:test';\nthrow new Error('classification must not execute tests');\n");
-  writeFileSync(join(root, 'test/browser.test.js'), "import { spawn } from 'node:child_process';\nspawn('Google Chrome');\n");
+  writeFileSync(join(root, 'test/browser.test.js'), browserFixtureSource);
   const admission = new URL('../src/browser-admission.js', import.meta.url).href;
   const gate = new URL('../src/gate.js', import.meta.url).href;
   const commands = [
@@ -56,7 +58,7 @@ test('shell admission preserves opaque suffixes and the existing short-slot boun
   mkdirSync(join(root, 'test'));
   writeFileSync(join(root, 'bin/run-tests.js'), "throw new Error('classification must not execute the runner');\n");
   writeFileSync(join(root, 'test/core.test.js'), "import { test } from 'node:test';\n");
-  writeFileSync(join(root, 'test/browser.test.js'), "import { spawn } from 'node:child_process';\nspawn('Google Chrome');\n");
+  writeFileSync(join(root, 'test/browser.test.js'), browserFixtureSource);
   /** Build the coordinator's literal saved-exit and fail/skip wrapper without executing it. */
   const capture = (file, quote = "'", slashes = 1) => {
     const print = `printf ${quote}%s${'\\'.repeat(slashes)}n${quote} "$out"`;
