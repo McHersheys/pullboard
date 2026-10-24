@@ -56,6 +56,7 @@ export function personRequestGuidance(message, { caller, leading = false } = {})
 
 /** @type {Readonly<Record<string, string>>} */
 export const NEXT_STEPS = Object.freeze({
+  CHECK_NO_PROOF: 'strengthen the trusted criterion so it fails before the outside change, then ask the coordinator to refreeze it',
   OUTSIDE_URL: 'use a GitHub issue or pull request URL with owner/repository and its positive number',
   OUTSIDE_FETCH: 'restore read-only gh API and Git fetch access, then intake the exact source again',
   OUTSIDE_SOURCE: 'fetch the exact GitHub source metadata and its immutable commit/tree before intake',

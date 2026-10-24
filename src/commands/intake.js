@@ -22,7 +22,7 @@ export async function run(io, { first, second, values }) {
       return 0;
     }
     const source = githubSource(ctx.info.root, first);
-    const lane = values.lane ?? me.lane ?? Object.keys(ctx.config.lanes)[0];
+    const lane = values.lane ?? (ctx.config.lanes[me.lane] ? me.lane : Object.keys(ctx.config.lanes)[0]);
     if (!lane || !ctx.config.lanes[lane]) throw new Refused('NO_LANE', 'choose a configured lane with --lane before intake');
     if (source.kind === 'pull-request' && (!values.criterion?.trim() || !values.check?.trim())) throw new Refused('CHECK_REQUIRED', 'intake a pull request with --criterion "behavior" --check "command" from the trusted coordinator checkout');
     const item = { lane, title: source.title, criterion: values.criterion ?? '', check: values.check, specIds: [], route: 'strong' };
