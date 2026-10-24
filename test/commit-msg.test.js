@@ -51,6 +51,9 @@ test('a push whose base has no maintainers list passes with the policy not activ
   const opaqueHead = checkPush(inactiveBase);
   assert.equal(opaqueHead.status, 0, opaqueHead.failure || opaqueHead.stderr);
   assert.equal(opaqueHead.stdout, bootstrap.stdout);
+  const initialPush = checkPush('0'.repeat(40));
+  assert.equal(initialPush.status, 0, initialPush.failure || initialPush.stderr);
+  assert.equal(initialPush.stdout, 'sign-off policy not active at base (none)\n');
 
   box.env.GIT_AUTHOR_NAME = 'Test Agent';
   box.env.GIT_AUTHOR_EMAIL = 'agent@example.com';
