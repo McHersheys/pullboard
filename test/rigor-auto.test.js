@@ -7,6 +7,10 @@ import { join } from 'node:path';
 import { after, test } from 'node:test';
 import * as store from '../src/board.js';
 import { personNeedsState } from '../src/needs-state.js';
+import { resumeNeeds } from '../src/resume-needs.js';
+import { resumeRigorCounters } from '../src/rigor-counters.js';
+import { RIGOR_COLD_NOTICE } from '../src/rigor-counters.js';
+import { clearProofCounters } from '../src/proof-counters.js';
 import { readDigest } from '../src/digest.js';
 import { submitFixture } from './board-submit-fixture.js';
 import { runFixtureChild, runFixtureGit } from './fixture-child.js';
@@ -77,7 +81,7 @@ function fixture() {
     advance: ms => { now = new Date(now.getTime() + ms); }, close: () => store.closeBoard(board) };
 }
 
-test('a repeated cause becomes a draft row in Needs you with no command run [D1,D3,S1]', () => {
+test('a repeated cause becomes a draft row in Needs you with no command run [D1,D3,S1,N19]', () => {
   const box = fixture();
   try {
     const before = ['SPEC.md', 'DOCTRINE.md', 'pullboard.json'].map(file => readFileSync(join(box.root, file), 'utf8'));
@@ -93,6 +97,20 @@ test('a repeated cause becomes a draft row in Needs you with no command run [D1,
     assert.ok(needs.length > 0, 'the person sees the board-only draft immediately');
     assert.ok(needs.every(need => need.unproved === true && need.proof == null));
     assert.ok(needs.some(need => need.evidence.items.map(item => item.id).join(',') === `${one},${two}`));
+
+    const coordinator = resumeNeeds(box.root, { board: box.board, config: loadConfig(box.root), includeRigorUndrafted: true });
+    assert.ok(coordinator.rigorUndrafted.every(cause => !needs.some(need => need.cause === cause.key)),
+      'an automatically drafted repeat is not also listed as undrafted advice [N19]');
+    const options = { person: store.PERSON, drafts: store.rowDrafts(box.board), decisions: store.rowDecisions(box.board) };
+    const hot = resumeRigorCounters(box.board, coordinator, options);
+    assert.deepEqual(hot.causes, coordinator.rigorUndrafted);
+    assert.equal(hot.notice, null);
+    const nativeEvents = store.events(box.board).length;
+    clearProofCounters(box.board);
+    const cold = resumeRigorCounters(box.board, coordinator, options);
+    assert.deepEqual(cold.causes, hot.causes, 'cold compatibility applies the same automatic-draft suppression');
+    assert.equal(cold.notice, RIGOR_COLD_NOTICE);
+    assert.equal(store.events(box.board).length, nativeEvents, 'cold compatibility never writes a native move');
 
     for (const title of ['First merge collision', 'Second merge collision']) {
       const id = box.submit(title);

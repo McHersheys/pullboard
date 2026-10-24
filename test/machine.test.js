@@ -162,6 +162,13 @@ const CAUGHT = {
   'spec-approval.js#specApprovalState': ['board-query.js#specApprovalBaseline'],
   // Historical decline metadata is parsed inside a non-throwing boundary, covered by the Rigor history control.
   'board.js#reopen': ['rigor-notices.js#declinedRigorSource'],
+  // Rigor projection folds inspect invalid cause results as data, never lifecycle refusals.
+  'rigor.js#eventCauses': ['rigor.js#causeProblem'],
+  'rigor-counter-state.js#neverKey': ['rigor.js#causeProblem'],
+  // Historical decline grammar is caught locally; typed readers return invalid evidence as null.
+  'rigor-counter-state.js#declineKey': ['spec.js#parseSpec'],
+  'rigor-source.js#readRigorSource': ['rigor.js#causeProblem'],
+  'rigor-auto-source.js#readAutomaticRigorSource': ['rigor.js#causeProblem'],
   // Only an unsupported historical grammar is ignored; new caller refusals remain audited below.
   'rigor-auto-source.js#automaticDecisionSource': ['spec.js#parseSpec'],
   'rigor-auto-source.js#rigorDecisionKey': ['spec.js#parseSpec'],
@@ -1485,4 +1492,10 @@ test('transport boundaries keep a new item refusal in ordered dispatch visible [
     'MOON_PHASE is raised by accept and reject but not declared there',
     'MOON_PHASE is raised by submit but not declared there',
   ], 'transport authentication is separate but a dispatcher item guard still belongs to the lifecycle');
+});
+
+
+test('Rigor historical data boundaries do not hide a new projection refusal [M1,M4]', () => {
+  const broken = editedSource('rigor-counter-state.js', /export function rigorCounterKeys\(event, person\) \{/, "export function rigorCounterKeys(event, person) { if (event.event_kind === 'probe') throw new Refused('RIGOR_PROBE', 'new item eligibility rule');");
+  assert.ok(codeProblems(MACHINE, broken).includes('RIGOR_PROBE is raised by claim but not declared there'));
 });

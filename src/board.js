@@ -1,3 +1,4 @@
+import { ensureProofCounters } from './proof-counters.js';
 import { correctedNoVerdictReopen } from './reopen-history.js';
 import {
   getShout,
@@ -11,6 +12,7 @@ export {
   getShout,
   allShouts,
   shoutDetails,
+  decisionAnswers,
   openRequests,
   pendingRefreeze,
   pendingRefreezeProblem,
@@ -31,10 +33,8 @@ import {
 } from './line-order.js';
 export { lineSettings, setLineSetting } from './line-settings.js';
 
-import {
-  applyOutsideIntake,
-  approveOutside as applyOutsideApproval,
-} from './outside-store.js';
+import { applyOutsideIntake } from './outside-store.js';
+import { approveOutside as applyOutsideApproval } from './outside-store.js';
 import {
   outsideSandboxProblem,
   outsideBuildProblem,
@@ -43,16 +43,12 @@ import {
   saveOutsideSource,
 } from './outside-source.js';
 import { FILE_GROWTH_NOTICE_ENGINE } from './file-growth-notice-engine.js';
-import {
-  recordBarRevision,
-  barReadyProblem,
-} from './bar-readiness.js';
+import { recordBarRevision } from './bar-readiness.js';
+import { barReadyProblem } from './bar-readiness.js';
 export { setBarReady, signBar } from './bar-readiness.js';
-import {
-  coordinatorCheck,
-  normalizeCheckBaseline,
-  saveCheckBaseline,
-} from './item-check-baseline.js';
+import { coordinatorCheck } from './item-check-baseline.js';
+import { normalizeCheckBaseline } from './item-check-baseline.js';
+import { saveCheckBaseline } from './item-check-baseline.js';
 export { coordinatorCheck, completeCheckBaseline, itemCheckAuthor } from './item-check-baseline.js';
 import {
   closeBoard,
@@ -356,6 +352,7 @@ export function openBoard(file, clock = systemClock, { isMain, onDiagnostic } = 
     db.exec(`PRAGMA busy_timeout = ${BOARD_BUSY_TIMEOUT_MS}`);
     if (file !== ':memory:' && isMain !== false) db.exec('PRAGMA journal_mode = WAL');
     const board = { db, clock };
+    let warmCounters = true;
     if (isMain !== false || file === ':memory:') {
       // Migrate and audit only a board whose version is behind; a drifted shape is reported and left alone (#1047).
       const standing = boardStanding(db, SCHEMA_DIGEST, SCHEMA_VERSION, readEventLogVersion(db) < EVENT_LOG_VERSION);
@@ -367,13 +364,17 @@ export function openBoard(file, clock = systemClock, { isMain, onDiagnostic } = 
         guardStore(board);
       }
       if (standing === 'behind' || standing === 'unstamped') recordSchemaStamp(db, SCHEMA_DIGEST);
-      if (standing === 'drifted') reportDrift(file, onDiagnostic);
+      if (standing === 'drifted') { warmCounters = false; reportDrift(file, onDiagnostic); }
     } else {
       // Read compatibility before any local effect; persistent schema belongs to trunk alone.
       readEventLogVersion(db);
       reportSharedSchema(file, sharedSchemaDiagnostic(db, expectedBoardSchema(SCHEMA, migrate, storeTriggers)), onDiagnostic);
     }
     guardMoves(board);
+    // Writable commands catch up old writers or missing local projections once. Read-only open
+    // never calls this path; drifted stores remain untouched, and invalid history stays invalid.
+    // Proof warming also preserves the Rigor projection, including after a proof-cache rebuild.
+    if (warmCounters) atomic(board, () => ensureProofCounters(board));
     return board;
   } catch (error) {
     try { db?.close(); } catch {}

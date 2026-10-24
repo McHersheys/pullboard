@@ -1,7 +1,5 @@
-import {
-  AGENT_SHELL_MARKERS,
-  SSH_SHELL_MARKERS,
-} from '../src/person.js';
+import { commandPhaseSnapshot } from '../src/command-phase.js';
+import { AGENT_SHELL_MARKERS, SSH_SHELL_MARKERS } from '../src/person.js';
 /** Private real CLI, auth and relay fixture; credentials never enter assertion messages [H1,H7,H18]. */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -130,7 +128,8 @@ function childResult(root, env, argv, observedSnapshotUploads, initialSnapshotUp
     /** Retain the exact command and work-derived bound without exposing credentials. */
     const reportFailure = (code, signal, detail = '') => reportFixtureChildFailure({
       command: process.execPath, args: argv, status: code, signal,
-      elapsedMs: performance.now() - startedAt, stderr, env, detail,
+      elapsedMs: performance.now() - startedAt, stderr, env, detail: exceededDeadline
+        ? detail + '\nstall phase capture: ' + JSON.stringify(commandPhaseSnapshot(env.PULLBOARD_COMMAND_PHASE_FILE, child.pid)) : detail,
     });
     child.once('error', error => {
       if (settled) return;
@@ -570,6 +569,7 @@ globalThis.fetch = function tracedFetch(input, init) {
   }
   /** Invoke the production CLI in this private repository. */
   let cliChildIndex = 0;
+  let phaseSequence = 0;
   /** Verify and consume the next optional test-flow child descriptor. */
   function plannedSnapshotUploads(args) {
     if (!cliChildren) return undefined;
@@ -587,9 +587,10 @@ globalThis.fetch = function tracedFetch(input, init) {
     /** Observe only this child's received work; retries consume the same finite six-unit allowance. */
     const observedWork = () => ({ legacyUploads: snapshotWriteCount - writesBefore,
       ...Object.fromEntries(Object.entries(pageWork).map(([name, count]) => [name, count - pagesBefore[name]])) });
-    const childEnv = traceSnapshotWrites ? { ...env, PULLBOARD_TEST_RELAY_TRACE_FILE: traceFile,
+    const phaseEnv = { ...env, PULLBOARD_COMMAND_PHASE_FILE: join(scratch, `command-phase-${++phaseSequence}.jsonl`) };
+    const childEnv = traceSnapshotWrites ? { ...phaseEnv, PULLBOARD_TEST_RELAY_TRACE_FILE: traceFile,
       PULLBOARD_TEST_RELAY_TRACE_ORIGIN: origin,
-      NODE_OPTIONS: [env.NODE_OPTIONS, '--import=' + pathToFileURL(tracePreload).href].filter(Boolean).join(' ') } : env;
+      NODE_OPTIONS: [env.NODE_OPTIONS, '--import=' + pathToFileURL(tracePreload).href].filter(Boolean).join(' ') } : phaseEnv;
     const traceLinesBefore = traceSnapshotWrites ? readFileSync(traceFile, 'utf8').split('\n').filter(Boolean).length : 0;
     const initialUploads = traceSnapshotWrites ? 0 : snapshotUploads ?? DEFAULT_SNAPSHOT_UPLOADS;
     /** Read only this child’s sanitized fetch records, retaining evidence before fixture cleanup. */

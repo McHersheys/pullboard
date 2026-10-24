@@ -6,6 +6,8 @@
  */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { dirname } from 'node:path';
+import { mkdirSync } from 'node:fs';
 import { mkdtempSync } from 'node:fs';
 import { readFileSync } from 'node:fs';
 import { realpathSync } from 'node:fs';
@@ -24,6 +26,8 @@ const ROOT = resolve(import.meta.dirname, '..');
 const PATTERN_HOLDERS = new Set(['test/privacy-words.test.js', 'docs/privacy.test.js', 'test/cockpit/privacy-scan.test.js']);
 /** Placeholder home folders that tests plant on purpose to prove redaction. */
 const PLACEHOLDER_HOMES = new Set(['private', 'example', 'person', 'user', 'me', 'you', 'name']);
+/** The one exact container-home declaration that is not a host user's home path. */
+const CONTAINER_HOME_DECLARATION = "const SANDBOX_CONTAINER_HOME = '/home/sandbox';";
 const MACHINES = ['Stu' + 'dio', 'Mac' + 'Book', 'M' + 'BP'];
 
 /** Escape text for a regular expression. */
@@ -59,6 +63,11 @@ function problemsIn(text, where, active) {
   return active.filter((rule) => rule.pattern.test(text)).map((rule) => `${where}: ${rule.name}`);
 }
 
+/** Recognize only the declared sandbox container-home constant, never other uses of that path. */
+function isContainerHomeDeclaration(path, line) {
+  return path === 'src/sandbox-verify.js' && line === CONTAINER_HOME_DECLARATION;
+}
+
 /**
  * The privacy problems in a repository: each tracked text file, and each commit body in the range a push would send.
  *
@@ -74,7 +83,10 @@ function privacyProblems(root, { range = pushedRange(root), machine } = {}) {
     if (PATTERN_HOLDERS.has(path) || /\.(?:png|jpe?g|gif|ico|woff2?|ttf|mp4|webm|sqlite|pdf)$/iu.test(path)) continue;
     let text;
     try { text = readFileSync(join(root, path), 'utf8'); } catch { continue; }
-    text.split('\n').forEach((line, index) => problems.push(...problemsIn(line, `${path}:${index + 1}`, active)));
+    text.split('\n').forEach((line, index) => {
+      if (isContainerHomeDeclaration(path, line)) return;
+      problems.push(...problemsIn(line, `${path}:${index + 1}`, active));
+    });
   }
   if (range) {
     for (const record of git('log', '--format=%H%x00%b%x1e', range).split('\x1e').map((entry) => entry.trim()).filter(Boolean)) {
@@ -94,7 +106,7 @@ function pushedRange(root) {
 }
 
 /** A disposable repository with one committed file and one commit body. */
-function planted(t, { file = 'clean text\n', body = 'Pullboard-Item: #1' } = {}) {
+function planted(t, { file = 'clean text\n', filePath = 'notes.md', body = 'Pullboard-Item: #1' } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-privacy-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1',
@@ -103,8 +115,9 @@ function planted(t, { file = 'clean text\n', body = 'Pullboard-Item: #1' } = {})
   git('init', '-q', '-b', 'main');
   git('commit', '-q', '--allow-empty', '-m', 'chore: start');
   const base = git('rev-parse', 'HEAD').trim();
-  writeFileSync(join(root, 'notes.md'), file);
-  git('add', 'notes.md');
+  mkdirSync(dirname(join(root, filePath)), { recursive: true });
+  writeFileSync(join(root, filePath), file);
+  git('add', filePath);
   git('commit', '-q', '-m', 'docs: add notes', '-m', body);
   return { root, range: `${base}..HEAD` };
 }
@@ -124,8 +137,9 @@ test('each privacy rule refuses a planted case in a tracked file and in a commit
     ['a home folder', 'see /Users/fixture-owner/Code/repo for the log'],
   ];
   for (const [rule, text] of cases) {
-    const inFile = planted(t, { file: `${text}\n` });
-    assert.deepEqual(privacyProblems(inFile.root, { range: inFile.range, machine: STAND_IN }), [`notes.md:1: ${rule}`], `a tracked file with ${rule}`);
+    const filePath = rule === 'a home folder' ? 'src/privacy-probe.js' : 'notes.md';
+    const inFile = planted(t, { file: `${text}\n`, filePath });
+    assert.deepEqual(privacyProblems(inFile.root, { range: inFile.range, machine: STAND_IN }), [`${filePath}:1: ${rule}`], `a tracked file with ${rule}`);
     const inBody = planted(t, { body: `${text}\n\nPullboard-Item: #1` });
     const found = privacyProblems(inBody.root, { range: inBody.range, machine: STAND_IN });
     assert.equal(found.length, 1, `a commit body with ${rule}: ${found.join('; ')}`);
@@ -133,4 +147,13 @@ test('each privacy rule refuses a planted case in a tracked file and in a commit
   }
   const clean = planted(t, { file: 'SSH_CONNECTION=10.0.0.1 22 and /Users/private/project are placeholders\n' });
   assert.deepEqual(privacyProblems(clean.root, { range: clean.range, machine: STAND_IN }), [], 'placeholders and addresses of no machine pass');
+});
+
+test('only the declared sandbox container home is exempted while a real source home is still caught [C7]', (t) => {
+  const source = readFileSync(join(ROOT, 'src/sandbox-verify.js'), 'utf8');
+  const declarations = source.split('\n').filter(line => isContainerHomeDeclaration('src/sandbox-verify.js', line));
+  assert.equal(declarations.length, 1, 'the container home is declared exactly once');
+  const realHome = planted(t, { file: "const privatePath = '/Users/fixture-owner/project';\n", filePath: 'src/privacy-probe.js' });
+  assert.deepEqual(privacyProblems(realHome.root, { range: realHome.range, machine: STAND_IN }),
+    ['src/privacy-probe.js:1: a home folder'], 'the narrow sandbox allowance does not suppress a real home path in source');
 });

@@ -2,17 +2,109 @@
 import assert from 'node:assert/strict';
 import {
   mkdirSync,
+  readFileSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import {
   after,
   test,
 } from 'node:test';
 import { createE2eHelpers } from './e2e-helpers.js';
+import { runFixtureChild } from './fixture-child.js';
 
 const e2e = createE2eHelpers();
 after(e2e.cleanup);
+
+test('an outside commit without a sign-off is refused with its fix [C1,C7]', () => {
+  const box = e2e.sandbox();
+  const repo = join(box.dir, 'signoff-hook');
+  mkdirSync(repo);
+  box.git(repo, 'init', '-q', '-b', 'main');
+  moved(box, repo, 'init');
+  const configPath = join(repo, 'pullboard.json');
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  config.maintainers = ['agent@example.com'];
+  writeFileSync(configPath, JSON.stringify(config));
+  box.git(repo, 'add', '-A');
+  box.git(repo, 'commit', '-q', '-m', 'chore: configure sign-off fixture');
+  writeFileSync(join(repo, 'README.md'), 'A real member commit.\n');
+  box.git(repo, 'add', 'README.md');
+  const member = box.tryGit(repo, 'commit', '-q', '-m', 'chore: record member work');
+  assert.equal(member.status, 0, member.failure || member.stderr);
+
+  box.env.GIT_AUTHOR_NAME = 'Outside Person';
+  box.env.GIT_AUTHOR_EMAIL = 'outside@example.com';
+  writeFileSync(join(repo, 'README.md'), 'An outside contribution.\n');
+  box.git(repo, 'add', 'README.md');
+  const missing = box.tryGit(repo, 'commit', '-q', '-m', 'chore: contribute outside work');
+  assert.notEqual(missing.status, 0, 'the installed commit-msg hook must refuse an unsigned outside author');
+  assert.match(missing.stderr, /git commit --amend -s/u);
+  assert.equal(missing.stderr.trim().split('\n').length, 1, 'the refusal is one actionable line');
+  const wrong = box.tryGit(repo, 'commit', '-q', '-s', '-m', 'chore: contribute outside work');
+  assert.notEqual(wrong.status, 0, 'the member committer sign-off cannot stand in for the outside author');
+  const signed = box.tryGit(repo, 'commit', '-q', '-m', 'chore: contribute outside work',
+    '-m', 'Signed-off-by: Outside Person <outside@example.com>');
+  assert.equal(signed.status, 0, signed.failure || signed.stderr);
+
+  // A contributor without Pullboard hooks can send a multi-commit PR; CI checks its whole range.
+  const incoming = join(box.dir, 'outside-pr');
+  mkdirSync(incoming);
+  box.git(incoming, 'init', '-q', '-b', 'main');
+  box.env.GIT_AUTHOR_NAME = 'Test Agent';
+  box.env.GIT_AUTHOR_EMAIL = 'agent@example.com';
+  writeFileSync(join(incoming, 'pullboard.json'), JSON.stringify({ maintainers: ['agent@example.com'] }));
+  box.git(incoming, 'add', '-A');
+  box.git(incoming, 'commit', '-q', '-m', 'chore: trusted base');
+  const base = box.git(incoming, 'rev-parse', 'HEAD').trim();
+  box.env.GIT_AUTHOR_NAME = 'Outside Person';
+  box.env.GIT_AUTHOR_EMAIL = 'outside@example.com';
+  writeFileSync(join(incoming, 'pullboard.json'), JSON.stringify({ maintainers: ['outside@example.com'] }));
+  box.git(incoming, 'add', '-A');
+  box.git(incoming, 'commit', '-q', '-m', 'chore: unsigned earlier contribution');
+  const unsigned = box.git(incoming, 'rev-parse', 'HEAD').trim();
+  writeFileSync(join(incoming, 'README.md'), 'Signed later work.\n');
+  box.git(incoming, 'add', '-A');
+  box.git(incoming, 'commit', '-q', '-m', 'chore: signed head',
+    '-m', 'Signed-off-by: Outside Person <outside@example.com>');
+  const event = join(box.dir, 'pull-request.json');
+  const check = () => {
+    writeFileSync(event, JSON.stringify({ pull_request: {
+      base: { sha: base }, head: { sha: box.git(incoming, 'rev-parse', 'HEAD').trim() },
+    } }));
+    return runFixtureChild(process.execPath, [resolve(import.meta.dirname, '../bin/check-signoffs.js')], {
+      cwd: incoming, encoding: 'utf8',
+      env: { ...box.env, GITHUB_EVENT_NAME: 'pull_request', GITHUB_EVENT_PATH: event },
+    });
+  };
+  const refused = check();
+  assert.equal(refused.status, 1, refused.failure || refused.stderr);
+  assert.ok(refused.stderr.includes(unsigned.slice(0, 12)), 'CI names the earlier unsigned commit, not just HEAD');
+  assert.match(refused.stderr, /git commit --amend -s/u);
+  assert.equal(refused.stderr.trim().split('\n').length, 1);
+  box.git(incoming, 'reset', '--soft', base);
+  box.git(incoming, 'commit', '-q', '-m', 'chore: sign the whole contribution',
+    '-m', 'Signed-off-by: Outside Person <outside@example.com>');
+  const accepted = check();
+  assert.equal(accepted.status, 0, accepted.failure || accepted.stderr);
+
+  const signedHead = box.git(incoming, 'rev-parse', 'HEAD').trim();
+  box.git(incoming, 'checkout', '-q', '--detach', base);
+  writeFileSync(join(incoming, 'other.txt'), 'A separately signed parent.\n');
+  box.git(incoming, 'add', 'other.txt');
+  box.git(incoming, 'commit', '-q', '-m', 'chore: signed other parent',
+    '-m', 'Signed-off-by: Outside Person <outside@example.com>');
+  const otherParent = box.git(incoming, 'rev-parse', 'HEAD').trim();
+  box.git(incoming, 'checkout', '-q', '--detach', signedHead);
+  box.env.GIT_AUTHOR_NAME = 'Merge Bot';
+  box.env.GIT_AUTHOR_EMAIL = 'merge-bot@example.com';
+  box.git(incoming, 'merge', '--no-ff', '--no-edit', otherParent);
+  assert.equal(check().status, 0, 'a merge wrapper is checked through both non-merge parents');
+  writeFileSync(join(incoming, 'bot.txt'), 'A bot contribution.\n');
+  box.git(incoming, 'add', 'bot.txt');
+  box.git(incoming, 'commit', '-q', '-m', 'chore: unsigned bot work');
+  assert.equal(check().status, 1, 'a non-member bot commit still needs its own author sign-off');
+});
 
 /** Require a real CLI move to succeed before a dependent fixture step. */
 function moved(box, root, ...args) {
