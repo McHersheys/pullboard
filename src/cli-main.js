@@ -115,6 +115,7 @@ const OPTIONS = {
   history: { type: 'boolean' },
   verbose: { type: 'boolean' },
   since: { type: 'string' },
+  window: { type: 'string' },
   decision: { type: 'boolean' },
   evidence: { type: 'string' },
   outcome: { type: 'string' },
