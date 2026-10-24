@@ -1,6 +1,10 @@
 /** Deterministic scheduling of observed intervals; predictions are not measurements of an alternate live queue. */
 import { Refused } from './refused.js';
 import {
+  ACTIVE_REVIEWER_WINDOW_MINUTES,
+  lineWipLimit,
+} from './line-wip-limit.js';
+import {
   replayHistory,
   replayObservations,
 } from './flow-replay-history.js';
@@ -29,12 +33,7 @@ function replayPolicy(input, observations) {
       throw new Refused('USAGE', `replay ${key} must use its supported board line-setting range; read pullboard settings line`);
     }
   }
-  const reviewers = new Set(observations.tasks.filter(task => task.stage === 'review').map(task => task.by)).size;
-  const capacity = { ...observations.stages };
-  if (settings.wipPerReviewer !== undefined && settings.wipPerReviewer !== false) {
-    capacity.build = capacity.review = Math.max(1, Math.ceil(settings.wipPerReviewer * reviewers));
-  }
-  return { order, settings: { ...settings }, capacity, reviewers, recorded: order === 'recorded' && !Object.keys(settings).length };
+  return { order, settings: { ...settings }, capacity: { ...observations.stages }, recorded: order === 'recorded' && !Object.keys(settings).length };
 
 }
 
@@ -51,6 +50,7 @@ function quartiles(values) {
 function schedule(observations, policy) {
   const pending = new Map(observations.tasks.map(task => [task.id, task]));
   const completed = new Map(), running = [];
+  const activeWip = new Set(), submitted = new Set(), reviewActivity = [];
   const arrival = new Map(observations.items.map(item => [item.id, item.arrival]));
   const rank = new Map((Array.isArray(policy.order) ? policy.order : []).map((id, index) => [id, index]));
   const capacity = policy.capacity;
@@ -61,31 +61,53 @@ function schedule(observations, policy) {
   /** A measured task starts after arrival, its prior stage and the seat's recorded availability. */
   const readyAt = task => Math.max(arrival.get(task.item), observations.resources.get(task.by).available,
     task.prior ? completed.get(task.prior.id)?.end ?? Infinity : -Infinity, policy.recorded ? task.start : -Infinity);
+  /** Count only reservations and verdicts already reached by this simulated clock, including the window boundary. */
+  const activeReviewers = () => new Set(reviewActivity.filter(event => event.at >= now - ACTIVE_REVIEWER_WINDOW_MINUTES * MINUTE
+    && event.at <= now).map(event => event.by)).size;
+  /** Native reviews-first is a backlog threshold, independent of the opt-in total-WIP admission cap. */
+  const prioritizeReviews = () => policy.settings.reviewsFirst === true
+    && submitted.size > lineWipLimit(typeof policy.settings.wipPerReviewer === 'number' ? policy.settings.wipPerReviewer : 3, activeReviewers());
   /** Recorded decisions preserve their exact start constraints; counterfactual order selects among ready tasks. */
   const compare = (a, b) => policy.recorded ? a.start - b.start || a.id - b.id :
-    (policy.settings.reviewsFirst ? Number(b.stage === 'review') - Number(a.stage === 'review') : 0)
+    (prioritizeReviews() ? Number(b.stage === 'review') - Number(a.stage === 'review') : 0)
     || (rank.get(a.item) ?? Infinity) - (rank.get(b.item) ?? Infinity) || arrival.get(a.item) - arrival.get(b.item) || a.item - b.item || a.id - b.id;
   while (pending.size || running.length) {
     for (let i = running.length - 1; i >= 0; i -= 1) {
-      if (running[i].end <= now) { const row = running.splice(i, 1)[0]; completed.set(row.task.id, row); }
+      if (running[i].end <= now) {
+        const row = running.splice(i, 1)[0];
+        completed.set(row.task.id, row);
+        if (row.task.stage === 'build') submitted.add(row.task.item);
+        if (row.task.stage === 'review') {
+          submitted.delete(row.task.item);
+          activeWip.delete(row.task.item);
+          reviewActivity.push({ at: row.end, by: row.task.by });
+        }
+      }
     }
     if (batched && !batch.size && now >= Math.max(batchStarted + cadence, batchFinished)) {
       const ready = [...pending.values()].filter(task => task.stage === 'landing' && readyAt(task) <= now).sort(compare).slice(0, batchSize);
       if (ready.length) { batch = new Set(ready.map(task => task.id)); batchUnstarted = true; }
     }
+    let started = false;
     for (const task of [...pending.values()].sort(compare)) {
       if (batched && task.stage === 'landing' && !batch.has(task.id)) continue;
       if (readyAt(task) > now || running.filter(row => row.task.stage === task.stage).length >= capacity[task.stage]
         || running.filter(row => row.task.by === task.by).length >= observations.resources.get(task.by).capacity) continue;
+      if (!policy.recorded && task.stage === 'build' && typeof policy.settings.wipPerReviewer === 'number'
+        && activeWip.size + 1 > lineWipLimit(policy.settings.wipPerReviewer, activeReviewers())) continue;
       if (batched && task.stage === 'landing' && batchUnstarted) { batchStarted = now; batchUnstarted = false; }
       pending.delete(task.id);
+      if (task.stage === 'build') activeWip.add(task.item);
+      if (task.stage === 'review') reviewActivity.push({ at: now, by: task.by });
       running.push({ task, start: now, end: now + task.duration });
+      started = true;
     }
     if (batched && batch.size && [...batch].every(id => completed.has(id))) {
       batchFinished = Math.max(...[...batch].map(id => completed.get(id).end));
       batch.clear();
       continue;
     }
+    if (started) continue; // A new reservation may admit another build at this same simulated instant.
     if (!pending.size && !running.length) break;
     const batchAt = batched && !batch.size && [...pending.values()].some(task => task.stage === 'landing' && readyAt(task) <= now)
       ? Math.max(batchStarted + cadence, batchFinished) : Infinity;
@@ -119,7 +141,8 @@ export function replayFlow(events, inputPolicy) {
     items, landingOrder, stages, unmeasured: observations.unmeasured,
     assumptions: ['Recorded lifecycle intervals are retained, not interpreted as CPU time.',
       'Seat identities and their observed concurrency are fixed; modelled board controls change scheduling only.',
-      `WIP uses ceil(ratio times ${policy.reviewers} distinct observed reviewer seats), not an invented workforce.`,
+      `Predicted total WIP uses the native unrounded cap and distinct simulated reservation/verdict actors in the trailing ${ACTIVE_REVIEWER_WINDOW_MINUTES}-minute window, minimum one.`,
+      'Only complete measured cycles supply simulated reviewer activity; incomplete or abandoned work stays explicitly unmeasured.',
       'Landing batches contain ready items only; the next batch waits for prior completion and its start-to-start cadence.',
       'Predicted queue times are not timings measured by running an alternate live policy.',
       'Incomplete or abandoned attempts remain unmeasured, never zero-duration work.'] } };
