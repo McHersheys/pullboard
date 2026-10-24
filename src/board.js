@@ -1272,6 +1272,7 @@ export function submit(board, id, { agentId, commit, tree, files = [], policyCom
         doctrineHolds: null,
         gateConfigured: null, queuedItemLease: null,
         gateGreen: null,
+        proofRecorded: null, // The CLI records and validates native receipts before sealing submit; replay needs no origin files.
         treeStillDuringGate: null,
         submissionProofValid: () => {
           if ((board.executionEngineVersion ?? ENGINE_VERSION) >= SUBMISSION_PROOF_ENGINE) recordedProof = submissionProof(proof);
@@ -1590,6 +1591,7 @@ export function verify(board, id, { agentId, decision, reason, note = '', cause,
         trunkMergeClean: null,
         noUnverifiedStack: null, queuedItemLease: null,
         itemCheckGreen: null,
+        proofRecorded: null, // The native verifier records the gate receipt before this ordered outcome.
         proofNoted: () =>
           note.trim()
             ? null
