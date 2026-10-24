@@ -1116,6 +1116,7 @@ test('person-only moves are signed [E22,B26,H16]', { timeout: relayWorkBudgetMs(
   const shown = { id: 'G1', text: 'A row the person decides on the passkey.' };
   writeFileSync(join(box.root, 'SPEC.md'), readFileSync(join(box.root, 'SPEC.md'), 'utf8').replace('## G · Goals: what the client asked for\n',
     `## G · Goals: what the client asked for\n\n- G1 [draft, must] ${shown.text} | gate: review\n`));
+  shown.source = readFileSync(join(box.root, 'SPEC.md'), 'utf8').split(/\r?\n/u).find(line => line.startsWith('- G1 '));
   const blind = { version: 1, type: 'person-request', id: randomUUID(), move: { verb: 'spec-approve', args: { ids: 'G1' } } };
   const seen = { ...blind, id: randomUUID(), rows: [shown] };
   for (const request of [blind, seen]) {
