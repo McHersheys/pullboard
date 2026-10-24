@@ -36,15 +36,17 @@ function coverage(root, board, commits, trustedHead) {
     ...store.landingBatches(board).filter(batch => ['trunk', 'landed', 'pushed'].includes(batch.state)).map(batch => batch.tip)]
     .filter(commit => COMMIT.test(commit ?? '') && tryGit(root, ['merge-base', '--is-ancestor', commit, trustedHead]).status === 0);
   const covered = new Map([...receipts.values()].map(receipt => [receipt.commit, receipt]));
-  for (const commit of commits) {
-    const id = trailerItem(root, commit, 'Pullboard-Item');
-    const item = id && items.find(item => item.item_id === id);
-    const receipt = receipts.get(id);
-    if (receipt && item.item_merged_commit === commit
+  for (const item of items) {
+    const commit = item.item_merged_commit;
+    const receipt = receipts.get(item.item_id);
+    if (receipt && COMMIT.test(commit ?? '') && recordedTrunks.includes(commit)
+        && trailerItem(root, commit, 'Pullboard-Item') === item.item_id
         && git(root, ['show', '-s', '--format=%P', commit]).split(' ').length > 1
         && tryGit(root, ['merge-base', '--is-ancestor', receipt.commit, commit]).status === 0) {
       for (const introduced of git(root, ['rev-list', `${commit}^1..${commit}`]).split('\n').filter(Boolean)) covered.set(introduced, receipt);
     }
+  }
+  for (const commit of commits) {
     const companion = receipts.get(trailerItem(root, commit, 'Pullboard-Companion'));
     const companionItem = companion && items.find(item => item.item_id === companion.item);
     if (companion && COMMIT.test(companionItem.item_merged_commit ?? '') && recordedTrunks.some(trunk =>
