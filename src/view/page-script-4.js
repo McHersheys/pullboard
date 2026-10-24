@@ -439,6 +439,13 @@ function pageMove(command, args = {}) {
     if (!ids || !reason) throw new Error('Choose a spec row and enter a reason to decline it.');
     return { body: { verb: 'spec-decline', args: { ids, reason } }, label: 'spec decline ' + ids + ' --reason ' + reason };
   }
+  if (command === 'sentinel-approve' || command === 'sentinel-decline') {
+    const name = text(args.name), digest = text(args.digest), reason = text(args.reason);
+    if (!name || !/^[a-f0-9]{64}$/u.test(digest)) throw new Error('Refresh the pending sentinel before deciding it.');
+    if (command === 'sentinel-decline' && !reason) throw new Error('Enter a reason to decline this sentinel.');
+    const fields = { name, digest, ...(command === 'sentinel-decline' ? { reason } : {}) };
+    return { body: { verb: command, args: fields }, label: 'sentinel ' + (command === 'sentinel-approve' ? 'approve ' : 'decline ') + name };
+  }
   throw new Error('No view action ' + String(command) + '; choose add, shout, answer, hold or release.');
 }
 
@@ -449,6 +456,8 @@ function moveMessage(move, result) {
   if (move.verb === 'answer') return 'answered #' + move.item;
   if (move.verb === 'spec-approve') return 'approved rows ' + move.args.ids + ' (pending apply)';
   if (move.verb === 'spec-decline') return 'declined rows ' + move.args.ids + ' (pending apply)';
+  if (move.verb === 'sentinel-approve') return 'approved sentinel ' + move.args.name;
+  if (move.verb === 'sentinel-decline') return 'declined sentinel ' + move.args.name;
   return move.args.off ? 'released the ' + move.args.lane + ' lane' : 'holding the ' + move.args.lane + ' lane: ' + move.args.reason;
 }
 
@@ -461,9 +470,13 @@ function sentinelDraftRow(row) {
   const evidence = row.evidence;
   const proof = evidence && evidence.proof ? 'Proof: ' + evidence.proof.check + ', ' + side('red', evidence.proof.red) + ', ' + side('green', evidence.proof.green) + '.' : '';
   const repeats = evidence ? 'Drafted from ' + evidence.occurrences + (evidence.occurrences === 1 ? ' repeat of ' : ' repeats of ') + evidence.key + (evidence.items.length ? ' on ' + evidence.items.map((item) => '#' + item.id).join(', ') : '') + '.' : 'Proposed by an agent with no repeat cited.';
+  const canDecide = !snapshot && (!readOnly || requests);
+  const actions = canDecide ? '<div class="sentinel-decision-actions"><button class="approve-row" data-sentinel-decision="approve" data-sentinel-name="' + esc(row.ref) + '" data-sentinel-digest="' + esc(row.digest) + '" type="button">Approve</button><button class="decline-row" data-sentinel-decision="decline" data-sentinel-name="' + esc(row.ref) + '" data-sentinel-digest="' + esc(row.digest) + '" type="button">Decline</button></div>' : '';
   return '<li class="row ask" data-sentinel-draft="' + esc(row.ref) + '"><span class="dot ask"></span><div><div class="t"><span>' + esc(row.ref) + '</span>' + esc(row.text) + '</div>'
     + '<div class="muted sentinel-proof">' + esc(repeats + (proof ? ' ' + proof : '')) + '</div>'
-    + '<div class="meta"><span class="why"><b>NEEDS YOU</b> a sentinel draft awaiting your approval, not watching yet</span></div></div><span class="chip warn">Approve or Decline</span></li>';
+    + '<div class="muted">Command: <code>' + esc(row.check) + '</code></div><div class="muted">Directory: ' + esc(row.directory) + '</div>'
+    + '<div class="muted">Schedule: ' + esc(row.every) + '</div><div class="muted">Owner: ' + esc(row.owner) + '</div>'
+    + '<div class="meta"><span class="why"><b>NEEDS YOU</b> a sentinel draft awaiting your approval, not watching yet</span></div>' + actions + '</div><span class="chip warn">Approve or Decline</span></li>';
 }
 
 /** One blueprint fit proposal: its decision, its new text or reason, and where it came from. */
@@ -477,10 +490,12 @@ function specFeedback(feedback) {
 }
 
 /** Ask why a Spec row or Doctrine rule is declined; the reason, once given, is recorded where it was asked. */
-function askDecline(kind, id, from) {
+function askDecline(kind, id, from, digest = '', anchor = null) {
   view.declining = id;
   view.declineKind = kind;
   view.declineFrom = from;
+  view.declineDigest = digest;
+  view.declineAnchor = anchor;
   // The dialog belongs to the board it was opened on, as Approve all's confirmation does (#612).
   view.declineRoot = view.root;
   $('spec-decline-title').textContent = 'Decline ' + id;
@@ -493,10 +508,13 @@ function askDecline(kind, id, from) {
  * from; closed because the page left its board, focus stays where the person put it.
  */
 function closeDecline(left = false) {
-  const asked = view.declining ? { id: view.declining, kind: view.declineKind, root: view.declineRoot, from: view.declineFrom } : null;
+  const asked = view.declining ? { id: view.declining, kind: view.declineKind, root: view.declineRoot, from: view.declineFrom, digest: view.declineDigest, anchor: view.declineAnchor } : null;
   view.declining = null;
+  view.declineDigest = null;
+  view.declineAnchor = null;
   closeModal($('spec-decline-dialog'));
-  if (!left && asked?.from === 'list') $(asked.kind + '-list').focus({ preventScroll: true });
+  if (!left && asked?.anchor?.isConnected) asked.anchor.focus({ preventScroll: true });
+  else if (!left && asked?.from === 'list') $(asked.kind + '-list').focus({ preventScroll: true });
   return asked;
 }
 
@@ -776,7 +794,7 @@ document.addEventListener('click', (event) => {
   // The open-board screens name their state in data-state and handle their own presses (#764).
   if (event.target.closest('#local-note')) return;
   if (view.filterOpen && !event.target.closest('.filter-control')) { view.filterOpen = false; render(); }
-  const t = event.target.closest('[data-filter-toggle],[data-filter-choice],[data-status],[data-roadmap-jump],[data-shout-id],[data-roadmap-key],[data-roadmap-all],[data-root],[data-tab],[data-go],[data-item],[data-items-view],[data-state],[data-rows],[data-row],[data-row-decision],[data-section-approve],[data-release],[data-shout],[data-new],[data-code],[data-code-all],[data-code-less],[data-stats-toggle],#proj-switch,#console');
+  const t = event.target.closest('[data-filter-toggle],[data-filter-choice],[data-status],[data-roadmap-jump],[data-shout-id],[data-roadmap-key],[data-roadmap-all],[data-root],[data-tab],[data-go],[data-item],[data-items-view],[data-state],[data-rows],[data-row],[data-row-decision],[data-sentinel-decision],[data-section-approve],[data-release],[data-shout],[data-new],[data-code],[data-code-all],[data-code-less],[data-stats-toggle],#proj-switch,#console');
   if (!event.target.closest('.side')) fold(false);
   if (!t) return;
   if (t.id === 'proj-switch') { fold(!$('side').classList.contains('open')); return; }
@@ -835,6 +853,11 @@ document.addEventListener('click', (event) => {
     const id = t.dataset.rowId, kind = t.dataset.rowKind;
     if (t.dataset.rowDecision === 'approve') decideRow(kind, 'spec-approve', { ids: id }, t);
     else askDecline(kind, id, t.closest('#' + kind + '-detail') ? 'detail' : 'list');
+  }
+  else if (t.dataset.sentinelDecision) {
+    const name = t.dataset.sentinelName, digest = t.dataset.sentinelDigest;
+    if (t.dataset.sentinelDecision === 'approve') act('sentinel-approve', { name, digest }, $('needs'));
+    else askDecline('sentinel', name, 'needs', digest, t);
   }
   else if (t.dataset.sectionApprove) askApproveAll(t.dataset.sectionApprove);
   else if (t.dataset.shoutId && !event.target.closest('button,a,input,textarea,select')) { go('shout:' + t.dataset.shoutId); }
@@ -914,6 +937,10 @@ $('spec-decline-form').addEventListener('submit', (event) => {
   if (!view.declining || !reason) return;
   const asked = closeDecline();
   if (asked.root !== view.root) return;
+  if (asked.kind === 'sentinel') {
+    act('sentinel-decline', { name: asked.id, digest: asked.digest, reason }, $('needs'));
+    return;
+  }
   const anchor = asked.from === 'detail' ? $(asked.kind + '-detail') : [...$(asked.kind + '-list').querySelectorAll('[data-row]')].find((row) => row.dataset.row === asked.kind + ':' + asked.id);
   decideRow(asked.kind, 'spec-decline', { ids: asked.id, reason }, anchor);
 });
