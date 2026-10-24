@@ -252,6 +252,7 @@ test('the coordinator reopens a submitted item without a verdict [V2,V6,O8]', (t
   assert.equal(last.event_by, 'coordinator');
   assert.deepEqual(JSON.parse(last.event_detail), {
     commit: submitted.commit, note: 'correct the frozen criterion, not the work', judgment: null, model: 'unknown',
+    cause: 'refusal:REOPENED', causeDerivation: { kind: 'reopen-category', coarse: true },
   });
   assert.equal(store.events(board).some((event) => event.event_kind === 'release' && JSON.parse(event.event_detail).review), false);
 
@@ -583,7 +584,8 @@ test('a reopened bar takes the same commit again [V2,V6,H16]', async (t) => {
   const first = applyRelayMove(copies[0], move, { sequence: 1, at: '2026-10-10T12:00:00.000Z', kind: 'move', sender });
   const second = applyRelayMove(copies[1], move, { sequence: 1, at: '2026-10-10T12:00:00.000Z', kind: 'move', sender });
   assert.deepEqual(first, second);
-  assert.deepEqual(first.result, { id: 1, commit: submitted.commit });
+  assert.deepEqual(first.result, { id: 1, commit: submitted.commit,
+    cause: 'refusal:REOPENED', causeDerivation: { kind: 'reopen-category', coarse: true } });
   for (const replica of copies) {
     assert.equal(store.getItem(replica, 1).item_status, 'open');
     assert.equal(store.getItem(replica, 1).item_commit, submitted.commit);
