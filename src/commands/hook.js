@@ -1,5 +1,6 @@
 /** The pullboard hook command, in its own module so an item adding another command never edits these lines. */
 import * as store from '../board.js';
+import { landingBatchOwnsRoot } from '../landing-candidates.js';
 import {
   hookRead,
   readStdin,
@@ -67,7 +68,7 @@ export async function hookCommand(io, { first, second }) {
   if (first === 'pre-commit' || first === 'pre-merge-commit') {
     applyFixers(info.root, ctx.config.fix).forEach((note) => io.err(`pullboard pre-commit: ${note}`));
     const agent = info.isMain ? null : hookRead(ctx, (board) => store.agentAt(board, info.root));
-    const landing = hookRead(ctx, (board) => store.landingBatches(board).some((batch) => batch.root === info.root && !['landed', 'blocked'].includes(batch.state)));
+    const landing = hookRead(ctx, (board) => store.landingBatches(board).some((batch) => landingBatchOwnsRoot(batch, info.root)));
     if (landing) io.caller('coordinator', info.root);
     else if (agent) io.caller('seat', info.root);
     problems = preCommitProblems({ root: info.root, isMain: info.isMain || landing, config: ctx.config, agent, boardFile: ctx.file, preMergeHook: first === 'pre-merge-commit', onNotice: (message) => io.err(`pullboard pre-commit: warning: ${message}`) });
