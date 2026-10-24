@@ -1,3 +1,4 @@
+import { recordedMoveRefusal } from './recorded-move.js';
 import {
   recoverySummary,
   unlinkedRelayStatus,
@@ -1214,8 +1215,10 @@ export async function relayOperation(root, operation, args, io, command, applyLo
       catch (error) {
         if (!(error instanceof Refused)) throw error;
         if (confirmedDeletion(state, error)) forgetDeletedCopy(root, file, state, io);
-        else if (error.code === 'AUTH_REQUIRED') reportExpiredSignIn(state, io);
-        else io.err(`pullboard: ${error.message}`);
+        else if (error.code === 'AUTH_REQUIRED') {
+          if (!receipt.outcome.error) io.err(`pullboard: ${recordedMoveRefusal({ recordedMove: true }, error).message}`);
+          reportExpiredSignIn(state, io);
+        } else io.err(`pullboard: ${recordedMoveRefusal({ recordedMove: !receipt.outcome.error }, error).message}`);
       }
       if (receipt.outcome.error) throw refusalFromReceipt(receipt.outcome.error);
       if (existsSync(file) && ['register', 'ensureCoordinator'].includes(operation)) await actorTransport(root, file, state, receipt.outcome.result, io);
