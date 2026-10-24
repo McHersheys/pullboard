@@ -1,5 +1,8 @@
 /** General CLI recovery text; operation-owned codes live in src/moves/ [P4,C7]. */
 export const DEFAULT_NEXT_STEPS = Object.freeze({
+  "AGENT_GRANT_EXPIRED": "claim the intended item, or shout the coordinator if its claim is unavailable",
+  "AGENT_GRANT_ITEM": "finish or release the claim, then claim the intended item; use shout for coordination",
+  "AGENT_GRANT_LANE": "join a seat in the intended lane or ask its owner to make the item change",
   "NESTED_RUN_HANDLE_REQUIRED": "pass the original ChildProcess or fixture promise retaining .child to awaitNestedRun",
   "NESTED_RUN_OFFER_REQUIRED": "start the child with the current spawn export after test-file token admission, then await its original handle",
   "NESTED_RUN_WAIT_REUSED": "await the original returned wait; do not lend the same child a second time",
