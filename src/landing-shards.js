@@ -356,6 +356,9 @@ export async function runLandingShards({ root, runner, files, count, inherited =
   const entries = await Promise.all(plan.map(async (shard, index) => ({ shard, label: `${index + 1}/${total}`,
     browser: await needsBrowser(shard.files), gui: await needsGui(shard.files), claimed: false, localOnly: false, done: false, attempts: [], status: null })));
 
+  /** A remote parent's slot cannot take a GUI file unless its own advertised capability permits it. */
+  const inheritedCanRun = entry => !entry.gui || !inherited?.runner || inherited.runner.gui === true;
+
   /** Run one attempt of a shard on a lease: a local child, or the runner it names. */
   const attempt = async (entry, lease) => {
     const started = Date.now();
@@ -470,7 +473,7 @@ export async function runLandingShards({ root, runner, files, count, inherited =
   /** The parent's own slot: run free shards one after another until every shard is done. */
   const lane = async () => {
     while (!entries.every(entry => entry.done) && !failures.length) {
-      const next = entries.find(entry => !entry.claimed && !entry.done && (!entry.gui || !inherited.runner || inherited.runner.gui === true));
+      const next = entries.find(entry => !entry.claimed && !entry.done && inheritedCanRun(entry));
       if (!next) { await changed; continue; }
       next.claimed = true;
       await runOnLease(next, inherited);
@@ -479,7 +482,7 @@ export async function runLandingShards({ root, runner, files, count, inherited =
 
   let shards;
   try {
-    for (const entry of entries) if (!inherited || entry !== entries[0]) acquire(entry);
+    for (const entry of entries) if (!inherited || entry !== entries[0] || !inheritedCanRun(entry)) acquire(entry);
     if (inherited) await lane();
     while (!entries.every(entry => entry.done) && !failures.length) await changed;
     if (failures.length) throw failures[0];

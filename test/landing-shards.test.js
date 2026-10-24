@@ -89,6 +89,46 @@ process.stdout.write(JSON.stringify(result));`;
   assert.equal(measured.shards[0].attempts[0].host, 'local');
 });
 
+test('a no-GUI remote parent gives its first GUI shard to a compatible local slot [C7,V4]', t => {
+  const box = fixture({ runner: true });
+  t.after(() => rmSync(box.dir, { recursive: true, force: true }));
+  const settingsPath = join(box.env.PULLBOARD_MACHINE_HOME, 'settings.json');
+  const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
+  settings.runners = settings.runners.map(runner => ({ ...runner, gui: false }));
+  writeFileSync(settingsPath, JSON.stringify(settings));
+  const script = `import assert from 'node:assert/strict';
+import { withGateSlot } from ${JSON.stringify(pathToFileURL(join(SOURCE, 'src/gate.js')).href)};
+import { runLandingShards } from ${JSON.stringify(pathToFileURL(join(SOURCE, 'src/landing-shards.js')).href)};
+const root = ${JSON.stringify(box.repo)};
+let release;
+let entered;
+const ready = new Promise(resolve => { entered = resolve; });
+const freed = new Promise(resolve => { release = resolve; });
+const result = await withGateSlot(root, async () => {
+  const held = withGateSlot(root, async () => { entered(); await freed; }, { remote: false });
+  await ready;
+  try {
+    return await withGateSlot(root, async inherited => {
+      assert.equal(inherited.runner.host, ${JSON.stringify(HOST)});
+      assert.equal(inherited.runner.gui, false);
+      const timer = setTimeout(release, 250);
+      try { return await runLandingShards({ root, inherited, runner: ${JSON.stringify(join(box.repo, 'bin/run-tests.js'))},
+        files: ['./test/a.test.js'], count: 1, needsBrowser: async () => false, needsGui: async () => true,
+        remoteRun: async () => { throw new Error('a no-GUI inherited runner must not execute this shard'); }, write: () => {} }); }
+      finally { clearTimeout(timer); }
+    });
+  } finally { release(); await held; }
+}, { remote: false });
+process.stdout.write(JSON.stringify(result));`;
+  const env = { ...box.env };
+  delete env.NODE_TEST_CONTEXT;
+  const result = runFixtureChild(process.execPath, ['--input-type=module', '-e', script], { cwd: box.repo, env, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.context);
+  const measured = JSON.parse(result.stdout);
+  assert.equal(measured.isGreen, true);
+  assert.equal(measured.shards[0].attempts[0].host, 'local');
+});
+
 test('six shards land on six different runners [C7,V4]', (t) => {
   const box = fixture({ runner: false });
   t.after(() => rmSync(box.dir, { recursive: true, force: true }));

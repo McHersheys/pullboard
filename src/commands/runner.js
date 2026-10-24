@@ -16,7 +16,7 @@ export function runnerCommand(io, { first, second, rest, values }) {
     // Registered capacity is what each runner enforces, whatever its own settings say (#1066).
     const runners = runnerResourceStatus(loadMachineSettings().runners ?? []);
     io.result?.({ runners });
-    io.say(runners.length ? runners.map(runner => `${runner.host}: ${runner.slots} slots, ${runner.browser} browser, GUI ${runner.gui === true ? 'yes' : runner.gui === false ? 'no' : 'unknown'}${runner.draining ? ' (draining)' : ''}`).join('\n') : 'no runners registered');
+    io.say(runners.length ? runners.map(runner => `${runner.host}: ${runner.slots} slots, ${runner.browser} browser${runner.draining ? ' (draining)' : ''}\n  GUI session: ${runner.gui === true ? 'yes' : runner.gui === false ? 'no' : 'unknown'}`).join('\n') : 'no runners registered');
     return 0;
   }
   if (first === 'remove') {
