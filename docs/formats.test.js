@@ -1,3 +1,4 @@
+/** @pullboard-test-input source-tree */
 /** Keep the format guide aligned with parser behavior, live SQLite schema and static export [A5,A10]. */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -6,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { submitFixture } from '../test/board-submit-fixture.js';
 import { syntheticFlakeObservation } from '../test/flake-observation-fixture.js';
 import { recordFlakeObservation } from '../src/board.js';
@@ -17,6 +19,8 @@ import { COORDINATOR } from '../src/config.js';
 import { JSON_SHAPES } from '../src/json.js';
 import { exportView } from '../src/serve.js';
 import { ENGINE_VERSION } from '../src/machine.js';
+import { discoverEngines } from '../src/engine-metadata.js';
+import { readEngineLeaves } from '../src/engine-numbers.js';
 import { applyEngineMove, prepareEngineMove } from '../src/engine.js';
 import {
   ACCEPT_REASON,
@@ -255,6 +259,39 @@ function documentedUpgradeConditions() {
   });
 }
 
+/** Keep the guide at the highest landed engine while allowing one branch-local pending leaf. */
+function assertEngineGuideVersion(guideVersion, leaves, branchVersion) {
+  const landed = Math.max(0, ...leaves.flatMap(({ number }) => number === null ? [] : [number]));
+  const pending = leaves.filter(({ number }) => number === null);
+  assert.ok(
+    pending.length <= 1,
+    `two unassigned engine leaves are not allowed: ${pending.map(({ file }) => file).join(', ')}`,
+  );
+  assert.equal(guideVersion, landed, `move engine guide version ${guideVersion} must match highest landed engine ${landed}`);
+  const expectedBranchVersion = pending.length === 1 ? landed + 1 : landed;
+  assert.equal(
+    branchVersion,
+    expectedBranchVersion,
+    `executable engine version ${branchVersion} must match the branch state ${expectedBranchVersion}`,
+  );
+}
+
+/** Create a minimal engine-leaf directory and return its parsed and executable versions. */
+function engineLeafFixture(t, landedVersion, pendingLeaves) {
+  const root = mkdtempSync(join(tmpdir(), 'pullboard-format-engines-'));
+  const source = join(root, 'src');
+  mkdirSync(source);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(source, 'landed-engine.js'), `export const LANDED_ENGINE = ${landedVersion};\n`);
+  for (const leaf of pendingLeaves) {
+    const exported = `${leaf.replace(/-([a-z])/gu, (_match, letter) => letter.toUpperCase()).toUpperCase().replace(/-/gu, '_')}_ENGINE`;
+    writeFileSync(join(source, `${leaf}-engine.js`), `import { unassignedEngine } from './engine-next.js';\nexport const ${exported} = unassignedEngine();\n`);
+  }
+  const leaves = readEngineLeaves(source);
+  const engines = Object.values(discoverEngines(pathToFileURL(`${source}/`)));
+  return { leaves, branchVersion: Math.max(...engines) };
+}
+
 /** Exercise each board event through the public API and return the rows it actually records. */
 function recordEventContract() {
   const board = openBoard(':memory:');
@@ -484,7 +521,9 @@ test('[A5,H16] grammar and executable engine versions match the format guide', (
   assert.equal(versionOf('row grammar'), SPEC_GRAMMAR_VERSION);
   assert.equal(versionOf('board schema'), SCHEMA_VERSION);
   assert.equal(versionOf('event log'), EVENT_LOG_VERSION);
-  assert.equal(versionOf('move engine'), ENGINE_VERSION);
+  const sourceDirectory = fileURLToPath(new URL('../src/', import.meta.url));
+  const leaves = readEngineLeaves(sourceDirectory);
+  assertEngineGuideVersion(versionOf('move engine'), leaves, ENGINE_VERSION);
   assert.match(versions, /Bump when a move's meaning changes/);
   assert.match(versions, /`ENGINE_VERSION`.*naming both versions/);
   assert.match(guide, /Engine 10 adds coordinator-only reopening for an unmerged verified item after a red landing candidate/u);
@@ -509,6 +548,29 @@ test('[A5,H16] grammar and executable engine versions match the format guide', (
     assert.throws(() => parseSpec(`<!-- pullboard-grammar invalid -->\n${body}`), (error) => error?.code === 'A5_GRAMMAR_VERSION', `${file} refuses an invalid marker`);
     assert.equal(parseSpec(`\`\`\`text\n<!-- pullboard-grammar ${SPEC_GRAMMAR_VERSION + 1} -->\n\`\`\`\n${body}`).grammarVersion, SPEC_GRAMMAR_VERSION, `${file} ignores a marker in a fenced example`);
   }
+});
+
+test("[A5,H16] a branch with one unassigned engine leaf matches the guide's landed number", (t) => {
+  const versions = block('<!-- format-versions:start -->', '<!-- format-versions:end -->');
+  const guideEngine = Number(/^\| `move engine` \| `(\d+)` \|/mu.exec(versions)?.[1]);
+  assert.ok(Number.isSafeInteger(guideEngine), 'the guide declares its landed move engine number');
+  const sourceDirectory = fileURLToPath(new URL('../src/', import.meta.url));
+  const landed = Math.max(0, ...readEngineLeaves(sourceDirectory).flatMap(({ number }) => number === null ? [] : [number]));
+  const onePending = engineLeafFixture(t, landed, ['pending']);
+
+  assertEngineGuideVersion(guideEngine, onePending.leaves, onePending.branchVersion);
+
+  const twoPending = engineLeafFixture(t, landed, ['first-pending', 'second-pending']);
+  assert.throws(
+    () => assertEngineGuideVersion(guideEngine, twoPending.leaves, twoPending.branchVersion),
+    /two unassigned engine leaves.*first-pending-engine\.js.*second-pending-engine\.js/u,
+    'two unassigned leaves are rejected by name',
+  );
+  assert.throws(
+    () => assertEngineGuideVersion(guideEngine + 1, onePending.leaves, onePending.branchVersion),
+    new RegExp(`move engine guide version ${guideEngine + 1} must match highest landed engine ${landed}`, 'u'),
+    'a guide row off by one names both engine numbers',
+  );
 });
 
 test('[A5] approved signer rows require every exact verified principal', (t) => {

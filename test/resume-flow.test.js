@@ -72,7 +72,7 @@ test('a worktree names its main checkout\'s uncommitted init files [I1,I2]', (t)
   for (const path of ['pullboard.json', 'SPEC.md', 'DOCTRINE.md']) assert.ok(fromWorktree.stderr.includes(path), fromWorktree.stderr);
   assert.doesNotMatch(fromWorktree.stderr, /worktree <lane>/u);
 
-  const fromMain = box.run(box.repo, 'resume');
+  const fromMain = box.run(box.repo, 'resume', '--diagnostics');
   assert.equal(fromMain.status, 0, fromMain.failure || fromMain.stderr || fromMain.stdout);
   assert.match(fromMain.stdout, /The person must commit Pullboard's setup files before agents can use worktrees/u);
   assert.ok(fromMain.stdout.includes(`cd ${box.repo} && git add`), fromMain.stdout);
@@ -90,9 +90,9 @@ test('resume asks the coordinator to commit an applied row file [I1,L3]', t => {
   const ROW_LINE = 'The coordinator must commit the row file spec apply changed: ';
   /** Resume's text and JSON from the main checkout, both passing, and neither naming an unrelated dirty file. */
   const resume = (box) => {
-    const text = box.run(box.repo, 'resume');
+    const text = box.run(box.repo, 'resume', '--diagnostics');
     assert.equal(text.status, 0, text.failure || text.stderr || text.stdout);
-    const json = box.run(box.repo, 'resume', '--json');
+    const json = box.run(box.repo, 'resume', '--diagnostics', '--json');
     assert.equal(json.status, 0, json.failure || json.stderr || json.stdout);
     const lines = text.stdout.split('\n');
     const card = JSON.parse(json.stdout);
@@ -473,7 +473,7 @@ test('resume shows the coordinator its unread shouts through the SessionStart ho
 
 test('spec draft adds draft rows and resume names them [N32]', t => {
   const box = releaseFixture(t, { freshSetup: true });
-  const initial = JSON.parse(box.run(box.repo, 'resume', '--json').stdout);
+  const initial = JSON.parse(box.run(box.repo, 'resume', '--diagnostics', '--json').stdout);
   assert.equal(initial.setup.step, 1);
   assert.match(initial.setup.command, /^pullboard spec draft/u);
   assert.doesNotMatch(initial.setup.command, /node -e|appendFileSync/u);
@@ -500,7 +500,7 @@ test('spec draft adds draft rows and resume names them [N32]', t => {
   assert.equal(JSON.parse(empty.stdout).error.code, 'USAGE');
   assert.equal(readFileSync(join(box.repo, 'SPEC.md'), 'utf8'), beforeEmpty, 'an empty draft does not change the spec');
 
-  const next = JSON.parse(box.run(box.repo, 'resume', '--json').stdout);
+  const next = JSON.parse(box.run(box.repo, 'resume', '--diagnostics', '--json').stdout);
   assert.equal(next.setup.step, 1);
   assert.match(next.setup.question, /waiting.*person.*approv/iu);
   assert.deepEqual(next.setup.rowIds, ['G1', 'G2']);
@@ -532,7 +532,7 @@ test('setup lets agents build starter items while rows wait [S1,B26]', t => {
   const starters = JSON.parse(box.run(box.repo, 'list', '--all', '--json').stdout).items.sort((a, b) => a.item_id - b.item_id);
   const first = starters.find(item => !item.item_after);
   assert.ok(first, 'the bundled blueprint files a starter with no dependency');
-  const initial = JSON.parse(box.run(box.repo, 'resume', '--json').stdout);
+  const initial = JSON.parse(box.run(box.repo, 'resume', '--diagnostics', '--json').stdout);
   assert.equal(initial.setup.waitingOn, 'person-approval');
   assert.equal(initial.setup.buildNow?.item, first.item_id, 'setup names the first starter while rows are undecided');
   assert.match(initial.setup.meanwhile, /claimed and built now.*person.*parallel/iu);
@@ -542,16 +542,16 @@ test('setup lets agents build starter items while rows wait [S1,B26]', t => {
   assert.equal(lane.status, 0, lane.failure || lane.stderr);
   box.git(box.repo, 'add', '-A');
   box.git(box.repo, 'commit', '-q', '-m', 'chore: commit blueprint setup');
-  const coordinator = box.run(box.repo, 'resume');
+  const coordinator = box.run(box.repo, 'resume', '--diagnostics');
   assert.match(coordinator.stdout, /claimed and built now.*person.*parallel/iu);
   assert.ok(coordinator.stdout.includes(`#${first.item_id}`), 'prose names the same first starter');
-  const prepared = JSON.parse(box.run(box.repo, 'resume', '--json').stdout);
+  const prepared = JSON.parse(box.run(box.repo, 'resume', '--diagnostics', '--json').stdout);
   assert.equal(prepared.setup.buildNow.command, `pullboard worktree ${first.item_lane} --model "<model name>"`);
   box.env.CODEX_THREAD_ID = 'starter-builder-session';
   const opened = box.run(box.repo, 'worktree', first.item_lane, '--model', 'Starter fixture', '--json');
   assert.equal(opened.status, 0, opened.failure || opened.stderr);
   const worktree = JSON.parse(opened.stdout).path;
-  const ready = JSON.parse(box.run(worktree, 'resume', '--json').stdout);
+  const ready = JSON.parse(box.run(worktree, 'resume', '--diagnostics', '--json').stdout);
   assert.equal(ready.setup.waitingOn, 'person-approval', 'approval remains a separate person decision');
   assert.equal(ready.setup.buildNow.item, first.item_id);
   assert.equal(ready.setup.buildNow.command, `pullboard claim ${first.item_id}`);
@@ -580,7 +580,7 @@ test("resume says setup waits on the person's approval [I1,I2]", async t => {
   const ids = drafted.map(result => JSON.parse(result.stdout).id);
   assert.deepEqual(ids, ['G1', 'G2']);
 
-  const waiting = box.run(box.repo, 'resume');
+  const waiting = box.run(box.repo, 'resume', '--diagnostics');
   assert.equal(waiting.status, 0, waiting.failure || waiting.stderr || waiting.stdout);
   assert.match(waiting.stdout, /waiting.*person.*approv/iu, 'setup waits for the person after the rows are drafted');
   for (const id of ids) assert.match(waiting.stdout, new RegExp(`\\b${id}\\b`, 'u'));
@@ -588,7 +588,7 @@ test("resume says setup waits on the person's approval [I1,I2]", async t => {
     'resume names permissible independent work while approval is pending');
   assert.doesNotMatch(waiting.stdout, /^next: .*spec (?:draft|approve)/mu,
     'the agent is not told to draft again or perform the person-only approval');
-  const waitingJson = box.run(box.repo, 'resume', '--json');
+  const waitingJson = box.run(box.repo, 'resume', '--diagnostics', '--json');
   assert.equal(waitingJson.status, 0, waitingJson.failure || waitingJson.stderr || waitingJson.stdout);
   const card = JSON.parse(waitingJson.stdout);
   assert.equal(card.setup?.step, 1);
@@ -604,7 +604,7 @@ test("resume says setup waits on the person's approval [I1,I2]", async t => {
   assert.equal(approval.status, 0, approval.failure || approval.stderr || approval.stdout);
   const applied = box.run(box.repo, 'spec', 'apply');
   assert.equal(applied.status, 0, applied.failure || applied.stderr || applied.stdout);
-  const partial = box.run(box.repo, 'resume', '--json');
+  const partial = box.run(box.repo, 'resume', '--diagnostics', '--json');
   assert.equal(partial.status, 0, partial.failure || partial.stderr || partial.stdout);
   const pending = JSON.parse(partial.stdout);
   assert.equal(pending.setup?.step, 1, 'one approved row does not stand in for the remaining setup draft');
@@ -614,7 +614,7 @@ test("resume says setup waits on the person's approval [I1,I2]", async t => {
   assert.equal(finalApproval.status, 0, finalApproval.failure || finalApproval.stderr || finalApproval.stdout);
   const finalApply = box.run(box.repo, 'spec', 'apply');
   assert.equal(finalApply.status, 0, finalApply.failure || finalApply.stderr || finalApply.stdout);
-  const resumed = box.run(box.repo, 'resume', '--json');
+  const resumed = box.run(box.repo, 'resume', '--diagnostics', '--json');
   assert.equal(resumed.status, 0, resumed.failure || resumed.stderr || resumed.stdout);
   const next = JSON.parse(resumed.stdout);
   assert.equal(next.setup?.step, 2, 'person approval advances setup to its next unanswered step');
@@ -663,7 +663,7 @@ function assertViewReceipt(box) {
     { ...receipt, setupStartedAt: '2000-01-01T00:00:00.000Z' },
     { ...receipt, boundAt: '2000-01-01T00:00:00.000Z' }]) {
     writeFileSync(receiptPath, JSON.stringify(invalid));
-    assert.equal(JSON.parse(box.run(box.repo, 'resume', '--json').stdout).setup?.step, 5,
+    assert.equal(JSON.parse(box.run(box.repo, 'resume', '--diagnostics', '--json').stdout).setup?.step, 5,
       'a receipt for another board or before this setup cannot complete it');
   }
   writeFileSync(receiptPath, receiptBytes);
@@ -686,7 +686,7 @@ test('a reused authenticated view completes setup for its new board [N26,N32]', 
     writeFileSync(file, JSON.stringify(config));
     const added = box.run(box.repo, 'add', 'app', 'First setup item', '--specs', 'N19', '--criterion', 'The fixture has work.');
     assert.equal(added.status, 0, added.failure || added.stderr || added.stdout);
-    assert.equal(JSON.parse(box.run(box.repo, 'resume', '--json').stdout).setup?.step, 5);
+    assert.equal(JSON.parse(box.run(box.repo, 'resume', '--diagnostics', '--json').stdout).setup?.step, 5);
   }
   awaitingView(firstBoard);
   const child = spawn(process.execPath, [join(firstBoard.root, 'cli/bin/pullboard.js'), 'view', '--no-open', '--json'],
@@ -707,7 +707,7 @@ test('a reused authenticated view completes setup for its new board [N26,N32]', 
     });
   });
   assert.equal(first.port, lease.port);
-  assert.equal(JSON.parse(firstBoard.run(firstBoard.repo, 'resume', '--json').stdout).setup, null);
+  assert.equal(JSON.parse(firstBoard.run(firstBoard.repo, 'resume', '--diagnostics', '--json').stdout).setup, null);
   const secondBoard = releaseFixture(t);
   const refusedBoard = releaseFixture(t);
   awaitingView(secondBoard);
@@ -717,7 +717,7 @@ test('a reused authenticated view completes setup for its new board [N26,N32]', 
   const second = JSON.parse(reused.stdout);
   assert.equal(second.reused, true);
   assert.equal(second.url, first.url);
-  assert.equal(JSON.parse(secondBoard.run(secondBoard.repo, 'resume', '--json').stdout).setup, null,
+  assert.equal(JSON.parse(secondBoard.run(secondBoard.repo, 'resume', '--diagnostics', '--json').stdout).setup, null,
     'the exact offered view command completes setup on the second board');
   const receiptPath = join(secondBoard.repo, '.git/pullboard/view-reuse.json');
   const bytes = readFileSync(receiptPath);
@@ -732,7 +732,7 @@ test('a reused authenticated view completes setup for its new board [N26,N32]', 
     { ...receipt, setupStartedAt: '2000-01-01T00:00:00.000Z' },
     { ...receipt, openedAt: '2000-01-01T00:00:00.000Z' }]) {
     writeFileSync(receiptPath, JSON.stringify(invalid));
-    assert.equal(JSON.parse(secondBoard.run(secondBoard.repo, 'resume', '--json').stdout).setup?.step, 5,
+    assert.equal(JSON.parse(secondBoard.run(secondBoard.repo, 'resume', '--diagnostics', '--json').stdout).setup?.step, 5,
       'another board or an observation before this setup cannot complete it');
   }
   writeFileSync(receiptPath, bytes);
@@ -743,7 +743,7 @@ test('a reused authenticated view completes setup for its new board [N26,N32]', 
     const refused = refusedBoard.run(refusedBoard.repo, 'view', '--no-open', '--json');
     assert.equal(refused.status, 1, refused.failure || refused.stderr || refused.stdout);
     assert.equal(JSON.parse(refused.stdout).error.code, 'PORT_BUSY');
-    assert.equal(JSON.parse(refusedBoard.run(refusedBoard.repo, 'resume', '--json').stdout).setup?.step, 5,
+    assert.equal(JSON.parse(refusedBoard.run(refusedBoard.repo, 'resume', '--diagnostics', '--json').stdout).setup?.step, 5,
       'an unauthenticated listener cannot complete setup');
   } finally { writeFileSync(sessionPath, sessionBytes); }
 });
@@ -756,10 +756,10 @@ async function finishSetup(box, observe = () => {}) {
   writeFileSync(configFile, JSON.stringify({ ...config, gate: '' }));
   /** Assert the next setup block in both the actual text and JSON CLI output. */
   function step(number) {
-    const text = box.run(box.repo, 'resume');
+    const text = box.run(box.repo, 'resume', '--diagnostics');
     assert.equal(text.status, 0, text.failure || text.stderr);
     assert.match(text.stdout, new RegExp(`Setting up: step ${number} of 5`));
-    const json = box.run(box.repo, 'resume', '--json');
+    const json = box.run(box.repo, 'resume', '--diagnostics', '--json');
     assert.equal(json.status, 0, json.failure || json.stderr);
     const setup = JSON.parse(json.stdout).setup;
     assert.equal(setup.step, number);
@@ -794,11 +794,11 @@ async function finishSetup(box, observe = () => {}) {
   box.git(box.repo, 'commit', '-q', '-m', 'chore: set up private fixture');
   const builder = box.run(box.repo, 'worktree', 'app', '--model', 'Fixture');
   assert.equal(builder.status, 0, builder.failure || builder.stderr);
-  const stillWaiting = JSON.parse(box.run(box.repo, 'resume', '--json').stdout);
+  const stillWaiting = JSON.parse(box.run(box.repo, 'resume', '--diagnostics', '--json').stdout);
   assert.equal(stillWaiting.setup?.step, 5, 'registering a builder does not stand in for the view’s own bind receipt');
   const shouted = box.run(box.repo, 'shout', 'all', 'Opened Pullboard view for this board.');
   assert.equal(shouted.status, 0, shouted.failure || shouted.stderr);
-  assert.equal(JSON.parse(box.run(box.repo, 'resume', '--json').stdout).setup?.step, 5,
+  assert.equal(JSON.parse(box.run(box.repo, 'resume', '--diagnostics', '--json').stdout).setup?.step, 5,
     'an ordinary same-text shout cannot impersonate a successful view bind');
   await openSetupView(box);
   assertViewReceipt(box);
@@ -813,7 +813,7 @@ test('resume walks a new board through setup one step at a time [N32,N19]', asyn
     if (number === 2) assert.match(setup.question, /Suggested folders: app/u);
   });
   assert.deepEqual(seen, [1, 2, 3, 4, 5]);
-  const result = box.run(box.repo, 'resume', '--json');
+  const result = box.run(box.repo, 'resume', '--diagnostics', '--json');
   assert.equal(result.status, 0, result.failure || result.stderr);
   assert.equal(JSON.parse(result.stdout).setup, null, 'actual successful view bind completes the board setup');
 });
@@ -830,9 +830,9 @@ test('resume names lane add to make a lane [I1,N32]', t => {
     const result = box.run(box.repo, ...args);
     assert.equal(result.status, 0, result.failure || result.stderr || result.stdout);
   }
-  const text = box.run(box.repo, 'resume');
+  const text = box.run(box.repo, 'resume', '--diagnostics');
   assert.equal(text.status, 0, text.failure || text.stderr);
-  const setup = JSON.parse(box.run(box.repo, 'resume', '--json').stdout).setup;
+  const setup = JSON.parse(box.run(box.repo, 'resume', '--diagnostics', '--json').stdout).setup;
   assert.equal(setup.step, 2);
   assert.equal(setup.command, 'pullboard lane add app --owns app/');
   assert.ok(text.stdout.includes(setup.command), text.stdout);
@@ -843,20 +843,20 @@ test('resume names lane add to make a lane [I1,N32]', t => {
   const lanes = box.run(box.repo, 'lanes');
   assert.equal(lanes.status, 0, lanes.failure || lanes.stderr);
   assert.match(lanes.stdout, /^app\s+app\/(?:\s|$)/mu);
-  assert.equal(JSON.parse(box.run(box.repo, 'resume', '--json').stdout).setup?.step, 3);
+  assert.equal(JSON.parse(box.run(box.repo, 'resume', '--diagnostics', '--json').stdout).setup?.step, 3);
 });
 
 test("a set-up board's resume prints no setup steps [N32,N19]", async t => {
   const box = releaseFixture(t, { freshSetup: true });
   await finishSetup(box);
-  const result = box.run(box.repo, 'resume');
+  const result = box.run(box.repo, 'resume', '--diagnostics');
   assert.equal(result.status, 0, result.failure || result.stderr);
   assert.doesNotMatch(result.stdout, /Setting up: step/u);
-  const json = box.run(box.repo, 'resume', '--json');
+  const json = box.run(box.repo, 'resume', '--diagnostics', '--json');
   assert.equal(JSON.parse(json.stdout).setup, null);
   const proposed = box.run(box.repo, 'spec', 'draft', 'A later proposal for the person', '--json');
   assert.equal(proposed.status, 0, proposed.failure || proposed.stderr || proposed.stdout);
-  const later = box.run(box.repo, 'resume', '--json');
+  const later = box.run(box.repo, 'resume', '--diagnostics', '--json');
   assert.equal(later.status, 0, later.failure || later.stderr || later.stdout);
   assert.equal(JSON.parse(later.stdout).setup, null, 'a later proposal does not reopen completed setup');
 });
@@ -887,7 +887,7 @@ test('a new preconfigured board waits for every initial approval [I1,I2]', async
     assert.equal(result.status, 0, result.failure || result.stderr || result.stdout);
   }
   await openSetupView(box);
-  const result = box.run(box.repo, 'resume', '--json');
+  const result = box.run(box.repo, 'resume', '--diagnostics', '--json');
   assert.equal(result.status, 0, result.failure || result.stderr || result.stdout);
   const setup = JSON.parse(result.stdout).setup;
   assert.equal(setup?.step, 1, 'an early view and preconfigured answers cannot bypass the remaining initial approval');
@@ -896,7 +896,7 @@ test('a new preconfigured board waits for every initial approval [I1,I2]', async
   for (const invalid of ['{', JSON.stringify({ ...started, boardId: 'another-board' }),
     JSON.stringify({ ...started, setupStartedAt: '2000-01-01T00:00:00.000Z' })]) {
     writeFileSync(marker, invalid);
-    const resumed = box.run(box.repo, 'resume', '--json');
+    const resumed = box.run(box.repo, 'resume', '--diagnostics', '--json');
     assert.equal(resumed.status, 0, resumed.failure || resumed.stderr || resumed.stdout);
     assert.deepEqual(JSON.parse(resumed.stdout).setup?.rowIds, ['G2'],
       'an invalid progress receipt is not evidence of a completed legacy setup');
@@ -916,7 +916,7 @@ test('an upgraded configured board stays set up before its first resume [I1,I2]'
     'idempotent init does not classify an existing coordinator as a new enrollment');
   const proposed = box.run(box.repo, 'spec', 'draft', 'A proposal drafted before the first upgraded resume', '--json');
   assert.equal(proposed.status, 0, proposed.failure || proposed.stderr || proposed.stdout);
-  const result = box.run(box.repo, 'resume', '--json');
+  const result = box.run(box.repo, 'resume', '--diagnostics', '--json');
   assert.equal(result.status, 0, result.failure || result.stderr || result.stdout);
   assert.equal(JSON.parse(result.stdout).setup, null, 'a later draft does not reopen a legacy completed setup');
   const complete = JSON.parse(readFileSync(join(stateDirectory, 'setup-complete.json'), 'utf8'));
@@ -946,7 +946,7 @@ test('a board building without spec rows is not told to draft the spec first [I1
   assert.equal(added.status, 0, added.failure || added.stderr || added.stdout);
   assert.equal(JSON.parse(added.stdout).item.item_spec_ids, '', 'real board items need no spec rows');
   for (let repeat = 0; repeat < 2; repeat++) {
-    const resumed = box.run(box.repo, 'resume', '--json');
+    const resumed = box.run(box.repo, 'resume', '--diagnostics', '--json');
     assert.equal(resumed.status, 0, resumed.failure || resumed.stderr || resumed.stdout);
     const card = JSON.parse(resumed.stdout);
     assert.notEqual(card.setup?.step, 1, 'an active rowless board skips the required spec step');
@@ -958,7 +958,7 @@ test('a board building without spec rows is not told to draft the spec first [I1
       assert.match(specStep.question, /optional/iu);
       assert.match(specStep.command, /pullboard spec draft/u);
     }
-    const text = box.run(box.repo, 'resume');
+    const text = box.run(box.repo, 'resume', '--diagnostics');
     assert.equal(text.status, 0, text.failure || text.stderr || text.stdout);
     assert.match(text.stdout, /spec rows are optional[^\n]*pullboard spec draft/iu,
       'resume offers the way to add rows without making it the work prerequisite');
@@ -966,7 +966,7 @@ test('a board building without spec rows is not told to draft the spec first [I1
   }
   await openSetupView(box);
   for (let repeat = 0; repeat < 2; repeat++) {
-    const resumed = box.run(box.repo, 'resume', '--json');
+    const resumed = box.run(box.repo, 'resume', '--diagnostics', '--json');
     assert.equal(resumed.status, 0, resumed.failure || resumed.stderr || resumed.stdout);
     const card = JSON.parse(resumed.stdout);
     assert.equal(card.setup, null, 'the working board can finish setup without adding rows');

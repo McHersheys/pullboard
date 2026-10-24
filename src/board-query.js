@@ -1,3 +1,4 @@
+import { outsideSource } from './outside-source.js';
 import {
   COORDINATION_SHOUT,
   itemShoutReader,
@@ -106,7 +107,8 @@ export function itemById(board, id) {
 export function getItem(board, id) {
   const item = current(board, itemById(board, id));
   const baseline = itemCheckBaseline(board, item);
-  return baseline ? { ...item, item_check_baseline: baseline } : item;
+  const source = outsideSource(board, id);
+  return { ...item, ...(baseline ? { item_check_baseline: baseline } : {}), ...(source ? { outside: source } : {}) };
 }
 
 /**

@@ -1,4 +1,35 @@
 import {
+  lineOrderEnabled,
+  lineBuildOrder,
+  reviewerScarcity,
+  barReadyForOrder,
+} from './line-order.js';
+export { lineSettings, setLineSetting } from './line-settings.js';
+
+import {
+  applyOutsideIntake,
+  approveOutside as applyOutsideApproval,
+} from './outside-store.js';
+import {
+  outsideSandboxProblem,
+  outsideBuildProblem,
+  outsideSource,
+  requireOutsideOwner,
+  saveOutsideSource,
+} from './outside-source.js';
+import { FILE_GROWTH_NOTICE_ENGINE } from './file-growth-notice-engine.js';
+import {
+  recordBarRevision,
+  barReadyProblem,
+} from './bar-readiness.js';
+export { setBarReady, signBar } from './bar-readiness.js';
+import {
+  coordinatorCheck,
+  normalizeCheckBaseline,
+  saveCheckBaseline,
+} from './item-check-baseline.js';
+export { coordinatorCheck, completeCheckBaseline, itemCheckAuthor } from './item-check-baseline.js';
+import {
   closeBoard,
   openBoardForRead,
   openBoardReadOnly,
@@ -19,7 +50,6 @@ import {
   now,
   isHeld,
   current,
-  itemCheckBaseline,
   reviewReleasesSinceSubmit,
   boardId,
   itemById,
@@ -37,6 +67,7 @@ import {
   rowDecisions,
   UNREAD_SQL,
 } from './board-query.js';
+
 import { ITEM_SHOUT_ENGINE } from './item-shout-engine.js';
 import {
   COORDINATION_SHOUT,
@@ -75,14 +106,18 @@ import {
   mkdirSync,
 } from 'node:fs';
 import { dirname } from 'node:path';
-import { sharedSchemaOwner } from './board-schema.js';
-import { expectedBoardSchema } from './board-schema.js';
-import { sharedSchemaDiagnostic } from './board-schema.js';
-import { reportSharedSchema } from './board-schema.js';
+import {
+  sharedSchemaOwner,
+  expectedBoardSchema,
+  sharedSchemaDiagnostic,
+  reportSharedSchema,
+} from './board-schema.js';
 import { DatabaseSync } from 'node:sqlite';
-import { boardNotWritable } from './board-access.js';
+import {
+  boardNotWritable,
+  boardBusyError,
+} from './board-access.js';
 import { ensureHotIndexes } from './board-hot.js';
-import { boardBusyError } from './board-access.js';
 export { boardBusyError } from './board-access.js';
 import {
   boardStanding,
@@ -98,6 +133,7 @@ import {
 import {
   itemFiles,
   itemFileCollisions,
+  addedFileCollisions,
 } from './item-files.js';
 export { itemFiles };
 import { COORDINATOR } from './config.js';
@@ -182,17 +218,19 @@ import {
   landingWaiverKind,
 } from './landing-exceptions.js';
 import { parseSpec } from './spec.js';
-import { invariantEvidence } from './submit-invariants.js';
+import {
+  invariantEvidence,
+  preserveInvariantEvidence,
+  validateLandingBatch,
+  validateLandingRevision,
+  submissionProof,
+  SUBMISSION_PROOF_ENGINE,
+} from './submit-invariants.js';
 import { landingBatches } from './landing-batch-history.js';
 import {
   NATIVE_FLAKE_ENGINE,
   carriesFlakeDiagnostics,
 } from './flake-engine.js';
-import { preserveInvariantEvidence } from './submit-invariants.js';
-import { validateLandingBatch } from './submit-invariants.js';
-import { validateLandingRevision } from './submit-invariants.js';
-import { submissionProof } from './submit-invariants.js';
-import { SUBMISSION_PROOF_ENGINE } from './submit-invariants.js';
 export { landingFlakes, landingWaiverCovers, landingWaiverKind };
 export { landingWaivers, landingWaiverFor, waivedLandingProof } from './landing-waivers.js';
 export { acceptCheck } from './check-accept.js';
@@ -601,7 +639,7 @@ function checkRouted({ brief, route, criterion, check }) {
  * @param {{ by: string, lane: string, title: string, criterion?: string, specIds?: string[], parentId?: number | null, after?: number[], brief?: string, route?: string, check?: string }} item
  * @returns {number} The new item's id.
  */
-export function addItem(board, { by, lane, title, criterion = '', specIds = [], parentId = null, after = [], brief = '', route = 'strong', check, checkBaseline }) {
+export function addItem(board, { by, lane, title, criterion = '', specIds = [], parentId = null, after = [], brief = '', route = 'strong', check, checkBaseline, barActor }) {
   return atomic(board, () => {
     const { command, cleanTitle } = validateItemAddition(board, { by, lane, title, criterion, parentId, after, brief, route, check });
     const baseline = normalizeCheckBaseline(by, command, checkBaseline);
@@ -616,6 +654,7 @@ export function addItem(board, { by, lane, title, criterion = '', specIds = [], 
     const id = Number(result.lastInsertRowid);
     saveCheckBaseline(board, id, baseline);
     logEvent(board, by, 'add', id, { lane, specIds, after, route, ...(baseline ? { checkBaseline: baseline } : {}) });
+    recordBarRevision(board, itemById(board, id), by, null, barActor);
     return id;
   });
 }
@@ -672,7 +711,7 @@ export function validateItemAddition(board, { by, lane, title, criterion = '', p
  * @param {number} id
  * @param {{ agentId: string, brief?: string, route?: string, criterion?: string, check?: string, after?: number[] }} change
  */
-export function editItem(board, id, { agentId, brief, route, criterion, check, after, checkBaseline, reason }) {
+export function editItem(board, id, { agentId, brief, route, criterion, check, after, checkBaseline, reason, barActor }) {
   atomic(board, () => {
     const stored = itemById(board, id);
     const expiredHolder = stored.item_status === 'claimed' && !isHeld(board, stored) ? stored.item_owner : null;
@@ -703,6 +742,8 @@ export function editItem(board, id, { agentId, brief, route, criterion, check, a
       ...(expiredHolder ? { expiredHolder } : {}),
       ...bar,
     });
+    recordBarRevision(board, itemById(board, id), agentId, item, barActor);
+    notifyFileGrowth(board, item, itemById(board, id));
     if (pendingRefreeze) {
       insertShout(board, {
         from: COORDINATOR,
@@ -712,6 +753,27 @@ export function editItem(board, id, { agentId, brief, route, criterion, check, a
       });
     }
   });
+}
+
+/** Persist both holder notices with the edit; a fixed system sender also reaches an editing holder's inbox. */
+function notifyFileGrowth(board, before, after) {
+  if ((board.executionEngineVersion ?? ENGINE_VERSION) < FILE_GROWTH_NOTICE_ENGINE
+    || !['claimed', 'submitted'].includes(before.item_status)) return;
+  for (const collision of addedFileCollisions(before, after, listItems(board, { all: true }))) {
+    const recipients = new Map();
+    for (const item of [before, collision.item]) {
+      const holder = item.item_owner || item.item_built_by;
+      const to = holder && board.db.prepare('SELECT 1 FROM agent WHERE agent_id=?').get(holder) ? holder : COORDINATOR;
+      recipients.set(to, [...(recipients.get(to) ?? []), item.item_id]);
+    }
+    const text = `New file overlap: #${after.item_id} grew into #${collision.item.item_id} on ${collision.shared.join(', ')}. Coordinate both items; the edit is retained.`;
+    for (const [to, items] of recipients) {
+      const detail = { changedItem: after.item_id, otherItem: collision.item.item_id, files: collision.shared };
+      const shout = persistShout(board, { from: 'overlap', to, text, detail: { ...detail, item: items[0] } });
+      // One holder may own both items: deliver once while retaining the notice on both item threads.
+      for (const item of items.slice(1)) logEvent(board, 'overlap', 'shout', item, { ...detail, shout, to, text });
+    }
+  }
 }
 
 /** Validate an edit without side effects, so a refused change never starts a shell baseline; a bar correction needs a reason [B31]. */
@@ -760,80 +822,6 @@ export function validateItemEdit(board, id, { agentId, brief, route, criterion, 
   checkRouted({ brief: next.item_brief, route: next.item_route, criterion: next.item_criterion, check: next.item_check });
   const unfreeze = next.item_criterion !== item.item_criterion || next.item_check !== item.item_check;
   return { item, next, command, unfreeze, bar: barCorrectionFields(board, item, next, { reason }) };
-}
-
-/** Normalize an explicitly supplied check only when its author is the coordinator [V2]. */
-export function coordinatorCheck(agentId, command) {
-  if (command === undefined) return undefined;
-  if (agentId !== COORDINATOR) {
-    throw new Refused('COORDINATOR_CHECK', 'only the coordinator sets or edits an item check; ask your coordinator to supply --check');
-  }
-  if (typeof command !== 'string') throw new Refused('BAD_CHECK', 'an item check is a command string; ask your coordinator to supply --check "<command>"');
-  return command.trim();
-}
-
-/** Validate captured baseline data without asking a replica to run Git or a shell [V2,H16]. */
-function normalizeCheckBaseline(agentId, command, baseline) {
-  if (baseline === undefined) return undefined;
-  coordinatorCheck(agentId, command ?? '');
-  if (!command || !baseline || typeof baseline !== 'object' || Array.isArray(baseline)
-    || baseline.command !== command || !['green', 'red', 'unavailable', 'pending'].includes(baseline.result)
-    || !(baseline.main === null || typeof baseline.main === 'string' && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(baseline.main))
-    || (baseline.result !== 'unavailable' && baseline.main === null)
-    || (baseline.result === 'pending' && !baseline.request)
-    || (baseline.request !== undefined && (typeof baseline.request !== 'string' || !/^[a-f0-9-]{36}$/.test(baseline.request)))
-    || (baseline.reason !== undefined && typeof baseline.reason !== 'string')
-    || (baseline.seconds !== undefined && (!Number.isSafeInteger(baseline.seconds) || baseline.seconds < 0))) {
-    throw new Refused('BAD_CHECK_BASELINE', 'the check baseline must describe this command at a main commit; set --check again from the coordinator');
-  }
-  return {
-    command, main: baseline.main, result: baseline.result,
-    ...(baseline.request === undefined ? {} : { request: baseline.request }),
-    ...(baseline.reason === undefined ? {} : { reason: baseline.reason }),
-    ...(baseline.seconds === undefined ? {} : { seconds: baseline.seconds }),
-    ...(baseline.result === 'green' ? { warning: 'CRITERION_PROVES_NOTHING' } : {}),
-  };
-}
-
-/** Record a captured result only for the still-current authorized background request [V2,H16]. */
-export function completeCheckBaseline(board, id, { agentId, expected, baseline }) {
-  return atomic(board, () => {
-    const result = normalizeCheckBaseline(agentId, baseline?.command, baseline);
-    if (!expected || !result || result.result === 'pending' || result.command !== expected.command || result.main !== expected.main
-      || typeof expected.request !== 'string' || !/^[a-f0-9-]{36}$/.test(expected.request)) {
-      throw new Refused('BAD_CHECK_BASELINE', 'a completed baseline must match its authorized request; set --check again from the coordinator');
-    }
-    const item = itemById(board, id);
-    const current = itemCheckBaseline(board, item);
-    if (current?.result !== 'pending' || current.request !== expected.request || current.command !== expected.command || current.main !== expected.main) return false;
-    const recorded = { ...result, request: expected.request };
-    saveCheckBaseline(board, id, recorded);
-    logEvent(board, agentId, 'check-baseline', id, { checkBaseline: recorded });
-    return true;
-  });
-}
-
-/** Store or clear an item's observation atomically with its check and immutable audit event. */
-function saveCheckBaseline(board, id, baseline) {
-  const key = `item_check_baseline_${id}`;
-  if (!baseline) board.db.prepare('DELETE FROM board_meta WHERE meta_key = ?').run(key);
-  else board.db.prepare('INSERT INTO board_meta(meta_key,meta_value) VALUES (?,?) ON CONFLICT(meta_key) DO UPDATE SET meta_value=excluded.meta_value')
-    .run(key, JSON.stringify(baseline));
-}
-
-
-
-/** Read the current check's setter from immutable edits, or its original item author [V2]. */
-export function itemCheckAuthor(board, id) {
-  const item = itemById(board, id);
-  const edits = board.db.prepare("SELECT event_by, event_detail FROM event WHERE item_id = ? AND event_kind = 'edit' ORDER BY event_id DESC").all(id);
-  for (const edit of edits) {
-    let detail;
-    try { detail = JSON.parse(edit.event_detail); }
-    catch { return null; }
-    if (detail && Object.hasOwn(detail, 'check')) return detail.check === item.item_check ? edit.event_by : null;
-  }
-  return item.item_created_by;
 }
 
 /**
@@ -986,8 +974,11 @@ export function claim(board, id, { agentId, lane, leaseMs, freeze, head = null, 
     const item = moveItem(board, id, 'claim', {
       checks: {
         joined: null, checkProvesSomething: null,
+        barReady: found => barReadyProblem(board, found),
         [IN_STATE]: (found) => new Refused('NOT_CLAIMABLE', `item #${id} is ${found.item_status}`),
         inLane: (found) => {
+          const outside = outsideBuildProblem(board, found);
+          if (outside) return outside;
           if (found.item_lane === lane) return null;
           return new Refused(
             'WRONG_LANE',
@@ -1133,8 +1124,9 @@ export function submit(board, id, { agentId, commit, tree, files = [], policyCom
     moveItem(board, id, 'submit', {
       checks: {
         joined: null, checkProvesSomething: null,
+        barReady: found => barReadyProblem(board, found),
         [IN_STATE]: notYours,
-        isHolder: (found) => (found.item_owner === agentId ? null : notYours()),
+        isHolder: (found) => outsideBuildProblem(board, found) ?? (found.item_owner === agentId ? null : notYours()),
         correctionRefrozen: () => pendingRefreezeProblem(board, id),
         criterionUnchanged: null,
         treeClean: null,
@@ -1142,6 +1134,7 @@ export function submit(board, id, { agentId, commit, tree, files = [], policyCom
         hasCommit: null,
         withinLane: null,
         trunkMergeClean: null,
+        trunkInCandidate: null,
         noUnverifiedStack: null,
         infraExplained: null, // The CLI checks the claimed Git diff before this transition.
         doctrineHolds: null,
@@ -1350,7 +1343,7 @@ function reserveWithin(board, id, { agentId, leaseMs, policy, familyPolicy = 'of
     checks: {
       coordinatorSaysAs: null,
       joined: null,
-      roadmapReadable: null, // Selection reads it before this move; explicit ids need no roadmap.
+      roadmapReadable: null, // Selection reads recorded queue policy and roadmap before this move; explicit ids consult neither.
       [IN_STATE]: (found) => new Refused('NOT_SUBMITTED', `item #${id} is ${current(board, found).item_status}, not submitted`),
       /** Enforce the cooldown after state validation and before reviewer eligibility [V1]. */
       reviewCooldownElapsed: () => {
@@ -1382,7 +1375,7 @@ function reserveWithin(board, id, { agentId, leaseMs, policy, familyPolicy = 'of
  * @param {{ agentId: string, decision: string, reason?: string, note?: string, cause?: string, head: string, digest: string, policy: string, familyPolicy?: string, check?: 'none' | 'green', review?: {commit: string, head?: string, trunk: string, paths: string[]}, implies?: number[], impliesId?: string }} verdict - implies: items this verdict changes (B29)
  * @returns {{ decision: string, reason: string, check?: 'none' | 'green' }}
  */
-export function verify(board, id, { agentId, decision, reason, note = '', cause, head, digest, policy, familyPolicy = 'off', check, review, implies, impliesId, reopenFirstRefusalMinutes, environment }) {
+export function verify(board, id, { agentId, decision, reason, note = '', cause, head, digest, policy, familyPolicy = 'off', check, review, implies, impliesId, reopenFirstRefusalMinutes, environment, sandbox }) {
   const verb = { ACCEPT: 'accept', REJECT: 'reject' }[decision];
   if (!verb) throw new Refused('BAD_DECISION', 'the decision is accept or reject');
   const isAccept = verb === 'accept';
@@ -1414,7 +1407,7 @@ export function verify(board, id, { agentId, decision, reason, note = '', cause,
         reasonIsMet: () => (reason && reason !== ACCEPT_REASON ? new Refused('BAD_REASON', `accept means ${ACCEPT_REASON}; a failed criterion is a reject`) : null),
         trunkMergeClean: null,
         noUnverifiedStack: null, queuedItemLease: null,
-        itemCheckGreen: null,
+        itemCheckGreen: found => isAccept ? outsideSandboxProblem(board, found, sandbox) : null,
         proofNoted: () =>
           note.trim()
             ? null
@@ -1426,12 +1419,14 @@ export function verify(board, id, { agentId, decision, reason, note = '', cause,
       before: (found) => recordVerdict(board, found, { agentId, decision, reason: code, note, digest, head }),
       set: (found) => ({ item_verdict: decision, item_verified_by: isAccept ? agentId : null, item_owner: isAccept ? found.item_owner : null }),
     });
+    if (isAccept && sandbox && outsideSource(board, id)) saveOutsideSource(board, id, { ...outsideSource(board, id), sandbox });
     const returnedAt = !isAccept && engine >= REOPEN_FIRST_REFUSAL_ENGINE && reopenFirstRefusalMinutes > 0 && item.item_built_by ? board.clock.now() : undefined;
     const reservation = !isAccept && engine >= REOPEN_FIRST_REFUSAL_ENGINE ? firstRefusalDetail(board, item, reopenFirstRefusalMinutes, returnedAt) : {};
     const detail = { ...reservation, reason: code, commit: item.item_commit, ...(!isAccept && cause !== undefined && cause !== null ? { cause } : {}) };
     if (isAccept && engine >= SPEC_APPROVAL_ENGINE) detail.note = note.trim();
     if (isAccept && check !== undefined) detail.check = check;
     if (environment !== undefined) detail.environment = environment;
+    if (sandbox !== undefined) detail.sandbox = sandbox;
     if (newReview) detail.review = { commit: review.commit, ...(Object.hasOwn(review, 'head') ? { head: review.head } : {}), trunk: review.trunk, paths: [...review.paths] };
     logEvent(board, agentId, verb, id, implies?.length ? { ...detail, implies } : detail, returnedAt);
     const trigger = board.lastEvent;
@@ -1553,6 +1548,7 @@ export function merged(board, id, { agentId, commit, note = '' }) {
     if (item.item_status !== 'verified') {
       throw new Refused('NOT_VERIFIED', `item #${id} is ${item.item_status}; merge verified work only`);
     }
+    requireOutsideOwner(board, item);
     setItem(board, id, { item_merged_commit: commit });
     logEvent(board, agentId, 'merged', id, { commit, ...(note.trim() ? { note: note.trim() } : {}) });
   });
@@ -1601,6 +1597,7 @@ export function refreeze(board, id, { agentId, freeze }) {
     const item = moveItem(board, id, 'refreeze', {
       checks: {
         joined: null,
+        barReady: found => barReadyProblem(board, found),
         coordinatorOnly: () => onlyCoordinator(agentId, 'refreezes a criterion'),
         holderOrCoordinator: (found) => {
           const live = current(board, found);
@@ -2024,15 +2021,16 @@ function milestoneRanks(board, priority) {
 }
 
 /** Make the shared build-queue comparator once: milestone, explicit rank, route, recent files, then oldest. */
-export function buildOrder(board, { warm = [] } = {}) {
+export function buildOrder(board, { warm = [], agentId, readiness = barReadyForOrder } = {}) {
   const milestonePriority = milestonePriorities(board);
   const rank = milestoneRanks(board, milestonePriority);
   const recent = new Set(warm);
   const shared = (entry) => itemFiles(entry).filter((path) => recent.has(path)).length;
-  return (first, second) => milestonePriority(first) - milestonePriority(second)
+  const fallback = (first, second) => milestonePriority(first) - milestonePriority(second)
     || rank(first) - rank(second)
     || ROUTES.indexOf(second.item_route) - ROUTES.indexOf(first.item_route)
     || shared(second) - shared(first) || first.item_id - second.item_id;
+  return lineOrderEnabled(board) ? lineBuildOrder({ agentId, release: milestonePriority, rank, items: listItems(board, { all: true }), ready: item => readiness(board, item), fallback }) : fallback;
 }
 
 /**
@@ -2078,8 +2076,12 @@ export function nextFor(board, { agentId, lane, verify = false, policy = 'any', 
     if (heldByMe) return { item: heldByMe, reasons: [] };
     const milestonePriority = milestonePriorities(board);
     const rank = milestoneRanks(board, milestonePriority);
-    candidates.sort((first, second) => milestonePriority(first.entry) - milestonePriority(second.entry)
-      || rank(first.entry) - rank(second.entry));
+    const scarcity = lineOrderEnabled(board) ? reviewerScarcity(board, candidates.map(candidate => candidate.entry), (entry, reviewer) =>
+      Object.values(reviewerChecks(board, { agentId: reviewer, policy, familyPolicy })).every(guard => !guard(entry))) : null;
+    const lineCompare = scarcity ? buildOrder(board, { agentId }) : null;
+    candidates.sort((first, second) => (scarcity ? scarcity.get(first.entry.item_id) - scarcity.get(second.entry.item_id)
+      || lineCompare(first.entry, second.entry) : milestonePriority(first.entry) - milestonePriority(second.entry)
+      || rank(first.entry) - rank(second.entry)));
     const item = candidates.find((candidate) => !candidate.holder && !candidate.cooldown)?.entry;
     if (item) return { item, reasons: [] };
     const held = candidates.filter((candidate) => candidate.holder && candidate.holder !== agentId)
@@ -2100,7 +2102,7 @@ export function nextFor(board, { agentId, lane, verify = false, policy = 'any', 
     const hold = laneHold(board, name);
     if (hold) { selectedLanes.delete(name); reasons.push(`${hold.hold_by} holds the ${name} lane: ${hold.hold_reason}`); }
   }
-  const compare = buildOrder(board, { warm });
+  const compare = buildOrder(board, { warm, agentId });
   const inFlight = listItems(board, { all: true });
   const recent = new Set(warm);
   const mainRed = new Set(priority);
@@ -2110,7 +2112,7 @@ export function nextFor(board, { agentId, lane, verify = false, policy = 'any', 
     .map((entry, order) => ({ entry, order, shared: itemFiles(entry).filter((path) => recent.has(path)) }))
     .sort((first, second) => compare(first.entry, second.entry));
   // Move only evidenced reworks ahead of their own tier; with no evidence, normal order is exact.
-  for (const route of ROUTES) {
+  for (const route of lineOrderEnabled(board) ? [] : ROUTES) {
     const routeTier = ROUTES.indexOf(route);
     const selected = mine.findIndex(({ entry }) => tier(entry) === routeTier && mainRed.has(entry.item_id));
     const firstTierItem = mine.findIndex(({ entry }) => tier(entry) === routeTier);
@@ -2475,3 +2477,9 @@ export function finishLandingBatch(board, { agentId, id, tip, landingFence }) {
     return recordLandingBatch(board, { agentId, batch: { ...batch, state: 'landed' }, revision: batch.revision, landingFence });
   });
 }
+
+/** File or refresh an outside source through the ordinary ordered engine. */
+export function intakeOutside(board, options) { return applyOutsideIntake(board, options, { atomic, addItem, moveItem, validateItemAddition }); }
+
+/** Record the person's exact-commit owner approval. */
+export function approveOutside(board, id, options) { return applyOutsideApproval(board, id, options, atomic); }

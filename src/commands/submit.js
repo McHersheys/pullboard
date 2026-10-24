@@ -1,3 +1,8 @@
+import {
+  barReadySetting,
+  barReadyProblem,
+} from '../bar-readiness.js';
+import { requireSubmitComposition } from '../submit-composition.js';
 /** The pullboard submit command, in its own module so an item adding another command never edits these lines. */
 import * as store from '../board.js';
 import {
@@ -22,6 +27,7 @@ import {
   withGateSlot,
 } from '../gate.js';
 import {
+  contains,
   headCommit,
   headTree,
   isClean,
@@ -95,6 +101,9 @@ export async function submitHere(ctx, id, infra) {
       if (recordedRecovery(board, recovered)) return { me, recorded: true };
       const item = store.getItem(board, id);
       const trunk = requireTrunkMerge(root, recovered.args[1].commit);
+      if (barReadySetting(board).enabled && (recovered.args[1].policyCommit !== trunk.commit || !contains(root, trunk.commit, recovered.args[1].commit))) {
+        throw new Refused('MAIN_NOT_COMPOSED', 'the unrecorded recovered submission has no proof for current main; run pullboard inbox to synchronize its original receipt, or ask the coordinator to resolve the pending move before a fresh submit; the original request is retained');
+      }
       refuseUnverifiedStack(root, board, item, recovered.args[1].commit, trunk);
       return { me, recorded: false };
     });
@@ -109,12 +118,15 @@ export async function submitHere(ctx, id, infra) {
     const item = store.getItem(board, id);
     seatCheckout.refuseHeldElsewhere(ctx.info, store.listAgents(board), item, 'submit');
     if (item.item_status !== 'claimed' || item.item_owner !== me.id) throw new Refused('NOT_YOURS', 'claim this item before submitting it');
+    const readiness = barReadyProblem(board, item);
+    if (readiness) throw readiness;
     const correction = store.pendingRefreezeProblem(board, id);
     if (correction) throw correction;
     return item;
   });
   const policy = itemPolicy(root, held);
   const acceptedMain = mainPolicy(root);
+  const requireComposition = withBoard(ctx, board => barReadySetting(board).enabled);
   ctx = { ...ctx, config: policy.config };
   withBoard(ctx, (board) => refuseProvesNothing(() => acceptedMain.config, board, store.getItem(board, id)));
   const dependencies = withBoard(ctx, board => dependencySnapshots(board.db, held));
@@ -152,6 +164,7 @@ export async function submitHere(ctx, id, infra) {
   if (!commit) throw new Refused('NO_COMMIT', 'nothing committed yet');
   withBoard(ctx, (board) => submitPreflight(board, id, { agentId: me.id, commit, tree: headTree(root) ?? '' }));
   const trunk = requireTrunkMerge(root, commit);
+  if (requireComposition) requireSubmitComposition(root, commit, trunk, acceptedMain.commit);
   withBoard(ctx, (board) => refuseUnverifiedStack(root, board, held, commit, trunk));
   machineNameProblems(root, `${acceptedMain.commit}..${commit}`, { refuse: acceptedMain.config.commits.noHostName === true, say: (line) => ctx.io.say(line) });
   const infraRecord = infraNotes.infraNote({ root, claimHead, files: filesSince(root, id, claimHead, commit), gates: [ctx.config.gate, acceptedMain.config.gate], infra, requireInfraNote: acceptedMain.config.submit.requireInfraNote });
@@ -188,6 +201,7 @@ export async function submitHere(ctx, id, infra) {
     );
   }
   const currentTrunk = requireTrunkMerge(root, commit); // The trunk may have moved while the gate ran.
+  if (requireComposition) requireSubmitComposition(root, commit, currentTrunk, acceptedMain.commit);
   const waivedLines = waived ? waived.map(waiverLine) : [];
   await withBoard(ctx, async (board) => {
     refuseUnverifiedStack(root, board, store.getItem(board, id), commit, currentTrunk);

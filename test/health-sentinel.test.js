@@ -180,16 +180,35 @@ test('a recurring health episode needs no changed code commit and legacy lookali
   assert.deepEqual(eventCauses({ ...event, event_kind: 'shout' }), []);
 });
 
-test('resume publishes health and the board and machine off switches suppress it [A6]', async t => {
+test('resume reads recorded health and scheduled runs refresh it with both off switches intact [A6]', async t => {
   const box = fixture(t);
-  box.claimed(0); box.clock.offset += 2 * HOUR;
+  const first = box.claimed(0); box.clock.offset += 2 * HOUR;
+  box.scan();
+  const last = store.events(box.board).filter(event => event.event_kind === 'health-scan').at(-1);
+  assert.ok(last, 'the actual ordered scan records findings before resume');
+  const notices = store.allShouts(box.board).filter(notice => notice.shout_from === 'sentinel').length;
+  const second = box.claimed(1); box.clock.offset += 2 * HOUR;
   let stdout = ''; let stderr = '';
   const code = await main(['resume', '--json'], { cwd: box.root, clock: box.clock,
     stdout: { isTTY: false, write: value => { stdout += value; } }, stderr: { write: value => { stderr += value; } } });
   assert.equal(code, 0, stderr);
-  assert.doesNotThrow(() => JSON.parse(stdout));
-  assert.equal(store.allShouts(box.board).filter(notice => notice.shout_from === 'sentinel').length, 2);
-  box.claimed(1); box.clock.offset += 2 * HOUR;
+  const resumed = JSON.parse(stdout);
+  assert.equal(resumed.health.recordedAt, last.event_at);
+  assert.ok(resumed.health.findings.some(finding => finding.item === first));
+  assert.equal(resumed.health.findings.some(finding => finding.item === second), false, 'resume does not silently refresh stale recorded findings');
+  assert.equal(store.events(box.board).filter(event => event.event_kind === 'health-scan').at(-1).event_id, last.event_id);
+  assert.equal(store.allShouts(box.board).filter(notice => notice.shout_from === 'sentinel').length, notices);
+  stdout = ''; stderr = '';
+  const ran = await main(['sentinel', 'run', '--json'], { cwd: box.root, clock: box.clock,
+    stdout: { isTTY: false, write: value => { stdout += value; } }, stderr: { write: value => { stderr += value; } } });
+  assert.equal(ran, 0, stderr);
+  const refreshed = JSON.parse(stdout);
+  assert.deepEqual(refreshed.sentinels, [], 'health refresh still runs when no approved watch is due');
+  assert.ok(refreshed.health.findings.some(finding => finding.item === second));
+  const refreshedEvent = store.events(box.board).filter(event => event.event_kind === 'health-scan').at(-1);
+  assert.equal(refreshed.health.recordedAt, refreshedEvent.event_at);
+  assert.notEqual(refreshed.health.recordedAt, last.event_at);
+  assert.ok(store.allShouts(box.board).filter(notice => notice.shout_from === 'sentinel').length > notices, 'scheduled refresh retains ordinary owner alerts');
   const config = JSON.parse(readFileSync(join(box.root, 'pullboard.json'), 'utf8'));
   writeFileSync(join(box.root, 'pullboard.json'), JSON.stringify({ ...config, health: { sentinel: false } }));
   assert.equal(scanHealthSentinel(box.file, { root: box.root, config: loadConfig(box.root), now: box.clock.now() }), null);

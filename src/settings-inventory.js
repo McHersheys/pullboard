@@ -15,6 +15,8 @@ import { machineHome } from './machine-home.js';
 import {
   machineSettingsFile,
   gateQueueSettings,
+  LINE_SETTING_DEFINITIONS,
+  validateLineSetting,
 } from './queue-settings.js';
 import { loadMachineSettings } from './settings.js';
 import { performanceCores } from './gate.js';
@@ -169,6 +171,26 @@ function repositorySettings(rows, board) {
     source: existsSync(keyFile) ? keyFile : keyEnvironment !== undefined ? 'environment:PULLBOARD_RELAY_KEY' : relay.keyStorage === 'keychain' ? 'system keychain' : keyFile });
 }
 
+/** Include board-owned line inputs in the existing read-only inventory, without exposing reasons or window evidence. */
+function boardLineSettings(rows, board) {
+  const file = join(repoInfo(board.root).commonDir, 'pullboard', 'board.sqlite');
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    const read = db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?');
+    for (const key of Object.keys(LINE_SETTING_DEFINITIONS)) {
+      const stored = read.get('line_setting:' + key);
+      let value = false;
+      if (stored) {
+        try { value = JSON.parse(stored.meta_value); }
+        catch { throw new Refused('BAD_SETTINGS', 'a stored board line setting is malformed; restore its recorded value'); }
+      }
+      validateLineSetting(key, value);
+      rows.push({ key: 'line.' + key, scope: 'board', board: board.id, root: board.root,
+        value, default: false, source: file, origin: stored ? 'configured' : 'default' });
+    }
+  } finally { db.close(); }
+}
+
 /** Read a registered board identity without creating, migrating, or repairing its database. */
 function registeredBoard(project) {
   const info = repoInfo(project.root);
@@ -199,6 +221,6 @@ export function settingsInventory(projects, selected = null) {
   const authorized = selected === null ? boards : boards.filter(board => board.id === selected);
   if (selected !== null && !authorized.length) throw new Refused('NO_BOARD', 'no registered board with this identity; use GET /api/v1/boards');
   machineSettings(rows);
-  for (const board of authorized) repositorySettings(rows, board);
+  for (const board of authorized) { repositorySettings(rows, board); boardLineSettings(rows, board); }
   return { settings: rows, ...(warnings.length ? { warnings } : {}) };
 }
