@@ -129,8 +129,7 @@ const NON_MOVE_ENTRY_POINTS = [
   'cli.js#refuseRemoteCoordinatorModel',
   // Child-process commands may be serialized into scripts, so audit this exported setup guard directly.
   'resources.js#gateSlotEnvironment',
-  // Before a person command, the relay's authority is read and compared with the board's stored key (#408).
-  'person-signing-cli.js#pinRelayAuthority',
+  'person-signing-cli.js#pinRelayAuthority', // Reads the relay's authority before a person command (#408).
 ];
 
 /** Board functions handed a function to call, and the one the CLI and the runner hand them. */
@@ -172,8 +171,7 @@ const CAUGHT = {
   // Only an unsupported historical grammar is ignored; new caller refusals remain audited below.
   'rigor-auto-source.js#automaticDecisionSource': ['spec.js#parseSpec'],
   'rigor-auto-source.js#rigorDecisionKey': ['spec.js#parseSpec'],
-  // A passkey row proof is a non-throwing boundary: an answer it cannot rebuild makes the proof false (#408).
-  'person-row-proof.js#signedRowDecisionsMatch': ['blueprints.js#answerQuestion'],
+  'person-row-proof.js#signedRowDecisionsMatch': ['blueprints.js#answerQuestion'], // A non-throwing proof: an unbuildable answer reads false (#408).
 };
 
 /**

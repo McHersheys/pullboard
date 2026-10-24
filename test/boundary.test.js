@@ -39,6 +39,8 @@ test('the core names no model, engine or vendor; secret patterns may name the ke
 test('only explicit relay commands open outbound connections; the view and API stay on loopback [P5, H15, H17, N26, A2]', () => {
   const allowed = (file, line) => file === 'src/relay.js' ||
     (file === 'src/relay-pairing-client.js' && line.trim() === 'response = await fetch(new URL(path, url), {') ||
+    // A board that signs person moves reads its linked relay's person authority, the relay link it already holds (#408).
+    (file === 'src/person-signing-cli.js' && line.trim() === "const response = await fetch(new URL(AUTHORITY_PATH, origin), { redirect: 'error', signal: AbortSignal.timeout(timeoutMs) });") ||
     (['src/serve.js', 'src/api.js'].includes(file) && line.trim() === "import { createServer } from 'node:http';") ||
     (file === 'src/local-fetch.js' && line.trim() === "import { request as httpRequest } from 'node:http';") ||
     (file === 'src/serve.js' && line.trim() === "const reply = await fetch(address.origin + path, { headers: { 'x-pullboard-key': address.searchParams.get('k') } });") ||
