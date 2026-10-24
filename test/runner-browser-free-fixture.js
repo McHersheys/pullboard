@@ -1,5 +1,6 @@
 /** @pullboard-test-input source-tree */
 /** A runner registered with no browser slots runs browser-free test files and never browser-bound ones [C7]. */
+import { awaitNestedRun } from '../src/test-file-pool.js';
 import assert from 'node:assert/strict';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -100,7 +101,7 @@ export async function browserFreeRunnerCheck(t, helpers) {
   await withNoBrowserRunner(t, helpers, async (fixture) => {
     const { runTests, show, hold, free } = fixture;
     await hold();
-    const ran = await runTests('test/free.test.js');
+    const ran = await awaitNestedRun(runTests('test/free.test.js'));
     assert.doesNotMatch(ran.stdout + ran.stderr, /BROWSER_SLOT_REQUIRED/u, show(ran));
     assert.equal(ran.status, 0, show(ran));
     assert.match(ran.stdout, /^ok 1 - browser-free file ran/mu, show(ran));
@@ -112,7 +113,7 @@ export async function browserFreeRunnerCheck(t, helpers) {
     const pending = gateRun(fixture, command);
     await until(() => fixture.phases().returned === 2, 'the runner answers the refused run');
     free();
-    const rerun = await pending;
+    const rerun = await awaitNestedRun(pending);
     assert.equal(rerun.status, 0, show(rerun));
     assert.match(rerun.stderr, /RUNNER_BROWSER_SLOT_REQUIRED[^\n]*its attempt \(exit 1\):\n[^]*run-tests: \[BROWSER_SLOT_REQUIRED\][^]*rerunning it locally with a browser slot/u, show(rerun));
     const record = JSON.parse(rerun.stdout.split('\n').findLast(line => line.startsWith('PULLBOARD_RUN_RESULT ')).slice('PULLBOARD_RUN_RESULT '.length));
@@ -130,7 +131,7 @@ export async function browserFreeRunnerCheck(t, helpers) {
     await new Promise(resolveWait => setTimeout(resolveWait, 1_000)); // budget: several admission polls in which a runner could take it.
     assert.equal(waiting(), true, 'the browser-bound run still waits for a local slot');
     free();
-    const local = await bound;
+    const local = await awaitNestedRun(bound);
     assert.equal(local.status, 0, show(local));
     assert.match(local.stdout, /^ok 1 - browser-bound file ran/mu, show(local));
     assert.deepEqual(fixture.phases(), { dispatched: 2, returned: 2 }, 'the browser-bound file never reached the runner');
@@ -142,7 +143,7 @@ export async function browserRefusalTextStaysRed(t, helpers) {
   await withNoBrowserRunner(t, helpers, async (fixture) => {
     const { runTests, show, hold } = fixture;
     await hold();
-    const red = await runTests('test/marker.test.js');
+    const red = await awaitNestedRun(runTests('test/marker.test.js'));
     assert.equal(red.status, 1, show(red));
     assert.match(red.stdout, /^not ok 1 - marker file ran/mu, show(red));
     assert.match(red.stdout, /\[BROWSER_SLOT_REQUIRED\] thrown by a test/u, show(red));
