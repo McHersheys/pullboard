@@ -180,7 +180,7 @@ export async function resumeHere(io, view, diagnostics = false, { json = false }
       health: recordedHealthFindings(board),
       all,
       needsYou: personNeeds(needsState),
-      ...(me.id === COORDINATOR ? { rigor: { undrafted: needsState.rigorUndrafted } } : {}),
+      ...(me.id === COORDINATOR ? { rigor: { undrafted: needsState.rigorUndrafted, ...(needsState.rigorNotice ? { notice: needsState.rigorNotice } : {}) } } : {}),
       ...(decisionSections ? { ...decisions, ...(diagnostics ? verifiedMergeGroups(root, pendingMerges, shouts, ctx.clock.now().getTime()) : {}),
         flow: proofStats(board, { now: ctx.clock.now().getTime() }).flow } : {}),
       requests: me.id === COORDINATOR ? store.openRequests(board) : [],
@@ -307,6 +307,7 @@ export async function resumeHere(io, view, diagnostics = false, { json = false }
     section(card.needsYou, (need) => need.kind === 'decision'
       ? `waiting on the person: #${need.id} from ${need.ref} (${span(ctx, need.at)}): ${firstLine(need.text)}`
       : `needs the person: ${need.ref}: ${firstLine(need.text)} (${need.what})`);
+    if (card.rigor?.notice) say(card.rigor.notice);
     section(card.rigor?.undrafted ?? [], (cause) => `Rigor needs a proved draft: ${cause.key}, items ${cause.items.map(item => `#${item.id}`).join(', ')}; pullboard rigor draft "${cause.key.replaceAll('"', '\\"')}" "<rule>" --check "<command>" --red <commit> --green <commit>`);
     if (card.toVerify.length) say('review queue:');
     section(card.toVerify, (item) => `  to verify: #${item.item_id} ${item.item_lane} (${span(ctx, item.item_updated_at)})`);

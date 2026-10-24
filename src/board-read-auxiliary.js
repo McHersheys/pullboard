@@ -36,6 +36,13 @@ export function shoutDetails(board, id) {
   return { ...shout, decision_state: shout.shout_decision ? (answer ? 'answered' : 'open') : null, decision_answer: answer };
 }
 
+/** Read the first reply to every decision through its indexed answer key, without one query per ask. */
+export function decisionAnswers(board) {
+  return board.db.prepare(`SELECT reply.* FROM shout ask JOIN shout reply ON reply.shout_id=(
+    SELECT first.shout_id FROM shout first WHERE first.shout_answers=ask.shout_id ORDER BY first.shout_id LIMIT 1)
+    WHERE ask.shout_decision=1 ORDER BY ask.shout_id`).all();
+}
+
 /** Requests remain visible to the coordinator until a done or declined answer closes them (A2). */
 export function openRequests(board) {
   return board.db.prepare(`SELECT * FROM shout ask WHERE ask.shout_request = 1
