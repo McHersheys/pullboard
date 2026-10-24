@@ -28,7 +28,7 @@ export function agentTree(info, config, board) {
   }
   const known = new Set(agents.map((agent) => agent.agent_id));
   const row = (agent, seen) => ({
-    id: agent.agent_id, displayName: displayAgentName(agent, config.agents.names), lane: agent.agent_lane, path: agent.agent_path,
+    id: agent.agent_id, parentSession: agent.agent_parent_session ?? null, displayName: displayAgentName(agent, config.agents.names), lane: agent.agent_lane, path: agent.agent_path,
     seats: agents.filter((seat) => seat.agent_id === agent.agent_id || (digests.has(agent.agent_id) && digests.get(seat.agent_id) === digests.get(agent.agent_id)))
       .map((seat) => ({ id: seat.agent_id, path: seat.agent_path })),
     holds: held.get(agent.agent_id) ?? [],
@@ -49,7 +49,7 @@ export function agentTreeLines(tree, indent = '') {
   if (!indent && !tree.length) return ['no agents have joined'];
   return tree.flatMap((agent) => {
     const held = agent.holds.map((hold) => `#${hold.item} (${hold.status})`).join(', ');
-    return [`${indent}${agent.displayName} (${agent.lane} lane) at ${agent.path}${held ? `: ${held}` : ''}`, ...agentTreeLines(agent.helpers, indent + '  ')];
+    return [`${indent}${agent.displayName} (${agent.lane} lane) parent ${agent.parentSession ?? 'unknown'} at ${agent.path}${held ? `: ${held}` : ''}`, ...agentTreeLines(agent.helpers, indent + '  ')];
   });
 }
 

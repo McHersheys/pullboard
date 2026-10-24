@@ -6,6 +6,7 @@ import {
   shoutItemId,
   UNREAD_SHOUT_SQL,
 } from './shout-audience.js';
+import { recordVerdict } from './verdict-assurance.js';
 import { logEvent } from './board-event-log.js';
 export { logEvent };
 /**
@@ -90,6 +91,7 @@ import { LOCAL_LANDING_ENGINE } from './land-engine.js';
 import { SPEC_APPROVAL_ENGINE } from './spec-approval-engine.js';
 import * as landingEnvironment from './landing-environment-guards.js';
 import { Refused } from './refused.js';
+import { saveJoinedSession } from './parent-session.js';
 import { itemAuthorProblem } from './item-authors.js';
 import { refuseMaskedExit } from './check-mask.js';
 import {
@@ -595,10 +597,11 @@ function current(board, item) {
  * the relay already issued a token for the next name; ids then skip taken names.
  *
  * @param {any} board
- * @param {{ lane: string, path: string, route?: string, family?: string | null, model?: string | null, createdBy?: string, id?: string }} who
+ * @param {{ lane: string, path: string, route?: string, family?: string | null, model?: string | null, parent?: string | null, session?: string | null, createdBy?: string, id?: string }} who
  * @returns {string} The agent's id.
  */
-export function register(board, { lane, path, route = 'strong', family, model, createdBy, id: named }) {
+export function register(board, who) {
+  let { lane, path, route = 'strong', family, model, createdBy, id: named } = who;
   const engine = board.executionEngineVersion ?? ENGINE_VERSION;
   if (engine < 8) model = undefined;
   if (engine < VERIFIER_STANDING_ENGINE) { createdBy = undefined; named = undefined; }
@@ -615,6 +618,7 @@ export function register(board, { lane, path, route = 'strong', family, model, c
           `this worktree is ${existing.agent_id} in the ${existing.agent_lane} lane, routed ${existing.agent_route}; use another worktree for ${lane} routed ${route}`,
         );
       }
+      saveJoinedSession(board, existing.agent_id, who);
       if (family !== undefined && family !== existing.agent_family) {
         board.db.prepare('UPDATE agent SET agent_family = ? WHERE agent_id = ?').run(family, existing.agent_id);
         logEvent(board, existing.agent_id, 'family', null, { family });
@@ -641,6 +645,7 @@ export function register(board, { lane, path, route = 'strong', family, model, c
         'INSERT INTO agent (agent_id, agent_lane, agent_path, agent_route, agent_family, agent_created_at) VALUES (?, ?, ?, ?, ?, ?)',
       )
       .run(id, lane, path, route, family ?? null, now(board));
+    saveJoinedSession(board, id, who);
     if ((board.executionEngineVersion ?? ENGINE_VERSION) >= 8) saveAgentModel(board, id, model);
     if (createdBy !== undefined) board.db.prepare('INSERT INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run(`agent_creator:${id}`, createdBy);
     // Only a relay replica replaying a receipt-bound registration marks the seat enrolled.
@@ -1598,16 +1603,7 @@ export function verify(board, id, { agentId, decision, reason, note = '', cause,
         noteGiven: () => (note.trim() ? null : new Refused('NOTE_REQUIRED', 'a reject says what failed: --note "..."')),
         causeWellFormed: () => causeProblem(cause),
       },
-      before: (found) => {
-        const family = board.db.prepare('SELECT agent_family FROM agent WHERE agent_id = ?').get(agentId)?.agent_family ?? null;
-        board.db
-          .prepare(
-            `INSERT INTO verdict (item_id, verdict_by, verdict_decision, verdict_reason, verdict_note,
-               verdict_commit, verdict_digest, verdict_head, verdict_verifier_family, verdict_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          )
-          .run(id, agentId, decision, code, note.trim(), found.item_commit, digest, head, family, now(board));
-      },
+      before: (found) => recordVerdict(board, found, { agentId, decision, reason: code, note, digest, head }),
       set: (found) => ({ item_verdict: decision, item_verified_by: isAccept ? agentId : null, item_owner: isAccept ? found.item_owner : null }),
     });
     const returnedAt = !isAccept && engine >= REOPEN_FIRST_REFUSAL_ENGINE && reopenFirstRefusalMinutes > 0 && item.item_built_by ? board.clock.now() : undefined;
