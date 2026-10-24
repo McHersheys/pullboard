@@ -4,6 +4,12 @@ import { DatabaseSync } from 'node:sqlite';
 
 const memory = new WeakMap();
 
+/** Read the native board identity once; an unidentifiable board supplies no local liveness. */
+function observationIdentity(board) {
+  const identity = board.db.prepare("SELECT meta_value FROM board_meta WHERE meta_key='board_id'").get()?.meta_value;
+  return typeof identity === 'string' && /^[0-9a-f]{32}$/u.test(identity) ? identity : null;
+}
+
 /** Locate a board's private observation sidecar without changing the shared board schema. */
 function observationFile(board) {
   const file = board.db.prepare('PRAGMA database_list').all().find(row => row.name === 'main')?.file;
@@ -13,18 +19,21 @@ function observationFile(board) {
 /** Update exactly one local seat row; registration and command activity are observations, not moves. */
 export function heartbeatSeat(board, id) {
   if (!board.db.prepare('SELECT 1 FROM agent WHERE agent_id=?').get(id)) return false;
+  const identity = observationIdentity(board);
+  if (identity === null) return false;
+  const key = JSON.stringify([identity, id]);
   const at = board.clock.now().toISOString();
   const file = observationFile(board);
   if (!file) {
     const rows = memory.get(board.db) ?? new Map();
-    rows.set(id, at);
+    rows.set(key, at);
     memory.set(board.db, rows);
     return true;
   }
   const db = new DatabaseSync(file);
   try {
     db.exec('PRAGMA busy_timeout=250; CREATE TABLE IF NOT EXISTS heartbeat(seat TEXT PRIMARY KEY, at TEXT NOT NULL)');
-    db.prepare('INSERT INTO heartbeat(seat,at) VALUES (?,?) ON CONFLICT(seat) DO UPDATE SET at=excluded.at').run(id, at);
+    db.prepare('INSERT INTO heartbeat(seat,at) VALUES (?,?) ON CONFLICT(seat) DO UPDATE SET at=excluded.at').run(key, at);
     return true;
   } finally { db.close(); }
 }
@@ -43,8 +52,9 @@ function heartbeatRows(board) {
 export function withSeatPresence(board, seats) {
   const rows = heartbeatRows(board);
   const now = board.clock.now().getTime();
+  const identity = observationIdentity(board);
   return seats.map(seat => {
-    const heartbeatAt = rows.get(seat.agent_id) ?? null;
+    const heartbeatAt = identity === null ? null : rows.get(JSON.stringify([identity, seat.agent_id])) ?? null;
     const elapsed = heartbeatAt === null ? Infinity : Math.max(0, now - Date.parse(heartbeatAt));
     return { ...seat, heartbeatAt, presence: elapsed < 600_000 ? 'live' : elapsed < 1_800_000 ? 'idle' : 'gone' };
   });
