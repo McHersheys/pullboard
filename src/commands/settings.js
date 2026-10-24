@@ -1,3 +1,4 @@
+import { lineSettingsCommand } from '../line-settings-cli.js';
 /** The pullboard settings command, in its own module so an item adding another command never edits these lines. */
 import {
   SETTING_FORMS,
@@ -25,8 +26,9 @@ import {
 } from '../cli.js';
 import { boardId } from '../board.js';
 
-/** Read or update machine-wide gate capacity. */
-export function settingsCommand(io, { first, second, rest }) {
+/** Read or update machine capacity, or delegate explicit board-owned line inputs. */
+export function settingsCommand(io, { first, second, rest, values }) {
+  if (first === 'line') return lineSettingsCommand(io, { second, rest, values });
   if (first === 'landing.pool') {
     if (!['on', 'off'].includes(second) || rest.length) throw new Refused('USAGE', 'pullboard settings landing.pool on|off in the board this machine should land');
     const ctx = context(io);

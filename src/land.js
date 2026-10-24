@@ -1,3 +1,8 @@
+import { requireOutsideOwner } from './outside-source.js';
+import {
+  landingChangedFiles,
+  deferredLandingPriorities,
+} from './land-collisions.js';
 /** Coordinator landing batches retain exact Git and gate receipts across interruptions [B3,R3]. */
 import { assignEngineNumbers } from './engine-numbers.js';
 import {
@@ -180,10 +185,23 @@ function candidates(board, root, base, maximum, { firstReady = false } = {}) {
   const pending = all.filter((item) => item.item_status === 'verified' && !item.item_merged_commit);
   const order = new Map();
   for (const event of store.events(board)) if (event.event_kind === 'accept') order.set(event.item_id, event.event_id);
-  pending.sort((left, right) => (order.get(left.item_id) ?? Infinity) - (order.get(right.item_id) ?? Infinity) || left.item_id - right.item_id);
+  const collisionFree = store.lineSettings(board).collisionFreeBatch === true;
+  const batches = store.landingBatches(board);
+  const priorities = collisionFree ? deferredLandingPriorities(batches, pending) : new Map();
+  pending.sort((left, right) => {
+    const leftPriority = priorities.get(left.item_id);
+    const rightPriority = priorities.get(right.item_id);
+    if (leftPriority !== undefined || rightPriority !== undefined) {
+      if (leftPriority === undefined) return 1;
+      if (rightPriority === undefined) return -1;
+      if (leftPriority !== rightPriority) return leftPriority - rightPriority;
+    }
+    return (order.get(left.item_id) ?? Infinity) - (order.get(right.item_id) ?? Infinity) || left.item_id - right.item_id;
+  });
   const ready = [];
   const blocked = [];
-  const knownReds = store.landingBatches(board).flatMap((batch) => batch.culprits ?? []);
+  const touched = new Map();
+  const knownReds = batches.flatMap((batch) => batch.culprits ?? []);
   for (const original of pending) {
     const item = { ...original, item_landing_commit: store.checkedLandingCommit(board, original) };
     const stale = projector.state(item);
@@ -204,6 +222,15 @@ function candidates(board, root, base, maximum, { firstReady = false } = {}) {
       continue;
     }
     if (ready.length < maximum) {
+      const files = collisionFree ? landingChangedFiles(root, base, item.item_landing_commit) : [];
+      const shared = files.filter(file => touched.has(file));
+      if (shared.length) {
+        blocked.push({ id: item.item_id, code: 'LAND_FILE_OVERLAP', files: shared,
+          commit: item.item_commit, frozenDigest: item.item_frozen_digest,
+          with: [...new Set(shared.map(file => touched.get(file)))] });
+        continue; // Verdict order is unchanged; this item leads the next eligible batch.
+      }
+      for (const file of files) touched.set(file, item.item_id);
       ready.push(item);
       if (firstReady) break;
     }
@@ -570,6 +597,7 @@ function withoutParallelBlocker(state, entries, removed) {
   return entries.filter(entry => {
     if (blocked.has(entry.id)) return false;
     const item = store.getItem(state.board, entry.id);
+    requireOutsideOwner(state.board, item);
     const dependency = (item.item_after ?? '').split(',').filter(Boolean).map(Number).find(id => blocked.has(id));
     const stacked = tryGit(state.root, ['merge-base', '--is-ancestor', removed.reviewedCommit ?? removed.commit, entry.reviewedCommit ?? entry.commit]).status === 0;
     if (dependency || stacked) {
@@ -940,6 +968,7 @@ function requirePushTarget(root, branch) {
 function publicationInputs(state, batch) {
   for (const entry of batch.items) {
     const item = store.getItem(state.board, entry.id);
+    requireOutsideOwner(state.board, item);
     if (item.item_status !== 'verified' || item.item_commit !== entry.commit
       || store.checkedLandingCommit(state.board, item) !== (entry.reviewedCommit ?? entry.commit)) {
       throw new Refused('LAND_ITEM_MOVED', `item #${entry.id} changed its checked composition; rebuild the landing before publishing`);
@@ -1090,6 +1119,7 @@ async function landOnTrunk(state) {
   }
   for (const entry of state.batch.items) {
     const item = store.getItem(state.board, entry.id);
+    requireOutsideOwner(state.board, item);
     if (item.item_status !== 'verified' || item.item_commit !== entry.commit) throw new Refused('LAND_ITEM_MOVED', `item #${entry.id} changed after the batch merged; rebuild its landing`);
   }
   if (mainCheckout(state.root)?.commit !== state.batch.base) throw new Refused('LAND_TRUNK_MOVED', 'main moved during the landing; rebuild the batch from its new tip');
@@ -1214,6 +1244,7 @@ export async function runLandingBatch({ root, board, config, write, say, owner, 
   if (fence && trunk?.branch !== fence.branch) throw new Refused('LAND_LEASE_LOST', 'the trunk branch changed while landing waited; start a new land command for its current branch');
   const unfinished = store.landingBatches(board).findLast((batch) => batch.state !== 'landed' && batch.state !== 'blocked');
   if (fence && unfinished && unfinished.branch !== fence.branch) throw new Refused('LAND_LEASE_LOST', 'the interrupted batch belongs to another trunk branch; restore that branch and start a fresh land --adopt');
+  if (!dryRun && unfinished) for (const entry of unfinished.items ?? []) requireOutsideOwner(board, store.getItem(board, entry.id));
   const recorded = store.landingBatches(board).findLast((batch) => batch.state === 'landed' && batch.base === trunk?.commit);
   if (fence && recorded && recorded.branch !== fence.branch) throw new Refused('LAND_LEASE_LOST', 'the recorded Git repair belongs to another trunk branch; restore that branch before landing');
   if (!dryRun && recorded && isClean(root) && !untracked(root).length) {
@@ -1234,6 +1265,7 @@ export async function runLandingBatch({ root, board, config, write, say, owner, 
     if (deferred) return deferred;
   }
   const selected = candidates(board, root, trunk.commit, maximum);
+  if (!dryRun) for (const item of selected.ready) requireOutsideOwner(board, item);
   const stale = selected.blocked.find(item => item.code === 'STALE_VERDICT');
   if (!selected.ready.length && stale) throw staleVerdictRefusal({ item_id: stale.id }, stale);
   if (dryRun) {
@@ -1295,7 +1327,9 @@ export async function runLandingBatch({ root, board, config, write, say, owner, 
       }
       const build = await mergeGroup(state, initialItems);
       await save(state, { ...build, conflicts: [...state.batch.conflicts, ...build.conflicts] });
-      for (const entry of state.batch.blocked ?? []) say(`${entry.code} #${entry.id}${entry.stacked ? ` carries #${entry.stacked}` : ''}`);
+      for (const entry of state.batch.blocked ?? []) say(entry.code === 'LAND_FILE_OVERLAP'
+        ? `#${entry.id} waits on overlapping files ${entry.files.join(', ')}; once this batch lands, its reviewer must merge current main and re-accept it without reopening`
+        : `${entry.code} #${entry.id}${entry.stacked ? ` carries #${entry.stacked}` : ''}`);
       if (!build.items.length) await save(state, { state: 'blocked' });
       else if (landsOnTrunk(state.config)) await landOnTrunk(state);
       else if (!await inlineDeferredGuards(state)) await save(state, { state: 'blocked' });

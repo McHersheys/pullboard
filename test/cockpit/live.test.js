@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** The view follows the board's event stream instead of a timer, in real Chrome [N26,A2]. */
 import assert from 'node:assert/strict';
 import { appendFileSync, mkdtempSync, rmSync } from 'node:fs';

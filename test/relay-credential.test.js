@@ -25,11 +25,16 @@ test('every current operation selects its native actor credential without a seco
     let kind = 'agent';
     if (operation === 'register') { args = [{ lane: box.lane, path: '/private/credential-enrollment' }]; kind = 'machine'; }
     if (operation === 'ensureCoordinator') { args = [box.root]; kind = 'machine'; }
+    if (operation === 'intakeOutside') args = [{ agentId: actor }];
+    if (operation === 'openHandoff') args = [{ agentId: actor }];
+    if (operation === 'takeHandoff') args = [{ agentId: actor, item: 999999 }];
+    if (operation === 'approveOutside') { args = [999999, { agentId: 'person' }]; kind = 'person'; }
     if (operation === 'addItem') args = [{ by: actor, lane: box.lane, title: 'credential actor fixture' }];
     if (operation === 'shout') args = [{ from: actor, to: 'all', text: 'credential actor fixture', lanes: [box.lane] }];
     if (operation === 'release') args = [999999, actor];
     if (['claim', 'refreeze'].includes(operation)) args = [box.before.tables.item[0].item_id, options];
     if (operation === 'reserveNextReview') args = [options];
+    if (operation === 'setLineSetting') args = [{ agentId: actor, key: 'reviewsFirst', value: true, reason: 'credential fixture', window: { windowMinutes: 60, activeReviewers: 1 } }];
     if (operation === 'setBarReady') args = [{ agentId: actor, enabled: false }];
     if (operation === 'recordHealthFindings') args = [{ agentId: actor, observedRevision: 0, findings: [] }];
     if (operation === 'recordSpecApprovalBaseline') args = [{ agentId: actor, baseline: { version: 1, file: 'SPEC.md', anchor: null, rows: [] } }];
@@ -72,6 +77,8 @@ test('every current operation selects its native actor credential without a seco
     return { operation, args, kind, ...(kind === 'person' ? { sent: false } : {}) };
   });
   cases.push(
+    { operation: 'openHandoff', args: [{}], kind: 'agent', sent: false, expected: 'RELAY_ACTOR' },
+    { operation: 'takeHandoff', args: [{ item: 999999 }], kind: 'agent', sent: false, expected: 'RELAY_ACTOR' },
     { operation: 'recordPublishFinding', args: [{ item: 999999 }], kind: 'agent', sent: false, expected: 'RELAY_ACTOR' },
     { operation: 'recordHealthFindings', args: [{ observedRevision: 0, findings: [] }], kind: 'agent', sent: false, expected: 'RELAY_ACTOR' },
     { operation: 'recordSpecApprovalBaseline', args: [{ baseline: { version: 1, file: 'SPEC.md', anchor: null, rows: [] } }], kind: 'agent', sent: false, expected: 'RELAY_ACTOR' },

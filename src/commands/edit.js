@@ -36,6 +36,7 @@ export async function run(io, args) {
   const id = idArg(first);
   const recovered = await relayCommandReceipt(ctx.info.root, io.relayCommand);
   if (recovered) {
+    io.recordedMove = true;
     for (const event of recovered.events) io.onEvent?.(event);
     io.result?.({ item: store.getItem(board, id) });
     io.say(`edited #${id}`);

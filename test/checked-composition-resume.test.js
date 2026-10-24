@@ -92,7 +92,7 @@ test('coordinator resume guides and groups the checked composition after stale r
     const view = await helpers.startView(box, box.repo);
     await view.stop();
 
-    const resumed = box.run(box.repo, 'resume', '--json');
+    const resumed = box.run(box.repo, 'resume', '--diagnostics', '--json');
     assert.equal(resumed.code, 0, resumed.err || resumed.out);
     const document = JSON.parse(resumed.out);
     assert.equal(document.setup, null, 'the actual view bind completed setup before merge guidance is judged');

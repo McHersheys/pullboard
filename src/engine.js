@@ -1,6 +1,15 @@
+import { HANDOFF_ENGINE } from './handoff-engine.js';
+import { handoffMoveProblem } from './handoff-state.js';
+import { requireHandoffActive } from './handoff-state.js';
+import { LINE_CAPACITY_ENGINE } from './line-capacity-engine.js';
+import { lineSettings } from './line-settings.js';
+import { outsideSource } from './outside-source.js';
+import { requireOutsideReceipt } from './outside-proof.js';
+import { OUTSIDE_INTAKE_ENGINE } from './outside-intake-engine.js';
 import { BAR_READY_ENGINE } from './bar-ready-engine.js';
 import { barReadySetting } from './bar-readiness.js';
 import { ITEM_SHOUT_ENGINE } from './item-shout-engine.js';
+import { RIGOR_AUTO_ENGINE } from './rigor-auto-engine.js';
 /** Versioned, deterministic replay through the CLI's existing board engine [H3,H16]. */
 import {
   createHash,
@@ -31,6 +40,7 @@ import { GATE_RUN_ENGINE } from './gate-run-engine.js';
 import { requireBound } from './quarantine.js';
 import {
   REOPEN_FIRST_REFUSAL_ENGINE,
+  QUOTED_LANDING_FAILURE_ENGINE,
   CAUSE_ENGINE,
   ENGINE_VERSION,
   VERIFIER_STANDING_ENGINE,
@@ -44,7 +54,10 @@ import {
   canonicalMilestoneTarget,
 } from './milestones.js';
 import { Refused } from './refused.js';
-import { firstRefusal } from './claims.js';
+import {
+  firstRefusal,
+  manualLandingFailureQuoted,
+} from './claims.js';
 import {
   requestMoveProblem,
   recordRequestMove,
@@ -73,6 +86,9 @@ import { requireCoordinatorHold } from './coordinator-hold.js';
 import { LANDING_ENVIRONMENT_ENGINE } from './landing-environment-engine.js';
 import { carriesLandingEnvironment } from './execution-environment.js';
 import { LANDING_LEASE_ENGINE } from './landing-lease-engine.js';
+import { LINE_ORDER_ENGINE } from './line-order-engine.js';
+import { LINE_SETTINGS_ENGINE } from './line-settings-engine.js';
+import { LAND_COLLISION_ENGINE } from './landing-collision-engine.js';
 import { PR_BRIDGE_ENGINE } from './pr-bridge-engine.js';
 import { LANDING_LOCAL_LEASE_ENGINE } from './landing-local-lease-engine.js';
 import { PERSON_SIGNING_ENGINE } from './person-signing-engine.js';
@@ -82,26 +98,40 @@ const ITEM_ID_FIRST_ARGUMENT = new Set(['signBar', 'acceptCheck', 'editItem', 'e
 
 /** Only these public board operations may be requested by an encrypted move. */
 export const ENGINE_OPERATIONS = Object.freeze([
-  'setBarReady', 'signBar', 'register', 'ensureCoordinator', 'addItem', 'editItem', 'completeCheckBaseline', 'escalate', 'recordAttempt',
+  'openHandoff', 'takeHandoff', 'intakeOutside', 'approveOutside', 'setBarReady', 'signBar', 'register', 'ensureCoordinator', 'addItem', 'editItem', 'completeCheckBaseline', 'escalate', 'recordAttempt',
   'claim', 'release', 'submit', 'reserveReview', 'reserveNextReview', 'verify', 'merged',
   'withdraw', 'refreeze', 'reopen', 'shout', 'passDecision', 'answerDecision', 'holdLane', 'releaseLane', 'holdItem', 'releaseItemHold',
   'addMilestone', 'editMilestoneItems', 'orderMilestoneItems', 'moveMilestone', 'editMilestone', 'removeMilestone', 'shipMilestone',
   'recordRowDecisions', 'applyRowDecisions', 'draftSpecRow', 'appendFact', 'recordSpecApprovalBaseline',
   'recordLandingBatch', 'recordLandingWaiver', 'recordLandingFlake', 'recordLandingTestDefect', 'finishLandingBatch', 'acceptCheck',
   'recordHealthFindings', 'proposeSentinel', 'decideSentinel', 'beginSentinelRun', 'finishSentinelRun',
-  'recordFlakeObservation', 'recordGateRun', 'declareJob', 'recordJobRun', 'takeCoordinator', 'landingLeaseMove', 'setPersonSigning', 'proposePersonMove',
+  'setLineSetting', 'recordFlakeObservation', 'recordGateRun', 'declareJob', 'recordJobRun', 'takeCoordinator', 'landingLeaseMove', 'setPersonSigning', 'proposePersonMove',
   'recordPublishFinding',
 ]);
 
 /** Engine version at which each ordered operation first has stable replay semantics. */
-const OPERATION_ENGINE = Object.freeze({ draftSpecRow: ROW_DRAFT_ENGINE, orderMilestoneItems: MILESTONE_RANK_ENGINE, reopen: 8, recordLandingBatch: 8, recordLandingWaiver: 8, recordLandingFlake: 8, finishLandingBatch: 8, acceptCheck: CHECK_ACCEPT_ENGINE,
+const OPERATION_ENGINE = Object.freeze({ setLineSetting: LINE_SETTINGS_ENGINE, draftSpecRow: ROW_DRAFT_ENGINE, orderMilestoneItems: MILESTONE_RANK_ENGINE, reopen: 8, recordLandingBatch: 8, recordLandingWaiver: 8, recordLandingFlake: 8, finishLandingBatch: 8, acceptCheck: CHECK_ACCEPT_ENGINE,
   shipMilestone: MILESTONE_SHIP_ENGINE, recordSpecApprovalBaseline: SPEC_APPROVAL_ENGINE, takeCoordinator: COORDINATOR_HOLD_ENGINE,
   setPersonSigning: PERSON_SIGNING_ENGINE, proposePersonMove: PERSON_SIGNING_ENGINE });
 
 /** Dependency edits, causes, sealed reviews, submission proofs, trunk conflicts, health observations and milestone targets retain distinct recorded engine meanings. */
 function minimumOperationEngine(operation, args, board, at) {
+  const outside = ['intakeOutside', 'approveOutside'].includes(operation) || operation === 'verify' && args[1]?.sandbox !== undefined
+    || board && ['claim', 'submit', 'verify', 'merged'].includes(operation) && Boolean(outsideSource(board, args[0]));
+  const capacity = operation === 'claim' && args[1]?.lineCapacity === true;
+  return Math.max(outside ? OUTSIDE_INTAKE_ENGINE : 1, capacity ? LINE_CAPACITY_ENGINE : 1, minimumExistingOperationEngine(operation, args, board, at));
+}
+
+/** Preserve each pre-existing move's required feature level when composing outside metadata. */
+function minimumExistingOperationEngine(operation, args, board, at) {
+  if (['openHandoff', 'takeHandoff'].includes(operation)) return HANDOFF_ENGINE;
+  const quotedLandingFailureEngine = operation === 'reopen' && args[1]?.quotedLandingFailure === true
+    ? QUOTED_LANDING_FAILURE_ENGINE : 1;
+  if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('conflict:')) return Math.max(RIGOR_AUTO_ENGINE, quotedLandingFailureEngine);
   if (['setBarReady', 'signBar'].includes(operation) || board && ['claim', 'submit', 'editItem', 'addItem', 'refreeze'].includes(operation) && barReadySetting(board).enabled) return BAR_READY_ENGINE;
   if (operation === 'recordPublishFinding') return PR_BRIDGE_ENGINE;
+  if (operation === 'setLineSetting' && args[0]?.key === 'collisionFreeBatch') return LAND_COLLISION_ENGINE;
+  if (operation === 'setLineSetting' && args[0]?.key === 'order') return LINE_ORDER_ENGINE;
   if (operation === 'recordLandingTestDefect' || operation === 'verify' && args[1]?.environment !== undefined
     || operation === 'recordGateRun' && Object.hasOwn(args[0]?.receipt ?? {}, 'environment')
     || operation === 'recordLandingBatch' && carriesLandingEnvironment(args[0]?.batch)) return LANDING_ENVIRONMENT_ENGINE;
@@ -115,19 +145,20 @@ function minimumOperationEngine(operation, args, board, at) {
   if (operation === 'shout' && args[0]?.item !== undefined) return ITEM_SHOUT_ENGINE;
   if (operation === 'landingLeaseMove' || args[0]?.landingFence !== undefined) return LANDING_LEASE_ENGINE;
   if (['verify', 'reopen'].includes(operation) && args[1]?.reopenFirstRefusalMinutes !== undefined
-    || ['claim', 'release'].includes(operation) && board && firstRefusal(board, args[0], at)) return REOPEN_FIRST_REFUSAL_ENGINE;
+    || ['claim', 'release'].includes(operation) && board && firstRefusal(board, args[0], at)) return Math.max(REOPEN_FIRST_REFUSAL_ENGINE, quotedLandingFailureEngine);
   // A batch landed on the local trunk before it is published (#801).
   if (operation === 'recordLandingBatch' && args[0]?.batch?.state === 'trunk'
     || operation === 'finishLandingBatch' && board && store.landingBatches(board).find(batch => batch.id === args[0]?.id)?.state === 'trunk') return LOCAL_LANDING_ENGINE;
   if (operation === 'recordFlakeObservation') return args[0]?.observation?.kind === 'ci' ? CI_FLAKE_ENGINE : NATIVE_FLAKE_ENGINE;
   if (operation === 'recordLandingBatch' && carriesFlakeDiagnostics(args[0]?.batch)) return NATIVE_FLAKE_ENGINE;
-  if (['proposeSentinel', 'decideSentinel', 'beginSentinelRun', 'finishSentinelRun'].includes(operation) || typeof args[1]?.cause === 'string' && args[1].cause.startsWith('sentinel:')) return BOARD_SENTINEL_ENGINE;
+  if (['proposeSentinel', 'decideSentinel', 'beginSentinelRun', 'finishSentinelRun'].includes(operation) || typeof args[1]?.cause === 'string' && args[1].cause.startsWith('sentinel:')) return Math.max(BOARD_SENTINEL_ENGINE, quotedLandingFailureEngine);
   if (['declareJob', 'recordJobRun'].includes(operation)) return RECURRING_JOB_ENGINE;
   if (operation === 'recordGateRun') return GATE_RUN_ENGINE;
   if (operation === 'recordHealthFindings') return HEALTH_SENTINEL_ENGINE;
   if (operation === 'reserveNextReview' && Array.isArray(args[0]?.skipIds) && args[0].skipIds.length) return REVIEW_SKIP_ENGINE;
   const options = args[1];
-  if (carriesConflict(operation, args)) return board && store.itemById(board, args[0])?.item_status === 'submitted' ? SUBMITTED_CONFLICT_ENGINE : CONFLICT_ENGINE;
+  if (carriesConflict(operation, args)) return Math.max(board && store.itemById(board, args[0])?.item_status === 'submitted' ? SUBMITTED_CONFLICT_ENGINE : CONFLICT_ENGINE,
+    quotedLandingFailureEngine);
   if (operation === 'submit' && options?.submissionProof !== undefined
     || operation === 'recordLandingBatch' && args[0]?.batch?.invariantEvidence !== undefined) return SUBMISSION_PROOF_ENGINE;
   const given = (name) => Boolean(options && typeof options === 'object' && Object.hasOwn(options, name) && options[name] !== undefined && options[name] !== null && options[name] !== false);
@@ -140,12 +171,13 @@ function minimumOperationEngine(operation, args, board, at) {
   if (operation === 'verify' && options && Object.hasOwn(options, 'review')) return VERDICT_REVIEW_ENGINE;
   if (operation === 'recordLandingBatch' && args[0]?.batch
     && ['items', 'candidates'].some(key => Array.isArray(args[0].batch[key]) && args[0].batch[key].some(entry => entry && typeof entry === 'object' && Object.hasOwn(entry, 'reviewedCommit')))) return VERDICT_REVIEW_ENGINE;
-  if (['verify', 'reopen', 'appendFact'].includes(operation) && (given('cause') || given('neverAgain') || given('asPerson'))) return CAUSE_ENGINE;
+  if (['verify', 'reopen', 'appendFact'].includes(operation) && (given('cause') || given('neverAgain') || given('asPerson'))) return Math.max(CAUSE_ENGINE, quotedLandingFailureEngine);
   if (carriesImplies(operation, args)) return IMPLIES_ENGINE;
   if (carriesBarReason(operation, args)) return BAR_ENGINE;
   if (operation === 'editMilestone' && options && Object.hasOwn(options, 'target') && options.target !== undefined) return MILESTONE_SHIP_ENGINE;
-  return operation === 'editItem' && options && Object.hasOwn(options, 'after') && options.after !== undefined
+  const operationEngine = operation === 'editItem' && options && Object.hasOwn(options, 'after') && options.after !== undefined
     ? 10 : OPERATION_ENGINE[operation] ?? 1;
+  return Math.max(operationEngine, quotedLandingFailureEngine);
 }
 
 /** Read a replica's committed prefix without trusting an independently saved transport cursor. */
@@ -184,12 +216,18 @@ export function startRelayEpoch(board) {
 /** Turn caller-only callbacks into deterministic values before sealing an executable operation. */
 export function prepareEngineMove(board, operation, args, { id = randomUUID(), actor } = {}) {
   if (!ENGINE_OPERATIONS.includes(operation) || !Array.isArray(args)) throw new Refused('RELAY_MOVE', 'use a supported board-engine operation with its argument array');
-  if (operation === 'submit' && ENGINE_VERSION >= SUBMISSION_PROOF_ENGINE) submissionProof(args[1]?.submissionProof);
-  const minimumEngine = minimumOperationEngine(operation, args, board);
+  const values = args.map((value) => value && typeof value === 'object' ? { ...value } : value);
+  if (operation === 'reopen' && values[1] && typeof values[1] === 'object'
+    && manualLandingFailureQuoted(values[1].note)) values[1].quotedLandingFailure = true;
+  if (operation === 'submit' && ENGINE_VERSION >= SUBMISSION_PROOF_ENGINE) submissionProof(values[1]?.submissionProof);
+  if (operation === 'claim' && ['wipPerReviewer', 'takeoverMinutes'].some(key => typeof lineSettings(board)[key] === 'number')) {
+    values[1] = { ...values[1], lineCapacity: true };
+  }
+  const minimumEngine = minimumOperationEngine(operation, values, board);
   if (ENGINE_VERSION < minimumEngine) throw new Refused('ENGINE_VERSION', `${operation} requires engine version ${minimumEngine}; this pullboard uses engine ${ENGINE_VERSION}; upgrade before sending it`);
   // A gate run is sealed only as its gate's own receipt; a run made up by hand is refused before it reaches any replica.
-  if (operation === 'recordGateRun') requireBound(board, args[0]?.receipt);
-  const values = args.map((value) => value && typeof value === 'object' ? { ...value } : value);
+  if (operation === 'recordGateRun') requireBound(board, values[0]?.receipt);
+  if (operation === 'verify' && values[1]?.sandbox !== undefined) requireOutsideReceipt(board, values[1].sandbox);
   if (operation === 'release') {
     const problem = store.reviewReleaseNoteProblem(board, values[0], values[1], values[2]);
     if (problem) throw problem;
@@ -341,7 +379,9 @@ function registrationProblem(board, move, { sender, registration, sequence, dige
 export function applyRelayMove(board, move, { sequence, at, sender, kind, digest = null, registration }) {
   requireSupportedEngine(move);
   const phoneReceipt = sender?.kind === 'machine' && move?.engine >= 6 && Boolean(move.personRequest) && !requestMoveProblem(board, move, { checkExecutorLease: false });
-  const problem = relaySenderProblem(move, sender, kind, { phoneReceipt }) ?? (kind === 'move' ? registrationProblem(board, move, { sender, registration, sequence, digest }) : null)
+  const problem = relaySenderProblem(move, sender, kind, { phoneReceipt })
+    ?? (kind === 'move' ? handoffMoveProblem(board, relayMoveActor(move), move.operation, move.args) : null)
+    ?? (kind === 'move' ? registrationProblem(board, move, { sender, registration, sequence, digest }) : null)
     // With signing on, a person-only move counts only when it carries out a passkey-confirmed request [E22].
     ?? (kind === 'move' ? signedMoveProblem(board, personAuthority(move), phoneReceipt ? move.personRequest : null) : null);
   if (!problem) {
@@ -393,6 +433,7 @@ export function applyEngineMove(board, move, { sequence, at, standing = null, en
           if (problem) throw problem;
           // One main checkout coordinates a linked board at a time; another is refused by name (#347).
           requireCoordinatorHold(board, move, standing?.lineage, at);
+          requireHandoffActive(board, relayMoveActor(move), move.operation, move.args);
           return store[move.operation](board, ...executableArgs(move, board));
         });
         const result = standing ? store.withVerifierStanding(board, standing, execute) : execute();

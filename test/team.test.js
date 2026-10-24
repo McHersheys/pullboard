@@ -318,7 +318,7 @@ test('a verdict reads stale when main moves under its files [E8]', { timeout: 12
   for (const root of [box.repo, peer]) {
     assert.match(run(box, root, 'show', '1'), /STALE_VERDICT/u);
     assert.equal(JSON.parse(run(box, root, 'list', '--all', '--json')).items[0].item_verdict_state?.commit, movingCommit);
-    const resume = JSON.parse(run(box, root, 'resume', '--json'));
+    const resume = JSON.parse(run(box, root, 'resume', '--diagnostics', '--json'));
     assert.equal(resume.all[0].item_verdict_state?.commit, movingCommit);
     assert.deepEqual(resume.toMerge, [], 'resume never suggests landing a stale acceptance');
     assert.equal(resume.staleVerdicts[0].item_id, 1);

@@ -1,3 +1,5 @@
+import { requireHandoffActive } from './handoff-state.js';
+import { requestedCommandMove } from './recorded-move.js';
 export { barActorForCommand } from './bar-actor.js';
 import {
   barReadinessRequired,
@@ -429,7 +431,6 @@ export async function launchBaseline(ctx, board, id, baseline) {
       baseline: { command: baseline.command, main: baseline.main, result: 'unavailable', reason: 'background worker could not start; set --check again from the coordinator' } }]);
   }
 }
-
 /** Parse an edit's dependency replacement, with the explicit word `none` meaning clear all. */
 export function editAfter(text) {
   if (text === undefined) return undefined;
@@ -440,7 +441,6 @@ export function editAfter(text) {
   }
   return parts.map((part) => idArg(part, 'an item id after --after'));
 }
-
 /**
  * Text a command was given as --<name> "..." or as --<name>-file <file>, or undefined when neither.
  * A file carries text past the shell exactly: backticks, dollar signs and quotes included.
@@ -460,7 +460,6 @@ export function textArg(io, values, name) {
   if (!existsSync(file)) throw new Refused('NO_FILE', `no file ${path}`);
   return readFileSync(file, 'utf8');
 }
-
 /**
  * The brief a command was given, from --brief or --brief-file.
  *
@@ -469,7 +468,6 @@ export function textArg(io, values, name) {
  * @returns {string | undefined}
  */
 export const briefArg = (io, values) => textArg(io, values, 'brief');
-
 /**
  * Verifying from the main checkout files the verdict as the coordinator's (V9). An agent whose
  * shell started there would be taken for the coordinator, so the coordinator says so explicitly
@@ -494,7 +492,6 @@ export function checkMainVerifier(ctx, board, values) {
     reviewerStartup(ctx.info.root, ctx.config, values.verifyId),
   );
 }
-
 /**
  * Select the person actor only through the main checkout's explicit person mode (B26).
  *
@@ -596,11 +593,22 @@ export async function ordered(ctx, board, operation, args) {
           () => store.recordSpecApprovalBaseline(board, ...values))
         : store.recordSpecApprovalBaseline(board, ...values);
     };
-    ensureSpecApprovalCoordinator(ctx, board, initialBaseline);
     const actor = ctx.info.isMain ? COORDINATOR : store.agentAt(board, ctx.info.root)?.agent_id;
+    requireHandoffActive(board, actor, operation, args);
+    ensureSpecApprovalCoordinator(ctx, board, initialBaseline);
+    const write = () => store.atomic(board, () => { requireHandoffActive(board, actor, operation, args); return store[operation](board, ...args); });
     if (initialBaseline && actor) await recordBaseline(actor);
+    const requested = requestedCommandMove(ctx.io.relayCommand?.cliOperation, operation);
+    /** Called only for this requested operation, after its store transaction commits, never for bootstrap. */
+    const applyRequested = () => {
+      const before = board.lastEvent;
+      const result = write();
+      if (requested && board.lastEvent !== before) ctx.io.recordedMove = true;
+      return result;
+    };
     const result = await withItemSession(ctx.info, operation, args, () => relayLinked(ctx.info.root) || relayRecovered(ctx.info.root)
-      ? relayOperation(ctx.info.root, operation, args, ctx.io, command, () => store[operation](board, ...args)) : store[operation](board, ...args));
+      ? relayOperation(ctx.info.root, operation, args, ctx.io, command, applyRequested,
+        requested ? () => { ctx.io.recordedMove = true; } : undefined) : applyRequested());
     return result;
   };
   const digest = agentSessionDigest();
@@ -618,7 +626,8 @@ export async function ordered(ctx, board, operation, args) {
 /** Order a claim on every route (claim, next, run) only after a check green on main is not held [V4]. */
 export async function claimOrdered(ctx, board, args) {
   refuseClaimProvesNothing(ctx.info.root, board, args[0]);
-  return await ordered(ctx, board, 'claim', args);
+  return await ordered(ctx, board, 'claim', [args[0], { ...args[1],
+    reviewPolicy: ctx.config.verify.policy, familyPolicy: ctx.config.verify.family }]);
 }
 
 /**
@@ -773,7 +782,7 @@ function prepareClaimSpec(ctx, item) {
   } catch {
     throw specBehindMain(policy.config.spec, missing);
   }
-  Object.assign(ctx, context(ctx.io));
+  Object.defineProperties(ctx, Object.getOwnPropertyDescriptors(context(ctx.io)));
   return missing;
 }
 
@@ -1125,11 +1134,11 @@ export function recordSetupState(ctx, identity, state) {
   renameSync(temporary, file);
 }
 
-/** Derive the next setup question from the real requirements, config, items and view receipt. */
-export function boardSetup(ctx, card, identity) {
+/** Derive setup from real inputs; a caller may share its already-read current decision snapshot. */
+export function boardSetup(ctx, card, identity, { decisions: capturedDecisions } = {}) {
   const rows = loadSpec(ctx.info.root, ctx.config).rows;
   const approved = rows.filter(row => row.status === 'approved');
-  const decisions = withBoard(ctx, (board) => store.rowDecisions(board));
+  const decisions = capturedDecisions ?? withBoard(ctx, (board) => store.rowDecisions(board));
   const open = setupDecisionRows(ctx.info.root, ctx.config, decisions, rows);
   const toApply = open.filter(row => row.decision);
   const drafted = open.filter(row => !row.decision);
@@ -1541,7 +1550,7 @@ function nextPick(ctx, board, values) {
   if (offer && !values.build) return { item: offer.item, offer, build: item ?? null };
   if (!item) return { reasons, laneWork: ctx.info.isMain ? mainLaneWork(store.listItems(board)) : null };
   const reviewSkipped = values.build && !held
-    ? { offeredItem: offer?.item.item_id ?? null, ratio: ctx.config.verify.reviewRatio, ...store.reviewQueue(board) } : null;
+    ? { offeredItem: offer?.item.item_id ?? null, ratio: offer?.ratio ?? ctx.config.verify.reviewRatio, ...store.reviewQueue(board) } : null;
   return { claim: true, me, item, held, shared, reasons, reviewSkipped, seats };
 }
 
@@ -1751,4 +1760,3 @@ export function privateNames(root, board, spec) {
   add(hostname().split('.')[0]);
   return { names: [...names], parts: [...parts] };
 }
-

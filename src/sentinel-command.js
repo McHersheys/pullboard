@@ -6,25 +6,73 @@ import {
 } from './person-signing-cli.js';
 import { requirePersonChannel } from './person.js';
 import { Refused } from './refused.js';
+import { dueSentinels } from './sentinels.js';
 import { sentinels } from './sentinels.js';
 import { runDueSentinels } from './sentinel-runner.js';
+import { withSentinelTrunk } from './sentinel-runner.js';
 import { healthSentinelEnabled } from './settings.js';
+import { recordedHealthFindings } from './health-sentinel.js';
+import { scanHealthSentinel } from './health-sentinel.js';
+import { initialSpecApprovalBaseline } from './spec-approval-bootstrap.js';
 
-/** Run due approved watches from ordinary resume, respecting the health switches. */
-export async function resumeSentinels({ ctx, withBoard, whoAmI, ordered }) {
+/** The watch command's existing string options, shared with the CLI parser. */
+export const SENTINEL_OPTIONS = {
+  every: { type: 'string' },
+  owner: { type: 'string' },
+  directory: { type: 'string' },
+  timeout: { type: 'string' },
+  next: { type: 'string' },
+  sentinel: { type: 'boolean' },
+};
+
+/** Resume reports due watches in one line and never starts their commands. */
+export function resumeSentinels({ ctx, withBoard }) {
+  if (!healthSentinelEnabled(ctx.config)) return;
+  return withBoard(ctx, board => {
+    if (dueSentinels(board).length) ctx.io.say('Sentinels are due; schedule pullboard sentinel run to run them in a prepared trunk checkout.');
+  });
+}
+
+/** Run due approved watches on pinned trunk, recording through the original caller's board. */
+async function runSentinels({ ctx, withBoard, whoAmI, ordered }) {
   return withBoard(ctx, async board => {
     const me = whoAmI(ctx, board);
-    if (!healthSentinelEnabled(ctx.config)) return;
-    await runDueSentinels({ root: ctx.info.root, board, agentId: me.id,
-      ordered: (operation, args) => ordered(ctx, board, operation, args) });
+    const enabled = healthSentinelEnabled(ctx.config);
+    if (enabled) {
+      // Preserve bootstrap-before-observation ordering so the compatibility move cannot stale the scan.
+      const baseline = initialSpecApprovalBaseline(ctx, board, 'recordHealthFindings');
+      if (baseline) {
+        const io = ctx.io.personRequest || ctx.io.personRequestMoveId
+          ? { ...ctx.io, personRequest: undefined, personRequestMoveId: undefined } : ctx.io;
+        await ordered({ ...ctx, io }, board, 'recordSpecApprovalBaseline', [{ agentId: 'coordinator', baseline }]);
+      }
+      const observation = scanHealthSentinel(ctx.file, { root: ctx.info.root, config: ctx.config, now: ctx.clock.now() });
+      if (observation) {
+        try { await ordered(ctx, board, 'recordHealthFindings', [{ agentId: me.id, ...observation }]); }
+        catch (error) { if (!(error instanceof Refused) || error.code !== 'HEALTH_SCAN_STALE') throw error; }
+      }
+    }
+    const health = recordedHealthFindings(board);
+    if (!enabled || !dueSentinels(board).length) {
+      ctx.io.result?.({ sentinels: [], health });
+      ctx.io.say('No enabled sentinel is due.');
+      return 0;
+    }
+    const { results, trunk } = await withSentinelTrunk(ctx.info.root, root => runDueSentinels({ root, board, agentId: me.id,
+      ordered: (operation, args) => ordered(ctx, board, operation, args) }));
+    ctx.io.result?.({ sentinels: results, trunk, health });
+    ctx.io.say(`Sentinels: ${results.length} run from trunk ${trunk.branch}@${trunk.commit.slice(0, 12)}.`);
+    for (const row of results) ctx.io.say(`${row.name}: ${row.lastRun.green ? 'green' : 'red'}; owner ${row.owner}`);
+    return 0;
   });
 }
 
 /** Keep command parsing separate from the CLI's process and server setup. */
 export async function sentinelCommand({ ctx, words, values, withBoard, whoAmI, ordered }) {
   const [verb, name, ...extra] = words;
+  if (verb === 'run' && !name && !extra.length) return runSentinels({ ctx, withBoard, whoAmI, ordered });
   if (extra.length || !['propose', 'approve', 'decline'].includes(verb) || !name) {
-    throw new Refused('USAGE', 'use pullboard sentinel propose <name> --check "<command>" --every 10m --owner <seat or lane>, sentinel approve <name>, sentinel decline <name> --reason "<why>", or pullboard sentinels');
+    throw new Refused('USAGE', 'use pullboard sentinel run, sentinel propose <name> --check "<command>" --every 10m --owner <seat or lane>, sentinel approve <name>, sentinel decline <name> --reason "<why>", or pullboard sentinels');
   }
   if (verb !== 'propose' && !signsPersonMoves(ctx.info.root)) requirePersonChannel(ctx.io.personChannel);
   return withBoard(ctx, async board => {

@@ -1,3 +1,4 @@
+import { takeoverReady } from './line-capacity.js';
 /** Durable first-refusal windows for reopened work [B13,B5]. */
 import { Refused } from './refused.js';
 
@@ -26,7 +27,7 @@ export function firstRefusalProblem(board, id, agentId) {
 /** Explain ineligible build work without raising an item refusal from review selection. */
 export function firstRefusalReason(board, id, agentId) {
   const window = firstRefusal(board, id);
-  return window && window.builder !== agentId
+  return window && window.builder !== agentId && !takeoverReady(board, id)
     ? `item #${id} waits for ${window.builder} until ${window.until}; claim it after that time, or ask its builder to release it`
     : null;
 }
@@ -56,13 +57,86 @@ export function firstRefusalArgs(operation, args, config) {
   return [args[0], { ...args[1], reopenFirstRefusalMinutes: minutes }, ...args.slice(2)];
 }
 
+/** Whether a manual landing note quotes a semicolon-delimited test name, including malformed attempts. */
+export function manualLandingFailureQuoted(note) {
+  if (typeof note !== 'string') return false;
+  const generatedPrefix = /^Landing batch [a-z0-9_-]{1,80} failed /iu.exec(note);
+  if (generatedPrefix) return false;
+  const opening = /(?:^|;[ \t]*)(?:[\w.-]+\/)*[\w.-]+\.[a-z0-9]+:[ \t]*"/giu;
+  for (const match of note.matchAll(opening)) {
+    let escaped = false;
+    let containsSeparator = false;
+    for (let index = match.index + match[0].length; index < note.length; index += 1) {
+      const character = note[index];
+      if (character === ';') containsSeparator = true;
+      if (character === '\r' || character === '\n') break;
+      if (escaped) { escaped = false; continue; }
+      if (character === '\\') { escaped = true; continue; }
+      if (character === '"') break;
+    }
+    if (containsSeparator) return true;
+  }
+  return false;
+}
+
+/** Read a quoted test name and its end offset, refusing malformed escapes or multiline text. */
+function quotedLandingTestName(text, start) {
+  let escaped = false;
+  for (let index = start + 1; index < text.length; index += 1) {
+    const character = text[index];
+    if (character === '\r' || character === '\n') return null;
+    if (escaped) { escaped = false; continue; }
+    if (character === '\\') { escaped = true; continue; }
+    if (character !== '"') continue;
+    let name;
+    try { name = JSON.parse(text.slice(start, index + 1)); }
+    catch { return null; }
+    if (typeof name !== 'string' || !name.trim() || /[\r\n]/u.test(name)) return null;
+    return { name, end: index + 1 };
+  }
+  return null;
+}
+
+/** Parse the manual failure list when its sealed move declares quoted names. */
+function quotedManualLandingFailure(failureText, mergeCommit) {
+  const tests = [];
+  let offset = 0;
+  while (offset < failureText.length) {
+    const entry = /^(?<file>(?:[\w.-]+\/)*[\w.-]+\.[a-z0-9]+):[ \t]*/iu.exec(failureText.slice(offset));
+    if (!entry) return null;
+    offset += entry[0].length;
+    let name;
+    if (failureText[offset] === '"') {
+      const quoted = quotedLandingTestName(failureText, offset);
+      if (!quoted) return null;
+      name = quoted.name;
+      offset = quoted.end;
+      while (failureText[offset] === ' ' || failureText[offset] === '\t') offset += 1;
+    } else {
+      const separator = failureText.indexOf(';', offset);
+      const end = separator < 0 ? failureText.length : separator;
+      name = failureText.slice(offset, end).trim();
+      offset = end;
+    }
+    if (!name.trim() || /[\r\n]/u.test(name)) return null;
+    tests.push({ file: entry.groups.file, name });
+    if (offset === failureText.length) break;
+    if (failureText[offset] !== ';') return null;
+    offset += 1;
+    while (failureText[offset] === ' ' || failureText[offset] === '\t') offset += 1;
+    if (offset === failureText.length) return null;
+  }
+  return tests.length ? { tests, mergeCommit } : null;
+}
+
 /** Read test and merge-commit evidence from a hand-written landing note without checking Git. */
-export function manualLandingFailure(note) {
+export function manualLandingFailure(note, { quoted = false } = {}) {
   const generatedPrefix = /^Landing batch [a-z0-9_-]{1,80} failed /iu.exec(note);
   const body = generatedPrefix ? note.slice(generatedPrefix[0].length) : note;
   const evidence = body.match(/;[ \t]*merge commit[ \t]+(?<mergeCommit>[a-f0-9]{40}|[a-f0-9]{64})$/iu);
   if (!evidence) return null;
   const failureText = body.slice(0, evidence.index);
+  if (quoted) return quotedManualLandingFailure(failureText, evidence.groups.mergeCommit);
   const firstTest = /(?<file>(?:[\w.-]+\/)*[\w.-]+\.[a-z0-9]+):[ \t]*/iu.exec(failureText);
   if (!firstTest) return null;
   const tests = failureText.slice(firstTest.index).split(/;[ \t]*/u).map((entry) => {

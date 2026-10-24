@@ -45,6 +45,7 @@ export async function run(io, args) {
   return act(async (ctx, board, me) => {
   const recovered = await relayCommandReceipt(ctx.info.root, io.relayCommand);
   if (recovered) {
+    io.recordedMove = true;
     for (const event of recovered.events) io.onEvent?.(event);
     const id = recovered.result;
     io.result?.({ item: store.getItem(board, id) });

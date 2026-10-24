@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { openBoardReadOnly } from './board.js';
 import { healthReport } from './health.js';
 import { healthSentinelEnabled } from './settings.js';
+import { Refused } from './refused.js';
 import {
   healthFindingIdentity,
   normalizedHealthFindings,
@@ -23,4 +24,15 @@ export function scanHealthSentinel(file, { root, config, now }) {
     if (JSON.stringify(before) === JSON.stringify(after)) return null;
     return { observedRevision, findings: report.stuck };
   } finally { db.close(); }
+}
+
+/** Read the indexed last recorded findings and their recording time without running a health scan. */
+export function recordedHealthFindings(board) {
+  const last = board.db.prepare("SELECT event_at, event_detail FROM event WHERE event_kind = 'health-scan' ORDER BY event_id DESC LIMIT 1").get();
+  if (!last) return { recordedAt: null, findings: [] };
+  const detail = JSON.parse(last.event_detail);
+  if (!Array.isArray(detail.active) || !Number.isFinite(Date.parse(last.event_at))) {
+    throw new Refused('HEALTH_FINDINGS', 'the recorded health findings are invalid; run pullboard doctor before scheduling another sentinel run');
+  }
+  return { recordedAt: last.event_at, findings: detail.active };
 }

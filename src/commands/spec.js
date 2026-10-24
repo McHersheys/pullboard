@@ -1,5 +1,6 @@
 /** The pullboard spec command, in its own module so an item adding another command never edits these lines. */
 import { verifiedPasskeyRowDecision } from '../person-signing.js';
+import { planAutomaticRigorApply } from '../rigor-auto-apply.js';
 import {
   fitCommand,
 } from '../blueprint-fit-command.js';
@@ -292,6 +293,11 @@ export async function specCommand(io, { first, second, rest, values }) {
     return withBoard(ctx, async (board) => {
       const me = whoAmI(ctx, board);
       if (!ctx.info.isMain || me.id !== COORDINATOR) throw new Refused('COORDINATOR_ONLY', 'only the coordinator applies row decisions; ask your coordinator to run pullboard spec apply');
+      // Every automatic proposal is preflighted before any draft or decision changes a file.
+      planRowApply(ctx.info.root, ctx.config, store.rowDecisions(board));
+      const automatic = planAutomaticRigorApply(ctx.info.root, ctx.config, store.rowDrafts(board), store.rowDecisions(board));
+      writeRowApply(ctx.info.root, automatic);
+      automatic.files.forEach(file => io.say(`${file.file}: materialized unproved Rigor drafts for the person's review`));
       // A lane's board drafts (#878) reach SPEC.md as draft rows at their own ids; the person approves them there as before.
       const drafted = pendingRowDrafts(loadSpec(ctx.info.root, ctx.config), store.rowDrafts(board)).map((draft) => draftRow(ctx.info.root, ctx.config, { target: 'spec', text: draft.text, gate: draft.gate, tier: draft.tier, section: /^(.*?)\d+$/u.exec(draft.id)[1], id: draft.id }));
       drafted.forEach((row) => io.say(`${row.file}: ${row.id} drafted from a lane, for the person to approve`));

@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** Cockpit exports contain local socket failures without exposing the session key [C7,N26]. */
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
