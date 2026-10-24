@@ -1272,7 +1272,7 @@ test('next --verify looks and reserves in one transaction, so no other verifier 
             store.reserveReview(rival, id, { agentId: third, leaseMs: 60_000, policy: 'any' });
             rivalSaw = 'reserved';
           } catch (error) {
-            rivalSaw = error.message;
+            rivalSaw = error;
           }
         }
         return new Date(Date.now() + 60_000);
@@ -1283,7 +1283,7 @@ test('next --verify looks and reserves in one transaction, so no other verifier 
     const found = store.reserveNextReview(looking, { agentId: 'web-2', lane: 'web', leaseMs: 60_000, policy: 'any' });
     assert.equal(found.item?.item_review_by, 'web-2');
     assert.ok(rivalSaw !== null, 'the look read the clock, so the rival had its chance mid-look');
-    assert.match(rivalSaw, /locked/, 'the rival could not write while the look held the board');
+    assert.equal(rivalSaw.code, 'BOARD_BUSY', 'the rival could not write while the look held the board');
   } finally {
     for (const board of others) store.closeBoard(board);
     lab.done();
