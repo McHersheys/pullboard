@@ -4,9 +4,11 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import { decodeBoardKey, seal, unseal } from '../src/seal.js';
 import { relayClientFixture } from './relay-client-fixture.js';
 import { runFixtureGit } from './fixture-child.js';
+import { ENGINE_VERSION } from '../src/machine.js';
 
 test('a relink after relay off seals moves with the new key [H15,H17]', async t => {
   const box = await relayClientFixture(t);
@@ -92,4 +94,37 @@ test('relink snapshots actual local queued effects and retains old encrypted obl
   assert.equal(exported.tables.shout.filter(row => row.shout_text === 'actual locally queued effect').length, 1,
     'the fresh baseline contains the native effect once, without replaying old queued moves');
   assert.equal((await box.cli('shout', 'all', 'new epoch after queued effect')).code, 0);
+});
+
+test('the native receiver refuses an old-key move on the fresh relinked board [H15,H17]', async t => {
+  const box = await relayClientFixture(t);
+  await box.link();
+  const oldKey = decodeBoardKey(readFileSync(box.keyFile, 'utf8').trim());
+  assert.equal((await box.cli('relay', 'off')).code, 0);
+  assert.equal((await box.cli('relay', 'on', '--url', box.origin)).code, 0);
+  assert.equal((await box.cli('shout', 'all', 'current-key receiver control')).code, 0);
+  const link = JSON.parse(readFileSync(box.linkFile, 'utf8'));
+  const key = decodeBoardKey(readFileSync(join(box.env.PULLBOARD_HOME, 'relay-keys', link.board + '.key'), 'utf8').trim());
+  const prior = box.moveAcks.at(-1);
+  const plain = await unseal(key, Buffer.from(prior.sealed, 'base64url'),
+    { boardId: link.board, kind: 'move', sequence: prior.sequence });
+  const move = JSON.parse(new TextDecoder().decode(plain));
+  move.id = randomUUID();
+  move.args[0].text = 'old-key move must never apply';
+  const sequence = link.sequence + 1;
+  const sealed = Buffer.from(await seal(oldKey, new TextEncoder().encode(JSON.stringify(move)),
+    { boardId: link.board, kind: 'move', sequence })).toString('base64url');
+  const response = await fetch(box.origin + '/api/v1/boards/' + link.board + '/moves', {
+    method: 'POST', headers: { authorization: 'Bearer ' + link.agentTokens.coordinator.token,
+      'x-pullboard-engine': String(ENGINE_VERSION), 'content-type': 'application/json' },
+    body: JSON.stringify({ sequence, sealed }),
+  });
+  assert.equal(response.status, 200, 'the opaque relay stores a correctly authorized position without opening it');
+  const exported = await box.cli('export');
+  assert.equal(exported.code, 0);
+  assert.equal(exported.document.tables.shout.some(row => row.shout_text === move.args[0].text), false,
+    'the native receiver never applies the stale-key operation');
+  const refusal = exported.document.tables.board_meta.find(row => row.meta_key === 'relay_refusal_' + sequence);
+  assert.ok(refusal, 'the actual native receiver durably records the refused position');
+  assert.equal(JSON.parse(refusal.meta_value).outcome.error.code, 'RELAY_SEAL');
 });
