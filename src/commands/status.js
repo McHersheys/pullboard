@@ -5,7 +5,6 @@ import { personNeedsSummary } from '../needs-summary.js';
 import { identifyCaller } from '../cli-read-context.js';
 import { relayStateExists } from '../local-state.js';
 import { unlinkedRelayStatus } from '../relay-status-fields.js';
-import { projectRowDecisions } from '../row-decisions.js';
 import { ruleProofCounts } from '../rule-proof-counts.js';
 import {
   reviewQueueLine,
@@ -39,8 +38,7 @@ export async function run(io, { values }) {
       relayLinked: relay?.relayLinked ?? (() => false) }, readers);
     const mine = store.itemsInStatus(board, 'claimed', me.id);
     const approvalState = personNeedsSummary(ctx.info.root, { board, config: ctx.config });
-    const rows = projectRowDecisions(store.rowDecisions(board), { root: ctx.info.root, spec: loadSpec(ctx.info.root, ctx.config).rows }).spec;
-    return { me, mine, ruleCounts: ruleProofCounts(ctx.info.root, board, rows), needs: approvalState.needs, specApprovalBaseline: approvalState.specApprovalBaseline, specApprovalEvidenceErrors: approvalState.specApprovalEvidenceErrors, stats: store.stats(board), reviewQueue: { ...store.reviewQueue(board), ...store.reviewQueueBreakdown(board) }, unread: store.unreadCount(board, me.id), relay: relay ? relay.relayStatus(ctx.info.root) : unlinkedRelayStatus(),
+    return { me, mine, ruleCounts: ruleProofCounts(ctx.info.root, board, approvalState.spec), needs: approvalState.needs, specApprovalBaseline: approvalState.specApprovalBaseline, specApprovalEvidenceErrors: approvalState.specApprovalEvidenceErrors, stats: store.stats(board), reviewQueue: { ...store.reviewQueue(board), ...store.reviewQueueBreakdown(board) }, unread: store.unreadCount(board, me.id), relay: relay ? relay.relayStatus(ctx.info.root) : unlinkedRelayStatus(),
       submitInvariantProposals: submitInvariantProposals(store.submitInvariantEvents(board, ctx.config), ctx.config) };
   });
   if (values.json) {
