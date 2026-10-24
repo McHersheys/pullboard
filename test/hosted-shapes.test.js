@@ -1123,11 +1123,13 @@ test('an expired saved pairing preserves a valid identity when its session probe
   for (const unavailable of [false, true]) await t.test(unavailable ? 'unavailable probe' : 'valid session', async () => {
     let probes = 0;
     let listings = 0;
+    let unpairedProbes = 0;
     const route = front.route(session, null);
     const page = await context.newPage({ phone: true, bootstrap: storedScript('stale-pairing'), route: async request => {
       if (new URL(request.url).pathname === '/api/v1/boards') listings += 1;
       if (new URL(request.url).pathname === '/api/v1/devices/session') {
         probes += 1;
+        if (probes > listings) unpairedProbes += 1;
         if (unavailable) return { kind: 'fulfill', status: 503, headers: { 'content-type': 'application/json' },
           body: Buffer.from(JSON.stringify({ version: 1, error: { code: 'RELAY_UNAVAILABLE', message: 'fixture session probe unavailable' } })) };
       }
@@ -1146,9 +1148,11 @@ test('an expired saved pairing preserves a valid identity when its session probe
         assert.ok(await page.poll(`(${READ_SCREEN}).board`, 8_000), 'valid paired identity opens its board despite the expired link'); // budget: fixture settle ceiling.
         assert.doesNotMatch((await page.evaluate(READ_SCREEN)).words, /fresh phone pairing link/u);
       }
-      if (!unavailable) assert.ok(listings > 0, 'the opened board requests its normal listings');
-      assert.equal(probes, unavailable ? 1 : listings, unavailable ? 'only the cause-specific session probe ran'
-        : 'each successful listing performs its normal session authorization without an extra expiry probe');
+      if (unavailable) assert.equal(probes, 1, 'only the cause-specific session probe ran');
+      else {
+        assert.ok(probes > 0, 'the opened board performs normal session authorization');
+        assert.equal(unpairedProbes, 0, 'no expiry-only session probe runs before or beyond the observed board listings');
+      }
       const screen = await page.evaluate(READ_SCREEN);
       assert.doesNotMatch(screen.words, /browser was removed/iu, 'a valid or unavailable session is not a revocation');
       assert.equal(await page.evaluate("document.getElementById('relay-removed') !== null"), false);
