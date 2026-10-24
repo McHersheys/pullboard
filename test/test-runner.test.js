@@ -1,7 +1,7 @@
 /** Test the CI-like test runner against real Git and PATH behavior [C7, S13]. */
 import assert from 'node:assert/strict';
 import { runFixtureExecFile as execFileSync, runFixtureChild as spawnSync } from './fixture-child.js';
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -121,7 +121,7 @@ function copyRunnerImports(sourceRoot, root) {
 
 /** Build the runner-discovery fixture from a source checkout. */
 function discoveryFixture(t, sourceRoot = fileURLToPath(new URL('../', import.meta.url))) {
-  const root = mkdtempSync(join(tmpdir(), 'pullboard-runner-discovery-'));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-runner-discovery-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const bin = join(root, 'bin');
   const tests = join(root, 'test');
@@ -164,4 +164,106 @@ test('discovery follows a new runner src import and its transitive dependency [C
   writeFileSync(join(source, 'src/discovery-extra.js'), "import { value } from './discovery-nested.js';\nif (value !== 'closure') throw new Error('transitive import failed');\n");
   writeFileSync(join(source, 'src/discovery-nested.js'), "export const value = 'closure';\n");
   runDiscovery(discoveryFixture(t, source));
+});
+
+
+test('a name pattern that matches no test fails with NO_TESTS_MATCHED [C7,S13]', (t) => {
+  const box = discoveryFixture(t);
+  const runner = join(box.bin, 'run-tests.js');
+  const file = join(box.root, 'test', 'one.test.js');
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  /** Execute the copied real runner with fixture inputs and preserve its native output. */
+  const execute = (...args) => spawnSync(process.execPath, [runner, ...args], { cwd: box.root, env, encoding: 'utf8' });
+  const missing = execute('--test-name-pattern', 'no matching case 1018', file);
+  assert.notEqual(missing.status, 0, `${missing.stdout}${missing.stderr}`);
+  assert.match(missing.stderr, /NO_TESTS_MATCHED/u);
+  assert.match(missing.stderr, /no matching case 1018/u);
+  assert.ok(missing.stderr.includes(file), missing.stderr);
+  assert.equal(existsSync(box.marker), false, 'a nonmatching case never executes');
+  const matched = execute(file, '--test-name-pattern=one discovered test');
+  assert.equal(matched.status, 0, `${matched.stdout}${matched.stderr}`);
+  assert.equal(readFileSync(box.marker, 'utf8'), 'x');
+  const whole = execute(file);
+  assert.equal(whole.status, 0, `${whole.stdout}${whole.stderr}`);
+  assert.equal(readFileSync(box.marker, 'utf8'), 'xx', 'whole-file behavior is preserved');
+  const silent = join(box.root, 'silent.mjs');
+  writeFileSync(silent, 'export default async function* (events) { for await (const event of events) {} }\n');
+  const quietMissing = execute('--test-reporter', silent, '--test-name-pattern', 'another absent case 1018', file);
+  assert.notEqual(quietMissing.status, 0, `${quietMissing.stdout}${quietMissing.stderr}`);
+  assert.match(quietMissing.stderr, /NO_TESTS_MATCHED/u);
+  const quietMatch = execute('--test-reporter', silent, '--test-name-pattern', 'one discovered test', file);
+  assert.equal(quietMatch.status, 0, `${quietMatch.stdout}${quietMatch.stderr}`);
+  assert.equal(quietMatch.stdout, '', 'observing selection adds no public reporter output');
+  assert.equal(readFileSync(box.marker, 'utf8'), 'xxx');
+  const output = join(box.root, 'default-reporter.tap');
+  const defaultDestination = execute('--test-name-pattern', 'one discovered test',
+    '--test-reporter-destination', output, file);
+  assert.equal(defaultDestination.status, 0, `${defaultDestination.stdout}${defaultDestination.stderr}`);
+  assert.match(readFileSync(output, 'utf8'), /ok 1 - one discovered test/u);
+  assert.equal(readFileSync(box.marker, 'utf8'), 'xxxx');
+  const absentWithDestination = execute('--test-reporter-destination=' + output,
+    '--test-name-pattern=absent default reporter case 1018', file);
+  assert.notEqual(absentWithDestination.status, 0, `${absentWithDestination.stdout}${absentWithDestination.stderr}`);
+  assert.match(absentWithDestination.stderr, /NO_TESTS_MATCHED/u);
+});
+
+
+test('a name pattern that matches no test fails with NO_TESTS_MATCHED in a landing [C7,S13]', (t) => {
+  const box = discoveryFixture(t);
+  const runner = join(box.bin, 'run-tests.js');
+  const file = join(box.root, 'test', 'one.test.js');
+  const env = { ...process.env, PULLBOARD_LANDING_RUN: '1' };
+  delete env.NODE_TEST_CONTEXT;
+  /** Exercise the real landing API and its independent reporter on private files. */
+  const execute = (...args) => spawnSync(process.execPath, [runner, ...args], { cwd: box.root, env, encoding: 'utf8' });
+  const missing = execute('--test-name-pattern=absent landing case 1018', file);
+  assert.notEqual(missing.status, 0, `${missing.stdout}${missing.stderr}`);
+  assert.match(missing.stderr, /NO_TESTS_MATCHED/u);
+  assert.equal(existsSync(box.marker), false);
+  const silent = join(box.root, 'silent.mjs');
+  const output = join(box.root, 'selected-output.txt');
+  writeFileSync(silent, 'export default async function* (events) { for await (const event of events) {} }\n');
+  const matched = execute('--test-reporter', silent, '--test-reporter-destination', output,
+    '--test-name-pattern', 'one discovered test', file);
+  assert.equal(matched.status, 0, `${matched.stdout}${matched.stderr}`);
+  assert.equal(readFileSync(output, 'utf8'), '', 'the selected reporter destination stays silent');
+  assert.equal(readFileSync(box.marker, 'utf8'), 'x');
+});
+
+
+test('runner option values that resemble a name pattern remain values [C7,S13]', (t) => {
+  const box = discoveryFixture(t);
+  const empty = join(box.root, 'test', 'empty.test.js');
+  writeFileSync(empty, 'export {};\n');
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const result = spawnSync(process.execPath, [join(box.bin, 'run-tests.js'),
+    '--test-skip-pattern', '--test-name-pattern=absent option value 1018', empty],
+  { cwd: box.root, env, encoding: 'utf8' });
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+  assert.doesNotMatch(result.stderr, /NO_TESTS_MATCHED/u, 'a skip-regex value is not a name-filter option');
+});
+
+
+test('a name pattern with sharded discovery keeps its filter [C7,S13]', (t) => {
+  const box = discoveryFixture(t);
+  writeFileSync(join(box.root, 'pullboard.json'), JSON.stringify({ landingShards: 2 }));
+  writeFileSync(join(box.root, '.gitignore'), 'ran-once\n');
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: box.root });
+  execFileSync('git', ['add', 'test/one.test.js', 'pullboard.json', '.gitignore'], { cwd: box.root });
+  execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test',
+    'commit', '-q', '-m', 'test: seed tracked discovery case'], { cwd: box.root });
+  const env = { ...process.env, PULLBOARD_LANDING_RUN: '1' };
+  delete env.NODE_TEST_CONTEXT;
+  /** Exercise configured discovery without explicit files, so the landing-shard branch is reached. */
+  const execute = (pattern) => spawnSync(process.execPath, [join(box.bin, 'run-tests.js'),
+    '--test-name-pattern', pattern], { cwd: box.root, env, encoding: 'utf8' });
+  const present = execute('one discovered test');
+  assert.equal(present.status, 0, `${present.stdout}${present.stderr}`);
+  assert.equal(readFileSync(box.marker, 'utf8'), 'x', 'the real configured shard is a positive control');
+  const absent = execute('absent sharded case 1018');
+  assert.notEqual(absent.status, 0, `${absent.stdout}${absent.stderr}`);
+  assert.match(absent.stderr, /NO_TESTS_MATCHED/u, `${absent.stdout}${absent.stderr}`);
+  assert.equal(readFileSync(box.marker, 'utf8'), 'x', 'a discarded filter must not run the tracked case again');
 });
