@@ -6,6 +6,7 @@ import { after, test } from 'node:test';
 import * as store from '../src/board.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { submitFixture } from './board-submit-fixture.js';
+import { exportBoard } from '../src/exchange.js';
 
 const e2e = createE2eHelpers();
 after(e2e.cleanup);
@@ -48,7 +49,21 @@ test('status moves are feed events and the board sends no status shout [B3,R2,N2
   assert.equal(thread.find(entry => entry.kind === 'main-moved').detail.sha, commit);
   assert.equal(store.itemThread(board, other).some(entry => entry.kind === 'main-moved'), false, 'an unrelated item gets no landing activity');
   assert.deepEqual(board.db.prepare('SELECT * FROM shout ORDER BY shout_id').all(), beforeShouts, 'routine lifecycle writes no status shout');
-  store.shout(board, { from: 'web-1', to: 'coordinator', lanes: ['web', 'api'], text: 'Who should coordinate the next review?' });
+  const snapshot = exportBoard(board);
+  assert.deepEqual(store.itemThread(board, item), thread, 'reading activity again is stable');
+  assert.deepEqual(exportBoard(board), snapshot, 'projection never writes another receipt');
+  assert.equal(store.events(board).filter(event => event.event_kind === 'main-moved').length, 1, 'one original batch receipt serves all item readers');
+  store.claim(board, other, { agentId: 'web-1', lane: 'web', leaseMs: 3600000, head: base, freeze });
+  submitFixture(board, other, { agentId: 'web-1', commit, tree });
+  store.verify(board, other, { agentId: reviewer, decision: 'REJECT', reason: 'TEST_FAILURE', note: 'Synthetic private refusal fixture.',
+    head: commit, digest: freeze().digest, policy: 'any', familyPolicy: 'off', reopenFirstRefusalMinutes: 30,
+    review: { commit, head: commit, trunk: base, paths: ['web/activity.txt'] } });
+  assert.equal(store.itemThread(board, other).at(-1).kind, 'reject', 'a rejection remains item activity');
+  const notices = board.db.prepare('SELECT * FROM shout WHERE shout_id > ? ORDER BY shout_id').all(beforeShouts.at(-1)?.shout_id ?? 0);
+  assert.equal(notices.length, 1, 'the actionable first-refusal notice survives; no routine reject shout is added');
+  assert.equal(notices[0].shout_to, 'web-1');
+  assert.match(notices[0].shout_text, /waits for you until.*claim it to resume/u);
+  store.shout(board, { from: 'web-1', to: 'coordinator', lanes: ['web', 'api'], text: 'My work was submitted.' });
   assert.equal(board.db.prepare('SELECT shout_text FROM shout ORDER BY shout_id DESC LIMIT 1').get().shout_text,
-    'Who should coordinate the next review?', 'agent-written coordination remains a shout');
+    'My work was submitted.', 'agent-written messages are never suppressed, even when they mention status');
 });
