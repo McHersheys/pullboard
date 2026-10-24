@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 
 const LOCK_MODULE = new URL('../src/relay-lock.js', import.meta.url).href;
@@ -30,18 +31,20 @@ await locked(file, async () => {
 });
 `;
 
-/** Run six waiters against a dead owner's lock, optionally with a dead reaper's reap lock too, and check one holder. */
-async function round(root, index, { deadReaper = false } = {}) {
+/** Run six waiters against a dead owner's lock, optionally with a dead holder's lease too, and check one holder. */
+async function round(root, index, { deadLease = false } = {}) {
   const file = join(root, `relay-${index}.json`);
   const log = join(root, `log-${index}`);
   writeFileSync(log, '');
   // The lock a crashed command left behind: its owner's process is gone.
   mkdirSync(`${file}.lock`);
   writeFileSync(join(`${file}.lock`, 'pid'), String(deadPid()));
-  if (deadReaper) {
-    // And the reap lock of a waiter that died while clearing it.
-    mkdirSync(`${file}.lock.reap`);
-    writeFileSync(join(`${file}.lock.reap`, 'pid'), String(deadPid()));
+  if (deadLease) {
+    // And the lease of a command that died holding it.
+    const db = new DatabaseSync(`${file}.lease.sqlite`);
+    db.exec('CREATE TABLE IF NOT EXISTS relay_lease(name TEXT PRIMARY KEY, pid INTEGER NOT NULL, token TEXT NOT NULL)');
+    db.prepare("INSERT INTO relay_lease(name, pid, token) VALUES ('relay', ?, 'dead')").run(deadPid());
+    db.close();
   }
   const waiters = Array.from({ length: 6 }, () => new Promise((done, fail) => {
     const child = spawn(process.execPath, ['--input-type=module', '-e', WAITER, LOCK_MODULE, log, file], { stdio: ['ignore', 'ignore', 'pipe'] });
@@ -65,8 +68,8 @@ test('waiters on a dead owner leave exactly one holder at a time [H5]', async (t
   for (let index = 0; index < 15; index += 1) await round(root, index);
 });
 
-test('a reaper that died clearing a lock is recovered, and still one waiter holds the lock at a time [H5]', async (t) => {
-  const root = mkdtempSync(join(tmpdir(), 'pullboard-relay-lock-reaper-'));
+test('a lease left by a dead holder is taken over by one waiter at a time [H5]', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'pullboard-relay-lock-lease-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  for (let index = 0; index < 10; index += 1) await round(root, index, { deadReaper: true });
+  for (let index = 0; index < 10; index += 1) await round(root, index, { deadLease: true });
 });

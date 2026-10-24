@@ -5,10 +5,10 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
-  renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import {
   dirname,
   join,
@@ -33,71 +33,54 @@ function gone(pid) {
   catch (error) { return error.code === 'ESRCH'; }
 }
 
-/** Whether this process holds the reap lock right now. */
-function holdsReaper(reaper) {
-  try { return ownerOf(reaper) === process.pid; } catch { return false; }
+/**
+ * The lease that decides which command holds a board's relay lock (#1119). Taking it is one SQLite write
+ * transaction that checks the holder and replaces it only when that holder's process is gone, so of any number of
+ * waiters exactly one holds it, and a live holder is never displaced: there is no separate removal step to race.
+ */
+function openLease(file) {
+  const db = new DatabaseSync(`${file}.lease.sqlite`);
+  db.exec(`PRAGMA busy_timeout = 10000;
+    CREATE TABLE IF NOT EXISTS relay_lease(name TEXT PRIMARY KEY, pid INTEGER NOT NULL, token TEXT NOT NULL);`);
+  return db;
 }
 
-/**
- * Take the reap lock, or clear one whose reaper died. A reaper publishes the lock with its pid already inside, by
- * renaming its own directory into place, so the lock always names a live or dead owner and is never taken twice.
- * A dead reaper's lock is moved aside in one step and deleted (#1119).
- *
- * @returns {boolean} Whether this process now holds the reap lock.
- */
-function takeReaper(reaper) {
-  const mine = `${reaper}.${process.pid}.${randomUUID()}`;
-  mkdirSync(mine, { mode: 0o700 });
-  writeFileSync(join(mine, 'pid'), String(process.pid));
-  try { renameSync(mine, reaper); return true; }
-  catch (error) {
-    rmSync(mine, { recursive: true, force: true });
-    if (!['EEXIST', 'ENOTEMPTY', 'EPERM'].includes(error.code)) throw error;
-  }
-  let holder;
-  try { holder = ownerOf(reaper); } catch { return false; }
-  if (holder === null || !gone(holder)) return false;
-  // Move it aside and delete it. If a live reaper took the path between our look and our move, it is the one
-  // moved: it finds it no longer holds the reap lock and does nothing. It is never put back, since by then it may
-  // have finished and would hold the path for ever.
-  const aside = `${reaper}.dead.${process.pid}.${randomUUID()}`;
-  try { renameSync(reaper, aside); } catch { return false; }
-  rmSync(aside, { recursive: true, force: true });
-  return false;
-}
-
-/**
- * Remove a lock whose owner is gone, as the only waiter allowed to (#1119). Waiters that found the same dead owner
- * compete for one short reap lock; the holder checks again that the lock still has that dead owner, or still none
- * after the stale age, and that it still holds the reap lock, and only then removes it. Nothing else removes
- * another's lock, so a live owner's lock is never removed, and the lock it frees is then won by exactly one mkdir.
- *
- * @returns {boolean} Whether this waiter cleared the lock.
- */
-function reap(lock, seenOwner) {
-  const reaper = lock + '.reap';
-  if (!takeReaper(reaper)) return false;
+/** Take the lease for this process when it is free or its holder has died; true when this process holds it. */
+function takeLease(db, token) {
+  db.exec('BEGIN IMMEDIATE');
   try {
-    let owner;
-    try { owner = ownerOf(lock); } catch (error) { if (error.code === 'ENOENT') return false; owner = null; }
-    const dead = seenOwner === null
-      ? owner === null && Date.now() - lstatSync(lock).mtimeMs > UNOWNED_STALE_MS
-      : owner === seenOwner && gone(owner);
-    if (!dead || !holdsReaper(reaper)) return false;
-    rmSync(lock, { recursive: true, force: true });
-    return true;
+    const holder = db.prepare("SELECT pid, token FROM relay_lease WHERE name = 'relay'").get();
+    const free = !holder || holder.token === token || gone(holder.pid);
+    if (free) db.prepare("INSERT OR REPLACE INTO relay_lease(name, pid, token) VALUES ('relay', ?, ?)").run(process.pid, token);
+    db.exec('COMMIT');
+    return free;
   } catch (error) {
-    if (error.code === 'ENOENT') return false;
+    db.exec('ROLLBACK');
     throw error;
-  } finally {
-    // Move the reap lock aside in one step before deleting it: emptied in place, its path would briefly accept
-    // another reaper's rename, which the deletion would then remove.
-    if (holdsReaper(reaper)) {
-      const done = `${reaper}.done.${process.pid}.${randomUUID()}`;
-      try { renameSync(reaper, done); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-      rmSync(done, { recursive: true, force: true });
-    }
   }
+}
+
+/** Give the lease up, only while it is still this process's own. */
+function releaseLease(db, token) {
+  db.prepare("DELETE FROM relay_lease WHERE name = 'relay' AND token = ?").run(token);
+}
+
+/**
+ * Take the directory lock older pullboard versions still use, as the lease holder. Only the lease holder clears a
+ * dead owner's directory, so no two current commands race on it.
+ *
+ * @returns {boolean} Whether this process now holds the directory lock too.
+ */
+function takeDirectory(lock) {
+  try { mkdirSync(lock, { mode: 0o700 }); writeFileSync(join(lock, 'pid'), String(process.pid)); return true; }
+  catch (error) { if (error.code !== 'EEXIST') throw error; }
+  let owner = null;
+  try { owner = ownerOf(lock); } catch (error) { if (error.code === 'ENOENT') return false; }
+  let stale;
+  try { stale = owner !== null ? gone(owner) : Date.now() - lstatSync(lock).mtimeMs > UNOWNED_STALE_MS; }
+  catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+  if (stale) rmSync(lock, { recursive: true, force: true });
+  return false;
 }
 
 /**
@@ -112,22 +95,10 @@ export async function locked(file, work, io) {
   const deadline = startedAt + (io?.relayLockWaitMs ?? LOCK_WAIT_MS);
   const progressEvery = io?.relayLockProgressMs ?? LOCK_PROGRESS_MS;
   let nextProgress = startedAt + progressEvery;
-  while (true) {
-    try { mkdirSync(lock, { mode: 0o700 }); writeFileSync(join(lock, 'pid'), String(process.pid)); break; }
-    catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-      let owner;
-      try { owner = ownerOf(lock); }
-      catch (unread) {
-        if (unread.code === 'ENOENT') {
-          try { lstatSync(lock); } catch (missing) { if (missing.code === 'ENOENT') continue; throw missing; }
-        }
-        owner = null;
-      }
-      let stale;
-      try { stale = owner !== null ? gone(owner) : Date.now() - lstatSync(lock).mtimeMs > UNOWNED_STALE_MS; }
-      catch (vanished) { if (vanished.code === 'ENOENT') continue; throw vanished; }
-      if (stale && reap(lock, owner)) continue;
+  const lease = openLease(file);
+  const token = randomUUID();
+  try {
+    while (!(takeLease(lease, token) && takeDirectory(lock))) {
       if (Date.now() >= deadline) throw new Refused('RELAY_BUSY', `another worktree was still sending this board after ${Math.round((Date.now() - startedAt) / 1000)} s; nothing was lost, so run the command again`);
       if (io?.err && Date.now() >= nextProgress) {
         nextProgress = Date.now() + progressEvery;
@@ -135,17 +106,20 @@ export async function locked(file, work, io) {
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-  }
-  try {
-    // Only the current lock holder can have a live link write; remove crashed legacy bearer fragments.
-    for (const name of readdirSync(dirname(file))) {
-      if (/^relay\.json\.[0-9a-f-]+\.tmp$/u.test(name)) rmSync(join(dirname(file), name), { force: true });
+    try {
+      // Only the current lock holder can have a live link write; remove crashed legacy bearer fragments.
+      for (const name of readdirSync(dirname(file))) {
+        if (/^relay\.json\.[0-9a-f-]+\.tmp$/u.test(name)) rmSync(join(dirname(file), name), { force: true });
+      }
+      return await work();
+    } finally {
+      // Remove only this command's own directory lock; another's is never ours to free.
+      let owner = null;
+      try { owner = ownerOf(lock); } catch { /* Already gone, or never named: nothing of ours to keep. */ }
+      if (owner === process.pid) rmSync(lock, { recursive: true, force: true });
     }
-    return await work();
   } finally {
-    // Remove only this command's own lock; another's is never ours to free.
-    let owner = null;
-    try { owner = ownerOf(lock); } catch { /* Already gone, or never named: nothing of ours to keep. */ }
-    if (owner === null || owner === process.pid) rmSync(lock, { recursive: true, force: true });
+    releaseLease(lease, token);
+    lease.close();
   }
 }
