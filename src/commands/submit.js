@@ -216,7 +216,7 @@ export async function submitHere(ctx, id, infra) {
       ...(gate.deferred ? { note: gate.deferredFiles ? deferredSelectionNote(gate.deferredFiles) : 'full suite deferred to the landing gate' } : {}) }]);
   });
   // A large submit still goes through; the note only suggests a chain of smaller items (#1162).
-  const sizeNote = oversizeNote(changedLines(root, acceptedMain.commit, commit));
+  const sizeNote = oversizeNote(changedLines(root, currentTrunk.commit, commit), acceptedMain.config.itemSizeBudget);
   if (sizeNote) ctx.io.say(`note: ${sizeNote}`);
   const report = waived
     ? `submission proof waived, not green: ${waived.length} failure(s), each covered by a live person waiver; the whole output is in ${gate.log}\n${waivedLines.join('\n')}`

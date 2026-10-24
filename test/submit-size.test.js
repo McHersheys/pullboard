@@ -6,6 +6,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { createE2eHelpers } from './e2e-helpers.js';
+import { configFromSource } from '../src/config.js';
 
 /** Submit a real committed change under the board's configured budget and inspect its public result. */
 function submitSized(helpers, lines, budget) {
@@ -49,5 +50,16 @@ test('a submit far over the size budget prints a split suggestion and still subm
     if (expected) {
       assert.match(notes[0], new RegExp(`changes ${lines} lines against main, over twice the ${budget ?? 100}-line item budget; consider splitting it into a chain`, 'u'));
     }
+  }
+});
+
+// AFTER-only validation controls; the original causal case and every assertion above are unchanged.
+test('the item size budget defaults to 100 and rejects invalid board settings [V4,C7]', () => {
+  assert.equal(configFromSource('{}').itemSizeBudget, 100);
+  for (const budget of [1, 50, 200]) {
+    assert.equal(configFromSource(JSON.stringify({ itemSizeBudget: budget })).itemSizeBudget, budget);
+  }
+  for (const budget of [0, -1, 1.5, '50', null, [], {}, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => configFromSource(JSON.stringify({ itemSizeBudget: budget })), { code: 'BAD_CONFIG', message: /itemSizeBudget/u });
   }
 });

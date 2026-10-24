@@ -26,9 +26,10 @@ export function changedLines(root, base, head) {
  * because the submit goes through as usual.
  *
  * @param {number | null} lines the changed-line count from changedLines
+ * @param {number} [budget] the board item size budget from accepted main
  * @returns {string | null}
  */
-export function oversizeNote(lines) {
-  if (lines === null || lines <= 2 * ITEM_SIZE_BUDGET) return null;
-  return `this submit changes ${lines} lines against main, over twice the ${ITEM_SIZE_BUDGET}-line item budget; consider splitting it into a chain of smaller items. The submit went through as usual.`;
+export function oversizeNote(lines, budget = ITEM_SIZE_BUDGET) {
+  if (lines === null || lines <= 2 * budget) return null;
+  return `this submit changes ${lines} lines against main, over twice the ${budget}-line item budget; consider splitting it into a chain of smaller items. The submit went through as usual.`;
 }
