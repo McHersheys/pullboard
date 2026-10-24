@@ -5,6 +5,7 @@ import {
 import * as store from '../board.js';
 import { caughtLines } from '../caught.js';
 import * as gateReceipt from '../gate-receipt.js';
+import { readRunnerStage } from '../runner-stage-read.js';
 import {
   flowLines,
   flowStats,
@@ -38,9 +39,11 @@ export function run(io, { values }) {
     if (windowMinutes !== undefined) board.db.exec('SAVEPOINT stats_window_read');
     try {
       const stats = proofStats(board, { since: values.since, now });
-      return { stats, agents: store.listAgents(board), ...(windowMinutes === undefined ? {} : {
-        window: flowStats(store.events(board), null, now, stats, { windowMinutes }).window,
-      }) };
+      // The lifecycle projection validates the date range before capacity reads use its bounds.
+      const window = windowMinutes === undefined ? undefined
+        : flowStats(store.events(board), null, now, stats, { windowMinutes }).window;
+      if (window) window.executionCapacity = readRunnerStage(ctx.info.root, { from: window.since, to: window.until });
+      return { stats, agents: store.listAgents(board), ...(window ? { window } : {}) };
     } finally {
       if (windowMinutes !== undefined) board.db.exec('RELEASE stats_window_read');
     }
@@ -55,6 +58,12 @@ export function run(io, { values }) {
   for (const line of barStatsLines(stats.bars)) io.say(line);
   for (const line of caughtLines(stats.caught)) io.say(line);
   for (const line of window ? flowWindowLines(window) : flowLines(stats.flow)) io.say(line);
+  if (window?.executionCapacity) {
+    const waits = window.executionCapacity.slotWait;
+    /** Keep absent window timing visibly unmeasured in the human-readable summary. */
+    const formatWait = value => value === null ? 'unmeasured' : `${(value / 1000).toFixed(2)}s`;
+    io.say(`runner slot waits: fast ${formatWait(waits.fastQuarterMs)} · median ${formatWait(waits.medianMs)} · slow ${formatWait(waits.slowQuarterMs)} · worst ${formatWait(waits.worstMs)} (${waits.count} measured)`);
+  }
   for (const line of waits.lines) io.say(line);
   return 0;
 }
