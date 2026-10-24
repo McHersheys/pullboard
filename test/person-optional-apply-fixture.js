@@ -74,7 +74,7 @@ export async function optionalPasskeyApply(t) {
     const record = personRequestRecords(board).find(entry => entry.id === document.id);
     const move = prepareEngineMove(board, operation, args);
     move.personRequest = { id: document.id, executor, phase, digest: requestIntentDigest(record) };
-    const outcome = applyRelayMove(board, move, { sequence: ++sequence, at, kind: 'move', sender: { kind: 'person', userId: 'fixture-user', presence } });
+    const outcome = applyRelayMove(board, move, { sequence: ++sequence, at, kind: 'move', sender: { kind: 'machine', userId: 'fixture-user', machine: 'fixture-native-device' } });
     assert.equal(outcome.error, undefined, JSON.stringify(outcome));
     return outcome.result;
   }
