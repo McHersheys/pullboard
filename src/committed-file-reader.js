@@ -73,8 +73,12 @@ export async function withCommittedFiles(root, action) {
   finally {
     await pending;
     child.stdin.end();
-    child.stdout.resume();
+    let drainError;
+    try {
+      // The iterator retains ownership of stdout even after a rejected frame; resume() does not drain it.
+      while (!(await chunks.next()).done) { /* Discard remaining framed bytes after input closes. */ }
+    } catch (error) { drainError = error; }
     const result = await finished;
-    if (!failed && (result.error || result.code !== 0)) throw new Refused('NO_POLICY', 'the committed-file reader failed; inspect the project with pullboard resume --diagnostics');
+    if (!failed && (drainError || result.error || result.code !== 0)) throw new Refused('NO_POLICY', 'the committed-file reader failed; inspect the project with pullboard resume --diagnostics');
   }
 }

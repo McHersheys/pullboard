@@ -13,6 +13,7 @@ import { configFromSource } from './config.js';
 import { withCommittedFiles } from './committed-file-reader.js';
 import { appliedDoctrine } from './doctrine.js';
 import { doctrineFromSource } from './doctrine.js';
+import { loadDoctrine } from './doctrine.js';
 import { agentDoctrine } from './doctrine-rulings.js';
 import { cleanGitEnvironment } from './git.js';
 import { headCommit } from './git.js';
@@ -50,28 +51,46 @@ async function primaryPath(info, listed) {
   return primaryCheckoutRoot(info);
 }
 
-/** Read shared committed guidance and exact applied decisions through one Git child, not working-file authority. */
-async function sharedDoctrine(ctx, board, primary, main) {
-  if (!main?.commit) return agentDoctrine(ctx, board);
+/** Read the same default-name alias fallback as the existing synchronous doctrine reader. */
+async function doctrineSourceAt(read, commit, name) {
+  let source = await read(commit, name);
+  if (source === null && [DOCTRINE_FILE, LEGACY_DOCTRINE_FILE].includes(name)) {
+    const alias = name === DOCTRINE_FILE ? LEGACY_DOCTRINE_FILE : DOCTRINE_FILE;
+    const other = await read(commit, alias);
+    if (other !== null) return { name: alias, source: other };
+  }
+  return { name, source };
+}
+
+/** Read shared committed guidance and optional stale-overlay HEAD through one fresh Git child. */
+async function sharedDoctrine(ctx, board, primary, main, includeHeadDoctrine) {
+  if (!main?.commit) return { doctrine: agentDoctrine(ctx, board) };
   const snapshot = await withCommittedFiles(ctx.info.root, async read => {
     const config = await read(main.commit, CONFIG_FILE);
-    if (config === null) return ctx.doctrine;
-    let name = configFromSource(config).practice;
-    let source = await read(main.commit, name);
-    if (source === null && [DOCTRINE_FILE, LEGACY_DOCTRINE_FILE].includes(name)) {
-      const alias = name === DOCTRINE_FILE ? LEGACY_DOCTRINE_FILE : DOCTRINE_FILE;
-      const other = await read(main.commit, alias);
-      if (other !== null) { name = alias; source = other; }
+    let shared = ctx.doctrine;
+    if (config !== null) {
+      const entry = await doctrineSourceAt(read, main.commit, configFromSource(config).practice);
+      shared = doctrineFromSource(entry.source, entry.name);
     }
-    return doctrineFromSource(source, name);
+    let headDoctrine;
+    if (includeHeadDoctrine) {
+      const working = loadDoctrine(ctx.info.root, ctx.config);
+      const head = headCommit(ctx.info.root);
+      if (head) {
+        const entry = await doctrineSourceAt(read, head, working.name);
+        // The stale helper historically labels an alias read with the current working doctrine's name.
+        headDoctrine = doctrineFromSource(entry.source, working.name);
+      }
+    }
+    return { shared, headDoctrine };
   });
-  const file = primary && join(primary, snapshot.name);
+  const file = primary && join(primary, snapshot.shared.name);
   const current = file && existsSync(file) ? readFileSync(file, 'utf8') : null;
-  return appliedDoctrine(snapshot, store.rowDecisions(board), current);
+  return { doctrine: appliedDoctrine(snapshot.shared, store.rowDecisions(board), current), headDoctrine: snapshot.headDoctrine };
 }
 
 /** Keep the command's verified trunk/HEAD snapshot, current branch and complete shared doctrine together. */
-export async function readResumeSources(ctx, board) {
+export async function readResumeSources(ctx, board, { compareBranch = true, includeHeadDoctrine = false } = {}) {
   const root = ctx.info.root;
   const main = mainCheckout(root);
   const listed = worktrees(root);
@@ -81,12 +100,12 @@ export async function readResumeSources(ctx, board) {
     : tryGit(root, ['rev-parse', '--abbrev-ref', 'HEAD']).stdout || 'HEAD';
   let ahead;
   let behind;
-  if (main?.commit && !ctx.info.isMain) {
+  if (compareBranch && main?.commit && !ctx.info.isMain) {
     const head = headCommit(root);
     const compared = head && tryGit(root, ['rev-list', '--left-right', '--count', `${main.commit}...${head}`]);
     const counts = compared?.status === 0 && /^([0-9]+)\s+([0-9]+)$/u.exec(compared.stdout);
     if (!counts) throw new Refused('NO_POLICY', 'the branch could not be compared with main; run pullboard resume --diagnostics');
     behind = Number(counts[1]); ahead = Number(counts[2]);
   }
-  return { doctrine: await sharedDoctrine(ctx, board, primary, main), primary, branch, mainRef: main?.branch, ahead, behind };
+  return { ...await sharedDoctrine(ctx, board, primary, main, includeHeadDoctrine), primary, branch, mainRef: main?.branch, ahead, behind };
 }

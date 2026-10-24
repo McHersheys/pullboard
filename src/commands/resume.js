@@ -130,9 +130,10 @@ function keylessBookkeeping(send) {
  * @param {any} io
  * @param {Awaited<ReturnType<typeof keepViewRunning>>} view what keeping the background view running did
  * @param {boolean} diagnostics include explicit setup, hook and stale-work inspection
+ * @param {{ json?: boolean }} options omit text-only calculations when the versioned result owns the output
  * @returns {number}
  */
-export async function resumeHere(io, view, diagnostics = false) {
+export async function resumeHere(io, view, diagnostics = false, { json = false } = {}) {
   const ctx = context(io);
   const ordered = keylessBookkeeping(sendOrdered);
   const initialBaseline = withBoardRead(ctx, board => {
@@ -151,11 +152,13 @@ export async function resumeHere(io, view, diagnostics = false) {
   let mainRoot = null;
   let worktreeConfig = null;
   let setupScope;
+  let setupDecisions;
   let doctrine;
   let sources;
   const card = await withBoardRead(ctx, async (board) => {
     setupScope = diagnostics ? setupIdentity(board) : null;
-    sources = await readResumeSources(ctx, board);
+    sources = await readResumeSources(ctx, board, { compareBranch: !json, includeHeadDoctrine: diagnostics });
+    setupDecisions = diagnostics ? store.rowDecisions(board) : undefined;
     doctrine = sources.doctrine;
     if (diagnostics) {
       mainRoot = sources.primary;
@@ -211,7 +214,7 @@ export async function resumeHere(io, view, diagnostics = false) {
   }
   const { me } = card;
   const name = (id) => agentDisplayName(card.agents, ctx.config, id);
-  if (diagnostics) card.stale = staleFrozenItems(card.all, loadSpec(root, ctx.config).rows, staleDoctrineRows(ctx, doctrine)).map((item) => ({ ...item, ...staleItemFinding(item) }));
+  if (diagnostics) card.stale = staleFrozenItems(card.all, loadSpec(root, ctx.config).rows, staleDoctrineRows(ctx, doctrine, { headDoctrine: sources.headDoctrine })).map((item) => ({ ...item, ...staleItemFinding(item) }));
   if (isMain && diagnostics) {
     card.staleFollowUps = { count: card.stale.length + card.staleIntegrations.length,
       list: 'pullboard resume --diagnostics --json', items: card.stale, integrations: card.staleIntegrations };
@@ -241,7 +244,7 @@ export async function resumeHere(io, view, diagnostics = false) {
   if (card.inbox) for (const line of coordinatorInboxLines(card.inbox, name, (at) => span(ctx, at), firstLine)) say(line);
   if (diagnostics) {
     say(`New agent worktrees: ${card.newWorktreeLocation}`);
-    card.setup = withBoardRead(ctx, board => withStarterWork(boardSetup(ctx, card, setupScope), { board, me, main: isMain, config: ctx.config, root, seat: ctx.io.callerRole() === 'seat' }));
+    card.setup = withBoardRead(ctx, board => withStarterWork(boardSetup(ctx, card, setupScope, { decisions: setupDecisions }), { board, me, main: isMain, config: ctx.config, root, seat: ctx.io.callerRole() === 'seat' }));
   } else say('Setup, hook and stale-work diagnostics: pullboard resume --diagnostics.');
   if (!loadSpec(root, ctx.config).rows.length && card.all.length) say('Spec rows are optional; add a requirement later: pullboard spec draft "<text>".');
   if (card.setup) {
@@ -252,7 +255,7 @@ export async function resumeHere(io, view, diagnostics = false) {
     if (card.setup.meanwhile) say(card.setup.meanwhile);
   }
   const dirty = diagnostics ? dirtyFiles(root).length : undefined;
-  if (!isMain) {
+  if (!isMain && !json) {
     const { branch, mainRef, behind = 0, ahead = 0 } = sources;
     // Fresh command facts compare the actual primary branch, not an unrelated detached review HEAD.
     const against = mainRef ? `${ahead} ahead of main, ${behind} behind${behind ? ' (merge main before you submit)' : ''}` : 'main is detached for a verification, so ahead and behind are unknown';
@@ -345,5 +348,5 @@ export async function resumeHere(io, view, diagnostics = false) {
 export async function run(io, { values }) {
   repoInfo(io.cwd);
   // JSON v1 retains its real diagnostic fields; only the default text card defers them.
-  return resumeHere(io, await keepViewRunning(), Boolean(values.diagnostics || values.json));
+  return resumeHere(io, await keepViewRunning(), Boolean(values.diagnostics || values.json), { json: Boolean(values.json) });
 }

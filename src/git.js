@@ -19,6 +19,7 @@ import {
   basename,
   dirname,
   join,
+  isAbsolute,
   resolve,
   sep,
 } from 'node:path';
@@ -534,21 +535,27 @@ export function repoInfo(cwd, { env } = {}) {
 /**
  * Read top level, worktree Git dir and shared Git dir in one process. With no inherited selector, the same process
  * also reads this checkout's HEAD commit and the primary checkout's branch and commit, and keeps them as this
- * command's headCommit and mainCheckout facts, so a command learns where it is, its head and the trunk from one call.
+ * command's headCommit, mainCheckout and effective hook-path facts, preserving Git's own configuration resolution.
  *
  * @param {string} cwd
  * @returns {{ root: string, commonDir: string, gitDir: string, isMain: boolean }}
  */
 function readRepoInfo(cwd, env) {
   const combined = !env && gitFacts.getStore()?.active && plainRepositoryEnvironment();
-  const primary = combined ? ['HEAD^{commit}', 'main-worktree/HEAD^{commit}', '--symbolic-full-name', 'main-worktree/HEAD'] : [];
+  const primary = combined ? ['HEAD^{commit}', 'main-worktree/HEAD^{commit}', '--symbolic-full-name', 'main-worktree/HEAD', '--git-path', 'hooks'] : [];
   const info = tryGit(cwd, ['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-dir', '--git-common-dir', ...primary], { env });
   // An unborn branch here or in the primary checkout fails the combined call after the paths; ask for the paths alone.
   if (combined && info.status !== 0 && info.stdout) return readRepoInfo(cwd, process.env);
   const fields = info.stdout.split('\n');
-  if (combined && info.status === 0 && [5, 6].includes(fields.length) && fields.slice(0, 5).every(Boolean)) {
+  const combinedFields = [6, 7].includes(fields.length) && fields.slice(0, 5).every(Boolean)
+    && isAbsolute(fields.at(-1)) && (fields.length === 6 || fields[5].startsWith('refs/'));
+  // Unusual hook paths can contain newlines; retain the original path-only reader instead of guessing fields.
+  if (combined && info.status === 0 && !combinedFields) return readRepoInfo(cwd, process.env);
+  if (combined && info.status === 0 && combinedFields) {
+    const hooks = fields.pop();
     const [root, , , head, commit, branch] = fields;
     const { facts } = gitFacts.getStore();
+    facts.set(`gitPath:${JSON.stringify([resolve(root), 'hooks'])}`, resolve(root, hooks));
     facts.set(`headCommit:${resolve(root)}`, head);
     // A detached primary checkout names no branch, as symbolic-ref reports it.
     facts.set(`mainCheckout:${resolve(root)}`, branch?.startsWith('refs/') ? { branch, commit } : null);
@@ -756,7 +763,8 @@ export function contains(root, ancestor, descendant) {
  * @returns {string}
  */
 export function gitPath(root, name) {
-  return resolve(root, git(root, ['rev-parse', '--git-path', name]));
+  return fact(`gitPath:${JSON.stringify([resolve(root), name])}`,
+    () => resolve(root, git(root, ['rev-parse', '--git-path', name])));
 }
 
 /** Refuse lane-sensitive history checks while grafts can rewrite commit ancestry despite replacement guards [L3]. */

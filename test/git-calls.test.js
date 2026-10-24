@@ -147,6 +147,17 @@ test('ordinary resume reads its indexed work card with at most four Git processe
   assert.deepEqual(card.stale, []);
   assert.equal(typeof card.newWorktreeLocation, 'string');
   assert.equal(typeof card.next, 'string');
+  mkdirSync(join(box.worker, 'src'), { recursive: true });
+  writeFileSync(join(box.worker, 'src/ahead.txt'), 'real branch divergence\n');
+  box.git(box.worker, 'add', 'src/ahead.txt');
+  box.git(box.worker, 'commit', '-q', '-m', 'test(core): retain real branch divergence [C7]');
+  writeFileSync(join(box.worker, 'dirty.txt'), 'real untracked diagnostic\n');
+  const diverged = resetAndCount(box, box.worker, 'resume', '--json');
+  assert.ok(diverged.count <= 4, `diverged JSON v1 resume started ${diverged.count} Git processes`);
+  assert.equal(JSON.parse(diverged.result.stdout).dirty, 1, 'v1 retains a real nonzero dirty value');
+  const text = resetAndCount(box, box.worker, 'resume');
+  assert.ok(text.count <= 4, `diverged text resume started ${text.count} Git processes`);
+  assert.match(text.result.stdout, /1 ahead of main, 0 behind/u, 'text compares real differing HEAD and main');
 });
 
 /** Record schema-valid private fixture history, never represented as a real gate execution. */
