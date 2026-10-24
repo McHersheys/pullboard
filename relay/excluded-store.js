@@ -7,19 +7,18 @@ export function excludedInventoryId(machine, account) {
   return createHash('sha256').update('pullboard-exclusions-v1:' + account + ':' + machine).digest('hex').slice(0, 32);
 }
 
-/** Keep names sealed and disclose a wrap only after checking that account's active device. */
-export function createExcludedStore({ database, active }) {
-  /** Open the existing owner-only device database lazily, without creating it for unrelated reads. */
-  function storage() {
-    const db = database();
-    db.exec(`CREATE TABLE IF NOT EXISTS excluded_inventory (
+/** Install the opaque inventory schema whenever its existing device database is opened [H5,H17]. */
+export function createExcludedTables(db) {
+  db.exec(`CREATE TABLE IF NOT EXISTS excluded_inventory (
       account TEXT NOT NULL, machine TEXT NOT NULL, label TEXT NOT NULL, count INTEGER NOT NULL,
       engine INTEGER NOT NULL, sealed TEXT NOT NULL, PRIMARY KEY(account,machine));
       CREATE TABLE IF NOT EXISTS excluded_inventory_wrap (
       account TEXT NOT NULL, machine TEXT NOT NULL, device TEXT NOT NULL, wrapped TEXT NOT NULL,
       PRIMARY KEY(account,machine,device));`);
-    return db;
-  }
+}
+
+/** Keep names sealed and disclose a wrap only after checking that account's active device. */
+export function createExcludedStore({ database, active }) {
   return {
     /** Replace one exact machine publication atomically; inclusion clears the last stale entry. */
     publish(account, value) {
@@ -43,7 +42,7 @@ export function createExcludedStore({ database, active }) {
         ids.add(wrap.device);
         active(account, wrap.device);
       }
-      const db = storage();
+      const db = database();
       db.exec('BEGIN IMMEDIATE');
       try {
         // Recheck under the write transaction: a concurrent revocation must win before publication.
@@ -62,12 +61,12 @@ export function createExcludedStore({ database, active }) {
     },
     /** A signed-in browser without a key learns only this account's machine labels and counts. */
     metadata(account) {
-      return storage().prepare('SELECT machine,label,count FROM excluded_inventory WHERE account=? ORDER BY machine').all(account);
+      return database().prepare('SELECT machine,label,count FROM excluded_inventory WHERE account=? ORDER BY machine').all(account);
     },
     /** Never return another device's wrap, including to a freshly signed-in revoked browser. */
     forDevice(account, device) {
       active(account, device);
-      return storage().prepare(`SELECT i.machine,i.label,i.count,i.engine,i.sealed,w.wrapped
+      return database().prepare(`SELECT i.machine,i.label,i.count,i.engine,i.sealed,w.wrapped
         FROM excluded_inventory AS i JOIN excluded_inventory_wrap AS w
         ON w.account=i.account AND w.machine=i.machine WHERE i.account=? AND w.device=? ORDER BY i.machine`)
         .all(account, device).map(row => ({ ...row, id: excludedInventoryId(row.machine, account) }));
