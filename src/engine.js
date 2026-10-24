@@ -43,7 +43,10 @@ import {
   canonicalMilestoneTarget,
 } from './milestones.js';
 import { Refused } from './refused.js';
-import { firstRefusal, manualLandingFailureQuoted } from './claims.js';
+import {
+  firstRefusal,
+  manualLandingFailureQuoted,
+} from './claims.js';
 import {
   requestMoveProblem,
   recordRequestMove,
