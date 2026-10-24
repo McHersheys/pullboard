@@ -120,6 +120,7 @@ import {
 } from './relay-outbox.js';
 import { stampCoordinatorHolder } from './coordinator-hold.js';
 import { relayFiles } from './local-state.js';
+import { archiveRelinkOutbox, finishRelink, plannedRelayBoard, relayRelink, rememberRelink } from './relay-relink.js';
 import { Refused } from './refused.js';
 import { landingRelayCallbacks } from './landing-relay.js';
 import { relayOrigin } from './relay-origin.js';
@@ -1571,13 +1572,15 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
     const url = relayOrigin(address || state?.url || DEFAULT_RELAY);
     if (state && (state.url !== url || state.repository !== repository)) throw new Refused('RELAY_LINKED', 'this board is linked to another relay or repository; run relay off before changing its link');
     const key = state ? readBoardKey(state.board) : await generateBoardKey();
-    const intent = remoteShell ? { board: state?.board ?? localRecords(root, store.boardId), repository,
+    const nextBoard = state?.board ?? plannedRelayBoard(root, localRecords(root, store.boardId));
+    const relink = state ? null : relayRelink(root);
+    const intent = remoteShell ? { board: nextBoard, repository,
       host: hostname(), boardName: basename(root) } : undefined;
     const signed = remoteShell ? await deviceSignIn(url, io, { intent }) : reusableCredential ?? reusableSession ?? await deviceSignIn(url, io);
     if (reusableSession && reusableSession.url !== url) throw new Refused('RELAY_SESSION', 'Sign in again to this relay with pullboard relay on --all.');
     if (!state) {
       const snapshot = localRecords(root, (board) => {
-        startRelayEpoch(board);
+        startRelayEpoch(board, nextBoard);
         return { board: store.boardId(board) };
       });
       snapshot.document = relaySnapshot(root);
@@ -1588,10 +1591,12 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
         cursor: snapshot.document.tables.event.at(-1)?.event_id ?? 0, baselineCursor: snapshot.document.tables.event.at(-1)?.event_id ?? 0,
         baselineAccepted: false, linkPending: true };
       state.snapshot = { sequence: 0, sealed: await sealedRecord(key, snapshot.document, state, 'snapshot', 0) };
+      if (relink) state.previousBoardNotice = relink.previous;
     }
     const account = signed.account ?? signed.user?.id;
     // Persist the exact sealed snapshot and a recoverable link intent before making the remote link.
     saveLink(file, state);
+    if (relink) finishRelink(root);
     if (state.linkPending) {
       if (signed.linkConfirmed && signed.linkedBoard !== state.board) throw new Refused('RELAY_RESPONSE', 'the relay confirmed a different board; sign in again');
       if (!reusableCredential && !signed.linkConfirmed) await request({ ...state, token: signed.token }, '/auth/boards/link', { method: 'POST', body: { board: state.board, repository } }, io);
@@ -1638,6 +1643,12 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
     }
     catch (error) { if (strict || !(error instanceof Refused)) throw error; io.err(`pullboard: ${error.message}; pending records are queued for the next command`); result = summary(root, state, { pairing: !quiet }); }
     if (!quiet) io.say(terminalQr(result.link));
+    if (state.previousBoardNotice) {
+      result.notice = 'Linked a fresh relay board. The old remote copy stays until you delete it from your phone.';
+      io.err(result.notice);
+      delete state.previousBoardNotice;
+      saveLink(file, state);
+    }
     return result;
   });
 }
@@ -1661,6 +1672,8 @@ export async function relayOff(root, io) {
     let proposal;
     try { proposal = await phoneProposal(state, 'delete-board', state.board, { root }); }
     catch { /* Missing key or pairing cannot stop local unlinking. */ }
+    rememberRelink(root, state.board);
+    archiveRelinkOutbox(root, state);
     rmSync(file, { force: true });
     try { forgetBoardKey(state.board, state.keyStorage); }
     catch { /* The local opt-out is complete even when secure key storage is temporarily locked. */ }
