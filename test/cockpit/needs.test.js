@@ -637,7 +637,26 @@ test('a sentinel draft in Needs you is approved and declined from the view [N26,
     await chrome.click('document.querySelector("#spec-decline-reason")');
     await chrome.send('Input.insertText', { text: 'This watch should not run.' });
     await chrome.click('document.querySelector("#spec-decline-submit")');
-    await chrome.waitFor('document.querySelector(\'[data-sentinel-draft="decline-watch"]\') === null');
+    try {
+      await chrome.waitFor('document.querySelector(\'[data-sentinel-draft="decline-watch"]\') === null');
+    } catch (error) {
+      const diagnostic = {};
+      try {
+        diagnostic.ui = JSON.parse(await chrome.stable(`JSON.stringify({
+          console: { text: document.querySelector('#console')?.textContent, className: document.querySelector('#console')?.className, hidden: document.querySelector('#console')?.hidden },
+          reason: document.querySelector('#spec-decline-reason')?.value,
+          request: view.request,
+          decline: { id: view.declining, kind: view.declineKind, digest: view.declineDigest, root: view.declineRoot, anchorConnected: Boolean(view.declineAnchor?.isConnected) },
+          active: { tag: document.activeElement?.tagName, id: document.activeElement?.id, decision: document.activeElement?.dataset?.sentinelDecision },
+          row: document.querySelector('[data-sentinel-draft="decline-watch"]')?.textContent,
+        })`));
+      } catch (diagnosticError) { diagnostic.uiError = String(diagnosticError.message || diagnosticError); }
+      try {
+        diagnostic.backend = JSON.parse(box.run(alpha.repo, 'sentinels', '--json')).sentinels.find((row) => row.name === 'decline-watch');
+      } catch (diagnosticError) { diagnostic.backendError = String(diagnosticError.message || diagnosticError); }
+      error.message += '; decline diagnostic ' + JSON.stringify(diagnostic);
+      throw error;
+    }
     recorded = JSON.parse(box.run(alpha.repo, 'sentinels', '--json')).sentinels;
     const declined = recorded.find((row) => row.name === 'decline-watch');
     assert.equal(declined.status, 'declined', 'the view decline is recorded on the board');
