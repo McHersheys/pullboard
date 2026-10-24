@@ -83,9 +83,9 @@ export async function assertBranchWorktreeBoardIsolation(t, sourceRoot) {
   };
   const before = footprint();
 
-  const boardFileInBranch = join(branch, 'src', 'board.js');
+  const boardFileInBranch = join(branch, 'src', 'board-schema-source.js');
   const boardSource = readFileSync(boardFileInBranch, 'utf8');
-  // The added-column list lives in board-migrate.js (#1047); the versions stay in board.js.
+  // The added-column list lives in board-migrate.js; schema versions live in board-schema-source.js.
   const migrateFileInBranch = join(branch, 'src', 'board-migrate.js');
   const migrateSource = readFileSync(migrateFileInBranch, 'utf8');
   const migration = "  ['item', 'item_after', \"TEXT NOT NULL DEFAULT ''\"],";
