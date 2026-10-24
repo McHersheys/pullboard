@@ -8,7 +8,7 @@ import { createE2eHelpers } from './e2e-helpers.js';
 
 /** Read one successful public CLI JSON response, preserving failures in the assertion. */
 function document(result, purpose) {
-  assert.equal(result.code, 0, `${purpose}: ${result.err || result.out}`);
+  assert.equal(result.code, 0, `${purpose}: ${result.out}\n${result.err ?? ''}`);
   return JSON.parse(result.out);
 }
 
@@ -22,7 +22,12 @@ test('two machines share a board through git [H11]', async t => {
   document(box.run(box.repo, 'sync', '--json'), 'explicit sync shares the first machine without a relay account');
   const clone = join(box.dir, 'second');
   box.git(box.dir, 'clone', remote, clone);
-  assert.equal(box.run(clone, 'init').code, 0, 'initialize only the clone-local board');
+  // As project() does, keep an undeclared disposable coordinator during initial setup.
+  const inheritedModel = box.env.PULLBOARD_MODEL;
+  delete box.env.PULLBOARD_MODEL;
+  const initialized = box.run(clone, 'init');
+  if (inheritedModel !== undefined) box.env.PULLBOARD_MODEL = inheritedModel;
+  assert.equal(initialized.code, 0, 'initialize only the clone-local board');
   document(box.run(clone, 'sync', '--json'), 'the second machine joins the same board');
   const secondSeat = join(box.dir, 'second-web');
   box.git(clone, 'worktree', 'add', secondSeat, '-b', 'web/second');
