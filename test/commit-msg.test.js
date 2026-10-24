@@ -16,6 +16,64 @@ import { runFixtureChild } from './fixture-child.js';
 const e2e = createE2eHelpers();
 after(e2e.cleanup);
 
+test('a push whose base has no maintainers list passes with the policy not active [C1,C7]', () => {
+  const box = e2e.sandbox();
+  const repo = join(box.dir, 'signoff-bootstrap');
+  mkdirSync(repo);
+  box.git(repo, 'init', '-q', '-b', 'main');
+  const configPath = join(repo, 'pullboard.json');
+  writeFileSync(configPath, JSON.stringify({ project: 'bootstrap' }));
+  box.git(repo, 'add', '-A');
+  box.git(repo, 'commit', '-q', '-m', 'chore: base before sign-off activation');
+  const inactiveBase = box.git(repo, 'rev-parse', 'HEAD').trim();
+  box.env.GIT_AUTHOR_NAME = 'Outside Person';
+  box.env.GIT_AUTHOR_EMAIL = 'outside@example.com';
+  writeFileSync(configPath, JSON.stringify({ maintainers: ['outside@example.com'] }));
+  box.git(repo, 'add', '-A');
+  box.git(repo, 'commit', '-q', '-m', 'chore: unsigned activation-era contribution');
+  const event = join(box.dir, 'push.json');
+  /** Run the public CI entry point against a real push event and exact Git objects. */
+  const checkPush = before => {
+    writeFileSync(event, JSON.stringify({ before, after: box.git(repo, 'rev-parse', 'HEAD').trim() }));
+    return runFixtureChild(process.execPath, [resolve(import.meta.dirname, '../bin/check-signoffs.js')], {
+      cwd: repo, encoding: 'utf8',
+      env: { ...box.env, GITHUB_EVENT_NAME: 'push', GITHUB_EVENT_PATH: event },
+    });
+  };
+  const bootstrap = checkPush(inactiveBase);
+  assert.equal(bootstrap.status, 0, bootstrap.failure || bootstrap.stderr);
+  assert.equal(bootstrap.stdout, 'sign-off policy not active at base ' + inactiveBase + '\n');
+
+  // An inactive base never reads policy from the contribution, even when that JSON is invalid.
+  writeFileSync(configPath, '{broken head policy');
+  box.git(repo, 'add', '-A');
+  box.git(repo, 'commit', '-q', '-m', 'chore: unreadable contribution policy');
+  const opaqueHead = checkPush(inactiveBase);
+  assert.equal(opaqueHead.status, 0, opaqueHead.failure || opaqueHead.stderr);
+  assert.equal(opaqueHead.stdout, bootstrap.stdout);
+  const initialPush = checkPush('0'.repeat(40));
+  assert.equal(initialPush.status, 0, initialPush.failure || initialPush.stderr);
+  assert.equal(initialPush.stdout, 'sign-off policy not active at base (none)\n');
+
+  box.env.GIT_AUTHOR_NAME = 'Test Agent';
+  box.env.GIT_AUTHOR_EMAIL = 'agent@example.com';
+  writeFileSync(configPath, JSON.stringify({ maintainers: ['agent@example.com'] }));
+  box.git(repo, 'add', '-A');
+  box.git(repo, 'commit', '-q', '-m', 'chore: trusted activation policy');
+  const activeBase = box.git(repo, 'rev-parse', 'HEAD').trim();
+  box.env.GIT_AUTHOR_NAME = 'Outside Person';
+  box.env.GIT_AUTHOR_EMAIL = 'outside@example.com';
+  writeFileSync(configPath, JSON.stringify({ maintainers: ['outside@example.com'] }));
+  box.git(repo, 'add', '-A');
+  box.git(repo, 'commit', '-q', '-m', 'chore: try to exempt an unsigned outside head');
+  const unsignedHead = box.git(repo, 'rev-parse', 'HEAD').trim();
+  const refused = checkPush(activeBase);
+  assert.equal(refused.status, 1, refused.failure || refused.stderr);
+  assert.match(refused.stderr, /git commit --amend -s/u);
+  assert.ok(refused.stderr.includes(unsignedHead.slice(0, 12)), 'the trusted base defeats head self-enrollment');
+  assert.doesNotMatch(refused.stdout, /policy not active/u);
+});
+
 test('an outside commit without a sign-off is refused with its fix [C1,C7]', () => {
   const box = e2e.sandbox();
   const repo = join(box.dir, 'signoff-hook');
