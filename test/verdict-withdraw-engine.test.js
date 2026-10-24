@@ -57,6 +57,10 @@ test('withdrawal true is engine-fenced while false retains historical reopen mea
   const before = exportBoard(boards[1]);
   assert.throws(() => applyRelayMove(boards[1], { ...withdraw, engine: VERDICT_WITHDRAW_ENGINE - 1 }, receipt), error => error.code === 'RELAY_MOVE' && /introduced in engine/u.test(error.message));
   assert.deepEqual(exportBoard(boards[1]), before, 'an impossible older tag refuses before any row or cursor changes');
+  const mixed = { ...withdraw, args: [1, { ...withdraw.args[1], cause: 'conflict:src/example.js' }], engine: VERDICT_WITHDRAW_ENGINE - 1 };
+  assert.throws(() => applyRelayMove(boards[1], mixed, receipt), error => error.code === 'RELAY_MOVE');
+  assert.deepEqual(exportBoard(boards[1]), before, 'an older mixed cause+withdrawal tag also refuses before row or cursor changes');
+
   const current = applyRelayMove(boards[2], withdraw, receipt);
   assert.equal(current.error, undefined, JSON.stringify(current));
   assert.equal(store.getItem(boards[2], 1).item_status, 'open');
