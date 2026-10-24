@@ -1,4 +1,5 @@
 import { recordedMoveRefusal } from './recorded-move.js';
+import { publishExcludedBoards } from './relay-excluded.js';
 import {
   recoverySummary,
   unlinkedRelayStatus,
@@ -1653,6 +1654,7 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
         await catchUp(root, file, state, io);
         await deliverDeviceWraps(root, io);
         updateRelayMachine(machine => { machine.excluded = machine.excluded.filter(entry => entry !== repoInfo(root).root); });
+        if (reusableSession === undefined) await publishExcludedBoards({ ...signed, account, url }, io, request);
       }
       result = summary(root, state, { pairing: !quiet });
     }

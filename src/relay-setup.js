@@ -46,6 +46,7 @@ import {
 } from './init.js';
 import { relayOfferEnabled } from './settings.js';
 import { Refused } from './refused.js';
+import { publishExcludedBoards } from './relay-excluded.js';
 
 /** Say which paired phone must approve a new board's link, and when the request ends in this computer's time. */
 function approvalWait(name, pending, devices) {
@@ -433,6 +434,7 @@ export async function relayOnAll(address, io, { signal, onPairingURL, onSignIn, 
   const approved = await waitForLinkApprovals(waiting, io, { signal });
   result.linked.push(...approved.linked);
   result.failed.push(...approved.failed);
+  await publishExcludedBoards(session, io, relayDeviceRequest);
   return { ...result, ...pairing, autoLink: true };
 }
 

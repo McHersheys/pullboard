@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { Refused } from '../src/refused.js';
 import { approvalContext } from '../src/relay-approval.js';
 import { createPersonEnrollmentStore } from './person-enrollment-store.js';
+import { createExcludedStore } from './excluded-store.js';
 
 /** Keep device revocations durable so an in-flight native wrap cannot recreate deleted grants. */
 export function createDeviceStore({ directory, now = Date.now }) {
@@ -62,6 +63,7 @@ export function createDeviceStore({ directory, now = Date.now }) {
   }
   return {
     person: createPersonEnrollmentStore({ database, now }),
+    exclusions: createExcludedStore({ database, active }),
     /** Bind the public session id that actually uploaded enrollment, never its bearer credential. */
     bindSession(principal, device, { enrollment = false } = {}) {
       if (principal.kind !== 'session') return;
