@@ -1,3 +1,5 @@
+import { AGENT_GRANT_ENGINE } from './agent-grant-engine.js';
+import { requireAgentGrant } from './agent-grant.js';
 import { requireHandoffActive } from './handoff-state.js';
 import { requestedCommandMove } from './recorded-move.js';
 export { barActorForCommand } from './bar-actor.js';
@@ -591,7 +593,11 @@ export async function ordered(ctx, board, operation, args) {
     const actor = ctx.info.isMain ? COORDINATOR : store.agentAt(board, ctx.info.root)?.agent_id;
     requireHandoffActive(board, actor, operation, args);
     ensureSpecApprovalCoordinator(ctx, board, initialBaseline);
-    const write = () => store.atomic(board, () => { requireHandoffActive(board, actor, operation, args); return store[operation](board, ...args); });
+    const write = () => store.atomic(board, () => {
+      requireHandoffActive(board, actor, operation, args);
+      requireAgentGrant(board, { operation, args, engine: AGENT_GRANT_ENGINE });
+      return store[operation](board, ...args);
+    });
     if (initialBaseline && actor) await recordBaseline(actor);
     const requested = requestedCommandMove(ctx.io.relayCommand?.cliOperation, operation);
     /** Called only for this requested operation, after its store transaction commits, never for bootstrap. */

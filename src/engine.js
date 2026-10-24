@@ -1,3 +1,5 @@
+import { agentGrantMinimum } from './agent-grant.js';
+import { requireAgentGrant } from './agent-grant.js';
 import {
   handoffMoveProblem,
   requireHandoffActive,
@@ -91,7 +93,7 @@ export function prepareEngineMove(board, operation, args, { id = randomUUID(), a
   if (operation === 'claim' && ['wipPerReviewer', 'takeoverMinutes'].some(key => typeof lineSettings(board)[key] === 'number')) {
     values[1] = { ...values[1], lineCapacity: true };
   }
-  const minimumEngine = minimumOperationEngine(operation, values, board);
+  const minimumEngine = Math.max(minimumOperationEngine(operation, values, board), agentGrantMinimum(board, { operation, args: values }));
   if (ENGINE_VERSION < minimumEngine) throw new Refused('ENGINE_VERSION', `${operation} requires engine version ${minimumEngine}; this pullboard uses engine ${ENGINE_VERSION}; upgrade before sending it`);
   // A gate run is sealed only as its gate's own receipt; a run made up by hand is refused before it reaches any replica.
   if (operation === 'recordGateRun') requireBound(board, values[0]?.receipt);
@@ -283,7 +285,7 @@ export function applyEngineMove(board, move, { sequence, at, standing = null, en
     let outcome = previous?.outcome;
     if (!outcome) {
       // Existing receipts replay before consulting newer snapshot semantics.
-      const minimumEngine = minimumOperationEngine(move.operation, move.args, board, new Date(at));
+      const minimumEngine = Math.max(minimumOperationEngine(move.operation, move.args, board, new Date(at)), agentGrantMinimum(board, move));
       if (move.engine < minimumEngine) throw new Refused('RELAY_MOVE', `${move.operation} cannot act on a checked-composition snapshot from engine ${move.engine}; use engine ${minimumEngine} or newer`);
       const clock = board.clock;
       const engineVersion = board.executionEngineVersion;
@@ -300,6 +302,7 @@ export function applyEngineMove(board, move, { sequence, at, standing = null, en
           // One main checkout coordinates a linked board at a time; another is refused by name (#347).
           requireCoordinatorHold(board, move, standing?.lineage, at);
           requireHandoffActive(board, relayMoveActor(move), move.operation, move.args);
+          requireAgentGrant(board, move);
           return store[move.operation](board, ...executableArgs(move, board));
         });
         const result = standing ? store.withVerifierStanding(board, standing, execute) : execute();

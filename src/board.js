@@ -1,3 +1,4 @@
+import { AGENT_GRANT_ENGINE } from './agent-grant-engine.js';
 import { ensureProofCounters } from './proof-counters.js';
 import { correctedNoVerdictReopen } from './reopen-history.js';
 import {
@@ -592,7 +593,8 @@ export function register(board, who) {
       const lineage = createdBy === COORDINATOR ? board.verifierStanding?.lineage ?? null : seatLineage(board, createdBy);
       if (lineage) board.db.prepare('INSERT INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run(`agent_lineage:${id}`, lineage);
     }
-    logEvent(board, id, 'join', null, route === 'strong' ? { lane } : { lane, route });
+    logEvent(board, id, 'join', null, { lane, ...(route === 'strong' ? {} : { route }),
+      ...(engine >= AGENT_GRANT_ENGINE ? { grantEngine: AGENT_GRANT_ENGINE } : {}) });
     return id;
   });
 }
@@ -1080,7 +1082,8 @@ export function claim(board, id, { agentId, lane, leaseMs, freeze, head = null, 
       board.db.prepare('DELETE FROM board_meta WHERE meta_key = ?').run(`item_lineage:${id}`);
       if (board.verifierStanding.lineage) board.db.prepare('INSERT INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run(`item_lineage:${id}`, board.verifierStanding.lineage);
     }
-    logEvent(board, agentId, renewed ? 'renew' : 'claim', id, { leaseUntil, digest, ...(!renewed && reviewSkipped ? { reviewSkipped } : {}) });
+    logEvent(board, agentId, renewed ? 'renew' : 'claim', id, { leaseUntil, digest, ...(!renewed && reviewSkipped ? { reviewSkipped } : {}),
+      ...((board.executionEngineVersion ?? ENGINE_VERSION) >= AGENT_GRANT_ENGINE ? { grantEngine: AGENT_GRANT_ENGINE } : {}) });
     return { leaseUntil, digest, renewed };
   });
 }

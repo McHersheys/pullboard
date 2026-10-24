@@ -922,3 +922,46 @@ test('an agent grant narrows at claim and expires identically on independent rep
   assert.equal(fact(3, 'An agent cannot mutate another lane', expired, freshActor).error?.code, 'AGENT_GRANT_LANE',
     'a fresh unclaimed seat still has only its registered lane');
 });
+
+test('an agent grant narrows at claim without changing old receipts or permitting an old-engine bypass [E21,H16]', async t => {
+  const { AGENT_GRANT_ENGINE } = await import('../src/agent-grant-engine.js');
+  const box = helpers.project();
+  const clock = { now: () => new Date('2026-10-01T00:00:00.000Z') };
+  const boards = ['legacy-authority.sqlite', 'legacy-peer.sqlite'].map(name => store.openBoard(join(box.dir, name), clock));
+  t.after(() => boards.forEach(board => store.closeBoard(board)));
+  const legacy = AGENT_GRANT_ENGINE - 1;
+  const head = box.git(box.repo, 'rev-parse', 'HEAD');
+  /** Apply the same actual public engine record on both private replicas. */
+  const apply = (operation, args, engine = legacy) => {
+    const move = prepareEngineMove(boards[0], operation, args);
+    move.engine = engine;
+    const sequence = appliedSequence(boards[0]) + 1;
+    const outcomes = boards.map(board => applyEngineMove(board, move, { sequence, at: clock.now().toISOString() }));
+    assert.deepEqual(outcomes[0], outcomes[1]);
+    assert.equal(outcomes[0].error, undefined, JSON.stringify(outcomes[0]));
+    return { move, sequence, outcome: outcomes[0] };
+  };
+  apply('register', [{ lane: 'coordinator', path: box.repo, model: 'fixture-model' }]);
+  const actor = apply('register', [{ lane: 'web', path: box.web, model: 'fixture-model' }]).outcome.result;
+  for (const title of ['First', 'Second']) apply('addItem', [{ by: 'coordinator', lane: 'web', title,
+    criterion: 'A real file must exist', specIds: [], check: 'test -f grant-proof' }]);
+  /** Freeze an actual private Git revision; replicas receive only the canonical frozen value. */
+  const freeze = item => ({ text: JSON.stringify({ title: item.item_title, criterion: item.item_criterion,
+    check: item.item_check, rows: [], policy: { version: 1, commit: head, verify: { policy: 'any', family: 'off' } } }),
+  digest: 'private-grant-fixture' });
+  const options = { agentId: actor, lane: 'web', leaseMs: 60_000, freeze };
+  apply('claim', [1, options]);
+  const prior = apply('appendFact', [2, { agentId: actor, kind: 'note', text: 'Legacy behavior stays recorded.' }]);
+  const forged = prepareEngineMove(boards[0], 'appendFact', [2, { agentId: actor, kind: 'note', text: 'Old engine cannot bypass the new claim.' }]);
+  forged.engine = legacy;
+  apply('claim', [1, options], AGENT_GRANT_ENGINE);
+  for (const board of boards) {
+    const before = store.itemThread(board, 2);
+    assert.deepEqual(applyEngineMove(board, prior.move, { sequence: prior.sequence, at: clock.now().toISOString() }),
+      prior.outcome, 'an acknowledged legacy outcome is returned unchanged after activation');
+    assert.throws(() => applyEngineMove(board, forged, { sequence: appliedSequence(board) + 1, at: clock.now().toISOString() }),
+      error => error.code === 'RELAY_MOVE' && error.message.includes(String(AGENT_GRANT_ENGINE)),
+      'a freshly sealed old-engine move cannot bypass new-claim authority');
+    assert.deepEqual(store.itemThread(board, 2), before, 'neither old receipt replay nor a forged old move adds a fact');
+  }
+});
