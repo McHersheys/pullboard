@@ -82,3 +82,24 @@ test('status and session hooks heartbeat the local seat without a shared board w
   assert.equal(heartbeat.code, 0, heartbeat.err + heartbeat.out);
   assert.equal(JSON.parse(heartbeat.out).presence, 'live');
 });
+
+
+test('an imported board never inherits a same-path coordinator heartbeat [B3,A7]', async (t) => {
+  const { exportBoard, importBoard } = await import('../src/exchange.js');
+  const root = mkdtempSync(join(tmpdir(), 'pullboard-presence-identity-'));
+  const clock = { now: () => new Date('2026-10-24T12:00:00Z') };
+  const local = store.openBoard(join(root, 'local.sqlite'), clock);
+  const foreign = store.openBoard(join(root, 'foreign.sqlite'), clock);
+  t.after(() => { store.closeBoard(local); store.closeBoard(foreign); rmSync(root, { recursive: true, force: true }); });
+  store.register(local, { lane: 'coordinator', path: join(root, 'old-coordinator') });
+  store.register(foreign, { lane: 'coordinator', path: join(root, 'foreign-coordinator') });
+  /** Read the native board identity to prove this is a real replacement. */
+  const identity = board => board.db.prepare("SELECT meta_value FROM board_meta WHERE meta_key='board_id'").get().meta_value;
+  assert.notEqual(identity(local), identity(foreign));
+  assert.equal(store.agentById(local, 'coordinator').presence, 'live');
+  importBoard(local, exportBoard(foreign));
+  assert.equal(identity(local), identity(foreign), 'the accepted import really replaced board identity');
+  assert.equal(store.agentById(local, 'coordinator').agent_path, join(root, 'foreign-coordinator'));
+  assert.equal(store.agentById(local, 'coordinator').presence, 'gone');
+  assert.equal(store.agentById(local, 'coordinator').heartbeatAt, null);
+});
