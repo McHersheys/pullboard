@@ -89,7 +89,7 @@ test('a proposed change to an approved row waits in Needs you and applies only w
   assert.equal(row(box, 'G1').status, 'retired', 'the person can approve an explicit status revision');
   assert.ok(!personNeedsState(box.repo).needs.some(entry => [proposal.id, retired.id].includes(entry.id)), 'older applied revisions stay closed after the target gets a newer decision');
   box.git(box.repo, 'add', 'SPEC.md');
-  box.git(box.repo, 'commit', '-q', '-m', 'feat: apply the person-approved retirement [G1]');
+  box.git(box.repo, 'commit', '-q', '-m', 'chore: apply the person-approved retirement');
   box.git(box.web, 'merge', '-q', '--ff-only', 'main');
   assert.notEqual(box.run(box.web, 'spec', 'draft', 'Change a retired row.', '--revises', 'G1', '--reason', 'Not approved.').code, 0);
 
