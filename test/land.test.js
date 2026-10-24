@@ -16,6 +16,7 @@ import { assertLandingDoctrineCounts } from './land-doctrine-fixture.js';
 import { onBoard, events, calls } from './land-board-fixture.js';
 
 import { landingTimeoutFixture } from './landing-timeout-fixture.js';
+import { assertParallelLanding } from './land-parallel-fixture.js';
 const e2e = createE2eHelpers();
 after(e2e.cleanup);
 const { sandbox, project, commitFile, waitFor, BIN } = e2e;
@@ -1487,3 +1488,7 @@ test('a publish gate run is recorded and a red and green pair it sees files the 
   assert.equal(calls(box).length - before, 3, 'each receipt represents one actual full publish gate');
 });
 test('a landing gate past its timeout stops cleanly [E27,E29]', () => landingTimeoutFixture({ landProject, itemWorktree, submitItem, acceptItem, onBoard, json }));
+
+
+test('landing tests candidate batches in parallel and lands the longest green prefix [B3,V4]', { timeout: 180_000 }, // budget: two real three-item private landings and bounded overlap barriers; no speed threshold.
+() => assertParallelLanding({ landProject, itemWorktree, submitItem, acceptItem, json }));
