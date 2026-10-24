@@ -159,14 +159,14 @@ test('reviews-first changes a ready shared seat without preempting recorded work
 test('landing cadence starts at actual admitted work when its recorded seat is busy [R1,R2]', () => {
   const rows = [[0, 'add', 1, 'coordinator'], [0, 'add', 2, 'coordinator'],
     [0, 'claim', 1, 'builder'], [0, 'claim', 2, 'coordinator'],
-    [1, 'submit', 1, 'builder'], [1, 'reserve', 1, 'reviewer'], [2, 'accept', 1, 'reviewer'],
-    [6, 'submit', 2, 'coordinator'], [6, 'reserve', 2, 'reviewer'],
-    [7, 'accept', 2, 'reviewer'], [7, 'merged', 1, 'coordinator'], [8, 'merged', 2, 'coordinator']];
+    [1, 'submit', 1, 'builder'], [6, 'submit', 2, 'coordinator'],
+    [6, 'reserve', 1, 'reviewer'], [7, 'accept', 1, 'reviewer'], [7, 'reserve', 2, 'reviewer'],
+    [8, 'accept', 2, 'reviewer'], [8, 'merged', 1, 'coordinator'], [9, 'merged', 2, 'coordinator']];
   const events = rows.map(([minute, kind, item, by], index) => ({ event_id: index + 1,
     event_at: new Date(BASE + minute * 60_000).toISOString(), event_kind: kind, item_id: item, event_by: by }));
   const result = replayFlow(events, { settings: { landingBatchSize: 1, landingCadenceMinutes: 5 } });
-  assert.equal(result.replay.items[0].landedAt, new Date(BASE + 11 * 60_000).toISOString(),
-    'the recorded five-minute landing interval starts only when the coordinator seat is free at minute six');
+  assert.equal(result.replay.items[0].landedAt, new Date(BASE + 7 * 60_000).toISOString(),
+    'the recorded one-minute landing interval starts only when the coordinator seat is free at minute six');
   assert.equal(result.replay.items[1].landedAt, new Date(BASE + 12 * 60_000).toISOString(),
     'the next batch waits for actual prior start plus cadence and prior completion');
 });
