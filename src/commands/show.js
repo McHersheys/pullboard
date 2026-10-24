@@ -68,7 +68,10 @@ export function run(io, { first, values }) {
     const runtime = receipt.environment ? `Node ${receipt.environment.node} ${receipt.environment.platform}/${receipt.environment.arch}` : 'runtime unknown';
     const counts = Object.values(receipt.counts).some(value => value === null) ? 'test counts unknown'
       : `${receipt.counts.passed} pass, ${receipt.counts.failed} fail, ${receipt.counts.skipped} skip`;
-    io.say(`receipt ${receipt.id}: ${receipt.kind}, ${receipt.commit?.slice(0, 12) ?? 'commit unknown'}, ${runtime}, runner ${receipt.runner ?? 'unknown'}, seat ${receipt.seat}, parent ${receipt.parentSession ?? 'unknown'}, exit ${receipt.exitCode ?? 'unknown'}, ${counts}, ${receipt.durationMs}ms${receipt.sourceClean ? '' : ', source unproven'}`);
+    io.say(`receipt ${receipt.id}: ${receipt.kind}, item #${receipt.item}`);
+    io.say(`  commit ${receipt.commit ?? 'unknown'}; tree ${receipt.tree ?? 'unknown'}; frozen ${receipt.frozenDigest ?? 'unknown'}`);
+    io.say(`  ${runtime}; runner ${receipt.runner ?? 'unknown'}; seat ${receipt.seat}; parent ${receipt.parentSession ?? 'unknown'}`);
+    io.say(`  exit ${receipt.exitCode ?? 'unknown'}; ${counts}; ${receipt.durationMs}ms${receipt.sourceClean ? '' : '; source unproven'}`);
   }
   sayCheckBaseline(io, item);
   sayBrief(io, item.item_brief);

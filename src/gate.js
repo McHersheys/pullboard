@@ -402,6 +402,10 @@ function leaveProofReceipt(root, command, run, before, context, lease) {
     if (!receipt) return null;
     mkdirSync(store, { recursive: true, mode: 0o700 });
     writeFileSync(join(store, `${receipt.id}.json`), receiptBody(receipt), { flag: 'wx', mode: 0o600 });
+    if (lease) {
+      lease.proofReceiptIds ??= [];
+      lease.proofReceiptIds.push(receipt.id);
+    }
     return receipt.id;
   } catch { return null; /* A missing receipt is refused by the CLI before it records a verdict. */ }
 }
@@ -601,7 +605,8 @@ async function withOneGateSlot(root, action, { landing = false, itemCheck = fals
   /** Hand the run its receipt tracker and slot, then record its receipt once the slot is released (#836). */
   const timed = lease => Object.assign(lease, { tracker, receiptKind, slot: slotOf(lease, { browserFree: browserFreeChecksEnabled() }) });
   const record = lease => {
-    const receipt = lease.receipt ?? receiptOf(tracker, { kind: receiptKind, slot: lease.slot });
+    const timing = lease.receipt ?? receiptOf(tracker, { kind: receiptKind, slot: lease.slot });
+    const receipt = { ...timing, ...(lease.proofReceiptIds?.length ? { proofReceiptIds: [...lease.proofReceiptIds] } : {}) };
     recordReceipt(root, receipt);
     onReceipt?.(receipt);
   };
@@ -732,6 +737,10 @@ function leaveRunReceipt(root, config, run, { before, kind }) {
     if (!receipt) return null;
     mkdirSync(store, { recursive: true, mode: 0o700 });
     writeFileSync(join(store, `${receipt.id}.json`), receiptBody(receipt), { flag: 'wx', mode: 0o600 });
+    if (lease) {
+      lease.proofReceiptIds ??= [];
+      lease.proofReceiptIds.push(receipt.id);
+    }
     return receipt.id;
   } catch { return null; }
 }
