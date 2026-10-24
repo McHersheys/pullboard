@@ -297,7 +297,8 @@ function leaveProofReceipt(root, command, run, before, context, lease) {
       green: run.isGreen ?? run.state === 'pass', failures: [],
       load: run.executionLoad ?? (remote || lease?.runner ? null : localLoad), at: new Date().toISOString(),
       proof: { item: context.item, frozenDigest: context.frozenDigest ?? null, seat: context.seat,
-        environment, runner: remote ?? (lease?.runner ? null : 'local'), exitCode: run.exitCode,
+        environment, runner: remote ?? (lease?.runner ? null
+          : run.profile?.receipt?.runner?.id ?? lease?.receipt?.runner?.id ?? lease?.localDescriptor?.id ?? null), exitCode: run.exitCode,
         counts: run.proofCounts ?? proofCounts(run.outputPath ? logLines(run.outputPath) : run.output ?? ''),
         durationMs: Math.max(0, Math.round(run.remoteWallMs ?? run.profile?.wallMs ?? run.seconds * 1000)), sourceClean } });
     if (!receipt) return null;
