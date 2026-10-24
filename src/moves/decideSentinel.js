@@ -13,7 +13,7 @@ function minimumEngine(args, board, at) {
 /** Read precisely the actor argument used by this operation [H2,H16]. */
 function actor(move) { return move.args[0]?.agentId ?? null; }
 
-export default Object.freeze({ operation: "decideSentinel", order: 48, engine: 1,
+export default Object.freeze({ operation: "decideSentinel", order: 50, engine: 1,
   itemIdFirstArgument: false, minimumEngine, actor,
   nextSteps: Object.freeze({
   "B26_PERSON_CHANNEL": "record it as the person through pullboard view or the person's own terminal",

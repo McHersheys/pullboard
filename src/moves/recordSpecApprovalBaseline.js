@@ -15,7 +15,7 @@ function minimumEngine(args, board, at) {
 /** Read precisely the actor argument used by this operation [H2,H16]. */
 function actor(move) { return move.args[0]?.agentId ?? null; }
 
-export default Object.freeze({ operation: "recordSpecApprovalBaseline", order: 39, engine: SPEC_APPROVAL_ENGINE,
+export default Object.freeze({ operation: "recordSpecApprovalBaseline", order: 41, engine: SPEC_APPROVAL_ENGINE,
   itemIdFirstArgument: false, minimumEngine, actor,
   nextSteps: Object.freeze({
   "COORDINATOR_ONLY": "ask the coordinator to do it: pullboard shout coordinator \"<what you need>\"",

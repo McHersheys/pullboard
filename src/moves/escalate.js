@@ -14,7 +14,7 @@ function minimumEngine(args, board, at) {
 /** Read precisely the actor argument used by this operation [H2,H16]. */
 function actor(move) { return move.args[1]?.agentId ?? null; }
 
-export default Object.freeze({ operation: "escalate", order: 9, engine: 1,
+export default Object.freeze({ operation: "escalate", order: 11, engine: 1,
   itemIdFirstArgument: true, minimumEngine, actor,
   nextSteps: Object.freeze({
   "CLOSED": "read its state with pullboard show <id>, then take open work: pullboard next",

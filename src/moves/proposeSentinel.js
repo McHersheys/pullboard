@@ -13,7 +13,7 @@ function minimumEngine(args, board, at) {
 /** Read precisely the actor argument used by this operation [H2,H16]. */
 function actor(move) { return move.args[0]?.agentId ?? null; }
 
-export default Object.freeze({ operation: "proposeSentinel", order: 47, engine: 1,
+export default Object.freeze({ operation: "proposeSentinel", order: 49, engine: 1,
   itemIdFirstArgument: false, minimumEngine, actor,
   nextSteps: Object.freeze({
   "BAD_SENTINEL": "read pullboard sentinel --help and propose an exact command, project directory, owner and schedule"

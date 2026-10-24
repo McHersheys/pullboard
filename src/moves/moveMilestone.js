@@ -14,7 +14,7 @@ function minimumEngine(args, board, at) {
 /** Read precisely the actor argument used by this operation [H2,H16]. */
 function actor(move) { return move.args[1]?.agentId ?? null; }
 
-export default Object.freeze({ operation: "moveMilestone", order: 31, engine: 1,
+export default Object.freeze({ operation: "moveMilestone", order: 33, engine: 1,
   itemIdFirstArgument: false, minimumEngine, actor,
   nextSteps: Object.freeze({
   "MILESTONE_ORDER": "move it before a different milestone; see pullboard roadmap",

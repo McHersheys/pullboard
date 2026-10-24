@@ -14,7 +14,7 @@ function minimumEngine(args, board, at) {
 /** Read precisely the actor argument used by this operation [H2,H16]. */
 function actor(move) { return move.args[1]?.asPerson ? 'person' : move.args[1]?.agentId ?? null; }
 
-export default Object.freeze({ operation: "releaseLane", order: 25, engine: 1,
+export default Object.freeze({ operation: "releaseLane", order: 27, engine: 1,
   itemIdFirstArgument: false, minimumEngine, actor,
   nextSteps: Object.freeze({
   "B26_PERSON_CHANNEL": "record it as the person through pullboard view or the person's own terminal",

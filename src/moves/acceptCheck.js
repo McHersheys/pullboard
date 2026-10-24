@@ -15,7 +15,7 @@ function minimumEngine(args, board, at) {
 /** Read precisely the actor argument used by this operation [H2,H16]. */
 function actor(move) { return move.args[1]?.agentId ?? null; }
 
-export default Object.freeze({ operation: "acceptCheck", order: 45, engine: CHECK_ACCEPT_ENGINE,
+export default Object.freeze({ operation: "acceptCheck", order: 47, engine: CHECK_ACCEPT_ENGINE,
   itemIdFirstArgument: true, minimumEngine, actor,
   nextSteps: Object.freeze({
   "B26_PERSON_CHANNEL": "record it as the person through pullboard view or the person's own terminal",

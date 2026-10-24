@@ -1,5 +1,10 @@
 /** General CLI recovery text; operation-owned codes live in src/moves/ [P4,C7]. */
 export const DEFAULT_NEXT_STEPS = Object.freeze({
+  "NESTED_RUN_HANDLE_REQUIRED": "pass the original ChildProcess or fixture promise retaining .child to awaitNestedRun",
+  "NESTED_RUN_OFFER_REQUIRED": "start the child with the current spawn export after test-file token admission, then await its original handle",
+  "NESTED_RUN_WAIT_REUSED": "await the original returned wait; do not lend the same child a second time",
+  "NESTED_RUN_WAIT_ACTIVE": "finish the active yielding wait before lending this test file token to another child",
+
   "RUNNER_GUI_SESSION_REQUIRED": "nothing to do: the run reruns locally; log in to a GUI session on the runner before sending GUI-marked files there",
   "OUTSIDE_NATIVE_BUILD": "the outside author revises the PR; ask the coordinator to return it, then intake its new exact head",
   "OUTSIDE_URL": "use a GitHub issue or pull request URL with owner/repository and its positive number",

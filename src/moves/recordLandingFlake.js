@@ -14,7 +14,7 @@ function minimumEngine(args, board, at) {
 /** Read precisely the actor argument used by this operation [H2,H16]. */
 function actor(move) { return move.args[0]?.agentId ?? null; }
 
-export default Object.freeze({ operation: "recordLandingFlake", order: 42, engine: 8,
+export default Object.freeze({ operation: "recordLandingFlake", order: 44, engine: 8,
   itemIdFirstArgument: false, minimumEngine, actor,
   nextSteps: Object.freeze({
   "LAND_FLAKE": "fix the flaky test, or ask the person for a waiver: pullboard land --waive <test> --until <date> --reason \"why\""

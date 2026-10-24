@@ -19,7 +19,7 @@ function minimumEngine(args, board, at) {
 /** Read precisely the actor argument used by this operation [H2,H16]. */
 function actor(move) { return move.args[1]?.agentId ?? null; }
 
-export default Object.freeze({ operation: "appendFact", order: 38, engine: 1,
+export default Object.freeze({ operation: "appendFact", order: 40, engine: 1,
   itemIdFirstArgument: true, minimumEngine, actor,
   nextSteps: Object.freeze({
   "BAD_FACT_ID": "upgrade to the current Pullboard engine, then retry the original fact operation",

@@ -3,6 +3,7 @@ import { RIGOR_AUTO_ENGINE } from '../rigor-auto-engine.js';
 import { itemById } from '../board-item-read.js';
 import {
   CAUSE_ENGINE,
+  QUOTED_LANDING_FAILURE_ENGINE,
   REOPEN_FIRST_REFUSAL_ENGINE,
   SUBMITTED_CONFLICT_ENGINE,
 } from '../engine-metadata.js';
@@ -15,19 +16,20 @@ import {
 
 /** Preserve this operation's historical first-matching engine conditions [H16]. */
 function minimumEngine(args, board, at) {
-  if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('conflict:')) return RIGOR_AUTO_ENGINE;
+  const quotedLandingFailureEngine = args[1]?.quotedLandingFailure === true ? QUOTED_LANDING_FAILURE_ENGINE : 1;
+  if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('conflict:')) return Math.max(RIGOR_AUTO_ENGINE, quotedLandingFailureEngine);
   if (args[0]?.landingFence !== undefined) return LANDING_LEASE_ENGINE;
-  if (args[1]?.reopenFirstRefusalMinutes !== undefined) return REOPEN_FIRST_REFUSAL_ENGINE;
-  if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('sentinel:')) return BOARD_SENTINEL_ENGINE;
-  if (carriesConflict('reopen', args)) return board && itemById(board, args[0])?.item_status === 'submitted' ? SUBMITTED_CONFLICT_ENGINE : CONFLICT_ENGINE;
-  if (['cause', 'neverAgain', 'asPerson'].some(name => Boolean(args[1] && typeof args[1] === 'object' && Object.hasOwn(args[1], name) && args[1][name] !== undefined && args[1][name] !== null && args[1][name] !== false))) return CAUSE_ENGINE;
-  return 8;
+  if (args[1]?.reopenFirstRefusalMinutes !== undefined) return Math.max(REOPEN_FIRST_REFUSAL_ENGINE, quotedLandingFailureEngine);
+  if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('sentinel:')) return Math.max(BOARD_SENTINEL_ENGINE, quotedLandingFailureEngine);
+  if (carriesConflict('reopen', args)) return Math.max(board && itemById(board, args[0])?.item_status === 'submitted' ? SUBMITTED_CONFLICT_ENGINE : CONFLICT_ENGINE, quotedLandingFailureEngine);
+  if (['cause', 'neverAgain', 'asPerson'].some(name => Boolean(args[1] && typeof args[1] === 'object' && Object.hasOwn(args[1], name) && args[1][name] !== undefined && args[1][name] !== null && args[1][name] !== false))) return Math.max(CAUSE_ENGINE, quotedLandingFailureEngine);
+  return Math.max(8, quotedLandingFailureEngine);
 }
 
 /** Read precisely the actor argument used by this operation [H2,H16]. */
 function actor(move) { return move.args[1]?.agentId ?? null; }
 
-export default Object.freeze({ operation: "reopen", order: 20, engine: 8,
+export default Object.freeze({ operation: "reopen", order: 22, engine: 8,
   itemIdFirstArgument: true, minimumEngine, actor,
   nextSteps: Object.freeze({
   "ALREADY_MERGED": "file the follow-up as a new item: pullboard add <lane> \"<title>\"",
@@ -37,7 +39,7 @@ export default Object.freeze({ operation: "reopen", order: 20, engine: 8,
   "CONFLICT_FILES": "name only the files Git reports as conflicting with the trunk: pullboard reopen <id> --conflict <file> [--conflict <file>]",
   "COORDINATOR_ONLY": "ask the coordinator to do it: pullboard shout coordinator \"<what you need>\"",
   "ENGINE_VERSION": "upgrade Pullboard: npm install -g pullboard@latest",
-  "LANDING_FAILURE_REQUIRED": "reopen with --note \"<test file>: <test name>; merge commit <sha>\", or with --conflict <file> for each conflicting file when it only conflicts with the trunk",
+  "LANDING_FAILURE_REQUIRED": "reopen with --note \"<test file>: <test name>; merge commit <sha>\", or with --note '<test file>: \"<test name; with semicolon>\"; merge commit <sha>' when the test name contains a semicolon, or use --conflict <file> for each file that only conflicts with the trunk",
   "MERGE_CHECK_FAILED": "use Git 2.38 or newer (git --version), then retry",
   "NOTE_REQUIRED": "add --note \"<what happened>\"",
   "NOT_ACCEPTED": "reopen a submission with --note \"why\"; --conflict is for accepted work",

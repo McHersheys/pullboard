@@ -15,7 +15,7 @@ function minimumEngine(args, board, at) {
 /** Read precisely the actor argument used by this operation [H2,H16]. */
 function actor(move) { return move.args[1]?.agentId ?? null; }
 
-export default Object.freeze({ operation: "shipMilestone", order: 34, engine: MILESTONE_SHIP_ENGINE,
+export default Object.freeze({ operation: "shipMilestone", order: 36, engine: MILESTONE_SHIP_ENGINE,
   itemIdFirstArgument: false, minimumEngine, actor,
   nextSteps: Object.freeze({
   "MILESTONE_COMMIT": "commit to main, then ship from the main checkout: pullboard milestone ship <name>",

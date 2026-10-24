@@ -15,7 +15,7 @@ function minimumEngine(args, board, at) {
 /** Read precisely the actor argument used by this operation [H2,H16]. */
 function actor(move) { return move.args[0]?.agentId ?? null; }
 
-export default Object.freeze({ operation: "draftSpecRow", order: 37, engine: ROW_DRAFT_ENGINE,
+export default Object.freeze({ operation: "draftSpecRow", order: 39, engine: ROW_DRAFT_ENGINE,
   itemIdFirstArgument: false, minimumEngine, actor,
   nextSteps: Object.freeze({
   "ROW_DRAFT": "pullboard spec draft \"<text>\" from an agent seat; the person approves the returned id"

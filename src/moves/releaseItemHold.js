@@ -14,7 +14,7 @@ function minimumEngine(args, board, at) {
 /** Read precisely the actor argument used by this operation [H2,H16]. */
 function actor(move) { return move.args[1]?.agentId ?? null; }
 
-export default Object.freeze({ operation: "releaseItemHold", order: 27, engine: 1,
+export default Object.freeze({ operation: "releaseItemHold", order: 29, engine: 1,
   itemIdFirstArgument: false, minimumEngine, actor,
   nextSteps: Object.freeze({
   "NOT_HELD": "see what is held with pullboard status"

@@ -1,4 +1,5 @@
 /** Shared registered-runner test tooling and bounded round-trip helpers. */
+import { awaitNestedRun } from '../src/test-file-pool.js';
 import assert from 'node:assert/strict';
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -108,7 +109,17 @@ export function phaseCounts(file) {
  * passes the marker counts it read before spawning the child: a fast child can dispatch before this
  * function first runs, and a baseline read here would swallow that dispatch.
  */
-export async function awaitRoundTrip(child, closed, phasesFile, before, deadlines = ROUND_TRIP_DEADLINES, firstReceiptAccepted = null) {
+export function awaitRoundTrip(child, closed, phasesFile, before, deadlines = ROUND_TRIP_DEADLINES, firstReceiptAccepted = null) {
+  const terminal = monitorRoundTrip(child, closed, phasesFile, before, deadlines, firstReceiptAccepted).catch(async error => {
+    if (child.exitCode === null && child.signalCode === null) await stopGroup(child, closed);
+    throw error;
+  });
+  terminal.child = child;
+  return awaitNestedRun(terminal);
+}
+
+/** Monitor the owned child's progress and cancellation inside its single explicit yielding wait. */
+async function monitorRoundTrip(child, closed, phasesFile, before, deadlines, firstReceiptAccepted) {
   const limits = { ...ROUND_TRIP_DEADLINES, ...deadlines };
   let done = null;
   closed.then(result => { done = result; });

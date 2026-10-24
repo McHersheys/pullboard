@@ -34,7 +34,7 @@ function minimumEngine(args, board, at) {
 /** Read precisely the actor argument used by this operation [H2,H16]. */
 function actor(move) { return move.args[1]?.agentId ?? null; }
 
-export default Object.freeze({ operation: "verify", order: 16, engine: 1,
+export default Object.freeze({ operation: "verify", order: 18, engine: 1,
   itemIdFirstArgument: true, minimumEngine, actor,
   nextSteps: Object.freeze({
   "A5_GRAMMAR_VERSION": "upgrade Pullboard: npm install -g pullboard@latest",

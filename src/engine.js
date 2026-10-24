@@ -1,3 +1,5 @@
+import { handoffMoveProblem, requireHandoffActive } from './handoff-state.js';
+import { manualLandingFailureQuoted } from './manual-landing-failure-quoted.js';
 import { lineSettings } from './line-settings.js';
 import { requireOutsideReceipt } from './outside-proof.js';
 /** Versioned, deterministic replay through the CLI's existing board engine [H3,H16]. */
@@ -79,16 +81,18 @@ export function startRelayEpoch(board) {
 /** Turn caller-only callbacks into deterministic values before sealing an executable operation. */
 export function prepareEngineMove(board, operation, args, { id = randomUUID(), actor } = {}) {
   if (!ENGINE_OPERATIONS.includes(operation) || !Array.isArray(args)) throw new Refused('RELAY_MOVE', 'use a supported board-engine operation with its argument array');
-  if (operation === 'submit' && ENGINE_VERSION >= SUBMISSION_PROOF_ENGINE) submissionProof(args[1]?.submissionProof);
+  const values = args.map((value) => value && typeof value === 'object' ? { ...value } : value);
+  if (operation === 'reopen' && values[1] && typeof values[1] === 'object'
+    && manualLandingFailureQuoted(values[1].note)) values[1].quotedLandingFailure = true;
+  if (operation === 'submit' && ENGINE_VERSION >= SUBMISSION_PROOF_ENGINE) submissionProof(values[1]?.submissionProof);
   if (operation === 'claim' && ['wipPerReviewer', 'takeoverMinutes'].some(key => typeof lineSettings(board)[key] === 'number')) {
-    args = [args[0], { ...args[1], lineCapacity: true }, ...args.slice(2)];
+    values[1] = { ...values[1], lineCapacity: true };
   }
-  const minimumEngine = minimumOperationEngine(operation, args, board);
+  const minimumEngine = minimumOperationEngine(operation, values, board);
   if (ENGINE_VERSION < minimumEngine) throw new Refused('ENGINE_VERSION', `${operation} requires engine version ${minimumEngine}; this pullboard uses engine ${ENGINE_VERSION}; upgrade before sending it`);
   // A gate run is sealed only as its gate's own receipt; a run made up by hand is refused before it reaches any replica.
-  if (operation === 'recordGateRun') requireBound(board, args[0]?.receipt);
-  if (operation === 'verify' && args[1]?.sandbox !== undefined) requireOutsideReceipt(board, args[1].sandbox);
-  const values = args.map((value) => value && typeof value === 'object' ? { ...value } : value);
+  if (operation === 'recordGateRun') requireBound(board, values[0]?.receipt);
+  if (operation === 'verify' && values[1]?.sandbox !== undefined) requireOutsideReceipt(board, values[1].sandbox);
   if (operation === 'release') {
     const problem = store.reviewReleaseNoteProblem(board, values[0], values[1], values[2]);
     if (problem) throw problem;
@@ -240,7 +244,9 @@ function registrationProblem(board, move, { sender, registration, sequence, dige
 export function applyRelayMove(board, move, { sequence, at, sender, kind, digest = null, registration }) {
   requireSupportedEngine(move);
   const phoneReceipt = sender?.kind === 'machine' && move?.engine >= 6 && Boolean(move.personRequest) && !requestMoveProblem(board, move, { checkExecutorLease: false });
-  const problem = relaySenderProblem(move, sender, kind, { phoneReceipt }) ?? (kind === 'move' ? registrationProblem(board, move, { sender, registration, sequence, digest }) : null);
+  const problem = relaySenderProblem(move, sender, kind, { phoneReceipt })
+    ?? (kind === 'move' ? handoffMoveProblem(board, relayMoveActor(move), move.operation, move.args) : null)
+    ?? (kind === 'move' ? registrationProblem(board, move, { sender, registration, sequence, digest }) : null);
   if (!problem) {
     // Engine-48 relay moves run under linked verifier standing; older recorded moves replay as they did.
     // The person is above every seat; their own moves act with the coordinator's standing.
@@ -290,6 +296,7 @@ export function applyEngineMove(board, move, { sequence, at, standing = null, en
           if (problem) throw problem;
           // One main checkout coordinates a linked board at a time; another is refused by name (#347).
           requireCoordinatorHold(board, move, standing?.lineage, at);
+          requireHandoffActive(board, relayMoveActor(move), move.operation, move.args);
           return store[move.operation](board, ...executableArgs(move, board));
         });
         const result = standing ? store.withVerifierStanding(board, standing, execute) : execute();

@@ -14,7 +14,7 @@ function minimumEngine(args, board, at) {
 /** Read precisely the actor argument used by this operation [H2,H16]. */
 function actor(move) { return move.args[0]?.agentId ?? null; }
 
-export default Object.freeze({ operation: "recordRowDecisions", order: 35, engine: 1,
+export default Object.freeze({ operation: "recordRowDecisions", order: 37, engine: 1,
   itemIdFirstArgument: false, minimumEngine, actor,
   nextSteps: Object.freeze({
   "B26_PERSON_APPROVAL": "ask the person to decide in pullboard view",

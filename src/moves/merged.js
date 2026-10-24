@@ -21,7 +21,7 @@ function minimumEngine(args, board, at) {
 /** Read precisely the actor argument used by this operation [H2,H16]. */
 function actor(move) { return move.args[1]?.agentId ?? null; }
 
-export default Object.freeze({ operation: "merged", order: 17, engine: 1,
+export default Object.freeze({ operation: "merged", order: 19, engine: 1,
   itemIdFirstArgument: true, minimumEngine, actor,
   nextSteps: Object.freeze({
   "NOT_VERIFIED": "merge only verified items; see pullboard list --all"
