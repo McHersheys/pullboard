@@ -798,7 +798,7 @@ catalogCase('[A1] catalog commands keep their real repository exercises', async 
 
 catalogCase('[A1] intake records a real outside pull request through the CLI', async (t) => {
   const box = intakeFixture(t);
-  const document = intakeFixtureJSON(box, box.repo, box.pull.html_url,
+  const document = intakeFixtureJSON(box, box.repo, 'intake', box.pull.html_url,
     '--criterion', 'the outside fixture is recorded without running its code',
     '--check', 'node --test test/contribution.test.js');
   coveredRoots.add('intake');
