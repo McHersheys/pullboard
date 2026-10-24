@@ -37,8 +37,9 @@ export function verdictsFor(board, id) {
 
 /** The latest matching acceptance; the submission stays immutable through later re-reviews. */
 export function acceptedVerdict(board, item) {
-  return verdictsFor(board, item.item_id).findLast(verdict =>
-    verdict.verdict_decision === 'ACCEPT' && !verdict.withdrawn && verdict.verdict_commit === item.item_commit);
+  const latest = verdictsFor(board, item.item_id).findLast(verdict =>
+    verdict.verdict_decision === 'ACCEPT' && verdict.verdict_commit === item.item_commit);
+  return latest?.withdrawn ? undefined : latest;
 }
 
 /** The exact checked composition for a new acceptance, or the historical submitted candidate. */
