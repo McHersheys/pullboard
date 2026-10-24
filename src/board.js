@@ -1,3 +1,4 @@
+export { lineSettings, setLineSetting } from './line-settings.js';
 import { recordVerdict } from './verdict-assurance.js';
 import { logEvent } from './board-event-log.js';
 export { logEvent };

@@ -529,3 +529,18 @@ A row approved after the board’s compatibility baseline is reported as `agent-
 Engine 68 retains the existing validated verifier note in new acceptance-event detail. Earlier engines retain their original receipt shape; later person confirmations project current approval state beside that immutable history. No new row status or approval authority is inferred from a Git author or an unsigned receipt.
 
 The engine-68 `recordSpecApprovalBaseline` move carries `{agentId, baseline: {version: 1, file, anchor, rows: [{id, text, source}]}}`. `anchor` is the current commit or `null` before the first commit; exact source rows also cover uncommitted initial requirements. Only the authenticated coordinator may establish the snapshot; a person uses the main checkout’s coordinator path. Lane commands never seed or replace it. The first snapshot is indexed under `board_meta.spec_approval_baseline` with a `spec_approval_baseline` event. Replay writes metadata only, never checkout files. Sender attribution is authenticated normally, older engines refuse the new move, and later bootstrap attempts cannot replace or expand the original snapshot. No local sidecar establishes shared approval authority. The metadata snapshot must agree with its single original coordinator event; a partial restore with either half missing or changed is invalid. A malformed stored marker remains in place with an invalid-baseline diagnostic; it is not treated as an absent migration baseline or reseeded by later commands. Board imports remain trusted recovery operations; agreement of these records is a consistency check, not cryptographic authentication of an imported history.
+
+## Recorded board line settings
+
+`pullboard settings line --json` reads six board-owned controller inputs. All default to `false` (off), independently of machine `gate.queue` or `pullboard.json`. `pullboard settings line <name> <on|off|number> --reason "why" --window '{"windowMinutes":60,"activeReviewers":2}'` records a coordinator-owned `setLineSetting` move. The window is a nonempty object of named finite nonnegative numbers, with `null` retaining an unknown measurement. A nonempty reason is required.
+
+| Setting | Enabled values | Off |
+| --- | --- | --- |
+| `reviewsFirst` | `true` (`on`) | `false` |
+| `wipPerReviewer` | 1.5 through 3 | `false` |
+| `barReady` | `true` (`on`) | `false` |
+| `takeoverMinutes` | whole minutes 15 through 60 | `false` |
+| `landingBatchSize` | whole numbers 1 through 8 | `false` |
+| `landingCadenceMinutes` | whole minutes 5 through 30 | `false` |
+
+These are recorded inputs only (#1096); this step does not enforce queue, takeover or landing behavior. The move carries `{agentId,key,value,reason,window}`; its native `line_setting` event carries `{key,value,reason,window}` with the board's actor and time outside that detail. Latest values live under `board_meta` keys `line_setting:<name>`, and ordered engine replay updates them and appends the same evidence. The unassigned `LINE_SETTINGS_ENGINE` leaf receives its permanent number at landing. Older engine records cannot request this new operation. Range, unknown-key, missing-reason and invalid-window refusals have named codes. The existing settings API reports each input as `scope: "board"`, key `line.<name>`, with off as its default and the board SQLite file as its source; it does not expose reason text or evidence payloads through that inventory.
