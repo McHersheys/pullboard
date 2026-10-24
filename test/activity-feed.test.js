@@ -67,3 +67,97 @@ test('status moves are feed events and the board sends no status shout [B3,R2,N2
   assert.equal(board.db.prepare('SELECT shout_text FROM shout ORDER BY shout_id DESC LIMIT 1').get().shout_text,
     'My work was submitted.', 'agent-written messages are never suppressed, even when they mention status');
 });
+
+
+test('an agent feed shows only activity that touches its items files rows and lane [R2,N26,H16]', (t) => {
+  assert.equal(typeof store.agentActivity, 'function', 'the inbox needs a tailored activity projection, not the global event log');
+  const board = store.openBoard(':memory:');
+  t.after(() => store.closeBoard(board));
+  for (const [lane, path] of [['coordinator', '/feed-fixture'], ['web', '/feed-fixture/web-1'],
+    ['web', '/feed-fixture/web-2'], ['api', '/feed-fixture/api-1']]) store.register(board, { lane, path });
+  const lanes = ['coordinator', 'web', 'api'];
+  /** Create ordinary private items; their later synthetic statuses exercise projection, not move authority. */
+  const add = (title, lane = 'api', options = {}) => store.addItem(board, { by: 'coordinator', lane, title, ...options });
+  const ancestor = add('Upstream ancestor');
+  const dependency = add('Direct dependency', 'api', { after: [ancestor] });
+  const mine = add('My active build', 'web', { after: [dependency], specIds: ['G1'],
+    brief: 'Files: src/edit.js\nTest: preserve the work\n' });
+  const dependent = add('Direct dependent', 'api', { after: [mine] });
+  const downstream = add('Downstream dependent', 'api', { after: [dependent] });
+  const sibling = add('Sibling only shares my prerequisite', 'api', { after: [dependency] });
+  const reviewed = add('My active review');
+  const sharedFile = add('Another lane edits my planned file', 'api', { brief: 'Files: src/edit.js\nTest: private fixture\n' });
+  const changedFile = add('Another lane edits my submitted diff', 'api', { brief: 'Files: src/diff-only.js\nTest: private fixture\n' });
+  const workingFile = add('Another lane edits my current working diff', 'api', { brief: 'Files: src/working.js\nTest: private fixture\n' });
+  const prefixOnly = add('A similar spelling is not the same file', 'api', { brief: 'Files: src/edit.js.backup\nTest: private fixture\n' });
+  const laneOnly = add('Other work in my lane', 'web');
+  const unrelated = add('Unrelated work');
+  const expired = add('My old expired claim');
+  const expiredReview = add('My old expired review');
+  const later = new Date(Date.now() + 3_600_000).toISOString();
+  const earlier = new Date(Date.now() - 3_600_000).toISOString();
+  // Projection-only synthetic status rows in this private in-memory board are not claims or gate receipts.
+  board.db.prepare("UPDATE item SET item_status='claimed',item_owner='web-1',item_lease_until=?,item_files=? WHERE item_id=?")
+    .run(later, 'src/diff-only.js', mine);
+  board.db.prepare("UPDATE item SET item_status='submitted',item_review_by='web-1',item_review_until=? WHERE item_id=?")
+    .run(later, reviewed);
+  board.db.prepare("UPDATE item SET item_status='claimed',item_owner='web-1',item_lease_until=? WHERE item_id=?")
+    .run(earlier, expired);
+  board.db.prepare("UPDATE item SET item_status='submitted',item_review_by='web-1',item_review_until=? WHERE item_id=?")
+    .run(earlier, expiredReview);
+  const question = store.shout(board, { from: 'web-1', to: 'api-1', text: 'Which direction?', lanes, decision: true });
+  const otherQuestion = store.shout(board, { from: 'web-2', to: 'api-1', text: 'Someone else asked', lanes, decision: true });
+  const since = board.db.prepare('SELECT MAX(event_id) AS id FROM event').get().id;
+  const expectedItems = [ancestor, dependency, mine, dependent, downstream, reviewed, sharedFile, changedFile, workingFile];
+  for (const id of [...expectedItems, sibling, prefixOnly, laneOnly, unrelated, expired, expiredReview]) {
+    store.appendFact(board, id, { agentId: 'coordinator', kind: 'note', text: id === laneOnly
+      ? 'Private lane detail must be summarized, not broadcast verbatim.' : `Private observation for #${id}` });
+  }
+  for (const id of ['G1', 'G2']) store.recordRowDecisions(board, { agentId: 'person', channel: 'terminal', decisions: [{
+    kind: 'spec', id, file: 'SPEC.md', decision: 'approve', source: `- ${id} [draft] Private row ${id}.`,
+    replacement: `- ${id} [approved] Private row ${id}.`, text: `Private row ${id}.`,
+  }] });
+  const answer = store.answerDecision(board, question, { agentId: 'api-1', text: 'Use the narrow path.', lanes });
+  store.answerDecision(board, otherQuestion, { agentId: 'api-1', text: 'Unrelated answer must stay private.', lanes });
+  const sha = 'a'.repeat(40);
+  // This synthetic main receipt supplies only identity; the injected Git seam supplies actual changed paths.
+  board.db.prepare('INSERT INTO event(event_at,event_by,event_kind,item_id,event_detail) VALUES (?,?,?,?,?)')
+    .run(new Date().toISOString(), 'coordinator', 'main-moved', null, JSON.stringify({ sha, batch: 'private-feed-main', items: [] }));
+  const news = store.shout(board, { from: 'coordinator', to: 'all', text: 'Release ready.\nRead its item for details.', lanes, news: true });
+  const governing = store.shout(board, { from: 'coordinator', to: 'all', text: 'Hold new browser launches until the person clears it.', lanes });
+  const snapshot = exportBoard(board);
+  /** This private Git seam declares fixture paths, not a claim about the live repository. */
+  const changesForMain = commit => commit === sha ? ['src/edit.js', 'src/diff-only.js', 'src/working.js', 'src/unrelated.js'] : null;
+  const options = { after: since, workingFiles: ['src/working.js'], changesForMain, sessionStart: true, newsAfter: 0 };
+  const feed = store.agentActivity(board, 'web-1', options);
+  assert.deepEqual(feed.entries.filter(entry => entry.kind === 'fact').map(entry => entry.item).sort((a, b) => a - b),
+    expectedItems.sort((a, b) => a - b), 'both dependency directions are transitive, but a prerequisite sibling is not my dependent');
+  const rowChanges = feed.entries.filter(entry => entry.kind === 'row_decision');
+  assert.equal(rowChanges.length, 1);
+  assert.deepEqual(rowChanges[0].rows, ['G1'], 'only rows cited by my active work reach me');
+  const answers = feed.entries.filter(entry => entry.kind === 'answer');
+  assert.deepEqual(answers.map(entry => entry.shout), [answer]);
+  assert.equal(answers[0].text, 'Use the narrow path.');
+  const main = feed.entries.find(entry => entry.kind === 'main-moved');
+  assert.deepEqual(main.files, ['src/diff-only.js', 'src/edit.js', 'src/working.js']);
+  assert.equal(main.text, 'main changed 3 files you are editing');
+  const digest = feed.digests.find(entry => entry.kind === 'lane');
+  assert.equal(digest.lane, 'web');
+  assert.equal(digest.count, 1);
+  assert.deepEqual(digest.items, [laneOnly]);
+  assert.doesNotMatch(JSON.stringify(feed), /Private lane detail|Unrelated answer/, 'digests do not leak the underlying unrelated prose');
+  assert.equal(new Set(feed.entries.map(entry => entry.eventId)).size, feed.entries.length, 'overlapping reasons deliver one event');
+  assert.deepEqual(feed.entries.map(entry => entry.eventId), feed.entries.map(entry => entry.eventId).toSorted((a, b) => a - b));
+  const announcements = feed.digests.find(entry => entry.kind === 'news');
+  assert.deepEqual(announcements.shouts, [news]);
+  assert.doesNotMatch(announcements.text, /[\r\n]/, 'explicit news is a one-line session-start digest');
+  assert.equal(feed.entries.some(entry => entry.shout === news), false, 'explicit news is not repeated as a direct message');
+  assert.equal(feed.entries.find(entry => entry.shout === governing)?.text,
+    'Hold new browser launches until the person clears it.', 'untyped governing broadcasts remain direct');
+  assert.equal(feed.cursor, board.db.prepare('SELECT MAX(event_id) AS id FROM event').get().id);
+  const continued = store.agentActivity(board, 'web-1', { ...options, after: feed.cursor, sessionStart: false });
+  assert.deepEqual(continued.entries, [], 'the caller can continue from the returned cursor');
+  assert.equal(continued.digests.some(entry => entry.kind === 'news'), false, 'news is read at session start, not on every poll');
+  assert.deepEqual(exportBoard(board), snapshot, 'a feed projection does not modify immutable history or native receipts');
+  assert.throws(() => store.agentActivity(board, 'unknown-fixture-agent', options), error => error.code === 'NO_AGENT');
+});
