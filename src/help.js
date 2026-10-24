@@ -24,7 +24,8 @@ Set up
   pullboard takeover                   rebind this checkout when the same agent starts a new session
                                         in a linked main checkout it also takes the board's coordinator here
   pullboard resources                  local resource holders and their FIFO queues
-  pullboard settings line [<name> <on|off|number> --reason "why" --window <json>]  read or record board controller inputs; all off by default, no queue enforcement
+  pullboard settings line [<name> <value> --reason "why" --window <json>]  read or record board controller inputs; all off by default, no queue enforcement
+      value is on, off, or a number within the setting range
                                         names: reviewsFirst, wipPerReviewer (1.5-3), barReady, takeoverMinutes (15-60), landingBatchSize (1-8), landingCadenceMinutes (5-30)
   pullboard settings [gateSlots <n> | browserSlots <n>]  view or set machine capacity (gate default 2; browser default 1)
                                         browser-free check slots are opt-in: gate.browserFreeChecks in ~/.pullboard/settings.json (default false)
@@ -133,6 +134,8 @@ Work
                                         a verdict takes --implies <ids>; a later verdict on the item supersedes it
                                         any --note can be --note-file <file>, which keeps quotes, $ and backticks intact
   pullboard shout <lane|agent|person|all> <text>  pullboard inbox
+  pullboard shout --item <id> <text>             message the item builder, reviewer and coordinator
+  A seat shout to all reaches only coordinator and person; their broadcasts reach everyone.
   pullboard shout [<to>] <text> --decision       ask for a decision; defaults to your coordinator or the person
   pullboard shout <to> <text> --evidence attempt|receipt --outcome <word> --item <id> --commit <rev>
   pullboard answer <shout-id> <text> [--as person] [--implies <ids>] [--supersedes <answer-id>]
