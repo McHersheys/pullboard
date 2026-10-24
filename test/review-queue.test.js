@@ -385,8 +385,10 @@ test('automatic conflict returns bind native evidence and replay without caller 
   }
   const left = replica('valid-left'), right = replica('valid-right');
   const missing = { ...move, args: [conflicted, { agentId: actor, computedConflict: rehash({ trunk: 'f'.repeat(40) }) }] };
-  assert.throws(() => applyEngineMove(left, missing, { sequence: 1, at: new Date().toISOString() }),
-    error => error.code === 'MERGE_CHECK_FAILED', 'missing immutable objects refuse by name until fetched');
+  assert.throws(() => {
+    const unexpected = applyEngineMove(left, missing, { sequence: 1, at: new Date().toISOString() });
+    t.diagnostic('unexpected missing-object outcome: ' + JSON.stringify({ move: missing, outcome: unexpected }));
+  }, error => error.code === 'MERGE_CHECK_FAILED', 'missing immutable objects refuse by name until fetched');
   assert.equal(appliedSequence(left), 0, 'a missing-object refusal does not consume the position needed after fetch');
   assert.throws(() => prepareEngineMove(left, 'reopen', [conflicted, { agentId: actor, automaticConflict: true }]),
     error => error.code === 'COORDINATOR_ONLY', 'an imported replica cannot fabricate native origin evidence');
