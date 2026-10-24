@@ -1,6 +1,6 @@
 /** The read-only board open for commands that only read, kept beside cli.js's withBoard [C7]. */
 import * as store from './board.js';
-import { withBoard } from './cli.js';
+import { withBoard } from './cli-context.js';
 import { Refused } from './refused.js';
 
 /**

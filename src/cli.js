@@ -7,6 +7,7 @@ import {
   barCoverageCommand,
   barCoverageForPolicy,
 } from './bar-coverage.js';
+import { identifyCaller } from './cli-identity.js';
 /**
  * The pullboard command line: every command, bound to who is asking (B3, R3). The main checkout is the
  * coordinator; every other worktree is the agent that joined from it.
@@ -28,9 +29,7 @@ import {
   renameSync,
   writeFileSync,
 } from 'node:fs';
-import {
-  hostname,
-} from 'node:os';
+import { hostname } from 'node:os';
 import {
   basename,
   dirname,
@@ -40,14 +39,11 @@ import {
   resolve,
 } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { parseArgs } from 'node:util';
 import {
   mainLaneWork,
   refuseNextIdle,
-  reportBlock,
   reviewerStartup,
 } from './next-steps.js';
-import { clearCompletedBlocks } from './blocks.js';
 import { environmentAgent } from './relay-environment.js';
 import { judgeTrunkMove } from './verdict-trunk.js';
 import * as gateReceipt from './gate-receipt.js';
@@ -59,14 +55,40 @@ import { withBoardRead } from './board-read.js';
 export { withBoardRead };
 import * as nativeFlakes from './native-flake-cli.js';
 import {
-  COMMANDS,
-  UNLISTED_COMMANDS,
-} from './commands/index.js';
-import {
   hookRead,
   readStdin,
-  traceServeStartup,
 } from './cli-support.js';
+import {
+  agentDisplayName,
+  cdTo,
+  context,
+  firstLineOf,
+  idArg,
+  idList,
+  itemLine,
+  sayBrief,
+  setupFiles,
+  shellWord,
+  span,
+  uncommittedSetup,
+  withBoard,
+} from './cli-context.js';
+import {
+  CHECKOUT_BOARD_ONLY,
+  CHECKOUT_LEASES,
+  main,
+} from './cli-main.js';
+import {
+  HELP,
+  printHelp,
+  resultCommands,
+  unknownCommand,
+} from './cli-help.js';
+// Commands and tests import these from here; each lives in the module a read can load without the rest.
+export {
+  agentDisplayName, cdTo, CHECKOUT_LEASES, context, firstLineOf, HELP, idArg, idList, itemLine, main, printHelp,
+  resultCommands, sayBrief, shellWord, span, uncommittedSetup, unknownCommand, withBoard,
+};
 import {
   CONFIG_FILE,
   COORDINATOR,
@@ -95,7 +117,6 @@ import {
   AGENT_SESSION_IDS,
   agentSessionDigest,
   personCommand,
-  requirePersonChannel,
 } from './person.js';
 import {
   bindLocalSession,
@@ -139,7 +160,6 @@ import {
   explicitCheckFiles,
 } from './browser-admission.js';
 import {
-  codeIsFromMain,
   contains,
   differFromHead,
   git,
@@ -153,7 +173,6 @@ import {
   resolveCommit,
   tryGit,
   untracked,
-  withGitFacts,
 } from './git.js';
 import {
   FIX_NOTE,
@@ -174,12 +193,10 @@ import {
   starterLaneNotes,
 } from './init.js';
 import {
-  buildHelp,
   SETTING_FORMS,
   VERSION,
 } from './help.js';
 import {
-  MAIN_MERGE_LABEL,
   mainMergeLines,
   mainMergesFor,
 } from './trunk-conflict.js';
@@ -190,9 +207,7 @@ import {
 } from './implies.js';
 import { defaultViewPort } from './view-port.js';
 export { VERSION };
-import {
-  productProblems,
-} from './products.js';
+import { productProblems } from './products.js';
 import {
   isLane,
   laneNames,
@@ -257,17 +272,12 @@ import {
   coordinatorInboxLines,
   inboxFirst,
 } from './resume.js';
-import {
-  sayCheckBaseline,
-} from './check-baseline.js';
+import { sayCheckBaseline } from './check-baseline.js';
 import {
   refuseClaimProvesNothing,
   refuseProvesNothing,
 } from './check-accept.js';
-import {
-  retryCheckBaselines,
-  startCheckBaseline,
-} from './check-baseline-worker.js';
+import { startCheckBaseline } from './check-baseline-worker.js';
 import {
   compareMainFailures,
   mainRedMessage,
@@ -278,9 +288,6 @@ import {
   sweepItems,
 } from './sweep.js';
 import { renderSpecView } from './view.js';
-import {
-  commandOutput,
-} from './json.js';
 import {
   listApiProjects,
   registerProjectAndLink,
@@ -311,8 +318,6 @@ import { firstRefusalArgs } from './claims.js';
 import { serveApi } from './api.js';
 import { serveMcp } from './mcp.js';
 import { scanHealthSentinel } from './health-sentinel.js';
-import { SENTINEL_OPTIONS } from './sentinel-command.js';
-import { QUALITY_OPTIONS } from './rigor-quality-draft.js';
 import { resumeSentinels } from './sentinel-command.js';
 import {
   staleFrozenItems,
@@ -341,9 +346,7 @@ import {
   verdictTrunk,
 } from './verdict-freshness.js';
 import { proofStats } from './stats.js';
-import {
-  flowAlertLine,
-} from './stats-flow.js';
+import { flowAlertLine } from './stats-flow.js';
 import { releaseHeadlinesBetween } from './changelog.js';
 import {
   addSigner,
@@ -367,13 +370,8 @@ import {
   relayLinked,
   relayOperation,
   relayRecovered,
-  syncRelay,
 } from './relay.js';
-import {
-  autoLinkProject,
-  unlinkedRelayProjects,
-} from './relay-setup.js';
-import { executePersonRequests } from './relay-request-execution.js';
+import { unlinkedRelayProjects } from './relay-setup.js';
 import {
   accountedFailures,
   landingRemote,
@@ -384,9 +382,6 @@ import {
 import { installStep } from './worktree.js';
 import * as infraNotes from './infra-note.js';
 export { gateWaitReporter };
-export const CHECKOUT_LEASES = new WeakMap();
-const CHECKOUT_BOARD_ONLY = new WeakMap();
-let startupMainTraced = false;
 /**
  * Read the collision baseline from the primary branch, retained trunk, or detached HEAD default.
  *
@@ -424,193 +419,6 @@ export function coordinatorFile(root, path, revision) {
     ...(detachedHeadDefault ? { baseline: 'collision baseline default: detached HEAD' } : {}),
   };
 }
-/** Find the nearest declared command for a useful typo hint. */
-function closestHelpCommand(input) {
-  const needle = input.toLowerCase();
-  /** Measure edit distance between two command names for a useful typo hint. */
-  const distance = (left, right) => {
-    let row = Array.from({ length: right.length + 1 }, (_, index) => index);
-    for (let i = 1; i <= left.length; i += 1) {
-      const next = [i];
-      for (let j = 1; j <= right.length; j += 1) {
-        next[j] = Math.min(next[j - 1] + 1, row[j] + 1, row[j - 1] + (left[i - 1] === right[j - 1] ? 0 : 1));
-      }
-      row = next;
-    }
-    return row.at(-1);
-  };
-  return Object.keys(HELP.commands).sort((a, b) => distance(needle, a) - distance(needle, b) || a.localeCompare(b))[0];
-}
-/** Render one command's usage, one-line flags and a pasteable example from the help declaration. */
-function commandHelp(name) {
-  const entry = HELP.commands[name];
-  if (!entry) return null;
-  return [
-    `Usage: ${entry.usages[0]}`,
-    ...entry.usages.slice(1).map((usage) => `       ${usage}`),
-    'Flags:',
-    ...(entry.flags.length ? entry.flags.map((flag) => `  ${flag}`) : ['  none']),
-    ...(name === 'spec' ? [
-      'Subcommands:',
-      '  pullboard spec --json — agent or person: print the parsed spec and practice rows',
-      '  pullboard spec check — agent or person: lint the spec and practice files',
-      '  pullboard spec view — agent or person: write the offline spec page',
-      '  pullboard spec show <id> — agent or person: inspect one row and its sign-offs',
-      '  pullboard spec unmet — agent or person: list approved rows without current sign-off',
-      '  pullboard spec draft <text> [--section <letter>] [--aim] [--gate "<gate>"] — any agent: append a draft row; never approve it',
-      '  pullboard spec signoff <ids> — person: sign rows with evidence',
-      '  pullboard spec signers add — person: register an SSH signing key',
-      '  pullboard spec approve <ids> — person: decide from their own terminal or Pullboard View',
-      '  pullboard spec decline <ids> — person: decide from their own terminal or Pullboard View',
-      '  pullboard spec answer <id> "<choice or text>" — person: answer a pending question from their own terminal or Pullboard View',
-      '  pullboard spec apply — coordinator: apply recorded row decisions to the files',
-    ] : []),
-    'Example:',
-    ...entry.example.split('\n').map((line) => `  ${line}`), ...entry.notes,
-  ].join('\n');
-}
-
-/** Write a selected help view in text and the stable help:string JSON field. */
-export function printHelp(io, text) {
-  io.result?.({ help: text });
-  io.say(text);
-  return 0;
-}
-
-/** Refuse an unknown command with its nearest declared spelling and a route to the full list. */
-export function unknownCommand(io, input) {
-  const closest = closestHelpCommand(input);
-  io.err(`pullboard: no command "${input}"; closest match is "${closest}". Run pullboard help --all for the full list.`);
-  return 2;
-}
-
-/** Resolve overview, command detail or the preserved full list from one invocation. */
-function selectedHelp(command, first, second, rest, values) {
-  if (command === 'help') {
-    if (values.all) return { text: HELP.all };
-    const requested = [first, second, ...rest].filter(Boolean).join(' ');
-    if (!requested || values.help && !first) return { text: HELP.overview };
-    return { name: requested, text: commandHelp(requested) };
-  }
-  if (values.all && (!command || command === 'help')) return { text: HELP.all };
-  if (!command) return { text: HELP.firstRun };
-  if (values.help) {
-    const words = [command, first, second, ...rest].filter(Boolean);
-    const candidates = words.map((_, index) => words.slice(0, index + 1).join(' ')).filter((name) => HELP.commands[name]);
-    const nested = candidates.at(-1) ?? command;
-    return { name: nested, text: commandHelp(nested) };
-  }
-  return null;
-}
-const OPTIONS = {
-  criterion: { type: 'string' },
-  specs: { type: 'string' },
-  parent: { type: 'string' },
-  reason: { type: 'string' },
-  off: { type: 'boolean' },
-  port: { type: 'string' },
-  slots: { type: 'string' },
-  browser: { type: 'string' },
-  'new-browser': { type: 'boolean' },
-  node: { type: 'string' },
-  root: { type: 'string' },
-  project: { type: 'boolean' },
-  export: { type: 'string' },
-  'no-open': { type: 'boolean' },
-  'no-permissions': { type: 'boolean' },
-  note: { type: 'string' },
-  infra: { type: 'string' },
-  'note-file': { type: 'string' },
-  by: { type: 'string' },
-  key: { type: 'string' },
-  out: { type: 'string' },
-  watch: { type: 'boolean' },
-  after: { type: 'string' },
-  brief: { type: 'string' },
-  'brief-file': { type: 'string' },
-  'coverage-file': { type: 'string' },
-  text: { type: 'string' },
-  gate: { type: 'string' },
-  aim: { type: 'boolean' },
-  doctrine: { type: 'boolean' },
-  source: { type: 'string' },
-  section: { type: 'string' },
-  blueprint: { type: 'string', multiple: true },
-  route: { type: 'string' },
-  family: { type: 'string' },
-  model: { type: 'string' },
-  as: { type: 'string' },
-  check: { type: 'string' },
-  ...SENTINEL_OPTIONS,
-  ...QUALITY_OPTIONS,
-  yes: { type: 'boolean' },
-  landing: { type: 'boolean' },
-  adopt: { type: 'boolean' },
-  waive: { type: 'string' },
-  until: { type: 'string' },
-  agent: { type: 'string' },
-  'agent-light': { type: 'string' },
-  'agent-mid': { type: 'string' },
-  'agent-strong': { type: 'string' },
-  attempts: { type: 'string' },
-  minutes: { type: 'string' },
-  items: { type: 'string' },
-  run: { type: 'string' },
-  max: { type: 'string' },
-  'dry-run': { type: 'boolean' },
-  update: { type: 'boolean' },
-  before: { type: 'string' },
-  target: { type: 'string' },
-  next: { type: 'string' },
-  add: { type: 'string' },
-  remove: { type: 'string' },
-  name: { type: 'string' },
-  title: { type: 'string' },
-  url: { type: 'string' },
-  skip: { type: 'string' },
-  wait: { type: 'string' },
-  verify: { type: 'boolean' },
-  build: { type: 'boolean' },
-  all: { type: 'boolean' },
-  must: { type: 'boolean' },
-  json: { type: 'boolean' },
-  history: { type: 'boolean' },
-  verbose: { type: 'boolean' },
-  since: { type: 'string' },
-  window: { type: 'string' },
-  decision: { type: 'boolean' },
-  evidence: { type: 'string' },
-  outcome: { type: 'string' },
-  item: { type: 'string' },
-  kinds: { type: 'string' }, to: { type: 'string' }, work: { type: 'string' }, 'review-wait': { type: 'string' },
-  commit: { type: 'string' },
-  ref: { type: 'string' },
-  supersedes: { type: 'string' },
-  conflict: { type: 'string', multiple: true },
-  cause: { type: 'string' },
-  'never-again': { type: 'boolean' },
-  'draft-splits': { type: 'boolean' },
-  implies: { type: 'string' },
-  owns: { type: 'string' },
-  red: { type: 'string' },
-  green: { type: 'string' },
-  help: { type: 'boolean', short: 'h' },
-  version: { type: 'boolean', short: 'v' },
-};
-
-/** Parse --wait as a switch for add/edit and as minutes for next/run, preserving all other options. */
-function parseCommandArgs(argv) {
-  let command;
-  for (const wait of [{ type: 'boolean' }, OPTIONS.wait]) {
-    try {
-      command = parseArgs({ args: argv, options: { ...OPTIONS, wait }, allowPositionals: true }).positionals[0];
-      if (['add', 'edit'].includes(command)) break;
-    } catch { /* The final parser supplies the existing actionable usage error. */ }
-  }
-  const options = ['add', 'edit'].includes(command) ? { ...OPTIONS, wait: { type: 'boolean' } } : OPTIONS;
-  return parseArgs({ args: argv, options, allowPositionals: true });
-}
-
 /** Start an already-recorded request, recording an unavailable result if its child cannot start. */
 export async function launchBaseline(ctx, board, id, baseline) {
   try { await startCheckBaseline(ctx.info.root, id, baseline); }
@@ -619,27 +427,6 @@ export async function launchBaseline(ctx, board, id, baseline) {
       baseline: { command: baseline.command, main: baseline.main, result: 'unavailable', reason: 'background worker could not start; set --check again from the coordinator' } }]);
   }
 }
-
-/**
- * A positive whole number from an argument, or a refusal naming what was expected.
- *
- * @param {string | undefined} text
- * @param {string} what
- * @returns {number}
- */
-export function idArg(text, what = 'an item id') {
-  const id = Number(String(text ?? '').replace(/^#/, ''));
-  if (!Number.isInteger(id) || id < 1) throw new Refused('USAGE', `expected ${what}, got "${text ?? ''}"`);
-  return id;
-}
-
-/**
- * A comma list of spec ids from a flag.
- *
- * @param {string | undefined} text
- * @returns {string[]}
- */
-export const idList = (text) => (text ?? '').split(',').map((id) => id.trim()).filter(Boolean);
 
 /** Parse an edit's dependency replacement, with the explicit word `none` meaning clear all. */
 export function editAfter(text) {
@@ -680,24 +467,6 @@ export function textArg(io, values, name) {
  * @returns {string | undefined}
  */
 export const briefArg = (io, values) => textArg(io, values, 'brief');
-
-/**
- * The start of a command an agent can paste anywhere: agent shells often start each command in the
- * main checkout, so every command pullboard suggests names its folder (I5).
- *
- * @param {string} root
- * @returns {string}
- */
-export const shellWord = (text) => (/^[\w@%+=:,./-]+$/.test(text) ? text : `'${text.replaceAll("'", "'\\''")}'`);
-
-/**
- * `cd <folder> &&`, the folder quoted for any POSIX shell: single quotes, so a space, a quote or a
- * dollar sign in the path reaches cd as written (I7).
- *
- * @param {string} root
- * @returns {string}
- */
-export const cdTo = (root) => `cd ${shellWord(root)} &&`;
 
 /**
  * Verifying from the main checkout files the verdict as the coordinator's (V9). An agent whose
@@ -777,111 +546,6 @@ export function briefInLane(ctx, lane, brief) {
 }
 
 /**
- * Print an item's brief, indented under a heading, when it has one.
- *
- * @param {any} io
- * @param {string} brief
- */
-export function sayBrief(io, brief) {
-  if (!brief) return;
-  io.say('brief:');
-  brief.split('\n').forEach((line) => io.say(`  ${line}`.trimEnd()));
-}
-
-/**
- * Everything a command needs: the repo, its config, the board's file, and where output goes.
- *
- * @param {any} io
- * @returns {any}
- */
-export function context(io) {
-  const info = repoInfo(io.cwd);
-  if (info.isMain) io.caller?.('coordinator', info.root);
-  const allowSchemaUpgrade = codeIsFromMain();
-  const config = configHere(info);
-  const file = join(info.commonDir, 'pullboard', 'board.sqlite');
-  return { info, config, file, allowSchemaUpgrade, doctrine: loadDoctrine(info.root, config), io, clock: io.clock ?? store.systemClock };
-}
-
-/**
- * This checkout's config. Init is the fix only where pullboard never was (C4): a config deleted
- * from a checkout whose last commit has it is restored, and a linked worktree made from a commit
- * that lacks it, beside a main checkout that has one, is made again from there.
- *
- * @param {{ root: string, commonDir: string, isMain: boolean }} info
- * @returns {any}
- */
-function configHere(info) {
-  try {
-    return loadConfig(info.root);
-  } catch (error) {
-    if (!(error instanceof Refused) || error.code !== 'NO_CONFIG') throw error;
-    if (tryGit(info.root, ['cat-file', '-e', `HEAD:${CONFIG_FILE}`]).status === 0) {
-      throw new Refused('NO_CONFIG', `${CONFIG_FILE} is deleted here, though this checkout's last commit has it: restore it: ${cdTo(info.root)} git checkout HEAD -- ${CONFIG_FILE}`);
-    }
-    const mainRoot = resolve(info.commonDir, '..');
-    if (info.isMain || !existsSync(join(mainRoot, CONFIG_FILE))) throw error;
-    let setup;
-    try {
-      setup = uncommittedSetup(mainRoot, loadConfig(mainRoot));
-    } catch {
-      // Keep the existing recovery for invalid or incomplete main-checkout configuration.
-    }
-    if (setup) {
-      throw new Refused(
-        'NO_CONFIG',
-        `this worktree has no ${CONFIG_FILE}, and the main checkout has uncommitted Pullboard setup files: ${setup.files.join(', ')}. Commit them in the main checkout first: ${setup.stage}`,
-      );
-    }
-    throw new Refused(
-      'NO_CONFIG',
-      `this worktree's commit has no ${CONFIG_FILE}, though the main checkout has one: make a new worktree from the main checkout, which says what to commit first: ${cdTo(mainRoot)} pullboard worktree <lane> --model "<model name>"`,
-    );
-  }
-}
-
-/**
- * Open the board, run `work`, and always close it.
- *
- * @template T
- * @param {any} ctx
- * @param {(board: any) => T} work
- * @param {any} [opened] an already-open board, as withBoardRead passes
- * @returns {T}
- */
-export function withBoard(ctx, work, opened) {
-  const board = opened ?? store.openBoard(ctx.file, ctx.clock, { isMain: ctx.allowSchemaUpgrade,
-    /** Report each source mismatch once through this invocation's text or JSON diagnostics. */
-    onDiagnostic(message) {
-      ctx.io.schemaDiagnostics ??= new Set();
-      const key = ctx.file + '\n' + message;
-      if (ctx.io.schemaDiagnostics.has(key)) return;
-      ctx.io.schemaDiagnostics.add(key);
-      ctx.io.err(message);
-    },
-  });
-  // Whether a proven flake stops blocking a landing is the coordinator's setting, read from accepted main on first use.
-  let quarantine;
-  board.quarantineEnabled = () => quarantine ??= mainPolicy(ctx.info.root).config.flakes?.quarantine === true;
-  const firstEvent = board.emittedEvents?.length ?? 0;
-  /** Forward committed events before releasing either synchronous or asynchronous work. */
-  const finish = () => {
-    for (const event of board.emittedEvents?.slice(firstEvent) ?? []) ctx.io.onEvent?.(event);
-    store.closeBoard(board);
-  };
-  let result;
-  try {
-    // Reuse the already-open board to identify a registered seat, without another lock or migration.
-    if (ctx.io.caller && !ctx.info.isMain && !ctx.io.callerKnown?.(ctx.info.root) && store.agentAt(board, ctx.info.root)) ctx.io.caller('seat', ctx.info.root);
-    result = work(board);
-  }
-  catch (error) { finish(); throw error; }
-  if (result && typeof result.then === 'function') return result.finally(finish);
-  finish();
-  return result;
-}
-
-/**
  * Reserve a new row's id on the board in one write transaction before any file names it, so writers
  * that plan the same id at the same moment get distinct ids (#878). written: the caller writes the row
  * into its own file now; otherwise it is a lane draft that spec apply writes. With no board yet there is
@@ -899,7 +563,7 @@ async function withItemSession(info, operation, args, move) { const noted = oper
  * Whether the board's committed relay.outbox setting queues moves while the relay is down (#922).
  * Why: it is read from the trunk's pullboard.json, so every machine on the board follows the same committed choice.
  */
-function relayOutboxSetting(root) {
+export function relayOutboxSetting(root) {
   try { return configFromSource(coordinatorFile(root, CONFIG_FILE).stdout).relay?.outbox === true; } catch { return false; }
 }
 
@@ -952,17 +616,12 @@ export async function claimOrdered(ctx, board, args) {
   return await ordered(ctx, board, 'claim', args);
 }
 
-/** Check ownership before sync or command side effects; reads and authenticated person channels keep their identity. A person's takeover in a linked main checkout binds no session (#347). */
-async function bindCheckoutSession(io, positionals, values) {
-  if (values.help || values.version || io.personChannel === 'view' || io.personRequest) return;
+/**
+ * Bind this checkout to the session behind a write command, which the command line has already told apart from a
+ * read. A person's takeover in a linked main checkout binds no session (#347).
+ */
+export async function bindWriteSession(io, positionals, values) {
   const [command, first] = positionals;
-  if (command === 'takeover' && (positionals.length !== 1 || Object.keys(values).some((key) => key !== 'json'))) {
-    throw new Refused('USAGE', 'pullboard takeover takes no arguments; run pullboard takeover [--json]');
-  }
-  const writes = ['bar', 'init', 'join', 'worktree', 'hooks', 'hook', 'skills', 'add', 'edit', 'fact', 'escalate', 'run', 'sweep',
-    'next', 'claim', 'hold', 'release', 'submit', 'done', 'verify', 'check', 'merged', 'land', 'withdraw', 'refreeze', 'reopen', 'shout', 'answer', 'pass', 'import', 'milestone', 'takeover', 'forget'];
-  if (!writes.includes(command) && !(command === 'lane' && first === 'add') && !(command === 'settings' && first) && !(command === 'spec' && first === 'apply') && !(command === 'relay' && ['on', 'off'].includes(first))) return;
-  if (command === 'answer' && values.as === 'person') return;
   const digest = agentSessionDigest();
   if (!digest) {
     if (command === 'takeover' && !(repoInfo(io.cwd).isMain && relayLinked(repoInfo(io.cwd).root))) throw new Refused('AGENT_SESSION', 'takeover belongs to an agent session; run pullboard takeover from the agent’s shell');
@@ -986,8 +645,9 @@ async function bindCheckoutSession(io, positionals, values) {
   let agent = info.isMain ? COORDINATOR : null;
   if (!info.isMain) {
     const ctx = context(io);
+    const ownsLandingRoot = command === 'hook' ? (await import('./landing-candidates.js')).landingBatchOwnsRoot : () => false;
     agent = withBoard(ctx, (board) => store.agentAt(board, info.root)?.agent_id
-      ?? (command === 'hook' && store.landingBatches(board).some((batch) => batch.root === info.root && !['landed', 'blocked'].includes(batch.state)) ? COORDINATOR : null));
+      ?? (command === 'hook' && store.landingBatches(board).some((batch) => ownsLandingRoot(batch, info.root)) ? COORDINATOR : null));
     if (!agent && command !== 'join') throw withBoard(ctx, (board) => seatCheckout.unjoinedRefusal(info, store.listAgents(board)));
   }
   if (['shout', 'fact'].includes(command) && localSessionMatches(info, { agent: agent ?? 'unjoined agent', digest })) {
@@ -1035,32 +695,9 @@ export function refuseRemoteCoordinatorModel(ctx, command) {
   throw new Refused('REMOTE_COORDINATOR_MODEL', `the coordinator's model is declared on the coordinator's own checkout (${name}); run pullboard ${command} there`);
 }
 
-/**
- * Who is asking: the coordinator in the main checkout, or the agent this worktree joined as.
- *
- * @param {any} ctx
- * @param {any} board
- * @returns {{ id: string, lane: string, route?: string, family: string | null, model: string | null, displayName: string }}
- */
+/** Resolve the caller with the existing environment and relay identity checks. */
 export function whoAmI(ctx, board) {
-  // A CI or cloud session works as the agent its environment token names, on that one board [E18].
-  const seat = environmentAgent(ctx.info.root, board);
-  if (seat) return { id: seat.agent_id, lane: seat.agent_lane, route: seat.agent_route, family: seat.agent_family ?? null, model: seat.agent_model ?? 'unknown', displayName: displayAgentName(seat, ctx.config.agents.names) };
-  if (ctx.info.isMain) {
-    ctx.io.caller?.('coordinator', ctx.info.root);
-    const registered = store.agentById(board, COORDINATOR);
-    const linked = relayLinked(ctx.info.root);
-    if (linked && !registered) throw new Refused('NO_AGENT', 'the linked snapshot has no coordinator; restore a consistent relay snapshot before acting');
-    const id = linked ? COORDINATOR : store.ensureCoordinator(board, ctx.info.root);
-    const agent = registered ?? store.agentAt(board, ctx.info.root);
-    return { id, lane: COORDINATOR, family: agent?.agent_family ?? null, model: agent?.agent_model ?? 'unknown', displayName: displayAgentName(agent ?? { agent_id: id }, ctx.config.agents.names) };
-  }
-  const agent = store.agentAt(board, ctx.info.root);
-  if (!agent) {
-    throw new Refused('NOT_JOINED', 'this worktree has not joined a lane: pullboard join <lane> --model "<model name>" (see: pullboard lanes)');
-  }
-  ctx.io.caller?.('seat', ctx.info.root);
-  return { id: agent.agent_id, lane: agent.agent_lane, route: agent.agent_route, family: agent.agent_family ?? null, model: agent.agent_model ?? 'unknown', displayName: displayAgentName(agent, ctx.config.agents.names) };
+  return identifyCaller(ctx, board, { environmentAgent, relayLinked });
 }
 
 /**
@@ -1193,90 +830,6 @@ export function evidenceFrom(ctx, values) {
  */
 export const evidenceLine = (shout) => `${shout.shout_evidence_kind}: ${shout.shout_evidence_outcome}, #${shout.shout_evidence_item} at ${shout.shout_evidence_commit.slice(0, 12)}`;
 
-/** How many characters of an earlier verdict's note show prints (N30). */
-const NOTE_LINE = 120;
-
-/**
- * A note's first line, cut to NOTE_LINE characters with … marking the cut. A line ends at any break
- * Unicode makes mandatory (UAX #14): LF, VT, FF, CR, CRLF, NEL, LS and PS. Characters are counted
- * as a reader sees them, so a cut never splits an emoji or an accented letter.
- *
- * @param {string} note
- * @returns {string}
- */
-export function firstLineOf(note) {
-  const line = note.split(/[\n\v\f\r\x85\u2028\u2029]/)[0];
-  const characters = [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(line)];
-  return characters.length > NOTE_LINE ? `${characters.slice(0, NOTE_LINE).map((part) => part.segment).join('')}…` : line;
-}
-
-/**
- * One item on one line: id, status and holder, lane, title, spec ids.
- *
- * @param {any} item
- * @returns {string}
- */
-export function itemLine(item, name = (id) => id, mainMerge = false) {
-  const holder = item.item_status === 'claimed' ? ` ${name(item.item_owner)}` : '';
-  const verifier = item.item_status === 'verified' ? ` by ${name(item.item_verified_by)}` : '';
-  const specs = item.item_spec_ids ? `  [${item.item_spec_ids}]` : '';
-  const parent = item.item_parent_id ? `  under #${item.item_parent_id}` : '';
-  const after = item.item_after ? `  after ${item.item_after.split(',').map((id) => `#${id}`).join(',')}` : '';
-  const rejected = item.item_status === 'open' && item.item_verdict === 'REJECT' ? ' (rejected)' : mainMerge ? ` (${MAIN_MERGE_LABEL})` : '';
-  const light = item.item_route === 'strong' ? '' : `  ${item.item_route}`;
-  const staleVerdict = item.item_verdict_state ? `  ${item.item_verdict_state.code}` : '';
-  const hold = item.item_hold_reason ? `  held by ${name(item.item_hold_by)}: ${item.item_hold_reason}` : '';
-  return `#${item.item_id}  ${item.item_status}${holder}${verifier}${rejected}  ${item.item_lane}  ${item.item_title}${specs}${parent}${after}${light}${hold}${staleVerdict}`;
-}
-
-/** Format a stable agent id for human-facing CLI output. */
-export function agentDisplayName(agents, config, id) {
-  if (!id) return '';
-  const agent = agents.find((entry) => entry.agent_id === id);
-  if (agent) return displayAgentName(agent, config.agents.names);
-  if (id === 'person' || id === 'all' || Object.hasOwn(config.lanes, id)) return id;
-  return displayAgentName({ agent_id: id }, config.agents.names);
-}
-
-/** Render only declared actor positions in a refusal, preserving user text and stable JSON ids. */
-function agentRefusalText(message, code, name) {
-  const patterns = {
-    ALREADY_JOINED: /^(\[ALREADY_JOINED\] this worktree is )(\S+)( in )/,
-    HELD: /^(\[HELD\] item #\d+ is held by )(\S+)( until )/,
-    ITEM_HELD: /^(\[ITEM_HELD\] item #\d+ is held by )(\S+)(: )/,
-    LANE_HELD: /^(\[LANE_HELD\] )(\S+)( holds the )/,
-    REVIEW_HELD: /^(\[REVIEW_HELD\] )(\S+)( holds the )/,
-    NOT_YOURS: /^(\[NOT_YOURS\] only the coordinator or )(\S+)(, who )/,
-    NO_AGENT: /^(\[NO_AGENT\] no (?:registered )?agent )(\S+)(;|$)/,
-    NOT_YOUR_CHECKOUT: /^(\[NOT_YOUR_CHECKOUT\] this checkout belongs to )(\S+)( in )/,
-    FACT_JUDGEMENT: /^(\[FACT_JUDGEMENT\] only the item's live holder \()(\S+)(\))/,
-    RELAY_PERSON_ONLY: /^(\[RELAY_PERSON_ONLY\] agent )(\S+)( cannot )/,
-    SELF_SHOUT: /^(\[SELF_SHOUT\] a shout cannot be addressed to its sender )(\S+)(;)/,
-    NO_READER: /^(\[NO_READER\] nobody reads ")(.*?)(":)/,
-  };
-  if (code === 'RELAY_SENDER_MISMATCH') {
-    return message.replace(/^(\[RELAY_SENDER_MISMATCH\] agent )(\S+)( cannot act as )(.*?)(; send this operation)/,
-      (_, before, sender, middle, actor, after) => `${before}${name(sender)}${middle}${actor === '(no declared agent)' ? actor : name(actor)}${after}`);
-  }
-  if (code === 'NOT_YOUR_DECISION') {
-    return message.replace(/^(\[NOT_YOUR_DECISION\] shout #\d+ is addressed to )(\S+)(, not your \S+ lane \(agent )(\S+)(\))$/,
-      (_, before, to, middle, caller, after) => `${before}${name(to)}${middle}${name(caller)}${after}`);
-  }
-  return patterns[code] ? message.replace(patterns[code], (_, before, id, after) => `${before}${name(id)}${after}`) : message;
-}
-
-/** Render the refusal body without its existing final footer; structured errors retain the message. */
-function displayedRefusal(io, error) {
-  const message = io.guidance(error.message.replace(/\r?\nnext:[ \t]*[^\r\n]*\S[ \t]*(?:\r?\n)*$/u, ''));
-  if (error.code === 'MODEL_REQUIRED') return message.replace(/; run pullboard .+$/u, '');
-  if (!['ALREADY_JOINED', 'HELD', 'ITEM_HELD', 'LANE_HELD', 'REVIEW_HELD', 'NOT_YOURS', 'NOT_YOUR_DECISION', 'NO_AGENT', 'NOT_YOUR_CHECKOUT', 'FACT_JUDGEMENT', 'RELAY_PERSON_ONLY', 'RELAY_SENDER_MISMATCH', 'SELF_SHOUT', 'NO_READER'].includes(error.code)) return message;
-  try {
-    const ctx = context(io);
-    const agents = withBoard(ctx, (board) => store.listAgents(board));
-    return agentRefusalText(message, error.code, (id) => agentDisplayName(agents, ctx.config, id));
-  } catch { return message; }
-}
-
 /** Label the holder at the start of a generated wait reason without rewriting its quoted reason. */
 export function displayedWait(reason, agents, config) {
   return reason.replace(/^(\S+)( holds the )/, (_, id, rest) => `${agentDisplayName(agents, config, id)}${rest}`)
@@ -1358,20 +911,6 @@ export function refuseUnverifiedStack(root, board, item, commit, trunk) {
       `#${item.item_id} includes unverified item #${stacked.item_id} at ${stacked.item_commit}; wait for #${stacked.item_id} to be accepted or rebuild without its commits before continuing`,
     );
   }
-}
-
-/**
- * How long ago an ISO time was, or how long until it, in the board's clock: 45m, 3h, 2d.
- *
- * @param {any} ctx
- * @param {string} iso
- * @returns {string}
- */
-export function span(ctx, iso) {
-  const minutes = Math.round(Math.abs(ctx.clock.now().getTime() - Date.parse(iso)) / 60_000);
-  if (minutes < 60) return `${minutes}m`;
-  if (minutes < 48 * 60) return `${Math.round(minutes / 60)}h`;
-  return `${Math.round(minutes / 1440)}d`;
 }
 
 /**
@@ -1658,34 +1197,6 @@ export function worktreeLocation(mainRoot, config) {
 /** Explain how to recover the configured location when the primary checkout cannot be proven. */
 export function unavailableWorktreeLocation() {
   return 'unavailable; run pullboard resume from the main checkout to see the configured location';
-}
-
-/**
- * The files a new worktree takes from the main checkout's last commit and works by: the config, the
- * spec, the practice file, the rules its opening lines name, and the hooks, when git looks for them
- * inside each worktree.
- *
- * @param {string} mainRoot
- * @param {any} config
- * @returns {string[]}
- */
-function setupFiles(mainRoot, config) {
-  const hooks = tryGit(mainRoot, ['config', '--get', 'core.hooksPath']).stdout;
-  const inEach = hooks && !isAbsolute(hooks) && !relative(mainRoot, resolve(mainRoot, hooks)).startsWith('..');
-  return [CONFIG_FILE, config.spec, config.practice, 'AGENTS.md', ...(inEach ? [hooks] : [])].filter(Boolean);
-}
-
-/** Find setup files in the main checkout that a new worktree would not receive from HEAD. */
-export function uncommittedSetup(mainRoot, config) {
-  if (headCommit(mainRoot) === null) return null;
-  const differ = differFromHead(mainRoot, setupFiles(mainRoot, config));
-  if (!differ.length) return null;
-  const words = differ.map(({ path }) => shellWord(path)).join(' ');
-  const force = differ.some(({ ignored }) => ignored) ? ' -f' : '';
-  return {
-    files: differ.map(({ path }) => path), differ,
-    stage: `${cdTo(mainRoot)} git add${force} -- ${words}`,
-  };
 }
 
 /** Find initialized setup that is on disk but absent from the primary checkout's committed policy. */
@@ -2206,48 +1717,6 @@ export function specProof(ctx) {
 
 
 /**
- * Run one command. Returns the exit code: 0 done, 1 refused, 2 usage.
- *
- * @param {string[]} argv
- * @param {any} io
- * @returns {Promise<number>}
- */
-async function runCommand(argv, io) {
-  let parsed;
-  try {
-    parsed = parseCommandArgs(argv);
-  } catch (error) {
-    const refusal = new Refused('USAGE', `${error.message}; run pullboard help`);
-    io.refusal?.(refusal);
-    io.err(`pullboard: ${error.message}\nRun pullboard help --all for the full list.\nnext: ${io.refusalDocument(refusal).error.next}`);
-    return 2;
-  }
-  const { values, positionals } = parsed;
-  io.jsonMode?.(values.json);
-  const [command = '', first, second, ...rest] = positionals;
-  const args = { first, second, rest, values };
-  if ((values.version || command === 'version') && !values.help) return await (await COMMANDS.version()).run(io, args);
-  const help = selectedHelp(command, first, second, rest, values);
-  if (help) return await (await COMMANDS.help()).run(io, args, help);
-  try {
-    if (values.as === 'person' && !['answer', 'decisions', 'fact', 'add', 'edit'].includes(command) && !(command === 'bar' && first === 'sign')) {
-      throw new Refused('USAGE', '--as person works with answer, decisions, fact --never-again, add, edit, or bar sign');
-    }
-    const load = COMMANDS[command];
-    if (!load) return unknownCommand(io, command);
-    return await (await load()).run(io, args);
-  } catch (error) {
-    if (error instanceof Refused) {
-      io.refusal?.(error);
-      io.err(`pullboard: ${displayedRefusal(io, error)}\nnext: ${io.refusalDocument(error).error.next}`);
-      reportBlock(io, error, { command });
-      return 1;
-    }
-    throw error;
-  }
-}
-
-/**
  * Every private name a saved blueprint must never carry: each agent's id, display name, model
  * and family, the person's Git name and email, everyone who signed off or signs rows, and this
  * machine's host name, whole, plus the parts of each (a first name, an email's user) to match
@@ -2278,119 +1747,3 @@ export function privateNames(root, board, spec) {
   return { names: [...names], parts: [...parts] };
 }
 
-/** Retain the primary branch on every command without creating a board for global help. */
-function rememberTrunk(io) {
-  let info;
-  try { info = repoInfo(io.cwd); }
-  catch (error) {
-    if (error instanceof Refused && ['NOT_A_REPO', 'NO_REPO', 'CORE_BARE'].includes(error.code)) return;
-    throw error;
-  }
-  if (!info.isMain) return;
-  const primary = mainCheckout(info.root);
-  if (primary?.branch) trunkRef(info.root, primary.branch);
-}
-
-/** Run one command and emit its single versioned JSON result when requested (A1). */
-export async function main(argv, streams) {
-  if (argv[0] === 'serve' && !startupMainTraced) {
-    startupMainTraced = true;
-    traceServeStartup('cli-main-enter');
-  }
-  return withGitFacts(() => runMain(argv, streams));
-}
-
-/** Parse and execute one CLI command, binding its checkout session and Git-fact scope. */
-async function runMain(argv, streams) {
-  const io = commandOutput(argv, streams);
-  let sync = true;
-  let needsRepo = true;
-  let parsed;
-  let checkoutSession;
-  try {
-    parsed = parseCommandArgs(argv);
-    const command = parsed.positionals[0];
-    io.relayJson = Boolean(parsed.values.json);
-    io.relayCommand = { cliOperation: command === 'done' ? 'submit' : command, cwd: resolve(io.cwd),
-      positionals: parsed.positionals.slice(1),
-      values: Object.fromEntries(Object.keys(parsed.values).filter(key => key !== 'json').sort().map(key => [key, parsed.values[key]])) };
-    sync = Boolean(command) && !parsed.values.help && !parsed.values.version
-      && !['help', 'version', 'hook', 'init', 'relay', 'tour', 'mcp', 'health', 'watch', 'digest'].includes(command)
-      // A coordinator declaration on a linked clone must refuse before auto-link or relay sync.
-      && !(command === 'join' && parsed.positionals[1] === COORDINATOR);
-    needsRepo = !(parsed.values.help || parsed.values.version || command === 'help' || command === 'version');
-  } catch { sync = false; needsRepo = false; }
-  if (parsed) {
-    try {
-      // Checkout identity supplies the display role even if a person-channel check refuses first.
-      try { const info = needsRepo ? repoInfo(io.cwd) : null; if (info?.isMain) io.caller('coordinator', info.root); } catch { /* Unknown checkouts retain existing guidance. */ }
-      const [command, verb] = parsed.positionals;
-      const remoteRelayOn = command === 'relay' && verb === 'on' && !parsed.values.all;
-      if (!parsed.values.help && !parsed.values.version &&
-          (parsed.values.as === 'person' && command !== 'decisions' || command === 'relay' && ['on', 'join', 'revoke'].includes(verb) && !remoteRelayOn)) {
-        requirePersonChannel(io.personChannel);
-        io.caller('person');
-      }
-      checkoutSession = await bindCheckoutSession(io, parsed.positionals, parsed.values);
-      if (checkoutSession?.lease) CHECKOUT_LEASES.set(io, checkoutSession.lease);
-    } catch (error) {
-      if (!(error instanceof Refused)) throw error;
-      io.refusal(error);
-      io.err(`pullboard: ${displayedRefusal(io, error)}\nnext: ${io.refusalDocument(error).error.next}`);
-      reportBlock(io, error, { command: parsed.positionals[0] });
-      io.flush(1);
-      return 1;
-    }
-  }
-  try {
-    /** A network refusal preserves offline reads; linked mutation dispatch requires an acknowledgement. */
-    const retry = async () => {
-      try {
-        io.relayOutbox ??= () => relayOutboxSetting(io.cwd);
-        await syncRelay(io.cwd, io);
-        await retryCheckBaselines(io.cwd, io);
-      }
-      catch (error) {
-        if (!(error instanceof Refused)) throw error;
-        if (!['NOT_A_REPO', 'NO_REPO', 'NO_CONFIG', 'CORE_BARE'].includes(error.code)) io.err(`pullboard: ${displayedRefusal(io, error)}\nnext: ${io.refusalDocument(error).error.next}`);
-      }
-    };
-    if (needsRepo) rememberTrunk(io);
-    traceServeStartup('cli-command-preamble-start');
-    if (sync) {
-      try { await autoLinkProject(io.cwd, io); } catch (error) { if (!(error instanceof Refused)) throw error; }
-      await retry();
-      try { await executePersonRequests(io.cwd, io, main); }
-      catch (error) {
-        if (!(error instanceof Refused)) throw error;
-        if (!['NOT_A_REPO', 'NO_REPO', 'NO_CONFIG', 'CORE_BARE'].includes(error.code)) io.err(`pullboard: ${displayedRefusal(io, error)}\nnext: ${io.refusalDocument(error).error.next}`);
-      }
-    }
-    traceServeStartup('cli-command-preamble-ready');
-    const code = await runCommand(argv, io);
-    if (code === 0) await checkoutSession?.finish?.();
-    if (sync && code === 0) await retry();
-    const status = io.exitCode(code);
-    if (status === 0 && needsRepo && !parsed?.values['dry-run']) clearCompletedBlocks(io);
-    io.flush(status);
-    return status;
-  } finally {
-    CHECKOUT_LEASES.delete(io);
-    CHECKOUT_BOARD_ONLY.delete(io);
-    checkoutSession?.lease?.release();
-  }
-}
-
-/** Result-producing command names, including aliases, for API contract coverage (A1). */
-export function resultCommands() {
-  return Object.keys(COMMANDS).filter((name) => !UNLISTED_COMMANDS.includes(name)).sort();
-}
-
-/** Command help follows the same dispatch declarations as execution. */
-export const HELP = buildHelp(resultCommands());
-
-// This marker is emitted once when the actual CLI entrypoint finishes evaluating.
-if (process.env.PULLBOARD_STARTUP_TRACE_ENTRY
-  && resolve(process.argv[1] ?? '') === resolve(process.env.PULLBOARD_STARTUP_TRACE_ENTRY)) {
-  traceServeStartup('cli-module-load-complete');
-}

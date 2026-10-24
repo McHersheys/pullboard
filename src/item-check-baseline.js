@@ -1,3 +1,5 @@
+import { itemCheckBaseline } from './board-query.js';
+export { itemCheckBaseline } from './board-query.js';
 /** Baseline observations and their immutable completion fences [V2,H16]. */
 import {
   atomic,
@@ -69,14 +71,6 @@ export function saveCheckBaseline(board, id, baseline) {
     .run(key, JSON.stringify(baseline));
 }
 
-/** Read an observation only when it still describes the item's current check command. */
-export function itemCheckBaseline(board, item) {
-  const row = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?').get(`item_check_baseline_${item.item_id}`);
-  if (!row) return null;
-  const baseline = JSON.parse(row.meta_value);
-  return baseline.command === item.item_check ? baseline : null;
-}
-
 /** Read the current check's setter from immutable edits, or its original item author [V2]. */
 export function itemCheckAuthor(board, id) {
   const item = itemById(board, id);
@@ -89,4 +83,3 @@ export function itemCheckAuthor(board, id) {
   }
   return item.item_created_by;
 }
-

@@ -1122,10 +1122,14 @@ test('an expired saved pairing preserves a valid identity when its session probe
   } finally { if (first) await first.close(); }
   for (const unavailable of [false, true]) await t.test(unavailable ? 'unavailable probe' : 'valid session', async () => {
     let probes = 0;
+    let listings = 0;
+    let unmatchedProbes = 0;
     const route = front.route(session, null);
     const page = await context.newPage({ phone: true, bootstrap: storedScript('stale-pairing'), route: async request => {
+      if (new URL(request.url).pathname === '/api/v1/boards') listings += 1;
       if (new URL(request.url).pathname === '/api/v1/devices/session') {
         probes += 1;
+        if (probes > listings) unmatchedProbes += 1;
         if (unavailable) return { kind: 'fulfill', status: 503, headers: { 'content-type': 'application/json' },
           body: Buffer.from(JSON.stringify({ version: 1, error: { code: 'RELAY_UNAVAILABLE', message: 'fixture session probe unavailable' } })) };
       }
@@ -1133,12 +1137,22 @@ test('an expired saved pairing preserves a valid identity when its session probe
     } });
     try {
       await page.navigate(HOSTED + '/');
-      const failure = await page.poll(`(() => { const node = document.querySelector('#relay-screen .relay-live span');
-        return node?.textContent.includes('fresh phone pairing link') && node.textContent; })()`, 8_000); // budget: existing hosted blocker-settle ceiling.
-      assert.ok(failure, 'the original expired pairing guidance remains observable on the phone');
-      assert.match(failure, /pullboard relay on --all/u);
-      assert.doesNotMatch(failure, /fixture session probe unavailable/u, 'probe errors do not replace the original pairing refusal');
-      assert.equal(probes, 1, 'only the cause-specific session probe ran');
+      if (unavailable) {
+        const failure = await page.poll(`(() => { const node = document.querySelector('#relay-screen .relay-live span');
+          return node?.textContent.includes('fresh phone pairing link') && node.textContent; })()`, 8_000); // budget: existing hosted blocker-settle ceiling.
+        assert.ok(failure, 'unavailable authorization retains the original expired pairing guidance');
+        assert.match(failure, /pullboard relay on --all/u);
+        assert.doesNotMatch(failure, /fixture session probe unavailable/u, 'probe errors do not replace the original pairing refusal');
+      } else {
+        // #982 intentionally replaces the former expired-link blocker for an authorized paired browser.
+        assert.ok(await page.poll(`(${READ_SCREEN}).board`, 8_000), 'valid paired identity opens its board despite the expired link'); // budget: fixture settle ceiling.
+        assert.doesNotMatch((await page.evaluate(READ_SCREEN)).words, /fresh phone pairing link/u);
+      }
+      if (unavailable) assert.equal(probes, 1, 'only the cause-specific session probe ran');
+      else {
+        assert.ok(probes > 0, 'the opened board performs normal session authorization');
+        assert.equal(unmatchedProbes, 0, 'no expiry-only session probe runs before or beyond the observed board listings');
+      }
       const screen = await page.evaluate(READ_SCREEN);
       assert.doesNotMatch(screen.words, /browser was removed/iu, 'a valid or unavailable session is not a revocation');
       assert.equal(await page.evaluate("document.getElementById('relay-removed') !== null"), false);
@@ -1149,5 +1163,58 @@ test('an expired saved pairing preserves a valid identity when its session probe
       assert.ok(retained.keys === enrolled.keys, 'unrelated valid board keys are retained');
       assert.ok(enrolledDevices(box).includes(enrolled.id), 'the real enrolled device remains active');
     } finally { await page.close(); }
+  });
+});
+
+/** Exercise stale enrollment through real saved keys, a real local view, and an unpaired control. */
+test('an expired pairing link left in sessionStorage never blocks a paired browser or the board computer\'s view [H5,H17,N26]', async t => {
+  assert.ok(hostedEngines().find(engine => engine.name === 'chromium')?.available, 'real Chromium is required');
+  const box = await relayClientFixture(t);
+  box.env.PULLBOARD_MACHINE_HOME = box.env.PULLBOARD_HOME;
+  const front = await hostedFront(box.origin);
+  const engine = await openEngine('chromium');
+  const paired = await engine.newContext();
+  t.after(async () => {
+    const outcomes = await Promise.allSettled([paired.close(), engine.close(), front.close()]);
+    for (const outcome of outcomes) if (outcome.status === 'rejected') throw outcome.reason;
+  });
+  const session = await freshSession(box);
+  let first;
+  try {
+    await relayOnAll(box, async link => {
+      first = await paired.newPage({ route: front.route(session, null), phone: true });
+      await first.navigate(link);
+    });
+    assert.ok(await first.poll(`(${READ_SCREEN}).board`, 8_000), 'real enrollment opens the seeded board'); // budget: fixture settle ceiling, not a speed bar.
+  } finally { if (first) await first.close(); }
+  await t.test('already paired phone retains access', async () => {
+    const page = await paired.newPage({ route: front.route(session, null), phone: true, bootstrap: storedScript('stale-pairing') });
+    try {
+      await page.navigate(HOSTED + '/');
+      assert.ok(await page.poll(`(${READ_SCREEN}).board`, 8_000), 'saved enrollment opens its board despite expired pending pairing'); // budget: fixture settle ceiling.
+      assert.equal(await page.evaluate("sessionStorage.getItem('pullboard.relay.device-pair.v1')"), null);
+      assert.doesNotMatch((await page.evaluate(READ_SCREEN)).words, /fresh phone pairing link|DEVICE_PAIR_EXPIRED/u);
+    } finally { await page.close(); }
+  });
+  const view = await boardView(box);
+  t.after(() => view.stop());
+  await t.test('board computer uses its own view', async () => {
+    const context = await engine.newContext();
+    try {
+      const seen = await visit(context, { route: front.route(session, view.base), phone: false,
+        bootstrap: storedScript('stale-pairing'), localView: view.base + '/local/view' }, true);
+      assert.ok(seen.board, 'the actual running local view remains readable');
+      assert.doesNotMatch(seen.words, /fresh phone pairing link|DEVICE_PAIR_EXPIRED/u);
+    } finally { await context.close(); }
+  });
+  await t.test('unpaired phone still needs a fresh link', async () => {
+    const context = await engine.newContext();
+    const page = await context.newPage({ route: front.route(session, null), phone: true, bootstrap: storedScript('stale-pairing') });
+    try {
+      await page.navigate(HOSTED + '/');
+      assert.ok(await page.poll(`(${READ_SCREEN}).words.includes('fresh phone pairing link')`, 8_000), 'unpaired browser gets actionable expiry guidance'); // budget: fixture settle ceiling.
+      assert.equal((await page.evaluate(READ_SCREEN)).board, false);
+      assert.equal(await page.evaluate("sessionStorage.getItem('pullboard.relay.device-pair.v1')"), null);
+    } finally { await context.close(); }
   });
 });
