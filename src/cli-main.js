@@ -131,6 +131,7 @@ const OPTIONS = {
   ref: { type: 'string' },
   supersedes: { type: 'string' },
   conflict: { type: 'string', multiple: true },
+  'withdraw-verdict': { type: 'boolean' },
   cause: { type: 'string' },
   'never-again': { type: 'boolean' },
   'draft-splits': { type: 'boolean' },
