@@ -146,6 +146,9 @@ export { declareJob, recordJobRun } from './recurring-jobs.js';
 export { proposeSentinel, decideSentinel, beginSentinelRun, finishSentinelRun } from './sentinels.js';
 export { flakeLedger, recordFlakeObservation } from './flakes.js';
 export { flakeQuarantines, gateRuns, recordGateRun } from './quarantine.js';
+export { proofReceipts, recordProofRun } from './proof-receipts.js';
+import { refuseLongShout } from './proof-receipts.js';
+import { PROOF_RUN_ENGINE } from './proof-run-engine.js';
 
 /** The seat readers live in seats.js; the board re-exports them so `store.*` callers keep one import. */
 export { agentAt, agentById, agentCreator, coordinatorHolder, listAgents, nextSeatId, seatEnrolled, seatLineage, takeCoordinator, withVerifierStanding } from './seats.js';
@@ -1936,6 +1939,7 @@ function persistShout(board, { from, to, text, decision = false, answers = null,
  * @returns {number}
  */
 export function shout(board, message) {
+  if ((board.executionEngineVersion ?? ENGINE_VERSION) >= PROOF_RUN_ENGINE) refuseLongShout(message.text);
   return atomic(board, () => insertShout(board, message));
 }
 

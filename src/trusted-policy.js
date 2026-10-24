@@ -215,13 +215,15 @@ export function checkAtCommit(root, item, { waitMs = 0, gateSlotHeld = false, ga
   let checkLogPath = '';
   let timingProfile = { files: [], tests: [] };
   let checkedSourceReady = false;
+  let executed = false;
+  let exitCode = null;
   /** Format one completed check phase with the private captures and durable artifact locations. */
   const finish = (state, stage) => {
     const runner = timingRunner(command);
     const events = checkLogPath && existsSync(checkLogPath) ? timingFromLog(checkLogPath, runner) : timingFromOutput(checkOutput, runner);
     timingProfile = { ...events, wallMs: Math.max(0, Date.now() - checkStartedAt) };
     return checkResult(state, stage, installOutput, checkOutput, { root, item, commandRoot: copy, installLogPath, checkLogPath, timingProfile, waitMs,
-      executionSourceUnchanged: checkedSourceReady && privateSourceUnchanged(copy, item.item_commit, env) });
+      executed, exitCode, executionSourceUnchanged: checkedSourceReady && privateSourceUnchanged(copy, item.item_commit, env) });
   };
   try {
     const common = policyGit(root, ['rev-parse', '--path-format=absolute', '--git-common-dir']).trim();
@@ -266,6 +268,8 @@ export function checkAtCommit(root, item, { waitMs = 0, gateSlotHeld = false, ga
     if (remaining <= 0) return finish('unverified', 'check timed out');
     checkLogPath = join(scratch, 'check.log');
     const run = runPrivateCommand(copy, env, command, remaining, checkLogPath);
+    executed = run.executed === true;
+    exitCode = run.status ?? null;
     checkOutput = run.output;
     if (run.error?.code === 'ETIMEDOUT') return finish('unverified', 'check timed out');
     if (run.error) return finish('unverified', `check could not start (${run.error.code})`);
@@ -423,7 +427,7 @@ function privateSourceUnchanged(root, commit, env) {
 }
 
 /** Persist a sanitized full diagnostic outside the temporary checkout so a refusal can name it. */
-function checkResult(state, stage, installCapture, checkCapture, { root = '', item = {}, commandRoot = root, installLogPath = '', checkLogPath = '', timingProfile = null, waitMs = 0, executionSourceUnchanged } = {}) {
+function checkResult(state, stage, installCapture, checkCapture, { root = '', item = {}, commandRoot = root, installLogPath = '', checkLogPath = '', timingProfile = null, waitMs = 0, executed = false, exitCode = null, executionSourceUnchanged } = {}) {
   const boundedInstall = secretScanned(installCapture, 'check install capture');
   const boundedCheck = secretScanned(checkCapture, 'frozen check capture');
   const install = digestOf(boundedInstall) || '(no output)';
@@ -499,6 +503,6 @@ function checkResult(state, stage, installCapture, checkCapture, { root = '', it
     : /could not start/u.test(stage) ? "couldn't start" : state === 'unverified' ? 'could not be verified' : 'passed';
   const output = `install output:\n${boundedInstall || '(no output)'}\ncheck output:\n${boundedCheck || '(not run or no output)'}`;
   return { sandboxBlocked, state, green: state === 'pass', checked: true, stage, failure, report, output, outputTail, outputPath, outputError, profilePath,
-    executionRoot: commandRoot, ...(executionSourceUnchanged === undefined ? {} : { executionSourceUnchanged }),
+    executionRoot: commandRoot, executed, exitCode, ...(executionSourceUnchanged === undefined ? {} : { executionSourceUnchanged }),
     profile: timingProfile ? { ...timingProfile, profilePath } : null };
 }

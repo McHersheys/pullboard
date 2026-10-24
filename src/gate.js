@@ -44,6 +44,7 @@ import {
   headTree,
   invalidateGitFacts,
   isClean,
+  tryGit,
   untracked,
 } from './git.js';
 import { recordGateRun } from './gate-control.js';
@@ -56,7 +57,13 @@ import {
   committedTest,
   tapTests,
 } from './tap-tests.js';
-import { mainPolicy } from './trusted-policy.js';
+import {
+  checkAtCommit,
+  frozenCheck,
+  mainPolicy,
+} from './trusted-policy.js';
+import { proofCounts } from './proof-provenance.js';
+import { logLines } from './timing.js';
 import { secretsIn } from './hooks.js';
 import { Refused } from './refused.js';
 import { missingGate } from './gate-config.js';
@@ -296,12 +303,12 @@ export function runShell(root, command, { pipefail = false, env = {}, stages = f
   const raw = `${result.stdout ?? ''}${result.stderr ?? ''}`;
   const seconds = Math.round((Date.now() - started) / 1000);
   const blocked = (output) => (result.status === 0 ? null : sandboxBlockedOperation(root, output));
-  if (!stages) return { isGreen: result.status === 0, output: raw, seconds, ...(timed ? { timedOut: result.timedOut } : {}), sandboxBlocked: blocked(raw) };
-  if (!split) return { isGreen: result.status === 0, output: raw, seconds, stages: null, ...(timed ? { timedOut: result.timedOut } : {}), sandboxBlocked: blocked(raw) };
+  if (!stages) return { isGreen: result.status === 0, exitCode: result.status, output: raw, seconds, ...(timed ? { timedOut: result.timedOut } : {}), sandboxBlocked: blocked(raw) };
+  if (!split) return { isGreen: result.status === 0, exitCode: result.status, output: raw, seconds, stages: null, ...(timed ? { timedOut: result.timedOut } : {}), sandboxBlocked: blocked(raw) };
   const staged = readStages(raw, marker, split.length);
   // Each pipeline component's own status rides on its stage, so no failing producer hides behind a later one.
   const withPipes = staged.stages.map((stage, index) => (pipeStatuses?.[index] ? { ...stage, pipeline: pipeStatuses[index] } : stage));
-  return { isGreen: result.status === 0, seconds, ...(timed ? { timedOut: result.timedOut } : {}), ...staged, stages: withPipes, sandboxBlocked: blocked(staged.output) };
+  return { isGreen: result.status === 0, exitCode: result.status, seconds, ...(timed ? { timedOut: result.timedOut } : {}), ...staged, stages: withPipes, sandboxBlocked: blocked(staged.output) };
 }
 
 /** Refuse an environment-blocked proof after its ordinary raw logs and timings are persisted. */
@@ -325,6 +332,7 @@ function safeLog(output) {
  * @param {{ waitMs?: number, artifactDirectory?: string, artifactPrefix?: string, persistLog?: boolean, profileFile?: string, pipefail?: boolean, gateSlotHeld?: boolean, gateLease?: object, landing?: boolean, stages?: boolean, timeoutMs?: number, waivers?: Array<{ kind: string, test: string }> }} [options]
  */
 export function runProfiledShell(root, command, { waitMs = 0, artifactDirectory, artifactPrefix = 'pullboard-gate', persistLog = false, profileFile, pipefail = false, gateSlotHeld = false, gateLease, landing = false, stages = false, waivers = [], timeoutMs } = {}) {
+  const proofSource = gateLease?.proof ? proofSourceAt(root) : null;
   const directory = artifactDirectory ?? dirname(gitPath(root, LOG));
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const id = randomUUID();
@@ -354,7 +362,58 @@ export function runProfiledShell(root, command, { waitMs = 0, artifactDirectory,
     ...runTiming(profiledRun, command),
     waitMs: Math.max(0, Math.round(waitMs)), wallMs: Math.max(0, Date.now() - started), receipt: settleReceipt(gateLease),
   });
-  return { ...profiledRun, profile, profilePath, logPath };
+  const result = { ...profiledRun, profile, profilePath, logPath };
+  const proofReceiptId = gateLease?.proof && leaveProofReceipt(root, command, result, proofSource, gateLease.proof, gateLease);
+  return { ...result, ...(proofReceiptId ? { proofReceiptId } : {}) };
+}
+
+/** Capture source identifiers before execution; a dirty tree remains explicitly unproven. */
+function proofSourceAt(root, commit = null) {
+  invalidateGitFacts(); // The child may have changed Git facts outside this command context.
+  const head = commit ?? headCommit(root);
+  const tree = head ? tryGit(root, ['rev-parse', '--verify', `${head}^{tree}`], { env: gitChildEnv(root) }) : null;
+  return { head, tree: tree?.status === 0 ? tree.stdout : null, clean: commit !== null || committedTree(root) !== null };
+}
+
+/** The private gate writer records process results, never provenance supplied by a CLI argument. */
+function leaveProofReceipt(root, command, run, before, context, lease) {
+  try {
+    if (!before || run.sandboxBlocked || run.exitCode === undefined) return null;
+    const store = receiptStore(root);
+    if (!store) return null;
+    const after = context.commit ? before : proofSourceAt(root);
+    const source = run.executionSource ?? run.profile?.executionSource;
+    const sourceClean = before.clean && after.clean && before.head === after.head && before.tree === after.tree
+      && run.executionSourceUnchanged !== false && (!source || source.commit === before.head && source.tree === before.tree)
+      && (!lease?.runner || Boolean(source));
+    const environment = run.environment ?? run.profile?.environment ?? null;
+    const remote = run.executionRunner ?? run.profile?.executionRunner;
+    const localLoad = { average: loadavg(), cpus: availableParallelism(), freeMB: Math.floor(freemem() / 1048576) };
+    let main = null;
+    try { main = mainPolicy(root).commit; } catch { /* An unavailable policy remains unknown in this execution record. */ }
+    const receipt = receiptFields({ version: 2, id: randomUUID(), kind: context.kind,
+      tree: before.tree, head: before.head, main, command: createHash('sha256').update(command).digest('hex'),
+      green: run.isGreen ?? run.state === 'pass', failures: [],
+      load: run.executionLoad ?? (remote || lease?.runner ? null : localLoad), at: new Date().toISOString(),
+      proof: { item: context.item, frozenDigest: context.frozenDigest ?? null, seat: context.seat,
+        environment, runner: remote ?? (lease?.runner ? null : 'local'), exitCode: run.exitCode,
+        counts: proofCounts(run.outputPath ? logLines(run.outputPath) : run.output ?? ''),
+        durationMs: Math.max(0, Math.round(run.remoteWallMs ?? run.profile?.wallMs ?? run.seconds * 1000)), sourceClean } });
+    if (!receipt) return null;
+    mkdirSync(store, { recursive: true, mode: 0o700 });
+    writeFileSync(join(store, `${receipt.id}.json`), receiptBody(receipt), { flag: 'wx', mode: 0o600 });
+    return receipt.id;
+  } catch { return null; /* A missing receipt is refused by the CLI before it records a verdict. */ }
+}
+
+/** Execute a private immutable check before the gate writes its provenance. */
+export function runFrozenProof(root, item, { gateLease, waitMs = 0 } = {}) {
+  const context = { item: item.item_id, frozenDigest: item.item_frozen_digest ?? null,
+    seat: gateLease?.proof?.seat, kind: 'verdict', commit: item.item_commit };
+  const before = proofSourceAt(root, item.item_commit);
+  const result = checkAtCommit(root, item, { gateLease, waitMs });
+  const id = result.executed ? leaveProofReceipt(root, frozenCheck(item), result, before, context, gateLease) : null;
+  return { ...result, ...(id ? { proofReceiptId: id } : {}) };
 }
 
 /** Run an independent focused comparison without blocking other holders of the machine pool.
@@ -689,7 +748,8 @@ function fullGateRun(root, config, trustStamp = false, { waitMs = 0, log = gitPa
   const receiptId = run.sandboxBlocked ? null : leaveRunReceipt(root, config, run, { before, kind });
   refuseSandboxBlocked(run);
   if (isGreen && before !== null && committedTree(root) === before) writeFileSync(gitPath(root, STAMP), `${before}\n`);
-  return { isGreen, isCached: false, output, seconds, log, profile, profilePath, receiptId, ...(run.timedOut ? { timedOut: true } : {}), ...(run.executionRoot ? { executionRoot: run.executionRoot } : {}),
+  return { isGreen, isCached: false, output, seconds, log, profile, profilePath, receiptId,
+    ...(run.proofReceiptId ? { proofReceiptId: run.proofReceiptId } : {}), ...(run.timedOut ? { timedOut: true } : {}), ...(run.executionRoot ? { executionRoot: run.executionRoot } : {}),
     // A remote run's host load and pinned main reach the flake diagnostics with it (#925).
     ...(run.executionRunner ? { executionRunner: run.executionRunner, executionMain: run.executionMain ?? null, executionLoad: run.executionLoad ?? null } : {}), ...(stages ? { stages: run.stages } : {}) };
 }
@@ -743,7 +803,7 @@ export async function runStaticChecks(root, config, { agent, item = '', onWait, 
  * @param {{base:string|null, trunk?:string, changed?:string[], check:string, agent?:string, item?:string|number, kind?:string, onWait?:(state:object)=>void, onBrowserFallback?:(decision:{file:string,reason:string})=>void}} options
  * @returns {Promise<any>}
  */
-export async function runSubmitGate(root, config, { base, trunk, changed, check, agent, item = '', kind = 'submit', onWait, onBrowserFallback, onFailure }) {
+export async function runSubmitGate(root, config, { base, trunk, changed, check, agent, item = '', kind = 'submit', onWait, onBrowserFallback, onFailure, proofContext }) {
   if (!config.gate.trim()) throw missingGate(root);
   await runStaticChecks(root, config, { agent, item, onWait, onBrowserFallback });
   const selection = config.affectedTests
@@ -770,6 +830,7 @@ export async function runSubmitGate(root, config, { base, trunk, changed, check,
     : (selection.full || !allowBrowserFreeChecks || await testsNeedBrowser(root, proofFiles, { onFallback: onBrowserFallback }));
   const browser = checkUsesBrowser || proofUsesBrowser;
   return await withGateSlot(root, async (lease) => {
+    if (proofContext) lease.proof = { ...proofContext, kind: 'submit' };
     pinRunMain(lease, onFailure);
     const startedAt = Date.now();
     const log = gitPath(root, 'pullboard-submit.log');
@@ -797,7 +858,9 @@ export async function runSubmitGate(root, config, { base, trunk, changed, check,
       refuseSandboxBlocked(proof);
       return { ...proof, log, seconds: criterion.seconds + proof.seconds, ...selection, ...(deferred ? { files: proofFiles, submitInvariants: invariants } : {}),
         ...(deferSelection ? { deferredFiles: selection.files, deferAbove: config.submitDeferAbove } : {}), deferred, deferFullFallback, check: receipt,
-        profile, profilePath, proofProfilePath: proof.profilePath, proofLog: proof.log };
+        profile, profilePath, proofProfilePath: proof.profilePath, proofLog: proof.log,
+        proofReceiptIds: [...(check ? [criterion.proofReceiptId ?? null] : []),
+          ...(proof.profile ? [proof.proofReceiptId ?? null] : [])] };
     };
     if (!criterion.isGreen) {
       writeFileSync(log, criterion.output);
