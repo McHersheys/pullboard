@@ -1,9 +1,4 @@
-import { lineWipLimit } from './line-wip-limit.js';
-import {
-  capacitySettings,
-  lineCapacitySnapshot,
-  lineCapacityProblem,
-} from './line-capacity.js';
+import * as capacity from './line-capacity-board.js';
 import {
   lineOrderEnabled,
   lineBuildOrder,
@@ -1023,8 +1018,7 @@ export function claim(board, id, { agentId, lane, leaseMs, freeze, head = null, 
             ? new Refused('ITEM_HELD', `item #${id} is held by coordinator: ${held.item_hold_reason}; wait for the coordinator to lift it with pullboard hold ${id} --off`)
             : null;
         },
-        lineCapacity: found => lineCapacityProblem(board, { renewal: isRenewal(found), oldestReview: pending =>
-          oldestCapacityReview(board, pending, { agentId, policy: reviewPolicy, familyPolicy }) }),
+        lineCapacity: found => capacity.claimProblem(board, isRenewal(found), { agentId, policy: reviewPolicy, familyPolicy }, { reviewerChecks, reviewReleaseCooldown }),
         oneLiveClaim: (found) => {
           if (found.item_parent_id !== null || isRework(found)) return null;
           const other = board.db
@@ -1268,26 +1262,8 @@ export { reviewQueueBreakdown } from './board-query.js';
 export { reviewQueue } from './board-query.js';
 
 /** Offer an eligible review at the queue ratio without claiming or reserving anything [Q1,V15]. */
-export function reviewOffer(board, { agentId, lane, policy = 'any', familyPolicy = 'off', ratio = 3, runnable = false, routes = ROUTES }) {
-  const queue = reviewQueue(board);
-  const settings = capacitySettings(board);
-  const capacity = settings.reviewsFirst === true ? lineCapacitySnapshot(board) : null;
-  if (capacity) ratio = typeof settings.wipPerReviewer === 'number' ? settings.wipPerReviewer : 3;
-  if (capacity ? queue.pending <= lineWipLimit(ratio, capacity.activeReviewers) : queue.pending < ratio * Math.max(queue.reviewing, 1)) return null;
-  const { item } = nextFor(board, { agentId, lane, verify: true, policy, familyPolicy, runnable, routes });
-  return item ? { item, queue, ratio } : null;
-}
-
-/** Find the oldest eligible submission with exactly the reservation guards, including cooldown and ownership. */
-function oldestCapacityReview(board, pending, who) {
-  try {
-    const checks = Object.values(reviewerChecks(board, who));
-    return pending.find(item => !reviewHolder(board, item) && !reviewReleaseCooldown(board, item.item_id, who.agentId)
-      && checks.every(check => !check(item))) ?? null;
-  } catch (error) {
-    if (error instanceof Refused) return null; // Eligibility failures are not a different claim refusal.
-    throw error;
-  }
+export function reviewOffer(board, who) {
+  return capacity.reviewOffer(board, who, nextFor);
 }
 
 /**

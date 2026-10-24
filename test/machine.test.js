@@ -108,7 +108,14 @@ const NON_MOVE_ENTRY_POINTS = [
 ];
 
 /** Board functions handed a function to call, and the one the CLI and the runner hand them. */
-const CALLBACKS = { 'board.js': { freeze: 'cli.js#freezer' } };
+const CALLBACKS = {
+  'board.js': { freeze: 'cli.js#freezer' },
+  'line-capacity-board.js': {
+    nextFor: 'board.js#nextFor',
+    reviewerChecks: 'board.js#reviewerChecks',
+    reviewReleaseCooldown: 'board.js#reviewReleaseCooldown',
+  },
+};
 
 /**
  * Calls whose refusals an entry point catches and reports as another: submit and verify read a
@@ -118,7 +125,7 @@ const CALLBACKS = { 'board.js': { freeze: 'cli.js#freezer' } };
  */
 const CAUGHT = {
   // Review eligibility returns Refused values as data, and this helper also catches thrown eligibility refusals.
-  'board.js#oldestCapacityReview': ['board.js#reviewerChecks'],
+  'line-capacity-board.js#oldestCapacityReview': ['board.js#reviewerChecks'],
   'commands/submit.js#submitHere': ['native-flakes.js#observeFailure', 'cli.js#freezer', 'main-red.js#compareMainFailures', 'main-red.js#matchingReworks', 'doctrine-checks.js#checkRulesAt'],
   // observeNativeFailure catches its optional pair/recording errors; they cannot become lifecycle refusals.
   'commands/verify.js#verifyHere': ['cli.js#freezer', 'native-flakes.js#observeFailure'],
