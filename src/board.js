@@ -1653,9 +1653,8 @@ export { getItem } from './board-query.js';
  * @param {{ from: string, to: string, text: string, lanes: string[], item?: number, decision?: boolean, answers?: number | null, evidence?: any, request?: boolean, news?: boolean, channel?: 'terminal' | 'view', detail?: object }} message - detail: extra event fields
  * @returns {number}
  */
-function insertShout(board, { from, to, text, lanes, item, decision = false, answers = null, evidence = null, request = false, news, channel = 'terminal', detail = {} }) {
+function insertShout(board, { from, to, text, lanes, item, decision = false, answers = null, evidence = null, request = false, channel = 'terminal', detail = {} }) {
   const engine = board.executionEngineVersion ?? ENGINE_VERSION;
-  detail = { ...detail, ...activityNewsDetail({ news, from, to, item, decision, request, answers, detail }, engine) };
   if (item !== undefined) {
     if (engine < ITEM_SHOUT_ENGINE) throw new Refused('ENGINE_VERSION', 'item messages require engine 93; upgrade every linked device before sending one');
     to = itemShoutTarget(board.db, item);
@@ -1724,7 +1723,8 @@ function persistShout(board, { from, to, text, decision = false, answers = null,
  * @returns {number}
  */
 export function shout(board, message) {
-  return atomic(board, () => insertShout(board, message));
+  return atomic(board, () => insertShout(board, { ...message, detail: { ...message.detail,
+    ...activityNewsDetail(message, board.executionEngineVersion ?? ENGINE_VERSION) } }));
 }
 
 /** Record one current health snapshot atomically, notifying each new or resolved episode once [A6]. */

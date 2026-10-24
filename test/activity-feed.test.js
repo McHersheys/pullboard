@@ -291,6 +291,10 @@ test('inbox delivery uses real Git paths and board-bound cursors without consumi
   rmSync(delivery.file);
   mkdirSync(delivery.file);
   assert.equal(saveActivityCursor(delivery, 1), false, 'a refused cursor save reports failure without hiding it');
+  const refusedSave = box.run(box.web, 'inbox', '--json');
+  assert.equal(refusedSave.code, 0, refusedSave.err);
+  assert.ok(JSON.parse(refusedSave.out).activity, 'delivery remains readable when local persistence fails');
+  assert.match(refusedSave.err, /activity cursor could not be saved/u, 'JSON callers receive the persistence warning too');
   rmSync(delivery.file, { recursive: true });
 });
 
@@ -308,6 +312,8 @@ test('old ordinary shout replay does not become newly typed news [H16,N26]', (t)
   const feed = store.agentActivity(board, 'web-1', { sessionStart: true });
   assert.ok(feed.entries.some(entry => entry.text === 'Historical metadata is not a new delivery instruction.'));
   assert.deepEqual(feed.digests, [], 'only the new versioned explicit representation is digested');
+  assert.equal(feed.entries.some(entry => entry.text === 'Legacy agent metadata cannot hide a direct message.'), false,
+    'supplemental news reads never reintroduce the sender\'s own ordinary broadcast');
   // The sender does not read its own broadcast; the coordinator must still receive it directly.
   const coordinator = store.agentActivity(board, 'coordinator', { sessionStart: true });
   assert.ok(coordinator.entries.some(entry => entry.text === 'Legacy agent metadata cannot hide a direct message.'));

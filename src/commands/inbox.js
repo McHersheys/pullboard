@@ -42,6 +42,6 @@ export function run(io) {
   const delivered = new Set(shouts.map(shout => shout.shout_id));
   for (const entry of activity.entries) if (!delivered.has(entry.shout)) io.say(`${entry.at.slice(0, 16)}  ${entry.text}`);
   for (const digest of activity.digests) io.say(digest.text);
-  if (!saveActivityCursor(delivery, activity.cursor)) io.say('activity cursor could not be saved; activity may repeat when you read inbox again');
+  if (!saveActivityCursor(delivery, activity.cursor)) io.err('activity cursor could not be saved; activity may repeat when you read inbox again');
   return 0;
 }

@@ -490,7 +490,9 @@ export function agentActivity(board, agentId, { after = 0, newsAfter = 0, workin
     .map(event => activityEventDetail(event).shout).filter(id => Number.isSafeInteger(id) && id > 0);
   for (let offset = 0; offset < possibleNewsIds.length; offset += 500) {
     const ids = possibleNewsIds.slice(offset, offset + 500);
-    messages.push(...board.db.prepare(`SELECT * FROM shout WHERE shout_id IN (${ids.map(() => '?').join(',')}) AND shout_to='all'`).all(...ids));
+    messages.push(...board.db.prepare(`SELECT * FROM shout WHERE shout_id IN (${ids.map(() => '?').join(',')})
+      AND shout_to='all' AND shout_from IN ('coordinator','person') AND shout_decision=0
+      AND shout_request=0 AND shout_answers IS NULL`).all(...ids));
   }
   const byShout = new Map(messages.map(message => [message.shout_id, message]));
   const newsIds = [...rows.values()].filter(event => isActivityNews(event, byShout.get(activityEventDetail(event)?.shout)))
