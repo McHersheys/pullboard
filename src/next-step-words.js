@@ -56,6 +56,7 @@ export function personRequestGuidance(message, { caller, leading = false } = {})
 
 /** @type {Readonly<Record<string, string>>} */
 export const NEXT_STEPS = Object.freeze({
+  SHOUT_TOO_LONG: 'shorten the message to 400 characters or fewer; cite native proof receipt ids and read pullboard show <id> for the evidence chain',
   PROOF_RUN_UNAVAILABLE: 'restore writable native receipt storage, run the item check with current Pullboard, then read pullboard show <id>',
   PROOF_RUN_UNBOUND: 'run the item check with current Pullboard and use its stored native receipt; read pullboard show <id> for the proof chain',
   PROOF_RUN_ACTOR: 'run the check from your own joined seat and use the native receipt that belongs to that seat',
