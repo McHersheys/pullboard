@@ -1,3 +1,5 @@
+import { LINE_CAPACITY_ENGINE } from './line-capacity-engine.js';
+import { lineSettings } from './line-settings.js';
 import { outsideSource } from './outside-source.js';
 import { requireOutsideReceipt } from './outside-proof.js';
 import { OUTSIDE_INTAKE_ENGINE } from './outside-intake-engine.js';
@@ -103,7 +105,8 @@ const OPERATION_ENGINE = Object.freeze({ setLineSetting: LINE_SETTINGS_ENGINE, d
 function minimumOperationEngine(operation, args, board, at) {
   const outside = ['intakeOutside', 'approveOutside'].includes(operation) || operation === 'verify' && args[1]?.sandbox !== undefined
     || board && ['claim', 'submit', 'verify', 'merged'].includes(operation) && Boolean(outsideSource(board, args[0]));
-  return Math.max(outside ? OUTSIDE_INTAKE_ENGINE : 1, minimumExistingOperationEngine(operation, args, board, at));
+  const capacity = board && operation === 'claim' && ['wipPerReviewer', 'takeoverMinutes'].some(key => typeof lineSettings(board)[key] === 'number');
+  return Math.max(outside ? OUTSIDE_INTAKE_ENGINE : 1, capacity ? LINE_CAPACITY_ENGINE : 1, minimumExistingOperationEngine(operation, args, board, at));
 }
 
 /** Preserve each pre-existing move's required feature level when composing outside metadata. */

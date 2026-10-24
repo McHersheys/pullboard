@@ -624,3 +624,9 @@ notice per overlapping item, linked to its item thread; the edit remains allowed
 Unchanged paths, prose, reordered lists and removals do not resend notices. Older
 recorded edits retain their silent behavior. The unassigned feature leaf receives
 its number at landing; no event-log or envelope format changes.
+
+### Line capacity decisions
+
+With `reviewsFirst` on, ordinary `next` offers an eligible review before a build when outstanding submissions exceed `wipPerReviewer` times the active-reviewer count (or ratio 3 while that numeric control is off). No permanent builder/reviewer seat type or role flag is required. Active reviewers are distinct registered seats with a reservation or verdict inside the flow window; its default is the last hour, and an empty window counts as one reviewer. The window uses the same validated boundaries as `stats --window`.
+
+With numeric `wipPerReviewer` on, a new claim that would exceed that limit is refused as `LINE_WIP_LIMIT`, naming the oldest eligible pending review when there is one. Live claimed items and outstanding submissions count; expired claims do not. Renewals remain possible. The native claim carries the configured verifier and family policies so its suggested review never relaxes those guards. With `takeoverMinutes` on, a sent-back item's idle interval can end its original builder's first-refusal window early; a live claim is never stolen, and normal claim appends preserve the old history. Disabled controls retain the previous behavior. New claims under these controls carry the line-capacity engine floor; older recorded claims keep their historical meaning during replay.

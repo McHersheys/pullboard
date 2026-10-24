@@ -120,10 +120,8 @@ function stageTraffic(items, stage, since, now) {
 
 /** Project landed item totals and stage traffic from the same prepared canonical lifecycle facts. */
 export function projectFlowWindow(prepared, minutes, now) {
-  if (!(minutes > 0) || !Number.isFinite(minutes) || !Number.isFinite(new Date(now - minutes * MINUTE).getTime())) {
-    throw new Refused('USAGE', 'use pullboard stats --window with a positive finite duration, for example --window 6h');
-  }
-  const since = now - minutes * MINUTE;
+  const bounds = flowWindowBounds(minutes, now);
+  const since = Date.parse(bounds.since);
   const landed = prepared.items.filter(item => item.mergeAt >= since && item.mergeAt <= now);
   const stages = Object.fromEntries(WINDOW_STAGES.map(stage => {
     const measured = landed.map(item => ({ item, minutes: stageMinutes(item, stage) })).filter(row => row.minutes !== null);
@@ -136,7 +134,7 @@ export function projectFlowWindow(prepared, minutes, now) {
         .map(row => tailItem(row.item, stage, row.minutes)) }];
   }));
   const constraint = WINDOW_STAGES.reduce((largest, stage) => stages[stage].overTargetMinutes > (largest ? stages[largest].overTargetMinutes : 0) ? stage : largest, null);
-  return { since: new Date(since).toISOString(), until: new Date(now).toISOString(), durationMinutes: minutes,
+  return { ...bounds,
     landedItems: landed.length,
     arrivals: { added: prepared.dailyEvents.filter(event => event.kind === 'added' && event.at >= since && event.at <= now).length, landed: landed.length },
     stages, constraint: { stage: constraint, overTargetMinutes: constraint ? stages[constraint].overTargetMinutes : 0 } };
@@ -153,4 +151,13 @@ export function flowWindowLines(window) {
         ...row.tail.map(item => `  #${item.id}: ${time(item.minutes)} · ${item.cause}${item.eligibility ? ' (eligibility unmeasured; check eligible reviewers)' : ''}`)];
     }),
     `constraint: ${window.constraint.stage ? LABELS[window.constraint.stage] : 'none measured over target'} · ${time(window.constraint.overTargetMinutes)} over target`];
+}
+
+/** Share exact validated window boundaries with line-capacity decisions. */
+export function flowWindowBounds(minutes, now) {
+  if (!(minutes > 0) || !Number.isFinite(minutes) || !Number.isFinite(new Date(now - minutes * MINUTE).getTime())) {
+    throw new Refused('USAGE', 'use pullboard stats --window with a positive finite duration, for example --window 6h');
+  }
+  const since = now - minutes * MINUTE;
+  return { since: new Date(since).toISOString(), until: new Date(now).toISOString(), durationMinutes: minutes };
 }
