@@ -568,6 +568,7 @@ const OPTIONS = {
   verbose: { type: 'boolean' },
   since: { type: 'string' },
   window: { type: 'string' },
+  policy: { type: 'string' },
   decision: { type: 'boolean' },
   evidence: { type: 'string' },
   outcome: { type: 'string' },
@@ -598,7 +599,9 @@ function parseCommandArgs(argv) {
     } catch { /* The final parser supplies the existing actionable usage error. */ }
   }
   const options = ['add', 'edit'].includes(command) ? { ...OPTIONS, wait: { type: 'boolean' } } : OPTIONS;
-  return parseArgs({ args: argv, options, allowPositionals: true });
+  // Flow consumes a history file; show retains its existing boolean --history switch.
+  const commandOptions = command === 'flow' ? { ...options, history: { type: 'string' } } : options;
+  return parseArgs({ args: argv, options: commandOptions, allowPositionals: true });
 }
 
 /** Start an already-recorded request, recording an unavailable result if its child cannot start. */

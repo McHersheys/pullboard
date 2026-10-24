@@ -166,6 +166,8 @@ Coordinator
   pullboard hold <lane|id> --off        lift a lane or item hold
 
 Receipts
+  pullboard flow replay [--history <json>] [--policy <json>]  reproduce recorded flow or predict another item order and WIP limits
+                                        --json includes text-free structural history; policy order is recorded or item ids, settings are buildWip/reviewWip/landingWip
   pullboard stats [--since <date> | --window <duration>]  proof numbers from the event log; --json for sites and tools
                                         --window 6h (also 30m or 1d): landed-item stage quartiles, tails and excess over targets;
                                         includes all attempts and sent-back idle; missing intervals stay unmeasured;
@@ -284,7 +286,7 @@ const HELP_EXAMPLES = {
   flakes: 'pullboard flakes', 'flakes rerun': 'pullboard flakes rerun on', 'flakes quarantine': 'pullboard flakes quarantine on',
   verify: 'pullboard verify 12 accept --note "removed the fix; the test failed"',
   watch: 'pullboard watch --to web', answer: 'pullboard answer 12 "done"', pass: 'pullboard pass 12 "please decide"',
-  status: 'pullboard status', view: 'pullboard view', digest: 'pullboard digest --out briefing.md', mcp: 'pullboard mcp', stats: 'pullboard stats --since 2026-10-08', log: 'pullboard log 12', ledger: 'pullboard ledger',
+  status: 'pullboard status', view: 'pullboard view', digest: 'pullboard digest --out briefing.md', mcp: 'pullboard mcp', flow: 'pullboard flow replay --json', stats: 'pullboard stats --since 2026-10-08', log: 'pullboard log 12', ledger: 'pullboard ledger',
   relay: 'pullboard relay on --all', 'relay recover': 'pullboard relay recover --skip 12',
   'lane add': 'pullboard lane add web --owns apps/web/', lane: 'pullboard lane add web --owns apps/web/',
   queue: 'pullboard queue', roadmap: 'pullboard roadmap', rigor: 'pullboard rigor', 'rigor quality': 'pullboard rigor quality --rule silent-catch', 'rigor draft': 'pullboard rigor draft "refusal:MERGE_LOST" "Merges keep every hunk" --check "node bin/checks/merges.js" --red 0123456 --green 89abcde', milestone: 'pullboard milestone add "0.7.0" --items 12,13',
