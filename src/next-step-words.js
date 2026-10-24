@@ -56,6 +56,13 @@ export function personRequestGuidance(message, { caller, leading = false } = {})
 
 /** @type {Readonly<Record<string, string>>} */
 export const NEXT_STEPS = Object.freeze({
+  PERSON_ENROLL_AUTH: 'authenticate a fresh enrollment with the locally trusted person credential',
+  PERSON_ENROLL_EXPIRED: 'create a fresh person-authenticated challenge valid for at most ten minutes',
+  PERSON_ENROLL_REVOKED: 'authenticate a different non-revoked device with the person credential',
+  PERSON_ENROLL_ACCOUNT: 'sign in to the exact account named in the person challenge',
+  PERSON_ENROLL_MISSING: 'use this account’s own person-authenticated enrollment',
+  PERSON_ENROLL_REPLAY: 'create a fresh one-time person challenge; do not reuse the consumed nonce',
+  PERSON_ENVELOPE_AUTH: 'use the original independently retained person material and exact account envelope context',
   PUBLISH_GITHUB: 'inspect gh auth status and the configured GitHub remote, then publish again',
   PUBLISH_STATE: 'preserve publish-pr.json and ask the coordinator to recover its recorded PR identities',
   PUBLISH_UNPROVEN: 'restore the item’s acceptance at its exact submitted commit before publishing',
@@ -311,6 +318,12 @@ export const NEXT_STEPS = Object.freeze({
   MISSING_SIGNERS: 'restore the signer list from git: git checkout HEAD -- .pullboard/signers',
   MODEL_REQUIRED: 'pass --model "<model name>", or set PULLBOARD_MODEL in this shell',
   MOVED_DURING_GATE: 'leave the worktree alone until the gate finishes, then submit again',
+  BAR_NOT_READY: 'read pullboard bar <id>; ask its author to complete the named red baseline and measurement/edge notes, then have an outside parent session sign the current bar',
+  BAR_COVERAGE: 'record whole-file duration evidence, the named-check duration and any install duration in a coverage JSON file, then run pullboard bar sign <id> --coverage-file <path> --note "..."',
+  BAR_SIGN_STALE: 'read pullboard show <id> and pullboard bar <id> again, then sign the current revision with current coverage evidence',
+  BAR_PARENT_UNKNOWN: 'join a fresh worktree from the current native session with its real parent; an outside session must sign a bar whose author identities are known',
+  BAR_SELF_SIGN: 'ask a different parent session to review the current bar and run pullboard bar sign <id> --note "..."',
+  MAIN_NOT_COMPOSED: 'merge current main into the candidate, commit the composition and submit again; for an unrecorded recovered move, run pullboard inbox first or ask the coordinator to resolve the pending receipt',
   BAR_REASON: 'say what the old bar got wrong: pullboard edit <id> --reason "..."',
   NOTE_REQUIRED: 'add --note "<what happened>"',
   NOTHING_FREE: 'wait for work: pullboard next --wait 9 (minutes)',

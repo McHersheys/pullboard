@@ -1,3 +1,5 @@
+import { BAR_READY_ENGINE } from './bar-ready-engine.js';
+import { barReadySetting } from './bar-readiness.js';
 import { ITEM_SHOUT_ENGINE } from './item-shout-engine.js';
 /** Versioned, deterministic replay through the CLI's existing board engine [H3,H16]. */
 import {
@@ -77,11 +79,11 @@ import { LANDING_LEASE_ENGINE } from './landing-lease-engine.js';
 import { PR_BRIDGE_ENGINE } from './pr-bridge-engine.js';
 import { LANDING_LOCAL_LEASE_ENGINE } from './landing-local-lease-engine.js';
 
-const ITEM_ID_FIRST_ARGUMENT = new Set(['acceptCheck', 'editItem', 'escalate', 'recordAttempt', 'claim', 'release', 'submit', 'reserveReview', 'verify', 'merged', 'withdraw', 'refreeze', 'reopen', 'appendFact']);
+const ITEM_ID_FIRST_ARGUMENT = new Set(['signBar', 'acceptCheck', 'editItem', 'escalate', 'recordAttempt', 'claim', 'release', 'submit', 'reserveReview', 'verify', 'merged', 'withdraw', 'refreeze', 'reopen', 'appendFact']);
 
 /** Only these public board operations may be requested by an encrypted move. */
 export const ENGINE_OPERATIONS = Object.freeze([
-  'register', 'ensureCoordinator', 'addItem', 'editItem', 'completeCheckBaseline', 'escalate', 'recordAttempt',
+  'setBarReady', 'signBar', 'register', 'ensureCoordinator', 'addItem', 'editItem', 'completeCheckBaseline', 'escalate', 'recordAttempt',
   'claim', 'release', 'submit', 'reserveReview', 'reserveNextReview', 'verify', 'merged',
   'withdraw', 'refreeze', 'reopen', 'shout', 'passDecision', 'answerDecision', 'holdLane', 'releaseLane', 'holdItem', 'releaseItemHold',
   'addMilestone', 'editMilestoneItems', 'orderMilestoneItems', 'moveMilestone', 'editMilestone', 'removeMilestone', 'shipMilestone',
@@ -98,6 +100,7 @@ const OPERATION_ENGINE = Object.freeze({ draftSpecRow: ROW_DRAFT_ENGINE, orderMi
 
 /** Dependency edits, causes, sealed reviews, submission proofs, trunk conflicts, health observations and milestone targets retain distinct recorded engine meanings. */
 function minimumOperationEngine(operation, args, board, at) {
+  if (['setBarReady', 'signBar'].includes(operation) || board && ['claim', 'submit', 'editItem', 'addItem', 'refreeze'].includes(operation) && barReadySetting(board).enabled) return BAR_READY_ENGINE;
   if (operation === 'recordPublishFinding') return PR_BRIDGE_ENGINE;
   const quotedLandingFailureEngine = operation === 'reopen' && args[1]?.quotedLandingFailure === true
     ? QUOTED_LANDING_FAILURE_ENGINE : 1;
