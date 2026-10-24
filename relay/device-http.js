@@ -3,6 +3,7 @@ import { apiJson, apiRefusal, apiStatus, readApiBody } from '../src/api-http.js'
 import { Refused } from '../src/refused.js';
 import { devicePublicKey } from '../src/relay-device-keys.js';
 import { approvalContext } from '../src/relay-approval.js';
+import { handlePersonEnrollment } from './person-enrollment-http.js';
 
 /** Require exact bounded action fields, excluding secrets and unrecognized relay metadata. */
 function exact(value, fields) {
@@ -22,6 +23,7 @@ export function createDeviceHandler({ authenticate, authorizeBoard, boardsFor, d
       if (url.search) throw new Refused('BAD_REQUEST', 'Keep device action fields out of URL queries.');
       const who = await authenticate(req, !['GET', 'HEAD'].includes(req.method));
       const account = who.user.id;
+      if (await handlePersonEnrollment(req, res, { pathname: url.pathname, who, devices, authorizeBoard })) return true;
       if (url.pathname === '/api/v1/devices/approvals' && req.method === 'POST') {
         if (who.kind !== 'machine') throw new Refused('HUMAN_REQUIRED', 'request this approval with the linked board’s machine credential');
         await authorizeBoard(req, who.board);
