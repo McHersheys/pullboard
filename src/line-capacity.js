@@ -4,7 +4,7 @@ import { LINE_CAPACITY_ENGINE } from './line-capacity-engine.js';
 import { lineSettings } from './line-settings.js';
 import { flowWindowBounds } from './stats-flow-window.js';
 import { Refused } from './refused.js';
-import { lineWipLimit } from './line-wip-limit.js';
+import { ACTIVE_REVIEWER_WINDOW_MINUTES, lineWipLimit } from './line-wip-limit.js';
 
 /** Old ordered claims keep their original semantics even beside newer recorded controls. */
 export function capacitySettings(board) {
@@ -12,7 +12,7 @@ export function capacitySettings(board) {
 }
 
 /** The controller and capacity count use the same validated flow-window boundaries; the default is one hour. */
-export function lineCapacitySnapshot(board, { windowMinutes = 60 } = {}) {
+export function lineCapacitySnapshot(board, { windowMinutes = ACTIVE_REVIEWER_WINDOW_MINUTES } = {}) {
   const at = board.clock.now().getTime();
   const window = flowWindowBounds(windowMinutes, at);
   const reviewers = board.db.prepare(`SELECT DISTINCT event_by FROM event JOIN agent ON agent_id=event_by

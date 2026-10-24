@@ -48,8 +48,10 @@ test('capacity counts distinct review actors in the same bounded flow window, no
   store.reserveReview(f.board, first, { agentId: f.reviewer, leaseMs: HOUR, policy: 'any' });
   store.reserveReview(f.board, second, { agentId: 'coordinator', leaseMs: HOUR, policy: 'any' });
   assert.equal(lineCapacitySnapshot(f.board).activeReviewers, 2, 'a core seat and coordinator are both observed reviewers; renewals do not duplicate them');
-  f.advance(2 * HOUR);
-  assert.equal(lineCapacitySnapshot(f.board).activeReviewers, 1);
+  f.advance(HOUR);
+  assert.equal(lineCapacitySnapshot(f.board).activeReviewers, 2, 'the shared sixty-minute boundary is inclusive');
+  f.advance(1);
+  assert.equal(lineCapacitySnapshot(f.board).activeReviewers, 1, 'activity just outside the window expires');
   assert.equal(lineCapacitySnapshot(f.board, { windowMinutes: 180 }).activeReviewers, 2, 'the explicit flow window changes both bounds');
   assert.throws(() => lineCapacitySnapshot(f.board, { windowMinutes: Infinity }), { code: 'USAGE' });
 });
