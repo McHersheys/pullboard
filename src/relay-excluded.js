@@ -19,7 +19,9 @@ import { Refused } from './refused.js';
 export async function publishExcludedBoards(session, io, request) {
   const machine = readRelayMachine();
   if (machine.owner?.account !== session.account || machine.owner?.url !== session.url) return;
-  if (!/^ps_[A-Za-z0-9_-]{43}$/u.test(session.token ?? '')) return;
+  const person = /^ps_[A-Za-z0-9_-]{43}$/u.test(session.token ?? '');
+  const publisher = /^pm_[A-Za-z0-9_-]{43}$/u.test(session.token ?? '') && session.machine === machine.machine;
+  if (!person && !publisher) return;
   const names = listApiProjects().filter(project => machine.excluded.includes(project.root)).map(project => {
     const repository = originRepository(project.root, { optional: true });
     if (!repository) throw new Refused('EXCLUDED_REPOSITORY', 'Restore a GitHub origin for each excluded project, then run pullboard relay on --all.');

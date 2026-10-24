@@ -24,6 +24,12 @@ export function createDeviceHandler({ authenticate, authorizeBoard, boardsFor, d
       const who = await authenticate(req, !['GET', 'HEAD'].includes(req.method));
       const account = who.user.id;
       if (url.pathname === '/api/v1/devices/exclusions') {
+        if (who.kind === 'machine' && req.method === 'POST') {
+          await authorizeBoard(req, who.board);
+          const body = await readApiBody(req, { maxBytes: 800000 });
+          if (body?.machine !== who.machine) throw new Refused('EXCLUDED_INVENTORY', 'Publish only this authenticated machine’s sealed exclusion list.');
+          apiJson(res, 200, devices.exclusions.publish(account, body)); return true;
+        }
         if (who.kind !== 'session') throw new Refused('HUMAN_REQUIRED', 'Sign in as the person to publish or read excluded-board metadata.');
         if (req.method === 'GET') { apiJson(res, 200, { exclusions: devices.exclusions.metadata(account) }); return true; }
         if (req.method === 'POST') { apiJson(res, 200, devices.exclusions.publish(account, await readApiBody(req, { maxBytes: 800000 }))); return true; }

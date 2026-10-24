@@ -55,6 +55,20 @@ test('excluded inventories keep names sealed, isolate accounts and refuse revoke
   const extra = await deviceRequest(box, path, { method: 'POST', cookie: owner, origin: box.origin, body: { ...body, names: ['forbidden'] } });
   assert.equal(extra.document.error?.code, 'EXCLUDED_INVENTORY', 'plaintext name fields are refused');
   assert.equal((await deviceRequest(box, path, { method: 'POST', cookie: owner, origin: box.origin, body })).response.status, 200);
+  const board = 'b'.repeat(32);
+  assert.equal((await deviceRequest(box, '/auth/boards/link', { method: 'POST', cookie: owner,
+    origin: box.origin, body: { board, repository: 'fixture/repository' } })).response.status, 200);
+  const issued = await deviceRequest(box, '/auth/machines', { method: 'POST', cookie: owner,
+    origin: box.origin, body: { board, machine } });
+  assert.equal(issued.response.status, 200);
+  const token = issued.document.token;
+  assert.equal((await deviceRequest(box, path, { method: 'POST', token, engine: ENGINE_VERSION, body })).response.status, 200,
+    'the enrolled machine can publish immediately without a retained person session');
+  assert.equal((await deviceRequest(box, path, { token, engine: ENGINE_VERSION })).document.error?.code, 'HUMAN_REQUIRED',
+    'a machine credential cannot read the account inventory');
+  assert.equal((await deviceRequest(box, path, { method: 'POST', token, engine: ENGINE_VERSION,
+    body: { ...body, machine: 'another-machine' } })).document.error?.code, 'EXCLUDED_INVENTORY',
+    'a machine credential cannot replace another machine’s list');
   box.restart();
   const metadata = await deviceRequest(box, path, { cookie: owner });
   assert.deepEqual(metadata.document.exclusions, [{ machine, label, count: 1 }], 'durable public metadata has no name, key or wrap');
