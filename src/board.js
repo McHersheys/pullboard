@@ -1,3 +1,4 @@
+export { openHandoff, takeHandoff } from './handoff.js';
 import { LAND_COLLISION_ENGINE } from './landing-collision-engine.js';
 import * as capacity from './line-capacity-board.js';
 import {
@@ -248,7 +249,6 @@ export { proposeSentinel, decideSentinel, beginSentinelRun, finishSentinelRun } 
 export { flakeLedger, recordFlakeObservation } from './flakes.js';
 export { flakeQuarantines, gateRuns, recordGateRun } from './quarantine.js';
 export { recordPublishFinding } from './pr-findings.js';
-
 /** The seat readers live in seats.js; the board re-exports them so `store.*` callers keep one import. */
 export { agentAt, agentById, agentCreator, coordinatorHolder, listAgents, nextSeatId, seatEnrolled, seatLineage, takeCoordinator, withVerifierStanding } from './seats.js';
 
@@ -275,7 +275,6 @@ export { systemClock } from './board-read-open.js';
 export { openBoardForRead } from './board-read-open.js';
 
 export { openBoardReadOnly } from './board-read-open.js';
-
 /**
  * Open, or create, the board at `file`. Tests pass `:memory:`.
  *

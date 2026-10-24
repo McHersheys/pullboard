@@ -22,7 +22,8 @@ export function shoutItemId(to) {
 export function itemShoutReader(db, id, agent) {
   const item = db.prepare('SELECT item_owner, item_built_by, item_review_by, item_verified_by FROM item WHERE item_id = ?').get(id);
   return Boolean(item && (agent === 'coordinator' || (item.item_owner ?? item.item_built_by) === agent
-    || (item.item_review_by ?? item.item_verified_by) === agent));
+    || (item.item_review_by ?? item.item_verified_by) === agent
+    || db.prepare("SELECT 1 FROM event WHERE item_id=? AND event_kind IN ('handoff-open','handoff-take') AND event_by=? LIMIT 1").get(id, agent)));
 }
 
 /** Match one live shout against an explicit seat or lane audience, including its item roles. */
@@ -37,9 +38,10 @@ export function shoutMatchesAudience(db, to, audience) {
 /** Positional bindings work on the supported minimum Node SQLite API as well as newer releases. */
 export const UNREAD_SHOUT_SQL = `FROM shout WHERE shout_id > ? AND shout_from != ? AND
   (shout_to IN ('all', ?, ?) OR (shout_to = '${COORDINATION_SHOUT}' AND ? IN ('coordinator', 'person')) OR EXISTS (SELECT 1 FROM item WHERE shout_to = 'item:' || item_id AND
-    (? = 'coordinator' OR COALESCE(item_owner, item_built_by) = ? OR COALESCE(item_review_by, item_verified_by) = ?)))`;
+    (? = 'coordinator' OR COALESCE(item_owner, item_built_by) = ? OR COALESCE(item_review_by, item_verified_by) = ? OR EXISTS
+      (SELECT 1 FROM event WHERE event.item_id=item.item_id AND event_kind IN ('handoff-open','handoff-take') AND event_by=?))))`;
 
 /** Bind every positional identity occurrence explicitly, including item-role checks. */
 export function unreadShoutBindings(cursor, seat, lane) {
-  return [cursor, seat, lane, seat, seat, seat, seat, seat];
+  return [cursor, seat, lane, seat, seat, seat, seat, seat, seat];
 }
