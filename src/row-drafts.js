@@ -18,6 +18,7 @@ import {
 import { cleanGitEnvironment } from './git.js';
 import { trunkRef } from './trusted-policy-read.js';
 import { recordRowDraft } from './row-draft-store.js';
+import { validSpecRevision } from './spec-revisions.js';
 export { rowDrafts } from './board-query.js';
 
 /**
@@ -33,11 +34,12 @@ export { rowDrafts } from './board-query.js';
  */
 export function draftSpecRow(board, { agentId, row, written = false }) {
   if (!agentId || agentId === PERSON) throw new Refused('ROW_DRAFT', 'an agent drafts a row and the person approves it; run pullboard spec draft "<text>" from an agent seat');
-  const needed = written ? ['text'] : ['text', 'gate', 'tier', 'section'];
+  const needed = written ? ['text'] : row?.revises !== undefined ? ['text', 'tier', 'section'] : ['text', 'gate', 'tier', 'section'];
   if (!row || !/^[A-Z][A-Z0-9]*\d+$/u.test(String(row.id)) || !['spec', 'doctrine', undefined].includes(row.target)
     || needed.some((key) => typeof row[key] !== 'string' || !row[key].trim() || /[\r\n|]/u.test(row[key]))) {
     throw new Refused('ROW_DRAFT', 'a drafted row needs its id and a one-line text, gate, tier and section; run pullboard spec draft "<text>"');
   }
+  if (row.revises !== undefined && (written || !validSpecRevision(row))) throw new Refused('SPEC_REVISION', 'a revision needs its exact approved source, proposed replacement and reason');
   return recordRowDraft(board, { agentId, row, written });
 }
 
@@ -61,7 +63,7 @@ export function trunkRowIds(root, mainRoot, config) {
 
 /** A lane's spec drafts: the reservations spec apply writes, unlike a writer's own reservation. */
 function laneDrafts(drafts) {
-  return drafts.filter((draft) => !draft.written && (draft.target ?? 'spec') === 'spec');
+  return drafts.filter((draft) => !draft.revises && !draft.written && (draft.target ?? 'spec') === 'spec');
 }
 
 /** Board drafts from lanes that SPEC.md does not have yet, for spec apply to write. */

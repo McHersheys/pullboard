@@ -1,6 +1,7 @@
 /** Approved requirements change only through a visible person decision [P6,B23,N39]. */
 import assert from 'node:assert/strict';
 import {
+  mkdirSync,
   readFileSync,
   writeFileSync,
 } from 'node:fs';
@@ -65,6 +66,14 @@ test('a proposed change to an approved row waits in Needs you and applies only w
   assert.equal(readFileSync(file, 'utf8'), approved, 'declining a revision never retires or rejects its approved target');
   assert.ok(!personNeedsState(box.repo).needs.some(entry => entry.id === declined.id));
 
+  writeFileSync(file, approved.replace('The page renders accessibly.', 'An agent silently changed it.'));
+  box.git(box.repo, 'add', 'SPEC.md');
+  const handEdit = box.tryGit(box.repo, 'commit', '-q', '-m', 'feat: silently rewrite the approved requirement [G1]');
+  assert.notEqual(handEdit.status, 0, 'the real commit hook refuses a direct approved-row rewrite');
+  assert.match(handEdit.stderr, /APPROVED_ROW_CHANGE|approved row|changes approved text/u);
+  writeFileSync(file, approved);
+  box.git(box.repo, 'add', 'SPEC.md');
+
   const retired = JSON.parse(succeeds(box.run(box.web, 'spec', 'draft', 'The page renders accessibly.',
     '--revises', 'G1', '--status', 'retired', '--reason', 'The feature is no longer supported.', '--json')).out);
   succeeds(box.run(box.repo, 'spec', 'approve', retired.id));
@@ -72,8 +81,41 @@ test('a proposed change to an approved row waits in Needs you and applies only w
   assert.equal(row(box, 'G1').status, 'retired', 'the person can approve an explicit status revision');
   assert.notEqual(box.run(box.web, 'spec', 'draft', 'Change a retired row.', '--revises', 'G1', '--reason', 'Not approved.').code, 0);
 
-  writeFileSync(file, approved.replace('The page renders accessibly.', 'An agent silently changed it.'));
-  const check = box.run(box.repo, 'spec', 'check');
-  assert.notEqual(check.code, 0, 'a direct edit cannot reuse the earlier approval');
-  writeFileSync(file, approved);
+});
+
+test('[P6,B23,N39] revisions require a reason and stale proposals cannot change a newer approved row', { timeout: 120_000 }, () => {
+  const box = fixtures.project('true');
+  assert.notEqual(box.run(box.web, 'spec', 'draft', 'Missing reason.', '--revises', 'G1').code, 0);
+  assert.notEqual(box.run(box.web, 'spec', 'draft', 'Missing target.', '--revises', 'G99', '--reason', 'No such row.').code, 0);
+  const first = JSON.parse(succeeds(box.run(box.web, 'spec', 'draft', 'An obsolete proposal.', '--revises', 'G1', '--reason', 'First idea.', '--json')).out);
+  const second = JSON.parse(succeeds(box.run(box.web, 'spec', 'draft', 'The replacement the person chooses.', '--revises', 'G1', '--reason', 'Better idea.', '--json')).out);
+  succeeds(box.run(box.repo, 'spec', 'approve', second.id));
+  succeeds(box.run(box.repo, 'spec', 'apply'));
+  const approved = readFileSync(join(box.repo, 'SPEC.md'), 'utf8');
+  assert.notEqual(box.run(box.repo, 'spec', 'approve', first.id).code, 0, 'a stale source cannot be approved over a different current row');
+  succeeds(box.run(box.repo, 'spec', 'decline', first.id, '--reason', 'Superseded.'));
+  succeeds(box.run(box.repo, 'spec', 'apply'));
+  assert.equal(readFileSync(join(box.repo, 'SPEC.md'), 'utf8'), approved);
+  assert.ok(!personNeedsState(box.repo).needs.some(entry => entry.id === first.id));
+});
+
+test('[B23,N39] a real gate rename gives the new path and an exact revision command', { timeout: 120_000 }, () => {
+  const box = fixtures.sandbox();
+  const root = join(box.dir, 'existing-repo');
+  mkdirSync(root);
+  mkdirSync(join(root, 'test'));
+  box.git(root, 'init', '-q', '-b', 'main');
+  writeFileSync(join(root, 'pullboard.json'), JSON.stringify({ ...fixtures.CONFIG, gate: 'true' }));
+  writeFileSync(join(root, 'SPEC.md'), '# Existing project\n\n## G · Goals\n- G1 [approved, must] The page renders. | gate: node --test test/old.test.js\n');
+  writeFileSync(join(root, 'test/old.test.js'), '// A tracked test in the project before Pullboard was installed.\n');
+  box.git(root, 'add', '-A');
+  box.git(root, 'commit', '-q', '-m', 'test: establish the existing gate');
+  box.git(root, 'mv', 'test/old.test.js', 'test/new.test.js');
+  box.git(root, 'commit', '-q', '-m', 'test: rename the gate');
+  succeeds(box.run(root, 'init'));
+  const check = box.run(root, 'spec', 'check');
+  assert.notEqual(check.code, 0);
+  const output = check.out + check.err;
+  assert.match(output, /renamed to test\/new\.test\.js/u);
+  assert.ok(output.includes("pullboard spec draft 'The page renders.' --revises 'G1' --gate 'node --test test/new.test.js' --reason 'Gate renamed from test/old.test.js to test/new.test.js.'"));
 });
