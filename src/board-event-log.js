@@ -1,3 +1,4 @@
+import { requireHandoffActive } from './handoff-state.js';
 /** Append native events and their rebuildable proof projection in the same transaction [R2]. */
 import { ENGINE_VERSION } from './machine.js';
 import { agentModel } from './seats.js';
@@ -16,6 +17,8 @@ import { ensureProofCounters } from './proof-counters.js';
  * @param {Date} [at] An enabled move may share one instant with its deadline.
  */
 export function logEvent(board, by, kind, itemId, detail = {}, at) {
+  // A refused authenticated request remains auditable; it is not an outgoing board move.
+  if (kind !== 'relay_refused') requireHandoffActive(board, by, kind, [{ item: kind === 'shout' ? detail.item : undefined }]);
   board.db.exec('SAVEPOINT proof_event_append');
   try {
     ensureProofCounters(board);
