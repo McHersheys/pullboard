@@ -894,7 +894,7 @@ test('pullboard help lists each role\'s moves from the declaration, and pullboar
 /** Guards checked before the explicit transition: CLI facts and optional roadmap selection. */
 const PRECHECKED = {
   claim: ['joined', 'checkProvesSomething'],
-  submit: ['joined', 'checkProvesSomething', 'criterionUnchanged', 'treeClean', 'nothingUntracked', 'hasCommit', 'withinLane', 'trunkMergeClean', 'infraExplained', 'doctrineHolds', 'gateConfigured', 'queuedItemLease', 'gateGreen', 'treeStillDuringGate', 'noUnverifiedStack'],
+  submit: ['joined', 'checkProvesSomething', 'criterionUnchanged', 'treeClean', 'nothingUntracked', 'hasCommit', 'withinLane', 'trunkMergeClean', 'trunkInCandidate', 'infraExplained', 'doctrineHolds', 'gateConfigured', 'queuedItemLease', 'gateGreen', 'treeStillDuringGate', 'noUnverifiedStack'],
   reserve: ['coordinatorSaysAs', 'joined', 'roadmapReadable'],
   accept: ['coordinatorSaysAs', 'joined', 'atSubmittedCommit', 'reviewTreeCurrent', 'trunkMergeClean', 'queuedItemLease', 'itemCheckGreen', 'noUnverifiedStack'],
   reject: ['coordinatorSaysAs', 'joined', 'atSubmittedCommit', 'reviewTreeCurrent'],
@@ -967,7 +967,12 @@ test('claim refuses in the declared order, one failure peeled at a time, on a re
     submitFixture(board, dependency, { agentId: 'web-1', commit: SHA_A, tree: 'tree' });
     store.holdLane(board, 'web', { agentId: 'coordinator', reason: 'pause' });
     store.holdItem(board, target, { agentId: 'coordinator', reason: 'item pause' });
-    const fired = [claimAs(999, light, 'api'), claimAs(done, light, 'api'), claimAs(target, light, 'api')];
+    const fired = [claimAs(999, light, 'api'), claimAs(done, light, 'api')];
+    store.setBarReady(board, { agentId: 'coordinator', enabled: true });
+    store.editItem(board, target, { agentId: 'coordinator', brief: 'Unsigned bar edge' });
+    fired.push(claimAs(target, light, 'api'));
+    store.setBarReady(board, { agentId: 'coordinator', enabled: false });
+    fired.push(claimAs(target, light, 'api'));
     store.releaseItemHold(board, target, { agentId: 'coordinator' });
     fired.push(claimAs(target, light, 'api'), claimAs(target, light, 'web'), claimAs(target, strong, 'web'));
     verdictOn(board, dependency, 'web-2', 'ACCEPT');
@@ -983,7 +988,7 @@ test('claim refuses in the declared order, one failure peeled at a time, on a re
     store.release(board, spare, strong);
     fired.push(claimAs(target, strong, 'web'), claimAs(target, strong, 'web', freeze));
     assert.deepEqual(fired, [...declaredBoardOrder('claim'), 'ok']);
-    assert.deepEqual(fired, ['NO_ITEM', 'NOT_CLAIMABLE', 'ITEM_HELD', 'WRONG_LANE', 'ROUTE', 'BLOCKED', 'HELD', 'REOPEN_HELD_FOR_BUILDER', 'PENDING_REFREEZE', 'LANE_HELD', 'ONE_CLAIM', 'UNKNOWN_SPEC', 'ok']);
+    assert.deepEqual(fired, ['NO_ITEM', 'NOT_CLAIMABLE', 'BAR_NOT_READY', 'ITEM_HELD', 'WRONG_LANE', 'ROUTE', 'BLOCKED', 'HELD', 'REOPEN_HELD_FOR_BUILDER', 'PENDING_REFREEZE', 'LANE_HELD', 'ONE_CLAIM', 'UNKNOWN_SPEC', 'ok']);
   } finally {
     lab.done();
   }
@@ -1003,6 +1008,10 @@ test('submit, accept and reject refuse in the declared order, one failure peeled
     submits.push(submitAs(piece, 'web-1', SHA_A));
     assert.equal(submits.at(-1), 'PENDING_REFREEZE', 'a pending correction stops the board submission before later guards');
     store.refreeze(board, piece, { agentId: 'web-1', freeze });
+    store.setBarReady(board, { agentId: 'coordinator', enabled: true });
+    store.editItem(board, piece, { agentId: 'coordinator', brief: 'Unsigned corrected bar' });
+    submits.push(submitAs(piece, 'web-1', SHA_A));
+    store.setBarReady(board, { agentId: 'coordinator', enabled: false });
     submits.push(outcome(() => submitFixture(board, piece, { agentId: 'web-1', commit: SHA_A, tree: 'tree',
       submissionProof: { version: 99, files: [], full: false, deferred: true, reason: '' } })));
     submitFixture(board, piece, { agentId: 'web-1', commit: SHA_A, tree: 'tree' });
