@@ -1,3 +1,4 @@
+import { getItem } from './board.js';
 /** Wait for one passkey-confirmed terminal request to finish through the ordinary native executor [E22,H16]. */
 import { setTimeout as delay } from 'node:timers/promises';
 import { syncRelay } from './relay.js';
@@ -7,8 +8,11 @@ import { Refused } from './refused.js';
 import { loadMachineSettings } from './settings.js';
 
 /** Preserve the ordinary command's required JSON fields while adding its confirmed request receipt. */
-function confirmedResult(record) {
+function confirmedResult(record, board) {
   switch (record.move.verb) {
+    case 'add':
+    case 'edit': return { item: getItem(board, record.move.verb === 'add' ? record.result : record.move.item) };
+    case 'bar-sign': return { signed: record.result };
     case 'answer': return { id: record.result, answers: record.move.item };
     case 'spec-approve':
     case 'spec-decline':
@@ -44,7 +48,7 @@ export async function awaitPersonConfirmation(ctx, board, request, where, { wait
     // Repo-changing spec decisions finish the native CLI stage by creating a coordinator request.
     // This reports that stage, never promises its eventual merge/landing outcome.
     if (record?.status === 'done' || record?.coordinatorRequest && Object.hasOwn(record, 'result')) {
-      const result = { ...confirmedResult(record), request: request.id, status: record.status,
+      const result = { ...confirmedResult(record, board), request: request.id, status: record.status,
         ...(record.coordinatorRequest ? { coordinatorRequest: record.coordinatorRequest } : {}) };
       ctx.io.personConfirmation = { request: result.request, status: result.status };
       ctx.io.result?.(result);

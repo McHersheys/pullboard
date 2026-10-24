@@ -64,7 +64,7 @@ export async function pinRelayAuthority(root, board, io = {}) {
  * @param {{ id: string }} me
  * @param {{ verb: string, item?: number, args: any } | null} intent - the request the passkey device shows, or null when it cannot carry this move
  */
-export async function requireSignedPerson(ctx, board, me, intent, rows) {
+export async function requireSignedPerson(ctx, board, me, intent, rows, effect) {
   if (!personSigning(board).signed) return null;
   // A board that has not pinned its relay key yet cannot check a passkey stamp, including an off it replayed: pin first.
   if (!localAuthority(board) && await pinRelayAuthority(ctx.info.root, board, ctx.io) && !personSigning(board).signed) return null;
@@ -78,7 +78,7 @@ export async function requireSignedPerson(ctx, board, me, intent, rows) {
   const where = `${origin}/#board=${relay.board}`;
   let sent = '';
   if (intent && me.id !== store.PERSON) {
-    const request = preparePersonRequest(intent, undefined, rows);
+    const request = preparePersonRequest(intent, undefined, rows, effect);
     try {
       await ordered(ctx, board, 'proposePersonMove', [{ agentId: me.id, request }]);
       sent = 'proposed';

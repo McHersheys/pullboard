@@ -1,9 +1,10 @@
 /** Browser-sealed person intent is CLI input, never an executable engine move [H12,H16]. */
 import { moveArgs } from './api-moves.js';
+import { normalizePersonBarEffect } from './person-bar-effect.js';
 import { Refused } from './refused.js';
 
 export const PERSON_REQUEST_VERSION = 1;
-const VERBS = Object.freeze(['add', 'shout', 'answer', 'hold', 'spec-approve', 'spec-decline', 'sentinel-approve', 'sentinel-decline', 'land-waive', 'signing', 'fact', 'spec-answer']);
+const VERBS = Object.freeze(['add', 'shout', 'answer', 'hold', 'spec-approve', 'spec-decline', 'sentinel-approve', 'sentinel-decline', 'land-waive', 'signing', 'fact', 'spec-answer', 'edit', 'bar-sign']);
 
 /** Validate a narrow person intent while retaining literal arguments for the actual CLI parser. */
 export function personRequestMove(body) {
@@ -29,8 +30,8 @@ export function personRequestMove(body) {
  * Create the distinct versioned request document before the browser seals it for request-kind AAD. A row decision on
  * a board that signs person moves also carries `rows`, the exact text of each row as the person saw it [E22].
  */
-export function preparePersonRequest(body, id = crypto.randomUUID(), rows) {
-  const document = { version: PERSON_REQUEST_VERSION, type: 'person-request', id, move: personRequestMove(body), ...(rows ? { rows } : {}) };
+export function preparePersonRequest(body, id = crypto.randomUUID(), rows, effect) {
+  const document = { version: PERSON_REQUEST_VERSION, type: 'person-request', id, move: personRequestMove(body), ...(rows ? { rows } : {}), ...(effect ? { effect } : {}) };
   return validatePersonRequest(document);
 }
 
@@ -49,10 +50,11 @@ export function validatePersonRequest(document) {
     throw new Refused('PERSON_REQUEST_VERSION', 'this person request format is unsupported; upgrade Pullboard on the browser and linked machine');
   }
   if (typeof document.id !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/u.test(document.id)
-      || Object.keys(document).some(key => !['version', 'type', 'id', 'move', 'rows'].includes(key))) {
+      || Object.keys(document).some(key => !['version', 'type', 'id', 'move', 'rows', 'effect'].includes(key))) {
     throw new Refused('BAD_REQUEST', 'a sealed person request needs its stable id and literal move; reload the paired view and retry');
   }
   const move = personRequestMove(document.move);
   if (document.rows !== undefined && !['spec-approve', 'spec-decline', 'spec-answer'].includes(move.verb)) throw new Refused('BAD_REQUEST', 'only a row decision carries the rows it shows');
-  return { version: PERSON_REQUEST_VERSION, type: 'person-request', id: document.id, move, ...(document.rows === undefined ? {} : { rows: shownRows(document.rows) }) };
+  return { version: PERSON_REQUEST_VERSION, type: 'person-request', id: document.id, move, ...(document.rows === undefined ? {} : { rows: shownRows(document.rows) }),
+    ...(document.effect === undefined ? {} : { effect: normalizePersonBarEffect(move.verb, document.effect) }) };
 }

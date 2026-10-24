@@ -63,6 +63,7 @@ export function createRelayBrowserHandler({ authenticate }) {
     ['/relay/engine.js', ['text/javascript', 'export const ENGINE_VERSION = ' + ENGINE_VERSION + ';\n']],
     ['/relay/seal.js', ['text/javascript', readFileSync(new URL('../src/seal.js', import.meta.url), 'utf8')]],
     ['/relay/api-moves.js', ['text/javascript', readFileSync(new URL('../src/api-moves.js', import.meta.url), 'utf8')]],
+    ['/relay/person-bar-effect.js', ['text/javascript', readFileSync(new URL('../src/person-bar-effect.js', import.meta.url), 'utf8')]],
     ['/relay/person-request.js', ['text/javascript', readFileSync(new URL('../src/person-request.js', import.meta.url), 'utf8')]],
     ['/relay/refused.js', ['text/javascript', readFileSync(new URL('../src/refused.js', import.meta.url), 'utf8')]],
   ]);

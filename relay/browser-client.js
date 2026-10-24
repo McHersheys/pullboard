@@ -1,3 +1,4 @@
+import { browserPersonBarEffect } from './person-bar-effect.js';
 /** Device-only relay transport: cookie authorization, local keys and authenticated ciphertext [H5,H15,H16,H17]. */
 import {
   rememberDevicePairing,
@@ -843,6 +844,9 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
         if (rows.some(row => !row || typeof row.source !== 'string')) throw new Refused('STALE_ROW_DECISION', 'Refresh this board to read each exact row, gate and signer list before confirming.');
         value = preparePersonRequest(value.move, value.id, rows);
       }
+      if (entry.state.personSigning?.signed && ['add', 'edit', 'bar-sign'].includes(value.move.verb) && !value.effect) {
+        value = preparePersonRequest(value.move, value.id, value.rows, browserPersonBarEffect(entry.state, value.move));
+      }
       if (entry.state.personSigning?.signed && !presences.has(value.id)) {
         presences.set(value.id, await passkeyPresence((path, options) => documentAt(path, denied, { ...options, signal: access.signal }), entry.id, value));
       }
@@ -853,7 +857,7 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
   }
   installPersonPasskeys(document, { documentAt: (path, options) => documentAt(path, denied, { ...options, signal: access.signal }),
     boards: () => [...paired.values()], signal: access.signal,
-    confirm: (board, proposal) => sendPersonRequest(paired.get(board), preparePersonRequest(proposal.move, proposal.id, proposal.rows)) });
+    confirm: (board, proposal) => sendPersonRequest(paired.get(board), preparePersonRequest(proposal.move, proposal.id, proposal.rows, proposal.effect)) });
   return {
     /** Give the startup frame back only after an opted-in viewer has drawn a readable board. */
     didRender() { rendered = true; notice(); for (const entry of paired.values()) entry.history?.start(); },

@@ -1,3 +1,9 @@
+import { previewBarCoverage } from './bar-coverage.js';
+import {
+  barDigest,
+  barReadiness,
+} from './bar-readiness.js';
+import { mainPolicy } from './trusted-policy.js';
 /** Device-sealed presentation uses the same API state as the local view [A4,H5,H15]. */
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
@@ -55,8 +61,15 @@ function readRelayPresentation(root, providedBoard) {
     const signed = store.personSigning(board).signed;
     const ids = signed ? [...loadSpec(root, config).rows.map(row => row.id), ...loadDoctrine(root, config).repo.rows.map(row => `doctrine:${row.id}`)] : [];
     const personRows = signed ? shownDecisionRows(root, config, ids) : [];
+    let personBars = [];
+    if (signed) {
+      const entries = store.listItems(board, { all: true }).map(item => ({ item, status: barReadiness(board, item, { signature: false }) }));
+      const plans = previewBarCoverage(root, entries.map(({ item, status }) => ({ item, coverage: status.signed?.coverage })), mainPolicy(root));
+      personBars = entries.map(({ item, status }, index) => ({ id: item.item_id,
+        before: { revision: status.revision?.revision ?? 0, digest: barDigest(item) }, ...(plans[index] ? { coverage: plans[index] } : {}) }));
+    }
     return { version: 1, state: { ...store.projectItemThreads(board, state), personRequests: personRequestStatuses(board),
-      personSigning: { signed }, personProposals, personRows }, config, shouts: store.allShouts(board) }; }
+      personSigning: { signed }, personProposals, personRows, personBars }, config, shouts: store.allShouts(board) }; }
   finally { if (!providedBoard) store.closeBoard(board); }
 }
 /** Resolve one shout from the complete history carried only inside the sealed presentation. */

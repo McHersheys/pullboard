@@ -180,7 +180,7 @@ export function proposePersonMove(board, { agentId, request }) {
   const document = validatePersonRequest(request);
   return atomic(board, () => {
     const at = board.clock.now();
-    const entry = { id: document.id, move: document.move, ...(document.rows ? { rows: document.rows } : {}), by: agentId, at: at.toISOString(), expires: new Date(at.getTime() + PROPOSAL_MS).toISOString() };
+    const entry = { id: document.id, move: document.move, ...(document.rows ? { rows: document.rows } : {}), ...(document.effect ? { effect: document.effect } : {}), by: agentId, at: at.toISOString(), expires: new Date(at.getTime() + PROPOSAL_MS).toISOString() };
     const kept = personProposals(board).filter((proposal) => proposal.id !== document.id);
     meta(board, PROPOSALS, JSON.stringify([...kept, entry].slice(-KEPT_PROPOSALS)));
     logEvent(board, agentId, 'person_proposal', null, { request: document.id, verb: document.move.verb });

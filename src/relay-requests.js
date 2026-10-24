@@ -9,6 +9,15 @@ import { signedRowDecisionsMatch } from './person-row-proof.js';
 import { parseImplies } from './implies.js';
 import { validatePersonRequest } from './person-request.js';
 import { relayMoveActor } from './relay-sender.js';
+import {
+  barDigest,
+  barReadiness,
+  barReadySetting,
+} from './bar-readiness.js';
+import {
+  barEffectValues,
+  sameBarEffect,
+} from './person-bar-effect.js';
 import { PEOPLE_ENGINE } from './people-engine.js';
 
 const INDEX = 'relay_person_requests';
@@ -72,7 +81,7 @@ export function receivePersonRequest(board, document, { sequence, at, sender }) 
       if (sender?.kind !== 'person' || typeof sender.userId !== 'string' || !sender.userId || sender.userId.length > 256) throw new Refused('RELAY_PERSON_ONLY', 'only the authenticated person can send a relay request; use the paired view with the person session');
       request = validatePersonRequest(document);
       // On a board that names approvers, a phone request that acts as the person must come from one [E4].
-      if (sender.approver === false && ['answer', 'hold', 'spec-approve', 'spec-decline', 'spec-answer', 'fact', 'sentinel-approve', 'sentinel-decline'].includes(request.move?.verb)) {
+      if (sender.approver === false && ['answer', 'hold', 'spec-approve', 'spec-decline', 'spec-answer', 'fact', 'sentinel-approve', 'sentinel-decline', 'add', 'edit', 'bar-sign'].includes(request.move?.verb)) {
         throw new Refused('NOT_APPROVER', `${sender.login ?? 'this person'} is not an approver of this board; ask an approver to answer, hold or decide rows and sentinels`);
       }
     } catch (cause) {
@@ -108,6 +117,27 @@ function fulfilsIntent(record, move, board) {
   const args = intent.args;
   const value = move.args[0];
   const options = move.args[1];
+  const document = JSON.parse(record.encoded);
+  if (document.effect && ['add', 'edit', 'bar-sign'].includes(intent.verb)) {
+    const verb = intent.verb;
+    const effect = document.effect;
+    const fields = verb === 'add' ? value : options;
+    if (verb !== 'add') {
+      if (value !== intent.item) return false;
+      const item = store.getItem(board, value);
+      const before = { revision: barReadiness(board, item, { signature: false }).revision?.revision ?? 0, digest: barDigest(item) };
+      if (!sameBarEffect(effect.before, before)) return false;
+    }
+    const expectedActor = barReadySetting(board).enabled ? { authority: 'person', session: null, parent: null } : null;
+    return move.args.length === (verb === 'add' ? 1 : 2) && fields
+      && (verb === 'bar-sign' ? fields.agentId === 'person' : (verb === 'add' ? fields.by : fields.agentId) === (verb === 'add' ? effect.value.by : effect.value.agentId))
+      && sameBarEffect(fields.barActor, expectedActor)
+      && sameBarEffect(barEffectValues(verb, fields), effect.value)
+      && (!args.wait || !fields.checkBaseline || fields.checkBaseline.result !== 'pending')
+      && Object.keys(fields).every(key => Object.hasOwn(effect.value, key) || ['by', 'agentId', 'barActor', 'checkBaseline'].includes(key));
+  }
+  if (personSigning(board).signed && ['add', 'edit', 'bar-sign'].includes(intent.verb)) return false;
+
   if (intent.verb === 'add') return value?.by === 'person' && value.lane === args.lane && value.title === args.title
     && value.criterion === (args.criterion ?? '') && value.brief === (args.brief ?? '')
     && value.route === (args.route ?? 'strong') && (value.check ?? '') === (args.check ?? '')
@@ -229,7 +259,7 @@ export function requestMoveProblem(board, move, { checkExecutorLease = true } = 
   const actor = relayMoveActor(move);
   if (!['coordinator', 'person'].includes(actor)) return new Refused('PERSON_REQUEST_RECEIPT', 'only the coordinator fulfils an authenticated person request');
   if (tag.phase === 'execute') {
-    const expected = { add: 'addItem', shout: 'shout', answer: 'answerDecision', hold: record.move.args.off ? 'releaseLane' : 'holdLane', 'spec-approve': 'recordRowDecisions', 'spec-decline': 'recordRowDecisions', 'spec-answer': 'recordRowDecisions', fact: 'appendFact', 'sentinel-approve': 'decideSentinel', 'sentinel-decline': 'decideSentinel', 'land-waive': 'recordLandingWaiver', signing: 'setPersonSigning' }[record.move.verb];
+    const expected = { add: 'addItem', shout: 'shout', answer: 'answerDecision', hold: record.move.args.off ? 'releaseLane' : 'holdLane', 'spec-approve': 'recordRowDecisions', 'spec-decline': 'recordRowDecisions', 'spec-answer': 'recordRowDecisions', fact: 'appendFact', 'sentinel-approve': 'decideSentinel', 'sentinel-decline': 'decideSentinel', 'land-waive': 'recordLandingWaiver', signing: 'setPersonSigning', edit: 'editItem', 'bar-sign': 'signBar' }[record.move.verb];
     if (move.operation !== expected || !fulfilsIntent(record, move, board)) return new Refused('PERSON_REQUEST_RECEIPT', 'the ordinary move does not fulfil this request; execute its original CLI intent');
   }
   if (move.engine >= 6 && ['claim', 'repo-request', 'refuse'].includes(tag.phase) && !fulfilsStage(record, move, tag)) return new Refused('PERSON_REQUEST_RECEIPT', 'publish only the exact stage for this authenticated phone request');

@@ -110,7 +110,7 @@ export function installPersonPasskeys(doc, { documentAt, boards, confirm, signal
       for (const proposal of entry.state.personProposals ?? []) {
         if (done.has(proposal.id) || Date.parse(proposal.expires) <= Date.now()) continue;
         const card = doc.createElement('div'); card.className = 'phone-approval'; card.dataset.proposal = proposal.id;
-        const text = doc.createElement('p'); text.className = 'phone-approval-title'; text.textContent = proposalText(proposal.move) + (proposal.rows?.length ? '\n' + proposal.rows.map(row => `${row.id}: ${row.source ?? row.text}`).join('\n') : '');
+        const text = doc.createElement('p'); text.className = 'phone-approval-title'; text.textContent = proposalText(proposal.move) + (proposal.rows?.length ? '\n' + proposal.rows.map(row => `${row.id}: ${row.source ?? row.text}`).join('\n') : '') + (proposal.effect ? '\n' + JSON.stringify(proposal.effect, null, 2) : '');
         const button = doc.createElement('button'); button.type = 'button'; button.id = 'person-confirm-' + proposal.id; button.textContent = 'Confirm with passkey';
         button.onclick = async () => {
           button.disabled = true;
