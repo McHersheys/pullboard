@@ -174,14 +174,23 @@ test('watch and aggregate coverage retain their single native orchestrator [C7]'
     assert.match(result.stdout, /shared\.mjs/u);
   });
   await t.test('watch executes its first real case and stops through its observed owner', async () => {
-    writeFileSync(join(root, 'watch.test.mjs'), "import { test } from 'node:test';\ntest('watch cell passed', () => {});\n");
+    writeFileSync(join(root, 'watch.test.mjs'), `import { test } from 'node:test';\nimport { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(watch)}, JSON.stringify({ pid: process.ppid, workerPid: process.pid }));\ntest('watch cell passed', () => {});\n`);
     const run = runFixtureChildAsync(process.execPath, [runner, '--watch', 'watch.test.mjs'], { cwd: root, env });
     let stopped = false;
     /** Signal only the observed watcher while its current parent is this exact owned live runner. */
     const stop = () => {
-      if (stopped || !existsSync(watch)) return;
-      const owned = JSON.parse(readFileSync(watch, 'utf8'));
-      assert.equal(owned.parentPid, run.child.pid);
+      if (stopped) return;
+      let owned;
+      if (existsSync(watch)) owned = JSON.parse(readFileSync(watch, 'utf8'));
+      else {
+        // Failure cleanup still targets only an actual native watcher of this live owned runner.
+        const census = spawnSync('ps', ['-axo', 'pid=,ppid=,command='], { encoding: 'utf8' });
+        const children = census.stdout.split('\n').map(line => line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/u))
+          .filter(row => row && Number(row[2]) === run.child.pid && row[3].includes('--watch') && row[3].includes('watch.test.mjs'));
+        assert.equal(children.length, 1, 'one owned native watcher is available for normal termination');
+        owned = { pid: Number(children[0][1]) };
+      }
+      assert.ok(Number.isSafeInteger(owned.pid) && owned.pid > 0);
       const current = spawnSync('ps', ['-p', String(owned.pid), '-o', 'ppid=,command='], { encoding: 'utf8' });
       if (current.status !== 0) return;
       assert.match(current.stdout, new RegExp(`^\\s*${run.child.pid}\\s+`), 'the watcher still belongs to our runner');
@@ -204,8 +213,11 @@ test('watch and aggregate coverage retain their single native orchestrator [C7]'
       });
     });
     control.catch(() => {});
-    const result = await awaitNestedRun(run);
-    await control;
+    const waiting = awaitNestedRun(run);
+    let controlError;
+    try { await control; } catch (error) { controlError = error; stop(); }
+    const result = await waiting;
+    if (controlError) throw controlError;
     assert.ok(stopped, 'normal termination targeted the observed native watcher');
     assert.ok(result.status === 0 || result.signal === 'SIGTERM', 'only normal owned watch termination is accepted');
     assert.match(result.stdout, /watch cell passed/u);

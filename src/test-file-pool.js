@@ -279,9 +279,15 @@ export async function reserveTestFileToken(env, signal) {
   try {
     signal?.throwIfAborted();
     immediate(db, () => db.prepare('INSERT INTO file_waiter(pid) VALUES (?)').run(process.pid));
+    let reported = false;
     while (!reserved) {
       signal?.throwIfAborted();
       reserved = admit(db, pool.cores, pool.lender, pool.call) !== false;
+      if (!reserved && !reported && pool.call?.startsWith('async:') && pool.lender &&
+        db.prepare('SELECT 1 FROM file_holder h WHERE h.pid = ? AND NOT EXISTS (SELECT 1 FROM file_call WHERE lender = h.pid)').get(pool.lender)) {
+        process.stderr.write(`test-file-pool: parent ${pool.lender} is holding its token while nested files wait; use awaitNestedRun(child) only while yielding.\n`);
+        reported = true;
+      }
       if (!reserved) await new Promise(done => setTimeout(done, POLL_MS));
     }
     db.prepare('UPDATE file_holder SET dispatch = ? WHERE pid = ?').run(nonce, process.pid);
