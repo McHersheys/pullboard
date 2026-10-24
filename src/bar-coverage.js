@@ -29,7 +29,7 @@ function observation(value, selection) {
 export function normalizeBarCoverage(value, item) {
   const bad = detail => { throw new Refused('BAR_COVERAGE', `${detail}; supply --coverage-file with recorded whole-file evidence before pullboard bar sign ${item.item_id}`); };
   if (!value || value.version !== 1 || !COMMIT.test(value.sourceMain) || value.sourceCheck !== item.item_check
-    || !Number.isSafeInteger(value.timeoutMs) || value.timeoutMs <= 0 || typeof value.runner !== 'string'
+    || !HASH.test(value.policyKey) || !Number.isSafeInteger(value.timeoutMs) || value.timeoutMs <= 0 || typeof value.runner !== 'string'
     || !Array.isArray(value.required) || value.required.some(path => !projectPath(path)) || !Array.isArray(value.files)) bad('the coverage plan must bind accepted main, its timeout, test paths and the original named check');
   const required = [...new Set(value.required)].sort();
   const files = value.files.map(file => {
@@ -47,13 +47,27 @@ export function normalizeBarCoverage(value, item) {
   const totalMs = fixed + files.filter(file => file.mode === 'whole').reduce((sum,file) => sum + file.evidence.durationMs, 0);
   if (totalMs > value.timeoutMs) bad('the recorded named, install and whole-file durations together exceed the unchanged review timeout');
   if (files.some(file => file.mode === 'whole') && !value.runner.trim()) bad('configure the project affectedTests command; Pullboard never substitutes its own test runner');
-  return { version: 1, sourceMain: value.sourceMain, sourceCheck: value.sourceCheck, timeoutMs: value.timeoutMs,
+  return { version: 1, sourceMain: value.sourceMain, policyKey: value.policyKey, sourceCheck: value.sourceCheck, timeoutMs: value.timeoutMs,
     runner: value.runner, required, files, totalMs, ...(files.length ? { named: { ...value.named }, installMs: value.installMs, ...(value.install ? { install: { ...value.install } } : {}) } : {}) };
+}
+/** Bind inventory and accepted execution settings, allowing unrelated main changes without resigning. */
+function coverageInputs(root, item, policy) {
+  const committed = new Set(git(root, ['ls-tree', '-r', '--name-only', '-z', policy.commit]).split('\0').filter(Boolean));
+  const required = [...new Set(briefFiles(item.item_brief).filter(path => committed.has(path) && barTestPath(path, policy.config.claim.barTestFiles)))].sort();
+  const policyKey = createHash('sha256').update(JSON.stringify({ required, runner: policy.config.affectedTests ?? '',
+    install: policy.config.check.install, timeoutMs: policy.config.check.timeoutMs, patterns: policy.config.claim.barTestFiles })).digest('hex');
+  return { required, policyKey };
+}
+/** Revalidate the signed inventory and runner at the frozen policy, never silently replan its proof. */
+export function barCoverageForPolicy(root, item, plan, policy) {
+  if (coverageInputs(root, item, policy).policyKey !== plan.policyKey) {
+    throw new Refused('BAR_NOT_READY', `#${item.item_id}'s accepted test inventory, runner, install or timeout changed after signing; another session must read the new policy and run pullboard bar sign ${item.item_id} with current coverage`);
+  }
+  return plan;
 }
 /** Resolve existing brief test paths at accepted main; the project explicitly configures non-Node globs. */
 export function prepareBarCoverage(root, item, policy, file) {
-  const committed = new Set(git(root, ['ls-tree', '-r', '--name-only', '-z', policy.commit]).split('\0').filter(Boolean));
-  const required = [...new Set(briefFiles(item.item_brief).filter(path => committed.has(path) && barTestPath(path, policy.config.claim.barTestFiles)))].sort();
+  const { required, policyKey } = coverageInputs(root, item, policy);
   let supplied = {};
   if (file) {
     const path = resolve(root, file);
@@ -66,7 +80,7 @@ export function prepareBarCoverage(root, item, policy, file) {
   if (policy.config.check.install && required.length && (!observation(supplied.install, 'install') || supplied.installMs !== supplied.install.durationMs)) throw new Refused('BAR_COVERAGE', 'the accepted install command needs its own recorded duration in --coverage-file');
   if (!policy.config.check.install) supplied.installMs = 0;
   return normalizeBarCoverage({ ...supplied, version: 1, sourceMain: policy.commit, sourceCheck: item.item_check,
-    timeoutMs: policy.config.check.timeoutMs, runner: policy.config.affectedTests ?? '', required, files: supplied.files ?? [] }, item);
+    timeoutMs: policy.config.check.timeoutMs, policyKey, runner: policy.config.affectedTests ?? '', required, files: supplied.files ?? [] }, item);
 }
 /** Digest every captured input so a signature cannot be transplanted to another coverage plan. */
 export function barCoverageDigest(plan) { return createHash('sha256').update(JSON.stringify(plan)).digest('hex'); }

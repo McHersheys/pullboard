@@ -205,7 +205,7 @@ function signReady(f, id, agentId = f.other) {
   const { revision } = barReadiness(f.board, store.getItem(f.board, id));
   return signBar(f.board, id, { agentId, revision: revision.revision, digest: revision.digest,
     note: 'The builder can meet this bar; two reviewers can use the named witness and listed edges to grade it alike.',
-    coverage: { version: 1, sourceMain: COMMIT, sourceCheck: store.getItem(f.board,id).item_check, timeoutMs: 300000, runner: 'node --test', required: [], files: [] } });
+    coverage: { version: 1, sourceMain: COMMIT, policyKey: 'd'.repeat(64), sourceCheck: store.getItem(f.board,id).item_check, timeoutMs: 300000, runner: 'node --test', required: [], files: [] } });
 }
 
 test('[B4,V2,V1,H16] a claim waits for a bar signed by another session', (t) => {

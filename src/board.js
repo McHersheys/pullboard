@@ -1192,6 +1192,7 @@ export function submit(board, id, { agentId, commit, tree, files = [], policyCom
         hasCommit: null,
         withinLane: null,
         trunkMergeClean: null,
+        trunkInCandidate: null,
         noUnverifiedStack: null,
         infraExplained: null, // The CLI checks the claimed Git diff before this transition.
         doctrineHolds: null,

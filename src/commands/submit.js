@@ -24,6 +24,7 @@ import {
   withGateSlot,
 } from '../gate.js';
 import {
+  contains,
   headCommit,
   headTree,
   isClean,
@@ -97,6 +98,9 @@ export async function submitHere(ctx, id, infra) {
       if (recordedRecovery(board, recovered)) return { me, recorded: true };
       const item = store.getItem(board, id);
       const trunk = requireTrunkMerge(root, recovered.args[1].commit);
+      if (barReadySetting(board).enabled && (recovered.args[1].policyCommit !== trunk.commit || !contains(root, trunk.commit, recovered.args[1].commit))) {
+        throw new Refused('MAIN_NOT_COMPOSED', 'the unrecorded recovered submission has no proof for current main; run pullboard inbox to synchronize its original receipt, or ask the coordinator to resolve the pending move before a fresh submit; the original request is retained');
+      }
       refuseUnverifiedStack(root, board, item, recovered.args[1].commit, trunk);
       return { me, recorded: false };
     });

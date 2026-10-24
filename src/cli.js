@@ -1,5 +1,5 @@
 import { barReadinessRequired, barReadiness } from './bar-readiness.js';
-import { barCoverageCommand } from './bar-coverage.js';
+import { barCoverageCommand, barCoverageForPolicy } from './bar-coverage.js';
 /**
  * The pullboard command line: every command, bound to who is asking (B3, R3). The main checkout is the
  * coordinator; every other worktree is the agent that joined from it.
@@ -1087,7 +1087,7 @@ export function freezer(ctx, { captureVerifyPolicy = false, board } = {}) {
     const frozen = frozenCriterion(loadSpec(ctx.info.root, config), item, doctrine);
     if (!policy) return frozen; // Legacy criteria retain their original digest and committed claim base.
     const signed = board && barReadinessRequired(board, item) ? barReadiness(board, item).signed : null;
-    const coverage = signed?.coverage;
+    const coverage = signed?.coverage ? barCoverageForPolicy(ctx.info.root, item, signed.coverage, { commit: policy.commit, config }) : null;
     const text = JSON.stringify({ ...JSON.parse(frozen.text), ...(coverage ? { sourceCheck: item.item_check, check: barCoverageCommand(item.item_check, coverage), barCoverage: coverage, barRevision: signed.revision } : {}), policy });
     return { text, digest: createHash('sha256').update(text).digest('hex') };
   };

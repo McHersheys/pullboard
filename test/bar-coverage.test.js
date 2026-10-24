@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { barCoverageCommand, normalizeBarCoverage, prepareBarCoverage, barTestPath } from '../src/bar-coverage.js';
+import { barCoverageCommand, normalizeBarCoverage, prepareBarCoverage, barTestPath, barCoverageForPolicy } from '../src/bar-coverage.js';
 import { requireSubmitComposition } from '../src/submit-composition.js';
 import { baselineTestEvidence } from '../src/check-baseline.js';
 import { configFromSource } from '../src/config.js';
@@ -19,7 +19,7 @@ function observed(durationMs, selection = 'whole-file') {
 function example() {
   const path = 'test/adjacent.test.js';
   const item = { item_id: 1, item_check: `node --test --test-name-pattern named ${path}`, item_brief: `Files: ${path}\nTest: named proves the behavior` };
-  const plan = { version: 1, sourceMain: SHA, sourceCheck: item.item_check, timeoutMs: 1000, runner: 'node --test', required: [path],
+  const plan = { version: 1, sourceMain: SHA, policyKey: 'c'.repeat(64), sourceCheck: item.item_check, timeoutMs: 1000, runner: 'node --test', required: [path],
     files: [{ path, mode: 'whole', evidence: observed(400) }], named: observed(100, 'named-check'), installMs: 0 };
   return { item, plan, path };
 }
@@ -28,6 +28,7 @@ function repository(t) {
   const root = mkdtempSync(join(tmpdir(), 'pullboard-bar-coverage-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const env = { ...process.env, GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid', GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid' };
+  delete env.NODE_TEST_CONTEXT; // A nested CLI/test runner is a normal process, not this test worker.
   /** Keep hooks out of this synthetic project; product hooks and admission remain unchanged. */
   const git = (...args) => {
     const ran = runFixtureChild('git', ['-c','core.hooksPath=/dev/null',...args], { cwd: root, env, encoding: 'utf8' });
@@ -46,7 +47,7 @@ test('[V2,V4] a passing named check cannot hide the failing neighboring case', t
   const named = runFixtureChild('/bin/sh',['-c',item.item_check],{cwd:f.root,env:f.env,encoding:'utf8'});
   assert.equal(named.status,0,named.stderr);
   const whole = runFixtureChild('/bin/sh',['-c',barCoverageCommand(item.item_check,normalizeBarCoverage(plan,item))],{cwd:f.root,env:f.env,encoding:'utf8'});
-  assert.notEqual(whole.status,0);
+  assert.notEqual(whole.status,0,whole.stdout+whole.stderr);
   assert.match(whole.stdout,/neighbor still fails/);
   assert.ok(barCoverageCommand(item.item_check,plan).startsWith(`(\n${item.item_check}\n)`),'original shell command remains intact');
 });
@@ -114,4 +115,18 @@ test('[V2,V4] baseline witness distinguishes observed failure, absent case and u
   assert.deepEqual(failed, { failed: ['named witness'], passed: [], noTestsMatched: false });
   assert.equal(baselineTestEvidence('run-tests: NO_TESTS_MATCHED: no named case', 'node bin/run-tests.js').noTestsMatched, true);
   assert.deepEqual(baselineTestEvidence('Error: module missing', 'node --test'), { failed: [], passed: [], noTestsMatched: false });
+});
+
+
+test('[V2,V4] new existing test files or accepted execution settings need a new coverage signature', t => {
+  const f=repository(t);const {item,plan}=example();
+  item.item_brief=item.item_brief.replace('Files: test/adjacent.test.js','Files: test/adjacent.test.js, test/new.test.js');
+  const config=configFromSource('{"affectedTests":"node --test","check":{"timeout":"2s"}}');
+  const file=join(f.root,'record.json');writeFileSync(file,JSON.stringify(plan));
+  const policy={commit:f.git('rev-parse','HEAD'),config};const prepared=prepareBarCoverage(f.root,item,policy,file);
+  writeFileSync(join(f.root,'unrelated.txt'),'unrelated');f.git('add','unrelated.txt');f.git('commit','-qm','test: unrelated');
+  assert.doesNotThrow(()=>barCoverageForPolicy(f.root,item,prepared,{commit:f.git('rev-parse','HEAD'),config}));
+  writeFileSync(join(f.root,'test','new.test.js'),'// a newly committed test file');f.git('add','test/new.test.js');f.git('commit','-qm','test: new brief file');
+  assert.throws(()=>barCoverageForPolicy(f.root,item,prepared,{commit:f.git('rev-parse','HEAD'),config}),e=>e.code==='BAR_NOT_READY');
+  assert.throws(()=>barCoverageForPolicy(f.root,item,prepared,{...policy,config:{...config,affectedTests:'node other.js'}}),e=>e.code==='BAR_NOT_READY');
 });
