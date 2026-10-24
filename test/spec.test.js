@@ -983,7 +983,7 @@ test('a joined seat requests answers for pending questions [S1,I1,P6]', t => {
     box.git('worktree', 'add', '-q', '-b', 'build/setup', builder);
     const joined = runIn(box, builder, ['join', 'build', '--model', 'Fixture']);
     assert.equal(joined.status, 0, joined.stderr + joined.stdout);
-    const read = runIn(box, builder, ['resume', '--json']);
+    const read = runIn(box, builder, ['resume', '--diagnostics', '--json']);
     assert.equal(read.status, 0, read.stderr + read.stdout);
     const card = JSON.parse(read.stdout);
     assert.match(card.setup.personCommand, /pullboard spec answer Q1 "<choice>"/u);
@@ -1007,7 +1007,7 @@ test('a changed approved draft needs a new decision before apply [S1,I1,P6]', t 
   const staleApply = box.run('apply');
   assert.equal(staleApply.status, 1, staleApply.stdout + staleApply.stderr);
   assert.match(staleApply.stderr, /STALE_ROW_DECISION/u);
-  const read = runIn(box, box.root, ['resume', '--json']);
+  const read = runIn(box, box.root, ['resume', '--diagnostics', '--json']);
   assert.equal(read.status, 0, read.stderr + read.stdout);
   const card = JSON.parse(read.stdout);
   assert.equal(card.setup.waitingOn, 'person-approval', 'the old decision does not approve the changed text');
@@ -1015,11 +1015,11 @@ test('a changed approved draft needs a new decision before apply [S1,I1,P6]', t 
   assert.equal(card.setup.personCommand, 'pullboard spec approve A1');
   assert.doesNotMatch(card.next, /spec apply/u, 'applying the stale receipt would loop');
   assert.equal(box.run('approve', 'A1').status, 0, 'the person can approve the current text');
-  const decided = JSON.parse(runIn(box, box.root, ['resume', '--json']).stdout);
+  const decided = JSON.parse(runIn(box, box.root, ['resume', '--diagnostics', '--json']).stdout);
   assert.equal(decided.setup.waitingOn, 'coordinator-apply');
   assert.equal(box.run('apply').status, 0);
   runFixtureGit(['commit', '-q', '-m', 'docs(spec): apply current row decision', '--', box.specName], { cwd: box.root, env: box.env, encoding: 'utf8' });
-  const applied = JSON.parse(runIn(box, box.root, ['resume', '--json']).stdout);
+  const applied = JSON.parse(runIn(box, box.root, ['resume', '--diagnostics', '--json']).stdout);
   assert.doesNotMatch(applied.next, /spec apply|approve A1/u);
 });
 

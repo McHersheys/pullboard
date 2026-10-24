@@ -22,6 +22,7 @@ import {
 } from '../spec.js';
 import {
   actOn,
+  barActorForCommand,
   briefArg,
   briefInLane,
   buildInFilelessLane,
@@ -29,6 +30,7 @@ import {
   idList,
   launchBaseline,
   ordered,
+  personMode,
 } from '../cli.js';
 
 /** Run `pullboard add` and return its exit code. */
@@ -70,6 +72,7 @@ export async function run(io, args) {
   const { command } = store.validateItemAddition(board, item);
   if (command) refuseCheckSyntax(command);
   if (command) item.checkBaseline = values.wait ? checkBaseline(ctx.info.root, command) : prepareCheckBaseline(ctx.info.root, command);
+  item.barActor = barActorForCommand(ctx, board, { asPerson: personMode(ctx, me, values) });
   const id = await ordered(ctx, board, 'addItem', [item]);
   if (item.checkBaseline?.result === 'pending') await launchBaseline(ctx, board, id, item.checkBaseline);
   io.result?.({ item: store.getItem(board, id) });

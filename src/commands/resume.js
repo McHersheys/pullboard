@@ -18,16 +18,14 @@ import {
   loadConfig,
 } from '../config.js';
 import {
-  agentDoctrine,
   resumeDoctrineNotes,
   staleDoctrineRows,
 } from '../doctrine-rulings.js';
 import {
   repoInfo,
-  tryGit,
 } from '../git.js';
 import {
-  scanHealthSentinel,
+  recordedHealthFindings,
 } from '../health-sentinel.js';
 import {
   unwiredHookProblems,
@@ -36,8 +34,8 @@ import {
   takeDecisionNotices,
 } from '../implies.js';
 import {
-  personNeedsState,
-} from '../needs-state.js';
+  resumeNeeds,
+} from '../resume-needs.js';
 import {
   personNeeds,
 } from '../needs.js';
@@ -65,6 +63,7 @@ import {
   loadSpec,
 } from '../spec.js';
 import { initialSpecApprovalBaseline } from '../spec-approval-bootstrap.js';
+import { readResumeSources } from '../resume-sources.js';
 import {
   flowAlertLine,
 } from '../stats-flow.js';
@@ -89,7 +88,6 @@ import {
   dirtyFiles,
   firstLine,
   ordered as sendOrdered,
-  primaryCheckoutRoot,
   resumeReleaseNotes,
   reworkNext,
   setupIdentity,
@@ -100,11 +98,12 @@ import {
   viewSetupComplete,
   whoAmI,
   withBoard,
+  withBoardRead,
   worktreeLocation,
 } from '../cli.js';
 
 /**
- * Resume's own moves (the approval baseline, health findings, due watches) are bookkeeping: a session that cannot
+ * Resume's one compatibility move (the approval baseline) is bookkeeping: a session that cannot
  * reach the board key (SSH, a scheduled job, a locked keychain) still reads the whole card, and the moves wait for a
  * session that can. Every read works without the key [E9].
  *
@@ -130,53 +129,59 @@ function keylessBookkeeping(send) {
  *
  * @param {any} io
  * @param {Awaited<ReturnType<typeof keepViewRunning>>} view what keeping the background view running did
+ * @param {boolean} diagnostics include explicit setup, hook and stale-work inspection
+ * @param {{ json?: boolean }} options omit text-only calculations when the versioned result owns the output
  * @returns {number}
  */
-export async function resumeHere(io, view) {
+export async function resumeHere(io, view, diagnostics = false, { json = false } = {}) {
   const ctx = context(io);
   const ordered = keylessBookkeeping(sendOrdered);
-  await withBoard(ctx, async board => {
-    const me = whoAmI(ctx, board);
-    // Bootstrap is an ordered move: observe health only after it, so the first legacy scan is not stale.
-    const initialBaseline = initialSpecApprovalBaseline(ctx, board, 'recordHealthFindings');
-    if (initialBaseline) {
-      const baselineIo = ctx.io.personRequest || ctx.io.personRequestMoveId
-        ? { ...ctx.io, personRequest: undefined, personRequestMoveId: undefined } : ctx.io;
-      await ordered({ ...ctx, io: baselineIo }, board, 'recordSpecApprovalBaseline', [{
-        agentId: COORDINATOR, baseline: initialBaseline,
-      }]);
-    }
-    const observation = scanHealthSentinel(ctx.file, { root: ctx.info.root, config: ctx.config, now: ctx.clock.now() });
-    if (observation) {
-      try { await ordered(ctx, board, 'recordHealthFindings', [{ agentId: me.id, ...observation }]); }
-      catch (error) { if (!(error instanceof Refused) || error.code !== 'HEALTH_SCAN_STALE') throw error; }
-    }
+  const initialBaseline = withBoardRead(ctx, board => {
+    whoAmI(ctx, board);
+    return initialSpecApprovalBaseline(ctx, board, 'recordHealthFindings');
   });
-  await resumeSentinels({ ctx, withBoard, whoAmI, ordered });
+  if (initialBaseline) {
+    const baselineIo = ctx.io.personRequest || ctx.io.personRequestMoveId
+      ? { ...ctx.io, personRequest: undefined, personRequestMoveId: undefined } : ctx.io;
+    await withBoard(ctx, board => ordered({ ...ctx, io: baselineIo }, board, 'recordSpecApprovalBaseline', [{
+      agentId: COORDINATOR, baseline: initialBaseline,
+    }]));
+  }
+  resumeSentinels({ ctx, withBoard: withBoardRead });
   const { root, isMain } = ctx.info;
-  const mainRoot = primaryCheckoutRoot(ctx.info);
-  const worktreeConfig = mainRoot ? (isMain ? ctx.config : loadConfig(mainRoot)) : null;
+  let mainRoot = null;
+  let worktreeConfig = null;
   let setupScope;
+  let setupDecisions;
   let doctrine;
-  const card = withBoard(ctx, (board) => {
-    setupScope = setupIdentity(board);
-    doctrine = agentDoctrine(ctx, board);
+  let sources;
+  const card = await withBoardRead(ctx, async (board) => {
+    setupScope = diagnostics ? setupIdentity(board) : null;
+    sources = await readResumeSources(ctx, board, { compareBranch: !json, includeHeadDoctrine: diagnostics });
+    setupDecisions = diagnostics ? store.rowDecisions(board) : undefined;
+    doctrine = sources.doctrine;
+    if (diagnostics) {
+      mainRoot = sources.primary;
+      // v1 placement follows actual working configuration, independently of committed doctrine authority.
+      worktreeConfig = mainRoot ? (isMain ? ctx.config : loadConfig(mainRoot)) : null;
+    }
     const me = whoAmI(ctx, board);
-    const projector = verdictProjector(root, board);
-    const all = store.listItems(board, { all: true }).map(projector.project);
+    const projector = diagnostics ? verdictProjector(root, board) : null;
+    const all = store.listItems(board, { all: true }).map(item => projector ? projector.project(item) : item);
     const pendingMerges = all.filter((item) => item.item_status === 'verified' && !item.item_merged_commit)
       .map(item => ({ ...item, item_checked_commit: store.checkedLandingCommit(board, item) }));
     const toMerge = pendingMerges.filter(item => !item.item_verdict_state);
     const staleVerdicts = pendingMerges.filter(item => item.item_verdict_state);
     const decisionSections = isMain ? coordinatorDecisionSections(board, ctx) : null;
     const { shouts = [], ...decisions } = decisionSections ?? {};
-    const needsState = personNeedsState(root, { board, includeRigorUndrafted: me.id === COORDINATOR });
+    const needsState = resumeNeeds(root, { board, config: ctx.config, includeRigorUndrafted: me.id === COORDINATOR });
     return {
       me,
+      health: recordedHealthFindings(board),
       all,
       needsYou: personNeeds(needsState),
       ...(me.id === COORDINATOR ? { rigor: { undrafted: needsState.rigorUndrafted } } : {}),
-      ...(decisionSections ? { ...decisions, ...verifiedMergeGroups(root, pendingMerges, shouts, ctx.clock.now().getTime()),
+      ...(decisionSections ? { ...decisions, ...(diagnostics ? verifiedMergeGroups(root, pendingMerges, shouts, ctx.clock.now().getTime()) : {}),
         flow: proofStats(board, { now: ctx.clock.now().getTime() }).flow } : {}),
       requests: me.id === COORDINATOR ? store.openRequests(board) : [],
       holding: all.filter((item) => item.item_status === 'claimed' && item.item_owner === me.id),
@@ -188,8 +193,7 @@ export async function resumeHere(io, view) {
       mainMerges: mainMergesFor(board, all.filter((item) => item.item_status === 'open' && item.item_built_by === me.id)),
       awaiting: all.filter((item) => item.item_status === 'submitted' && item.item_built_by === me.id),
       toVerify: all.filter((item) => item.item_status === 'submitted' && item.item_built_by !== me.id),
-      toMerge,
-      staleVerdicts,
+      ...(diagnostics ? { toMerge, staleVerdicts } : { acceptedAwaitingLanding: pendingMerges }),
       ...(isMain ? { landingBatches: store.landingBatches(board) } : {}),
       open: all.filter((item) => item.item_status === 'open'),
       hold: store.laneHold(board, me.lane),
@@ -198,20 +202,22 @@ export async function resumeHere(io, view) {
       newest: store.peekShouts(board, me.id, 1),
       ...(me.id === COORDINATOR ? { inbox: coordinatorInbox(board, me.id, decisions.openDecisions ?? store.openDecisions(board, COORDINATOR)) } : {}),
       agents: store.listAgents(board),
-      viewOpened: viewSetupComplete(ctx, board),
+      ...(diagnostics ? { viewOpened: viewSetupComplete(ctx, board) } : {}),
     };
   });
   card.relayProblems = unlinkedRelayProjects();
-  card.hookProblems = unwiredHookProblems(root);
-  card.newWorktreeLocation = mainRoot
-    ? worktreeLocation(mainRoot, worktreeConfig)
-    : unavailableWorktreeLocation();
+  if (diagnostics) {
+    card.hookProblems = unwiredHookProblems(root);
+    card.newWorktreeLocation = mainRoot
+      ? worktreeLocation(mainRoot, worktreeConfig)
+      : unavailableWorktreeLocation();
+  }
   const { me } = card;
   const name = (id) => agentDisplayName(card.agents, ctx.config, id);
-  card.stale = staleFrozenItems(card.all, loadSpec(root, ctx.config).rows, staleDoctrineRows(ctx, doctrine)).map((item) => ({ ...item, ...staleItemFinding(item) }));
-  if (isMain) {
+  if (diagnostics) card.stale = staleFrozenItems(card.all, loadSpec(root, ctx.config).rows, staleDoctrineRows(ctx, doctrine, { headDoctrine: sources.headDoctrine })).map((item) => ({ ...item, ...staleItemFinding(item) }));
+  if (isMain && diagnostics) {
     card.staleFollowUps = { count: card.stale.length + card.staleIntegrations.length,
-      list: 'pullboard resume --json', items: card.stale, integrations: card.staleIntegrations };
+      list: 'pullboard resume --diagnostics --json', items: card.stale, integrations: card.staleIntegrations };
     delete card.staleIntegrations;
     card.reviewQueue = { items: card.toVerify, awaiting: card.awaiting };
   }
@@ -225,15 +231,21 @@ export async function resumeHere(io, view) {
   if (releaseNotes?.omitted) say(`${releaseNotes.omitted} earlier release${releaseNotes.omitted === 1 ? '' : 's'} omitted; see the full notes in CHANGELOG.md`);
   else if (releaseNotes?.releases.length) say('Full release notes: CHANGELOG.md');
   for (const problem of card.relayProblems) say(problem.message);
-  for (const problem of card.hookProblems) say(`${problem.message}; ${problem.next}`);
+  for (const problem of card.hookProblems ?? []) say(`${problem.message}; ${problem.next}`);
   const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
   say(`resume: ${me.displayName}${me.family ? ` [family ${me.family}]` : ''}, ${me.lane} lane${isMain ? ', the main checkout' : ''}, at ${root}`);
+  if (card.health.recordedAt) {
+    say(`Health recorded ${card.health.recordedAt}: ${card.health.findings.length} finding${card.health.findings.length === 1 ? '' : 's'}; refresh with pullboard sentinel run.`);
+    for (const finding of card.health.findings) say(`  ${finding.subject}: ${finding.why}; next: ${finding.next}`);
+  } else say('No health findings have been recorded; schedule pullboard sentinel run to refresh them.');
   card.view = view;
   // A view left running needs no line at every session start; a start, a busy port or a failure does.
   if (view.state !== 'running' && backgroundViewLine(view)) say(backgroundViewLine(view));
   if (card.inbox) for (const line of coordinatorInboxLines(card.inbox, name, (at) => span(ctx, at), firstLine)) say(line);
-  say(`New agent worktrees: ${card.newWorktreeLocation}`);
-  card.setup = withBoard(ctx, board => withStarterWork(boardSetup(ctx, card, setupScope), { board, me, main: isMain, config: ctx.config, root, seat: ctx.io.callerRole() === 'seat' }));
+  if (diagnostics) {
+    say(`New agent worktrees: ${card.newWorktreeLocation}`);
+    card.setup = withBoardRead(ctx, board => withStarterWork(boardSetup(ctx, card, setupScope, { decisions: setupDecisions }), { board, me, main: isMain, config: ctx.config, root, seat: ctx.io.callerRole() === 'seat' }));
+  } else say('Setup, hook and stale-work diagnostics: pullboard resume --diagnostics.');
   if (!loadSpec(root, ctx.config).rows.length && card.all.length) say('Spec rows are optional; add a requirement later: pullboard spec draft "<text>".');
   if (card.setup) {
     say(`Setting up: step ${card.setup.step} of 5`);
@@ -242,18 +254,16 @@ export async function resumeHere(io, view) {
     if (card.setup.afterAnswer) say(card.setup.afterAnswer);
     if (card.setup.meanwhile) say(card.setup.meanwhile);
   }
-  const dirty = dirtyFiles(root).length;
-  if (!isMain) {
-    const branch = tryGit(root, ['rev-parse', '--abbrev-ref', 'HEAD']).stdout || 'HEAD';
-    // Against the main checkout's branch, not its HEAD, which is detached while the coordinator verifies.
-    const mainRef = /^branch (.+)$/m.exec(tryGit(root, ['worktree', 'list', '--porcelain']).stdout.split('\n\n')[0])?.[1];
-    const [behind = 0, ahead = 0] = mainRef ? tryGit(root, ['rev-list', '--left-right', '--count', `${mainRef}...HEAD`]).stdout.split(/\s+/).map(Number) : [];
+  const dirty = diagnostics ? dirtyFiles(root).length : undefined;
+  if (!isMain && !json) {
+    const { branch, mainRef, behind = 0, ahead = 0 } = sources;
+    // Fresh command facts compare the actual primary branch, not an unrelated detached review HEAD.
     const against = mainRef ? `${ahead} ahead of main, ${behind} behind${behind ? ' (merge main before you submit)' : ''}` : 'main is detached for a verification, so ahead and behind are unknown';
     say(`branch ${branch}: ${against}${dirty ? `; ${plural(dirty, 'file')} uncommitted` : ''}`);
   } else if (dirty) {
     say(`${plural(dirty, 'file')} uncommitted in the main checkout`);
   }
-  if (isMain) {
+  if (isMain && diagnostics) {
     card.commits = commitOwners(uncommittedSetup(root, ctx.config)?.differ ?? [], [ctx.config.spec, ctx.config.practice], root);
     for (const line of commitOwnerLines(card.commits)) say(line);
   }
@@ -270,9 +280,9 @@ export async function resumeHere(io, view) {
     say(`sent back: #${item.item_id} ${verdict ? `${verdict.verdict_reason} by ${name(verdict.verdict_by)}: ${firstLine(verdict.verdict_note)}` : 'rejected'}`);
   }
   for (const { item, merge } of card.mainMerges) say(mainMergeLines(item, merge, name).join('; '));
-  if (isMain && card.staleFollowUps.count) say(`${plural(card.staleFollowUps.count, 'stale follow-up')}; list them with ${card.staleFollowUps.list}`);
-  else if (!isMain) for (const item of card.stale) say(`stale: ${item.message}; next: ${item.next}`);
-  for (const item of card.staleVerdicts) say(staleVerdictRefusal(item, item.item_verdict_state).message);
+  if (isMain && diagnostics && card.staleFollowUps.count) say(`${plural(card.staleFollowUps.count, 'stale follow-up')}; list them with ${card.staleFollowUps.list}`);
+  else if (!isMain && diagnostics) for (const item of card.stale) say(`stale: ${item.message}; next: ${item.next}`);
+  for (const item of card.staleVerdicts ?? []) say(staleVerdictRefusal(item, item.item_verdict_state).message);
   if (card.awaiting.length) say(`awaiting a verdict: ${card.awaiting.map((item) => `#${item.item_id} (${span(ctx, item.item_updated_at)})`).join(', ')}`);
   if (isMain) {
     for (const batch of card.landingBatches.filter((entry) => !['landed', 'blocked'].includes(entry.state))) say(`landing ${batch.id}: ${batch.state}, owner ${batch.owner}, tip ${batch.tip}; log ${batch.logPath}; next: pullboard land --adopt`);
@@ -283,13 +293,13 @@ export async function resumeHere(io, view) {
     };
     section(card.openDecisions, (ask) => `open decision #${ask.id} from ${name(ask.asker)} (${ask.age}): ${firstLine(ask.question)}`);
     section(card.recentAnswers, (answer) => `recent decision #${answer.id}: ${name(answer.answeredBy)} answered ${name(answer.asker)} (${answer.age} ago): ${firstLine(answer.answer)}`);
-    if (card.toMerge.length || card.staleVerdicts.length) {
+    if (diagnostics && (card.toMerge.length || card.staleVerdicts.length)) {
       const groups = card.verifiedNotMerged;
       // Conflicts remain useful diagnostics even when the acceptance must be re-reviewed.
       const freshness = item => item.item_verdict_state ? ' [STALE_VERDICT]' : '';
       /** Keep merge groups on one line while retaining all entries in JSON. */
       const listed = (entries, line) => entries.slice(0, 3).map(line).join(', ')
-        + (entries.length > 3 ? `, +${entries.length - 3} more (pullboard resume --json)` : '') || 'none';
+        + (entries.length > 3 ? `, +${entries.length - 3} more (pullboard resume --diagnostics --json)` : '') || 'none';
       say(`verified, not merged — merges cleanly: ${listed(groups.clean, (item) => `#${item.item_id} ${firstLine(item.item_title)}${freshness(item)}`)}`);
       say(`verified, not merged — conflicts: ${listed(groups.conflicts, ({ item, files }) => `#${item.item_id} ${firstLine(item.item_title)} (${files.join(', ') || 'files unavailable'})${freshness(item)}`)}`);
       say(`verified, not merged — claimed for integration: ${listed(groups.integrating, ({ item, by, at, commit }) => `#${item.item_id} by ${name(by)} at ${at} (${commit.slice(0, 12)})${freshness(item)}`)}`);
@@ -300,7 +310,8 @@ export async function resumeHere(io, view) {
     section(card.rigor?.undrafted ?? [], (cause) => `Rigor needs a proved draft: ${cause.key}, items ${cause.items.map(item => `#${item.id}`).join(', ')}; pullboard rigor draft "${cause.key.replaceAll('"', '\\"')}" "<rule>" --check "<command>" --red <commit> --green <commit>`);
     if (card.toVerify.length) say('review queue:');
     section(card.toVerify, (item) => `  to verify: #${item.item_id} ${item.item_lane} (${span(ctx, item.item_updated_at)})`);
-    if (card.toMerge.length) say('merge verified work, run the gate, then record each with pullboard merged <id> <commit>');
+    if (diagnostics && card.toMerge.length) say('merge verified work, run the gate, then record each with pullboard merged <id> <commit>');
+    if (!diagnostics && card.acceptedAwaitingLanding.length) say(`Last accepted receipts awaiting landing checks: ${card.acceptedAwaitingLanding.map(item => `#${item.item_id}`).join(', ')}; pullboard land checks their current verdicts.`);
     for (const hold of card.holds) say(`held: the ${hold.hold_lane} lane, ${hold.hold_reason}`);
     const byLane = Object.entries(Map.groupBy(card.open, (item) => item.item_lane)).map(([lane, items]) => `${lane} ${items.length}`);
     say(`open: ${card.open.length}${byLane.length ? ` (${byLane.join(', ')})` : ''}`);
@@ -312,7 +323,10 @@ export async function resumeHere(io, view) {
   const isVerified = (id) => card.all.find((other) => other.item_id === Number(id))?.item_status === 'verified';
   const ready = inLane.filter((item) => !item.item_after || item.item_after.split(',').every(isVerified)).length;
   let next;
-  if (isMain) next = coordinatorNext(card, loadSpec(root, ctx.config).rows);
+  if (isMain) {
+    next = coordinatorNext(diagnostics ? card : { ...card, toMerge: card.acceptedAwaitingLanding, staleVerdicts: [] }, loadSpec(root, ctx.config).rows);
+    if (!diagnostics && next.startsWith('merge #')) next = 'pullboard land (checks current verdicts before merging)';
+  }
   else if (card.holding.length) next = buildNext(card);
   else if (card.sentBack.length) next = reworkNext(card);
   else if (card.hold) next = 'wait for the hold to lift: pullboard next --wait 9 (minutes)';
@@ -323,7 +337,7 @@ export async function resumeHere(io, view) {
   if (card.setup) next = card.setup.agentNext ?? card.setup.command;
   if (card.commits) next = commitFirst(card.commits, next);
   if (card.inbox) next = inboxFirst(card.inbox, next);
-  io.result?.({ ...card, root, dirty, next });
+  io.result?.({ ...card, root, ...(diagnostics ? { dirty } : {}), next });
   say(`next: ${next}`);
   const flowAlert = isMain ? flowAlertLine(card.flow) : null;
   if (flowAlert) say(flowAlert);
@@ -331,7 +345,8 @@ export async function resumeHere(io, view) {
 }
 
 /** Run `pullboard resume` and return its exit code. */
-export async function run(io) {
+export async function run(io, { values }) {
   repoInfo(io.cwd);
-  return resumeHere(io, await keepViewRunning());
+  // JSON v1 retains its real diagnostic fields; only the default text card defers them.
+  return resumeHere(io, await keepViewRunning(), Boolean(values.diagnostics || values.json), { json: Boolean(values.json) });
 }

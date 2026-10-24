@@ -6,6 +6,7 @@ import * as store from '../src/board.js';
 import { workQueue } from '../src/queue.js';
 import { applyEngineMove, applyRelayMove, prepareEngineMove } from '../src/engine.js';
 import { ENGINE_VERSION, MILESTONE_RANK_ENGINE } from '../src/machine.js';
+import { LINE_ORDER_ENGINE } from '../src/line-order-engine.js';
 import { exportBoard, importBoard } from '../src/exchange.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
@@ -634,4 +635,154 @@ test('the queue names the same noncolliding work next can serve [N2,N20]', (t) =
   assert.equal(queue.first.strong, store.nextFor(board, { agentId: builder, lane: 'core' }).item.item_id);
   assert.ok(queue.unreleased.find(item => item.id === b).waits.some(reason => reason.includes(`#${a}`)
     && reason.includes('src/shared.js')), 'queue retains the same actionable blocking item and file');
+});
+
+/** Real Git/SQLite and native edit/inbox commands; later lifecycle records are private fixture state, not gate executions. */
+test("a claimed item whose files grow into another claimed item's files names the overlap to both holders [N2,B7,B13,N20]", t => {
+  const box = crossLaneFixture(t);
+  const left = box.seat('growth-left', 'web', 'growth-left-session');
+  const right = box.seat('growth-right', 'web', 'growth-right-session');
+  /** Create ordinary coordinator briefs in the private project's permitted lane. */
+  const add = (title, file) => box.json(box.run(box.repo, 'add', 'web', title, '--specs', 'G1',
+    '--brief', `Files: ${file}\nTest: growing work names its newly shared file`, '--json')).item.item_id;
+  const a = add('A already holds x', 'web/x.js');
+  const b = add('B initially holds only y', 'web/y.js');
+  box.json(box.runAs('growth-left-session', left.root, 'claim', String(a), '--json'));
+  box.json(box.runAs('growth-right-session', right.root, 'claim', String(b), '--json'));
+  /** Read only this fixture's public board state and close before the next native command. */
+  function onBoard(work) {
+    const board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
+    try { return work(board); } finally { store.closeBoard(board); }
+  }
+  /** The coordinator's normal edit is allowed even when it creates a collision. */
+  function edit(files, note = 'growing work names its newly shared file') {
+    return box.json(box.run(box.repo, 'edit', String(b), '--brief', `Files: ${files}\nTest: ${note}`, '--json'));
+  }
+  /** One delivered notice per holder names both items and the actual new collision. */
+  function noticesForBoth() {
+    const messages = [
+      box.json(box.runAs('growth-left-session', left.root, 'inbox', '--json')).shouts,
+      box.json(box.runAs('growth-right-session', right.root, 'inbox', '--json')).shouts,
+    ];
+    for (const [index, messagesForHolder] of messages.entries()) {
+      const notices = messagesForHolder.filter(message => message.shout_text.includes(`#${a}`)
+        && message.shout_text.includes(`#${b}`) && message.shout_text.includes('web/x.js'));
+      assert.equal(notices.length, 1, `${index === 0 ? 'A' : 'B'} receives exactly one new overlap notice`);
+      const item = index === 0 ? a : b;
+      assert.ok(onBoard(board => store.itemThread(board, item).some(event => event.kind === 'shout'
+        && event.detail.shout === notices[0].shout_id)), 'the holder notice is retained on its item thread');
+    }
+  }
+  edit('web/y.js, web/x.js');
+  const grown = onBoard(board => store.getItem(board, b));
+  assert.equal(grown.item_status, 'claimed', 'a warning does not revoke or reject the held edit');
+  assert.match(grown.item_brief, /web\/x\.js/u, 'the real native edit stored the enlarged file list');
+  noticesForBoth();
+  const noticeCount = onBoard(board => store.allShouts(board).length);
+  edit('web/x.js, web/y.js', 'only the prose and order changed');
+  edit('web/y.js');
+  assert.equal(onBoard(board => store.allShouts(board).length), noticeCount,
+    'reordering existing paths, prose edits and shrinking a brief do not send duplicate notices');
+
+  // Seed later lifecycle states with real Git object IDs. These records do not claim an executed gate or landing.
+  const commit = box.git(box.repo, 'rev-parse', 'HEAD');
+  const tree = box.git(box.repo, 'rev-parse', 'HEAD^{tree}');
+  onBoard(board => {
+    submitFixture(board, a, { agentId: left.agent, commit, tree });
+    const reviewer = store.register(board, { lane: 'review', path: join(box.dir, 'growth-reviewer'), route: 'strong' });
+    store.verify(board, a, { agentId: reviewer, decision: 'ACCEPT', policy: 'any', head: commit,
+      digest: store.getItem(board, a).item_frozen_digest, note: 'Private lifecycle state only; no gate execution claimed.' });
+    submitFixture(board, b, { agentId: right.agent, commit, tree });
+  });
+  edit('web/y.js, web/x.js');
+  assert.equal(onBoard(board => store.getItem(board, b).item_status), 'submitted');
+  noticesForBoth();
+  const acceptedCount = onBoard(board => store.allShouts(board).length);
+  onBoard(board => store.merged(board, a, { agentId: 'coordinator', commit }));
+  edit('web/y.js');
+  edit('web/y.js, web/x.js');
+  assert.equal(onBoard(board => store.allShouts(board).length), acceptedCount,
+    'an already landed item is no longer an in-flight collision');
+});
+
+
+/** A private real Git repository and SQLite queue; lifecycle records below are not gate executions. */
+function lineOrderFixture(t) {
+  const helpers = createE2eHelpers();
+  const box = helpers.sandbox();
+  const root = join(box.dir, 'line-order');
+  mkdirSync(root);
+  box.git(root, 'init', '-q', '-b', 'main');
+  box.git(root, 'commit', '--allow-empty', '-qm', 'test: seed the private line-order repository');
+  const board = store.openBoard(join(root, 'board.sqlite'));
+  store.register(board, { lane: 'coordinator', path: root });
+  const builder = store.register(board, { lane: 'core', path: join(root, 'builder'), route: 'strong', parent: 'builder-P', session: 'builder-child' });
+  const reviewer = store.register(board, { lane: 'review', path: join(root, 'reviewer'), route: 'strong', parent: 'reviewer-R', session: 'reviewer-child' });
+  t.after(() => { store.closeBoard(board); helpers.cleanup(); });
+  /** Switch only the recorded ordering control; other line controls remain off. */
+  function order(value) {
+    store.setLineSetting(board, { agentId: 'coordinator', key: 'order', value, reason: 'private queue policy control', window: { windowMinutes: 60, activeReviewers: 3 } });
+  }
+  return { board, root, builder, reviewer, order };
+}
+
+test('line order sends a send-back home first and gives the scarcest review first [N2,B13,H16]', t => {
+  const home = lineOrderFixture(t);
+  const older = store.addItem(home.board, { by: 'coordinator', lane: 'core', title: 'older fresh work' });
+  const returned = submitted(home.board, home.builder, 'a later send-back belongs home', 'strong', 1);
+  const returnedItem = store.getItem(home.board, returned);
+  store.verify(home.board, returned, { agentId: home.reviewer, decision: 'REJECT', reason: 'TEST_FAILURE',
+    note: 'Synthetic rejected lifecycle record; no gate execution claimed.', head: returnedItem.item_commit,
+    digest: returnedItem.item_frozen_digest, policy: 'any', reopenFirstRefusalMinutes: 15 });
+  store.addMilestone(home.board, { agentId: 'coordinator', name: 'first', items: [older] });
+  assert.equal(store.nextFor(home.board, { agentId: home.builder, lane: 'core' }).item.item_id, older, 'off retains release order before rework');
+  assert.equal(store.lineSettings(home.board).reviewsFirst, false, 'review-versus-build selection is a separate control');
+  home.order(true);
+  assert.equal(store.nextFor(home.board, { agentId: home.builder, lane: 'core' }).item.item_id, returned, 'on returns the builder to its own send-back before new release work');
+  home.order(false);
+  assert.equal(store.nextFor(home.board, { agentId: home.builder, lane: 'core' }).item.item_id, older, 'recorded off restores the prior order');
+
+  const scarce = lineOrderFixture(t);
+  const otherAuthor = store.register(scarce.board, { lane: 'core', path: join(scarce.root, 'author-Q'), parent: 'author-Q', session: 'author-Q-child' });
+  for (let index = 0; index < 2; index++) store.register(scarce.board, { lane: 'review', path: join(scarce.root, `sibling-${index}`),
+    parent: 'builder-P', session: `builder-sibling-${index}` });
+  const abundant = submitted(scarce.board, otherAuthor, 'older review has several independent seats', 'strong', 2);
+  const limited = submitted(scarce.board, scarce.builder, 'newer review shares its author parent with two seats', 'strong', 3);
+  const prior = store.getItem(scarce.board, limited);
+  store.verify(scarce.board, limited, { agentId: scarce.reviewer, decision: 'REJECT', reason: 'TEST_FAILURE',
+    note: 'Synthetic historical-author lifecycle record; no gate execution claimed.', head: prior.item_commit, digest: prior.item_frozen_digest, policy: 'any' });
+  store.claim(scarce.board, limited, { agentId: otherAuthor, lane: 'core', leaseMs: HOUR, freeze: FREEZE });
+  submitFixture(scarce.board, limited, { agentId: otherAuthor, commit: '4'.repeat(40), tree: '4'.repeat(40) });
+  assert.equal(store.nextFor(scarce.board, { agentId: scarce.reviewer, lane: 'review', verify: true }).item.item_id, abundant, 'off retains oldest review');
+  scarce.order(true);
+  assert.equal(store.nextFor(scarce.board, { agentId: scarce.reviewer, lane: 'review', verify: true }).item.item_id, limited,
+    'scarcity excludes every seat from the same parent as an author, just as the review guard does');
+  const sibling = store.listAgents(scarce.board).find(agent => agent.agent_path === join(scarce.root, 'sibling-0')).agent_id;
+  assert.throws(() => store.reserveReview(scarce.board, limited, { agentId: sibling, leaseMs: HOUR, policy: 'any' }),
+    error => error.code === 'SELF_SESSION_VERIFY', 'the count cannot borrow eligibility from a seat refused by the real review guard');
+  const snapshot = exportBoard(scarce.board);
+  const replay = store.openBoard(join(scarce.root, 'replica.sqlite'));
+  t.after(() => store.closeBoard(replay));
+  importBoard(replay, snapshot);
+  assert.equal(store.nextFor(replay, { agentId: scarce.reviewer, lane: 'review', verify: true }).item.item_id, limited, 'export/import retains the recorded policy and author lineage');
+  const oldMove = prepareEngineMove(replay, 'reserveNextReview', [{ agentId: scarce.reviewer, lane: 'review', leaseMs: HOUR, policy: 'any' }]);
+  const oldOutcome = applyEngineMove(replay, { ...oldMove, engine: LINE_ORDER_ENGINE - 1 }, { sequence: 1, at: '2026-10-24T00:00:00Z' });
+  assert.equal(oldOutcome.result.item.item_id, abundant, 'an older recorded reserve-next retains its old ordering even with current policy records in the snapshot');
+
+  const ranked = lineOrderFixture(t);
+  const ordinary = store.addItem(ranked.board, { by: 'coordinator', lane: 'core', title: 'ranked ordinary work' });
+  const dependency = store.addItem(ranked.board, { by: 'coordinator', lane: 'core', title: 'another item waits for this' });
+  store.addItem(ranked.board, { by: 'coordinator', lane: 'core', title: 'blocked follower', after: [dependency] });
+  const ready = store.addItem(ranked.board, { by: 'coordinator', lane: 'core', title: 'ready bar', criterion: 'a real condition is observable', check: 'true', brief: 'Files: src/ready.js\nTest: the condition is checked' });
+  store.addMilestone(ranked.board, { agentId: 'coordinator', name: 'early', items: [ordinary, dependency, ready] });
+  store.orderMilestoneItems(ranked.board, 'early', { agentId: 'coordinator', items: [ordinary, ready, dependency] });
+  assert.equal(store.nextFor(ranked.board, { agentId: ranked.builder, lane: 'core' }).item.item_id, ordinary, 'off preserves coordinator rank');
+  ranked.order(true);
+  assert.equal(store.nextFor(ranked.board, { agentId: ranked.builder, lane: 'core' }).item.item_id, dependency, 'being waited on precedes ready-bar and coordinator rank');
+  store.withdraw(ranked.board, dependency, { agentId: 'coordinator', reason: 'private selection control: remove the prerequisite' });
+  assert.equal(store.nextFor(ranked.board, { agentId: ranked.builder, lane: 'core' }).item.item_id, ordinary, 'the signed-readiness tier is inert until its authoritative predicate lands');
+  const readiness = (_board, item) => item.item_id === ready;
+  const withSignedReadiness = [ordinary, ready].map(id => store.getItem(ranked.board, id))
+    .sort(store.buildOrder(ranked.board, { agentId: ranked.builder, readiness }));
+  assert.equal(withSignedReadiness[0].item_id, ready, 'the injected readiness predicate precedes coordinator rank without manufacturing signed records');
 });
