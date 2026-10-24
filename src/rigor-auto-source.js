@@ -1,6 +1,7 @@
 /** Evidence-only proposals are deliberately distinct from executed rigor: proofs [D1,S1]. */
 import { causeProblem } from './rigor.js';
 import { parseSpec } from './spec.js';
+import { Refused } from './refused.js';
 import { readRigorSource } from './rigor-source.js';
 import {
   rowDecisionContext,
@@ -41,7 +42,10 @@ export function automaticDecisionSource(record) {
   try {
     const rows = parseSpec(`## Decision\n${record.source ?? ''}\n`).rows;
     return rows.length === 1 ? automaticSourceFromText(rows[0].text) : null;
-  } catch { return null; /* An unreadable old decision cannot decide a new proposal. */ }
+  } catch (error) {
+    if (error instanceof Refused && error.code === 'A5_GRAMMAR_VERSION') return null;
+    throw error;
+  }
 }
 
 /** A proved replacement decision also answers older unproved advice about that same cause. */
@@ -50,12 +54,16 @@ export function rigorDecisionKey(record) {
     const rows = parseSpec(`## Decision\n${record.source ?? ''}\n`).rows;
     return rows.length === 1 ? readRigorSource(rows[0].source)?.key
       ?? readAutomaticRigorSource(automaticSourceFromText(rows[0].text))?.key ?? null : null;
-  } catch { return null; /* Only typed historical row provenance can answer a proposal. */ }
+  } catch (error) {
+    if (error instanceof Refused && error.code === 'A5_GRAMMAR_VERSION') return null;
+    throw error;
+  }
 }
 
 /** A materialized row must preserve the whole definition; merely occupying its id is a collision. */
 export function sameAutomaticRow(row, draft) {
-  const expected = parseSpec(`## Proposal\n- ${draft.id} [draft, ${draft.tier}] ${draft.text} | gate: ${draft.gate}\n`).rows[0];
+  const expected = { id: draft.id, status: 'draft', tier: draft.tier, text: draft.text, gate: draft.gate,
+    serves: [], signers: [], unknown: [] };
   return expected && ['id', 'status', 'tier', 'text', 'gate', 'serves', 'signers', 'unknown', 'count', 'runs', 'mode', 'files', 'source']
     .every(key => JSON.stringify(row[key]) === JSON.stringify(expected[key]));
 }

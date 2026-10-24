@@ -5,10 +5,8 @@ import {
   PERSON,
   rowDecisions,
 } from './board.js';
-import {
-  draftSpecRow,
-  rowDrafts,
-} from './row-drafts.js';
+import { recordRowDraft } from './row-draft-store.js';
+import { rowDrafts } from './board-query.js';
 import {
   causeProblem,
   eventCauses,
@@ -95,7 +93,7 @@ export function recordAutomaticRigorDrafts(board, trigger, shout) {
       const source = automaticRigorSource(cause, eventIds);
       const advice = cause.split ? splitProposal(cause.split).text
         : `Review how to prevent repeated ${JSON.stringify(cause.key).replaceAll('|', '\\u007c')} (${cause.items.map(item => `#${item.id}`).join(', ') || 'person-marked never again'}). No remedy or red/green proof has been established.`;
-      const entry = draftSpecRow(board, { agentId: 'rigor', row: { id: `RG${trigger.event_id}1`, target,
+      const entry = recordRowDraft(board, { agentId: 'rigor', row: { id: `RG${trigger.event_id}1`, target,
         text: `${advice} Source: ${source}`, gate: 'review', tier: 'aim', section: 'RG' } });
       logEvent(board, 'rigor', 'rigor-draft', null, { engine: RIGOR_AUTO_ENGINE, id: entry.id, target, cause: cause.key,
         source, unproved: true, items: cause.items, occurrences: cause.occurrences });

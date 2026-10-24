@@ -16,6 +16,7 @@ import { loadConfig } from '../src/config.js';
 import { RIGOR_AUTO_ENGINE } from '../src/rigor-auto-engine.js';
 import { prepareEngineMove, applyEngineMove } from '../src/engine.js';
 import { conflictNote } from '../src/trunk-conflict.js';
+import { automaticDecisionSource, rigorDecisionKey } from '../src/rigor-auto-source.js';
 
 const roots = [];
 after(() => { for (const root of roots) rmSync(root, { recursive: true, force: true }); });
@@ -297,4 +298,14 @@ test('canonical conflict holds crossing the hot-file threshold also draft advice
     assert.equal(need.unproved, true);
     assert.equal(box.git('status', '--porcelain').trim(), '', 'the automatic holds do not edit the repository');
   } finally { box.close(); }
+});
+
+/** Unsupported historical grammar carries no authority; unrelated reader failures must remain visible. */
+test('automatic decision readers ignore only unsupported historical grammar [D1,H16,M1]', () => {
+  const source = '<!-- pullboard-grammar 999 -->\n- G9 [draft, aim] Historical proposal | gate: review';
+  assert.equal(automaticDecisionSource({ source }), null);
+  assert.equal(rigorDecisionKey({ source }), null);
+  const broken = { get source() { throw new Error('unexpected metadata reader failure'); } };
+  assert.throws(() => automaticDecisionSource(broken), /unexpected metadata reader failure/);
+  assert.throws(() => rigorDecisionKey(broken), /unexpected metadata reader failure/);
 });
