@@ -1,6 +1,7 @@
 /** Exercise collision-free batches against real private Git, hooks, board settings and remotes [B3,R3,R1]. */
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
+import { mkdirSync } from 'node:fs';
 import { writeFileSync } from 'node:fs';
 import * as store from '../src/board.js';
 
@@ -9,6 +10,7 @@ export function assertCollisionFreeLanding({ landProject, itemWorktree, submitIt
   for (const enabled of [false, true]) {
     const box = landProject();
     const shared = 'web/land-1.test.js';
+    mkdirSync(join(box.repo, 'web'), { recursive: true });
     writeFileSync(join(box.repo, shared), 'BASE first\nunchanged middle\nBASE last\n');
     box.git(box.repo, 'add', shared);
     box.git(box.repo, 'commit', '-q', '-m', 'test: shared landing base [G1]');
