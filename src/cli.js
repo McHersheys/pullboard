@@ -594,8 +594,17 @@ export async function ordered(ctx, board, operation, args) {
     ensureSpecApprovalCoordinator(ctx, board, initialBaseline);
     const actor = ctx.info.isMain ? COORDINATOR : store.agentAt(board, ctx.info.root)?.agent_id;
     if (initialBaseline && actor) await recordBaseline(actor);
+    /** Called only for this requested operation, after its store transaction commits, never for bootstrap. */
+    const applyRequested = () => {
+      const before = board.db.prepare('SELECT MAX(event_id) AS id FROM event').get().id ?? 0;
+      const result = store[operation](board, ...args);
+      const after = board.db.prepare('SELECT MAX(event_id) AS id FROM event').get().id ?? 0;
+      if (after > before) ctx.io.recordedMove = true;
+      return result;
+    };
     const result = await withItemSession(ctx.info, operation, args, () => relayLinked(ctx.info.root) || relayRecovered(ctx.info.root)
-      ? relayOperation(ctx.info.root, operation, args, ctx.io, command, () => store[operation](board, ...args)) : store[operation](board, ...args));
+      ? relayOperation(ctx.info.root, operation, args, ctx.io, command, applyRequested,
+        () => { ctx.io.recordedMove = true; }) : applyRequested());
     return result;
   };
   const digest = agentSessionDigest();
