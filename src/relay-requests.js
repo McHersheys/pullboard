@@ -81,7 +81,9 @@ export function receivePersonRequest(board, document, { sequence, at, sender }) 
       if (sender?.kind !== 'person' || typeof sender.userId !== 'string' || !sender.userId || sender.userId.length > 256) throw new Refused('RELAY_PERSON_ONLY', 'only the authenticated person can send a relay request; use the paired view with the person session');
       request = validatePersonRequest(document);
       // On a board that names approvers, a phone request that acts as the person must come from one [E4].
-      if (sender.approver === false && ['answer', 'hold', 'spec-approve', 'spec-decline', 'spec-answer', 'fact', 'sentinel-approve', 'sentinel-decline', 'add', 'edit', 'bar-sign'].includes(request.move?.verb)) {
+      // Adding or editing an item is a person move only where person moves are signed, since its bar is signed then.
+      const barVerbs = personSigning(board, { strict: false }).signed ? ['add', 'edit'] : [];
+      if (sender.approver === false && ['answer', 'hold', 'spec-approve', 'spec-decline', 'spec-answer', 'fact', 'sentinel-approve', 'sentinel-decline', 'bar-sign', ...barVerbs].includes(request.move?.verb)) {
         throw new Refused('NOT_APPROVER', `${sender.login ?? 'this person'} is not an approver of this board; ask an approver to answer, hold or decide rows and sentinels`);
       }
     } catch (cause) {
