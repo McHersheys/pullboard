@@ -881,17 +881,20 @@ async function runCells(engine, built, boardCells, report, ineffective) {
     let seen;
     try { seen = await visit(context, { route, phone: cell.where === 'phone', bootstrap,
       localView: cell.where === 'board-view' ? built.view.base + '/local/view' : null }, want.board); }
-    catch (error) { seen = { board: false, approval: false, words: 'visit failed: ' + error.message, commands: [], signIn: false, ms: null }; }
+    catch (error) { seen = { board: false, approval: false, words: 'visit failed: ' + error.message, commands: [], signIn: false, ms: null,
+      capture: error.pageState ?? { unavailable: true, error: error.message } }; }
     let problem = judge(cell, seen, ineffective);
     // A board that arrived but over the bar is measured once more: one slow sample on a loaded machine is noise, two
     // are a finding. Both timings are reported.
     // A board still loading at the ceiling (a blank or 'Finding your boards' screen) is likewise measured once more.
     if (problem?.startsWith('the board took') || problem?.startsWith('the board did not show') && (!seen.words || /finding your boards|checking your/iu.test(seen.words))) {
       const again = await visit(context, { route, phone: cell.where === 'phone', bootstrap }, want.board).catch(() => null);
-      if (again) { seen = { ...again, words: again.words, firstMs: seen.ms }; problem = judge(cell, seen, ineffective); }
+      if (again) { seen = { ...again, words: again.words, firstMs: seen.ms, firstCapture: seen.capture }; problem = judge(cell, seen, ineffective); }
     }
-    report.push({ engine: engine.name, cell: cell.id, ok: !problem, problem, ms: seen.ms, firstMs: seen.firstMs ?? null, words: seen.words.slice(0, 300), commands: seen.commands });
-    if (problem) failures[cell.id] = problem;
+    const failure = problem ? problem + '\nPAGE_STATE=' + JSON.stringify(seen.capture ?? { unavailable: true }) : null;
+    report.push({ engine: engine.name, cell: cell.id, ok: !problem, problem: failure, ms: seen.ms, firstMs: seen.firstMs ?? null,
+      words: seen.words.slice(0, 300), commands: seen.commands, pageState: seen.capture ?? null, firstPageState: seen.firstCapture ?? null });
+    if (problem) failures[cell.id] = failure;
   };
   const unpaired = boardCells.filter((cell) => (impossibility(cell)?.runsAs.browser ?? cell.browser) === 'unpaired');
   for (let at = 0; at < unpaired.length; at += PARALLEL) {

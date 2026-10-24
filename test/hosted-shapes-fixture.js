@@ -239,6 +239,27 @@ export const READ_SCREEN = `(() => {
     words: parts.join(' | ').slice(0, 1500), commands: [...new Set(commands)], signIn };
 })()`;
 
+/** Read diagnostic-only state beside the final screen, without changing any ordinary poll or settle key. */
+const READ_CAPTURE = `(() => {
+  const screen = ${READ_SCREEN};
+  const seen = node => { if (!node) return false; const rect = node.getBoundingClientRect(); const style = getComputedStyle(node);
+    return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none'; };
+  const chain = document.querySelector('#chain');
+  const first = document.querySelector('.first');
+  const visiblePanels = ['#relay-screen', '#local-note', '#relay-notice', '#relay-removed', '#phone-approvals', '.first']
+    .filter(selector => seen(document.querySelector(selector)));
+  const busyIndicators = { loading: document.body.classList.contains('loading'),
+    projectLoading: seen(document.querySelector('#project-loading')),
+    ariaBusy: [...document.querySelectorAll('[aria-busy="true"]')].some(seen),
+    checkingText: /checking|finding your boards|connecting/iu.test(screen.words) };
+  const pageState = { screen: document.documentElement.dataset.relayScreen || '',
+    localNote: document.querySelector('#local-note')?.dataset.state || '', visiblePanels,
+    busy: Object.values(busyIndicators).some(Boolean), busyIndicators,
+    chain: { present: Boolean(chain), visible: seen(chain), hasExpectedItem: Boolean(chain?.textContent.includes(${JSON.stringify(BOARD_ITEM)})) },
+    noBoardsYet: { present: Boolean(first), visible: seen(first), text: (first?.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 1000) } };
+  return { ...screen, pageState };
+})()`;
+
 /**
  * Judge what a page showed against the cell's screen. Returns null when it holds, else the reason it does not.
  *
@@ -266,6 +287,12 @@ export function judge(cell, seen, ineffective = []) {
   return null;
 }
 
+/** Bind the final screen read to this visit's unchanged budget, before its browser page closes. */
+function visitCapture(seen, started, wantsBoard) {
+  return { ...(seen?.pageState ?? { unavailable: true }), capturedAt: new Date().toISOString(),
+    elapsedMs: Date.now() - started, budgetMs: wantsBoard ? BOARD_MS : SETTLE_MS };
+}
+
 /**
  * Open one cell's page, wait for its screen and read it.
  *
@@ -275,8 +302,8 @@ export function judge(cell, seen, ineffective = []) {
  */
 export async function visit(context, { route, phone, bootstrap, localView = null }, wantsBoard) {
   const page = await context.newPage({ route, phone, bootstrap });
+  const started = Date.now();
   try {
-    const started = Date.now();
     await page.navigate(HOSTED + '/');
     if (wantsBoard) {
       let shown = await page.poll(`(${READ_SCREEN}).board || ${localView ? `((document.querySelector('#local-note')?.dataset.state === 'local-open' || document.querySelector('[data-part="local-command"]')?.hidden === false) && (${READ_SCREEN}).commands.includes('pullboard view'))` : 'false'}`, BOARD_MS + 2_000);
@@ -286,8 +313,9 @@ export async function visit(context, { route, phone, bootstrap, localView = null
         await page.navigate(localView);
         shown = await page.poll(`(${READ_SCREEN}).board`, BOARD_MS + 2_000);
       }
-      const seen = await page.evaluate(READ_SCREEN);
-      return { ...seen, ms: shown ? Date.now() - started : null, exceptions: page.exceptions.length };
+      const seen = await page.evaluate(READ_CAPTURE);
+      return { ...seen, ms: shown ? Date.now() - started : null, exceptions: page.exceptions.length,
+        capture: visitCapture(seen, started, wantsBoard) };
     }
     // A blocker screen settles when it has stopped changing for half a second and is not still checking.
     let last = '';
@@ -301,7 +329,14 @@ export async function visit(context, { route, phone, bootstrap, localView = null
       else if (Date.now() - since >= 500 && seen && (seen.board || seen.words || seen.signIn) && !/checking|finding your boards|connecting/iu.test(seen.words)) break;
       await new Promise((later) => setTimeout(later, 50)); // budget: poll interval while the screen settles, no speed claim.
     }
-    return { ...(seen ?? { board: false, approval: false, words: '', commands: [], signIn: false }), ms: Date.now() - started, exceptions: page.exceptions.length };
+    const ms = Date.now() - started;
+    const final = await page.evaluate(READ_CAPTURE).catch(() => null);
+    return { ...(seen ?? { board: false, approval: false, words: '', commands: [], signIn: false }), ms, exceptions: page.exceptions.length,
+      capture: visitCapture(final, started, wantsBoard) };
+  } catch (error) {
+    const final = await page.evaluate(READ_CAPTURE).catch(() => null);
+    error.pageState = visitCapture(final, started, wantsBoard);
+    throw error;
   } finally { await page.close(); }
 }
 
