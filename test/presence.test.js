@@ -103,3 +103,38 @@ test('an imported board never inherits a same-path coordinator heartbeat [B3,A7]
   assert.equal(store.agentById(local, 'coordinator').presence, 'gone');
   assert.equal(store.agentById(local, 'coordinator').heartbeatAt, null);
 });
+
+test('plain status counts large seat history and hides gone seats behind --all [B3,C7]', async (t) => {
+  const { createE2eHelpers } = await import('./e2e-helpers.js');
+  const { heartbeatSeat } = await import('../src/seat-presence.js');
+  const { JSON_SHAPES } = await import('../src/json.js');
+  const helpers = createE2eHelpers();
+  t.after(helpers.cleanup);
+  const box = helpers.project('true');
+  let at = Date.now() - 40 * 60_000;
+  const board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'), { now: () => new Date(at) });
+  const gone = [];
+  for (let index = 0; index < 100; index += 1) gone.push(store.register(board, { lane: 'api', path: join(box.dir, `history-${index}`) }));
+  at = Date.now() - 11 * 60_000;
+  const idle = store.register(board, { lane: 'api', path: join(box.dir, 'idle-seat') });
+  at = Date.now();
+  heartbeatSeat(board, 'coordinator');
+  heartbeatSeat(board, 'web-1');
+  assert.equal(store.listAgents(board).filter(seat => seat.presence === 'gone').length, 100);
+  store.closeBoard(board);
+  const plain = box.run(box.web, 'status');
+  assert.equal(plain.code, 0, plain.err + plain.out);
+  assert.match(plain.out, /seats: 2 live, 1 idle, 100 gone/u);
+  assert.ok(plain.out.includes(`${idle}: idle`));
+  assert.ok(gone.every(id => !plain.out.includes(`${id}: gone`)), 'plain status never prints historical gone rows');
+  const all = box.run(box.web, 'status', '--all');
+  assert.equal(all.code, 0, all.err + all.out);
+  assert.ok(gone.every(id => all.out.includes(`${id}: gone`)), 'the explicit flag retains access to every identity');
+  const structured = box.run(box.web, 'status', '--json');
+  assert.equal(structured.code, 0, structured.err + structured.out);
+  const summary = JSON.parse(structured.out);
+  assert.deepEqual(summary.presenceCounts, { live: 2, idle: 1, gone: 100 });
+  assert.equal(summary.agents.length, 103, 'JSON may retain full history per outside1705');
+  assert.equal(JSON_SHAPES.commands.heartbeat.required.seat, 'string|null');
+  assert.equal(JSON_SHAPES.commands.heartbeat.required.heartbeatAt, 'string|null');
+});
