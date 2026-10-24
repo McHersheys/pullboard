@@ -13,10 +13,17 @@ import { assertNoRemoteLanding } from './land-no-remote-fixture.js';
 import { MARKER_NOT_YET, readMarker } from './land-marker-fixture.js';
 import { assertLandingStopIdentity } from './land-stop-fixture.js';
 import { assertLandingDoctrineCounts } from './land-doctrine-fixture.js';
-import { onBoard, events, calls } from './land-board-fixture.js';
+import {
+  onBoard,
+  events,
+  calls,
+  json,
+  mergeSubjects,
+} from './land-board-fixture.js';
 import { landingTimeoutFixture } from './landing-timeout-fixture.js';
 import { assertParallelLanding, assertParallelCliLease, assertParallelNestedGate } from './land-parallel-fixture.js';
 import { landEnginesInOrder } from './land-engine-fixture.js';
+import { assertCollisionFreeLanding } from './land-collision-fixture.js';
 const e2e = createE2eHelpers();
 after(e2e.cleanup);
 const { sandbox, project, commitFile, waitFor, BIN } = e2e;
@@ -443,18 +450,6 @@ function launchHookProbe(box, probe, marker) {
   child.stderr.setEncoding('utf8').on('data', (part) => { child.stderrText += part; });
   child.closed = lockChildOutcome(child);
   return child;
-}
-
-/** Run a successful JSON command, retaining child context if any actual hook or check refuses. */
-function json(box, cwd, ...args) {
-  const result = box.run(cwd, ...args, '--json');
-  assert.equal(result.code, 0, `${result.err}\n${result.out}`);
-  return JSON.parse(result.out);
-}
-
-/** Read the actual first-parent merge sequence at the published tip. */
-function mergeSubjects(box, base, tip) {
-  return box.git(box.repo, 'log', '--reverse', '--first-parent', '--format=%s', `${base}..${tip}`).split('\n').filter(Boolean);
 }
 
 test('land pushes one exact batch in verdict order and records each first-containing merge once [B3,R3]', () => {
@@ -1498,3 +1493,6 @@ test('parallel landing refuses a live inherited gate before scheduling [B3,V4,Q1
 test('the landing merge assigns engine numbers in landing order, either order, and the board replays [B3,R3,H16]', () => {
   for (const order of [[0, 1], [1, 0]]) landEnginesInOrder({ landProject, itemWorktree, submitItem, acceptItem, json, onBoard }, order);
 });
+
+test('a landing batch leaves out an item that touches a file already in the batch [B3,R3,R1,H16]',
+() => assertCollisionFreeLanding({ landProject, itemWorktree, submitItem, acceptItem, json, onBoard }));
