@@ -17,6 +17,7 @@ import { relayMoveActor } from '../src/relay-sender.js';
 import { NEXT_STEPS } from '../src/next-step-words.js';
 import { MOVE_REGISTRY, minimumMoveEngine } from '../src/move-registry.js';
 import { PROOF_RUN_ENGINE } from '../src/proof-run-engine.js';
+import { ENGINE_VERSION } from '../src/machine.js';
 import { REGISTRY_AT } from './move-registry-fixture.js';
 
 const SNAPSHOT = JSON.parse(readFileSync(new URL('./move-registry-baseline.json', import.meta.url), 'utf8'));
@@ -69,7 +70,12 @@ test('today\'s move order, actors, recovery text and recorded SQLite prefix are 
     assert.deepEqual(applyEngineMove(board, move, options), outcome, move.operation);
     assert.deepEqual(applyEngineMove(board, move, options), outcome, 'same-position retry returns its immutable receipt');
   }
-  assert.equal(JSON.stringify(exportBoard(board)), JSON.stringify(SNAPSHOT.replay.acceptedExpected), 'items, events, receipts and replay cursor retain accepted-main bytes for the exact historical moves');
+  const expected = structuredClone(SNAPSHOT.replay.acceptedExpected);
+  // Replay records the executor's current version, while historical moves and every other byte stay pinned.
+  const executorVersion = expected.tables.board_meta.find(row => row.meta_key === 'relay_engine_version');
+  assert.ok(executorVersion, 'the pinned prefix explicitly records its executor version');
+  executorVersion.meta_value = String(ENGINE_VERSION);
+  assert.equal(JSON.stringify(exportBoard(board)), JSON.stringify(expected), 'items, events, receipts and replay cursor retain accepted-main bytes; only the declared executor version advances');
 });
 
 test('two new board moves declared in two files need no edit to engine.js, relay-sender.js or next-step-words.js [C7,V4,H3,H16]', t => {
