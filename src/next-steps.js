@@ -613,6 +613,7 @@ export const NEXT_STEPS = Object.freeze({
   UNTRACKED: 'commit or ignore the untracked files, then run the command again',
   UNKNOWN_TOOL: 'call tools/list and use a tool name returned by that MCP server',
   USAGE: 'run pullboard help',
+  SHOUT_TOO_LONG: 'shorten the message to 400 characters or fewer; cite native proof receipt ids and read pullboard show <id> for the evidence chain',
   PROOF_RUN_UNAVAILABLE: 'restore writable native receipt storage, run the item check with current Pullboard, then read pullboard show <id>',
   PROOF_RUN_UNBOUND: 'run the item check with current Pullboard and use its stored native receipt; read pullboard show <id> for the proof chain',
   PROOF_RUN_ACTOR: 'run the check from your own joined seat and use the native receipt that belongs to that seat',
