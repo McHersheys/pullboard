@@ -81,7 +81,9 @@ export function assertSnapshotCheckpoints(trace, expected) {
       if (previous) {
         assert.equal(write.ciphertext, previous.ciphertext, 'a retried sequence preserves its exact ciphertext');
         assert.equal(previous.abort?.name, 'TimeoutError', 'only a timed-out PUT can add a transport attempt');
-        assert.ok(write.callers.some(caller => caller.includes('async retry@cli.js:')), 'syncRelay retries the persisted checkpoint');
+        // Bind the exported retry function, independent of its source module or namespace.
+        assert.ok(write.callers.some(caller => caller.split('@', 1)[0].replace(/^async /u, '').split('.').at(-1) === 'retrySync'),
+          'syncRelay retries the persisted checkpoint');
       }
       checkpoints.set(write.sequence, write);
     }

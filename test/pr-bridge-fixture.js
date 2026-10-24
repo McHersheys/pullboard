@@ -1,0 +1,177 @@
+/** Real private Git, SQLite and loopback GitHub-protocol fixtures [B3,R3]. */
+import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import { createServer } from 'node:http';
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { createE2eHelpers } from './e2e-helpers.js';
+import { startFixtureChild } from './fixture-child.js';
+
+/** Run the actual CLI without blocking the loopback provider's event loop. */
+export async function runBridgeCLI(box, ...args) {
+  const child = startFixtureChild(process.execPath, [box.BIN, ...args],
+    { cwd: box.repo, env: box.env, stdio: ['ignore', 'pipe', 'pipe'] });
+  let out = '';
+  let err = '';
+  child.stdout.setEncoding('utf8').on('data', chunk => { out += chunk; });
+  child.stderr.setEncoding('utf8').on('data', chunk => { err += chunk; });
+  const [code, signal] = await once(child, 'close');
+  return { code, signal, out, err };
+}
+
+/** Configure a private repo whose proof is an actual bounded test of tracked content. */
+export function bridgeProject(t, mode = 'release') {
+  const helpers = createE2eHelpers();
+  t.after(helpers.cleanup);
+  const scratch = helpers.sandbox();
+  const gate = join(scratch.dir, 'bridge-gate.mjs');
+  const gateCalls = join(scratch.dir, 'gate-calls.jsonl');
+  writeFileSync(gate, [
+    "import { readFileSync, appendFileSync } from 'node:fs';",
+    "import { execFileSync } from 'node:child_process';",
+    `appendFileSync(${JSON.stringify(gateCalls)}, JSON.stringify({ head: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() }) + '\\n');`,
+    "let red = false; for (const file of ['web/one.js', 'web/two.js']) { try { if (readFileSync(file, 'utf8').includes('RED')) red = true; } catch (error) { if (error.code !== 'ENOENT') throw error; } }",
+    "console.log('TAP version 13'); console.log((red ? 'not ok' : 'ok') + ' 1 - bridge project content stays green');",
+    "console.log('1..1'); console.log('# tests 1'); console.log('# pass ' + (red ? 0 : 1)); console.log('# fail ' + (red ? 1 : 0)); console.log('# skipped 0'); process.exitCode = red ? 1 : 0;",
+  ].join('\n'));
+  const box = helpers.project(`node ${JSON.stringify(gate)}`, scratch);
+  const remote = join(box.dir, 'origin.git');
+  box.git(box.dir, 'init', '-q', '--bare', remote);
+  box.git(box.repo, 'remote', 'add', 'origin', remote);
+  box.git(box.repo, 'push', '-q', '-u', 'origin', 'main');
+  const published = box.git(remote, 'rev-parse', 'main');
+  // URL rewriting is confined to this private repo: the production bridge sees a GitHub remote,
+  // while every real Git transfer goes only to the owned local bare repository.
+  box.git(box.repo, 'remote', 'set-url', 'origin', 'https://github.com/fixture/repository.git');
+  box.git(box.repo, 'config', `url.${remote}.insteadOf`, 'https://github.com/fixture/repository.git');
+  return { ...box, ...helpers, remote, published, gateCalls, mode };
+}
+
+/** Build, verify and locally land two real items before enabling the opt-in publisher. */
+export function landBridgeItems(box) {
+  const entries = [];
+  for (const [index, name] of ['one', 'two'].entries()) {
+    const path = index === 0 ? box.web : join(box.dir, 'web-two');
+    if (index) {
+      box.git(box.repo, 'worktree', 'add', '-q', '-b', 'web/two', path, 'main');
+      assert.equal(box.run(path, 'join', 'web').code, 0);
+    }
+    const add = box.run(box.repo, 'add', 'web', `private bridge ${name}`, '--specs', 'G1',
+      '--criterion', `private ${name} remains correct`, '--check', 'test ! -f RED', '--json');
+    assert.equal(add.code, 0, add.err);
+    const id = JSON.parse(add.out).item.item_id;
+    assert.equal(box.run(path, 'claim', String(id)).code, 0);
+    const file = `web/${name}.js`;
+    assert.equal(box.commitFile(box, path, file, 'PASS\n', `feat(web): bridge ${name} [G1]`).status, 0);
+    const commit = box.git(path, 'rev-parse', 'HEAD');
+    const submitted = box.run(path, 'submit', String(id));
+    assert.equal(submitted.code, 0, submitted.err);
+    box.git(box.repo, 'switch', '-q', '--detach', commit);
+    try {
+      const reviewed = box.run(box.repo, 'verify', String(id), 'accept', '--as', 'coordinator', '--note', 'private bridge proof passed');
+      assert.equal(reviewed.code, 0, reviewed.err);
+    } finally { box.git(box.repo, 'switch', '-q', 'main'); }
+    box.git(box.repo, 'merge', '-q', '--no-ff', '-m', `chore(merge): private bridge ${name} [G1]`, commit);
+    const merged = box.run(box.repo, 'merged', String(id), box.git(box.repo, 'rev-parse', 'HEAD'));
+    assert.equal(merged.code, 0, merged.err);
+    entries.push({ id, commit, file });
+  }
+  const configPath = join(box.repo, 'pullboard.json');
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  writeFileSync(configPath, JSON.stringify({ ...config, publish: { pullRequest: box.mode }, approvers: ['fixture-person'] }, null, 2));
+  box.git(box.repo, 'add', 'pullboard.json');
+  box.git(box.repo, 'commit', '-q', '-m', 'chore: opt in to private pull request bridge [G1]');
+  return entries;
+}
+
+/** Stand in for GitHub over real HTTP, refusing every merge endpoint. */
+export async function bridgeProvider(t, box) {
+  const state = { requests: [], pulls: [], checks: [], annotations: [], annotationsByRun: {}, next: 1 };
+  const server = createServer(async (req, res) => {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    const body = raw ? JSON.parse(raw) : null;
+    const url = new URL(req.url, 'http://localhost');
+    state.requests.push({ method: req.method, path: url.pathname, body });
+    const reply = (status, value) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(value)); };
+    if (url.pathname.endsWith('/merge') && req.method !== 'GET') return reply(403, { message: 'agents never merge' });
+    if (url.pathname === '/repos/fixture/repository/pulls') {
+      if (req.method === 'GET') return reply(200, state.pulls.filter(p => p.state === (url.searchParams.get('state') ?? 'open') &&
+        (!url.searchParams.get('head') || url.searchParams.get('head') === 'fixture:' + p.head.ref)));
+      if (req.method === 'POST') {
+        const head = box.git(box.remote, 'rev-parse', `refs/heads/${body.head}`);
+        const pull = { number: state.next++, html_url: `https://github.com/fixture/repository/pull/${state.next - 1}`,
+          title: body.title, body: body.body, state: 'open', merged: false,
+          head: { ref: body.head, sha: head }, base: { ref: body.base }, merged_by: null, merge_commit_sha: null };
+        state.pulls.push(pull); return reply(201, pull);
+      }
+    }
+    const pullRoute = /^\/repos\/fixture\/repository\/pulls\/(\d+)$/u.exec(url.pathname);
+    if (pullRoute) {
+      const pull = state.pulls.find(p => p.number === Number(pullRoute[1]));
+      if (!pull) return reply(404, { message: 'missing private pull' });
+      if (req.method === 'PATCH') {
+        Object.assign(pull, { title: body.title, body: body.body });
+        pull.head.sha = box.git(box.remote, 'rev-parse', `refs/heads/${pull.head.ref}`);
+      }
+      return reply(200, pull);
+    }
+    if (/\/commits\/[a-f0-9]+\/check-runs$/u.test(url.pathname)) return reply(200, { total_count: state.checks.length, check_runs: state.checks });
+    const annotations = /\/check-runs\/(\d+)\/annotations$/u.exec(url.pathname);
+    if (annotations) return reply(200, state.annotationsByRun[annotations[1]] ?? state.annotations);
+    if (/\/commits\/[a-f0-9]+\/status$/u.test(url.pathname)) return reply(200, { state: 'success', statuses: [] });
+    return reply(404, { message: 'unexpected private provider endpoint' });
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const adapter = join(box.dir, 'private-gh.mjs');
+  writeFileSync(adapter, [
+    "const args=process.argv.slice(2); if(args[0]!=='api') throw new Error('only gh api is permitted');",
+    "const endpoint=args.find(a=>a.startsWith('repos/')); if(!endpoint) throw new Error('missing API endpoint');",
+    "const i=args.indexOf('--method'); const method=i<0?'GET':args[i+1]; let input=''; if(args.includes('--input'))for await(const chunk of process.stdin)input+=chunk;",
+    `const response=await fetch(${JSON.stringify(origin)}+'/'+endpoint,{method,headers:{'content-type':'application/json'},...(input?{body:input}:{})});`,
+    "process.stdout.write(await response.text()); if(!response.ok)process.exitCode=1;",
+  ].join('\n'));
+  const shim = join(box.dir, 'bin', 'gh');
+  writeFileSync(shim, `#!/bin/sh\nexec "${process.execPath}" "${adapter}" "$@"\n`);
+  chmodSync(shim, 0o755);
+  return state;
+}
+
+/** Fix only the linked private repair through the same real item lifecycle. */
+export function landBridgeRepair(box, id, file) {
+  const path = join(box.dir, `repair-${id}`);
+  box.git(box.repo, 'worktree', 'add', '-q', '-b', `web/repair-${id}`, path, 'main');
+  assert.equal(box.run(path, 'join', 'web').code, 0);
+  const edited = box.run(box.repo, 'edit', String(id), '--criterion', 'the private CI finding is repaired',
+    '--check', 'test ! -f RED', '--brief', 'Change the named private web fixture and retain the linked finding.');
+  assert.equal(edited.code, 0, edited.err);
+  assert.equal(box.run(path, 'claim', String(id)).code, 0);
+  assert.equal(box.commitFile(box, path, file, 'PASS FIXED\n', 'fix(web): repair private CI finding [G1]').status, 0);
+  const commit = box.git(path, 'rev-parse', 'HEAD');
+  const submitted = box.run(path, 'submit', String(id));
+  assert.equal(submitted.code, 0, submitted.err);
+  box.git(box.repo, 'switch', '-q', '--detach', commit);
+  try {
+    const accepted = box.run(box.repo, 'verify', String(id), 'accept', '--as', 'coordinator', '--note', 'private repair proof passed');
+    assert.equal(accepted.code, 0, accepted.err);
+  } finally { box.git(box.repo, 'switch', '-q', 'main'); }
+  box.git(box.repo, 'merge', '-q', '--no-ff', '-m', 'chore(merge): land private CI repair [G1]', commit);
+  const merged = box.run(box.repo, 'merged', String(id), box.git(box.repo, 'rev-parse', 'HEAD'));
+  assert.equal(merged.code, 0, merged.err);
+  return commit;
+}
+
+/** Perform an actual private merge outside the product, with a separately reported provider actor. */
+export function mergeBridgeAs(box, pull, actor, type = 'User') {
+  const person = join(box.dir, `person-${pull.number}`);
+  box.git(box.dir, 'clone', '-q', '--branch', 'main', box.remote, person);
+  box.git(person, 'fetch', '-q', 'origin', pull.head.ref);
+  box.git(person, 'merge', '-q', '--no-ff', '-m', 'chore: external private proposal merge [G1]', 'FETCH_HEAD');
+  box.git(person, 'push', '-q', 'origin', 'main');
+  pull.state = 'closed'; pull.merged = true;
+  pull.merge_commit_sha = box.git(person, 'rev-parse', 'HEAD');
+  pull.merged_by = { login: actor, type, id: pull.number + 1000 };
+}

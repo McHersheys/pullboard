@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Refused } from '../src/refused.js';
 import { approvalContext } from '../src/relay-approval.js';
+import { createPersonEnrollmentStore } from './person-enrollment-store.js';
 
 /** Keep device revocations durable so an in-flight native wrap cannot recreate deleted grants. */
 export function createDeviceStore({ directory, now = Date.now }) {
@@ -20,6 +21,10 @@ export function createDeviceStore({ directory, now = Date.now }) {
         CREATE TABLE IF NOT EXISTS device_session (account TEXT NOT NULL, session TEXT NOT NULL, device TEXT NOT NULL, expires INTEGER NOT NULL, PRIMARY KEY(account,session,device));
         CREATE TABLE IF NOT EXISTS wrapped_key (account TEXT NOT NULL, device TEXT NOT NULL, board TEXT NOT NULL, engine INTEGER NOT NULL, wrapped TEXT NOT NULL, PRIMARY KEY(account,device,board));
         CREATE TABLE IF NOT EXISTS enrollment (account TEXT NOT NULL, locator TEXT NOT NULL, expires INTEGER NOT NULL, payload TEXT, PRIMARY KEY(account,locator));
+        CREATE TABLE IF NOT EXISTS person_enrollment (
+          account TEXT NOT NULL, nonce TEXT NOT NULL, device TEXT NOT NULL, expires INTEGER NOT NULL,
+          payload TEXT NOT NULL, used INTEGER NOT NULL DEFAULT 0, wrapped TEXT,
+          PRIMARY KEY(account,nonce));
         CREATE TABLE IF NOT EXISTS phone_approval (id TEXT PRIMARY KEY, account TEXT NOT NULL, publisher TEXT NOT NULL,
           board TEXT NOT NULL, device TEXT NOT NULL, action TEXT NOT NULL, machine TEXT NOT NULL, expires INTEGER NOT NULL,
           context TEXT NOT NULL, sealed TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'waiting', response TEXT);
@@ -56,6 +61,7 @@ export function createDeviceStore({ directory, now = Date.now }) {
     return row ? { context: JSON.parse(row.context), sealed: row.sealed, state: row.state, response: row.response } : null;
   }
   return {
+    person: createPersonEnrollmentStore({ database, now }),
     /** Bind the public session id that actually uploaded enrollment, never its bearer credential. */
     bindSession(principal, device, { enrollment = false } = {}) {
       if (principal.kind !== 'session') return;
