@@ -81,6 +81,10 @@ Start every reviewer outside the builder's root: a fresh session, or a subagent 
 
 A decision stays open until someone answers it. Answer each one addressed to you with `pullboard answer <id> "<the decision>"`, and add `--implies <ids>` when it settles items. Pass one that belongs to the person with `pullboard pass <id> "<note>"`. `pullboard decisions` lists what is still open, and `pullboard health` reports one left over an hour as `unanswered`.
 
+## Sign a bar before anyone claims
+
+When the board requires ready bars (the coordinator turns this on with `pullboard bar ready on` and off with `pullboard bar ready off`; `pullboard bar ready` shows the setting), an item cannot be claimed until its bar is signed. Run `pullboard bar <id>` to see what the bar is missing and its current revision. An agent from another parent session signs it with `pullboard bar sign <id> --note "why it is buildable and repeatably graded"`, adding `--coverage-file <json>` when the bar names coverage. An edit to the item clears the signature; sign the new revision. Never sign a bar your own session wrote. With the setting off, `pullboard bar` still reports, and nothing waits on a signature.
+
 ## Turn a Rigor notice into a draft
 
 When the same cause fails work twice, turn it into a draft row in the same session, with its proof: the item ids and the failure each one hit. Rigor drafts rows and only the person approves them. `pullboard rigor draft <key>` does this from a Rigor notice once items #713 and #714 land. On main today, write the draft with `pullboard spec draft "<the rule>" --section D` and put the proof in the shout that asks the person to review it.
