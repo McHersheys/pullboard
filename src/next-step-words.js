@@ -56,6 +56,22 @@ export function personRequestGuidance(message, { caller, leading = false } = {})
 
 /** @type {Readonly<Record<string, string>>} */
 export const NEXT_STEPS = Object.freeze({
+  OUTSIDE_NATIVE_BUILD: 'the outside author revises the PR; ask the coordinator to return it, then intake its new exact head',
+  CHECK_NO_PROOF: 'strengthen the trusted criterion so it fails before the outside change, then ask the coordinator to refreeze it',
+  OUTSIDE_URL: 'use a GitHub issue or pull request URL with owner/repository and its positive number',
+  OUTSIDE_FETCH: 'restore read-only gh API and Git fetch access, then intake the exact source again',
+  OUTSIDE_SOURCE: 'fetch the exact GitHub source metadata and its immutable commit/tree before intake',
+  OUTSIDE_HEAD_CHANGED: 'ask the coordinator to reopen the old outside submission before intaking its new exact head',
+  OUTSIDE_OWNER_APPROVAL: 'the owner runs pullboard intake approve <id> from the person terminal or view',
+  OUTSIDE_SANDBOX_REQUIRED: 'read the exact PR diff, then run pullboard verify <id> accept --sandbox with the configured container provider',
+  SANDBOX_PROVIDER_REQUIRED: 'commit sandbox.provider docker with an absolute executable, explicit Unix endpoint and pinned minimum/current images in trusted main pullboard.json',
+  SANDBOX_IMAGE_REQUIRED: 'preload the exact configured digest in the configured Docker daemon; verification does not pull automatically',
+  SANDBOX_RUNTIME: 'correct the pinned official image so its actual Linux Node environment matches the configured minimum/current role',
+  SANDBOX_EXPORT: 'restore Git access to the exact recorded commit and independent private export before verifying',
+  SANDBOX_EXECUTION: 'restore the Docker daemon and inspect the named owned container before another verification',
+  SANDBOX_CLEANUP_REQUIRED: 'restore Docker and remove the exact named owned container before another verification',
+  SANDBOX_CHECK_REQUIRED: 'set a trusted full gate and frozen causal criterion before intake',
+
   PERSON_ENROLL_AUTH: 'authenticate a fresh enrollment with the locally trusted person credential',
   PERSON_ENROLL_EXPIRED: 'create a fresh person-authenticated challenge valid for at most ten minutes',
   PERSON_ENROLL_REVOKED: 'authenticate a different non-revoked device with the person credential',

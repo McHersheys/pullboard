@@ -32,6 +32,8 @@ export function traceServeStartup(phase) {
 
 const OPTIONS = {
   criterion: { type: 'string' },
+  sandbox: { type: 'boolean' },
+  lane: { type: 'string' },
   specs: { type: 'string' },
   parent: { type: 'string' },
   reason: { type: 'string' },

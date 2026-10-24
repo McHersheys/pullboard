@@ -1,4 +1,15 @@
 import {
+  applyOutsideIntake,
+  approveOutside as applyOutsideApproval,
+} from './outside-store.js';
+import {
+  outsideSandboxProblem,
+  outsideBuildProblem,
+  outsideSource,
+  requireOutsideOwner,
+  saveOutsideSource,
+} from './outside-source.js';
+import {
   recordBarRevision,
   barReadyProblem,
 } from './bar-readiness.js';
@@ -925,6 +936,8 @@ export function claim(board, id, { agentId, lane, leaseMs, freeze, head = null, 
         barReady: found => barReadyProblem(board, found),
         [IN_STATE]: (found) => new Refused('NOT_CLAIMABLE', `item #${id} is ${found.item_status}`),
         inLane: (found) => {
+          const outside = outsideBuildProblem(board, found);
+          if (outside) return outside;
           if (found.item_lane === lane) return null;
           return new Refused(
             'WRONG_LANE',
@@ -1072,7 +1085,7 @@ export function submit(board, id, { agentId, commit, tree, files = [], policyCom
         joined: null, checkProvesSomething: null,
         barReady: found => barReadyProblem(board, found),
         [IN_STATE]: notYours,
-        isHolder: (found) => (found.item_owner === agentId ? null : notYours()),
+        isHolder: (found) => outsideBuildProblem(board, found) ?? (found.item_owner === agentId ? null : notYours()),
         correctionRefrozen: () => pendingRefreezeProblem(board, id),
         criterionUnchanged: null,
         treeClean: null,
@@ -1321,7 +1334,7 @@ function reserveWithin(board, id, { agentId, leaseMs, policy, familyPolicy = 'of
  * @param {{ agentId: string, decision: string, reason?: string, note?: string, cause?: string, head: string, digest: string, policy: string, familyPolicy?: string, check?: 'none' | 'green', review?: {commit: string, head?: string, trunk: string, paths: string[]}, implies?: number[], impliesId?: string }} verdict - implies: items this verdict changes (B29)
  * @returns {{ decision: string, reason: string, check?: 'none' | 'green' }}
  */
-export function verify(board, id, { agentId, decision, reason, note = '', cause, head, digest, policy, familyPolicy = 'off', check, review, implies, impliesId, reopenFirstRefusalMinutes, environment }) {
+export function verify(board, id, { agentId, decision, reason, note = '', cause, head, digest, policy, familyPolicy = 'off', check, review, implies, impliesId, reopenFirstRefusalMinutes, environment, sandbox }) {
   const verb = { ACCEPT: 'accept', REJECT: 'reject' }[decision];
   if (!verb) throw new Refused('BAD_DECISION', 'the decision is accept or reject');
   const isAccept = verb === 'accept';
@@ -1353,7 +1366,7 @@ export function verify(board, id, { agentId, decision, reason, note = '', cause,
         reasonIsMet: () => (reason && reason !== ACCEPT_REASON ? new Refused('BAD_REASON', `accept means ${ACCEPT_REASON}; a failed criterion is a reject`) : null),
         trunkMergeClean: null,
         noUnverifiedStack: null, queuedItemLease: null,
-        itemCheckGreen: null,
+        itemCheckGreen: found => isAccept ? outsideSandboxProblem(board, found, sandbox) : null,
         proofNoted: () =>
           note.trim()
             ? null
@@ -1365,12 +1378,14 @@ export function verify(board, id, { agentId, decision, reason, note = '', cause,
       before: (found) => recordVerdict(board, found, { agentId, decision, reason: code, note, digest, head }),
       set: (found) => ({ item_verdict: decision, item_verified_by: isAccept ? agentId : null, item_owner: isAccept ? found.item_owner : null }),
     });
+    if (isAccept && sandbox && outsideSource(board, id)) saveOutsideSource(board, id, { ...outsideSource(board, id), sandbox });
     const returnedAt = !isAccept && engine >= REOPEN_FIRST_REFUSAL_ENGINE && reopenFirstRefusalMinutes > 0 && item.item_built_by ? board.clock.now() : undefined;
     const reservation = !isAccept && engine >= REOPEN_FIRST_REFUSAL_ENGINE ? firstRefusalDetail(board, item, reopenFirstRefusalMinutes, returnedAt) : {};
     const detail = { ...reservation, reason: code, commit: item.item_commit, ...(!isAccept && cause !== undefined && cause !== null ? { cause } : {}) };
     if (isAccept && engine >= SPEC_APPROVAL_ENGINE) detail.note = note.trim();
     if (isAccept && check !== undefined) detail.check = check;
     if (environment !== undefined) detail.environment = environment;
+    if (sandbox !== undefined) detail.sandbox = sandbox;
     if (newReview) detail.review = { commit: review.commit, ...(Object.hasOwn(review, 'head') ? { head: review.head } : {}), trunk: review.trunk, paths: [...review.paths] };
     logEvent(board, agentId, verb, id, implies?.length ? { ...detail, implies } : detail, returnedAt);
     const trigger = board.lastEvent;
@@ -1484,6 +1499,7 @@ export function merged(board, id, { agentId, commit, note = '' }) {
     if (item.item_status !== 'verified') {
       throw new Refused('NOT_VERIFIED', `item #${id} is ${item.item_status}; merge verified work only`);
     }
+    requireOutsideOwner(board, item);
     setItem(board, id, { item_merged_commit: commit });
     logEvent(board, agentId, 'merged', id, { commit, ...(note.trim() ? { note: note.trim() } : {}) });
   });
@@ -2407,3 +2423,9 @@ export function finishLandingBatch(board, { agentId, id, tip, landingFence }) {
     return recordLandingBatch(board, { agentId, batch: { ...batch, state: 'landed' }, revision: batch.revision, landingFence });
   });
 }
+
+/** File or refresh an outside source through the ordinary ordered engine. */
+export function intakeOutside(board, options) { return applyOutsideIntake(board, options, { atomic, addItem, moveItem, validateItemAddition }); }
+
+/** Record the person's exact-commit owner approval. */
+export function approveOutside(board, id, options) { return applyOutsideApproval(board, id, options, atomic); }
