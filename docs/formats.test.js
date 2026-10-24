@@ -268,9 +268,11 @@ function assertEngineGuideVersion(guideVersion, leaves, branchVersion) {
     `two unassigned engine leaves are not allowed: ${pending.map(({ file }) => file).join(', ')}`,
   );
   assert.equal(guideVersion, landed, `move engine guide version ${guideVersion} must match highest landed engine ${landed}`);
-  assert.ok(
-    branchVersion === landed || branchVersion === landed + 1,
-    `executable engine version ${branchVersion} must be landed ${landed} or the one pending number ${landed + 1}`,
+  const expectedBranchVersion = pending.length === 1 ? landed + 1 : landed;
+  assert.equal(
+    branchVersion,
+    expectedBranchVersion,
+    `executable engine version ${branchVersion} must match the branch state ${expectedBranchVersion}`,
   );
 }
 
