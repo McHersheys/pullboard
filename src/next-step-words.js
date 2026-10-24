@@ -3,58 +3,16 @@ import { DEFAULT_NEXT_STEPS } from './next-step-defaults.js';
 /** Pure refusal guidance shared by JSON and CLI output without loading ledger or Git [P4,W4,C7]. */
 import { RECORDED_GENERIC_NEXT } from './recorded-refusal.js';
 
-/** The coordinator carries every seat's request for a person decision [B26]. */
-export const COORDINATOR_PERSON_REQUEST = 'ask the coordinator to bring it to the person: pullboard shout coordinator "<what is needed>" --decision';
-
-/**
- * Route presentation-only person requests for a known seat; unknown callers retain existing text.
- * This does not change a refusal receipt, actor identity or permission to make the person's move.
- *
- * @param {string} step
- * @param {{ caller?: 'seat'|'coordinator'|'person'|'unknown' }} [options]
- * @returns {string}
- */
-export function personRequestStep(step, { caller } = {}) {
-  return caller === 'seat' && /\bask the person\b/iu.test(step) ? COORDINATOR_PERSON_REQUEST : step;
-}
-
-/** Keep quoted user text out of generated repair-clause rewriting. */
-function quotedAt(text, at) {
-  let quoted = false;
-  let escaped = false;
-  for (let index = 0; index < at; index += 1) {
-    if (escaped) { escaped = false; continue; }
-    if (text[index] === '\\') { escaped = true; continue; }
-    if (text[index] === '"') quoted = !quoted;
-  }
-  return quoted;
-}
-
-/**
- * Present a generated person-request clause for a seat, keeping its reason and requested action.
- * Only the explanatory first line and an explicit final next footer are guidance; raw diagnostic
- * lines and quoted user text remain intact. Setup questions opt in to a leading imperative.
- *
- * @param {string} message
- * @param {{ caller?: 'seat'|'coordinator'|'person'|'unknown', leading?: boolean }} [options]
- * @returns {string}
- */
-export function personRequestGuidance(message, { caller, leading = false } = {}) {
-  if (caller !== 'seat') return message;
-  const lines = String(message).split('\n');
-  /** Route only an unquoted imperative, preserving clauses that explain the refusal. */
-  const route = line => line.replace(/(^|[;.:]\s+|\b(?:or|and)\s+)ask the person(?=$|[\s:;])([^;\n]*)/giu,
-    (whole, before, action, at) => {
-      if ((!before && !leading) || quotedAt(line, at + before.length)) return whole;
-      const request = action.trim().replace(/^:?\s*(?:to\s+|for\s+)?/iu, '');
-      const needed = request.replace(/\bask the person(?:\s+to)?\s*/giu,
-        (words, offset) => quotedAt(request, offset) ? words : '');
-      return `${before}${COORDINATOR_PERSON_REQUEST}${needed ? ` (needed: ${needed})` : ''}`;
-    });
-  lines[0] = route(lines[0]);
-  if (lines.length > 1 && /^next:[ \t]*\S/u.test(lines.at(-1))) lines[lines.length - 1] = route(lines.at(-1));
-  return lines.join('\n');
-}
+import {
+  COORDINATOR_PERSON_REQUEST,
+  personRequestStep,
+  personRequestGuidance,
+} from './json-output.js';
+export {
+  COORDINATOR_PERSON_REQUEST,
+  personRequestStep,
+  personRequestGuidance,
+} from './json-output.js';
 
 /** @type {Readonly<Record<string, string>>} */
 export const NEXT_STEPS = withMoveNextSteps(DEFAULT_NEXT_STEPS);

@@ -9,7 +9,7 @@ import { resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { parseArgs } from 'node:util';
 import { COMMANDS } from './commands/index.js';
-import { commandOutput } from './json.js';
+import { commandOutput } from './json-output.js';
 import { Refused } from './refused.js';
 
 export const CHECKOUT_LEASES = new WeakMap();
@@ -166,6 +166,7 @@ async function runCommand(argv, io) {
     parsed = parseCommandArgs(argv);
   } catch (error) {
     const refusal = new Refused('USAGE', `${error.message}; run pullboard help`);
+    await io.prepareRefusal();
     io.refusal?.(refusal);
     io.err(`pullboard: ${error.message}\nRun pullboard help --all for the full list.\nnext: ${io.refusalDocument(refusal).error.next}`);
     return 2;
@@ -237,6 +238,7 @@ async function bindCheckoutSession(io, positionals, values) {
 
 /** Render a refusal with agents' display names, loading the board only for a refusal that names one. */
 async function displayedRefusal(io, error) {
+  await io.prepareRefusal();
   return (await import('./cli-context.js')).displayedRefusal(io, error);
 }
 
@@ -308,6 +310,7 @@ async function runMain(argv, streams) {
     if (code === 0) await (await syncWork())?.retrySync(io);
     const status = io.exitCode(code);
     if (status === 0 && needsRepo && !parsed?.values['dry-run']) (await import('./blocks.js')).clearCompletedBlocks(io);
+    if (status !== 0) await io.prepareRefusal();
     io.flush(status);
     return status;
   } finally {

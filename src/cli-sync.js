@@ -14,9 +14,12 @@ import { autoLinkProject } from './relay-setup.js';
 const QUIET = ['NOT_A_REPO', 'NO_REPO', 'NO_CONFIG', 'CORE_BARE'];
 
 /** Report a refusal from the work around a command without stopping the command. */
-function reportQuietly(io, error) {
+async function reportQuietly(io, error) {
   if (!(error instanceof Refused)) throw error;
-  if (!QUIET.includes(error.code)) io.err(`pullboard: ${displayedRefusal(io, error)}\nnext: ${io.refusalDocument(error).error.next}`);
+  if (!QUIET.includes(error.code)) {
+    await io.prepareRefusal?.();
+    io.err(`pullboard: ${displayedRefusal(io, error)}\nnext: ${io.refusalDocument(error).error.next}`);
+  }
 }
 
 /** A network refusal preserves offline reads; linked mutation dispatch requires an acknowledgement. */
@@ -26,7 +29,7 @@ export async function retrySync(io) {
     await syncRelay(io.cwd, io);
     await retryCheckBaselines(io.cwd, io);
   }
-  catch (error) { reportQuietly(io, error); }
+  catch (error) { await reportQuietly(io, error); }
 }
 
 /** Before a command: link this project when the machine links new ones, sync, then run the person's waiting requests. */
@@ -34,5 +37,5 @@ export async function syncBefore(io, main) {
   try { await autoLinkProject(io.cwd, io); } catch (error) { if (!(error instanceof Refused)) throw error; }
   await retrySync(io);
   try { await executePersonRequests(io.cwd, io, main); }
-  catch (error) { reportQuietly(io, error); }
+  catch (error) { await reportQuietly(io, error); }
 }
