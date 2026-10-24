@@ -1490,4 +1490,3 @@ test('direct branch board opens preserve shared DDL while private databases stil
   const { assertDirectOpenBoardIsolation } = await import('./direct-open-board-regression.js');
   assertDirectOpenBoardIsolation(t, fileURLToPath(new URL('..', import.meta.url)));
 });
-
