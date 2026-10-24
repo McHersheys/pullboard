@@ -138,7 +138,11 @@ import {
   boardBusyError,
 } from './board-access.js';
 import { ensureHotIndexes } from './board-hot.js';
-import { ensureFactIdentityIndexes, factIdentityExists, missingFactIdentityIndexes } from './fact-identity.js';
+import {
+  ensureFactIdentityIndexes,
+  factIdentityExists,
+  missingFactIdentityIndexes,
+} from './fact-identity.js';
 import { NEXT_STEPS } from './next-step-words.js';
 import { boardWriteBusyError } from './board-busy.js';
 export { boardBusyError } from './board-access.js';
