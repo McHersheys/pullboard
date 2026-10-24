@@ -310,8 +310,11 @@ async function runMain(argv, streams) {
     await (await syncWork())?.syncBefore(io, main);
     traceServeStartup('cli-command-preamble-ready');
     const code = await runCommand(argv, io);
+    traceServeStartup('cli-command-returned');
     if (code === 0) await checkoutSession?.finish?.();
+    traceServeStartup('cli-final-sync-start');
     if (code === 0) await (await syncWork())?.retrySync(io);
+    traceServeStartup('cli-final-sync-ready');
     const status = io.exitCode(code);
     if (status === 0 && needsRepo && !parsed?.values['dry-run']) (await import('./blocks.js')).clearCompletedBlocks(io);
     if (status !== 0) await io.prepareRefusal();

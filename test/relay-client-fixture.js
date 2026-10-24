@@ -563,9 +563,11 @@ globalThis.fetch = function tracedFetch(input, init) {
     /** Observe only this child's received work; retries consume the same finite six-unit allowance. */
     const observedWork = () => ({ legacyUploads: snapshotWriteCount - writesBefore,
       ...Object.fromEntries(Object.entries(pageWork).map(([name, count]) => [name, count - pagesBefore[name]])) });
+    const phaseFile = args[0] === 'export' ? join(scratch, `export-phase-${cliChildIndex}-${Date.now()}.jsonl`) : null;
+    const phaseEnv = phaseFile ? { ...env, PULLBOARD_STARTUP_TRACE_ENTRY: CLI, PULLBOARD_STARTUP_TRACE_FILE: phaseFile } : env;
     const childEnv = traceSnapshotWrites ? { ...env, PULLBOARD_TEST_RELAY_TRACE_FILE: traceFile,
       PULLBOARD_TEST_RELAY_TRACE_ORIGIN: origin,
-      NODE_OPTIONS: [env.NODE_OPTIONS, '--import=' + pathToFileURL(tracePreload).href].filter(Boolean).join(' ') } : env;
+      NODE_OPTIONS: [env.NODE_OPTIONS, '--import=' + pathToFileURL(tracePreload).href].filter(Boolean).join(' ') } : phaseEnv;
     const traceLinesBefore = traceSnapshotWrites ? readFileSync(traceFile, 'utf8').split('\n').filter(Boolean).length : 0;
     const initialUploads = traceSnapshotWrites ? 0 : snapshotUploads ?? DEFAULT_SNAPSHOT_UPLOADS;
     /** Read only this child’s sanitized fetch records, retaining evidence before fixture cleanup. */
@@ -584,6 +586,13 @@ globalThis.fetch = function tracedFetch(input, init) {
         throw new Error(`${message}; safe snapshot transport evidence: ${evidence}`, { cause: error });
       }
       throw error;
+    } finally {
+      if (phaseFile) {
+        try {
+          t.diagnostic('export CLI phase timing: ' + JSON.stringify({ child: cliChildIndex,
+            phases: existsSync(phaseFile) ? readFileSync(phaseFile, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line)) : [] }));
+        } catch (error) { t.diagnostic('export CLI phase timing unavailable: ' + error.code); }
+      }
     }
     if (traceSnapshotWrites) result.snapshotTrace = childTrace();
     if (cliChildren) {
