@@ -24,6 +24,7 @@ test('every current operation selects its native actor credential without a seco
     if (operation === 'release') args = [999999, actor];
     if (['claim', 'refreeze'].includes(operation)) args = [box.before.tables.item[0].item_id, options];
     if (operation === 'reserveNextReview') args = [options];
+    if (operation === 'setBarReady') args = [{ agentId: actor, enabled: false }];
     if (operation === 'recordHealthFindings') args = [{ agentId: actor, observedRevision: 0, findings: [] }];
     if (operation === 'recordSpecApprovalBaseline') args = [{ agentId: actor, baseline: { version: 1, file: 'SPEC.md', anchor: null, rows: [] } }];
     if (operation === 'recordFlakeObservation') args = [{ agentId: actor, lane: box.lane, observation: syntheticFlakeObservation('credential-fixture') }];
@@ -180,6 +181,9 @@ test('a person-only move is refused before the relay is asked [H2,H9,H16]', asyn
   writeFileSync(box.linkFile, JSON.stringify(state), { mode: 0o600 });
 
   const personCases = [
+    ['addItem', [{ by: 'coordinator', lane: box.lane, title: 'Person-authored bar', barActor: { authority: 'person', session: null, parent: null } }]],
+    ['editItem', [1, { agentId: 'coordinator', brief: 'Person correction', barActor: { authority: 'person', session: null, parent: null } }]],
+    ['signBar', [1, { agentId: 'coordinator', barActor: { authority: 'person', session: null, parent: null } }]],
     ['recordLandingWaiver', [{ agentId: 'person', channel: 'terminal', reason: 'fixture' }]],
     ['recordRowDecisions', [{ agentId: 'person', channel: 'terminal', decisions: [] }]],
     ['answerDecision', [1, { agentId: 'person', asPerson: true, channel: 'terminal' }]],
