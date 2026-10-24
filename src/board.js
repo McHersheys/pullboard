@@ -88,6 +88,7 @@ import {
   unreadCount,
   events,
   itemThread,
+  laneHold,
   laneHolds,
   rowDecisions,
   UNREAD_SQL,
@@ -2151,18 +2152,7 @@ export function releaseLane(board, lane, { agentId, asPerson = false, channel = 
   });
 }
 
-/**
- * The hold on a lane, or null.
- *
- * @param {any} board
- * @param {string} lane
- * @returns {any | null}
- */
-export function laneHold(board, lane) {
-  return board.db.prepare('SELECT * FROM hold WHERE hold_lane = ?').get(lane) ?? null;
-}
-
-export { laneHolds } from './board-query.js';
+export { laneHold, laneHolds } from './board-query.js';
 
 /** Read an item's coordinator hold, or null when it is available for claims. */
 export function itemHold(board, id) {
