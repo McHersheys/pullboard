@@ -7,6 +7,10 @@ import { join } from 'node:path';
 /** Require both documents in the exact landed, clean tip of a real private project's complete lifecycle. */
 export function assertBadgeLanding(e2e) {
   const box = e2e.project('node --test web/badge.test.cjs');
+  const builder = box.run(box.web, 'join', 'web', '--model', 'Badge fixture', '--parent', 'badge-parent-P');
+  assert.equal(builder.code, 0, builder.err);
+  const reviewer = box.run(box.repo, 'join', 'coordinator', '--model', 'Badge fixture', '--parent', 'badge-parent-Q');
+  assert.equal(reviewer.code, 0, reviewer.err);
   const path = join(box.repo, 'pullboard.json');
   const config = JSON.parse(readFileSync(path, 'utf8'));
   writeFileSync(path, JSON.stringify({ ...config, landing: { publish: 'separate' } }, null, 2));

@@ -639,7 +639,7 @@ function playReplay() {
  * this until the new board arrives, so the main column never mixes the old board with the new pick.
  */
 function renderSide() {
-  /** Render a repo button or one muted recovery line when its board cannot be read. */
+  /** Render a repo button or a transient board-read error line. Registered unreadable boards are disclosed below. */
   const repoButton = (x) => {
     if (!x.ok) return '<p class="repo-error" role="status"><b>' + esc(x.name) + ':</b> ' + esc(x.error) + '</p>';
     const on = x.root === view.root;
@@ -647,15 +647,20 @@ function renderSide() {
     const line = x.loading ? 'Loading…' : (asks ? '<span class="asks">' + esc(parts.slice(0, asks).join(' · ')) + '</span>' + (parts.length > asks ? ' · ' : '') : '') + esc(parts.slice(asks).join(' · '));
     return '<button class="proj repo' + (on ? ' on' : '') + '"' + (on ? ' aria-current="true"' : '') + ' data-root="' + esc(x.root) + '" title="' + esc(x.root) + '" type="button"><span class="pname">' + (x.owner ? '<span class="owner">' + esc(x.owner) + '/</span>' : '') + esc(x.name) + '</span><small>' + (hosted.local && x.source ? '<span class="src">' + (x.source === 'relay' ? 'shared' : 'this computer') + '</span> · ' : '') + line + '</small></button>';
   };
-  const groupedRoots = new Set(data.groups.flatMap((group) => group.repos.map((repo) => repo.root)));
-  const grouped = data.groups.map((group) => {
+  const readableProjects = data.projects.filter((repo) => repo.ok);
+  const unreadableProjects = data.projects.filter((repo) => !repo.ok && repo.warningCode === 'BOARD_UNAVAILABLE');
+  const otherErrors = data.projects.filter((repo) => !repo.ok && repo.warningCode !== 'BOARD_UNAVAILABLE').map(repoButton).join('');
+  const groups = projectGroups(readableProjects);
+  const groupedRoots = new Set(groups.flatMap((group) => group.repos.map((repo) => repo.root)));
+  const grouped = groups.map((group) => {
     const on = group.key === view.root;
     const needs = group.repos.reduce((total, repo) => total + needCount(repo), 0);
     const count = group.repos.length;
     return '<section class="repo-group"><button class="proj project-pick' + (on ? ' on' : '') + '"' + (on ? ' aria-current="true"' : '') + ' data-root="' + esc(group.key) + '" type="button"><span class="pname">' + esc(group.name) + '</span><small>' + (needs ? '<span class="asks">' + needs + ' need you</span> · ' : '') + count + ' ' + (count === 1 ? 'repo' : 'repos') + '</small></button><div class="repos">' + group.repos.map(repoButton).join('') + '</div></section>';
   }).join('');
-  const loose = data.projects.filter((repo) => !groupedRoots.has(repo.root)).map(repoButton).join('');
-  $('proj-list').innerHTML = grouped || loose ? grouped + loose : '<div class="empty">None yet.</div>';
+  const loose = readableProjects.filter((repo) => !groupedRoots.has(repo.root)).map(repoButton).join('');
+  const unreadable = unreadableProjects.length ? '<details class="unreadable-projects"><summary>' + unreadableProjects.length + ' ' + (unreadableProjects.length === 1 ? 'board can' : 'boards can') + ' no longer be found</summary><ul>' + unreadableProjects.map((repo) => '<li><b>' + esc(repo.name) + '</b> <code>' + esc(repo.root) + '</code></li>').join('') + '</ul>' + (snapshot || readOnly ? '' : '<button type="button" data-forget-unreadable>Forget all</button>') + '</details>' : '';
+  $('proj-list').innerHTML = grouped || loose || otherErrors || unreadable ? grouped + loose + otherErrors + unreadable : '<div class="empty">None yet.</div>';
   const p = data.project;
   const selectedGroup = data.groups.find((group) => group.key === view.root);
   const selectedRepo = data.projects.find((x) => x.root === view.root);

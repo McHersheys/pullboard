@@ -74,6 +74,8 @@ For example: `flow: review wait average 61 min (1 measured; > 60 min); bottlenec
 `merged <id> <commit>` records only a commit reachable from the primary checkout's branch that contains the item's submitted commit or has the same stable patch id as the item's change from its claim base. Other commits are refused with `NOT_MERGED`; `--note "why"` records an exceptional receipt and keeps the note in that item's `merged` event.
 
 <!-- api-command-shapes:start -->
+`status --json` and local API state carry `ruleCounts`: `approved`, `gated` (approved rows naming a gate), `ungated`, `proven`, `unproven`, and `contradicted`. Proof requires a green configured full-gate receipt on the current trunk whose supported test selection includes the row's test files. Opaque or unsupported coverage remains unproven. Contradicted counts approved rows whose gate files failed on the trunk in the last seven days; it is independent of proven, so a row can count in both after a later green. The API refreshes this window when evidence ages out, even without a board move.
+
 | Command | Required top-level fields |
 | --- | --- |
 | `help` | `version:number`, `help:string` |
@@ -104,7 +106,7 @@ For example: `flow: review wait average 61 min (1 measured; > 60 min); bottlenec
 | `milestone ship` | `version:number`, `milestone:object`, `into:string|null`, `moved:array`, `notMoved:array` |
 | `show` | `version:number`, `item_id:number`, `item_title:string`, `item_lane:string`, `item_status:string`, `verdicts:array`, `thread:array` |
 | `stats` | `version:number`, `stats:object`, `gateWaits:array` |
-| `status` | `version:number`, `me:object`, `mine:array`, `stats:object`, `reviewQueue:object`, `unread:number`, `relay:object` |
+| `status` | `version:number`, `me:object`, `mine:array`, `ruleCounts:object`, `stats:object`, `reviewQueue:object`, `unread:number`, `relay:object` |
 | `doctor` | `version:number`, `problems:array` |
 | `health` | `version:number`, `asOf:string`, `thresholds:object`, `stuck:array`, `waiting:array` |
 | `skills` | `version:number`, `updated:array`, `current:array`, `customized:array` |
@@ -378,6 +380,7 @@ The server checks any Origin against its own address and grants no CORS permissi
 | --- | --- |
 | `GET /api/v1/settings?board=id` | Local-only read-only inventory: machine settings plus all authorized boards, or the selected board. Each row has `key`, `scope`, `value`, `default`, `source`, and `origin`; repo/board rows also identify `board` and `root`. Credential rows carry `secret: true` and only `set` or `not set`. Runtime events, queues and cached relay payloads are excluded. |
 | `GET /api/v1/boards` | Registered boards with their project details and ids |
+| `POST /api/v1/projects/forget-unreadable` | Local view only, with the view session key in `x-pullboard-key`. Body exactly `{"confirm": true}`. Forgets the registered boards this machine can no longer find (`BOARD_UNAVAILABLE`) and returns `{version, forgotten}`; a board refused for a newer schema is kept. Refuses `BAD_REQUEST` for any other body, `VIEW_SIGN_IN_AUTH` without the key. |
 | `GET /api/v1/boards/:board/state?seen=N` | The board state, listing item summaries, including open coordinator requests and the unseen shout count since N |
 | `GET /api/v1/boards/:board/state?detail=full` | The same state with every item in full, which static view exports read |
 | `GET /api/v1/boards/:board/state?since=N` | What changed in the summary state since the snapshot this server sent at event N, and the new latest sequence |
