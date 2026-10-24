@@ -635,3 +635,71 @@ test('the queue names the same noncolliding work next can serve [N2,N20]', (t) =
   assert.ok(queue.unreleased.find(item => item.id === b).waits.some(reason => reason.includes(`#${a}`)
     && reason.includes('src/shared.js')), 'queue retains the same actionable blocking item and file');
 });
+
+/** Real Git/SQLite and native edit/inbox commands; later lifecycle records are private fixture state, not gate executions. */
+test("a claimed item whose files grow into another claimed item's files names the overlap to both holders [N2,B7,B13,N20]", t => {
+  const box = crossLaneFixture(t);
+  const left = box.seat('growth-left', 'web', 'growth-left-session');
+  const right = box.seat('growth-right', 'web', 'growth-right-session');
+  /** Create ordinary coordinator briefs in the private project's permitted lane. */
+  const add = (title, file) => box.json(box.run(box.repo, 'add', 'web', title, '--specs', 'G1',
+    '--brief', `Files: ${file}\nTest: growing work names its newly shared file`, '--json')).item.item_id;
+  const a = add('A already holds x', 'web/x.js');
+  const b = add('B initially holds only y', 'web/y.js');
+  box.json(box.runAs('growth-left-session', left.root, 'claim', String(a), '--json'));
+  box.json(box.runAs('growth-right-session', right.root, 'claim', String(b), '--json'));
+  /** Read only this fixture's public board state and close before the next native command. */
+  function onBoard(work) {
+    const board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
+    try { return work(board); } finally { store.closeBoard(board); }
+  }
+  /** The coordinator's normal edit is allowed even when it creates a collision. */
+  function edit(files, note = 'growing work names its newly shared file') {
+    return box.json(box.run(box.repo, 'edit', String(b), '--brief', `Files: ${files}\nTest: ${note}`, '--json'));
+  }
+  /** One delivered notice per holder names both items and the actual new collision. */
+  function noticesForBoth() {
+    const messages = [
+      box.json(box.runAs('growth-left-session', left.root, 'inbox', '--json')).shouts,
+      box.json(box.runAs('growth-right-session', right.root, 'inbox', '--json')).shouts,
+    ];
+    for (const [index, messagesForHolder] of messages.entries()) {
+      const notices = messagesForHolder.filter(message => message.shout_text.includes(`#${a}`)
+        && message.shout_text.includes(`#${b}`) && message.shout_text.includes('web/x.js'));
+      assert.equal(notices.length, 1, `${index === 0 ? 'A' : 'B'} receives exactly one new overlap notice`);
+      const item = index === 0 ? a : b;
+      assert.ok(onBoard(board => store.itemThread(board, item).some(event => event.kind === 'shout'
+        && event.detail.shout === notices[0].shout_id)), 'the holder notice is retained on its item thread');
+    }
+  }
+  edit('web/y.js, web/x.js');
+  const grown = onBoard(board => store.getItem(board, b));
+  assert.equal(grown.item_status, 'claimed', 'a warning does not revoke or reject the held edit');
+  assert.match(grown.item_brief, /web\/x\.js/u, 'the real native edit stored the enlarged file list');
+  noticesForBoth();
+  const noticeCount = onBoard(board => store.allShouts(board).length);
+  edit('web/x.js, web/y.js', 'only the prose and order changed');
+  edit('web/y.js');
+  assert.equal(onBoard(board => store.allShouts(board).length), noticeCount,
+    'reordering existing paths, prose edits and shrinking a brief do not send duplicate notices');
+
+  // Seed later lifecycle states with real Git object IDs. These records do not claim an executed gate or landing.
+  const commit = box.git(box.repo, 'rev-parse', 'HEAD');
+  const tree = box.git(box.repo, 'rev-parse', 'HEAD^{tree}');
+  onBoard(board => {
+    submitFixture(board, a, { agentId: left.agent, commit, tree });
+    const reviewer = store.register(board, { lane: 'review', path: join(box.dir, 'growth-reviewer'), route: 'strong' });
+    store.verify(board, a, { agentId: reviewer, decision: 'ACCEPT', policy: 'any', head: commit,
+      digest: store.getItem(board, a).item_frozen_digest, note: 'Private lifecycle state only; no gate execution claimed.' });
+    submitFixture(board, b, { agentId: right.agent, commit, tree });
+  });
+  edit('web/y.js, web/x.js');
+  assert.equal(onBoard(board => store.getItem(board, b).item_status), 'submitted');
+  noticesForBoth();
+  const acceptedCount = onBoard(board => store.allShouts(board).length);
+  onBoard(board => store.merged(board, a, { agentId: 'coordinator', commit }));
+  edit('web/y.js');
+  edit('web/y.js, web/x.js');
+  assert.equal(onBoard(board => store.allShouts(board).length), acceptedCount,
+    'an already landed item is no longer an in-flight collision');
+});
