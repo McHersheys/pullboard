@@ -6,7 +6,7 @@ import { submitFixture } from './board-submit-fixture.js';
 import assert from 'node:assert/strict';
 import { runFixtureExecFile as execFileSync, runFixtureChild } from './fixture-child.js';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { after, test } from 'node:test';
 import * as store from '../src/board.js';
@@ -71,6 +71,7 @@ test('the board stamps every proof receipt and show prints the chain [C7,H16]', 
     assert.deepEqual(receipt.environment, { node: process.versions.node, platform: process.platform, arch: process.arch });
     assert.equal(typeof receipt.runner, 'string');
     assert.ok(receipt.runner);
+    assert.equal(receipt.runner, `local:${hostname()}`, 'the receipt identifies the actual local executor');
     assert.equal(receipt.seat, receipt.kind === 'verdict' ? reviewer : builder);
     assert.equal(receipt.parentSession, receipt.kind === 'verdict' ? reviewerParent : builderParent);
     assert.equal(receipt.exitCode, 0);
