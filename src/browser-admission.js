@@ -23,6 +23,7 @@ import {
   cleanGitEnvironment,
   git,
 } from './git.js';
+import { literalShellWords } from './literal-shell-words.js';
 import { foreignNodeOptions } from './test-isolation.js';
 
 const MODULE_SUFFIXES = ['.js', '.mjs', '.cjs', '.cts', '.json'];
@@ -65,41 +66,7 @@ const SAFE_CHILD_PROCESS_MODULES = new Map([
   ['src/resources.js', 'reads process identity with /bin/ps'],
 ]);
 
-/** Split a literal shell command into words, refusing expansion, operators, and incomplete quoting. */
-export function literalShellWords(command) {
-  if (typeof command !== 'string' || !command.trim()) return null;
-  const words = [];
-  let word = '';
-  let started = false;
-  let quote = '';
-  for (const character of command) {
-    if (character === '\n' || character === '\r') return null;
-    if (quote === "'") {
-      if (character === "'") quote = '';
-      else word += character;
-      started = true;
-      continue;
-    }
-    if (quote === '"') {
-      if (character === '"') quote = '';
-      else if ('$`\\'.includes(character)) return null;
-      else word += character;
-      started = true;
-      continue;
-    }
-    if (character === '"' || character === "'") { quote = character; started = true; continue; }
-    if (/\s/u.test(character)) {
-      if (started) { words.push(word); word = ''; started = false; }
-      continue;
-    }
-    if (';&|<>$`(){}*?[]\\'.includes(character)) return null;
-    word += character;
-    started = true;
-  }
-  if (quote) return null;
-  if (started) words.push(word);
-  return words;
-}
+export { literalShellWords } from './literal-shell-words.js';
 
 /** Parse only explicit Node test-runner files and the small, literal option set used by frozen checks. */
 function explicitRunnerFiles(args) {
