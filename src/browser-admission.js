@@ -23,6 +23,7 @@ import {
   cleanGitEnvironment,
   git,
 } from './git.js';
+import { literalShellWords } from './literal-shell-words.js';
 import { foreignNodeOptions } from './test-isolation.js';
 
 const MODULE_SUFFIXES = ['.js', '.mjs', '.cjs', '.cts', '.json'];
@@ -65,41 +66,7 @@ const SAFE_CHILD_PROCESS_MODULES = new Map([
   ['src/resources.js', 'reads process identity with /bin/ps'],
 ]);
 
-/** Split a literal shell command into words, refusing expansion, operators, and incomplete quoting. */
-export function literalShellWords(command) {
-  if (typeof command !== 'string' || !command.trim()) return null;
-  const words = [];
-  let word = '';
-  let started = false;
-  let quote = '';
-  for (const character of command) {
-    if (character === '\n' || character === '\r') return null;
-    if (quote === "'") {
-      if (character === "'") quote = '';
-      else word += character;
-      started = true;
-      continue;
-    }
-    if (quote === '"') {
-      if (character === '"') quote = '';
-      else if ('$`\\'.includes(character)) return null;
-      else word += character;
-      started = true;
-      continue;
-    }
-    if (character === '"' || character === "'") { quote = character; started = true; continue; }
-    if (/\s/u.test(character)) {
-      if (started) { words.push(word); word = ''; started = false; }
-      continue;
-    }
-    if (';&|<>$`(){}*?[]\\'.includes(character)) return null;
-    word += character;
-    started = true;
-  }
-  if (quote) return null;
-  if (started) words.push(word);
-  return words;
-}
+export { literalShellWords } from './literal-shell-words.js';
 
 /** Parse only explicit Node test-runner files and the small, literal option set used by frozen checks. */
 function explicitRunnerFiles(args) {
@@ -139,8 +106,30 @@ export function resolveExecutable(command, pathValue = process.env.PATH) {
   return null;
 }
 
-/** Recognize the exact output-capture and grep shape used by frozen named-test checks. */
-function capturedRunner(command) {
+/** Recognize output-only status wrappers without treating arbitrary shell suffixes as classified work. */
+function statusCaptureSuffix(suffix, variable) {
+  if (variable === 'rc' || variable === 'bad') return false;
+  const quotes = ['"', "'"];
+  const prints = [1, 2].flatMap(slashes => quotes.map(quote => `printf ${quote}%s${'\\'.repeat(slashes)}n${quote} "$${variable}"`));
+  for (const print of prints) {
+    const saved = `; rc=$?; ${print}; `;
+    if (suffix === `${saved}[ "$rc" -eq 0 ]`) return true;
+    for (const badPrint of prints) for (const quote of quotes) {
+      const checked = `${saved}bad=$(${badPrint} | grep -E ${quote}^# (fail|skipped) [1-9]${quote}); [ "$rc" -eq 0 ] && [ -z "$bad" ]`;
+      if (suffix === checked) return true;
+      for (const finalPrint of prints) for (const namedQuote of quotes) {
+        const prefix = `${checked} && ${finalPrint} | grep -Eq ${namedQuote}`;
+        if (!suffix.startsWith(prefix) || !suffix.endsWith(namedQuote)) continue;
+        const pattern = suffix.slice(prefix.length, -1);
+        if (pattern.startsWith('^[[:space:]]*ok [0-9]+ - ') && !/["'$`\\]/u.test(pattern)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** Recognize fixed frozen-check wrappers; new status wrappers do not widen short-slot eligibility. */
+function capturedRunner(command, { status = false } = {}) {
   const opening = /^([A-Za-z_][A-Za-z0-9_]*)=\$\(/u.exec(command);
   if (!opening) return null;
   const variable = opening[1];
@@ -149,6 +138,7 @@ function capturedRunner(command) {
   if (bodyEnd < 0) return null;
   const inner = command.slice(opening[0].length, bodyEnd);
   const suffix = command.slice(bodyEnd + ending.length);
+  if (status && statusCaptureSuffix(suffix, variable)) return inner;
   const quotes = ['"', "'"];
   // Only the literal one-backslash newline form is part of the frozen capture shape.
   const prints = quotes.map(quote => `printf ${quote}%s\\n${quote} "$${variable}"`);
@@ -373,7 +363,7 @@ export async function checkNeedsBrowser(root, command, { commit, env = process.e
   let words = literalShellWords(command);
   if (words && await ownSourceCheck(root, words, { commit, env })) return false;
   if (!words) {
-    const inner = capturedRunner(command);
+    const inner = capturedRunner(command, { status: true });
     if (!inner) return browserFallback(onFallback, '<frozen check>', 'shell syntax is outside the supported literal capture form');
     const grep = resolveExecutable('grep', env.PATH);
     if (!grep || !['/usr/bin/grep', '/bin/grep'].includes(await realpath(grep).catch(() => ''))) return browserFallback(onFallback, '<frozen check>', 'capture wrapper does not resolve the system grep');

@@ -1,4 +1,5 @@
 /** Coordinator landing batches retain exact Git and gate receipts across interruptions [B3,R3]. */
+import { assignEngineNumbers } from './engine-numbers.js';
 import {
   createHash,
   randomUUID,
@@ -11,6 +12,7 @@ import {
   openSync,
   readFileSync,
   readSync,
+  realpathSync,
 } from 'node:fs';
 import {
   dirname,
@@ -19,6 +21,8 @@ import {
   relative,
 } from 'node:path';
 import * as store from './board.js';
+import { badgeCounts } from './badge.js';
+import { writeBadges } from './badge.js';
 import {
   git,
   headCommit,
@@ -35,6 +39,8 @@ import {
   runProfiledShell,
   runStaticChecks,
   withGateSlot,
+  isStampedGreen,
+  withLandingGateSlot,
 } from './gate.js';
 import {
   readGateReceipt,
@@ -48,11 +54,22 @@ import {
   requireConfirmedLanding,
 } from './landing-lease.js';
 import { runLandingWorker } from './landing-worker.js';
+import { runLandingCandidateWorker } from './landing-candidates.js';
+import { inheritedGateSlot } from './resources.js';
 import { Refused } from './refused.js';
+import { requireLandingHost } from './landing-host.js';
+import {
+  environmentLabel,
+  sameEnvironment,
+} from './execution-environment.js';
 import { browserFreeChecksEnabled } from './settings.js';
 import { tightenLandingDoctrine } from './landing-doctrine.js';
 import { policyAt } from './trusted-policy.js';
-import { landingFileTimes } from './submit-invariants.js';
+import {
+  landingFileTimes,
+  validateLandingBatch,
+  validateLandingRevision,
+} from './submit-invariants.js';
 import {
   flakeSource,
   observeNativeFailure,
@@ -69,6 +86,30 @@ function quote(value) { return `'${String(value).replaceAll("'", "'\\''")}'`; }
 function testHash(root, file) {
   try { return createHash('sha256').update(readFileSync(join(root, file))).digest('hex'); }
   catch { return null; }
+}
+
+/** Read a committed test identity; an uncommitted edit cannot release a trunk hold. */
+function testBlob(root, commit, file) {
+  const result = tryGit(root, ['rev-parse', '--verify', `${commit}:${file}`]);
+  return result.status === 0 ? result.stdout : null;
+}
+
+/** A test defect holds every batch on its trunk until the committed test changes or every failure is waived. */
+function heldTestDefects(root, board, trunk) {
+  return store.landingTestDefects(board).filter(defect => {
+    if (defect.branch !== trunk.branch) return false;
+    const blob = testBlob(root, trunk.commit, defect.test);
+    return !(blob && blob !== defect.blob && blob !== defect.trunkBlob) && !defect.names.every(name => store.landingWaiverFor(board, { file: defect.test, name }));
+  });
+}
+
+/** Keep each verdict's recorded executor distinct from the actual landing host. */
+function environmentWarnings(board, items, environment) {
+  return items.flatMap(entry => {
+    const verdict = store.acceptedVerdict(board, store.getItem(board, entry.id));
+    const recorded = verdict?.environment ?? null;
+    return sameEnvironment(recorded, environment) ? [] : [{ item: entry.id, recorded, landing: environment }];
+  });
 }
 
 /** Derive failing test identities from TAP or spec reporter names and source locations, refusing unknown paths. */
@@ -204,9 +245,33 @@ async function mergeGroup(state, items) {
       state.say(`conflict #${item.item_id}: ${files.join(', ')}`);
       continue;
     }
+    // An engine the item added without a number gets the next one now, in landing order, inside its own merge (#1101).
+    const engines = assignEngineNumbers(batch.root);
+    if (engines.files.length) {
+      git(batch.root, ['add', '--', ...engines.files]);
+      git(batch.root, ['commit', '--amend', '--no-edit']);
+      for (const engine of engines.assigned) state.say(`engine ${engine.name}: ${engine.number} for #${item.item_id}`);
+    }
     const first = git(batch.root, ['rev-list', '--first-parent', '--reverse', 'HEAD']).split('\n')
       .find((commit) => tryGit(batch.root, ['merge-base', '--is-ancestor', checked, commit]).status === 0);
     merged.push({ id: item.item_id, commit: item.item_commit, ...(checked !== item.item_commit ? { reviewedCommit: checked } : {}), merge: first });
+  }
+  if (merged.length) {
+    const changed = writeBadges(batch.root, badgeCounts(state.board));
+    if (changed.length) {
+      git(batch.root, ['add', '--', ...changed]);
+      const tip = headCommit(batch.root);
+      const parents = git(batch.root, ['rev-list', '--parents', '-n', '1', tip]).split(' ');
+      if (tip !== batch.base && parents.length === 3 && merged.some(entry => entry.merge === tip)) {
+        // Badges belong to the final item merge, preserving its parents/trailer and first-containing receipt.
+        git(batch.root, ['commit', '--amend', '--no-edit']);
+        const refreshed = headCommit(batch.root);
+        for (const entry of merged) if (entry.merge === tip) entry.merge = refreshed;
+      } else {
+        // An already-contained item may create no merge: never amend the existing trunk's history.
+        git(batch.root, ['commit', '-m', 'chore: refresh board badge counts']);
+      }
+    }
   }
   let doctrineCounts = [];
   try {
@@ -329,15 +394,271 @@ async function gateGroup(state, label) {
     submissions: state.batch.items.map(({ id, commit }) => ({ id, commit })),
     failures: [...new Set(landingFailures(gate.output, state.batch.root, { excludeCancelled: true }).map(failure => failure.file).filter(Boolean))],
     fileTimes: landingFileTimes(state.batch.root, gate.profile) };
-  await save(state, { gateResults: [...state.gates.values()].map(({ tree: testedTree, isGreen, failures, accounted, complete, requiresGreen, logPath: log, flakeDiagnostics, timedOut }) =>
+  const warnings = gate.environment ? environmentWarnings(state.board, state.batch.items, gate.environment) : [];
+  for (const warning of warnings) state.say(`#${warning.item} was checked on ${environmentLabel(warning.recorded)}; this landing ran on ${environmentLabel(warning.landing)}`);
+  await save(state, { environmentWarnings: warnings, gateResults: [...state.gates.values()].map(({ tree: testedTree, isGreen, failures, accounted, complete, requiresGreen, logPath: log, flakeDiagnostics, environment: executor, timedOut }) =>
     ({ tree: testedTree, isGreen, ...(timedOut ? { timedOut: true } : {}), failures, accounted: accounted ?? null, complete: complete ?? null, requiresGreen: Boolean(requiresGreen), logPath: log,
-      ...(flakeDiagnostics ? { flakeDiagnostics } : {}) })),
+      environment: executor ?? null, ...(flakeDiagnostics ? { flakeDiagnostics } : {}) })),
     invariantEvidence: { ...evidence, gates: [...evidence.gates, tested] } });
   if (gate.timedOut) {
     await save(state, { state: 'blocked', timedOut: true });
     throw new Refused('LAND_GATE_TIMEOUT', 'the landing gate timed out; its process tree is stopped and no candidate is a culprit');
   }
   return result;
+}
+
+/** Merge and test one speculative prefix without giving its worker publication authority. */
+export async function runLandingCandidate({ root, board, config, batch, entries, write, say, onWait, checkLease, checkLeaseNow, claimGate, finishGate }) {
+  await checkLease();
+  if (!existsSync(batch.root)) {
+    mkdirSync(dirname(batch.root), { recursive: true });
+    checkLeaseNow();
+    git(root, ['worktree', 'add', '--detach', batch.root, batch.base]);
+  }
+  board.quarantineEnabled = () => config.flakes?.quarantine === true;
+  const state = { root, board, config, batch, write, say, onWait, checkLease, checkLeaseNow,
+    culprits: [], flaky: false, gates: new Map(), diagnosed: new Map() };
+  const build = await mergeGroup(state, entries);
+  await save(state, { ...build });
+  // A conflicting prefix is not its requested composition. Never test the smaller accidental tree.
+  if (build.conflicts.length || !build.items.length) return { batch: state.batch, gate: null };
+  const tree = headTree(batch.root);
+  const claimed = await claimGate(tree);
+  if (claimed.previous) state.gates.set(tree, claimed.previous);
+  const gate = claimed.cached ?? { ...await gateGroup(state, 'candidate'), proofRoot: state.batch.root, proofCommit: headCommit(state.batch.root) };
+  if (!claimed.cached) await finishGate(tree, gate);
+  await save(state, { state: gate.isGreen ? 'ready' : 'blocked' });
+  return { batch: state.batch, gate };
+}
+
+/** Read a completed speculative result from its immutable raw log, without another execution. */
+function savedCandidateResult(candidate) {
+  if (!candidate.complete) return null;
+  if (candidate.error) throw new Refused(candidate.error.code, candidate.error.message);
+  const gate = candidate.gate;
+  return { batch: candidate.snapshot, gate: gate ? { ...gate, output: readFileSync(gate.logPath, 'utf8') } : null };
+}
+
+/** Keep only small replayable gate metadata; the complete output remains in its immutable log. */
+function candidateGateRecord(gate) {
+  if (!gate) return null;
+  const { tree, isGreen, failures, accounted, complete, requiresGreen, logPath, flakeDiagnostics, timedOut, proofRoot, proofCommit } = gate;
+  return { tree, isGreen, failures, accounted, complete, requiresGreen, logPath,
+    ...(proofRoot ? { proofRoot, proofCommit } : {}),
+    ...(flakeDiagnostics ? { flakeDiagnostics } : {}), ...(timedOut ? { timedOut } : {}) };
+}
+
+/** Run all prefixes through normal admission, serializing their delta receipts under one batch. */
+async function parallelPrefixes(state, entries) {
+  let serial = Promise.resolve();
+  const claims = new Map();
+  /** A failed delta must not prevent other already-running children from sealing their receipts. */
+  const ordered = action => {
+    const pending = serial.then(action);
+    serial = pending.catch(() => {});
+    return pending;
+  };
+  const counts = badgeCounts(state.board);
+  const groups = entries.map((_, index) => entries.slice(0, index + 1));
+  const descriptors = groups.map(group => {
+    const key = createHash('sha256').update(JSON.stringify([state.batch.base, group, counts, liveWaiverProjection(state.board)])).digest('hex');
+    const previous = state.batch.parallelCandidates?.find(candidate => candidate.key === key);
+    if (previous) {
+      if (previous.gate) state.gates.set(previous.gate.tree, previous.gate);
+      return previous;
+    }
+    const directory = join(dirname(state.batch.root), 'candidates', key);
+    return { key, snapshot: { version: 1, id: randomUUID(), base: state.batch.base, tip: state.batch.base,
+      branch: state.batch.branch, root: join(directory, 'worktree'), items: group, candidates: group,
+      conflicts: [], blocked: [], state: 'merging', owner: state.batch.owner,
+      logPath: join(directory, 'logs', 'candidate.log'), revision: 0 } };
+  });
+  await save(state, { state: 'gating', parallelCandidates: [...(state.batch.parallelCandidates ?? []),
+    ...descriptors.filter(candidate => !state.batch.parallelCandidates?.some(previous => previous.key === candidate.key))] });
+  /** Replace only this child's descriptor; every sibling and the parent's evidence stay current. */
+  const update = (key, patch) => ordered(async () => {
+    const latest = state.batch.parallelCandidates.find(candidate => candidate.key === key);
+    const updated = { ...latest, ...patch };
+    await save(state, { parallelCandidates: state.batch.parallelCandidates.map(candidate => candidate.key === key ? updated : candidate) });
+    return updated;
+  });
+  const settled = await Promise.allSettled(descriptors.map(async descriptor => {
+    const previous = savedCandidateResult(descriptor);
+    if (previous) return previous;
+    const key = descriptor.key;
+    /** Virtual child batches append deltas to their one canonical parent, never overwrite it. */
+    const write = async (operation, args) => {
+      if (operation === 'claimGate') {
+        const [tree] = args;
+        const cached = state.gates.get(tree);
+        if (cached?.timedOut) throw new Refused('LAND_GATE_TIMEOUT', 'this exact tree has a recorded landing timeout; inspect its log before starting a new batch');
+        if (cached && (completeGate(cached) || !coveredFailures(state, cached))) return { cached };
+        const prior = claims.get(tree);
+        if (prior) return { cached: await prior.promise };
+        let resolveGate;
+        let rejectGate;
+        const promise = new Promise((resolveResult, rejectResult) => { resolveGate = resolveResult; rejectGate = rejectResult; });
+        void promise.catch(() => {});
+        claims.set(tree, { key, promise, resolveGate, rejectGate });
+        return { owner: true, ...(cached ? { previous: cached } : {}) };
+      }
+      if (operation === 'finishGate') {
+        const [tree, gate] = args;
+        const claim = claims.get(tree);
+        if (!claim || claim.key !== key || gate.tree !== tree) throw new Refused('LAND_CANDIDATE', 'a candidate returned another tree’s gate; inspect its checkpoint');
+        state.gates.set(tree, gate);
+        claim.resolveGate(gate);
+        return null;
+      }
+      if (operation !== 'recordLandingBatch') return await state.write(operation, args);
+      return await ordered(async () => {
+        const { batch, revision } = args[0];
+        const latest = state.batch.parallelCandidates.find(candidate => candidate.key === key);
+        const before = latest.snapshot;
+        validateLandingBatch(batch, revision);
+        validateLandingRevision(before, batch, revision);
+        const snapshot = { ...batch, revision: revision + 1 };
+        const evidence = state.batch.invariantEvidence ?? { version: 1, gates: [], diagnostics: [] };
+        const childEvidence = snapshot.invariantEvidence ?? { gates: [], diagnostics: [] };
+        const oldEvidence = before.invariantEvidence ?? { gates: [], diagnostics: [] };
+        for (const kind of ['gates', 'diagnostics']) {
+          if (JSON.stringify(childEvidence[kind].slice(0, oldEvidence[kind].length)) !== JSON.stringify(oldEvidence[kind])) {
+            throw new Refused('LAND_EVIDENCE', 'candidate evidence is append-only; inspect the saved prefix before adopting');
+          }
+        }
+        await save(state, { parallelCandidates: state.batch.parallelCandidates.map(candidate => candidate.key === key ? { ...candidate, snapshot } : candidate),
+          invariantEvidence: { ...evidence,
+            gates: [...evidence.gates, ...childEvidence.gates.slice(oldEvidence.gates.length)],
+            diagnostics: [...evidence.diagnostics, ...childEvidence.diagnostics.slice(oldEvidence.diagnostics.length)] } });
+        return snapshot;
+      });
+    };
+    try {
+      const result = await runLandingCandidateWorker({ root: state.root, config: state.config, batch: descriptor.snapshot,
+        entries: descriptor.snapshot.candidates, fence: state.fence }, {
+        write, checkLease: state.checkLease, say: state.say, onWait: state.onWait,
+        onStart: pid => update(key, { workerPid: pid }),
+      });
+      await update(key, { complete: true, gate: candidateGateRecord(result.gate) });
+      return result;
+    } catch (error) {
+      for (const claim of claims.values()) if (claim.key === key) claim.rejectGate(error);
+      await update(key, { complete: true, error: { code: error.code ?? 'LAND_CANDIDATE', message: error.message } });
+      throw error;
+    }
+  }));
+  await serial;
+  // All siblings have ended before authority returns to a physical merge or publication.
+  const failure = settled.find(result => result.status === 'rejected');
+  if (failure) throw failure.reason;
+  return settled.map(result => result.value);
+}
+
+/** Move the parent's fixed worktree to an already tested composition without rebuilding its tree. */
+async function promoteCandidate(state, candidate) {
+  await state.checkLease();
+  state.checkLeaseNow();
+  if (!isClean(state.batch.root) || untracked(state.batch.root).length) throw new Refused('LAND_DIRTY', 'the landing worktree changed; inspect it before adopting');
+  git(state.batch.root, ['checkout', '--detach', candidate.batch.tip]);
+  await save(state, { tip: candidate.batch.tip, items: candidate.batch.items,
+    conflicts: candidate.batch.conflicts ?? [], doctrineCounts: candidate.batch.doctrineCounts ?? [] });
+}
+
+/** Exclude a returned candidate and explicit or Git-stacked dependents from later speculation. */
+function withoutParallelBlocker(state, entries, removed) {
+  const blocked = new Set([removed.id]);
+  return entries.filter(entry => {
+    if (blocked.has(entry.id)) return false;
+    const item = store.getItem(state.board, entry.id);
+    const dependency = (item.item_after ?? '').split(',').filter(Boolean).map(Number).find(id => blocked.has(id));
+    const stacked = tryGit(state.root, ['merge-base', '--is-ancestor', removed.reviewedCommit ?? removed.commit, entry.reviewedCommit ?? entry.commit]).status === 0;
+    if (dependency || stacked) {
+      blocked.add(entry.id);
+      state.batch.blocked = [...state.batch.blocked, { id: entry.id, code: 'STACKED_UNVERIFIED', stacked: dependency ?? removed.id }];
+      return false;
+    }
+    return true;
+  });
+}
+
+/** Trust a recorded positive main comparison only for every exact failing target of this gate. */
+function parallelGreenBase(state, gate) {
+  const ids = new Set((gate.flakeDiagnostics?.observations ?? []).filter(row => row.recorded).map(row => row.id));
+  const observations = store.flakeLedger(state.board).flatMap(row => row.observations).filter(row => ids.has(row.id));
+  return gate.failures.length > 0 && gate.failures.every(failure => observations.some(observation => observation.file === failure.file
+    && observation.name === failure.name && observation.main === state.batch.base
+    && observation.classification === 'possible-regression' && observation.mainReceipt?.green === true));
+}
+
+/** Test prefixes together, remove only diagnosed blockers, and publish one exact green composition. */
+async function parallelLanding(state, initialItems) {
+  let remaining = initialItems;
+  // A death between returning B and saving survivors must never resurrect a C stacked on B.
+  const originals = state.batch.candidates ?? initialItems;
+  for (const id of new Set([...state.culprits.map(entry => entry.id), ...(state.batch.conflicts ?? []).map(entry => entry.id)])) {
+    const removed = originals.find(entry => entry.id === id);
+    if (removed) remaining = withoutParallelBlocker(state, remaining, removed);
+  }
+  const excluded = new Set((state.batch.blocked ?? []).map(entry => entry.id));
+  remaining = remaining.filter(entry => !excluded.has(entry.id));
+  // Restore every sealed tree, even when changed badge counts produce a new descriptor key.
+  for (const candidate of state.batch.parallelCandidates ?? []) {
+    for (const gate of candidate.snapshot.gateResults ?? []) {
+      if (!state.gates.has(gate.tree)) state.gates.set(gate.tree, { ...gate, proofRoot: candidate.snapshot.root,
+        proofCommit: candidate.snapshot.invariantEvidence?.gates.findLast(entry => entry.isGreen)?.commit });
+    }
+    if (candidate.gate) state.gates.set(candidate.gate.tree, candidate.gate);
+  }
+  await save(state, { parallelRemaining: remaining });
+  while (remaining.length) {
+    const results = await parallelPrefixes(state, remaining);
+    const conflicts = results.flatMap(result => result.batch.conflicts ?? []);
+    if (conflicts.length) {
+      const blocker = remaining.find(entry => conflicts.some(conflict => conflict.id === entry.id));
+      await save(state, { conflicts });
+      remaining = withoutParallelBlocker(state, remaining, blocker);
+      await save(state, { parallelRemaining: remaining });
+      continue;
+    }
+    const green = results.findLastIndex(result => result.gate?.isGreen || result.gate && waivedProof(state, result.gate));
+    if (green === results.length - 1) {
+      const candidate = results[green];
+      await promoteCandidate(state, candidate);
+      if (landsOnTrunk(state.config)) { await landOnTrunk(state); return; }
+      if (!await inlineDeferredGuards(state)) { await save(state, { state: 'blocked' }); return; }
+      const proof = candidate.gate.isGreen ? { tree: candidate.gate.tree, failures: [], logPath: candidate.gate.logPath } : waivedProof(state, candidate.gate);
+      if (!proof) throw new Refused('LAND_WAIVER', 'the candidate’s waiver expired; inspect the gate before adopting');
+      await save(state, { state: 'ready', proof, parallelProofRoot: candidate.gate.proofRoot ?? candidate.batch.root, culprits: state.culprits });
+      await publish(state);
+      return;
+    }
+    const boundary = results[green + 1];
+    await promoteCandidate(state, boundary);
+    const gate = boundary.gate;
+    const flakyFiles = await diagnose(state, gate.failures, gate);
+    if (flakyFiles.length) { await fileFlakes(state, gate, flakyFiles); state.flaky = true; return; }
+    const culprit = remaining[green + 1];
+    const greenBase = green >= 0 && results[green].gate.isGreen && completeGate(results[green].gate)
+      || parallelGreenBase(state, gate);
+    if (!greenBase) { await fileTestDefects(state, gate); state.flaky = true; return; }
+    // A red A+B with green A can still be an interaction: B alone must reproduce those failures.
+    // This is a distinct composition, not a retry of A+B or any other already tested tree.
+    const [alone] = await parallelPrefixes(state, [culprit]);
+    const signatures = new Set((alone.gate?.failures ?? []).map(failure => JSON.stringify([failure.file, failure.name])));
+    if (!alone.gate || alone.gate.isGreen || !gate.failures.every(failure => signatures.has(JSON.stringify([failure.file, failure.name])))) {
+      await promoteCandidate(state, boundary);
+      await fileTestDefects(state, gate);
+      state.flaky = true;
+      return;
+    }
+    await promoteCandidate(state, alone);
+    const aloneFlakes = await diagnose(state, alone.gate.failures, alone.gate);
+    if (aloneFlakes.length) { await fileFlakes(state, alone.gate, aloneFlakes); state.flaky = true; return; }
+    await bisect(state, [culprit], gate.failures);
+    remaining = withoutParallelBlocker(state, remaining, culprit);
+    await save(state, { parallelRemaining: remaining });
+  }
+  await save(state, { state: 'blocked', culprits: state.culprits });
 }
 
 /** Run each failing file once alone, with the same queued machine capacity as other checks. */
@@ -361,7 +682,7 @@ async function diagnose(state, failures, gate) {
     if (!runner) throw new Refused('LAND_DIAGNOSTIC', `no runner can isolate ${file}; configure affectedTests for the project’s test runner`);
     const commit = headCommit(state.batch.root);
     const tree = headTree(state.batch.root);
-    const result = await withGateSlot(state.batch.root, (lease) => runProfiledShell(state.batch.root, `${runner} ${quote(file)}`, {
+    const result = await withLandingGateSlot(state.batch.root, (lease) => runProfiledShell(state.batch.root, `${runner} ${quote(file)}`, {
       waitMs: lease.waitMs, artifactDirectory: dirname(state.batch.logPath), artifactPrefix: 'diagnostic', persistLog: true, pipefail: true, gateLease: lease,
     }), { landing: true, browser: true, agent: 'coordinator', kind: 'land-diagnostic', onWait: state.onWait });
     if (headCommit(state.batch.root) !== commit || headTree(state.batch.root) !== tree || !isClean(state.batch.root)) {
@@ -566,6 +887,24 @@ async function fileFlakes(state, gate, files) {
   state.say(`flake: ${files.join(', ')}; nothing landed; fix the test or ask the person for an expiring waiver`);
 }
 
+/** File a neutral test defect for the exact no-culprit red and leave its proof available for a waiver. */
+async function fileTestDefects(state, gate) {
+  const defects = [];
+  const files = [...new Set(gate.failures.map(failure => failure.file).filter(Boolean))];
+  if (!files.length) throw new Refused('LAND_DIAGNOSTIC', 'the no-culprit gate did not identify a failing test file');
+  for (const file of files) {
+    const owner = laneOf(state.config, file);
+    const lane = owner === 'coordinator' ? store.getItem(state.board, state.batch.items[0].id).item_lane : owner;
+    defects.push(await state.write('recordLandingTestDefect', [{ agentId: 'coordinator', test: file,
+      hash: testHash(state.batch.root, file), blob: testBlob(state.batch.root, state.batch.tip, file),
+      trunkBlob: testBlob(state.root, state.batch.base, file),
+      names: gate.failures.filter(failure => failure.file === file).map(failure => failure.name),
+      lane, batchId: state.batch.id, branch: state.batch.branch }]));
+  }
+  await save(state, { state: 'test-defect', failures: gate.failures, testDefects: defects });
+  state.say(`the trunk is held by a test defect: ${files.join(', ')}; correct the test or ask an approver for an expiring waiver`);
+}
+
 /** Name the remote a landing pushes the trunk to: the trunk branch's own remote, else origin [B3]. */
 function landingRemoteName(root, branch) {
   return tryGit(root, ['config', '--get', `branch.${branch.replace(/^refs\/heads\//u, '')}.remote`]).stdout || 'origin';
@@ -611,6 +950,29 @@ function publicationInputs(state, batch) {
   if (mainCheckout(state.root)?.commit !== batch.base) throw new Refused('LAND_TRUNK_MOVED', 'main moved during the landing; rebuild the batch from its new tip');
 }
 
+/** Push from the actual gate-owning worktree, preserving its native stamp and canonical batch root. */
+function parallelPublicationRoot(state, batch) {
+  const root = batch.parallelProofRoot ?? batch.root;
+  if (root === batch.root) return root;
+  const owner = (batch.parallelCandidates ?? []).some(candidate => candidate.snapshot.root === root
+    && (candidate.gate?.tree === batch.proof?.tree || candidate.snapshot.gateResults?.some(gate => gate.tree === batch.proof?.tree)));
+  if (!owner || !existsSync(root) || realpathSync(repoInfo(root).commonDir) !== realpathSync(repoInfo(batch.root).commonDir)) {
+    throw new Refused('LAND_MOVED', 'the recorded gate-owning worktree is missing or belongs to another repository; restore it before adopting');
+  }
+  const tree = git(state.root, ['rev-parse', `${batch.tip}^{tree}`]);
+  if (batch.proof?.tree !== tree || headTree(root) !== tree || headTree(batch.root) !== tree || !isClean(root) || untracked(root).length) {
+    throw new Refused('LAND_MOVED', 'the speculative proof no longer matches both clean landing trees; restore the exact recorded composition before adopting');
+  }
+  // Existing native stamps prove trees. A duplicate composition may have different merge metadata;
+  // checking out its identical tree preserves that contract without creating or copying any stamp.
+  state.checkLeaseNow();
+  if (headCommit(root) !== batch.tip) git(root, ['checkout', '--detach', batch.tip]);
+  if (!(batch.proof.failures ?? []).length && !isStampedGreen(root)) {
+    throw new Refused('LAND_MOVED', 'the gate-owning worktree lost its native green stamp; inspect the recorded gate before adopting');
+  }
+  return root;
+}
+
 /** Push the exact gated tip before recording receipts, then fast-forward only a clean unchanged main. */
 async function publish(state) {
   let batch = state.batch;
@@ -623,10 +985,11 @@ async function publish(state) {
   if (batch.state !== 'pushed') {
     await state.checkLease();
     publicationInputs(state, batch);
+    const pushRoot = parallelPublicationRoot(state, batch);
     const alreadyPushed = tryGit(batch.root, ['ls-remote', remote, batch.branch]).stdout.split(/\s+/u)[0] === batch.tip;
     if (!alreadyPushed) {
       state.checkLeaseNow();
-      const pushed = tryGit(batch.root, ['push', remote, `HEAD:${batch.branch}`]);
+      const pushed = tryGit(pushRoot, ['push', remote, `HEAD:${batch.branch}`]);
       if (pushed.status !== 0) throw pushRefused(pushed.stderr || pushed.stdout);
     }
     await save(state, { state: 'pushed' });
@@ -684,7 +1047,7 @@ async function deferredGuards(state) {
   const tree = headTree(root);
   const commit = headCommit(root);
   const browser = !browserFreeChecksEnabled() || await testsNeedBrowser(root, files);
-  const run = await withGateSlot(root, lease => runProfiledShell(root, `${state.config.affectedTests} ${files.map(quote).join(' ')}`, { waitMs: lease.waitMs, gateLease: lease, stages: true }),
+  const run = await withLandingGateSlot(root, lease => runProfiledShell(root, `${state.config.affectedTests} ${files.map(quote).join(' ')}`, { waitMs: lease.waitMs, gateLease: lease, stages: true }),
     { agent: 'coordinator', kind: 'gate', landing: true, browser, onWait: state.onWait });
   // The same pin as the full landing gate: a result only counts for the exact merged tree it ran on.
   if (headCommit(root) !== commit || headTree(root) !== tree || !isClean(root)) {
@@ -771,6 +1134,13 @@ function cadenceDeferral(board, config, branch, say) {
   return { batch: null, landed: [], conflicts: [], blocked: [], culprits: [], flakes: [], deferredUntil };
 }
 
+/** Require a separate admitted slot for every speculative gate, without holding a parent gate open. */
+function requireParallelGateAdmission(root, config) {
+  if (config.landing?.parallel === true && inheritedGateSlot({ root, namedFiles: true })) {
+    throw new Refused('LAND_PARALLEL_NESTED_GATE', 'parallel landing needs separately admitted gate slots; run pullboard land outside the current gate command');
+  }
+}
+
 /** Build, gate, diagnose and durably land one coordinator batch; all external actions stay in its worktree. */
 export async function land(options) {
   if (options.dryRun) return runLandingBatch(options);
@@ -778,6 +1148,7 @@ export async function land(options) {
   const trunk = mainCheckout(options.root);
   const branch = trunk?.branch;
   if (!branch) throw new Refused('LAND_TRUNK', 'landing needs the coordinator’s primary branch; return its checkout to the trunk');
+  if (trunk.commit) requireParallelGateAdmission(options.root, policyAt(options.root, trunk.commit).config);
   if (trunk.commit && !options.adopt) {
     requireConfirmedLanding(options.board);
     const deferred = cadenceDeferral(options.board, policyAt(options.root, trunk.commit).config, branch, options.say);
@@ -799,11 +1170,13 @@ export async function land(options) {
   }
   let lastWait = '';
   const controller = new AbortController();
-  const lease = await takeLandingResource({ board: options.board, write: options.write, branch,
+  const lease = await takeLandingResource({ board: options.board, write: options.write, refresh: options.refresh, branch,
     onLost: error => controller.abort(error),
     /** Report a real ordered holder, without allocating machine test capacity to this waiter. */
     onWait({ holders, position }) {
-      const message = `landing waiting: ${branch} held by ${holders[0]?.label ?? 'the previous landing'}; queued at place ${position}`;
+      const holder = holders[0];
+      const elapsed = holder ? Math.max(0, Math.floor((options.board.clock.now().getTime() - Date.parse(holder.since)) / 1000)) : 0;
+      const message = `landing waiting: ${branch} held by ${holder?.label ?? 'the previous landing'} on ${holder?.machine ?? (holder?.lineage ? 'the recorded coordinator machine (legacy identity)' : 'this machine')} for ${elapsed}s; queued at place ${position}; foreign holders require explicit release or pullboard takeover`;
       if (message !== lastWait) options.say(message);
       lastWait = message;
     } });
@@ -851,7 +1224,11 @@ export async function runLandingBatch({ root, board, config, write, say, owner, 
   if (!trunk?.commit) throw new Refused('LAND_TRUNK', 'landing needs the coordinator’s primary branch; return its checkout to the trunk');
   // Pin accepted policy after any recorded-landed repair, never before admission or from candidate files.
   config ??= policyAt(root, trunk.commit).config;
+  if (!dryRun) requireParallelGateAdmission(root, config);
   board.quarantineEnabled = () => config.flakes?.quarantine === true;
+  const environment = dryRun ? null : requireLandingHost(store.boardId(board), config);
+  const testDefects = heldTestDefects(root, board, trunk);
+  if (!dryRun && testDefects.length) throw new Refused('LAND_TEST_DEFECT', `this trunk is held by ${testDefects.map(defect => `#${defect.item} (${defect.test})`).join(', ')}; correct the committed test or ask an approver for an expiring waiver`);
   if (!dryRun && !adopt && !unfinished) {
     const deferred = cadenceDeferral(board, config, trunk.branch, say);
     if (deferred) return deferred;
@@ -872,7 +1249,7 @@ export async function runLandingBatch({ root, board, config, write, say, owner, 
     }
     return { batch: null, landed: [], conflicts, blocked: selected.blocked, culprits: [], flakes: [], items: selected.ready.map((item) => item.item_id) };
   }
-  if (unfinished && !adopt && unfinished.state !== 'flaky') throw new Refused('LAND_ADOPT', `batch ${unfinished.id} is ${unfinished.state}; inspect pullboard resume, then run pullboard land --adopt`);
+  if (unfinished && !adopt && !['flaky', 'test-defect'].includes(unfinished.state)) throw new Refused('LAND_ADOPT', `batch ${unfinished.id} is ${unfinished.state}; inspect pullboard resume, then run pullboard land --adopt`);
   if (adopt && !unfinished) throw new Refused('LAND_ADOPT', 'there is no interrupted landing batch; run pullboard land');
   let batch = unfinished;
   if (batch?.state === 'flaky') {
@@ -893,6 +1270,7 @@ export async function runLandingBatch({ root, board, config, write, say, owner, 
     const id = randomUUID();
     const directory = join(repoInfo(root).commonDir, 'pullboard', 'landings', id);
     batch = { version: 1, id, startedAt: new Date().toISOString(), base: trunk.commit, tip: trunk.commit, branch: trunk.branch, root: join(directory, 'worktree'),
+      ...(environment ? { environment } : {}),
       candidates: selected.ready.map(landingEntry),
       items: selected.ready.map(landingEntry), conflicts: [], blocked: selected.blocked,
       state: 'merging', owner, logPath: join(directory, 'logs', 'batch.log'), revision: 0 };
@@ -900,7 +1278,7 @@ export async function runLandingBatch({ root, board, config, write, say, owner, 
     mkdirSync(directory, { recursive: true });
     git(root, ['worktree', 'add', '--detach', batch.root, batch.base]);
   }
-  const state = { root, board, config, write, say, onWait, checkLease, checkLeaseNow, batch, culprits: batch.culprits ?? [], flaky: false, gates: new Map((batch.gateResults ?? []).map((result) => [result.tree, result])), diagnosed: new Map((batch.diagnostics ?? []).map((result) => [result.test, result.isGreen])) };
+  const state = { root, board, config, write, say, onWait, checkLease, checkLeaseNow, fence, batch, culprits: batch.culprits ?? [], flaky: false, gates: new Map((batch.gateResults ?? []).map((result) => [result.tree, result])), diagnosed: new Map((batch.diagnostics ?? []).map((result) => [result.test, result.isGreen])) };
   try {
     await save(state, { owner });
     await returnCulprits(state);
@@ -910,6 +1288,11 @@ export async function runLandingBatch({ root, board, config, write, say, owner, 
       const initialItems = (state.batch.candidates ?? state.batch.items)
         .filter((entry) => !state.culprits.some((culprit) => culprit.id === entry.id && culprit.commit === entry.commit));
       if (!existsSync(state.batch.root)) throw new Refused('LAND_WORKTREE', `the recorded landing worktree is missing at ${state.batch.root}; restore it before adopting`);
+      if (state.config.landing?.parallel === true) {
+        await parallelLanding(state, initialItems);
+        return { batch: state.batch, landed: state.batch.state === 'landed' ? state.batch.items.map(entry => entry.id) : [],
+          conflicts: state.batch.conflicts ?? [], blocked: state.batch.blocked ?? [], culprits: state.culprits, flakes: state.batch.flakes ?? [] };
+      }
       const build = await mergeGroup(state, initialItems);
       await save(state, { ...build, conflicts: [...state.batch.conflicts, ...build.conflicts] });
       for (const entry of state.batch.blocked ?? []) say(`${entry.code} #${entry.id}${entry.stacked ? ` carries #${entry.stacked}` : ''}`);
@@ -935,8 +1318,11 @@ export async function runLandingBatch({ root, board, config, write, say, owner, 
                 gate = await gateGroup(state, 'green-items');
                 proof = gate.isGreen ? null : waivedProof(state, gate);
                 if (!gate.isGreen && !proof) {
-                  await save(state, { state: 'blocked', failures: gate.failures, culprits: state.culprits });
-                  throw new Refused('LAND_INTERACTION', 'the individually green items fail together; nothing retries or lands; inspect the batch’s failing tests');
+                  if (!state.culprits.length) { await fileTestDefects(state, gate); state.flaky = true; }
+                  else {
+                    await save(state, { state: 'blocked', failures: gate.failures, culprits: state.culprits });
+                    throw new Refused('LAND_INTERACTION', 'the individually green items fail together; nothing retries or lands; inspect the batch’s failing tests');
+                  }
                 }
               }
             } else if (!state.flaky) await save(state, { state: 'blocked', culprits: state.culprits });

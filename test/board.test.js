@@ -569,12 +569,15 @@ test('shouts reach a lane, an agent or all; inbox marks them read [B7]', () => {
   const lanes = ['coordinator', 'web', 'api'];
   store.shout(board, { from: 'coordinator', to: 'web', text: 'web: rebase', lanes });
   store.shout(board, { from: 'api-1', to: 'web-2', text: 'web-2: schema changed', lanes });
-  store.shout(board, { from: 'web-1', to: 'all', text: 'all: gate is slow', lanes });
+  const report = store.shout(board, { from: 'web-1', to: 'all', text: 'all: gate is slow', lanes });
+  assert.equal(store.getShout(board, report).shout_to, 'coordinator+person');
+  assert.ok(store.inbox(board, 'coordinator').some(shout => shout.shout_id === report));
+  store.shout(board, { from: 'coordinator', to: 'all', text: 'all: gate is slow', lanes });
   assert.throws(() => store.shout(board, { from: 'web-1', to: 'nobody', text: 'x', lanes }), /NO_READER/);
   assert.equal(store.unreadCount(board, 'web-2'), 3);
   assert.deepEqual(store.inbox(board, 'web-2').map((shout) => shout.shout_text), ['web: rebase', 'web-2: schema changed', 'all: gate is slow']);
   assert.equal(store.unreadCount(board, 'web-2'), 0);
-  assert.deepEqual(store.inbox(board, 'web-1').map((shout) => shout.shout_text), ['web: rebase']);
+  assert.deepEqual(store.inbox(board, 'web-1').map((shout) => shout.shout_text), ['web: rebase', 'all: gate is slow']);
 });
 
 test('a shout can ask for a decision; it stays open until someone answers it [B21]', () => {

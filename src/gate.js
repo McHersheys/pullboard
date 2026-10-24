@@ -15,10 +15,8 @@ import {
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   realpathSync,
-  rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
@@ -34,9 +32,10 @@ import {
   availableParallelism,
   freemem,
   loadavg,
-  tmpdir,
 } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { executionEnvironment } from './execution-environment.js';
+import { constrainedLandingHost } from './landing-host.js';
 import {
   gitChildEnv,
   gitPath,
@@ -90,13 +89,15 @@ import { receiptOf } from './gate-receipt.js';
 import { recordReceipt } from './gate-receipt.js';
 import { slotOf } from './gate-receipt.js';
 import { startReceipt } from './gate-receipt.js';
-import {
-  gateStages,
-  stagedScript,
-  readPipes,
-  readStages,
-} from './gate-stages.js';
 export { gateStages } from './gate-stages.js';
+// A read that checks a baseline runs one command without loading the gate's queue and runners.
+import { runShell } from './shell-run.js';
+import {
+  digestOf,
+  writeTimingProfile,
+} from './gate-output.js';
+// A read that checks a baseline or a trusted policy summarizes output without loading the gate's queue and runners.
+export { digestOf, runShell, writeTimingProfile };
 import {
   RunnerDropped,
   runOnRunner,
@@ -116,15 +117,6 @@ const LOG = 'pullboard-gate.log';
 const LANDING_RUN_ENV = 'PULLBOARD_LANDING_RUN';
 // Live person waivers, as {kind, test}, so a landing run does not stop early on a waived failure.
 const LANDING_WAIVERS_ENV = 'PULLBOARD_LANDING_WAIVERS';
-const DIGEST_CHARS = 3000;
-const TAIL_CHARS = 1000;
-const LINE_CHARS = 300;
-const FAILURE_RE = /fail|error|expected|received|assert|not ok|✗|×|cannot|undefined|exception/i;
-// A passing test's own lines, whatever its name says: TAP's `ok N` and the `# Subtest:` before it.
-const PASSING_RE = /^\s*(ok \d+\b|# Subtest:)/;
-// Lines kept under a failure, where test runners say why: the message, expected and actual.
-const CONTEXT_LINES = 20;
-
 /** Detect the performance-core budget on Apple Silicon, or the runtime's usable CPU budget elsewhere. */
 export function performanceCores() {
   if (process.platform === 'darwin') {
@@ -176,61 +168,6 @@ export function landingShardCount(root) {
 }
 
 /**
- * The lines of a failure worth an agent's attention: each line that looks like a failure with the
- * lines under it that say why, then the end of the output, within one cap, so a refusal or a retry
- * carries the reason and not the whole log. Passing tests are skipped however they are named. The
- * end has its own share of the cap and every line is cut short, so no single long line can push the
- * summary out. Unstructured commands keep their first diagnostic, and omitted nonempty lines are
- * counted so the excerpt never looks like the complete output.
- *
- * @param {string} output
- * @returns {string}
- */
-export function digestOf(output) {
-  const lines = output
-    .split('\n')
-    .map((line) => line.trimEnd())
-    .filter(Boolean)
-    .map((line) => (line.length > LINE_CHARS ? `${line.slice(0, LINE_CHARS)}…` : line));
-  const tail = [];
-  let room = TAIL_CHARS;
-  for (let at = lines.length - 1; at >= 0 && tail.length < 15 && lines[at].length < room; at -= 1) {
-    tail.unshift(lines[at]);
-    room -= lines[at].length + 1;
-  }
-  room = DIGEST_CHARS - (TAIL_CHARS - room) - 80; // Reserve the omission count inside the same cap.
-  const body = lines.slice(0, lines.length - tail.length);
-  const failing = [];
-  for (let at = 0; at < body.length && failing.length < 40; at += 1) {
-    if (PASSING_RE.test(body[at]) || !FAILURE_RE.test(body[at])) continue;
-    if (/^\s*not ok \d+/u.test(body[at])) {
-      let end = at + 1;
-      while (end < body.length && !/^\s*(?:# Subtest:|(?:not )?ok \d+|\d+\.\.)/u.test(body[end])) end += 1;
-      // Cancelled siblings are fallout; keep the actual assertion's fields inside the digest cap.
-      if (body.slice(at, end).some(line => /failureType:\s*['"]testAborted['"]/u.test(line))) { at = end - 1; continue; }
-    }
-    const block = body.slice(at, at + CONTEXT_LINES + 1);
-    const end = block.findIndex((line, n) => n > 0 && (PASSING_RE.test(line) || /^\s*(not ok \d+|\.\.\.)\s*$|^\s*not ok \d+/.test(line)));
-    for (const line of end === -1 ? block : block.slice(0, end)) {
-      if (line.length >= room) break;
-      failing.push(line);
-      room -= line.length + 1;
-    }
-    at += (end === -1 ? block.length : end) - 1;
-  }
-  if (!failing.length) {
-    for (const line of body.filter(line => !PASSING_RE.test(line)).slice(0, CONTEXT_LINES + 1)) {
-      if (line.length >= room) break;
-      failing.push(line);
-      room -= line.length + 1;
-    }
-  }
-  const omitted = lines.length - failing.length - tail.length;
-  const notice = omitted ? [`… ${omitted} nonempty output lines omitted …`] : [];
-  return [...failing, ...notice, ...tail].join('\n');
-}
-
-/**
  * The tree a gate run would check, or null when the working copy differs from HEAD or holds
  * untracked files, since a pass over it would vouch for something no commit holds.
  *
@@ -252,56 +189,6 @@ export function isStampedGreen(root) {
   const tree = committedTree(root);
   const file = gitPath(root, STAMP);
   return tree !== null && existsSync(file) && readFileSync(file, 'utf8').trim() === tree;
-}
-
-/**
- * Run a shell command in a checkout for a digest: both streams in one pipe, in order, read whole
- * however long, stdin closed so nothing waits on a person. With `stages`, each top-level stage's
- * exit status and own output are kept too, or `stages` is null when the command cannot be split.
- *
- * @param {string} root
- * @param {string} command
- * @param {{ pipefail?: boolean, env?: NodeJS.ProcessEnv, stages?: boolean, timeoutMs?: number }} [options] - Gate-only pipefail, additional child environment values and per-stage accounting.
- * @returns {{ isGreen: boolean, output: string, seconds: number, sandboxBlocked: string|null, stages?: Array<{ status: number|null, output: string, pipeline?: Array<{ status: number|null, output: string|null }> }> | null }}
- */
-export function runShell(root, command, { pipefail = false, env = {}, stages = false, timeoutMs } = {}) {
-  const started = Date.now();
-  const options = { cwd: root, env: { ...gitChildEnv(root), ...env }, shell: true, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', maxBuffer: 2 ** 30 };
-  let prefix = '';
-  if (pipefail) {
-    // Probe the same shell as the command, with no load-sensitive deadline or alternate shell.
-    const probe = spawnSync('set -o pipefail', options);
-    if (probe.status === 0) prefix = 'set -o pipefail\n';
-    else if (hasPipeline(command)) {
-      throw new Refused('PIPEFAIL_UNAVAILABLE', 'the repo gate shell cannot enable pipefail; rewrite the gate without a pipe');
-    }
-  }
-  const split = stages ? gateStages(command) : null;
-  const marker = `PULLBOARD_STAGE_${randomUUID().replaceAll('-', '')}`;
-  const pipes = split?.some((stage) => stage.pipeline.length > 1) ? mkdtempSync(join(tmpdir(), 'pullboard-pipes-')) : null;
-  // Newlines, not spaces, around the command, so a trailing comment in it cannot swallow the `)`.
-  const script = `${prefix}(\n${split ? stagedScript(split, marker, pipes) : command}\n) 2>&1`;
-  const timedDirectory = timeoutMs ? mkdtempSync(join(tmpdir(), 'pullboard-timed-output-')) : null;
-  const outputFile = timedDirectory ? join(timedDirectory, 'output.log') : null;
-  const timed = timeoutMs ? spawnSync(process.execPath, [fileURLToPath(new URL('./timed-shell-worker.js', import.meta.url))], { ...options, shell: false, stdio: ['pipe', 'pipe', 'pipe'], input: JSON.stringify({ command: script, timeoutMs, outputFile }) }) : null;
-  if (timed && (timed.status !== 0 || timed.error)) throw new Refused('LAND_TIMEOUT_CUSTODY', 'the timed gate worker did not prove cleanup; inspect its owned processes before landing again');
-  const result = timed ? { ...JSON.parse(timed.stdout || '{}'), stdout: '', stderr: timed.stderr } : spawnSync(script, options);
-  if (timed && result.error) throw new Refused('LAND_GATE_OUTPUT', `the timed gate stopped and drained after its output failed (${result.error}); inspect free disk space and ${timedDirectory} before landing again`);
-  if (timed) result.stdout = readFileSync(outputFile, 'utf8') + (result.timedOut ? `\n[LAND_GATE_TIMEOUT] landing gate exceeded ${timeoutMs}ms; its owned processes are stopped\n` : '');
-  if (timedDirectory) rmSync(timedDirectory, { recursive: true, force: true });
-  if (result.timedOut || result.overflow || result.error) result.status = 1;
-  invalidateGitFacts();
-  const pipeStatuses = pipes ? readPipes(split, pipes) : null;
-  if (pipes) rmSync(pipes, { recursive: true, force: true });
-  const raw = `${result.stdout ?? ''}${result.stderr ?? ''}`;
-  const seconds = Math.round((Date.now() - started) / 1000);
-  const blocked = (output) => (result.status === 0 ? null : sandboxBlockedOperation(root, output));
-  if (!stages) return { isGreen: result.status === 0, output: raw, seconds, ...(timed ? { timedOut: result.timedOut } : {}), sandboxBlocked: blocked(raw) };
-  if (!split) return { isGreen: result.status === 0, output: raw, seconds, stages: null, ...(timed ? { timedOut: result.timedOut } : {}), sandboxBlocked: blocked(raw) };
-  const staged = readStages(raw, marker, split.length);
-  // Each pipeline component's own status rides on its stage, so no failing producer hides behind a later one.
-  const withPipes = staged.stages.map((stage, index) => (pipeStatuses?.[index] ? { ...stage, pipeline: pipeStatuses[index] } : stage));
-  return { isGreen: result.status === 0, seconds, ...(timed ? { timedOut: result.timedOut } : {}), ...staged, stages: withPipes, sandboxBlocked: blocked(staged.output) };
 }
 
 /** Refuse an environment-blocked proof after its ordinary raw logs and timings are persisted. */
@@ -344,6 +231,7 @@ export function runProfiledShell(root, command, { waitMs = 0, artifactDirectory,
     browser: gateLease.browser, pipefail, stages, waivers: landing ? waivers : [], metadata: { ...(gateLease.runMetadata ?? {}), landing, ...(timeoutMs ? { timeoutMs } : {}) } }) }
     : runShell(root, command, { pipefail, env: inherited, stages, timeoutMs });
   gateLease?.tracker?.mark('ranAt');
+  if (gateLease) gateLease.environment = run.environment ?? null;
   const sandboxBlocked = run.isGreen ? null : run.sandboxBlocked ?? (run.executionRunner
     // The controller cannot realpath remote files; retain the network denial signal without treating remote paths as local paths.
     ? sandboxBlockedOperation(root, run.output, { includeFilePaths: false })
@@ -369,6 +257,7 @@ export async function runProfiledShellAsync(root, command, { waitMs = 0, gateSlo
   if (gateLease?.runner) {
     const run = await runOnRunnerAsync(root, command, { runner: gateLease.runner, source: gateLease.source,
       browser: gateLease.browser, metadata: { ...(gateLease.runMetadata ?? {}), landing } });
+    gateLease.environment = run.environment ?? null;
     gateLease.tracker?.mark('ranAt');
     const wallMs = Math.max(0, Date.now() - started);
     const profilePath = join(dirname(gitPath(root, LOG)), `pullboard-gate-${randomUUID()}.profile.json`);
@@ -383,6 +272,7 @@ export async function runProfiledShellAsync(root, command, { waitMs = 0, gateSlo
     PULLBOARD_TEST_STAGE: gateLease?.receiptKind ?? (landing ? 'land' : 'gate'),
   };
   const env = { ...gitChildEnv(root), ...inherited };
+  const environment = executionEnvironment();
   const child = spawn(`(\n${command}\n) 2>&1`, { cwd: root, env, shell: true, stdio: ['ignore', 'pipe', 'pipe'] });
   const chunks = [];
   let bytes = 0;
@@ -399,6 +289,7 @@ export async function runProfiledShellAsync(root, command, { waitMs = 0, gateSlo
   child.once('error', error => { failure = error; });
   const status = await new Promise(resolveClose => child.once('close', resolveClose));
   gateLease?.tracker?.mark('ranAt');
+  if (gateLease) gateLease.environment = environment;
   invalidateGitFacts();
   const output = chunks.join('') + (overflow ? '\nFocused comparison output exceeded one GiB.\n' : '')
     + (failure ? `\n${failure.message}\n` : '');
@@ -406,13 +297,13 @@ export async function runProfiledShellAsync(root, command, { waitMs = 0, gateSlo
   const profilePath = join(dirname(gitPath(root, LOG)), `pullboard-gate-${randomUUID()}.profile.json`);
   const profile = writeTimingProfile(profilePath, { ...timingFromOutput(output, timingRunner(command)),
     waitMs: Math.max(0, Math.round(waitMs)), wallMs, receipt: settleReceipt(gateLease) });
-  return { isGreen: status === 0 && !overflow && !failure, sandboxBlocked: status === 0 ? null : sandboxBlockedOperation(root, output), output, seconds: Math.round(wallMs / 1000), profile, profilePath, logPath: null };
+  return { isGreen: status === 0 && !overflow && !failure, environment, sandboxBlocked: status === 0 ? null : sandboxBlockedOperation(root, output), output, seconds: Math.round(wallMs / 1000), profile, profilePath, logPath: null };
 }
 
 /** Close a gated run's receipt (#836) as its evidence is written; the slot's release records this same receipt. */
 function settleReceipt(lease) {
   if (!lease?.tracker) return undefined;
-  lease.receipt = receiptOf(lease.tracker, { kind: lease.receiptKind, slot: lease.slot });
+  lease.receipt = { ...receiptOf(lease.tracker, { kind: lease.receiptKind, slot: lease.slot }), environment: lease.environment ?? null };
   return lease.receipt;
 }
 
@@ -435,79 +326,6 @@ function runTiming(run, command) {
   return { ...profile, executionRunner: run.executionRunner, executionSource: run.executionSource,
     files: (profile.files ?? []).map(file => ({ ...file, path: localPath(file.path) })),
     tests: (profile.tests ?? []).map(test => ({ ...test, file: localPath(test.file) })) };
-}
-
-/** Persist one sanitized timing profile as a private artifact.
- * @param {string} path
- * @param {{ files?: Array<object>, tests?: Array<object>, [key: string]: any }} profile
- * @returns {object} The sanitized profile written to disk.
- */
-export function writeTimingProfile(path, profile) {
-  /** Sanitize one reporter-controlled string before persistence or display.
-   * @param {unknown} value
-   * @param {string} label
-   * @returns {unknown}
-   */
-  const sanitize = (value, label) => {
-    if (typeof value !== 'string') return value;
-    if (Buffer.byteLength(value, 'utf8') > 64 * 1024) return '[redacted profile field exceeds 64 KiB safe-scan limit]';
-    const findings = secretsIn([{ path: `timing profile ${label}`, line: 1, text: value }]);
-    return findings.length ? `[redacted ${findings.map(finding => finding.slice(0, finding.lastIndexOf(' at '))).join(', ')}]` : value;
-  };
-  /** Accept only measured, nonnegative durations from reporter events. */
-  const validDuration = value => Number.isFinite(value) && value >= 0;
-  const files = (profile.files ?? []).filter(file => typeof file?.path === 'string' && validDuration(file.durationMs))
-    .map(file => ({ path: sanitize(file.path, 'file path'), durationMs: file.durationMs }));
-  const tests = (profile.tests ?? []).filter(test => (typeof test?.file === 'string' || test?.file === null) && typeof test?.name === 'string' && validDuration(test.durationMs))
-    .map(test => ({ file: sanitize(test.file, 'test file'), name: sanitize(test.name, 'test name'), durationMs: test.durationMs, passed: test.passed === true }));
-  const sanitized = {
-    version: 1,
-    waitMs: validDuration(profile.waitMs) ? profile.waitMs : 0,
-    wallMs: validDuration(profile.wallMs) ? profile.wallMs : null,
-    files,
-    tests,
-    runner: sanitize(profile.runner ?? 'shell', 'runner'),
-    format: sanitize(profile.format ?? 'none', 'format'),
-    unavailable: sanitize(profile.unavailable ?? null, 'availability'),
-    ...(profile.executionRunner ? { executionRunner: sanitize(profile.executionRunner, 'execution runner') } : {}),
-    ...(profile.receipt ? { receipt: { ...profile.receipt, slot: { kind: sanitize(profile.receipt.slot?.kind, 'slot kind'), reason: sanitize(profile.receipt.slot?.reason, 'slot reason') } } } : {}),
-    ...(profile.landingShards ? { landingShards: {
-      balance: sanitize(String(profile.landingShards.balance ?? 'unknown'), 'landing balance'),
-      unverified: (profile.landingShards.unverified ?? []).map(entry => ({ shard: sanitize(String(entry.shard), 'landing unverified shard'),
-        processes: sanitize(String(entry.processes), 'landing unverified processes') })),
-      quarantined: (profile.landingShards.quarantined ?? []).map(entry => ({ host: sanitize(String(entry.host), 'landing quarantine host'),
-        message: sanitize(String(entry.message), 'landing quarantine message') })),
-      floor: profile.landingShards.floor && validDuration(profile.landingShards.floor.ms)
-        ? { path: sanitize(String(profile.landingShards.floor.path), 'landing floor path'), ms: profile.landingShards.floor.ms } : null,
-      // One entry per attempt, so a failed runner attempt stays beside its local rerun.
-      shards: (profile.landingShards.shards ?? []).map(shard => ({ shard: sanitize(String(shard.shard), 'landing shard'),
-        attempt: Number.isSafeInteger(shard.attempt) ? shard.attempt : 1,
-        host: sanitize(String(shard.host), 'landing shard host'), status: sanitize(String(shard.status), 'landing shard status'),
-        reason: shard.reason ? sanitize(String(shard.reason), 'landing shard reason') : null,
-        wallMs: validDuration(shard.wallMs) ? shard.wallMs : null })),
-      files: (profile.landingShards.files ?? []).filter(file => typeof file?.path === 'string').map(file => ({
-        path: sanitize(file.path, 'landing file path'), shard: sanitize(String(file.shard), 'landing file shard'),
-        host: sanitize(String(file.host), 'landing file host'), durationMs: validDuration(file.durationMs) ? file.durationMs : null })),
-    } } : {}),
-    ...(profile.executionSource ? { executionSource: {
-      commit: sanitize(profile.executionSource.commit, 'execution commit'),
-      tree: sanitize(profile.executionSource.tree, 'execution tree'),
-      tooling: Object.fromEntries(Object.entries(profile.executionSource.tooling ?? {})
-        .filter(([key]) => ['kind', 'name', 'version', 'commit', 'tree', 'sha256'].includes(key))
-        .map(([key, value]) => [key, sanitize(value, `execution tooling ${key}`)])),
-    } } : {}),
-  };
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, `${JSON.stringify(sanitized, null, 2)}\n`, { mode: 0o600 });
-  return sanitized;
-}
-
-/** Conservatively detect a pipe when the configured gate shell cannot enforce every stage's status. */
-function hasPipeline(command) {
-  for (let index = 0; index < command.length; index += 1) {
-    if (command[index] === '|' && command[index + 1] !== '|' && command[index - 1] !== '|') return true;
-  }
-  return false;
 }
 
 /** Run work under the machine queue: landings first, then every other eligible waiter in arrival order.
@@ -533,6 +351,12 @@ export async function withGateSlot(root, action, options = {}) {
     if (result && typeof result === 'object') result.runnerAttempt = attempt;
     return result;
   }
+}
+
+/** Validate landing membership before admission; generic SSH capacity cannot stand in for a constrained host. */
+export async function withLandingGateSlot(root, action, options = {}) {
+  const constrained = constrainedLandingHost(root);
+  return withGateSlot(root, action, { ...options, landing: true, ...(constrained ? { remote: false } : {}) });
 }
 
 /** One gate admission and its action; withGateSlot may call it again for a local rerun. */
@@ -630,7 +454,7 @@ export async function runGate(root, config, { trustStamp = true, onWait, landing
     throw missingGate(root);
   }
   if (trustStamp && isStampedGreen(root)) return { isGreen: true, isCached: true, output: '', seconds: 0, log: '' };
-  return await withGateSlot(root, async (lease) => {
+  return await (landing ? withLandingGateSlot : withGateSlot)(root, async (lease) => {
     pinRunMain(lease, onFailure);
     const run = fullGateRun(root, config, trustStamp, { waitMs: lease.waitMs, gateLease: lease, landing, stages, waivers, kind: landing ? 'land' : 'gate' });
     if (!run.isGreen && !run.timedOut && onFailure) await onFailure(run, { root, command: config.gate, lease });
@@ -669,7 +493,7 @@ function leaveRunReceipt(root, config, run, { before, kind }) {
     }
     const local = { average: loadavg(), cpus: availableParallelism(), freeMB: Math.floor(freemem() / 1048576) };
     const receipt = receiptFields({ version: 1, id: randomUUID(), kind, tree: before, head, main: policy.commit, command: createHash('sha256').update(config.gate).digest('hex'),
-      green: run.isGreen, failures: [...failures.values()], load: Array.isArray(run.executionLoad?.average) ? run.executionLoad : local, at: new Date().toISOString() });
+      green: run.isGreen, failures: [...failures.values()], load: Array.isArray(run.executionLoad?.average) ? run.executionLoad : local, at: new Date().toISOString(), environment: run.environment ?? null });
     if (!receipt) return null;
     mkdirSync(store, { recursive: true, mode: 0o700 });
     writeFileSync(join(store, `${receipt.id}.json`), receiptBody(receipt), { flag: 'wx', mode: 0o600 });
@@ -689,7 +513,7 @@ function fullGateRun(root, config, trustStamp = false, { waitMs = 0, log = gitPa
   const receiptId = run.sandboxBlocked ? null : leaveRunReceipt(root, config, run, { before, kind });
   refuseSandboxBlocked(run);
   if (isGreen && before !== null && committedTree(root) === before) writeFileSync(gitPath(root, STAMP), `${before}\n`);
-  return { isGreen, isCached: false, output, seconds, log, profile, profilePath, receiptId, ...(run.timedOut ? { timedOut: true } : {}), ...(run.executionRoot ? { executionRoot: run.executionRoot } : {}),
+  return { isGreen, isCached: false, output, seconds, log, profile, profilePath, receiptId, ...(run.timedOut ? { timedOut: true } : {}), environment: run.environment ?? null, ...(run.executionRoot ? { executionRoot: run.executionRoot } : {}),
     // A remote run's host load and pinned main reach the flake diagnostics with it (#925).
     ...(run.executionRunner ? { executionRunner: run.executionRunner, executionMain: run.executionMain ?? null, executionLoad: run.executionLoad ?? null } : {}), ...(stages ? { stages: run.stages } : {}) };
 }
@@ -708,12 +532,13 @@ function fullGateRun(root, config, trustStamp = false, { waitMs = 0, log = gitPa
  */
 function gateRunRecord(root, config, isGreen, gateLease) {
   const at = new Date().toISOString();
+  const environment = gateLease?.environment ?? null;
   const positiveControl = config.positiveControl?.trim() ? config.positiveControl : null;
-  if (!positiveControl) return { at, green: isGreen, control: null, gate: config.gate, positiveControl };
+  if (!positiveControl) return { at, green: isGreen, control: null, gate: config.gate, positiveControl, environment };
   const control = runProfiledShell(root, positiveControl, { gateLease, artifactPrefix: 'pullboard-gate-control', persistLog: true });
   // A control the environment refused says nothing about the gate, the same rule that keeps a refused gate run out of the record.
   const result = control.sandboxBlocked ? null : control.isGreen;
-  return { at, green: isGreen, control: result, gate: config.gate, positiveControl, controlLog: control.logPath, controlProfile: control.profilePath };
+  return { at, green: isGreen, control: result, gate: config.gate, positiveControl, environment, controlLog: control.logPath, controlProfile: control.profilePath };
 }
 
 /** Quote a fixed executable or selected path without permitting shell expansion. */

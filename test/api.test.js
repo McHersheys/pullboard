@@ -23,13 +23,21 @@ import { join, dirname, resolve, basename, delimiter } from 'node:path';
 import { after, test } from 'node:test';
 import { main, resultCommands } from '../src/cli.js';
 import { createLocalApiHandler } from '../src/api.js';
+import { serveApi } from '../src/api.js';
+import * as apiExports from '../src/api.js';
 import { addItem as addBoardItem, allShouts, EVENT_LOG_VERSION, closeBoard, events as boardEvents, openBoard, verdictsFor } from '../src/board.js';
 import { presentationShout, relayPresentation } from '../src/relay-presentation.js';
 import { JSON_SHAPES } from '../src/json.js';
 import { projectState, serveView } from '../src/serve.js';
 import { registerProject } from '../src/projects.js';
 import { SSH_SHELL_MARKERS } from '../src/person.js';
-import { fetchFresh } from './http-fixture.js';
+import {
+  apiError,
+  apiFetch,
+  assertRequiredShape,
+  nextSseEvent,
+  timedMs,
+} from './api-fixture.js';
 
 const BIN = resolve(import.meta.dirname, '../bin/pullboard.js');
 const TEMP_DIRS = [];
@@ -45,6 +53,27 @@ const SPEC = `# API fixture
 ## G · Goals
 - G1 [approved, must] The fixture keeps its board. | gate: true
 `;
+
+test('apiBoardListing is exported and matches the board list [A2]', async (t) => {
+  const apiBoardListing = apiExports.apiBoardListing;
+  assert.equal(typeof apiBoardListing, 'function', 'the existing API listing classifier is exported');
+  const box = project();
+  const unreadableRoot = join(box.dir, 'unreadable');
+  mkdirSync(unreadableRoot);
+  const projects = () => [
+    { root: box.repo, name: 'Readable fixture', project: 'API parity', added: '2026-10-23T00:00:00.000Z' },
+    { root: unreadableRoot, name: 'Unreadable fixture', project: 'API parity', added: '2026-10-23T00:00:00.000Z' },
+  ];
+  const api = await serveApi({ runCommand: main, projects });
+  t.after(() => api.close());
+  const address = new URL(api.url);
+  const response = await apiFetch({ origin: address.origin, secret: address.searchParams.get('k') }, '/api/v1/boards');
+  assert.equal(response.status, 200);
+  const listed = await response.json();
+  assert.deepEqual({ version: 1, ...apiBoardListing(projects) }, listed);
+  assert.deepEqual(listed.boards.map(({ root }) => root), [box.repo]);
+  assert.deepEqual(listed.warnings.map(({ root, error }) => [root, error.error.code]), [[unreadableRoot, 'BOARD_UNAVAILABLE']]);
+});
 
 test('[A5] append-only event records expose format version one', () => {
   assert.equal(EVENT_LOG_VERSION, 1);
@@ -247,23 +276,6 @@ function shapeFor(command, subcommand) {
   return JSON_SHAPES.commands[key];
 }
 
-/** Match one catalog field to its declared JSON value type. */
-function hasType(value, type) {
-  if (type.includes('|')) return type.split('|').some((part) => hasType(value, part));
-  if (type === 'array') return Array.isArray(value);
-  if (type === 'object') return value !== null && typeof value === 'object' && !Array.isArray(value);
-  if (type === 'null') return value === null;
-  return typeof value === type;
-}
-
-/** Check one required-field map from JSON_SHAPES. */
-function assertRequiredShape(value, required, label) {
-  for (const [field, type] of Object.entries(required ?? {})) {
-    assert.ok(Object.hasOwn(value, field), `${label} must include ${field}`);
-    assert.ok(hasType(value[field], type), `${label}.${field} must be ${type}`);
-  }
-}
-
 /** Parse a command's sole JSON document and check its public command shape. */
 function json(box, cwd, command, args = [], subcommand) {
   const result = box.run(cwd, command, ...args, '--json');
@@ -413,9 +425,9 @@ test('[A5, A6] a future-schema worktree cannot migrate the shared board; main ca
   assert.ok(migratedFromWorktree.prepare('PRAGMA table_info(item)').all().some((column) => column.name === 'item_files'));
   migratedFromWorktree.close();
 
-  const boardSource = join(linked, 'src/board.js');
+  const schemaSource = join(linked, 'src/board-schema-source.js');
   const migrateSource = join(linked, 'src/board-migrate.js');
-  const oldSource = readFileSync(boardSource, 'utf8');
+  const oldSource = readFileSync(schemaSource, 'utf8');
   const oldMigrations = readFileSync(migrateSource, 'utf8');
   const migration = "  ['shout', 'shout_request_outcome', \"TEXT NOT NULL DEFAULT ''\"],\n];";
   assert.ok(oldSource.includes('export const SCHEMA_VERSION = 3;'));
@@ -423,9 +435,9 @@ test('[A5, A6] a future-schema worktree cannot migrate the shared board; main ca
   const newSource = oldSource.replace('export const SCHEMA_VERSION = 3;', 'export const SCHEMA_VERSION = 4;');
   const newMigrations = oldMigrations.replace(migration, migration.replace('\n];', "\n  ['item', 'item_unmerged_probe', 'INTEGER NOT NULL DEFAULT 0'],\n];"));
   assert.notEqual(newMigrations, oldMigrations, 'the unmerged worktree carries a real schema-4 migration');
-  writeFileSync(boardSource, newSource);
+  writeFileSync(schemaSource, newSource);
   writeFileSync(migrateSource, newMigrations);
-  box.git(linked, 'add', 'src/board.js', 'src/board-migrate.js');
+  box.git(linked, 'add', 'src/board-schema-source.js', 'src/board-migrate.js');
   box.git(linked, 'commit', '-q', '-m', 'feat: simulate an unmerged schema bump');
 
   let before = readFileSync(dbFile);
@@ -811,44 +823,6 @@ async function startApi(t, box, { traceStartup = false, traceFile: requestedTrac
   const secret = parsed.searchParams.get('k');
   assert.ok(secret, 'serve startup exposes its per-session secret in its private URL');
   return { child, document, origin: parsed.origin, secret, stderr: () => stderr };
-}
-
-/** Send one bounded HTTP request to the fixture API on its own connection, authenticating by header unless overridden. */
-function apiFetch(api, path, options = {}) {
-  const { noSecret = false, ...requestOptions } = options;
-  const headers = { ...(noSecret ? {} : { 'x-pullboard-key': api.secret }), ...requestOptions.headers };
-  return fetchFresh(new URL(path, api.origin), { ...requestOptions, headers, signal: requestOptions.signal ?? AbortSignal.timeout(10_000) });
-}
-
-/** The milliseconds one awaited request takes, end to end. */
-async function timedMs(work) { const started = performance.now(); await work(); return performance.now() - started; }
-
-/** Parse and validate a versioned API refusal. */
-async function apiError(response, status) {
-  assert.equal(response.status, status);
-  const document = await response.json();
-  assertRequiredShape(document, JSON_SHAPES.error.required, 'HTTP error envelope');
-  assertRequiredShape(document.error, JSON_SHAPES.errorFields, 'HTTP error');
-  return document.error;
-}
-
-/** Read exactly the next non-comment server-sent event, preserving partial frames across chunks. */
-async function nextSseEvent(reader, pending = { text: '' }) {
-  const decoder = new TextDecoder();
-  while (true) {
-    const boundary = pending.text.indexOf('\n\n');
-    if (boundary >= 0) {
-      const frame = pending.text.slice(0, boundary);
-      pending.text = pending.text.slice(boundary + 2);
-      const id = /^id: (.+)$/m.exec(frame)?.[1];
-      const data = [...frame.matchAll(/^data: (.+)$/gm)].map((match) => match[1]).join('\n');
-      if (id !== undefined && data) return { id, document: JSON.parse(data) };
-      continue;
-    }
-    const { done, value } = await reader.read();
-    assert.equal(done, false, 'the live event stream remains open');
-    pending.text += decoder.decode(value, { stream: true });
-  }
 }
 
 test('[N38] local API and sealed presentation resolve shouts beyond recent state, with complete export history', async (t) => {

@@ -1,3 +1,6 @@
+import { LANDING_LOCAL_PREFIX } from './landing-local-lease.js';
+import { PROOF_COUNTER_PREFIX } from './proof-counters.js';
+import { rebuildProofCounters } from './proof-counters.js';
 /**
  * Export and import whole board files (A7), including their AUTOINCREMENT counters, so a copy can
  * continue producing the same ids after its rows are restored.
@@ -43,6 +46,13 @@ function columnsOf(db, table) {
   return db.prepare(`PRAGMA table_info(${identifier(table)})`).all().map(({ name }) => name);
 }
 
+/** Read native rows without fetching large local proof projections into an export or digest. */
+function nativeRows(db, table) {
+  if (table === 'board_meta') return db.prepare('SELECT * FROM board_meta WHERE (meta_key < ? OR meta_key >= ?) AND meta_key NOT GLOB ? ORDER BY rowid')
+    .all(PROOF_COUNTER_PREFIX, 'local:proof-stats;', LANDING_LOCAL_PREFIX + '*');
+  return db.prepare(`SELECT * FROM ${identifier(table)} ORDER BY ${table === 'sqlite_sequence' ? 'name' : 'rowid'}`).all();
+}
+
 /**
  * Capture every board table and row in the stable v1 document format.
  * @param {{ db: any }} board
@@ -54,7 +64,7 @@ export function exportBoard(board) {
   try {
     const tables = Object.fromEntries(tableNames(db).map((table) => [
       table,
-      db.prepare(`SELECT * FROM ${identifier(table)} ORDER BY ${table === 'sqlite_sequence' ? 'name' : 'rowid'}`).all(),
+      nativeRows(db, table),
     ]));
     db.exec('COMMIT');
     return { version: VERSION, tables };
@@ -72,6 +82,7 @@ export function semanticBoardDigest(document) {
     ...document,
     tables: {
       ...tables,
+      ...(Array.isArray(tables.board_meta) ? { board_meta: tables.board_meta.filter(row => !row.meta_key.startsWith(PROOF_COUNTER_PREFIX) && !row.meta_key.startsWith(LANDING_LOCAL_PREFIX)) } : {}),
       agent: tables.agent.map(({ agent_last_shout_id, ...row }) => row),
     },
   };
@@ -123,7 +134,7 @@ function validateDocument(db, document, names) {
 
 /** Only the generated identity is disposable when restoring a fresh board (A2, A7). */
 function hasOnlyIdentity(db, { baseline = false } = {}) {
-  const rows = db.prepare('SELECT * FROM board_meta').all();
+  const rows = nativeRows(db, 'board_meta');
   const identity = rows.find((row) => row.meta_key === 'board_id');
   const eventLog = rows.find((row) => row.meta_key === 'event_log_version');
   return /^[0-9a-f]{32}$/.test(identity?.meta_value ?? '')
@@ -212,11 +223,12 @@ function restoreDocument(board, document, replace = false, expectedNativeDigest 
   validateDocument(db, document, names);
   db.exec('PRAGMA defer_foreign_keys = ON; BEGIN IMMEDIATE');
   try {
+    const localLanding = db.prepare('SELECT * FROM board_meta WHERE meta_key GLOB ?').all(LANDING_LOCAL_PREFIX + '*');
     let localAgentCursors = null;
     if (expectedNativeDigest !== null) {
       const current = { version: VERSION, tables: Object.fromEntries(names.map((table) => [
         table,
-        db.prepare(`SELECT * FROM ${identifier(table)} ORDER BY ${table === 'sqlite_sequence' ? 'name' : 'rowid'}`).all(),
+        nativeRows(db, table),
       ])) };
       const actual = semanticBoardDigest(current);
       if (actual !== expectedNativeDigest) throw new Refused('RELAY_LOCAL_CHANGED', 'the local board changed before checkpoint restore; its changes were preserved, export them and retry recovery');
@@ -241,6 +253,7 @@ function restoreDocument(board, document, replace = false, expectedNativeDigest 
       const sql = `INSERT INTO ${identifier(table)} (${columns.map(identifier).join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`;
       const insert = db.prepare(sql);
       for (const row of document.tables[table]) {
+        if (table === 'board_meta' && (row.meta_key.startsWith(PROOF_COUNTER_PREFIX) || row.meta_key.startsWith(LANDING_LOCAL_PREFIX))) continue;
         let restored = row;
         if (replace && expectedNativeDigest !== null && table === 'agent' && localAgentCursors.has(row.agent_id)) {
           const localCursor = localAgentCursors.get(row.agent_id);
@@ -256,6 +269,9 @@ function restoreDocument(board, document, replace = false, expectedNativeDigest 
     for (const row of document.tables.sqlite_sequence ?? []) {
       if (!setSequence.run(row.seq, row.name).changes) db.prepare('INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)').run(row.name, row.seq);
     }
+    const restoreLocal = db.prepare('INSERT OR REPLACE INTO board_meta(meta_key,meta_value) VALUES (?,?)');
+    for (const row of localLanding) restoreLocal.run(row.meta_key, row.meta_value);
+    rebuildProofCounters(board);
     for (const { name, sql } of storeTriggers()) db.exec(sql);
     db.exec('COMMIT');
     return { tables: names };

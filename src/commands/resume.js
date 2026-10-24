@@ -201,7 +201,6 @@ export async function resumeHere(io, view, diagnostics = false) {
     };
   });
   card.relayProblems = unlinkedRelayProjects();
-  card.diagnostics = { command: 'pullboard resume --diagnostics' };
   if (diagnostics) {
     card.hookProblems = unwiredHookProblems(root);
     card.newWorktreeLocation = mainRoot
@@ -347,5 +346,6 @@ export async function resumeHere(io, view, diagnostics = false) {
 /** Run `pullboard resume` and return its exit code. */
 export async function run(io, { values }) {
   repoInfo(io.cwd);
-  return resumeHere(io, await keepViewRunning(), Boolean(values.diagnostics));
+  // JSON v1 retains its real diagnostic fields; only the default text card defers them.
+  return resumeHere(io, await keepViewRunning(), Boolean(values.diagnostics || values.json));
 }

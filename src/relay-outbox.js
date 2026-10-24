@@ -161,7 +161,7 @@ export const ITEM_SLOTS = Object.freeze({
   register: [], ensureCoordinator: [], shout: [], passDecision: [], holdLane: [], releaseLane: [],
   moveMilestone: [], editMilestone: [], removeMilestone: [], shipMilestone: [],
   recordRowDecisions: [], applyRowDecisions: [], draftSpecRow: [], recordSpecApprovalBaseline: [],
-  recordLandingBatch: [], recordLandingWaiver: [], recordLandingFlake: [], finishLandingBatch: [],
+  recordLandingBatch: [], recordLandingWaiver: [], recordLandingFlake: [], recordLandingTestDefect: [], finishLandingBatch: [],
   recordHealthFindings: [], decideSentinel: [], beginSentinelRun: [], finishSentinelRun: [],
   recordFlakeObservation: [], recordGateRun: [], declareJob: [], recordJobRun: [], takeCoordinator: [], landingLeaseMove: [],
   ...Object.fromEntries(FIRST_ITEM.map((operation) => [operation, [[0]]])),

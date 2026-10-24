@@ -110,7 +110,7 @@ test('authenticated relay senders bind every move and refusals preserve replica 
   assert.deepEqual(claimOne, claimTwo);
   assert.equal(store.getItem(one, item).item_owner, 'web-1');
 
-  const shout = prepareEngineMove(one, 'shout', [{ from: 'web-1', to: 'all', text: 'authenticated fixture', lanes: ['web'] }], { id: 'valid-shout-after-refusals' });
+  const shout = prepareEngineMove(one, 'shout', [{ from: 'web-1', to: 'coordinator', text: 'authenticated fixture', lanes: ['web'] }], { id: 'valid-shout-after-refusals' });
   const shoutOne = applyRelayMove(one, shout, { sequence: cases.length + 2, at: CLAIM_AT, kind: 'move', sender: agent });
   const shoutTwo = applyRelayMove(two, shout, { sequence: cases.length + 2, at: CLAIM_AT, kind: 'move', sender: agent });
   assert.deepEqual(shoutOne, shoutTwo);
@@ -664,7 +664,21 @@ test('the engine version is the highest feature engine [C7,V4]', () => {
   const source = new URL('../src/', import.meta.url);
   const files = readdirSync(source).filter((file) => /-engine\.js$/u.test(file));
   assert.deepEqual(Object.keys(ENGINE_REGISTRY), files.map((file) => file.slice(0, -'-engine.js'.length)).sort(), 'every src/*-engine.js leaf is a feature engine, discovered by its file name');
-  for (const file of files) assert.match(readFileSync(new URL(file, source), 'utf8'), /^export const [A-Z][A-Z0-9_]*_ENGINE = \d+;$/mu, `${file} declares its one engine constant`);
+  const pending = [], landed = [];
+  for (const file of files) {
+    const text = readFileSync(new URL(file, source), 'utf8');
+    const declarations = text.split('\n').filter(line => /^export const /u.test(line));
+    assert.equal(declarations.length, 1, `${file} declares exactly one engine constant`);
+    const match = /^export const [A-Z][A-Z0-9_]*_ENGINE = (?:(\d+)|unassignedEngine\(\));$/u.exec(declarations[0]);
+    assert.ok(match, `${file} declares a landed number or the native landing placeholder`);
+    if (match[1] !== undefined) landed.push(Number(match[1]));
+    else {
+      assert.ok(text.split('\n').includes("import { unassignedEngine } from './engine-next.js';"), `${file} imports the actual placeholder resolver`);
+      pending.push(file.slice(0, -'-engine.js'.length));
+    }
+  }
+  for (const name of pending) assert.equal(ENGINE_REGISTRY[name], Math.max(0, ...landed) + 1,
+    `${name} resolves to the next landed engine until its own merge assigns a permanent number`);
   assert.doesNotMatch(readFileSync(new URL('machine.js', source), 'utf8'), /Math\.max\([A-Z_]+ENGINE,/u, 'src/machine.js lists no engine by name');
 });
 
@@ -678,4 +692,30 @@ test('a feature engine or command file name outside letters, digits, underscore 
   } finally { rmSync(directory, { recursive: true, force: true }); }
   assert.deepEqual(discovered(['index.js', 'add.js', 'two-words.js'], COMMAND_CANDIDATE, COMMAND_FILE, 'command'), ['add.js', 'two-words.js']);
   assert.throws(() => discovered(['index.js', 'add.js', 'a.b.js'], COMMAND_CANDIDATE, COMMAND_FILE, 'command'), /a\.b\.js cannot be a command/u, 'a dotted command file is refused by name');
+});
+
+
+test('engine 93 item messages replay and older broadcasts keep their recorded meaning [B7,H3,H16]', (t) => {
+  const { copies, item } = engineCopies(t);
+  const [one, two] = copies;
+  const legacy = { ...prepareEngineMove(one, 'shout', [{ from: 'web-1', to: 'all', text: 'old broadcast', lanes: ['web'] }]), engine: 92 };
+  for (const board of copies) applyEngineMove(board, legacy, { sequence: 1, at: CLAIM_AT });
+  assert.equal(store.inbox(one, 'web-2')[0].shout_text, 'old broadcast');
+  const message = prepareEngineMove(one, 'shout', [{ from: 'web-1', to: 'web', item, text: 'item message', lanes: ['web'] }]);
+  assert.throws(() => applyEngineMove(two, { ...message, engine: 92 }, { sequence: 2, at: CLAIM_AT }), /RELAY_MOVE/);
+  const first = applyEngineMove(one, message, { sequence: 2, at: CLAIM_AT });
+  const second = applyEngineMove(two, message, { sequence: 2, at: CLAIM_AT });
+  assert.deepEqual(first, second);
+  assert.equal(store.getShout(one, first.result).shout_to, `item:${item}`);
+  assert.equal(store.getShout(two, second.result).shout_to, `item:${item}`);
+  const report = prepareEngineMove(one, 'shout', [{ from: 'web-1', to: 'all', text: 'new private report', lanes: ['web'] }]);
+  const reports = copies.map(board => applyEngineMove(board, report, { sequence: 3, at: CLAIM_AT }));
+  assert.deepEqual(reports[0], reports[1]);
+  for (const [index, board] of copies.entries()) {
+    assert.equal(store.getShout(board, reports[index].result).shout_to, 'coordinator+person');
+    assert.equal(store.inbox(board, 'web-2').some(shout => shout.shout_text === 'new private report'), false);
+    assert.equal(store.inbox(board, 'coordinator').some(shout => shout.shout_text === 'new private report'), true);
+    assert.equal(store.recentShouts(board).find(shout => shout.shout_text === 'old broadcast').shout_to, 'all',
+      'recorded old broadcast remains global, rather than being reinterpreted by its sender');
+  }
 });

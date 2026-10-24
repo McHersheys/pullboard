@@ -28,7 +28,8 @@ export function verdictsFor(board, id) {
   return verdicts.map((verdict, index) => {
     let detail = {};
     try { detail = JSON.parse(receipts[index]?.event_detail ?? '{}'); } catch { /* Malformed legacy details remain unknown. */ }
-    return { ...verdict, check: detail.check ?? 'unknown', ...(detail.review ? { review: detail.review } : {}) };
+    return { ...verdict, assurance: verdictAssurance(board, verdict), check: detail.check ?? 'unknown', ...(detail.review ? { review: detail.review } : {}),
+      ...(Object.hasOwn(detail, 'environment') ? { environment: detail.environment } : {}) };
   });
 }
 
@@ -41,4 +42,10 @@ export function acceptedVerdict(board, item) {
 /** The exact checked composition for a new acceptance, or the historical submitted candidate. */
 export function checkedLandingCommit(board, item) {
   return acceptedVerdict(board, item)?.review?.head ?? item.item_commit;
+}
+
+/** Old verdicts without an assurance record never acquire independent status from later seat enrollment. */
+export function verdictAssurance(board, verdict) {
+  return board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?')
+    .get(`verdict_assurance:${verdict.verdict_id}`)?.meta_value === 'independent' ? 'independent' : 'procedural';
 }

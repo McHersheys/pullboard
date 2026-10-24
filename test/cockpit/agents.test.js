@@ -152,6 +152,43 @@ test('the agents panel is rows for work and pills for idle [N26]', { timeout: 12
   }
 });
 
+test('the shout feed names a seat broadcast and an item shout in product words [N26,A5]', { timeout: 120_000 }, async (t) => {
+  const executable = chromeExecutable();
+  if (!executable) return t.skip('Install Chrome or set PULLBOARD_CHROME for rendered feed checks.');
+  const box = machine();
+  const alpha = project(box, 'recipients');
+  box.run(alpha.repo, 'add', 'web', 'Header', '--specs', 'G1', '--criterion', 'renders');
+  // A registered seat's shout to all is stored at coordinator+person; an item shout is stored at item:<id>.
+  box.run(alpha.web, 'shout', 'all', 'Seat broadcast for the coordinator');
+  box.run(alpha.web, 'shout', '--item', '1', 'Item shout for its audience');
+  const view = await startView(box);
+  const profile = mkdtempSync(join(tmpdir(), 'pullboard-recipients-chrome-'));
+  let chrome;
+  try {
+    chrome = await openSnapshotChrome(executable, view.link.href, profile);
+    await chrome.waitFor('typeof data !== "undefined" && data?.project?.shouts?.length >= 2');
+    await chrome.click("document.querySelector('[data-tab=shouts]')");
+    await chrome.waitFor('document.querySelectorAll("#feed .shout").length >= 2');
+    for (const width of [1280, 375]) {
+      await shoutsAt(chrome, width, 'light');
+      const at = `${width}px`;
+      const feed = JSON.parse(await chrome.stable(`JSON.stringify({
+        tos: [...document.querySelectorAll('#feed .shout .to')].map((to) => to.textContent),
+        link: document.querySelector('#feed .shout .to a.ref')?.dataset.go ?? null,
+        text: document.querySelector('#feed').innerText }) `));
+      assert.ok(feed.tos.includes('→ coordinator and you'), `${at}: a seat broadcast reads coordinator and you: ${JSON.stringify(feed.tos)}`);
+      assert.ok(feed.tos.includes('→ #1'), `${at}: an item shout reads its id: ${JSON.stringify(feed.tos)}`);
+      assert.equal(feed.link, 'item:1', `${at}: the item id links to the item`);
+      assert.ok(!feed.text.includes('coordinator+person') && !feed.text.includes('item:'), `${at}: no card shows the internal address`);
+    }
+    assert.deepEqual(chrome.exceptions, [], 'the page raises no uncaught exception');
+  } finally {
+    if (chrome) await closeSnapshotChrome(chrome);
+    rmSync(profile, { recursive: true, force: true });
+    await view.stop();
+  }
+});
+
 test('agent model display names follow the API on phone and desktop [O8,N26]', { timeout: 150_000 }, async (t) => {
   const executable = chromeExecutable();
   assert.ok(executable, 'Chrome is required for model-name viewport proof');
@@ -177,6 +214,7 @@ test('agent model display names follow the API on phone and desktop [O8,N26]', {
   box.run(unknown, 'claim', '3');
   box.run(alpha.web, 'shout', 'web-2', 'Known sender and unknown recipient');
   box.run(unknown, 'shout', 'all', 'Unknown sender and a lane-free recipient');
+  box.run(alpha.repo, 'shout', 'all', 'A coordinator broadcast reaches everyone');
   box.run(alpha.repo, 'shout', 'person', 'A model decision', '--decision');
   box.run(alpha.repo, 'hold', 'web', '--reason', 'Wait for the model decision');
   box.run(alpha.repo, 'milestone', 'add', 'Model release', '--items', '1,2,3');

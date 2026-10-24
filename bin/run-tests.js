@@ -16,9 +16,14 @@ import { after, afterEach, beforeEach } from 'node:test';
 import { Worker } from 'node:worker_threads';
 import { randomUUID } from 'node:crypto';
 import { channel } from 'node:diagnostics_channel';
+import {
+  selectedTestResult,
+  testSelectionPatterns,
+} from '../src/test-selection.js';
 import { AGENT_SHELL_MARKERS, SSH_SHELL_MARKERS } from '../src/person.js';
 import { isLandingWorkerIdentityTimeout, landingWorkerIdentityQuery, parseLandingWorkerIdentity } from '../src/landing-worker-identity.js';
 import { foreignNodeOptions, isolateTestMachine } from '../src/test-isolation.js';
+import { TEST_FILE_POOL_ENV, longestFirst, takeTestFileToken, testFilePoolValue } from '../src/test-file-pool.js';
 const runner = fileURLToPath(import.meta.url);
 const LANDING_RUN_ENV = 'PULLBOARD_LANDING_RUN';
 const LANDING_WORKER_STARTS_ENV = 'PULLBOARD_LANDING_WORKER_STARTS';
@@ -228,6 +233,8 @@ function testEnvironment(sandbox, gateMarkers = {}) {
   env.PULLBOARD_MACHINE_HOME = join(sandbox, 'machine');
   // A test finds its runner by this pid, never by parsing ps text; a nested runner sets its own (#1073).
   env.PULLBOARD_TEST_RUNNER_PID = String(process.pid);
+  // #1046: every file of every run takes a token from one machine pool; a nested run keeps its parent's loan.
+  env[TEST_FILE_POOL_ENV] = testFilePoolValue(process.env);
   isolateTestMachine(env, sandbox); // #1068: no settings, resources, runners or host markers of the real machine.
   // init and resume start a background view by default; a test opts back in by deleting this.
   env.PULLBOARD_VIEW_BACKGROUND = '0';
@@ -303,6 +310,15 @@ function runTests(args, env, concurrency) {
     } else selectors.push(argument);
   }
   const reporter = args.some((argument) => argument === '--test-reporter' || argument.startsWith('--test-reporter='));
+  const selectionReporter = [];
+  if (env.PULLBOARD_TEST_SELECTION) {
+    const reporters = placed.filter(argument => /^--test-reporter(?:=|$)/u.test(argument)).length;
+    const destinations = placed.filter(argument => /^--test-reporter-destination(?:=|$)/u.test(argument)).length;
+    if (destinations && destinations !== (reporters || 1)) throw new Error('each --test-reporter requires a matching --test-reporter-destination');
+    if (reporter && !destinations) for (let index = 0; index < reporters; index++) selectionReporter.push('--test-reporter-destination=stdout');
+    if (!reporter && !env.PULLBOARD_TEST_ACTIONS && !destinations) selectionReporter.push('--test-reporter-destination=stdout');
+    selectionReporter.push(`--test-reporter=${fileURLToPath(new URL('../src/test-selection.js', import.meta.url))}`, `--test-reporter-destination=${devNull}`);
+  }
   const nodeArgs = [
     '--disable-warning=ExperimentalWarning',
     '--test',
@@ -311,6 +327,7 @@ function runTests(args, env, concurrency) {
     '--import',
     runner,
     ...placed,
+    ...selectionReporter,
     ...selectors,
   ];
   return spawnSync(process.execPath, nodeArgs, { env, stdio: 'inherit' });
@@ -894,6 +911,7 @@ async function runLandingTests(args, env, concurrency) {
   delete options.selectedFiles;
   const reporterEntries = options.reporters;
   if (process.env.PULLBOARD_TEST_ACTIONS) reporterEntries.push({ reporter: fileURLToPath(new URL('../src/test-action-reporter.js', import.meta.url)), destination: devNull });
+  if (testEnv.PULLBOARD_TEST_SELECTION) reporterEntries.push({ reporter: fileURLToPath(new URL('../src/test-selection.js', import.meta.url)), destination: devNull });
   delete options.reporters;
   const loadedReporters = [];
   for (const entry of reporterEntries) {
@@ -1304,6 +1322,36 @@ function explicitTestFiles(args) {
   return files;
 }
 
+/**
+ * Start the longest test files first, by the last landing's recorded wall times (#1046), so the slowest file
+ * never starts last and holds the run open alone. Options and their values keep their places.
+ *
+ * @param {string[]} args
+ * @returns {Promise<string[]>}
+ */
+async function longestFilesFirst(args) {
+  const at = [];
+  let takesValue = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (takesValue) { takesValue = false; continue; }
+    if (argument === '--') { for (let rest = index + 1; rest < args.length; rest += 1) at.push(rest); break; }
+    if (argument.startsWith('-')) {
+      if (!argument.includes('=')) takesValue = optionTakesValue(argument);
+      continue;
+    }
+    at.push(index);
+  }
+  if (at.length < 2) return args;
+  const { readFileTimes } = await import('../src/landing-shards.js');
+  const times = readFileTimes(process.cwd());
+  if (!Object.keys(times).length) return args;
+  const ordered = longestFirst(at.map(index => args[index]), times, file => relative(process.cwd(), resolve(file)));
+  const result = [...args];
+  at.forEach((index, position) => { result[index] = ordered[position]; });
+  return result;
+}
+
 /** Admit only explicit regular in-root files; directories and uncertain options remain ordinary. */
 function namesOnlyTestFiles(args) {
   let takesValue = false;
@@ -1384,6 +1432,9 @@ function shardArguments(args) {
 /** Run tests in the disposable environment, preserving a marker only when a parent holds the slot. */
 async function executeTests(args, sandbox, gateMarkers, fullSuite, concurrency) {
   const env = testEnvironment(sandbox, gateMarkers);
+  const patterns = testSelectionPatterns(args, optionTakesValue);
+  if (patterns.length) env.PULLBOARD_TEST_SELECTION = join(sandbox, 'selected-tests.json');
+  else delete env.PULLBOARD_TEST_SELECTION;
   // This is an inner file limit; the real machine gate/browser lease remains unchanged.
   env.PULLBOARD_TEST_BROWSER_RESOURCE = 'test-browser-files:' + randomUUID();
   env.PULLBOARD_TEST_BROWSER_CAPACITY = String(concurrency.browser);
@@ -1411,11 +1462,12 @@ async function executeTests(args, sandbox, gateMarkers, fullSuite, concurrency) 
     }
     if (files) selectedArgs = [...args, ...files];
   }
+  selectedArgs = await longestFilesFirst(selectedArgs);
   const result = process.env[LANDING_RUN_ENV] === '1'
     ? await runLandingTests(selectedArgs, env, concurrency)
     : runTests(selectedArgs, env, concurrency);
   if (result.error) throw result.error;
-  return result;
+  return selectedTestResult(result, env.PULLBOARD_TEST_SELECTION, patterns, explicitTestFiles(selectedArgs));
 }
 
 /**
@@ -1486,8 +1538,9 @@ async function main(args) {
     const { GATE_SLOT_HELD_ENV, GATE_SLOT_POOL_ENV, GATE_SLOT_TOKEN_ENV, gateSlotEnvironment, inheritedGateSlot } = await import('../src/resources.js');
     const scopedMarker = process.env[GATE_SLOT_POOL_ENV] || process.env[GATE_SLOT_TOKEN_ENV];
     const legacyHeld = process.env[GATE_SLOT_HELD_ENV] === '1';
-    // A full landing run with landingShards above 1 fans its files out instead of running them here.
-    if (fullSuite && process.env[LANDING_RUN_ENV] === '1' && !shardLabel) {
+    // Shard payloads carry files only; filtered discovery keeps the existing admitted run and its name filter.
+    const filteredByName = testSelectionPatterns(actions.args, optionTakesValue).length > 0;
+    if (fullSuite && process.env[LANDING_RUN_ENV] === '1' && !shardLabel && !filteredByName) {
       const { landingShardCount } = await import('../src/gate.js');
       const count = landingShardCount(process.cwd());
       if (count > 1) {
@@ -1558,13 +1611,15 @@ if (process.argv[1] && resolve(process.argv[1]) === runner) {
   process.env.PULLBOARD_TEST_FILE = process.argv[1];
   (await import('../src/test-action-cache.js')).recordTestAction(process.argv[1]); // #1045: reuse off below; record this file.
   const fileTimes = process.env[LANDING_FILE_TIMES_ENV];
+  let tokenWaitMs = 0;
   // Only this test file reports; anything it starts is not one of the shard's files.
   delete process.env[LANDING_FILE_TIMES_ENV];
   if (fileTimes && process.env.NODE_TEST_CONTEXT === 'child-v8') {
     // One line per test file process: its wall time from start to exit, for the next shard plan.
     const timedFile = relative(process.cwd(), resolve(process.argv[1]));
     process.once('exit', () => {
-      try { appendFileSync(fileTimes, `${JSON.stringify({ file: timedFile, ms: Math.round(process.uptime() * 1000) })}\n`); }
+      // The file's own time, not its wait for a token: the next shard plan weighs work, not this run's queue (#1046).
+      try { appendFileSync(fileTimes, `${JSON.stringify({ file: timedFile, ms: Math.round(process.uptime() * 1000 - tokenWaitMs) })}\n`); }
       catch { /* A missing time only weakens the next shard plan. */ }
     });
   }
@@ -1618,5 +1673,7 @@ if (process.argv[1] && resolve(process.argv[1]) === runner) {
       process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, `--import=${guard.href}`].filter(Boolean).join(' ');
     }
   }
+  // After any browser wait, so a file never holds a core while it queues for a browser (#1046).
+  if (process.env.NODE_TEST_CONTEXT === 'child-v8') tokenWaitMs = await takeTestFileToken();
   if (!landingWorker) installTestWatchdog();
 }

@@ -1,3 +1,4 @@
+import { proofEventDetail } from './proof-event-detail.js';
 /**
  * A corrected bar records why the old one was wrong [B10,B31,R1].
  *
@@ -8,7 +9,7 @@
  * stored, and nothing in the correction record is taken from the move beyond the reason text, so
  * a relay or API caller cannot mark a reject as the bar's.
  */
-import { ENGINE_VERSION } from './machine.js';
+import { ENGINE_VERSION } from './engine-metadata.js';
 import { Refused } from './refused.js';
 
 /** The engine whose edits carry a reason and refuse an unexplained bar correction; older replays never did. */
@@ -90,7 +91,7 @@ export function barStats(history, verdicts, boundary) {
   const of = (agent) => (result[agent] ??= { corrections: 0, barRejects: 0, buildRejects: 0 });
   for (const event of history) {
     if (event.event_kind === 'add') creators.set(event.item_id, event.event_by);
-    const correction = event.event_kind === 'edit' ? JSON.parse(event.event_detail).barCorrection : null;
+    const correction = event.event_kind === 'edit' ? proofEventDetail(event).barCorrection : null;
     if (!correction) continue;
     if (correction.reject) explained.add(correction.reject.verdict);
     if (!inWindow(event.event_at)) continue;

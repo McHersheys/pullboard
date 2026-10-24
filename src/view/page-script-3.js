@@ -17,7 +17,7 @@ function relayProject(root = view.root) {
 async function sendPersonRequest(root, move) {
   if (!requests || snapshot || !readOnly) throw new Error('This view cannot send person requests.');
   if (!relayProject(root)) throw new Error('Person requests through the relay require a linked relay board.');
-  if (!['add', 'shout', 'answer', 'hold', 'spec-approve', 'spec-decline'].includes(move.verb)) throw new Error('Choose a person action from the view controls.');
+  if (!['add', 'shout', 'answer', 'hold', 'spec-approve', 'spec-decline', 'sentinel-approve', 'sentinel-decline'].includes(move.verb)) throw new Error('Choose a person action from the view controls.');
   if (!transport) throw transportLoadError || new Error('The browser transport is still loading.');
   return transport.request(boardPath(root) + '/moves', move);
 }
@@ -32,6 +32,8 @@ function requestLabel(request) {
   if (move?.verb === 'hold') return (args.off ? 'Release ' : 'Hold ') + (args.lane || '') + ' lane' + (!args.off && args.reason ? ': ' + args.reason : '');
   if (move?.verb === 'spec-approve') return 'Approve row ' + (args.ids || '');
   if (move?.verb === 'spec-decline') return 'Decline row ' + (args.ids || '');
+  if (move?.verb === 'sentinel-approve') return 'Approve sentinel ' + (args.name || '');
+  if (move?.verb === 'sentinel-decline') return 'Decline sentinel ' + (args.name || '') + (args.reason ? ': ' + args.reason : '');
   return 'Person request';
 }
 
@@ -201,7 +203,8 @@ async function boardState(root, mark, fresh = null) {
   if (!data) {
     // Names are already known: a slow board must not leave the project picker blank.
     const projects = listed.boards.map((board) => ({ ...board, ok: true, loading: true }));
-    projects.push(...(listed.warnings || []).map((warning) => ({ ...warning, ok: false, error: warning.error.error.message })));
+    projects.push(...(listed.warnings || []).map((warning) => ({ ...warning, ok: false,
+      warningCode: warning.error?.error?.code, error: warning.error?.error?.message || 'This board could not be read.' })));
     data = { root: null, project: null, group: null, projects, groups: projectGroups(projects) };
     renderSide();
     $('project-loading').hidden = projects.length === 0;
@@ -222,7 +225,8 @@ async function boardState(root, mark, fresh = null) {
       return { ...board, ok: false, error: String(error.message || error) };
     }
   }));
-  projects.push(...(listed.warnings || []).map((warning) => ({ ...warning, ok: false, error: warning.error.error.message })));
+  projects.push(...(listed.warnings || []).map((warning) => ({ ...warning, ok: false,
+    warningCode: warning.error?.error?.code, error: warning.error?.error?.message || 'This board could not be read.' })));
   const groups = projectGroups(projects);
   const group = groups.find((entry) => entry.key === root);
   return {

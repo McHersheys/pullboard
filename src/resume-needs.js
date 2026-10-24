@@ -3,7 +3,7 @@ import * as store from './board.js';
 import { pendingFit } from './blueprint-fit.js';
 import { projectFit } from './blueprint-fit.js';
 import { repoInfo } from './git.js';
-import { personNeedsSummary } from './needs-state.js';
+import { personNeedsSummary } from './needs-summary.js';
 import { personNeeds } from './needs.js';
 import { undraftedRigor } from './rigor-notices.js';
 
