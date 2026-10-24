@@ -582,3 +582,37 @@ test('an explicit colliding claim warns but remains available to the builder [N2
   assert.ok(renewed.warnings?.some(warning => warning.includes(`#${a}`) && warning.includes('web/shared.js')),
     'machine-readable claims retain the same warning');
 });
+
+test('next considers other lanes but expired claims never block a file [N2,B4,N20]', (t) => {
+  const { board, builder } = boardFixture();
+  t.after(() => store.closeBoard(board));
+  let at = Date.parse('2026-10-24T00:00:00Z');
+  board.clock = { now: () => new Date(at) };
+  const busy = store.register(board, { lane: 'api', path: '/other-lane', route: 'strong' });
+  const a = store.addItem(board, { by: 'coordinator', lane: 'api', title: 'Another lane changes a shared file',
+    brief: 'Files: src/shared.js' });
+  const b = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Same file in this lane',
+    brief: 'Files: src/shared.js' });
+  const c = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Independent file',
+    brief: 'Files: src/free.js' });
+  store.claim(board, a, { agentId: busy, lane: 'api', leaseMs: HOUR, freeze: FREEZE });
+  assert.equal(store.nextFor(board, { agentId: builder, lane: 'core' }).item.item_id, c,
+    'a live claim in another lane still protects its named file');
+  at += HOUR;
+  assert.equal(store.nextFor(board, { agentId: builder, lane: 'core' }).item.item_id, b,
+    'the exact lease boundary releases that file without changing the stored claim');
+});
+
+test('next leaves a brief without named files in its original order [N2,N20]', (t) => {
+  const { board, builder } = boardFixture();
+  t.after(() => store.closeBoard(board));
+  const busy = store.register(board, { lane: 'core', path: '/busy-unspecified', route: 'strong' });
+  const a = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'An in-flight file',
+    brief: 'Files: src/shared.js' });
+  const b = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'No declared file set',
+    brief: 'Change: investigate the next useful improvement' });
+  store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Later work', brief: 'Files: src/free.js' });
+  store.claim(board, a, { agentId: busy, lane: 'core', leaseMs: HOUR, freeze: FREEZE });
+  assert.equal(store.nextFor(board, { agentId: builder, lane: 'core' }).item.item_id, b,
+    'missing file declarations do not invent a reservation or change selection');
+});
