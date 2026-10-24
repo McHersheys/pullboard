@@ -917,6 +917,47 @@ async function runCells(engine, built, boardCells, report, ineffective) {
   return failures;
 }
 
+test('a forced hosted cell failure captures its final page state without raising its budget [H5,H17,N26]', async t => {
+  assert.ok(hostedEngines().find(engine => engine.name === 'chromium')?.available, 'real Chrome is required');
+  const engine = await openEngine('chromium');
+  t.after(() => engine.close());
+  const built = await buildBoards(t, 'approval', [engine]);
+  t.after(async () => {
+    for (const identity of Object.values(built.revoked)) await identity.context.close();
+  });
+  const cell = cells().find(entry => entry.id === 'board-view/signed-in/paired/approval/fresh');
+  assert.ok(cell, 'the control selects one actual committed matrix cell');
+  // Only this control's fresh contexts hide the seeded chain: the real page, relay and local view still run.
+  const forced = { name: engine.name, async newContext() {
+    const context = await engine.newContext();
+    const open = context.newPage.bind(context);
+    return { ...context, newPage(options) {
+      const hide = `document.addEventListener('DOMContentLoaded', () => {
+        const style = document.createElement('style');
+        style.textContent = '#chain { display: none !important; }';
+        document.head.append(style);
+      }, { once: true });`;
+      return open({ ...options, bootstrap: (options.bootstrap ?? '') + ';' + hide });
+    } };
+  } };
+  const report = [];
+  const failures = await runCells(forced, built, [cell], report, []);
+  assert.deepEqual(Object.keys(failures), [cell.id], 'exactly the selected cell genuinely fails');
+  assert.match(failures[cell.id], /the board did not show within 3000 ms/u, 'the original cell judge still owns the failure');
+  assert.equal(report.length, 1, 'the control does not run another matrix cell');
+  assert.match(failures[cell.id], /PAGE_STATE=/u, 'the actual matrix failure message carries the final page capture');
+  const state = JSON.parse(failures[cell.id].split('PAGE_STATE=')[1]);
+  assert.equal(state.budgetMs, 3000, 'capture never raises the board budget');
+  assert.ok(state.elapsedMs >= state.budgetMs, 'the real forced visit reached the unchanged budget');
+  assert.equal(typeof state.screen, 'string');
+  assert.equal(typeof state.busy, 'boolean');
+  assert.equal(state.chain.present, true, 'the genuine local board still renders its seeded chain');
+  assert.equal(state.chain.visible, false, 'the owned control alone hides that chain');
+  assert.equal(state.chain.hasExpectedItem, true, 'an empty or wrong board is not the control');
+  assert.equal(typeof state.noBoardsYet.visible, 'boolean');
+  assert.match(state.noBoardsYet.text, /No boards yet/u, 'capture records the empty-state text even when hidden');
+});
+
 test('a board awaiting a phone approval is mentioned on a non-phone paired browser [H5]', {
   timeout: 180_000,
 }, async (t) => {
