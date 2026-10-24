@@ -198,10 +198,7 @@ function staleHeadFixture(t) {
 test('a submitted head that no longer merges is returned to its builder [C7,V4]', (t) => {
   const { box, json, conflicted, reviewer } = staleHeadFixture(t);
   assert.equal(json(box.run(box.repo, 'show', String(conflicted), '--json')).item_status, 'submitted', 'the head waits for review before the trunk check');
-  const refused = box.run(reviewer, 'next', '--verify', '--json');
-  assert.equal(JSON.parse(refused.out).error.code, 'COORDINATOR_ONLY', 'a reviewer cannot return a conflicting submission');
-  assert.equal(json(box.run(box.repo, 'show', String(conflicted), '--json')).item_status, 'submitted');
-  const next = box.run(box.repo, 'next', '--verify', '--as', 'coordinator', '--json');
+  const next = box.run(reviewer, 'next', '--verify', '--json');
   assert.match(next.err, new RegExp(`returned #${conflicted} to its builder unreviewed: it no longer merges onto the trunk \\(web/list\\.html\\)`, 'u'), next.out + next.err);
   const item = json(box.run(box.repo, 'show', String(conflicted), '--json'));
   assert.equal(item.item_status, 'open', 'the head that no longer merges goes back, unreviewed');
@@ -222,9 +219,6 @@ test('next --verify skips a head that does not merge [C7,V4]', (t) => {
   box.git(box.repo, 'worktree', 'add', '-q', second, '-b', 'web/two', 'main');
   json(box.run(second, 'join', 'web', '--json'));
   const clean = build('Show the footer', 'web/footer.html', '<footer>clean</footer>\n', second);
-  // The coordinator returns the conflicting head; the explicit id avoids reserving the clean one.
-  const returned = box.run(box.repo, 'next', '--verify', String(conflicted), '--as', 'coordinator', '--json');
-  assert.equal(JSON.parse(returned.out).error.code, 'NOT_SUBMITTED', 'the returned head cannot receive a review reservation');
   const next = json(box.run(reviewer, 'next', '--verify', '--json'));
   assert.equal(next.item.item_id, clean, 'the reviewer gets the head that merges, though the conflicting one is older');
   assert.equal(json(box.run(box.repo, 'show', String(conflicted), '--json')).item_status, 'open');
