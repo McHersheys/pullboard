@@ -1,3 +1,4 @@
+/** @pullboard-test-input source-tree */
 /** A move sends only its own event; one background publisher sends the checkpoint once moves go quiet [H5]. */
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
