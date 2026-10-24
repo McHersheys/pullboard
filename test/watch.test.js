@@ -415,7 +415,25 @@ test('a shout about an item reaches only the people on it [B7,A2,N19]', async (t
     assert.equal(inbox.some((shout) => shout.shout_text === 'only this item needs the message'), index < 2,
       'inbox uses the same item audience as watch and resume');
   }
-  const refused = box.run(outsider.path, 'shout', 'all', 'unnecessary broadcast', '--json');
-  assert.notEqual(refused.status, 0);
-  assert.equal(JSON.parse(refused.stdout).error.code, 'BROADCAST_FORBIDDEN', 'a seat addresses an item or a seat instead of everybody');
+  const coordinatorWatch = startWatch(box, ['--json', '--kinds', 'shout', '--to', 'coordinator']);
+  const personWatch = startWatch(box, ['--json', '--kinds', 'shout', '--to', 'person']);
+  t.after(async () => { await coordinatorWatch.stop(); await personWatch.stop(); });
+  for (const watch of [coordinatorWatch, personWatch]) await watch.note((line) => /following/u.test(line), 10_000, 'coordination audience startup'); // budget: startup hang ceiling, not a latency claim.
+  const sent = box.run(outsider.path, 'shout', 'all', 'a seat reports only to coordination', '--json');
+  assert.equal(sent.status, 0, 'a seat shout to all is accepted under the corrected bar');
+  const privateSequence = lastSequence(box);
+  box.cli(box.root, 'shout', 'all', 'coordinator global delivery barrier');
+  const publicSequence = lastSequence(box);
+  for (const watch of [...watches, coordinatorWatch, personWatch]) await watch.line((line) => JSON.parse(line).sequence === publicSequence, 5_000, 'global barrier after coordination-only shout'); // budget: stream hang ceiling, not a latency claim.
+  for (const watch of watches) assert.equal(watch.out.lines.some(({ line }) => JSON.parse(line).sequence === privateSequence), false,
+    'a seat shout to all is not delivered to any of the three seats');
+  for (const watch of [coordinatorWatch, personWatch]) assert.equal(watch.out.lines.some(({ line }) => JSON.parse(line).sequence === privateSequence), true,
+    'the coordinator and person both receive the accepted seat report');
+  for (const seat of [builder, reviewer, outsider]) {
+    assert.equal(box.cli(seat.path, 'resume').unread, 1, 'only the coordinator global barrier is unread');
+    const inbox = box.cli(seat.path, 'inbox').shouts;
+    assert.equal(inbox.some((shout) => shout.shout_text === 'a seat reports only to coordination'), false);
+    assert.equal(inbox.some((shout) => shout.shout_text === 'coordinator global delivery barrier'), true);
+  }
+  assert.equal(box.cli(box.root, 'inbox').shouts.some((shout) => shout.shout_text === 'a seat reports only to coordination'), true);
 });
