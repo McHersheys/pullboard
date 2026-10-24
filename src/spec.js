@@ -55,6 +55,13 @@ const LEGACY_SIGNER_RE = /^[A-Z][A-Za-z]{1,11}$/;
 const FIELD_NAMES = ['gate', 'serves', 'signers', 'count', 'runs', 'mode', 'files', 'source'];
 const CHECK_FIELDS = ['count', 'runs', 'mode', 'files'];
 
+/** Replace the complete gate field, including check pipelines, while preserving other row fields. */
+export function replaceRowGate(source, gate) {
+  const field = new RegExp(`(\\|\\s*gate\\s*:\\s*)(.*?)(?=\\|\\s*(?:${FIELD_NAMES.join('|')})\\s*:|$)`, 'u');
+  return field.test(source) ? source.replace(field, (_, start, old) => `${start}${gate}${old.match(/\s*$/u)?.[0] ?? ''}`)
+    : `${source.trimEnd()} | gate: ${gate}`;
+}
+
 /**
  * One row's trailing fields, after the text: `| gate: ...`, `| serves: a, b` and `| signers: CO,AB`.
  * A doctrine rule may add `| count: N`, `| runs: nightly`, `| mode: watch` and `| files: <paths>`

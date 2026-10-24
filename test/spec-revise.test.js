@@ -13,6 +13,11 @@ import {
 import { createE2eHelpers } from './e2e-helpers.js';
 import { personNeedsState } from '../src/needs-state.js';
 import { parseSpec } from '../src/spec.js';
+import { loadConfig } from '../src/config.js';
+import {
+  planSpecRevision,
+  validSpecRevision,
+} from '../src/spec-revisions.js';
 
 const fixtures = createE2eHelpers();
 after(fixtures.cleanup);
@@ -57,6 +62,9 @@ test('a proposed change to an approved row waits in Needs you and applies only w
   const decision = history.find(event => event.event_kind === 'row_decision' && JSON.stringify(event).includes(proposal.id));
   assert.ok(decision, 'durable row history identifies the proposal and person decision');
   assert.equal(decision.event_by, 'person', 'the approval history attributes the actual person');
+  box.git(box.repo, 'add', 'SPEC.md');
+  box.git(box.repo, 'commit', '-q', '-m', 'feat: apply the person-approved revision [G1]');
+  box.git(box.web, 'merge', '-q', '--ff-only', 'main');
 
   const approved = readFileSync(file, 'utf8');
   const declined = JSON.parse(succeeds(box.run(box.web, 'spec', 'draft', 'An unwanted replacement.',
@@ -80,6 +88,9 @@ test('a proposed change to an approved row waits in Needs you and applies only w
   succeeds(box.run(box.repo, 'spec', 'apply'));
   assert.equal(row(box, 'G1').status, 'retired', 'the person can approve an explicit status revision');
   assert.ok(!personNeedsState(box.repo).needs.some(entry => [proposal.id, retired.id].includes(entry.id)), 'older applied revisions stay closed after the target gets a newer decision');
+  box.git(box.repo, 'add', 'SPEC.md');
+  box.git(box.repo, 'commit', '-q', '-m', 'feat: apply the person-approved retirement [G1]');
+  box.git(box.web, 'merge', '-q', '--ff-only', 'main');
   assert.notEqual(box.run(box.web, 'spec', 'draft', 'Change a retired row.', '--revises', 'G1', '--reason', 'Not approved.').code, 0);
 
 });
@@ -128,4 +139,27 @@ test('[B23,N39] a real gate rename gives the new path and an exact revision comm
   const output = check.out + check.err;
   assert.match(output, /renamed to test\/new\.test\.js/u);
   assert.ok(output.includes("pullboard spec draft 'The page renders.' --revises 'G1' --gate 'node --test test/new.test.js' --reason 'Gate renamed from test/old.test.js to test/new.test.js.'"));
+});
+
+test('[P6,B23] revision plans preserve omitted fields and refuse formatting-only changes', { timeout: 120_000 }, () => {
+  const box = fixtures.project('true');
+  const file = join(box.repo, 'SPEC.md');
+  const source = readFileSync(file, 'utf8').replace('- G1 [approved, must] The page renders. | gate: web test',
+    '- G1 [approved] The page renders. | gate: check node old | grep ok | count: 0 | serves: G2   ');
+  writeFileSync(file, source);
+  const config = loadConfig(box.repo);
+  const unchanged = { revises: 'G1', reason: 'Explain a change.', taken: [] };
+  assert.throws(() => planSpecRevision(box.repo, config, unchanged), error => error.code === 'SPEC_REVISION' && /unchanged/u.test(error.message));
+  const text = planSpecRevision(box.repo, config, { ...unchanged, text: 'The page renders accessibly.' });
+  assert.equal(text.replacement, text.source.replace('The page renders.', 'The page renders accessibly.'));
+  assert.ok(validSpecRevision(text));
+  const gate = planSpecRevision(box.repo, config, { ...unchanged, gate: 'true' });
+  assert.equal(gate.replacement, gate.source.replace('check node old | grep ok', 'true'));
+  assert.ok(validSpecRevision(gate));
+  const status = planSpecRevision(box.repo, config, { ...unchanged, status: 'retired' });
+  assert.equal(status.replacement, status.source.replace('[approved]', '[retired]'));
+  assert.ok(validSpecRevision(status));
+  assert.equal(validSpecRevision({ ...text, replacement: `${text.replacement} | signers: someone-else` }), false,
+    'a revision payload cannot silently introduce fields outside text, gate and status');
+  assert.equal(readFileSync(file, 'utf8'), source, 'planning never writes the private row file');
 });

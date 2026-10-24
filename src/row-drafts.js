@@ -34,7 +34,7 @@ export { rowDrafts } from './board-query.js';
  */
 export function draftSpecRow(board, { agentId, row, written = false }) {
   if (!agentId || agentId === PERSON) throw new Refused('ROW_DRAFT', 'an agent drafts a row and the person approves it; run pullboard spec draft "<text>" from an agent seat');
-  const needed = written ? ['text'] : row?.revises !== undefined ? ['text', 'tier', 'section'] : ['text', 'gate', 'tier', 'section'];
+  const needed = written ? ['text'] : row?.revises !== undefined ? ['text', 'section'] : ['text', 'gate', 'tier', 'section'];
   if (!row || !/^[A-Z][A-Z0-9]*\d+$/u.test(String(row.id)) || !['spec', 'doctrine', undefined].includes(row.target)
     || needed.some((key) => typeof row[key] !== 'string' || !row[key].trim() || /[\r\n|]/u.test(row[key]))) {
     throw new Refused('ROW_DRAFT', 'a drafted row needs its id and a one-line text, gate, tier and section; run pullboard spec draft "<text>"');

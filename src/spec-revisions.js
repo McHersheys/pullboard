@@ -21,6 +21,7 @@ import { draftRow } from './spec-draft.js';
 import {
   loadSpec,
   parseSpec,
+  replaceRowGate,
   STATUSES,
 } from './spec.js';
 
@@ -40,13 +41,12 @@ export function planSpecRevision(root, config, { revises, text, gate, status, re
   if (!STATUSES.includes(wanted)) throw new Refused('SPEC_REVISION', `unknown status ${wanted}; use one of ${STATUSES.join(', ')}`);
   const nextGate = gate ?? row.gate;
   const nextText = text ?? row.text;
-  let replacement = source.replace(/\[[a-z]+(?=,|\])/u, () => `[${wanted}`)
-    .replace(/(\]\s+)[^|]*/u, (_, start) => `${start}${nextText} `);
-  replacement = /\|\s*gate\s*:/u.test(replacement)
-    ? replacement.replace(/(\|\s*gate\s*:\s*)[^|]*/u, (_, start) => `${start}${nextGate} `)
-    : `${replacement.trimEnd()} | gate: ${nextGate}`;
-  replacement = replacement.trimEnd();
-  if (replacement === source) throw new Refused('SPEC_REVISION', 'the proposed row is unchanged; give new text, gate or status');
+  if (nextText === row.text && nextGate === row.gate && wanted === row.status) throw new Refused('SPEC_REVISION', 'the proposed row is unchanged; give new text, gate or status');
+  let replacement = source;
+  if (wanted !== row.status) replacement = replacement.replace(/\[[a-z]+(?=,|\])/u, () => `[${wanted}`);
+  if (nextText !== row.text) replacement = replacement.replace(/(\]\s+)([^|]*)/u,
+    (_, start, old) => `${start}${nextText}${old.match(/\s*$/u)?.[0] ?? ''}`);
+  if (nextGate !== row.gate) replacement = replaceRowGate(replacement, nextGate);
   const prefix = /^([A-Z][A-Z0-9]*?)\d+(?:\.\d+)*$/u.exec(revises)?.[1];
   const plan = draftRow(root, config, { target: 'spec', text: nextText, gate: nextGate, tier: row.tier, section: prefix, taken, write: false });
   return { ...plan.row, target: 'spec', revises, file: config.spec, source, replacement, status: wanted, reason: reason.trim() };
@@ -68,7 +68,9 @@ export function validSpecRevision(row) {
     && typeof row.reason === 'string' && row.reason.trim() && !/[\r\n|]/u.test(row.reason)
     && before.length === 1 && before[0].status === 'approved' && before[0].id === row.revises
     && after.length === 1 && after[0].id === row.revises && after[0].text === row.text
-    && after[0].gate === row.gate && after[0].status === row.status && row.source !== row.replacement;
+    && after[0].gate === row.gate && after[0].status === row.status && row.source !== row.replacement
+    && [...new Set([...Object.keys(before[0]), ...Object.keys(after[0])])].filter(key => !['text', 'gate', 'status', 'line', 'section'].includes(key))
+      .every(key => JSON.stringify(before[0][key]) === JSON.stringify(after[0][key]));
 }
 
 /** Accept only the exact approved effect of a still-pending board proposal. */
