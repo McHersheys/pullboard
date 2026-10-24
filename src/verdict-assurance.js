@@ -14,11 +14,7 @@ export function reviewAssurance(board, item, reviewer) {
   }) ? 'independent' : 'procedural';
 }
 
-/** Old verdicts without an assurance record never acquire independent status from later seat enrollment. */
-export function verdictAssurance(board, verdict) {
-  return board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?')
-    .get(`verdict_assurance:${verdict.verdict_id}`)?.meta_value === 'independent' ? 'independent' : 'procedural';
-}
+export { verdictAssurance } from './verdict-reviews.js';
 
 /** Insert the immutable native verdict and, under engine 90, its assurance in the same board transaction. */
 export function recordVerdict(board, item, { agentId, decision, reason, note, digest, head }) {

@@ -9,7 +9,7 @@ import { proofEventDetail } from './proof-event-detail.js';
  * stored, and nothing in the correction record is taken from the move beyond the reason text, so
  * a relay or API caller cannot mark a reject as the bar's.
  */
-import { ENGINE_VERSION } from './machine.js';
+import { ENGINE_VERSION } from './engine-metadata.js';
 import { Refused } from './refused.js';
 
 /** The engine whose edits carry a reason and refuse an unexplained bar correction; older replays never did. */
