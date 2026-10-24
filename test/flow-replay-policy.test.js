@@ -150,7 +150,8 @@ test('reviews-first changes a shared seat only above the native submitted thresh
   const input = events(rows.sort((a, b) => a[0] - b[0]));
   const buildsFirst = replayFlow(input, { order: [5, 1, 2, 3, 4], settings: { reviewsFirst: false } });
   const reviewsFirst = replayFlow(input, { order: [5, 1, 2, 3, 4], settings: { reviewsFirst: true } });
-  assert.equal(buildsFirst.replay.items[0].stages.reviewWait, 1);
+  assert.equal(buildsFirst.replay.items[0].stages.reviewWait, 2,
+    'the prioritized item5 uses the one observed review slot at minute2; item1 then starts at3 after submitting at1');
   assert.equal(reviewsFirst.replay.items[0].stages.reviewWait, 0,
     'four submitted items exceed the default3 threshold for one currently active reviewer');
   assert.equal(reviewsFirst.replay.items[4].claimAt, new Date(BASE + 2 * 60_000).toISOString(),
