@@ -140,6 +140,43 @@ test('a new fact id is checked by index across current, legacy and archived fact
   assert.equal(board.db.prepare('SELECT count(*) AS n FROM event').get().n, beforeMalformed + 1, 'failed append has no partial event');
 });
 
+
+test('legacy fact SQL formats preserve parser outcomes [B29,C7]', (t) => {
+  const db = new DatabaseSync(':memory:');
+  t.after(() => db.close());
+  const jsonb = db.prepare("SELECT jsonb(?) AS value").get('{"id":"blob-id","unused":{"tail":123}}').value;
+  const alteredJsonb = Uint8Array.from(jsonb);
+  alteredJsonb[alteredJsonb.length - 1] = 255;
+  const cases = [
+    ['strict text', '{"id":"text-id"}', 'text-id'],
+    ['JSON5 text', "{id:'json5-id',}", 'json5-id'],
+    ['JSON text BLOB', Buffer.from('{"id":"blob-text-id"}'), 'blob-text-id'],
+    ['JSON5 text BLOB', Buffer.from("{id:'blob-json5-id'}"), 'blob-json5-id'],
+    ['native JSONB', jsonb, 'blob-id'],
+    ['missing identity', '{"text":"note"}', null],
+    ['JSON scalar', 'true', null],
+    ['JSON null', 'null', null],
+    ['malformed text', '{broken', undefined],
+    ['malformed BLOB', Buffer.from('{broken'), undefined],
+    ['altered unused JSONB tail', alteredJsonb, 'observe'],
+  ];
+  const observations = [];
+  for (const [format, value, expected] of cases) {
+    const readable = db.prepare('SELECT json_valid(?,10) AS readable').get(value).readable;
+    let result;
+    try { result = { value: db.prepare("SELECT json_extract(?,'$.id') AS id").get(value).id }; }
+    catch (error) { result = { error: error.message, code: error.code, errcode: error.errcode }; }
+    observations.push({ format, readable, result });
+    if (expected === 'observe') continue;
+    if (expected === undefined) assert.match(result.error, /malformed JSON/iu, format);
+    else {
+      assert.equal(result.value, expected, format);
+      assert.equal(readable, 1, `${format}: proposed predicate retains parser-readable legacy values`);
+    }
+  }
+  console.log(JSON.stringify({ sqlite: db.prepare('SELECT sqlite_version() AS version').get().version, legacyFormatObservations: observations }));
+});
+
 after(() => {
   for (const dir of sandboxes) rmSync(dir, { recursive: true, force: true });
 });
