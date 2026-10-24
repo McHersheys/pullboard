@@ -103,9 +103,9 @@ export async function assertNoKilledChromeClone(t) {
     try {
       await waitUntil(() => existsSync(join(profile, 'DevToolsActivePort')), 15_000, 'real Chrome did not publish its private DevTools port');
       if (control) {
-        await new Promise(resolve => setTimeout(resolve, 1_000)); // budget: let the native background clone task start before graceful shutdown drains it.
-        await gracefulClose(profile, launched);
+        // Chrome may skip an unstarted clone task during shutdown, so observe creation before asking it to close.
         await waitUntil(() => monitor.created.size > 0, 5_000, 'unflagged native Chrome must create a clone for the control');
+        await gracefulClose(profile, launched);
         assert.deepEqual(monitor.errors, []);
         t.diagnostic(JSON.stringify({ phase: 'unflagged-control', createdClones: monitor.created.size, remainingClones: newChromeClones(before).length }));
         await waitUntil(() => newChromeClones(before).length === 0, 5_000, 'Chromium must clean its own control clone after graceful shutdown');
