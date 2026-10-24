@@ -4,6 +4,7 @@ import { logEvent } from './board-event-log.js';
 import {
   LINE_SETTING_DEFINITIONS,
   validateLineSetting,
+  validateKnownLineSetting,
 } from './queue-settings.js';
 import { LINE_ORDER_ENGINE } from './line-order-engine.js';
 import { LINE_SETTINGS_ENGINE } from './line-settings-engine.js';
@@ -20,7 +21,7 @@ export function lineSettings(board) {
     let value;
     try { value = JSON.parse(row.meta_value); }
     catch { throw new Refused('LINE_SETTING_RANGE', 'a stored line setting is malformed; restore its recorded board value before changing policy'); }
-    validateLineSetting(key, value);
+    validateKnownLineSetting(key, value);
     values[key] = value;
   }
   return values;
