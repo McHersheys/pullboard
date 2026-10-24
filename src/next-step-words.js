@@ -56,6 +56,7 @@ export function personRequestGuidance(message, { caller, leading = false } = {})
 
 /** @type {Readonly<Record<string, string>>} */
 export const NEXT_STEPS = Object.freeze({
+  LINE_WIP_LIMIT: 'review the oldest eligible waiting submission: pullboard next --verify; if none is eligible, ask the coordinator to arrange a reviewer',
   OUTSIDE_NATIVE_BUILD: 'the outside author revises the PR; ask the coordinator to return it, then intake its new exact head',
   CHECK_NO_PROOF: 'strengthen the trusted criterion so it fails before the outside change, then ask the coordinator to refreeze it',
   OUTSIDE_URL: 'use a GitHub issue or pull request URL with owner/repository and its positive number',
@@ -474,6 +475,11 @@ export const NEXT_STEPS = Object.freeze({
   RELAY_ORIGIN: 'set a GitHub origin: git remote add origin https://github.com/<owner>/<repo>.git, then pullboard relay on',
   RELAY_PERSON_ONLY: 'do it as the person from the paired phone or the person\'s own session',
   RELAY_PRESENTATION_PENDING: 'run pullboard status again',
+  AGENT_REPLACED: 'read the takeover named in the refusal; only shout on that exact hand-off item, then continue work from the incoming agent worktree',
+  HANDOFF_WORKTREE: 'join an agent worktree and run pullboard handoff there; the main checkout uses pullboard takeover',
+  HANDOFF_SELF: 'join a different worktree as the incoming agent, then run pullboard handoff --take <id>',
+  HANDOFF_TAKEN: 'read the recorded takeover and ask the incoming agent on the hand-off item before replacing another role',
+  NO_HANDOFF: 'ask the outgoing agent to run pullboard handoff, then read and take the active item it prints',
   RELAY_RECOVERY_HEALTHY: 'replay it normally: pullboard relay',
   RELAY_RECOVERY_PENDING: 'finish the saved recovery: pullboard relay recover --skip <sequence>',
   RELAY_REGISTRATION: 'create the seat again from its creating seat\'s checkout, or from the main checkout: pullboard worktree <lane> --model "<model name>"',

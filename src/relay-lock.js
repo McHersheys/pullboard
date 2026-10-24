@@ -107,7 +107,7 @@ export async function locked(file, work, io) {
   const token = randomUUID();
   try {
     while (!(takeLease(lease, token) && takeDirectory(lock))) {
-      if (Date.now() >= deadline) throw new Refused('RELAY_BUSY', `another worktree was still sending this board after ${Math.round((Date.now() - startedAt) / 1000)} s; nothing was lost, so run the command again`);
+      if (Date.now() >= deadline) throw new Refused('RELAY_BUSY', `another worktree was still sending this board after ${Math.round((Date.now() - startedAt) / 1000)} s; this attempt was not recorded; run the command again`);
       if (io?.err && Date.now() >= nextProgress) {
         nextProgress = Date.now() + progressEvery;
         io.err(`pullboard: waiting for another worktree to finish sending this board (${Math.round((Date.now() - startedAt) / 1000)} s of ${Math.round((deadline - startedAt) / 1000)} s)`);
