@@ -46,6 +46,7 @@ export function withGitReadFacts(work) {
 /** Reuse facts within one CLI invocation, while isolating concurrent commands and expiring settled ones.
  *
  * @param {() => unknown} work
+ * @param {{ resumeSources?: boolean }} [options] permit pinned source facts only for an explicit resume scope
  * @returns {Promise<unknown>}
  */
 export async function withGitFacts(work, { resumeSources = false } = {}) {
@@ -59,6 +60,12 @@ export async function withGitFacts(work, { resumeSources = false } = {}) {
   });
   // CLI authority must always use fresh Git facts, even when invoked from an API read callback.
   return gitReadFacts.getStore() === true ? gitReadFacts.run(null, run) : run();
+}
+
+/** Set the already parsed command intent before its first repository lookup, without creating a new cache. */
+export function setResumeSourceFacts(enabled) {
+  const cache = gitFacts.getStore();
+  if (cache?.active) cache.resumeSources = enabled === true;
 }
 
 /** Drop facts after this command changes Git state such as refs, configuration, or worktrees. */

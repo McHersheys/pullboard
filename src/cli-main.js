@@ -255,7 +255,7 @@ export async function main(argv, streams) {
   // Version and help ask Git nothing, so they never load it.
   if (asksGitNothing(argv)) return runMain(argv, streams);
   const { withGitFacts } = await import('./git.js');
-  return withGitFacts(() => runMain(argv, streams), { resumeSources: argv[0] === 'resume' });
+  return withGitFacts(() => runMain(argv, streams));
 }
 
 /** Parse and execute one CLI command, binding its checkout session and Git-fact scope. */
@@ -279,6 +279,7 @@ async function runMain(argv, streams) {
     needsRepo = !(parsed.values.help || parsed.values.version || command === 'help' || command === 'version');
   } catch { sync = false; needsRepo = false; }
   const git = needsRepo ? await import('./git.js') : null;
+  git?.setResumeSourceFacts(parsed?.positionals[0] === 'resume');
   if (parsed) {
     try {
       // Checkout identity supplies the display role even if a person-channel check refuses first.

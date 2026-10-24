@@ -147,6 +147,9 @@ test('ordinary resume reads its indexed work card with at most four Git processe
   assert.deepEqual(card.stale, []);
   assert.equal(typeof card.newWorktreeLocation, 'string');
   assert.equal(typeof card.next, 'string');
+  const leading = resetAndCount(box, box.worker, '--json', 'resume');
+  assert.ok(leading.count <= 4, `flag-leading resume started ${leading.count} Git processes`);
+  assert.equal(JSON.parse(leading.result.stdout).me.id, card.me.id, 'global flags before the parsed command retain the same resume card');
   mkdirSync(join(box.worker, 'src'), { recursive: true });
   writeFileSync(join(box.worker, 'src/ahead.txt'), 'real branch divergence\n');
   box.git(box.worker, 'add', 'src/ahead.txt');
