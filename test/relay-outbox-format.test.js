@@ -37,4 +37,15 @@ test('legacy numeric outboxes remain readable and an old reader refuses new resu
   assert.equal((await readOutbox(file, key, board)).version, 2);
   await assert.rejects(old.readOutbox(file, key, board), error => error.code === 'RELAY_OUTBOX',
     'the actual old reader refuses the new local format instead of silently ignoring result paths');
+  const numeric = { ...legacy, moves: [{ move: { id: 'outside', operation: 'intakeOutside' },
+    created: [{ resultPath: [], item: 9 }] }] };
+  await writeOutbox(file, key, board, numeric);
+  assert.equal((await readOutbox(file, key, board)).version, 2,
+    'a non-add creator uses the new format even when its item result is numeric');
+  await assert.rejects(old.readOutbox(file, key, board), error => error.code === 'RELAY_OUTBOX');
+  const queued = { ...legacy, moves: [{ move: { id: 'queued-outside', operation: 'intakeOutside' } }] };
+  await writeOutbox(file, key, board, queued);
+  assert.equal((await readOutbox(file, key, board)).version, 2,
+    'the initial queued creator is fenced before a local result has been captured');
+  await assert.rejects(old.readOutbox(file, key, board), error => error.code === 'RELAY_OUTBOX');
 });
