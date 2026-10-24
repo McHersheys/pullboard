@@ -22,6 +22,8 @@ import {
 import { Refused } from './refused.js';
 import { mainPolicy } from './trusted-policy.js';
 
+const SANDBOX_CONTAINER_HOME = '/home/sandbox';
+
 /** Await the owned client while native physical-admission heartbeats remain live. */
 function client(executable, args, options) {
   return new Promise(resolve => {
@@ -82,8 +84,8 @@ async function container(runtime, environment, directory, image, source, stage, 
   const args = ['run', '--pull', 'never', '--name', name, '--cidfile', cid, '--network', 'none', '--read-only',
     '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '256', '--memory', '2g', '--cpus', '2',
     '--user', '1000:1000', '--tmpfs', '/work:rw,nosuid,nodev,size=1073741824,mode=1777',
-    '--tmpfs', '/home/sandbox:rw,nosuid,nodev,size=67108864,mode=1777', '--tmpfs', '/tmp:rw,nosuid,nodev,size=268435456,mode=1777',
-    '--env', 'HOME=/home/sandbox', '--env', 'PATH=/usr/local/bin:/usr/bin:/bin', '--label', `pullboard.sandbox.stage=${stage}`,
+    '--tmpfs', `${SANDBOX_CONTAINER_HOME}:rw,nosuid,nodev,size=67108864,mode=1777`, '--tmpfs', '/tmp:rw,nosuid,nodev,size=268435456,mode=1777',
+    '--env', `HOME=${SANDBOX_CONTAINER_HOME}`, '--env', 'PATH=/usr/local/bin:/usr/bin:/bin', '--label', `pullboard.sandbox.stage=${stage}`,
     '--mount', `type=bind,source=${source},target=/source,readonly`, '--workdir', '/work', image,
     '/bin/sh', '-eu', '-c', 'cp -R /source/. /work/; cd /work; ' + command];
   let result;
