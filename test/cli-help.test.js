@@ -77,10 +77,10 @@ test('command help forms and flags match the declaration, with a full list only 
   for (const name of resultCommands()) assert.ok(HELP.commands[name], `result command ${name} has a help declaration`);
   assert.deepEqual(HELP.commands.whoami.usages, ['pullboard whoami']);
   assert.deepEqual(HELP.commands.lanes.usages, ['pullboard lanes']);
-  assert.deepEqual(HELP.commands.status.usages, ['pullboard status']);
+  assert.deepEqual(HELP.commands.status.usages, ['pullboard status [--all]']);
   for (const name of ['whoami', 'lanes', 'status']) {
     const usages = run('help', name).stdout.match(/^Usage:.*$/gmu);
-    assert.deepEqual(usages, [`Usage: pullboard ${name}`]);
+    assert.deepEqual(usages, [`Usage: pullboard ${name}${name === 'status' ? ' [--all]' : ''}`]);
   }
   const mustHaveFlags = [
     ['spec signoff', ['--note', '--note-file <file>']],

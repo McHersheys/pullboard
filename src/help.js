@@ -338,7 +338,7 @@ const HELP_ALIASES = {
   lanes: { usage: 'pullboard lanes', source: 'whoami' },
   agents: { usage: 'pullboard agents', source: 'whoami' },
   lane: { usage: 'pullboard lane add <name> --owns <path>[,<path>]', source: 'lane add' },
-  status: { usage: 'pullboard status', source: 'whoami' },
+  status: { usage: 'pullboard status [--all]', source: 'whoami' },
   done: { usage: 'pullboard done <id>', source: 'submit <id>' },
   inbox: { usage: 'pullboard inbox', source: null },
   'check accept': { usage: 'pullboard check accept <id>', source: 'check accept' },
@@ -389,6 +389,10 @@ const HELP_FLAG_EXPLANATIONS = {
 
 /** Lines a command's own help adds after its example. */
 const HELP_NOTES = {
+  status: [
+    'Counts include live, idle and gone identities; plain text lists only live and idle seats.',
+    '--all includes gone seats. JSON retains the full identity history and presence counts.',
+  ],
   resume: [
     'Ordinary resume reads the current work card and recorded health without running diagnostics or watches.',
     'Use --diagnostics explicitly for setup, hooks, dirty files and stale-work checks.',
