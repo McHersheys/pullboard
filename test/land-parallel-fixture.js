@@ -21,8 +21,8 @@ function observeGates(box) {
     "const fs = require('node:fs');",
     `const trace = ${JSON.stringify(trace)}; const armed = ${JSON.stringify(armed)};`,
     "if (!fs.existsSync(armed) || process.argv.includes('--alone')) return;",
-    "const root = process.cwd(); const pid = process.pid;",
-    "const mark = phase => fs.appendFileSync(trace, JSON.stringify({ phase, root, pid, at: Date.now() }) + '\\n');",
+    "const root = process.cwd(); const pid = process.pid; const files = fs.readdirSync(root + '/web').filter(name => /^land-[0-9]+\\.test\\.js$/.test(name)).sort();",
+    "const mark = phase => fs.appendFileSync(trace, JSON.stringify({ phase, root, pid, files, at: Date.now() }) + '\\n');",
     "mark('start'); process.on('exit', () => mark('end'));",
     // Budget: a deterministic rendezvous ceiling, not a performance requirement. Serial code exits
     // this barrier without a peer and is rejected by the parent’s overlap assertion.
@@ -96,7 +96,8 @@ export function assertParallelLanding({ landProject, itemWorktree, submitItem, a
     if (enabled) {
       assert.ok(maximum >= 2, 'candidate gates execute concurrently in distinct worktrees');
       const starts = rows.filter(row => row.phase === 'start');
-      assert.ok(starts.length >= 3, 'the A, A+B and A+B+C prefixes all execute');
+      const sets = starts.map(row => row.files.join(','));
+      for (const wanted of ['land-1.test.js', 'land-1.test.js,land-2.test.js', 'land-1.test.js,land-2.test.js,land-3.test.js']) assert.ok(sets.includes(wanted), `the exact prefix executes: ${wanted}`);
     } else assert.equal(maximum, 1, 'the default serial behavior remains serial');
   }
 }
