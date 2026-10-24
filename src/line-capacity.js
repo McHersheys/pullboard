@@ -18,7 +18,7 @@ export function lineCapacitySnapshot(board, { windowMinutes = 60 } = {}) {
   const reviewers = board.db.prepare(`SELECT DISTINCT event_by FROM event JOIN agent ON agent_id=event_by
     WHERE event_kind IN ('reserve','accept','reject','verify') AND event_at>=? AND event_at<=?`).all(window.since, window.until);
   const pending = board.db.prepare(`SELECT item.*, MAX(event.event_id) AS submitted_order FROM item
-    JOIN event ON event.item_id=item.item_id AND event_kind='submit' WHERE item_status='submitted'
+    LEFT JOIN event ON event.item_id=item.item_id AND event_kind='submit' WHERE item_status='submitted'
     GROUP BY item.item_id ORDER BY submitted_order, item.item_id`).all();
   const building = board.db.prepare("SELECT COUNT(*) AS count FROM item WHERE item_status='claimed' AND item_lease_until>?").get(window.until).count;
   return { ...window, activeReviewers: Math.max(reviewers.length, 1), pending, building, wip: pending.length + building };

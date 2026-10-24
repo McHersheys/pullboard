@@ -112,3 +112,19 @@ test('the total cap covers builds and submitted work together without rounding a
   assert.throws(() => f.claim(fourth, f.reviewer), { code: 'LINE_WIP_LIMIT' });
   assert.equal(store.getItem(f.board, fourth).item_status, 'open');
 });
+
+test('legacy submissions without recorded submit history still consume native WIP [N2,H16]', t => {
+  const f = fixture(t), waiting = f.submit();
+  const original = store.events(f.board, { itemId: waiting });
+  const legacy = exportBoard(f.board);
+  // Model a legacy imported snapshot, preserving the original private board and all its receipts.
+  legacy.tables.event = legacy.tables.event.filter(row => !(row.item_id === waiting && row.event_kind === 'submit'));
+  const replica = store.openBoard(join(f.root, 'legacy.sqlite'), f.board.clock);
+  t.after(() => store.closeBoard(replica));
+  importBoard(replica, legacy);
+  const snapshot = lineCapacitySnapshot(replica);
+  assert.equal(snapshot.wip, 1);
+  assert.equal(snapshot.pending[0].item_id, waiting);
+  assert.equal(snapshot.pending[0].submitted_order, null, 'missing history is unknown, never an invented submit time');
+  assert.deepEqual(store.events(f.board, { itemId: waiting }), original);
+});
