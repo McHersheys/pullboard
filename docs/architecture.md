@@ -81,6 +81,7 @@ Everything durable lives on one volume at `/data`: `auth.sqlite`, then `devices.
 | `device_session` | `boards/devices.sqlite` | Per signed-in browser session: account, session id, the paired device it belongs to, and its expiry, so a revoked device's sessions are refused. | Its expiry; expired rows are deleted whenever a session is recorded. |
 | `wrapped_key` | `boards/devices.sqlite` | Per phone and board: the board key, encrypted to that phone's public key, and the engine version. | The device is revoked or the board deleted. A board that expires idle leaves its wraps behind. |
 | `enrollment` | `boards/devices.sqlite` | A pending phone pairing: account, locator, expiry, and the phone's signed public enrollment (device id, public key, label, created time, MAC). | Deleted once the machine accepts it, or after it expires at 10 minutes. |
+| `person_enrollment` | `boards/devices.sqlite` | Per new-device challenge: account, nonce, device, expiry, the person-signed challenge payload, whether it was used, and the opaque board-key wrap once a trusted machine released it. The relay cannot open the wrap. | No deletion path yet; a used or expired challenge stays as a row. |
 | `phone_approval` | `boards/devices.sqlite` | Per request: id, account, publishing board, board, device, action, machine, expiry, the context in clear, the sealed intent, its state and the phone's sealed reply. | No deletion path; expired requests are marked expired. |
 | `journal_meta` | `boards/<board>.journal.sqlite` | The board id and the journal format. | The board is deleted or expires. |
 | `journal_head` | `boards/<board>.journal.sqlite` | The latest sequence number and the time of the last move or request. | The board is deleted or expires. |
@@ -142,6 +143,6 @@ Agents on a machine share what is on disk. Every agent runs as the same operatin
 
 Revoking a phone stops new wraps and deletes its stored ones, and the board keys it already received stay usable to whoever holds them. Board key rotation is a separate step.
 
-Some rows have no deletion path: `relay_users`, `relay_action_grants`, `phone_approval` and the `device` tombstones. A board that expires for inactivity leaves its `wrapped_key` rows behind.
+Some rows have no deletion path: `relay_users`, `relay_action_grants`, `phone_approval`, `person_enrollment` and the `device` tombstones. A board that expires for inactivity leaves its `wrapped_key` rows behind.
 
 RFC 0004 describes keeping the board key in the operating system's keychain. The code keeps it in a mode-600 file and moves any older keychain copy into that file (`src/relay-key.js`).
