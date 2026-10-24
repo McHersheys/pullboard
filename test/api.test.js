@@ -425,9 +425,9 @@ test('[A5, A6] a future-schema worktree cannot migrate the shared board; main ca
   assert.ok(migratedFromWorktree.prepare('PRAGMA table_info(item)').all().some((column) => column.name === 'item_files'));
   migratedFromWorktree.close();
 
-  const boardSource = join(linked, 'src/board.js');
+  const schemaSource = join(linked, 'src/board-schema-source.js');
   const migrateSource = join(linked, 'src/board-migrate.js');
-  const oldSource = readFileSync(boardSource, 'utf8');
+  const oldSource = readFileSync(schemaSource, 'utf8');
   const oldMigrations = readFileSync(migrateSource, 'utf8');
   const migration = "  ['shout', 'shout_request_outcome', \"TEXT NOT NULL DEFAULT ''\"],\n];";
   assert.ok(oldSource.includes('export const SCHEMA_VERSION = 3;'));
@@ -435,9 +435,9 @@ test('[A5, A6] a future-schema worktree cannot migrate the shared board; main ca
   const newSource = oldSource.replace('export const SCHEMA_VERSION = 3;', 'export const SCHEMA_VERSION = 4;');
   const newMigrations = oldMigrations.replace(migration, migration.replace('\n];', "\n  ['item', 'item_unmerged_probe', 'INTEGER NOT NULL DEFAULT 0'],\n];"));
   assert.notEqual(newMigrations, oldMigrations, 'the unmerged worktree carries a real schema-4 migration');
-  writeFileSync(boardSource, newSource);
+  writeFileSync(schemaSource, newSource);
   writeFileSync(migrateSource, newMigrations);
-  box.git(linked, 'add', 'src/board.js', 'src/board-migrate.js');
+  box.git(linked, 'add', 'src/board-schema-source.js', 'src/board-migrate.js');
   box.git(linked, 'commit', '-q', '-m', 'feat: simulate an unmerged schema bump');
 
   let before = readFileSync(dbFile);

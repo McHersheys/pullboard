@@ -11,7 +11,7 @@
 import {
   ENGINE_VERSION,
   SUBMITTED_CONFLICT_ENGINE,
-} from './machine.js';
+} from './engine-metadata.js';
 import { Refused } from './refused.js';
 
 import { CONFLICT_ENGINE } from './trunk-conflict-engine.js';

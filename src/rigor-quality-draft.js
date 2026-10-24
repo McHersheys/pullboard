@@ -17,15 +17,6 @@ import {
 } from './rigor-quality.js';
 import { draftRow } from './spec-draft.js';
 
-/** The flags these commands add to the CLI's option table. */
-export const QUALITY_OPTIONS = {
-  base: { type: 'string' },
-  head: { type: 'string' },
-  rule: { type: 'string' },
-  budget: { type: 'string' },
-  'draft-quality': { type: 'boolean' },
-};
-
 /** The source a drafted quality row carries, so a rerun finds it whatever the person decided. */
 export function qualitySource(key) {
   return `rigor-quality:${key}`;
