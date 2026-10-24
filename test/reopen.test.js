@@ -11,6 +11,7 @@ import * as store from '../src/board.js';
 import { appliedSequence, applyRelayMove, engineReceipt, prepareEngineMove } from '../src/engine.js';
 import { exportBoard, importBoard } from '../src/exchange.js';
 import { ENGINE_VERSION } from '../src/machine.js';
+import { QUOTED_LANDING_FAILURE_ENGINE } from '../src/quoted-landing-failure-engine.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { unpackRelease } from './release-archive.js';
 
@@ -297,7 +298,6 @@ test('a reopen note can cite a test whose name contains a semicolon [V2,V6,H16]'
   try {
     move = prepareEngineMove(moveBoard, 'reopen', [item.id, { agentId: 'coordinator', note }]);
     assert.equal(move.args[1].quotedLandingFailure, true);
-    const { QUOTED_LANDING_FAILURE_ENGINE } = await import('../src/machine.js');
     assert.ok(move.engine >= QUOTED_LANDING_FAILURE_ENGINE);
   }
   finally { store.closeBoard(moveBoard); }
@@ -306,7 +306,7 @@ test('a reopen note can cite a test whose name contains a semicolon [V2,V6,H16]'
   try {
     importBoard(markedReplica, snapshot);
     const beforeOldFloor = exportBoard(markedReplica);
-    assert.throws(() => applyRelayMove(markedReplica, { ...move, engine: move.engine - 1 }, {
+    assert.throws(() => applyRelayMove(markedReplica, { ...move, engine: QUOTED_LANDING_FAILURE_ENGINE - 1 }, {
       sequence: 1, at: '2026-10-24T12:00:00.000Z', kind: 'move',
       sender: { kind: 'agent', userId: 'fixture-user', agent: 'coordinator' },
     }), (error) => error.code === 'RELAY_MOVE');
