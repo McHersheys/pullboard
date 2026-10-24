@@ -26,7 +26,7 @@ test('a relink after relay off seals moves with the new key [H15,H17]', async t 
   const key = decodeBoardKey(readFileSync(join(box.env.PULLBOARD_HOME, 'relay-keys', linked.board + '.key'), 'utf8').trim());
   assert.equal((await box.cli('shout', 'all', 'after explicit relink')).code, 0);
   const move = box.moveAcks.at(-1);
-  const binding = { boardId: linked.board, kind: 'move', sequence: move.sequence };
+  const binding = { boardId: linked.board, kind: 'move', sequence: move.event_id };
   const opened = await unseal(key, Buffer.from(move.sealed, 'base64url'), binding);
   assert.equal(JSON.parse(new TextDecoder().decode(opened)).operation, 'shout');
   await assert.rejects(unseal(oldKey, Buffer.from(move.sealed, 'base64url'), binding), { code: 'SEAL_AUTH_FAILED' });
@@ -72,7 +72,7 @@ test('relink snapshots actual local queued effects and retains old encrypted obl
   const cli = fileURLToPath(new URL('../bin/pullboard.js', import.meta.url));
   writeFileSync(join(box.env.PATH, 'pullboard'), `#!/bin/sh\nexec node "${cli}" "$@"\n`, { mode: 0o700 });
   runFixtureGit(['add', 'pullboard.json'], { cwd: box.root, env: box.env });
-  runFixtureGit(['commit', '-q', '-m', 'private relay outbox configuration'], { cwd: box.root, env: box.env });
+  runFixtureGit(['commit', '-q', '-m', 'chore(config): queue relay moves while offline [H17]'], { cwd: box.root, env: box.env });
   await box.link();
   const old = JSON.parse(readFileSync(box.linkFile, 'utf8'));
   await box.stopRelay();
@@ -107,7 +107,7 @@ test('the native receiver refuses an old-key move on the fresh relinked board [H
   const key = decodeBoardKey(readFileSync(join(box.env.PULLBOARD_HOME, 'relay-keys', link.board + '.key'), 'utf8').trim());
   const prior = box.moveAcks.at(-1);
   const plain = await unseal(key, Buffer.from(prior.sealed, 'base64url'),
-    { boardId: link.board, kind: 'move', sequence: prior.sequence });
+    { boardId: link.board, kind: 'move', sequence: prior.event_id });
   const move = JSON.parse(new TextDecoder().decode(plain));
   move.id = randomUUID();
   move.args[0].text = 'old-key move must never apply';
