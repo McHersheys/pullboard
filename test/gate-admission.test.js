@@ -523,8 +523,13 @@ test('four concurrent runs start only token-owned file processes and keep p95 be
   for (const mode of ['native', 'landing']) await t.test(mode, async scope => {
     const measurement = await measureFileInflation(scope, mode);
     scope.diagnostic('P95_MEASUREMENT=' + JSON.stringify(measurement));
-    assert.ok(measurement.peakFileProcesses <= measurement.cores,
-      `a two-token machine must not spawn files that wait for a token; saw ${measurement.peakFileProcesses}`);
-    assert.ok(measurement.p95 < 2, `p95 process-lifetime ratio ${measurement.p95} must be below2x standalone`); // budget: #1091 requires p95<2x under four concurrent runs.
+    assert.equal(measurement.peakConcurrentRuns, 4, 'all four actual private gate leases overlapped');
+    await scope.test('only token-owned file processes start', () => {
+      assert.ok(measurement.peakFileProcesses <= measurement.cores,
+        `a two-token machine must not spawn files that wait for a token; saw ${measurement.peakFileProcesses}`);
+    });
+    await scope.test('p95 stays below twice standalone', () => {
+      assert.ok(measurement.p95 < 2, `p95 process-lifetime ratio ${measurement.p95} must be below2x standalone`); // budget: #1091 requires p95<2x under four concurrent runs.
+    });
   });
 });

@@ -18,6 +18,7 @@ import { GATE_SLOT_HELD_ENV } from '../src/resources.js';
 import { GATE_SLOT_POOL_ENV } from '../src/resources.js';
 import { GATE_SLOT_TOKEN_ENV } from '../src/resources.js';
 import { BROWSER_SLOT_HELD_ENV } from '../src/resources.js';
+import { testsNeedBrowser } from '../src/browser-admission.js';
 
 const runner = fileURLToPath(new URL('../bin/run-tests.js', import.meta.url));
 
@@ -63,16 +64,19 @@ export async function measureFileInflation(t, mode) {
   writeFileSync(join(root, 'pullboard.json'), JSON.stringify({ testConcurrency: { files: 8, browser: 1 } }));
   const machine = join(root, '.machine');
   mkdirSync(machine);
-  writeFileSync(join(machine, 'settings.json'), JSON.stringify({ gateSlots: 4, browserSlots: 1 }));
+  writeFileSync(join(machine, 'settings.json'), JSON.stringify({ gateSlots: 4, browserSlots: 1,
+    gate: { browserByLaunch: true } }));
   const times = join(root, 'lifetimes.jsonl');
   writeFileSync(times, '');
   const env = { ...process.env, PULLBOARD_MACHINE_HOME: machine, [TEST_FILE_CORES_ENV]: '2',
     PULLBOARD_LANDING_RUN: mode === 'landing' ? '1' : '0', FIXTURE_TIMES: times, FIXTURE_DATA: root };
   // These are independently admitted private fixture runs, with their own pool and no action reuse.
   for (const key of [TEST_FILE_POOL_ENV, GATE_SLOT_HELD_ENV, GATE_SLOT_POOL_ENV, GATE_SLOT_TOKEN_ENV,
-    BROWSER_SLOT_HELD_ENV, 'PULLBOARD_TEST_ACTIONS']) delete env[key];
+    BROWSER_SLOT_HELD_ENV, 'PULLBOARD_TEST_ACTIONS', 'PULLBOARD_TEST_BROWSER_BY_LAUNCH']) delete env[key];
   const files = Array.from({ length: 8 }, (_, n) => 'work-' + n + '.test.js');
   for (const file of files) writeFileSync(join(root, file), workload(file));
+  assert.equal(await testsNeedBrowser(root, files, { byLaunch: true }), false,
+    'the private machine uses supported launch classification for these Git-only files');
   const standalone = [];
   for (const file of files) {
     const result = await awaitNestedRun(runFixtureChildAsync(process.execPath, [runner, file], {
@@ -88,22 +92,26 @@ export async function measureFileInflation(t, mode) {
   }));
   const parents = new Set(runs.map(run => run.child.pid));
   let peakFileProcesses = 0;
+  let peakConcurrentRuns = 0;
   const db = new DatabaseSync(join(machine, 'test-file-pool.sqlite'), { readOnly: true });
+  const resources = new DatabaseSync(join(machine, 'resources.sqlite'), { readOnly: true });
   /** Observe already spawned files, including those blocked in preload; dispatcher PIDs are not file processes. */
   const sample = () => {
     const rows = db.prepare('SELECT pid FROM file_holder UNION SELECT pid FROM file_waiter').all();
     peakFileProcesses = Math.max(peakFileProcesses, rows.filter(row => !parents.has(row.pid)).length);
+    const holders = resources.prepare("SELECT pid FROM holder WHERE name = 'gate'").all();
+    peakConcurrentRuns = Math.max(peakConcurrentRuns, holders.filter(row => parents.has(row.pid)).length);
   };
   const monitor = setInterval(sample, 20); // budget: one private read every 20 ms observes overspawn; this is not a speed threshold.
   let results;
   try { results = await Promise.all(runs.map(run => awaitNestedRun(run))); sample(); }
-  finally { clearInterval(monitor); db.close(); }
+  finally { clearInterval(monitor); db.close(); resources.close(); }
   for (const result of results) assert.equal(result.status, 0, result.failure ?? result.stdout);
   const concurrent = observations(times).filter(row => row.run.startsWith('concurrent-'));
   assert.equal(concurrent.length, 32, 'four runs of all eight real files completed without action reuse');
   const samples = concurrent.map(row => ({ ...row, standaloneMs: alone.get(row.file), ratio: row.lifetimeMs / alone.get(row.file) }));
   const ordered = samples.map(row => row.ratio).sort((a, b) => a - b);
-  return { mode, cores: 2, peakFileProcesses, standalone, standaloneFileLifetimes: Object.fromEntries(alone), samples,
+  return { mode, cores: 2, peakFileProcesses, peakConcurrentRuns, standalone, standaloneFileLifetimes: Object.fromEntries(alone), samples,
     percentile: 'nearest rank: ceil(0.95 * 32)-1', p95: ordered[Math.ceil(0.95 * ordered.length) - 1],
     runs: results.map(result => ({ status: result.status, signal: result.signal, elapsedMs: result.elapsedMs,
       stdout: result.stdout, stderr: result.stderr })) };
