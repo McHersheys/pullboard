@@ -1529,7 +1529,7 @@ function reserveWithin(board, id, { agentId, leaseMs, policy, familyPolicy = 'of
     checks: {
       coordinatorSaysAs: null,
       joined: null,
-      roadmapReadable: null, // Selection reads it before this move; explicit ids need no roadmap.
+      roadmapReadable: null, // Selection reads recorded queue policy and roadmap before this move; explicit ids consult neither.
       [IN_STATE]: (found) => new Refused('NOT_SUBMITTED', `item #${id} is ${current(board, found).item_status}, not submitted`),
       /** Enforce the cooldown after state validation and before reviewer eligibility [V1]. */
       reviewCooldownElapsed: () => {
