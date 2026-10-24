@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** The hosted journeys' routing sets aside only the reads its own navigation orphaned [N40,N26]. */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';

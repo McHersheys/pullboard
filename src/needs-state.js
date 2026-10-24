@@ -37,9 +37,10 @@ export function personNeedsState(root, { board: providedBoard = null, includeRig
     const config = loadConfig(root);
     const state = projectSpecApprovals(projectFit(pendingFit(info.commonDir), projectRowDecisions(decisions, projectState(root, { board }))), specApprovalState(root, { board, config }));
     const rows = projectRowDecisions(decisions, { root, spec: loadSpec(root, config).rows, practice: loadDoctrine(root, config).rows });
-    const rigorDrafts = rigorDraftNeeds(rows);
+    const drafts = store.rowDrafts(board);
+    const rigorDrafts = rigorDraftNeeds(rows, drafts, decisions);
     const projected = { ...state, rigorDrafts, sentinelDrafts: sentinelDraftNeeds(sentinels(board)), blocks: recentBlocks(info.commonDir, board), ...(includeRigorUndrafted
-      ? { rigorUndrafted: undraftedRigor(store.events(board), rows, { person: store.PERSON }) } : {}) };
+      ? { rigorUndrafted: undraftedRigor(store.events(board), rows, { person: store.PERSON, drafts, decisions }) } : {}) };
     return { ...projected, needs: personNeeds(projected) };
   } finally {
     if (!providedBoard) store.closeBoard(board);

@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** One real machine setup reaches current and future projects through one phone key [H5,H15,H17]. */
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';

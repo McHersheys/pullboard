@@ -8,6 +8,7 @@ import * as store from '../src/board.js';
 import { applyRelayMove, prepareEngineMove } from '../src/engine.js';
 import { settingsInventory } from '../src/settings-inventory.js';
 import { createE2eHelpers } from './e2e-helpers.js';
+import { LAND_COLLISION_ENGINE } from '../src/landing-collision-engine.js';
 
 /** A private SQLite board with coordinator and builder identities. */
 function fixture(t) {
@@ -66,7 +67,7 @@ test('the settings inventory exposes board line values and defaults without audi
   } finally {
     for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
   }
-  assert.equal(rows.length, 7);
+  assert.equal(rows.length, 8);
   assert.deepEqual(rows.find(row => row.key === 'line.wipPerReviewer'), { key: 'line.wipPerReviewer', scope: 'board',
     board: store.boardId(board), root: box.repo, value: 2, default: false,
     source: join(box.repo, '.git', 'pullboard', 'board.sqlite'), origin: 'configured' });
@@ -74,4 +75,20 @@ test('the settings inventory exposes board line values and defaults without audi
   assert.equal(rows.find(row => row.key === 'line.reviewsFirst').origin, 'default');
   assert.doesNotMatch(JSON.stringify(rows), /PRIVATE_REASON_CANARY|activeReviewers|reviewMedianMinutes/u);
   assert.equal(store.events(board).length, before, 'inventory is a read, not a line-setting change');
+});
+
+test('collision-free batch policy stays off until a current authenticated coordinator records it [R1,R2,H16]', t => {
+  const board = fixture(t);
+  assert.equal(store.lineSettings(board).collisionFreeBatch, false);
+  const options = change({ key: 'collisionFreeBatch' });
+  const move = prepareEngineMove(board, 'setLineSetting', [options], { id: 'collision-policy', actor: 'coordinator' });
+  const envelope = { sequence: 1, at: '2026-10-24T00:00:00Z', kind: 'move',
+    sender: { kind: 'agent', agent: 'coordinator', userId: 'fixture' } };
+  assert.throws(() => applyRelayMove(board, { ...move, engine: LAND_COLLISION_ENGINE - 1 }, envelope), /RELAY_MOVE/u);
+  assert.equal(store.lineSettings(board).collisionFreeBatch, false);
+  assert.equal(applyRelayMove(board, move, envelope).error, undefined);
+  assert.equal(store.lineSettings(board).collisionFreeBatch, true);
+  assert.throws(() => store.setLineSetting(board, change({ key: 'collisionFreeBatch', value: 1 })), /LINE_SETTING_RANGE/u);
+  store.setLineSetting(board, change({ key: 'collisionFreeBatch', value: false }));
+  assert.equal(store.lineSettings(board).collisionFreeBatch, false);
 });

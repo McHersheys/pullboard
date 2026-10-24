@@ -1,4 +1,5 @@
 /** Read a privacy-safe runner capacity snapshot for one explicit stats window [C7,O5]. */
+import { guiSession } from './gui-session.js';
 import { retainedReceipts } from './gate-receipt.js';
 import { localRunnerDescriptor } from './runner-load.js';
 import {
@@ -24,7 +25,7 @@ function currentRunners(settings, receipts, machineResources) {
   const browserPool = machineResources.find(resource => resource.name === 'browser');
   const localCapacity = gate?.capacity ?? settings.gateSlots;
   const browserCapacity = browserPool?.capacity ?? settings.browserSlots;
-  const local = localRunnerDescriptor(localCapacity, browserCapacity > 0);
+  const local = localRunnerDescriptor(localCapacity, browserCapacity > 0, guiSession());
   const gateHolders = gate?.holders ?? [];
   local.active = gateHolders.some(holder => holder.timing) ? localCapacity
     : gateHolders.filter(holder => holder.slot !== 'short').length;
@@ -34,7 +35,7 @@ function currentRunners(settings, receipts, machineResources) {
     id: runner.host,
     kind: runner.kind ?? 'ssh',
     slots: { current: runner.slots, limit: runner.slots, elastic: false },
-    capabilities: { os: reportedPlatform(receipts, runner.host), browser: runner.browser > 0 },
+    capabilities: { os: reportedPlatform(receipts, runner.host), browser: runner.browser > 0, gui: runner.gui ?? null },
     active: runner.holders.some(holder => holder.timing === 1) ? runner.slots : runner.inUse,
     browserSlots: runner.browser,
     browserActive: runner.browserInUse,

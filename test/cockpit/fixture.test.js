@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** Cockpit fixture checks, using the shared real-board fixtures [N26]. */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
