@@ -1,5 +1,6 @@
 /** General CLI recovery text; operation-owned codes live in src/moves/ [P4,C7]. */
 export const DEFAULT_NEXT_STEPS = Object.freeze({
+  "WHY_GIT": "run pullboard why from inside the repository, with a path that git can read",
   "NESTED_RUN_HANDLE_REQUIRED": "pass the original ChildProcess or fixture promise retaining .child to awaitNestedRun",
   "NESTED_RUN_OFFER_REQUIRED": "start the child with the current spawn export after test-file token admission, then await its original handle",
   "NESTED_RUN_WAIT_REUSED": "await the original returned wait; do not lend the same child a second time",

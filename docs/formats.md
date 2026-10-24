@@ -453,7 +453,7 @@ The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its ap
 | `sentinel-run` | running agent | `name`, `digest`, `run`, `result`, `engine` |
 | `sentinel-failure` | sentinel | `name`, `digest`, `run`, `cause`, `engine` |
 | `pass` | coordinator | `shout`, `to`, `decision`, `request`, `answers` |
-| `answer` | answerer | `shout`, `to`, `decision`, `request`, `answers`, `outcome`, `channel`, engine-20 `implies`, `supersedes` |
+| `answer` | answerer | `shout`, `to`, `decision`, `request`, `answers`, `outcome`, `channel`, engine-20 `implies`, `supersedes`, decision-origin `provenance` |
 | `row_decision` | person | `record`, `channel` |
 | `row_draft` | builder, or rigor | engine-55 `row`, `written` |
 | `flake-observation` | reporting agent | engine-59 `engine`, `observation` |
@@ -570,6 +570,8 @@ Landing queue grants, first queue entries and releases are shared ordered transi
 
 
 Engine 93 adds item-addressed shouts. A shout move's optional `item` names an existing item; its event belongs to that item and includes the message text. Its canonical `shout_to` is `item:<id>`, read by the item's current builder and reviewer and the coordinator. Inbox, resume and seat watch use the same audience; an explicit seat or lane destination with `--item` still uses the item's audience. An item decision is answerable by its current participants or coordinator; replies stay in its thread and audience. The coordinator can still pass it to the person through the existing decision flow. A registered seat's shout to `all` is accepted and stored at reserved address `coordinator+person`, read only by coordination audiences. The plus sign cannot occur in valid lane names or their derived seat ids. Coordinator and person broadcasts retain `all` and reach everyone; recorded older-engine `all` rows retain their original global meaning without a retrospective sender filter. Main-checkout watch remains the person's board-wide observer. A joined seat's default watch filters shouts to its own address, lane, items and `all`, while ordinary lifecycle events remain visible.
+
+The decision-origin engine, numbered at landing, records where an answered decision came from. An `answerDecision` move may carry `origin` (`person-relayed`, `agent` or `inherited`) and `rationale`; either makes it a move of this engine, and an older engine refuses it with `RELAY_MOVE` before changing its board or cursor. From this engine every answer event also records `provenance: {statement, rationale, decidedBy, relayedBy, origin}`. The board sets it, not the caller: a real person answer is `person`, an agent that names no origin is `agent`, and `relayedBy` is the answering seat only for `person-relayed`. An agent naming `person` is refused with `BAD_ORIGIN`. An answer recorded before this engine has no provenance and reads as `unknown`, never as the person's. `pullboard why <file>[:<line>]` lists the items, spec rows and answered decisions behind the landed commits that touched that file or line, found by their `Pullboard-Item: #N` trailers.
 
 ### Outside intake and sandbox receipts
 

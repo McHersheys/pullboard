@@ -6715,6 +6715,8 @@
     "RIGOR_UNPROVEN": "name a check that fails at --red and passes at --green: pullboard rigor draft <key> \"<rule>\" --check \"<command>\" --red <commit> --green <commit>",
     "RIGOR_PERSON_ONLY": "ask the person to mark it from the main checkout: pullboard fact <id> root-cause \"<why>\" --cause <key> --never-again --as person",
     "SANDBOX_BLOCKED": "ask the coordinator to bring it to the person: pullboard shout coordinator \"<what is needed>\" --decision; or run the gate outside the sandbox; keep the tests unchanged",
+    "BAD_ORIGIN": "name where the decision came from with --origin person-relayed, agent or inherited, or leave --origin out",
+    "WHY_GIT": "run pullboard why from inside the repository, with a path that git can read",
     "NOT_YOUR_DECISION": "answer only decisions addressed to you; see pullboard inbox",
     "NO_AGENT": "create and join a lane worktree: pullboard worktree <lane> --model \"<model name>\"",
     "NO_BOARD": "initialize the board in this repository: pullboard init",
@@ -7403,7 +7405,7 @@
           },
           {
             "meta_key": "relay_engine_version",
-            "meta_value": "106"
+            "meta_value": "107"
           },
           {
             "meta_key": "relay_receipt_registry-snapshot-2",
