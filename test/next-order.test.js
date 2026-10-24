@@ -3,6 +3,7 @@ import { submitFixture } from './board-submit-fixture.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as store from '../src/board.js';
+import { workQueue } from '../src/queue.js';
 import { applyEngineMove, applyRelayMove, prepareEngineMove } from '../src/engine.js';
 import { ENGINE_VERSION, MILESTONE_RANK_ENGINE } from '../src/machine.js';
 import { exportBoard, importBoard } from '../src/exchange.js';
@@ -151,7 +152,7 @@ function crossLaneFixture(t) {
   function add(lane, title, route = 'strong') {
     return json(box.run(box.repo, 'add', lane, title, '--specs', lane === 'api' ? 'G2' : 'G1', '--route', route,
       ...(route === 'strong' ? [] : ['--criterion', 'The item can be built and checked from its brief.', '--check', 'true',
-        '--brief', `Files: ${lane}/page.js\nChange: build the fixture item\nTest: the check proves the fixture`]), '--json')).item.item_id;
+        '--brief', `Files: ${lane}/${route}.js\nChange: build the fixture item\nTest: the check proves the fixture`]), '--json')).item.item_id;
   }
   /** Keep the test's queue order explicit without touching a production board. */
   function milestone(name, id) {
@@ -615,4 +616,22 @@ test('next leaves a brief without named files in its original order [N2,N20]', (
   store.claim(board, a, { agentId: busy, lane: 'core', leaseMs: HOUR, freeze: FREEZE });
   assert.equal(store.nextFor(board, { agentId: builder, lane: 'core' }).item.item_id, b,
     'missing file declarations do not invent a reservation or change selection');
+});
+
+test('the queue names the same noncolliding work next can serve [N2,N20]', (t) => {
+  const { board, builder } = boardFixture();
+  t.after(() => store.closeBoard(board));
+  const busy = store.register(board, { lane: 'core', path: '/queue-busy', route: 'strong' });
+  const a = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Already changing a file',
+    brief: 'Files: src/shared.js' });
+  const b = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Must wait for that file',
+    brief: 'Files: src/shared.js' });
+  const c = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Can proceed now',
+    brief: 'Files: src/free.js' });
+  store.claim(board, a, { agentId: busy, lane: 'core', leaseMs: HOUR, freeze: FREEZE });
+  const queue = workQueue(board);
+  assert.equal(queue.first.strong, c, 'queue does not advertise a file collision as available');
+  assert.equal(queue.first.strong, store.nextFor(board, { agentId: builder, lane: 'core' }).item.item_id);
+  assert.ok(queue.unreleased.find(item => item.id === b).waits.some(reason => reason.includes(`#${a}`)
+    && reason.includes('src/shared.js')), 'queue retains the same actionable blocking item and file');
 });
