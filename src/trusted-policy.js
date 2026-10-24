@@ -1,4 +1,9 @@
-import { mainPolicy, policyAt, policyGit, trunkRef } from './trusted-policy-read.js';
+import {
+  mainPolicy,
+  policyAt,
+  policyGit,
+  trunkRef,
+} from './trusted-policy-read.js';
 export { mainPolicy, policyAt, trunkRef } from './trusted-policy-read.js';
 /** Coordinator policy and immutable submission checks cannot come from a builder's candidate [V4,V16,L3,M3]. */
 import { randomUUID } from 'node:crypto';
