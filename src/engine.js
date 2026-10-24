@@ -1,3 +1,5 @@
+import { HANDOFF_ENGINE } from './handoff-engine.js';
+import { requireHandoffActive } from './handoff-state.js';
 import { BAR_READY_ENGINE } from './bar-ready-engine.js';
 import { barReadySetting } from './bar-readiness.js';
 import { ITEM_SHOUT_ENGINE } from './item-shout-engine.js';
@@ -79,7 +81,7 @@ const ITEM_ID_FIRST_ARGUMENT = new Set(['signBar', 'acceptCheck', 'editItem', 'e
 
 /** Only these public board operations may be requested by an encrypted move. */
 export const ENGINE_OPERATIONS = Object.freeze([
-  'setBarReady', 'signBar', 'register', 'ensureCoordinator', 'addItem', 'editItem', 'completeCheckBaseline', 'escalate', 'recordAttempt',
+  'openHandoff', 'takeHandoff', 'setBarReady', 'signBar', 'register', 'ensureCoordinator', 'addItem', 'editItem', 'completeCheckBaseline', 'escalate', 'recordAttempt',
   'claim', 'release', 'submit', 'reserveReview', 'reserveNextReview', 'verify', 'merged',
   'withdraw', 'refreeze', 'reopen', 'shout', 'passDecision', 'answerDecision', 'holdLane', 'releaseLane', 'holdItem', 'releaseItemHold',
   'addMilestone', 'editMilestoneItems', 'orderMilestoneItems', 'moveMilestone', 'editMilestone', 'removeMilestone', 'shipMilestone',
@@ -96,6 +98,7 @@ const OPERATION_ENGINE = Object.freeze({ draftSpecRow: ROW_DRAFT_ENGINE, orderMi
 
 /** Dependency edits, causes, sealed reviews, submission proofs, trunk conflicts, health observations and milestone targets retain distinct recorded engine meanings. */
 function minimumOperationEngine(operation, args, board, at) {
+  if (['openHandoff', 'takeHandoff'].includes(operation)) return HANDOFF_ENGINE;
   if (['setBarReady', 'signBar'].includes(operation) || board && ['claim', 'submit', 'editItem', 'addItem', 'refreeze'].includes(operation) && barReadySetting(board).enabled) return BAR_READY_ENGINE;
   if (operation === 'recordPublishFinding') return PR_BRIDGE_ENGINE;
   if (operation === 'recordLandingTestDefect' || operation === 'verify' && args[1]?.environment !== undefined
@@ -387,6 +390,7 @@ export function applyEngineMove(board, move, { sequence, at, standing = null, en
           if (problem) throw problem;
           // One main checkout coordinates a linked board at a time; another is refused by name (#347).
           requireCoordinatorHold(board, move, standing?.lineage, at);
+          requireHandoffActive(board, relayMoveActor(move), move.operation, move.args);
           return store[move.operation](board, ...executableArgs(move, board));
         });
         const result = standing ? store.withVerifierStanding(board, standing, execute) : execute();

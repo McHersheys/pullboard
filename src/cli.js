@@ -1,3 +1,4 @@
+import { requireHandoffActive } from './handoff-state.js';
 export { barActorForCommand } from './bar-actor.js';
 import {
   barReadinessRequired,
@@ -427,7 +428,6 @@ export async function launchBaseline(ctx, board, id, baseline) {
       baseline: { command: baseline.command, main: baseline.main, result: 'unavailable', reason: 'background worker could not start; set --check again from the coordinator' } }]);
   }
 }
-
 /** Parse an edit's dependency replacement, with the explicit word `none` meaning clear all. */
 export function editAfter(text) {
   if (text === undefined) return undefined;
@@ -438,7 +438,6 @@ export function editAfter(text) {
   }
   return parts.map((part) => idArg(part, 'an item id after --after'));
 }
-
 /**
  * Text a command was given as --<name> "..." or as --<name>-file <file>, or undefined when neither.
  * A file carries text past the shell exactly: backticks, dollar signs and quotes included.
@@ -458,7 +457,6 @@ export function textArg(io, values, name) {
   if (!existsSync(file)) throw new Refused('NO_FILE', `no file ${path}`);
   return readFileSync(file, 'utf8');
 }
-
 /**
  * The brief a command was given, from --brief or --brief-file.
  *
@@ -467,7 +465,6 @@ export function textArg(io, values, name) {
  * @returns {string | undefined}
  */
 export const briefArg = (io, values) => textArg(io, values, 'brief');
-
 /**
  * Verifying from the main checkout files the verdict as the coordinator's (V9). An agent whose
  * shell started there would be taken for the coordinator, so the coordinator says so explicitly
@@ -492,7 +489,6 @@ export function checkMainVerifier(ctx, board, values) {
     reviewerStartup(ctx.info.root, ctx.config, values.verifyId),
   );
 }
-
 /**
  * Select the person actor only through the main checkout's explicit person mode (B26).
  *
@@ -591,11 +587,13 @@ export async function ordered(ctx, board, operation, args) {
           () => store.recordSpecApprovalBaseline(board, ...values))
         : store.recordSpecApprovalBaseline(board, ...values);
     };
-    ensureSpecApprovalCoordinator(ctx, board, initialBaseline);
     const actor = ctx.info.isMain ? COORDINATOR : store.agentAt(board, ctx.info.root)?.agent_id;
+    requireHandoffActive(board, actor, operation, args);
+    ensureSpecApprovalCoordinator(ctx, board, initialBaseline);
+    const write = () => store.atomic(board, () => { requireHandoffActive(board, actor, operation, args); return store[operation](board, ...args); });
     if (initialBaseline && actor) await recordBaseline(actor);
     const result = await withItemSession(ctx.info, operation, args, () => relayLinked(ctx.info.root) || relayRecovered(ctx.info.root)
-      ? relayOperation(ctx.info.root, operation, args, ctx.io, command, () => store[operation](board, ...args)) : store[operation](board, ...args));
+      ? relayOperation(ctx.info.root, operation, args, ctx.io, command, write) : write());
     return result;
   };
   const digest = agentSessionDigest();
