@@ -54,7 +54,7 @@ function normalizedRunner(value, { stage = false } = {}) {
     id: value.id,
     kind: value.kind,
     slots: { current: value.slots.current, limit: value.slots.limit, elastic: value.slots.elastic },
-    capabilities: { os, browser, gui },
+    capabilities: { os, browser, ...(value.capabilities.gui === undefined ? {} : { gui }) },
   };
   normalized.active = value.active;
   if (value.browserSlots !== undefined) Object.assign(normalized, { browserSlots: value.browserSlots, browserActive: value.browserActive });
@@ -214,7 +214,7 @@ function capabilityMatch(runner, requested) {
   for (const key of ['os', 'browser', 'gui']) {
     if (requested[key] === undefined || requested[key] === null) continue;
     if (['browser', 'gui'].includes(key) && requested[key] === false) continue;
-    const actual = runner.capabilities[key];
+    const actual = runner.capabilities[key] ?? null;
     if (actual === null) unknown = true;
     else if (actual !== requested[key]) return 'no';
   }
