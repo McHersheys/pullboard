@@ -128,7 +128,7 @@ test('[B13,B5] releasing another review cannot cancel the builder reservation', 
   const f = fixture(t);
   const id = returned(f, 'reject', 30);
   const another = store.addItem(f.board, { by: 'coordinator', lane: 'core', title: 'review another', route: 'mid',
-    criterion: 'prove', check: 'true', brief: 'Files: src/a.js\nTest: proves another fix' });
+    criterion: 'prove', check: 'true', brief: 'Files: src/unrelated.js\nTest: proves another fix' });
   claim(f, another, f.other);
   submitFixture(f.board, another, { agentId: f.other, commit: COMMIT, tree: COMMIT });
   store.reserveReview(f.board, another, { agentId: f.builder, leaseMs: 1_800_000, policy: 'any' });
