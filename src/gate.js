@@ -4,6 +4,7 @@
  * tree's id in the git dir, so the same tree is never checked twice. An agent sees a digest of the
  * run, not the run (V10): a passing suite's output costs tokens and says nothing.
  */
+import { checkNeedsGui, projectNeedsGui, testsNeedGui } from './gui-admission.js';
 import {
   spawn,
   spawnSync,
@@ -530,16 +531,16 @@ function hasPipeline(command) {
  * hold (gate.memoryFloorMB) holds short slots too, since a short run uses the same machine memory.
  *
  * @param {(lease: { waitMs: number, token?: string, pool?: string, browser?: boolean, slotClass?: 'gate'|'short', release: () => void }) => any | Promise<any>} action - Work to perform while holding a slot.
- * @param {{ landing?: boolean, itemCheck?: boolean, shortEligible?: boolean, diagnostic?: boolean, browser?: boolean, remote?: boolean, agent?: string, item?: string|number, kind?: string, onWait?: (state: object) => void, onReceipt?: (receipt: object) => void, readMemory?: typeof readMachineMemory }} [options] - Queue class, short-slot eligibility, remote eligibility, progress reporter, the run's receipt once its slot is released (#836) and, for tests, the machine memory reader.
+ * @param {{ landing?: boolean, itemCheck?: boolean, shortEligible?: boolean, diagnostic?: boolean, browser?: boolean, gui?: boolean, remote?: boolean, agent?: string, item?: string|number, kind?: string, onWait?: (state: object) => void, onReceipt?: (receipt: object) => void, readMemory?: typeof readMachineMemory }} [options] - Queue class, short-slot eligibility, remote eligibility, progress reporter, the run's receipt once its slot is released (#836) and, for tests, the machine memory reader.
  * @returns {Promise<any>} The action's result after releasing its lease.
  */
 export async function withGateSlot(root, action, options = {}) {
   try { return await withOneGateSlot(root, action, options); }
   catch (error) {
-    if (error?.code !== 'RUNNER_BROWSER_SLOT_REQUIRED' || options.remote === false) throw error;
+    if (!['RUNNER_BROWSER_SLOT_REQUIRED', 'RUNNER_GUI_SESSION_REQUIRED'].includes(error?.code) || options.remote === false) throw error;
     // The runner's red attempt stays on record beside the local rerun.
     const attempt = error.runnerAttempt ?? { host: '', exitCode: null, output: '' };
-    process.stderr.write(`${error.message}; its attempt (exit ${attempt.exitCode}):\n${attempt.output}${attempt.output.endsWith('\n') || !attempt.output ? '' : '\n'}rerunning it locally with a browser slot\n`);
+    process.stderr.write(`${error.message}; its attempt (exit ${attempt.exitCode}):\n${attempt.output}${attempt.output.endsWith('\n') || !attempt.output ? '' : '\n'}rerunning it locally with the required capabilities\n`);
     const result = await withOneGateSlot(root, action, { ...options, remote: false, browser: true });
     if (result && typeof result === 'object') result.runnerAttempt = attempt;
     return result;
@@ -553,7 +554,7 @@ export async function withLandingGateSlot(root, action, options = {}) {
 }
 
 /** One gate admission and its action; withGateSlot may call it again for a local rerun. */
-async function withOneGateSlot(root, action, { landing = false, itemCheck = false, shortEligible = false, diagnostic = false, browser = false, remote = true, agent, item = '', kind = '', onWait, onReceipt, readMemory = readMachineMemory } = {}) {
+async function withOneGateSlot(root, action, { landing = false, itemCheck = false, shortEligible = false, diagnostic = false, browser = false, gui = false, remote = true, agent, item = '', kind = '', onWait, onReceipt, readMemory = readMachineMemory } = {}) {
   const tracker = startReceipt();
   const receiptKind = kind || (landing ? 'landing' : 'gate');
   /** Hand the run its receipt tracker and slot, then record its receipt once the slot is released (#836). */
@@ -594,6 +595,7 @@ async function withOneGateSlot(root, action, { landing = false, itemCheck = fals
     itemCheck,
     diagnostic,
     browser,
+    gui,
     allowIdleCapacityUpdate: true,
     remote: remote && Boolean(source),
     runnerProvider: () => loadMachineSettings().runners ?? [],
@@ -605,7 +607,7 @@ async function withOneGateSlot(root, action, { landing = false, itemCheck = fals
   try {
     while (true) {
       lease.source = source;
-      lease.runMetadata = { landing, itemCheck, diagnostic, item: String(item), kind };
+      lease.runMetadata = { landing, itemCheck, diagnostic, gui, item: String(item), kind };
       timed(lease).tracker.mark('actionAt');
       try { return await action(lease); }
       catch (error) {
@@ -654,7 +656,7 @@ export async function runGate(root, config, { trustStamp = true, onWait, landing
     await recordRun(onFailure, run);
     return run;
   }, {
-    landing, browser: true, agent, item, kind: landing ? 'landing' : 'gate', onWait,
+    landing, browser: true, gui: projectNeedsGui(root), agent, item, kind: landing ? 'landing' : 'gate', onWait,
   });
 }
 
@@ -749,7 +751,7 @@ export async function runStaticChecks(root, config, { agent, item = '', onWait, 
     refuseSandboxBlocked(run);
     if (!run.isGreen) throw new Refused('GATE_RED', `static checks are red; fix the named source before running proof:\n${digestOf(run.output)}`);
     return run;
-  }, { browser, agent, item, kind: 'static', itemCheck: true, shortEligible: true, onWait });
+  }, { browser, gui: await checkNeedsGui(root, command), agent, item, kind: 'static', itemCheck: true, shortEligible: true, onWait });
 }
 
 /**
@@ -787,6 +789,7 @@ export async function runSubmitGate(root, config, { base, trunk, changed, check,
     ? (proofFiles.length > 0 && (!allowBrowserFreeChecks || await testsNeedBrowser(root, proofFiles, { onFallback: onBrowserFallback })))
     : (selection.full || !allowBrowserFreeChecks || await testsNeedBrowser(root, proofFiles, { onFallback: onBrowserFallback }));
   const browser = checkUsesBrowser || proofUsesBrowser;
+  const gui = (check ? await checkNeedsGui(root, check) : false) || ((selection.full && !deferFullFallback && !deferSelection) ? projectNeedsGui(root) : testsNeedGui(root, proofFiles));
   return await withGateSlot(root, async (lease) => {
     pinRunMain(lease, onFailure);
     const startedAt = Date.now();
@@ -841,7 +844,7 @@ export async function runSubmitGate(root, config, { base, trunk, changed, check,
       command: !deferFullFallback && selection.full ? config.gate : `${config.affectedTests.trimEnd()} ${proofFiles.map(path => commandWord('./' + path)).join(' ')}`, lease });
     await recordRun(onFailure, proof);
     return finish(proof);
-  }, { browser, agent, item, kind, itemCheck: true, onWait });
+  }, { browser, gui, agent, item, kind, itemCheck: true, onWait });
 }
 
 /** The durable words a submission and its reviewers read for an affected selection moved to the landing gate. */

@@ -34,6 +34,7 @@ import { fileURLToPath } from 'node:url';
 import * as resourceApi from './resources.js';
 import { createDescendantTracker } from './runner-custody.js';
 import { Refused } from './refused.js';
+import { guiSession } from './gui-session.js';
 import {
   gateStages,
   stagedScript,
@@ -169,6 +170,7 @@ async function readSpec() {
     || typeof value.pipefail !== 'boolean' || !Number.isSafeInteger(value.slots) || value.slots < 1
     || !Number.isSafeInteger(value.browser) || value.browser < 0
     || typeof value.browserRequired !== 'boolean'
+    || value.guiRequired !== undefined && typeof value.guiRequired !== 'boolean'
     || (value.browserByLaunch !== undefined && typeof value.browserByLaunch !== 'boolean')
     || !value.runtime || typeof value.runtime !== 'object' || !value.runtime.files || typeof value.runtime.files !== 'object'
     || typeof value.runtime.sha256 !== 'string') throw new Error('invalid work specification');
@@ -200,7 +202,7 @@ async function readSpec() {
     tagNames.add(tag.name);
     if (tag.chain.length ? tag.chain[0] !== tag.object : tag.object !== tag.peeledCommit) throw new Error('invalid tag manifest');
   }
-  const runtimeNames = ['runner-custody.js', 'resources.js', 'git.js', 'machine-home.js', 'refused.js', 'process-census.js', 'queue-settings.js', 'queue-order.js', 'sandbox-denial.js', 'gate-stages.js', 'child-journal-preload.js', 'execution-environment.js'];
+  const runtimeNames = ['runner-custody.js', 'resources.js', 'git.js', 'machine-home.js', 'refused.js', 'process-census.js', 'queue-settings.js', 'queue-order.js', 'sandbox-denial.js', 'gate-stages.js', 'child-journal-preload.js', 'execution-environment.js', 'gui-session.js'];
   if (Object.keys(value.runtime.files).length !== runtimeNames.length
     || runtimeNames.some(name => typeof value.runtime.files[name] !== 'string')) throw new Error('invalid work specification');
   if (createHash('sha256').update(JSON.stringify(value.runtime.files)).digest('hex') !== value.runtime.sha256) throw new Error('invalid trusted runtime');
@@ -746,7 +748,7 @@ async function runCommand(spec, root, env, sink, tracker) {
 async function receipt(spec, fields, sink) {
   await flushStdout();
   const body = { id: spec.id, commit: spec.commit, tree: spec.tree, code: fields.code, signal: fields.signal,
-    environment: executionEnvironment(),
+    environment: executionEnvironment(), gui: fields.gui ?? null,
     runtimeSha256: spec.runtime.sha256, toolingSha256: spec.tooling.sha256, root: fields.root ?? '', outputSha256: sink.hash.digest('hex'), wallMs: Math.max(0, Date.now() - sink.wallStart),
     // The execution host's load and the pinned main this run used, so a paired rerun here can be judged (#925).
     main: typeof spec.main === 'string' ? spec.main : null, load: { average: loadavg(), cpus: availableParallelism(), freeMB: Math.floor(freemem() / 1048576) },
@@ -798,6 +800,7 @@ async function main() {
   let tracker = null;
   let runDirectory;
   let setupStep = 'runner directories';
+  let gui = null;
   let final = { code: 1, signal: null, root: '' };
   try {
     const runnerHome = isAbsolute(process.env.HOME || '') ? process.env.HOME : userInfo().homedir;
@@ -837,6 +840,8 @@ async function main() {
       item: spec.item ?? '', kind: spec.kind ?? 'remote-command',
       onWait: () => assertTransportLive(),
     }, machineHomePath);
+    gui = guiSession();
+    if (spec.guiRequired && gui !== true) throw new Refused('RUNNER_GUI_SESSION_REQUIRED', 'log in to a GUI session on this runner or keep GUI-marked files local');
     const canonicalMachineHome = machineHomePath;
     tracker = createDescendantTracker(runDirectory, {
       tick: reportCleanupTimeout, timedOut: () => cleanupTimedOut,
@@ -879,7 +884,7 @@ async function main() {
   }
   if (transportLost || cleanupTimedOut) { clearTimeout(cleanupTimer); process.exitCode = 1; stopReading(); return; }
   cleanupStage = 'result receipt';
-  await receipt(spec, final, sink);
+  await receipt(spec, { ...final, gui }, sink);
   clearTimeout(cleanupTimer);
   process.exitCode = 0;
   stopReading();
