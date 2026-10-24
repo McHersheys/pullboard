@@ -1,4 +1,5 @@
 import { requireHandoffActive } from './handoff-state.js';
+import { requestedCommandMove } from './recorded-move.js';
 export { barActorForCommand } from './bar-actor.js';
 import {
   barReadinessRequired,
@@ -592,8 +593,17 @@ export async function ordered(ctx, board, operation, args) {
     ensureSpecApprovalCoordinator(ctx, board, initialBaseline);
     const write = () => store.atomic(board, () => { requireHandoffActive(board, actor, operation, args); return store[operation](board, ...args); });
     if (initialBaseline && actor) await recordBaseline(actor);
+    const requested = requestedCommandMove(ctx.io.relayCommand?.cliOperation, operation);
+    /** Called only for this requested operation, after its store transaction commits, never for bootstrap. */
+    const applyRequested = () => {
+      const before = board.lastEvent;
+      const result = write();
+      if (requested && board.lastEvent !== before) ctx.io.recordedMove = true;
+      return result;
+    };
     const result = await withItemSession(ctx.info, operation, args, () => relayLinked(ctx.info.root) || relayRecovered(ctx.info.root)
-      ? relayOperation(ctx.info.root, operation, args, ctx.io, command, write) : write());
+      ? relayOperation(ctx.info.root, operation, args, ctx.io, command, applyRequested,
+        requested ? () => { ctx.io.recordedMove = true; } : undefined) : applyRequested());
     return result;
   };
   const digest = agentSessionDigest();
