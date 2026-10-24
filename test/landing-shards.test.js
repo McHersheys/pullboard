@@ -16,6 +16,49 @@ const BIN = join(SOURCE, 'bin', 'pullboard.js');
 const HOST = 'fixture-host';
 const NAMES = ['a', 'b', 'c', 'd', 'e', 'f'];
 
+test('GUI-marked landing files use only a runner with a GUI session [C7,V4]', (t) => {
+  const box = fixture({ runner: false });
+  t.after(() => rmSync(box.dir, { recursive: true, force: true }));
+  const hosts = ['fixture-no-gui', 'fixture-gui'];
+  for (const host of hosts) {
+    const added = runFixtureChild(process.execPath, [BIN, 'runner', 'add', host, '--slots', '1', '--browser', '1', '--json'],
+      { cwd: box.repo, env: box.env, encoding: 'utf8' });
+    assert.equal(added.status, 0, added.context);
+  }
+  // These are seeded capability reports, not a claim about this test machine's desktop session.
+  const settingsPath = join(box.env.PULLBOARD_MACHINE_HOME, 'settings.json');
+  const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
+  settings.runners = settings.runners.map(runner => ({ ...runner, gui: runner.host === 'fixture-gui' }));
+  writeFileSync(settingsPath, JSON.stringify(settings));
+  const selected = join(box.repo, 'test/a.test.js');
+  writeFileSync(selected, '/** @pullboard-test-gui */\n' + readFileSync(selected, 'utf8'));
+  git(box.repo, box.env, 'add', '.');
+  git(box.repo, box.env, 'commit', '-q', '-m', 'test: GUI-marked private fixture');
+  const script = `import { withGateSlot } from ${JSON.stringify(pathToFileURL(join(SOURCE, 'src/gate.js')).href)};
+import { runLandingShards } from ${JSON.stringify(pathToFileURL(join(SOURCE, 'src/landing-shards.js')).href)};
+const root = ${JSON.stringify(box.repo)};
+const calls = [];
+const remoteRun = async (_root, _command, options) => {
+  calls.push({ host: options.runner.host, gui: options.runner.gui ?? null });
+  return { isGreen: true, output: '' };
+};
+// Actual private SQLite leases occupy both local slots, forcing the planner to choose a runner.
+const result = await withGateSlot(root, () => withGateSlot(root, () => runLandingShards({ root,
+  runner: ${JSON.stringify(join(box.repo, 'bin/run-tests.js'))}, files: ['./test/a.test.js'], count: 1,
+  needsBrowser: async () => true, needsGui: async () => true, remoteRun, write: () => {},
+}), { remote: false, kind: 'check' }), { remote: false, kind: 'check' });
+process.stdout.write(JSON.stringify({ green: result.isGreen, calls }));`;
+  const env = { ...box.env };
+  delete env.NODE_TEST_CONTEXT;
+  const result = runFixtureChild(process.execPath, ['--input-type=module', '-e', script],
+    { cwd: box.repo, env, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.context);
+  const measured = JSON.parse(result.stdout);
+  assert.equal(measured.green, true);
+  assert.deepEqual(measured.calls.map(call => call.host), ['fixture-gui'], 'a GUI-marked file never runs on the first, no-GUI runner');
+  assert.equal(measured.calls[0].gui, true, 'the selected runner carries its explicit GUI capability');
+});
+
 test('six shards land on six different runners [C7,V4]', (t) => {
   const box = fixture({ runner: false });
   t.after(() => rmSync(box.dir, { recursive: true, force: true }));
