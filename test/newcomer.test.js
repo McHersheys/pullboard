@@ -151,7 +151,7 @@ test('setup offers a gate to a board with no build [I1,I2]', (t) => {
   const specPath = join(box.root, 'SPEC.md');
   writeFileSync(specPath, `${readFileSync(specPath, 'utf8')}- G1 [approved, must] The board can check its own requirements. | gate: pullboard spec check\n`);
 
-  const before = JSON.parse(box.run('resume', '--json').stdout);
+  const before = JSON.parse(box.run('resume', '--diagnostics', '--json').stdout);
   assert.equal(before.setup.step, 3);
   assert.match(before.setup.question, /if this board has no build.*pullboard spec check.*second agent review checks the actual work/u);
   assert.match(before.setup.question, /choose a custom gate command/u);
@@ -159,7 +159,7 @@ test('setup offers a gate to a board with no build [I1,I2]', (t) => {
   const answer = runFixtureChild('sh', ['-c', before.setup.command], { cwd: box.root, env: box.env, encoding: 'utf8' });
   assert.equal(answer.status, 0, answer.failure ?? answer.stderr);
   assert.equal(JSON.parse(readFileSync(configPath, 'utf8')).gate, 'pullboard spec check');
-  assert.equal(JSON.parse(box.run('resume', '--json').stdout).setup.step, 4);
+  assert.equal(JSON.parse(box.run('resume', '--diagnostics', '--json').stdout).setup.step, 4);
 
   box.git('add', '-f', '--', 'pullboard.json', 'SPEC.md', 'DOCTRINE.md', 'AGENTS.md', '.gitignore', '.githooks', '.claude');
   const stagedPaths = box.git('diff', '--cached', '--name-only').split('\n');

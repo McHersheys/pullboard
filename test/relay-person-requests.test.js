@@ -27,7 +27,7 @@ const APPROVAL_FLOW_CLI_CHILDREN = [
   { command: ['relay', 'on'], snapshotUploads: 1 },
   { command: ['status'], snapshotUploads: 4 },
   { command: ['export'], snapshotUploads: 0 },
-  { command: ['resume'], snapshotUploads: 1 }, // The first health scan publishes the fixture's unserved work findings.
+  { command: ['resume'], snapshotUploads: 0 }, // Resume reads indexed health; scheduled sentinel run publishes new findings (#1042).
   { command: ['spec', 'apply'], snapshotUploads: 1 },
   { command: ['answer'], snapshotUploads: 1 },
   { command: ['status'], snapshotUploads: 3 },
@@ -42,7 +42,7 @@ const DECLINE_FLOW_CLI_CHILDREN = [
   { command: ['status'], snapshotUploads: 4 },
   { command: ['answer'], snapshotUploads: 1 },
   { command: ['answer'], snapshotUploads: 1 },
-  { command: ['resume'], snapshotUploads: 1 }, // The first health scan publishes the fixture's unserved work findings.
+  { command: ['resume'], snapshotUploads: 0 }, // Resume reads indexed health; scheduled sentinel run publishes new findings (#1042).
 ];
 
 /** Record the real phase and wait budget for a late-snapshot failure without changing either wait. */
