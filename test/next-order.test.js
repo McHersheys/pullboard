@@ -531,3 +531,54 @@ test('a reserve-next move with skipIds needs engine 69 and older engines replay 
   const plain = replay(68, false);
   assert.equal(plain.outcome.result.item.item_id, plain.own, 'a move without skipIds replays at engine 68 as it always did');
 });
+
+/** The native lifecycle is seeded here; these are board-state records, not claimed gate executions. */
+test('next never hands out work that collides with work in flight [N2,B13,N20]', (t) => {
+  const { board, builder, reviewer } = boardFixture();
+  t.after(() => store.closeBoard(board));
+  const other = store.register(board, { lane: 'core', path: '/busy-builder', route: 'strong' });
+  /** Name the actual files as a coordinator's ordinary brief does. */
+  const add = (title, file) => store.addItem(board, { by: 'coordinator', lane: 'core', title,
+    brief: `Files: ${file}\nTest: the native queue respects in-flight work` });
+  const a = add('A is changing the shared file', 'src/x.js');
+  const b = add('B would collide', 'src/x.js');
+  const c = add('C can progress independently', 'src/z.js');
+  store.claim(board, a, { agentId: other, lane: 'core', leaseMs: HOUR, freeze: FREEZE });
+  /** Exercise the same board selector the CLI and runners use, including its explanation. */
+  function avoids(stage) {
+    const next = store.nextFor(board, { agentId: builder, lane: 'core' });
+    assert.equal(next.item.item_id, c, `${stage}: C progresses before overlapping B`);
+    assert.ok(next.reasons.some(reason => reason.includes(`#${b}`) && reason.includes(`#${a}`) && reason.includes('src/x.js')),
+      `${stage}: B names the item and file it waits behind`);
+  }
+  avoids('claimed');
+  const commit = 'a'.repeat(40);
+  submitFixture(board, a, { agentId: other, commit, tree: commit });
+  avoids('submitted');
+  const item = store.getItem(board, a);
+  store.verify(board, a, { agentId: reviewer, decision: 'ACCEPT', policy: 'any', head: commit,
+    digest: item.item_frozen_digest, note: 'Synthetic accepted lifecycle record; no gate execution claimed.' });
+  avoids('accepted but not landed');
+  store.merged(board, a, { agentId: 'coordinator', commit: 'b'.repeat(40) });
+  assert.equal(store.nextFor(board, { agentId: builder, lane: 'core' }).item.item_id, b,
+    'landing A releases B to its original order');
+});
+
+test('an explicit colliding claim warns but remains available to the builder [N2,B13,N20]', (t) => {
+  const box = crossLaneFixture(t);
+  const busy = box.seat('collision-busy', 'web', 'collision-busy-session');
+  const manual = box.seat('collision-manual', 'web', 'collision-manual-session');
+  /** A real coordinator-created brief in the private project's permitted web lane. */
+  const add = title => box.json(box.run(box.repo, 'add', 'web', title, '--specs', 'G1',
+    '--brief', 'Files: web/shared.js\nTest: an explicit choice names its overlap', '--json')).item.item_id;
+  const a = add('A holds the shared file');
+  const b = add('B is an explicit override');
+  box.json(box.runAs('collision-busy-session', busy.root, 'claim', String(a), '--json'));
+  const claimed = box.runAs('collision-manual-session', manual.root, 'claim', String(b));
+  assert.equal(claimed.code, 0, claimed.out + claimed.err);
+  assert.match(claimed.out, new RegExp(`warn.*#${a}.*web/shared\\.js`, 'iu'),
+    'the normal successful claim warns about the other in-flight item and shared file');
+  const renewed = box.json(box.runAs('collision-manual-session', manual.root, 'claim', String(b), '--json'));
+  assert.ok(renewed.warnings?.some(warning => warning.includes(`#${a}`) && warning.includes('web/shared.js')),
+    'machine-readable claims retain the same warning');
+});
