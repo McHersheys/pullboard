@@ -142,6 +142,12 @@ import {
   boardBusyError,
 } from './board-access.js';
 import { ensureHotIndexes } from './board-hot.js';
+import {
+  ensureFactIdentityIndexes,
+  factIdentityExists,
+  missingFactIdentityIndexes,
+  requireFactIdentityIndexes,
+} from './fact-identity.js';
 import { NEXT_STEPS } from './next-step-words.js';
 import { boardWriteBusyError } from './board-busy.js';
 export { boardBusyError } from './board-access.js';
@@ -357,6 +363,13 @@ export function openBoard(file, clock = systemClock, { isMain, onDiagnostic } = 
         guardStore(board);
       }
       if (standing === 'behind' || standing === 'unstamped') recordSchemaStamp(db, SCHEMA_DIGEST);
+      // Index-only upgrades keep the data version/digest unchanged. Install and restamp together;
+      // drifted or read-only stores never take this path, and old clients accept the resulting stamp.
+      if (standing !== 'drifted' && missingFactIdentityIndexes(db).length) atomic(board, () => {
+        if (boardStanding(db, SCHEMA_DIGEST, SCHEMA_VERSION) !== 'current') return;
+        ensureFactIdentityIndexes(db);
+        recordSchemaStamp(db, SCHEMA_DIGEST);
+      });
       if (standing === 'drifted') { warmCounters = false; reportDrift(file, onDiagnostic); }
     } else {
       // Read compatibility before any local effect; persistent schema belongs to trunk alone.
@@ -1875,6 +1888,7 @@ export { itemThread } from './board-query.js';
  * The internal factId is set from a sealed move's identity during replay, rather than replica-local sequence ids; a never-again with its cause is the person's alone, and rigor lists it at once (#713) [D1].
  */
 export function appendFact(board, id, { agentId, kind, text, ref = null, supersedes = null, factId = randomUUID(), implies, cause = null, neverAgain = false, asPerson = false, channel = 'terminal' }) {
+  if (board.readOnly) requireFactIdentityIndexes(board.db);
   return atomic(board, () => {
     const item = current(board, itemById(board, id));
     if (!board.db.prepare('SELECT 1 FROM agent WHERE agent_id = ?').get(agentId)) throw new Refused('NO_AGENT', `no registered agent ${agentId}; join a worktree before appending a fact`);
@@ -1884,7 +1898,7 @@ export function appendFact(board, id, { agentId, kind, text, ref = null, superse
       throw new Refused('FACT_JUDGEMENT', `only the item's live holder${isHeld(board, item) ? ' (' + item.item_owner + ')' : ''} or the coordinator may append a judgement or supersede a fact; append an observation or ask the coordinator`);
     }
     if (typeof factId !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/u.test(factId)) throw new Refused('BAD_FACT_ID', 'a fact identity is invalid; retry with the current Pullboard engine');
-    if (board.db.prepare("SELECT 1 FROM event WHERE event_kind = 'fact' AND json_extract(event_detail, '$.id') = ?").get(factId)) throw new Refused('BAD_FACT_ID', 'this fact identity is already recorded; retry the original sealed move instead of appending it again');
+    if (factIdentityExists(board.db, factId)) throw new Refused('BAD_FACT_ID', 'this fact identity is already recorded; retry the original sealed move instead of appending it again');
     if (supersedes !== null && (typeof supersedes !== 'string' || !itemThread(board, id).some((entry) => entry.type === 'fact' && entry.id === supersedes))) {
       throw new Refused('NO_FACT', `no fact ${String(supersedes)} on item #${id}; use a fact id from pullboard show ${id} --json`);
     }
