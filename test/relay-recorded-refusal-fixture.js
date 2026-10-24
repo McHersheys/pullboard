@@ -11,6 +11,7 @@ export async function recordedRelayRefusal(t) {
   assert.equal(linked.code, 0, linked.failure);
   const result = await box.script(`
     const { main } = await import(${JSON.stringify(box.mainURL)});
+    const { relayOperation } = await import(${JSON.stringify(new URL('../src/relay.js', import.meta.url).href)});
     const { spawn } = await import('node:child_process');
     const { mkdirSync, writeFileSync, rmSync, readFileSync } = await import('node:fs');
     const { DatabaseSync } = await import('node:sqlite');
@@ -36,11 +37,20 @@ export async function recordedRelayRefusal(t) {
       for (const [text, recorded] of [[title, true], [missing, false]]) {
         if (!recorded) hold();
         let stdout = '', stderr = '';
-        const code = await main(['add', ${JSON.stringify(box.lane)}, text], {
+        const streams = {
           cwd: process.cwd(), relayLockWaitMs: 150, relayLockProgressMs: 1000,
           stdout: { write(value) { stdout += value; if (recorded && /^#[0-9]+\\n$/u.test(value)) hold(); } },
           stderr: { write(value) { stderr += value; } }
-        });
+        };
+        let code;
+        if (recorded) code = await main(['add', ${JSON.stringify(box.lane)}, text], streams);
+        else {
+          try {
+            await relayOperation(process.cwd(), 'addItem', [{ by: 'coordinator', lane: ${JSON.stringify(box.lane)}, title: text }],
+              { ...streams, err(value) { stderr += value; } });
+            code = 0;
+          } catch (error) { code = 1; stderr += error.message; }
+        }
         const db = new DatabaseSync(database, { readOnly: true });
         try {
           const rows = db.prepare('SELECT item_id FROM item WHERE item_title=?').all(text);
