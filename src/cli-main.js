@@ -85,6 +85,7 @@ const OPTIONS = {
   budget: { type: 'string' },
   'draft-quality': { type: 'boolean' },
   yes: { type: 'boolean' },
+  diagnostics: { type: 'boolean' },
   landing: { type: 'boolean' },
   adopt: { type: 'boolean' },
   waive: { type: 'string' },
