@@ -1,3 +1,5 @@
+import { CHECK_ACCEPT_ENGINE } from './move-engine-constants.js';
+export { CHECK_ACCEPT_ENGINE };
 /**
  * A check that already passes on main proves nothing, so a board that asks for it holds the item
  * until the person accepts that exact check [V2,V4,B26].
@@ -16,8 +18,6 @@ import { requirePersonChannel } from './person.js';
 import { Refused } from './refused.js';
 import { mainPolicy } from './trusted-policy-read.js';
 
-/** The engine that first replays a person's check acceptance; older engines refuse the move unread [H16]. */
-export const CHECK_ACCEPT_ENGINE = 24;
 
 /** The setting value that turns today's warning into a hold. */
 export const PROVES_NOTHING_HOLD = 'hold';

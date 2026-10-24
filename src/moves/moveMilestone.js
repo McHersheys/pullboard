@@ -1,0 +1,20 @@
+/** Routing metadata owned by moveMilestone, discovered without a shared registry edit [C7,V4,H16]. */
+import { LANDING_LEASE_ENGINE } from '../landing-lease-engine.js';
+import { BOARD_SENTINEL_ENGINE } from '../sentinel-engine.js';
+
+/** Preserve this operation's historical first-matching engine conditions [H16]. */
+function minimumEngine(args, board, at) {
+  if (args[0]?.landingFence !== undefined) return LANDING_LEASE_ENGINE;
+  if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('sentinel:')) return BOARD_SENTINEL_ENGINE;
+  return 1;
+}
+
+/** Read precisely the actor argument used by this operation [H2,H16]. */
+function actor(move) { return move.args[1]?.agentId ?? null; }
+
+export default Object.freeze({ operation: "moveMilestone", order: 31, engine: 1,
+  itemIdFirstArgument: false, minimumEngine, actor,
+  nextSteps: Object.freeze({
+  "MILESTONE_ORDER": "move it before a different milestone; see pullboard roadmap",
+  "NO_MILESTONE": "name a milestone from pullboard roadmap"
+}) });

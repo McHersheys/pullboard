@@ -1,3 +1,5 @@
+import { itemById } from './board-item-read.js';
+export { itemById };
 import { outsideSource } from './outside-source.js';
 import {
   COORDINATION_SHOUT,
@@ -83,18 +85,6 @@ export function boardId(board) {
   return board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?').get('board_id').meta_value;
 }
 
-/**
- * The item with this id, or a refusal naming the id.
- *
- * @param {any} board
- * @param {number} id
- * @returns {any}
- */
-export function itemById(board, id) {
-  const item = board.db.prepare('SELECT * FROM item WHERE item_id = ?').get(id);
-  if (!item) throw new Refused('NO_ITEM', `no item #${id}; see: pullboard list`);
-  return item;
-}
 
 /**
  * One item as a reader should see it.
