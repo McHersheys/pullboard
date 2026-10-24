@@ -982,10 +982,15 @@ test('an excluded board is named as excluded with the step that includes it [H5,
 }, async t => {
   assert.ok(hostedEngines().find(engine => engine.name === 'chromium')?.available, 'real Chrome is required');
   const engine = await openEngine('chromium');
-  t.after(() => engine.close());
+  const contexts = [];
+  t.after(async () => {
+    // Dispose targets while CDP is live, before shutting down the shared browser.
+    for (const context of contexts) await context.close();
+    await engine.close();
+  });
   const built = await buildBoards(t, 'excluded', [engine]);
   const fresh = await engine.newContext();
-  t.after(() => fresh.close());
+  contexts.push(fresh);
   const unpaired = await visit(fresh, {
     route: built.front.route(built.unpairedSession, null), phone: true,
     bootstrap: storedScript('fresh', { boards: [] }),
@@ -1002,7 +1007,7 @@ test('an excluded board is named as excluded with the step that includes it [H5,
   const front = await hostedFront(box.origin);
   t.after(() => front.close());
   const paired = await engine.newContext();
-  t.after(() => paired.close());
+  contexts.push(paired);
   const session = await freshSession(box);
   let pairingPage;
   await relayOnAll(box, async link => {
