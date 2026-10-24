@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** @pullboard-test-input source-tree */
 /** The command shown to a second browser enrolls it without replacing the first [H15,H17]. */
 import assert from 'node:assert/strict';

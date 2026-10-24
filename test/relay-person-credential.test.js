@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** Same-user agents keep working while only the paired phone holds person authority [H5,H16,H17,B26]. */
 import assert from 'node:assert/strict';
 import { startFixtureChild as spawn, runFixtureChild as spawnSync } from './fixture-child.js';
