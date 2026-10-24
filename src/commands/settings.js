@@ -14,10 +14,25 @@ import {
   setBrowserSlots,
   setGateShortSlots,
   setGateSlots,
+  setLandingPool,
 } from '../settings.js';
+import {
+  context,
+  withBoard,
+} from '../cli.js';
+import { boardId } from '../board.js';
 
 /** Read or update machine-wide gate capacity. */
 export function settingsCommand(io, { first, second, rest }) {
+  if (first === 'landing.pool') {
+    if (!['on', 'off'].includes(second) || rest.length) throw new Refused('USAGE', 'pullboard settings landing.pool on|off in the board this machine should land');
+    const ctx = context(io);
+    const board = withBoard(ctx, boardId);
+    const settings = setLandingPool(board, second === 'on');
+    io.result?.({ settings, board });
+    io.say(`this board's landing pool: ${second}`);
+    return 0;
+  }
   if (!first && !second && !rest.length) {
     const settings = loadMachineSettings();
     const queue = gateQueueSettings();

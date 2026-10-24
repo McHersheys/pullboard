@@ -11,6 +11,7 @@ import {
   join,
 } from 'node:path';
 import { tryGit } from './git.js';
+import { environmentProblem } from './execution-environment.js';
 
 /** The folder beside the board that holds gate run receipts. */
 export const RECEIPT_FOLDER = 'gate-receipts';
@@ -63,6 +64,7 @@ export function receiptFields(value) {
 /** The checks behind receiptFields; each malformed field throws, and receiptFields turns that into null. */
 function checkedFields(value) {
   const bad = () => new TypeError('malformed gate receipt');
+  if (Object.hasOwn(value ?? {}, 'environment') && value.environment !== null && environmentProblem(value.environment)) throw bad();
   if (!value || value.version !== 1 || !ID.test(value.id ?? '') || !['gate', 'land', 'submit'].includes(value.kind) || !SHA.test(value.tree ?? '')
     || !SHA.test(value.head ?? '') || value.main !== null && !SHA.test(value.main ?? '') || !DIGEST.test(value.command ?? '')
     || typeof value.green !== 'boolean' || !Array.isArray(value.failures) || value.failures.length > MOST_FAILURES
@@ -76,7 +78,8 @@ function checkedFields(value) {
   if (!load || !Array.isArray(load.average) || load.average.length !== 3 || load.average.some((number) => !Number.isFinite(number) || number < 0)
     || !Number.isSafeInteger(load.cpus) || load.cpus < 1 || !Number.isSafeInteger(load.freeMB) || load.freeMB < 0) throw bad();
   return { version: 1, id: value.id, kind: value.kind, tree: value.tree, head: value.head, main: value.main, command: value.command,
-    green: value.green, failures, load: { average: [...load.average], cpus: load.cpus, freeMB: load.freeMB }, at: value.at };
+    green: value.green, failures, load: { average: [...load.average], cpus: load.cpus, freeMB: load.freeMB }, at: value.at,
+    ...(Object.hasOwn(value, 'environment') ? { environment: value.environment } : {}) };
 }
 
 /**

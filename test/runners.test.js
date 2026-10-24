@@ -385,6 +385,8 @@ test('a queued run executes on a registered runner and its result comes back (ho
     const result = gateResult(run.stdout);
     assert.equal(result.isGreen, true);
     assert.equal(result.runner, HOST);
+    assert.deepEqual(result.profile.receipt.environment, { platform: process.platform, arch: process.arch, node: process.versions.node },
+      'the real SSH stand-in worker reports its own executor, without inferring a second physical host');
     assert.equal(result.profile.executionRunner, HOST);
     assert.equal(result.profile.executionSource.tooling.name, 'pullboard');
     assert.equal(result.profile.executionSource.tooling.kind, 'git-checkout');

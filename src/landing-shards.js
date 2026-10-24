@@ -324,7 +324,7 @@ class NotNeeded extends Error {}
  * @returns {Promise<{ isGreen: boolean, balance: string, shards: object[], files: object[] }>}
  */
 export async function runLandingShards({ root, runner, files, count, inherited = null, needsBrowser = async () => true, write = text => process.stdout.write(text), remoteRun }) {
-  const { withGateSlot } = await import('./gate.js');
+  const { withLandingGateSlot } = await import('./gate.js');
   const runners = await import('./runners.js');
   const { RunnerDropped } = runners;
   // A test may stand in for the SSH round trip to make a runner answer with a given refusal.
@@ -441,7 +441,7 @@ export async function runLandingShards({ root, runner, files, count, inherited =
   /** Queue this shard for a slot of its own; the parent's lane may take it first. */
   const acquire = (entry) => {
     const localOnly = entry.localOnly;
-    const running = withGateSlot(root, async lease => {
+    const running = withLandingGateSlot(root, async lease => {
       if (entry.claimed || entry.done) return;
       // A host quarantined in this landing gets no more shards; queue again for a local slot.
       if (lease.runner && quarantined.has(lease.runner.host)) return 'divert';
