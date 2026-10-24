@@ -1,3 +1,4 @@
+import { ITEM_SHOUT_ENGINE } from './item-shout-engine.js';
 /** Versioned, deterministic replay through the CLI's existing board engine [H3,H16]. */
 import {
   createHash,
@@ -100,6 +101,8 @@ function minimumOperationEngine(operation, args, board, at) {
     if (store.landingBatches(board).some(batch => batch.id === id && carriesLandingEnvironment(batch))) return LANDING_ENVIRONMENT_ENGINE;
   }
   if (operation === 'landingLeaseMove' && args[0]?.localHeartbeat === true) return LANDING_LOCAL_LEASE_ENGINE;
+
+  if (operation === 'shout' && args[0]?.item !== undefined) return ITEM_SHOUT_ENGINE;
   if (operation === 'landingLeaseMove' || args[0]?.landingFence !== undefined) return LANDING_LEASE_ENGINE;
   if (['verify', 'reopen'].includes(operation) && args[1]?.reopenFirstRefusalMinutes !== undefined
     || ['claim', 'release'].includes(operation) && board && firstRefusal(board, args[0], at)) return REOPEN_FIRST_REFUSAL_ENGINE;
