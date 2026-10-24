@@ -193,3 +193,20 @@ test('aborting a pending stream read prevents reconnect and closes its reader [H
   assert.equal(requests, 1);
   assert.equal(failures, 0, 'intentional close is not reported as a relay failure');
 });
+
+
+test('checkpoint timeout notices survive activity and recovery on another paired board [H5,H16]', () => {
+  const a = 'a'.repeat(32), b = 'b'.repeat(32);
+  const available = [{ id: a, repository: 'fixture/one' }, { id: b, repository: 'fixture/two' }];
+  const paired = new Map([[a, { repository: 'fixture/one', checkpointTimedOut: true }],
+    [b, { repository: 'fixture/two', checkpointTimedOut: false }]]);
+  const text = 'The relay snapshot has not caught up to this move. Retry this board.';
+  const lines = () => noticeLines({ available, paired, failure: '' }).filter(line => line.includes(text));
+  assert.deepEqual(lines(), ['fixture/one: ' + text], 'an unrelated successful event cannot hide this board timeout');
+  paired.get(b).checkpointTimedOut = true;
+  assert.deepEqual(lines(), ['fixture/one: ' + text, 'fixture/two: ' + text]);
+  paired.get(b).checkpointTimedOut = false;
+  assert.deepEqual(lines(), ['fixture/one: ' + text], 'covering board two cannot clear board one');
+  paired.get(a).checkpointTimedOut = false;
+  assert.deepEqual(lines(), [], 'every covering checkpoint clears only its own timeout');
+});

@@ -16,22 +16,23 @@ const e2e = createE2eHelpers();
 after(e2e.cleanup);
 
 /** Seed historical board records through normal lifecycle and native import, including a legacy self acceptance. */
-function badgeProject(total, outside) {
+function badgeProject(total, outside, { independent = outside } = {}) {
   const box = e2e.sandbox();
   box.git(box.dir, 'init', '-q', '-b', 'main');
   const source = store.openBoard(':memory:');
   let document;
   try {
     store.register(source, { lane: 'coordinator', path: box.dir });
-    const builder = store.register(source, { lane: 'web', path: join(box.dir, 'builder') });
-    const reviewer = store.register(source, { lane: 'web', path: join(box.dir, 'reviewer') });
+    const builder = store.register(source, { lane: 'web', path: join(box.dir, 'builder'), parent: 'badge-parent-P' });
+    const reviewer = store.register(source, { lane: 'web', path: join(box.dir, 'reviewer'), parent: 'badge-parent-Q' });
+    const procedural = store.register(source, { lane: 'web', path: join(box.dir, 'procedural-reviewer') });
     for (let index = 0; index < total; index++) {
       const id = store.addItem(source, { by: 'coordinator', lane: 'web', title: `Finished ${index}` });
       store.claim(source, id, { agentId: builder, lane: 'web', leaseMs: 3_600_000,
         freeze: () => ({ text: 'badge history fixture', digest: `badge-${id}` }) });
       const commit = String(index + 1).padStart(40, '0');
       submitFixture(source, id, { agentId: builder, commit, tree: commit });
-      store.verify(source, id, { agentId: reviewer, decision: 'ACCEPT', head: commit,
+      store.verify(source, id, { agentId: index < independent ? reviewer : procedural, decision: 'ACCEPT', head: commit,
         digest: `badge-${id}`, policy: 'any', note: 'Synthetic historical board-state acceptance; no runtime proof claimed.' });
     }
     document = exportBoard(source);
@@ -73,4 +74,14 @@ test('pullboard badge writes the verified counts from the board [B3,V1]', () => 
   assert.match(nothing.out, /No finished items.*no badge files/);
   assert.equal(existsSync(join(empty.dir, 'docs/badges')), false, 'no files or directories are written for no finished work');
   assertBadgeLanding(e2e);
+});
+
+
+test('[V1,B3] procedural verdicts do not increase the independent badge percentage', () => {
+  const mixed = badgeProject(3, 3, { independent: 2 });
+  assert.equal(mixed.run(mixed.dir, 'badge').code, 0);
+  assert.equal(endpoints(mixed)[1].message, '66%', 'unknown-parent procedural acceptance stays in the denominator only');
+  const unknown = badgeProject(3, 3, { independent: 0 });
+  assert.equal(unknown.run(unknown.dir, 'badge').code, 0);
+  assert.equal(endpoints(unknown)[1].message, '0%', 'three different-seat acceptances with unknown reviewer parents prove no independent percentage');
 });

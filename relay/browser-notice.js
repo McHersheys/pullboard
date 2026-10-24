@@ -40,6 +40,10 @@ export function noticeLines({ available, paired, ownedRequestIds = new Map(), wa
   }, 0);
   if (waiting) lines.push(`${waiting} request${waiting === 1 ? '' : 's'} from this device ${waiting === 1 ? 'is' : 'are'} waiting for a linked machine to run Pullboard.`);
   for (const link of pendingLinks) if (typeof link?.name === 'string') lines.push(`${link.name}: waiting for approval on your phone.`);
+  // One board's successful event or checkpoint cannot clear another board's recorded lag.
+  for (const [id, entry] of paired) if (entry.checkpointTimedOut) {
+    lines.push((entry.repository ?? id) + ': The relay snapshot has not caught up to this move. Retry this board.');
+  }
   const pairedRepositories = new Set(available.filter(board => paired.has(board.id)).map(board => board.repository));
   for (const board of available.filter(value => !paired.has(value.id))) {
     // This phone just approved the link: its key is on the way, so asking to pair would be wrong.
