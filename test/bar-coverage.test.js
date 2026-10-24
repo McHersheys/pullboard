@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { barCoverageCommand, normalizeBarCoverage, prepareBarCoverage, barTestPath, barCoverageForPolicy } from '../src/bar-coverage.js';
 import { requireSubmitComposition } from '../src/submit-composition.js';
+import { nativeBarActor } from '../src/bar-actor.js';
 import { baselineTestEvidence } from '../src/check-baseline.js';
 import { configFromSource } from '../src/config.js';
 import { runFixtureChild } from './fixture-child.js';
@@ -129,4 +130,13 @@ test('[V2,V4] new existing test files or accepted execution settings need a new 
   writeFileSync(join(f.root,'test','new.test.js'),'// a newly committed test file');f.git('add','test/new.test.js');f.git('commit','-qm','test: new brief file');
   assert.throws(()=>barCoverageForPolicy(f.root,item,prepared,{commit:f.git('rev-parse','HEAD'),config}),e=>e.code==='BAR_NOT_READY');
   assert.throws(()=>barCoverageForPolicy(f.root,item,prepared,{...policy,config:{...config,affectedTests:'node other.js'}}),e=>e.code==='BAR_NOT_READY');
+});
+
+
+test('[V1,H16] native authorship captures only the current runtime, not a historical seat fallback', () => {
+  assert.equal(nativeBarActor({}),null);
+  const first=nativeBarActor({CLAUDE_CODE_SESSION_ID:'synthetic-private-author-a'});
+  const second=nativeBarActor({CLAUDE_CODE_SESSION_ID:'synthetic-private-author-b'});
+  assert.equal(first.session,first.parent);
+  assert.notEqual(first.parent,second.parent);
 });

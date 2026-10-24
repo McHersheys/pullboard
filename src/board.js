@@ -721,7 +721,7 @@ function checkRouted({ brief, route, criterion, check }) {
  * @param {{ by: string, lane: string, title: string, criterion?: string, specIds?: string[], parentId?: number | null, after?: number[], brief?: string, route?: string, check?: string }} item
  * @returns {number} The new item's id.
  */
-export function addItem(board, { by, lane, title, criterion = '', specIds = [], parentId = null, after = [], brief = '', route = 'strong', check, checkBaseline }) {
+export function addItem(board, { by, lane, title, criterion = '', specIds = [], parentId = null, after = [], brief = '', route = 'strong', check, checkBaseline, barActor }) {
   return atomic(board, () => {
     const { command, cleanTitle } = validateItemAddition(board, { by, lane, title, criterion, parentId, after, brief, route, check });
     const baseline = normalizeCheckBaseline(by, command, checkBaseline);
@@ -736,7 +736,7 @@ export function addItem(board, { by, lane, title, criterion = '', specIds = [], 
     const id = Number(result.lastInsertRowid);
     saveCheckBaseline(board, id, baseline);
     logEvent(board, by, 'add', id, { lane, specIds, after, route, ...(baseline ? { checkBaseline: baseline } : {}) });
-    recordBarRevision(board, itemById(board, id), by);
+    recordBarRevision(board, itemById(board, id), by, null, barActor);
     return id;
   });
 }
@@ -793,7 +793,7 @@ export function validateItemAddition(board, { by, lane, title, criterion = '', p
  * @param {number} id
  * @param {{ agentId: string, brief?: string, route?: string, criterion?: string, check?: string, after?: number[] }} change
  */
-export function editItem(board, id, { agentId, brief, route, criterion, check, after, checkBaseline, reason }) {
+export function editItem(board, id, { agentId, brief, route, criterion, check, after, checkBaseline, reason, barActor }) {
   atomic(board, () => {
     const stored = itemById(board, id);
     const expiredHolder = stored.item_status === 'claimed' && !isHeld(board, stored) ? stored.item_owner : null;
@@ -824,7 +824,7 @@ export function editItem(board, id, { agentId, brief, route, criterion, check, a
       ...(expiredHolder ? { expiredHolder } : {}),
       ...bar,
     });
-    recordBarRevision(board, itemById(board, id), agentId, item);
+    recordBarRevision(board, itemById(board, id), agentId, item, barActor);
     if (pendingRefreeze) {
       insertShout(board, {
         from: COORDINATOR,

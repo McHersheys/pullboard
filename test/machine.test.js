@@ -878,7 +878,7 @@ test('pullboard help lists each role\'s moves from the declaration, and pullboar
 /** Guards checked before the explicit transition: CLI facts and optional roadmap selection. */
 const PRECHECKED = {
   claim: ['joined', 'checkProvesSomething'],
-  submit: ['joined', 'checkProvesSomething', 'criterionUnchanged', 'treeClean', 'nothingUntracked', 'hasCommit', 'withinLane', 'trunkMergeClean', 'infraExplained', 'doctrineHolds', 'gateConfigured', 'queuedItemLease', 'gateGreen', 'treeStillDuringGate', 'noUnverifiedStack'],
+  submit: ['joined', 'checkProvesSomething', 'criterionUnchanged', 'treeClean', 'nothingUntracked', 'hasCommit', 'withinLane', 'trunkMergeClean', 'trunkInCandidate', 'infraExplained', 'doctrineHolds', 'gateConfigured', 'queuedItemLease', 'gateGreen', 'treeStillDuringGate', 'noUnverifiedStack'],
   reserve: ['coordinatorSaysAs', 'joined', 'roadmapReadable'],
   accept: ['coordinatorSaysAs', 'joined', 'atSubmittedCommit', 'reviewTreeCurrent', 'trunkMergeClean', 'queuedItemLease', 'itemCheckGreen', 'noUnverifiedStack'],
   reject: ['coordinatorSaysAs', 'joined', 'atSubmittedCommit', 'reviewTreeCurrent'],

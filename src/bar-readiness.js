@@ -1,3 +1,4 @@
+import { normalizeBarActor } from './bar-actor.js';
 import { normalizeBarCoverage, barCoverageDigest } from './bar-coverage.js';
 /** Readiness is a revision-bound peer judgement, with mechanical prerequisites [U113]. */
 import { createHash } from 'node:crypto';
@@ -55,14 +56,15 @@ function historicalAuthors(board, item) {
   return Object.fromEntries(Object.entries(fields).map(([field, agent]) => [field, { agent, parent: parent(board, agent) }]));
 }
 /** Snapshot authors on semantic edits, never retroactively upgrading an unknown historical parent. */
-export function recordBarRevision(board, item, by, before = null) {
+export function recordBarRevision(board, item, by, before = null, actor = null) {
   if ((board.executionEngineVersion ?? ENGINE_VERSION) < BAR_READY_ENGINE || !barReadySetting(board).enabled) return;
   const previous = read(board, `bar_revision:${item.item_id}`);
   const changed = FIELDS.filter(key => !before || before[key] !== item[key]);
   if (!changed.length && previous) return;
   const authors = previous?.authors ?? historicalAuthors(board, item);
+  const currentActor = normalizeBarActor(actor);
   for (const field of FIELDS) {
-    if (changed.includes(field)) authors[field] = { agent: by, parent: parent(board, by) };
+    if (changed.includes(field)) authors[field] = { agent: by, ...currentActor };
     else if (!authors[field]) authors[field] = { agent: item.item_created_by, parent: parent(board, item.item_created_by) };
   }
   const revision = { digest: barDigest(item), authors };
@@ -118,20 +120,21 @@ export function barReadyProblem(board, item) {
   return status.missing.length ? new Refused('BAR_NOT_READY', `#${item.item_id}'s bar needs ${status.missing.join('; ')}; ask its author to edit the brief, then another session runs pullboard bar sign ${item.item_id}`) : null;
 }
 /** Record the peer's judgement against exact words, author identities and baseline observation. */
-export function signBar(board, id, { agentId, revision, digest, note, coverage }) {
+export function signBar(board, id, { agentId, revision, digest, note, coverage, barActor }) {
   return atomic(board, () => {
     const item = itemById(board, id);
     if (['verified','withdrawn'].includes(item.item_status)) throw new Refused('CLOSED', `#${id} is ${item.item_status}; sign an open bar`);
     const status = barReadiness(board, item, { signature: false });
     if (status.missing.length) throw new Refused('BAR_NOT_READY', `#${id} needs ${status.missing.join('; ')}; edit the brief or wait for its baseline before signing`);
     if (status.revision.revision !== revision || status.revision.digest !== digest) throw new Refused('BAR_SIGN_STALE', `#${id}'s bar changed; read it again before pullboard bar sign ${id}`);
-    const signerParent = parent(board, agentId);
+    const signerActor = normalizeBarActor(barActor);
+    const signerParent = signerActor.parent;
     const authors = Object.values(status.revision.authors);
     if (!signerParent || authors.some(author => !author.parent)) throw new Refused('BAR_PARENT_UNKNOWN', `#${id} needs known author and signer session identities; join from the real runtime session, then author a new bar revision`);
     if (authors.some(author => author.agent === agentId || author.parent === signerParent)) throw new Refused('BAR_SELF_SIGN', `#${id}'s author and its helpers cannot sign their own bar; ask another parent session`);
     if (typeof note !== 'string' || !note.trim()) throw new Refused('NOTE_REQUIRED', 'say whether a builder can meet this bar and two reviewers would grade it the same: --note "..."');
     const plan = normalizeBarCoverage(coverage, item);
-    const signed = { revision, digest, coverage: plan, coverageDigest: barCoverageDigest(plan), baselineDigest: status.baselineDigest, authorParents: authors, signerParent, note: note.trim() };
+    const signed = { revision, digest, coverage: plan, coverageDigest: barCoverageDigest(plan), baselineDigest: status.baselineDigest, authorParents: authors, signerParent, signerSession: signerActor.session, note: note.trim() };
     logEvent(board, agentId, 'bar-sign', id, signed);
     save(board, `bar_sign:${id}`, { ...signed, by: agentId, event: board.lastEvent.event_id });
     return { id, ...signed };

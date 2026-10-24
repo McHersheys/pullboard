@@ -1,4 +1,5 @@
-import { barReadinessRequired, barReadiness } from './bar-readiness.js';
+import { nativeBarActor } from './bar-actor.js';
+import { barReadinessRequired, barReadiness, barReadySetting } from './bar-readiness.js';
 import { barCoverageCommand, barCoverageForPolicy } from './bar-coverage.js';
 /**
  * The pullboard command line: every command, bound to who is asking (B3, R3). The main checkout is the
@@ -897,6 +898,11 @@ function relayOutboxSetting(root) {
 }
 
 export async function ordered(ctx, board, operation, args) {
+  if (['addItem','editItem','signBar'].includes(operation) && barReadySetting(board).enabled) {
+    const at = operation === 'addItem' ? 0 : 1;
+    const barActor = ctx.io.personChannel === 'view' || ctx.io.personRequest ? null : nativeBarActor();
+    args = args.map((value, index) => index === at ? { ...value, barActor } : value);
+  }
   const initialBaseline = initialSpecApprovalBaseline(ctx, board, operation);
   // Only a reject or a reopen can open a builder's first-refusal window (#954), so an accept never reads the coordinator's policy.
   if (operation === 'reopen' || operation === 'verify' && args[1]?.decision === 'REJECT') args = firstRefusalArgs(operation, args, configFromSource(coordinatorFile(ctx.info.root, CONFIG_FILE).stdout));
