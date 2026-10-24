@@ -1122,8 +1122,10 @@ test('an expired saved pairing preserves a valid identity when its session probe
   } finally { if (first) await first.close(); }
   for (const unavailable of [false, true]) await t.test(unavailable ? 'unavailable probe' : 'valid session', async () => {
     let probes = 0;
+    let listings = 0;
     const route = front.route(session, null);
     const page = await context.newPage({ phone: true, bootstrap: storedScript('stale-pairing'), route: async request => {
+      if (new URL(request.url).pathname === '/api/v1/boards') listings += 1;
       if (new URL(request.url).pathname === '/api/v1/devices/session') {
         probes += 1;
         if (unavailable) return { kind: 'fulfill', status: 503, headers: { 'content-type': 'application/json' },
@@ -1144,8 +1146,9 @@ test('an expired saved pairing preserves a valid identity when its session probe
         assert.ok(await page.poll(`(${READ_SCREEN}).board`, 8_000), 'valid paired identity opens its board despite the expired link'); // budget: fixture settle ceiling.
         assert.doesNotMatch((await page.evaluate(READ_SCREEN)).words, /fresh phone pairing link/u);
       }
-      assert.equal(probes, unavailable ? 1 : 2, unavailable ? 'only the cause-specific session probe ran'
-        : 'startup and the opened cockpit each perform their normal authorized listing');
+      if (!unavailable) assert.ok(listings > 0, 'the opened board requests its normal listings');
+      assert.equal(probes, unavailable ? 1 : listings, unavailable ? 'only the cause-specific session probe ran'
+        : 'each successful listing performs its normal session authorization without an extra expiry probe');
       const screen = await page.evaluate(READ_SCREEN);
       assert.doesNotMatch(screen.words, /browser was removed/iu, 'a valid or unavailable session is not a revocation');
       assert.equal(await page.evaluate("document.getElementById('relay-removed') !== null"), false);
