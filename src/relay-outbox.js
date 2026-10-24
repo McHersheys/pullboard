@@ -47,6 +47,12 @@ import {
 } from './seal.js';
 import { stampCoordinatorHolder } from './coordinator-hold.js';
 import { Refused } from './refused.js';
+import {
+  createdItemAt,
+  createsItems,
+  entryCreatedItems,
+  rememberCreatedItems,
+} from './relay-created-items.js';
 
 /** How many replay refusals the link keeps for pullboard status; older ones stay in the relay's own receipts. */
 const KEPT_REFUSALS = 20;
@@ -72,7 +78,7 @@ export async function readOutbox(file, key, boardId) {
   if (!existsSync(file)) return null;
   const plain = await unseal(key, readFileSync(file), { boardId, kind: 'outbox', sequence: 0 });
   const document = JSON.parse(gunzipSync(plain).toString('utf8'));
-  if (document?.version !== 1 || !Array.isArray(document.moves) || !document.base || !Number.isSafeInteger(document.baseSequence)) {
+  if (![1, 2].includes(document?.version) || !Array.isArray(document.moves) || !document.base || !Number.isSafeInteger(document.baseSequence)) {
     throw new Refused('RELAY_OUTBOX', 'the relay outbox on this machine is unreadable; keep it, and ask for help before relinking this board');
   }
   return document;
@@ -80,6 +86,10 @@ export async function readOutbox(file, key, boardId) {
 
 /** Seal and atomically replace the outbox, readable only by this user. */
 export async function writeOutbox(file, key, boardId, document) {
+  // Old clients must refuse richer result bindings rather than treating temporary item numbers as final.
+  if (document.moves.some(entry => (entry.move.operation !== 'addItem' && createsItems(entry.move.operation))
+      || entry.created?.some(row => row.resultPath.length)
+      || entry.refs?.some(ref => ref.resultPath?.length))) document.version = 2;
   const sealed = await seal(key, gzipSync(Buffer.from(JSON.stringify(document))), { boardId, kind: 'outbox', sequence: 0 });
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   const temporary = file + '.' + randomUUID() + '.tmp';
@@ -227,7 +237,7 @@ const ITEM_KEYS = /^(id|ids|item|items|itemId|parentId|after|implies|add|remove|
  * queued, because the outbox could not follow the item if the relay renumbers it (#922).
  */
 export function strayItemRefs(outbox, move) {
-  const pending = new Set(outbox.moves.filter((entry) => Number.isSafeInteger(entry.visible)).map((entry) => entry.visible));
+  const pending = new Set(outbox.moves.flatMap(entryCreatedItems).map(row => row.item));
   if (!pending.size) return [];
   const declared = new Set(itemSlots(move).map((path) => JSON.stringify(path)));
   const found = [];
@@ -248,8 +258,10 @@ export function strayItemRefs(outbox, move) {
  * that number, and a replay part way through renumbers it here, so only the add itself names the item (#922).
  */
 export function bindRefs(outbox, move) {
-  const pending = new Map(outbox.moves.filter((entry) => Number.isSafeInteger(entry.visible)).map((entry) => [entry.visible, entry.move.id]));
-  return itemSlots(move).filter((path) => pending.has(itemNumber(slot(move, path)))).map((path) => ({ path, add: pending.get(itemNumber(slot(move, path))) }));
+  const pending = new Map(outbox.moves.flatMap(entry => entryCreatedItems(entry).map(row => [row.item,
+    { add: entry.move.id, ...(row.resultPath.length ? { resultPath: row.resultPath } : {}) }])));
+  return itemSlots(move).filter((path) => pending.has(itemNumber(slot(move, path))))
+    .map(path => ({ path, ...pending.get(itemNumber(slot(move, path))) }));
 }
 
 /**
@@ -259,10 +271,12 @@ export function bindRefs(outbox, move) {
 export function resolveMove(entry, outbox, { local = false } = {}) {
   const move = structuredClone(entry.move);
   const lost = [];
-  for (const { path, add } of entry.refs ?? []) {
+  for (const { path, add, resultPath = [] } of entry.refs ?? []) {
     const waiting = local ? outbox.moves.find((other) => other.move.id === add) : null;
-    const value = waiting ? waiting.visible : outbox.results?.[add];
-    if (value === null) lost.push(itemNumber(slot(entry.move, path)));
+    const result = outbox.results?.[add];
+    const value = waiting ? entryCreatedItems(waiting).find(row => JSON.stringify(row.resultPath) === JSON.stringify(resultPath))?.item
+      : createdItemAt(result, resultPath);
+    if (result === null && !waiting || value === undefined) lost.push(itemNumber(slot(entry.move, path)));
     else if (Number.isSafeInteger(value)) slot(move, path, sameForm(slot(entry.move, path), value));
   }
   return { move, lost };
@@ -349,8 +363,8 @@ export async function queueMove(link, { operation, args, command, move, error, a
     saveOutboxSummary(link, outbox);
     throw refusal;
   }
-  if (move.operation === 'addItem' && Number.isSafeInteger(result)) {
-    entry.visible = result;
+  if (createsItems(move.operation)) {
+    rememberCreatedItems(entry, result);
     await writeOutbox(where, key, state.board, outbox);
   }
   if (!OUTBOX_NOTICES.has(io)) {
@@ -380,7 +394,7 @@ async function rebaseOutbox(link, outbox, key) {
       catch (error) { if (!(error instanceof Refused)) throw error; return null; }
     });
     // A re-applied add may get another number here; later moves reach it through their bound add, not the number.
-    if (move.operation === 'addItem' && Number.isSafeInteger(result)) entry.visible = result;
+    rememberCreatedItems(entry, result);
   }
   await writeOutbox(outboxFile(file), key, state.board, outbox);
 }
@@ -457,12 +471,14 @@ export async function flushOutbox(link) {
         const earlier = localRecords(root, (board) => earlierMoves(board, { ...entry, move: resolveMove(entry, outbox).move }, sequence));
         io.err(`pullboard: ${keepRefusal(state, entry, receipt.outcome.error, earlier)}`);
       }
-      if (entry.move.operation === 'addItem') {
+      if (createsItems(entry.move.operation)) {
         outbox.results[entry.move.id] = receipt.outcome.error ? null : receipt.outcome.result;
-        const is = receipt.outcome.result;
-        if (!receipt.outcome.error && Number.isSafeInteger(entry.visible) && Number.isSafeInteger(is) && is !== entry.visible) {
-          state.outboxRenumbered = [...(state.outboxRenumbered ?? []), { was: entry.visible, is }].slice(-KEPT_REFUSALS);
-          io.err(`pullboard: the item this machine showed as #${entry.visible} while the relay was down is #${is} on the board; its queued moves follow it`);
+        for (const { item: was, resultPath } of entryCreatedItems(entry)) {
+          const is = createdItemAt(receipt.outcome.result, resultPath);
+          if (!receipt.outcome.error && Number.isSafeInteger(is) && is !== was) {
+            state.outboxRenumbered = [...(state.outboxRenumbered ?? []), { was, is }].slice(-KEPT_REFUSALS);
+            io.err(`pullboard: the item this machine showed as #${was} while the relay was down is #${is} on the board; its queued moves follow it`);
+          }
         }
       }
       await finishEntry(link, outbox, where, key);
