@@ -8,8 +8,15 @@ import { serveApi } from '../src/api.js';
 import * as store from '../src/board.js';
 import { main } from '../src/cli.js';
 import { receiptBody } from '../src/gate-run-receipt.js';
+import { clearProofCounters } from '../src/proof-counters.js';
+import {
+  ruleProofCounts,
+  ruleProofWindow,
+} from '../src/rule-proof-counts.js';
+import { loadSpec } from '../src/spec.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { fetchFresh } from './http-fixture.js';
+import { runFixtureChild } from './fixture-child.js';
 
 const helpers = createE2eHelpers();
 test.after(helpers.cleanup);
@@ -51,8 +58,8 @@ function fixture(spec = SPEC) {
 }
 
 /** Append a bound, schema-valid historical fixture receipt through the board's ordinary recording operation. */
-function seedRun(box, { head = box.head, main = head, green = true, days = 0, command = GATE, failures = [] } = {}) {
-  const receipt = { version: 1, id: randomUUID(), kind: 'gate', head, main,
+function seedRun(box, { head = box.head, main = head, green = true, days = 0, command = GATE, failures = [], kind = 'gate' } = {}) {
+  const receipt = { version: 1, id: randomUUID(), kind, head, main,
     tree: box.git(box.root, 'rev-parse', `${head}^{tree}`).trim(),
     command: createHash('sha256').update(command).digest('hex'), green, failures,
     at: new Date(Date.now() - days * 86_400_000).toISOString(), load: { average: [0, 0, 0], cpus: 1, freeMB: 100 } };
@@ -99,6 +106,96 @@ test('the server reports how many rule rows are proven, unproven and contradicte
   assert.deepEqual(after.map(document => document.ruleCounts), [proven, proven], 'current green and this-week red are independent counts; API event invalidation refreshes both');
   const none = { approved: 0, gated: 0, ungated: 0, proven: 0, unproven: 0, contradicted: 0 };
   assert.deepEqual((await documents(empty, api)).map(document => document.ruleCounts), [none, none]);
+});
+
+test('a read-only legacy board retains recent red counts and exact expiry without warming proof indexes [S1,A1,A2,C7]', (t) => {
+  const box = fixture();
+  t.after(() => store.closeBoard(box.board));
+  seedRun(box, { green: false, days: 2,
+    failures: [{ file: 'test/contradicted.test.js', name: 'legacy recent red' }] });
+  seedRun(box, { green: false, days: 1, kind: 'submit',
+    failures: [{ file: 'test/unproven.test.js', name: 'submission is not trunk gate proof' }] });
+  seedRun(box);
+  const runs = store.gateRuns(box.board);
+  const red = runs.find(run => run.kind === 'gate' && !run.green);
+  const submit = runs.find(run => run.kind === 'submit');
+  assert.ok(red && submit, 'the private board has validated historical receipts of both kinds');
+  // A pre-projection board or a disposable cache loss keeps its authoritative native history.
+  clearProofCounters(box.board);
+  const rows = loadSpec(box.root, { spec: 'SPEC.md' }).rows;
+  const snapshot = box.board.db.prepare('SELECT event_id,event_detail FROM event ORDER BY event_id').all();
+  const changes = box.board.db.prepare('SELECT total_changes() AS n').get().n;
+  box.board.db.exec('PRAGMA query_only=ON');
+  const week = 7 * 86_400_000;
+  const end = Date.parse(red.at) + week;
+  const atBoundary = ruleProofCounts(box.root, box.board, rows, { now: end });
+  assert.equal(atBoundary.contradicted, 1, 'recent native trunk red remains visible at the inclusive seven-day boundary');
+  assert.equal(atBoundary.proven, 0, 'missing coverage projection never invents green proof');
+  assert.deepEqual(ruleProofWindow(box.board, new Date(end).toISOString()), {
+    events: [red.eventId, submit.eventId], nextExpiry: new Date(end + 1).toISOString(),
+  }, 'the window deliberately retains submit-red invalidation while proof counts exclude it');
+  const expired = ruleProofCounts(box.root, box.board, rows, { now: end + 1 });
+  assert.equal(expired.contradicted, 0, 'the native red expires one millisecond after seven days without a write');
+  assert.deepEqual(ruleProofWindow(box.board, new Date(end + 1).toISOString()), {
+    events: [submit.eventId], nextExpiry: new Date(Date.parse(submit.at) + week + 1).toISOString(),
+  });
+  assert.equal(box.board.db.prepare('SELECT total_changes() AS n').get().n, changes);
+  assert.deepEqual(box.board.db.prepare('SELECT event_id,event_detail FROM event ORDER BY event_id').all(), snapshot);
+});
+
+/** Simulate only a private reader's parser context after imports; the child still runs the real current Node. */
+function simulatedReaderContext(box, identity) {
+  const script = `
+import * as store from ${JSON.stringify(new URL('../src/board.js', import.meta.url).href)};
+import { ruleProofCounts } from ${JSON.stringify(new URL('../src/rule-proof-counts.js', import.meta.url).href)};
+import { loadSpec } from ${JSON.stringify(new URL('../src/spec.js', import.meta.url).href)};
+const root = ${JSON.stringify(box.root)};
+const actualRuntime = { execPath: process.execPath, version: process.version };
+const board = store.openBoard(${JSON.stringify(join(box.root, '.git', 'pullboard', 'board.sqlite'))}, undefined, { isMain: false });
+const rows = loadSpec(root, { spec: 'SPEC.md' }).rows;
+const simulated = ${JSON.stringify(identity)};
+Object.defineProperty(process, 'execPath', { value: simulated.execPath });
+Object.defineProperty(process, 'version', { value: simulated.version });
+board.db.exec('PRAGMA query_only=ON');
+try {
+  const before = board.db.prepare('SELECT total_changes() AS n').get().n;
+  const ruleCounts = ruleProofCounts(root, board, rows);
+  const after = board.db.prepare('SELECT total_changes() AS n').get().n;
+  console.log(JSON.stringify({ actualRuntime, simulated, ruleCounts, writes: after - before }));
+} finally { store.closeBoard(board); }
+`;
+  const result = runFixtureChild(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: box.root, env: box.env, encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, result.failure ?? result.stderr);
+  const document = JSON.parse(result.stdout.trim());
+  assert.deepEqual(document.actualRuntime, { execPath: process.execPath, version: process.version },
+    'this fixture simulates read-context properties; it does not claim an alternate runtime executed');
+  assert.equal(document.writes, 0);
+  return document.ruleCounts;
+}
+
+test('literal-node rule proof survives simulated reader runtime changes while absolute-node proof stays path-bound [S1,A1,A2,C7]', (t) => {
+  const literal = fixture();
+  const absolute = fixture();
+  t.after(() => { store.closeBoard(literal.board); store.closeBoard(absolute.board); });
+  seedRun(literal);
+  const changedContext = { execPath: process.execPath + '.other-installation', version: 'v24.0.0' };
+  assert.equal(simulatedReaderContext(literal, changedContext).proven, 2,
+    'literal node coverage is independent of the reader installation path and supported version');
+  const command = JSON.stringify(process.execPath) + ' --test test/proven.test.js test/both.test.js';
+  writeFileSync(join(absolute.root, 'pullboard.json'), JSON.stringify({ ...helpers.CONFIG, gate: command }));
+  absolute.git(absolute.root, 'add', 'pullboard.json');
+  absolute.git(absolute.root, 'commit', '-q', '-m', 'chore(fixture): configure absolute Node gate');
+  absolute.head = absolute.git(absolute.root, 'rev-parse', 'HEAD').trim();
+  seedRun(absolute, { command });
+  const samePath = { execPath: process.execPath, version: 'v24.0.0' };
+  assert.equal(simulatedReaderContext(absolute, samePath).proven, 2,
+    'an unchanged absolute command path keeps its proof across reader version labels');
+  assert.equal(simulatedReaderContext(absolute, changedContext).proven, 0,
+    'a reader with another executable path does not reinterpret the absolute command');
+  assert.equal(simulatedReaderContext(literal, changedContext).proven, 2,
+    'separate absolute-command records never downgrade the literal-node board');
 });
 
 test('a gate command with npm flags counts as opaque [S1,A1,A2]', async (t) => {
