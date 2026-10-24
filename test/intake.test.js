@@ -175,3 +175,17 @@ test('renaming an existing sealing boundary cannot hide its touched old path [B2
   const filed = fixtureJSON(box, box.repo, 'intake', box.pull.html_url, '--criterion', 'the fixture behavior works', '--check', 'node --test test/contribution.test.js');
   assert.ok(filed.item.outside.sensitivity.some(reason => reason.path === 'src/seal.js' && reason.rule === 'declared-sensitive-path'), 'the exact old trust-boundary path remains part of the owner decision after a GitHub rename');
 });
+
+
+test('trusted pinned browser images use the sandbox protocol without changing actual Node roles [V3,C7]', t => {
+  const box = intakeFixture(t);
+  const filed = fixtureJSON(box, box.repo, 'intake', box.pull.html_url, '--criterion', 'the fixture behavior works', '--check', 'node --test test/contribution.test.js');
+  const id = String(filed.item.item_id);
+  // A transport double models the custom image reference; this case is not real Chrome/container execution.
+  const images = { minimum: 'ghcr.io/fixture/node-chrome-min@sha256:' + '3'.repeat(64), current: 'ghcr.io/fixture/node-chrome-current@sha256:' + '4'.repeat(64) };
+  configureFixtureSandbox(box, { images });
+  assert.equal(fixtureJSON(box, box.web, 'verify', id, 'accept', '--sandbox', '--note', 'trusted browser image protocol').decision, 'ACCEPT');
+  const runs = fixtureJSON(box, box.repo, 'show', id).outside.sandbox.runs;
+  assert.deepEqual(runs.map(run => run.image), [images.minimum, images.current]);
+  assert.deepEqual(runs.map(run => run.environment.node), ['22.13.1', '24.21.0']);
+});

@@ -97,10 +97,10 @@ process.stdout.write(JSON.stringify(args.includes('--slurp')?[value]:value));\n`
 }
 
 /** Configure a Docker CLI protocol double, explicitly not a real container/runtime proof. */
-export function configureFixtureSandbox(box) {
+export function configureFixtureSandbox(box, { images = null } = {}) {
   const dockerLog = join(box.dir, 'docker-calls.jsonl');
-  const minimum = 'node@sha256:' + '1'.repeat(64);
-  const current = 'node@sha256:' + '2'.repeat(64);
+  const minimum = images?.minimum ?? 'node@sha256:' + '1'.repeat(64);
+  const current = images?.current ?? 'node@sha256:' + '2'.repeat(64);
   const docker = executable(box, 'fixture-docker', `const fs=require('node:fs'); const args=process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(dockerLog)},JSON.stringify({args,secret:process.env.HOST_SECRET??null,credential:process.env.GH_TOKEN??null})+'\\n');
 const image=args.find(arg=>arg.includes('@sha256:'))||''; const minimum=image===${JSON.stringify(minimum)};
