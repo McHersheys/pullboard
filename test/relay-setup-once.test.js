@@ -210,7 +210,16 @@ test('set up once links three registered boards, later registration and a persis
   assert.equal(completed.document.linked.length, 3);
   assert.equal(completed.document.paired, true);
   await pageWait(chrome, 'initial pairing renders registered boards', "document.querySelectorAll('#proj-list .proj.repo').length === 3");
-  assert.equal(await pageEvaluate(chrome, 'initial pairing strips the one-use fragment', 'location.hash'), '', 'the one-use secret is stripped from browser history');
+  // Rows render before the router replaces the stripped fragment with the board's ordinary address.
+  await pageWait(chrome, 'initial pairing settles the board address', "history.state?.tab === 'home' && typeof history.state.root === 'string' && location.hash === '#repository/home'");
+  const pairedUrl = await pageEvaluate(chrome, 'initial pairing reads the settled address', 'location.href');
+  const navigation = await chrome.send('Page.getNavigationHistory');
+  assert.ok(navigation.entries.length > 0, 'the actual browser history is inspected');
+  for (const url of [pairedUrl, ...navigation.entries.map(entry => entry.url)]) {
+    assert.equal(url.includes('device='), false, 'the one-use pairing fragment is absent from the address and history');
+    assert.equal(url.includes(pending.locator), false, 'the pairing locator is absent from the address and history');
+    assert.equal(url.includes(pending.secret), false, 'the one-use secret is absent from the address and history');
+  }
   const device = await pageEvaluate(chrome, 'initial pairing reads the persisted device key', browserDeviceExpression());
   assert.equal(device.extractable, false, 'the private phone key is persisted non-extractable in IndexedDB');
   assert.equal(JSON.parse(readFileSync(machineFile, 'utf8')).devices[0].deviceId, device.id);
