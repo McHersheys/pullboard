@@ -856,7 +856,7 @@ document.addEventListener('click', (event) => {
   }
   else if (t.dataset.sentinelDecision) {
     const name = t.dataset.sentinelName, digest = t.dataset.sentinelDigest;
-    if (t.dataset.sentinelDecision === 'approve') act('sentinel-approve', { name, digest }, t.closest('[data-sentinel-draft]'));
+    if (t.dataset.sentinelDecision === 'approve') act('sentinel-approve', { name, digest }, $('needs'));
     else askDecline('sentinel', name, 'needs', digest, t);
   }
   else if (t.dataset.sectionApprove) askApproveAll(t.dataset.sectionApprove);
@@ -938,7 +938,7 @@ $('spec-decline-form').addEventListener('submit', (event) => {
   const asked = closeDecline();
   if (asked.root !== view.root) return;
   if (asked.kind === 'sentinel') {
-    act('sentinel-decline', { name: asked.id, digest: asked.digest, reason }, asked.anchor?.closest('[data-sentinel-draft]'));
+    act('sentinel-decline', { name: asked.id, digest: asked.digest, reason }, $('needs'));
     return;
   }
   const anchor = asked.from === 'detail' ? $(asked.kind + '-detail') : [...$(asked.kind + '-list').querySelectorAll('[data-row]')].find((row) => row.dataset.row === asked.kind + ':' + asked.id);
