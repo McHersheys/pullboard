@@ -6,10 +6,10 @@ import { SPEC_REVISION_ENGINE } from '../spec-revision-engine.js';
 
 /** Preserve this operation's historical first-matching engine conditions [H16]. */
 function minimumEngine(args, board, at) {
-  if (args[0]?.decisions?.some(record => record.revision !== undefined)) return Math.max(SPEC_REVISION_ENGINE,
+  if (Array.isArray(args[0]?.decisions) && args[0].decisions.some(record => record?.revision !== undefined)) return Math.max(SPEC_REVISION_ENGINE,
     args[0]?.landingFence === undefined ? 0 : LANDING_LEASE_ENGINE,
-    args[1]?.cause?.startsWith('conflict:') ? RIGOR_AUTO_ENGINE : 0,
-    args[1]?.cause?.startsWith('sentinel:') ? BOARD_SENTINEL_ENGINE : 0);
+    typeof args[1]?.cause === 'string' && args[1].cause.startsWith('conflict:') ? RIGOR_AUTO_ENGINE : 0,
+    typeof args[1]?.cause === 'string' && args[1].cause.startsWith('sentinel:') ? BOARD_SENTINEL_ENGINE : 0);
   if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('conflict:')) return RIGOR_AUTO_ENGINE;
   if (args[0]?.landingFence !== undefined) return LANDING_LEASE_ENGINE;
   if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('sentinel:')) return BOARD_SENTINEL_ENGINE;

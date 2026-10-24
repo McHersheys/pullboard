@@ -7,8 +7,8 @@ import { BOARD_SENTINEL_ENGINE } from '../sentinel-engine.js';
 /** Retain every applicable surrounding operation floor, including overlapping payload features. */
 function minimumEngine(args) {
   return Math.max(SPEC_REVISION_ENGINE, args[0]?.landingFence === undefined ? 0 : LANDING_LEASE_ENGINE,
-    args[1]?.cause?.startsWith('conflict:') ? RIGOR_AUTO_ENGINE : 0,
-    args[1]?.cause?.startsWith('sentinel:') ? BOARD_SENTINEL_ENGINE : 0);
+    typeof args[1]?.cause === 'string' && args[1].cause.startsWith('conflict:') ? RIGOR_AUTO_ENGINE : 0,
+    typeof args[1]?.cause === 'string' && args[1].cause.startsWith('sentinel:') ? BOARD_SENTINEL_ENGINE : 0);
 }
 
 /** The operation's first argument carries its authenticated person actor. */
