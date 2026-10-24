@@ -22,7 +22,9 @@ async function publisherDone(box, from, uploads) {
     await new Promise(next => setTimeout(next, 100));
   }
   const log = join(directory, 'relay-checkpoint.log');
-  assert.fail(`the background publisher sent no checkpoint: ${existsSync(log) ? readFileSync(log, 'utf8') : 'no publisher log'}`);
+  const seen = ['relay-checkpoint.due', 'relay-checkpoint.pid'].filter(name => existsSync(join(directory, name)));
+  const settings = Object.keys(box.env).filter(name => /^PULLBOARD_RELAY|^NODE_OPTIONS$|^CI$/u.test(name));
+  assert.fail(`the background publisher sent no checkpoint: ${existsSync(log) ? readFileSync(log, 'utf8') : 'no publisher log'}; files: ${seen.join(', ') || 'none'}; child settings named: ${settings.join(', ') || 'none'}`);
 }
 
 test('a move on a large board sends only its event and never the checkpoint [H5]', async (t) => {
