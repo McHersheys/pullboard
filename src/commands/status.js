@@ -1,6 +1,8 @@
 /** The pullboard status command, in its own module so an item adding another command never edits these lines. */
 import * as store from '../board.js';
 import { personNeedsSummary } from '../needs-state.js';
+import { projectRowDecisions } from '../row-decisions.js';
+import { ruleProofCounts } from '../rule-proof-counts.js';
 import {
   reviewQueueLine,
 } from '../next-steps.js';
@@ -34,7 +36,8 @@ export function run(io, { values }) {
     const me = whoAmI(ctx, board);
     const mine = store.itemsInStatus(board, 'claimed', me.id);
     const approvalState = personNeedsSummary(ctx.info.root, { board, config: ctx.config });
-    return { me, mine, needs: approvalState.needs, specApprovalBaseline: approvalState.specApprovalBaseline, specApprovalEvidenceErrors: approvalState.specApprovalEvidenceErrors, stats: store.stats(board), reviewQueue: { ...store.reviewQueue(board), ...store.reviewQueueBreakdown(board) }, unread: store.unreadCount(board, me.id), relay: relayStatus(ctx.info.root),
+    const rows = projectRowDecisions(store.rowDecisions(board), { root: ctx.info.root, spec: loadSpec(ctx.info.root, ctx.config).rows }).spec;
+    return { me, mine, ruleCounts: ruleProofCounts(ctx.info.root, board, rows), needs: approvalState.needs, specApprovalBaseline: approvalState.specApprovalBaseline, specApprovalEvidenceErrors: approvalState.specApprovalEvidenceErrors, stats: store.stats(board), reviewQueue: { ...store.reviewQueue(board), ...store.reviewQueueBreakdown(board) }, unread: store.unreadCount(board, me.id), relay: relayStatus(ctx.info.root),
       submitInvariantProposals: submitInvariantProposals(store.submitInvariantEvents(board, ctx.config), ctx.config) };
   });
   if (values.json) {
