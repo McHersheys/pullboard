@@ -1,5 +1,9 @@
 /** Baseline observations and their immutable completion fences [V2,H16]. */
-import { atomic, itemById, logEvent } from './board.js';
+import {
+  atomic,
+  itemById,
+  logEvent,
+} from './board.js';
 import { COORDINATOR } from './config.js';
 import { Refused } from './refused.js';
 

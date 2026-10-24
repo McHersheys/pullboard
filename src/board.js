@@ -1,6 +1,14 @@
-import { recordBarRevision, barReadyProblem } from './bar-readiness.js';
+import {
+  recordBarRevision,
+  barReadyProblem,
+} from './bar-readiness.js';
 export { setBarReady, signBar } from './bar-readiness.js';
-import { coordinatorCheck, normalizeCheckBaseline, saveCheckBaseline, itemCheckBaseline } from './item-check-baseline.js';
+import {
+  coordinatorCheck,
+  normalizeCheckBaseline,
+  saveCheckBaseline,
+  itemCheckBaseline,
+} from './item-check-baseline.js';
 export { coordinatorCheck, completeCheckBaseline, itemCheckAuthor } from './item-check-baseline.js';
 import { recordVerdict } from './verdict-assurance.js';
 import { logEvent } from './board-event-log.js';

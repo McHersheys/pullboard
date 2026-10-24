@@ -1,4 +1,7 @@
-import { timingFromOutput, timingRunner } from './timing.js';
+import {
+  timingFromOutput,
+  timingRunner,
+} from './timing.js';
 /** Observe a proposed check on an isolated copy of main before recording its move [V2,H16]. */
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';

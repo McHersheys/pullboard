@@ -1,6 +1,9 @@
 /** Captured whole-file obligations share one signed, frozen project command [V2,V4]. */
 import { createHash } from 'node:crypto';
-import { readFileSync, statSync } from 'node:fs';
+import {
+  readFileSync,
+  statSync,
+} from 'node:fs';
 import { resolve } from 'node:path';
 import { briefFiles } from './brief.js';
 import { git } from './git.js';

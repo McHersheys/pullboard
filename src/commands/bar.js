@@ -2,8 +2,17 @@ import { prepareBarCoverage } from '../bar-coverage.js';
 import { mainPolicy } from '../trusted-policy.js';
 /** Inspect, enable and independently sign acceptance bars [B4,V1,V2,H16]. */
 import { getItem } from '../board.js';
-import { barReadiness, barReadySetting } from '../bar-readiness.js';
-import { actOn, barActorForCommand, idArg, ordered, personMode } from '../cli.js';
+import {
+  barReadiness,
+  barReadySetting,
+} from '../bar-readiness.js';
+import {
+  actOn,
+  barActorForCommand,
+  idArg,
+  ordered,
+  personMode,
+} from '../cli.js';
 import { Refused } from '../refused.js';
 
 /** Run the board-scoped readiness setting or show/sign one exact revision. */

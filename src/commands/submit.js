@@ -1,4 +1,7 @@
-import { barReadySetting, barReadyProblem } from '../bar-readiness.js';
+import {
+  barReadySetting,
+  barReadyProblem,
+} from '../bar-readiness.js';
 import { requireSubmitComposition } from '../submit-composition.js';
 /** The pullboard submit command, in its own module so an item adding another command never edits these lines. */
 import * as store from '../board.js';

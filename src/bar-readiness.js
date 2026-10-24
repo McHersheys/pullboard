@@ -1,8 +1,15 @@
 import { normalizeBarActor } from './bar-actor.js';
-import { normalizeBarCoverage, barCoverageDigest } from './bar-coverage.js';
+import {
+  normalizeBarCoverage,
+  barCoverageDigest,
+} from './bar-coverage.js';
 /** Readiness is a revision-bound peer judgement, with mechanical prerequisites [B4,V1,V2,H16]. */
 import { createHash } from 'node:crypto';
-import { atomic, itemById, logEvent } from './board.js';
+import {
+  atomic,
+  itemById,
+  logEvent,
+} from './board.js';
 import { itemCheckBaseline } from './item-check-baseline.js';
 import { agentParent } from './seats.js';
 import { ENGINE_VERSION } from './machine.js';

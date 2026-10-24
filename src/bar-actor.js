@@ -4,7 +4,10 @@ import { requirePersonChannel } from './person.js';
 import { barReadySetting } from './bar-readiness.js';
 import { agentParent } from './seats.js';
 /** Current bar authorship survives native takeover without rewriting historical seats [V1,H16]. */
-import { runtimeSessionIdentity, parentSessionDigest } from './parent-session.js';
+import {
+  runtimeSessionIdentity,
+  parentSessionDigest,
+} from './parent-session.js';
 import { Refused } from './refused.js';
 
 /** Capture only this runtime's own session and discovered parent before sealing an ordered move. */
