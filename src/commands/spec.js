@@ -247,7 +247,7 @@ export async function specCommand(io, { first, second, rest, values }) {
       if (missing.length) throw new Refused('NO_EVIDENCE', `${missing.join(', ')} has no evidence; build it or cite its id in a test first`);
       const completed = await requireSignedPerson(ctx, board, whoAmI(ctx, board), { verb: 'spec-approve', args: { ids: ids.join(',') } }, rows.map(({ id, text }) => ({ id, text })));
       if (completed === null) throw new Refused('PERSON_SIGNED', 'confirm optional sign-off as a row approval through its original terminal request', 'run spec approve <ids> with your passkey');
-      io.result?.({ count: ids.length, by: 'person', ids, evidence });
+      io.result?.({ count: ids.length, by: 'person', ids, evidence, ...io.personConfirmation });
       return completed;
     });
   }

@@ -46,6 +46,7 @@ export async function awaitPersonConfirmation(ctx, board, request, where, { wait
     if (record?.status === 'done' || record?.coordinatorRequest && Object.hasOwn(record, 'result')) {
       const result = { ...confirmedResult(record), request: request.id, status: record.status,
         ...(record.coordinatorRequest ? { coordinatorRequest: record.coordinatorRequest } : {}) };
+      ctx.io.personConfirmation = { request: result.request, status: result.status };
       ctx.io.result?.(result);
       ctx.io.say(`passkey-confirmed request ${request.id} ${record.coordinatorRequest ? 'sent to the coordinator' : 'completed'}`);
       return 0;
