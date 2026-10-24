@@ -1,3 +1,4 @@
+import { submitFixture as submitBoardStateFixture } from './board-submit-fixture.js';
 import { createHash } from 'node:crypto';
 /** @pullboard-test-loads src/board.js src/engine.js src/exchange.js */
 /** Two independent Git/SQLite replicas derive verdict freshness without rewriting proof [E8]. */
@@ -1053,4 +1054,67 @@ test('an agent grant narrows at claim for accepted numeric-text item ids [E21,H1
   assert.equal(fact('1', 'Text cannot extend an expired lease', expired).error?.code, 'AGENT_GRANT_EXPIRED');
   assert.equal(fact('999999', 'A missing target stays missing', expired).error?.code, 'NO_ITEM');
   assert.equal(fact('not-an-id', 'Malformed text keeps its existing refusal', expired).error?.code, 'NO_ITEM');
+});
+
+/** Real Git and two private SQLite replicas; seeded acceptances are lifecycle fixtures, not executed gates. */
+test('an agent grant narrows at claim without trapping its own verdict withdrawal [E21,V2,V6,H16]', t => {
+  const box = helpers.project();
+  let instant = Date.parse('2026-10-24T00:00:00Z');
+  const clock = { now: () => new Date(instant) };
+  const boards = ['withdraw-grant-primary.sqlite', 'withdraw-grant-peer.sqlite']
+    .map(name => store.openBoard(join(box.dir, name), clock));
+  t.after(() => boards.forEach(board => store.closeBoard(board)));
+  const primary = boards[0];
+  store.register(primary, { lane: 'coordinator', path: box.repo });
+  const builder = store.register(primary, { lane: 'web', path: box.web, route: 'strong', parent: 'withdraw-builder', session: 'builder-child' });
+  const reviewer = store.register(primary, { lane: 'tests', path: join(box.dir, 'withdraw-reviewer'), route: 'strong', parent: 'withdraw-reviewer', session: 'reviewer-child' });
+  const stranger = store.register(primary, { lane: 'tests', path: join(box.dir, 'withdraw-stranger'), route: 'strong', parent: 'withdraw-stranger', session: 'stranger-child' });
+  /** Supply the ordinary frozen criterion for this explicitly synthetic lifecycle setup. */
+  const freeze = item => ({ text: item.item_title, digest: `withdraw:${item.item_id}` });
+  const prior = store.addItem(primary, { by: 'coordinator', lane: 'tests', title: 'Earlier reviewer build' });
+  store.claim(primary, prior, { agentId: reviewer, lane: 'tests', leaseMs: 1000, freeze });
+  const commit = box.git(box.repo, 'rev-parse', 'HEAD');
+  const tree = box.git(box.repo, 'rev-parse', 'HEAD^{tree}');
+  /** Create a current, immutable acceptance through the public board lifecycle. */
+  function accepted(title) {
+    const id = store.addItem(primary, { by: 'coordinator', lane: 'web', title });
+    store.claim(primary, id, { agentId: builder, lane: 'web', leaseMs: 60_000, freeze });
+    submitBoardStateFixture(primary, id, { agentId: builder, commit, tree });
+    store.reserveReview(primary, id, { agentId: reviewer, leaseMs: 60_000, policy: 'any' });
+    store.verify(primary, id, { agentId: reviewer, decision: 'ACCEPT', policy: 'any', head: commit,
+      digest: store.getItem(primary, id).item_frozen_digest, note: 'Private lifecycle state only; no gate execution claimed.' });
+    return id;
+  }
+  const own = accepted('Acceptance held by the different-lane reviewer');
+  const control = accepted('Coordinator withdrawal positive control');
+  instant += 1001;
+  assert.ok(store.getItem(primary, prior).item_lease_until < clock.now().toISOString(), 'the earlier build lease really expired');
+  const original = store.verdictsFor(primary, own)[0];
+  importBoard(boards[1], exportBoard(primary));
+  /** One ordinary ordered move has the same outcome on both independent SQLite replicas. */
+  function replay(operation, args) {
+    const move = prepareEngineMove(primary, operation, args);
+    const outcomes = boards.map(board => applyEngineMove(board, move,
+      { sequence: appliedSequence(board) + 1, at: clock.now().toISOString() }));
+    assert.deepEqual(outcomes[0], outcomes[1], 'the two replicas agree on the actual engine result');
+    return outcomes[0];
+  }
+  const positive = replay('reopen', [control, { agentId: 'coordinator', withdrawVerdict: true,
+    note: 'Positive control of the existing withdrawal lifecycle' }]);
+  assert.equal(positive.error, undefined, 'the fixture supports a valid current verdict withdrawal');
+  const conflict = replay('reopen', [own, { agentId: reviewer, conflict: { files: ['web/page.js'], trunk: commit },
+    note: 'Conflict administration is not a reviewer exception' }]);
+  assert.ok(conflict.error, 'a reviewer cannot substitute conflict reopening for its own verdict withdrawal');
+  const withdrawn = replay('reopen', [String(own), { agentId: reviewer, withdrawVerdict: true,
+    note: 'The reviewer corrects its own current acceptance after its old claim expired' }]);
+  assert.equal(withdrawn.error, undefined, 'own verdict withdrawal remains review administration across lanes and expired build claims');
+  for (const board of boards) {
+    assert.equal(store.getItem(board, own).item_status, 'open');
+    const verdict = store.verdictsFor(board, own).find(row => row.verdict_id === original.verdict_id);
+    assert.equal(verdict.withdrawn, true);
+    assert.equal(verdict.verdict_commit, original.verdict_commit, 'the acceptance continues to name its original commit');
+    assert.equal(verdict.verdict_note, original.verdict_note, 'withdrawal never rewrites the original proof note');
+  }
+  const unrelated = replay('reopen', [control, { agentId: stranger, withdrawVerdict: true, note: 'Not this seat’s verdict' }]);
+  assert.ok(unrelated.error, 'the exception gives a stranger no reopening authority');
 });
