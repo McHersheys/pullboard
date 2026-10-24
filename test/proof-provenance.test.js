@@ -1,6 +1,6 @@
 /** Native provenance rejects borrowed evidence and keeps unknown facts explicit [C7,H16]. */
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -8,6 +8,7 @@ import * as store from '../src/board.js';
 import { prepareEngineMove, applyEngineMove } from '../src/engine.js';
 import { boardReceiptStore, receiptBody, receiptFields } from '../src/gate-run-receipt.js';
 import { proofCounts } from '../src/proof-provenance.js';
+import { bindRefs, resolveMove, strayItemRefs } from '../src/relay-outbox.js';
 import { recordNativeProof } from '../src/proof-cli.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 
@@ -99,4 +100,52 @@ test('proof receipts bind the native actor and replay without the origin filesys
   store.recordProofRun(board, args[0]);
   assert.equal(store.proofReceipts(board, item).length, 1, 'retrying the same receipt is idempotent');
   assert.equal(receiptFields({ ...receipt, proof: { ...receipt.proof, environment: { node: '22', platform: 'darwin' } } }), null);
+});
+
+
+test('an offline proof receipt follows the item its queued add actually creates [B26,H16,C7]', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'pullboard-proof-renumber-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const origin = store.openBoard(join(directory, 'origin.sqlite'));
+  const replica = store.openBoard(':memory:');
+  t.after(() => { store.closeBoard(replica); store.closeBoard(origin); });
+  for (const target of [origin, replica]) {
+    store.register(target, { lane: 'coordinator', path: '/renumber-coordinator' });
+    store.register(target, { lane: 'web', path: '/renumber-builder' });
+  }
+  const addArgs = [{ by: 'coordinator', lane: 'web', title: 'The offline proof item' }];
+  const add = prepareEngineMove(origin, 'addItem', addArgs, { id: 'offline-proof-add', actor: 'coordinator' });
+  const local = store.addItem(origin, addArgs[0]);
+  const unrelated = store.addItem(replica, { by: 'coordinator', lane: 'web', title: 'Another machine took this number' });
+  const at = '2026-10-23T00:00:00.000Z';
+  const added = applyEngineMove(replica, add, { sequence: 1, at });
+  assert.equal(added.error, undefined);
+  const remote = added.result;
+  assert.equal(local, unrelated, 'the competing add consumed the old local number');
+  assert.notEqual(remote, local, 'the actual replay assigned the offline item a different number');
+  // Synthetic receipt storage tests reference binding, not a claim that this fixture executed a gate.
+  const receipt = { version: 2, id: '00000000-0000-4000-8000-00000000b26e', kind: 'check',
+    head: 'a'.repeat(40), tree: 'b'.repeat(40), main: null, command: 'c'.repeat(64), green: false,
+    failures: [], load: null, at,
+    proof: { item: local, frozenDigest: null, seat: 'web-1', environment: null, runner: null, exitCode: 7,
+      counts: { passed: null, failed: null, skipped: null }, durationMs: 37, sourceClean: false } };
+  mkdirSync(boardReceiptStore(origin));
+  const file = join(boardReceiptStore(origin), `${receipt.id}.json`);
+  const nativeBody = receiptBody(receipt);
+  writeFileSync(file, nativeBody);
+  const move = prepareEngineMove(origin, 'recordProofRun', [{ agentId: 'web-1', itemId: local, receiptId: receipt.id }],
+    { id: 'offline-proof-run', actor: 'web-1' });
+  const outbox = { moves: [{ move: add, visible: local }], results: { [add.id]: remote } };
+  assert.deepEqual(strayItemRefs(outbox, move), [], 'every item reference in the canonical proof can be queued');
+  const entry = { move, refs: bindRefs(outbox, move) };
+  const resolved = resolveMove(entry, outbox);
+  assert.deepEqual(resolved.lost, []);
+  assert.equal(resolved.move.args[0].itemId, remote);
+  assert.equal(resolved.move.args[0].receipt.proof.item, remote, 'the canonical receipt and operation stay bound to one item');
+  const replay = applyEngineMove(replica, resolved.move, { sequence: 2, at });
+  assert.equal(replay.error, undefined);
+  assert.equal(store.proofReceipts(replica, remote).length, 1);
+  assert.equal(store.proofReceipts(replica, unrelated).length, 0, 'the other machine item receives no borrowed proof');
+  assert.deepEqual(applyEngineMove(replica, resolved.move, { sequence: 2, at }), replay, 'same-position retry remains idempotent');
+  assert.equal(readFileSync(file, 'utf8'), nativeBody, 'wire reference remapping never edits the origin native receipt file');
 });
