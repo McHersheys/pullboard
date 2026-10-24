@@ -7,9 +7,23 @@ import { explicitCheckFiles } from './browser-admission.js';
 /** Only an explicit file annotation requests a GUI; --headless does not establish this capability. */
 export function testsNeedGui(root, files) {
   return files.some(file => {
-    try { return /^\s*(?:\/\*\*?[^]*?@pullboard-test-gui\b[^]*?\*\/)/u.test(readFileSync(resolve(root, file), 'utf8')); }
+    try { return headerNeedsGui(readFileSync(resolve(root, file), 'utf8')); }
     catch { return false; } // Missing files retain their normal execution failure; they cannot add an inferred capability.
   });
+}
+
+/** Read annotation lines only from leading comments, stopping before any executable source or code literal. */
+function headerNeedsGui(source) {
+  let remaining = source.replace(/^#![^\n]*(?:\n|$)/u, '').trimStart();
+  while (remaining.startsWith('/*') || remaining.startsWith('//')) {
+    const block = remaining.startsWith('/*');
+    const end = block ? remaining.indexOf('*/', 2) : remaining.indexOf('\n');
+    if (block && end < 0) return false;
+    const comment = remaining.slice(2, end < 0 ? remaining.length : end);
+    if (/^[ \t]*\*?[ \t]*@pullboard-test-gui[ \t]*\r?$/mu.test(comment)) return true;
+    remaining = end < 0 ? '' : remaining.slice(end + (block ? 2 : 1)).trimStart();
+  }
+  return false;
 }
 
 /** Read the project's tracked Node test files when an opaque full gate supplies no explicit selection. */
