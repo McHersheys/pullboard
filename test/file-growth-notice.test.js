@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { join } from 'node:path';
 import * as store from '../src/board.js';
-import { applyEngineMove, prepareEngineMove } from '../src/engine.js';
+import { appliedSequence, applyEngineMove, prepareEngineMove } from '../src/engine.js';
+import { submitFixture } from './board-submit-fixture.js';
 import { FILE_GROWTH_NOTICE_ENGINE } from '../src/file-growth-notice-engine.js';
 import { exportBoard, importBoard } from '../src/exchange.js';
 import { createE2eHelpers } from './e2e-helpers.js';
@@ -27,6 +28,8 @@ function fixture(t, { sameHolder = false, expiredPeer = false } = {}) {
   const a = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'A holds x', brief: 'Files: web/x.js' });
   const b = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'B holds y', brief: 'Files: web/y.js' });
   store.claim(board, a, { agentId: left, lane: 'web', leaseMs: HOUR, freeze });
+  if (sameHolder) submitFixture(board, a, { agentId: left,
+    commit: box.git(box.repo, 'rev-parse', 'HEAD'), tree: box.git(box.repo, 'rev-parse', 'HEAD^{tree}') });
   if (expiredPeer) at += HOUR;
   store.claim(board, b, { agentId: right, lane: 'web', leaseMs: HOUR, freeze });
   return { board, left, right, a, b, at: () => new Date(at).toISOString() };
@@ -35,7 +38,7 @@ function fixture(t, { sameHolder = false, expiredPeer = false } = {}) {
 /** Apply the ordinary versioned edit input, rather than calling a notification helper. */
 function edit(box, brief, engine = undefined) {
   const move = prepareEngineMove(box.board, 'editItem', [box.b, { agentId: 'coordinator', brief }]);
-  const result = applyEngineMove(box.board, engine === undefined ? move : { ...move, engine }, { sequence: 1, at: box.at() });
+  const result = applyEngineMove(box.board, engine === undefined ? move : { ...move, engine }, { sequence: appliedSequence(box.board) + 1, at: box.at() });
   assert.equal(result.error, undefined, JSON.stringify(result.error));
 }
 
