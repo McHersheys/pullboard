@@ -328,7 +328,7 @@ export async function watchCommand({ io, values, words, ctx, primaryCheckoutRoot
   const start = watchStart(file);
   const options = watchOptions(values, { config, agents: start.agents });
   // The person's main-checkout stream remains the board-wide observer; a joined seat follows its own audience.
-  const seat = !isMain && start.agents.find((agent) => agent.agent_path === info.root);
+  const seat = info.root !== mainRoot && start.agents.find((agent) => agent.agent_path === info.root);
   if (seat && values.to === undefined) {
     options.to = new Set(['all', seat.agent_id, seat.agent_lane]);
     options.seatDefault = true;
