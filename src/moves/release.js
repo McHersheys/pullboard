@@ -1,6 +1,6 @@
 import { RIGOR_AUTO_ENGINE } from '../rigor-auto-engine.js';
 /** Routing metadata owned by release, discovered without a shared registry edit [C7,V4,H16]. */
-import { firstRefusal } from '../claims.js';
+import { firstRefusal } from '../first-refusal-window.js';
 import { REOPEN_FIRST_REFUSAL_ENGINE } from '../engine-metadata.js';
 import { LANDING_LEASE_ENGINE } from '../landing-lease-engine.js';
 import { BOARD_SENTINEL_ENGINE } from '../sentinel-engine.js';

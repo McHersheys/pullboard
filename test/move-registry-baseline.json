@@ -5766,6 +5766,38 @@
       ],
       "state": null,
       "expected": 102
+    },
+    {
+      "operation": "claim",
+      "args": [
+        1,
+        {
+          "lineCapacity": true
+        }
+      ],
+      "expected": 103
+    },
+    {
+      "operation": "claim",
+      "args": [
+        1,
+        {
+          "lineCapacity": true,
+          "cause": "conflict:src/board.js"
+        }
+      ],
+      "expected": 103
+    },
+    {
+      "operation": "claim",
+      "args": [
+        1,
+        {
+          "lineCapacity": true,
+          "cause": "sentinel:example"
+        }
+      ],
+      "expected": 103
     }
   ],
   "nextSteps": {
@@ -6312,7 +6344,8 @@
     "WITHDRAWN": "wait on an item that is not withdrawn; see pullboard list --all",
     "WRONG_BOARD": "open the repository registered to this board and confirm its identity with pullboard status",
     "WRONG_LANE": "create a worktree in the required lane with pullboard worktree <lane> --model \"<model name>\", or take an item in your lane with pullboard next",
-    "RUNNER_GUI_SESSION_REQUIRED": "nothing to do: the run reruns locally; log in to a GUI session on the runner before sending GUI-marked files there"
+    "RUNNER_GUI_SESSION_REQUIRED": "nothing to do: the run reruns locally; log in to a GUI session on the runner before sending GUI-marked files there",
+    "LINE_WIP_LIMIT": "review the oldest eligible waiting submission: pullboard next --verify; if none is eligible, ask the coordinator to arrange a reviewer"
   },
   "replay": {
     "initial": {
@@ -6742,6 +6775,7 @@
       "minimumExistingOperationEngine first: cause.startsWith('conflict:') -> RIGOR_AUTO_ENGINE102",
       "setLineSetting collisionFreeBatch -> LAND_COLLISION_ENGINE101, beforeorder"
     ],
-    "originalReplayInputSHA256": "944bd3a1f53799b01f58b1dddec39c487205b5daf0a2860c30bc7a73e9ddcd5e"
+    "originalReplayInputSHA256": "944bd3a1f53799b01f58b1dddec39c487205b5daf0a2860c30bc7a73e9ddcd5e",
+    "capacityMain": "fd47453359c9d58554a9739d8ac20ddc229a0a5a"
   }
 }
