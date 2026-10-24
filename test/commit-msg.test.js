@@ -40,7 +40,6 @@ test('an outside commit without a sign-off is refused with its fix [C1,C7]', () 
   const missing = box.tryGit(repo, 'commit', '-q', '-m', 'chore: contribute outside work');
   assert.notEqual(missing.status, 0, 'the installed commit-msg hook must refuse an unsigned outside author');
   assert.match(missing.stderr, /git commit --amend -s/u);
-  assert.match(missing.stderr, /CONTRIBUTING\.md#how-to-sign-off-step-by-step/u);
   assert.equal(missing.stderr.trim().split('\n').length, 1, 'the refusal is one actionable line');
   const wrong = box.tryGit(repo, 'commit', '-q', '-s', '-m', 'chore: contribute outside work');
   assert.notEqual(wrong.status, 0, 'the member committer sign-off cannot stand in for the outside author');
@@ -82,7 +81,6 @@ test('an outside commit without a sign-off is refused with its fix [C1,C7]', () 
   assert.equal(refused.status, 1, refused.failure || refused.stderr);
   assert.ok(refused.stderr.includes(unsigned.slice(0, 12)), 'CI names the earlier unsigned commit, not just HEAD');
   assert.match(refused.stderr, /git commit --amend -s/u);
-  assert.match(refused.stderr, /CONTRIBUTING\.md#how-to-sign-off-step-by-step/u);
   assert.equal(refused.stderr.trim().split('\n').length, 1);
   box.git(incoming, 'reset', '--soft', base);
   box.git(incoming, 'commit', '-q', '-m', 'chore: sign the whole contribution',

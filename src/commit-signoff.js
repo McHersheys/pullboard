@@ -52,12 +52,11 @@ function signedByAuthor(message, author) {
   });
 }
 
-/** Keep the missing-sign-off refusal to one line with the concrete fix and contributor guide. */
+/** Keep the missing-sign-off refusal to one line with the concrete fix [C1]. */
 function signoffProblem(message, author, maintainers, commit = null) {
   if (maintainers.includes(author.email) || signedByAuthor(message, author)) return null;
   return 'pullboard sign-off: ' + (commit ? 'commit ' + commit.slice(0, 12) : 'this outside commit')
-    + ' needs Signed-off-by matching its author; git commit --amend -s; see '
-    + '[CONTRIBUTING: How to sign off](CONTRIBUTING.md#how-to-sign-off-step-by-step)';
+    + ' needs Signed-off-by matching its author; git commit --amend -s';
 }
 
 /** Check every new non-merge commit; a merge wrapper does not substitute for its parents. */
