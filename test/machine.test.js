@@ -27,6 +27,8 @@ const NOT_MOVES = {
   USAGE: 'how a command was typed',
   NO_FILE: 'how a command was typed: a --note-file that does not exist',
   ALREADY_JOINED: 'registering who is asking, before any move',
+  BAD_PARENT: 'validating optional parent/session declarations at join, before any move',
+  PARENT_SESSION_CHANGED: 'preserving the joined seat’s immutable parent/session identity, before any move',
   BAD_ROUTE: 'registering who is asking, before any move',
   ONE_COORDINATOR: 'registering who is asking, before any move',
   BAD_SEAT_ID: 'registering who is asking, before any move; only a creator naming a new worktree seat raises it',

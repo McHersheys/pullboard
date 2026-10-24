@@ -1,3 +1,8 @@
+import {
+  parentIdentity,
+  parentSessionDigest,
+  runtimeSessionIdentity,
+} from '../parent-session.js';
 /** The pullboard join command, in its own module so an item adding another command never edits these lines. */
 import {
   displayAgentName,
@@ -27,13 +32,17 @@ import {
 /** Run `pullboard join` and return its exit code. */
 export async function run(io, { first, values }) {
   const ctx = context(io);
+  const runtime = runtimeSessionIdentity();
+  const parent = values.parent === undefined ? runtime?.parent : parentIdentity(values.parent);
+  const parentDigest = parent ? parentSessionDigest(parent) : undefined;
+  const sessionDigest = runtime?.session ? parentSessionDigest(runtime.session) : undefined;
   if (ctx.info.isMain) {
     if (first !== COORDINATOR) throw new Refused('MAIN_IS_COORDINATOR', 'the main checkout is the coordinator; join from a worktree: git worktree add ../<dir>');
     const route = values.route ?? 'strong';
     const model = requiredModel(values.model, process.env, `join ${shellWord(COORDINATOR)}${values.route ? ` --route ${shellWord(values.route)}` : ''}${values.family ? ` --family ${shellWord(values.family)}` : ''}`);
     if (relayLinked(ctx.info.root)) refuseRemoteCoordinatorModel(ctx, 'join coordinator');
     const id = await withBoard(ctx, async (board) => await ordered(ctx, board, 'register', [
-      { lane: COORDINATOR, path: ctx.info.root, route, family: values.family, model },
+      { lane: COORDINATOR, path: ctx.info.root, route, family: values.family, model, parentDigest, sessionDigest },
     ]));
     const displayName = displayAgentName({ agent_id: id, agent_model: model }, ctx.config.agents.names);
     io.result?.({ agent: id, lane: COORDINATOR, route, path: ctx.info.root, model, displayName });
@@ -45,7 +54,7 @@ export async function run(io, { first, values }) {
   }
   const route = values.route ?? 'strong';
   const model = requiredModel(values.model, process.env, `join ${shellWord(first)}${values.route ? ` --route ${shellWord(values.route)}` : ''}${values.family ? ` --family ${shellWord(values.family)}` : ''}`);
-  const id = await withBoard(ctx, async (board) => await ordered(ctx, board, 'register', [{ lane: first, path: ctx.info.root, route, family: values.family, model }]));
+  const id = await withBoard(ctx, async (board) => await ordered(ctx, board, 'register', [{ lane: first, path: ctx.info.root, route, family: values.family, model, parentDigest, sessionDigest }]));
   const displayName = displayAgentName({ agent_id: id, agent_model: model }, ctx.config.agents.names);
   io.result?.({ agent: id, lane: first, route, path: ctx.info.root, model, displayName });
   io.say(`joined as ${displayName} in the ${first} lane${route === 'light' ? ', on the light route' : ''}`);

@@ -93,6 +93,7 @@ export async function run(io, { first, values }) {
   verdicts.forEach((verdict, index) => {
     io.say(`${verdictLine(verdict)}${notes[index] ? `: ${notes[index]}` : ''}`);
     io.say(`  check: ${verdict.check ?? 'unknown'}`);
+    io.say(`  assurance: ${verdict.assurance}`);
   });
   if (notes.some((note, index) => note !== verdicts[index].verdict_note)) io.say(`(earlier verdicts shortened; every note in full: pullboard show ${id} --history)`);
   for (const correction of barCorrections(thread)) io.say(barCorrectionLine(correction));

@@ -270,7 +270,7 @@ export function agentModel(board, id) {
 
 /** Attach an agent's model to a row from the legacy stable agent table. */
 export function withModel(board, agent) {
-  return agent ? { ...agent, agent_model: agentModel(board, agent.agent_id) } : agent;
+  return agent ? { ...agent, agent_model: agentModel(board, agent.agent_id), agent_parent_session: agentParent(board, agent.agent_id) } : agent;
 }
 
 /**
@@ -281,7 +281,7 @@ export function withModel(board, agent) {
  */
 export function listAgents(board) {
   return board.db.prepare(`SELECT agent.*, board_meta.meta_value AS agent_model FROM agent
-    LEFT JOIN board_meta ON board_meta.meta_key='agent_model:' || agent.agent_id ORDER BY agent.rowid`).all().map(agent => ({ ...agent }));
+    LEFT JOIN board_meta ON board_meta.meta_key='agent_model:' || agent.agent_id ORDER BY agent.rowid`).all().map(agent => ({ ...agent, agent_parent_session: agentParent(board, agent.agent_id) }));
 }
 
 /** The optional engine-20 fields of a fact, present only when its event set them. */
@@ -412,4 +412,9 @@ export function relatedItems(board, item, limit = 3) {
     .filter((entry) => entry.shared.length)
     .sort((first, second) => second.shared.length - first.shared.length || second.item.item_id - first.item.item_id)
     .slice(0, limit);
+}
+
+/** Read a seat's immutable parent session digest; unknown parents remain separate seats. */
+export function agentParent(board, id) {
+  return board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?').get(`agent_parent_session:${id}`)?.meta_value ?? null;
 }

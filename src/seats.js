@@ -2,6 +2,7 @@ import {
   agentAt,
   agentById,
   agentModel,
+  agentParent,
   withModel,
   listAgents,
 } from './board-query.js';
@@ -204,4 +205,30 @@ export function standingProblem(board, verifier, builder, itemId) {
     }
     seat = creator;
   }
+}
+
+export { agentParent } from './board-query.js';
+
+/** A root session is its own parent, even while its missing parent is displayed as unknown. */
+export function effectiveAgentParent(board, id) {
+  return agentParent(board, id)
+    ?? board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?').get(`agent_session:${id}`)?.meta_value
+    ?? `seat:${id}`;
+}
+
+/** Persist the joined session independently of its parent, so a root and its children share independence. */
+export function saveAgentSession(board, id, digest) {
+  const key = `agent_session:${id}`;
+  const previous = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?').get(key)?.meta_value;
+  if (previous && previous !== digest) throw new Refused('PARENT_SESSION_CHANGED', 'this seat already belongs to another session; create a fresh worktree and join there');
+  if (!previous) board.db.prepare('INSERT INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run(key, digest);
+}
+
+/** Persist a parent once, preserving author independence across later joins. */
+export function saveAgentParent(board, id, digest) {
+  const previous = agentParent(board, id);
+  if (previous && previous !== digest) throw new Refused('PARENT_SESSION_CHANGED', 'this seat already belongs to another parent session; create a fresh worktree and join there');
+  const own = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?').get(`agent_session:${id}`)?.meta_value;
+  if (!previous && own && own !== digest) throw new Refused('PARENT_SESSION_CHANGED', 'this seat already joined as its own parent session; create a fresh worktree to declare another parent');
+  if (!previous) board.db.prepare('INSERT INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run(`agent_parent_session:${id}`, digest);
 }
