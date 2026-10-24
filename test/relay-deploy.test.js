@@ -828,6 +828,7 @@ function refusingStoragePage(t, { hash, board, sealed }) {
       const url = new URL(String(input), location.origin);
       const accept = new Headers(init.headers).get('accept');
       if (url.pathname === '/api/v1/boards') return reply({ version: 1, boards: [{ id: board, repository: 'acme/widgets' }] });
+      if (url.pathname === '/api/v1/devices/exclusions') return reply({ version: 1, exclusions: [] });
       if (url.pathname === '/api/v1/devices/approvals') {
         approvalReads += 1;
         assert.equal(init.method ?? 'GET', 'GET', 'pending phone approvals are read-only');

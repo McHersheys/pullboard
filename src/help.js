@@ -32,7 +32,7 @@ Set up
   pullboard resources                  local resource holders and their FIFO queues
   pullboard settings line [<name> <value> --reason "why" --window <json>]  read or record board controller inputs; all off by default
       value is on, off, or a number within the setting range
-                                        names: order, reviewsFirst, wipPerReviewer (1.5-3), barReady, takeoverMinutes (15-60), collisionFreeBatch, landingBatchSize (1-8), landingCadenceMinutes (5-30)
+                                        names: order, reviewsFirst, wipPerReviewer (1.5-3), barReady, bar.check, takeoverMinutes (15-60), collisionFreeBatch, landingBatchSize (1-8), landingCadenceMinutes (5-30)
   pullboard settings [gateSlots <n> | browserSlots <n>]  view or set machine capacity (gate default 2; browser default 1)
                                         browser-free check slots are opt-in: gate.browserFreeChecks in ~/.pullboard/settings.json (default false)
                                         a test file takes a browser slot only if it launches Chrome: gate.browserByLaunch (default false)
@@ -117,8 +117,9 @@ Work
   pullboard skills --update            refresh unchanged Claude Code skills from shipped versions
   pullboard show <id> [--history]       an item, the criterion frozen at claim, its verdicts: the latest in full,
                                         earlier ones as one line; --history prints every note in full
-  pullboard fact <id> <kind> <text> [--supersedes <fact-id>] [--ref path:lines@full-sha] [--implies <ids>]
-                                        append an observation or a holder/coordinator judgement to its thread
+  pullboard fact <id> <kind> <text> [--answers <bar-check-fact-id>] [--supersedes <fact-id>] [--ref path:lines@full-sha] [--implies <ids>]
+                                        append observations, bar-check notes and peer answers, or holder/coordinator judgements
+                                        a bar-answer uses --answers to name the bar-check fact it reviewed
                                         --implies 12,13: each named item gets a fact citing this decision,
                                         and is told again when the decision is superseded
                                         the person adds --cause <key> --never-again --as person: rigor lists it at once
@@ -166,6 +167,8 @@ Work
   pullboard digest [--out <file>] [--watch]     a short Markdown briefing of this board for a person or a chat assistant;
                                         secrets redacted; --out replaces a file, --watch rewrites it after every move
   pullboard import <file>                       restore a versioned export into an empty board
+  pullboard sync                               opt in to sharing one board through origin without an account
+                                               reads work offline; moves need remote acknowledgement
 
 Coordinator
   pullboard sweep --run "<checker>" --check "<checker on {file}>" [--route light] [--max 20] [--dry-run]
@@ -307,7 +310,7 @@ const HELP_EXAMPLES = {
   verify: 'pullboard verify 12 accept --note "removed the fix; the test failed"',
   watch: 'pullboard watch --to web', answer: 'pullboard answer 12 "done"', pass: 'pullboard pass 12 "please decide"',
   status: 'pullboard status', view: 'pullboard view', digest: 'pullboard digest --out briefing.md', mcp: 'pullboard mcp', stats: 'pullboard stats --since 2026-10-08', log: 'pullboard log 12', ledger: 'pullboard ledger',
-  relay: 'pullboard relay on --all', 'relay recover': 'pullboard relay recover --skip 12',
+  relay: 'pullboard relay on --all', 'relay recover': 'pullboard relay recover --skip 12', sync: 'pullboard sync',
   'lane add': 'pullboard lane add web --owns apps/web/', lane: 'pullboard lane add web --owns apps/web/',
   queue: 'pullboard queue', roadmap: 'pullboard roadmap', rigor: 'pullboard rigor', 'rigor quality': 'pullboard rigor quality --rule silent-catch', 'rigor draft': 'pullboard rigor draft "refusal:MERGE_LOST" "Merges keep every hunk" --check "node bin/checks/merges.js" --red 0123456 --green 89abcde', milestone: 'pullboard milestone add "0.7.0" --items 12,13',
   'milestone order': 'pullboard milestone order "0.7.0" 13,12',

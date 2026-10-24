@@ -7,6 +7,8 @@ import {
   execFileSync,
   spawnSync,
 } from 'node:child_process';
+import { gitBoardDataPush } from './git-sync-format.js';
+export { gitBoardDataPush };
 import { hostname } from 'node:os';
 import {
   chmodSync,
@@ -740,6 +742,7 @@ export function deletedRowProblems(root, paths) {
  * @returns {string[]}
  */
 export function prePushProblems(root, refsText) {
+  if (gitBoardDataPush(root, refsText)) return [];
   if (tryGit(root, ['diff', '--quiet', 'HEAD']).status !== 0) {
     return ['commit or stash your changes first; the gate must check what you push'];
   }

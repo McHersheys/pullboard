@@ -1,6 +1,10 @@
 import { beginCommandPhase } from './command-phase.js';
 import { recordedMoveRefusal } from './recorded-move.js';
 import {
+  publishExcludedBoards,
+  publishOffExclusions,
+} from './relay-excluded.js';
+import {
   recoverySummary,
   unlinkedRelayStatus,
 } from './relay-status-fields.js';
@@ -1648,6 +1652,7 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
         await catchUp(root, file, state, io);
         await deliverDeviceWraps(root, io);
         updateRelayMachine(machine => { machine.excluded = machine.excluded.filter(entry => entry !== repoInfo(root).root); });
+        if (reusableSession === undefined) await publishExcludedBoards({ ...signed, account, url }, io, request);
       }
       result = summary(root, state, { pairing: !quiet });
     }
@@ -1669,7 +1674,7 @@ export async function relayOff(root, io) {
   const file = linkFile(root);
   return locked(file, async () => {
     const state = loadLink(file);
-    if (!state) return summary(root, null);
+    if (!state) { await publishOffExclusions(null, io, { loadLink, linkFile, request: relayDeviceRequest }); return summary(root, null); }
     let joined = [];
     try {
       const roster = await request(state, '/auth/machines?board=' + state.board, {}, io);
@@ -1687,6 +1692,7 @@ export async function relayOff(root, io) {
     rmSync(file, { force: true });
     try { forgetBoardKey(state.board, state.keyStorage); }
     catch { /* The local opt-out is complete even when secure key storage is temporarily locked. */ }
+    await publishOffExclusions(state, io, { loadLink, linkFile, request: relayDeviceRequest });
     let requested = false;
     let remote;
     try {

@@ -13,6 +13,7 @@ import { browserJSON, withBrowserDeadline } from './browser-deadline.js';
 import { phoneApprovalStatus, placePhoneApprovals, forgetPhoneApprovals } from './browser-approval-card.js';
 import { phoneSnapshotPages } from './browser-pages.js';
 import { createPhoneHistory } from './browser-history.js';
+import { deviceExcludedBoards } from './browser-devices.js';
 
 const CHECKPOINT_WAIT_MS = 15_000;
 const KEYS = 'pullboard.relay.keys.v1';
@@ -113,6 +114,8 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
   const approvedBoards = new Set();
   let pendingLinks = [];
   let pendingLinksFailure = '';
+  let exclusions = [];
+  let exclusionsFailure = '';
   let warnings = [];
   let failure = '';
   let failureBoard = null;
@@ -223,7 +226,7 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
       entry.key = null;
     }
     paired.clear();
-    available = []; waitingBoards.clear(); pendingLinks = []; pendingLinksFailure = ''; warnings = []; pair = null;
+    available = []; waitingBoards.clear(); pendingLinks = []; pendingLinksFailure = ''; exclusions = []; exclusionsFailure = ''; warnings = []; pair = null;
     for (const id of Object.keys(keys)) delete keys[id];
     document.querySelector('main')?.replaceChildren();
     if (error?.code !== 'DEVICE_REVOKED') { location.replace('/'); return; }
@@ -259,8 +262,8 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
       try { state = storedOwnedRequestState(localStorage, key, entry.state?.personRequests); } catch { /* Missing device storage can only hide this device's own notice. */ }
       ownedRequestIds.set(id, state.owned);
     }
-    const lines = noticeLines({ available, paired, ownedRequestIds, waitingBoards, approvedBoards, pendingLinks, warnings,
-      failure: failure || pendingLinksFailure });
+    const lines = noticeLines({ available, paired, ownedRequestIds, waitingBoards, approvedBoards, pendingLinks, warnings, exclusions,
+      failure: failure || pendingLinksFailure || exclusionsFailure });
     for (const text of lines) {
       const paragraph = document.createElement('p');
       paragraph.textContent = text;
@@ -275,7 +278,7 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
     // A phone has no local-view screen to fall back to: keep its shell and the real reason until a board is readable.
     const root = document.documentElement;
     const phoneWaiting = root.dataset.relayDevice === 'phone' && (!rendered || paired.size === 0);
-    const step = emptyBoardStep({ available, waitingBoards, approvedBoards, loaded: inventoryLoaded, browserPaired, failure });
+    const step = emptyBoardStep({ available, waitingBoards, approvedBoards, loaded: inventoryLoaded, browserPaired, failure, exclusions });
     showRelayScreen(root, phoneWaiting || paired.size === 0 ? 'share' : null,
       phoneWaiting && (failure || waitingBoards.size || warnings.some(value => ['ACCOUNT_STORAGE_WARNING', 'ACCOUNT_STORAGE_LIMIT'].includes(value?.code))) ? lines.join(' ') : '', step);
     placePhoneApprovals(document);
@@ -556,6 +559,14 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
     }
     if (accessLost) throw accessError;
     const device = await deviceBoardKeyState((path, options) => documentAt(path, denied, options));
+    if (accessLost) throw accessError;
+    exclusions = [];
+    exclusionsFailure = '';
+    try { exclusions = await deviceExcludedBoards((path, options) => documentAt(path, denied, options)); }
+    catch {
+      if (accessLost) throw accessError;
+      exclusionsFailure = 'Excluded-board status could not be checked. Refresh to retry.';
+    }
     if (accessLost) throw accessError;
     Object.assign(keys, stored(localStorage, KEYS, {}), device.keys);
     browserPaired = device.paired || Boolean(pair) || Object.values(keys).some(value => {
