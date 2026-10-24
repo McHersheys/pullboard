@@ -11,7 +11,7 @@ Nothing ships until a second agent verifies it.
 Outside contributions
   pullboard intake <GitHub PR URL> --criterion "behavior" --check "command" [--lane <lane>]  record exact outside author/commit, already submitted; never execute it here
   pullboard intake <GitHub issue URL>  record author, source state and maintainer reply; repeating intake refreshes metadata
-  pullboard verify <id> accept --sandbox --note "proof"  configured Docker only, no network/credentials, Node22.13 and24; missing provider refuses
+  pullboard verify <id> accept [--sandbox] --note "proof"  configured Docker only, no network/credentials, Node22.13 and24; required for outside items; missing provider refuses
   pullboard intake approve <id>        owner/person approval for the exact sensitive outside commit; every PR result post still needs separate person OK
 
 Set up
@@ -65,6 +65,7 @@ Set up
   pullboard relay tokens                list this board's agent token ids, agents and expiry, never credentials
   pullboard relay revoke <token-id>     revoke one token from that list; other agents keep working
   pullboard relay recover --skip <sequence>  person-only recovery of one blocked next relay position
+  pullboard handoff [--take <id>]        write or take an agent hand-off; keep questions on its item
   pullboard resume [--diagnostics]      where you are: your claim, branch, what came back,
                                         unread shouts, what to do next; run it to start any session
   pullboard badge                       write board-derived Shields endpoint JSON to docs/badges/
@@ -312,6 +313,7 @@ const HELP_EXAMPLES = {
   edit: 'pullboard edit 12 --brief "Add the upload page"', release: 'pullboard release 12',
   land: 'pullboard land --max 4',
   publish: 'pullboard publish',
+  handoff: 'pullboard handoff --take 12',
   health: 'pullboard health',
   reopen: 'pullboard reopen 12 --note "correct the frozen criterion"',
   escalate: 'pullboard escalate 12 --note "needs a manual step"', next: 'pullboard next',
@@ -365,6 +367,7 @@ const HELP_ALIASES = {
 };
 
 const HELP_FLAG_EXPLANATIONS = {
+  '--take': 'take the existing hand-off from a newly joined agent worktree',
   '--after': 'claiming waits until those items are verified',
   '--blueprint': 'start from a bundled blueprint or a JSON file; repeat it for one product, one architecture and any practice blueprints',
   '--brief': 'what a cold agent needs',
