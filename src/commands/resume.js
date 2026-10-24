@@ -18,13 +18,11 @@ import {
   loadConfig,
 } from '../config.js';
 import {
-  agentDoctrine,
   resumeDoctrineNotes,
   staleDoctrineRows,
 } from '../doctrine-rulings.js';
 import {
   repoInfo,
-  tryGit,
 } from '../git.js';
 import {
   recordedHealthFindings,
@@ -90,7 +88,6 @@ import {
   dirtyFiles,
   firstLine,
   ordered as sendOrdered,
-  primaryCheckoutRoot,
   resumeReleaseNotes,
   reworkNext,
   setupIdentity,
@@ -104,14 +101,6 @@ import {
   withBoardRead,
   worktreeLocation,
 } from '../cli.js';
-
-/** Temporary bounded observation for coordinator25919; never a submitted product API. */
-const RESUME_OBSERVATIONS = [];
-
-/** Drain the private diagnostic spans after the measured fixture command. */
-export function takeResumeObservations() {
-  return RESUME_OBSERVATIONS.splice(0);
-}
 
 /**
  * Resume's one compatibility move (the approval baseline) is bookkeeping: a session that cannot
@@ -144,15 +133,7 @@ function keylessBookkeeping(send) {
  * @returns {number}
  */
 export async function resumeHere(io, view, diagnostics = false) {
-  let observedAt = performance.now();
-  /** Record disjoint observational spans; no result, authority or command input changes. */
-  const observed = (phase) => {
-    const now = performance.now();
-    if (RESUME_OBSERVATIONS.length < 80) RESUME_OBSERVATIONS.push({ phase, ms: now - observedAt });
-    observedAt = performance.now();
-  };
   const ctx = context(io);
-  observed('context');
   const ordered = keylessBookkeeping(sendOrdered);
   const initialBaseline = withBoardRead(ctx, board => {
     whoAmI(ctx, board);
@@ -165,21 +146,22 @@ export async function resumeHere(io, view, diagnostics = false) {
       agentId: COORDINATOR, baseline: initialBaseline,
     }]));
   }
-  observed('baseline bookkeeping');
   resumeSentinels({ ctx, withBoard: withBoardRead });
-  observed('due sentinel notice');
   const { root, isMain } = ctx.info;
-  const mainRoot = diagnostics ? primaryCheckoutRoot(ctx.info) : null;
-  const worktreeConfig = mainRoot ? (isMain ? ctx.config : loadConfig(mainRoot)) : null;
-  observed('primary identity + actual working config');
+  let mainRoot = null;
+  let worktreeConfig = null;
   let setupScope;
   let doctrine;
   let sources;
   const card = await withBoardRead(ctx, async (board) => {
     setupScope = diagnostics ? setupIdentity(board) : null;
-    sources = diagnostics ? null : await readResumeSources(ctx, board);
-    doctrine = diagnostics ? agentDoctrine(ctx, board) : sources.doctrine;
-    observed('shared doctrine preparation');
+    sources = await readResumeSources(ctx, board);
+    doctrine = sources.doctrine;
+    if (diagnostics) {
+      mainRoot = sources.primary;
+      // v1 placement follows actual working configuration, independently of committed doctrine authority.
+      worktreeConfig = mainRoot ? (isMain ? ctx.config : loadConfig(mainRoot)) : null;
+    }
     const me = whoAmI(ctx, board);
     const projector = diagnostics ? verdictProjector(root, board) : null;
     const all = store.listItems(board, { all: true }).map(item => projector ? projector.project(item) : item);
@@ -187,11 +169,9 @@ export async function resumeHere(io, view, diagnostics = false) {
       .map(item => ({ ...item, item_checked_commit: store.checkedLandingCommit(board, item) }));
     const toMerge = pendingMerges.filter(item => !item.item_verdict_state);
     const staleVerdicts = pendingMerges.filter(item => item.item_verdict_state);
-    observed('toMerge + stale verdict projection');
     const decisionSections = isMain ? coordinatorDecisionSections(board, ctx) : null;
     const { shouts = [], ...decisions } = decisionSections ?? {};
     const needsState = resumeNeeds(root, { board, config: ctx.config, includeRigorUndrafted: me.id === COORDINATOR });
-    observed('decisions + personNeeds + fit');
     return {
       me,
       health: recordedHealthFindings(board),
@@ -222,21 +202,16 @@ export async function resumeHere(io, view, diagnostics = false) {
       ...(diagnostics ? { viewOpened: viewSetupComplete(ctx, board) } : {}),
     };
   });
-  observed('remaining board card');
   card.relayProblems = unlinkedRelayProjects();
-  observed('relay problems');
   if (diagnostics) {
     card.hookProblems = unwiredHookProblems(root);
-    observed('hook diagnostics');
     card.newWorktreeLocation = mainRoot
       ? worktreeLocation(mainRoot, worktreeConfig)
       : unavailableWorktreeLocation();
-    observed('newWorktreeLocation');
   }
   const { me } = card;
   const name = (id) => agentDisplayName(card.agents, ctx.config, id);
   if (diagnostics) card.stale = staleFrozenItems(card.all, loadSpec(root, ctx.config).rows, staleDoctrineRows(ctx, doctrine)).map((item) => ({ ...item, ...staleItemFinding(item) }));
-  observed('stale frozen + HEAD doctrine overlay');
   if (isMain && diagnostics) {
     card.staleFollowUps = { count: card.stale.length + card.staleIntegrations.length,
       list: 'pullboard resume --diagnostics --json', items: card.stale, integrations: card.staleIntegrations };
@@ -264,12 +239,10 @@ export async function resumeHere(io, view, diagnostics = false) {
   // A view left running needs no line at every session start; a start, a busy port or a failure does.
   if (view.state !== 'running' && backgroundViewLine(view)) say(backgroundViewLine(view));
   if (card.inbox) for (const line of coordinatorInboxLines(card.inbox, name, (at) => span(ctx, at), firstLine)) say(line);
-  observed('common doctrine/release/view rendering');
   if (diagnostics) {
     say(`New agent worktrees: ${card.newWorktreeLocation}`);
     card.setup = withBoardRead(ctx, board => withStarterWork(boardSetup(ctx, card, setupScope), { board, me, main: isMain, config: ctx.config, root, seat: ctx.io.callerRole() === 'seat' }));
   } else say('Setup, hook and stale-work diagnostics: pullboard resume --diagnostics.');
-  observed('setup projection');
   if (!loadSpec(root, ctx.config).rows.length && card.all.length) say('Spec rows are optional; add a requirement later: pullboard spec draft "<text>".');
   if (card.setup) {
     say(`Setting up: step ${card.setup.step} of 5`);
@@ -278,22 +251,15 @@ export async function resumeHere(io, view, diagnostics = false) {
     if (card.setup.afterAnswer) say(card.setup.afterAnswer);
     if (card.setup.meanwhile) say(card.setup.meanwhile);
   }
-  observed('setup rendering');
   const dirty = diagnostics ? dirtyFiles(root).length : undefined;
-  observed('dirty actual status');
   if (!isMain) {
-    const branch = diagnostics ? tryGit(root, ['rev-parse', '--abbrev-ref', 'HEAD']).stdout || 'HEAD' : sources.branch;
-    // Against the main checkout's branch, not its HEAD, which is detached while the coordinator verifies.
-    const mainRef = diagnostics ? /^branch (.+)$/mu.exec(tryGit(root, ['worktree', 'list', '--porcelain']).stdout.split('\n\n')[0])?.[1] : sources.mainRef;
-    const [behind = 0, ahead = 0] = diagnostics
-      ? mainRef ? tryGit(root, ['rev-list', '--left-right', '--count', `${mainRef}...HEAD`]).stdout.split(/\s+/).map(Number) : []
-      : [sources.behind, sources.ahead];
+    const { branch, mainRef, behind = 0, ahead = 0 } = sources;
+    // Fresh command facts compare the actual primary branch, not an unrelated detached review HEAD.
     const against = mainRef ? `${ahead} ahead of main, ${behind} behind${behind ? ' (merge main before you submit)' : ''}` : 'main is detached for a verification, so ahead and behind are unknown';
     say(`branch ${branch}: ${against}${dirty ? `; ${plural(dirty, 'file')} uncommitted` : ''}`);
   } else if (dirty) {
     say(`${plural(dirty, 'file')} uncommitted in the main checkout`);
   }
-  observed('branch + ahead/behind');
   if (isMain && diagnostics) {
     card.commits = commitOwners(uncommittedSetup(root, ctx.config)?.differ ?? [], [ctx.config.spec, ctx.config.practice], root);
     for (const line of commitOwnerLines(card.commits)) say(line);
@@ -368,12 +334,10 @@ export async function resumeHere(io, view, diagnostics = false) {
   if (card.setup) next = card.setup.agentNext ?? card.setup.command;
   if (card.commits) next = commitFirst(card.commits, next);
   if (card.inbox) next = inboxFirst(card.inbox, next);
-  observed('remaining notices + next');
   io.result?.({ ...card, root, ...(diagnostics ? { dirty } : {}), next });
   say(`next: ${next}`);
   const flowAlert = isMain ? flowAlertLine(card.flow) : null;
   if (flowAlert) say(flowAlert);
-  observed('result serialization + final line');
   return 0;
 }
 

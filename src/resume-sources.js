@@ -88,5 +88,5 @@ export async function readResumeSources(ctx, board) {
     if (!counts) throw new Refused('NO_POLICY', 'the branch could not be compared with main; run pullboard resume --diagnostics');
     behind = Number(counts[1]); ahead = Number(counts[2]);
   }
-  return { doctrine: await sharedDoctrine(ctx, board, primary, main), branch, mainRef: main?.branch, ahead, behind };
+  return { doctrine: await sharedDoctrine(ctx, board, primary, main), primary, branch, mainRef: main?.branch, ahead, behind };
 }
