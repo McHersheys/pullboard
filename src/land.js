@@ -1,4 +1,5 @@
 /** Coordinator landing batches retain exact Git and gate receipts across interruptions [B3,R3]. */
+import { assignEngineNumbers } from './engine-numbers.js';
 import {
   createHash,
   randomUUID,
@@ -205,6 +206,13 @@ async function mergeGroup(state, items) {
       conflicts.push({ id: item.item_id, files });
       state.say(`conflict #${item.item_id}: ${files.join(', ')}`);
       continue;
+    }
+    // An engine the item added without a number gets the next one now, in landing order, inside its own merge (#1101).
+    const engines = assignEngineNumbers(batch.root);
+    if (engines.files.length) {
+      git(batch.root, ['add', '--', ...engines.files]);
+      git(batch.root, ['commit', '--amend', '--no-edit']);
+      for (const engine of engines.assigned) state.say(`engine ${engine.name}: ${engine.number} for #${item.item_id}`);
     }
     const first = git(batch.root, ['rev-list', '--first-parent', '--reverse', 'HEAD']).split('\n')
       .find((commit) => tryGit(batch.root, ['merge-base', '--is-ancestor', checked, commit]).status === 0);

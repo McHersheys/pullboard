@@ -9,15 +9,11 @@
  * broken copy, and checks the declaration against the refusals board.js and cli.js raise today.
  */
 
+import { fileURLToPath } from 'node:url';
 import {
-  ENGINE_CANDIDATE,
-  ENGINE_FILE,
-  discovered,
-} from './discovery.js';
-import {
-  readdirSync,
-  readFileSync,
-} from 'node:fs';
+  nextEngineNumber,
+  readEngineLeaves,
+} from './engine-numbers.js';
 
 export { AUTO_ESCALATE_ENGINE } from './auto-escalate-engine.js';
 export { ROW_DRAFT_ENGINE } from './row-draft-engine.js';
@@ -28,20 +24,17 @@ export { WITHDRAW_MILESTONE_ENGINE } from './withdraw-milestone-engine.js';
 /**
  * Find every feature engine: each src/*-engine.js leaf declares exactly one `export const NAME_ENGINE = n;` line.
  * A feature that raises the engine adds its own new file and no line of any shared one, so two items adding
- * different engines never conflict [C7,V4]. The value is read as text because machine.js needs it synchronously.
+ * different engines never conflict [C7,V4]. An unlanded leaf says `= unassignedEngine();` and reads as one above
+ * the landed engines until the landing merge gives it its number (#1101). The value is read as text because
+ * machine.js needs it synchronously.
  *
  * @param {URL} directory the folder holding the *-engine.js leaves
  * @returns {Record<string, number>} engine number by file name, in name order
  */
 export function discoverEngines(directory = new URL('./', import.meta.url)) {
-  const found = {};
-  for (const file of discovered(readdirSync(directory), ENGINE_CANDIDATE, ENGINE_FILE, 'feature engine')) {
-    const lines = readFileSync(new URL(file, directory), 'utf8').split('\n').filter((line) => /^export const /u.test(line));
-    const match = lines.length === 1 ? /^export const [A-Z][A-Z0-9_]*_ENGINE = (\d+);$/u.exec(lines[0]) : null;
-    if (!match) throw new Error(`${file} must declare exactly one line \`export const NAME_ENGINE = <number>;\` so ENGINE_VERSION can read it`);
-    found[file.slice(0, -'-engine.js'.length)] = Number(match[1]);
-  }
-  return found;
+  const leaves = readEngineLeaves(fileURLToPath(directory));
+  const unlanded = nextEngineNumber(leaves);
+  return Object.fromEntries(leaves.map((leaf) => [leaf.file.slice(0, -'-engine.js'.length), leaf.number ?? unlanded]));
 }
 
 export { REOPEN_FIRST_REFUSAL_ENGINE } from './reopen-first-refusal-engine.js';
