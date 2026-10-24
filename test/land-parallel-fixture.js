@@ -97,7 +97,9 @@ export function assertParallelLanding({ landProject, itemWorktree, submitItem, a
       assert.ok(maximum >= 2, 'candidate gates execute concurrently in distinct worktrees');
       const starts = rows.filter(row => row.phase === 'start');
       const sets = starts.map(row => row.files.join(','));
-      for (const wanted of ['land-1.test.js', 'land-1.test.js,land-2.test.js', 'land-1.test.js,land-2.test.js,land-3.test.js']) assert.ok(sets.includes(wanted), `the exact prefix executes: ${wanted}`);
+      for (const wanted of ['land-1.test.js', 'land-1.test.js,land-2.test.js', 'land-1.test.js,land-2.test.js,land-3.test.js']) assert.equal(sets.filter(value => value === wanted).length, 1, `each exact prefix executes once: ${wanted}`);
+      assert.equal(sets.filter(value => value === 'land-1.test.js,land-3.test.js').length, 1, 'C is checked once on A, with no serial retry or pre-push rerun');
+      assert.equal(sets.filter(value => value === 'land-2.test.js').length, 1, 'the distinct B-alone control confirms culpability rather than blaming an interaction');
     } else assert.equal(maximum, 1, 'the default serial behavior remains serial');
   }
 }

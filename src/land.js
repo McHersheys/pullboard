@@ -558,6 +558,15 @@ function withoutParallelBlocker(state, entries, removed) {
   });
 }
 
+/** Trust a recorded positive main comparison only for every exact failing target of this gate. */
+function parallelGreenBase(state, gate) {
+  const ids = new Set((gate.flakeDiagnostics?.observations ?? []).filter(row => row.recorded).map(row => row.id));
+  const observations = store.flakeLedger(state.board).flatMap(row => row.observations).filter(row => ids.has(row.id));
+  return gate.failures.length > 0 && gate.failures.every(failure => observations.some(observation => observation.file === failure.file
+    && observation.name === failure.name && observation.main === state.batch.base
+    && observation.classification === 'possible-regression' && observation.mainReceipt?.green === true));
+}
+
 /** Test prefixes together, remove only diagnosed blockers, and publish one exact green composition. */
 async function parallelLanding(state, initialItems) {
   let remaining = initialItems;
@@ -606,6 +615,21 @@ async function parallelLanding(state, initialItems) {
     const flakyFiles = await diagnose(state, gate.failures, gate);
     if (flakyFiles.length) { await fileFlakes(state, gate, flakyFiles); state.flaky = true; return; }
     const culprit = remaining[green + 1];
+    const greenBase = green >= 0 ? completeGate(results[green].gate) : parallelGreenBase(state, gate);
+    if (!greenBase) { await fileTestDefects(state, gate); state.flaky = true; return; }
+    // A red A+B with green A can still be an interaction: B alone must reproduce those failures.
+    // This is a distinct composition, not a retry of A+B or any other already tested tree.
+    const [alone] = await parallelPrefixes(state, [culprit]);
+    const signatures = new Set((alone.gate?.failures ?? []).map(failure => JSON.stringify([failure.file, failure.name])));
+    if (!alone.gate || alone.gate.isGreen || !gate.failures.every(failure => signatures.has(JSON.stringify([failure.file, failure.name])))) {
+      await promoteCandidate(state, boundary);
+      await fileTestDefects(state, gate);
+      state.flaky = true;
+      return;
+    }
+    await promoteCandidate(state, alone);
+    const aloneFlakes = await diagnose(state, alone.gate.failures, alone.gate);
+    if (aloneFlakes.length) { await fileFlakes(state, alone.gate, aloneFlakes); state.flaky = true; return; }
     await bisect(state, [culprit], gate.failures);
     remaining = withoutParallelBlocker(state, remaining, culprit);
     await save(state, { parallelRemaining: remaining });
