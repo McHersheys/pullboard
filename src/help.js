@@ -166,7 +166,9 @@ Coordinator
   pullboard hold <lane|id> --off        lift a lane or item hold
 
 Receipts
-  pullboard stats [--since <date>]      proof numbers from the event log; --json for sites and tools
+  pullboard stats [--since <date> | --window <duration>]  proof numbers from the event log; --json for sites and tools
+                                        --window 6h (also 30m or 1d): landed-item stage quartiles, tails and excess over targets;
+                                        includes all attempts and sent-back idle; missing intervals stay unmeasured;
                                         stage averages/medians count ends inside the inclusive UTC window;
                                         build: first claim to final submit (including rework);
                                         review wait: final submit to the closing review reservation;
@@ -428,12 +430,13 @@ function overviewHelp(groups, firstRun = false) {
 }
 
 /** The settings forms settingsCommand dispatches with a value; each gets its own help, from this list (N2). */
-export const SETTING_FORMS = Object.freeze(['gateSlots', 'browserSlots', 'gate.shortSlots']);
+export const SETTING_FORMS = Object.freeze(['gateSlots', 'browserSlots', 'gate.shortSlots', 'landing.pool']);
 
 /** Help for each settings form the printed usage did not already name, so each form is covered (N2). */
 function settingFormHelp(commands) {
   return Object.fromEntries(SETTING_FORMS.filter((form) => !commands[`settings ${form}`]).map((form) => [`settings ${form}`, Object.freeze({
-    usages: [`pullboard settings ${form} <n>`], flags: [], example: `pullboard settings ${form} 2`, notes: [],
+    usages: [`pullboard settings ${form} ${form === 'landing.pool' ? 'on|off' : '<n>'}`], flags: [],
+    example: `pullboard settings ${form} ${form === 'landing.pool' ? 'on' : '2'}`, notes: [],
   })]));
 }
 
