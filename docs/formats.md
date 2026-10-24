@@ -425,7 +425,7 @@ The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its ap
 | `reserve` | reviewer | `until` |
 | `accept` | reviewer | `reason`, `commit`, engine-20 `implies`, engine-33 `review`, engine-68 `note` |
 | `reject` | reviewer | `reason`, `commit`, engine-20 `implies`, engine-33 `review` |
-| `reopen` | coordinator | `commit`, `note`, `judgment`, engine-10 `supersedes`, `landingFailure`, engine-30 `cause`, engine-52 `conflict` |
+| `reopen` | coordinator, or reviewer | `commit`, `note`, `judgment`, engine-10 `supersedes`, `landingFailure`, engine-30 `cause`, engine-52 `conflict`, `withdrawnVerdict` |
 | `merged` | coordinator | `commit` |
 | `landing_batch` | coordinator | `batch` |
 | `landing-review-moved` | coordinator | `code`, `batch`, `verdict`, `checked`, `landed` |
@@ -463,6 +463,8 @@ The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its ap
 A CLI `accept` event includes `check: "none"` when no frozen item check ran or `check: "green"` when it passed. Older accept events and records without this field read as `unknown`; the result stays in event detail and does not change the board schema or event-log version.
 
 An engine-10 `reopen` of a verified item adds `supersedes` with the earlier accept event id and `landingFailure` with `{batch, tests: [{file, name}], mergeCommit}`. For a recorded red batch, `batch` is its id and the tests and merge commit come from that batch. For a hand-run landing, `batch` is `null`; the coordinator's note supplies a test path and name plus merge commit, which are recorded without checking that commit against the repository. The accept event and verdict row remain append-only, and merged items cannot be reopened. Engine-8 and engine-9 `reopen` events keep their original `{commit, note, judgment}` detail and submitted-only behavior.
+
+A `reopen` with `withdrawVerdict: true` records `withdrawnVerdict: {verdictId, acceptEventId}` for the exact current acceptance withdrawn by its accepting reviewer or the coordinator, and `supersedes` names that same accept event. The original verdict row and accept event remain immutable; history derives their withdrawn state from this binding, without rewriting earlier records or reviving an older acceptance. A later fresh acceptance can become current. This flag requires the verdict-withdraw feature engine; ordinary reopen records and older recorded moves keep their original meaning.
 
 Item facts use the existing append-only `event` table and event-log version 1. A `fact` event's actor and timestamp stamp its author and time; its detail carries a stable string `id`, typed `kind`, exact `text`, optional `ref` binding or `null`, and superseded fact id or `null`. Allowed kinds are `capture`, `measurement`, `note`, `diff`, `decision`, `rejection`, `supersession` and `root-cause`. Judgement kinds and any correction using `supersedes` require the item's live holder or the coordinator. A correction must refer to a fact on the same item; it adds a new event and preserves every earlier fact.
 
