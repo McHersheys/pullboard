@@ -12,7 +12,8 @@ const SHA='a'.repeat(40);
 const ACTORS={coordinator:{session:'a'.repeat(64),parent:'a'.repeat(64)},'core-1':{session:'b'.repeat(64),parent:'a'.repeat(64)},'core-2':{session:'c'.repeat(64),parent:'c'.repeat(64)}};
 /** Private SQLite copies share one initial history; all observations here are synthetic protocol fixtures. */
 function copies(t) {
-  const first=store.openBoard(':memory:');const second=store.openBoard(':memory:');
+  const clock={now:()=>new Date('2026-10-24T00:00:00Z')};
+  const first=store.openBoard(':memory:',clock);const second=store.openBoard(':memory:',clock);
   t.after(()=>{store.closeBoard(second);store.closeBoard(first);});
   store.register(first,{lane:'coordinator',path:'/private/bar-replay-root',sessionDigest:ACTORS.coordinator.session});
   for (const [index,id] of ['core-1','core-2'].entries()) store.register(first,{lane:'core',path:`/private/bar-replay-${index}`,sessionDigest:ACTORS[id].session,parentDigest:ACTORS[id].parent});
