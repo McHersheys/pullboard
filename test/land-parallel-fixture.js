@@ -23,7 +23,9 @@ function observeGates(box) {
     `const trace = ${JSON.stringify(trace)}; const armed = ${JSON.stringify(armed)};`,
     "if (!fs.existsSync(armed) || process.argv.includes('--alone')) return;",
     "const root = process.cwd(); const pid = process.pid; const files = fs.readdirSync(root + '/web').filter(name => /^land-[0-9]+\\.test\\.js$/.test(name)).sort();",
-    "const mark = phase => fs.appendFileSync(trace, JSON.stringify({ phase, root, pid, files, at: Date.now() }) + '\\n');",
+    "const tree = require('node:child_process').execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: root, encoding: 'utf8' }).trim();",
+    "const badgeFile = root + '/docs/badges/items.json'; const badgeMessage = fs.existsSync(badgeFile) ? JSON.parse(fs.readFileSync(badgeFile, 'utf8')).message : null;",
+    "const mark = phase => fs.appendFileSync(trace, JSON.stringify({ phase, root, pid, files, tree, badgeMessage, at: Date.now() }) + '\\n');",
     "mark('start'); process.on('exit', () => mark('end'));",
     // Budget: a deterministic rendezvous ceiling, not a performance requirement. Serial code exits
     // this barrier without a peer and is rejected by the parent’s overlap assertion.
@@ -98,7 +100,20 @@ export function assertParallelLanding({ landProject, itemWorktree, submitItem, a
       assert.ok(maximum >= 2, 'candidate gates execute concurrently in distinct worktrees');
       const starts = rows.filter(row => row.phase === 'start');
       const sets = starts.map(row => row.files.join(','));
-      for (const wanted of ['land-1.test.js', 'land-1.test.js,land-2.test.js', 'land-1.test.js,land-2.test.js,land-3.test.js']) assert.equal(sets.filter(value => value === wanted).length, 1, `each exact prefix executes once: ${wanted}`);
+      assert.ok(starts.every(row => /^[a-f0-9]{40,64}$/u.test(row.tree)), 'each observed gate identifies its actual tested tree');
+      assert.equal(new Set(starts.map(row => row.tree)).size, starts.length, `no exact tree is gated twice: ${JSON.stringify(starts)}`);
+      for (const wanted of ['land-1.test.js', 'land-1.test.js,land-2.test.js', 'land-1.test.js,land-2.test.js,land-3.test.js']) {
+        assert.equal(starts.filter(row => row.files.join(',') === wanted && row.badgeMessage === '3 items').length, 1,
+          `each initial exact prefix executes once: ${wanted}; ${JSON.stringify(starts)}`);
+      }
+      const aTrees = starts.filter(row => row.files.join(',') === 'land-1.test.js');
+      if (aTrees.length > 1) {
+        // Returning B changes real committed badge content. A new A tree is a necessary matched
+        // control for A+C; the old green three-item badge cannot prove the two-item projection.
+        assert.equal(aTrees.length, 2, JSON.stringify(starts));
+        assert.deepEqual(new Set(aTrees.map(row => row.badgeMessage)), new Set(['3 items', '2 items']));
+        assert.deepEqual(box.git(box.repo, 'diff', '--name-only', aTrees[0].tree, aTrees[1].tree).split('\n'), ['docs/badges/items.json']);
+      }
       assert.equal(sets.filter(value => value === 'land-1.test.js,land-3.test.js').length, 1, 'C is checked once on A, with no serial retry or pre-push rerun');
       assert.equal(sets.filter(value => value === 'land-2.test.js').length, 1, 'the distinct B-alone control confirms culpability rather than blaming an interaction');
     } else assert.equal(maximum, 1, 'the default serial behavior remains serial');
