@@ -1,3 +1,4 @@
+import { commandPhaseSnapshot } from '../src/command-phase.js';
 import { AGENT_SHELL_MARKERS, SSH_SHELL_MARKERS } from '../src/person.js';
 /** Private real CLI, auth and relay fixture; credentials never enter assertion messages [H1,H7,H18]. */
 import assert from 'node:assert/strict';
@@ -107,7 +108,8 @@ function childResult(root, env, argv, observedSnapshotUploads, initialSnapshotUp
     /** Retain the exact command and work-derived bound without exposing credentials. */
     const reportFailure = (code, signal, detail = '') => reportFixtureChildFailure({
       command: process.execPath, args: argv, status: code, signal,
-      elapsedMs: performance.now() - startedAt, stderr, env, detail,
+      elapsedMs: performance.now() - startedAt, stderr, env, detail: exceededDeadline
+        ? detail + '\nstall phase capture: ' + JSON.stringify(commandPhaseSnapshot(env.PULLBOARD_COMMAND_PHASE_FILE, child.pid)) : detail,
     });
     child.once('error', error => {
       if (settled) return;
@@ -142,7 +144,7 @@ export { childResult as relayFixtureChild };
  * fixture once used, a loaded machine kept the test process busy enough that browser replies queued past their
  * deadlines (#955, #979). A case that needs a faster poll passes pollMs by name and says why.
  */
-export async function relayClientFixture(t, { cliChildren, coordinatorModel, accountStorageBytes, pollMs = 200, traceCliPhases = false } = {}) {
+export async function relayClientFixture(t, { cliChildren, coordinatorModel, accountStorageBytes, pollMs = 200 } = {}) {
   const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-relay-cleanup-')));
   const root = join(scratch, 'repo');
   const home = join(scratch, 'home');
@@ -546,6 +548,7 @@ globalThis.fetch = function tracedFetch(input, init) {
   }
   /** Invoke the production CLI in this private repository. */
   let cliChildIndex = 0;
+  let phaseSequence = 0;
   /** Verify and consume the next optional test-flow child descriptor. */
   function plannedSnapshotUploads(args) {
     if (!cliChildren) return undefined;
@@ -563,8 +566,7 @@ globalThis.fetch = function tracedFetch(input, init) {
     /** Observe only this child's received work; retries consume the same finite six-unit allowance. */
     const observedWork = () => ({ legacyUploads: snapshotWriteCount - writesBefore,
       ...Object.fromEntries(Object.entries(pageWork).map(([name, count]) => [name, count - pagesBefore[name]])) });
-    const phaseFile = (traceCliPhases || args[0] === 'export') ? join(scratch, `export-phase-${cliChildIndex}-${Date.now()}.jsonl`) : null;
-    const phaseEnv = phaseFile ? { ...env, PULLBOARD_STARTUP_TRACE_ENTRY: CLI, PULLBOARD_STARTUP_TRACE_FILE: phaseFile } : env;
+    const phaseEnv = { ...env, PULLBOARD_COMMAND_PHASE_FILE: join(scratch, `command-phase-${++phaseSequence}.jsonl`) };
     const childEnv = traceSnapshotWrites ? { ...phaseEnv, PULLBOARD_TEST_RELAY_TRACE_FILE: traceFile,
       PULLBOARD_TEST_RELAY_TRACE_ORIGIN: origin,
       NODE_OPTIONS: [env.NODE_OPTIONS, '--import=' + pathToFileURL(tracePreload).href].filter(Boolean).join(' ') } : phaseEnv;
@@ -586,13 +588,6 @@ globalThis.fetch = function tracedFetch(input, init) {
         throw new Error(`${message}; safe snapshot transport evidence: ${evidence}`, { cause: error });
       }
       throw error;
-    } finally {
-      if (phaseFile) {
-        try {
-          t.diagnostic('private CLI phase timing: ' + JSON.stringify({ child: cliChildIndex, command: args[0],
-            phases: existsSync(phaseFile) ? readFileSync(phaseFile, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line)) : [] }));
-        } catch (error) { t.diagnostic('private CLI phase timing unavailable: ' + error.code); }
-      }
     }
     if (traceSnapshotWrites) result.snapshotTrace = childTrace();
     if (cliChildren) {

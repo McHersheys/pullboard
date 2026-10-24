@@ -277,7 +277,7 @@ test('real paired Chrome approval remains pending until coordinator applies and 
   skip: !findChromeExecutable() && 'Chrome is not installed',
   timeout: approvalFlowTimeoutMs(APPROVAL_FLOW_CLI_CHILDREN),
 }, async t => {
-  const box = await relayClientFixture(t, { cliChildren: APPROVAL_FLOW_CLI_CHILDREN, traceCliPhases: true });
+  const box = await relayClientFixture(t, { cliChildren: APPROVAL_FLOW_CLI_CHILDREN });
   const title = 'PERSON_REQUEST_APPROVAL_FIXTURE';
   const id = 'G98';
   const row = addPendingSpecRow(box, id);

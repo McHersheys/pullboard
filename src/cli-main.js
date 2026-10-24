@@ -290,9 +290,7 @@ async function runMain(argv, streams) {
         (await import('./person.js')).requirePersonChannel(io.personChannel);
         io.caller('person');
       }
-      traceServeStartup('cli-bind-start');
       checkoutSession = await bindCheckoutSession(io, parsed.positionals, parsed.values);
-      traceServeStartup('cli-bind-ready');
       if (checkoutSession?.lease) CHECKOUT_LEASES.set(io, checkoutSession.lease);
     } catch (error) {
       if (!(error instanceof Refused)) throw error;
@@ -304,29 +302,20 @@ async function runMain(argv, streams) {
     }
   }
   try {
-    traceServeStartup('cli-trunk-start');
     if (needsRepo) await rememberTrunk(io, git);
-    traceServeStartup('cli-trunk-ready');
     traceServeStartup('cli-command-preamble-start');
     // The relay and baseline work loads only where a relay token, relay state, a link or a pending result exists.
     /** Load the work around the command when any of it could act here, or null. */
     const syncWork = async () => (sync && (await import('./local-state.js')).syncMayAct(io.cwd) ? import('./cli-sync.js') : null);
     await (await syncWork())?.syncBefore(io, main);
     traceServeStartup('cli-command-preamble-ready');
-    traceServeStartup('cli-command-dispatch');
     const code = await runCommand(argv, io);
-    traceServeStartup('cli-command-returned');
     if (code === 0) await checkoutSession?.finish?.();
-    traceServeStartup('cli-final-sync-start');
     if (code === 0) await (await syncWork())?.retrySync(io);
-    traceServeStartup('cli-final-sync-ready');
     const status = io.exitCode(code);
     if (status === 0 && needsRepo && !parsed?.values['dry-run']) (await import('./blocks.js')).clearCompletedBlocks(io);
-    traceServeStartup('cli-post-sync-ready');
     if (status !== 0) await io.prepareRefusal();
-    traceServeStartup('cli-flush-start');
     io.flush(status);
-    traceServeStartup('cli-flush-ready');
     return status;
   } finally {
     CHECKOUT_LEASES.delete(io);
