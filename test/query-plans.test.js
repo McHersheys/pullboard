@@ -83,6 +83,14 @@ test('a new fact id is checked by index across current, legacy and archived fact
     .run(clock.now().toISOString(), 'coordinator', 'fact', second, JSON.stringify({ id: 'legacy-0', text: 'Historical duplicate retained' }));
   recordSchemaStamp(legacy, SCHEMA_DIGEST);
   legacy.close();
+  const older = store.openBoard(file, clock, { isMain: false });
+  try {
+    assert.throws(() => store.appendFact(older, second, options('cold-identity')), { code: 'BAD_FACT_ID' },
+      'an older indexless store still reserves cold identities');
+    store.appendFact(older, second, options('before-index-install'));
+  } finally {
+    store.closeBoard(older);
+  }
   const readonly = store.openBoardReadOnly(file);
   assert.equal(readonly.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='index' AND name LIKE '%_fact_%'").get().n, 0,
     'read-only open never installs an additive index');

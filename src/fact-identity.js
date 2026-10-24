@@ -32,8 +32,14 @@ export function ensureFactIdentityIndexes(db) {
  */
 export function factIdentityExists(db, id) {
   const tables = factTables(db);
-  const legacy = tables.some((table) => db.prepare(`SELECT 1 FROM ${table}
-    WHERE event_kind = 'fact' AND NOT json_valid(event_detail) LIMIT 1`).get());
+  const legacy = tables.some((table) => {
+    // SQLite can prefer the broad kind index even when the partial legacy index is empty.
+    // Older/non-owning stores may not have this additive index yet; keep their original lookup.
+    const indexed = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ? AND tbl_name = ?")
+      .get(`${table}_fact_legacy`, table);
+    return db.prepare(`SELECT 1 FROM ${table}${indexed ? ` INDEXED BY ${table}_fact_legacy` : ''}
+      WHERE event_kind = 'fact' AND NOT json_valid(event_detail) LIMIT 1`).get();
+  });
   if (legacy) {
     let history = 'event';
     if (tables.includes('event_archive')) {
