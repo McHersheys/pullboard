@@ -5,15 +5,17 @@ import { LANDING_LEASE_ENGINE } from '../landing-lease-engine.js';
 import { IMPLIES_ENGINE } from '../move-engine-constants.js';
 import { carriesImplies } from '../move-implies.js';
 import { BOARD_SENTINEL_ENGINE } from '../sentinel-engine.js';
+import { BAR_CHECK_ENGINE } from '../bar-check-engine.js';
 
 /** Preserve this operation's historical first-matching engine conditions [H16]. */
 function minimumEngine(args, board, at) {
-  if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('conflict:')) return RIGOR_AUTO_ENGINE;
-  if (args[0]?.landingFence !== undefined) return LANDING_LEASE_ENGINE;
-  if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('sentinel:')) return BOARD_SENTINEL_ENGINE;
-  if (['cause', 'neverAgain', 'asPerson'].some(name => Boolean(args[1] && typeof args[1] === 'object' && Object.hasOwn(args[1], name) && args[1][name] !== undefined && args[1][name] !== null && args[1][name] !== false))) return CAUSE_ENGINE;
-  if (carriesImplies('appendFact', args)) return IMPLIES_ENGINE;
-  return 1;
+  const barCheck = ['bar-check', 'bar-answer'].includes(args[1]?.kind) ? BAR_CHECK_ENGINE : 1;
+  if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('conflict:')) return Math.max(barCheck, RIGOR_AUTO_ENGINE);
+  if (args[0]?.landingFence !== undefined) return Math.max(barCheck, LANDING_LEASE_ENGINE);
+  if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('sentinel:')) return Math.max(barCheck, BOARD_SENTINEL_ENGINE);
+  if (['cause', 'neverAgain', 'asPerson'].some(name => Boolean(args[1] && typeof args[1] === 'object' && Object.hasOwn(args[1], name) && args[1][name] !== undefined && args[1][name] !== null && args[1][name] !== false))) return Math.max(barCheck, CAUSE_ENGINE);
+  if (carriesImplies('appendFact', args)) return Math.max(barCheck, IMPLIES_ENGINE);
+  return barCheck;
 }
 
 /** Read precisely the actor argument used by this operation [H2,H16]. */
