@@ -81,3 +81,25 @@ test('a clock rollback refuses replay instead of silently reordering native hist
   assert.throws(() => replayFlow([...input].reverse(), { order: [1] }), /clocks moved backwards/u,
     'array order cannot hide rollback by placing lower timestamps first');
 });
+
+
+/** Public board control names are replay inputs; internal stage capacities are not a second settings API. */
+test('replay accepts modelled board controls and explicitly refuses unmodelled controls [R1,R2,A1]', () => {
+  const settings = { reviewsFirst: true, wipPerReviewer: 1.5, landingBatchSize: 2, landingCadenceMinutes: 5 };
+  const result = replayFlow(rework(), { settings });
+  assert.equal(result.replay.mode, 'predicted');
+  assert.deepEqual(result.replay.policy.settings, settings);
+  assert.equal(result.replay.items[0].cycleMinutes, 10, 'recorded work is retained while observed queue waits are not imposed');
+  assert.deepEqual(result.replay.items[0].stages,
+    { build: 5, reviewWait: 0, review: 3, sendBackIdle: 0, mergeWait: 2 });
+  for (const key of ['barReady', 'takeoverMinutes']) {
+    for (const value of [false, key === 'barReady' ? true : 30]) {
+      assert.throws(() => replayFlow(rework(), { settings: { [key]: value } }),
+        new RegExp(key + '.*not modelled by replay', 'u'), 'unknown authority is never silently ignored');
+    }
+  }
+  for (const key of ['buildWip', 'reviewWip', 'landingWip']) {
+    assert.throws(() => replayFlow(rework(), { settings: { [key]: 2 } }), /USAGE/u,
+      'internal limits are not accepted as public board settings');
+  }
+});
