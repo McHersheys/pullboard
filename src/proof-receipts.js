@@ -36,6 +36,8 @@ export function proofReceipts(board, itemId) {
 export function proofRunReceipt(board, request) {
   const { agentId, itemId } = request;
   if (!listAgents(board).some(agent => agent.agent_id === agentId)) throw new Refused('NOT_JOINED', 'join before recording a proof run');
+  // Only the engine establishes this in-process replay context after origin sealing, as for legacy gate runs.
+  // A replica cannot read the origin's receipt file; normal direct calls always require that file.
   const run = board.executionEngineVersion === undefined ? boundProofReceipt(board, request) : receiptFields(request.receipt);
   if (!run || run.version !== 2 || run.proof.item !== itemId) throw new Refused('PROOF_RUN_UNBOUND', 'the native receipt must name this item; run its check and read pullboard show <id>');
   if (run.proof.seat !== agentId) throw new Refused('PROOF_RUN_ACTOR', 'the native receipt belongs to another seat; use the receipts from your own check');

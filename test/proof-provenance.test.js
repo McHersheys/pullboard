@@ -72,6 +72,8 @@ test('proof receipts bind the native actor and replay without the origin filesys
     failures: [], load: null, at: '2026-10-23T00:00:00.000Z',
     proof: { item, frozenDigest: null, seat: 'web-1', environment: null, runner: null, exitCode: 7,
       counts: { passed: null, failed: null, skipped: null }, durationMs: 37, sourceClean: false } };
+  assert.throws(() => store.recordProofRun(board, { agentId: 'web-1', itemId: item, receipt }),
+    error => error.code === 'PROOF_RUN_UNBOUND', 'caller-written fields without a native file never establish a direct proof');
   mkdirSync(boardReceiptStore(board));
   writeFileSync(join(boardReceiptStore(board), `${receipt.id}.json`), receiptBody(receipt));
   assert.throws(() => store.recordProofRun(board, { agentId: 'web-2', itemId: item, receiptId: receipt.id }),
