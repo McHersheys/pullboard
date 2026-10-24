@@ -244,7 +244,17 @@ async function mergeGroup(state, items) {
     const changed = writeBadges(batch.root, badgeCounts(state.board));
     if (changed.length) {
       git(batch.root, ['add', '--', ...changed]);
-      git(batch.root, ['commit', '-m', 'chore: refresh board badge counts']);
+      const tip = headCommit(batch.root);
+      const parents = git(batch.root, ['rev-list', '--parents', '-n', '1', tip]).split(' ');
+      if (tip !== batch.base && parents.length === 3 && merged.some(entry => entry.merge === tip)) {
+        // Badges belong to the final item merge, preserving its parents/trailer and first-containing receipt.
+        git(batch.root, ['commit', '--amend', '--no-edit']);
+        const refreshed = headCommit(batch.root);
+        for (const entry of merged) if (entry.merge === tip) entry.merge = refreshed;
+      } else {
+        // An already-contained item may create no merge: never amend the existing trunk's history.
+        git(batch.root, ['commit', '-m', 'chore: refresh board badge counts']);
+      }
     }
   }
   let doctrineCounts = [];

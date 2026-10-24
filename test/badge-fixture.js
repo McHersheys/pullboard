@@ -32,10 +32,17 @@ export function assertBadgeLanding(e2e) {
     const accepted = box.run(box.repo, 'verify', String(id), 'accept', '--as', 'coordinator', '--note', 'The private native probe passed at the submitted commit.');
     assert.equal(accepted.code, 0, `${accepted.err}\n${accepted.out}`);
   } finally { box.git(box.repo, 'switch', '-q', 'main'); }
+  const beforeLanding = box.git(box.repo, 'rev-parse', 'main');
   const result = box.run(box.repo, 'land', '--json');
   assert.equal(result.code, 0, `${result.err}\n${result.out}`);
   const landed = JSON.parse(result.out);
   assert.deepEqual(landed.landed, [id]);
+  const recorded = JSON.parse(box.run(box.repo, 'show', String(id), '--json').out);
+  assert.equal(recorded.item_merged_commit, landed.batch.tip, 'badge refresh remains inside the first-containing item merge');
+  assert.deepEqual(box.git(box.repo, 'rev-list', '--parents', '-n', '1', landed.batch.tip).split(' '),
+    [landed.batch.tip, beforeLanding, commit], 'the badge refresh preserves both actual merge parents');
+  assert.equal(box.git(box.repo, 'log', '-1', '--format=%b', landed.batch.tip).trim(), `Pullboard-Item: #${id}`);
+
   const documents = ['items', 'checked'].map(name => JSON.parse(box.git(box.repo, 'show', `${landed.batch.tip}:docs/badges/${name}.json`)));
   assert.equal(documents[0].message, '1 items');
   assert.equal(documents[1].message, '100%');
