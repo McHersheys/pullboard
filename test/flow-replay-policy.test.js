@@ -49,7 +49,7 @@ test('recorded landing ties follow event order and hypothetical WIP does not man
     [1, 'reserve', 2, 'review-1'], [2, 'accept', 2, 'review-1'], [2, 'reserve', 1, 'review-1'],
     [3, 'accept', 1, 'review-1'], [5, 'merged', 2, 'coordinator'], [5, 'merged', 1, 'coordinator']]);
   assert.deepEqual(replayFlow(input).replay.landingOrder, [2, 1]);
-  const changed = replayFlow(input, { order: [1, 2], settings: { reviewWip: 2 } });
+  const changed = replayFlow(input, { order: [1, 2], settings: { wipPerReviewer: 2 } });
   assert.equal(changed.replay.items.find(item => item.id === 2).stages.reviewWait, 1,
     'the one observed reviewer still reviews one item at a time even when global review WIP is two');
 });
@@ -102,4 +102,54 @@ test('replay accepts modelled board controls and explicitly refuses unmodelled c
     assert.throws(() => replayFlow(rework(), { settings: { [key]: 2 } }), /USAGE/u,
       'internal limits are not accepted as public board settings');
   }
+});
+
+
+/** Build canonical public lifecycle rows from independently specified recorded stage boundaries. */
+function parallelHistory() {
+  const rows = [];
+  for (let id = 1; id <= 4; id += 1) {
+    rows.push([0, 'add', id, 'coordinator'], [0, 'claim', id, `builder-${id}`],
+      [4, 'submit', id, `builder-${id}`], [3 + id, 'reserve', id, 'reviewer'],
+      [4 + id, 'accept', id, 'reviewer'], [9, 'merged', id, 'coordinator']);
+  }
+  return rows.sort((a, b) => a[0] - b[0]).map(([minute, kind, item, by], index) =>
+    ({ event_id: index + 1, event_at: new Date(BASE + minute * 60_000).toISOString(), event_kind: kind, item_id: item, event_by: by }));
+}
+
+test('board reviewer ratio bounds starts while fixed reviewer capacity preserves work [R1,R2]', () => {
+  const input = parallelHistory();
+  const low = replayFlow(input, { settings: { wipPerReviewer: 1.5 } });
+  const high = replayFlow(input, { settings: { wipPerReviewer: 3 } });
+  assert.equal(low.replay.items[2].claimAt, new Date(BASE + 4 * 60_000).toISOString());
+  assert.equal(high.replay.items[2].claimAt, new Date(BASE).toISOString());
+  for (const result of [low, high]) {
+    assert.equal(result.replay.stages.build.medianMinutes, 4);
+    assert.equal(result.replay.stages.review.medianMinutes, 1);
+  }
+});
+
+test('board replay controls validate their named ranges and keep off values explicit [R1,R2,A1]', () => {
+  for (const [key, values] of Object.entries({ wipPerReviewer: [1, 3.1, '2'],
+    landingBatchSize: [0, 9, 1.5], landingCadenceMinutes: [4, 31, 5.5], reviewsFirst: [1, 'true'] })) {
+    for (const value of values) assert.throws(() => replayFlow(rework(), { settings: { [key]: value } }), /USAGE/u);
+  }
+  const settings = { reviewsFirst: false, wipPerReviewer: false, landingBatchSize: false, landingCadenceMinutes: false };
+  assert.deepEqual(replayFlow(rework(), { settings }).replay.policy.settings, settings);
+});
+
+
+test('reviews-first changes a ready shared seat without preempting recorded work [R1,R2]', () => {
+  const rows = [[0, 'add', 1, 'coordinator'], [0, 'claim', 1, 'builder'],
+    [1, 'submit', 1, 'builder'], [1, 'reserve', 1, 'shared'], [1, 'add', 2, 'coordinator'],
+    [2, 'accept', 1, 'shared'], [2, 'claim', 2, 'shared'], [3, 'submit', 2, 'shared'],
+    [3, 'reserve', 2, 'reviewer'], [3, 'merged', 1, 'coordinator'],
+    [4, 'accept', 2, 'reviewer'], [5, 'merged', 2, 'coordinator']];
+  const events = rows.map(([minute, kind, item, by], index) => ({ event_id: index + 1,
+    event_at: new Date(BASE + minute * 60_000).toISOString(), event_kind: kind, item_id: item, event_by: by }));
+  const buildsFirst = replayFlow(events, { order: [2, 1], settings: { reviewsFirst: false } });
+  const reviewsFirst = replayFlow(events, { order: [2, 1], settings: { reviewsFirst: true } });
+  assert.equal(buildsFirst.replay.items[0].stages.reviewWait, 1);
+  assert.equal(reviewsFirst.replay.items[0].stages.reviewWait, 0);
+  assert.equal(reviewsFirst.replay.items[1].claimAt, new Date(BASE + 2 * 60_000).toISOString());
 });

@@ -68,15 +68,15 @@ test('the replay bench reproduces a recorded history and is deterministic [R1,R2
   const history = join(root, 'history.json');
   const policy = join(root, 'policy.json');
   writeFileSync(history, JSON.stringify(recorded.history));
-  writeFileSync(policy, JSON.stringify({ order: [1, 2], settings: { buildWip: 1, reviewWip: 1, landingWip: 1 } }));
+  writeFileSync(policy, JSON.stringify({ order: [1, 2], settings: { wipPerReviewer: 1.5, landingBatchSize: 1, landingCadenceMinutes: 5 } }));
   const counterfactual = await run(root, 'flow', 'replay', '--history', history, '--policy', policy, '--json');
   assert.equal(counterfactual.code, 0, counterfactual.stderr + counterfactual.stdout);
   const changed = JSON.parse(counterfactual.stdout);
-  assert.deepEqual(changed.replay.landingOrder, [1, 2]);
-  assert.deepEqual(changed.replay.items.map(item => [item.id, item.cycleMinutes]), [[1, 11], [2, 9]]);
+  assert.deepEqual(changed.replay.landingOrder, [2, 1]);
+  assert.deepEqual(changed.replay.items.map(item => [item.id, item.cycleMinutes]), [[1, 12], [2, 6]]);
   assert.deepEqual(changed.replay.stages.build, { count: 2, fastQuarterMinutes: 2, medianMinutes: 3.5, slowQuarterMinutes: 5, worstMinutes: 5 });
   assert.deepEqual(changed.replay.stages.review, { count: 2, fastQuarterMinutes: 1, medianMinutes: 1.5, slowQuarterMinutes: 2, worstMinutes: 2 });
-  assert.deepEqual(changed.replay.stages.mergeWait, { count: 2, fastQuarterMinutes: 4, medianMinutes: 5, slowQuarterMinutes: 6, worstMinutes: 6 });
+  assert.deepEqual(changed.replay.stages.mergeWait, { count: 2, fastQuarterMinutes: 3, medianMinutes: 4, slowQuarterMinutes: 5, worstMinutes: 5 });
   assert.equal((await run(root, 'flow', 'replay', '--history', history, '--policy', policy, '--json')).stdout,
     counterfactual.stdout, 'same structural input and policy produce byte-identical JSON');
 });

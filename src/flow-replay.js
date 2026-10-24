@@ -6,7 +6,7 @@ import {
 } from './flow-replay-history.js';
 
 const MINUTE = 60_000;
-const SETTINGS = { buildWip: 'build', reviewWip: 'review', landingWip: 'landing' };
+const RANGES = { wipPerReviewer: [1.5, 3, false], landingBatchSize: [1, 8, true], landingCadenceMinutes: [5, 30, true] };
 
 /** Accept only hypothetical replay limits, never writing machine or board settings. */
 function replayPolicy(input, observations) {
@@ -18,14 +18,24 @@ function replayPolicy(input, observations) {
     || new Set(order).size !== order.length || order.some(id => !observations.items.some(item => item.id === id)))) {
     throw new Refused('USAGE', 'replay order is recorded or a list of distinct measured item ids');
   }
-  const limits = source.settings ?? {};
-  if (!limits || typeof limits !== 'object' || Array.isArray(limits)
-    || Object.entries(limits).some(([key, value]) => !Object.hasOwn(SETTINGS, key) || !Number.isSafeInteger(value) || value < 1)) {
-    throw new Refused('USAGE', 'replay settings accept positive buildWip, reviewWip and landingWip limits only');
+  const settings = source.settings ?? {};
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) throw new Refused('USAGE', 'replay settings must be a board line-settings object');
+  for (const [key, value] of Object.entries(settings)) {
+    if (['barReady', 'takeoverMinutes'].includes(key)) throw new Refused('USAGE', `${key} is not modelled by replay`);
+    if (key === 'reviewsFirst' && typeof value === 'boolean') continue;
+    const range = RANGES[key];
+    if (!range || value !== false && (typeof value !== 'number' || !Number.isFinite(value)
+      || value < range[0] || value > range[1] || range[2] && !Number.isSafeInteger(value))) {
+      throw new Refused('USAGE', `replay ${key} must use its supported board line-setting range; read pullboard settings line`);
+    }
   }
-  const settings = Object.fromEntries(Object.entries(SETTINGS).map(([key, stage]) => [key, limits[key] ?? observations.stages[stage]]));
-  const recorded = order === 'recorded' && Object.entries(SETTINGS).every(([key, stage]) => settings[key] === observations.stages[stage]);
-  return { order, settings, recorded };
+  const reviewers = new Set(observations.tasks.filter(task => task.stage === 'review').map(task => task.by)).size;
+  const capacity = { ...observations.stages };
+  if (settings.wipPerReviewer !== undefined && settings.wipPerReviewer !== false) {
+    capacity.build = capacity.review = Math.max(1, Math.ceil(settings.wipPerReviewer * reviewers));
+  }
+  return { order, settings: { ...settings }, capacity, reviewers, recorded: order === 'recorded' && !Object.keys(settings).length };
+
 }
 
 /** Match the existing flow window's quartile convention, retaining nulls when no interval is measured. */
@@ -43,26 +53,42 @@ function schedule(observations, policy) {
   const completed = new Map(), running = [];
   const arrival = new Map(observations.items.map(item => [item.id, item.arrival]));
   const rank = new Map((Array.isArray(policy.order) ? policy.order : []).map((id, index) => [id, index]));
-  const capacity = Object.fromEntries(Object.entries(SETTINGS).map(([key, stage]) => [stage, policy.settings[key]]));
-  let now = observations.origin;
+  const capacity = policy.capacity;
+  const batchSize = policy.settings.landingBatchSize || Infinity;
+  const cadence = (policy.settings.landingCadenceMinutes || 0) * MINUTE;
+  const batched = !policy.recorded && (batchSize !== Infinity || cadence > 0);
+  let now = observations.origin, batch = new Set(), batchStarted = -Infinity, batchFinished = -Infinity;
   /** A measured task starts after arrival, its prior stage and the seat's recorded availability. */
   const readyAt = task => Math.max(arrival.get(task.item), observations.resources.get(task.by).available,
     task.prior ? completed.get(task.prior.id)?.end ?? Infinity : -Infinity, policy.recorded ? task.start : -Infinity);
   /** Recorded decisions preserve their exact start constraints; counterfactual order selects among ready tasks. */
   const compare = (a, b) => policy.recorded ? a.start - b.start || a.id - b.id :
-    (rank.get(a.item) ?? Infinity) - (rank.get(b.item) ?? Infinity) || arrival.get(a.item) - arrival.get(b.item) || a.item - b.item || a.id - b.id;
+    (policy.settings.reviewsFirst ? Number(b.stage === 'review') - Number(a.stage === 'review') : 0)
+    || (rank.get(a.item) ?? Infinity) - (rank.get(b.item) ?? Infinity) || arrival.get(a.item) - arrival.get(b.item) || a.item - b.item || a.id - b.id;
   while (pending.size || running.length) {
     for (let i = running.length - 1; i >= 0; i -= 1) {
       if (running[i].end <= now) { const row = running.splice(i, 1)[0]; completed.set(row.task.id, row); }
     }
+    if (batched && !batch.size && now >= Math.max(batchStarted + cadence, batchFinished)) {
+      const ready = [...pending.values()].filter(task => task.stage === 'landing' && readyAt(task) <= now).sort(compare).slice(0, batchSize);
+      if (ready.length) { batch = new Set(ready.map(task => task.id)); batchStarted = now; }
+    }
     for (const task of [...pending.values()].sort(compare)) {
+      if (batched && task.stage === 'landing' && !batch.has(task.id)) continue;
       if (readyAt(task) > now || running.filter(row => row.task.stage === task.stage).length >= capacity[task.stage]
         || running.filter(row => row.task.by === task.by).length >= observations.resources.get(task.by).capacity) continue;
       pending.delete(task.id);
       running.push({ task, start: now, end: now + task.duration });
     }
+    if (batched && batch.size && [...batch].every(id => completed.has(id))) {
+      batchFinished = Math.max(...[...batch].map(id => completed.get(id).end));
+      batch.clear();
+      continue;
+    }
     if (!pending.size && !running.length) break;
-    const next = Math.min(...running.map(row => row.end), ...[...pending.values()].map(readyAt).filter(at => at > now));
+    const batchAt = batched && !batch.size && [...pending.values()].some(task => task.stage === 'landing' && readyAt(task) <= now)
+      ? Math.max(batchStarted + cadence, batchFinished) : Infinity;
+    const next = Math.min(...running.map(row => row.end), ...[...pending.values()].map(readyAt).filter(at => at > now), batchAt > now ? batchAt : Infinity);
     if (!Number.isFinite(next)) throw new Refused('USAGE', 'replay history has an unschedulable dependency; export a complete lifecycle history');
     now = next;
   }
@@ -91,7 +117,9 @@ export function replayFlow(events, inputPolicy) {
   return { history, replay: { mode: policy.recorded ? 'recorded' : 'predicted', policy: { order: policy.order, settings: policy.settings },
     items, landingOrder, stages, unmeasured: observations.unmeasured,
     assumptions: ['Recorded lifecycle intervals are retained, not interpreted as CPU time.',
-      'Seat identities and their observed concurrency are fixed; WIP limits are hypothetical replay inputs only.',
+      'Seat identities and their observed concurrency are fixed; modelled board controls change scheduling only.',
+      `WIP uses ceil(ratio times ${policy.reviewers} distinct observed reviewer seats), not an invented workforce.`,
+      'Landing batches contain ready items only; the next batch waits for prior completion and its start-to-start cadence.',
       'Predicted queue times are not timings measured by running an alternate live policy.',
       'Incomplete or abandoned attempts remain unmeasured, never zero-duration work.'] } };
 }
