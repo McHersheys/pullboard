@@ -1133,11 +1133,17 @@ test('an expired saved pairing preserves a valid identity when its session probe
     } });
     try {
       await page.navigate(HOSTED + '/');
-      const failure = await page.poll(`(() => { const node = document.querySelector('#relay-screen .relay-live span');
-        return node?.textContent.includes('fresh phone pairing link') && node.textContent; })()`, 8_000); // budget: existing hosted blocker-settle ceiling.
-      assert.ok(failure, 'the original expired pairing guidance remains observable on the phone');
-      assert.match(failure, /pullboard relay on --all/u);
-      assert.doesNotMatch(failure, /fixture session probe unavailable/u, 'probe errors do not replace the original pairing refusal');
+      if (unavailable) {
+        const failure = await page.poll(`(() => { const node = document.querySelector('#relay-screen .relay-live span');
+          return node?.textContent.includes('fresh phone pairing link') && node.textContent; })()`, 8_000); // budget: existing hosted blocker-settle ceiling.
+        assert.ok(failure, 'unavailable authorization retains the original expired pairing guidance');
+        assert.match(failure, /pullboard relay on --all/u);
+        assert.doesNotMatch(failure, /fixture session probe unavailable/u, 'probe errors do not replace the original pairing refusal');
+      } else {
+        // #982 intentionally replaces the former expired-link blocker for an authorized paired browser.
+        assert.ok(await page.poll(`(${READ_SCREEN}).board`, 8_000), 'valid paired identity opens its board despite the expired link'); // budget: fixture settle ceiling.
+        assert.doesNotMatch((await page.evaluate(READ_SCREEN)).words, /fresh phone pairing link/u);
+      }
       assert.equal(probes, 1, 'only the cause-specific session probe ran');
       const screen = await page.evaluate(READ_SCREEN);
       assert.doesNotMatch(screen.words, /browser was removed/iu, 'a valid or unavailable session is not a revocation');
