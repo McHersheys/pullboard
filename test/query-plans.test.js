@@ -28,10 +28,9 @@ const SHOUTS = 23_000;
 const SEATS = 800;
 const sandboxes = [];
 // Reads that fold the whole history by design, so no index can serve them, each with the item that
-// rewrites it: coordinator resume's undrafted Rigor in personNeedsState (#1052) and resume's
-// proofStats (#1051). The test fails if one stops scanning while still listed, so the list can only
+// rewrites it: resume's proofStats (#1051). The test fails if one stops scanning while still listed, so the list can only
 // shrink.
-const WHOLE_HISTORY = ['personNeedsState', 'proofStats'];
+const WHOLE_HISTORY = ['proofStats'];
 
 after(() => {
   for (const dir of sandboxes) rmSync(dir, { recursive: true, force: true });
@@ -48,15 +47,19 @@ function fixture() {
 import { appendFileSync } from 'node:fs';
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
+let gitDepth = 0;
 for (const name of ['spawnSync', 'execFileSync']) {
   const original = childProcess[name];
   /** Measure actual synchronous Git calls without substituting their results or environment. */
   childProcess[name] = function (command, ...args) {
     const started = performance.now();
+    const git = command === 'git';
+    if (git) gitDepth += 1;
     try { return original.call(this, command, ...args); }
     finally {
-      if (command === 'git' && process.env.PULLBOARD_GIT_TIMING_LOG) {
-        appendFileSync(process.env.PULLBOARD_GIT_TIMING_LOG, JSON.stringify({ milliseconds: performance.now() - started }) + '\\n');
+      if (git) gitDepth -= 1;
+      if (git && gitDepth === 0 && process.env.PULLBOARD_GIT_TIMING_LOG) {
+        appendFileSync(process.env.PULLBOARD_GIT_TIMING_LOG, JSON.stringify({ pid: process.pid, milliseconds: performance.now() - started }) + '\\n');
       }
     }
   };
@@ -93,7 +96,7 @@ DatabaseSync.prototype.prepare = function (sql, ...rest) {
     const argv = [...(record ? ['--import', pathToFileURL(preload).href] : []), ...(node ? [] : [BIN]), ...args];
     const result = runFixtureChild(process.execPath, argv, { cwd, env: { ...env, PULLBOARD_QUERY_LOG: log,
       ...(timing ? { PULLBOARD_GIT_TIMING_LOG: join(dir, 'git-timing.log') } : {}) }, encoding: 'utf8' });
-    return { code: result.status, out: result.stdout ?? '', err: result.failure ?? result.stderr ?? '' };
+    return { code: result.status, pid: result.pid, out: result.stdout ?? '', err: result.failure ?? result.stderr ?? '' };
   };
   git('init', '-q', '-b', 'main');
   assert.equal(run(repo, ['init']).code, 0);
@@ -171,13 +174,15 @@ test('coordinator resume never reads the whole event history for rigor [C7,D1,N1
     for (const line of readFileSync(box.log, 'utf8').split('\n').filter(Boolean)) {
       const row = JSON.parse(line);
       if (!/resume-needs\.js|rigor-counters\.js/u.test(row.stack) || !/\bFROM event\b/iu.test(row.sql)) continue;
-      const plan = board.db.prepare(`EXPLAIN QUERY PLAN ${row.sql}`).all().map(entry => entry.detail);
+      const bindings = row.sql.includes('?') ? [0] : []; // The only hot event parameter is the recorded integer cursor.
+      const plan = board.db.prepare(`EXPLAIN QUERY PLAN ${row.sql}`).all(...bindings).map(entry => entry.detail);
       plans.push({ sql: row.sql, plan });
       assert.ok(!plan.some(detail => /^SCAN event\b/u.test(detail)), `Rigor must use indexed state/tail, never whole-history: ${row.sql}\n${plan.join('\n')}`);
     }
     assert.ok(plans.length > 0, 'the real coordinator resume executed an observed Rigor event-cursor/tail query');
     const gitMs = readFileSync(join(box.dir, 'git-timing.log'), 'utf8').split('\n').filter(Boolean)
-      .reduce((total, line) => total + JSON.parse(line).milliseconds, 0);
+      .map(line => JSON.parse(line)).filter(row => row.pid === result.pid)
+      .reduce((total, row) => total + row.milliseconds, 0);
     assert.ok(gitMs <= wallMs, 'only actual nonoverlapping synchronous Git durations are excluded');
     const excludingGit = wallMs - gitMs;
     console.log(`# coordinator resume wall ${wallMs.toFixed(2)} ms; actual Git ${gitMs.toFixed(2)} ms; excluding Git ${excludingGit.toFixed(2)} ms`);
