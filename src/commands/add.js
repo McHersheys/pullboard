@@ -22,6 +22,7 @@ import {
 } from '../spec.js';
 import {
   actOn,
+  barActorForCommand,
   briefArg,
   briefInLane,
   buildInFilelessLane,
@@ -70,6 +71,7 @@ export async function run(io, args) {
   const { command } = store.validateItemAddition(board, item);
   if (command) refuseCheckSyntax(command);
   if (command) item.checkBaseline = values.wait ? checkBaseline(ctx.info.root, command) : prepareCheckBaseline(ctx.info.root, command);
+  item.barActor = barActorForCommand(ctx, board);
   const id = await ordered(ctx, board, 'addItem', [item]);
   if (item.checkBaseline?.result === 'pending') await launchBaseline(ctx, board, id, item.checkBaseline);
   io.result?.({ item: store.getItem(board, id) });

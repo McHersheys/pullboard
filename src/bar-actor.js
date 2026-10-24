@@ -8,6 +8,9 @@ export function nativeBarActor(environment = process.env, registered = {}) {
   const identity = runtimeSessionIdentity(environment);
   if (!identity) return null;
   const session = parentSessionDigest(identity.session);
+  if (!identity.parent && registered.session && registered.session !== session && registered.parent && registered.parent !== registered.session) {
+    throw new Refused('BAR_PARENT_UNKNOWN', 'this helper seat belongs to an earlier native session and its current parent is unknown; join a fresh worktree with the current parent before authoring or signing a bar');
+  }
   const declared = registered.session === session ? registered.parent : null;
   const parent = identity.parent ? parentSessionDigest(identity.parent) : declared ?? session;
   if (identity.parent && declared && parent !== declared) throw new Refused('BAR_PARENT_UNKNOWN', 'the native parent and this session’s joined declaration disagree; use a fresh correctly joined worktree before authoring or signing a bar');

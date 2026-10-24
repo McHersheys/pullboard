@@ -1,9 +1,9 @@
 import { prepareBarCoverage } from '../bar-coverage.js';
 import { mainPolicy } from '../trusted-policy.js';
-/** Inspect, enable and independently sign acceptance bars [U113]. */
+/** Inspect, enable and independently sign acceptance bars [B4,V1,V2,H16]. */
 import { getItem } from '../board.js';
 import { barReadiness, barReadySetting } from '../bar-readiness.js';
-import { actOn, idArg, ordered } from '../cli.js';
+import { actOn, barActorForCommand, idArg, ordered } from '../cli.js';
 import { Refused } from '../refused.js';
 
 /** Run the board-scoped readiness setting or show/sign one exact revision. */
@@ -28,7 +28,7 @@ export async function run(io, { first, second, rest, values }) {
     }
     io.say(`Sign-off asks: can the builder meet this bar, and would two reviewers grade it the same? Check the named baseline, every measurement method, coverage and reviewer edges in pullboard show ${id}.`);
     const coverage = prepareBarCoverage(ctx.info.root, item, mainPolicy(ctx.info.root), values['coverage-file']);
-    const signed = await ordered(ctx, board, 'signBar', [id, { agentId: me.id, revision: status.revision?.revision, digest: status.revision?.digest, note: values.note, coverage }]);
+    const signed = await ordered(ctx, board, 'signBar', [id, { agentId: me.id, revision: status.revision?.revision, digest: status.revision?.digest, note: values.note, coverage, barActor: barActorForCommand(ctx, board) }]);
     io.result?.({ signed });
     io.say(`signed #${id} revision ${signed.revision}; any bar edit needs a fresh signature`);
     return 0;

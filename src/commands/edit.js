@@ -13,6 +13,7 @@ import {
 } from '../relay.js';
 import {
   actOn,
+  barActorForCommand,
   briefArg,
   briefInLane,
   editAfter,
@@ -50,6 +51,7 @@ export async function run(io, args) {
   const { item, command } = store.validateItemEdit(board, id, change);
   if (command && command !== item.item_check) refuseCheckSyntax(command);
   if (command && (command !== item.item_check || barReadySetting(board).enabled)) change.checkBaseline = values.wait ? checkBaseline(ctx.info.root, command) : prepareCheckBaseline(ctx.info.root, command);
+  change.barActor = barActorForCommand(ctx, board);
   await ordered(ctx, board, 'editItem', [id, change]);
   if (change.checkBaseline?.result === 'pending') await launchBaseline(ctx, board, id, change.checkBaseline);
   io.result?.({ item: store.getItem(board, id) });

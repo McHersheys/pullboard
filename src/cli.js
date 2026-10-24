@@ -897,13 +897,14 @@ function relayOutboxSetting(root) {
   try { return configFromSource(coordinatorFile(root, CONFIG_FILE).stdout).relay?.outbox === true; } catch { return false; }
 }
 
+/** Capture bar provenance only at author/sign commands, never during unrelated lifecycle dispatch. */
+export function barActorForCommand(ctx, board) {
+  if (!barReadySetting(board).enabled || ctx.io.personChannel === 'view' || ctx.io.personRequest) return null;
+  const actor = ctx.info.isMain ? COORDINATOR : store.agentAt(board, ctx.info.root)?.agent_id;
+  return nativeBarActorForSeat(board, actor);
+}
+
 export async function ordered(ctx, board, operation, args) {
-  if (['addItem','editItem','signBar'].includes(operation) && barReadySetting(board).enabled) {
-    const at = operation === 'addItem' ? 0 : 1;
-    const actor = ctx.info.isMain ? COORDINATOR : store.agentAt(board, ctx.info.root)?.agent_id;
-    const barActor = ctx.io.personChannel === 'view' || ctx.io.personRequest ? null : nativeBarActorForSeat(board, actor);
-    args = args.map((value, index) => index === at ? { ...value, barActor } : value);
-  }
   const initialBaseline = initialSpecApprovalBaseline(ctx, board, operation);
   // Only a reject or a reopen can open a builder's first-refusal window (#954), so an accept never reads the coordinator's policy.
   if (operation === 'reopen' || operation === 'verify' && args[1]?.decision === 'REJECT') args = firstRefusalArgs(operation, args, configFromSource(coordinatorFile(ctx.info.root, CONFIG_FILE).stdout));
