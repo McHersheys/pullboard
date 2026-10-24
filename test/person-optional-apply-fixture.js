@@ -1,0 +1,95 @@
+/** Exact signed-request provenance must replace optional SSH signing at native apply, never named identity [E22,H16]. */
+import assert from 'node:assert/strict';
+import {
+  createHash,
+  generateKeyPairSync,
+  randomUUID,
+  sign,
+} from 'node:crypto';
+import {
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
+import { join } from 'node:path';
+import * as store from '../src/board.js';
+import * as signing from '../src/person-signing.js';
+import { presenceAttestation } from '../src/person-presence.js';
+import { preparePersonRequest } from '../src/person-request.js';
+import {
+  prepareRowDecisions,
+  planRowApply,
+} from '../src/row-decisions.js';
+import { loadConfig } from '../src/config.js';
+import {
+  applyRelayMove,
+  prepareEngineMove,
+} from '../src/engine.js';
+import {
+  receivePersonRequest,
+  personRequestRecords,
+  requestIntentDigest,
+  requestStageText,
+} from '../src/relay-requests.js';
+import { relayClientFixture } from './relay-client-fixture.js';
+import { runFixtureGit } from './fixture-child.js';
+
+/** A valid OpenSSH public line for a fixture-only public key; no SSH private key or signing subprocess exists. */
+function sshPublicLine(publicKey) {
+  const name = Buffer.from('ssh-ed25519');
+  const raw = publicKey.export({ format: 'der', type: 'spki' }).subarray(-32);
+  const length = value => { const bytes = Buffer.alloc(4); bytes.writeUInt32BE(value); return bytes; };
+  return `fixture@example.invalid namespaces="pullboard-signoff" ssh-ed25519 ${Buffer.concat([length(name.length), name, length(raw.length), raw]).toString('base64')}\n`;
+}
+
+/** Exercise actual engine receipt validation and native apply on an owned project, with a separately pinned fixture relay key. */
+export async function optionalPasskeyApply(t) {
+  const box = await relayClientFixture(t);
+  const specFile = join(box.root, 'SPEC.md');
+  const text = 'An optional SSH row approved by its exact passkey request.';
+  writeFileSync(specFile, readFileSync(specFile, 'utf8') + `\n- G21 [draft, must] ${text} | gate: review\n`);
+  const publicPair = generateKeyPairSync('ed25519');
+  const allowed = sshPublicLine(publicPair.publicKey);
+  mkdirSync(join(box.root, '.pullboard'), { recursive: true });
+  writeFileSync(join(box.root, '.pullboard', 'signers'), allowed);
+  writeFileSync(join(box.root, '.pullboard', 'signers.initial'), allowed);
+  writeFileSync(join(box.root, '.pullboard', 'first-commit'), runFixtureGit(['rev-list', '--max-parents=0', 'HEAD'], { cwd: box.root, env: box.env }) + '\n');
+  const board = store.openBoard(join(box.root, '.git', 'pullboard', 'board.sqlite'));
+  t.after(() => store.closeBoard(board));
+  const authority = generateKeyPairSync('ed25519');
+  signing.pinAuthority(board, 'https://fixture-relay.invalid', { version: 1, algorithm: 'Ed25519',
+    publicKey: authority.publicKey.export({ format: 'der', type: 'spki' }).toString('base64url') });
+  signing.setPersonSigning(board, { agentId: 'coordinator', signed: true });
+  const document = preparePersonRequest({ verb: 'spec-approve', args: { ids: 'G21' } }, randomUUID(), [{ id: 'G21', text }]);
+  const boardId = board.db.prepare("SELECT meta_value FROM board_meta WHERE meta_key='board_id'").get().meta_value;
+  const presence = { board: boardId, request: document.id, digest: createHash('sha256').update(JSON.stringify(document)).digest('hex'),
+    credential: 'fixture-passkey', at: Date.now() };
+  presence.signature = sign(null, presenceAttestation(presence), authority.privateKey).toString('base64url');
+  const at = new Date().toISOString();
+  receivePersonRequest(board, document, { sequence: 1, at, sender: { kind: 'person', userId: 'fixture-user', presence } });
+  const executor = 'fixture-executor';
+  let sequence = 1;
+  /** Execute normal sealed engine operations with actual stable request stage bindings. */
+  function execute(operation, args, phase) {
+    const record = personRequestRecords(board).find(entry => entry.id === document.id);
+    const move = prepareEngineMove(board, operation, args);
+    move.personRequest = { id: document.id, executor, phase, digest: requestIntentDigest(record) };
+    const outcome = applyRelayMove(board, move, { sequence: ++sequence, at, kind: 'move', sender: { kind: 'person', userId: 'fixture-user', presence } });
+    assert.equal(outcome.error, undefined, JSON.stringify(outcome));
+    return outcome.result;
+  }
+  const intake = personRequestRecords(board).find(entry => entry.id === document.id);
+  execute('shout', [{ from: 'person', to: 'coordinator', text: requestStageText(intake, 'claim'), lanes: Object.keys(loadConfig(box.root).lanes) }], 'claim');
+  const decisions = prepareRowDecisions(box.root, loadConfig(box.root), { ids: ['G21'], decision: 'approve', by: 'person',
+    sshSign: false, passkeyRequest: document.id, on: at, commit: runFixtureGit(['rev-parse', 'HEAD'], { cwd: box.root, env: box.env }) });
+  // Keep this explicit even before prepareRowDecisions retains the new provenance option.
+  decisions.forEach(record => { record.passkeyRequest = document.id; });
+  assert.equal(decisions[0].signature, undefined, 'optional passkey approval does not invoke SSH signing');
+  execute('recordRowDecisions', [{ agentId: 'person', channel: 'view', decisions }], 'execute');
+  const plan = planRowApply(box.root, loadConfig(box.root), store.rowDecisions(board), {
+    passkeyDecision: record => signing.verifiedPasskeyRowDecision(board, record),
+  });
+  assert.equal(plan.files.length, 1);
+  assert.match(plan.files[0].after, /- G21 \[approved, must\] An optional SSH row approved by its exact passkey request\./u);
+  assert.equal(readFileSync(specFile, 'utf8').includes('G21 [draft'), true, 'planning does not write before the caller commits its ordered apply');
+}

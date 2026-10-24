@@ -203,7 +203,10 @@ export async function specCommand(io, { first, second, rest, values }) {
       const ids = [second, ...rest].filter(Boolean).flatMap((text) => text.split(/[\s,]+/u)).filter(Boolean);
       // With signed person moves on, the decision goes to the person's passkey; a named SSH signer has no passkey yet [E22].
       const shown = [...spec.rows, ...(practice.rows ?? []).map(row => ({ ...row, id: `doctrine:${row.id}` }))].filter(row => ids.includes(row.id));
-      if (personSigning(board).signed) refuseNamedSigners(shown, ids);
+      if (personSigning(board).signed) {
+        refuseNamedSigners(shown, ids);
+        if (values.by !== undefined && values.by !== 'person') throw new Refused('PERSON_SIGNER_REQUIRED', `the requested SSH signer ${values.by} has no passkey identity`, 'confirm as the person without --by, or wait until signing is off');
+      }
       const confirmed = await requireSignedPerson(ctx, board, me, { verb: `spec-${first}`, args: { ids: ids.join(','),
         ...(values.text === undefined ? {} : { text: values.text }), ...(values.reason === undefined ? {} : { reason: values.reason }) } }, shown.map(({ id, text }) => ({ id, text })));
     if (confirmed !== null) return confirmed;
@@ -215,8 +218,10 @@ export async function specCommand(io, { first, second, rest, values }) {
         requireShownRows(board, io.personRequest, decidable, ids);
       }
       // An approve keeps a pending answer: plain, it approves the answered text; --text says what it replaces.
+      const signedDecision = personSigning(board).signed;
       const kept = first === 'approve' ? pendingAnswers(ctx.info.root, ctx.config, ids, store.rowDecisions(board)) : new Map();
-      const decide = { decision: first, reason: values.reason, by: values.by, on: new Date().toISOString(), commit: headCommit(ctx.info.root) ?? '' };
+      if (signedDecision && values.text === undefined && kept.size) throw new Refused('STALE_ROW_DECISION', 'this row has a pending answer different from the original shown source', 'approve one row with --text containing the exact pending answer you want your passkey to confirm');
+      const decide = { decision: first, reason: values.reason, by: signedDecision ? 'person' : values.by, sshSign: !signedDecision, on: new Date().toISOString(), commit: headCommit(ctx.info.root) ?? '' };
       const records = values.text === undefined && kept.size ? ids.flatMap((id) => prepareRowDecisions(ctx.info.root, ctx.config, { ...decide, ids: [id], text: kept.get(id)?.text }))
         : prepareRowDecisions(ctx.info.root, ctx.config, { ...decide, ids, text: values.text });
       const decisions = await ordered(ctx, board, 'recordRowDecisions', [{ agentId: store.PERSON, channel: io.personChannel ?? 'terminal', decisions: records }]);
@@ -270,7 +275,7 @@ export async function specCommand(io, { first, second, rest, values }) {
       if (row.status !== 'pending') throw new Refused('SPEC_ANSWER', `${second} is ${row.status}, not a pending question`, `read it with pullboard spec show ${second}; only a pending row takes an answer`);
       if (personSigning(board).signed) requireShownRows(board, io.personRequest, [row], [second]);
       const { text } = answerQuestion(row.text, given, second);
-      const records = prepareRowDecisions(ctx.info.root, ctx.config, { ids: [second], decision: 'approve', text, on: new Date().toISOString(), commit: headCommit(ctx.info.root) ?? '' });
+      const records = prepareRowDecisions(ctx.info.root, ctx.config, { ids: [second], decision: 'approve', text, sshSign: !personSigning(board).signed, by: personSigning(board).signed ? 'person' : undefined, on: new Date().toISOString(), commit: headCommit(ctx.info.root) ?? '' });
       const decisions = await ordered(ctx, board, 'recordRowDecisions', [{ agentId: store.PERSON, channel: io.personChannel ?? 'terminal', decisions: records }]);
       // The answer reported is read back from the signed text, never carried as a field of its own.
       const answered = decisions.map((record) => ({ ...record, answer: decisionAnswer(record) }));

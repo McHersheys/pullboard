@@ -54,6 +54,7 @@ import {
   grantChallenge,
   softwarePasskey,
 } from './person-passkey-fixture.js';
+import { optionalPasskeyApply } from './person-optional-apply-fixture.js';
 import { firstUnpairedAuthorityInsertion } from './person-first-pin-fixture.js';
 import { refuseNamedSigners } from '../src/person-signing-cli.js';
 import { createE2eHelpers } from './e2e-helpers.js';
@@ -1206,3 +1207,6 @@ test('person-only moves are signed [E22,B26,H16]', { timeout: relayWorkBudgetMs(
 
 /** Keep the initial-unpaired local-edit clause distinct from the post-pin trigger controls. */
 test('person-only moves are signed before the first authority pin [E22,B26,H16]', firstUnpairedAuthorityInsertion);
+
+/** Optional SSH policy must accept a genuinely bound passkey row decision without using an SSH key. */
+test('person-only moves are signed through optional SSH apply [E22,H16]', optionalPasskeyApply);

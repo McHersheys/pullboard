@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { recordedRefusal } from './recorded-refusal.js';
 import { Refused } from './refused.js';
 import { answerQuestion } from './blueprints.js';
+import { personSigning } from './person-signing.js';
 import { parseImplies } from './implies.js';
 import { validatePersonRequest } from './person-request.js';
 import { relayMoveActor } from './relay-sender.js';
@@ -101,7 +102,7 @@ export function receivePersonRequest(board, document, { sequence, at, sender }) 
 }
 
 /** Compare the requested literal arguments with the ordinary effect produced by the CLI. */
-function fulfilsIntent(record, move) {
+function fulfilsIntent(record, move, board) {
   const intent = record.move;
   const args = intent.args;
   const value = move.args[0];
@@ -139,7 +140,8 @@ function fulfilsIntent(record, move) {
     } catch { return false; }
     return value?.agentId === 'person' && value.channel === 'view' && value.decisions?.length === 1
       && value.decisions[0].id === args.row && value.decisions[0].kind === 'spec'
-      && value.decisions[0].decision === 'approve' && value.decisions[0].text === text;
+      && value.decisions[0].decision === 'approve' && value.decisions[0].text === text && value.decisions[0].by === 'person'
+      && value.decisions[0].signature === undefined;
   }
   if (intent.verb === 'hold') return value === args.lane && options?.asPerson === true && options.channel === 'view'
     && (args.off || options.reason === (args.reason ?? ''));
@@ -158,11 +160,16 @@ function fulfilsIntent(record, move) {
   const rows = value?.decisions;
   if (!['spec-approve', 'spec-decline', 'spec-answer'].includes(intent.verb) || typeof args.ids !== 'string') return false;
   const ids = args.ids.split(/[\s,]+/u).filter(Boolean);
+  const requiresShown = personSigning(board, { strict: false }).signed;
+  let shown;
+  try { shown = JSON.parse(record.encoded).rows; } catch { return false; }
+  if (requiresShown && (!Array.isArray(shown) || shown.length !== ids.length)) return false;
   return value?.agentId === 'person' && value.channel === 'view' && Array.isArray(rows) && rows.length === ids.length
     && rows.every((row, index) => (row.kind === 'doctrine' ? 'doctrine:' : '') + row.id === ids[index]
       && row.decision === (intent.verb === 'spec-approve' ? 'approve' : 'decline')
       && (intent.verb !== 'spec-decline' || row.reason === args.reason.trim())
-      && (args.text === undefined || row.text === args.text.trim()));
+      && (args.text === undefined ? !requiresShown || row.text === shown.find(entry => entry.id === ids[index])?.text : row.text === args.text.trim())
+      && (!requiresShown || row.by === 'person' && row.signature === undefined));
 }
 
 /** The item ids a request's `implies` text names, parsed as `--implies` is, or null when it names none validly. */
@@ -221,7 +228,7 @@ export function requestMoveProblem(board, move, { checkExecutorLease = true } = 
   if (!['coordinator', 'person'].includes(actor)) return new Refused('PERSON_REQUEST_RECEIPT', 'only the coordinator fulfils an authenticated person request');
   if (tag.phase === 'execute') {
     const expected = { add: 'addItem', shout: 'shout', answer: 'answerDecision', hold: record.move.args.off ? 'releaseLane' : 'holdLane', 'spec-approve': 'recordRowDecisions', 'spec-decline': 'recordRowDecisions', 'spec-answer': 'recordRowDecisions', fact: 'appendFact', 'sentinel-approve': 'decideSentinel', 'sentinel-decline': 'decideSentinel', 'land-waive': 'recordLandingWaiver', signing: 'setPersonSigning' }[record.move.verb];
-    if (move.operation !== expected || !fulfilsIntent(record, move)) return new Refused('PERSON_REQUEST_RECEIPT', 'the ordinary move does not fulfil this request; execute its original CLI intent');
+    if (move.operation !== expected || !fulfilsIntent(record, move, board)) return new Refused('PERSON_REQUEST_RECEIPT', 'the ordinary move does not fulfil this request; execute its original CLI intent');
   }
   if (move.engine >= 6 && ['claim', 'repo-request', 'refuse'].includes(tag.phase) && !fulfilsStage(record, move, tag)) return new Refused('PERSON_REQUEST_RECEIPT', 'publish only the exact stage for this authenticated phone request');
   if (['claim', 'repo-request', 'refuse'].includes(tag.phase) && !(move.operation === 'shout' && move.args[0]?.from === 'person' && move.args[0]?.to === 'coordinator'

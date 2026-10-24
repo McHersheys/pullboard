@@ -49,12 +49,12 @@ function decisionRows(root, config, ids) {
  * a pending question is an approval of its answered text and carries no separate answer field: the
  * answer shown is read back from the signed source and text by decisionAnswer.
  */
-export function prepareRowDecisions(root, config, { ids, decision, reason = '', text: proposedText, by, on, commit = '', note = '' }) {
+export function prepareRowDecisions(root, config, { ids, decision, reason = '', text: proposedText, by, on, commit = '', note = '', sshSign = true }) {
   if (!ids.length) throw new Refused('USAGE', 'name rows: pullboard spec approve <ids> or spec decline <ids> --reason "why"');
   if (!['approve', 'decline'].includes(decision)) throw new Refused('ROW_DECISION', 'use pullboard spec approve or decline');
   if (decision === 'decline' && (!reason.trim() || /[\r\n|]/u.test(reason))) throw new Refused('ROW_DECISION', 'a decline needs a one-line reason without a field separator; use --reason "why"');
   if (proposedText !== undefined && (decision !== 'approve' || ids.length !== 1 || !proposedText.trim() || /[\r\n|]/u.test(proposedText))) throw new Refused('ROW_DECISION', 'approve one row with --text "exact one-line text", without a field separator');
-  const signed = decision === 'approve' && hasSignerFile(root);
+  const signed = sshSign && decision === 'approve' && hasSignerFile(root);
   const principal = by ?? (signed ? defaultPrincipal(root) : 'person');
   return decisionRows(root, config, ids).map(({ kind, file, row, source }) => {
     const status = decision === 'approve' ? 'approved' : 'wont';
