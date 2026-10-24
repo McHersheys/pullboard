@@ -2,7 +2,10 @@
 import { causeProblem } from './rigor.js';
 import { parseSpec } from './spec.js';
 import { readRigorSource } from './rigor-source.js';
-import { rowDecisionContext, staleRowDecision } from './row-decision-state.js';
+import {
+  rowDecisionContext,
+  staleRowDecision,
+} from './row-decision-state.js';
 
 /** Preserve exact repeat evidence in a portable one-line ordinary draft. */
 export function automaticRigorSource(cause, eventIds) {

@@ -1,10 +1,20 @@
 /** Explicitly materialize board proposals before the existing person-only exact-row decision [D1,S1]. */
 import { readFileSync } from 'node:fs';
 import { loadDoctrine } from './doctrine.js';
-import { loadSpec, insertSectionRows } from './spec.js';
+import {
+  loadSpec,
+  insertSectionRows,
+} from './spec.js';
 import { Refused } from './refused.js';
-import { automaticDecisionSource, automaticSourceFromText, sameAutomaticRow } from './rigor-auto-source.js';
-import { rowDecisionContext, staleRowDecision } from './row-decision-state.js';
+import {
+  automaticDecisionSource,
+  automaticSourceFromText,
+  sameAutomaticRow,
+} from './rigor-auto-source.js';
+import {
+  rowDecisionContext,
+  staleRowDecision,
+} from './row-decision-state.js';
 
 /** Preflight every definition and both id namespaces before returning even the first file write. */
 export function planAutomaticRigorApply(root, config, drafts, decisions = []) {

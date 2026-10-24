@@ -159,7 +159,10 @@ import {
 } from './rigor-notices.js';
 import { RIGOR_NOTICE_ENGINE } from './rigor-source.js';
 import { RIGOR_AUTO_ENGINE } from './rigor-auto-engine.js';
-import { deriveRigorCause, recordAutomaticRigorDrafts } from './rigor-auto.js';
+import {
+  deriveRigorCause,
+  recordAutomaticRigorDrafts,
+} from './rigor-auto.js';
 import {
   causeProblem,
   requireNeverAgain,

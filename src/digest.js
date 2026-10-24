@@ -40,9 +40,20 @@ import {
 import { healthReport } from './health.js';
 import { secretsIn } from './hooks.js';
 import { Refused } from './refused.js';
-import { rowDrafts, rowDecisions } from './board-query.js';
-import { automaticDecisionSource, automaticSourceFromText, rigorDecisionKey, readAutomaticRigorSource } from './rigor-auto-source.js';
-import { rowDecisionContext, staleRowDecision } from './row-decision-state.js';
+import {
+  rowDrafts,
+  rowDecisions,
+} from './board-query.js';
+import {
+  automaticDecisionSource,
+  automaticSourceFromText,
+  rigorDecisionKey,
+  readAutomaticRigorSource,
+} from './rigor-auto-source.js';
+import {
+  rowDecisionContext,
+  staleRowDecision,
+} from './row-decision-state.js';
 import { loadConfig } from './config.js';
 
 /** The briefing stays under 50 KB, counted in UTF-8 bytes. */

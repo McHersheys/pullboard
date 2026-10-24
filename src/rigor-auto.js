@@ -1,10 +1,33 @@
 /** A failure move creates a durable, unproved proposal without writing a repository file [D1,H16]. */
-import { events, logEvent, PERSON, rowDecisions } from './board.js';
-import { draftSpecRow, rowDrafts } from './row-drafts.js';
-import { causeProblem, eventCauses, rigorReport, testCause } from './rigor.js';
-import { conflictNoteFiles, conflictReport, splitProposal } from './rigor-conflicts.js';
+import {
+  events,
+  logEvent,
+  PERSON,
+  rowDecisions,
+} from './board.js';
+import {
+  draftSpecRow,
+  rowDrafts,
+} from './row-drafts.js';
+import {
+  causeProblem,
+  eventCauses,
+  rigorReport,
+  testCause,
+} from './rigor.js';
+import {
+  conflictNoteFiles,
+  conflictReport,
+  splitProposal,
+} from './rigor-conflicts.js';
 import { NATIVE_FLAKE_ENGINE } from './flake-engine.js';
-import { automaticDecisionSource, automaticRigorSource, automaticSourceFromText, readAutomaticRigorSource, rigorDecisionKey } from './rigor-auto-source.js';
+import {
+  automaticDecisionSource,
+  automaticRigorSource,
+  automaticSourceFromText,
+  readAutomaticRigorSource,
+  rigorDecisionKey,
+} from './rigor-auto-source.js';
 import { RIGOR_AUTO_ENGINE } from './rigor-auto-engine.js';
 
 /** Prefer structured exact-head failures; a coded fallback is a coarse category, never a root-cause finding. */

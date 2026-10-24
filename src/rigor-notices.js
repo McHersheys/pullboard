@@ -6,7 +6,11 @@ import {
   rigorReport,
 } from './rigor.js';
 import { parseSpec } from './spec.js';
-import { automaticRigorNeeds, automaticSourceFromText, readAutomaticRigorSource } from './rigor-auto-source.js';
+import {
+  automaticRigorNeeds,
+  automaticSourceFromText,
+  readAutomaticRigorSource,
+} from './rigor-auto-source.js';
 import { RIGOR_AUTO_ENGINE } from './rigor-auto-engine.js';
 import {
   readRigorSource,
