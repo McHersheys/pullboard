@@ -1,5 +1,6 @@
 /** Test files on one machine never outnumber its cores, and the longest files start first [C7]. */
 import { awaitNestedRun } from '../src/test-file-pool.js';
+import { measureFileInflation } from './gate-admission-p95-fixture.js';
 import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -515,4 +516,15 @@ test('c', () => { execSync(${JSON.stringify(startD)}, { cwd: ${JSON.stringify(ro
   const dEnd = events.find(event => event.file === 'd.test.js' && event.at === 'end')?.t;
   assert.ok(dEnd, 'D ran to its end after C died');
   assert.ok(events.find(event => event.at === 'resume').t >= dEnd, 'on 1 core, P resumed only after D, the file under its call, ended');
+});
+
+
+test('four concurrent runs start only token-owned file processes and keep p95 below twice standalone [C7]', async t => {
+  for (const mode of ['native', 'landing']) await t.test(mode, async scope => {
+    const measurement = await measureFileInflation(scope, mode);
+    scope.diagnostic('P95_MEASUREMENT=' + JSON.stringify(measurement));
+    assert.ok(measurement.peakFileProcesses <= measurement.cores,
+      `a two-token machine must not spawn files that wait for a token; saw ${measurement.peakFileProcesses}`);
+    assert.ok(measurement.p95 < 2, `p95 process-lifetime ratio ${measurement.p95} must be below2x standalone`); // budget: #1091 requires p95<2x under four concurrent runs.
+  });
 });
