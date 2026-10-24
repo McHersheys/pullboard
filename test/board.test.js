@@ -964,23 +964,17 @@ test('two send-backs at the strongest route record no escalation [B15,B13,H16]',
   assert.equal(notices.length, 1, 'one coordinator notice for this rejection pair');
   assert.match(notices[0].shout_text, /web-1 built it/u);
   for (const rejection of rejections) assert.ok(notices[0].shout_text.includes(`#${rejection.verdict_id}`), 'the notice names both rejection receipts');
-  const rigorNotices = store.allShouts(board).filter(entry => entry.shout_from === 'rigor'
-    && entry.shout_to === 'coordinator' && entry.shout_text.includes('Rigor recorded unproved doctrine draft'));
+  const rigorNotices = store.allShouts(board).filter(entry => entry.shout_from === 'rigor' && entry.shout_to === 'coordinator' && entry.shout_text.includes('Rigor recorded unproved doctrine draft'));
   assert.equal(rigorNotices.length, 1, 'the repeated refusal cause keeps its independent Rigor notice');
   assert.match(rigorNotices[0].shout_text, new RegExp(`for refusal:TEST_FAILURE, from #${id}\\.`));
   const rigorDraft = store.events(board).find(event => event.event_kind === 'rigor-draft' && event.event_by === 'rigor');
-  assert.ok(rigorDraft, 'the independent notice retains its durable Rigor draft event');
-  const rigorDraftDetail = JSON.parse(rigorDraft.event_detail);
-  assert.deepEqual({ target: rigorDraftDetail.target, cause: rigorDraftDetail.cause, unproved: rigorDraftDetail.unproved }, {
-    target: 'doctrine', cause: 'refusal:TEST_FAILURE', unproved: true,
-  });
+  const rigorDraftDetail = JSON.parse(rigorDraft?.event_detail ?? '{}');
+  assert.deepEqual([rigorDraftDetail.target, rigorDraftDetail.cause, rigorDraftDetail.unproved], ['doctrine', 'refusal:TEST_FAILURE', true], 'the independent notice retains its durable Rigor draft event');
   rejectRevision(id, SHA_C, 'third strong send-back');
-  const pairNoticesAfterThird = store.allShouts(board).filter(entry => entry.shout_to === 'coordinator'
-    && entry.shout_text.includes(`#${id} has two send-backs at the strongest route`));
+  const pairNoticesAfterThird = store.allShouts(board).filter(entry => entry.shout_to === 'coordinator' && entry.shout_text.includes(`#${id} has two send-backs at the strongest route`));
   assert.equal(pairNoticesAfterThird.length, 1, 'one further rejection cannot repeat the pair notice');
   rejectRevision(id, SHA_D, 'fourth strong send-back');
-  const pairNoticesAfterFourth = store.allShouts(board).filter(entry => entry.shout_to === 'coordinator'
-    && entry.shout_text.includes(`#${id} has two send-backs at the strongest route`));
+  const pairNoticesAfterFourth = store.allShouts(board).filter(entry => entry.shout_to === 'coordinator' && entry.shout_text.includes(`#${id} has two send-backs at the strongest route`));
   assert.equal(pairNoticesAfterFourth.length, 2, 'a new pair gets its own single notice');
   const nextRejections = store.verdictsFor(board, id).filter(entry => entry.verdict_decision === 'REJECT').slice(-2);
   for (const rejection of nextRejections) assert.ok(pairNoticesAfterFourth[1].shout_text.includes(`#${rejection.verdict_id}`));
