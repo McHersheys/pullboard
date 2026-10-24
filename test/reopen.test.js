@@ -1,4 +1,4 @@
-/** @pullboard-test-loads src/board.js src/engine.js src/exchange.js src/machine.js */
+/** @pullboard-test-loads src/board.js src/claims.js src/engine.js src/exchange.js src/machine.js */
 /** Real Git, SQLite and ordered-engine coverage for coordinator criterion reopen [V2,V6,H16]. */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -259,6 +259,126 @@ test('the coordinator reopens a submitted item without a verdict [V2,V6,O8]', (t
   const edited = box.run(box.repo, 'edit', '1', '--criterion', 'The page renders a heading.', '--reason', 'the fixture corrects its bar');
   assert.equal(edited.code, 0, edited.err);
   assert.equal(store.getItem(board, 1).item_criterion, 'The page renders a heading.');
+});
+
+test('a reopen note can cite a test whose name contains a semicolon [V2,V6,H16]', async () => {
+  const box = landingProject();
+  const item = submitLandingFixture(box, 61, 'export const status = "PASS_QUOTED";\n');
+  acceptLandingFixture(box, item);
+  const mergeCommit = 'b'.repeat(40);
+  const note = `web/landing.test.js: "keeps; the \\"landed\\" behavior"; web/other.test.js: "finds; the event"; merge commit ${mergeCommit}`;
+  const malformed = box.run(box.repo, 'reopen', String(item.id), '--note',
+    `web/landing.test.js: "keeps; the landed behavior; merge commit ${mergeCommit}`, '--json');
+  assert.equal(malformed.code, 1);
+  assert.equal(JSON.parse(malformed.out).error.code, 'LANDING_FAILURE_REQUIRED');
+  const malformedUnquoted = box.run(box.repo, 'reopen', String(item.id), '--note',
+    `web/landing.test.js: ; merge commit ${mergeCommit}`, '--json');
+  assert.equal(malformedUnquoted.code, 1);
+  assert.equal(JSON.parse(malformedUnquoted.out).error.code, 'LANDING_FAILURE_REQUIRED');
+  assert.equal(readItem(box, item.id).item_status, 'verified', 'an unclosed quoted attempt cannot fall back to the historical parser');
+
+  const board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
+  let snapshot;
+  try {
+    snapshot = exportBoard(board);
+  }
+  finally { store.closeBoard(board); }
+
+  const reopened = box.run(box.repo, 'reopen', String(item.id), '--note', note, '--json');
+  assert.equal(reopened.code, 0, [reopened.err, reopened.out].filter(Boolean).join('\n'));
+  assert.match(JSON.parse(malformed.out).error.next,
+    /--note '<test file>: "<test name; with semicolon>"; merge commit <sha>'/u,
+    'the refusal shows a shell-valid quoted form for a semicolon in the test name');
+  assert.match(JSON.parse(malformedUnquoted.out).error.next,
+    /--note '<test file>: "<test name; with semicolon>"; merge commit <sha>'/u,
+    'a current-engine refusal for an invalid unquoted note also shows the quoted form');
+  const moveBoard = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
+  let move;
+  try {
+    move = prepareEngineMove(moveBoard, 'reopen', [item.id, { agentId: 'coordinator', note }]);
+    assert.equal(move.args[1].quotedLandingFailure, true);
+    const { QUOTED_LANDING_FAILURE_ENGINE } = await import('../src/machine.js');
+    assert.ok(move.engine >= QUOTED_LANDING_FAILURE_ENGINE);
+  }
+  finally { store.closeBoard(moveBoard); }
+
+  const markedReplica = store.openBoard(':memory:');
+  try {
+    importBoard(markedReplica, snapshot);
+    const beforeOldFloor = exportBoard(markedReplica);
+    assert.throws(() => applyRelayMove(markedReplica, { ...move, engine: move.engine - 1 }, {
+      sequence: 1, at: '2026-10-24T12:00:00.000Z', kind: 'move',
+      sender: { kind: 'agent', userId: 'fixture-user', agent: 'coordinator' },
+    }), (error) => error.code === 'RELAY_MOVE');
+    assert.deepEqual(exportBoard(markedReplica), beforeOldFloor, 'an unmarked pre-feature engine cannot partially apply the new grammar');
+    const result = applyRelayMove(markedReplica, move, {
+      sequence: 1, at: '2026-10-24T12:00:00.000Z', kind: 'move',
+      sender: { kind: 'agent', userId: 'fixture-user', agent: 'coordinator' },
+    });
+    assert.equal(result.error, undefined, JSON.stringify(result));
+    assert.deepEqual(result.result.landingFailure.tests, [
+      { file: 'web/landing.test.js', name: 'keeps; the "landed" behavior' },
+      { file: 'web/other.test.js', name: 'finds; the event' },
+    ]);
+  }
+  finally { store.closeBoard(markedReplica); }
+
+  const expected = {
+    batch: null,
+    tests: [
+      { file: 'web/landing.test.js', name: 'keeps; the "landed" behavior' },
+      { file: 'web/other.test.js', name: 'finds; the event' },
+    ],
+    mergeCommit,
+  };
+  assert.deepEqual(JSON.parse(reopened.out).landingFailure, expected);
+  const returned = readItem(box, item.id);
+  assert.equal(returned.item_status, 'open');
+  const event = returned.thread.findLast((entry) => entry.type === 'move' && entry.kind === 'reopen');
+  assert.deepEqual(event.detail.landingFailure, expected);
+
+  const historical = `test/a.test.js: "first; test/b.test.js: second"; merge commit ${'c'.repeat(40)}`;
+  const legacyReplica = store.openBoard(':memory:');
+  try {
+    importBoard(legacyReplica, snapshot);
+    const legacy = applyRelayMove(legacyReplica, {
+      version: 1, engine: 10, id: 'legacy-quoted-manual', operation: 'reopen',
+      args: [item.id, { agentId: 'coordinator', note: historical }], actor: 'coordinator',
+    }, { sequence: 1, at: '2026-10-24T12:00:00.000Z', kind: 'move',
+      sender: { kind: 'agent', userId: 'fixture-user', agent: 'coordinator' } });
+    assert.equal(legacy.error, undefined, JSON.stringify(legacy));
+    assert.deepEqual(legacy.result.landingFailure.tests, [
+      { file: 'test/a.test.js', name: '"first' },
+      { file: 'test/b.test.js', name: 'second"' },
+    ], 'old unmarked moves retain the historical semicolon split');
+  }
+  finally { store.closeBoard(legacyReplica); }
+
+  const legacyRefusalReplica = store.openBoard(':memory:');
+  try {
+    importBoard(legacyRefusalReplica, snapshot);
+    const legacyRefusal = applyRelayMove(legacyRefusalReplica, {
+      version: 1, engine: 10, id: 'legacy-quoted-refusal', operation: 'reopen',
+      args: [item.id, { agentId: 'coordinator', note: 'not landing evidence' }], actor: 'coordinator',
+    }, { sequence: 1, at: '2026-10-24T12:00:00.000Z', kind: 'move',
+      sender: { kind: 'agent', userId: 'fixture-user', agent: 'coordinator' } });
+    assert.equal(legacyRefusal.error?.code, 'LANDING_FAILURE_REQUIRED');
+    assert.equal(legacyRefusal.error.message,
+      `reopening verified item #${item.id} needs --note in the format <test file>: <test name>; merge commit <sha>`,
+      'an old unmarked refusal retains its recorded-engine message');
+    assert.equal(store.getItem(legacyRefusalReplica, item.id).item_status, 'verified');
+  }
+  finally { store.closeBoard(legacyRefusalReplica); }
+
+  const unquotedWorktree = join(box.dir, 'unquoted-web');
+  const unquotedItem = submitLandingFixture(box, 62, 'export const status = "PASS_UNQUOTED";\n', unquotedWorktree);
+  acceptLandingFixture(box, unquotedItem);
+  const unquotedNote = `review context: web/landing.test.js: keeps the landed behavior; merge commit ${'c'.repeat(40)}`;
+  const unquotedReopen = box.run(box.repo, 'reopen', String(unquotedItem.id), '--note', unquotedNote, '--json');
+  assert.equal(unquotedReopen.code, 0, [unquotedReopen.err, unquotedReopen.out].filter(Boolean).join('\n'));
+  assert.deepEqual(JSON.parse(unquotedReopen.out).landingFailure.tests,
+    [{ file: 'web/landing.test.js', name: 'keeps the landed behavior' }],
+    'the current CLI preserves unquoted evidence found after prose');
 });
 
 test('a red landing gate returns a verified item to its builder [B3,V4]', async (t) => {
@@ -584,8 +704,10 @@ test('a reopened bar takes the same commit again [V2,V6,H16]', async (t) => {
   const first = applyRelayMove(copies[0], move, { sequence: 1, at: '2026-10-10T12:00:00.000Z', kind: 'move', sender });
   const second = applyRelayMove(copies[1], move, { sequence: 1, at: '2026-10-10T12:00:00.000Z', kind: 'move', sender });
   assert.deepEqual(first, second);
-  assert.deepEqual(first.result, { id: 1, commit: submitted.commit,
-    cause: 'refusal:REOPENED', causeDerivation: { kind: 'reopen-category', coarse: true } });
+  assert.deepEqual(first.result, {
+    id: 1, commit: submitted.commit, cause: 'refusal:REOPENED',
+    causeDerivation: { kind: 'reopen-category', coarse: true },
+  });
   for (const replica of copies) {
     assert.equal(store.getItem(replica, 1).item_status, 'open');
     assert.equal(store.getItem(replica, 1).item_commit, submitted.commit);

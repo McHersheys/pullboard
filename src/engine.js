@@ -41,6 +41,7 @@ import { GATE_RUN_ENGINE } from './gate-run-engine.js';
 import { requireBound } from './quarantine.js';
 import {
   REOPEN_FIRST_REFUSAL_ENGINE,
+  QUOTED_LANDING_FAILURE_ENGINE,
   CAUSE_ENGINE,
   ENGINE_VERSION,
   VERIFIER_STANDING_ENGINE,
@@ -54,7 +55,10 @@ import {
   canonicalMilestoneTarget,
 } from './milestones.js';
 import { Refused } from './refused.js';
-import { firstRefusal } from './claims.js';
+import {
+  firstRefusal,
+  manualLandingFailureQuoted,
+} from './claims.js';
 import {
   requestMoveProblem,
   recordRequestMove,
@@ -119,8 +123,9 @@ function minimumOperationEngine(operation, args, board, at) {
 /** Preserve each pre-existing move's required feature level when composing outside metadata. */
 function minimumExistingOperationEngine(operation, args, board, at) {
   if (['openHandoff', 'takeHandoff'].includes(operation)) return HANDOFF_ENGINE;
-  if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('conflict:')) return RIGOR_AUTO_ENGINE;
-  if (operation === 'reopen' && args[1]?.withdrawVerdict === true) return VERDICT_WITHDRAW_ENGINE;
+  const quotedLandingFailureEngine = operation === 'reopen' && args[1]?.quotedLandingFailure === true
+    ? QUOTED_LANDING_FAILURE_ENGINE : 1;
+  if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('conflict:')) return Math.max(RIGOR_AUTO_ENGINE, quotedLandingFailureEngine);
   if (['setBarReady', 'signBar'].includes(operation) || board && ['claim', 'submit', 'editItem', 'addItem', 'refreeze'].includes(operation) && barReadySetting(board).enabled) return BAR_READY_ENGINE;
   if (operation === 'recordPublishFinding') return PR_BRIDGE_ENGINE;
   if (operation === 'setLineSetting' && args[0]?.key === 'collisionFreeBatch') return LAND_COLLISION_ENGINE;
@@ -138,19 +143,20 @@ function minimumExistingOperationEngine(operation, args, board, at) {
   if (operation === 'shout' && args[0]?.item !== undefined) return ITEM_SHOUT_ENGINE;
   if (operation === 'landingLeaseMove' || args[0]?.landingFence !== undefined) return LANDING_LEASE_ENGINE;
   if (['verify', 'reopen'].includes(operation) && args[1]?.reopenFirstRefusalMinutes !== undefined
-    || ['claim', 'release'].includes(operation) && board && firstRefusal(board, args[0], at)) return REOPEN_FIRST_REFUSAL_ENGINE;
+    || ['claim', 'release'].includes(operation) && board && firstRefusal(board, args[0], at)) return Math.max(REOPEN_FIRST_REFUSAL_ENGINE, quotedLandingFailureEngine);
   // A batch landed on the local trunk before it is published (#801).
   if (operation === 'recordLandingBatch' && args[0]?.batch?.state === 'trunk'
     || operation === 'finishLandingBatch' && board && store.landingBatches(board).find(batch => batch.id === args[0]?.id)?.state === 'trunk') return LOCAL_LANDING_ENGINE;
   if (operation === 'recordFlakeObservation') return args[0]?.observation?.kind === 'ci' ? CI_FLAKE_ENGINE : NATIVE_FLAKE_ENGINE;
   if (operation === 'recordLandingBatch' && carriesFlakeDiagnostics(args[0]?.batch)) return NATIVE_FLAKE_ENGINE;
-  if (['proposeSentinel', 'decideSentinel', 'beginSentinelRun', 'finishSentinelRun'].includes(operation) || typeof args[1]?.cause === 'string' && args[1].cause.startsWith('sentinel:')) return BOARD_SENTINEL_ENGINE;
+  if (['proposeSentinel', 'decideSentinel', 'beginSentinelRun', 'finishSentinelRun'].includes(operation) || typeof args[1]?.cause === 'string' && args[1].cause.startsWith('sentinel:')) return Math.max(BOARD_SENTINEL_ENGINE, quotedLandingFailureEngine);
   if (['declareJob', 'recordJobRun'].includes(operation)) return RECURRING_JOB_ENGINE;
   if (operation === 'recordGateRun') return GATE_RUN_ENGINE;
   if (operation === 'recordHealthFindings') return HEALTH_SENTINEL_ENGINE;
   if (operation === 'reserveNextReview' && Array.isArray(args[0]?.skipIds) && args[0].skipIds.length) return REVIEW_SKIP_ENGINE;
   const options = args[1];
-  if (carriesConflict(operation, args)) return board && store.itemById(board, args[0])?.item_status === 'submitted' ? SUBMITTED_CONFLICT_ENGINE : CONFLICT_ENGINE;
+  if (carriesConflict(operation, args)) return Math.max(board && store.itemById(board, args[0])?.item_status === 'submitted' ? SUBMITTED_CONFLICT_ENGINE : CONFLICT_ENGINE,
+    quotedLandingFailureEngine);
   if (operation === 'submit' && options?.submissionProof !== undefined
     || operation === 'recordLandingBatch' && args[0]?.batch?.invariantEvidence !== undefined) return SUBMISSION_PROOF_ENGINE;
   const given = (name) => Boolean(options && typeof options === 'object' && Object.hasOwn(options, name) && options[name] !== undefined && options[name] !== null && options[name] !== false);
@@ -163,12 +169,13 @@ function minimumExistingOperationEngine(operation, args, board, at) {
   if (operation === 'verify' && options && Object.hasOwn(options, 'review')) return VERDICT_REVIEW_ENGINE;
   if (operation === 'recordLandingBatch' && args[0]?.batch
     && ['items', 'candidates'].some(key => Array.isArray(args[0].batch[key]) && args[0].batch[key].some(entry => entry && typeof entry === 'object' && Object.hasOwn(entry, 'reviewedCommit')))) return VERDICT_REVIEW_ENGINE;
-  if (['verify', 'reopen', 'appendFact'].includes(operation) && (given('cause') || given('neverAgain') || given('asPerson'))) return CAUSE_ENGINE;
+  if (['verify', 'reopen', 'appendFact'].includes(operation) && (given('cause') || given('neverAgain') || given('asPerson'))) return Math.max(CAUSE_ENGINE, quotedLandingFailureEngine);
   if (carriesImplies(operation, args)) return IMPLIES_ENGINE;
   if (carriesBarReason(operation, args)) return BAR_ENGINE;
   if (operation === 'editMilestone' && options && Object.hasOwn(options, 'target') && options.target !== undefined) return MILESTONE_SHIP_ENGINE;
-  return operation === 'editItem' && options && Object.hasOwn(options, 'after') && options.after !== undefined
+  const operationEngine = operation === 'editItem' && options && Object.hasOwn(options, 'after') && options.after !== undefined
     ? 10 : OPERATION_ENGINE[operation] ?? 1;
+  return Math.max(operationEngine, quotedLandingFailureEngine);
 }
 
 /** Read a replica's committed prefix without trusting an independently saved transport cursor. */
@@ -207,16 +214,18 @@ export function startRelayEpoch(board) {
 /** Turn caller-only callbacks into deterministic values before sealing an executable operation. */
 export function prepareEngineMove(board, operation, args, { id = randomUUID(), actor } = {}) {
   if (!ENGINE_OPERATIONS.includes(operation) || !Array.isArray(args)) throw new Refused('RELAY_MOVE', 'use a supported board-engine operation with its argument array');
-  if (operation === 'submit' && ENGINE_VERSION >= SUBMISSION_PROOF_ENGINE) submissionProof(args[1]?.submissionProof);
+  const values = args.map((value) => value && typeof value === 'object' ? { ...value } : value);
+  if (operation === 'reopen' && values[1] && typeof values[1] === 'object'
+    && manualLandingFailureQuoted(values[1].note)) values[1].quotedLandingFailure = true;
+  if (operation === 'submit' && ENGINE_VERSION >= SUBMISSION_PROOF_ENGINE) submissionProof(values[1]?.submissionProof);
   if (operation === 'claim' && ['wipPerReviewer', 'takeoverMinutes'].some(key => typeof lineSettings(board)[key] === 'number')) {
-    args = [args[0], { ...args[1], lineCapacity: true }, ...args.slice(2)];
+    values[1] = { ...values[1], lineCapacity: true };
   }
-  const minimumEngine = minimumOperationEngine(operation, args, board);
+  const minimumEngine = minimumOperationEngine(operation, values, board);
   if (ENGINE_VERSION < minimumEngine) throw new Refused('ENGINE_VERSION', `${operation} requires engine version ${minimumEngine}; this pullboard uses engine ${ENGINE_VERSION}; upgrade before sending it`);
   // A gate run is sealed only as its gate's own receipt; a run made up by hand is refused before it reaches any replica.
-  if (operation === 'recordGateRun') requireBound(board, args[0]?.receipt);
-  if (operation === 'verify' && args[1]?.sandbox !== undefined) requireOutsideReceipt(board, args[1].sandbox);
-  const values = args.map((value) => value && typeof value === 'object' ? { ...value } : value);
+  if (operation === 'recordGateRun') requireBound(board, values[0]?.receipt);
+  if (operation === 'verify' && values[1]?.sandbox !== undefined) requireOutsideReceipt(board, values[1].sandbox);
   if (operation === 'release') {
     const problem = store.reviewReleaseNoteProblem(board, values[0], values[1], values[2]);
     if (problem) throw problem;
