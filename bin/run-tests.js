@@ -240,6 +240,8 @@ function testEnvironment(sandbox, gateMarkers = {}) {
   isolateTestMachine(env, sandbox); // #1068: no settings, resources, runners or host markers of the real machine.
   // init and resume start a background view by default; a test opts back in by deleting this.
   env.PULLBOARD_VIEW_BACKGROUND = '0';
+  // Likewise the relay checkpoint publishes inside the command; a test of the background publisher opts in (#1014).
+  env.PULLBOARD_RELAY_CHECKPOINT_BACKGROUND = '0';
   env.TMPDIR = sandbox;
   env.TMP = sandbox;
   env.TEMP = sandbox;
