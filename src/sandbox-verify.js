@@ -63,14 +63,14 @@ function exportSource(root, commit, directory) {
   return { target, tree };
 }
 
-/** A supported provider must be explicitly configured by accepted main, with two immutable official runtime images. */
+/** A supported provider must be explicitly configured by accepted main, with two immutable trusted runtime images. */
 function provider(root) {
   const value = mainPolicy(root).config.sandbox;
   if (!value || value.provider !== 'docker' || typeof value.executable !== 'string' || !value.executable.startsWith('/') ||
       typeof value.endpoint !== 'string' || !/^unix:\/\/\/[^\r\n]+$/u.test(value.endpoint) ||
       value.exportRoot !== undefined && (typeof value.exportRoot !== 'string' || !isAbsolute(value.exportRoot) || /[\r\n\0]/u.test(value.exportRoot)) ||
-      !['minimum', 'current'].every(role => /^node@sha256:[a-f0-9]{64}$/u.test(value.images?.[role] ?? ''))) {
-    throw new Refused('SANDBOX_PROVIDER_REQUIRED', 'configure sandbox.provider=docker with an absolute executable, explicit Unix endpoint and pinned node@sha256 images for minimum/current in committed main pullboard.json; no host fallback is permitted');
+      !['minimum', 'current'].every(role => /^(?:[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?\/)?(?:[a-z0-9]+(?:[._-][a-z0-9]+)*\/)*[a-z0-9]+(?:[._-][a-z0-9]+)*@sha256:[a-f0-9]{64}$/u.test(value.images?.[role] ?? ''))) {
+    throw new Refused('SANDBOX_PROVIDER_REQUIRED', 'configure sandbox.provider=docker with an absolute executable, explicit Unix endpoint and digest-pinned runtime images for minimum/current in committed main pullboard.json; no host fallback is permitted');
   }
   return value;
 }

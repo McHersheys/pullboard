@@ -83,7 +83,7 @@ const facts=JSON.parse(fs.readFileSync(${JSON.stringify(facts)},'utf8'));
 const route=(args.find(arg=>arg.startsWith('repos/')||arg.startsWith('/repos/'))||'').replace(/^\\//,'').split('?')[0];
 let value;
 if(args[0]==='repo'&&args[1]==='view') value={nameWithOwner:'fixture/project',defaultBranchRef:{name:'main'}};
-else if(args[0]!=='api'||args.includes('--method')||args.includes('-X')) { process.stderr.write('fixture refuses posting or unknown commands'); process.exit(2); }
+else if(args[0]!=='api'||args.includes('-X')||(args.includes('--method')&&args[args.indexOf('--method')+1]!=='GET')) { process.stderr.write('fixture refuses posting or unknown commands'); process.exit(2); }
 else if(route==='repos/fixture/project/pulls/7') value=facts.pull;
 else if(route==='repos/fixture/project/pulls/7/files') value=facts.files||[{filename:'relay/outside.js',status:'added'},{filename:'test/contribution.test.js',status:'added'}];
 else if(route==='repos/fixture/project/pulls/7/reviews') value=[];

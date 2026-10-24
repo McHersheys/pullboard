@@ -41,6 +41,10 @@ export function githubPullClient(root, repository) {
   return {
     list: head => pages(`pulls?state=open&head=${encodeURIComponent(repository.split('/')[0] + ':' + head)}`),
     read: number => api('GET', `pulls/${number}`),
+    readIssue: number => api('GET', `issues/${number}`),
+    comments: number => pages(`issues/${number}/comments`),
+    reviews: number => pages(`pulls/${number}/reviews`),
+    files: number => pages(`pulls/${number}/files`),
     create: body => api('POST', 'pulls', body),
     update: (number, body) => api('PATCH', `pulls/${number}`, body),
     checks: head => pages(`commits/${head}/check-runs`, 'check_runs'),

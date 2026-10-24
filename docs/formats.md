@@ -559,7 +559,9 @@ Sandbox verification reads operational provider settings from committed trusted
 main, not from the PR's configuration. `sandbox.provider` is `docker`,
 `sandbox.executable` is an absolute Docker-compatible CLI path, `sandbox.endpoint`
 is an explicit Unix daemon socket, and `sandbox.images.minimum` and
-`sandbox.images.current` are immutable `node@sha256:<digest>` references. Images
+`sandbox.images.current` are immutable `<image>@sha256:<digest>` references selected by trusted main.
+Prebuilt Node+Chrome images are supported for browser gates; outside heads cannot
+choose runtime images, and actual container Node versions must still match both roles. Images
 must already be present; verification uses `--pull never`. The actual container
 must report Linux Node 22.13.x and Node 24.x respectively, the two roles in the
 committed CI matrix; this is not a claim about the latest global Node release.

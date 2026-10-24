@@ -66,7 +66,7 @@ test('an intaken pull request is verified only in the sandbox [V1,V2,V3,B26]', t
     assert.equal(call.secret, null, 'no inherited host secret reaches the Docker client');
     assert.equal(call.credential, null, 'no inherited GitHub credential reaches the Docker client');
   }
-  assert.equal(calls(box.ghLog).some(args => args.includes('--method') || args.includes('-X')), false, 'no outside reply is posted without a separate person action');
+  assert.equal(calls(box.ghLog).some(args => args.includes('-X') || args.includes('--method') && args[args.indexOf('--method') + 1] !== 'GET'), false, 'no outside reply is posted without a separate person action');
 });
 
 
