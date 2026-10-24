@@ -8,6 +8,12 @@ export const VERSION = packageData.version;
 const ALL_HELP = `pullboard ${VERSION}: the local-first work board for teams of coding agents.
 Nothing ships until a second agent verifies it.
 
+Outside contributions
+  pullboard intake <GitHub PR URL> --criterion "behavior" --check "command" [--lane <lane>]  record exact outside author/commit, already submitted; never execute it here
+  pullboard intake <GitHub issue URL>  record author, source state and maintainer reply; repeating intake refreshes metadata
+  pullboard verify <id> accept --sandbox --note "proof"  configured Docker only, no network/credentials, Node22.13 and24; missing provider refuses
+  pullboard intake approve <id>        owner/person approval for the exact sensitive outside commit; every PR result post still needs separate person OK
+
 Set up
   pullboard tour                        see it work: a reject and its rework, scripted, in thirty seconds
   pullboard init [--model <name>] [--blueprint <name or file>]... [--no-permissions] [--yes] [--verbose]  short setup summary; --verbose shows recipes; --yes commits only setup's own files with your Git identity
@@ -24,6 +30,9 @@ Set up
   pullboard takeover                   rebind this checkout when the same agent starts a new session
                                         in a linked main checkout it also takes the board's coordinator here
   pullboard resources                  local resource holders and their FIFO queues
+  pullboard settings line [<name> <value> --reason "why" --window <json>]  read or record board controller inputs; all off by default
+      value is on, off, or a number within the setting range
+                                        names: order, reviewsFirst, wipPerReviewer (1.5-3), barReady, takeoverMinutes (15-60), landingBatchSize (1-8), landingCadenceMinutes (5-30)
   pullboard settings [gateSlots <n> | browserSlots <n>]  view or set machine capacity (gate default 2; browser default 1)
                                         browser-free check slots are opt-in: gate.browserFreeChecks in ~/.pullboard/settings.json (default false)
                                         a test file takes a browser slot only if it launches Chrome: gate.browserByLaunch (default false)
@@ -56,7 +65,7 @@ Set up
   pullboard relay tokens                list this board's agent token ids, agents and expiry, never credentials
   pullboard relay revoke <token-id>     revoke one token from that list; other agents keep working
   pullboard relay recover --skip <sequence>  person-only recovery of one blocked next relay position
-  pullboard resume                      where you are: your claim, branch, uncommitted work, what came back,
+  pullboard resume [--diagnostics]      where you are: your claim, branch, what came back,
                                         unread shouts, what to do next; run it to start any session
   pullboard badge                       write board-derived Shields endpoint JSON to docs/badges/
   pullboard hooks                       reinstall the git hooks (e.g. after a fresh clone)
@@ -96,6 +105,7 @@ Work
   pullboard sentinel propose <name> --check "<command>" --every 10m|hourly|daily --owner <seat or lane> [--directory <path>] [--timeout <milliseconds>] [--next "<step>"]
                                         propose an exact board watch; only the person may approve it
   pullboard sentinel approve <name>     person: approve this command, directory and schedule
+  pullboard sentinel run                run due approved watches in a prepared trunk checkout
   pullboard sentinel decline <name> --reason "<why>"   person: prevent future runs
   pullboard sentinels                   approvals, owners and the last result; does not run checks
   pullboard loop declare <name> --every 10m --owner <seat or lane>   coordinator: declare a recurring job's cadence
@@ -279,11 +289,13 @@ const ADD_EXAMPLE = ['pullboard lane add web --owns src/web', 'pullboard spec dr
   'pullboard add web "Upload page" --specs G1'].join('\n');
 
 const HELP_EXAMPLES = {
+  'settings line': `pullboard settings line reviewsFirst on --reason "reviews are waiting" --window '{"windowMinutes":60}'`,
   'spec approve': 'pullboard spec approve G1',
   'spec decline': 'pullboard spec decline G1 --reason "The requirement needs revision"',
   'sentinel propose': 'pullboard sentinel propose "Run the checks" --check "npm test" --every hourly --owner web',
   tour: 'pullboard tour', init: 'pullboard init --blueprint web-app', worktree: 'pullboard worktree web --model "my-model"',
   join: 'pullboard join web --model "my-model"', resume: 'pullboard resume',
+  intake: 'pullboard intake https://github.com/owner/repo/pull/7 --criterion "behavior" --check "npm test"',
   add: ADD_EXAMPLE, list: 'pullboard list web', show: 'pullboard show 12',
   claim: 'pullboard claim 12', submit: 'pullboard submit 12', 'next --verify': 'pullboard next --verify',
   fact: 'pullboard fact 12 measurement "The check passes in 8 seconds"',
@@ -372,6 +384,16 @@ const HELP_FLAG_EXPLANATIONS = {
 
 /** Lines a command's own help adds after its example. */
 const HELP_NOTES = {
+  resume: [
+    'Ordinary resume reads the current work card and recorded health without running diagnostics or watches.',
+    'Use --diagnostics explicitly for setup, hooks, dirty files and stale-work checks.',
+  ],
+  'sentinel run': [
+    'Schedule this command with cron on a server or a scheduled CI job that already has ordinary board access.',
+    'For example: 0 * * * * cd /path/to/project && pullboard sentinel run',
+    'Each run prepares committed local trunk; resume and the background view never execute watch commands.',
+    'It also refreshes work-health findings; resume shows only the indexed findings and their recorded time.',
+  ],
   watch: [
     'Claude Code: run pullboard watch --to <your id> under the Monitor tool, and each event line wakes the seat.',
     'Any other harness: run it as a long-running command and treat each stdout line as an event.',

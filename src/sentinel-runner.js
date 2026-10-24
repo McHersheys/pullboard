@@ -3,13 +3,36 @@ import { spawn } from 'node:child_process';
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
+import { rmSync } from 'node:fs';
 import { relative } from 'node:path';
 import { resolve } from 'node:path';
 import { sep } from 'node:path';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { performance } from 'node:perf_hooks';
 import { Refused } from './refused.js';
 import { parseProcessCensus } from './process-census.js';
 import { sentinels } from './sentinels.js';
+import { gitChildEnv } from './git.js';
+import { mainCheckout } from './git.js';
+
+/** Prepare immutable local trunk in a private clone, leaving every live checkout untouched. */
+export async function withSentinelTrunk(root, action) {
+  const trunk = mainCheckout(root);
+  if (!trunk?.commit) throw new Refused('SENTINEL_TRUNK', 'commit the primary branch before running sentinels: pullboard sentinel run');
+  const directory = mkdtempSync(join(tmpdir(), 'pullboard-sentinel-trunk-'));
+  const checkout = join(directory, 'checkout');
+  const env = gitChildEnv(root);
+  try {
+    const clone = spawnSync('git', ['clone', '--quiet', '--shared', '--no-checkout', '--', root, checkout], { env, encoding: 'utf8' });
+    const selected = clone.status === 0 && spawnSync('git', ['checkout', '--quiet', '--detach', trunk.commit], { cwd: checkout, env, encoding: 'utf8' });
+    if (!selected || selected.status !== 0) throw new Refused('SENTINEL_TRUNK', 'the trunk checkout could not be prepared; inspect the primary branch and retry pullboard sentinel run');
+    return { results: await action(checkout), trunk };
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
 
 /** Keep only bounded final output; a noisy check cannot grow a board receipt without limit. */
 function outputTail(previous, chunk) {
@@ -69,7 +92,7 @@ export function executeSentinel(root, row, { signal, environment = process.env }
       const path = relative(base, directory);
       if (path === '..' || path.startsWith('..' + sep)) throw new Refused('BAD_SENTINEL', 'the approved sentinel directory must remain inside its project');
     } catch (error) { reject(error); return; }
-    if (signal?.aborted) { reject(new Refused('SENTINEL_ABORTED', 'the background view stopped before this check began; retry on resume')); return; }
+    if (signal?.aborted) { reject(new Refused('SENTINEL_ABORTED', 'the sentinel run stopped before this check began; retry pullboard sentinel run')); return; }
     const start = performance.now();
     const group = process.platform !== 'win32';
     // The shell waits on a private start pipe until its detached group identity is captured.
@@ -106,7 +129,7 @@ export function executeSentinel(root, row, { signal, environment = process.env }
     const timer = setTimeout(() => { timedOut = true; stop(); }, row.timeoutMs);
     timer.unref();
     signal?.addEventListener('abort', stop, { once: true });
-    /** A background resume child also drains its approved command before honoring view shutdown. */
+    /** A scheduled run drains its approved command before honoring shutdown. */
     const interrupt = () => { interrupted = true; stop(); };
     process.once('SIGTERM', interrupt); process.once('SIGINT', interrupt);
     /** Remove only this run's handlers, leaving the embedding process's other handlers untouched. */

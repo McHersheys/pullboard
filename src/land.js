@@ -1,3 +1,4 @@
+import { requireOutsideOwner } from './outside-source.js';
 /** Coordinator landing batches retain exact Git and gate receipts across interruptions [B3,R3]. */
 import { assignEngineNumbers } from './engine-numbers.js';
 import {
@@ -570,6 +571,7 @@ function withoutParallelBlocker(state, entries, removed) {
   return entries.filter(entry => {
     if (blocked.has(entry.id)) return false;
     const item = store.getItem(state.board, entry.id);
+    requireOutsideOwner(state.board, item);
     const dependency = (item.item_after ?? '').split(',').filter(Boolean).map(Number).find(id => blocked.has(id));
     const stacked = tryGit(state.root, ['merge-base', '--is-ancestor', removed.reviewedCommit ?? removed.commit, entry.reviewedCommit ?? entry.commit]).status === 0;
     if (dependency || stacked) {
@@ -940,6 +942,7 @@ function requirePushTarget(root, branch) {
 function publicationInputs(state, batch) {
   for (const entry of batch.items) {
     const item = store.getItem(state.board, entry.id);
+    requireOutsideOwner(state.board, item);
     if (item.item_status !== 'verified' || item.item_commit !== entry.commit
       || store.checkedLandingCommit(state.board, item) !== (entry.reviewedCommit ?? entry.commit)) {
       throw new Refused('LAND_ITEM_MOVED', `item #${entry.id} changed its checked composition; rebuild the landing before publishing`);
@@ -1090,6 +1093,7 @@ async function landOnTrunk(state) {
   }
   for (const entry of state.batch.items) {
     const item = store.getItem(state.board, entry.id);
+    requireOutsideOwner(state.board, item);
     if (item.item_status !== 'verified' || item.item_commit !== entry.commit) throw new Refused('LAND_ITEM_MOVED', `item #${entry.id} changed after the batch merged; rebuild its landing`);
   }
   if (mainCheckout(state.root)?.commit !== state.batch.base) throw new Refused('LAND_TRUNK_MOVED', 'main moved during the landing; rebuild the batch from its new tip');
@@ -1214,6 +1218,7 @@ export async function runLandingBatch({ root, board, config, write, say, owner, 
   if (fence && trunk?.branch !== fence.branch) throw new Refused('LAND_LEASE_LOST', 'the trunk branch changed while landing waited; start a new land command for its current branch');
   const unfinished = store.landingBatches(board).findLast((batch) => batch.state !== 'landed' && batch.state !== 'blocked');
   if (fence && unfinished && unfinished.branch !== fence.branch) throw new Refused('LAND_LEASE_LOST', 'the interrupted batch belongs to another trunk branch; restore that branch and start a fresh land --adopt');
+  if (!dryRun && unfinished) for (const entry of unfinished.items ?? []) requireOutsideOwner(board, store.getItem(board, entry.id));
   const recorded = store.landingBatches(board).findLast((batch) => batch.state === 'landed' && batch.base === trunk?.commit);
   if (fence && recorded && recorded.branch !== fence.branch) throw new Refused('LAND_LEASE_LOST', 'the recorded Git repair belongs to another trunk branch; restore that branch before landing');
   if (!dryRun && recorded && isClean(root) && !untracked(root).length) {
@@ -1234,6 +1239,7 @@ export async function runLandingBatch({ root, board, config, write, say, owner, 
     if (deferred) return deferred;
   }
   const selected = candidates(board, root, trunk.commit, maximum);
+  if (!dryRun) for (const item of selected.ready) requireOutsideOwner(board, item);
   const stale = selected.blocked.find(item => item.code === 'STALE_VERDICT');
   if (!selected.ready.length && stale) throw staleVerdictRefusal({ item_id: stale.id }, stale);
   if (dryRun) {
