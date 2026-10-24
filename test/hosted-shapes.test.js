@@ -455,6 +455,7 @@ import { enrollProtocolPhone } from './relay-device-enrollment-fixture.js';
 import { hostedEngines } from './hosted-browsers.js';
 import { openEngine } from './hosted-browsers.js';
 import {
+  BOARD_ITEM,
   BOARDS,
   HOSTED,
   READ_SCREEN,
@@ -1017,6 +1018,9 @@ test('a board over the size limit is named with its size and the limit, beside a
 
   box.limitSnapshots(null);
   const healthy = await siblingProject(box, 'healthy-sibling', 'fixture/healthy-sibling');
+  const healthyLane = Object.keys(JSON.parse(readFileSync(join(healthy, 'pullboard.json'), 'utf8')).lanes)[0];
+  assert.equal((await box.cliAt(healthy, 'add', healthyLane, BOARD_ITEM)).code, 0,
+    'the healthy board has the real item required by the unchanged visibility probe');
   assert.equal((await box.cliAt(healthy, 'relay', 'on', '--url', box.origin)).code, 0);
   const mixed = await visit(paired, { route: front.route(session, null), phone: true }, true);
   assert.equal(mixed.board, true, 'the healthy sibling remains readable');

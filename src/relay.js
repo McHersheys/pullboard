@@ -473,7 +473,8 @@ async function publishSnapshotSize(state, io) {
   try {
     const sealed = Buffer.from(await seal(readBoardKey(state.board), new TextEncoder().encode(JSON.stringify(value)),
       { boardId: state.board, kind: 'snapshot', sequence: 0 })).toString('base64url');
-    await rawRequest(state, '/api/v1/boards/' + state.board + '/upload-status', { method: 'PUT', body: { sealed } }, io);
+    const reply = await rawRequest(state, '/api/v1/boards/' + state.board + '/upload-status', { method: 'PUT', body: { sealed } }, io);
+    if (typeof reply.recorded !== 'boolean') throw new Refused('RELAY_RESPONSE', 'Retry the sealed size notice when the relay can acknowledge it.');
     pause.sizeNoticePublished = true;
     const file = STATE_FILES.get(state);
     if (file) saveLink(file, state);
