@@ -64,6 +64,56 @@ function summary(count, totalMinutes, averageMinutes, medianMinutes, unmeasuredC
   return { count, totalMinutes, averageMinutes, medianMinutes, unmeasuredCompleted };
 }
 
+test('a flow window reports stage quartiles and the slowest items with their cause [R1,R2]', t => {
+  const a = 'a'.repeat(40), b = 'b'.repeat(40), c = 'c'.repeat(40);
+  const entries = [
+    ...cycle(1, [10, 20, 5, 10], 250), ...cycle(2, [20, 40, 10, 20], 250),
+    ...cycle(3, [30, 60, 15, 30], 250), ...cycle(4, [40, 80, 20, 40], 250),
+    ...cycle(5, [50, 60, 70, 80], 250, { legacy: true }),
+    [0, 'coordinator', 'add', 6, { lane: 'core' }],
+    [250, 'core-6', 'claim', 6, { leaseUntil: at(1000) }], [260, 'core-6', 'submit', 6, { commit: a }],
+    [265, 'review-1', 'reserve', 6, { until: at(1000) }], [270, 'review-1', 'reject', 6, { commit: a }],
+    [300, 'core-6', 'claim', 6, { leaseUntil: at(1000) }], [320, 'core-6', 'submit', 6, { commit: b }],
+    [330, 'review-1', 'reserve', 6, { until: at(1000) }], [340, 'review-1', 'reject', 6, { commit: b }],
+    [350, 'core-6', 'claim', 6, { leaseUntil: at(1000) }], [380, 'core-6', 'submit', 6, { commit: c }],
+    [400, 'review-1', 'reserve', 6, { until: at(1000) }], [420, 'review-1', 'accept', 6, { commit: c }],
+    [500, 'coordinator', 'merged', 6],
+    ...cycle(7, [1, 1, 1, 1], 1), [500, 'coordinator', 'merged', 7],
+    ...cycle(8, [1, 1, 1, 1], 700),
+    [100, 'coordinator', 'add', 9, { lane: 'core' }], [480, 'coordinator', 'merged', 9],
+    [300, 'coordinator', 'add', 10, { lane: 'core' }],
+  ];
+  const { board, stats } = fixture(t, entries, 600);
+  const history = store.events(board);
+  const result = flowStats(history, null, BASE + 600 * 60_000, stats(), { windowMinutes: 360 });
+  const window = result.window;
+  assert.ok(window, 'the existing event-derived flow projection carries the requested window');
+  assert.equal(window.since, at(240));
+  assert.equal(window.until, at(600));
+  assert.equal(window.landedItems, 7, 'include an incompletely recorded landing, but not future or repeated old receipts');
+  assert.deepEqual(window.arrivals, { added: 1, landed: 7 });
+  const { stages } = window;
+  assert.deepEqual([stages.build.count, stages.build.fastQuarterMinutes, stages.build.medianMinutes,
+    stages.build.slowQuarterMinutes, stages.build.worstMinutes, stages.build.unmeasuredCompleted], [6, 20, 35, 50, 60, 1]);
+  assert.deepEqual([stages.reviewWait.count, stages.reviewWait.fastQuarterMinutes, stages.reviewWait.medianMinutes,
+    stages.reviewWait.slowQuarterMinutes, stages.reviewWait.worstMinutes, stages.reviewWait.unmeasuredCompleted], [5, 35, 40, 60, 80, 2]);
+  assert.equal(stages.reviewWait.overTargetMinutes, 95, 'sum each landed item\'s excess over the 30-minute target');
+  assert.deepEqual(window.constraint, { stage: 'reviewWait', overTargetMinutes: 95 });
+  assert.deepEqual(stages.reviewWait.tail.map(item => item.id), [4, 3, 2]);
+  assert.equal(stages.reviewWait.tail[0].eligibility, 'unmeasured', 'waiting alone cannot establish reviewer ineligibility');
+  assert.deepEqual(stages.build.tail.map(item => item.id), [6, 5, 4]);
+  assert.equal(stages.build.tail[0].cause, 'rework');
+  assert.equal(stages.build.tail[0].submissions, 3);
+  assert.equal(stages.build.arrivals, 8);
+  assert.equal(stages.build.completions, 8);
+  assert.deepEqual(stages.build.seats, ['core-1', 'core-2', 'core-3', 'core-4', 'core-5', 'core-6']);
+  assert.deepEqual([stages.sendBackIdle.count, stages.sendBackIdle.medianMinutes, stages.sendBackIdle.unmeasuredCompleted], [1, 40, 6]);
+  assert.equal(stages.sendBackIdle.tail[0].cause, 'send-back-idle');
+  assert.deepEqual(stages.mergeWait.tail.map(item => item.id), [5, 6, 4], 'equal tail durations use ascending item id');
+  assert.equal(stages.mergeWait.tail[0].cause, 'landing-queue');
+  assert.deepEqual(store.events(board), history, 'statistics append no synthetic measurement moves');
+});
+
 test('flow numbers match a hand computation through rework, released reviews and every live queue [R1,R2]', t => {
   const a = 'a'.repeat(40), b = 'b'.repeat(40), c = 'c'.repeat(40);
   const entries = [
