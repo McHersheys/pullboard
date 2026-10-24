@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 /** @pullboard-test-loads src/board.js src/engine.js src/exchange.js */
 /** Two independent Git/SQLite replicas derive verdict freshness without rewriting proof [E8]. */
 import assert from 'node:assert/strict';
@@ -946,9 +947,11 @@ test('an agent grant narrows at claim without changing old receipts or permittin
   for (const title of ['First', 'Second']) apply('addItem', [{ by: 'coordinator', lane: 'web', title,
     criterion: 'A real file must exist', specIds: [], check: 'test -f grant-proof' }]);
   /** Freeze an actual private Git revision; replicas receive only the canonical frozen value. */
-  const freeze = item => ({ text: JSON.stringify({ title: item.item_title, criterion: item.item_criterion,
-    check: item.item_check, rows: [], policy: { version: 1, commit: head, verify: { policy: 'any', family: 'off' } } }),
-  digest: 'private-grant-fixture' });
+  const freeze = item => {
+    const text = JSON.stringify({ title: item.item_title, criterion: item.item_criterion,
+      check: item.item_check, rows: [], policy: { version: 1, commit: head, verify: { policy: 'any', family: 'off' } } });
+    return { text, digest: createHash('sha256').update(text).digest('hex') };
+  };
   const options = { agentId: actor, lane: 'web', leaseMs: 60_000, freeze };
   apply('claim', [1, options]);
   const prior = apply('appendFact', [2, { agentId: actor, kind: 'note', text: 'Legacy behavior stays recorded.' }]);
