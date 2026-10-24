@@ -60,6 +60,7 @@ import {
   rejectFabricatedPasskeyMetadata,
   rejectSyntheticPasskeyEvent,
 } from './person-optional-apply-fixture.js';
+import { rejectConsumedOffReplay } from './person-off-replay-fixture.js';
 import { firstUnpairedAuthorityInsertion } from './person-first-pin-fixture.js';
 import { refuseNamedSigners } from '../src/person-signing-cli.js';
 import { createE2eHelpers } from './e2e-helpers.js';
@@ -1231,3 +1232,5 @@ test('person-only moves are signed against fabricated receipt metadata [E22,H16]
 
 /** A local event insertion is not an authenticated execution of a different row source. */
 test('person-only moves are signed against synthetic execution events [E22,H16]', rejectSyntheticPasskeyEvent);
+
+test('person-only moves are signed against consumed OFF replay [E22,H16]', rejectConsumedOffReplay);

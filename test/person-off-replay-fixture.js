@@ -1,0 +1,65 @@
+/** Exact signed-request provenance must replace optional SSH signing at native apply, never named identity [E22,H16]. */
+import assert from 'node:assert/strict';
+import {
+  createHash,
+  generateKeyPairSync,
+  randomUUID,
+  sign,
+} from 'node:crypto';
+import { join } from 'node:path';
+import * as store from '../src/board.js';
+import * as signing from '../src/person-signing.js';
+import { presenceAttestation } from '../src/person-presence.js';
+import { preparePersonRequest } from '../src/person-request.js';
+import { loadConfig } from '../src/config.js';
+import {
+  applyRelayMove,
+  prepareEngineMove,
+} from '../src/engine.js';
+import {
+  receivePersonRequest,
+  personRequestRecords,
+  requestIntentDigest,
+  requestStageText,
+} from '../src/relay-requests.js';
+import { relayClientFixture } from './relay-client-fixture.js';
+
+/** A consumed genuine OFF stamp cannot disable signing a second time after ordinary re-enable [E22,H16]. */
+export async function rejectConsumedOffReplay(t) {
+  const box = await relayClientFixture(t);
+  const board = store.openBoard(join(box.root, '.git', 'pullboard', 'board.sqlite'));
+  t.after(() => store.closeBoard(board));
+  const authority = generateKeyPairSync('ed25519');
+  signing.pinAuthority(board, 'https://fixture-relay.invalid', { version: 1, algorithm: 'Ed25519',
+    publicKey: authority.publicKey.export({ format: 'der', type: 'spki' }).toString('base64url') });
+  signing.setPersonSigning(board, { agentId: 'coordinator', signed: true });
+  const document = preparePersonRequest({ verb: 'signing', args: { signed: 'off' } }, randomUUID());
+  const boardId = board.db.prepare("SELECT meta_value FROM board_meta WHERE meta_key='board_id'").get().meta_value;
+  const presence = { board: boardId, request: document.id, digest: createHash('sha256').update(JSON.stringify(document)).digest('hex'),
+    credential: 'fixture-passkey', at: Date.now() };
+  presence.signature = sign(null, presenceAttestation(presence), authority.privateKey).toString('base64url');
+  const at = new Date().toISOString();
+  receivePersonRequest(board, document, { sequence: 1, at, sender: { kind: 'person', userId: 'fixture-user', presence } });
+  const executor = 'fixture-executor';
+  let sequence = 1;
+  /** Use real sealed request execution, never a self-declared presence flag. */
+  function execute(operation, args, phase) {
+    const record = personRequestRecords(board).find(entry => entry.id === document.id);
+    const move = prepareEngineMove(board, operation, args);
+    move.personRequest = { id: document.id, executor, phase, digest: requestIntentDigest(record) };
+    const outcome = applyRelayMove(board, move, { sequence: ++sequence, at, kind: 'move',
+      sender: { kind: 'machine', userId: 'fixture-user', machine: 'fixture-native-device' } });
+    assert.equal(outcome.error, undefined, JSON.stringify(outcome));
+  }
+  const intake = personRequestRecords(board).find(entry => entry.id === document.id);
+  execute('shout', [{ from: 'person', to: 'coordinator', text: requestStageText(intake, 'claim'), lanes: Object.keys(loadConfig(box.root).lanes) }], 'claim');
+  execute('setPersonSigning', [{ agentId: 'person', signed: false, request: document.id }], 'execute');
+  assert.equal(signing.personSigning(board).signed, false, 'a genuine first execution turns signing off');
+  const original = board.db.prepare("SELECT * FROM event WHERE event_kind='person_signing' ORDER BY event_id DESC LIMIT 1").get();
+  assert.equal(JSON.parse(original.event_detail).request, document.id);
+  signing.setPersonSigning(board, { agentId: 'coordinator', signed: true });
+  assert.equal(signing.personSigning(board).signed, true, 'ordinary re-enable is the positive control');
+  board.db.prepare('INSERT INTO event(event_at,event_by,event_kind,item_id,event_detail) VALUES (?,?,?,?,?)')
+    .run(original.event_at, original.event_by, original.event_kind, original.item_id, original.event_detail);
+  assert.equal(signing.personSigning(board).signed, true, 'an exact consumed OFF event cannot disable signing again without new presence');
+}
