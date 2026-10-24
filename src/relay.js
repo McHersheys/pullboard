@@ -1,6 +1,9 @@
 import { beginCommandPhase } from './command-phase.js';
 import { recordedMoveRefusal } from './recorded-move.js';
-import { publishExcludedBoards } from './relay-excluded.js';
+import {
+  publishExcludedBoards,
+  publishOffExclusions,
+} from './relay-excluded.js';
 import {
   recoverySummary,
   unlinkedRelayStatus,
@@ -1665,29 +1668,13 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
   });
 }
 
-/** Publish this machine's changed exclusions without retaining a person session or blocking local opt-out. */
-async function publishOffExclusions(state, io) {
-  const machine = readRelayMachine();
-  const candidates = state ? [state] : [];
-  for (const project of listApiProjects()) {
-    try { const linked = loadLink(linkFile(project.root)); if (linked) candidates.push(linked); }
-    catch { /* An unrelated broken link cannot prevent local exclusion. */ }
-  }
-  const publisher = candidates.find(value => value.machine === machine.machine
-    && value.account === machine.owner?.account && value.url === machine.owner?.url
-    && /^pm_[A-Za-z0-9_-]{43}$/u.test(value.token ?? ''));
-  if (!publisher) return;
-  try { await publishExcludedBoards(publisher, io, relayDeviceRequest); }
-  catch { io.err('Excluded locally; the relay exclusion notice could not be updated. Run pullboard relay on --all when the relay is reachable.'); }
-}
-
 /** Unlink locally without approval, then request a separate phone-approved remote deletion if possible. */
 export async function relayOff(root, io) {
   updateRelayMachine(machine => { const project = repoInfo(root).root; if (!machine.excluded.includes(project)) machine.excluded.push(project); });
   const file = linkFile(root);
   return locked(file, async () => {
     const state = loadLink(file);
-    if (!state) { await publishOffExclusions(null, io); return summary(root, null); }
+    if (!state) { await publishOffExclusions(null, io, { loadLink, linkFile, request: relayDeviceRequest }); return summary(root, null); }
     let joined = [];
     try {
       const roster = await request(state, '/auth/machines?board=' + state.board, {}, io);
@@ -1705,7 +1692,7 @@ export async function relayOff(root, io) {
     rmSync(file, { force: true });
     try { forgetBoardKey(state.board, state.keyStorage); }
     catch { /* The local opt-out is complete even when secure key storage is temporarily locked. */ }
-    await publishOffExclusions(state, io);
+    await publishOffExclusions(state, io, { loadLink, linkFile, request: relayDeviceRequest });
     let requested = false;
     let remote;
     try {

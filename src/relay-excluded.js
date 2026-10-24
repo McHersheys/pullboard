@@ -44,3 +44,22 @@ export async function publishExcludedBoards(session, io, request) {
   await request(session, '/api/v1/devices/exclusions', { method: 'POST', body: publication }, io);
   updateRelayMachine(state => { state.exclusionsPublished = names.length ? { account: session.account, url: session.url } : null; });
 }
+
+/**
+ * Publish changed exclusions without retaining a person session or blocking local opt-out.
+ * Link readers and transport come from the caller to keep this module independent of relay.js.
+ */
+export async function publishOffExclusions(state, io, { loadLink, linkFile, request }) {
+  const machine = readRelayMachine();
+  const candidates = state ? [state] : [];
+  for (const project of listApiProjects()) {
+    try { const linked = loadLink(linkFile(project.root)); if (linked) candidates.push(linked); }
+    catch { /* An unrelated broken link cannot prevent local exclusion. */ }
+  }
+  const publisher = candidates.find(value => value.machine === machine.machine
+    && value.account === machine.owner?.account && value.url === machine.owner?.url
+    && /^pm_[A-Za-z0-9_-]{43}$/u.test(value.token ?? ''));
+  if (!publisher) return;
+  try { await publishExcludedBoards(publisher, io, request); }
+  catch { io.err('Excluded locally; the relay exclusion notice could not be updated. Run pullboard relay on --all when the relay is reachable.'); }
+}
