@@ -179,10 +179,11 @@ export function refuseNamedSigners(rows, ids) {
  * @param {{ id: string, text: string }[]} rows - the spec rows, and doctrine rows as `doctrine:<id>`
  * @param {string[]} ids - the rows being decided
  */
-export function requireShownRows(board, personRequest, rows, ids) {
+export function requireShownRows(board, personRequest, rows, ids, sources = []) {
   const record = personRequestRecords(board).find((entry) => entry.id === personRequest?.id && !entry.duplicateOf);
   const shown = record ? JSON.parse(record.encoded).rows : undefined;
-  const changed = ids.filter((id) => !Array.isArray(shown) || shown.find((row) => row.id === id)?.text !== rows.find((row) => row.id === id)?.text);
+  const changed = ids.filter((id) => !Array.isArray(shown) || shown.find((row) => row.id === id)?.text !== rows.find((row) => row.id === id)?.text
+    || typeof shown.find(row => row.id === id)?.source !== 'string' || shown.find(row => row.id === id)?.source !== sources.find(row => row.id === id)?.source);
   if (changed.length) {
     throw new Refused('STALE_ROW_DECISION', `${changed.join(', ')} changed after the person saw ${changed.length === 1 ? 'it' : 'them'}, or the passkey request did not show ${changed.length === 1 ? 'it' : 'them'}`,
       'read the rows again in the relay view and decide them again with your passkey');

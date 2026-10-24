@@ -25,7 +25,7 @@ export function signedRowDecisionsMatch(request, rows) {
       const decision = verb === 'spec-decline' ? 'decline' : 'approve';
       const text = verb === 'spec-answer' ? answerQuestion(shown.text, args.answer, args.row).text
         : args.text === undefined ? shown.text : args.text.trim();
-      return shown && original && kindId === id && original.id === row.id && original.text === shown.text && !original.signers?.length
+      return shown && original && kindId === id && original.id === row.id && original.text === shown.text && typeof shown.source === 'string' && shown.source === row.source && !original.signers?.length
         && row.decision === decision && row.text === text && row.by === 'person' && row.signature === undefined
         && row.reason === (decision === 'decline' ? args.reason.trim() : '') && row.passkeyRequest === request.id
         && row.replacement === rowDecisionReplacement(row.source, decision, text);
@@ -51,6 +51,20 @@ export function verifiedPasskeyRowDecision(board, decision) {
       || stamp?.board !== read('board_id') || stamp?.request !== request.id
       || stamp?.digest !== createHash('sha256').update(request.encoded).digest('hex')
       || !validPresence(stamp) || !pin || !presenceSigned(stamp, pin.publicKey) || !signedRowDecisionsMatch(request, request.result)) return false;
+    const cursor = Number(read('relay_applied_sequence'));
+    if (typeof request.resultMove !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/u.test(request.resultMove)
+      || !Number.isSafeInteger(cursor) || request.resultSequence > cursor || request.resultSequence <= request.sequence) return false;
+    const receipt = JSON.parse(read('relay_receipt_' + request.resultMove) ?? 'null');
+    const move = receipt && JSON.parse(receipt.move);
+    if (!move || receipt.sequence !== request.resultSequence || move.id !== request.resultMove || move.operation !== 'recordRowDecisions'
+      || move.personRequest?.id !== request.id || move.personRequest?.phase !== 'execute' || move.personRequest?.executor !== request.executor
+      || move.personRequest?.digest !== stamp.digest || move.args?.[0]?.agentId !== 'person' || move.args?.[0]?.channel !== 'view'
+      || !signedRowDecisionsMatch(request, move.args[0].decisions) || receipt.outcome?.error
+      || !isDeepStrictEqual(receipt.outcome?.result, request.result)) return false;
+    const committed = board.db.prepare('SELECT * FROM event WHERE event_id=?').get(decision.event);
+    if (!committed || committed.event_kind !== 'row_decision' || committed.event_by !== 'person' || committed.event_at !== decision.at
+      || !isDeepStrictEqual(JSON.parse(committed.event_detail).record, decisionBody(decision))
+      || !receipt.outcome.events?.some(event => isDeepStrictEqual({ ...event }, { ...committed }))) return false;
     return request.result.some(record => record.event === decision.event && isDeepStrictEqual(decisionBody(record), decisionBody(decision)));
   } catch { return false; }
 }

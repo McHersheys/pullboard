@@ -35,6 +35,7 @@ import { staleRowDecision } from './row-decision-state.js';
 function decisionRows(root, config, ids) {
   const spec = loadSpec(root, config);
   const doctrine = loadDoctrine(root, config);
+  const lines = new Map();
   return ids.map((reference) => {
     const kind = reference.startsWith('doctrine:') ? 'doctrine' : 'spec';
     const id = kind === 'doctrine' ? reference.slice('doctrine:'.length) : reference;
@@ -42,9 +43,15 @@ function decisionRows(root, config, ids) {
     const matches = parsed.rows.filter((row) => row.id === id);
     if (matches.length !== 1) throw new Refused('NO_ROW', `${reference} names ${matches.length} repo rows; use one id from ${parsed.name}`);
     const file = kind === 'doctrine' ? doctrine.name : config.spec;
-    const source = readFileSync(join(root, file), 'utf8').split(/\r?\n/u)[matches[0].line - 1];
+    if (!lines.has(file)) lines.set(file, readFileSync(join(root, file), 'utf8').split(/\r?\n/u));
+    const source = lines.get(file)[matches[0].line - 1];
     return { kind, file, row: matches[0], source };
   });
+}
+
+/** Capture the complete original source row a passkey confirms, including gate and required SSH signer fields. */
+export function shownDecisionRows(root, config, ids) {
+  return decisionRows(root, config, ids).map(({ kind, row, source }) => ({ id: kind === 'doctrine' ? `doctrine:${row.id}` : row.id, text: row.text, source }));
 }
 
 /**

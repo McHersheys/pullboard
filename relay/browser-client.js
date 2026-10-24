@@ -837,9 +837,11 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
       await flushOutbox(entry);
       await snapshot(entry); await catchUp(entry);
       // A signed row decision names the exact text of each row this page shows; the passkey confirms that text.
-      if (entry.state.personSigning?.signed && ['spec-approve', 'spec-decline'].includes(value.move.verb) && !value.rows) {
-        value = preparePersonRequest(value.move, value.id, value.move.args.ids.split(/[\s,]+/u).filter(Boolean).map(id => ({ id,
-          text: (id.startsWith('doctrine:') ? entry.state.practice : entry.state.spec).find(row => row.id === id.replace(/^doctrine:/u, ''))?.text ?? '' })));
+      if (entry.state.personSigning?.signed && ['spec-approve', 'spec-decline', 'spec-answer'].includes(value.move.verb) && !value.rows) {
+        const ids = value.move.verb === 'spec-answer' ? [value.move.args.row] : value.move.args.ids.split(/[\s,]+/u).filter(Boolean);
+        const rows = ids.map(id => entry.state.personRows?.find(row => row.id === id));
+        if (rows.some(row => !row || typeof row.source !== 'string')) throw new Refused('STALE_ROW_DECISION', 'Refresh this board to read each exact row, gate and signer list before confirming.');
+        value = preparePersonRequest(value.move, value.id, rows);
       }
       if (entry.state.personSigning?.signed && !presences.has(value.id)) {
         presences.set(value.id, await passkeyPresence((path, options) => documentAt(path, denied, { ...options, signal: access.signal }), entry.id, value));

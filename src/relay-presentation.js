@@ -10,6 +10,9 @@ import {
 } from './git.js';
 import { Refused } from './refused.js';
 import { loadConfig } from './config.js';
+import { loadSpec } from './spec.js';
+import { loadDoctrine } from './doctrine.js';
+import { shownDecisionRows } from './row-decisions.js';
 import { projectState } from './serve.js';
 import { personNeeds } from './needs.js';
 import { personBlockWords } from './blocks.js';
@@ -48,8 +51,12 @@ function readRelayPresentation(root, providedBoard) {
     // The passkey device reads whether person moves are signed and which terminal-started moves wait for it [E22].
     const requested = new Set(personRequestRecords(board).map((record) => record.id));
     const personProposals = store.personProposals(board).filter((proposal) => !requested.has(proposal.id));
+    const config = loadConfig(root);
+    const signed = store.personSigning(board).signed;
+    const ids = signed ? [...loadSpec(root, config).rows.map(row => row.id), ...loadDoctrine(root, config).repo.rows.map(row => `doctrine:${row.id}`)] : [];
+    const personRows = signed ? shownDecisionRows(root, config, ids) : [];
     return { version: 1, state: { ...store.projectItemThreads(board, state), personRequests: personRequestStatuses(board),
-      personSigning: { signed: store.personSigning(board).signed }, personProposals }, config: loadConfig(root), shouts: store.allShouts(board) }; }
+      personSigning: { signed }, personProposals, personRows }, config, shouts: store.allShouts(board) }; }
   finally { if (!providedBoard) store.closeBoard(board); }
 }
 /** Resolve one shout from the complete history carried only inside the sealed presentation. */
