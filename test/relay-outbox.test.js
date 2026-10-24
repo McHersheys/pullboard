@@ -1,3 +1,4 @@
+import { recordedRelayRefusal } from './relay-recorded-refusal-fixture.js';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -259,3 +260,5 @@ test('a milestone edit naming an offline item follows that item when another mac
       'the milestone holds the item this machine added, not the other machine\'s');
   }
 });
+
+test('a relay refusal after a recorded move says it was recorded [C6,N26,H16]', recordedRelayRefusal);
