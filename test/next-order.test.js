@@ -703,3 +703,85 @@ test("a claimed item whose files grow into another claimed item's files names th
   assert.equal(onBoard(board => store.allShouts(board).length), acceptedCount,
     'an already landed item is no longer an in-flight collision');
 });
+
+
+/** A private real Git repository and SQLite queue; lifecycle records below are not gate executions. */
+function lineOrderFixture(t) {
+  const helpers = createE2eHelpers();
+  const box = helpers.sandbox();
+  const root = join(box.dir, 'line-order');
+  mkdirSync(root);
+  box.git(root, 'init', '-q', '-b', 'main');
+  box.git(root, 'commit', '--allow-empty', '-qm', 'test: seed the private line-order repository');
+  const board = store.openBoard(join(root, 'board.sqlite'));
+  store.register(board, { lane: 'coordinator', path: root });
+  const builder = store.register(board, { lane: 'core', path: join(root, 'builder'), route: 'strong', parent: 'builder-P', session: 'builder-child' });
+  const reviewer = store.register(board, { lane: 'review', path: join(root, 'reviewer'), route: 'strong', parent: 'reviewer-R', session: 'reviewer-child' });
+  t.after(() => { store.closeBoard(board); helpers.cleanup(); });
+  /** Switch only the recorded ordering control; other line controls remain off. */
+  function order(value) {
+    store.setLineSetting(board, { agentId: 'coordinator', key: 'order', value, reason: 'private queue policy control', window: { windowMinutes: 60, activeReviewers: 3 } });
+  }
+  return { board, root, builder, reviewer, order };
+}
+
+test('line order sends a send-back home first and gives the scarcest review first [N2,B13,H16]', t => {
+  const home = lineOrderFixture(t);
+  const older = store.addItem(home.board, { by: 'coordinator', lane: 'core', title: 'older fresh work' });
+  const returned = submitted(home.board, home.builder, 'a later send-back belongs home', 'strong', 1);
+  const returnedItem = store.getItem(home.board, returned);
+  store.verify(home.board, returned, { agentId: home.reviewer, decision: 'REJECT', reason: 'TEST_FAILURE',
+    note: 'Synthetic rejected lifecycle record; no gate execution claimed.', head: returnedItem.item_commit,
+    digest: returnedItem.item_frozen_digest, policy: 'any', reopenFirstRefusalMinutes: 15 });
+  store.addMilestone(home.board, { agentId: 'coordinator', name: 'first', items: [older] });
+  assert.equal(store.nextFor(home.board, { agentId: home.builder, lane: 'core' }).item.item_id, older, 'off retains release order before rework');
+  assert.equal(store.lineSettings(home.board).reviewsFirst, false, 'review-versus-build selection is a separate control');
+  home.order(true);
+  assert.equal(store.nextFor(home.board, { agentId: home.builder, lane: 'core' }).item.item_id, returned, 'on returns the builder to its own send-back before new release work');
+  home.order(false);
+  assert.equal(store.nextFor(home.board, { agentId: home.builder, lane: 'core' }).item.item_id, older, 'recorded off restores the prior order');
+
+  const scarce = lineOrderFixture(t);
+  const otherAuthor = store.register(scarce.board, { lane: 'core', path: join(scarce.root, 'author-Q'), parent: 'author-Q', session: 'author-Q-child' });
+  for (let index = 0; index < 2; index++) store.register(scarce.board, { lane: 'review', path: join(scarce.root, `sibling-${index}`),
+    parent: 'builder-P', session: `builder-sibling-${index}` });
+  const abundant = submitted(scarce.board, otherAuthor, 'older review has several independent seats', 'strong', 2);
+  const limited = submitted(scarce.board, scarce.builder, 'newer review shares its author parent with two seats', 'strong', 3);
+  const prior = store.getItem(scarce.board, limited);
+  store.verify(scarce.board, limited, { agentId: scarce.reviewer, decision: 'REJECT', reason: 'TEST_FAILURE',
+    note: 'Synthetic historical-author lifecycle record; no gate execution claimed.', head: prior.item_commit, digest: prior.item_frozen_digest, policy: 'any' });
+  store.claim(scarce.board, limited, { agentId: otherAuthor, lane: 'core', leaseMs: HOUR, freeze: FREEZE });
+  submitFixture(scarce.board, limited, { agentId: otherAuthor, commit: '4'.repeat(40), tree: '4'.repeat(40) });
+  assert.equal(store.nextFor(scarce.board, { agentId: scarce.reviewer, lane: 'review', verify: true }).item.item_id, abundant, 'off retains oldest review');
+  scarce.order(true);
+  assert.equal(store.nextFor(scarce.board, { agentId: scarce.reviewer, lane: 'review', verify: true }).item.item_id, limited,
+    'scarcity excludes every seat from the same parent as an author, just as the review guard does');
+  const sibling = store.listAgents(scarce.board).find(agent => agent.agent_path === join(scarce.root, 'sibling-0')).agent_id;
+  assert.throws(() => store.reserveReview(scarce.board, limited, { agentId: sibling, leaseMs: HOUR, policy: 'any' }),
+    error => error.code === 'SELF_SESSION_VERIFY', 'the count cannot borrow eligibility from a seat refused by the real review guard');
+  const snapshot = exportBoard(scarce.board);
+  const replay = store.openBoard(join(scarce.root, 'replica.sqlite'));
+  t.after(() => store.closeBoard(replay));
+  importBoard(replay, snapshot);
+  assert.equal(store.nextFor(replay, { agentId: scarce.reviewer, lane: 'review', verify: true }).item.item_id, limited, 'export/import retains the recorded policy and author lineage');
+  const oldMove = prepareEngineMove(replay, 'reserveNextReview', [{ agentId: scarce.reviewer, lane: 'review', leaseMs: HOUR, policy: 'any' }]);
+  const oldOutcome = applyEngineMove(replay, { ...oldMove, engine: ENGINE_VERSION - 1 }, { sequence: 1, at: '2026-10-24T00:00:00Z' });
+  assert.equal(oldOutcome.result.item.item_id, abundant, 'an older recorded reserve-next retains its old ordering even with current policy records in the snapshot');
+
+  const ranked = lineOrderFixture(t);
+  const ordinary = store.addItem(ranked.board, { by: 'coordinator', lane: 'core', title: 'ranked ordinary work' });
+  const dependency = store.addItem(ranked.board, { by: 'coordinator', lane: 'core', title: 'another item waits for this' });
+  store.addItem(ranked.board, { by: 'coordinator', lane: 'core', title: 'blocked follower', after: [dependency] });
+  const ready = store.addItem(ranked.board, { by: 'coordinator', lane: 'core', title: 'ready bar', criterion: 'a real condition is observable', check: 'true', brief: 'Files: src/ready.js\nTest: the condition is checked' });
+  store.addMilestone(ranked.board, { agentId: 'coordinator', name: 'early', items: [ordinary, dependency, ready] });
+  store.orderMilestoneItems(ranked.board, 'early', { agentId: 'coordinator', items: [ordinary, ready, dependency] });
+  assert.equal(store.nextFor(ranked.board, { agentId: ranked.builder, lane: 'core' }).item.item_id, ordinary, 'off preserves coordinator rank');
+  ranked.order(true);
+  assert.equal(store.nextFor(ranked.board, { agentId: ranked.builder, lane: 'core' }).item.item_id, dependency, 'being waited on precedes ready-bar and coordinator rank');
+  store.withdraw(ranked.board, dependency, { agentId: 'coordinator', reason: 'private selection control: remove the prerequisite' });
+  assert.equal(store.nextFor(ranked.board, { agentId: ranked.builder, lane: 'core' }).item.item_id, ordinary, 'the signed-readiness tier is inert until its authoritative predicate lands');
+  const readiness = (_board, item) => item.item_id === ready;
+  const withSignedReadiness = [ordinary, ready].map(id => store.getItem(ranked.board, id))
+    .sort(store.buildOrder(ranked.board, { agentId: ranked.builder, readiness }));
+  assert.equal(withSignedReadiness[0].item_id, ready, 'the injected readiness predicate precedes coordinator rank without manufacturing signed records');
+});

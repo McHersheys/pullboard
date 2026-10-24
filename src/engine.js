@@ -75,6 +75,7 @@ import { requireCoordinatorHold } from './coordinator-hold.js';
 import { LANDING_ENVIRONMENT_ENGINE } from './landing-environment-engine.js';
 import { carriesLandingEnvironment } from './execution-environment.js';
 import { LANDING_LEASE_ENGINE } from './landing-lease-engine.js';
+import { LINE_ORDER_ENGINE } from './line-order-engine.js';
 import { LINE_SETTINGS_ENGINE } from './line-settings-engine.js';
 import { PR_BRIDGE_ENGINE } from './pr-bridge-engine.js';
 import { LANDING_LOCAL_LEASE_ENGINE } from './landing-local-lease-engine.js';
@@ -109,6 +110,7 @@ function minimumOperationEngine(operation, args, board, at) {
 function minimumExistingOperationEngine(operation, args, board, at) {
   if (['setBarReady', 'signBar'].includes(operation) || board && ['claim', 'submit', 'editItem', 'addItem', 'refreeze'].includes(operation) && barReadySetting(board).enabled) return BAR_READY_ENGINE;
   if (operation === 'recordPublishFinding') return PR_BRIDGE_ENGINE;
+  if (operation === 'setLineSetting' && args[0]?.key === 'order') return LINE_ORDER_ENGINE;
   if (operation === 'recordLandingTestDefect' || operation === 'verify' && args[1]?.environment !== undefined
     || operation === 'recordGateRun' && Object.hasOwn(args[0]?.receipt ?? {}, 'environment')
     || operation === 'recordLandingBatch' && carriesLandingEnvironment(args[0]?.batch)) return LANDING_ENVIRONMENT_ENGINE;

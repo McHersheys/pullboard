@@ -85,7 +85,7 @@ test('a line setting change is a recorded move with its reason and its range [R1
     '--window', JSON.stringify(numbers), '--json');
   assert.equal(changed.code, 0, `a board setting change succeeds: ${changed.err}${changed.out}`);
   assert.equal(initial.code, 0, initial.err);
-  const defaults = { reviewsFirst: false, wipPerReviewer: false, barReady: false, takeoverMinutes: false,
+  const defaults = { order: false, reviewsFirst: false, wipPerReviewer: false, barReady: false, takeoverMinutes: false,
     landingBatchSize: false, landingCadenceMinutes: false };
   assert.deepEqual(JSON.parse(initial.out).lineSettings, defaults, 'all line controls start off, not silently enabled by a machine file');
   assert.equal(JSON.parse(changed.out).lineSettings.reviewsFirst, true);
@@ -97,7 +97,7 @@ test('a line setting change is a recorded move with its reason and its range [R1
   assert.deepEqual(JSON.parse(first.event_detail), { key: 'reviewsFirst', value: true,
     reason: 'Review waiting exceeds the target', window: numbers, model: 'unknown' });
   assert.equal(first.event_by, 'coordinator');
-  const values = [['reviewsFirst', false], ['wipPerReviewer', 1.5], ['wipPerReviewer', 3], ['barReady', true],
+  const values = [['order', true], ['order', false], ['reviewsFirst', false], ['wipPerReviewer', 1.5], ['wipPerReviewer', 3], ['barReady', true],
     ['takeoverMinutes', 15], ['takeoverMinutes', 60], ['landingBatchSize', 1], ['landingBatchSize', 8],
     ['landingCadenceMinutes', 5], ['landingCadenceMinutes', 30]];
   let sequence = appliedSequence(board);
@@ -114,7 +114,7 @@ test('a line setting change is a recorded move with its reason and its range [R1
   }
   for (const [key, value] of [['wipPerReviewer', 1.49], ['wipPerReviewer', 3.01], ['takeoverMinutes', 14],
     ['takeoverMinutes', 61], ['landingBatchSize', 0], ['landingBatchSize', 9], ['landingBatchSize', 1.5],
-    ['landingCadenceMinutes', 4], ['landingCadenceMinutes', 31], ['reviewsFirst', 1]]) {
+    ['landingCadenceMinutes', 4], ['landingCadenceMinutes', 31], ['reviewsFirst', 1], ['order', 1]]) {
     const before = store.events(board).length;
     assert.throws(() => store.setLineSetting(board, { agentId: 'coordinator', key, value, reason: 'Invalid limit', window: numbers }), /LINE_SETTING_RANGE/u);
     assert.equal(store.events(board).length, before, 'a refused value appends no successful setting event');

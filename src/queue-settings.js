@@ -88,6 +88,7 @@ export function gateQueueSettings() {
 
 /** Board-owned controller inputs; false means off, independently of machine gate settings. */
 export const LINE_SETTING_DEFINITIONS = Object.freeze({
+  order: Object.freeze({ type: 'boolean' }),
   reviewsFirst: Object.freeze({ type: 'boolean' }),
   wipPerReviewer: Object.freeze({ type: 'number', min: 1.5, max: 3, integer: false }),
   barReady: Object.freeze({ type: 'boolean' }),
@@ -99,6 +100,11 @@ export const LINE_SETTING_DEFINITIONS = Object.freeze({
 /** Refuse unknown controls and out-of-range values without changing any live queue behavior. */
 export function validateLineSetting(key, value) {
   if (!Object.hasOwn(LINE_SETTING_DEFINITIONS, key)) throw new Refused('LINE_SETTING_UNKNOWN', 'choose a known board line setting from pullboard settings line');
+  validateKnownLineSetting(key, value);
+}
+
+/** Validate a value after the caller establishes its key belongs to the shared registry. */
+export function validateKnownLineSetting(key, value) {
   const definition = LINE_SETTING_DEFINITIONS[key];
   if (value === false || definition.type === 'boolean' && value === true) return;
   if (definition.type === 'number' && typeof value === 'number' && Number.isFinite(value)
