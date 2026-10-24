@@ -14,6 +14,10 @@ import { after, test } from 'node:test';
 import { submitFixture } from './board-submit-fixture.js';
 import * as store from '../src/board.js';
 import { healthReport } from '../src/health.js';
+import { loadConfig } from '../src/config.js';
+import { personNeedsSummary } from '../src/needs-summary.js';
+import { resumeNeeds } from '../src/resume-needs.js';
+import { undraftedRigor } from '../src/rigor-notices.js';
 import { runFixtureChild, runFixtureGit } from './fixture-child.js';
 
 const BIN = resolve(import.meta.dirname, '../bin/pullboard.js');
@@ -24,10 +28,9 @@ const SHOUTS = 23_000;
 const SEATS = 800;
 const sandboxes = [];
 // Reads that fold the whole history by design, so no index can serve them, each with the item that
-// rewrites it: coordinator resume's undrafted Rigor in personNeedsState (#1052) and resume's
-// proofStats (#1051). The test fails if one stops scanning while still listed, so the list can only
+// rewrites it: resume's proofStats (#1051). The test fails if one stops scanning while still listed, so the list can only
 // shrink.
-const WHOLE_HISTORY = ['personNeedsState', 'proofStats'];
+const WHOLE_HISTORY = ['proofStats'];
 
 after(() => {
   for (const dir of sandboxes) rmSync(dir, { recursive: true, force: true });
@@ -42,12 +45,47 @@ function fixture() {
   // Record every statement any connection prepares, so the test plans exactly what the command ran.
   writeFileSync(preload, `import { DatabaseSync } from 'node:sqlite';
 import { appendFileSync } from 'node:fs';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+// Explicit development profiling preserves the normal command and timing assertion unchanged.
+if (process.env.PULLBOARD_RESUME_CPU_PROFILE) {
+  const { Session } = await import('node:inspector');
+  const { writeFileSync } = await import('node:fs');
+  const session = new Session();
+  session.connect();
+  const post = method => new Promise((resolve, reject) => session.post(method, (error, result) => error ? reject(error) : resolve(result)));
+  await post('Profiler.enable');
+  await post('Profiler.start');
+  process.once('beforeExit', async () => {
+    const { profile } = await post('Profiler.stop');
+    writeFileSync(process.env.PULLBOARD_RESUME_CPU_PROFILE + '.' + process.pid + '.cpuprofile', JSON.stringify(profile));
+    session.disconnect();
+  });
+}
+let gitDepth = 0;
+for (const name of ['spawnSync', 'execFileSync']) {
+  const original = childProcess[name];
+  /** Measure actual synchronous Git calls without substituting their results or environment. */
+  childProcess[name] = function (command, ...args) {
+    const started = performance.now();
+    const git = command === 'git';
+    if (git) gitDepth += 1;
+    try { return original.call(this, command, ...args); }
+    finally {
+      if (git) gitDepth -= 1;
+      if (git && gitDepth === 0 && process.env.PULLBOARD_GIT_TIMING_LOG) {
+        appendFileSync(process.env.PULLBOARD_GIT_TIMING_LOG, JSON.stringify({ pid: process.pid, milliseconds: performance.now() - started }) + '\\n');
+      }
+    }
+  };
+}
+syncBuiltinESMExports();
 const prepare = DatabaseSync.prototype.prepare;
 DatabaseSync.prototype.prepare = function (sql, ...rest) {
   // The function that asked: past the events() helper and serve's withProject wrapper.
   const caller = new Error().stack.split('\\n').slice(2).map((line) => /at (?:Module\\.)?([\\w$.]+) \\(/u.exec(line)?.[1])
     .find((name) => name && name !== 'events' && name !== 'withProject');
-  appendFileSync(process.env.PULLBOARD_QUERY_LOG, JSON.stringify({ sql, caller }) + '\\n');
+  appendFileSync(process.env.PULLBOARD_QUERY_LOG, JSON.stringify({ sql, caller, stack: new Error().stack }) + '\\n');
   return prepare.call(this, sql, ...rest);
 };
 `);
@@ -69,10 +107,11 @@ DatabaseSync.prototype.prepare = function (sql, ...rest) {
   mkdirSync(repo);
   const git = (...args) => runFixtureGit(args, { cwd: repo, env });
   /** Run the CLI, or a node script, in a checkout; `record` adds the statement-recording preload. */
-  const run = (cwd, args, { record = false, node = false } = {}) => {
+  const run = (cwd, args, { record = false, node = false, timing = false } = {}) => {
     const argv = [...(record ? ['--import', pathToFileURL(preload).href] : []), ...(node ? [] : [BIN]), ...args];
-    const result = runFixtureChild(process.execPath, argv, { cwd, env: { ...env, PULLBOARD_QUERY_LOG: log }, encoding: 'utf8' });
-    return { code: result.status, out: result.stdout ?? '', err: result.failure ?? result.stderr ?? '' };
+    const result = runFixtureChild(process.execPath, argv, { cwd, env: { ...env, PULLBOARD_QUERY_LOG: log,
+      ...(timing ? { PULLBOARD_GIT_TIMING_LOG: join(dir, 'git-timing.log') } : {}) }, encoding: 'utf8' });
+    return { code: result.status, pid: result.pid, out: result.stdout ?? '', err: result.failure ?? result.stderr ?? '' };
   };
   git('init', '-q', '-b', 'main');
   assert.equal(run(repo, ['init']).code, 0);
@@ -92,7 +131,7 @@ DatabaseSync.prototype.prepare = function (sql, ...rest) {
 }
 
 /** Fill the board to the measured scale: seats, items, an event log, shouts, and decisions half answered. */
-function seed(file) {
+function seed(file, { rigor = [] } = {}) {
   const db = new DatabaseSync(file);
   const at = (n) => new Date(Date.UTC(2026, 9, 1) + n * 1000).toISOString();
   db.exec('BEGIN');
@@ -103,7 +142,11 @@ function seed(file) {
   for (let n = 0; n < ITEMS; n += 1) item.run(`Item ${n}`, at(n), at(n));
   const event = db.prepare('INSERT INTO event (event_at, event_by, event_kind, item_id, event_detail) VALUES (?, ?, ?, ?, ?)');
   const kinds = ['add', 'claim', 'renew', 'shout', 'edit'];
-  for (let n = 0; n < EVENTS; n += 1) event.run(at(n), `web-${100 + (n % SEATS)}`, kinds[n % kinds.length], n % 10 ? 1 + (n % ITEMS) : null, '{}');
+  for (let n = 0; n < EVENTS; n += 1) {
+    const row = rigor[n];
+    event.run(at(n), row?.by ?? `web-${100 + (n % SEATS)}`, row?.kind ?? kinds[n % kinds.length],
+      row ? row.item : n % 10 ? 1 + (n % ITEMS) : null, JSON.stringify(row?.detail ?? {}));
+  }
   const shout = db.prepare('INSERT INTO shout (shout_from, shout_to, shout_text, shout_at, shout_decision, shout_answers) VALUES (?, ?, ?, ?, ?, ?)');
   for (let n = 0; n < SHOUTS; n += 1) {
     const asks = n % 10 === 0;
@@ -115,6 +158,52 @@ function seed(file) {
   db.exec('COMMIT');
   db.close();
 }
+
+test('coordinator resume never reads the whole event history for rigor [C7,D1,N19]', () => {
+  const box = fixture();
+  seed(box.board, { rigor: [
+    { kind: 'reject', item: 1, detail: { cause: 'row:G1', commit: 'a'.repeat(40) } },
+    { kind: 'reopen', item: 1, detail: { cause: 'row:G1', commit: 'b'.repeat(40) } },
+    { kind: 'reject', item: 2, detail: { cause: 'test:test/old.js::old failure', commit: 'a'.repeat(40) } },
+    { kind: 'reject', item: 3, detail: { cause: 'test:test/old.js::old failure', commit: 'a'.repeat(40) } },
+    { kind: 'fact', item: 4, by: store.PERSON, detail: { cause: 'doctrine:C3', neverAgain: true } },
+    { kind: 'reject', item: 5, detail: { cause: 'refusal:MERGE_CONFLICT' } },
+    { kind: 'reject', item: 6, detail: { cause: 'refusal:MERGE_CONFLICT' } },
+  ] });
+  // Writable initialization may backfill once, before the measured read-only resume.
+  const board = store.openBoard(box.board);
+  try {
+    const config = loadConfig(box.repo);
+    const state = personNeedsSummary(box.repo, { board, config });
+    const expected = undraftedRigor(store.events(board), state, { person: store.PERSON });
+    assert.deepEqual(expected.map(cause => cause.key), ['doctrine:C3', 'test:test/old.js::old failure', 'row:G1']);
+    const actual = resumeNeeds(box.repo, { board, config, includeRigorUndrafted: true });
+    assert.deepEqual(actual.rigorUndrafted, expected, 'old failures survive 44,993 later unrelated events');
+    writeFileSync(box.log, '');
+    writeFileSync(join(box.dir, 'git-timing.log'), '');
+    const started = performance.now();
+    const result = box.run(box.repo, ['resume'], { record: true, timing: true });
+    const wallMs = performance.now() - started;
+    assert.equal(result.code, 0, result.err + result.out);
+    const plans = [];
+    for (const line of readFileSync(box.log, 'utf8').split('\n').filter(Boolean)) {
+      const row = JSON.parse(line);
+      if (!/resume-needs\.js|rigor-counters\.js/u.test(row.stack) || !/\bFROM event\b/iu.test(row.sql)) continue;
+      const bindings = row.sql.includes('?') ? [0] : []; // The only hot event parameter is the recorded integer cursor.
+      const plan = board.db.prepare(`EXPLAIN QUERY PLAN ${row.sql}`).all(...bindings).map(entry => entry.detail);
+      plans.push({ sql: row.sql, plan });
+      assert.ok(!plan.some(detail => /^SCAN event\b/u.test(detail)), `Rigor must use indexed state/tail, never whole-history: ${row.sql}\n${plan.join('\n')}`);
+    }
+    assert.ok(plans.length > 0, 'the real coordinator resume executed an observed Rigor event-cursor/tail query');
+    const gitMs = readFileSync(join(box.dir, 'git-timing.log'), 'utf8').split('\n').filter(Boolean)
+      .map(line => JSON.parse(line)).filter(row => row.pid === result.pid)
+      .reduce((total, row) => total + row.milliseconds, 0);
+    assert.ok(gitMs <= wallMs, 'only actual nonoverlapping synchronous Git durations are excluded');
+    const excludingGit = wallMs - gitMs;
+    console.log(`# coordinator resume wall ${wallMs.toFixed(2)} ms; actual Git ${gitMs.toFixed(2)} ms; excluding Git ${excludingGit.toFixed(2)} ms`);
+    assert.ok(excludingGit < 1000, `coordinator resume excluding actual Git took ${excludingGit.toFixed(2)} ms, over 1000 ms`); // budget: declared #1052 steady-state bound is 1 s excluding actual Git.
+  } finally { store.closeBoard(board); }
+});
 
 /** Add each recorded statement to `statements`, with the commands and the functions that ran it. */
 function record(statements, log, command) {

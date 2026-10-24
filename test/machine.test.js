@@ -8,7 +8,7 @@ import { submitFixture } from './board-submit-fixture.js';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
@@ -136,6 +136,13 @@ const CAUGHT = {
   'spec-approval.js#specApprovalState': ['board-query.js#specApprovalBaseline'],
   // Historical decline metadata is parsed inside a non-throwing boundary, covered by the Rigor history control.
   'board.js#reopen': ['rigor-notices.js#declinedRigorSource'],
+  // Rigor projection folds inspect invalid cause results as data, never lifecycle refusals.
+  'rigor.js#eventCauses': ['rigor.js#causeProblem'],
+  'rigor-counter-state.js#neverKey': ['rigor.js#causeProblem'],
+  // Historical decline grammar is caught locally; typed readers return invalid evidence as null.
+  'rigor-counter-state.js#declineKey': ['spec.js#parseSpec'],
+  'rigor-source.js#readRigorSource': ['rigor.js#causeProblem'],
+  'rigor-auto-source.js#readAutomaticRigorSource': ['rigor.js#causeProblem'],
   // Only an unsupported historical grammar is ignored; new caller refusals remain audited below.
   'rigor-auto-source.js#automaticDecisionSource': ['spec.js#parseSpec'],
   'rigor-auto-source.js#rigorDecisionKey': ['spec.js#parseSpec'],
@@ -1322,7 +1329,7 @@ test('the lifecycle page and the help show the reservation: reserve, and reviewF
   assert.match(page, /^\| reserve \| submitted \| submitted \| agent, coordinator \| .*reviewFree \(REVIEW_HELD\) \|$/m);
   for (const verb of ['accept', 'reject']) assert.match(page, new RegExp(`^\\| ${verb} \\| submitted, verified \\| .*policyAllows \\(COORDINATOR_VERIFIES\\), familyAllows \\(O2_FAMILY_MATCH\\), reviewFree \\(REVIEW_HELD\\), criterionUnchanged`, 'm'));
   assert.match(page, /^\| REVIEW_HELD \| no other agent holds its review under a live lease \| pullboard next --verify/m);
-  assert.match(HELP.all, /^ {2}agent +intake, claim, release, submit, reserve, accept, reject, escalate, refreeze \(when a live claim has a pending coordinator correction\)$/m);
+  assert.match(HELP.all, /^ {2}agent +intake, claim, release, submit, reserve, accept, reject, reopen, escalate, refreeze \(when a live claim has a pending coordinator correction\)$/m);
   assert.match(HELP.all, /pullboard next --verify +reserve the next submitted item you can check/);
 });
 
@@ -1430,8 +1437,9 @@ test('the board refuses a status written outside moveItem at run time, however i
 test('a helper added to the board that changes a status outside moveItem is refused when it runs [M1]', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'pullboard-planted-'));
   try {
-    for (const file of readdirSync(new URL('../src/', import.meta.url)).filter((name) => name.endsWith('.js'))) {
+    for (const file of readdirSync(new URL('../src/', import.meta.url), { recursive: true }).filter((name) => name.endsWith('.js'))) {
       const source = fromDisk(file);
+      mkdirSync(dirname(join(dir, file)), { recursive: true });
       writeFileSync(join(dir, file), file === 'board.js' ? `${source}\nexport function reopenByHand(board, id) {\n  board.db.prepare("update item set item_status = 'open', item_owner = null, item_lease_until = null where item_id = ?").run(id);\n}\n` : source);
     }
     const copy = await import(pathToFileURL(join(dir, 'board.js')).href);
@@ -1456,4 +1464,10 @@ test('transport boundaries keep a new item refusal in ordered dispatch visible [
     'MOON_PHASE is raised by accept and reject but not declared there',
     'MOON_PHASE is raised by submit but not declared there',
   ], 'transport authentication is separate but a dispatcher item guard still belongs to the lifecycle');
+});
+
+
+test('Rigor historical data boundaries do not hide a new projection refusal [M1,M4]', () => {
+  const broken = editedSource('rigor-counter-state.js', /export function rigorCounterKeys\(event, person\) \{/, "export function rigorCounterKeys(event, person) { if (event.event_kind === 'probe') throw new Refused('RIGOR_PROBE', 'new item eligibility rule');");
+  assert.ok(codeProblems(MACHINE, broken).includes('RIGOR_PROBE is raised by claim but not declared there'));
 });

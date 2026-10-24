@@ -1,3 +1,5 @@
+import { itemById } from './board-item-read.js';
+export { itemById };
 import { outsideSource } from './outside-source.js';
 import {
   COORDINATION_SHOUT,
@@ -7,6 +9,7 @@ import {
   unreadShoutBindings,
 } from './shout-audience.js';
 /** Canonical board queries shared by reads and the synchronous write store [C7]. */
+import { verdictWithdrawals } from './verdict-withdrawal.js';
 import { COORDINATOR } from './config.js';
 import { itemFiles } from './item-files.js';
 import { parseSpec } from './spec.js';
@@ -83,18 +86,6 @@ export function boardId(board) {
   return board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?').get('board_id').meta_value;
 }
 
-/**
- * The item with this id, or a refusal naming the id.
- *
- * @param {any} board
- * @param {number} id
- * @returns {any}
- */
-export function itemById(board, id) {
-  const item = board.db.prepare('SELECT * FROM item WHERE item_id = ?').get(id);
-  if (!item) throw new Refused('NO_ITEM', `no item #${id}; see: pullboard list`);
-  return item;
-}
 
 /**
  * One item as a reader should see it.
@@ -227,9 +218,11 @@ export function events(board, { itemId } = {}) {
 /** Read every move and fact in append order, including superseded facts and full original text [B31,B32]. */
 export function itemThread(board, id) {
   itemById(board, id);
+  const withdrawals = new Map([...verdictWithdrawals(board, id).values()].map(row => [row.acceptEventId, row]));
   return events(board, { itemId: id }).map((event) => event.event_kind === 'fact'
     ? { type: 'fact', ...factFromEvent(event) }
     : { type: 'move', eventId: event.event_id, kind: event.event_kind, by: event.event_by,
+      ...(withdrawals.has(event.event_id) ? { withdrawn: true, withdrawal: withdrawals.get(event.event_id) } : {}),
       at: event.event_at, detail: JSON.parse(event.event_detail) });
 }
 
@@ -294,8 +287,9 @@ export function withModel(board, agent) {
  * @returns {any[]}
  */
 export function listAgents(board) {
-  return board.db.prepare(`SELECT agent.*, board_meta.meta_value AS agent_model FROM agent
-    LEFT JOIN board_meta ON board_meta.meta_key='agent_model:' || agent.agent_id ORDER BY agent.rowid`).all().map(agent => ({ ...agent, agent_parent_session: agentParent(board, agent.agent_id) }));
+  return board.db.prepare(`SELECT agent.*, model.meta_value AS agent_model, parent.meta_value AS agent_parent_session FROM agent
+    LEFT JOIN board_meta model ON model.meta_key='agent_model:' || agent.agent_id
+    LEFT JOIN board_meta parent ON parent.meta_key='agent_parent_session:' || agent.agent_id ORDER BY agent.rowid`).all();
 }
 
 /** The optional engine-20 fields of a fact, present only when its event set them. */

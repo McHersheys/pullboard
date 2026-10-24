@@ -1,24 +1,11 @@
+import { declaredMoveActor } from './move-registry.js';
 /** Compare sealed actors with the relay's independently authenticated sender [H2,H16,B26]. */
 import { VERIFIER_STANDING_ENGINE } from './machine.js';
 import { Refused } from './refused.js';
 
 /** Read only the actor field used by each public engine operation; unknown operations fail closed. */
 export function relayMoveActor(move) {
-  const args = move?.args;
-  if (!Array.isArray(args)) return null;
-  if (move.operation === 'register' && move.engine >= VERIFIER_STANDING_ENGINE) return args[0]?.createdBy === 'machine' ? null : args[0]?.createdBy ?? null;
-  if (move.operation === 'intakeOutside') return args[0]?.agentId ?? null;
-  if (move.operation === 'approveOutside') return args[1]?.agentId ?? null;
-  if (move.operation === 'addItem') return args[0]?.by ?? null;
-  if (move.operation === 'shout') return args[0]?.from ?? null;
-  if (['proposeSentinel', 'decideSentinel', 'beginSentinelRun', 'finishSentinelRun'].includes(move.operation)) return args[0]?.agentId ?? null;
-  if (['openHandoff', 'takeHandoff', 'setLineSetting', 'setBarReady', 'recordHealthFindings', 'recordFlakeObservation', 'recordGateRun', 'declareJob', 'recordJobRun', 'takeCoordinator', 'landingLeaseMove', 'recordPublishFinding'].includes(move.operation)) return args[0]?.agentId ?? null;
-  if (['holdLane', 'releaseLane'].includes(move.operation) && args[1]?.asPerson) return 'person';
-  if (move.operation === 'release') return args[1] ?? null;
-  if (['reserveNextReview', 'addMilestone', 'recordRowDecisions', 'applyRowDecisions', 'draftSpecRow', 'recordSpecApprovalBaseline', 'recordLandingBatch', 'recordLandingWaiver', 'recordLandingFlake', 'recordLandingTestDefect', 'finishLandingBatch'].includes(move.operation)) return args[0]?.agentId ?? null;
-  if (['signBar', 'acceptCheck', 'completeCheckBaseline', 'appendFact', 'editItem', 'escalate', 'recordAttempt', 'claim', 'submit', 'reserveReview', 'verify', 'merged', 'withdraw', 'refreeze',
-    'passDecision', 'answerDecision', 'holdLane', 'releaseLane', 'holdItem', 'releaseItemHold', 'reopen', 'editMilestoneItems', 'orderMilestoneItems', 'moveMilestone', 'editMilestone', 'removeMilestone', 'shipMilestone'].includes(move.operation)) return args[1]?.agentId ?? null;
-  return null;
+  return declaredMoveActor(move);
 }
 
 /** Validate the complete relay-authenticated sender envelope before attributing a refusal. */

@@ -1028,8 +1028,9 @@ export function coordinatorDecisionSections(board, ctx) {
   const openDecisions = store.openDecisions(board, COORDINATOR).map((ask) => ({
     id: ask.shout_id, asker: ask.shout_from, question: ask.shout_text, at: ask.shout_at, age: span(ctx, ask.shout_at),
   }));
+  const answers = new Map(store.decisionAnswers(board).map(answer => [answer.shout_answers, answer]));
   const recentAnswers = shouts.filter((ask) => ask.shout_decision).flatMap((ask) => {
-    const answer = store.shoutDetails(board, ask.shout_id).decision_answer;
+    const answer = answers.get(ask.shout_id);
     if (!answer) return [];
     const ageMs = ctx.clock.now().getTime() - Date.parse(answer.shout_at);
     if (ageMs < 0 || ageMs > 24 * 60 * 60 * 1000) return [];
