@@ -61,7 +61,10 @@ import {
   rejectSyntheticPasskeyEvent,
 } from './person-optional-apply-fixture.js';
 import { rejectConsumedOffReplay } from './person-off-replay-fixture.js';
-import { firstUnpairedAuthorityInsertion } from './person-first-pin-fixture.js';
+import {
+  firstPinNeedsBuiltInRelay,
+  firstUnpairedAuthorityInsertion,
+} from './person-first-pin-fixture.js';
 import { refuseNamedSigners } from '../src/person-signing-cli.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import {
@@ -974,11 +977,18 @@ test('person-only moves are signed [E22,B26,H16]', { timeout: relayWorkBudgetMs(
   const early = (await box.cli('shout', 'person', 'A decision before signing', '--decision')).document.id;
   assert.equal((await cli(box.env, 'answer', String(early), 'Off answers as today', '--as', 'person')).code, 0, 'off: the terminal answers as the person');
 
-  // Turning signing on is allowed from the terminal, even an agent's.
+  // A board with no relay cannot turn signing on: only the relay can vouch for a passkey (#408 trust-anchor ruling).
+  const offline = await cli(marked, 'settings', 'person.signed', 'on');
+  assert.equal(offline.document.error?.code, 'PERSON_SIGNING_RELAY', `no relay, no signing: ${JSON.stringify(offline.document)}`);
+  // Linked, turning signing on is allowed from the terminal, even an agent's; unlinking then still works with no tap.
+  assert.equal((await box.link()).code, 0);
   const on = await cli(marked, 'settings', 'person.signed', 'on');
   assert.equal(on.code, 0, `an agent may turn signing on: ${JSON.stringify(on.document)}`);
   assert.equal(on.document.person.signed, true);
   const ask = (await box.cli('shout', 'person', 'A decision only the person answers', '--decision')).document.id;
+  // The same board on a device that is not paired: its link set aside, restored below without linking again, and no
+  // move succeeds meanwhile, so the relay and the board still agree when it returns.
+  renameSync(box.linkFile, `${box.linkFile}.unpaired`);
 
   // S10a and the on-and-unpaired case: every person move fails closed at once, naming how to pair a passkey.
   const calls = box.calls.length;
@@ -1008,7 +1018,7 @@ test('person-only moves are signed [E22,B26,H16]', { timeout: relayWorkBudgetMs(
   assert.equal(viewed.body.error?.code, 'PERSON_SIGNED', 'the view channel is not the person once signing is on');
 
   // Linked, a terminal person move goes to the passkey as an action-bound request and says where to confirm.
-  assert.equal((await box.link()).code, 0);
+  renameSync(`${box.linkFile}.unpaired`, box.linkFile);
   assert.ok(holdsNoPersonCredential(box.root) && holdsNoPersonCredential(box.env.HOME), 'no file holds a person session or grant');
   const terminal = helpers.launch({ ...box, env: { ...cleared, SSH_CONNECTION: '127.0.0.1 40000 127.0.0.1 22' } },
     box.root, process.execPath, [CLI, 'answer', String(ask), 'Signed on the passkey', '--as', 'person', '--json']);
@@ -1117,7 +1127,8 @@ test('person-only moves are signed [E22,B26,H16]', { timeout: relayWorkBudgetMs(
   const shown = { id: 'G1', text: 'A row the person decides on the passkey.' };
   writeFileSync(join(box.root, 'SPEC.md'), readFileSync(join(box.root, 'SPEC.md'), 'utf8').replace('## G · Goals: what the client asked for\n',
     `## G · Goals: what the client asked for\n\n- G1 [draft, must] ${shown.text} | gate: review\n`));
-  shown.source = readFileSync(join(box.root, 'SPEC.md'), 'utf8').split(/\r?\n/u).find(line => line.startsWith('- G1 '));
+  // The template's own placeholder G1 may sit beside it; the person sees the row this test wrote.
+  shown.source = readFileSync(join(box.root, 'SPEC.md'), 'utf8').split(/\r?\n/u).find(line => line.startsWith('- G1 ') && line.includes(shown.text));
   const blind = { version: 1, type: 'person-request', id: randomUUID(), move: { verb: 'spec-approve', args: { ids: 'G1' } } };
   const seen = { ...blind, id: randomUUID(), rows: [shown] };
   for (const request of [blind, seen]) {
@@ -1129,6 +1140,10 @@ test('person-only moves are signed [E22,B26,H16]', { timeout: relayWorkBudgetMs(
   assert.notEqual(received[seen.id].status, 'refused', JSON.stringify(received[seen.id]));
   const decided = (await box.cli('export')).document.tables.event.filter((row) => row.event_kind === 'row_decision');
   assert.deepEqual(decided.map((row) => [row.event_by, JSON.parse(row.event_detail).record.id]), [['person', 'G1']], 'the passkey decided exactly the row it showed');
+  // The real CLI applies that decision, checked against the authority its relay vouches for, never a stored key (#408).
+  const applied = await box.cli('spec', 'apply');
+  assert.equal(applied.code, 0, JSON.stringify(applied.document));
+  assert.match(readFileSync(join(box.root, 'SPEC.md'), 'utf8'), /- G1 \[approved, must\] A row the person decides on the passkey\./u, 'the native CLI applies the passkey approval');
   assert.throws(() => refuseNamedSigners([{ id: 'G2', signers: ['alice@example.com'] }], ['G2']), { code: 'PERSON_SIGNER_REQUIRED', message: /G2 names its SSH signers alice@example\.com/u });
 
   /** One live SSH command, one confirmation, no status/export/other CLI before its original exit. */
@@ -1159,7 +1174,7 @@ test('person-only moves are signed [E22,B26,H16]', { timeout: relayWorkBudgetMs(
     }
   }
   // Each newly mapped action must complete on its original terminal, with exact target/meaning.
-  const factItem = (await box.cli('add', box.lane, 'SIGNED_FACT_TARGET')).document.id;
+  const factItem = (await box.cli('add', box.lane, 'SIGNED_FACT_TARGET')).document.item.item_id;
   const fact = await confirmTerminal(['fact', String(factItem), 'decision', 'Keep this exact rule', '--as', 'person', '--cause', 'row:G1', '--never-again'], 'fact');
   assert.equal(fact.item, factItem);
   assert.equal(fact.fact.text, 'Keep this exact rule');
@@ -1221,11 +1236,13 @@ test('person-only moves are signed [E22,B26,H16]', { timeout: relayWorkBudgetMs(
 /** Keep the initial-unpaired local-edit clause distinct from the post-pin trigger controls. */
 test('person-only moves are signed before the first authority pin [E22,B26,H16]', firstUnpairedAuthorityInsertion);
 
+test('person-only moves are signed only from the built-in relay over TLS [E22,B26,H16]', { timeout: relayWorkBudgetMs(8) }, firstPinNeedsBuiltInRelay); // budget: hang ceiling for one link and two refused CLI runs; not a speed target.
+
 /** Optional SSH policy must accept a genuinely bound passkey row decision without using an SSH key. */
 test('person-only moves are signed through optional SSH apply [E22,H16]', optionalPasskeyApply);
 
 /** The actual CLI applies and projects the recorded passkey approval even with optional SSH enabled. */
-test('person-only moves are signed through native CLI apply [E22,H16]', optionalPasskeyApplyThroughCli);
+test('person-only moves are signed: an unlinked CLI applies no passkey decision it cannot verify [E22,H16]', optionalPasskeyApplyThroughCli);
 
 /** Initial trust and committed execution provenance are separate signing boundaries. */
 test('person-only moves are signed against fabricated receipt metadata [E22,H16]', rejectFabricatedPasskeyMetadata);

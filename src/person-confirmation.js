@@ -34,7 +34,9 @@ function confirmedResult(record, board) {
  * waitMs bounds polling, not a transport already in flight; existing transport deadlines remain authoritative.
  */
 export async function awaitPersonConfirmation(ctx, board, request, where, { waitMs = 120_000 } = {}) {
-  ctx.io.err(`pullboard: confirm request ${request.id} with your passkey at ${where}; this terminal is waiting`);
+  const waiting = `pullboard: confirm request ${request.id} with your passkey at ${where}; this terminal is waiting`;
+  // A waiting terminal says where to confirm while it waits, even when its result is one JSON document at the end.
+  if (typeof ctx.io.stderr?.write === 'function') ctx.io.stderr.write(`${waiting}\n`); else ctx.io.err(waiting);
   // Current trunk owns main in cli-main.js, unlike the old 015ae feature's monolithic cli.js.
   const { main } = await import('./cli-main.js');
   const until = Date.now() + waitMs;

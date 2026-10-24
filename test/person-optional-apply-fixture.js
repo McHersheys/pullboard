@@ -32,6 +32,7 @@ import {
   requestStageText,
 } from '../src/relay-requests.js';
 import { relayClientFixture } from './relay-client-fixture.js';
+import { relayStampKey } from './person-relay-stamp.js';
 import { runFixtureGit } from './fixture-child.js';
 
 /** A valid OpenSSH public line for a fixture-only public key; no SSH private key or signing subprocess exists. */
@@ -56,15 +57,15 @@ export async function optionalPasskeyApply(t, { throughCli = false, fabricatedMe
   writeFileSync(join(box.root, '.pullboard', 'first-commit'), runFixtureGit(['rev-list', '--max-parents=0', 'HEAD'], { cwd: box.root, env: box.env }) + '\n');
   const board = store.openBoard(join(box.root, '.git', 'pullboard', 'board.sqlite'));
   t.after(() => store.closeBoard(board));
-  const authority = generateKeyPairSync('ed25519');
-  signing.pinAuthority(board, 'https://fixture-relay.invalid', { version: 1, algorithm: 'Ed25519',
-    publicKey: authority.publicKey.export({ format: 'der', type: 'spki' }).toString('base64url') });
+  // The relay's own stamp key, as the relay vouches for it to this process (#408).
+  const relayKey = relayStampKey(box);
+  signing.attestAuthority(board, box.origin, relayKey.authority);
   signing.setPersonSigning(board, { agentId: 'coordinator', signed: true });
   const document = preparePersonRequest({ verb: 'spec-approve', args: { ids: 'G21' } }, randomUUID(), [{ id: 'G21', text, source: readFileSync(specFile, 'utf8').split(/\r?\n/u).find(line => line.startsWith('- G21 ')) }]);
   const boardId = board.db.prepare("SELECT meta_value FROM board_meta WHERE meta_key='board_id'").get().meta_value;
   const presence = { board: boardId, request: document.id, digest: createHash('sha256').update(JSON.stringify(document)).digest('hex'),
     credential: 'fixture-passkey', at: Date.now() };
-  presence.signature = sign(null, presenceAttestation(presence), authority.privateKey).toString('base64url');
+  presence.signature = sign(null, presenceAttestation(presence), relayKey.privateKey).toString('base64url');
   const at = new Date().toISOString();
   receivePersonRequest(board, document, { sequence: 1, at, sender: { kind: 'person', userId: 'fixture-user', presence } });
   const executor = 'fixture-executor';
@@ -127,16 +128,13 @@ export async function optionalPasskeyApply(t, { throughCli = false, fabricatedMe
     return;
   }
   if (throughCli) {
+    // An unlinked CLI has no relay to vouch for the stamp, so the decision this process attested does not apply there:
+    // only the relay's own answer counts, never a key stored on the board (#408). The linked apply is in team.test.js.
+    const before = readFileSync(specFile, 'utf8');
     const applied = await box.cli('spec', 'apply');
-    assert.equal(applied.code, 0, JSON.stringify(applied.document));
-    assert.match(readFileSync(specFile, 'utf8'), /- G21 \[approved, must\] An optional SSH row approved by its exact passkey request\./u);
-    const status = await box.cli('status');
-    assert.equal(status.code, 0, JSON.stringify(status.document));
-    assert.equal(status.document.specApprovalBaseline?.pending, false, 'the approval projection must not skip behind an uncaptured baseline');
-    assert.equal(status.document.needs.some(need => need.kind === 'agent-approved' && need.id === 'G21'), false,
-      'the actual status projection recognizes the applied passkey approval');
-    assert.equal((status.document.specApprovalEvidenceErrors ?? []).some(error => error.id === 'G21'), false,
-      'the optional SSH approval carries valid provenance through the real CLI');
+    assert.equal(applied.code, 1, JSON.stringify(applied.document));
+    assert.equal(applied.document.error.code, 'MISSING_SIGNATURE', 'the unverified passkey approval is not applied');
+    assert.equal(readFileSync(specFile, 'utf8'), before, 'the row stays a draft');
     return;
   }
   const plan = planRowApply(box.root, loadConfig(box.root), store.rowDecisions(board), {

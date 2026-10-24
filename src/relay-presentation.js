@@ -64,7 +64,10 @@ function readRelayPresentation(root, providedBoard) {
     let personBars = [];
     if (signed) {
       const entries = store.listItems(board, { all: true }).map(item => ({ item, status: barReadiness(board, item, { signature: false }) }));
-      const plans = previewBarCoverage(root, entries.map(({ item, status }) => ({ item, coverage: status.signed?.coverage })), mainPolicy(root));
+      // A board with no committed policy yet still shows its bars, only without their coverage preview.
+      let policy = null;
+      try { policy = mainPolicy(root); } catch (error) { if (!(error instanceof Refused)) throw error; }
+      const plans = policy ? previewBarCoverage(root, entries.map(({ item, status }) => ({ item, coverage: status.signed?.coverage })), policy) : [];
       personBars = entries.map(({ item, status }, index) => ({ id: item.item_id,
         before: { revision: status.revision?.revision ?? 0, digest: barDigest(item) }, ...(plans[index] ? { coverage: plans[index] } : {}) }));
     }

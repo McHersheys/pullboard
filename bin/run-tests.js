@@ -1677,6 +1677,9 @@ if (process.argv[1] && resolve(process.argv[1]) === runner) {
     }
   }
   // After any browser wait, so a file never holds a core while it queues for a browser (#1046).
+  // Test-only, never published: the CLI under test may read its person authority from the loopback fixture relay (#408).
+  const fixtureOrigin = new URL('../test/person-authority-fixture-origin.js', import.meta.url);
+  if (process.env.NODE_TEST_CONTEXT === 'child-v8' && existsSync(fileURLToPath(fixtureOrigin))) process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, `--import=${fixtureOrigin.href}`].filter(Boolean).join(' ');
   if (process.env.NODE_TEST_CONTEXT === 'child-v8') tokenWaitMs = await takeTestFileToken();
   if (!landingWorker) installTestWatchdog();
 }

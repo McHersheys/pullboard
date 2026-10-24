@@ -80,7 +80,8 @@ export function relaySenderProblem(move, sender, kind, { phoneReceipt = false } 
     return sender.approver === false && (kind === 'snapshot' || personAuthority(move))
       ? new Refused('NOT_APPROVER', `${sender.login ?? 'this person'} is not an approver of this board; only an approver it names answers person decisions, approves rows or replaces its snapshot`) : null;
   }
-  if (personFact(move)) {
+  // A machine may carry out the person's own never-again only as the request the person confirmed (#408).
+  if (personFact(move) && !(sender.kind === 'machine' && phoneReceipt)) {
     return new Refused('RELAY_PERSON_ONLY', `${sender.kind === 'agent' ? `agent ${sender.agent}` : 'a machine'} cannot record the person's never-again; the person marks it from their own session`);
   }
   if (sender.kind === 'machine') {

@@ -8,12 +8,20 @@ import {
 } from 'node:crypto';
 import {
   mkdtempSync,
+  readFileSync,
   rmSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import * as store from '../src/board.js';
 import { presenceAttestation } from '../src/person-presence.js';
+import {
+  relayClientFixture,
+  relayFixtureChild,
+} from './relay-client-fixture.js';
+
+const CLI = resolve(import.meta.dirname, '../bin/pullboard.js');
 
 /** A local first-row insertion cannot supply the missing person/relay trust anchor on an unpaired signed board. */
 export function firstUnpairedAuthorityInsertion(t) {
@@ -41,4 +49,32 @@ export function firstUnpairedAuthorityInsertion(t) {
   }));
   assert.equal(store.personSigning(board).signed, true,
     'an initial raw local authority row cannot turn signing off on an unpaired board');
+}
+
+/**
+ * Without the test runner's preload, the real CLI takes a first pin only from the built-in relay over TLS: a linked
+ * loopback relay over http, or any other origin, cannot vouch for the person, so signing stays off and nothing is pinned.
+ */
+export async function firstPinNeedsBuiltInRelay(t) {
+  const box = await relayClientFixture(t);
+  assert.equal((await box.link()).code, 0);
+  const env = { ...box.env, NODE_OPTIONS: (box.env.NODE_OPTIONS ?? '').split(' ').filter(option => !option.includes('person-authority-fixture-origin')).join(' ') };
+  const pinned = () => {
+    const board = store.openBoard(join(box.root, '.git', 'pullboard', 'board.sqlite'));
+    try { return board.db.prepare("SELECT meta_value FROM board_meta WHERE meta_key='person_authority_local'").get(); }
+    finally { store.closeBoard(board); }
+  };
+  const turnOn = async () => relayFixtureChild(box.root, env, [CLI, 'settings', 'person.signed', 'on', '--json']);
+  const overHttp = await turnOn();
+  assert.equal(overHttp.document.error?.code, 'PERSON_SIGNING_RELAY', `an http relay cannot vouch: ${JSON.stringify(overHttp.document)}`);
+  assert.equal(pinned(), undefined, 'nothing is pinned from an http origin');
+  // Another https origin is refused by name before any request leaves the machine.
+  const link = JSON.parse(readFileSync(box.linkFile, 'utf8'));
+  writeFileSync(box.linkFile, JSON.stringify({ ...link, url: 'https://relay.example.invalid' }));
+  const calls = box.calls.length;
+  const elsewhere = await turnOn();
+  assert.equal(elsewhere.document.error?.code, 'PERSON_SIGNING_RELAY', `a non-built-in origin cannot vouch: ${JSON.stringify(elsewhere.document)}`);
+  assert.equal(pinned(), undefined, 'nothing is pinned from a non-built-in origin');
+  assert.equal(box.calls.slice(calls).filter(call => call.path === '/.well-known/pullboard-person-authority').length, 0, 'no authority request was made');
+  writeFileSync(box.linkFile, JSON.stringify(link));
 }

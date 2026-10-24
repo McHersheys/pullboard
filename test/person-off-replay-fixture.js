@@ -2,7 +2,6 @@
 import assert from 'node:assert/strict';
 import {
   createHash,
-  generateKeyPairSync,
   randomUUID,
   sign,
 } from 'node:crypto';
@@ -23,21 +22,22 @@ import {
   requestStageText,
 } from '../src/relay-requests.js';
 import { relayClientFixture } from './relay-client-fixture.js';
+import { relayStampKey } from './person-relay-stamp.js';
 
 /** A consumed genuine OFF stamp cannot disable signing a second time after ordinary re-enable [E22,H16]. */
 export async function rejectConsumedOffReplay(t) {
   const box = await relayClientFixture(t);
   const board = store.openBoard(join(box.root, '.git', 'pullboard', 'board.sqlite'));
   t.after(() => store.closeBoard(board));
-  const authority = generateKeyPairSync('ed25519');
-  signing.pinAuthority(board, 'https://fixture-relay.invalid', { version: 1, algorithm: 'Ed25519',
-    publicKey: authority.publicKey.export({ format: 'der', type: 'spki' }).toString('base64url') });
+  // The relay's own stamp key, as the relay vouches for it to this process (#408).
+  const relayKey = relayStampKey(box);
+  signing.attestAuthority(board, box.origin, relayKey.authority);
   signing.setPersonSigning(board, { agentId: 'coordinator', signed: true });
   const document = preparePersonRequest({ verb: 'signing', args: { signed: 'off' } }, randomUUID());
   const boardId = board.db.prepare("SELECT meta_value FROM board_meta WHERE meta_key='board_id'").get().meta_value;
   const presence = { board: boardId, request: document.id, digest: createHash('sha256').update(JSON.stringify(document)).digest('hex'),
     credential: 'fixture-passkey', at: Date.now() };
-  presence.signature = sign(null, presenceAttestation(presence), authority.privateKey).toString('base64url');
+  presence.signature = sign(null, presenceAttestation(presence), relayKey.privateKey).toString('base64url');
   const at = new Date().toISOString();
   receivePersonRequest(board, document, { sequence: 1, at, sender: { kind: 'person', userId: 'fixture-user', presence } });
   const executor = 'fixture-executor';

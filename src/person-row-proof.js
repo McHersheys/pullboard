@@ -8,6 +8,7 @@ import {
   validPresence,
 } from './person-presence.js';
 import { rowDecisionReplacement } from './row-decision-text.js';
+import { attestedAuthority } from './person-attested.js';
 
 /** Keep the original signed request's complete row effect, including source fields and optional signer boundaries. */
 export function signedRowDecisionsMatch(request, rows) {
@@ -45,7 +46,8 @@ export function verifiedPasskeyRowDecision(board, decision) {
     if (!request || !Number.isSafeInteger(request.resultSequence) || request.resultSequence < 1) return false;
     const source = JSON.parse(request.received);
     const stamp = source.sender?.presence;
-    const pin = JSON.parse(read('person_authority_local') ?? 'null');
+    // Only the authority the relay vouched for in this process checks the stamp, never the board's own row (#408).
+    const pin = attestedAuthority(read('board_id') ?? null);
     if (source.sender?.kind !== 'person' || typeof source.sender.userId !== 'string' || !source.sender.userId
       || JSON.stringify(source.document) !== request.encoded || JSON.stringify(source.document.move) !== JSON.stringify(request.move)
       || stamp?.board !== read('board_id') || stamp?.request !== request.id

@@ -210,10 +210,12 @@ export async function specCommand(io, { first, second, rest, values }) {
         refuseNamedSigners(shown, ids);
         if (values.by !== undefined && values.by !== 'person') throw new Refused('PERSON_SIGNER_REQUIRED', `the requested SSH signer ${values.by} has no passkey identity`, 'confirm as the person without --by, or wait until signing is off');
       }
-      const sources = shownDecisionRows(ctx.info.root, ctx.config, ids);
+      // The rows are read only when a passkey request is built, so an unpaired board refuses before reading them.
       const confirmed = await requireSignedPerson(ctx, board, me, { verb: `spec-${first}`, args: { ids: ids.join(','),
-        ...(values.text === undefined ? {} : { text: values.text }), ...(values.reason === undefined ? {} : { reason: values.reason }) } }, sources);
+        ...(values.text === undefined ? {} : { text: values.text }), ...(values.reason === undefined ? {} : { reason: values.reason }) } },
+      () => shownDecisionRows(ctx.info.root, ctx.config, ids));
     if (confirmed !== null) return confirmed;
+      const sources = shownDecisionRows(ctx.info.root, ctx.config, ids);
       requirePersonChannel(io.personChannel);
       if (!ctx.info.isMain || me.id !== COORDINATOR) throw new Refused('B26_PERSON_APPROVAL', 'only the person from the main checkout approves or declines rows; use pullboard view for the person to decide');
       if (personSigning(board).signed) {
@@ -294,7 +296,8 @@ export async function specCommand(io, { first, second, rest, values }) {
       const me = whoAmI(ctx, board);
       if (!ctx.info.isMain || me.id !== COORDINATOR) throw new Refused('COORDINATOR_ONLY', 'only the coordinator applies row decisions; ask your coordinator to run pullboard spec apply');
       // Every automatic proposal is preflighted before any draft or decision changes a file.
-      planRowApply(ctx.info.root, ctx.config, store.rowDecisions(board));
+      const passkeyDecision = record => verifiedPasskeyRowDecision(board, record);
+      planRowApply(ctx.info.root, ctx.config, store.rowDecisions(board), { passkeyDecision });
       const automatic = planAutomaticRigorApply(ctx.info.root, ctx.config, store.rowDrafts(board), store.rowDecisions(board));
       writeRowApply(ctx.info.root, automatic);
       automatic.files.forEach(file => io.say(`${file.file}: materialized unproved Rigor drafts for the person's review`));
@@ -302,7 +305,7 @@ export async function specCommand(io, { first, second, rest, values }) {
       const drafted = pendingRowDrafts(loadSpec(ctx.info.root, ctx.config), store.rowDrafts(board)).map((draft) => draftRow(ctx.info.root, ctx.config, { target: 'spec', text: draft.text, gate: draft.gate, tier: draft.tier, section: /^(.*?)\d+$/u.exec(draft.id)[1], id: draft.id }));
       drafted.forEach((row) => io.say(`${row.file}: ${row.id} drafted from a lane, for the person to approve`));
       clashingRowDrafts(loadSpec(ctx.info.root, ctx.config), store.rowDrafts(board)).forEach((draft) => io.say(`${ctx.config.spec}: ${draft.id} holds other text, so the draft by ${draft.by} was not written; shout ${draft.by} to run pullboard spec draft again and cite the new id`));
-      const plan = planRowApply(ctx.info.root, ctx.config, store.rowDecisions(board), { passkeyDecision: record => verifiedPasskeyRowDecision(board, record) });
+      const plan = planRowApply(ctx.info.root, ctx.config, store.rowDecisions(board), { passkeyDecision });
       writeRowApply(ctx.info.root, plan);
       let applied;
       try { applied = await ordered(ctx, board, 'applyRowDecisions', [{ agentId: me.id, events: plan.records.map((record) => record.event) }]); }

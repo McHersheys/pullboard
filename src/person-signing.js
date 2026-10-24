@@ -22,6 +22,10 @@ import {
 } from './relay-requests.js';
 import { validPresence } from './relay-sender.js';
 import { presenceSigned } from './person-presence.js';
+import {
+  attestedAuthority,
+  rememberAttested,
+} from './person-attested.js';
 
 const PROPOSALS = 'person_proposals';
 const AUTHORITY = 'person_authority_local';
@@ -63,6 +67,14 @@ export function localAuthority(board) {
   return read(board, AUTHORITY, null);
 }
 
+/** The authority a relay published, checked for shape; refused when it names no usable stamp key. */
+function validAuthority(origin, authority) {
+  if (authority?.version !== 1 || authority.algorithm !== 'Ed25519' || typeof authority.publicKey !== 'string' || !/^[A-Za-z0-9_-]{40,200}$/u.test(authority.publicKey)) {
+    throw new Refused('PERSON_AUTHORITY', `the relay at ${origin} published no usable passkey stamp key; upgrade the relay and retry`);
+  }
+  return { origin, publicKey: authority.publicKey };
+}
+
 /**
  * Pin the relay's public stamp key, once. A later different key, or the same key from another origin, is refused:
  * nothing replaces the first pin, so a key written in by hand later never verifies a stamp.
@@ -72,9 +84,7 @@ export function localAuthority(board) {
  * @param {any} authority - the relay's published `{version: 1, algorithm: 'Ed25519', publicKey}`
  */
 export function pinAuthority(board, origin, authority) {
-  if (authority?.version !== 1 || authority.algorithm !== 'Ed25519' || typeof authority.publicKey !== 'string' || !/^[A-Za-z0-9_-]{40,200}$/u.test(authority.publicKey)) {
-    throw new Refused('PERSON_AUTHORITY', `the relay at ${origin} published no usable passkey stamp key; upgrade the relay and retry`);
-  }
+  validAuthority(origin, authority);
   return atomic(board, () => {
     const existing = localAuthority(board);
     if (existing) {
@@ -95,8 +105,52 @@ export function pinAuthority(board, origin, authority) {
 function stampHolds(board, stamp, strict) {
   if (!validPresence(stamp)) return false;
   if (!strict) return true;
-  const pinned = localAuthority(board);
-  return Boolean(pinned) && stamp.board === boardId(board) && presenceSigned(stamp, pinned.publicKey);
+  const attested = attestedAuthority(boardId(board));
+  return Boolean(attested) && stamp.board === boardId(board) && presenceSigned(stamp, attested.publicKey);
+}
+
+/**
+ * Record the authority this process fetched from the relay, and pin it as the board's first pin when none exists.
+ * A local row that differs is ignored, never trusted and never replaced (its triggers keep it), and is returned so
+ * the caller reports it by name.
+ *
+ * @param {any} board
+ * @param {string} origin - the built-in relay origin the authority was read from over TLS
+ * @param {any} authority - the relay's published `{version: 1, algorithm: 'Ed25519', publicKey}`
+ * @returns {{ attested: { origin: string, publicKey: string }, ignored: { origin: string, publicKey: string } | null }}
+ */
+export function attestAuthority(board, origin, authority) {
+  const local = localAuthority(board);
+  const attested = local && local.origin === origin && local.publicKey === authority?.publicKey
+    ? local : local ? validAuthority(origin, authority) : pinAuthority(board, origin, authority);
+  rememberAttested(boardId(board), attested);
+  return { attested, ignored: attested === local || !local ? null : local };
+}
+
+/** Whether this process holds a relay-attested authority for the board. */
+export function authorityAttested(board) {
+  return Boolean(attestedAuthority(boardId(board)));
+}
+
+/**
+ * Whether this board's strict reading of person moves depends on the relay's authority: it has ever signed person
+ * moves, so its signing state and every passkey-confirmed row or request can only be checked against the relay.
+ * A board that never signed fetches nothing.
+ */
+export function authorityNeeded(board) {
+  return Boolean(board.db.prepare("SELECT 1 FROM event WHERE event_kind = 'person_signing' LIMIT 1").get());
+}
+
+/** Whether an off comes after the last on: the board reads as signed only until the relay vouches for that off. */
+export function offPending(board) {
+  const rows = board.db.prepare("SELECT event_detail FROM event WHERE event_kind = 'person_signing' ORDER BY event_id DESC").all();
+  for (const row of rows) {
+    let detail;
+    try { detail = JSON.parse(row.event_detail); } catch { continue; }
+    if (detail?.signed === true) return false;
+    if (detail?.signed === false) return true;
+  }
+  return false;
 }
 
 /**

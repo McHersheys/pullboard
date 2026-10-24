@@ -35,6 +35,9 @@ export async function retrySync(io) {
 export async function syncBefore(io, main) {
   try { await autoLinkProject(io.cwd, io); } catch (error) { if (!(error instanceof Refused)) throw error; }
   await retrySync(io);
+  // An off that only the relay can vouch for is checked against the relay's own authority before anything reads it (#408).
+  try { await (await import('./person-signing-cli.js')).attestBeforeCommand(io.cwd, io); }
+  catch (error) { reportQuietly(io, error); }
   try { await executePersonRequests(io.cwd, io, main); }
   catch (error) { reportQuietly(io, error); }
 }

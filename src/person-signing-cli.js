@@ -4,7 +4,10 @@
  */
 import * as store from './board.js';
 import {
-  localAuthority,
+  attestAuthority,
+  authorityAttested,
+  authorityNeeded,
+  offPending,
   passkeyConfirmed,
   personSigning,
   pinAuthority,
@@ -16,7 +19,10 @@ import { preparePersonRequest } from './person-request.js';
 import { personRequestRecords } from './relay-requests.js';
 import { Refused } from './refused.js';
 import { awaitPersonConfirmation } from './person-confirmation.js';
-import { relayStatus } from './relay.js';
+import {
+  DEFAULT_RELAY,
+  relayStatus,
+} from './relay.js';
 import { loadMachineSettings } from './settings.js';
 import { repoInfo } from './git.js';
 import { existsSync } from 'node:fs';
@@ -28,29 +34,66 @@ import {
 
 const AUTHORITY_PATH = '/.well-known/pullboard-person-authority';
 
+/** The relay origin built into this code: the only place a board's first person authority is read from. */
+const BUILT_IN_AUTHORITY_ORIGIN = new URL(DEFAULT_RELAY).origin;
+
 /**
- * Pin the relay's passkey stamp key for a linked board that has none yet, read from the board's own relay origin.
- * A relay that cannot be reached leaves the board unpinned, and every passkey check then fails closed.
+ * Whether a person authority may be read from this origin: the built-in relay over TLS, or the loopback fixture relay
+ * only when the test runner's own preload admits it. Never pullboard.json or a board row (#408 trust-anchor ruling).
+ */
+function authorityOrigin(origin) {
+  if (origin === BUILT_IN_AUTHORITY_ORIGIN) return process.env.NODE_TLS_REJECT_UNAUTHORIZED !== '0';
+  const fixture = globalThis[Symbol.for('pullboard.personAuthorityFixtureOrigin')];
+  return typeof fixture === 'function' && fixture(origin) === true;
+}
+
+/**
+ * Read this board's person authority from its relay, every time a process needs one, even when the board already
+ * pinned a key: a local row may have been written by anyone with the shell, so only the relay's answer counts. The
+ * first answer is pinned; a local row that differs is ignored and reported by name. A relay that cannot be reached,
+ * or an origin that is not the built-in relay, leaves the process without an authority, and passkey checks fail closed.
  *
  * @param {string} root
  * @param {any} board
  * @param {{ err?: (line: string) => void }} [io]
+ * @returns {Promise<{ origin: string, publicKey: string } | null>}
  */
-export async function pinRelayAuthority(root, board, io = {}) {
-  if (localAuthority(board)) return localAuthority(board);
+export async function pinRelayAuthority(root, board, io = {}, { timeoutMs = 10_000 } = {}) {
   const relay = relayStatus(root);
   if (!relay.linked || !relay.url) return null;
   const origin = new URL(relay.url).origin;
+  if (!authorityOrigin(origin)) {
+    io.err?.(`pullboard: [PERSON_AUTHORITY_ORIGIN] ${origin} is not the built-in relay ${BUILT_IN_AUTHORITY_ORIGIN} over TLS, so it cannot vouch for the person; person moves wait for the built-in relay`);
+    return null;
+  }
   let document;
   try {
-    const response = await fetch(new URL(AUTHORITY_PATH, origin), { redirect: 'error', signal: AbortSignal.timeout(10_000) });
+    const response = await fetch(new URL(AUTHORITY_PATH, origin), { redirect: 'error', signal: AbortSignal.timeout(timeoutMs) });
     document = await response.json();
     if (!response.ok) throw new Refused(document?.error?.code ?? 'PERSON_AUTHORITY', document?.error?.message ?? 'the relay refused');
   } catch (error) {
     io.err?.(`pullboard: [PERSON_AUTHORITY] could not read the passkey stamp key from ${origin} (${error.code ?? error.name ?? 'error'}); passkey-confirmed moves wait until it can`);
     return null;
   }
-  return pinAuthority(board, origin, document.authority);
+  const { attested, ignored } = attestAuthority(board, origin, document.authority);
+  if (ignored) io.err?.(`pullboard: [PERSON_AUTHORITY_MISMATCH] this board's stored key for ${ignored.origin} does not match what ${origin} attests, so it is ignored; only the relay's key checks passkeys`);
+  return attested;
+}
+
+/**
+ * Before a command on a board that signs person moves, read the relay's authority once, so every strict check in this
+ * process (signing state, passkey-confirmed rows and requests) sees the relay's answer. Other boards fetch nothing.
+ *
+ * @param {string} root
+ * @param {{ err?: (line: string) => void }} io
+ */
+export async function attestBeforeCommand(root, io) {
+  let board;
+  try { board = store.openBoard(join(repoInfo(root).commonDir, 'pullboard', 'board.sqlite')); }
+  catch { return; } // No board here: nothing to vouch for, and the command reports its own refusal.
+  // Budget: ceiling for one small read before a command; a slow relay leaves passkey checks failing closed instead.
+  try { if (authorityNeeded(board) && !authorityAttested(board)) await pinRelayAuthority(root, board, io, { timeoutMs: 2_000 }); }
+  finally { store.closeBoard(board); }
 }
 
 /**
@@ -63,22 +106,26 @@ export async function pinRelayAuthority(root, board, io = {}) {
  * @param {any} board
  * @param {{ id: string }} me
  * @param {{ verb: string, item?: number, args: any } | null} intent - the request the passkey device shows, or null when it cannot carry this move
+ * @param {any[] | (() => any[])} [rows] - the rows the device shows, or a reader called only when a request is built
  */
 export async function requireSignedPerson(ctx, board, me, intent, rows, effect) {
   if (!personSigning(board).signed) return null;
-  // A board that has not pinned its relay key yet cannot check a passkey stamp, including an off it replayed: pin first.
-  if (!localAuthority(board) && await pinRelayAuthority(ctx.info.root, board, ctx.io) && !personSigning(board).signed) return null;
+  const relay = relayStatus(ctx.info.root);
+  if (!relay.linked && !ctx.io.personRequest) throw signedRefusal('no passkey device is paired with this board');
+  // Only the relay can vouch for a passkey stamp, including an off this board replayed: read its authority first.
+  if (!authorityAttested(board) && !await pinRelayAuthority(ctx.info.root, board, ctx.io)) {
+    throw signedRefusal('the relay could not vouch for your passkey, so a person move cannot be confirmed from here');
+  }
+  if (!personSigning(board).signed) return null;
   if (ctx.io.personRequest) {
     if (passkeyConfirmed(board, ctx.io.personRequest)) return null;
     throw signedRefusal('this request reached the board without a passkey confirmation', 'send it again from the relay view and confirm it with your passkey');
   }
-  const relay = relayStatus(ctx.info.root);
-  if (!relay.linked) throw signedRefusal('no passkey device is paired with this board');
   const origin = new URL(relay.url).origin;
   const where = `${origin}/#board=${relay.board}`;
   let sent = '';
   if (intent && me.id !== store.PERSON) {
-    const request = preparePersonRequest(intent, undefined, rows, effect);
+    const request = preparePersonRequest(intent, undefined, typeof rows === 'function' ? rows() : rows, effect);
     try {
       await ordered(ctx, board, 'proposePersonMove', [{ agentId: me.id, request }]);
       sent = 'proposed';
@@ -125,6 +172,28 @@ export function signsPersonMoves(cwd) {
   finally { db?.close(); }
 }
 
+/**
+ * Whether person moves on this board are signed, as the relay vouches for it: the read the command line uses to let
+ * the passkey step stand in for the shell checks. Only an off after the last on needs the relay; then it is read
+ * once, here, so a genuine off brings the shell checks back and a forged one leaves signing on (#408).
+ *
+ * @param {string} cwd
+ * @param {{ err?: (line: string) => void }} io
+ * @returns {Promise<boolean>}
+ */
+export async function personMovesSigned(cwd, io) {
+  if (!signsPersonMoves(cwd)) return false;
+  let board;
+  try { board = store.openBoard(join(repoInfo(cwd).commonDir, 'pullboard', 'board.sqlite')); }
+  catch { return true; } // Unreadable here: keep the passkey step, which refuses by name if it cannot go on.
+  try {
+    if (!offPending(board) || authorityAttested(board)) return personSigning(board).signed;
+    // Budget: ceiling for one small read before a person command; an unreachable relay leaves signing on.
+    await pinRelayAuthority(cwd, board, io, { timeoutMs: 2_000 });
+    return personSigning(board).signed;
+  } finally { store.closeBoard(board); }
+}
+
 export { signingLine } from './person-signing-words.js';
 import { signingLine } from './person-signing-words.js';
 
@@ -145,7 +214,10 @@ export function signingSetting(io, value) {
       const confirmed = await requireSignedPerson(ctx, board, me, { verb: 'signing', args: { signed: value } });
       if (confirmed !== null) return confirmed;
     }
-    else await pinRelayAuthority(ctx.info.root, board, io);
+    else if (!await pinRelayAuthority(ctx.info.root, board, io)) {
+      throw new Refused('PERSON_SIGNING_RELAY', 'signed person moves need the built-in relay to vouch for your passkey, and it could not be reached from this board',
+        'link this board to the relay with pullboard relay on --all, then turn signing on');
+    }
     await ordered(ctx, board, 'setPersonSigning', [signed ? { agentId: ctx.io.personRequest ? store.PERSON : me.id, signed }
       : { agentId: store.PERSON, signed, request: ctx.io.personRequest.id }]);
     io.result?.({ settings: loadMachineSettings(), person: { signed } });
