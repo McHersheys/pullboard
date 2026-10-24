@@ -435,3 +435,9 @@ export function relatedItems(board, item, limit = 3) {
 export function agentParent(board, id) {
   return board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?').get(`agent_parent_session:${id}`)?.meta_value ?? null;
 }
+
+/** Every stamped receipt for one item, in recorded order. */
+export function proofReceipts(board, itemId) {
+  return board.db.prepare("SELECT event_id, event_detail FROM event WHERE item_id = ? AND event_kind = 'proof-run' ORDER BY event_id").all(itemId)
+    .map(row => ({ eventId: row.event_id, ...JSON.parse(row.event_detail).receipt }));
+}

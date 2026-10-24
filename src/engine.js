@@ -59,6 +59,8 @@ import {
   firstRefusal,
   manualLandingFailureQuoted,
 } from './claims.js';
+import { boundProofReceipt } from './proof-receipts.js';
+import { PROOF_RUN_ENGINE } from './proof-run-engine.js';
 import {
   requestMoveProblem,
   recordRequestMove,
@@ -103,7 +105,7 @@ export const ENGINE_OPERATIONS = Object.freeze([
   'recordRowDecisions', 'applyRowDecisions', 'draftSpecRow', 'appendFact', 'recordSpecApprovalBaseline',
   'recordLandingBatch', 'recordLandingWaiver', 'recordLandingFlake', 'recordLandingTestDefect', 'finishLandingBatch', 'acceptCheck',
   'recordHealthFindings', 'proposeSentinel', 'decideSentinel', 'beginSentinelRun', 'finishSentinelRun',
-  'setLineSetting', 'recordFlakeObservation', 'recordGateRun', 'declareJob', 'recordJobRun', 'takeCoordinator', 'landingLeaseMove',
+  'setLineSetting', 'recordFlakeObservation', 'recordGateRun', 'recordProofRun', 'declareJob', 'recordJobRun', 'takeCoordinator', 'landingLeaseMove',
   'recordPublishFinding',
 ]);
 
@@ -152,6 +154,7 @@ function minimumExistingOperationEngine(operation, args, board, at) {
   if (['proposeSentinel', 'decideSentinel', 'beginSentinelRun', 'finishSentinelRun'].includes(operation) || typeof args[1]?.cause === 'string' && args[1].cause.startsWith('sentinel:')) return Math.max(BOARD_SENTINEL_ENGINE, quotedLandingFailureEngine);
   if (['declareJob', 'recordJobRun'].includes(operation)) return RECURRING_JOB_ENGINE;
   if (operation === 'recordGateRun') return GATE_RUN_ENGINE;
+  if (operation === 'recordProofRun') return PROOF_RUN_ENGINE;
   if (operation === 'recordHealthFindings') return HEALTH_SENTINEL_ENGINE;
   if (operation === 'reserveNextReview' && Array.isArray(args[0]?.skipIds) && args[0].skipIds.length) return REVIEW_SKIP_ENGINE;
   const options = args[1];
@@ -226,6 +229,10 @@ export function prepareEngineMove(board, operation, args, { id = randomUUID(), a
   // A gate run is sealed only as its gate's own receipt; a run made up by hand is refused before it reaches any replica.
   if (operation === 'recordGateRun') requireBound(board, values[0]?.receipt);
   if (operation === 'verify' && values[1]?.sandbox !== undefined) requireOutsideReceipt(board, values[1].sandbox);
+  if (operation === 'recordProofRun') {
+    const receipt = boundProofReceipt(board, args[0]);
+    values[0] = { agentId: args[0].agentId, itemId: args[0].itemId, receipt };
+  }
   if (operation === 'release') {
     const problem = store.reviewReleaseNoteProblem(board, values[0], values[1], values[2]);
     if (problem) throw problem;

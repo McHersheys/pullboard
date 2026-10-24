@@ -35,6 +35,7 @@ test('every current operation selects its native actor credential without a seco
     if (operation === 'recordFlakeObservation') args = [{ agentId: actor, lane: box.lane, observation: syntheticFlakeObservation('credential-fixture') }];
     if (operation === 'recordGateRun') args = [{ agentId: actor, lane: box.lane, receipt: { version: 1, id: '00000000-0000-4000-8000-00000000c0de', kind: 'gate', tree: 'b'.repeat(40), head: 'a'.repeat(40),
       main: 'a'.repeat(40), command: 'c'.repeat(64), green: true, failures: [], load: { average: [0, 0, 0], cpus: 1, freeMB: 100 }, at: '2026-10-20T00:00:00.000Z' } }];
+    if (operation === 'recordProofRun') args = [{ agentId: actor, itemId: 999999, receiptId: '00000000-0000-4000-8000-00000000c0de' }];
     if (operation === 'declareJob') args = [{ agentId: actor, name: 'credential-job', every: '10m', owner: actor }];
     if (operation === 'recordJobRun') args = [{ agentId: actor, name: 'credential-job' }];
     if (operation === 'takeCoordinator') args = [{ agentId: actor, machine: 'credential-machine' }];
@@ -65,6 +66,7 @@ test('every current operation selects its native actor credential without a seco
     if (operation === 'draftSpecRow') args = [{ agentId: actor, row: { id: 'G9', text: 'A credential fixture row.', gate: 'review', tier: 'must', section: 'G · Goals' } }];
     if (operation === 'recordRowDecisions') { args = [{ agentId: 'person', channel: 'terminal', decisions: [] }]; kind = 'person'; }
     // A gate run with no receipt from this machine's own gate is refused before it reaches transport.
+    if (operation === 'recordProofRun') return { operation, args, kind, sent: false, expected: 'PROOF_RUN_UNBOUND' };
     if (operation === 'recordGateRun') return { operation, args, kind, sent: false, expected: 'GATE_RUN_UNBOUND' };
     return { operation, args, kind, ...(kind === 'person' ? { sent: false } : {}) };
   });

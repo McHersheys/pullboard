@@ -59,6 +59,12 @@ export const NEXT_STEPS = Object.freeze({
   BAD_VERDICT_WITHDRAW: 'use --withdraw-verdict with a note, or report a conflict separately',
   VERDICT_WITHDRAW_FORBIDDEN: 'ask the accepting reviewer or coordinator to withdraw this verdict',
   VERDICT_WITHDRAW_STATE: 'refresh the item; withdraw only a current acceptance before landing',
+  SHOUT_TOO_LONG: 'shorten the message to 400 characters or fewer; cite native proof receipt ids and read pullboard show <id> for the evidence chain',
+  PROOF_RUN_UNAVAILABLE: 'restore writable native receipt storage, run the item check with current Pullboard, then read pullboard show <id>',
+  PROOF_RUN_UNBOUND: 'run the item check with current Pullboard and use its stored native receipt; read pullboard show <id> for the proof chain',
+  PROOF_RUN_ACTOR: 'run the check from your own joined seat and use the native receipt that belongs to that seat',
+  PROOF_RUN_STALE: 'read pullboard show <id> for the current frozen criterion, then run a fresh item check',
+  PROOF_RUN_CHANGED: 'preserve the original receipt and run a new item check to obtain a new native receipt id',
   LINE_WIP_LIMIT: 'review the oldest eligible waiting submission: pullboard next --verify; if none is eligible, ask the coordinator to arrange a reviewer',
 
   OUTSIDE_NATIVE_BUILD: 'the outside author revises the PR; ask the coordinator to return it, then intake its new exact head',
