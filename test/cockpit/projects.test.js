@@ -718,7 +718,7 @@ test('a migration-refused project stays quiet beside a normal board [A5,A6,N26]'
   box.git(primary, 'add', '-A');
   box.git(primary, 'commit', '-q', '-m', 'chore: retain migration fixture source');
   box.git(primary, 'worktree', 'add', '-q', '-b', 'view/future', linked, 'main');
-  const boardSource = join(linked, 'src/board.js');
+  const boardSource = join(linked, 'src/board-schema-source.js');
   const original = readFileSync(boardSource, 'utf8');
   const future = original.replace('export const SCHEMA_VERSION = 3;', 'export const SCHEMA_VERSION = 4;');
   assert.notEqual(future, original, 'only the linked running code expects the future schema');

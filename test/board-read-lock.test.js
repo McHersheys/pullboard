@@ -5,9 +5,11 @@ import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import { after, test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
-import { cpSync } from 'node:fs';
+import { cpSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import * as store from '../src/board.js';
+import { withBoard } from '../src/cli-context.js';
+import { withBoardRead } from '../src/board-read.js';
 import { pathToFileURL } from 'node:url';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { runFixtureChild, startFixtureChild as spawn } from './fixture-child.js';
@@ -101,6 +103,47 @@ const HOT_INDEXES = ['shout_answers', 'shout_open_decision', 'shout_open_request
 
 const READS = [['version'], ['show', '1'], ['status'], ['list']];
 const RUNS = 5;
+
+test('read-only CLI fallback preserves coordinator registration and moved events [C7,B3]', () => {
+  const box = e2e.sandbox();
+  box.repo = join(box.dir, 'repo');
+  mkdirSync(box.repo);
+  box.git(box.repo, 'init', '-q', '-b', 'main');
+  writeFileSync(join(box.repo, 'pullboard.json'), JSON.stringify(e2e.CONFIG));
+  writeFileSync(join(box.repo, 'SPEC.md'), e2e.SPEC);
+  box.git(box.repo, 'add', '-A');
+  box.git(box.repo, 'commit', '-qm', 'Create the read fallback fixture');
+  box.release = released(box);
+  const cli = () => runFixtureChild(process.execPath, [join(box.release, 'bin', 'pullboard.js'), 'status', '--json'],
+    { cwd: box.repo, env: box.env, encoding: 'utf8' });
+  const first = cli();
+  assert.equal(first.status, 0, first.failure ?? first.stderr);
+  assert.equal(JSON.parse(first.stdout).me.id, 'coordinator');
+  const file = join(box.repo, '.git', 'pullboard', 'board.sqlite');
+  const board = store.openBoard(file);
+  try {
+    assert.equal(store.events(board).filter(event => event.event_kind === 'join').length, 1);
+    store.ensureCoordinator(board, '/previous/coordinator-location');
+  } finally { store.closeBoard(board); }
+  const moved = cli();
+  assert.equal(moved.status, 0, moved.failure ?? moved.stderr);
+  const read = store.openBoardForRead(file);
+  let events;
+  try {
+    assert.equal(store.agentById(read, 'coordinator').agent_path, box.repo);
+    events = store.events(read);
+    const moves = events.filter(event => event.event_kind === 'moved');
+    assert.equal(moves.length, 2, 'the public move away and CLI move back each retain their event');
+    assert.equal(JSON.parse(moves.at(-1).event_detail).path, box.repo);
+  } finally { store.closeBoard(read); }
+  assert.equal(cli().status, 0);
+  const ctx = { file, info: { root: box.repo, isMain: true }, config: e2e.CONFIG,
+    clock: store.systemClock, allowSchemaUpgrade: true, io: { err() {} } };
+  assert.equal(withBoardRead(ctx, opened => store.events(opened).length), events.length,
+    'the existing public read API remains synchronous and an ordinary read appends no event');
+  assert.equal(withBoard(ctx, opened => store.agentById(opened, 'coordinator').agent_path), box.repo,
+    'the existing public board API remains synchronous');
+});
 
 /** Each read's median over RUNS in-process runs, failing on any refusal. */
 async function medians(box, argv) {

@@ -1,0 +1,25 @@
+/** The CLI's async boundary: ordinary reads load queries, genuine write fallbacks load the full store [C7]. */
+import * as store from './board-query.js';
+import { withOpenedBoard } from './cli-read-context.js';
+import { Refused } from './refused.js';
+
+/** Keep the old full-store fallback and pass its synchronous backend to the same work callback. */
+async function writeFallback(ctx, work) {
+  const full = await import('./board.js');
+  const { withBoard } = await import('./cli-context.js');
+  return withBoard(ctx, board => work(board, full));
+}
+
+/** Open exactly as the synchronous read API does; only the CLI awaits a needed full-store import. */
+export async function withBoardRead(ctx, work) {
+  const board = store.openBoardForRead(ctx.file, ctx.clock);
+  if (board && !board.current && !ctx.allowSchemaUpgrade) store.closeBoard(board);
+  if (!board || (!board.current && !ctx.allowSchemaUpgrade)) return writeFallback(ctx, work);
+  try { return await withOpenedBoard(ctx, opened => work(opened, store), board); }
+  catch (error) {
+    const needsWrite = error instanceof store.ReadNeedsWrite || store.writeRefused(error);
+    if (board.current && needsWrite) return writeFallback(ctx, work);
+    if (!needsWrite && !store.schemaMissing(error)) throw error;
+    throw new Refused('BOARD_SCHEMA_BEHIND', 'this board was made by an older pullboard and a read never upgrades it');
+  }
+}

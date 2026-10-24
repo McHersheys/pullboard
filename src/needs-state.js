@@ -16,8 +16,8 @@ import {
   undraftedRigor,
 } from './rigor-notices.js';
 import { personNeeds } from './needs.js';
-import { personBlockWords } from './blocks.js';
-import { displayAgentName } from './agent-names.js';
+import { recentBlocks } from './needs-summary.js';
+export { personNeedsSummary, recentBlocks } from './needs-summary.js';
 import {
   projectSpecApprovals,
   specApprovalState,
@@ -44,21 +44,4 @@ export function personNeedsState(root, { board: providedBoard = null, includeRig
   } finally {
     if (!providedBoard) store.closeBoard(board);
   }
-}
-
-/** Keep status's complete obligation list without dashboard history, Git ages, or release notes. */
-export function personNeedsSummary(root, { board, config }) {
-  const spec = loadSpec(root, config);
-  const rows = projectRowDecisions(store.rowDecisions(board), { root, spec: spec.rows, practice: loadDoctrine(root, config).rows });
-  const projected = projectSpecApprovals({ ...rows,
-    decisions: store.openDecisions(board, store.PERSON), holds: store.laneHolds(board),
-    agents: store.listAgents(board).map(agent => ({ ...agent, displayName: displayAgentName(agent, config.agents.names) })),
-    rigorDrafts: rigorDraftNeeds(rows), sentinelDrafts: sentinelDraftNeeds(sentinels(board)), blocks: recentBlocks(repoInfo(root).commonDir, board),
-  }, specApprovalState(root, { board, config, spec }));
-  return projected;
-}
-
-/** The person's blocks from the last day, by the board's clock, for Needs you [C6]. */
-export function recentBlocks(commonDir, board) {
-  return personBlockWords(commonDir, (board?.clock ?? store.systemClock).now());
 }

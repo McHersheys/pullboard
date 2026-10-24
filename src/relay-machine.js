@@ -13,7 +13,6 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import {
@@ -24,13 +23,14 @@ import {
 import { scrubLegacyPersonSessions } from './relay-key.js';
 import { approvalContext } from './relay-approval.js';
 import { createPairingCode } from './pairing.js';
+import { relayMachineDirectory } from './local-state.js';
 import { Refused } from './refused.js';
 
 const DEVICE = /^device-[0-9a-f]{32}$/u;
 
 /** Locate only the private machine directory; repositories never carry these credentials. */
 function directory() {
-  return join(process.env.PULLBOARD_HOME || join(homedir(), '.pullboard'), 'relay-machine');
+  return relayMachineDirectory();
 }
 
 /** Refuse symlinks, non-owner files or broader permissions before reading machine secrets. */
