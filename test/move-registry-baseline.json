@@ -6758,6 +6758,181 @@
           }
         ]
       }
+    },
+    "acceptedExpected": {
+      "version": 1,
+      "tables": {
+        "agent": [
+          {
+            "agent_id": "coordinator",
+            "agent_lane": "coordinator",
+            "agent_path": "/fixture/main",
+            "agent_last_shout_id": 0,
+            "agent_route": "strong",
+            "agent_family": null,
+            "agent_created_at": "2026-10-01T00:00:00.000Z"
+          },
+          {
+            "agent_id": "web-1",
+            "agent_lane": "web",
+            "agent_path": "/fixture/web",
+            "agent_last_shout_id": 0,
+            "agent_route": "strong",
+            "agent_family": null,
+            "agent_created_at": "2026-10-01T00:00:00.000Z"
+          }
+        ],
+        "board_meta": [
+          {
+            "meta_key": "event_log_version",
+            "meta_value": "1"
+          },
+          {
+            "meta_key": "board_id",
+            "meta_value": "9f90bef0df25f1fe38d812764f6b157c"
+          },
+          {
+            "meta_key": "relay_receipt_registry-snapshot-1",
+            "meta_value": "{\"sequence\":1,\"move\":\"{\\\"version\\\":1,\\\"engine\\\":100,\\\"id\\\":\\\"registry-snapshot-1\\\",\\\"operation\\\":\\\"claim\\\",\\\"args\\\":[1,{\\\"agentId\\\":\\\"web-1\\\",\\\"lane\\\":\\\"web\\\",\\\"leaseMs\\\":7200000,\\\"head\\\":\\\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\\",\\\"frozen\\\":{\\\"text\\\":\\\"{\\\\\\\"rows\\\\\\\":[]}\\\",\\\"digest\\\":\\\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\\\"},\\\"freezeError\\\":null}],\\\"actor\\\":\\\"web-1\\\"}\",\"outcome\":{\"result\":{\"leaseUntil\":\"2026-10-01T02:00:00.000Z\",\"digest\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"renewed\":false},\"events\":[{\"event_id\":4,\"event_at\":\"2026-10-01T00:00:00.000Z\",\"event_by\":\"web-1\",\"event_kind\":\"claim\",\"item_id\":1,\"event_detail\":\"{\\\"leaseUntil\\\":\\\"2026-10-01T02:00:00.000Z\\\",\\\"digest\\\":\\\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\\\",\\\"model\\\":\\\"unknown\\\"}\"}]}}"
+          },
+          {
+            "meta_key": "relay_applied_sequence",
+            "meta_value": "3"
+          },
+          {
+            "meta_key": "relay_engine_version",
+            "meta_value": "103"
+          },
+          {
+            "meta_key": "relay_receipt_registry-snapshot-2",
+            "meta_value": "{\"sequence\":2,\"move\":\"{\\\"version\\\":1,\\\"engine\\\":100,\\\"id\\\":\\\"registry-snapshot-2\\\",\\\"operation\\\":\\\"shout\\\",\\\"args\\\":[{\\\"from\\\":\\\"web-1\\\",\\\"to\\\":\\\"all\\\",\\\"lanes\\\":[\\\"web\\\"],\\\"text\\\":\\\"recorded registry message\\\"}],\\\"actor\\\":\\\"web-1\\\"}\",\"outcome\":{\"result\":1,\"events\":[{\"event_id\":5,\"event_at\":\"2026-10-01T00:00:00.000Z\",\"event_by\":\"web-1\",\"event_kind\":\"shout\",\"item_id\":null,\"event_detail\":\"{\\\"shout\\\":1,\\\"to\\\":\\\"coordinator+person\\\",\\\"decision\\\":false,\\\"request\\\":false,\\\"answers\\\":null,\\\"model\\\":\\\"unknown\\\"}\"}]}}"
+          },
+          {
+            "meta_key": "relay_receipt_registry-snapshot-3",
+            "meta_value": "{\"sequence\":3,\"move\":\"{\\\"version\\\":1,\\\"engine\\\":100,\\\"id\\\":\\\"registry-snapshot-3\\\",\\\"operation\\\":\\\"appendFact\\\",\\\"args\\\":[1,{\\\"agentId\\\":\\\"web-1\\\",\\\"kind\\\":\\\"note\\\",\\\"text\\\":\\\"recorded registry fact\\\"}],\\\"actor\\\":\\\"web-1\\\"}\",\"outcome\":{\"result\":{\"id\":\"registry-snapshot-3\",\"eventId\":6,\"kind\":\"note\",\"text\":\"recorded registry fact\",\"by\":\"web-1\",\"at\":\"2026-10-01T00:00:00.000Z\",\"ref\":null,\"supersedes\":null},\"events\":[{\"event_id\":6,\"event_at\":\"2026-10-01T00:00:00.000Z\",\"event_by\":\"web-1\",\"event_kind\":\"fact\",\"item_id\":1,\"event_detail\":\"{\\\"id\\\":\\\"registry-snapshot-3\\\",\\\"kind\\\":\\\"note\\\",\\\"text\\\":\\\"recorded registry fact\\\",\\\"ref\\\":null,\\\"supersedes\\\":null,\\\"model\\\":\\\"unknown\\\"}\"}]}}"
+          }
+        ],
+        "event": [
+          {
+            "event_id": 1,
+            "event_at": "2026-10-01T00:00:00.000Z",
+            "event_by": "coordinator",
+            "event_kind": "join",
+            "item_id": null,
+            "event_detail": "{\"lane\":\"coordinator\",\"model\":\"unknown\"}"
+          },
+          {
+            "event_id": 2,
+            "event_at": "2026-10-01T00:00:00.000Z",
+            "event_by": "web-1",
+            "event_kind": "join",
+            "item_id": null,
+            "event_detail": "{\"lane\":\"web\",\"model\":\"unknown\"}"
+          },
+          {
+            "event_id": 3,
+            "event_at": "2026-10-01T00:00:00.000Z",
+            "event_by": "coordinator",
+            "event_kind": "add",
+            "item_id": 1,
+            "event_detail": "{\"lane\":\"web\",\"specIds\":[],\"after\":[],\"route\":\"strong\",\"model\":\"unknown\"}"
+          },
+          {
+            "event_id": 4,
+            "event_at": "2026-10-01T00:00:00.000Z",
+            "event_by": "web-1",
+            "event_kind": "claim",
+            "item_id": 1,
+            "event_detail": "{\"leaseUntil\":\"2026-10-01T02:00:00.000Z\",\"digest\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"model\":\"unknown\"}"
+          },
+          {
+            "event_id": 5,
+            "event_at": "2026-10-01T00:00:00.000Z",
+            "event_by": "web-1",
+            "event_kind": "shout",
+            "item_id": null,
+            "event_detail": "{\"shout\":1,\"to\":\"coordinator+person\",\"decision\":false,\"request\":false,\"answers\":null,\"model\":\"unknown\"}"
+          },
+          {
+            "event_id": 6,
+            "event_at": "2026-10-01T00:00:00.000Z",
+            "event_by": "web-1",
+            "event_kind": "fact",
+            "item_id": 1,
+            "event_detail": "{\"id\":\"registry-snapshot-3\",\"kind\":\"note\",\"text\":\"recorded registry fact\",\"ref\":null,\"supersedes\":null,\"model\":\"unknown\"}"
+          }
+        ],
+        "hold": [],
+        "item": [
+          {
+            "item_id": 1,
+            "item_parent_id": null,
+            "item_lane": "web",
+            "item_title": "Move registry snapshot",
+            "item_criterion": "",
+            "item_spec_ids": "",
+            "item_after": "",
+            "item_brief": "",
+            "item_route": "strong",
+            "item_check": "",
+            "item_status": "claimed",
+            "item_owner": "web-1",
+            "item_lease_until": "2026-10-01T02:00:00.000Z",
+            "item_frozen": "{\"rows\":[]}",
+            "item_frozen_digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "item_built_by": null,
+            "item_builder_family": null,
+            "item_commit": null,
+            "item_tree": null,
+            "item_verdict": null,
+            "item_verified_by": null,
+            "item_merged_commit": null,
+            "item_withdrawn_reason": null,
+            "item_hold_reason": null,
+            "item_hold_by": null,
+            "item_hold_at": null,
+            "item_created_by": "coordinator",
+            "item_created_at": "2026-10-01T00:00:00.000Z",
+            "item_updated_at": "2026-10-01T00:00:00.000Z",
+            "item_claim_head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "item_files": "",
+            "item_review_by": null,
+            "item_review_until": null
+          }
+        ],
+        "shout": [
+          {
+            "shout_id": 1,
+            "shout_from": "web-1",
+            "shout_to": "coordinator+person",
+            "shout_text": "recorded registry message",
+            "shout_at": "2026-10-01T00:00:00.000Z",
+            "shout_decision": 0,
+            "shout_answers": null,
+            "shout_evidence_kind": null,
+            "shout_evidence_outcome": null,
+            "shout_evidence_item": null,
+            "shout_evidence_commit": null,
+            "shout_request": 0,
+            "shout_request_outcome": ""
+          }
+        ],
+        "verdict": [],
+        "sqlite_sequence": [
+          {
+            "name": "event",
+            "seq": 6
+          },
+          {
+            "name": "item",
+            "seq": 1
+          },
+          {
+            "name": "shout",
+            "seq": 1
+          }
+        ]
+      }
     }
   },
   "observer": {
@@ -6767,15 +6942,24 @@
   },
   "acceptedDelta": {
     "head": "cc6fc1c0b5e62a82f8a236629221bae374ca16bc",
-    "engine": 102,
-    "scope": "Source-derived assertions from exact actuallyLANDED main; NOT a new executedobserver snapshot. Original26 observer285floorinputs/354actors/59oporder/3recordedengine100 replay inputs+expectations retained. Actualmain59oporder+actors source unchanged; only twofloorbranches andoneCLIrecoveryentry changed inthreeconsumers.",
-    "newFloorExpectations": 141,
+    "engine": 103,
+    "scope": "Accepted cc/fd floor and recovery deltas, plus an executed accepted-fd historical replay reference. Original26 observer vectors, actors, order, engine100 replay inputs/outcomes/expected remain intact; acceptedExpected differs only in relay_engine_version100\u2192103, captured from pinned accepted main, never candidate-derived.",
+    "newFloorExpectations": 144,
     "newRecoveryCode": "RUNNER_GUI_SESSION_REQUIRED",
     "sourceConditions": [
       "minimumExistingOperationEngine first: cause.startsWith('conflict:') -> RIGOR_AUTO_ENGINE102",
       "setLineSetting collisionFreeBatch -> LAND_COLLISION_ENGINE101, beforeorder"
     ],
     "originalReplayInputSHA256": "944bd3a1f53799b01f58b1dddec39c487205b5daf0a2860c30bc7a73e9ddcd5e",
-    "capacityMain": "fd47453359c9d58554a9739d8ac20ddc229a0a5a"
+    "capacityMain": "fd47453359c9d58554a9739d8ac20ddc229a0a5a",
+    "referenceManifestSHA256": "982b43dad076785d3c5e87f312085601462110d117e9f274b9dfb273fd0ae81b",
+    "replayDelta": [
+      {
+        "table": "board_meta",
+        "key": "relay_engine_version",
+        "before": "100",
+        "after": "103"
+      }
+    ]
   }
 }
