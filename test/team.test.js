@@ -960,6 +960,8 @@ test('an agent grant narrows at claim without changing old receipts or permittin
   forged.engine = legacy;
   const oldPeer = prepareEngineMove(boards[0], 'appendFact', [1, { agentId: other, kind: 'note', text: 'Another old seat must understand the new item grant.' }]);
   oldPeer.engine = legacy;
+  const oldTextPeer = prepareEngineMove(boards[0], 'appendFact', ['1', { agentId: other, kind: 'note', text: 'Numeric text cannot hide the newly claimed target from an old engine.' }]);
+  oldTextPeer.engine = legacy;
   apply('claim', [1, options], AGENT_GRANT_ENGINE);
   for (const board of boards) {
     const before = store.itemThread(board, 2);
@@ -971,6 +973,9 @@ test('an agent grant narrows at claim without changing old receipts or permittin
     assert.throws(() => applyEngineMove(board, oldPeer, { sequence: appliedSequence(board) + 1, at: clock.now().toISOString() }),
       error => error.code === 'RELAY_MOVE' && error.message.includes(String(AGENT_GRANT_ENGINE)),
       'another legacy seat cannot interpret a newly claimed item under old grant semantics');
+    assert.throws(() => applyEngineMove(board, oldTextPeer, { sequence: appliedSequence(board) + 1, at: clock.now().toISOString() }),
+      error => error.code === 'RELAY_MOVE' && error.message.includes(String(AGENT_GRANT_ENGINE)),
+      'the same target expressed as numeric text still requires the new grant engine');
     assert.deepEqual(store.itemThread(board, 2), before, 'neither old receipt replay nor a forged old move adds a fact');
   }
 });
@@ -1010,4 +1015,42 @@ test('an agent grant narrows at claim without trapping its own handoff facts [E2
   assert.equal(fact(2, 'Not a handoff channel').error?.code, 'AGENT_GRANT_ITEM');
   assert.equal(fact(channels[0], 'More context after the build lease ended', expired).error, undefined);
   assert.equal(fact(2, 'Expiry is not general authority', expired).error?.code, 'AGENT_GRANT_EXPIRED');
+});
+
+
+test('an agent grant narrows at claim for accepted numeric-text item ids [E21,H16]', () => {
+  const box = helpers.project();
+  for (const title of ['Claimed work', 'Other work']) {
+    run(box, box.repo, 'add', 'web', title, '--specs', 'G1', '--check', 'test -f web/grant-proof');
+  }
+  run(box, box.web, 'claim', '1');
+  const actor = withBoard(box.repo, board => store.listAgents(board).find(agent => agent.agent_path === box.web).agent_id);
+  const held = withBoard(box.repo, board => store.getItem(board, 1));
+  const snapshot = withBoard(box.repo, exportBoard);
+  const peer = join(box.dir, 'text-id-grant-replica');
+  box.git(box.dir, 'clone', '-q', box.repo, peer);
+  withBoard(peer, board => importBoard(board, snapshot));
+  const roots = [box.repo, peer];
+  const during = new Date(Date.parse(held.item_lease_until) - 1000).toISOString();
+  const expired = new Date(Date.parse(held.item_lease_until) + 1).toISOString();
+  /** Keep the public engine argument bytes while both replicas resolve the same native row. */
+  const fact = (item, text, at = during) => {
+    const move = withBoard(box.repo, board => prepareEngineMove(board, 'appendFact', [item, { agentId: actor, kind: 'note', text }]));
+    const outcomes = roots.map(root => withBoard(root, board => applyEngineMove(board, move,
+      { sequence: appliedSequence(board) + 1, at })));
+    assert.deepEqual(outcomes[0], outcomes[1]);
+    return outcomes[0];
+  };
+  assert.equal(fact('1', 'Accepted numeric text still names the own item').error, undefined,
+    'a guard must preserve the existing accepted item-id form');
+  const before = roots.map(root => withBoard(root, board => store.itemThread(board, 2)));
+  for (const item of ['2', '02', '2.0', ' 2 ']) {
+    assert.equal(fact(item, 'An alternate spelling does not enlarge authority').error?.code, 'AGENT_GRANT_ITEM',
+      `the existing target ${JSON.stringify(item)} is still outside the claim`);
+  }
+  assert.deepEqual(roots.map(root => withBoard(root, board => store.itemThread(board, 2))), before,
+    'numeric-text refusals add no item facts on either replica');
+  assert.equal(fact('1', 'Text cannot extend an expired lease', expired).error?.code, 'AGENT_GRANT_EXPIRED');
+  assert.equal(fact('999999', 'A missing target stays missing', expired).error?.code, 'NO_ITEM');
+  assert.equal(fact('not-an-id', 'Malformed text keeps its existing refusal', expired).error?.code, 'NO_ITEM');
 });
