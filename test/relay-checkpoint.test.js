@@ -1,6 +1,8 @@
 /** A move sends only its own event; one background publisher sends the checkpoint once moves go quiet [H5]. */
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -97,4 +99,25 @@ test('a move during a held checkpoint upload returns before the upload ends [H5]
   assert.ok(elapsed < 2000, `the move took ${Math.round(elapsed)} ms; it must not wait for the upload`); // budget: ceiling for one CLI move with headroom, far under the held upload.
   box.holdPublishes(false);
   await publisherDone(box, from, 2);
+});
+
+test('publishers that find a dead holder\'s claim together upload one checkpoint between them [H5]', async (t) => {
+  const inline = process.env[CHECKPOINT_BACKGROUND_ENV];
+  process.env[CHECKPOINT_BACKGROUND_ENV] = '0'; // This case starts its publishers itself.
+  t.after(() => { if (inline === undefined) delete process.env[CHECKPOINT_BACKGROUND_ENV]; else process.env[CHECKPOINT_BACKGROUND_ENV] = inline; });
+  const box = await relayClientFixture(t);
+  await box.link();
+  assert.equal((await box.cli('shout', 'all', 'a move whose checkpoint is due')).code, 0);
+  const directory = dirname(box.linkFile);
+  // A claim left by a publisher that died, and a move older than the quiet period.
+  writeFileSync(join(directory, 'relay-checkpoint.pid'), '999999\n');
+  writeFileSync(join(directory, 'relay-checkpoint.due'), `${Date.now() - 60_000}\n`);
+  const from = box.calls.length;
+  const worker = fileURLToPath(new URL('../src/relay-checkpoint-worker.js', import.meta.url));
+  const exits = Array.from({ length: 4 }, () => new Promise(done => {
+    spawn(process.execPath, [worker, box.root, box.linkFile], { cwd: box.root, env: box.env, stdio: 'ignore' }).once('exit', done);
+  }));
+  await Promise.all(exits);
+  assert.equal(box.calls.slice(from).filter(checkpointUpload).length, 1, 'four publishers recovering one dead claim sent one checkpoint');
+  assert.equal(existsSync(join(directory, 'relay-checkpoint.pid')), false, 'the claim is released');
 });

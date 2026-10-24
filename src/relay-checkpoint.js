@@ -49,14 +49,16 @@ export function checkpointQuietMs(env = process.env) {
 }
 
 /**
- * The files the publisher keeps beside the relay link: when the last move happened, and which process publishes.
+ * The files the publisher keeps beside the relay link: when the last move happened, which move the last upload
+ * covered, and which process publishes.
  *
  * @param {string} file - The relay link file.
- * @returns {{ due: string, pid: string, log: string }}
+ * @returns {{ due: string, done: string, pid: string, log: string }}
  */
 export function checkpointFiles(file) {
   const directory = dirname(file);
-  return { due: join(directory, 'relay-checkpoint.due'), pid: join(directory, 'relay-checkpoint.pid'), log: join(directory, 'relay-checkpoint.log') };
+  return { due: join(directory, 'relay-checkpoint.due'), done: join(directory, 'relay-checkpoint.done'),
+    pid: join(directory, 'relay-checkpoint.pid'), log: join(directory, 'relay-checkpoint.log') };
 }
 
 // Budget: a publisher refreshes its claim on every pass, far more often than this; an older claim belongs to a
