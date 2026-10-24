@@ -1018,7 +1018,6 @@ test('an excluded board is named as excluded with the step that includes it [H5,
   await pairingPage.close();
   const excluded = await siblingProject(box, 'excluded-project', 'fixture/excluded-board');
   assert.equal((await box.cliAt(excluded, 'relay', 'off')).code, 0);
-  await relayOnAll(box);
   const metadata = await fetch(box.origin + '/api/v1/devices/exclusions', { headers: { cookie: 'pb_session=' + session } });
   assert.equal(metadata.status, 200);
   const publicInventory = await metadata.json();
