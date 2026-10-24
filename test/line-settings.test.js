@@ -58,7 +58,14 @@ test('the settings inventory exposes board line values and defaults without audi
   board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
   store.setLineSetting(board, change({ key: 'wipPerReviewer', value: 2 }));
   const before = store.events(board).length;
-  const rows = settingsInventory([{ root: box.repo }]).settings.filter(row => row.scope === 'board' && row.key.startsWith('line.'));
+  const previous = Object.fromEntries(['PULLBOARD_HOME', 'PULLBOARD_MACHINE_HOME'].map(key => [key, process.env[key]]));
+  let rows;
+  try {
+    for (const key of Object.keys(previous)) process.env[key] = box.env[key];
+    rows = settingsInventory([{ root: box.repo }]).settings.filter(row => row.scope === 'board' && row.key.startsWith('line.'));
+  } finally {
+    for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+  }
   assert.equal(rows.length, 6);
   assert.deepEqual(rows.find(row => row.key === 'line.wipPerReviewer'), { key: 'line.wipPerReviewer', scope: 'board',
     board: store.boardId(board), root: box.repo, value: 2, default: false,
