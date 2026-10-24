@@ -1,3 +1,4 @@
+/** @pullboard-test-loads src/relay-outbox.js */
 /** Sealed local outbox compatibility uses the actual old reader, not an imitation of its version check [B26,H16,H17]. */
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
