@@ -33,6 +33,9 @@ export function landEnginesInOrder({ landProject, itemWorktree, submitItem, acce
   mkdirSync(join(box.repo, 'src'), { recursive: true });
   mkdirSync(join(box.repo, 'docs'), { recursive: true });
   writeFileSync(join(box.repo, 'src', 'base-engine.js'), '/** The landed base engine. */\nexport const BASE_ENGINE = 80;\n');
+  // The project's own engine file, which is not Pullboard's: landing must neither fail on it nor change it.
+  const game = '/** The project\'s game engine. */\nexport class GameEngine {}\nexport const SPEED = 3;\n';
+  writeFileSync(join(box.repo, 'src', 'game-engine.js'), game);
   writeFileSync(join(box.repo, 'docs', 'formats.md'), '| Format | Version |\n| --- | --- |\n| `move engine` | `80` | the fixture |\n');
   box.git(box.repo, 'add', '-A');
   box.git(box.repo, 'commit', '-q', '-m', 'chore: a landed engine and its documented number');
@@ -58,6 +61,7 @@ export function landEnginesInOrder({ landProject, itemWorktree, submitItem, acce
   assert.match(landed, /^export const ALPHA_ENGINE = \d+;$/mu, 'the export line itself names its number');
   assert.ok(!landed.includes("from './engine-next.js'"), 'a landed leaf no longer imports the placeholder');
   assert.notEqual(box.git(box.repo, 'rev-parse', 'main'), base);
+  assert.equal(box.git(box.repo, 'show', `${result.batch.tip}:src/game-engine.js`) + '\n', game, 'the project\'s own engine file is untouched');
   // The landed board replays: its events import into a fresh board unchanged.
   const document = onBoard(box, (board) => exportBoard(board));
   const replayed = store.openBoard(join(box.dir, 'replayed.sqlite'));

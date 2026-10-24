@@ -51,7 +51,7 @@ export function nextEngineNumber(leaves) {
 }
 
 /**
- * Give each unlanded leaf under `root`/src its number, next above the landed ones in file-name order, and keep the
+ * Give each unlanded leaf under `root`/src (one importing the placeholder) its number, next above the landed ones in file-name order, and keep the
  * documented move engine in docs/formats.md equal to the result. A tree with no unlanded leaf is left untouched.
  *
  * @param {string} root
@@ -60,7 +60,18 @@ export function nextEngineNumber(leaves) {
 export function assignEngineNumbers(root) {
   const directory = join(root, 'src');
   if (!existsSync(directory)) return { files: [], assigned: [] };
-  const leaves = readEngineLeaves(directory);
+  // Only a leaf that imports the placeholder is Pullboard's to number. Any other project may have its own
+  // src/*-engine.js files that follow none of these rules; they are never read as leaves, so a land never fails on them.
+  const texts = readdirSync(directory).filter((file) => ENGINE_CANDIDATE.test(file))
+    .map((file) => ({ file, text: readFileSync(join(directory, file), 'utf8') }));
+  const leaves = texts.map(({ file, text }) => {
+    const lines = text.split('\n').filter((line) => /^export const /u.test(line));
+    const match = lines.length === 1 ? ENGINE_LINE.exec(lines[0]) : null;
+    if (!match) return null;
+    const number = match[2] === undefined ? null : Number(match[2]);
+    if (number === null && !text.split('\n').includes(UNASSIGNED_IMPORT)) return null;
+    return { file, name: match[1], number };
+  }).filter(Boolean);
   const unlanded = leaves.filter((leaf) => leaf.number === null);
   if (!unlanded.length) return { files: [], assigned: [] };
   let next = nextEngineNumber(leaves) - 1;
