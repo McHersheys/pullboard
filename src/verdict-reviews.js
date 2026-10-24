@@ -29,7 +29,8 @@ export function verdictsFor(board, id) {
   return verdicts.map((verdict, index) => {
     let detail = {};
     try { detail = JSON.parse(receipts[index]?.event_detail ?? '{}'); } catch { /* Malformed legacy details remain unknown. */ }
-    return { ...verdict, assurance: verdictAssurance(board, verdict), check: detail.check ?? 'unknown', ...(detail.review ? { review: detail.review } : {}) };
+    return { ...verdict, assurance: verdictAssurance(board, verdict), check: detail.check ?? 'unknown', ...(detail.review ? { review: detail.review } : {}),
+      ...(Object.hasOwn(detail, 'environment') ? { environment: detail.environment } : {}) };
   });
 }
 
