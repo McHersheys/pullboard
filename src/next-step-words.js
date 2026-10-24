@@ -72,6 +72,10 @@ export const NEXT_STEPS = Object.freeze({
   SANDBOX_CLEANUP_REQUIRED: 'restore Docker and remove the exact named owned container before another verification',
   SANDBOX_CHECK_REQUIRED: 'set a trusted full gate and frozen causal criterion before intake',
 
+  LINE_SETTING_UNKNOWN: 'read pullboard settings line and choose a listed board control',
+  LINE_SETTING_RANGE: 'read the allowed range with pullboard settings line, then record an in-range value or off with its reason and window numbers',
+  LINE_SETTING_REASON: 'repeat the board setting change with --reason describing the measured window',
+  LINE_SETTING_WINDOW: 'repeat the board setting change with --window containing a nonempty JSON object of finite nonnegative measurements or null for unknown',
   PERSON_ENROLL_AUTH: 'authenticate a fresh enrollment with the locally trusted person credential',
   PERSON_ENROLL_EXPIRED: 'create a fresh person-authenticated challenge valid for at most ten minutes',
   PERSON_ENROLL_REVOKED: 'authenticate a different non-revoked device with the person credential',

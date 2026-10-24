@@ -1,3 +1,5 @@
+export { lineSettings, setLineSetting } from './line-settings.js';
+
 import {
   applyOutsideIntake,
   approveOutside as applyOutsideApproval,
@@ -56,6 +58,7 @@ import {
   rowDecisions,
   UNREAD_SQL,
 } from './board-query.js';
+
 import { ITEM_SHOUT_ENGINE } from './item-shout-engine.js';
 import {
   COORDINATION_SHOUT,
