@@ -22,7 +22,6 @@ import {
  * Who holds an item now: its builder while claimed, its reviewer while a submitted item is reserved.
  *
  * @param {any} item
- * @param {any[]} inFlight
  * @param {number} now
  * @returns {string | null}
  */
@@ -33,10 +32,11 @@ function holderOf(item, now) {
 }
 
 /**
- * What an item waits on before an agent can take it: unverified items it comes after, and a hold.
+ * What an item waits on before an agent can take it: dependencies, file collisions and holds.
  *
  * @param {any} board
  * @param {any} item
+ * @param {any[]} inFlight
  * @returns {string[]}
  */
 function waitsOf(board, item, inFlight) {
