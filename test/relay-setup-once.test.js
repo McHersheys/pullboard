@@ -46,6 +46,25 @@ function command(root, env, args) {
   return { child, done };
 }
 
+/** Keep the actual CLI refusal and named protocol stages without dumping private request bodies. */
+function setupCommandCapture(result, calls, origin) {
+  const stages = calls.map(({ method, path }) => {
+    const pathname = new URL(path, origin).pathname;
+    const stage = ['/auth/device/start', '/auth/device/poll', '/auth/boards/link', '/auth/machines', '/api/v2', '/api/v1']
+      .find(prefix => pathname === prefix || pathname.startsWith(prefix + '/')) ?? 'other';
+    return { method, stage };
+  }).slice(-32);
+  const error = result.document?.error;
+  return { exit: result.code, error: error ? { code: error.code, message: error.message } : null, stages };
+}
+
+/** Preserve the original success assertion while retaining the refusal that explains a failure. */
+function assertSetupSucceeded(result, calls, origin) {
+  assert.equal(result.code, 0,
+    'explicitly linking the board again requires a foreground sign-in; '
+      + JSON.stringify(setupCommandCapture(result, calls, origin)));
+}
+
 /** Initialize an independent committed project with origin in place before its registration. */
 async function project(box, name) {
   const root = join(dirname(box.root), name);
@@ -174,6 +193,38 @@ test('the set-up-once wait names the step it is on [H5,C7]', {
     assert.strictEqual(error, originalTimeout);
     assert.equal(error.code, 'CDP_TIMEOUT');
     assert.match(error.message, /^DevTools Runtime\.evaluate timed out after 17ms\.; page-step capture unavailable$/u);
+    return true;
+  });
+});
+
+test('set-up-once failure capture retains a real CLI refusal code and message [H5,C7]', async t => {
+  const box = await relayClientFixture(t);
+  const calls = [];
+  const refusal = { code: 'SETUP_CAPTURE_PROBE', message: 'The capture control refused this sign-in; use the fixture relay.' };
+  const server = createServer((request, response) => {
+    calls.push({ method: request.method, path: request.url });
+    request.resume();
+    response.writeHead(403, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ version: 1, error: refusal }));
+  });
+  await new Promise((resolveListen, rejectListen) => {
+    server.once('error', rejectListen);
+    server.listen(0, '127.0.0.1', resolveListen);
+  });
+  t.after(() => new Promise(resolveClose => server.close(resolveClose)));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const result = await command(box.root, box.env, ['relay', 'on', '--url', origin]).done;
+  assert.notEqual(result.code, 0, 'the production CLI actually refuses the loopback protocol response');
+  assert.ok(calls.some(call => call.method === 'POST' && call.path === '/auth/device/start'),
+    'the refusal crosses the actual foreground sign-in protocol');
+  assert.equal(result.document.error.code, refusal.code);
+  assert.ok(result.document.error.message.includes(refusal.message));
+  const capture = setupCommandCapture(result, calls, origin);
+  assert.deepEqual(capture.error, result.document.error && {
+    code: result.document.error.code, message: result.document.error.message,
+  }, 'capture retains the CLI document code and complete message, not only its exit status');
+  assert.throws(() => assertSetupSucceeded(result, calls, origin), error => {
+    assert.ok(error.message.includes(JSON.stringify(capture)), 'the same failing assertion reports the retained refusal');
     return true;
   });
 });
@@ -346,19 +397,7 @@ test('set up once links three registered boards, later registration and a persis
     'the paired phone is not enrolled again while excluding a board');
   const relinkCallsStart = box.calls.length;
   const relinked = await command(fourth, box.env, ['relay', 'on', '--url', box.origin]).done;
-  // Keep only named protocol stages and a refusal code: private bodies, URLs and credentials stay private.
-  const relinkStages = box.calls.slice(relinkCallsStart).map(({ method, path }) => {
-    const pathname = new URL(path, box.origin).pathname;
-    const stage = ['/auth/device/start', '/auth/device/poll', '/auth/boards/link', '/auth/machines', '/api/v2', '/api/v1']
-      .find(prefix => pathname === prefix || pathname.startsWith(prefix + '/')) ?? 'other';
-    return { method, stage };
-  }).slice(-32);
-  const errorCode = relinked.document?.error?.code;
-  assert.equal(relinked.code, 0,
-    'explicitly linking the board again requires a foreground sign-in; ' + JSON.stringify({
-      exit: relinked.code, errorCode: /^[A-Z][A-Z0-9_]{0,79}$/u.test(errorCode ?? '') ? errorCode : null,
-      stages: relinkStages,
-    }));
+  assertSetupSucceeded(relinked, box.calls.slice(relinkCallsStart), box.origin);
   assert.equal(JSON.parse(readFileSync(machineFile, 'utf8')).excluded.includes(fourth), false,
     'explicit board linking clears its opt-out');
   await pageWait(chrome, 'relinking renders four linked boards', "document.querySelectorAll('#proj-list .proj.repo').length === 4");
