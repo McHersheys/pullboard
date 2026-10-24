@@ -3,6 +3,7 @@ import {
   newWindowTrace,
   observeFlowStage,
   observeFlowVerdict,
+  observeFlowGap,
   frozenWindowTrace,
   projectFlowWindow,
 } from './stats-flow-window.js';
@@ -87,6 +88,7 @@ export function moveFlowItem(item, event, detail, at) {
       break;
     }
     case 'merged':
+      if (item.windowTrace?.cursor?.stage !== 'mergeWait') observeFlowGap(item);
       observeFlowStage(item, null, at, event.event_by);
       item.mergeAt ??= at; item.state = 'merged'; break;
     case 'reopen':

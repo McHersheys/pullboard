@@ -34,10 +34,16 @@ export function run(io, { values }) {
   const windowMinutes = values.window === undefined ? undefined : flowWindowMinutes(values.window);
   const now = ctx.clock.now().getTime();
   const { stats, agents, window } = withBoard(ctx, (board) => {
-    const stats = proofStats(board, { since: values.since, now });
-    return { stats, agents: store.listAgents(board), ...(windowMinutes === undefined ? {} : {
-      window: flowStats(store.events(board), null, now, stats, { windowMinutes }).window,
-    }) };
+    // Keep counters and optional raw-history window on the same read snapshot while other seats append.
+    if (windowMinutes !== undefined) board.db.exec('SAVEPOINT stats_window_read');
+    try {
+      const stats = proofStats(board, { since: values.since, now });
+      return { stats, agents: store.listAgents(board), ...(windowMinutes === undefined ? {} : {
+        window: flowStats(store.events(board), null, now, stats, { windowMinutes }).window,
+      }) };
+    } finally {
+      if (windowMinutes !== undefined) board.db.exec('RELEASE stats_window_read');
+    }
   });
   const waits = gateReceipt.gateWaitStats(ctx.info.root);
   io.result?.({ stats, gateWaits: waits.stats, ...(window ? { window } : {}) });

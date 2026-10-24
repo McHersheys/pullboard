@@ -33,6 +33,14 @@ export function observeFlowVerdict(item, by) {
   trace.cursor = null;
 }
 
+/** Preserve a missing required boundary without substituting a different move's timestamp. */
+export function observeFlowGap(item) {
+  const trace = item.windowTrace;
+  if (!trace?.cursor) return;
+  if (!trace.missing.includes(trace.cursor.stage)) trace.missing.push(trace.cursor.stage);
+  trace.cursor = null;
+}
+
 /** Freeze nested observations along with the existing immutable prepared lifecycle. */
 export function frozenWindowTrace(trace) {
   return Object.freeze({ ...trace, cursor: trace.cursor ? Object.freeze({ ...trace.cursor }) : null,

@@ -249,6 +249,7 @@ test('[R1,R2,A1] stats window and ordinary counters share one SQLite snapshot wh
   const clock = { now: () => new Date('2026-10-08T13:00:00Z') };
   const original = DatabaseSync.prototype.exec;
   let injected = false;
+  /** Append on a second real connection after the existing statistics snapshot is released. */
   DatabaseSync.prototype.exec = function (sql) {
     const result = original.call(this, sql);
     if (!injected && sql === 'RELEASE proof_stats_read') {
