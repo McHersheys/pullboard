@@ -1,5 +1,6 @@
 import { computedReturnArgs } from './computed-conflict-return.js';
-import { requireComputedConflictBound } from './computed-conflict-receipt.js';
+import { requirePreparedComputedConflict } from './computed-conflict-receipt.js';
+import { preflightComputedConflict } from './computed-conflict-receipt.js';
 import { agentGrantMinimum } from './agent-grant.js';
 import { requireAgentGrant } from './agent-grant.js';
 import {
@@ -106,7 +107,7 @@ export function prepareEngineMove(board, operation, args, { id = randomUUID(), a
   if (operation === 'recordGateRun') requireBound(board, values[0]?.receipt);
   if (operation === 'reopen' && values[1]?.computedConflict !== undefined) {
     if (values[1].conflict !== undefined) throw new Refused('COORDINATOR_ONLY', 'automatic conflict evidence accepts no caller conflict assertion');
-    requireComputedConflictBound(board, values[1].computedConflict);
+    requirePreparedComputedConflict(board, values[0], values[1].agentId, values[1].computedConflict);
   }
   if (operation === 'verify' && values[1]?.sandbox !== undefined) requireOutsideReceipt(board, values[1].sandbox);
   if (operation === 'release') {
@@ -298,6 +299,8 @@ export function applyEngineMove(board, move, { sequence, at, standing = null, en
       // Existing receipts replay before consulting newer snapshot semantics.
       const minimumEngine = Math.max(minimumOperationEngine(move.operation, move.args, board, new Date(at)), agentGrantMinimum(board, move));
       if (move.engine < minimumEngine) throw new Refused('RELAY_MOVE', `${move.operation} cannot act on a checked-composition snapshot from engine ${move.engine}; use engine ${minimumEngine} or newer`);
+      // Missing immutable objects abort before a refusal receipt or cursor could make a fetch unrecoverable.
+      if (move.operation === 'reopen' && move.args[1]?.computedConflict !== undefined) preflightComputedConflict(board, move.args[0], move.args[1].agentId, move.args[1].computedConflict);
       const clock = board.clock;
       const engineVersion = board.executionEngineVersion;
       board.clock = { now: () => new Date(at) };

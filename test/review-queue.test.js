@@ -17,6 +17,7 @@ import { nextReview } from '../src/next-review.js';
 import { Refused } from '../src/refused.js';
 import { AGENT_GRANT_ENGINE } from '../src/agent-grant-engine.js';
 import {
+  appliedSequence,
   applyEngineMove,
   prepareEngineMove,
 } from '../src/engine.js';
@@ -351,17 +352,20 @@ test('automatic conflict returns bind native evidence and replay without caller 
   assert.equal(evidence.trunk, box.git(box.repo, 'rev-parse', 'HEAD'));
   assert.deepEqual(evidence.files, ['web/list.html']);
   assert.equal(evidence.actor, actor, 'the move retains the actual reviewer actor');
-  const forged = { ...evidence, id: 'ffffffff-ffff-ffff-ffff-ffffffffffff' };
-  const { digest: ignored, ...forgedFields } = forged;
-  forged.digest = createHash('sha256').update(JSON.stringify(forgedFields)).digest('hex');
-  for (const receipt of [forged, { ...evidence, files: ['web/false.html'] }]) {
+  /** Rehashing altered data must not make it trusted: immutable Git still decides the actual conflict. */
+  const rehash = changes => {
+    const { digest, ...fields } = { ...evidence, ...changes };
+    return { ...fields, digest: createHash('sha256').update(JSON.stringify(fields)).digest('hex') };
+  };
+  const forged = rehash({ files: ['web/false.html'] });
+  for (const receipt of [forged, rehash({ head: evidence.trunk }), { ...evidence, files: ['web/false.html'] }]) {
     assert.throws(() => prepareEngineMove(source, 'reopen', [conflicted, { agentId: actor, computedConflict: receipt }]),
-      error => error.code === 'COORDINATOR_ONLY', 'unbound or mutated evidence cannot be sealed');
+      error => error.code === 'COORDINATOR_ONLY', 'false or mutated conflict evidence cannot be sealed');
     assert.throws(() => store.reopen(source, conflicted, { agentId: actor, computedConflict: receipt }),
-      error => error.code === 'COORDINATOR_ONLY', 'the direct origin API also requires its own stored evidence');
+      error => error.code === 'COORDINATOR_ONLY', 'the direct origin API independently verifies the immutable conflict');
   }
   assert.deepEqual(exportBoard(source), original, 'evidence preparation and refusals do not change the board');
-  /** Each imported replica has no native evidence store or usable coordinator repository binding. */
+  /** Each independent SQLite replica verifies the recorded objects, without choosing its own current trunk. */
   const replica = name => {
     const board = store.openBoard(join(box.dir, `${name}.sqlite`));
     copies.push(board); importBoard(board, original); return board;
@@ -369,6 +373,8 @@ test('automatic conflict returns bind native evidence and replay without caller 
   for (const [name, options] of [
     ['flag', { agentId: actor, automaticConflict: true }],
     ['mutated', { agentId: actor, computedConflict: { ...evidence, files: ['web/false.html'] } }],
+    ['rehashed', { agentId: actor, computedConflict: forged }],
+    ['clean-record', { agentId: actor, computedConflict: rehash({ trunk: evidence.head }) }],
     ['actor', { agentId: store.agentAt(source, box.web).agent_id, computedConflict: evidence }],
   ]) {
     const board = replica(name);
@@ -378,10 +384,16 @@ test('automatic conflict returns bind native evidence and replay without caller 
     assert.equal(store.getItem(board, conflicted).item_status, 'submitted');
   }
   const left = replica('valid-left'), right = replica('valid-right');
+  const missing = { ...move, args: [conflicted, { agentId: actor, computedConflict: rehash({ trunk: 'f'.repeat(40) }) }] };
+  assert.throws(() => applyEngineMove(left, missing, { sequence: 1, at: new Date().toISOString() }),
+    error => error.code === 'MERGE_CHECK_FAILED', 'missing immutable objects refuse by name until fetched');
+  assert.equal(appliedSequence(left), 0, 'a missing-object refusal does not consume the position needed after fetch');
   assert.throws(() => prepareEngineMove(left, 'reopen', [conflicted, { agentId: actor, automaticConflict: true }]),
     error => error.code === 'COORDINATOR_ONLY', 'an imported replica cannot fabricate native origin evidence');
   assert.throws(() => applyEngineMove(left, { ...move, engine: AGENT_GRANT_ENGINE - 1 }, { sequence: 1, at: new Date().toISOString() }),
     error => error.code === 'RELAY_MOVE', 'an older engine cannot interpret the new computed-return record');
+  // Main now contains the submitted head, while the recorded earlier trunk remains conflicting.
+  box.git(box.repo, 'merge', '-q', '--no-edit', '-s', 'ours', evidence.head);
   const receipt = { sequence: 1, at: new Date().toISOString() };
   const results = [left, right].map(board => applyEngineMove(board, move, receipt));
   assert.deepEqual(results[0], results[1]);

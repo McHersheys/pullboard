@@ -1,16 +1,13 @@
 /** Native computation of automatic submitted-head returns; callers supply no conflict assertion [V4,H16]. */
 import { createHash } from 'node:crypto';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
 import { realpathSync } from 'node:fs';
-import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { repoInfo } from './git.js';
 import { trunkMerge } from './trunk-merge.js';
-import { computedConflictStore } from './computed-conflict-receipt.js';
 import { Refused } from './refused.js';
 
-/** Compute and privately store evidence only for this exact native board and current submitted head. */
+/** Compute evidence only for this exact native board and current submitted head. */
 export function computeConflictReturn(board, id, actor) {
   const root = board.db.prepare("SELECT agent_path FROM agent WHERE agent_id='coordinator'").get()?.agent_path;
   const file = board.db.prepare('PRAGMA database_list').all().find(row => row.name === 'main')?.file;
@@ -26,9 +23,6 @@ export function computeConflictReturn(board, id, actor) {
     item: item.item_id, actor, head: item.item_commit, trunk: merge.commit, files: merge.files, at: board.clock.now().toISOString(),
     submission: board.db.prepare("SELECT event_id FROM event WHERE item_id=? AND event_kind='submit' ORDER BY event_id DESC LIMIT 1").get(item.item_id).event_id };
   const receipt = { ...fields, digest: createHash('sha256').update(JSON.stringify(fields)).digest('hex') };
-  const directory = computedConflictStore(board);
-  mkdirSync(directory, { recursive: true, mode: 0o700 });
-  writeFileSync(join(directory, `${receipt.id}.json`), JSON.stringify(receipt) + '\n', { flag: 'wx', mode: 0o600 });
   return receipt;
 }
 
