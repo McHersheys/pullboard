@@ -1,4 +1,5 @@
 /** Independent person-root enrollment and opaque account envelopes [H15]. */
+/** @pullboard-test-input source-tree */
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
