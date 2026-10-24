@@ -25,7 +25,7 @@ import { sourceSetupFailureFixture } from './runner-source-setup-fixture.js';
 import { runnerSourceRefusalCases } from './runner-source-refusal-fixture.js';
 import { writeCacheProbe, writeProbe } from './runner-probe-fixture.js';
 import { browserFreeRunnerCheck, browserRefusalTextStaysRed } from './runner-browser-free-fixture.js';
-import { runnerUsesRegisteredCapacity } from './runner-capacity-fixture.js';
+import { runnerTimingReceipt, runnerUsesRegisteredCapacity } from './runner-capacity-fixture.js';
 import { removingBusyRunnerDrains, runnerRemoveKeepsSettings } from './runner-drain-fixture.js';
 import { awaitRoundTrip, cleanupToolingSnapshots, cli, committedToolingSnapshot, fixtureResultContext, gateResult, git, phaseCounts, ROUND_TRIP_DEADLINES, runThroughGate, startToolingCli, TOOLING_SNAPSHOTS } from './runner-tooling-fixture.js';
 import { runnerStageFixture } from './runner-stage-fixture.js';
@@ -1315,6 +1315,9 @@ test('a runner job leaves no process behind, and never signals a process it cann
   { timeout: 30_000 }, t => unprovenProcessFixture(t, { createDescendantTracker, parseProcessCensus })); // budget: scripted census, no real processes.
 
 test('machines report busy share and a new run goes to the idle one [C7,O5]', { timeout: 30_000 }, t => runnerStageFixture(t, e2e));
+
+test('registered timing receipt names the physical worker and actual load [C7,Q1]', { timeout: 90_000 },
+  t => runnerTimingReceipt(t, { cli, git, runThroughGate, gateResult }));
 
 test('a runner uses the capacity it was registered with [C7,O5]', { timeout: 180_000 }, t => runnerUsesRegisteredCapacity(t, { cli, git, observe, startQueueController, gateResult })); // budget: two rounds of four concurrent runner round trips.
 

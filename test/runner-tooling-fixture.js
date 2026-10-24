@@ -149,14 +149,14 @@ export async function awaitRoundTrip(child, closed, phasesFile, before, deadline
  * Run a gate command through its real lease and return the profile/result emitted by the API child.
  * `requests` names the stand-in's request log, whose .phases file times the round trip by phase.
  */
-export async function runThroughGate(repo, env, command, { browser = true, item = '663', kind = 'check', landing = false, toolingRoot = resolve(import.meta.dirname, '..'), requests, deadlines } = {}) {
+export async function runThroughGate(repo, env, command, { browser = true, timing = false, item = '663', kind = 'check', landing = false, toolingRoot = resolve(import.meta.dirname, '..'), requests, deadlines } = {}) {
   const sourceRoot = realpathSync(toolingRoot);
   const gateUrl = pathToFileURL(join(committedToolingSnapshot(sourceRoot, env), 'src', 'gate.js')).href;
   const snapshot = TOOLING_SNAPSHOTS.get(sourceRoot);
   snapshot.active++;
   const script = `const { runProfiledShell, withGateSlot } = await import(${JSON.stringify(gateUrl)});
 const result = await withGateSlot(${JSON.stringify(repo)}, lease => runProfiledShell(${JSON.stringify(repo)}, ${JSON.stringify(command)}, { gateLease: lease, landing: ${landing} }),
-  { browser: ${browser}, item: ${JSON.stringify(item)}, kind: ${JSON.stringify(kind)}, landing: ${landing}, agent: 'runner-fixture' });
+  { browser: ${browser}, timing: ${timing}, item: ${JSON.stringify(item)}, kind: ${JSON.stringify(kind)}, landing: ${landing}, agent: 'runner-fixture' });
 process.stdout.write(result.output);
 process.stdout.write('PULLBOARD_RUN_RESULT ' + JSON.stringify({ isGreen: result.isGreen, runner: result.profile.executionRunner, sandboxBlocked: result.sandboxBlocked, profile: result.profile }) + '\\n');
 process.exitCode = result.isGreen ? 0 : 1;

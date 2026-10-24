@@ -86,6 +86,8 @@ await withGateSlot(root, async lease => {
   finally { for (const key of ['PULLBOARD_GATE_SLOT_HELD', 'PULLBOARD_GATE_SLOT_POOL', 'PULLBOARD_GATE_SLOT_TOKEN', 'PULLBOARD_BROWSER_SLOT_HELD']) delete process.env[key]; }
 }, { timing: true, remote: false, onReceipt: value => { receipt = value; } });
 assert.equal(receipt.timing, true);
+assert.equal(receipt.exclusive, true);
+assert.deepEqual(receipt.unfencedClients, []);
 assert.equal(receipt.runner.kind, 'local');
 for (const sample of [receipt.load.start, receipt.load.end]) {
   assert.ok(Number.isFinite(Date.parse(sample.at)), 'load has an executor timestamp');
@@ -95,5 +97,23 @@ for (const sample of [receipt.load.start, receipt.load.end]) {
 }
 assert.ok(Date.parse(receipt.load.end.at) >= Date.parse(receipt.load.start.at));
 assert.ok(Date.parse(receipt.finishedAt) >= Date.parse(receipt.admittedAt));
+`);
+});
+
+test('a legacy queue client makes the timing receipt explicitly unfenced even after it exits [C7,Q1]', async t => {
+  const box = fixture(t);
+  await runFixture(box, `
+const { takeResource: legacyTakeResource } = await import(${JSON.stringify(new URL('./fixtures/resources-pre-runners.js', import.meta.url).href)});
+let receipt;
+await withGateSlot(root, async lease => {
+  assert.equal(lease.timingEvidence().exclusive, true);
+  const legacy = await legacyTakeResource({ name: 'gate', capacity: 2, scope: 'machine', root, agent: 'legacy-unfenced-fixture' });
+  try { assert.equal(listResources({ root }).find(row => row.name === 'gate').holders.length, 2); }
+  finally { legacy.release(); }
+  assert.equal(listResources({ root }).find(row => row.name === 'gate').holders.length, 1,
+    'the short legacy run already left before the receipt is captured');
+}, { timing: true, remote: false, onReceipt: value => { receipt = value; } });
+assert.equal(receipt.exclusive, false, 'a number measured beside an unfenced client cannot claim isolation');
+assert.ok(receipt.unfencedClients.some(client => client.agent === 'legacy-unfenced-fixture'));
 `);
 });
