@@ -47,8 +47,7 @@ export function intakeFixture(t) {
   mkdirSync(join(fork, 'relay'), { recursive: true });
   mkdirSync(join(fork, 'test'), { recursive: true });
   writeFileSync(join(fork, 'relay', 'outside.js'), 'export const outside = true;\n');
-  writeFileSync(join(fork, 'test', 'contribution.test.js'), "import { test } from 'node:test'; import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto'; import { outside } from '../relay/outside.js'; test('outside change [V2]',()=>assert.equal(outside,true));\n");
+  writeFileSync(join(fork, 'test', 'contribution.test.js'), "import { test } from 'node:test'; import assert from 'node:assert/strict'; import { outside } from '../relay/outside.js'; test('outside change [V2]',()=>assert.equal(outside,true));\n");
   box.git(fork, 'add', '-A');
   box.git(fork, 'commit', '-q', '--author', 'Outside Contributor <outside@example.test>', '-m', 'feat: outside fixture\n\nSigned-off-by: Outside Contributor <outside@example.test>');
   const commit = box.git(fork, 'rev-parse', 'HEAD');
