@@ -5,6 +5,7 @@
  * get from next now. The order is the board's own buildOrder, never a second copy, so the queue and
  * next cannot disagree. It is for agents and coordinators; the person reads the Roadmap instead.
  */
+import { itemAuthorProblem } from './item-authors.js';
 import { Refused } from './refused.js';
 import { itemFileCollisions } from './item-files.js';
 import {
@@ -55,11 +56,11 @@ function waitsOf(board, item, inFlight) {
  * @param {any} board
  * @returns {{ releases: { name: string, landed: number, total: number, items: any[] }[], unreleased: any[], first: Record<string, number | null> }}
  */
-export function workQueue(board) {
+export function workQueue(board, reviewer = null) {
   const now = board.clock.now().getTime();
   const release = milestonePriorities(board);
   const planned = roadmap(board, (reference) => ({ id: reference, title: reference, status: 'unavailable' }));
-  const items = listItems(board).sort(buildOrder(board));
+  const items = listItems(board).filter(item => !reviewer || item.item_status !== 'submitted' || !itemAuthorProblem(board, item, reviewer)).sort(buildOrder(board));
   const inFlight = listItems(board, { all: true });
   const entry = (item) => ({ id: item.item_id, title: item.item_title, route: item.item_route, lane: item.item_lane,
     status: item.item_status, holder: holderOf(item, now), waits: waitsOf(board, item, inFlight) });
@@ -104,9 +105,9 @@ export function sayQueue(io, queue) {
  * @param {(work: (board: any) => any) => any} read - opens the board for one read
  * @returns {number}
  */
-export function queueCommand(io, words, read) {
+export function queueCommand(io, words, read, reviewer = () => null) {
   if (words.some((word) => word !== undefined)) throw new Refused('USAGE', 'pullboard queue takes no arguments');
-  const queue = read((board) => workQueue(board));
+  const queue = read((board) => workQueue(board, reviewer(board)));
   io.result?.(queue);
   sayQueue(io, queue);
   return 0;

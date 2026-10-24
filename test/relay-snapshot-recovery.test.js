@@ -75,6 +75,8 @@ test('a delayed native checkpoint recovers the real page after its visible timeo
   await chrome.waitFor('document.querySelector("#relay-notice")?.textContent.includes(' + JSON.stringify(timeoutText) + ')', // budget: hang ceiling for observing the declared fifteen-second checkpoint timeout; no throughput claim.
     45_000, 'actual fifteen-second native checkpoint timeout');
   assert.ok(Date.now() - started >= 14_000, 'the production wait elapsed; no clock or fetch was replaced'); // budget: declared fifteen-second native checkpoint wait (14000ms lower bound).
+  assert.equal(await chrome.evaluate('document.querySelector("#relay-notice").textContent.includes("Pending event #1")'), true,
+    'the timeout retains the received pending event while checkpoint items remain authoritative');
   assert.equal(await chrome.evaluate('document.querySelector("#chain").textContent.includes(' + JSON.stringify(recovered) + ')'), false);
 
   const native = openBoard(join(box.root, '.git', 'pullboard', 'board.sqlite'));
@@ -106,6 +108,8 @@ test('a delayed native checkpoint recovers the real page after its visible timeo
   // Inspect immediately, before another event can incidentally clear the failure.
   assert.equal(await chrome.evaluate('document.querySelector("#relay-notice").textContent.includes(' + JSON.stringify(timeoutText) + ')'), false,
     'successful authenticated state recovery clears the timeout notice');
+  assert.equal(await chrome.evaluate('document.querySelector("#relay-notice").textContent.includes("Pending event #1")'), false,
+    'only the covering authenticated checkpoint clears the pending mark');
   await chrome.evaluate('refresh()');
   await chrome.waitFor('document.querySelector("#chain")?.textContent.includes(' + JSON.stringify(recovered) + ')');
   assert.ok(streams() > streamsBeforeRecovery, 'the fatal old stream is replaced by a real authorized SSE connection');

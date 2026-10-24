@@ -1,5 +1,6 @@
 /** Sealed review validation and immutable acceptance projections [E8,H16]. */
 import { Refused } from './refused.js';
+import { verdictAssurance } from './verdict-assurance.js';
 
 /** Validate a sealed review without consulting Git or changing either replica [E8,H16]. */
 export function verdictReviewProblem(review, commit, { checked } = {}) {
@@ -28,7 +29,7 @@ export function verdictsFor(board, id) {
   return verdicts.map((verdict, index) => {
     let detail = {};
     try { detail = JSON.parse(receipts[index]?.event_detail ?? '{}'); } catch { /* Malformed legacy details remain unknown. */ }
-    return { ...verdict, check: detail.check ?? 'unknown', ...(detail.review ? { review: detail.review } : {}),
+    return { ...verdict, assurance: verdictAssurance(board, verdict), check: detail.check ?? 'unknown', ...(detail.review ? { review: detail.review } : {}),
       ...(Object.hasOwn(detail, 'environment') ? { environment: detail.environment } : {}) };
   });
 }
