@@ -105,7 +105,7 @@ const NOT_MOVES = {
   CHECKOUT_BUSY: 'a hook gives up waiting for a checkout another command holds, before any item move',
   UNMERGED_SCHEMA: 'shared-board schema compatibility checked before a command opens the database',
   PERSON_SIGNED: 'a person-only move on a board that signs person moves needs a passkey; no item move is person-only',
-  PERSON_SIGNING_CORRUPT: 'the signing policy record is read before ordering any move; it is no item lifecycle rule',
+  PERSON_SIGNING_CORRUPT: 'the stored relay key is read when a command fetches the relay\'s authority, before any move; it is no item lifecycle rule',
 };
 
 /**
@@ -129,6 +129,8 @@ const NON_MOVE_ENTRY_POINTS = [
   'cli.js#refuseRemoteCoordinatorModel',
   // Child-process commands may be serialized into scripts, so audit this exported setup guard directly.
   'resources.js#gateSlotEnvironment',
+  // Before a person command, the relay's authority is read and compared with the board's stored key (#408).
+  'person-signing-cli.js#pinRelayAuthority',
 ];
 
 /** Board functions handed a function to call, and the one the CLI and the runner hand them. */
@@ -163,6 +165,8 @@ const CAUGHT = {
   // Only an unsupported historical grammar is ignored; new caller refusals remain audited below.
   'rigor-auto-source.js#automaticDecisionSource': ['spec.js#parseSpec'],
   'rigor-auto-source.js#rigorDecisionKey': ['spec.js#parseSpec'],
+  // A passkey row proof is a non-throwing boundary: an answer it cannot rebuild makes the proof false (#408).
+  'person-row-proof.js#signedRowDecisionsMatch': ['blueprints.js#answerQuestion'],
 };
 
 /**
