@@ -142,6 +142,46 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
     Object.defineProperties(entry.state, Object.getOwnPropertyDescriptors(value));
   }
 
+  /** Keep newer received events visible while only a native checkpoint may replace item state. */
+  function checkpointState(entry, state, sequence) {
+    const pending = (entry.state?.pendingEvents ?? []).filter(event => event.sequence > sequence);
+    delete state.pendingEvents;
+    if (pending.length) state.pendingEvents = pending;
+    const requests = (entry.state?.personRequests ?? []).filter(request => request.sequence > sequence);
+    if (requests.length) {
+      const known = new Set((state.personRequests ?? []).map(request => request.id));
+      state.personRequests = [...(state.personRequests ?? []), ...requests.filter(request => !known.has(request.id))];
+    }
+    return state;
+  }
+
+  /** Advance the checkpoint cursor independently of the already authenticated event prefix. */
+  function installCheckpoint(entry, state, sequence) {
+    installState(entry, checkpointState(entry, state, sequence));
+    entry.checkpointCursor = sequence;
+    entry.cursor = Math.max(entry.cursor, sequence);
+  }
+
+  /** Poll in the cursor queue without blocking later events while the native publisher is behind. */
+  function pendingCheckpoint(entry) {
+    if (entry.snapshotPolling || !entry.state?.pendingEvents?.length || access.signal.aborted) return;
+    entry.snapshotPolling = true;
+    entry.snapshotTimer = setTimeout(() => {
+      entry.snapshotTimer = null;
+      if (access.signal.aborted || paired.get(entry.id) !== entry) { entry.snapshotPolling = false; return; }
+      void enqueue(entry, async () => {
+        const previous = entry.checkpointCursor;
+        await snapshot(entry);
+        if (access.signal.aborted || paired.get(entry.id) !== entry) return;
+        notice();
+        if (entry.checkpointCursor !== previous) onUpdate();
+      }).catch(error => {
+        if (access.signal.aborted || paired.get(entry.id) !== entry) return;
+        failure = error.message; failureBoard = entry.id; notice();
+      }).finally(() => { entry.snapshotPolling = false; pendingCheckpoint(entry); });
+    }, 1000);
+  }
+
   /** Discard decrypted memory and this document when relay authorization is lost. */
   async function denied(error) {
     if (accessLost) return;
@@ -206,6 +246,12 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
       paragraph.textContent = text;
       element.append(paragraph);
     }
+    for (const entry of paired.values()) for (const event of entry.state?.pendingEvents ?? []) {
+      const paragraph = document.createElement('p');
+      const operation = String(event.operation).replace(/([a-z])([A-Z])/gu, '$1 $2').toLowerCase();
+      paragraph.textContent = 'Pending event #' + event.sequence + ' on ' + entry.repository + ': ' + operation + (event.title ? ' — ' + event.title : '');
+      element.append(paragraph);
+    }
     // A phone has no local-view screen to fall back to: keep its shell and the real reason until a board is readable.
     const root = document.documentElement;
     const phoneWaiting = root.dataset.relayDevice === 'phone' && (!rendered || paired.size === 0);
@@ -251,11 +297,11 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
   function historyFor(entry) {
     entry.history ??= createPhoneHistory({
       active: () => !accessLost && paired.get(entry.id) === entry,
-      current: () => ({ id: entry.pages?.id, sequence: entry.cursor }),
+      current: () => ({ id: entry.pages?.id, sequence: entry.checkpointCursor }),
       install(full, details) {
         const state = presentationState(full, entry.id);
         if (details) state.items = state.items.map(item => details.get(item.id) ?? item);
-        installState(entry, { ...state, historyProgress: entry.history.status() });
+        installState(entry, checkpointState(entry, { ...state, historyProgress: entry.history.status() }, entry.checkpointCursor));
         entry.historyChanged = true;
       },
       changed() {
@@ -303,12 +349,15 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
       });
       if (accessLost) throw accessError;
       const unchanged = entry.pages?.id === page.id && entry.state;
-      if (row.sequence >= entry.cursor && !unchanged) {
+      if (row.sequence >= entry.checkpointCursor && !unchanged) {
         const value = await page.presentation();
         if (accessLost) throw accessError;
-        installState(entry, presentationState(value, entry.id));
-        entry.shouts = null; entry.cursor = row.sequence;
+        installCheckpoint(entry, presentationState(value, entry.id), row.sequence);
+        entry.shouts = null;
+      } else if (unchanged && row.sequence > entry.checkpointCursor) {
+        installCheckpoint(entry, { ...entry.state }, row.sequence);
       }
+      if (row.sequence < entry.checkpointCursor) return;
       entry.pages = page;
       const history = historyFor(entry);
       history.queue(page, row.sequence);
@@ -321,23 +370,11 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
     const state = snapshotState(value, entry.id);
     if (accessLost) throw new Error('Sign in again to read this board.');
     entry.snapshotTag = response.headers.get('etag');
-    if (row.sequence >= entry.cursor) {
+    if (row.sequence >= entry.checkpointCursor) {
       entry.history?.close(); entry.history = null; entry.pages = null; entry.pageCache?.clear();
-      installState(entry, state);
+      installCheckpoint(entry, state, row.sequence);
       entry.shouts = Array.isArray(value.presentation?.shouts) ? value.presentation.shouts : null;
-      entry.cursor = row.sequence;
     }
-  }
-
-  /** Wait for an acknowledged device snapshot instead of consuming an event with no projection. */
-  async function waitForSnapshot(entry, sequence) {
-    const deadline = Date.now() + 15000;
-    while (Date.now() < deadline) {
-      await snapshot(entry);
-      if (entry.state && entry.cursor >= sequence) return;
-      await new Promise(resolveSnapshot => setTimeout(resolveSnapshot, 100));
-    }
-    throw new Error('The relay snapshot has not caught up to this move. Retry this board.');
   }
 
   /** Apply a sealed presentation in strict sequence; newer executable formats are never guessed. */
@@ -372,13 +409,15 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
     if (move.engine !== ENGINE_VERSION) throw new Refused('RELAY_ENGINE_VERSION', 'This board needs engine ' + move.engine + '; this browser reads engine ' + ENGINE_VERSION + '. Upgrade the browser client.');
     if (move.presentation) {
       entry.history?.close(); entry.history = null; entry.pages = null; entry.pageCache?.clear();
-      installState(entry, presentationState(move.presentation, entry.id));
+      installCheckpoint(entry, presentationState(move.presentation, entry.id), row.event_id);
       entry.shouts = Array.isArray(move.presentation.shouts) ? move.presentation.shouts : null;
       entry.cursor = row.event_id;
     } else {
-      // A snapshot may be uploaded just after this ACK and compact the event immediately. Keep
-      // the cursor where it is until a valid snapshot actually covers this row.
-      await waitForSnapshot(entry, row.event_id);
+      const title = move.args?.find(value => value && typeof value === 'object' && typeof value.title === 'string')?.title;
+      entry.state.pendingEvents ??= [];
+      entry.state.pendingEvents.push({ sequence: row.event_id, operation: move.operation ?? move.event?.event_kind ?? 'move', ...(title ? { title } : {}) });
+      entry.cursor = row.event_id;
+      pendingCheckpoint(entry);
     }
   }
 
@@ -512,7 +551,7 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
       if (paired.has(board.id) && pair?.board !== board.id && encodeBoardKey(paired.get(board.id).key) === encoded) continue;
       if (!encoded) continue;
       try {
-        const entry = { id: board.id, repository: board.repository, key: decodeBoardKey(encoded), cursor: -1, state: null, shouts: null, outbox: null };
+        const entry = { id: board.id, repository: board.repository, key: decodeBoardKey(encoded), cursor: -1, checkpointCursor: -1, state: null, shouts: null, outbox: null };
         await snapshot(entry);
         await catchUp(entry);
         if (accessLost) throw new Error('Sign in again to read this board.');
@@ -530,6 +569,7 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
           try { sessionStorage.removeItem(PENDING); } catch { /* Device storage can be unavailable. */ }
         }
         subscribe(entry);
+        pendingCheckpoint(entry);
       } catch (error) {
         if (['NO_BOARD', 'NO_SNAPSHOT'].includes(error?.code) || /\[(?:NO_BOARD|NO_SNAPSHOT)\]/u.test(error.message)) {
           waitForFirstSnapshot({ id: board.id, repository: board.repository });
