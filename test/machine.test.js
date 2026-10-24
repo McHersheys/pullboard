@@ -8,7 +8,7 @@ import { submitFixture } from './board-submit-fixture.js';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
@@ -1405,8 +1405,9 @@ test('the board refuses a status written outside moveItem at run time, however i
 test('a helper added to the board that changes a status outside moveItem is refused when it runs [M1]', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'pullboard-planted-'));
   try {
-    for (const file of readdirSync(new URL('../src/', import.meta.url)).filter((name) => name.endsWith('.js'))) {
+    for (const file of readdirSync(new URL('../src/', import.meta.url), { recursive: true }).filter((name) => name.endsWith('.js'))) {
       const source = fromDisk(file);
+      mkdirSync(dirname(join(dir, file)), { recursive: true });
       writeFileSync(join(dir, file), file === 'board.js' ? `${source}\nexport function reopenByHand(board, id) {\n  board.db.prepare("update item set item_status = 'open', item_owner = null, item_lease_until = null where item_id = ?").run(id);\n}\n` : source);
     }
     const copy = await import(pathToFileURL(join(dir, 'board.js')).href);
