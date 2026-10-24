@@ -278,17 +278,37 @@ test('resume batches first decision answers and parent identities without changi
     insert.run(at, 'coordinator', 'coordinator', `first ${n}`, 0, ask);
     insert.run(new Date(now).toISOString(), 'coordinator', 'coordinator', `later ${n}`, 0, ask);
   }
+  const personAsk = Number(insert.run(new Date(now).toISOString(), 'coordinator', 'person', 'person choice', 1, null).lastInsertRowid);
   const expected = asks.flatMap(id => {
     const { decision_answer: answer } = store.shoutDetails(board, id);
     return answer ? [answer] : [];
   });
   assert.deepEqual(store.decisionAnswers(board), expected, 'the oldest answer stays authoritative, including historical duplicate replies');
+  const originalPrepare = DatabaseSync.prototype.prepare;
+  let sql;
+  DatabaseSync.prototype.prepare = function (statement, ...args) {
+    if (this === board.db && statement.includes('SELECT reply.* FROM shout ask')) sql = statement;
+    return originalPrepare.call(this, statement, ...args);
+  };
+  try { store.decisionAnswers(board); }
+  finally { DatabaseSync.prototype.prepare = originalPrepare; }
+  const plan = board.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all().map(row => row.detail);
+  assert.ok(plan.some(line => /SEARCH ask USING .*shout_open_decision/u.test(line)), plan.join('\n'));
+  assert.ok(plan.some(line => /SEARCH first USING .*shout_answers/u.test(line)), plan.join('\n'));
+  assert.ok(!plan.some(line => /^SCAN (?:ask|reply|first|shout)\b/u.test(line)), plan.join('\n'));
   const rows = coordinatorDecisionSections(board, { clock: { now: () => new Date(now) } });
+  assert.deepEqual(rows.openDecisions.map(row => row.id), [asks[0]]);
+  assert.deepEqual(rows.personQuestions.map(row => row.id), [personAsk]);
   assert.deepEqual(rows.recentAnswers.map(row => row.answer), expected.filter(row => {
     const age = now - Date.parse(row.shout_at);
     return age >= 0 && age <= 86400000;
   }).map(row => row.shout_text));
+  const agent = board.db.prepare('INSERT INTO agent(agent_id,agent_lane,agent_path,agent_created_at) VALUES(?,?,?,?)');
+  agent.run('core-absent', 'core', '/old/absent', new Date(now).toISOString());
+  agent.run('core-empty', 'core', '/old/empty', new Date(now).toISOString());
   board.db.prepare('INSERT INTO board_meta(meta_key,meta_value) VALUES(?,?)').run('agent_parent_session:coordinator', 'original-parent');
+  board.db.prepare('INSERT INTO board_meta(meta_key,meta_value) VALUES(?,?)').run('agent_parent_session:core-empty', '');
+  assert.deepEqual(store.listAgents(board).map(row => row.agent_parent_session), ['original-parent', null, '']);
   assert.deepEqual(store.listAgents(board).map(row => row.agent_parent_session),
     store.listAgents(board).map(row => agentParent(board, row.agent_id)));
 });
