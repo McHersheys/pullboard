@@ -26,7 +26,7 @@ function gitText(root, args) {
 }
 
 /** Local hooks use HEAD; CI supplies its trusted base object, never the contribution's policy. */
-function maintainersAt(root, commit, required) {
+function maintainersAt(root, commit) {
   let config;
   try { config = JSON.parse(gitText(root, ['show', commit + ':pullboard.json'])); }
   catch (error) {
@@ -36,7 +36,7 @@ function maintainersAt(root, commit, required) {
   if (!config || typeof config !== 'object' || Array.isArray(config)) {
     throw new Refused('BAD_CONFIG', 'Restore an object in the trusted pullboard.json before checking sign-offs.');
   }
-  if (config.maintainers === undefined && !required) return null;
+  if (config.maintainers === undefined) return null;
   if (!Array.isArray(config.maintainers) || config.maintainers.some(email =>
     typeof email !== 'string' || !email || email.trim() !== email || /[<>\u0000-\u001f\u007f]/u.test(email))) {
     throw new Refused('BAD_CONFIG', 'The trusted pullboard.json must contain maintainers as a list of exact author emails; ask the maintainer to correct the base branch.');
@@ -79,7 +79,7 @@ export function pendingCommitSignoffProblem(root, message) {
   const commit = head.stdout.trim();
   const policyPath = gitText(root, ['ls-tree', '-z', commit, '--', 'pullboard.json']);
   if (!policyPath) return null;
-  const maintainers = maintainersAt(root, commit, false);
+  const maintainers = maintainersAt(root, commit);
   if (maintainers === null) return null; // Other repositories have no contribution policy enabled.
   const mergePath = resolve(root, gitText(root, ['rev-parse', '--git-path', 'MERGE_HEAD']).trim());
   if (existsSync(mergePath)) {
@@ -101,5 +101,7 @@ export function contributionSignoffProblem(root, { base, head }) {
       || (base !== null && (!/^[0-9a-f]{40,64}$/u.test(base ?? '') || /^0+$/u.test(base)))) {
     throw new Refused('BAD_CONFIG', 'The sign-off check needs exact base and head commit ids from the CI event.');
   }
-  return rangeProblem(root, [head], base, maintainersAt(root, base ?? head, true));
+  const maintainers = base === null ? null : maintainersAt(root, base);
+  if (maintainers === null) return { checked: 0, problem: null, policyInactive: true };
+  return rangeProblem(root, [head], base, maintainers);
 }
