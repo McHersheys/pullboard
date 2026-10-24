@@ -169,12 +169,29 @@ test('ordinary resume reads its indexed work card with at most four Git processe
   assert.match(renamed.result.stdout, /2 files uncommitted/u, 'a renamed path with whitespace counts once alongside the new file');
 });
 
+/** Unrelated reads retain the original one-process repository miss and never request resume-only blobs. */
+test('ordinary Git scopes skip resume blobs and empty repository failures do not retry [C7,N19]', t => {
+  const box = fixture(t);
+  const standard = readFactScenario(box, box.worker, `const { repoInfo, mainSourceBlobs } = await import(${JSON.stringify(GIT_MODULE)});
+    console.log(JSON.stringify(await withGitFacts(() => { const info = repoInfo(process.argv[1]);
+      return { head: headCommit(info.root), blobs: mainSourceBlobs(info.root) }; })));`);
+  assert.equal(standard.head, box.git(box.worker, 'rev-parse', 'HEAD'));
+  assert.equal(standard.blobs, null, 'only explicit resume scopes request committed source identities');
+  writeFileSync(box.calls, '');
+  const outside = readFactScenario(box, box.dir, `const { repoInfo } = await import(${JSON.stringify(GIT_MODULE)});
+    console.log(JSON.stringify(await withGitFacts(() => { try { repoInfo(process.argv[1]); return null; }
+      catch (error) { return error.code; } })));`);
+  assert.equal(outside, 'NOT_A_REPO');
+  assert.equal(readFileSync(box.calls, 'utf8').trim().split('\n').filter(Boolean).length, 1,
+    'an empty failed rev-parse goes directly to the filesystem bare-check rather than retrying Git');
+});
+
 /** Optional committed-source facts never replace Git's repository or detached-HEAD semantics. */
 test('combined Git source facts retain repository identity when optional doctrine is missing [C7,N19]', t => {
   const box = fixture(t);
   const script = `const { repoInfo, mainSourceBlobs, mainCheckout } = await import(${JSON.stringify(GIT_MODULE)});
     console.log(JSON.stringify(await withGitFacts(() => { const info = repoInfo(process.argv[1]);
-      return { info, head: headCommit(info.root), main: mainCheckout(info.root), blobs: mainSourceBlobs(info.root) }; })));`;
+      return { info, head: headCommit(info.root), main: mainCheckout(info.root), blobs: mainSourceBlobs(info.root) }; }, { resumeSources: true })));`;
   const present = readFactScenario(box, box.worker, script);
   assert.equal(present.head, box.git(box.worker, 'rev-parse', 'HEAD'));
   assert.equal(present.blobs.config, box.git(box.repo, 'rev-parse', 'HEAD:pullboard.json'));

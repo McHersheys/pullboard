@@ -255,7 +255,7 @@ export async function main(argv, streams) {
   // Version and help ask Git nothing, so they never load it.
   if (asksGitNothing(argv)) return runMain(argv, streams);
   const { withGitFacts } = await import('./git.js');
-  return withGitFacts(() => runMain(argv, streams));
+  return withGitFacts(() => runMain(argv, streams), { resumeSources: argv[0] === 'resume' });
 }
 
 /** Parse and execute one CLI command, binding its checkout session and Git-fact scope. */

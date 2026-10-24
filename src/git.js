@@ -48,8 +48,8 @@ export function withGitReadFacts(work) {
  * @param {() => unknown} work
  * @returns {Promise<unknown>}
  */
-export async function withGitFacts(work) {
-  const cache = { active: true, facts: new Map() };
+export async function withGitFacts(work, { resumeSources = false } = {}) {
+  const cache = { active: true, facts: new Map(), resumeSources };
   const run = () => gitFacts.run(cache, async () => {
     try { return await work(); }
     finally {
@@ -547,21 +547,26 @@ export function repoInfo(cwd, { env } = {}) {
  */
 function readRepoInfo(cwd, env) {
   const combined = !env && gitFacts.getStore()?.active && plainRepositoryEnvironment();
-  const primary = combined ? ['HEAD^{commit}', 'main-worktree/HEAD^{commit}', '--git-path', 'hooks', 'main-worktree/HEAD:pullboard.json', 'main-worktree/HEAD:DOCTRINE.md', '--symbolic-full-name', 'main-worktree/HEAD'] : [];
+  const resumeSources = combined && gitFacts.getStore().resumeSources;
+  const optional = ['main-worktree/HEAD:pullboard.json', 'main-worktree/HEAD:DOCTRINE.md'];
+  const primary = combined ? ['HEAD^{commit}', 'main-worktree/HEAD^{commit}', '--git-path', 'hooks',
+    ...(resumeSources ? optional : []), '--symbolic-full-name', 'main-worktree/HEAD'] : [];
   const info = tryGit(cwd, ['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-dir', '--git-common-dir', ...primary], { env });
   const fields = info.stdout.split('\n');
   /** Recognize full SHA-1 or SHA-256 object identities before accepting a partial optional response. */
   const oid = value => /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(value ?? '');
   const baseValid = fields.length >= 6 && fields.slice(0, 3).every(isAbsolute)
     && oid(fields[3]) && oid(fields[4]) && isAbsolute(fields[5]);
-  const optional = ['main-worktree/HEAD:pullboard.json', 'main-worktree/HEAD:DOCTRINE.md'];
-  const missingOptional = info.status !== 0 && (fields.length === 7 && fields[6] === optional[0]
+  const missingOptional = resumeSources && info.status !== 0 && (fields.length === 7 && fields[6] === optional[0]
     || fields.length === 8 && oid(fields[6]) && fields[7] === optional[1]);
-  if (combined && (!baseValid || info.status !== 0 && !missingOptional)) return readRepoInfo(cwd, process.env);
+  if (combined && info.stdout && (!baseValid || info.status !== 0 && !missingOptional)) return readRepoInfo(cwd, process.env);
   if (combined && baseValid) {
-    const [root, , , head, commit, hooks, config, doctrine, branch] = fields;
-    const suffixValid = missingOptional || (fields.length === 8 || fields.length === 9)
-      && oid(config) && oid(doctrine) && (branch === undefined || branch.startsWith('refs/'));
+    const [root, , , head, commit, hooks] = fields;
+    const [config, doctrine] = resumeSources ? fields.slice(6, 8) : [];
+    const branch = fields[resumeSources ? 8 : 6];
+    const suffixValid = missingOptional || (resumeSources
+      ? (fields.length === 8 || fields.length === 9) && oid(config) && oid(doctrine)
+      : fields.length === 6 || fields.length === 7) && (branch === undefined || branch.startsWith('refs/'));
     if (!suffixValid) return readRepoInfo(cwd, process.env);
     const { facts } = gitFacts.getStore();
     facts.set(`gitPath:${JSON.stringify([resolve(root), 'hooks'])}`, resolve(root, hooks));
