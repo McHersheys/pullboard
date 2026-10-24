@@ -117,11 +117,12 @@ function parallelHistory() {
     ({ event_id: index + 1, event_at: new Date(BASE + minute * 60_000).toISOString(), event_kind: kind, item_id: item, event_by: by }));
 }
 
-test('board reviewer ratio bounds starts while fixed reviewer capacity preserves work [R1,R2]', () => {
+test('the shared total WIP cap retains fractional limits without manufacturing stage capacity [R1,R2]', () => {
   const input = parallelHistory();
   const low = replayFlow(input, { settings: { wipPerReviewer: 1.5 } });
   const high = replayFlow(input, { settings: { wipPerReviewer: 3 } });
-  assert.equal(low.replay.items[2].claimAt, new Date(BASE + 4 * 60_000).toISOString());
+  assert.deepEqual(low.replay.items.map(item => item.claimAt), [0, 5, 10, 15].map(minute => new Date(BASE + minute * 60_000).toISOString()),
+    'ratio1.5 with one reviewer admits one total item until its verdict, not two builders plus reviews');
   assert.equal(high.replay.items[2].claimAt, new Date(BASE).toISOString());
   for (const result of [low, high]) {
     assert.equal(result.replay.stages.build.medianMinutes, 4);
@@ -139,22 +140,24 @@ test('board replay controls validate their named ranges and keep off values expl
 });
 
 
-test('reviews-first changes a ready shared seat without preempting recorded work [R1,R2]', () => {
-  const rows = [[0, 'add', 1, 'coordinator'], [0, 'claim', 1, 'builder'],
-    [1, 'submit', 1, 'builder'], [1, 'reserve', 1, 'shared'], [1, 'add', 2, 'coordinator'],
-    [2, 'accept', 1, 'shared'], [2, 'claim', 2, 'shared'], [3, 'submit', 2, 'shared'],
-    [3, 'reserve', 2, 'reviewer'], [3, 'merged', 1, 'coordinator'],
-    [4, 'accept', 2, 'reviewer'], [5, 'merged', 2, 'coordinator']];
-  const events = rows.map(([minute, kind, item, by], index) => ({ event_id: index + 1,
-    event_at: new Date(BASE + minute * 60_000).toISOString(), event_kind: kind, item_id: item, event_by: by }));
-  const buildsFirst = replayFlow(events, { order: [2, 1], settings: { reviewsFirst: false } });
-  const reviewsFirst = replayFlow(events, { order: [2, 1], settings: { reviewsFirst: true } });
-  assert.equal(buildsFirst.replay.items[0].stages.reviewWait, 2,
-    'the prioritized second item takes the shared build seat, then the one observed review place');
-  assert.equal(reviewsFirst.replay.items[0].stages.reviewWait, 0);
-  assert.equal(reviewsFirst.replay.items[1].claimAt, new Date(BASE + 2 * 60_000).toISOString());
+test('reviews-first changes a shared seat only above the native submitted threshold [R1,R2]', () => {
+  const rows = [];
+  for (let id = 1; id <= 4; id += 1) rows.push([0, 'add', id, 'coordinator'], [0, 'claim', id, `builder-${id}`],
+    [1, 'submit', id, `builder-${id}`], [id, 'reserve', id, 'shared'], [id + 1, 'accept', id, 'shared'],
+    [id + 2, 'merged', id, 'coordinator']);
+  rows.push([1, 'add', 5, 'coordinator'], [5, 'claim', 5, 'shared'], [6, 'submit', 5, 'shared'],
+    [6, 'reserve', 5, 'reviewer'], [7, 'accept', 5, 'reviewer'], [8, 'merged', 5, 'coordinator']);
+  const input = events(rows.sort((a, b) => a[0] - b[0]));
+  const buildsFirst = replayFlow(input, { order: [5, 1, 2, 3, 4], settings: { reviewsFirst: false } });
+  const reviewsFirst = replayFlow(input, { order: [5, 1, 2, 3, 4], settings: { reviewsFirst: true } });
+  assert.equal(buildsFirst.replay.items[0].stages.reviewWait, 1);
+  assert.equal(reviewsFirst.replay.items[0].stages.reviewWait, 0,
+    'four submitted items exceed the default3 threshold for one currently active reviewer');
+  assert.equal(reviewsFirst.replay.items[4].claimAt, new Date(BASE + 2 * 60_000).toISOString(),
+    'after one verdict leaves only3 submissions, the explicit build order resumes without preemption');
+  const below = replayFlow(rework(), { settings: { reviewsFirst: true } });
+  assert.equal(below.replay.items[0].cycleMinutes, 10, 'one submitted item does not trigger review priority');
 });
-
 
 test('landing cadence starts at actual admitted work when its recorded seat is busy [R1,R2]', () => {
   const rows = [[0, 'add', 1, 'coordinator'], [0, 'add', 2, 'coordinator'],
@@ -170,3 +173,22 @@ test('landing cadence starts at actual admitted work when its recorded seat is b
   assert.equal(result.replay.items[1].landedAt, new Date(BASE + 12 * 60_000).toISOString(),
     'the next batch waits for actual prior start plus cadence and prior completion');
 });
+
+
+test('active reviewers follow the moving simulated sixty-minute event window [R1,R2,H16]', () => {
+  const rows = [];
+  for (let id = 1; id <= 6; id += 1) {
+    const start = id <= 2 ? 0 : 70;
+    rows.push([start, 'add', id, 'coordinator'], [start, 'claim', id, `builder-${id}`],
+      [start + 1, 'submit', id, `builder-${id}`], [start + 1, 'reserve', id, `reviewer-${id}`],
+      [start + 2, 'accept', id, `reviewer-${id}`], [start + 3, 'merged', id, 'coordinator']);
+  }
+  const input = events(rows.sort((a, b) => a[0] - b[0]));
+  const result = replayFlow(input, { settings: { wipPerReviewer: 2 } });
+  assert.deepEqual(result.replay.items.map(item => item.claimAt), [0, 0, 70, 70, 71, 71].map(minute => atMinute(minute)),
+    'future reviewers do not inflate admission; expired first-wave reviewers leave a minimum-one window until new reservations occur');
+  assert.deepEqual(replayFlow([...input].reverse(), { settings: { wipPerReviewer: 2 } }), result);
+});
+
+/** Expected fixture instants are arithmetic on recorded minutes, never wall-clock samples. */
+function atMinute(minute) { return new Date(BASE + minute * 60_000).toISOString(); }
