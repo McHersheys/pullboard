@@ -918,7 +918,7 @@ test('next offers the focus milestone first across review and build modes [N2,B1
   const review = box.json(box.runAs(box.session, owner.root, 'next', '--verify', '--json'));
   assert.equal(review.item.item_id, outside, 'review-only next never silently claims the focused build');
   assert.equal(review.review, true);
-  box.json(box.runAs(box.session, owner.root, 'release', String(outside), '--json'));
+  box.json(box.runAs(box.session, owner.root, 'release', String(outside), '--note', 'Continue the private focus ordering control', '--json'));
   const focusedReview = box.add('api', 'Focused review before focused build');
   const updated = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
   try {
