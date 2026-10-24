@@ -1,5 +1,6 @@
 /** Append-only withdrawal bindings and derived review-history annotations [V2,V6,H16]. */
 import { Refused } from './refused.js';
+import { VERDICT_WITHDRAW_ENGINE } from './verdict-withdraw-engine.js';
 
 /** Pair immutable verdict rows with their corresponding immutable acceptance/rejection events. */
 function verdictPairs(board, id) {
@@ -36,4 +37,11 @@ export function verdictWithdrawalTarget(board, item, agentId) {
     throw new Refused('VERDICT_WITHDRAW_FORBIDDEN', 'only the accepting reviewer or coordinator can withdraw this verdict; ask that reviewer or the coordinator');
   }
   return { verdictId: pair.verdict.verdict_id, acceptEventId: pair.event.event_id };
+}
+
+/** Preserve withdrawal option refusals before any lifecycle mutation or review-history lookup. */
+export function checkOptions(withdrawVerdict, forMerge, currentEngine) {
+  if (withdrawVerdict !== undefined && typeof withdrawVerdict !== 'boolean') throw new Refused('BAD_VERDICT_WITHDRAW', 'withdrawVerdict must be a boolean; use --withdraw-verdict');
+  if (withdrawVerdict === true && currentEngine < VERDICT_WITHDRAW_ENGINE) throw new Refused('ENGINE_VERSION', 'update Pullboard before withdrawing a verdict');
+  if (withdrawVerdict === true && forMerge) throw new Refused('BAD_VERDICT_WITHDRAW', 'withdraw a verdict or report a trunk conflict, not both');
 }

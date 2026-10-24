@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** Cockpit agents checks, using the shared real-board fixtures [N26]. */
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
@@ -230,6 +231,21 @@ test('agent model display names follow the API on phone and desktop [O8,N26]', {
   };
   try {
     chrome = await openSnapshotChrome(executable, view.link.href, profile);
+    await chrome.stable(`(() => {
+      const nativeFetch = window.fetch.bind(window);
+      window.__modelDetailDelay = { started: 0, completed: 0, milliseconds: 5000 };
+      /** Keep the summary heading visible while the verified item's detail is in flight. */
+      window.fetch = async (...args) => {
+        const path = new URL(typeof args[0] === 'string' ? args[0] : args[0].url, location.href).pathname;
+        if (path.startsWith('/api/v1/boards/') && path.endsWith('/items/2')) {
+          window.__modelDetailDelay.started += 1;
+          await new Promise(resolve => setTimeout(resolve, window.__modelDetailDelay.milliseconds));
+          window.__modelDetailDelay.completed += 1;
+        }
+        return nativeFetch(...args);
+      };
+      return true;
+    })()`);
     await settled(chrome, "data?.project?.agents?.length === 3 && !!document.querySelector('#chain [data-item=\"1\"]')");
     for (const style of ['suffix', 'prefix']) {
       if (style === 'prefix') {
@@ -256,15 +272,21 @@ test('agent model display names follow the API on phone and desktop [O8,N26]', {
         assert.equal(await text('#chain [data-item="1"] .chip'), expected.builder, `${at}: item row holder`);
         assert.equal(await text('#chain [data-item="3"] .chip'), expected.unknown, `${at}: unknown model row`);
         await press(chrome, 'document.querySelector("#chain [data-item=\\"1\\"]")');
-        await settled(chrome, 'view.item === 1 && !!document.querySelector("#detail h2")');
+        await settled(chrome, `view.item === 1 && !!document.querySelector("#detail h2") && !document.querySelector('#detail [aria-busy="true"]')`);
         assert.ok((await text('#detail')).includes(expected.builder), `${at}: held item detail`);
         assert.equal(await text('#needs .row[data-go^="decide:"] .meta'), 'NEEDS YOU a decision, asked by ' + expected.reviewer, `${at}: Needs-you decision author`);
         assert.ok((await text('#needs .row[data-go="tab:shouts"] .meta')).includes('lane held by ' + expected.reviewer), `${at}: Needs-you lane holder`);
         await chooseFilter(chrome, 'state:verified');
         await settled(chrome, '!!document.querySelector("#chain [data-item=\\"2\\"]")');
         await press(chrome, 'document.querySelector("#chain [data-item=\\"2\\"]")');
-        await settled(chrome, 'view.item === 2 && !!document.querySelector("#detail h2")');
+        await settled(chrome, `view.item === 2 && !!document.querySelector("#detail h2") && !document.querySelector('#detail [aria-busy="true"]') && !!document.querySelector('#detail .verdict .by')`);
         const detail = await text('#detail');
+        const detailState = JSON.parse(await chrome.stable(`JSON.stringify({
+          heading: !!document.querySelector('#detail h2'),
+          busy: !!document.querySelector('#detail [aria-busy="true"]'),
+          verdict: !!document.querySelector('#detail .verdict .by'), delay: window.__modelDetailDelay })`));
+        t.diagnostic(JSON.stringify({ checkpoint: at, ...detailState,
+          capturedText: detail, builderPresent: detail.includes(expected.builder), reviewerPresent: detail.includes(expected.reviewer) }));
         assert.ok(detail.includes(expected.builder) && detail.includes(expected.reviewer), `${at}: builder and verifier detail`);
         assert.ok((await text('#detail .verdict .by')).startsWith(expected.reviewer), `${at}: verdict identity`);
         await tab('shouts');
@@ -337,11 +359,12 @@ test('agent model display names follow the API on phone and desktop [O8,N26]', {
         assert.equal(expanded.shown, true, `${at}: the expanded row displays its detail`);
         assert.ok(expanded.agents.includes(expected.builder), `${at}: the approved Agents field uses the API display name`);
         await press(chrome, `${roadmapRow}.parentElement.querySelector('.milestone-why a[data-go="item:1"]')`);
-        await settled(chrome, 'view.tab === "items" && view.item === 1 && !!document.querySelector("#detail h2")');
+        await settled(chrome, `view.tab === "items" && view.item === 1 && !!document.querySelector("#detail h2") && !document.querySelector('#detail [aria-busy="true"]')`);
         assert.ok((await text('#detail')).includes(expected.builder), `${at}: roadmap item opens with the API identity`);
         assert.ok(await chrome.stable('document.documentElement.scrollWidth <= innerWidth'), `${at}: no sideways overflow`);
       }
     }
+    assert.ok(await chrome.stable('window.__modelDetailDelay.started >= 1'), 'the fixed delayed-detail control was exercised');
     assert.deepEqual(chrome.exceptions, [], 'all model-name views run without browser exceptions');
   } finally {
     if (chrome) await closeSnapshotChrome(chrome);

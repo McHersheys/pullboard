@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** The per-item projector the API reuses, checked against the full projection on a real board [A2,N26]. */
 import assert from 'node:assert/strict';
 import { join } from 'node:path';

@@ -1,3 +1,4 @@
+import { LAND_COLLISION_ENGINE } from './landing-collision-engine.js';
 import {
   lineOrderEnabled,
   lineBuildOrder,
@@ -36,8 +37,7 @@ import {
   readEventLogVersion,
   systemClock,
 } from './board-read-open.js';
-import { VERDICT_WITHDRAW_ENGINE } from './verdict-withdraw-engine.js';
-import { verdictWithdrawalTarget } from './verdict-withdrawal.js';
+import * as verdictWithdrawal from './verdict-withdrawal.js';
 import {
   BOARD_BUSY_TIMEOUT_MS,
   EVENT_LOG_VERSION,
@@ -118,6 +118,7 @@ import {
   boardBusyError,
 } from './board-access.js';
 import { ensureHotIndexes } from './board-hot.js';
+import { boardWriteBusyError } from './board-busy.js';
 export { boardBusyError } from './board-access.js';
 import {
   boardStanding,
@@ -186,6 +187,11 @@ import {
   rigorNoticeText,
 } from './rigor-notices.js';
 import { RIGOR_NOTICE_ENGINE } from './rigor-source.js';
+import { RIGOR_AUTO_ENGINE } from './rigor-auto-engine.js';
+import {
+  deriveRigorCause,
+  recordAutomaticRigorDrafts,
+} from './rigor-auto.js';
 import {
   causeProblem,
   requireNeverAgain,
@@ -262,10 +268,6 @@ export const REJECT_REASONS = [
 ];
 
 export { systemClock } from './board-read-open.js';
-
-
-
-
 
 export { openBoardForRead } from './board-read-open.js';
 
@@ -424,8 +426,6 @@ export { boardId } from './board-query.js';
 
 export { closeBoard } from './board-read-open.js';
 
-
-
 const TRANSACTION_DEPTH = new WeakMap();
 
 /**
@@ -441,7 +441,9 @@ const TRANSACTION_DEPTH = new WeakMap();
 export function atomic(board, work) {
   const depth = TRANSACTION_DEPTH.get(board) ?? 0;
   const savepoint = `pullboard_atomic_${depth}`;
-  board.db.exec(depth ? `SAVEPOINT ${savepoint}` : 'BEGIN IMMEDIATE');
+  const startedAt = Date.now();
+  try { board.db.exec(depth ? `SAVEPOINT ${savepoint}` : 'BEGIN IMMEDIATE'); }
+  catch (error) { throw boardWriteBusyError(board.db, startedAt, error); }
   TRANSACTION_DEPTH.set(board, depth + 1);
   const lastEvent = board.lastEvent;
   const emitted = board.emittedEvents?.length ?? 0;
@@ -492,11 +494,6 @@ export function linkPublishRepair(board, { agentId, item, repair }) {
   }
   setItem(board, repair, { item_parent_id: item });
 }
-
-
-
-
-
 
 /**
  * Register a worktree as an agent (B3): the main checkout as the one coordinator, any other
@@ -1246,8 +1243,6 @@ export function reviewReleaseNoteProblem(board, itemId, agentId, note) {
   return null;
 }
 
-
-
 /** Return a reviewer's active one-hour cooldown, if a later submission has not reset it [V1,R1]. */
 function reviewReleaseCooldown(board, itemId, agentId) {
   if ((board.executionEngineVersion ?? ENGINE_VERSION) < 5) return null;
@@ -1422,7 +1417,9 @@ export function verify(board, id, { agentId, decision, reason, note = '', cause,
     if (isAccept && sandbox && outsideSource(board, id)) saveOutsideSource(board, id, { ...outsideSource(board, id), sandbox });
     const returnedAt = !isAccept && engine >= REOPEN_FIRST_REFUSAL_ENGINE && reopenFirstRefusalMinutes > 0 && item.item_built_by ? board.clock.now() : undefined;
     const reservation = !isAccept && engine >= REOPEN_FIRST_REFUSAL_ENGINE ? firstRefusalDetail(board, item, reopenFirstRefusalMinutes, returnedAt) : {};
-    const detail = { ...reservation, reason: code, commit: item.item_commit, ...(!isAccept && cause !== undefined && cause !== null ? { cause } : {}) };
+    const derivedCause = !isAccept && engine >= RIGOR_AUTO_ENGINE
+      ? deriveRigorCause(board, item, { cause, reason: code, agentId }) : !isAccept && cause != null ? { cause } : {};
+    const detail = { ...reservation, reason: code, commit: item.item_commit, ...derivedCause };
     if (isAccept && engine >= SPEC_APPROVAL_ENGINE) detail.note = note.trim();
     if (isAccept && check !== undefined) detail.check = check;
     if (environment !== undefined) detail.environment = environment;
@@ -1450,13 +1447,10 @@ export function reopen(board, id, { agentId, note = '', conflict, cause, reopenF
   return atomic(board, () => {
     let submittedCommit = null;
     const forMerge = conflict !== undefined && conflict !== null;
-    let supersedes;
-    let landingFailure, withdrawnVerdict;
+    let supersedes, landingFailure, withdrawnVerdict;
     const forWithdrawal = withdrawVerdict === true;
     const currentEngine = board.executionEngineVersion ?? ENGINE_VERSION;
-    if (withdrawVerdict !== undefined && typeof withdrawVerdict !== 'boolean') throw new Refused('BAD_VERDICT_WITHDRAW', 'withdrawVerdict must be a boolean; use --withdraw-verdict');
-    if (forWithdrawal && currentEngine < VERDICT_WITHDRAW_ENGINE) throw new Refused('ENGINE_VERSION', 'update Pullboard before withdrawing a verdict');
-    if (forWithdrawal && forMerge) throw new Refused('BAD_VERDICT_WITHDRAW', 'withdraw a verdict or report a trunk conflict, not both');
+    verdictWithdrawal.checkOptions(withdrawVerdict, forMerge, currentEngine);
     const declaredTransition = MOVES.find((entry) => entry.verb === 'reopen');
     const transition = currentEngine >= 10 ? declaredTransition : { ...declaredTransition, from: ['submitted'] };
     const item = moveItem(board, id, 'reopen', {
@@ -1466,7 +1460,7 @@ export function reopen(board, id, { agentId, note = '', conflict, cause, reopenF
         [IN_STATE]: (found) => new Refused('NOT_SUBMITTED', `item #${id} is ${current(board, found).item_status}, not submitted`),
         // Any joined seat returns a submitted head that no longer merges, with Git's files and trunk (#807).
         reopenAuthority: (found) => {
-          if (forWithdrawal) { withdrawnVerdict = verdictWithdrawalTarget(board, found, agentId); return null; }
+          if (forWithdrawal) { withdrawnVerdict = verdictWithdrawal.verdictWithdrawalTarget(board, found, agentId); return null; }
           return (forMerge && found.item_status === 'submitted' && currentEngine >= SUBMITTED_CONFLICT_ENGINE && listAgents(board).some((agent) => agent.agent_id === agentId)
           ? null : onlyCoordinator(agentId, 'reopens submissions'));
         },
@@ -1513,13 +1507,16 @@ export function reopen(board, id, { agentId, note = '', conflict, cause, reopenF
     const returnedAt = (forMerge || landingFailure || forWithdrawal) && currentEngine >= REOPEN_FIRST_REFUSAL_ENGINE && reopenFirstRefusalMinutes > 0 && item.item_built_by ? board.clock.now() : undefined;
     const reservation = (forMerge || landingFailure || forWithdrawal) && currentEngine >= REOPEN_FIRST_REFUSAL_ENGINE ? firstRefusalDetail(board, item, reopenFirstRefusalMinutes, returnedAt) : {};
     const returned = forWithdrawal ? { supersedes, withdrawnVerdict } : forMerge ? { supersedes, ...conflictDetail(conflict) } : supersedes ? { supersedes, landingFailure } : {};
+    const derivedCause = currentEngine >= RIGOR_AUTO_ENGINE
+      ? deriveRigorCause(board, item, { cause, conflict, landingFailure, agentId }) : cause != null ? { cause } : {};
+    const returnedWithCause = currentEngine >= RIGOR_AUTO_ENGINE ? { ...returned, ...derivedCause } : { ...derivedCause, ...returned };
     logEvent(board, agentId, 'reopen', id, { commit: submittedCommit, note: note.trim() || conflictNote(conflict), judgment: null, ...reservation,
-      ...(cause !== undefined && cause !== null ? { cause } : {}), ...returned }, returnedAt);
+      ...returnedWithCause }, returnedAt);
     const trigger = board.lastEvent;
     tellFirstRefusal(board, item, reservation, persistShout);
     if (!reservation.reopenFirstRefusal && forMerge && supersedes === undefined && item.item_built_by) persistShout(board, { from: agentId, to: item.item_built_by, text: returnedHeadNotice(id, submittedCommit, conflict) });
     postRigorNotices(board, trigger);
-    return { id: item.item_id, commit: submittedCommit, ...returned };
+    return { id: item.item_id, commit: submittedCommit, ...returnedWithCause };
   });
 }
 
@@ -1910,8 +1907,6 @@ export function openRequests(board) {
     ORDER BY ask.shout_id`).all();
 }
 
-
-
 /**
  * Unread shouts for an agent, oldest first, then marked read.
  *
@@ -1981,6 +1976,10 @@ export function appendFact(board, id, { agentId, kind, text, ref = null, superse
 /** The enclosing move's transaction owns these implicit notices; older replay emits none. */
 function postRigorNotices(board, trigger) {
   if ((board.executionEngineVersion ?? ENGINE_VERSION) < RIGOR_NOTICE_ENGINE) return;
+  if ((board.executionEngineVersion ?? ENGINE_VERSION) >= RIGOR_AUTO_ENGINE) {
+    recordAutomaticRigorDrafts(board, trigger, persistShout);
+    return;
+  }
   for (const cause of newRigorNotices(events(board), trigger, { person: PERSON })) {
     persistShout(board, { from: 'rigor', to: COORDINATOR, text: rigorNoticeText(cause) });
     logEvent(board, 'rigor', 'rigor-notice', null, { cause: cause.key, items: cause.items,
@@ -2256,6 +2255,7 @@ export function holdItem(board, id, { agentId, reason }) {
     const at = now(board);
     setItem(board, id, { item_hold_reason: text, item_hold_by: agentId, item_hold_at: at });
     logEvent(board, agentId, 'hold_item', id, { reason: text });
+    if ((board.executionEngineVersion ?? ENGINE_VERSION) >= RIGOR_AUTO_ENGINE) postRigorNotices(board, board.lastEvent);
     return itemHold(board, id);
   });
 }
@@ -2474,8 +2474,23 @@ export function finishLandingBatch(board, { agentId, id, tip, landingFence }) {
       if (!item.item_merged_commit) merged(board, entry.id, { agentId, commit: entry.merge });
     }
     logEvent(board, agentId, 'main-moved', null, { sha: tip, batch: id, items: batch.items.map((entry) => entry.id) });
+    tellDeferredLandingReviews(board, batch);
     return recordLandingBatch(board, { agentId, batch: { ...batch, state: 'landed' }, revision: batch.revision, landingFence });
   });
+}
+
+/** Notify each deferred item's current audience once, in the landed transition's transaction. */
+function tellDeferredLandingReviews(board, batch) {
+  if ((board.executionEngineVersion ?? ENGINE_VERSION) < LAND_COLLISION_ENGINE) return;
+  for (const deferred of batch.blocked ?? []) {
+    if (deferred.code !== 'LAND_FILE_OVERLAP') continue;
+    const item = board.db.prepare('SELECT * FROM item WHERE item_id=?').get(deferred.id);
+    if (!item || item.item_status !== 'verified' || item.item_merged_commit) continue;
+    const reviewer = item.item_review_by ?? item.item_verified_by ?? 'coordinator';
+    persistShout(board, { from: 'landing', to: `item:${item.item_id}`,
+      text: `#${item.item_id} waited for overlapping files while batch ${batch.id} landed at ${batch.tip}. ${reviewer}: merge current main into the reviewed commit and record a fresh merge-only re-accept before the next batch; no builder cycle or reopening is needed.`,
+      detail: { item: item.item_id, batch: batch.id, files: deferred.files, reviewer } });
+  }
 }
 
 /** File or refresh an outside source through the ordinary ordered engine. */
