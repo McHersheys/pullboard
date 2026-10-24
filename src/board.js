@@ -1,4 +1,8 @@
 import { heartbeatSeat } from './seat-presence.js';
+import {
+  focusOrder,
+  focusReasons,
+} from './focus-milestone.js';
 import { ensureProofCounters } from './proof-counters.js';
 import { correctedNoVerdictReopen } from './reopen-history.js';
 import {
@@ -139,6 +143,12 @@ import {
   boardBusyError,
 } from './board-access.js';
 import { ensureHotIndexes } from './board-hot.js';
+import {
+  ensureFactIdentityIndexes,
+  factIdentityExists,
+  missingFactIdentityIndexes,
+  requireFactIdentityIndexes,
+} from './fact-identity.js';
 import { NEXT_STEPS } from './next-step-words.js';
 import { boardWriteBusyError } from './board-busy.js';
 export { boardBusyError } from './board-access.js';
@@ -354,6 +364,13 @@ export function openBoard(file, clock = systemClock, { isMain, onDiagnostic } = 
         guardStore(board);
       }
       if (standing === 'behind' || standing === 'unstamped') recordSchemaStamp(db, SCHEMA_DIGEST);
+      // Index-only upgrades keep the data version/digest unchanged. Install and restamp together;
+      // drifted or read-only stores never take this path, and old clients accept the resulting stamp.
+      if (standing !== 'drifted' && missingFactIdentityIndexes(db).length) atomic(board, () => {
+        if (boardStanding(db, SCHEMA_DIGEST, SCHEMA_VERSION) !== 'current') return;
+        ensureFactIdentityIndexes(db);
+        recordSchemaStamp(db, SCHEMA_DIGEST);
+      });
       if (standing === 'drifted') { warmCounters = false; reportDrift(file, onDiagnostic); }
     } else {
       // Read compatibility before any local effect; persistent schema belongs to trunk alone.
@@ -1313,7 +1330,7 @@ export function reserveReview(board, id, who) {
 export function reserveNextReview(board, { agentId, lane, leaseMs, policy, familyPolicy = 'off', runnable, routes, skipIds = [] }) {
   return atomic(board, () => {
     const { item, reasons } = nextFor(board, { agentId, lane, verify: true, familyPolicy, runnable, routes, skipIds });
-    return item ? { item: reserveWithin(board, item.item_id, { agentId, leaseMs, policy, familyPolicy }), reasons: [] } : { item: null, reasons };
+    return item ? { item: reserveWithin(board, item.item_id, { agentId, leaseMs, policy, familyPolicy }), reasons } : { item: null, reasons };
   });
 }
 
@@ -1873,6 +1890,7 @@ export { itemThread } from './board-query.js';
  * The internal factId is set from a sealed move's identity during replay, rather than replica-local sequence ids; a never-again with its cause is the person's alone, and rigor lists it at once (#713) [D1].
  */
 export function appendFact(board, id, { agentId, kind, text, ref = null, supersedes = null, factId = randomUUID(), implies, cause = null, neverAgain = false, asPerson = false, channel = 'terminal' }) {
+  if (board.readOnly) requireFactIdentityIndexes(board.db);
   return atomic(board, () => {
     const item = current(board, itemById(board, id));
     if (!board.db.prepare('SELECT 1 FROM agent WHERE agent_id = ?').get(agentId)) throw new Refused('NO_AGENT', `no registered agent ${agentId}; join a worktree before appending a fact`);
@@ -1882,7 +1900,7 @@ export function appendFact(board, id, { agentId, kind, text, ref = null, superse
       throw new Refused('FACT_JUDGEMENT', `only the item's live holder${isHeld(board, item) ? ' (' + item.item_owner + ')' : ''} or the coordinator may append a judgement or supersede a fact; append an observation or ask the coordinator`);
     }
     if (typeof factId !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/u.test(factId)) throw new Refused('BAD_FACT_ID', 'a fact identity is invalid; retry with the current Pullboard engine');
-    if (board.db.prepare("SELECT 1 FROM event WHERE event_kind = 'fact' AND json_extract(event_detail, '$.id') = ?").get(factId)) throw new Refused('BAD_FACT_ID', 'this fact identity is already recorded; retry the original sealed move instead of appending it again');
+    if (factIdentityExists(board.db, factId)) throw new Refused('BAD_FACT_ID', 'this fact identity is already recorded; retry the original sealed move instead of appending it again');
     if (supersedes !== null && (typeof supersedes !== 'string' || !itemThread(board, id).some((entry) => entry.type === 'fact' && entry.id === supersedes))) {
       throw new Refused('NO_FACT', `no fact ${String(supersedes)} on item #${id}; use a fact id from pullboard show ${id} --json`);
     }
@@ -1933,7 +1951,7 @@ export function buildOrder(board, { warm = [], agentId, readiness = barReadyForO
     || rank(first) - rank(second)
     || ROUTES.indexOf(second.item_route) - ROUTES.indexOf(first.item_route)
     || shared(second) - shared(first) || first.item_id - second.item_id;
-  return lineOrderEnabled(board) ? lineBuildOrder({ agentId, release: milestonePriority, rank, items: listItems(board, { all: true }), ready: item => readiness(board, item), fallback }) : fallback;
+  return focusOrder(board, lineOrderEnabled(board) ? lineBuildOrder({ agentId, release: milestonePriority, rank, items: listItems(board, { all: true }), ready: item => readiness(board, item), fallback }) : fallback);
 }
 
 /**
@@ -1953,6 +1971,7 @@ export function buildOrder(board, { warm = [], agentId, readiness = barReadyForO
  * @returns {{ item: any | null, reasons: string[], shared?: string[] }}
  */
 export function nextFor(board, { agentId, lane, verify = false, policy = 'any', familyPolicy = 'off', runnable = false, routes = ROUTES, warm = [], priority = [], lanes, skipIds = [] }) {
+  const focusCompare = focusOrder(board, () => 0);
   const route = routeOf(board, agentId);
   const tier = (entry) => ROUTES.indexOf(entry.item_route);
   const allItems = listItems(board).reverse();
@@ -1985,8 +2004,9 @@ export function nextFor(board, { agentId, lane, verify = false, policy = 'any', 
     candidates.sort((first, second) => (scarcity ? scarcity.get(first.entry.item_id) - scarcity.get(second.entry.item_id)
       || lineCompare(first.entry, second.entry) : milestonePriority(first.entry) - milestonePriority(second.entry)
       || rank(first.entry) - rank(second.entry)));
+    candidates.sort((a, b) => focusCompare(a.entry, b.entry));
     const item = candidates.find((candidate) => !candidate.holder && !candidate.cooldown)?.entry;
-    if (item) return { item, reasons: [] };
+    if (item) return { item, reasons: focusReasons(board, item) };
     const held = candidates.filter((candidate) => candidate.holder && candidate.holder !== agentId)
       .map(({ entry, holder: reviewer }) => `${reviewer} holds the review of #${entry.item_id} until ${entry.item_review_until}`);
     const cooling = candidates.filter((candidate) => candidate.cooldown)
@@ -2032,6 +2052,7 @@ export function nextFor(board, { agentId, lane, verify = false, policy = 'any', 
       mine.splice(firstTierItem, 0, rework);
     }
   }
+  mine.sort((a, b) => focusCompare(a.entry, b.entry));
   for (const { entry, shared } of mine) {
     const waiting = (entry.item_after ? entry.item_after.split(',').map(Number) : [])
       .map((id) => current(board, itemById(board, id)))
@@ -2040,7 +2061,7 @@ export function nextFor(board, { agentId, lane, verify = false, policy = 'any', 
     if (reserved) { reasons.push(reserved); continue; }
     const collisions = itemFileCollisions(entry, inFlight);
     if (collisions.length) { reasons.push(...collisions); continue; }
-    if (!waiting.length) return { item: entry, reasons, shared };
+    if (!waiting.length) return { item: entry, reasons: focusReasons(board, entry, reasons), shared };
     reasons.push(`#${entry.item_id} waits on ${waiting.map(waitingOn).join(', ')}`);
   }
   if (!mine.length && !reasons.length) reasons.push(idleReason(items, lane, routed));

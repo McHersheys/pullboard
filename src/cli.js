@@ -1,3 +1,7 @@
+import {
+  focusReviewFirst,
+  focusReasons,
+} from './focus-milestone.js';
 import { requireHandoffActive } from './handoff-state.js';
 import { requestedCommandMove } from './recorded-move.js';
 export { barActorForCommand } from './bar-actor.js';
@@ -10,6 +14,7 @@ import {
   barCoverageForPolicy,
 } from './bar-coverage.js';
 import { identifyCaller } from './cli-identity.js';
+import { gitSyncLinked } from './local-state.js';
 /**
  * The pullboard command line: every command, bound to who is asking (B3, R3). The main checkout is the
  * coordinator; every other worktree is the agent that joined from it.
@@ -583,7 +588,9 @@ export async function ordered(ctx, board, operation, args) {
       const values = [{ agentId, baseline: initialBaseline }];
       const baselineIo = ctx.io.personRequest || ctx.io.personRequestMoveId
         ? { ...ctx.io, personRequest: undefined, personRequestMoveId: undefined } : ctx.io;
-      return relayLinked(ctx.info.root) || relayRecovered(ctx.info.root)
+      return gitSyncLinked(ctx.info.root)
+        ? (await import('./sync.js')).gitBoardOperation(ctx.info.root, board, 'recordSpecApprovalBaseline', values, baselineIo)
+        : relayLinked(ctx.info.root) || relayRecovered(ctx.info.root)
         ? relayOperation(ctx.info.root, 'recordSpecApprovalBaseline', values, baselineIo, undefined,
           () => store.recordSpecApprovalBaseline(board, ...values))
         : store.recordSpecApprovalBaseline(board, ...values);
@@ -601,9 +608,12 @@ export async function ordered(ctx, board, operation, args) {
       if (requested && board.lastEvent !== before) ctx.io.recordedMove = true;
       return result;
     };
-    const result = await withItemSession(ctx.info, operation, args, () => relayLinked(ctx.info.root) || relayRecovered(ctx.info.root)
-      ? relayOperation(ctx.info.root, operation, args, ctx.io, command, applyRequested,
-        requested ? () => { ctx.io.recordedMove = true; } : undefined) : applyRequested());
+    const result = await withItemSession(ctx.info, operation, args, async () => gitSyncLinked(ctx.info.root)
+      ? (await import('./sync.js')).gitBoardOperation(ctx.info.root, board, operation, args, ctx.io)
+      : relayLinked(ctx.info.root) || relayRecovered(ctx.info.root)
+        ? relayOperation(ctx.info.root, operation, args, ctx.io, command, applyRequested,
+          requested ? () => { ctx.io.recordedMove = true; } : undefined) : applyRequested());
+    if (requested && gitSyncLinked(ctx.info.root)) ctx.io.recordedMove = true;
     return result;
   };
   const digest = agentSessionDigest();
@@ -706,7 +716,7 @@ export function refuseRemoteCoordinatorModel(ctx, command) {
 
 /** Resolve the caller with the existing environment and relay identity checks. */
 export function whoAmI(ctx, board) {
-  return identifyCaller(ctx, board, { environmentAgent, relayLinked });
+  return identifyCaller(ctx, board, { environmentAgent, relayLinked: root => relayLinked(root) || gitSyncLinked(root) });
 }
 
 /**
@@ -1543,7 +1553,7 @@ function nextPick(ctx, board, values) {
   const findOffer = () => store.reviewOffer(board, { agentId: me.id, lane: me.lane, policy: ctx.config.verify.policy,
     familyPolicy: ctx.config.verify.family, ratio: ctx.config.verify.reviewRatio, runnable: values.runnable, routes: values.routes });
   const offer = held ? null : relayLinked(ctx.info.root) ? store.withVerifierStanding(board, { root: true }, findOffer) : findOffer();
-  if (offer && !values.build) return { item: offer.item, offer, build: item ?? null };
+  if (offer && !values.build && focusReviewFirst(board, offer.item, item)) return { item: offer.item, offer, build: item ?? null, reasons: focusReasons(board, offer.item) };
   if (!item) return { reasons, laneWork: ctx.info.isMain ? mainLaneWork(store.listItems(board)) : null };
   const reviewSkipped = values.build && !held
     ? { offeredItem: offer?.item.item_id ?? null, ratio: offer?.ratio ?? ctx.config.verify.reviewRatio, ...store.reviewQueue(board) } : null;

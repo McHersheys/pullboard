@@ -58,7 +58,10 @@ export async function nextHere(io, values) {
       continue;
     }
     if (found.item) {
-      if (found.offer) { sayReviewOffer(ctx, found); return 0; }
+      if (found.offer) {
+        for (const reason of found.reasons ?? []) io.say(reason);
+        sayReviewOffer(ctx, found); return 0;
+      }
       const item = found.item;
       const agents = withBoardRead(ctx, (board) => store.listAgents(board));
       io.result?.({ item, review: Boolean(values.verify), held: Boolean(found.held), shared: found.shared ?? [], reasons: found.reasons ?? [], ...(found.seat ? { seat: found.seat } : {}) });

@@ -1,5 +1,6 @@
 import { withSeatPresence } from './seat-presence.js';
 import { itemById } from './board-item-read.js';
+import { itemActivity } from './activity-feed.js';
 export { itemById };
 import { outsideSource } from './outside-source.js';
 import {
@@ -220,7 +221,7 @@ export function events(board, { itemId } = {}) {
 export function itemThread(board, id) {
   itemById(board, id);
   const withdrawals = new Map([...verdictWithdrawals(board, id).values()].map(row => [row.acceptEventId, row]));
-  return events(board, { itemId: id }).map((event) => event.event_kind === 'fact'
+  return itemActivity(board, id).map((event) => event.event_kind === 'fact'
     ? { type: 'fact', ...factFromEvent(event) }
     : { type: 'move', eventId: event.event_id, kind: event.event_kind, by: event.event_by,
       ...(withdrawals.has(event.event_id) ? { withdrawn: true, withdrawal: withdrawals.get(event.event_id) } : {}),

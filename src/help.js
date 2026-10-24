@@ -167,6 +167,8 @@ Work
   pullboard digest [--out <file>] [--watch]     a short Markdown briefing of this board for a person or a chat assistant;
                                         secrets redacted; --out replaces a file, --watch rewrites it after every move
   pullboard import <file>                       restore a versioned export into an empty board
+  pullboard sync                               opt in to sharing one board through origin without an account
+                                               reads work offline; moves need remote acknowledgement
 
 Coordinator
   pullboard sweep --run "<checker>" --check "<checker on {file}>" [--route light] [--max 20] [--dry-run]
@@ -307,7 +309,7 @@ const HELP_EXAMPLES = {
   verify: 'pullboard verify 12 accept --note "removed the fix; the test failed"',
   watch: 'pullboard watch --to web', answer: 'pullboard answer 12 "done"', pass: 'pullboard pass 12 "please decide"',
   status: 'pullboard status', view: 'pullboard view', digest: 'pullboard digest --out briefing.md', mcp: 'pullboard mcp', stats: 'pullboard stats --since 2026-10-08', log: 'pullboard log 12', ledger: 'pullboard ledger',
-  relay: 'pullboard relay on --all', 'relay recover': 'pullboard relay recover --skip 12',
+  relay: 'pullboard relay on --all', 'relay recover': 'pullboard relay recover --skip 12', sync: 'pullboard sync',
   'lane add': 'pullboard lane add web --owns apps/web/', lane: 'pullboard lane add web --owns apps/web/',
   queue: 'pullboard queue', roadmap: 'pullboard roadmap', rigor: 'pullboard rigor', 'rigor quality': 'pullboard rigor quality --rule silent-catch', 'rigor draft': 'pullboard rigor draft "refusal:MERGE_LOST" "Merges keep every hunk" --check "node bin/checks/merges.js" --red 0123456 --green 89abcde', milestone: 'pullboard milestone add "0.7.0" --items 12,13',
   'milestone order': 'pullboard milestone order "0.7.0" 13,12',

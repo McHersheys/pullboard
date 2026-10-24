@@ -23,6 +23,83 @@ import {
   wrapDeviceBoardKey,
 } from '../src/relay-device-keys.js';
 import { githubFixture } from './relay-fixture.js';
+import { excludedInventoryId } from '../relay/excluded-store.js';
+import {
+  seal,
+  unseal,
+} from '../src/seal.js';
+
+test('excluded inventories keep names sealed, isolate accounts and refuse revoked devices [H5,H15,H17]', async t => {
+  const box = await relayDeviceFixture(t);
+  const owner = await browserSession(box);
+  const phone = await createDeviceKeys();
+  const registered = await deviceRequest(box, '/api/v1/devices/' + phone.deviceId, {
+    method: 'POST', cookie: owner, origin: box.origin, body: {},
+  });
+  assert.equal(registered.response.status, 200);
+  const machine = 'machine-excluded-fixture';
+  const label = 'Fixture computer';
+  const id = excludedInventoryId(machine, '7');
+  const key = new Uint8Array(randomBytes(32));
+  const plain = new TextEncoder().encode(JSON.stringify({ account: '7', machine, label, names: ['fixture/private-excluded'] }));
+  const sealed = Buffer.from(await seal(key, plain, { boardId: id, kind: 'snapshot', sequence: 0 })).toString('base64url');
+  const envelope = await wrapDeviceBoardKey(key, phone.publicKey, { board: id, device: phone.deviceId, engine: ENGINE_VERSION });
+  const body = { machine, label, count: 1, engine: ENGINE_VERSION, sealed,
+    wraps: [{ device: phone.deviceId, wrapped: Buffer.from(JSON.stringify(envelope)).toString('base64url') }] };
+  const path = '/api/v1/devices/exclusions';
+  const denied = await deviceRequest(box, path);
+  assert.equal(denied.document.error?.code, 'AUTH_REQUIRED');
+  const foreignOrigin = await deviceRequest(box, path, { method: 'POST', cookie: owner, origin: 'https://foreign.invalid', body });
+  assert.equal(foreignOrigin.document.error?.code, 'BAD_ORIGIN');
+  assert.deepEqual((await deviceRequest(box, path, { cookie: owner })).document.exclusions, []);
+  const extra = await deviceRequest(box, path, { method: 'POST', cookie: owner, origin: box.origin, body: { ...body, names: ['forbidden'] } });
+  assert.equal(extra.document.error?.code, 'EXCLUDED_INVENTORY', 'plaintext name fields are refused');
+  assert.equal((await deviceRequest(box, path, { method: 'POST', cookie: owner, origin: box.origin, body })).response.status, 200);
+  const board = 'b'.repeat(32);
+  assert.equal((await deviceRequest(box, '/auth/boards/link', { method: 'POST', cookie: owner,
+    origin: box.origin, body: { board, repository: 'fixture/repository' } })).response.status, 200);
+  const issued = await deviceRequest(box, '/auth/machines', { method: 'POST', cookie: owner,
+    origin: box.origin, body: { board, machine } });
+  assert.equal(issued.response.status, 201);
+  const token = issued.document.token;
+  assert.equal((await deviceRequest(box, path, { method: 'POST', token, engine: ENGINE_VERSION, body })).response.status, 200,
+    'the enrolled machine can publish immediately without a retained person session');
+  assert.equal((await deviceRequest(box, path, { token, engine: ENGINE_VERSION })).document.error?.code, 'HUMAN_REQUIRED',
+    'a machine credential cannot read the account inventory');
+  assert.equal((await deviceRequest(box, path, { method: 'POST', token, engine: ENGINE_VERSION,
+    body: { ...body, machine: 'another-machine' } })).document.error?.code, 'EXCLUDED_INVENTORY',
+    'a machine credential cannot replace another machine’s list');
+  box.restart();
+  const metadata = await deviceRequest(box, path, { cookie: owner });
+  assert.deepEqual(metadata.document.exclusions, [{ machine, label, count: 1 }], 'durable public metadata has no name, key or wrap');
+  box.state.accountID = 8;
+  const other = await browserSession(box);
+  assert.deepEqual((await deviceRequest(box, path, { cookie: other })).document.exclusions, []);
+  const devicePath = '/api/v1/devices/' + phone.deviceId + '/exclusions';
+  assert.equal((await deviceRequest(box, devicePath, { cookie: other })).document.error?.code, 'DEVICE_NOT_ENROLLED');
+  box.state.accountID = 7;
+  const delivered = await deviceRequest(box, devicePath, { cookie: owner });
+  assert.equal(delivered.response.status, 200);
+  const row = delivered.document.exclusions[0];
+  const openedKey = await unwrapDeviceBoardKey(phone.privateKey,
+    JSON.parse(Buffer.from(row.wrapped, 'base64url').toString('utf8')), { board: row.id, device: phone.deviceId, engine: row.engine });
+  assert.deepEqual(await unseal(openedKey, new Uint8Array(Buffer.from(row.sealed, 'base64url')),
+    { boardId: row.id, kind: 'snapshot', sequence: 0 }), plain);
+  const stored = readFileSync(join(box.relayDirectory, 'devices.sqlite'));
+  assert.equal(stored.includes('fixture/private-excluded'), false, 'the relay database has no repository plaintext');
+  assert.equal(stored.includes(Buffer.from(key)), false, 'the relay database has no raw list key');
+  assert.equal(stored.includes(Buffer.from(key).toString('base64url')), false, 'the relay database has no transport key');
+  const freshOwner = await browserSession(box);
+  assert.equal((await deviceRequest(box, '/api/v1/devices/' + phone.deviceId, {
+    method: 'DELETE', cookie: freshOwner, origin: box.origin,
+  })).response.status, 200);
+  assert.equal((await deviceRequest(box, devicePath, { cookie: freshOwner })).document.error?.code, 'DEVICE_REVOKED',
+    'a fresh sign-in cannot use the removed device’s old private key to fetch a new wrap');
+  const cleared = await deviceRequest(box, path, { method: 'POST', cookie: freshOwner, origin: box.origin,
+    body: { ...body, count: 0, sealed: '', wraps: [] } });
+  assert.equal(cleared.response.status, 200);
+  assert.deepEqual((await deviceRequest(box, path, { cookie: freshOwner })).document.exclusions, [], 'including the last board removes the publication');
+});
 
 /** Start actual relay/auth HTTP handlers with private SQLite and a real GitHub protocol fixture. */
 async function relayDeviceFixture(t) {

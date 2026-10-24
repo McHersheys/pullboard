@@ -14,6 +14,8 @@ Notable changes to Pullboard, for people using it. The format follows [Keep a Ch
 
 ### Fixed
 
+- pullboard.dev now says when a board is excluded from sharing, and how to include it. Paired browsers decrypt its name; other browsers see only the computer and the number excluded. (#983)
+
 - An old pairing link no longer blocks a browser that is already paired. (#982)
 
 - A browser you removed now says so, instead of a blank page or a sign-in screen. (#981)
