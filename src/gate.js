@@ -34,6 +34,8 @@ import {
   loadavg,
 } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { executionEnvironment } from './execution-environment.js';
+import { constrainedLandingHost } from './landing-host.js';
 import {
   gitChildEnv,
   gitPath,
@@ -229,6 +231,7 @@ export function runProfiledShell(root, command, { waitMs = 0, artifactDirectory,
     browser: gateLease.browser, pipefail, stages, waivers: landing ? waivers : [], metadata: { ...(gateLease.runMetadata ?? {}), landing, ...(timeoutMs ? { timeoutMs } : {}) } }) }
     : runShell(root, command, { pipefail, env: inherited, stages, timeoutMs });
   gateLease?.tracker?.mark('ranAt');
+  if (gateLease) gateLease.environment = run.environment ?? null;
   const sandboxBlocked = run.isGreen ? null : run.sandboxBlocked ?? (run.executionRunner
     // The controller cannot realpath remote files; retain the network denial signal without treating remote paths as local paths.
     ? sandboxBlockedOperation(root, run.output, { includeFilePaths: false })
@@ -254,6 +257,7 @@ export async function runProfiledShellAsync(root, command, { waitMs = 0, gateSlo
   if (gateLease?.runner) {
     const run = await runOnRunnerAsync(root, command, { runner: gateLease.runner, source: gateLease.source,
       browser: gateLease.browser, metadata: { ...(gateLease.runMetadata ?? {}), landing } });
+    gateLease.environment = run.environment ?? null;
     gateLease.tracker?.mark('ranAt');
     const wallMs = Math.max(0, Date.now() - started);
     const profilePath = join(dirname(gitPath(root, LOG)), `pullboard-gate-${randomUUID()}.profile.json`);
@@ -268,6 +272,7 @@ export async function runProfiledShellAsync(root, command, { waitMs = 0, gateSlo
     PULLBOARD_TEST_STAGE: gateLease?.receiptKind ?? (landing ? 'land' : 'gate'),
   };
   const env = { ...gitChildEnv(root), ...inherited };
+  const environment = executionEnvironment();
   const child = spawn(`(\n${command}\n) 2>&1`, { cwd: root, env, shell: true, stdio: ['ignore', 'pipe', 'pipe'] });
   const chunks = [];
   let bytes = 0;
@@ -284,6 +289,7 @@ export async function runProfiledShellAsync(root, command, { waitMs = 0, gateSlo
   child.once('error', error => { failure = error; });
   const status = await new Promise(resolveClose => child.once('close', resolveClose));
   gateLease?.tracker?.mark('ranAt');
+  if (gateLease) gateLease.environment = environment;
   invalidateGitFacts();
   const output = chunks.join('') + (overflow ? '\nFocused comparison output exceeded one GiB.\n' : '')
     + (failure ? `\n${failure.message}\n` : '');
@@ -291,13 +297,13 @@ export async function runProfiledShellAsync(root, command, { waitMs = 0, gateSlo
   const profilePath = join(dirname(gitPath(root, LOG)), `pullboard-gate-${randomUUID()}.profile.json`);
   const profile = writeTimingProfile(profilePath, { ...timingFromOutput(output, timingRunner(command)),
     waitMs: Math.max(0, Math.round(waitMs)), wallMs, receipt: settleReceipt(gateLease) });
-  return { isGreen: status === 0 && !overflow && !failure, sandboxBlocked: status === 0 ? null : sandboxBlockedOperation(root, output), output, seconds: Math.round(wallMs / 1000), profile, profilePath, logPath: null };
+  return { isGreen: status === 0 && !overflow && !failure, environment, sandboxBlocked: status === 0 ? null : sandboxBlockedOperation(root, output), output, seconds: Math.round(wallMs / 1000), profile, profilePath, logPath: null };
 }
 
 /** Close a gated run's receipt (#836) as its evidence is written; the slot's release records this same receipt. */
 function settleReceipt(lease) {
   if (!lease?.tracker) return undefined;
-  lease.receipt = receiptOf(lease.tracker, { kind: lease.receiptKind, slot: lease.slot });
+  lease.receipt = { ...receiptOf(lease.tracker, { kind: lease.receiptKind, slot: lease.slot }), environment: lease.environment ?? null };
   return lease.receipt;
 }
 
@@ -345,6 +351,12 @@ export async function withGateSlot(root, action, options = {}) {
     if (result && typeof result === 'object') result.runnerAttempt = attempt;
     return result;
   }
+}
+
+/** Validate landing membership before admission; generic SSH capacity cannot stand in for a constrained host. */
+export async function withLandingGateSlot(root, action, options = {}) {
+  const constrained = constrainedLandingHost(root);
+  return withGateSlot(root, action, { ...options, landing: true, ...(constrained ? { remote: false } : {}) });
 }
 
 /** One gate admission and its action; withGateSlot may call it again for a local rerun. */
@@ -442,7 +454,7 @@ export async function runGate(root, config, { trustStamp = true, onWait, landing
     throw missingGate(root);
   }
   if (trustStamp && isStampedGreen(root)) return { isGreen: true, isCached: true, output: '', seconds: 0, log: '' };
-  return await withGateSlot(root, async (lease) => {
+  return await (landing ? withLandingGateSlot : withGateSlot)(root, async (lease) => {
     pinRunMain(lease, onFailure);
     const run = fullGateRun(root, config, trustStamp, { waitMs: lease.waitMs, gateLease: lease, landing, stages, waivers, kind: landing ? 'land' : 'gate' });
     if (!run.isGreen && !run.timedOut && onFailure) await onFailure(run, { root, command: config.gate, lease });
@@ -481,7 +493,7 @@ function leaveRunReceipt(root, config, run, { before, kind }) {
     }
     const local = { average: loadavg(), cpus: availableParallelism(), freeMB: Math.floor(freemem() / 1048576) };
     const receipt = receiptFields({ version: 1, id: randomUUID(), kind, tree: before, head, main: policy.commit, command: createHash('sha256').update(config.gate).digest('hex'),
-      green: run.isGreen, failures: [...failures.values()], load: Array.isArray(run.executionLoad?.average) ? run.executionLoad : local, at: new Date().toISOString() });
+      green: run.isGreen, failures: [...failures.values()], load: Array.isArray(run.executionLoad?.average) ? run.executionLoad : local, at: new Date().toISOString(), environment: run.environment ?? null });
     if (!receipt) return null;
     mkdirSync(store, { recursive: true, mode: 0o700 });
     writeFileSync(join(store, `${receipt.id}.json`), receiptBody(receipt), { flag: 'wx', mode: 0o600 });
@@ -501,7 +513,7 @@ function fullGateRun(root, config, trustStamp = false, { waitMs = 0, log = gitPa
   const receiptId = run.sandboxBlocked ? null : leaveRunReceipt(root, config, run, { before, kind });
   refuseSandboxBlocked(run);
   if (isGreen && before !== null && committedTree(root) === before) writeFileSync(gitPath(root, STAMP), `${before}\n`);
-  return { isGreen, isCached: false, output, seconds, log, profile, profilePath, receiptId, ...(run.timedOut ? { timedOut: true } : {}), ...(run.executionRoot ? { executionRoot: run.executionRoot } : {}),
+  return { isGreen, isCached: false, output, seconds, log, profile, profilePath, receiptId, ...(run.timedOut ? { timedOut: true } : {}), environment: run.environment ?? null, ...(run.executionRoot ? { executionRoot: run.executionRoot } : {}),
     // A remote run's host load and pinned main reach the flake diagnostics with it (#925).
     ...(run.executionRunner ? { executionRunner: run.executionRunner, executionMain: run.executionMain ?? null, executionLoad: run.executionLoad ?? null } : {}), ...(stages ? { stages: run.stages } : {}) };
 }
@@ -520,12 +532,13 @@ function fullGateRun(root, config, trustStamp = false, { waitMs = 0, log = gitPa
  */
 function gateRunRecord(root, config, isGreen, gateLease) {
   const at = new Date().toISOString();
+  const environment = gateLease?.environment ?? null;
   const positiveControl = config.positiveControl?.trim() ? config.positiveControl : null;
-  if (!positiveControl) return { at, green: isGreen, control: null, gate: config.gate, positiveControl };
+  if (!positiveControl) return { at, green: isGreen, control: null, gate: config.gate, positiveControl, environment };
   const control = runProfiledShell(root, positiveControl, { gateLease, artifactPrefix: 'pullboard-gate-control', persistLog: true });
   // A control the environment refused says nothing about the gate, the same rule that keeps a refused gate run out of the record.
   const result = control.sandboxBlocked ? null : control.isGreen;
-  return { at, green: isGreen, control: result, gate: config.gate, positiveControl, controlLog: control.logPath, controlProfile: control.profilePath };
+  return { at, green: isGreen, control: result, gate: config.gate, positiveControl, environment, controlLog: control.logPath, controlProfile: control.profilePath };
 }
 
 /** Quote a fixed executable or selected path without permitting shell expansion. */

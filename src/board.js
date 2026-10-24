@@ -52,6 +52,7 @@ import {
   checkedLandingCommit,
 } from './verdict-reviews.js';
 export { verdictReviewProblem, verdictsFor, acceptedVerdict, checkedLandingCommit };
+export { landingTestDefects, recordLandingTestDefect } from './landing-test-defects.js';
 export { landingLeaseMove, landingLeaseState } from './landing-lease.js';
 import { guardLandingWrite } from './landing-lease.js';
 import {
@@ -114,6 +115,7 @@ import {
 } from './machine.js';
 import { LOCAL_LANDING_ENGINE } from './land-engine.js';
 import { SPEC_APPROVAL_ENGINE } from './spec-approval-engine.js';
+import * as landingEnvironment from './landing-environment-guards.js';
 import { Refused } from './refused.js';
 import { itemAuthorProblem } from './item-authors.js';
 import { refuseMaskedExit } from './check-mask.js';
@@ -168,7 +170,6 @@ import {
   landingWaiverKind,
 } from './landing-exceptions.js';
 import { parseSpec } from './spec.js';
-import { quarantineWaivers } from './quarantine.js';
 import { invariantEvidence } from './submit-invariants.js';
 import { landingBatches } from './landing-batch-history.js';
 import {
@@ -181,6 +182,7 @@ import { validateLandingRevision } from './submit-invariants.js';
 import { submissionProof } from './submit-invariants.js';
 import { SUBMISSION_PROOF_ENGINE } from './submit-invariants.js';
 export { landingFlakes, landingWaiverCovers, landingWaiverKind };
+export { landingWaivers, landingWaiverFor, waivedLandingProof } from './landing-waivers.js';
 export { acceptCheck } from './check-accept.js';
 export { declareJob, recordJobRun } from './recurring-jobs.js';
 export { proposeSentinel, decideSentinel, beginSentinelRun, finishSentinelRun } from './sentinels.js';
@@ -1351,12 +1353,13 @@ function reserveWithin(board, id, { agentId, leaseMs, policy, familyPolicy = 'of
  * @param {{ agentId: string, decision: string, reason?: string, note?: string, cause?: string, head: string, digest: string, policy: string, familyPolicy?: string, check?: 'none' | 'green', review?: {commit: string, head?: string, trunk: string, paths: string[]}, implies?: number[], impliesId?: string }} verdict - implies: items this verdict changes (B29)
  * @returns {{ decision: string, reason: string, check?: 'none' | 'green' }}
  */
-export function verify(board, id, { agentId, decision, reason, note = '', cause, head, digest, policy, familyPolicy = 'off', check, review, implies, impliesId, reopenFirstRefusalMinutes }) {
+export function verify(board, id, { agentId, decision, reason, note = '', cause, head, digest, policy, familyPolicy = 'off', check, review, implies, impliesId, reopenFirstRefusalMinutes, environment }) {
   const verb = { ACCEPT: 'accept', REJECT: 'reject' }[decision];
   if (!verb) throw new Refused('BAD_DECISION', 'the decision is accept or reject');
   const isAccept = verb === 'accept';
   const code = isAccept ? ACCEPT_REASON : reason;
   const engine = board.executionEngineVersion ?? ENGINE_VERSION;
+  landingEnvironment.requireVerdict(board, environment);
   const declaration = MOVES.find(move => move.verb === verb);
   const newReview = engine >= VERDICT_REVIEW_ENGINE && review !== undefined;
   // Without the new sealed metadata, old moves keep their exact submitted-only semantics.
@@ -1408,6 +1411,7 @@ export function verify(board, id, { agentId, decision, reason, note = '', cause,
     const detail = { ...reservation, reason: code, commit: item.item_commit, ...(!isAccept && cause !== undefined && cause !== null ? { cause } : {}) };
     if (isAccept && engine >= SPEC_APPROVAL_ENGINE) detail.note = note.trim();
     if (isAccept && check !== undefined) detail.check = check;
+    if (environment !== undefined) detail.environment = environment;
     if (newReview) detail.review = { commit: review.commit, ...(Object.hasOwn(review, 'head') ? { head: review.head } : {}), trunk: review.trunk, paths: [...review.paths] };
     logEvent(board, agentId, verb, id, implies?.length ? { ...detail, implies } : detail, returnedAt);
     const trigger = board.lastEvent;
@@ -2332,6 +2336,7 @@ export { landingBatches };
 /** Append one coordinator-owned batch revision without changing the board schema [B3,R3]. */
 export function recordLandingBatch(board, { agentId, batch, revision = 0, landingFence }) {
   coordinatorOnly(agentId, 'records landing batches');
+  landingEnvironment.requireBatch(board, batch);
   if (carriesFlakeDiagnostics(batch) && (board.executionEngineVersion ?? ENGINE_VERSION) < NATIVE_FLAKE_ENGINE) {
     throw new Refused('ENGINE_VERSION', `typed landing diagnostics require engine ${NATIVE_FLAKE_ENGINE}; upgrade Pullboard`);
   }
@@ -2345,6 +2350,7 @@ export function recordLandingBatch(board, { agentId, batch, revision = 0, landin
   return atomic(board, () => {
     guardLandingWrite(board, landingFence);
     const previous = landingBatches(board).find((entry) => entry.id === batch.id);
+    landingEnvironment.requireRevision(board, previous, batch);
     preserveInvariantEvidence(previous, evidence, board.executionEngineVersion ?? ENGINE_VERSION);
     validateLandingRevision(previous, batch, revision);
     const recorded = { ...batch, revision: revision + 1, updatedAt: now(board) };
@@ -2373,20 +2379,6 @@ export function recordLandingWaiver(board, { agentId, channel, id, test, until, 
   });
 }
 
-/** Read every person waiver, retaining expired entries as evidence [B3,R3]. */
-export function landingWaivers(board) {
-  return board.db.prepare("SELECT event_by,event_detail FROM event WHERE event_kind = 'landing_waiver' ORDER BY event_id").all()
-    .filter((row) => row.event_by === PERSON)
-    .map((row) => JSON.parse(row.event_detail).waiver).concat(quarantineWaivers(board)); // A proven flake's quarantine, when on [C7,D1].
-}
-
-/** Find a live person's waiver and derive its match kind without rewriting history [B3,R3,H16]. */
-export function landingWaiverFor(board, failure) {
-  const waiver = landingWaivers(board).findLast((entry) => Date.parse(entry.until) > board.clock.now().getTime()
-    && landingWaiverCovers(entry, failure));
-  return waiver ? { ...waiver, kind: waiver.kind ?? landingWaiverKind(waiver.test) } : null;
-}
-
 /** File one durable defect per flaky test and retain its source digest [B3,R3]. */
 export function recordLandingFlake(board, { agentId, test, hash, names, lane, batchId }) {
   coordinatorOnly(agentId, 'files landing flakes');
@@ -2404,24 +2396,15 @@ export function recordLandingFlake(board, { agentId, test, hash, names, lane, ba
   });
 }
 
-/** Validate a distinct waived landing proof without creating an ordinary gate stamp [B3,R3]. */
-export function waivedLandingProof(board, tree) {
-  return landingBatches(board).findLast((batch) => ['ready', 'pushed', 'landed'].includes(batch.state)
-    && batch.proof?.tree === tree && Array.isArray(batch.proof.failures) && batch.proof.failures.length > 0
-    && batch.proof.failures.every((failure) => {
-      const waiver = landingWaivers(board).find((entry) => entry.id === failure.waiver);
-      return waiver && Date.parse(waiver.until) > board.clock.now().getTime()
-        && landingWaiverCovers(waiver, failure);
-    })) ?? null;
-}
-
 /** Atomically record a pushed batch's first-containing merges and one main-moved receipt [B3,R3]. */
 export function finishLandingBatch(board, { agentId, id, tip, landingFence }) {
   coordinatorOnly(agentId, 'finishes a landing');
+  landingEnvironment.requireTrunk(board);
   return atomic(board, () => {
     guardLandingWrite(board, landingFence);
     const batch = landingBatches(board).find((entry) => entry.id === id);
     if (!batch || batch.tip !== tip) throw new Refused('LAND_BATCH', 'the pushed tip must match its recorded batch; run pullboard land --adopt');
+    landingEnvironment.requireStoredBatch(board, batch);
     if (batch.state === 'landed') return batch;
     if (batch.state !== 'pushed' && !(batch.state === 'trunk' && (board.executionEngineVersion ?? ENGINE_VERSION) >= LOCAL_LANDING_ENGINE)) throw new Refused('LAND_NOT_PUSHED', 'record a successful push before landing receipts; run pullboard land --adopt');
     for (const entry of batch.items) {

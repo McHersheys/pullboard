@@ -3,6 +3,7 @@
  * board read that replays a check baseline needs only this, so it never loads the gate [C7].
  */
 import { spawnSync } from 'node:child_process';
+import { executionEnvironment } from './execution-environment.js';
 import { randomUUID } from 'node:crypto';
 import {
   mkdtempSync,
@@ -37,6 +38,7 @@ import { sandboxBlockedOperation } from './sandbox-denial.js';
  */
 export function runShell(root, command, { pipefail = false, env = {}, stages = false, timeoutMs } = {}) {
   const started = Date.now();
+  const environment = executionEnvironment();
   const options = { cwd: root, env: { ...gitChildEnv(root), ...env }, shell: true, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', maxBuffer: 2 ** 30 };
   let prefix = '';
   if (pipefail) {
@@ -67,12 +69,12 @@ export function runShell(root, command, { pipefail = false, env = {}, stages = f
   const raw = `${result.stdout ?? ''}${result.stderr ?? ''}`;
   const seconds = Math.round((Date.now() - started) / 1000);
   const blocked = (output) => (result.status === 0 ? null : sandboxBlockedOperation(root, output));
-  if (!stages) return { isGreen: result.status === 0, output: raw, seconds, ...(timed ? { timedOut: result.timedOut } : {}), sandboxBlocked: blocked(raw) };
-  if (!split) return { isGreen: result.status === 0, output: raw, seconds, stages: null, ...(timed ? { timedOut: result.timedOut } : {}), sandboxBlocked: blocked(raw) };
+  if (!stages) return { isGreen: result.status === 0, output: raw, seconds, environment, ...(timed ? { timedOut: result.timedOut } : {}), sandboxBlocked: blocked(raw) };
+  if (!split) return { isGreen: result.status === 0, output: raw, seconds, environment, ...(timed ? { timedOut: result.timedOut } : {}), stages: null, sandboxBlocked: blocked(raw) };
   const staged = readStages(raw, marker, split.length);
   // Each pipeline component's own status rides on its stage, so no failing producer hides behind a later one.
   const withPipes = staged.stages.map((stage, index) => (pipeStatuses?.[index] ? { ...stage, pipeline: pipeStatuses[index] } : stage));
-  return { isGreen: result.status === 0, seconds, ...(timed ? { timedOut: result.timedOut } : {}), ...staged, stages: withPipes, sandboxBlocked: blocked(staged.output) };
+  return { isGreen: result.status === 0, seconds, environment, ...(timed ? { timedOut: result.timedOut } : {}), ...staged, stages: withPipes, sandboxBlocked: blocked(staged.output) };
 }
 
 /** Conservatively detect a pipe when the configured gate shell cannot enforce every stage's status. */

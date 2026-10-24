@@ -1,3 +1,4 @@
+import { environmentProblem } from './execution-environment.js';
 /**
  * What a gate run leaves for people and agents: the digest of its output and its sanitized timing profile. Trusted
  * policy checks write both, so they live apart from the gate's queue and runners, which a board read never needs [C7].
@@ -105,6 +106,7 @@ export function writeTimingProfile(path, profile) {
     runner: sanitize(profile.runner ?? 'shell', 'runner'),
     format: sanitize(profile.format ?? 'none', 'format'),
     unavailable: sanitize(profile.unavailable ?? null, 'availability'),
+    ...(Object.hasOwn(profile, 'environment') ? { environment: environmentProblem(profile.environment) ? null : profile.environment } : {}),
     ...(profile.executionRunner ? { executionRunner: sanitize(profile.executionRunner, 'execution runner') } : {}),
     ...(profile.receipt ? { receipt: { ...profile.receipt, slot: { kind: sanitize(profile.receipt.slot?.kind, 'slot kind'), reason: sanitize(profile.receipt.slot?.reason, 'slot reason') } } } : {}),
     ...(profile.landingShards ? { landingShards: {
