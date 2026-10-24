@@ -69,6 +69,7 @@ import { requireCoordinatorHold } from './coordinator-hold.js';
 import { LANDING_ENVIRONMENT_ENGINE } from './landing-environment-engine.js';
 import { carriesLandingEnvironment } from './execution-environment.js';
 import { LANDING_LEASE_ENGINE } from './landing-lease-engine.js';
+import { LANDING_LOCAL_LEASE_ENGINE } from './landing-local-lease-engine.js';
 
 const ITEM_ID_FIRST_ARGUMENT = new Set(['acceptCheck', 'editItem', 'escalate', 'recordAttempt', 'claim', 'release', 'submit', 'reserveReview', 'verify', 'merged', 'withdraw', 'refreeze', 'reopen', 'appendFact']);
 
@@ -98,6 +99,7 @@ function minimumOperationEngine(operation, args, board, at) {
     const id = operation === 'recordLandingBatch' ? args[0]?.batch?.id : args[0]?.id;
     if (store.landingBatches(board).some(batch => batch.id === id && carriesLandingEnvironment(batch))) return LANDING_ENVIRONMENT_ENGINE;
   }
+  if (operation === 'landingLeaseMove' && args[0]?.localHeartbeat === true) return LANDING_LOCAL_LEASE_ENGINE;
   if (operation === 'landingLeaseMove' || args[0]?.landingFence !== undefined) return LANDING_LEASE_ENGINE;
   if (['verify', 'reopen'].includes(operation) && args[1]?.reopenFirstRefusalMinutes !== undefined
     || ['claim', 'release'].includes(operation) && board && firstRefusal(board, args[0], at)) return REOPEN_FIRST_REFUSAL_ENGINE;

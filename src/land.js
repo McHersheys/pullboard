@@ -876,11 +876,13 @@ export async function land(options) {
   }
   let lastWait = '';
   const controller = new AbortController();
-  const lease = await takeLandingResource({ board: options.board, write: options.write, branch,
+  const lease = await takeLandingResource({ board: options.board, write: options.write, refresh: options.refresh, branch,
     onLost: error => controller.abort(error),
     /** Report a real ordered holder, without allocating machine test capacity to this waiter. */
     onWait({ holders, position }) {
-      const message = `landing waiting: ${branch} held by ${holders[0]?.label ?? 'the previous landing'}; queued at place ${position}`;
+      const holder = holders[0];
+      const elapsed = holder ? Math.max(0, Math.floor((options.board.clock.now().getTime() - Date.parse(holder.since)) / 1000)) : 0;
+      const message = `landing waiting: ${branch} held by ${holder?.label ?? 'the previous landing'} on ${holder?.machine ?? (holder?.lineage ? 'the recorded coordinator machine (legacy identity)' : 'this machine')} for ${elapsed}s; queued at place ${position}; foreign holders require explicit release or pullboard takeover`;
       if (message !== lastWait) options.say(message);
       lastWait = message;
     } });
