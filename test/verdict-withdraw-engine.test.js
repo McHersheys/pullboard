@@ -17,9 +17,13 @@ after(e2e.cleanup);
 /** Obtain an accepted snapshot through actual joined Git checkouts and native submission/review. */
 function acceptedSnapshot(context = false) {
   const box = e2e.project();
+  if (context) {
+    assert.equal(e2e.commitFile(box, box.repo, 'web/page.html', '<header>Old</header>\n' + '\n'.repeat(8) + '<h1>Start</h1>\n', 'test(web): establish a private review base [G1]').status, 0);
+    box.git(box.web, 'merge', '-q', '--ff-only', 'main');
+  }
   assert.equal(box.run(box.repo, 'add', 'web', 'Withdrawal engine fixture', '--specs', 'G1', '--criterion', 'The page renders.').code, 0);
   assert.equal(box.run(box.web, 'claim', '1').code, 0);
-  assert.equal(e2e.commitFile(box, box.web, 'web/page.html', '<h1>Page</h1>', 'feat(web): page [G1]').status, 0);
+  assert.equal(e2e.commitFile(box, box.web, 'web/page.html', context ? '<header>Old</header>\n' + '\n'.repeat(8) + '<h1>Page</h1>\n' : '<h1>Page</h1>', 'feat(web): page [G1]').status, 0);
   assert.equal(box.run(box.web, 'submit', '1').code, 0);
   const reviewer = join(box.dir, 'reviewer');
   box.git(box.repo, 'worktree', 'add', '-q', reviewer, '-b', 'api/reviewer');
@@ -71,7 +75,7 @@ test('the API carries withdrawal as a boolean without changing note boundaries [
 
 test('withdrawing the latest accept never revives an earlier accept of the same commit [V2,V6,H16]', t => {
   const { box, reviewer } = acceptedSnapshot(true);
-  const trunk = e2e.commitFile(box, box.repo, 'README.md', 'A new private trunk revision.\n', 'docs: move the private review trunk');
+  const trunk = e2e.commitFile(box, box.repo, 'web/page.html', '<header>New</header>\n' + '\n'.repeat(8) + '<h1>Start</h1>\n', 'fix(web): move the private review trunk [G1]');
   assert.equal(trunk.status, 0, trunk.stderr);
   box.git(reviewer, 'merge', '-q', '--no-edit', 'main');
   const reviewed = box.run(reviewer, 'verify', '1', 'accept', '--note', 'the actual new trunk composition passes', '--json');
