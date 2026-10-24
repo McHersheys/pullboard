@@ -807,6 +807,18 @@ catalogCase('[A1] intake records a real outside pull request through the CLI', a
   assert.equal(document.item.item_commit, box.commit);
 });
 
+catalogCase('[A1,H11] sync shares a board through a real Git remote without an account', async () => {
+  const source = await project();
+  const remote = join(source.dir, 'shared-board.git');
+  await source.git(source.dir, 'init', '-q', '--bare', remote);
+  await source.git(source.repo, 'remote', 'add', 'origin', remote);
+  const result = await json(source, source.repo, 'sync');
+  assert.equal(result.ref, 'refs/pullboard/board');
+  assert.equal(result.sequence, 0);
+  assert.equal(result.pending, null);
+  assert.match(await source.git(remote, 'rev-parse', result.ref), /^[0-9a-f]{40,64}$/u);
+});
+
 test('[A1] every catalog command and subcommand has a real CLI exercise', { concurrency: true }, async (t) => {
   // Every private scenario finishes before the final catalog and root coverage assertions.
   const completed = await Promise.allSettled(catalogCases.map(({ name, run }) => t.test(name, run)));

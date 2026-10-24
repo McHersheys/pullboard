@@ -6947,7 +6947,9 @@
     "VIEW_SIGN_IN_UNKNOWN": "start sign-in again with pullboard view",
     "WITHDRAWN": "wait on an item that is not withdrawn; see pullboard list --all",
     "WRONG_BOARD": "open the repository registered to this board and confirm its identity with pullboard status",
-    "WRONG_LANE": "create a worktree in the required lane with pullboard worktree <lane> --model \"<model name>\", or take an item in your lane with pullboard next"
+    "WRONG_LANE": "create a worktree in the required lane with pullboard worktree <lane> --model \"<model name>\", or take an item in your lane with pullboard next",
+    "EXCLUDED_REPOSITORY": "restore the GitHub origin of each excluded project, then run pullboard relay on --all",
+    "EXCLUDED_INVENTORY": "restore at most 256 excluded boards and their active paired devices, then run pullboard relay on --all"
   },
   "replay": {
     "initial": {
@@ -7557,7 +7559,14 @@
       "priorAccepted": "105",
       "currentAccepted": "106"
     },
-    "observer": "Actualaccepted f0 immutable Gitexport + exact-source observer, data capture root1136-acceptedf0-resolution-run01; original3 replay moves/receipts/outcomes/retries retained except explicit currentengine metadata. Lateactualf0 whole-source map taken while waiting beforeexecution, all1021 stable after; initialgenerichelper pointedat prioracb explicitlyqualified."
+    "observer": "Actualaccepted f0 immutable Gitexport + exact-source observer, data capture root1136-acceptedf0-resolution-run01; original3 replay moves/receipts/outcomes/retries retained except explicit currentengine metadata. Lateactualf0 whole-source map taken while waiting beforeexecution, all1021 stable after; initialgenerichelper pointedat prioracb explicitlyqualified.",
+    "feature983": {
+      "newRecoveryCodes": [
+        "EXCLUDED_REPOSITORY",
+        "EXCLUDED_INVENTORY"
+      ],
+      "qualification": "#983 adds only these2 explicitfeature recovery entries; all557 accepted8ba/f0 entries,61ops,366actors,477floors and historicalreplay remain unchanged. These two strings are explicit newfeature contract, not a regenerated snapshot from candidate execution."
+    }
   },
   "historicalOperations": [
     "intakeOutside",

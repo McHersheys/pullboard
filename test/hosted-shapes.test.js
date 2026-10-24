@@ -977,6 +977,74 @@ test('a forced hosted cell failure captures its final page state without raising
   assert.match(state.noBoardsYet.text, /No boards yet/u, 'capture records the empty-state text even when hidden');
 });
 
+test('an excluded board is named as excluded with the step that includes it [H5,H17]', {
+  timeout: 180_000, // budget: two real relay setups, one native enrollment and fresh browser visits.
+}, async t => {
+  assert.ok(hostedEngines().find(engine => engine.name === 'chromium')?.available, 'real Chrome is required');
+  const engine = await openEngine('chromium');
+  const contexts = [];
+  t.after(async () => {
+    // Dispose targets while CDP is live, before shutting down the shared browser.
+    for (const context of contexts) await context.close();
+    await engine.close();
+  });
+  const built = await buildBoards(t, 'excluded', [engine]);
+  const fresh = await engine.newContext();
+  contexts.push(fresh);
+  const unpaired = await visit(fresh, {
+    route: built.front.route(built.unpairedSession, null), phone: true,
+    bootstrap: storedScript('fresh', { boards: [] }),
+  }, false);
+  assert.equal(unpaired.board, false, 'exclusion never links or discloses the board');
+  assert.match(unpaired.words, /1 board excluded/iu, 'a fresh browser sees the actual exclusion count');
+  assert.doesNotMatch(unpaired.words, /fixture\/repository/u, 'a browser without a device wrap sees no excluded name');
+  assert.ok(unpaired.commands.some(command => /pullboard relay on(?:\s|$)/u.test(command)
+    && !/--all/u.test(command)), 'the command includes a board that the completed --all skipped');
+  assert.equal(unpaired.commands.some(command => /pullboard relay on --all/u.test(command)), false);
+
+  const box = await relayClientFixture(t);
+  box.env.PULLBOARD_MACHINE_HOME = box.env.PULLBOARD_HOME;
+  const front = await hostedFront(box.origin);
+  t.after(() => front.close());
+  const paired = await engine.newContext();
+  contexts.push(paired);
+  const session = await freshSession(box);
+  let pairingPage;
+  await relayOnAll(box, async link => {
+    pairingPage = await paired.newPage({ route: front.route(session, null) });
+    await pairingPage.navigate(link);
+  });
+  assert.ok(await pairingPage.poll(`(${READ_SCREEN}).board`, 8_000), 'the genuine enrolled browser opens the healthy board');
+  await pairingPage.close();
+  const excluded = await siblingProject(box, 'excluded-project', 'fixture/excluded-board');
+  assert.equal((await box.cliAt(excluded, 'relay', 'off')).code, 0);
+  const metadata = await fetch(box.origin + '/api/v1/devices/exclusions', { headers: { cookie: 'pb_session=' + session } });
+  assert.equal(metadata.status, 200);
+  const publicInventory = await metadata.json();
+  assert.equal(publicInventory.exclusions.length, 1);
+  assert.equal(publicInventory.exclusions[0].count, 1);
+  assert.ok(publicInventory.exclusions[0].label.trim(), 'only a bounded machine label is public');
+  assert.doesNotMatch(JSON.stringify(publicInventory), /fixture\/excluded-board|excluded-project/u,
+    'the relay public inventory contains neither repository names nor local paths');
+  const unwrapped = await visit(fresh, { route: front.route(session, null), phone: true }, false);
+  assert.doesNotMatch(unwrapped.words, /fixture\/excluded-board/u,
+    'an existing phone-approval notice cannot disclose an excluded name to an unwrapped browser');
+  const named = await visit(paired, { route: front.route(session, null), phone: true }, true);
+  assert.equal(named.board, true, 'the healthy board remains readable beside the exclusion');
+  assert.match(named.words, /fixture\/excluded-board[^.]*excluded/iu, 'only the device-wrapped browser decrypts the excluded name');
+  assert.match(named.words, /pullboard relay on/u, 'the named exclusion carries its include command');
+  assert.equal((await box.cliAt(excluded, 'relay', 'on', '--url', box.origin)).code, 0,
+    'the offered ordinary command actually includes the excluded board');
+  const cleared = await fetch(box.origin + '/api/v1/devices/exclusions', { headers: { cookie: 'pb_session=' + session } });
+  assert.equal(cleared.status, 200);
+  assert.deepEqual((await cleared.json()).exclusions, [], 'including the board clears its published exclusion');
+  assert.equal((await box.cliAt(excluded, 'relay', 'off')).code, 0,
+    'off also publishes from the removed board’s own machine credential');
+  const removed = await fetch(box.origin + '/api/v1/devices/exclusions', { headers: { cookie: 'pb_session=' + session } });
+  assert.equal(removed.status, 200);
+  assert.equal((await removed.json()).exclusions[0]?.count, 1, 'a linked board’s removal publishes without setup or its forgotten board key');
+});
+
 test('a board awaiting a phone approval is mentioned on a non-phone paired browser [H5]', {
   timeout: 180_000,
 }, async (t) => {

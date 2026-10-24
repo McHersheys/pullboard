@@ -35,6 +35,11 @@ export function relayLinkFile(commonDir) {
   return join(commonDir, 'pullboard', 'relay.json');
 }
 
+/** Whether this machine explicitly enabled account-free Git board sharing [H11]. */
+export function gitSyncLinked(root) {
+  return existsSync(join(repoInfo(root).commonDir, 'pullboard', 'git-sync.json'));
+}
+
 /** A repository's notice that its relay copy was deleted, which relay status still reads. */
 export function relayDeletedFile(commonDir) {
   return join(commonDir, 'pullboard', 'relay-deleted.json');
@@ -72,7 +77,7 @@ export function syncMayAct(cwd) {
     // Outside a repository every step refuses quietly with these codes; any other failure takes the full path.
     return !(error instanceof Refused && ['NOT_A_REPO', 'CORE_BARE'].includes(error.code));
   }
-  if (existsSync(relayLinkFile(info.commonDir))) return true;
+  if (existsSync(relayLinkFile(info.commonDir)) || existsSync(join(info.commonDir, 'pullboard', 'git-sync.json'))) return true;
   const receipts = baselineReceiptDirectory(info.commonDir);
   return existsSync(receipts) && readdirSync(receipts).some((name) => BASELINE_RECEIPT.test(name));
 }
