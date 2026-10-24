@@ -81,6 +81,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { boardNotWritable } from './board-access.js';
 import { ensureHotIndexes } from './board-hot.js';
 import { boardBusyError } from './board-access.js';
+import { boardWriteBusyError } from './board-busy.js';
 export { boardBusyError } from './board-access.js';
 import {
   boardStanding,
@@ -401,7 +402,9 @@ const TRANSACTION_DEPTH = new WeakMap();
 export function atomic(board, work) {
   const depth = TRANSACTION_DEPTH.get(board) ?? 0;
   const savepoint = `pullboard_atomic_${depth}`;
-  board.db.exec(depth ? `SAVEPOINT ${savepoint}` : 'BEGIN IMMEDIATE');
+  const startedAt = Date.now();
+  try { board.db.exec(depth ? `SAVEPOINT ${savepoint}` : 'BEGIN IMMEDIATE'); }
+  catch (error) { throw boardWriteBusyError(board.db, startedAt, error); }
   TRANSACTION_DEPTH.set(board, depth + 1);
   const lastEvent = board.lastEvent;
   const emitted = board.emittedEvents?.length ?? 0;
