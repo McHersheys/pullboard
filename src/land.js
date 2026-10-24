@@ -1,4 +1,5 @@
 import { requireOutsideOwner } from './outside-source.js';
+import { landingChangedFiles } from './land-collisions.js';
 /** Coordinator landing batches retain exact Git and gate receipts across interruptions [B3,R3]. */
 import { assignEngineNumbers } from './engine-numbers.js';
 import {
@@ -184,6 +185,8 @@ function candidates(board, root, base, maximum, { firstReady = false } = {}) {
   pending.sort((left, right) => (order.get(left.item_id) ?? Infinity) - (order.get(right.item_id) ?? Infinity) || left.item_id - right.item_id);
   const ready = [];
   const blocked = [];
+  const collisionFree = store.lineSettings(board).collisionFreeBatch === true;
+  const touched = new Map();
   const knownReds = store.landingBatches(board).flatMap((batch) => batch.culprits ?? []);
   for (const original of pending) {
     const item = { ...original, item_landing_commit: store.checkedLandingCommit(board, original) };
@@ -205,6 +208,14 @@ function candidates(board, root, base, maximum, { firstReady = false } = {}) {
       continue;
     }
     if (ready.length < maximum) {
+      const files = collisionFree ? landingChangedFiles(root, base, item.item_landing_commit) : [];
+      const shared = files.filter(file => touched.has(file));
+      if (shared.length) {
+        blocked.push({ id: item.item_id, code: 'LAND_FILE_OVERLAP', files: shared,
+          with: [...new Set(shared.map(file => touched.get(file)))] });
+        continue; // Verdict order is unchanged; this item leads the next eligible batch.
+      }
+      for (const file of files) touched.set(file, item.item_id);
       ready.push(item);
       if (firstReady) break;
     }
