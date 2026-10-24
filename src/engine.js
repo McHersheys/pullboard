@@ -1,4 +1,5 @@
 import { HANDOFF_ENGINE } from './handoff-engine.js';
+import { handoffMoveProblem } from './handoff-state.js';
 import { requireHandoffActive } from './handoff-state.js';
 import { BAR_READY_ENGINE } from './bar-ready-engine.js';
 import { barReadySetting } from './bar-readiness.js';
@@ -340,7 +341,9 @@ function registrationProblem(board, move, { sender, registration, sequence, dige
 export function applyRelayMove(board, move, { sequence, at, sender, kind, digest = null, registration }) {
   requireSupportedEngine(move);
   const phoneReceipt = sender?.kind === 'machine' && move?.engine >= 6 && Boolean(move.personRequest) && !requestMoveProblem(board, move, { checkExecutorLease: false });
-  const problem = relaySenderProblem(move, sender, kind, { phoneReceipt }) ?? (kind === 'move' ? registrationProblem(board, move, { sender, registration, sequence, digest }) : null);
+  const problem = relaySenderProblem(move, sender, kind, { phoneReceipt })
+    ?? (kind === 'move' ? handoffMoveProblem(board, relayMoveActor(move), move.operation, move.args) : null)
+    ?? (kind === 'move' ? registrationProblem(board, move, { sender, registration, sequence, digest }) : null);
   if (!problem) {
     // Engine-48 relay moves run under linked verifier standing; older recorded moves replay as they did.
     // The person is above every seat; their own moves act with the coordinator's standing.

@@ -90,8 +90,10 @@ test('handoff takeover prints real work and retires only the outgoing seat [B3,N
   assert.ok(taken.document.facts.some(row => row.text.includes('Outside scratch')));
   assert.ok(taken.document.facts.some(row => row.kind === 'note' && row.text.includes(box.clock.now().toISOString())));
   assert.equal(store.getItem(box.board, item).item_owner, outgoing, 'takeover reports claims; it does not silently reassign work');
+  const beforeBlockedFact = store.events(box.board).length;
   const blocked = await box.cli(0, ['fact', String(id), 'note', 'not a permitted post-takeover move']);
   assert.equal(blocked.document.error.code, 'AGENT_REPLACED');
+  assert.equal(store.events(box.board).length, beforeBlockedFact, 'a refused fact leaves no partial event');
   assert.match(blocked.document.error.message, new RegExp(incoming, 'u'));
   assert.equal((await box.cli(0, ['shout', 'coordinator', 'a different channel'])).document.error.code, 'AGENT_REPLACED');
   assert.equal((await box.cli(0, ['shout', '--item', String(item), 'wrong item'])).document.error.code, 'AGENT_REPLACED');
@@ -119,6 +121,7 @@ test('handoff takeover is first-wins and cannot be forged by facts or an authent
   assert.equal(box.replay('takeHandoff', [{ agentId: other, item: id }], other).error.code, 'HANDOFF_TAKEN');
   assert.equal(store.events(box.board).filter(row => row.event_kind === 'handoff-take').length, 1);
   const count = store.listItems(box.board, { all: true }).length;
+  assert.equal(box.replay('addItem', [{ by: incoming, lane: 'core', title: 'Spoof incoming', route: 'strong' }], outgoing).error.code, 'RELAY_SENDER_MISMATCH', 'authentication refusals stay auditable after retirement');
   for (const engine of [1, ENGINE_VERSION]) {
     assert.equal(box.replay('addItem', [{ by: outgoing, lane: 'core', title: 'Old actor must fail', route: 'strong' }], outgoing, engine).error.code, 'AGENT_REPLACED');
   }
@@ -138,5 +141,7 @@ test('handoff rejects main and ordinary items, and a closed untaken channel is r
   assert.notEqual(next.item, first.item);
   assert.throws(() => store.takeHandoff(box.board, { agentId: incoming, item: first.item }), error => error.code === 'NO_HANDOFF');
   assert.equal(store.takeHandoff(box.board, { agentId: incoming, item: next.item }).incoming, incoming);
+  const beforeRefusedFact = store.events(box.board).length;
   assert.throws(() => store.appendFact(box.board, next.item, { agentId: outgoing, kind: 'note', text: 'direct store is also refused' }), error => error.code === 'AGENT_REPLACED');
+  assert.equal(store.events(box.board).length, beforeRefusedFact);
 });

@@ -17,10 +17,16 @@ export function itemHandoff(board, item) {
 }
 
 /** Refuse a replaced seat before any move, except a message on its exact hand-off item. */
-export function requireHandoffActive(board, actor, operation, args) {
+export function handoffMoveProblem(board, actor, operation, args) {
   if (typeof actor !== 'string' || actor === 'person' || actor === 'coordinator') return;
   const handoff = agentHandoff(board, actor);
   if (!handoff?.takenAt) return;
   if (operation === 'shout' && args?.[0]?.item === handoff.item) return;
-  throw new Refused('AGENT_REPLACED', `${actor} was taken over by ${handoff.incoming} at ${handoff.takenAt}; only pullboard shout --item ${handoff.item} "<answer for the incoming agent>" remains available`);
+  return new Refused('AGENT_REPLACED', `${actor} was taken over by ${handoff.incoming} at ${handoff.takenAt}; only pullboard shout --item ${handoff.item} "<answer for the incoming agent>" remains available`);
+}
+
+/** Raise the same replacement refusal at native writes and deterministic engine dispatch. */
+export function requireHandoffActive(board, actor, operation, args) {
+  const problem = handoffMoveProblem(board, actor, operation, args);
+  if (problem) throw problem;
 }
