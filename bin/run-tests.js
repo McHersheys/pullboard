@@ -1153,7 +1153,7 @@ function namesOnlyTestFiles(args) {
     if (!argument.startsWith('-')) continue;
     const option = argument.split('=', 1)[0].replaceAll('_', '-');
     const requiresValue = optionTakesValue(option);
-    if (!knownNodeOptions.has(option)) return false;
+    if (!knownNodeOption(option)) return false;
     if (!argument.includes('=')) takesValue = requiresValue;
   }
   if (takesValue || foreignNodeOptions(process.env.NODE_OPTIONS)) return false;
