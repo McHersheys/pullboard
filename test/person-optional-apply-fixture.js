@@ -52,7 +52,7 @@ export async function optionalPasskeyApply(t) {
   const allowed = sshPublicLine(publicPair.publicKey);
   mkdirSync(join(box.root, '.pullboard'), { recursive: true });
   writeFileSync(join(box.root, '.pullboard', 'signers'), allowed);
-  writeFileSync(join(box.root, '.pullboard', 'signers.initial'), allowed);
+  writeFileSync(join(box.root, '.pullboard', 'signers.initial'), createHash('sha256').update(allowed).digest('hex') + '\n');
   writeFileSync(join(box.root, '.pullboard', 'first-commit'), runFixtureGit(['rev-list', '--max-parents=0', 'HEAD'], { cwd: box.root, env: box.env }) + '\n');
   const board = store.openBoard(join(box.root, '.git', 'pullboard', 'board.sqlite'));
   t.after(() => store.closeBoard(board));
