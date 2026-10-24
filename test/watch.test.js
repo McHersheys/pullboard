@@ -306,9 +306,22 @@ test('watch --work announces a claimable item and a review left waiting [A2,N26]
   assert.equal(watch.out.lines.filter(({ line }) => JSON.parse(line).kind === 'review-wait' && JSON.parse(line).item === added.item_id).length, 1,
     'a waiting review is announced once');
   assert.ok(kinds.includes('accept') && kinds.includes('reject'), 'the verdicts print as events too');
-  const moves = events(box).slice(before).map(event => event.event_kind);
-  assert.deepEqual(moves, ['add', 'add', 'claim', 'check_accept', 'release', 'claim', 'submit', 'join', 'reserve', 'accept', 'claim', 'submit', 'reserve', 'reject'],
-    'watch wrote no event: the new ones are exactly the moves this test made');
+  const recorded = events(box).slice(before);
+  assert.deepEqual(recorded.map(event => event.event_kind), [
+    'add', 'add', 'claim', 'check_accept', 'release', 'claim', 'proof-run', 'proof-run',
+    'submit', 'join', 'reserve', 'proof-run', 'accept', 'claim', 'proof-run', 'proof-run',
+    'submit', 'reserve', 'reject',
+  ], 'watch wrote no event: only the explicit moves and their native proof receipts were recorded');
+  const proofs = recorded.filter(event => event.event_kind === 'proof-run');
+  const receipts = proofs.map(event => JSON.parse(event.event_detail).receipt);
+  assert.deepEqual(receipts.map(receipt => [receipt.item, receipt.commit]), [
+    [added.item_id, firstCommit], [added.item_id, firstCommit], [added.item_id, firstCommit],
+    [waiting.item_id, secondCommit], [waiting.item_id, secondCommit],
+  ], 'only the two submits and the executed accept check recorded native proofs');
+  for (let index = 0; index < proofs.length; index++) {
+    assert.equal(proofs[index].event_by, receipts[index].seat, 'each proof belongs to its executing seat');
+    assert.equal(proofs[index].item_id, receipts[index].item, 'each proof belongs to its checked item');
+  }
 });
 
 test('watch filters by kind, item and addressee, and refuses a flag it cannot follow [A2]', async (t) => {
