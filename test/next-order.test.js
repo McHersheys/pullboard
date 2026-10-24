@@ -6,6 +6,7 @@ import * as store from '../src/board.js';
 import { workQueue } from '../src/queue.js';
 import { applyEngineMove, applyRelayMove, prepareEngineMove } from '../src/engine.js';
 import { ENGINE_VERSION, MILESTONE_RANK_ENGINE } from '../src/machine.js';
+import { LINE_ORDER_ENGINE } from '../src/line-order-engine.js';
 import { exportBoard, importBoard } from '../src/exchange.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
@@ -765,7 +766,7 @@ test('line order sends a send-back home first and gives the scarcest review firs
   importBoard(replay, snapshot);
   assert.equal(store.nextFor(replay, { agentId: scarce.reviewer, lane: 'review', verify: true }).item.item_id, limited, 'export/import retains the recorded policy and author lineage');
   const oldMove = prepareEngineMove(replay, 'reserveNextReview', [{ agentId: scarce.reviewer, lane: 'review', leaseMs: HOUR, policy: 'any' }]);
-  const oldOutcome = applyEngineMove(replay, { ...oldMove, engine: ENGINE_VERSION - 1 }, { sequence: 1, at: '2026-10-24T00:00:00Z' });
+  const oldOutcome = applyEngineMove(replay, { ...oldMove, engine: LINE_ORDER_ENGINE - 1 }, { sequence: 1, at: '2026-10-24T00:00:00Z' });
   assert.equal(oldOutcome.result.item.item_id, abundant, 'an older recorded reserve-next retains its old ordering even with current policy records in the snapshot');
 
   const ranked = lineOrderFixture(t);
