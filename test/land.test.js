@@ -1490,7 +1490,6 @@ test('a publish gate run is recorded and a red and green pair it sees files the 
 });
 test('a landing gate past its timeout stops cleanly [E27,E29]', () => landingTimeoutFixture({ landProject, itemWorktree, submitItem, acceptItem, onBoard, json }));
 
-
 test('landing tests candidate batches in parallel and lands the longest green prefix [B3,V4]', { timeout: 180_000 }, // budget: two real three-item private landings and bounded overlap barriers; no speed threshold.
 () => assertParallelLanding({ landProject, itemWorktree, submitItem, acceptItem, json }));
 
