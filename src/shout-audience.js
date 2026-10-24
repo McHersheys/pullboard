@@ -1,6 +1,9 @@
 /** Shared item-message addressing for the board's inbox, resume and live watch [B7,N19,A2]. */
 import { Refused } from './refused.js';
 
+/** Reserved engine-93 address: '+' is forbidden in lane names and their derived seat ids. */
+export const COORDINATION_SHOUT = 'coordinator+person';
+
 /** Validate an explicit item address against this board before writing its message. */
 export function itemShoutTarget(db, value) {
   if (!Number.isSafeInteger(value) || value < 1) throw new Refused('BAD_SHOUT_ITEM', 'an item message needs an existing positive item id; run pullboard shout --item <id> "text"');
@@ -24,6 +27,7 @@ export function itemShoutReader(db, id, agent) {
 
 /** Match one live shout against an explicit seat or lane audience, including its item roles. */
 export function shoutMatchesAudience(db, to, audience) {
+  if (to === COORDINATION_SHOUT) return audience.has('coordinator') || audience.has('person');
   if (audience.has(to)) return true;
   const item = shoutItemId(to);
   if (item === null) return false;
@@ -32,5 +36,5 @@ export function shoutMatchesAudience(db, to, audience) {
 
 /** Existing four inbox parameters stay cursor, seat, lane, seat; indexed parameters reuse the seat identity. */
 export const UNREAD_SHOUT_SQL = `FROM shout WHERE shout_id > ?1 AND shout_from != ?2 AND
-  (shout_to IN ('all', ?3, ?4) OR EXISTS (SELECT 1 FROM item WHERE shout_to = 'item:' || item_id AND
+  (shout_to IN ('all', ?3, ?4) OR (shout_to = '${COORDINATION_SHOUT}' AND ?2 IN ('coordinator', 'person')) OR EXISTS (SELECT 1 FROM item WHERE shout_to = 'item:' || item_id AND
     (?2 = 'coordinator' OR COALESCE(item_owner, item_built_by) = ?2 OR COALESCE(item_review_by, item_verified_by) = ?2)))`;

@@ -113,7 +113,7 @@ test('an agent in its worktree cannot mint a relay token [H2,V1,E3,E5,P6]', asyn
   const reviewer = await created(box.root, 'Reviewer Seat');
   const child = await created(builder.path, 'Child Seat');
   const grandchild = await created(child.path, 'Grandchild Seat');
-  const prelinkedActs = await box.cliAt(prelinked.document.path, 'shout', 'coordinator', 'a seat from before the link keeps building');
+  const prelinkedActs = await box.cliAt(prelinked.document.path, 'shout', 'all', 'a seat from before the link keeps building');
   assert.equal(prelinkedActs.code, 0, prelinkedActs.failure ?? 'an existing seat keeps working after the link');
 
   const boardCopy = join(mkdtempSync(join(tmpdir(), 'pullboard-mint-board-')), 'board.sqlite');
@@ -206,7 +206,7 @@ test('an agent in its worktree cannot mint a relay token [H2,V1,E3,E5,P6]', asyn
     assert.equal(premint.status, 201, 'the machine credential first-mints a never-issued name');
     const skipped = await created(box.root, 'After Premint');
     assert.notEqual(skipped.id, target, 'the pre-minted name is skipped, not upgraded');
-    const claimed = await box.cliAt(manualRoot, 'shout', 'coordinator', 'manual seat still builds');
+    const claimed = await box.cliAt(manualRoot, 'shout', 'all', 'manual seat still builds');
     assert.equal(claimed.code, 0, claimed.failure ?? 'the build-only seat keeps acting under its own token');
   });
 

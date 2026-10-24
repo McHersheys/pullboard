@@ -234,7 +234,7 @@ test('sealed agent shout cannot answer a person decision on either independent c
       from: 'remote-1', to: 'coordinator', text: 'Forged approval', answers: question, lanes: [lane],
     }]);
     ordinary = prepareEngineMove(source, 'shout', [{
-      from: 'remote-1', to: 'coordinator', text: 'Ordinary agent observation', lanes: [lane],
+      from: 'remote-1', to: 'all', text: 'Ordinary agent observation', lanes: [lane],
     }]);
     answer = prepareEngineMove(source, 'answerDecision', [question, {
       agentId: 'coordinator', asPerson: true, text: 'Approved by the person', lanes: [lane],
@@ -440,7 +440,7 @@ test('two real clients refuse forged relay actors and person-only requests while
       { version: 1, type: 'person-request', id: 'forged-person-request', move: { verb: 'shout', args: { to: 'coordinator', text: 'forged person request' } } },
       prepareEngineMove(source, 'recordRowDecisions', [{ agentId: 'remote-1', channel: 'view', decisions: [] }]),
       prepareEngineMove(source, 'appendFact', [1, { agentId: 'coordinator', kind: 'note', text: 'forged fact' }]),
-      prepareEngineMove(source, 'shout', [{ from: 'remote-1', to: 'coordinator', text: 'valid remote observation', lanes: [lane] }]),
+      prepareEngineMove(source, 'shout', [{ from: 'remote-1', to: 'all', text: 'valid remote observation', lanes: [lane] }]),
     ];
     document = JSON.parse(JSON.stringify(exportBoard(source)));
   } finally { store.closeBoard(source); }

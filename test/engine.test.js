@@ -694,4 +694,14 @@ test('engine 93 item messages replay and older broadcasts keep their recorded me
   assert.deepEqual(first, second);
   assert.equal(store.getShout(one, first.result).shout_to, `item:${item}`);
   assert.equal(store.getShout(two, second.result).shout_to, `item:${item}`);
+  const report = prepareEngineMove(one, 'shout', [{ from: 'web-1', to: 'all', text: 'new private report', lanes: ['web'] }]);
+  const reports = copies.map(board => applyEngineMove(board, report, { sequence: 3, at: CLAIM_AT }));
+  assert.deepEqual(reports[0], reports[1]);
+  for (const [index, board] of copies.entries()) {
+    assert.equal(store.getShout(board, reports[index].result).shout_to, 'coordinator+person');
+    assert.equal(store.inbox(board, 'web-2').some(shout => shout.shout_text === 'new private report'), false);
+    assert.equal(store.inbox(board, 'coordinator').some(shout => shout.shout_text === 'new private report'), true);
+    assert.equal(store.recentShouts(board).find(shout => shout.shout_text === 'old broadcast').shout_to, 'all',
+      'recorded old broadcast remains global, rather than being reinterpreted by its sender');
+  }
 });

@@ -569,7 +569,9 @@ test('shouts reach a lane, an agent or all; inbox marks them read [B7]', () => {
   const lanes = ['coordinator', 'web', 'api'];
   store.shout(board, { from: 'coordinator', to: 'web', text: 'web: rebase', lanes });
   store.shout(board, { from: 'api-1', to: 'web-2', text: 'web-2: schema changed', lanes });
-  assert.throws(() => store.shout(board, { from: 'web-1', to: 'all', text: 'all: gate is slow', lanes }), /BROADCAST_FORBIDDEN/);
+  const report = store.shout(board, { from: 'web-1', to: 'all', text: 'all: gate is slow', lanes });
+  assert.equal(store.getShout(board, report).shout_to, 'coordinator+person');
+  assert.ok(store.inbox(board, 'coordinator').some(shout => shout.shout_id === report));
   store.shout(board, { from: 'coordinator', to: 'all', text: 'all: gate is slow', lanes });
   assert.throws(() => store.shout(board, { from: 'web-1', to: 'nobody', text: 'x', lanes }), /NO_READER/);
   assert.equal(store.unreadCount(board, 'web-2'), 3);

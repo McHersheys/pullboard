@@ -1,5 +1,6 @@
 import { ITEM_SHOUT_ENGINE } from './item-shout-engine.js';
 import {
+  COORDINATION_SHOUT,
   itemShoutTarget,
   itemShoutReader,
   shoutItemId,
@@ -1898,10 +1899,9 @@ function insertShout(board, { from, to, text, lanes, item, decision = false, ans
     to = itemShoutTarget(board.db, item);
     detail = { ...detail, item, text: text.trim() };
   }
-  if (engine >= ITEM_SHOUT_ENGINE && to === 'all' && from !== COORDINATOR && from !== PERSON
-    && board.db.prepare('SELECT 1 FROM agent WHERE agent_id = ?').get(from)) {
-    throw new Refused('BROADCAST_FORBIDDEN', 'only the coordinator or person broadcasts; address an item with pullboard shout --item <id> \"text\", or name a seat');
-  }
+  const coordinationOnly = engine >= ITEM_SHOUT_ENGINE && to === 'all' && from !== COORDINATOR && from !== PERSON
+    && Boolean(board.db.prepare('SELECT 1 FROM agent WHERE agent_id = ?').get(from));
+  if (coordinationOnly) to = COORDINATION_SHOUT;
   if (!text.trim()) throw new Refused('EMPTY_SHOUT', 'a shout needs text');
   if (to === from) throw new Refused('SELF_SHOUT', `a shout cannot be addressed to its sender ${from}; name another agent, a lane or all`);
   if (request && (from !== 'person' || to !== COORDINATOR || decision || answers !== null)) {
@@ -1910,7 +1910,7 @@ function insertShout(board, { from, to, text, lanes, item, decision = false, ans
   const ask = answers === null ? null : getShout(board, answers);
   const isAgent = board.db.prepare('SELECT 1 FROM agent WHERE agent_id = ?').get(to);
   const requestReply = ask?.shout_request && to === ask.shout_from;
-  if (item === undefined && to !== 'all' && to !== PERSON && !lanes.includes(to) && !isAgent && !requestReply) {
+  if (item === undefined && !coordinationOnly && to !== 'all' && to !== PERSON && !lanes.includes(to) && !isAgent && !requestReply) {
     throw new Refused('NO_READER', `nobody reads "${to}": name a lane, an agent or all`);
   }
   if (to === PERSON && decision && from !== COORDINATOR) {
@@ -2016,7 +2016,7 @@ export function passDecision(board, id, { agentId, note, lanes }) {
   return atomic(board, () => {
     if (agentId !== COORDINATOR) throw new Refused('COORDINATOR_ONLY', 'only the coordinator can pass a decision up');
     const ask = getShout(board, id);
-    if (!ask.shout_decision || (ask.shout_to !== COORDINATOR && shoutItemId(ask.shout_to) === null)) throw new Refused('NOT_COORDINATOR_DECISION', `shout #${id} is not a decision waiting for the coordinator`);
+    if (!ask.shout_decision || (ask.shout_to !== COORDINATOR && ask.shout_to !== COORDINATION_SHOUT && shoutItemId(ask.shout_to) === null)) throw new Refused('NOT_COORDINATOR_DECISION', `shout #${id} is not a decision waiting for the coordinator`);
     if (board.db.prepare('SELECT 1 FROM shout WHERE shout_answers = ?').get(id)) throw new Refused('ALREADY_ANSWERED', `shout #${id} already has an answer`);
     const text = `Passed up from ${ask.shout_from}: ${ask.shout_text}\nCoordinator note: ${String(note ?? '').trim()}`;
     if (!String(note ?? '').trim()) throw new Refused('EMPTY_NOTE', 'include a note with the reason for passing this decision');
@@ -2048,6 +2048,7 @@ export function answerDecision(board, id, { agentId, text, lanes, asPerson = fal
     const caller = personAnswer ? null : board.db.prepare('SELECT agent_lane FROM agent WHERE agent_id = ?').get(agentId);
     const addressedItem = shoutItemId(ask.shout_to);
     const ownsDecision = ask.shout_to === agentId || ask.shout_to === caller?.agent_lane
+      || (ask.shout_to === COORDINATION_SHOUT && agentId === COORDINATOR)
       || (addressedItem !== null && itemShoutReader(board.db, addressedItem, agentId));
     if (!ownsDecision && !personAnswer) {
       const lane = caller?.agent_lane ? `your ${caller.agent_lane} lane` : 'a lane you do not belong to';
@@ -2127,6 +2128,7 @@ export function openDecisions(board, recipient = null) {
   const recipients = [...new Set(Array.isArray(recipient) ? recipient : [recipient])];
   if (!recipients.length) return [];
   return openDecisions(board).filter((ask) => recipients.includes(ask.shout_to)
+    || (ask.shout_to === COORDINATION_SHOUT && recipients.includes(COORDINATOR))
     || (shoutItemId(ask.shout_to) !== null && recipients.some((agent) => itemShoutReader(board.db, shoutItemId(ask.shout_to), agent))));
 }
 
