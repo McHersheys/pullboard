@@ -3,12 +3,24 @@ import * as store from './board.js';
 import {
   git,
   tryGit,
+  cleanGitEnvironment,
+  refuseGrafts,
 } from './git.js';
 import { Refused } from './refused.js';
 import { outsideSource } from './outside-source.js';
 
 export const PR_VERIFICATION_CONTEXT = 'pullboard/verified-by-second-agent';
 const COMMIT = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u;
+
+/** Read only the intended repository, never inherited Git directory or replacement selectors. */
+function exactGit(root, args) {
+  return git(root, args, { env: cleanGitEnvironment() });
+}
+
+/** A failed ancestry lookup supplies no coverage. */
+function gitStatus(root, args) {
+  return tryGit(root, args, { env: cleanGitEnvironment() }).status;
+}
 
 /** Unknown historical provenance or a different criterion cannot become independent proof later. */
 function itemReceipt(board, item) {
@@ -26,7 +38,7 @@ function itemReceipt(board, item) {
 
 /** Only one unambiguous Git trailer can identify an item; prose and PR descriptions are not authority. */
 function trailerItem(root, commit, key) {
-  const values = git(root, ['show', '-s', `--format=%(trailers:key=${key},valueonly)`, commit]).split('\n').filter(Boolean);
+  const values = exactGit(root, ['show', '-s', `--format=%(trailers:key=${key},valueonly)`, commit]).split('\n').filter(Boolean);
   const match = values.length === 1 && /^#([1-9][0-9]*)$/u.exec(values[0]);
   return match && Number.isSafeInteger(Number(match[1])) ? Number(match[1]) : null;
 }
@@ -37,24 +49,24 @@ function coverage(root, board, commits, trustedHead) {
   const receipts = new Map(items.map(item => [item.item_id, itemReceipt(board, item)]).filter(([, receipt]) => receipt));
   const recordedTrunks = [...items.map(item => item.item_merged_commit),
     ...store.landingBatches(board).filter(batch => ['trunk', 'landed', 'pushed'].includes(batch.state)).map(batch => batch.tip)]
-    .filter(commit => COMMIT.test(commit ?? '') && tryGit(root, ['merge-base', '--is-ancestor', commit, trustedHead]).status === 0);
+    .filter(commit => COMMIT.test(commit ?? '') && gitStatus(root, ['merge-base', '--is-ancestor', commit, trustedHead]) === 0);
   const covered = new Map([...receipts.values()].map(receipt => [receipt.commit, receipt]));
   for (const item of items) {
     const commit = item.item_merged_commit;
     const receipt = receipts.get(item.item_id);
     if (receipt && COMMIT.test(commit ?? '') && recordedTrunks.includes(commit)
         && trailerItem(root, commit, 'Pullboard-Item') === item.item_id
-        && git(root, ['show', '-s', '--format=%P', commit]).split(' ').length > 1
-        && tryGit(root, ['merge-base', '--is-ancestor', receipt.commit, commit]).status === 0) {
-      for (const introduced of git(root, ['rev-list', `${commit}^1..${commit}`]).split('\n').filter(Boolean)) covered.set(introduced, receipt);
+        && exactGit(root, ['show', '-s', '--format=%P', commit]).split(' ').length > 1
+        && gitStatus(root, ['merge-base', '--is-ancestor', receipt.commit, commit]) === 0) {
+      for (const introduced of exactGit(root, ['rev-list', `${commit}^1..${commit}`]).split('\n').filter(Boolean)) covered.set(introduced, receipt);
     }
   }
   for (const commit of commits) {
     const companion = receipts.get(trailerItem(root, commit, 'Pullboard-Companion'));
     const companionItem = companion && items.find(item => item.item_id === companion.item);
     if (companion && COMMIT.test(companionItem.item_merged_commit ?? '') && recordedTrunks.some(trunk =>
-      tryGit(root, ['merge-base', '--is-ancestor', commit, trunk]).status === 0
-      && tryGit(root, ['merge-base', '--is-ancestor', companionItem.item_merged_commit, trunk]).status === 0)) covered.set(commit, companion);
+      gitStatus(root, ['merge-base', '--is-ancestor', commit, trunk]) === 0
+      && gitStatus(root, ['merge-base', '--is-ancestor', companionItem.item_merged_commit, trunk]) === 0)) covered.set(commit, companion);
   }
   return covered;
 }
@@ -72,6 +84,7 @@ function unverifiedReason(board, commits) {
 
 /** Check the complete provider range against Git objects and immutable native receipts, not merely its head. */
 export function pullRequestVerification({ root, board, client, pull, proposal, repository, trustedHead }) {
+  refuseGrafts(root);
   const head = pull.head?.sha;
   const outside = store.listItems(board, { all: true }).find(item => {
     const source = outsideSource(board, item.item_id);
@@ -84,11 +97,11 @@ export function pullRequestVerification({ root, board, client, pull, proposal, r
   }
   // GitHub's PR-commits endpoint stops at 250; a larger open range is read from exact local Git objects.
   const rows = pull.commits <= 250 ? client.commits(pull.number) : null;
-  const range = rows ? null : tryGit(root, ['rev-list', `${pull.base.sha}..${head}`]);
+  const range = rows ? null : tryGit(root, ['rev-list', `${pull.base.sha}..${head}`], { env: cleanGitEnvironment() });
   const commits = rows ? rows.map(row => row.sha) : range.status === 0 ? range.stdout.trim().split('\n').filter(Boolean) : [];
   if (!Number.isSafeInteger(pull.commits) || pull.commits < 1 || commits.length !== pull.commits
       || commits.some(commit => !COMMIT.test(commit ?? '')) || new Set(commits).size !== commits.length
-      || !commits.includes(head) || commits.some(commit => tryGit(root, ['merge-base', '--is-ancestor', commit, head]).status !== 0)) {
+      || !commits.includes(head) || commits.some(commit => gitStatus(root, ['merge-base', '--is-ancestor', commit, head]) !== 0)) {
     return { state: 'failure', description: 'not verified: complete exact commit range is unavailable', assurance: 'unknown', receipts: [] };
   }
   const covered = coverage(root, board, commits, trustedHead);

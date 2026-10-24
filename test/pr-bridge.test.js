@@ -1,6 +1,10 @@
 /** Publishing proposes only proven heads and observes a person's merge [B3,R3]. */
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import {
+  readFileSync,
+  writeFileSync,
+  rmSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { bridgeProject, bridgeProvider, landBridgeItems, landBridgeRepair, mergeBridgeAs, runBridgeCLI } from './pr-bridge-fixture.js';
@@ -143,6 +147,15 @@ test('a pull request carries a verified-by-a-second-agent status and an outside 
   assert.ok(proof.unverified.includes(unreviewed), 'every commit is checked, not only the newly verified head');
   assert.equal(latest(native.head.sha).state, 'failure');
   assert.equal(github.requests.some(request => request.path.endsWith('/merge') && request.method !== 'GET'), false);
+  const grafts = join(proven.repo, '.git/info/grafts');
+  writeFileSync(grafts, `${native.head.sha} ${proven.published}\n`);
+  const beforeGrafts = github.statuses.length;
+  try {
+    const grafted = await runBridgeCLI(proven, 'publish', '--json');
+    assert.notEqual(grafted.code, 0);
+    assert.equal(JSON.parse(grafted.out).error.code, 'GIT_GRAFTS');
+    assert.equal(github.statuses.length, beforeGrafts, 'altered local ancestry cannot publish new proof');
+  } finally { rmSync(grafts); }
 });
 
 
