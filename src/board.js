@@ -1,4 +1,25 @@
 import { ensureRigorCounters } from './rigor-counters.js';
+import {
+  getShout,
+  milestones,
+  openRequests,
+  pendingRefreeze,
+  pendingRefreezeProblem,
+  milestonePriorities,
+} from './board-read-auxiliary.js';
+export {
+  getShout,
+  allShouts,
+  shoutDetails,
+  openRequests,
+  pendingRefreeze,
+  pendingRefreezeProblem,
+  milestonePriorities,
+  peekShouts,
+  projectItemThreads,
+  milestones,
+  unverifiedSubmissions,
+} from './board-read-auxiliary.js';
 export { openHandoff, takeHandoff } from './handoff.js';
 import { LAND_COLLISION_ENGINE } from './landing-collision-engine.js';
 import * as capacity from './line-capacity-board.js';
@@ -1620,51 +1641,12 @@ export function refreeze(board, id, { agentId, freeze }) {
   });
 }
 
-/** Return a pending coordinator correction until a later refreeze event adopts it [V2]. */
-export function pendingRefreeze(board, id) {
-  const lastRefreeze = board.db.prepare("SELECT COALESCE(MAX(event_id), 0) AS event_id FROM event WHERE item_id = ? AND event_kind = 'refreeze'").get(id).event_id;
-  const edits = board.db.prepare("SELECT event_detail FROM event WHERE item_id = ? AND event_kind = 'edit' AND event_id > ? ORDER BY event_id DESC").all(id, lastRefreeze);
-  const fields = new Set();
-  for (const edit of edits) {
-    const details = JSON.parse(edit.event_detail);
-    for (const field of details.pendingRefreeze ?? []) if (['after', 'criterion', 'check'].includes(field)) fields.add(field);
-  }
-  return [...fields].sort();
-}
 
-/** Refuse a stale claim action with the exact coordinator repair command [V2]. */
-export function pendingRefreezeProblem(board, id) {
-  if ((board.executionEngineVersion ?? ENGINE_VERSION) < 8) return null;
-  const fields = pendingRefreeze(board, id);
-  return fields.length
-    ? new Refused('PENDING_REFREEZE', `item #${id} has a pending ${fields.join(' and ')} correction; refreeze it before renewing or submitting.\nnext: pullboard refreeze ${id}`)
-    : null;
-}
 
 export { listItems } from './board-query.js';
 
 export { itemsInStatus } from './board-query.js';
 
-/** Return all recorded submitted heads of items still awaiting verification [V1,V17].
- * Historical heads remain unreviewed after a rejection or resubmission; current pointers also
- * cover legacy snapshots that retained the item but not its original submit event.
- * @param {any} board
- * @returns {{ item_id: number, item_title: string, item_commit: string }[]}
- */
-export function unverifiedSubmissions(board) {
-  const submissions = new Map();
-  for (const item of listItems(board, { all: true })) {
-    if (item.item_status === 'verified') continue;
-    const commits = [item.item_commit, ...events(board, { itemId: item.item_id })
-      .filter(event => event.event_kind === 'submit')
-      .map(event => JSON.parse(event.event_detail).commit)];
-    for (const commit of commits) {
-      if (!/^[0-9a-f]{40,64}$/iu.test(commit ?? '')) continue;
-      submissions.set(`${item.item_id}:${commit}`, { item_id: item.item_id, item_title: item.item_title, item_commit: commit });
-    }
-  }
-  return [...submissions.values()];
-}
 
 export { getItem } from './board-query.js';
 
@@ -1866,41 +1848,11 @@ function checkEvidence(board, { kind, outcome, item, commit }) {
   if (!/^[0-9a-f]{40}$/.test(commit ?? '')) throw new Refused('BAD_EVIDENCE', `evidence names a commit by its full SHA (saw "${commit ?? ''}")`);
 }
 
-/**
- * One shout by its id.
- *
- * @param {any} board
- * @param {number} id
- * @returns {any}
- */
-export function getShout(board, id) {
-  const found = board.db.prepare('SELECT * FROM shout WHERE shout_id = ?').get(id);
-  if (!found) throw new Refused('NO_SHOUT', `no shout #${id}`);
-  return found;
-}
 
-/** Read every shout in creation order without marking it read, for addressed history and exports. */
-export function allShouts(board) {
-  return board.db.prepare('SELECT * FROM shout ORDER BY shout_id').all();
-}
 
-/** Read one shout with the current open or answered state of its decision, if it is one. */
-export function shoutDetails(board, id) {
-  const shout = getShout(board, id);
-  const answer = shout.shout_decision
-    ? board.db.prepare('SELECT * FROM shout WHERE shout_answers = ? ORDER BY shout_id LIMIT 1').get(id) ?? null
-    : null;
-  return { ...shout, decision_state: shout.shout_decision ? (answer ? 'answered' : 'open') : null, decision_answer: answer };
-}
 
 export { openDecisions } from './board-query.js';
 
-/** Requests remain visible to the coordinator until a done or declined answer closes them (A2). */
-export function openRequests(board) {
-  return board.db.prepare(`SELECT * FROM shout ask WHERE ask.shout_request = 1
-    AND NOT EXISTS (SELECT 1 FROM shout reply WHERE reply.shout_answers = ask.shout_id AND reply.shout_request_outcome IN ('done', 'declined'))
-    ORDER BY ask.shout_id`).all();
-}
 
 /**
  * Unread shouts for an agent, oldest first, then marked read.
@@ -1936,10 +1888,6 @@ export { factReference };
 
 export { itemThread } from './board-query.js';
 
-/** Add threads to public item projections without changing their existing fields [A1,A2,B32]. */
-export function projectItemThreads(board, state) {
-  return { ...state, items: state.items.map((item) => ({ ...item, thread: itemThread(board, item.id) })) };
-}
 
 /** Append a typed fact atomically; a correction never edits the original event [B29,B30,B31,B32].
  * The internal factId is set from a sealed move's identity during replay, rather than replica-local sequence ids; a never-again with its cause is the person's alone, and rigor lists it at once (#713) [D1].
@@ -1982,25 +1930,6 @@ function postRigorNotices(board, trigger) {
   }
 }
 
-/**
- * Rank items by the first unfinished milestone that contains them, leaving unlisted work last.
- * A finished milestone no longer holds back later releases.
- *
- * @param {any} board
- * @returns {(entry: any) => number}
- */
-export function milestonePriorities(board) {
-  if ((board.executionEngineVersion ?? ENGINE_VERSION) < 8) return () => 0;
-  const ordered = milestones(board);
-  const items = new Map(listItems(board, { all: true }).map((entry) => [entry.item_id, entry]));
-  const priorities = new Map();
-  for (const [index, milestone] of ordered.entries()) {
-    const unfinished = milestone.items.some((id) => typeof id !== 'number' || items.get(id)?.item_status !== 'verified');
-    if (!unfinished) continue;
-    for (const id of milestone.items) if (!priorities.has(id)) priorities.set(id, index);
-  }
-  return (entry) => priorities.get(entry.item_id) ?? ordered.length;
-}
 
 /** Explicit item ranks belong to the same first unfinished milestone as its priority [N2,B13]. */
 function milestoneRanks(board, priority) {
@@ -2266,18 +2195,6 @@ export function releaseItemHold(board, id, { agentId }) {
   });
 }
 
-/** Read named milestones from board metadata; older boards simply have none. */
-export function milestones(board) {
-  const row = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?').get('milestones');
-  if (!row) return [];
-  try {
-    const value = JSON.parse(row.meta_value);
-    if (!Array.isArray(value)) throw new Error('not an array');
-    return value;
-  } catch {
-    throw new Refused('MILESTONES_CORRUPT', 'the stored roadmap is unreadable; restore board metadata from a known-good board export');
-  }
-}
 
 // A lane agent's drafted rows live in row-drafts.js (#878); exported here so the engine dispatches them.
 export { draftSpecRow, rowDrafts } from './row-drafts.js';
@@ -2347,22 +2264,6 @@ export function applyRowDecisions(board, { agentId, events }) {
   });
 }
 
-/**
- * The newest unread shouts, without marking them read: `resume` shows them, `inbox` reads them.
- *
- * @param {any} board
- * @param {string} agentId
- * @param {number} [limit]
- * @returns {any[]}
- */
-export function peekShouts(board, agentId, limit = 2) {
-  const agent = board.db.prepare('SELECT * FROM agent WHERE agent_id = ?').get(agentId);
-  if (!agent) return [];
-  return board.db
-    .prepare(`SELECT * ${UNREAD_SQL} ORDER BY shout_id DESC LIMIT ?`)
-    .all(...unreadShoutBindings(agent.agent_last_shout_id, agentId, agent.agent_lane), limit)
-    .reverse();
-}
 
 export { recentShouts, eventsOfKinds, recentEvents, lastMoves, decisionAndEvidenceShouts, submitInvariantEvents } from './board-hot.js';
 
