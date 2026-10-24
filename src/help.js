@@ -13,7 +13,7 @@ Set up
   pullboard init [--model <name>] [--blueprint <name or file>]... [--no-permissions] [--yes] [--verbose]  short setup summary; --verbose shows recipes; --yes commits only setup's own files with your Git identity
   pullboard worktree <lane> --model <name> [--route light] [--family <name>]   make and join a worktree for a new agent
                                         pullboard.json worktrees: inside or beside; init defaults to inside
-  pullboard join <lane> --model <name> [--route light] [--family <name>]       register this worktree as an agent
+  pullboard join <lane> --model <name> [--route light] [--family <name>] [--parent <session-id>]  register this worktree and its parent session
                                         A model is required (or set PULLBOARD_MODEL); family is a separate declaration
   pullboard join coordinator --model <name>                                 declare the main checkout's coordinator model
                                         pullboard.json agents.names: suffix (default) or prefix
@@ -166,7 +166,9 @@ Coordinator
   pullboard hold <lane|id> --off        lift a lane or item hold
 
 Receipts
-  pullboard stats [--since <date>]      proof numbers from the event log; --json for sites and tools
+  pullboard stats [--since <date> | --window <duration>]  proof numbers from the event log; --json for sites and tools
+                                        --window 6h (also 30m or 1d): landed-item stage quartiles, tails and excess over targets;
+                                        includes all attempts and sent-back idle; missing intervals stay unmeasured;
                                         stage averages/medians count ends inside the inclusive UTC window;
                                         build: first claim to final submit (including rework);
                                         review wait: final submit to the closing review reservation;

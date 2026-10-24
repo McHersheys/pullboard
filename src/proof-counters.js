@@ -2,9 +2,10 @@ import { NATIVE_FLAKE_ENGINE } from './flake-engine.js';
 /** Rebuildable, local proof projections maintained with the event that produced them [R1,R2]. */
 import { moveFlowItem } from './stats-flow.js';
 import { roleOf } from './stats-flow.js';
+import { appendRuleProof } from './rule-proof-index.js';
 
 export const PROOF_COUNTER_PREFIX = 'local:proof-stats:';
-const PREFIX = `${PROOF_COUNTER_PREFIX}v1:`;
+const PREFIX = `${PROOF_COUNTER_PREFIX}v2:`;
 
 /** Encode non-finite timestamps with external paths, so user detail objects cannot collide with markers. */
 function encode(value) {
@@ -139,6 +140,7 @@ export function appendProofCounter(board, event) {
   if (keepCatch(event, detail)) {
     put(board, `catch:${event.event_id}`, { event_id: event.event_id, event_at: event.event_at, event_by: event.event_by, event_kind: event.event_kind, item_id: event.item_id, detail });
   }
+  appendRuleProof(board, event, detail, key => proofCounter(board, key), (key, value) => put(board, key, value));
   put(board, 'summary', summary);
 }
 

@@ -179,8 +179,13 @@ test('the run pack names verified items that touched the same files, so a cold a
   box.run(box.repo, 'add', 'web', 'Greet', '--route', 'light', '--criterion', 'says Hi', '--check', 'grep -q Hi web/page.js', '--brief', LIGHT_BRIEF);
   const runner = box.run(box.repo, 'worktree', 'web', '--route', 'light').out.match(/^made (\S+) /)[1];
   assert.match(box.run(runner, 'run', '--agent-light', greet, '--attempts', '1').out, /submitted #1/);
-  box.git(box.web, 'merge', '-q', '--ff-only', JSON.parse(box.run(box.repo, 'show', '1', '--json').out).item_commit);
+  const firstCommit = JSON.parse(box.run(box.repo, 'show', '1', '--json').out).item_commit;
+  box.git(box.web, 'merge', '-q', '--ff-only', firstCommit);
   assert.match(box.run(box.web, 'verify', '1', 'accept', '--note', 'emptied the page; the check failed').out, /verified #1/);
+  // Accepted work still blocks colliding pulls until it actually lands (#1114).
+  box.git(box.repo, 'merge', '-q', '--ff-only', firstCommit);
+  const landed = box.run(box.repo, 'merged', '1', firstCommit);
+  assert.equal(landed.code, 0, landed.err);
   box.run(box.repo, 'add', 'web', 'Say', 'bye', '--route', 'light', '--criterion', 'says Bye', '--check', 'grep -q Bye web/page.js', '--brief', LIGHT_BRIEF);
   const ran = box.run(runner, 'run', '--agent-light', follow, '--attempts', '1');
   assert.match(ran.out, /submitted #2/, ran.out);

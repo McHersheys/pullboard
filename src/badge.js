@@ -6,14 +6,15 @@ import { writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { join } from 'node:path';
 
-/** Count finished records and their current non-self acceptance; absent legacy builder evidence proves nothing. */
+/** Count finished records and only their current independent, non-self acceptance; unknown lineage proves nothing. */
 export function badgeCounts(board) {
   const row = board.db.prepare(`SELECT COUNT(*) AS items,
     COALESCE(SUM(CASE WHEN i.item_built_by IS NOT NULL AND i.item_built_by != ''
-      AND v.verdict_by != i.item_built_by THEN 1 ELSE 0 END), 0) AS checked
+      AND v.verdict_by != i.item_built_by AND assurance.meta_value='independent' THEN 1 ELSE 0 END), 0) AS checked
     FROM item i LEFT JOIN verdict v ON v.verdict_id = (
       SELECT MAX(a.verdict_id) FROM verdict a WHERE a.item_id=i.item_id
         AND a.verdict_decision='ACCEPT' AND a.verdict_commit=i.item_commit)
+    LEFT JOIN board_meta assurance ON assurance.meta_key='verdict_assurance:' || v.verdict_id
     WHERE i.item_status='verified'`).get();
   return { items: row.items, checked: row.checked, percent: row.items ? Math.floor(row.checked * 100 / row.items) : null };
 }
