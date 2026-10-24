@@ -20,7 +20,7 @@ import {
   parseSpec,
 } from './spec.js';
 import { cleanGitEnvironment } from './git.js';
-import { trunkRef } from './trusted-policy.js';
+import { trunkRef } from './trusted-policy-read.js';
 
 /** The board's recorded row drafts, oldest first. */
 export function rowDrafts(board) {

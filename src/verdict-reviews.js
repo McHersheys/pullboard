@@ -1,6 +1,5 @@
 /** Sealed review validation and immutable acceptance projections [E8,H16]. */
 import { Refused } from './refused.js';
-import { verdictAssurance } from './verdict-assurance.js';
 
 /** Validate a sealed review without consulting Git or changing either replica [E8,H16]. */
 export function verdictReviewProblem(review, commit, { checked } = {}) {
@@ -43,4 +42,10 @@ export function acceptedVerdict(board, item) {
 /** The exact checked composition for a new acceptance, or the historical submitted candidate. */
 export function checkedLandingCommit(board, item) {
   return acceptedVerdict(board, item)?.review?.head ?? item.item_commit;
+}
+
+/** Old verdicts without an assurance record never acquire independent status from later seat enrollment. */
+export function verdictAssurance(board, verdict) {
+  return board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?')
+    .get(`verdict_assurance:${verdict.verdict_id}`)?.meta_value === 'independent' ? 'independent' : 'procedural';
 }

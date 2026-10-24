@@ -1,3 +1,4 @@
+import { syncRelay } from '../relay.js';
 /** The pullboard land command, in its own module so an item adding another command never edits these lines. */
 import * as store from '../board.js';
 import {
@@ -43,7 +44,7 @@ export async function run(io, { first, second, rest, values }) {
   }
   if (values.until !== undefined || values.reason !== undefined || values.max !== undefined && (!/^[1-9][0-9]*$/u.test(values.max) || !Number.isSafeInteger(Number(values.max)))) throw new Refused('USAGE', 'use --max with a positive item count, or --waive with --until and --reason');
   const result = await land({ root: ctx.info.root, board,
-    write: (operation, parameters) => ordered(ctx, board, operation, parameters), say: io.say, owner: agentSessionDigest() ?? `pid-${process.pid}`,
+    write: (operation, parameters) => ordered(ctx, board, operation, parameters), refresh: () => syncRelay(ctx.info.root, io), say: io.say, owner: agentSessionDigest() ?? `pid-${process.pid}`,
     maximum: values.max === undefined ? Infinity : Number(values.max), dryRun: Boolean(values['dry-run']), adopt: Boolean(values.adopt), onWait: gateWaitReporter(io) });
   io.result?.(result);
   for (const blocked of result.blocked ?? []) if (blocked.code === 'STALE_VERDICT') io.say(staleVerdictRefusal({ item_id: blocked.id }, blocked).message);
