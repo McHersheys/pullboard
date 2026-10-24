@@ -1,3 +1,6 @@
+export { openHandoff, takeHandoff } from './handoff.js';
+import { LAND_COLLISION_ENGINE } from './landing-collision-engine.js';
+import * as capacity from './line-capacity-board.js';
 import {
   lineOrderEnabled,
   lineBuildOrder,
@@ -116,6 +119,7 @@ import {
   boardBusyError,
 } from './board-access.js';
 import { ensureHotIndexes } from './board-hot.js';
+import { boardWriteBusyError } from './board-busy.js';
 export { boardBusyError } from './board-access.js';
 import {
   boardStanding,
@@ -242,7 +246,6 @@ export { proposeSentinel, decideSentinel, beginSentinelRun, finishSentinelRun } 
 export { flakeLedger, recordFlakeObservation } from './flakes.js';
 export { flakeQuarantines, gateRuns, recordGateRun } from './quarantine.js';
 export { recordPublishFinding } from './pr-findings.js';
-
 /** The seat readers live in seats.js; the board re-exports them so `store.*` callers keep one import. */
 export { agentAt, agentById, agentCreator, coordinatorHolder, listAgents, nextSeatId, seatEnrolled, seatLineage, takeCoordinator, withVerifierStanding } from './seats.js';
 
@@ -266,14 +269,9 @@ export const REJECT_REASONS = [
 
 export { systemClock } from './board-read-open.js';
 
-
-
-
-
 export { openBoardForRead } from './board-read-open.js';
 
 export { openBoardReadOnly } from './board-read-open.js';
-
 /**
  * Open, or create, the board at `file`. Tests pass `:memory:`.
  *
@@ -427,8 +425,6 @@ export { boardId } from './board-query.js';
 
 export { closeBoard } from './board-read-open.js';
 
-
-
 const TRANSACTION_DEPTH = new WeakMap();
 
 /**
@@ -444,7 +440,9 @@ const TRANSACTION_DEPTH = new WeakMap();
 export function atomic(board, work) {
   const depth = TRANSACTION_DEPTH.get(board) ?? 0;
   const savepoint = `pullboard_atomic_${depth}`;
-  board.db.exec(depth ? `SAVEPOINT ${savepoint}` : 'BEGIN IMMEDIATE');
+  const startedAt = Date.now();
+  try { board.db.exec(depth ? `SAVEPOINT ${savepoint}` : 'BEGIN IMMEDIATE'); }
+  catch (error) { throw boardWriteBusyError(board.db, startedAt, error); }
   TRANSACTION_DEPTH.set(board, depth + 1);
   const lastEvent = board.lastEvent;
   const emitted = board.emittedEvents?.length ?? 0;
@@ -495,11 +493,6 @@ export function linkPublishRepair(board, { agentId, item, repair }) {
   }
   setItem(board, repair, { item_parent_id: item });
 }
-
-
-
-
-
 
 /**
  * Register a worktree as an agent (B3): the main checkout as the one coordinator, any other
@@ -966,7 +959,7 @@ export function recordAttempt(board, id, { agentId, n, seconds, result }) {
  * @param {{ agentId: string, lane: string, leaseMs: number, freeze: (item: any) => { text: string, digest: string }, head?: string | null, reviewSkipped?: object | null }} who
  * @returns {{ leaseUntil: string, digest: string, renewed: boolean }}
  */
-export function claim(board, id, { agentId, lane, leaseMs, freeze, head = null, reviewSkipped = null }) {
+export function claim(board, id, { agentId, lane, leaseMs, freeze, head = null, reviewSkipped = null, reviewPolicy = 'any', familyPolicy = 'off' }) {
   return atomic(board, () => {
     const leaseUntil = new Date(board.clock.now().getTime() + leaseMs).toISOString();
     const isRenewal = (item) => item.item_owner === agentId && isHeld(board, item);
@@ -1022,6 +1015,7 @@ export function claim(board, id, { agentId, lane, leaseMs, freeze, head = null, 
             ? new Refused('ITEM_HELD', `item #${id} is held by coordinator: ${held.item_hold_reason}; wait for the coordinator to lift it with pullboard hold ${id} --off`)
             : null;
         },
+        lineCapacity: found => capacity.claimProblem(board, isRenewal(found), { agentId, policy: reviewPolicy, familyPolicy }, { reviewerChecks, reviewReleaseCooldown }),
         oneLiveClaim: (found) => {
           if (found.item_parent_id !== null || isRework(found)) return null;
           const other = board.db
@@ -1249,8 +1243,6 @@ export function reviewReleaseNoteProblem(board, itemId, agentId, note) {
   return null;
 }
 
-
-
 /** Return a reviewer's active one-hour cooldown, if a later submission has not reset it [V1,R1]. */
 function reviewReleaseCooldown(board, itemId, agentId) {
   if ((board.executionEngineVersion ?? ENGINE_VERSION) < 5) return null;
@@ -1265,11 +1257,8 @@ export { reviewQueueBreakdown } from './board-query.js';
 export { reviewQueue } from './board-query.js';
 
 /** Offer an eligible review at the queue ratio without claiming or reserving anything [Q1,V15]. */
-export function reviewOffer(board, { agentId, lane, policy = 'any', familyPolicy = 'off', ratio = 3, runnable = false, routes = ROUTES }) {
-  const queue = reviewQueue(board);
-  if (queue.pending < ratio * Math.max(queue.reviewing, 1)) return null;
-  const { item } = nextFor(board, { agentId, lane, verify: true, policy, familyPolicy, runnable, routes });
-  return item ? { item, queue, ratio } : null;
+export function reviewOffer(board, who) {
+  return capacity.reviewOffer(board, who, nextFor);
 }
 
 /**
@@ -1910,8 +1899,6 @@ export function openRequests(board) {
     ORDER BY ask.shout_id`).all();
 }
 
-
-
 /**
  * Unread shouts for an agent, oldest first, then marked read.
  *
@@ -2479,8 +2466,23 @@ export function finishLandingBatch(board, { agentId, id, tip, landingFence }) {
       if (!item.item_merged_commit) merged(board, entry.id, { agentId, commit: entry.merge });
     }
     logEvent(board, agentId, 'main-moved', null, { sha: tip, batch: id, items: batch.items.map((entry) => entry.id) });
+    tellDeferredLandingReviews(board, batch);
     return recordLandingBatch(board, { agentId, batch: { ...batch, state: 'landed' }, revision: batch.revision, landingFence });
   });
+}
+
+/** Notify each deferred item's current audience once, in the landed transition's transaction. */
+function tellDeferredLandingReviews(board, batch) {
+  if ((board.executionEngineVersion ?? ENGINE_VERSION) < LAND_COLLISION_ENGINE) return;
+  for (const deferred of batch.blocked ?? []) {
+    if (deferred.code !== 'LAND_FILE_OVERLAP') continue;
+    const item = board.db.prepare('SELECT * FROM item WHERE item_id=?').get(deferred.id);
+    if (!item || item.item_status !== 'verified' || item.item_merged_commit) continue;
+    const reviewer = item.item_review_by ?? item.item_verified_by ?? 'coordinator';
+    persistShout(board, { from: 'landing', to: `item:${item.item_id}`,
+      text: `#${item.item_id} waited for overlapping files while batch ${batch.id} landed at ${batch.tip}. ${reviewer}: merge current main into the reviewed commit and record a fresh merge-only re-accept before the next batch; no builder cycle or reopening is needed.`,
+      detail: { item: item.item_id, batch: batch.id, files: deferred.files, reviewer } });
+  }
 }
 
 /** File or refresh an outside source through the ordinary ordered engine. */

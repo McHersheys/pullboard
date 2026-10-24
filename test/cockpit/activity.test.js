@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** Cockpit activity checks, using the shared real-board fixtures [N26]. */
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -240,6 +241,7 @@ test('the activity tab draws the lifecycle from the declaration, as the README d
       'open>claimed': 'claim 6',
       'claimed>open': 'release · lapse · escalate · refreeze (none yet)',
       'claimed>submitted': 'submit 3',
+      'open>submitted': 'intake (none yet)',
       'submitted>verified': 'accept 1',
       'submitted>open': 'reject 1',
       'open>withdrawn': verifiedIsFinal ? 'withdraw 4' : 'withdraw 1',
@@ -441,6 +443,17 @@ test('activity rows say what each shout and answer said [N26]', { timeout: 120_0
       // Measure only laid-out previews: on Activity, at this width, each preview with a box of its own.
       const laidOut = `innerWidth === ${width} && !document.querySelector('[data-pane="activity"]').hidden && [...document.querySelectorAll('#activity .said')].every((said) => said.getBoundingClientRect().height > 0)`;
       await chrome.waitFor(laidOut).catch(async (error) => { throw new Error(`${error.message}; showing ${await chrome.stable("[...document.querySelectorAll('[data-pane]')].filter((pane) => !pane.hidden).map((pane) => pane.dataset.pane).join()")}`); });
+      await chrome.waitFor("[...document.querySelectorAll('#flow svg text.tag')].some(node => node.textContent === 'intake' && node.getBoundingClientRect().width > 0)");
+      const labels = JSON.parse(await chrome.stable(`JSON.stringify([...document.querySelectorAll('#flow svg text.tag')].map(node => {
+        const box = node.getBoundingClientRect();
+        return { words: node.textContent, left: box.left, right: box.right, top: box.top, bottom: box.bottom };
+      }))`));
+      const intake = labels.find(label => label.words === 'intake');
+      assert.ok(intake && intake.right > intake.left, `${width}: the intake route has a visible label`);
+      for (const other of labels.filter(label => label !== intake)) {
+        assert.ok(intake.right <= other.left || intake.left >= other.right || intake.bottom <= other.top || intake.top >= other.bottom,
+          `${width}: intake stays clear of ${other.words} in the actual browser layout`);
+      }
       const rows = JSON.parse(await chrome.stable(`JSON.stringify([...document.querySelectorAll('#activity .act')].map((row) => {
         const said = row.querySelector('.said');
         const lines = said ? Math.round(said.getBoundingClientRect().height / parseFloat(getComputedStyle(said).lineHeight)) : 0;

@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /**
  * Every shape of opening a board through pullboard.dev, in real Chromium and real WebKit [H5,H17,N26].
  *
@@ -880,17 +881,20 @@ async function runCells(engine, built, boardCells, report, ineffective) {
     let seen;
     try { seen = await visit(context, { route, phone: cell.where === 'phone', bootstrap,
       localView: cell.where === 'board-view' ? built.view.base + '/local/view' : null }, want.board); }
-    catch (error) { seen = { board: false, approval: false, words: 'visit failed: ' + error.message, commands: [], signIn: false, ms: null }; }
+    catch (error) { seen = { board: false, approval: false, words: 'visit failed: ' + error.message, commands: [], signIn: false, ms: null,
+      capture: error.pageState ?? { unavailable: true, error: error.message } }; }
     let problem = judge(cell, seen, ineffective);
     // A board that arrived but over the bar is measured once more: one slow sample on a loaded machine is noise, two
     // are a finding. Both timings are reported.
     // A board still loading at the ceiling (a blank or 'Finding your boards' screen) is likewise measured once more.
     if (problem?.startsWith('the board took') || problem?.startsWith('the board did not show') && (!seen.words || /finding your boards|checking your/iu.test(seen.words))) {
       const again = await visit(context, { route, phone: cell.where === 'phone', bootstrap }, want.board).catch(() => null);
-      if (again) { seen = { ...again, words: again.words, firstMs: seen.ms }; problem = judge(cell, seen, ineffective); }
+      if (again) { seen = { ...again, words: again.words, firstMs: seen.ms, firstCapture: seen.capture }; problem = judge(cell, seen, ineffective); }
     }
-    report.push({ engine: engine.name, cell: cell.id, ok: !problem, problem, ms: seen.ms, firstMs: seen.firstMs ?? null, words: seen.words.slice(0, 300), commands: seen.commands });
-    if (problem) failures[cell.id] = problem;
+    const failure = problem ? problem + '\nPAGE_STATE=' + JSON.stringify(seen.capture ?? { unavailable: true }) : null;
+    report.push({ engine: engine.name, cell: cell.id, ok: !problem, problem: failure, ms: seen.ms, firstMs: seen.firstMs ?? null,
+      words: seen.words.slice(0, 300), commands: seen.commands, pageState: seen.capture ?? null, firstPageState: seen.firstCapture ?? null });
+    if (problem) failures[cell.id] = failure;
   };
   const unpaired = boardCells.filter((cell) => (impossibility(cell)?.runsAs.browser ?? cell.browser) === 'unpaired');
   for (let at = 0; at < unpaired.length; at += PARALLEL) {
@@ -915,6 +919,63 @@ async function runCells(engine, built, boardCells, report, ineffective) {
   await revokedRun;
   return failures;
 }
+
+test('a forced hosted cell failure captures its final page state without raising its budget [H5,H17,N26]', async t => {
+  assert.ok(hostedEngines().find(engine => engine.name === 'chromium')?.available, 'real Chrome is required');
+  const engine = await openEngine('chromium');
+  t.after(() => engine.close());
+  const built = await buildBoards(t, 'approval', [engine]);
+  t.after(async () => {
+    for (const identity of Object.values(built.revoked)) await identity.context.close();
+  });
+  const cell = cells().find(entry => entry.id === 'board-view/signed-in/paired/approval/fresh');
+  assert.ok(cell, 'the control selects one actual committed matrix cell');
+  const beforeFault = [];
+  // Only this control's fresh contexts remove the chain, after witnessing the genuine seeded board.
+  const forced = {
+    name: engine.name,
+    /** Open a real fresh context; only this control's page navigation adds a display fault. */
+    async newContext() {
+      const context = await engine.newContext();
+      const open = context.newPage.bind(context);
+      return {
+        ...context,
+        /** Keep the actual browser page, witness the board, then remove its owned display node. */
+        async newPage(options) {
+          const page = await open(options);
+          return {
+            ...page,
+            /** Navigate normally and remove only the already witnessed item-chain node. */
+            async navigate(url) {
+              await page.navigate(url);
+              const shown = await page.poll(`(${READ_SCREEN}).board`, 8_000); // budget: existing blocker-settle fixture ceiling, not a speed assertion.
+              assert.ok(shown, 'the real seeded board appears before this control injects its fault');
+              beforeFault.push(await page.evaluate(READ_SCREEN));
+              await page.evaluate(`document.querySelector('#chain').remove()`);
+            },
+          };
+        },
+      };
+    },
+  };
+  const report = [];
+  const failures = await runCells(forced, built, [cell], report, []);
+  assert.deepEqual(Object.keys(failures), [cell.id], 'exactly the selected cell genuinely fails');
+  assert.match(failures[cell.id], /the board did not show within 3000 ms/u, 'the original cell judge still owns the failure');
+  assert.equal(report.length, 1, 'the control does not run another matrix cell');
+  assert.ok(beforeFault.length > 0 && beforeFault.every(seen => seen.board), 'every injected fault follows the actual seeded-board positive witness');
+  assert.match(failures[cell.id], /PAGE_STATE=/u, 'the actual matrix failure message carries the final page capture');
+  const state = JSON.parse(failures[cell.id].split('PAGE_STATE=')[1]);
+  assert.equal(state.budgetMs, 3000, 'capture never raises the board budget');
+  assert.ok(state.elapsedMs >= state.budgetMs, 'the real forced visit reached the unchanged budget');
+  assert.equal(typeof state.screen, 'string');
+  assert.equal(typeof state.busy, 'boolean');
+  assert.equal(state.chain.present, false, 'capture observes the owned control removing the chain');
+  assert.equal(state.chain.visible, false, 'the removed chain cannot count as visible');
+  assert.equal(state.chain.hasExpectedItem, false, 'the positive witness was removed rather than replaced with another board');
+  assert.equal(typeof state.noBoardsYet.visible, 'boolean');
+  assert.match(state.noBoardsYet.text, /No boards yet/u, 'capture records the empty-state text even when hidden');
+});
 
 test('a board awaiting a phone approval is mentioned on a non-phone paired browser [H5]', {
   timeout: 180_000,

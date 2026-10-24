@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** Exercise the deterministic stress fixture and the real-Chrome performance harness [N26]. */
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';

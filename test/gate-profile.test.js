@@ -1,4 +1,5 @@
 /** Real gate, item-check and verifier profiles parse emitted timings [C7,V10]. */
+import { awaitNestedRun } from '../src/test-file-pool.js';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
@@ -160,7 +161,15 @@ test('a timing profile records two runner invocations and the real gate-slot wai
       gateTimer = setTimeout(() => reject(new Error('private gate did not finish within 60 seconds')), 60_000); // budget: hang ceiling for private gate completion; no throughput claim.
     });
     let status;
-    try { [status] = await Promise.race([gateExited, timeout]); }
+    try {
+      const terminal = Promise.race([gateExited, timeout]).catch(async error => {
+        if (gate.exitCode === null && gate.signalCode === null) gate.kill('SIGTERM');
+        await gateExited;
+        throw error;
+      });
+      terminal.child = gate;
+      [status] = await awaitNestedRun(terminal);
+    }
     finally { clearTimeout(gateTimer); }
     result = { status, stdout: Buffer.concat(gateOutput).toString('utf8'), stderr: '' };
   } finally {
@@ -353,6 +362,7 @@ function startProfiledSubmit(box, cwd) {
   const finished = new Promise(resolveFinished => child.once('close', (code, signal) => resolveFinished({
     code, signal, stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8'),
   })));
+  finished.child = child;
   return { child, finished };
 }
 
@@ -404,10 +414,16 @@ async function runProfileSubmission(box, queue) {
     }
     let timer;
     try {
-      result = await Promise.race([
+      const terminal = Promise.race([
         submit.finished,
         new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('private profile submit exceeded 60 seconds')), 60_000); }), // budget: hang ceiling for private submission completion; no throughput claim.
-      ]);
+      ]).catch(async error => {
+        if (submit.child.exitCode === null && submit.child.signalCode === null) submit.child.kill('SIGTERM');
+        await submit.finished;
+        throw error;
+      });
+      terminal.child = submit.child;
+      result = await awaitNestedRun(terminal);
     } finally {
       clearTimeout(timer);
     }

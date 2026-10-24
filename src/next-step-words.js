@@ -56,6 +56,7 @@ export function personRequestGuidance(message, { caller, leading = false } = {})
 
 /** @type {Readonly<Record<string, string>>} */
 export const NEXT_STEPS = Object.freeze({
+  LINE_WIP_LIMIT: 'review the oldest eligible waiting submission: pullboard next --verify; if none is eligible, ask the coordinator to arrange a reviewer',
   OUTSIDE_NATIVE_BUILD: 'the outside author revises the PR; ask the coordinator to return it, then intake its new exact head',
   CHECK_NO_PROOF: 'strengthen the trusted criterion so it fails before the outside change, then ask the coordinator to refreeze it',
   OUTSIDE_URL: 'use a GitHub issue or pull request URL with owner/repository and its positive number',
@@ -180,6 +181,7 @@ export const NEXT_STEPS = Object.freeze({
   BRIEF_TOO_LONG: 'shorten the brief and point to a longer doc by path, or pass --brief-file <file>',
   BROWSER_SLOT_REQUIRED: 'release the gate lease and take it again with browser: true',
   RUNNER_CAPACITY_BUSY: 'nothing to do on that runner: rerun once its running jobs end, and it runs at its new registered size',
+  RUNNER_GUI_SESSION_REQUIRED: 'nothing to do: the run reruns locally; log in to a GUI session on the runner before sending GUI-marked files there',
   RUNNER_BROWSER_SLOT_REQUIRED: 'nothing to do: the run reruns on a local gate slot; if it repeats, set gate.browserByLaunch the same on this machine and that runner',
   CANNOT_SIGN: 'sign only approved rows: pullboard spec signoff <approved ids>',
   CHECKOUT_SESSION: 'run pullboard takeover from the agent session that owns this checkout',
@@ -345,6 +347,10 @@ export const NEXT_STEPS = Object.freeze({
   BAR_SELF_SIGN: 'ask a different parent session to review the current bar and run pullboard bar sign <id> --note "..."',
   MAIN_NOT_COMPOSED: 'merge current main into the candidate, commit the composition and submit again; for an unrecorded recovered move, run pullboard inbox first or ask the coordinator to resolve the pending receipt',
   BAR_REASON: 'say what the old bar got wrong: pullboard edit <id> --reason "..."',
+  NESTED_RUN_HANDLE_REQUIRED: 'pass the original ChildProcess or fixture promise retaining .child to awaitNestedRun',
+  NESTED_RUN_OFFER_REQUIRED: 'start the child with the current spawn export after test-file token admission, then await its original handle',
+  NESTED_RUN_WAIT_REUSED: 'await the original returned wait; do not lend the same child a second time',
+  NESTED_RUN_WAIT_ACTIVE: 'finish the active yielding wait before lending this test file token to another child',
   NOTE_REQUIRED: 'add --note "<what happened>"',
   NOTHING_FREE: 'wait for work: pullboard next --wait 9 (minutes)',
   NOT_AT_COMMIT: 'check out the submitted commit shown by pullboard show <id>: git switch --detach <commit>',
@@ -473,6 +479,11 @@ export const NEXT_STEPS = Object.freeze({
   RELAY_ORIGIN: 'set a GitHub origin: git remote add origin https://github.com/<owner>/<repo>.git, then pullboard relay on',
   RELAY_PERSON_ONLY: 'do it as the person from the paired phone or the person\'s own session',
   RELAY_PRESENTATION_PENDING: 'run pullboard status again',
+  AGENT_REPLACED: 'read the takeover named in the refusal; only shout on that exact hand-off item, then continue work from the incoming agent worktree',
+  HANDOFF_WORKTREE: 'join an agent worktree and run pullboard handoff there; the main checkout uses pullboard takeover',
+  HANDOFF_SELF: 'join a different worktree as the incoming agent, then run pullboard handoff --take <id>',
+  HANDOFF_TAKEN: 'read the recorded takeover and ask the incoming agent on the hand-off item before replacing another role',
+  NO_HANDOFF: 'ask the outgoing agent to run pullboard handoff, then read and take the active item it prints',
   RELAY_RECOVERY_HEALTHY: 'replay it normally: pullboard relay',
   RELAY_RECOVERY_PENDING: 'finish the saved recovery: pullboard relay recover --skip <sequence>',
   RELAY_REGISTRATION: 'create the seat again from its creating seat\'s checkout, or from the main checkout: pullboard worktree <lane> --model "<model name>"',

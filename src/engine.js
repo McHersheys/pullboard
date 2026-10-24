@@ -1,3 +1,8 @@
+import { HANDOFF_ENGINE } from './handoff-engine.js';
+import { handoffMoveProblem } from './handoff-state.js';
+import { requireHandoffActive } from './handoff-state.js';
+import { LINE_CAPACITY_ENGINE } from './line-capacity-engine.js';
+import { lineSettings } from './line-settings.js';
 import { outsideSource } from './outside-source.js';
 import { requireOutsideReceipt } from './outside-proof.js';
 import { OUTSIDE_INTAKE_ENGINE } from './outside-intake-engine.js';
@@ -78,6 +83,7 @@ import { carriesLandingEnvironment } from './execution-environment.js';
 import { LANDING_LEASE_ENGINE } from './landing-lease-engine.js';
 import { LINE_ORDER_ENGINE } from './line-order-engine.js';
 import { LINE_SETTINGS_ENGINE } from './line-settings-engine.js';
+import { LAND_COLLISION_ENGINE } from './landing-collision-engine.js';
 import { PR_BRIDGE_ENGINE } from './pr-bridge-engine.js';
 import { LANDING_LOCAL_LEASE_ENGINE } from './landing-local-lease-engine.js';
 
@@ -85,7 +91,7 @@ const ITEM_ID_FIRST_ARGUMENT = new Set(['signBar', 'acceptCheck', 'editItem', 'e
 
 /** Only these public board operations may be requested by an encrypted move. */
 export const ENGINE_OPERATIONS = Object.freeze([
-  'intakeOutside', 'approveOutside', 'setBarReady', 'signBar', 'register', 'ensureCoordinator', 'addItem', 'editItem', 'completeCheckBaseline', 'escalate', 'recordAttempt',
+  'openHandoff', 'takeHandoff', 'intakeOutside', 'approveOutside', 'setBarReady', 'signBar', 'register', 'ensureCoordinator', 'addItem', 'editItem', 'completeCheckBaseline', 'escalate', 'recordAttempt',
   'claim', 'release', 'submit', 'reserveReview', 'reserveNextReview', 'verify', 'merged',
   'withdraw', 'refreeze', 'reopen', 'shout', 'passDecision', 'answerDecision', 'holdLane', 'releaseLane', 'holdItem', 'releaseItemHold',
   'addMilestone', 'editMilestoneItems', 'orderMilestoneItems', 'moveMilestone', 'editMilestone', 'removeMilestone', 'shipMilestone',
@@ -104,14 +110,17 @@ const OPERATION_ENGINE = Object.freeze({ setLineSetting: LINE_SETTINGS_ENGINE, d
 function minimumOperationEngine(operation, args, board, at) {
   const outside = ['intakeOutside', 'approveOutside'].includes(operation) || operation === 'verify' && args[1]?.sandbox !== undefined
     || board && ['claim', 'submit', 'verify', 'merged'].includes(operation) && Boolean(outsideSource(board, args[0]));
-  return Math.max(outside ? OUTSIDE_INTAKE_ENGINE : 1, minimumExistingOperationEngine(operation, args, board, at));
+  const capacity = operation === 'claim' && args[1]?.lineCapacity === true;
+  return Math.max(outside ? OUTSIDE_INTAKE_ENGINE : 1, capacity ? LINE_CAPACITY_ENGINE : 1, minimumExistingOperationEngine(operation, args, board, at));
 }
 
 /** Preserve each pre-existing move's required feature level when composing outside metadata. */
 function minimumExistingOperationEngine(operation, args, board, at) {
+  if (['openHandoff', 'takeHandoff'].includes(operation)) return HANDOFF_ENGINE;
   if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('conflict:')) return RIGOR_AUTO_ENGINE;
   if (['setBarReady', 'signBar'].includes(operation) || board && ['claim', 'submit', 'editItem', 'addItem', 'refreeze'].includes(operation) && barReadySetting(board).enabled) return BAR_READY_ENGINE;
   if (operation === 'recordPublishFinding') return PR_BRIDGE_ENGINE;
+  if (operation === 'setLineSetting' && args[0]?.key === 'collisionFreeBatch') return LAND_COLLISION_ENGINE;
   if (operation === 'setLineSetting' && args[0]?.key === 'order') return LINE_ORDER_ENGINE;
   if (operation === 'recordLandingTestDefect' || operation === 'verify' && args[1]?.environment !== undefined
     || operation === 'recordGateRun' && Object.hasOwn(args[0]?.receipt ?? {}, 'environment')
@@ -196,6 +205,9 @@ export function startRelayEpoch(board) {
 export function prepareEngineMove(board, operation, args, { id = randomUUID(), actor } = {}) {
   if (!ENGINE_OPERATIONS.includes(operation) || !Array.isArray(args)) throw new Refused('RELAY_MOVE', 'use a supported board-engine operation with its argument array');
   if (operation === 'submit' && ENGINE_VERSION >= SUBMISSION_PROOF_ENGINE) submissionProof(args[1]?.submissionProof);
+  if (operation === 'claim' && ['wipPerReviewer', 'takeoverMinutes'].some(key => typeof lineSettings(board)[key] === 'number')) {
+    args = [args[0], { ...args[1], lineCapacity: true }, ...args.slice(2)];
+  }
   const minimumEngine = minimumOperationEngine(operation, args, board);
   if (ENGINE_VERSION < minimumEngine) throw new Refused('ENGINE_VERSION', `${operation} requires engine version ${minimumEngine}; this pullboard uses engine ${ENGINE_VERSION}; upgrade before sending it`);
   // A gate run is sealed only as its gate's own receipt; a run made up by hand is refused before it reaches any replica.
@@ -353,7 +365,9 @@ function registrationProblem(board, move, { sender, registration, sequence, dige
 export function applyRelayMove(board, move, { sequence, at, sender, kind, digest = null, registration }) {
   requireSupportedEngine(move);
   const phoneReceipt = sender?.kind === 'machine' && move?.engine >= 6 && Boolean(move.personRequest) && !requestMoveProblem(board, move, { checkExecutorLease: false });
-  const problem = relaySenderProblem(move, sender, kind, { phoneReceipt }) ?? (kind === 'move' ? registrationProblem(board, move, { sender, registration, sequence, digest }) : null);
+  const problem = relaySenderProblem(move, sender, kind, { phoneReceipt })
+    ?? (kind === 'move' ? handoffMoveProblem(board, relayMoveActor(move), move.operation, move.args) : null)
+    ?? (kind === 'move' ? registrationProblem(board, move, { sender, registration, sequence, digest }) : null);
   if (!problem) {
     // Engine-48 relay moves run under linked verifier standing; older recorded moves replay as they did.
     // The person is above every seat; their own moves act with the coordinator's standing.
@@ -403,6 +417,7 @@ export function applyEngineMove(board, move, { sequence, at, standing = null, en
           if (problem) throw problem;
           // One main checkout coordinates a linked board at a time; another is refused by name (#347).
           requireCoordinatorHold(board, move, standing?.lineage, at);
+          requireHandoffActive(board, relayMoveActor(move), move.operation, move.args);
           return store[move.operation](board, ...executableArgs(move, board));
         });
         const result = standing ? store.withVerifierStanding(board, standing, execute) : execute();
