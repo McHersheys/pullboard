@@ -12,7 +12,8 @@ export function recordRowDraft(board, { agentId, row, written = false }) {
     // The same writer asking again for the same definition, as a resumed blueprint add does, keeps the id
     // it reserved; a different gate, tier, section, target or writer is another proposal and gets its own id.
     const same = current.find((draft) => draft.id === row.id && draft.by === agentId && draft.written === Boolean(written)
-      && ['text', 'gate', 'tier', 'section', 'revises', 'file', 'source', 'replacement', 'status', 'reason'].every((key) => (draft[key] ?? '') === (row[key] ?? '')) && draft.target === (row.target ?? 'spec'));
+      && ['text', 'gate', 'tier', 'section'].every((key) => (draft[key] ?? '') === (row[key] ?? '')) && draft.target === (row.target ?? 'spec')
+      && (row.revises === undefined ? draft.revises === undefined : ['revises', 'file', 'source', 'replacement', 'status', 'reason'].every(key => draft[key] === row[key])));
     if (same) return same;
     const [, prefix, number] = /^(.*?)(\d+)$/u.exec(row.id);
     let next = Number(number);

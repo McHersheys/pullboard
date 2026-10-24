@@ -45,7 +45,7 @@ export function planSpecRevision(root, config, { revises, text, gate, status, re
   if (replacement === source) throw new Refused('SPEC_REVISION', 'the proposed row is unchanged; give new text, gate or status');
   const prefix = /^([A-Z][A-Z0-9]*?)\d+(?:\.\d+)*$/u.exec(revises)?.[1];
   const plan = draftRow(root, config, { target: 'spec', text, gate: nextGate, tier: row.tier, section: prefix, taken, write: false });
-  return { ...plan.row, revises, file: config.spec, source, replacement, status: wanted, reason: reason.trim() };
+  return { ...plan.row, target: 'spec', revises, file: config.spec, source, replacement, status: wanted, reason: reason.trim() };
 }
 
 /** The signed reference includes the immutable complete proposal, not mutable display labels. */
