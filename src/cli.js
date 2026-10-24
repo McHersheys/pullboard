@@ -611,7 +611,8 @@ export async function ordered(ctx, board, operation, args) {
 /** Order a claim on every route (claim, next, run) only after a check green on main is not held [V4]. */
 export async function claimOrdered(ctx, board, args) {
   refuseClaimProvesNothing(ctx.info.root, board, args[0]);
-  return await ordered(ctx, board, 'claim', args);
+  return await ordered(ctx, board, 'claim', [args[0], { ...args[1],
+    reviewPolicy: ctx.config.verify.policy, familyPolicy: ctx.config.verify.family }]);
 }
 
 /**
@@ -1534,7 +1535,7 @@ function nextPick(ctx, board, values) {
   if (offer && !values.build) return { item: offer.item, offer, build: item ?? null };
   if (!item) return { reasons, laneWork: ctx.info.isMain ? mainLaneWork(store.listItems(board)) : null };
   const reviewSkipped = values.build && !held
-    ? { offeredItem: offer?.item.item_id ?? null, ratio: ctx.config.verify.reviewRatio, ...store.reviewQueue(board) } : null;
+    ? { offeredItem: offer?.item.item_id ?? null, ratio: offer?.ratio ?? ctx.config.verify.reviewRatio, ...store.reviewQueue(board) } : null;
   return { claim: true, me, item, held, shared, reasons, reviewSkipped, seats };
 }
 

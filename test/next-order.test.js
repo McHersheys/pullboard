@@ -786,3 +786,42 @@ test('line order sends a send-back home first and gives the scarcest review firs
     .sort(store.buildOrder(ranked.board, { agentId: ranked.builder, readiness }));
   assert.equal(withSignedReadiness[0].item_id, ready, 'the injected readiness predicate precedes coordinator rank without manufacturing signed records');
 });
+
+test('line capacity offers reviews before builds when reviews pile up [N2,B13,H16]', t => {
+  const { board, root, builder, reviewer } = lineOrderFixture(t);
+  let at = Date.parse('2026-10-24T00:00:00Z');
+  board.clock = { now: () => new Date(at) };
+  /** Change only the named recorded input, retaining its measured reason and window. */
+  function setting(key, value) {
+    store.setLineSetting(board, { agentId: 'coordinator', key, value, reason: 'seeded line-capacity window',
+      window: { activeReviewers: 1, submissions: 5 } });
+  }
+  const waiting = Array.from({ length: 5 }, (_, index) => submitted(board, builder, `waiting review ${index}`, 'strong', index + 1));
+  const build = store.addItem(board, { by: 'coordinator', lane: 'review', title: 'fresh work for the same seat' });
+  assert.equal(store.reviewOffer(board, { agentId: reviewer, lane: 'review', ratio: 99 }), null,
+    'off retains the old configured review ratio');
+  setting('reviewsFirst', true);
+  setting('wipPerReviewer', 1.5);
+  const offer = store.reviewOffer(board, { agentId: reviewer, lane: 'review', ratio: 99 });
+  assert.equal(offer?.item.item_id, waiting[0], 'recorded capacity replaces the legacy ratio when reviews pile up');
+  assert.throws(() => store.claim(board, build, { agentId: reviewer, lane: 'review', leaseMs: HOUR, freeze: FREEZE }),
+    error => error.code === 'LINE_WIP_LIMIT' && error.message.includes(`#${waiting[0]}`),
+    'a new claim over the limit names the oldest eligible waiting review');
+  const foreign = store.register(board, { lane: 'core', path: join(root, 'takeover'), route: 'strong', parent: 'takeover-T', session: 'takeover-child' });
+  const returned = store.getItem(board, waiting[0]);
+  store.verify(board, returned.item_id, { agentId: reviewer, decision: 'REJECT', reason: 'TEST_FAILURE',
+    note: 'Synthetic lifecycle refusal; no gate execution claimed.', head: returned.item_commit,
+    digest: returned.item_frozen_digest, policy: 'any', reopenFirstRefusalMinutes: 60 });
+  setting('wipPerReviewer', false);
+  setting('takeoverMinutes', 15);
+  const historyBefore = store.events(board, { itemId: returned.item_id });
+  assert.throws(() => store.claim(board, returned.item_id, { agentId: foreign, lane: 'core', leaseMs: HOUR, freeze: FREEZE }),
+    error => error.code === 'REOPEN_HELD_FOR_BUILDER', 'the builder still gets the initial wait');
+  at += 15 * 60_000;
+  store.claim(board, returned.item_id, { agentId: foreign, lane: 'core', leaseMs: HOUR, freeze: FREEZE });
+  assert.equal(store.getItem(board, returned.item_id).item_owner, foreign, 'the recorded idle wait permits a same-lane takeover');
+  assert.deepEqual(store.events(board, { itemId: returned.item_id }).slice(0, historyBefore.length), historyBefore,
+    'taking over appends history and never rewrites the rejected work');
+  setting('reviewsFirst', false);
+  assert.equal(store.reviewOffer(board, { agentId: reviewer, lane: 'review', ratio: 99 }), null, 'off restores the old ratio');
+});
