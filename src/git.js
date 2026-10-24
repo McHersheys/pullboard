@@ -377,6 +377,11 @@ export function mainCheckout(root) {
   return fact(`mainCheckout:${resolve(root)}`, () => readMainCheckout(root));
 }
 
+/** Read only source identities already captured by this command's combined Git lookup. */
+export function mainSourceBlobs(root) {
+  return gitFacts.getStore()?.facts.get(`mainSourceBlobs:${resolve(root)}`) ?? null;
+}
+
 /** Resolve the primary checkout without assuming its branch is named main.
  *
  * @param {string} root
@@ -542,26 +547,30 @@ export function repoInfo(cwd, { env } = {}) {
  */
 function readRepoInfo(cwd, env) {
   const combined = !env && gitFacts.getStore()?.active && plainRepositoryEnvironment();
-  const primary = combined ? ['HEAD^{commit}', 'main-worktree/HEAD^{commit}', '--symbolic-full-name', 'main-worktree/HEAD', '--git-path', 'hooks'] : [];
+  const primary = combined ? ['HEAD^{commit}', 'main-worktree/HEAD^{commit}', '--git-path', 'hooks', 'main-worktree/HEAD:pullboard.json', 'main-worktree/HEAD:DOCTRINE.md', '--symbolic-full-name', 'main-worktree/HEAD'] : [];
   const info = tryGit(cwd, ['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-dir', '--git-common-dir', ...primary], { env });
-  // An unborn branch here or in the primary checkout fails the combined call after the paths; ask for the paths alone.
-  if (combined && info.status !== 0 && info.stdout) return readRepoInfo(cwd, process.env);
   const fields = info.stdout.split('\n');
-  const combinedFields = [6, 7].includes(fields.length) && fields.slice(0, 5).every(Boolean)
-    && isAbsolute(fields.at(-1)) && (fields.length === 6 || fields[5].startsWith('refs/'));
-  // Unusual hook paths can contain newlines; retain the original path-only reader instead of guessing fields.
-  if (combined && info.status === 0 && !combinedFields) return readRepoInfo(cwd, process.env);
-  if (combined && info.status === 0 && combinedFields) {
-    const hooks = fields.pop();
-    const [root, , , head, commit, branch] = fields;
+  /** Recognize full SHA-1 or SHA-256 object identities before accepting a partial optional response. */
+  const oid = value => /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(value ?? '');
+  const baseValid = fields.length >= 6 && fields.slice(0, 3).every(isAbsolute)
+    && oid(fields[3]) && oid(fields[4]) && isAbsolute(fields[5]);
+  const optional = ['main-worktree/HEAD:pullboard.json', 'main-worktree/HEAD:DOCTRINE.md'];
+  const missingOptional = info.status !== 0 && (fields.length === 7 && fields[6] === optional[0]
+    || fields.length === 8 && oid(fields[6]) && fields[7] === optional[1]);
+  if (combined && (!baseValid || info.status !== 0 && !missingOptional)) return readRepoInfo(cwd, process.env);
+  if (combined && baseValid) {
+    const [root, , , head, commit, hooks, config, doctrine, branch] = fields;
+    const suffixValid = missingOptional || (fields.length === 8 || fields.length === 9)
+      && oid(config) && oid(doctrine) && (branch === undefined || branch.startsWith('refs/'));
+    if (!suffixValid) return readRepoInfo(cwd, process.env);
     const { facts } = gitFacts.getStore();
     facts.set(`gitPath:${JSON.stringify([resolve(root), 'hooks'])}`, resolve(root, hooks));
     facts.set(`headCommit:${resolve(root)}`, head);
-    // A detached primary checkout names no branch, as symbolic-ref reports it.
-    facts.set(`mainCheckout:${resolve(root)}`, branch?.startsWith('refs/') ? { branch, commit } : null);
+    if (!missingOptional) facts.set(`mainCheckout:${resolve(root)}`, branch?.startsWith('refs/') ? { branch, commit } : null);
+    if (oid(config) && oid(doctrine)) facts.set(`mainSourceBlobs:${resolve(root)}`, { commit, config, doctrine });
     fields.length = 3;
   }
-  if (info.status !== 0 || fields.length !== 3 || fields.some((field) => !field)) {
+  if (info.status !== 0 && !missingOptional || fields.length !== 3 || fields.some((field) => !field)) {
     const bare = bareWorktreeFinding(cwd);
     if (bare) throw new Refused(bare.code, `${bare.message}; run ${bare.next}`);
     throw new Refused('NOT_A_REPO', 'not inside a git work tree; run git init, or cd into a repo');

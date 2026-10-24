@@ -155,9 +155,46 @@ test('ordinary resume reads its indexed work card with at most four Git processe
   const diverged = resetAndCount(box, box.worker, 'resume', '--json');
   assert.ok(diverged.count <= 4, `diverged JSON v1 resume started ${diverged.count} Git processes`);
   assert.equal(JSON.parse(diverged.result.stdout).dirty, 1, 'v1 retains a real nonzero dirty value');
+  box.git(box.repo, 'branch', 'unrelated-upstream', 'core/worker');
+  box.git(box.worker, 'config', 'branch.core/worker.remote', '.');
+  box.git(box.worker, 'config', 'branch.core/worker.merge', 'refs/heads/unrelated-upstream');
   const text = resetAndCount(box, box.worker, 'resume');
   assert.ok(text.count <= 4, `diverged text resume started ${text.count} Git processes`);
   assert.match(text.result.stdout, /1 ahead of main, 0 behind/u, 'text compares real differing HEAD and main');
+  assert.match(text.result.stdout, /1 file uncommitted/u, 'an untracked file is counted within the same Git budget');
+  assert.equal(box.git(box.worker, 'config', 'branch.core/worker.merge'), 'refs/heads/unrelated-upstream', 'comparison leaves the real upstream unchanged');
+  box.git(box.worker, 'mv', 'src/ahead.txt', 'src/renamed \nfile.txt');
+  const renamed = resetAndCount(box, box.worker, 'resume');
+  assert.ok(renamed.count <= 4, `renamed-path resume started ${renamed.count} Git processes`);
+  assert.match(renamed.result.stdout, /2 files uncommitted/u, 'a renamed path with whitespace counts once alongside the new file');
+});
+
+/** Optional committed-source facts never replace Git's repository or detached-HEAD semantics. */
+test('combined Git source facts retain repository identity when optional doctrine is missing [C7,N19]', t => {
+  const box = fixture(t);
+  const script = `const { repoInfo, mainSourceBlobs, mainCheckout } = await import(${JSON.stringify(GIT_MODULE)});
+    console.log(JSON.stringify(await withGitFacts(() => { const info = repoInfo(process.argv[1]);
+      return { info, head: headCommit(info.root), main: mainCheckout(info.root), blobs: mainSourceBlobs(info.root) }; })));`;
+  const present = readFactScenario(box, box.worker, script);
+  assert.equal(present.head, box.git(box.worker, 'rev-parse', 'HEAD'));
+  assert.equal(present.blobs.config, box.git(box.repo, 'rev-parse', 'HEAD:pullboard.json'));
+  assert.equal(present.blobs.doctrine, box.git(box.repo, 'rev-parse', 'HEAD:DOCTRINE.md'));
+  box.git(box.repo, 'rm', 'DOCTRINE.md');
+  box.git(box.repo, 'commit', '-q', '-m', 'test(core): omit optional doctrine source [C7]');
+  const missing = readFactScenario(box, box.worker, script);
+  assert.equal(missing.blobs, null);
+  assert.equal(missing.main.commit, box.git(box.repo, 'rev-parse', 'HEAD'));
+  assert.equal(missing.head, present.head, 'missing primary doctrine does not discard the linked HEAD');
+  box.git(box.repo, 'config', 'core.hooksPath', `hooks\n${'a'.repeat(40)}\n${'b'.repeat(40)}`);
+  const unusual = readFactScenario(box, box.worker, script);
+  assert.equal(unusual.blobs, null, 'hook path lines never become trusted source object IDs');
+  assert.equal(unusual.main.commit, missing.main.commit, 'opaque hook paths preserve the validated Git fallback');
+  assert.equal(unusual.head, present.head);
+  box.git(box.repo, 'config', '--unset', 'core.hooksPath');
+  box.git(box.repo, 'switch', '-q', '--detach');
+  const detached = readFactScenario(box, box.worker, script);
+  assert.equal(detached.main, null, 'a detached primary never acquires an invented main branch');
+  assert.equal(detached.head, present.head);
 });
 
 /** Record schema-valid private fixture history, never represented as a real gate execution. */
