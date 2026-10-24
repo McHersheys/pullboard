@@ -1,3 +1,5 @@
+import { BAR_READY_ENGINE } from './bar-ready-engine.js';
+import { barReadySetting } from './bar-readiness.js';
 /** Versioned, deterministic replay through the CLI's existing board engine [H3,H16]. */
 import {
   createHash,
@@ -70,11 +72,11 @@ import { LANDING_ENVIRONMENT_ENGINE } from './landing-environment-engine.js';
 import { carriesLandingEnvironment } from './execution-environment.js';
 import { LANDING_LEASE_ENGINE } from './landing-lease-engine.js';
 
-const ITEM_ID_FIRST_ARGUMENT = new Set(['acceptCheck', 'editItem', 'escalate', 'recordAttempt', 'claim', 'release', 'submit', 'reserveReview', 'verify', 'merged', 'withdraw', 'refreeze', 'reopen', 'appendFact']);
+const ITEM_ID_FIRST_ARGUMENT = new Set(['signBar', 'acceptCheck', 'editItem', 'escalate', 'recordAttempt', 'claim', 'release', 'submit', 'reserveReview', 'verify', 'merged', 'withdraw', 'refreeze', 'reopen', 'appendFact']);
 
 /** Only these public board operations may be requested by an encrypted move. */
 export const ENGINE_OPERATIONS = Object.freeze([
-  'register', 'ensureCoordinator', 'addItem', 'editItem', 'completeCheckBaseline', 'escalate', 'recordAttempt',
+  'setBarReady', 'signBar', 'register', 'ensureCoordinator', 'addItem', 'editItem', 'completeCheckBaseline', 'escalate', 'recordAttempt',
   'claim', 'release', 'submit', 'reserveReview', 'reserveNextReview', 'verify', 'merged',
   'withdraw', 'refreeze', 'reopen', 'shout', 'passDecision', 'answerDecision', 'holdLane', 'releaseLane', 'holdItem', 'releaseItemHold',
   'addMilestone', 'editMilestoneItems', 'orderMilestoneItems', 'moveMilestone', 'editMilestone', 'removeMilestone', 'shipMilestone',
@@ -90,6 +92,7 @@ const OPERATION_ENGINE = Object.freeze({ draftSpecRow: ROW_DRAFT_ENGINE, orderMi
 
 /** Dependency edits, causes, sealed reviews, submission proofs, trunk conflicts, health observations and milestone targets retain distinct recorded engine meanings. */
 function minimumOperationEngine(operation, args, board, at) {
+  if (['setBarReady', 'signBar'].includes(operation) || board && ['claim', 'submit', 'editItem', 'addItem', 'refreeze'].includes(operation) && barReadySetting(board).enabled) return BAR_READY_ENGINE;
   if (operation === 'recordLandingTestDefect' || operation === 'verify' && args[1]?.environment !== undefined
     || operation === 'recordGateRun' && Object.hasOwn(args[0]?.receipt ?? {}, 'environment')
     || operation === 'recordLandingBatch' && carriesLandingEnvironment(args[0]?.batch)) return LANDING_ENVIRONMENT_ENGINE;
