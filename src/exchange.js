@@ -1,4 +1,5 @@
 import { AGENT_GRANT_ENGINE } from './agent-grant-engine.js';
+import { beginCommandPhase } from './command-phase.js';
 import { LANDING_LOCAL_PREFIX } from './landing-local-lease.js';
 import { PROOF_COUNTER_PREFIX } from './proof-counters.js';
 import { rebuildProofCounters } from './proof-counters.js';
@@ -60,19 +61,22 @@ function nativeRows(db, table) {
  * @returns {{ version: number, tables: Record<string, any[]> }}
  */
 export function exportBoard(board) {
-  const db = board.db;
-  db.exec('BEGIN DEFERRED');
+  const finishPhase = beginCommandPhase('local-export');
   try {
-    const tables = Object.fromEntries(tableNames(db).map((table) => [
-      table,
-      nativeRows(db, table),
-    ]));
-    db.exec('COMMIT');
-    return { version: VERSION, tables };
-  } catch (error) {
-    db.exec('ROLLBACK');
-    throw error;
-  }
+    const db = board.db;
+    db.exec('BEGIN DEFERRED');
+    try {
+      const tables = Object.fromEntries(tableNames(db).map((table) => [
+        table,
+        nativeRows(db, table),
+      ]));
+      db.exec('COMMIT');
+      return { version: VERSION, tables };
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  } finally { finishPhase(); }
 }
 
 /** Hash semantic native state while excluding only per-agent inbox read cursors. */
