@@ -1,5 +1,8 @@
 /** Validate the one data-only ref that carries account-free board moves [H11]. */
-import { git, gitChildEnv } from './git.js';
+import {
+  git,
+  gitChildEnv,
+} from './git.js';
 import { Refused } from './refused.js';
 
 export const GIT_BOARD_REF = 'refs/pullboard/board';

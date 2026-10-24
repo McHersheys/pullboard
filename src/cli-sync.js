@@ -11,7 +11,10 @@ import { syncRelay } from './relay.js';
 import { executePersonRequests } from './relay-request-execution.js';
 import { autoLinkProject } from './relay-setup.js';
 import { gitSyncLinked } from './local-state.js';
-import { context, withBoard } from './cli-context.js';
+import {
+  context,
+  withBoard,
+} from './cli-context.js';
 
 /** Codes a checkout with no board refuses with, which the sync around a command keeps quiet. */
 const QUIET = ['NOT_A_REPO', 'NO_REPO', 'NO_CONFIG', 'CORE_BARE'];

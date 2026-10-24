@@ -1,6 +1,12 @@
 /** Explicit opt-in to account-free sharing through the repository's own Git remote [H11]. */
-import { context, withBoard } from '../cli-context.js';
-import { relayLinked, relayRecovered } from '../relay.js';
+import {
+  context,
+  withBoard,
+} from '../cli-context.js';
+import {
+  relayLinked,
+  relayRecovered,
+} from '../relay.js';
 import { syncGitBoard } from '../sync.js';
 import { Refused } from '../refused.js';
 

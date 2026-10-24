@@ -1,15 +1,36 @@
 /** Account-free ordered moves on the repository's own Git remote [H11,H10]. */
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import * as store from './board.js';
-import { exportBoard, importBoard, semanticBoardDigest } from './exchange.js';
-import { appliedSequence, applyEngineMove, engineReceipt, prepareEngineMove } from './engine.js';
-import { gitChildEnv, repoInfo } from './git.js';
+import {
+  exportBoard,
+  importBoard,
+  semanticBoardDigest,
+} from './exchange.js';
+import {
+  appliedSequence,
+  applyEngineMove,
+  engineReceipt,
+  prepareEngineMove,
+} from './engine.js';
+import {
+  gitChildEnv,
+  repoInfo,
+} from './git.js';
 import { locked } from './relay-lock.js';
 import { Refused } from './refused.js';
-import { GIT_BOARD_REF, validateGitBoardCommit } from './git-sync-format.js';
+import {
+  GIT_BOARD_REF,
+  validateGitBoardCommit,
+} from './git-sync-format.js';
 
 const PREFIX = 'local:git-sync:';
 const CACHE = 'refs/pullboard/cache';
