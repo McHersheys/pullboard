@@ -1,3 +1,4 @@
+import { shoutMatchesAudience } from './shout-audience.js';
 /**
  * pullboard watch: follow the board's own live event stream and print one line per event [A2,N26].
  *
@@ -82,7 +83,7 @@ function readBoard(file, read) {
 export function watchStart(file) {
   return readBoard(file, (db) => ({
     id: db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?').get('board_id').meta_value,
-    agents: db.prepare('SELECT agent_id, agent_lane FROM agent').all(),
+    agents: db.prepare('SELECT agent_id, agent_lane, agent_path FROM agent').all(),
     sequence: db.prepare('SELECT COALESCE(MAX(event_id), 0) AS id FROM event').get().id,
   }));
 }
@@ -217,7 +218,8 @@ export async function followBoard({ file, mainRoot, commonDir, config, isMain, r
   /** Whether an event passes the --kinds, --item and --to filters. */
   const wanted = (event, to) => (!options.kinds || options.kinds.has(event.event_kind))
     && (options.item === null || event.item_id === options.item)
-    && (!options.to || (SHOUT_KINDS.has(event.event_kind) && options.to.has(to)));
+    && (!options.to || (options.seatDefault && !SHOUT_KINDS.has(event.event_kind))
+      || (SHOUT_KINDS.has(event.event_kind) && readBoard(file, (db) => shoutMatchesAudience(db, to, options.to))));
 
   let work = null;
   let mainHead = null;
@@ -325,6 +327,12 @@ export async function watchCommand({ io, values, words, ctx, primaryCheckoutRoot
   if (words.some((word) => word !== undefined)) throw new Refused('USAGE', 'pullboard watch takes flags only, such as pullboard watch --to core; run pullboard help watch');
   const start = watchStart(file);
   const options = watchOptions(values, { config, agents: start.agents });
+  // The person's main-checkout stream remains the board-wide observer; a joined seat follows its own audience.
+  const seat = info.root !== mainRoot && start.agents.find((agent) => agent.agent_path === info.root);
+  if (seat && values.to === undefined) {
+    options.to = new Set(['all', seat.agent_id, seat.agent_lane]);
+    options.seatDefault = true;
+  }
   const abort = new AbortController();
   const stop = () => abort.abort();
   process.once('SIGINT', stop);

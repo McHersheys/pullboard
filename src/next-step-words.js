@@ -208,6 +208,7 @@ export const NEXT_STEPS = Object.freeze({
   FIT_TARGET: 'pick a target the message lists, or read the waiting batch with pullboard spec fit',
   NO_FIT_PROPOSALS: 'have a seat record proposals with pullboard blueprint fit <name or file> <target> keep|adapt|drop|answer',
   EMPTY_NOTE: 'say why: pullboard pass <id> --note "<reason>"',
+  BAD_SHOUT_ITEM: 'name an existing positive item: pullboard shout --item <id> "<text>"',
   EMPTY_SHOUT: 'give the shout text: pullboard shout <to> "<text>"',
   EMPTY_SIGNERS: 'restore the signer list from Git: git restore --source=HEAD -- .pullboard/signers',
   ENGINE_VERSION: 'upgrade Pullboard: npm install -g pullboard@latest',

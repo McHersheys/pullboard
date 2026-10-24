@@ -35,6 +35,14 @@ import {
   rowDecisions,
   UNREAD_SQL,
 } from './board-query.js';
+import { ITEM_SHOUT_ENGINE } from './item-shout-engine.js';
+import {
+  COORDINATION_SHOUT,
+  itemShoutTarget,
+  itemShoutReader,
+  shoutItemId,
+  unreadShoutBindings,
+} from './shout-audience.js';
 import { recordVerdict } from './verdict-assurance.js';
 import { logEvent } from './board-event-log.js';
 export { logEvent };
@@ -1651,10 +1659,19 @@ export { getItem } from './board-query.js';
  * Insert a shout within the caller's transaction.
  *
  * @param {any} board
- * @param {{ from: string, to: string, text: string, lanes: string[], decision?: boolean, answers?: number | null, evidence?: any, request?: boolean, channel?: 'terminal' | 'view', detail?: object }} message - detail: extra event fields
+ * @param {{ from: string, to: string, text: string, lanes: string[], item?: number, decision?: boolean, answers?: number | null, evidence?: any, request?: boolean, channel?: 'terminal' | 'view', detail?: object }} message - detail: extra event fields
  * @returns {number}
  */
-function insertShout(board, { from, to, text, lanes, decision = false, answers = null, evidence = null, request = false, channel = 'terminal', detail = {} }) {
+function insertShout(board, { from, to, text, lanes, item, decision = false, answers = null, evidence = null, request = false, channel = 'terminal', detail = {} }) {
+  const engine = board.executionEngineVersion ?? ENGINE_VERSION;
+  if (item !== undefined) {
+    if (engine < ITEM_SHOUT_ENGINE) throw new Refused('ENGINE_VERSION', 'item messages require engine 93; upgrade every linked device before sending one');
+    to = itemShoutTarget(board.db, item);
+    detail = { ...detail, item, text: text.trim() };
+  }
+  const coordinationOnly = engine >= ITEM_SHOUT_ENGINE && to === 'all' && from !== COORDINATOR && from !== PERSON
+    && Boolean(board.db.prepare('SELECT 1 FROM agent WHERE agent_id = ?').get(from));
+  if (coordinationOnly) to = COORDINATION_SHOUT;
   if (!text.trim()) throw new Refused('EMPTY_SHOUT', 'a shout needs text');
   if (to === from) throw new Refused('SELF_SHOUT', `a shout cannot be addressed to its sender ${from}; name another agent, a lane or all`);
   if (request && (from !== 'person' || to !== COORDINATOR || decision || answers !== null)) {
@@ -1663,7 +1680,7 @@ function insertShout(board, { from, to, text, lanes, decision = false, answers =
   const ask = answers === null ? null : getShout(board, answers);
   const isAgent = board.db.prepare('SELECT 1 FROM agent WHERE agent_id = ?').get(to);
   const requestReply = ask?.shout_request && to === ask.shout_from;
-  if (to !== 'all' && to !== PERSON && !lanes.includes(to) && !isAgent && !requestReply) {
+  if (item === undefined && !coordinationOnly && to !== 'all' && to !== PERSON && !lanes.includes(to) && !isAgent && !requestReply) {
     throw new Refused('NO_READER', `nobody reads "${to}": name a lane, an agent or all`);
   }
   if (to === PERSON && decision && from !== COORDINATOR) {
@@ -1703,7 +1720,7 @@ function persistShout(board, { from, to, text, decision = false, answers = null,
     )
     .run(from, to, text.trim(), now(board), decision ? 1 : 0, answers, evidence?.kind ?? null, evidence ? evidence.outcome.trim() : null, evidence?.item ?? null, evidence?.commit ?? null, request ? 1 : 0, outcome);
   const id = Number(result.lastInsertRowid);
-  logEvent(board, from, answers === null ? 'shout' : decision ? 'pass' : 'answer', null, { shout: id, to, decision: Boolean(decision), request: Boolean(request), answers, ...(outcome ? { outcome } : {}), ...(personAnswer ? { channel } : {}), ...detail });
+  logEvent(board, from, answers === null ? 'shout' : decision ? 'pass' : 'answer', detail.item ?? null, { shout: id, to, decision: Boolean(decision), request: Boolean(request), answers, ...(outcome ? { outcome } : {}), ...(personAnswer ? { channel } : {}), ...detail });
   return id;
 }
 
@@ -1711,7 +1728,7 @@ function persistShout(board, { from, to, text, decision = false, answers = null,
  * Shout to a lane, an agent, `all`, or the person (B7, B25, B26). The caller passes declared lanes.
  *
  * @param {any} board
- * @param {{ from: string, to: string, text: string, lanes: string[], decision?: boolean, answers?: number | null, evidence?: any, request?: boolean, channel?: 'terminal' | 'view' }} message
+ * @param {{ from: string, to: string, text: string, lanes: string[], item?: number, decision?: boolean, answers?: number | null, evidence?: any, request?: boolean, channel?: 'terminal' | 'view' }} message
  * @returns {number}
  */
 export function shout(board, message) {
@@ -1769,11 +1786,11 @@ export function passDecision(board, id, { agentId, note, lanes }) {
   return atomic(board, () => {
     if (agentId !== COORDINATOR) throw new Refused('COORDINATOR_ONLY', 'only the coordinator can pass a decision up');
     const ask = getShout(board, id);
-    if (!ask.shout_decision || ask.shout_to !== COORDINATOR) throw new Refused('NOT_COORDINATOR_DECISION', `shout #${id} is not a decision waiting for the coordinator`);
+    if (!ask.shout_decision || (ask.shout_to !== COORDINATOR && ask.shout_to !== COORDINATION_SHOUT && shoutItemId(ask.shout_to) === null)) throw new Refused('NOT_COORDINATOR_DECISION', `shout #${id} is not a decision waiting for the coordinator`);
     if (board.db.prepare('SELECT 1 FROM shout WHERE shout_answers = ?').get(id)) throw new Refused('ALREADY_ANSWERED', `shout #${id} already has an answer`);
     const text = `Passed up from ${ask.shout_from}: ${ask.shout_text}\nCoordinator note: ${String(note ?? '').trim()}`;
     if (!String(note ?? '').trim()) throw new Refused('EMPTY_NOTE', 'include a note with the reason for passing this decision');
-    return insertShout(board, { from: COORDINATOR, to: PERSON, text, lanes, decision: true, answers: id });
+    return insertShout(board, { from: COORDINATOR, to: PERSON, text, lanes, decision: true, answers: id, detail: shoutItemId(ask.shout_to) === null ? {} : { item: shoutItemId(ask.shout_to), text } });
   });
 }
 
@@ -1799,16 +1816,19 @@ export function answerDecision(board, id, { agentId, text, lanes, asPerson = fal
     if (!asPerson && ask.shout_to === PERSON && agentId === COORDINATOR) throw new Refused('B26_PERSON_ANSWER', `this decision is addressed to the person; answer from the main checkout: pullboard answer ${id} "<answer>" --as person`);
     const personAnswer = asPerson;
     const caller = personAnswer ? null : board.db.prepare('SELECT agent_lane FROM agent WHERE agent_id = ?').get(agentId);
-    const ownsDecision = ask.shout_to === agentId || ask.shout_to === caller?.agent_lane;
+    const addressedItem = shoutItemId(ask.shout_to);
+    const ownsDecision = ask.shout_to === agentId || ask.shout_to === caller?.agent_lane
+      || (ask.shout_to === COORDINATION_SHOUT && agentId === COORDINATOR)
+      || (addressedItem !== null && itemShoutReader(board.db, addressedItem, agentId));
     if (!ownsDecision && !personAnswer) {
       const lane = caller?.agent_lane ? `your ${caller.agent_lane} lane` : 'a lane you do not belong to';
       throw new Refused('NOT_YOUR_DECISION', `shout #${id} is addressed to ${ask.shout_to}, not ${lane} (agent ${agentId})`);
     }
     const from = personAnswer ? PERSON : agentId;
-    const answerId = tellAnswerImplications(board, (by, itemId, fact) => logEvent(board, by, 'fact', itemId, fact), insertShout(board, { from, to: ask.shout_from, text, lanes, answers: id, channel, detail: { ...(implies?.length ? { implies } : {}), ...(supersedes !== null ? { supersedes } : {}) } }), { seed: impliesId, implies, supersedes, from, person: PERSON });
+    const answerId = tellAnswerImplications(board, (by, itemId, fact) => logEvent(board, by, 'fact', itemId, fact), insertShout(board, { from, to: ask.shout_from, text, lanes, answers: id, channel, ...(addressedItem === null ? {} : { item: addressedItem }), detail: { ...(implies?.length ? { implies } : {}), ...(supersedes !== null ? { supersedes } : {}) } }), { seed: impliesId, implies, supersedes, from, person: PERSON });
     if (personAnswer && ask.shout_answers !== null) {
       const original = getShout(board, ask.shout_answers);
-      insertShout(board, { from: PERSON, to: original.shout_from, text: `Person answered #${id}: ${String(text).trim()}`, lanes, answers: original.shout_id, channel });
+      insertShout(board, { from: PERSON, to: original.shout_from, text: `Person answered #${id}: ${String(text).trim()}`, lanes, answers: original.shout_id, channel, ...(shoutItemId(original.shout_to) === null ? {} : { item: shoutItemId(original.shout_to) }) });
     }
     return answerId;
   });
@@ -1884,7 +1904,7 @@ export function inbox(board, agentId) {
     if (!agent) throw new Refused('NO_AGENT', `no agent ${agentId}`);
     const shouts = board.db
       .prepare(`SELECT * ${UNREAD_SQL} ORDER BY shout_id`)
-      .all(agent.agent_last_shout_id, agentId, agent.agent_lane, agentId);
+      .all(...unreadShoutBindings(agent.agent_last_shout_id, agentId, agent.agent_lane));
     const last = shouts.at(-1)?.shout_id ?? agent.agent_last_shout_id;
     board.db.prepare('UPDATE agent SET agent_last_shout_id = ? WHERE agent_id = ?').run(last, agentId);
     if (agentId !== COORDINATOR) return shouts;
@@ -2319,7 +2339,7 @@ export function peekShouts(board, agentId, limit = 2) {
   if (!agent) return [];
   return board.db
     .prepare(`SELECT * ${UNREAD_SQL} ORDER BY shout_id DESC LIMIT ?`)
-    .all(agent.agent_last_shout_id, agentId, agent.agent_lane, agentId, limit)
+    .all(...unreadShoutBindings(agent.agent_last_shout_id, agentId, agent.agent_lane), limit)
     .reverse();
 }
 

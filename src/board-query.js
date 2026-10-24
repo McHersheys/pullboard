@@ -1,3 +1,10 @@
+import {
+  COORDINATION_SHOUT,
+  itemShoutReader,
+  shoutItemId,
+  UNREAD_SHOUT_SQL,
+  unreadShoutBindings,
+} from './shout-audience.js';
 /** Canonical board queries shared by reads and the synchronous write store [C7]. */
 import { COORDINATOR } from './config.js';
 import { itemFiles } from './item-files.js';
@@ -180,10 +187,9 @@ export function openDecisions(board, recipient = null) {
   }
   const recipients = [...new Set(Array.isArray(recipient) ? recipient : [recipient])];
   if (!recipients.length) return [];
-  const marks = recipients.map(() => '?').join(', ');
-  return board.db
-    .prepare(`SELECT * FROM shout ask WHERE ask.shout_decision = 1 AND ask.shout_to IN (${marks}) AND NOT EXISTS (SELECT 1 FROM shout reply WHERE reply.shout_answers = ask.shout_id) ORDER BY ask.shout_id`)
-    .all(...recipients);
+  return openDecisions(board).filter((ask) => recipients.includes(ask.shout_to)
+    || (ask.shout_to === COORDINATION_SHOUT && recipients.includes(COORDINATOR))
+    || (shoutItemId(ask.shout_to) !== null && recipients.some((agent) => itemShoutReader(board.db, shoutItemId(ask.shout_to), agent))));
 }
 
 /**
@@ -198,7 +204,7 @@ export function unreadCount(board, agentId) {
   if (!agent) return 0;
   const { total } = board.db
     .prepare(`SELECT COUNT(*) AS total ${UNREAD_SQL}`)
-    .get(agent.agent_last_shout_id, agentId, agent.agent_lane, agentId);
+    .get(...unreadShoutBindings(agent.agent_last_shout_id, agentId, agent.agent_lane));
   return total;
 }
 
@@ -244,7 +250,7 @@ export function rowDecisions(board) {
 /**
  * The SQL that picks an agent's unread shouts: to it, to its lane, or to all, from anyone else.
  */
-export const UNREAD_SQL = `FROM shout WHERE shout_id > ? AND shout_from != ? AND shout_to IN ('all', ?, ?)`;
+export const UNREAD_SQL = UNREAD_SHOUT_SQL;
 
 /**
  * The agent registered for a worktree path, if any.
