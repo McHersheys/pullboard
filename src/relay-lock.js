@@ -1,9 +1,11 @@
 /** The per-board link lock: one worktree sends at a time, and a sibling waits instead of failing (#919). */
+import { randomUUID } from 'node:crypto';
 import {
   lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -31,36 +33,71 @@ function gone(pid) {
   catch (error) { return error.code === 'ESRCH'; }
 }
 
+/** Whether this process holds the reap lock right now. */
+function holdsReaper(reaper) {
+  try { return ownerOf(reaper) === process.pid; } catch { return false; }
+}
+
+/**
+ * Take the reap lock, or clear one whose reaper died. A reaper publishes the lock with its pid already inside, by
+ * renaming its own directory into place, so the lock always names a live or dead owner and is never taken twice.
+ * A dead reaper's lock is moved aside in one step and deleted (#1119).
+ *
+ * @returns {boolean} Whether this process now holds the reap lock.
+ */
+function takeReaper(reaper) {
+  const mine = `${reaper}.${process.pid}.${randomUUID()}`;
+  mkdirSync(mine, { mode: 0o700 });
+  writeFileSync(join(mine, 'pid'), String(process.pid));
+  try { renameSync(mine, reaper); return true; }
+  catch (error) {
+    rmSync(mine, { recursive: true, force: true });
+    if (!['EEXIST', 'ENOTEMPTY', 'EPERM'].includes(error.code)) throw error;
+  }
+  let holder;
+  try { holder = ownerOf(reaper); } catch { return false; }
+  if (holder === null || !gone(holder)) return false;
+  // Move it aside and delete it. If a live reaper took the path between our look and our move, it is the one
+  // moved: it finds it no longer holds the reap lock and does nothing. It is never put back, since by then it may
+  // have finished and would hold the path for ever.
+  const aside = `${reaper}.dead.${process.pid}.${randomUUID()}`;
+  try { renameSync(reaper, aside); } catch { return false; }
+  rmSync(aside, { recursive: true, force: true });
+  return false;
+}
+
 /**
  * Remove a lock whose owner is gone, as the only waiter allowed to (#1119). Waiters that found the same dead owner
- * compete for one short reap lock; the winner checks again that the lock still has that dead owner, or still none
- * after the stale age, and only then removes it. Nothing else removes another's lock, so the check cannot be
- * overtaken: a live owner's lock is never removed, and the lock it frees is then won by exactly one mkdir.
+ * compete for one short reap lock; the holder checks again that the lock still has that dead owner, or still none
+ * after the stale age, and that it still holds the reap lock, and only then removes it. Nothing else removes
+ * another's lock, so a live owner's lock is never removed, and the lock it frees is then won by exactly one mkdir.
  *
  * @returns {boolean} Whether this waiter cleared the lock.
  */
 function reap(lock, seenOwner) {
   const reaper = lock + '.reap';
-  try { mkdirSync(reaper, { mode: 0o700 }); }
-  catch (error) {
-    if (error.code !== 'EEXIST') throw error;
-    // A reaper holds this only for a check and a removal; one this old died doing it.
-    try { if (Date.now() - lstatSync(reaper).mtimeMs > UNOWNED_STALE_MS) rmSync(reaper, { recursive: true, force: true }); }
-    catch (gone) { if (gone.code !== 'ENOENT') throw gone; }
-    return false;
-  }
+  if (!takeReaper(reaper)) return false;
   try {
     let owner;
     try { owner = ownerOf(lock); } catch (error) { if (error.code === 'ENOENT') return false; owner = null; }
     const dead = seenOwner === null
       ? owner === null && Date.now() - lstatSync(lock).mtimeMs > UNOWNED_STALE_MS
       : owner === seenOwner && gone(owner);
-    if (dead) rmSync(lock, { recursive: true, force: true });
-    return dead;
+    if (!dead || !holdsReaper(reaper)) return false;
+    rmSync(lock, { recursive: true, force: true });
+    return true;
   } catch (error) {
     if (error.code === 'ENOENT') return false;
     throw error;
-  } finally { rmSync(reaper, { recursive: true, force: true }); }
+  } finally {
+    // Move the reap lock aside in one step before deleting it: emptied in place, its path would briefly accept
+    // another reaper's rename, which the deletion would then remove.
+    if (holdsReaper(reaper)) {
+      const done = `${reaper}.done.${process.pid}.${randomUUID()}`;
+      try { renameSync(reaper, done); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      rmSync(done, { recursive: true, force: true });
+    }
+  }
 }
 
 /**
