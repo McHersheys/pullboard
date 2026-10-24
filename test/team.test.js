@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, cpSync, readdirSync, lstatSync, renameSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, cpSync, readdirSync, lstatSync, renameSync, symlinkSync } from 'node:fs';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -23,7 +23,7 @@ import { unpackRelease } from './release-archive.js';
 import { decodeBoardKey, seal } from '../src/seal.js';
 import { ENGINE_VERSION as PEOPLE_VERSION } from '../src/machine.js';
 import { relayWorkBudgetMs } from './relay-budget.js';
-import { hostname } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { assertMatchingLandingHost, assertNoCulpritTrunkHold } from './landing-environment-fixture.js';
 import { landingQueueCase } from './landing-queue-fixture.js';
 
@@ -842,4 +842,33 @@ test('an agent session on a computer that does not hold the coordinator takes it
   assert.equal(taken.document.coordinator, `computer ${other.machine.slice(-8)}`, 'the second computer now holds the coordinator');
   assert.equal((await inSession('add', box.lane, 'Planned after the takeover')).code, 0, 'the new holder coordinates');
   assert.equal((await box.cli('add', box.lane, 'Planned again on the first computer')).document?.error?.code, 'COORDINATOR_HELD', 'the earlier holder is refused');
+});
+
+/** Simulate a long holder and a polling waiter with the real board clock and lease operation. */
+test('a landing lease renewal or waiter poll writes no board event [Q1,Q2,Q3]', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'pullboard-lease-events-'));
+  let milliseconds = Date.parse('2026-01-01T00:00:00Z');
+  const board = store.openBoard(join(directory, 'board.sqlite'), { now: () => new Date(milliseconds) });
+  t.after(() => { store.closeBoard(board); rmSync(directory, { recursive: true, force: true }); });
+  store.register(board, { lane: 'coordinator', path: directory });
+  const owner = { agentId: 'coordinator', token: randomUUID(), branch: 'refs/heads/main', pid: process.pid };
+  const waiter = { ...owner, token: randomUUID() };
+  const granted = store.landingLeaseMove(board, { ...owner, action: 'request' });
+  assert.equal(granted.acquired, true);
+  assert.equal(store.landingLeaseMove(board, { ...waiter, action: 'request' }).position, 1);
+  for (let second = 1; second <= 35 * 60; second += 1) {
+    milliseconds += 1000;
+    if (second % 5 === 0) {
+      const renewed = store.landingLeaseMove(board, { ...owner, action: 'renew', generation: granted.generation });
+      assert.equal(renewed.acquired, true, 'the same generation remains held throughout the simulation');
+    }
+    const queued = store.landingLeaseMove(board, { ...waiter, action: 'request' });
+    assert.equal(queued.acquired, false, 'polling never steals a live holder');
+  }
+  store.landingLeaseMove(board, { ...owner, action: 'release', generation: granted.generation });
+  const events = board.db.prepare("SELECT event_detail FROM event WHERE event_kind='landing_lease' ORDER BY event_id").all();
+  assert.equal(events.length, 3, 'only grant, initial queue and release are board events across 35 minutes');
+  const state = store.landingLeaseState(board);
+  assert.equal(state.holder, null);
+  assert.equal(state.line.length, 1, 'suppressing polling events does not discard the waiting command');
 });
