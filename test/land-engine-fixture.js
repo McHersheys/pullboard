@@ -7,7 +7,8 @@ import { exportBoard, importBoard } from '../src/exchange.js';
 
 /** An unlanded engine leaf, as an item adds one under #1101. */
 function unlandedLeaf(name) {
-  return `/** The ${name} feature's engine. */\nimport { unassignedEngine } from './engine-next.js';\nexport const ${name.toUpperCase()}_ENGINE = unassignedEngine();\n`;
+  // The comment names the placeholder too: only the export line itself may be rewritten.
+  return `/** The ${name} feature's engine, written as ${name.toUpperCase()}_ENGINE = unassignedEngine(); until it lands. */\nimport { unassignedEngine } from './engine-next.js';\nexport const ${name.toUpperCase()}_ENGINE = unassignedEngine();\n`;
 }
 
 /** The engine number a leaf holds at a commit, or null when the leaf is not there or not yet numbered. */
@@ -53,7 +54,9 @@ export function landEnginesInOrder({ landProject, itemWorktree, submitItem, acce
     if (position === 0) assert.equal(numberAt(box, merge, other), null, `${other} had not landed yet at the first merge`);
   }
   assert.match(box.git(box.repo, 'show', `${result.batch.tip}:docs/formats.md`), /\| `move engine` \| `82` \|/u, 'the documented move engine follows the highest landed number');
-  assert.ok(!box.git(box.repo, 'show', `${result.batch.tip}:src/alpha-engine.js`).includes('unassignedEngine'), 'a landed leaf names its number, not the placeholder');
+  const landed = box.git(box.repo, 'show', `${result.batch.tip}:src/alpha-engine.js`);
+  assert.match(landed, /^export const ALPHA_ENGINE = \d+;$/mu, 'the export line itself names its number');
+  assert.ok(!landed.includes("from './engine-next.js'"), 'a landed leaf no longer imports the placeholder');
   assert.notEqual(box.git(box.repo, 'rev-parse', 'main'), base);
   // The landed board replays: its events import into a fresh board unchanged.
   const document = onBoard(box, (board) => exportBoard(board));

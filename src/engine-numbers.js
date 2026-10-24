@@ -70,7 +70,7 @@ export function assignEngineNumbers(root) {
     next += 1;
     const path = join(directory, leaf.file);
     const text = readFileSync(path, 'utf8').split('\n').filter((line) => line !== UNASSIGNED_IMPORT).join('\n')
-      .replace(/= unassignedEngine\(\);$/mu, `= ${next};`);
+      .replace(/^(export const [A-Z][A-Z0-9_]*_ENGINE = )unassignedEngine\(\);$/mu, `$1${next};`);
     writeFileSync(path, text);
     files.push(`src/${leaf.file}`);
     assigned.push({ name: leaf.name, number: next });
