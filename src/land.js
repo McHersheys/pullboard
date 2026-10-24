@@ -615,7 +615,8 @@ async function parallelLanding(state, initialItems) {
     const flakyFiles = await diagnose(state, gate.failures, gate);
     if (flakyFiles.length) { await fileFlakes(state, gate, flakyFiles); state.flaky = true; return; }
     const culprit = remaining[green + 1];
-    const greenBase = green >= 0 ? completeGate(results[green].gate) : parallelGreenBase(state, gate);
+    const greenBase = green >= 0 && results[green].gate.isGreen && completeGate(results[green].gate)
+      || parallelGreenBase(state, gate);
     if (!greenBase) { await fileTestDefects(state, gate); state.flaky = true; return; }
     // A red A+B with green A can still be an interaction: B alone must reproduce those failures.
     // This is a distinct composition, not a retry of A+B or any other already tested tree.
