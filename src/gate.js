@@ -546,10 +546,14 @@ export async function withGateSlot(root, action, options = {}) {
   }
 }
 
+/** Validate landing membership before admission; generic SSH capacity cannot stand in for a constrained host. */
+export async function withLandingGateSlot(root, action, options = {}) {
+  const constrained = constrainedLandingHost(root);
+  return withGateSlot(root, action, { ...options, landing: true, ...(constrained ? { remote: false } : {}) });
+}
+
 /** One gate admission and its action; withGateSlot may call it again for a local rerun. */
 async function withOneGateSlot(root, action, { landing = false, itemCheck = false, shortEligible = false, diagnostic = false, browser = false, remote = true, agent, item = '', kind = '', onWait, onReceipt, readMemory = readMachineMemory } = {}) {
-  // Generic SSH capacity has no board-owned landing membership; a constrained landing stays on its checked host.
-  if (landing && constrainedLandingHost(root)) remote = false;
   const tracker = startReceipt();
   const receiptKind = kind || (landing ? 'landing' : 'gate');
   /** Hand the run its receipt tracker and slot, then record its receipt once the slot is released (#836). */
@@ -643,7 +647,7 @@ export async function runGate(root, config, { trustStamp = true, onWait, landing
     throw missingGate(root);
   }
   if (trustStamp && isStampedGreen(root)) return { isGreen: true, isCached: true, output: '', seconds: 0, log: '' };
-  return await withGateSlot(root, async (lease) => {
+  return await (landing ? withLandingGateSlot : withGateSlot)(root, async (lease) => {
     pinRunMain(lease, onFailure);
     const run = fullGateRun(root, config, trustStamp, { waitMs: lease.waitMs, gateLease: lease, landing, stages, waivers, kind: landing ? 'land' : 'gate' });
     if (!run.isGreen && !run.timedOut && onFailure) await onFailure(run, { root, command: config.gate, lease });

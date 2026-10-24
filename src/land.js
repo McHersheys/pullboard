@@ -37,6 +37,7 @@ import {
   runProfiledShell,
   runStaticChecks,
   withGateSlot,
+  withLandingGateSlot,
 } from './gate.js';
 import {
   readGateReceipt,
@@ -401,7 +402,7 @@ async function diagnose(state, failures, gate) {
     if (!runner) throw new Refused('LAND_DIAGNOSTIC', `no runner can isolate ${file}; configure affectedTests for the project’s test runner`);
     const commit = headCommit(state.batch.root);
     const tree = headTree(state.batch.root);
-    const result = await withGateSlot(state.batch.root, (lease) => runProfiledShell(state.batch.root, `${runner} ${quote(file)}`, {
+    const result = await withLandingGateSlot(state.batch.root, (lease) => runProfiledShell(state.batch.root, `${runner} ${quote(file)}`, {
       waitMs: lease.waitMs, artifactDirectory: dirname(state.batch.logPath), artifactPrefix: 'diagnostic', persistLog: true, pipefail: true, gateLease: lease,
     }), { landing: true, browser: true, agent: 'coordinator', kind: 'land-diagnostic', onWait: state.onWait });
     if (headCommit(state.batch.root) !== commit || headTree(state.batch.root) !== tree || !isClean(state.batch.root)) {
@@ -742,7 +743,7 @@ async function deferredGuards(state) {
   const tree = headTree(root);
   const commit = headCommit(root);
   const browser = !browserFreeChecksEnabled() || await testsNeedBrowser(root, files);
-  const run = await withGateSlot(root, lease => runProfiledShell(root, `${state.config.affectedTests} ${files.map(quote).join(' ')}`, { waitMs: lease.waitMs, gateLease: lease, stages: true }),
+  const run = await withLandingGateSlot(root, lease => runProfiledShell(root, `${state.config.affectedTests} ${files.map(quote).join(' ')}`, { waitMs: lease.waitMs, gateLease: lease, stages: true }),
     { agent: 'coordinator', kind: 'gate', landing: true, browser, onWait: state.onWait });
   // The same pin as the full landing gate: a result only counts for the exact merged tree it ran on.
   if (headCommit(root) !== commit || headTree(root) !== tree || !isClean(root)) {
