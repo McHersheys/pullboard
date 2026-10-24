@@ -94,6 +94,7 @@ For example: `flow: review wait average 61 min (1 measured; > 60 min); bottlenec
 | `settings` | `version:number`, `settings:object` |
 | `runner` | `version:number`, `runner:object` |
 | `relay` | `version:number`, `linked:boolean`, `board:string`, `url:string`, `link:string`, `sequence:number`, `behind:number`, `recovery:object` |
+| `sync` | `version:number`, `ref:string`, `sequence:number`, `pending:string|null` |
 | `list` | `version:number`, `items:array` |
 | `queue` | `version:number`, `releases:array`, `unreleased:array`, `first:object` |
 | `roadmap` | `version:number`, `milestones:array` |
