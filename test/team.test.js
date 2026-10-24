@@ -1175,6 +1175,20 @@ test('person-only moves are signed [E22,B26,H16]', { timeout: relayWorkBudgetMs(
   assert.equal(approvedRow.decisions[0].decision, 'approve');
   const declinedRow = await confirmTerminal(['spec', 'decline', 'G4', '--reason', 'Do not approve this row'], 'spec-decline');
   assert.equal(declinedRow.decisions[0].decision, 'decline');
+  writeFileSync(join(box.root, 'SPEC.md'), readFileSync(join(box.root, 'SPEC.md'), 'utf8')
+    + '\n- G5 [approved, must] An optional sign-off row. | gate: review\n- G6 [approved, must] A named-signature row. | gate: review | signers: alice@example.com\n');
+  mkdirSync(join(box.root, 'test'), { recursive: true });
+  writeFileSync(join(box.root, 'test', 'signed-evidence.test.js'), '/** G5 is cited as evidence for the optional sign-off fixture. */\n');
+  const sshFile = join(box.root, '.pullboard', 'signoffs.jsonl');
+  const beforeSsh = existsSync(sshFile) ? readFileSync(sshFile, 'utf8') : null;
+  const optionalSignoff = await confirmTerminal(['spec', 'signoff', 'G5'], 'spec-approve');
+  assert.equal(optionalSignoff.count, 1);
+  assert.equal(optionalSignoff.by, 'person');
+  assert.equal(existsSync(sshFile) ? readFileSync(sshFile, 'utf8') : null, beforeSsh, 'passkey approval never writes an SSH signature');
+  const namedSignoff = await cli(cleared, 'spec', 'signoff', 'G6');
+  assert.equal(namedSignoff.document.error?.code, 'PERSON_SIGNER_REQUIRED');
+  assert.match(namedSignoff.document.error.message, /G6 names its SSH signers alice@example\.com/u);
+
   const waiver = await confirmTerminal(['land', '--waive', 'gate:lint', '--until', '2099-01-01', '--reason', 'An explicit bounded fixture exception'], 'land-waive');
   assert.equal(waiver.waiver.test, 'gate:lint');
 

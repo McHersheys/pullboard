@@ -1,6 +1,9 @@
 /** CLI proposal and exact person decisions for board-owned watches [A6,D3]. */
 import { PERSON } from './board.js';
-import { requireSignedPerson } from './person-signing-cli.js';
+import {
+  requireSignedPerson,
+  signsPersonMoves,
+} from './person-signing-cli.js';
 import { requirePersonChannel } from './person.js';
 import { Refused } from './refused.js';
 import { sentinels } from './sentinels.js';
@@ -23,6 +26,7 @@ export async function sentinelCommand({ ctx, words, values, withBoard, whoAmI, o
   if (extra.length || !['propose', 'approve', 'decline'].includes(verb) || !name) {
     throw new Refused('USAGE', 'use pullboard sentinel propose <name> --check "<command>" --every 10m --owner <seat or lane>, sentinel approve <name>, sentinel decline <name> --reason "<why>", or pullboard sentinels');
   }
+  if (verb !== 'propose' && !signsPersonMoves(ctx.info.root)) requirePersonChannel(ctx.io.personChannel);
   return withBoard(ctx, async board => {
     const me = whoAmI(ctx, board);
     let row;

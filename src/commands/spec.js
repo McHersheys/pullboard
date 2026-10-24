@@ -252,12 +252,12 @@ export async function specCommand(io, { first, second, rest, values }) {
     });
   }
   if (first === 'answer') {
-    const completed = await withBoard(ctx, async board => {
+    const completed = signsPersonMoves(ctx.info.root) ? await withBoard(ctx, async board => {
       const row = spec.rows.find(entry => entry.id === second);
       if (!row) throw new Refused('NO_ROW', `${second} is not a row in ${ctx.config.spec}`);
       if (personSigning(board).signed) refuseNamedSigners([row], [second]);
       return requireSignedPerson(ctx, board, whoAmI(ctx, board), { verb: 'spec-answer', args: { row: second, answer: rest.join(' ').trim() } }, [{ id: row.id, text: row.text }]);
-    });
+    }) : null;
     if (completed !== null) return completed;
     requirePersonChannel(io.personChannel, process.env, { command: personCommand(primaryCheckoutRoot(ctx.info) ?? ctx.info.root, ['spec', 'answer', second, rest.join(' ')]) });
     return withBoard(ctx, async (board) => {
