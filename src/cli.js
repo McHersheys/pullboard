@@ -1,5 +1,5 @@
-import { nativeBarActorForSeat } from './bar-actor.js';
-import { barReadinessRequired, barReadiness, barReadySetting } from './bar-readiness.js';
+export { barActorForCommand } from './bar-actor.js';
+import { barReadinessRequired, barReadiness } from './bar-readiness.js';
 import { barCoverageCommand, barCoverageForPolicy } from './bar-coverage.js';
 /**
  * The pullboard command line: every command, bound to who is asking (B3, R3). The main checkout is the
@@ -895,20 +895,6 @@ async function withItemSession(info, operation, args, move) { const noted = oper
  */
 function relayOutboxSetting(root) {
   try { return configFromSource(coordinatorFile(root, CONFIG_FILE).stdout).relay?.outbox === true; } catch { return false; }
-}
-
-/** Capture bar provenance only at author/sign commands, never during unrelated lifecycle dispatch. */
-export function barActorForCommand(ctx, board, { asPerson = false } = {}) {
-  if (!barReadySetting(board).enabled) return null;
-  const actor = ctx.info.isMain ? COORDINATOR : store.agentAt(board, ctx.info.root)?.agent_id;
-  const phone = ctx.io.personRequest?.phase === 'execute';
-  if (asPerson || phone || ctx.io.personChannel === 'view' && actor === COORDINATOR) {
-    if (!phone) requirePersonChannel(ctx.io.personChannel);
-    if (!ctx.info.isMain || actor !== COORDINATOR) throw new Refused('B26_PERSON_ANSWER', 'the person authors or signs a bar from the main checkout or its authenticated view');
-    return { authority: 'person', session: null, parent: null };
-  }
-  if (ctx.io.personChannel === 'view' || ctx.io.personRequest) return null;
-  return nativeBarActorForSeat(board, actor);
 }
 
 export async function ordered(ctx, board, operation, args) {

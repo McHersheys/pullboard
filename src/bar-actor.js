@@ -1,3 +1,7 @@
+import { agentAt } from './board.js';
+import { COORDINATOR } from './config.js';
+import { requirePersonChannel } from './person.js';
+import { barReadySetting } from './bar-readiness.js';
 import { agentParent } from './seats.js';
 /** Current bar authorship survives native takeover without rewriting historical seats [V1,H16]. */
 import { runtimeSessionIdentity, parentSessionDigest } from './parent-session.js';
@@ -30,4 +34,18 @@ export function normalizeBarActor(value) {
     throw new Refused('BAR_PARENT_UNKNOWN', 'bar authorship needs the current native session and its parent; run this move from the real runtime session, without borrowing another seat');
   }
   return { session: value.session, parent: value.parent };
+}
+
+/** Capture bar provenance only at author/sign commands, never during unrelated lifecycle dispatch. */
+export function barActorForCommand(ctx, board, { asPerson = false } = {}) {
+  if (!barReadySetting(board).enabled) return null;
+  const actor = ctx.info.isMain ? COORDINATOR : agentAt(board, ctx.info.root)?.agent_id;
+  const phone = ctx.io.personRequest?.phase === 'execute';
+  if (asPerson || phone || ctx.io.personChannel === 'view' && actor === COORDINATOR) {
+    if (!phone) requirePersonChannel(ctx.io.personChannel);
+    if (!ctx.info.isMain || actor !== COORDINATOR) throw new Refused('B26_PERSON_ANSWER', 'the person authors or signs a bar from the main checkout or its authenticated view');
+    return { authority: 'person', session: null, parent: null };
+  }
+  if (ctx.io.personChannel === 'view' || ctx.io.personRequest) return null;
+  return nativeBarActorForSeat(board, actor);
 }
