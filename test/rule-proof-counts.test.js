@@ -8,6 +8,12 @@ import { serveApi } from '../src/api.js';
 import * as store from '../src/board.js';
 import { main } from '../src/cli.js';
 import { receiptBody } from '../src/gate-run-receipt.js';
+import { clearProofCounters } from '../src/proof-counters.js';
+import {
+  ruleProofCounts,
+  ruleProofWindow,
+} from '../src/rule-proof-counts.js';
+import { loadSpec } from '../src/spec.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { fetchFresh } from './http-fixture.js';
 
@@ -51,8 +57,8 @@ function fixture(spec = SPEC) {
 }
 
 /** Append a bound, schema-valid historical fixture receipt through the board's ordinary recording operation. */
-function seedRun(box, { head = box.head, main = head, green = true, days = 0, command = GATE, failures = [] } = {}) {
-  const receipt = { version: 1, id: randomUUID(), kind: 'gate', head, main,
+function seedRun(box, { head = box.head, main = head, green = true, days = 0, command = GATE, failures = [], kind = 'gate' } = {}) {
+  const receipt = { version: 1, id: randomUUID(), kind, head, main,
     tree: box.git(box.root, 'rev-parse', `${head}^{tree}`).trim(),
     command: createHash('sha256').update(command).digest('hex'), green, failures,
     at: new Date(Date.now() - days * 86_400_000).toISOString(), load: { average: [0, 0, 0], cpus: 1, freeMB: 100 } };
@@ -99,4 +105,39 @@ test('the server reports how many rule rows are proven, unproven and contradicte
   assert.deepEqual(after.map(document => document.ruleCounts), [proven, proven], 'current green and this-week red are independent counts; API event invalidation refreshes both');
   const none = { approved: 0, gated: 0, ungated: 0, proven: 0, unproven: 0, contradicted: 0 };
   assert.deepEqual((await documents(empty, api)).map(document => document.ruleCounts), [none, none]);
+});
+
+test('a read-only legacy board retains recent red counts and exact expiry without warming proof indexes [S1,A1,A2,C7]', (t) => {
+  const box = fixture();
+  t.after(() => store.closeBoard(box.board));
+  seedRun(box, { green: false, days: 2,
+    failures: [{ file: 'test/contradicted.test.js', name: 'legacy recent red' }] });
+  seedRun(box, { green: false, days: 1, kind: 'submit',
+    failures: [{ file: 'test/unproven.test.js', name: 'submission is not trunk gate proof' }] });
+  seedRun(box);
+  const runs = store.gateRuns(box.board);
+  const red = runs.find(run => run.kind === 'gate' && !run.green);
+  const submit = runs.find(run => run.kind === 'submit');
+  assert.ok(red && submit, 'the private board has validated historical receipts of both kinds');
+  // A pre-projection board or a disposable cache loss keeps its authoritative native history.
+  clearProofCounters(box.board);
+  const rows = loadSpec(box.root, { spec: 'SPEC.md' }).rows;
+  const snapshot = box.board.db.prepare('SELECT event_id,event_detail FROM event ORDER BY event_id').all();
+  const changes = box.board.db.prepare('SELECT total_changes() AS n').get().n;
+  box.board.db.exec('PRAGMA query_only=ON');
+  const week = 7 * 86_400_000;
+  const end = Date.parse(red.at) + week;
+  const atBoundary = ruleProofCounts(box.root, box.board, rows, { now: end });
+  assert.equal(atBoundary.contradicted, 1, 'recent native trunk red remains visible at the inclusive seven-day boundary');
+  assert.equal(atBoundary.proven, 0, 'missing coverage projection never invents green proof');
+  assert.deepEqual(ruleProofWindow(box.board, new Date(end).toISOString()), {
+    events: [red.eventId, submit.eventId], nextExpiry: new Date(end + 1).toISOString(),
+  }, 'the window deliberately retains submit-red invalidation while proof counts exclude it');
+  const expired = ruleProofCounts(box.root, box.board, rows, { now: end + 1 });
+  assert.equal(expired.contradicted, 0, 'the native red expires one millisecond after seven days without a write');
+  assert.deepEqual(ruleProofWindow(box.board, new Date(end + 1).toISOString()), {
+    events: [submit.eventId], nextExpiry: new Date(Date.parse(submit.at) + week + 1).toISOString(),
+  });
+  assert.equal(box.board.db.prepare('SELECT total_changes() AS n').get().n, changes);
+  assert.deepEqual(box.board.db.prepare('SELECT event_id,event_detail FROM event ORDER BY event_id').all(), snapshot);
 });
