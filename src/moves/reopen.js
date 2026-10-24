@@ -1,3 +1,4 @@
+import { VERDICT_WITHDRAW_ENGINE } from '../verdict-withdraw-engine.js';
 import { RIGOR_AUTO_ENGINE } from '../rigor-auto-engine.js';
 /** Routing metadata owned by reopen, discovered without a shared registry edit [C7,V4,H16]. */
 import { itemById } from '../board-item-read.js';
@@ -15,7 +16,7 @@ import {
 } from '../trunk-conflict.js';
 
 /** Preserve this operation's historical first-matching engine conditions [H16]. */
-function minimumEngine(args, board, at) {
+function existingEngine(args, board, at) {
   const quotedLandingFailureEngine = args[1]?.quotedLandingFailure === true ? QUOTED_LANDING_FAILURE_ENGINE : 1;
   if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('conflict:')) return Math.max(RIGOR_AUTO_ENGINE, quotedLandingFailureEngine);
   if (args[0]?.landingFence !== undefined) return LANDING_LEASE_ENGINE;
@@ -26,12 +27,20 @@ function minimumEngine(args, board, at) {
   return Math.max(8, quotedLandingFailureEngine);
 }
 
+/** Keep verdict withdrawal as an independent maximum over every prior first-match floor [H16]. */
+function minimumEngine(args, board, at) {
+  return Math.max(args[1]?.withdrawVerdict === true ? VERDICT_WITHDRAW_ENGINE : 1, existingEngine(args, board, at));
+}
+
 /** Read precisely the actor argument used by this operation [H2,H16]. */
 function actor(move) { return move.args[1]?.agentId ?? null; }
 
 export default Object.freeze({ operation: "reopen", order: 22, engine: 8,
   itemIdFirstArgument: true, minimumEngine, actor,
   nextSteps: Object.freeze({
+  "BAD_VERDICT_WITHDRAW": "use --withdraw-verdict with a note, or report a conflict separately",
+  "VERDICT_WITHDRAW_FORBIDDEN": "ask the accepting reviewer or coordinator to withdraw this verdict",
+  "VERDICT_WITHDRAW_STATE": "refresh the item; withdraw only a current acceptance before landing",
   "ALREADY_MERGED": "file the follow-up as a new item: pullboard add <lane> \"<title>\"",
   "BAD_CAUSE": "name the cause as test:<file>::<title>, refusal:<CODE>, row:<id> or doctrine:<id>, or leave --cause out",
   "BAD_CONFIG": "fix pullboard.json as the message says, then commit it: git commit -m \"chore: fix pullboard config\" pullboard.json",

@@ -1,3 +1,4 @@
+import { correctedNoVerdictReopen } from './reopen-history.js';
 import {
   getShout,
   milestones,
@@ -60,6 +61,7 @@ import {
   readEventLogVersion,
   systemClock,
 } from './board-read-open.js';
+import * as verdictWithdrawal from './verdict-withdrawal.js';
 import {
   BOARD_BUSY_TIMEOUT_MS,
   EVENT_LOG_VERSION,
@@ -1208,39 +1210,6 @@ export function submit(board, id, { agentId, commit, tree, files = [], policyCom
   });
 }
 
-/**
- * True only after a no-verdict reopen followed by an explicit refreeze, or an edit that clears the
- * old frozen bar followed by a new claim. Reopening a verified landing failure is excluded.
- *
- * @param {any} board
- * @param {number} id
- * @param {string} commit
- * @returns {boolean}
- */
-function correctedNoVerdictReopen(board, id, commit) {
-  const history = board.db.prepare(
-    "SELECT event_id, event_kind, event_detail FROM event WHERE item_id = ? AND event_kind IN ('submit', 'reopen', 'edit', 'refreeze', 'claim') ORDER BY event_id DESC",
-  ).all(id);
-  const boundary = history.findIndex((entry) => entry.event_kind === 'submit' || entry.event_kind === 'reopen');
-  if (boundary < 0 || history[boundary].event_kind !== 'reopen') return false;
-  const reopened = JSON.parse(history[boundary].event_detail);
-  if (reopened.judgment !== null || reopened.supersedes !== undefined) return false;
-
-  const previousSubmission = history.slice(boundary + 1).find((entry) => {
-    if (entry.event_kind !== 'submit') return false;
-    const detail = JSON.parse(entry.event_detail);
-    return detail.commit === commit;
-  });
-  if (!previousSubmission) return false;
-  const afterReopen = history.slice(0, boundary);
-  const latestBarChange = afterReopen.find((entry) => entry.event_kind === 'refreeze'
-    || (entry.event_kind === 'edit' && Object.hasOwn(JSON.parse(entry.event_detail), 'unfrozen')));
-  if (!latestBarChange) return false;
-  if (latestBarChange.event_kind === 'refreeze') return true;
-  return afterReopen.some((entry) => entry.event_kind === 'claim' && entry.event_id > latestBarChange.event_id
-    && Boolean(JSON.parse(entry.event_detail).digest));
-}
-
 export { reviewHolder } from './board-query.js';
 
 /** Validate a newly constructed review release while keeping old sealed replay executable [V1,R1,H16].
@@ -1461,16 +1430,17 @@ export function verify(board, id, { agentId, decision, reason, note = '', cause,
  *
  * @param {any} board
  * @param {number} id
- * @param {{ agentId: string, note: string, cause?: string }} request
+ * @param {{ agentId: string, note: string, cause?: string, withdrawVerdict?: boolean }} request
  * @returns {{ id: number, commit: string, supersedes?: number, landingFailure?: object }}
  */
-export function reopen(board, id, { agentId, note = '', conflict, cause, reopenFirstRefusalMinutes, quotedLandingFailure }) {
+export function reopen(board, id, { agentId, note = '', conflict, cause, reopenFirstRefusalMinutes, quotedLandingFailure, withdrawVerdict }) {
   return atomic(board, () => {
     let submittedCommit = null;
     const forMerge = conflict !== undefined && conflict !== null;
-    let supersedes;
-    let landingFailure;
+    let supersedes, landingFailure, withdrawnVerdict;
+    const forWithdrawal = withdrawVerdict === true;
     const currentEngine = board.executionEngineVersion ?? ENGINE_VERSION;
+    verdictWithdrawal.checkOptions(withdrawVerdict, forMerge, currentEngine);
     const declaredTransition = MOVES.find((entry) => entry.verb === 'reopen');
     const transition = currentEngine >= 10 ? declaredTransition : { ...declaredTransition, from: ['submitted'] };
     const item = moveItem(board, id, 'reopen', {
@@ -1479,14 +1449,18 @@ export function reopen(board, id, { agentId, note = '', conflict, cause, reopenF
         joined: null,
         [IN_STATE]: (found) => new Refused('NOT_SUBMITTED', `item #${id} is ${current(board, found).item_status}, not submitted`),
         // Any joined seat returns a submitted head that no longer merges, with Git's files and trunk (#807).
-        coordinatorOnly: (found) => (forMerge && found.item_status === 'submitted' && currentEngine >= SUBMITTED_CONFLICT_ENGINE && listAgents(board).some((agent) => agent.agent_id === agentId)
-          ? null : onlyCoordinator(agentId, 'reopens submissions')),
+        reopenAuthority: (found) => {
+          if (forWithdrawal) { withdrawnVerdict = verdictWithdrawal.verdictWithdrawalTarget(board, found, agentId); return null; }
+          return (forMerge && found.item_status === 'submitted' && currentEngine >= SUBMITTED_CONFLICT_ENGINE && listAgents(board).some((agent) => agent.agent_id === agentId)
+          ? null : onlyCoordinator(agentId, 'reopens submissions'));
+        },
         noteGiven: () => (forMerge || note.trim() ? null : new Refused('NOTE_REQUIRED', 'say why the criterion needs correction: --note "why"')),
         causeWellFormed: () => causeProblem(cause),
         notMerged: (found) => found.item_status !== 'verified' || !found.item_merged_commit
           ? null
           : new Refused('ALREADY_MERGED', `item #${id} was merged as ${found.item_merged_commit}; merged items cannot be reopened`),
         landingFailureRecorded: (found) => {
+          if (forWithdrawal) { supersedes = withdrawnVerdict.acceptEventId; return null; }
           if (found.item_status !== 'verified' || forMerge) return null;
           const accepted = events(board, { itemId: id }).findLast((event) => {
             if (event.event_kind !== 'accept') return false;
@@ -1523,9 +1497,9 @@ export function reopen(board, id, { agentId, note = '', conflict, cause, reopenF
         };
       },
     });
-    const returnedAt = (forMerge || landingFailure) && currentEngine >= REOPEN_FIRST_REFUSAL_ENGINE && reopenFirstRefusalMinutes > 0 && item.item_built_by ? board.clock.now() : undefined;
-    const reservation = (forMerge || landingFailure) && currentEngine >= REOPEN_FIRST_REFUSAL_ENGINE ? firstRefusalDetail(board, item, reopenFirstRefusalMinutes, returnedAt) : {};
-    const returned = forMerge ? { supersedes, ...conflictDetail(conflict) } : supersedes ? { supersedes, landingFailure } : {};
+    const returnedAt = (forMerge || landingFailure || forWithdrawal) && currentEngine >= REOPEN_FIRST_REFUSAL_ENGINE && reopenFirstRefusalMinutes > 0 && item.item_built_by ? board.clock.now() : undefined;
+    const reservation = (forMerge || landingFailure || forWithdrawal) && currentEngine >= REOPEN_FIRST_REFUSAL_ENGINE ? firstRefusalDetail(board, item, reopenFirstRefusalMinutes, returnedAt) : {};
+    const returned = forWithdrawal ? { supersedes, withdrawnVerdict } : forMerge ? { supersedes, ...conflictDetail(conflict) } : supersedes ? { supersedes, landingFailure } : {};
     const derivedCause = currentEngine >= RIGOR_AUTO_ENGINE
       ? deriveRigorCause(board, item, { cause, conflict, landingFailure, agentId }) : cause != null ? { cause } : {};
     const returnedWithCause = currentEngine >= RIGOR_AUTO_ENGINE ? { ...returned, ...derivedCause } : { ...derivedCause, ...returned };
