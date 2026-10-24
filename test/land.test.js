@@ -548,7 +548,8 @@ test('land bisects a real red, blocks stale proof and refuses an unverified stac
   assert.equal(result.culprits[0].tests[0].file, FILES[2]);
   assert.match(result.culprits[0].tests[0].name, /keeps the landed behavior/u);
   assert.ok(json(box, box.repo, 'show', String(entries[2].item)).thread.some((entry) => entry.type === 'fact' && entry.text.includes(FILES[2])));
-  assert.deepEqual(calls(box).slice(beforeCalls), [[], ['--alone', FILES[2]], [], []], 'one red batch, one isolated diagnostic and two bisection gates; cached green tree is not retested');
+  assert.deepEqual(calls(box).slice(beforeCalls), [[], ['--alone', FILES[2]], [], [], []],
+    'one red batch, one diagnostic, two bisection gates, then the final tree: returning its culprit changes badge counts, so that different tree needs its own gate');
   assert.equal(json(box, box.repo, 'show', String(entries[0].item)).item_merged_commit, result.batch.tip);
   for (const entry of entries.slice(1)) assert.equal(json(box, box.repo, 'show', String(entry.item)).item_merged_commit, null);
   assert.equal(box.git(box.remote, 'rev-parse', 'main'), result.batch.tip);

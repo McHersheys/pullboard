@@ -33,10 +33,17 @@ function selectedFiles(args, tracked, canonical) {
   return files;
 }
 
+/** Recognize only option-free npm test and npm run script commands; options leave the gate opaque. */
+function npmScriptName(words) {
+  if (words?.[0] !== 'npm') return null;
+  if (words[1] === 'test' && words.length === 2) return 'test';
+  return words[1] === 'run' && words.length === 3 && words[2] && !words[2].startsWith('-') ? words[2] : null;
+}
+
 /** Known external tools leave the parent shell's directory/environment intact; shell builtins do not. */
 function keepsShellContext(words) {
   return words && (words[0] === 'node' || words[0] === process.execPath
-    || words[0] === 'npm' && (words[1] === 'test' && words.length === 2 || words[1] === 'run' && words.length === 3));
+    || npmScriptName(words) !== null);
 }
 
 /** Resolve supported configured test commands at the receipt's committed source; opaque commands prove no file. */
@@ -49,12 +56,12 @@ function includedFiles(root, commit, command, tracked, depth = 0, context = {}) 
     return parts.length > 1 && parts.every(part => keepsShellContext(literalShellWords(part)))
       ? parts.flatMap(part => includedFiles(root, commit, part, tracked, depth + 1, context)) : [];
   }
-  if (words[0] === 'npm' && (words[1] === 'test' && words.length === 2 || words[1] === 'run' && words.length === 3)) {
+  if (npmScriptName(words) !== null) {
     try {
       const source = tryGit(root, ['show', `${commit}:package.json`]);
       const manifest = JSON.parse(source.stdout);
       if (Object.hasOwn(manifest, 'workspaces') || tracked.has('.npmrc')) return [];
-      const script = manifest.scripts?.[words[1] === 'test' ? 'test' : words[2]];
+      const script = manifest.scripts?.[npmScriptName(words)];
       return typeof script === 'string' ? includedFiles(root, commit, script, tracked, depth + 1, context) : [];
     } catch { return []; }
   }
