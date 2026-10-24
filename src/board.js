@@ -1,3 +1,4 @@
+import { lineWipLimit } from './line-wip-limit.js';
 import { capacitySettings, lineCapacitySnapshot, lineCapacityProblem } from './line-capacity.js';
 import {
   lineOrderEnabled,
@@ -1268,7 +1269,7 @@ export function reviewOffer(board, { agentId, lane, policy = 'any', familyPolicy
   const settings = capacitySettings(board);
   const capacity = settings.reviewsFirst === true ? lineCapacitySnapshot(board) : null;
   if (capacity) ratio = typeof settings.wipPerReviewer === 'number' ? settings.wipPerReviewer : 3;
-  if (capacity ? queue.pending <= ratio * capacity.activeReviewers : queue.pending < ratio * Math.max(queue.reviewing, 1)) return null;
+  if (capacity ? queue.pending <= lineWipLimit(ratio, capacity.activeReviewers) : queue.pending < ratio * Math.max(queue.reviewing, 1)) return null;
   const { item } = nextFor(board, { agentId, lane, verify: true, policy, familyPolicy, runnable, routes });
   return item ? { item, queue, ratio } : null;
 }

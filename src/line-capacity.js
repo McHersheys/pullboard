@@ -4,6 +4,7 @@ import { LINE_CAPACITY_ENGINE } from './line-capacity-engine.js';
 import { lineSettings } from './line-settings.js';
 import { flowWindowBounds } from './stats-flow-window.js';
 import { Refused } from './refused.js';
+import { lineWipLimit } from './line-wip-limit.js';
 
 /** Old ordered claims keep their original semantics even beside newer recorded controls. */
 export function capacitySettings(board) {
@@ -28,7 +29,7 @@ export function lineCapacityProblem(board, { renewal, oldestReview } = {}) {
   const ratio = capacitySettings(board).wipPerReviewer;
   if (renewal || typeof ratio !== 'number') return null;
   const snapshot = lineCapacitySnapshot(board);
-  const limit = ratio * snapshot.activeReviewers;
+  const limit = lineWipLimit(ratio, snapshot.activeReviewers);
   if (snapshot.wip + 1 <= limit) return null;
   const review = oldestReview?.(snapshot.pending);
   return new Refused('LINE_WIP_LIMIT', `the line has ${snapshot.wip} live claims and submissions against limit ${limit}; `

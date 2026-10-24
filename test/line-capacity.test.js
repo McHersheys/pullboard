@@ -99,3 +99,16 @@ test('old recorded claims ignore new capacity while new claims retain the featur
   assert.equal(current.error?.code, 'LINE_WIP_LIMIT');
   assert.equal(store.getItem(replica, id).item_status, 'open');
 });
+
+test('the total cap covers builds and submitted work together without rounding a fractional allowance [N2,R1,H16]', t => {
+  const f = fixture(t), first = f.submit('first'), second = f.submit('second');
+  store.reserveReview(f.board, first, { agentId: f.reviewer, leaseMs: HOUR, policy: 'any' });
+  store.reserveReview(f.board, second, { agentId: 'coordinator', leaseMs: HOUR, policy: 'any' });
+  f.setting('wipPerReviewer', 1.5);
+  const third = store.addItem(f.board, { by: 'coordinator', lane: 'core', title: 'third total item' });
+  const fourth = store.addItem(f.board, { by: 'coordinator', lane: 'core', title: 'fourth total item' });
+  f.claim(third);
+  assert.equal(lineCapacitySnapshot(f.board).wip, 3, 'two pending submissions and one live build consume the same cap');
+  assert.throws(() => f.claim(fourth, f.reviewer), { code: 'LINE_WIP_LIMIT' });
+  assert.equal(store.getItem(f.board, fourth).item_status, 'open');
+});
