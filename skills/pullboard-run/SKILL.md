@@ -55,6 +55,8 @@ Close each finding with its next step in the same cycle. When the step belongs t
 
 A recurring job that runs on a cadence, such as a listener loop or a sentinel, records each run with `pullboard loop ran <name>`, and `pullboard health` flags one that stays silent for 1.5 cadences. The coordinator declares the cadence with `pullboard loop declare <name> --every 10m --owner <seat or lane>`; `pullboard loop` lists the jobs and their last runs.
 
+Approved sentinels never run inside an agent's session. A timer (cron on a server, or a scheduled CI job) runs `pullboard sentinel run`, which runs the due sentinels in a trunk checkout it prepares and records each result; `pullboard resume` only says when sentinels are due and where they run.
+
 ## Route by roadmap order
 
 `pullboard digest --out briefing.md` writes a short Markdown briefing of this board for a person or a chat assistant; hand it over when someone needs the board's state at a glance.
