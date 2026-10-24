@@ -68,7 +68,7 @@ export function moveFlowItem(item, event, detail, at) {
       observeFlowStage(item, 'review', at, event.event_by);
       item.reserve = { at, by: event.event_by, until: Date.parse(detail.until) }; break;
     case 'release':
-      observeFlowStage(item, detail.review || item.state === 'submitted' ? 'reviewWait' : null, at, event.event_by);
+      observeFlowStage(item, detail.review || item.state === 'submitted' ? 'reviewWait' : 'sendBackIdle', at, event.event_by);
       if (detail.review || item.state === 'submitted') item.reserve = null;
       else { item.state = 'open'; item.openAt = at; }
       break;
@@ -93,7 +93,7 @@ export function moveFlowItem(item, event, detail, at) {
     case 'refreeze':
     case 'escalate':
     case 'lapse':
-      observeFlowStage(item, null, at, event.event_by);
+      observeFlowStage(item, 'sendBackIdle', at, event.event_by);
       item.state = 'open'; item.openAt = at; item.reserve = null; break;
     case 'withdraw': observeFlowStage(item, null, at, event.event_by); item.state = 'withdrawn'; break;
   }
