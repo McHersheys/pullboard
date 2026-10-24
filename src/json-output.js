@@ -106,6 +106,7 @@ export function commandOutput(argv, streams, { version = 1, refusalDocument: sup
   };
   return {
     ...streams,
+    recordedMove: false,
     physicalStdoutIsTTY: Boolean(streams.stdout.isTTY),
     stdout: { get isTTY() { return enabled ? false : streams.stdout.isTTY; }, write: (text) => streams.stdout.write(text) },
     say: (line) => emit(streams.stdout, messages, line),

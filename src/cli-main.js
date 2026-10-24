@@ -1,3 +1,4 @@
+import { recordedMoveRefusal } from './recorded-move.js';
 /**
  * The command line's entry: parse the arguments, bind the checkout, run the relay and baseline work around the
  * command when there is any, and dispatch through the lazy command table. It loads a module only when the command
@@ -188,6 +189,7 @@ async function runCommand(argv, io) {
     if (!load) return (await import('./cli-help.js')).unknownCommand(io, command);
     return await (await load()).run(io, args);
   } catch (error) {
+    error = recordedMoveRefusal(io, error);
     if (error instanceof Refused) {
       io.refusal?.(error);
       io.err(`pullboard: ${await displayedRefusal(io, error)}\nnext: ${io.refusalDocument(error).error.next}`);
