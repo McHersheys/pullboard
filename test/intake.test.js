@@ -103,7 +103,9 @@ test('outside sealing and command-bearing changes require owner approval [B26,V3
   advanceOutsideFixture(box, 'src/seal.js', 'export const sealFixture = true;\n', ['relay/outside.js']);
   const filed = fixtureJSON(box, box.repo, 'intake', box.pull.html_url, '--criterion', 'the fixture behavior works', '--check', 'node --test test/contribution.test.js');
   const id = String(filed.item.item_id);
-  assert.equal(fixtureJSON(box, box.repo, 'show', id).outside.sensitive, true, 'the existing sealing boundary needs owner approval even without a relay change');
+  const source = fixtureJSON(box, box.repo, 'show', id).outside;
+  assert.equal(source.sensitive, true, 'the existing sealing boundary needs owner approval even without a relay change');
+  assert.ok(source.sensitivity.some(reason => reason.path === 'src/seal.js' && reason.rule === 'declared-sensitive-path'));
 });
 
 test('a returned outside pull request cannot be claimed as native build work [V1,V3]', t => {
@@ -133,4 +135,30 @@ test('an outside author revision is re-intaken only after normal return and clea
   assert.equal(refreshed.item.item_tree, next.tree);
   assert.equal(refreshed.item.outside.ownerApproval, null, 'the old owner approval never authorizes the new source commit');
   assert.equal(refreshed.item.outside.sandbox, null, 'the new outside head must be executed in the sandbox again');
+});
+
+
+test('outside process-execution detection and unreadable files explain their owner holds [B26,V3]', t => {
+  const box = intakeFixture(t);
+  advanceOutsideFixture(box, 'lib/plain.js', "import { execFile } from 'node:child_process'; export const run = () => execFile('true');\n", ['relay/outside.js']);
+  advanceOutsideFixture(box, 'assets/opaque.bin', Buffer.from([0, 255, 254]));
+  const filed = fixtureJSON(box, box.repo, 'intake', box.pull.html_url, '--criterion', 'the fixture behavior works', '--check', 'node --test test/contribution.test.js');
+  const reasons = filed.item.outside.sensitivity;
+  assert.ok(reasons.some(reason => reason.path === 'lib/plain.js' && reason.rule === 'new-process-execution'));
+  assert.ok(reasons.some(reason => reason.path === 'assets/opaque.bin' && reason.rule === 'unreadable-changed-file'));
+});
+
+test('only trusted main can extend outside sensitive paths and ordinary source stays ordinary [B26,V4]', t => {
+  const box = intakeFixture(t);
+  const configPath = new URL('pullboard.json', 'file://' + box.repo + '/');
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  config.intake = { sensitivePaths: ['data/regulated.json'] };
+  writeFileSync(configPath, JSON.stringify(config));
+  box.git(box.repo, 'add', 'pullboard.json');
+  box.git(box.repo, 'commit', '-q', '-m', 'chore: declare private sensitive data');
+  advanceOutsideFixture(box, 'data/regulated.json', '{"fixture":true}\n', ['relay/outside.js']);
+  advanceOutsideFixture(box, 'lib/ordinary.js', 'export const add = (left, right) => left + right;\n');
+  const filed = fixtureJSON(box, box.repo, 'intake', box.pull.html_url, '--criterion', 'the fixture behavior works', '--check', 'node --test test/contribution.test.js');
+  assert.ok(filed.item.outside.sensitivity.some(reason => reason.path === 'data/regulated.json' && reason.rule === 'configured-sensitive-path'));
+  assert.equal(filed.item.outside.sensitivity.some(reason => reason.path === 'lib/ordinary.js'), false, 'source files are not all sensitive just for being source');
 });

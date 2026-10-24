@@ -31,3 +31,10 @@ export function outsideSandboxProblem(board, item, receipt) {
   }
   return null;
 }
+
+/** Outside PR code is revised by its source author, never claimed or submitted as native build work. */
+export function outsideBuildProblem(board, item) {
+  return outsideSource(board, item.item_id)?.kind === 'pull-request'
+    ? new Refused('OUTSIDE_NATIVE_BUILD', `outside item #${item.item_id} stays with its PR author; ask the coordinator to return it, then intake the author's new exact head`)
+    : null;
+}

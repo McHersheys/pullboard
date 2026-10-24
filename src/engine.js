@@ -1,3 +1,4 @@
+import { outsideSource } from './outside-source.js';
 import { requireOutsideReceipt } from './outside-proof.js';
 import { OUTSIDE_INTAKE_ENGINE } from './outside-intake-engine.js';
 import { ITEM_SHOUT_ENGINE } from './item-shout-engine.js';
@@ -94,7 +95,8 @@ const OPERATION_ENGINE = Object.freeze({ draftSpecRow: ROW_DRAFT_ENGINE, orderMi
 
 /** Dependency edits, causes, sealed reviews, submission proofs, trunk conflicts, health observations and milestone targets retain distinct recorded engine meanings. */
 function minimumOperationEngine(operation, args, board, at) {
-  const outside = ['intakeOutside', 'approveOutside'].includes(operation) || operation === 'verify' && args[1]?.sandbox !== undefined;
+  const outside = ['intakeOutside', 'approveOutside'].includes(operation) || operation === 'verify' && args[1]?.sandbox !== undefined
+    || board && ['claim', 'submit', 'verify', 'merged'].includes(operation) && Boolean(outsideSource(board, args[0]));
   return Math.max(outside ? OUTSIDE_INTAKE_ENGINE : 1, minimumExistingOperationEngine(operation, args, board, at));
 }
 

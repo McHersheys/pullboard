@@ -4,6 +4,7 @@ import {
 } from './outside-store.js';
 import {
   outsideSandboxProblem,
+  outsideBuildProblem,
   outsideSource,
   requireOutsideOwner,
   saveOutsideSource,
@@ -982,6 +983,8 @@ export function claim(board, id, { agentId, lane, leaseMs, freeze, head = null, 
         joined: null, checkProvesSomething: null,
         [IN_STATE]: (found) => new Refused('NOT_CLAIMABLE', `item #${id} is ${found.item_status}`),
         inLane: (found) => {
+          const outside = outsideBuildProblem(board, found);
+          if (outside) return outside;
           if (found.item_lane === lane) return null;
           return new Refused(
             'WRONG_LANE',
@@ -1128,7 +1131,7 @@ export function submit(board, id, { agentId, commit, tree, files = [], policyCom
       checks: {
         joined: null, checkProvesSomething: null,
         [IN_STATE]: notYours,
-        isHolder: (found) => (found.item_owner === agentId ? null : notYours()),
+        isHolder: (found) => outsideBuildProblem(board, found) ?? (found.item_owner === agentId ? null : notYours()),
         correctionRefrozen: () => pendingRefreezeProblem(board, id),
         criterionUnchanged: null,
         treeClean: null,
@@ -2466,7 +2469,7 @@ export function finishLandingBatch(board, { agentId, id, tip, landingFence }) {
 }
 
 /** File or refresh an outside source through the ordinary ordered engine. */
-export function intakeOutside(board, options) { return applyOutsideIntake(board, options, { atomic, addItem, moveItem }); }
+export function intakeOutside(board, options) { return applyOutsideIntake(board, options, { atomic, addItem, moveItem, validateItemAddition }); }
 
 /** Record the person's exact-commit owner approval. */
 export function approveOutside(board, id, options) { return applyOutsideApproval(board, id, options, atomic); }

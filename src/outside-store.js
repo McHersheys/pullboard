@@ -14,30 +14,35 @@ function validate(source, frozen) {
       !Number.isSafeInteger(source.number) || source.number < 1 || !/^[A-Za-z0-9-]{1,39}$/u.test(source.author ?? '') || !['open', 'closed'].includes(source.state) || typeof source.maintainerReplied !== 'boolean') {
     throw new Refused('OUTSIDE_SOURCE', 'intake needs GitHub source metadata; fetch the exact issue or pull request again');
   }
-  if (source.kind === 'pull-request' && (!/^[a-f0-9]{40}$/u.test(source.commit ?? '') || !/^[a-f0-9]{40}$/u.test(source.tree ?? '') || !frozen ||
+  if (source.kind === 'pull-request' && (!/^[a-f0-9]{40}$/u.test(source.commit ?? '') || !/^[a-f0-9]{40}$/u.test(source.tree ?? '') || !frozen || typeof frozen.text !== 'string' || !Array.isArray(source.files) || !/^[a-f0-9]{40}$/u.test(source.base ?? '') || typeof source.sensitive !== 'boolean' ||
       createHash('sha256').update(frozen.text).digest('hex') !== frozen.digest)) throw new Refused('OUTSIDE_SOURCE', 'fetch the exact pull request commit and freeze its trusted criterion before intake');
 }
 
 /** Apply one replayable source refresh; refresh never silently replaces a submitted commit. */
-export function applyOutsideIntake(board, options, { atomic, addItem, moveItem }) {
+export function applyOutsideIntake(board, options, { atomic, addItem, moveItem, validateItemAddition }) {
   return atomic(board, () => {
     const { agentId, source, item, frozen } = options;
     validate(source, frozen);
     const existing = board.db.prepare("SELECT meta_key,meta_value FROM board_meta WHERE meta_key LIKE 'outside:%'").all()
       .find(row => { const old = JSON.parse(row.meta_value); return old.repository === source.repository && old.kind === source.kind && old.number === source.number; });
-    if (existing) {
-      const id = Number(existing.meta_key.slice('outside:'.length));
-      const old = outsideSource(board, id);
-      if (source.kind === 'pull-request' && old.commit !== source.commit) throw new Refused('OUTSIDE_HEAD_CHANGED', 'the pull request head changed; ask the coordinator to reopen its recorded submission before intaking the new head');
-      saveOutsideSource(board, id, { ...old, state: source.state, maintainerReplied: source.maintainerReplied, updatedAt: source.updatedAt });
-      logEvent(board, agentId, 'outside-refresh', id, { source });
-      return id;
+    const priorId = existing ? Number(existing.meta_key.slice('outside:'.length)) : null;
+    const old = priorId ? outsideSource(board, priorId) : null;
+    if (old && (source.kind === 'issue' || old.commit === source.commit)) {
+      saveOutsideSource(board, priorId, { ...old, state: source.state, maintainerReplied: source.maintainerReplied,
+        ...(source.kind === 'pull-request' ? { sensitive: source.sensitive, sensitivity: source.sensitivity } : {}), updatedAt: source.updatedAt });
+      logEvent(board, agentId, 'outside-refresh', priorId, { source });
+      return priorId;
     }
-    const id = addItem(board, { ...item, by: agentId });
+    if (old && itemById(board, priorId).item_status !== 'open') throw new Refused('OUTSIDE_HEAD_CHANGED', 'the pull request head changed; ask the coordinator to reopen its recorded submission before intaking the new head');
+    // Re-intake must obey the same coordinator-owned bar validation as the original addition.
+    validateItemAddition(board, { ...item, by: agentId });
+    const id = priorId ?? addItem(board, { ...item, by: agentId });
     saveOutsideSource(board, id, { ...source, ownerApproval: null, sandbox: null });
     if (source.kind === 'pull-request') moveItem(board, id, 'intake', {
-      checks: { joined: null, itemExists: null, inState: () => new Refused('NOT_CLAIMABLE', 'intake files a new outside item'), outsideSubmission: null },
+      checks: { joined: null, itemExists: null, inState: () => new Refused('NOT_CLAIMABLE', 'intake files or re-intakes a normally returned outside item'), outsideSubmission: null },
       set: () => ({ item_built_by: `outside:github:${source.author}`, item_commit: source.commit, item_tree: source.tree,
+        item_title: item.title, item_criterion: item.criterion, item_check: item.check, item_route: item.route ?? 'strong',
+        item_owner: null, item_lease_until: null, item_review_by: null, item_review_until: null, item_verdict: null, item_verified_by: null,
         item_claim_head: source.base, item_frozen: frozen.text, item_frozen_digest: frozen.digest, item_files: source.files.join('\n') }),
     });
     logEvent(board, agentId, 'outside-intake', id, { source, frozen });

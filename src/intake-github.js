@@ -1,3 +1,4 @@
+import { outsideSensitivity } from './outside-sensitive.js';
 /** Read GitHub public source metadata; never post, execute PR programs or use its executable settings. */
 import { spawnSync } from 'node:child_process';
 import { Refused } from './refused.js';
@@ -40,7 +41,6 @@ export function githubSource(root, url) {
   if (paths.some(path => typeof path !== 'string' || path.includes('\n') || path.startsWith('/') || path.split('/').includes('..'))) throw new Refused('OUTSIDE_FETCH', 'GitHub returned an invalid changed path; restore its file metadata');
   const changed = git(root, ['diff', '--name-only', '-z', `${data.base.sha}...${fetched}`]).split('\0').filter(Boolean);
   if (changed.length !== paths.length || changed.some(path => !paths.includes(path))) throw new Refused('OUTSIDE_FETCH', 'the changed-file list differs from the fetched exact commit; refresh GitHub metadata');
-  // Fail closed for command-bearing files as well as explicit trust boundaries.
-  const sensitive = paths.some(path => /(^|\/)(relay|hooks?|\.github|person|sealing|signing)(\/|[.-]|$)/iu.test(path) || /(^|\/)(package\.json|Makefile|Dockerfile|.*\.(?:sh|bash|zsh|cmd|ps1))$/iu.test(path) || /(^|\/)(bin|scripts)\//u.test(path));
-  return { ...common, commit: fetched, tree: git(root, ['rev-parse', `${fetched}^{tree}`]).trim(), base: data.base.sha, files: paths, sensitive };
+  const sensitivity = outsideSensitivity(root, data.base.sha, fetched, paths);
+  return { ...common, commit: fetched, tree: git(root, ['rev-parse', `${fetched}^{tree}`]).trim(), base: data.base.sha, files: paths, sensitivity, sensitive: sensitivity.length > 0 };
 }

@@ -37,7 +37,7 @@ export async function outsideVerdict(ctx, board, item, me, decision, values) {
     if (headCommit(ctx.info.root) !== head || !isClean(ctx.info.root) || untracked(ctx.info.root).length) throw new Refused('NOT_AT_COMMIT', 'the trusted reviewing checkout moved during sandbox verification; restore its clean head before reviewing again');
     const after = requireTrunkMerge(ctx.info.root, item.item_commit);
     if (after.commit !== trunk.commit) throw new Refused('VERDICT_TRUNK_MOVED', 'main moved during sandbox verification; review the outside change against current main');
-    review = { commit: item.item_commit, head: item.item_commit, trunk: trunk.commit, paths: [...new Set([...(item.outside.files ?? []), 'pullboard.json', 'SPEC.md', 'DOCTRINE.md'])] };
+    review = { commit: item.item_commit, head: item.item_commit, trunk: trunk.commit, paths: [...new Set([...(item.outside.files ?? []), 'pullboard.json', 'SPEC.md', 'DOCTRINE.md'])].sort() };
   }
   return ordered(ctx, board, 'verify', [item.item_id, { agentId: me.id, decision, reason: values.reason,
     note: textArg(ctx.io, values, 'note') ?? '', head: item.item_commit, digest, policy: policy.config.verify.policy, familyPolicy: policy.config.verify.family,
