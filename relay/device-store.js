@@ -21,6 +21,10 @@ export function createDeviceStore({ directory, now = Date.now }) {
         CREATE TABLE IF NOT EXISTS device_session (account TEXT NOT NULL, session TEXT NOT NULL, device TEXT NOT NULL, expires INTEGER NOT NULL, PRIMARY KEY(account,session,device));
         CREATE TABLE IF NOT EXISTS wrapped_key (account TEXT NOT NULL, device TEXT NOT NULL, board TEXT NOT NULL, engine INTEGER NOT NULL, wrapped TEXT NOT NULL, PRIMARY KEY(account,device,board));
         CREATE TABLE IF NOT EXISTS enrollment (account TEXT NOT NULL, locator TEXT NOT NULL, expires INTEGER NOT NULL, payload TEXT, PRIMARY KEY(account,locator));
+        CREATE TABLE IF NOT EXISTS person_enrollment (
+          account TEXT NOT NULL, nonce TEXT NOT NULL, device TEXT NOT NULL, expires INTEGER NOT NULL,
+          payload TEXT NOT NULL, used INTEGER NOT NULL DEFAULT 0, wrapped TEXT,
+          PRIMARY KEY(account,nonce));
         CREATE TABLE IF NOT EXISTS phone_approval (id TEXT PRIMARY KEY, account TEXT NOT NULL, publisher TEXT NOT NULL,
           board TEXT NOT NULL, device TEXT NOT NULL, action TEXT NOT NULL, machine TEXT NOT NULL, expires INTEGER NOT NULL,
           context TEXT NOT NULL, sealed TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'waiting', response TEXT);

@@ -6,12 +6,7 @@ import { personEnrollmentBody } from '../src/person-enrollment.js';
 export function createPersonEnrollmentStore({ database, now }) {
   /** Keep spent nonces permanently spent; expiry never makes an old request reusable. */
   function db() {
-    const opened = database();
-    opened.exec(`CREATE TABLE IF NOT EXISTS person_enrollment (
-      account TEXT NOT NULL, nonce TEXT NOT NULL, device TEXT NOT NULL, expires INTEGER NOT NULL,
-      payload TEXT NOT NULL, used INTEGER NOT NULL DEFAULT 0, wrapped TEXT,
-      PRIMARY KEY(account,nonce));`);
-    return opened;
+    return database();
   }
   /** Hide other accounts and reject revocation or an expired pending challenge. */
   function entry(account, nonce) {
