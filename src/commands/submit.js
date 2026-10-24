@@ -2,6 +2,7 @@ import {
   barReadySetting,
   barReadyProblem,
 } from '../bar-readiness.js';
+import { barCheckWarning } from '../bar-check.js';
 import { requireSubmitComposition } from '../submit-composition.js';
 /** The pullboard submit command, in its own module so an item adding another command never edits these lines. */
 import * as store from '../board.js';
@@ -124,6 +125,15 @@ export async function submitHere(ctx, id, infra) {
     if (correction) throw correction;
     return item;
   });
+  const barWarning = await withBoard(ctx, async board => {
+    const warning = barCheckWarning(board, held);
+    if (!warning) return null;
+    await ordered(ctx, board, 'appendFact', [id, { agentId: held.item_owner, kind: 'note', text: `bar.check warning: ${warning}` }]);
+    return warning;
+  });
+  if (barWarning) {
+    ctx.io.say(`bar.check warning: ${barWarning}`);
+  }
   const policy = itemPolicy(root, held);
   const acceptedMain = mainPolicy(root);
   const requireComposition = withBoard(ctx, board => barReadySetting(board).enabled);

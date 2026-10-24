@@ -85,7 +85,7 @@ test('a line setting change is a recorded move with its reason and its range [R1
     '--window', JSON.stringify(numbers), '--json');
   assert.equal(changed.code, 0, `a board setting change succeeds: ${changed.err}${changed.out}`);
   assert.equal(initial.code, 0, initial.err);
-  const defaults = { order: false, reviewsFirst: false, wipPerReviewer: false, barReady: false, takeoverMinutes: false,
+  const defaults = { order: false, reviewsFirst: false, wipPerReviewer: false, barReady: false, 'bar.check': false, takeoverMinutes: false, collisionFreeBatch: false,
     landingBatchSize: false, landingCadenceMinutes: false };
   assert.deepEqual(JSON.parse(initial.out).lineSettings, defaults, 'all line controls start off, not silently enabled by a machine file');
   assert.equal(JSON.parse(changed.out).lineSettings.reviewsFirst, true);
@@ -97,7 +97,7 @@ test('a line setting change is a recorded move with its reason and its range [R1
   assert.deepEqual(JSON.parse(first.event_detail), { key: 'reviewsFirst', value: true,
     reason: 'Review waiting exceeds the target', window: numbers, model: 'unknown' });
   assert.equal(first.event_by, 'coordinator');
-  const values = [['order', true], ['order', false], ['reviewsFirst', false], ['wipPerReviewer', 1.5], ['wipPerReviewer', 3], ['barReady', true],
+  const values = [['order', true], ['order', false], ['reviewsFirst', false], ['wipPerReviewer', 1.5], ['wipPerReviewer', 3], ['barReady', true], ['bar.check', true], ['collisionFreeBatch', true], ['collisionFreeBatch', false],
     ['takeoverMinutes', 15], ['takeoverMinutes', 60], ['landingBatchSize', 1], ['landingBatchSize', 8],
     ['landingCadenceMinutes', 5], ['landingCadenceMinutes', 30]];
   let sequence = appliedSequence(board);
