@@ -1072,7 +1072,7 @@ test('an agent grant narrows at claim without trapping its own verdict withdrawa
   /** Supply the ordinary frozen criterion for this explicitly synthetic lifecycle setup. */
   const freeze = item => ({ text: item.item_title, digest: `withdraw:${item.item_id}` });
   const prior = store.addItem(primary, { by: 'coordinator', lane: 'tests', title: 'Earlier reviewer build' });
-  store.claim(primary, prior, { agentId: reviewer, lane: 'tests', leaseMs: 1000, freeze });
+  const priorClaim = store.claim(primary, prior, { agentId: reviewer, lane: 'tests', leaseMs: 1000, freeze });
   const commit = box.git(box.repo, 'rev-parse', 'HEAD');
   const tree = box.git(box.repo, 'rev-parse', 'HEAD^{tree}');
   /** Create a current, immutable acceptance through the public board lifecycle. */
@@ -1088,7 +1088,8 @@ test('an agent grant narrows at claim without trapping its own verdict withdrawa
   const own = accepted('Acceptance held by the different-lane reviewer');
   const control = accepted('Coordinator withdrawal positive control');
   instant += 1001;
-  assert.ok(store.getItem(primary, prior).item_lease_until < clock.now().toISOString(), 'the earlier build lease really expired');
+  assert.ok(priorClaim.leaseUntil < clock.now().toISOString(), 'the earlier build lease really expired');
+  assert.equal(store.getItem(primary, prior).item_status, 'open', 'the normal reader also treats that claim as expired');
   const original = store.verdictsFor(primary, own)[0];
   importBoard(boards[1], exportBoard(primary));
   /** One ordinary ordered move has the same outcome on both independent SQLite replicas. */
