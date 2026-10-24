@@ -56,6 +56,11 @@ export function personRequestGuidance(message, { caller, leading = false } = {})
 
 /** @type {Readonly<Record<string, string>>} */
 export const NEXT_STEPS = Object.freeze({
+  PUBLISH_GITHUB: 'inspect gh auth status and the configured GitHub remote, then publish again',
+  PUBLISH_STATE: 'preserve publish-pr.json and ask the coordinator to recover its recorded PR identities',
+  PUBLISH_UNPROVEN: 'restore the item’s acceptance at its exact submitted commit before publishing',
+  PUBLISH_COMPOSITION: 'compose the accepted work with the actual remote base, resolve conflicts normally, then publish',
+  PUBLISH_FINDING: 'record the exact merged item, publication head and failing GitHub job/run evidence',
   ACCOUNT_STORAGE_LIMIT: 'remove an unneeded relay copy through the approved phone flow, or ask the relay operator to increase the account quota; uploads resume when space is available',
   BAD_PAGE: 'retry the saved upload with a current linked CLI; send only its original bounded encrypted objects',
   BAD_PAGE_PATH: 'refresh the board on the phone, then follow the encrypted references from its new read pin',
