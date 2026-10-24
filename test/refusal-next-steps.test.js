@@ -6,6 +6,7 @@ import { after, test } from 'node:test';
 import { Refused } from '../src/refused.js';
 import { recordedRefusal, refusalFromReceipt, RECORDED_GENERIC_NEXT } from '../src/recorded-refusal.js';
 import { refusalDocument } from '../src/json.js';
+import { commandOutput as lightCommandOutput } from '../src/json-output.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 
 const e2e = createE2eHelpers();
@@ -135,4 +136,30 @@ test('every refusal names a next step that works [P4,I1,I2]', async () => {
   succeeded(box.run(recovery, 'join', 'web', '--model', 'New Agent Fixture Model'));
   succeeded(box.run(recovery, 'whoami', '--json'));
   assert.equal(readFileSync(bindingPath, 'utf8'), binding, 'recovery leaves the main owner binding unchanged');
+});
+
+
+test('the light collector preserves prepared JSON refusal documents and a single success output [A1,P4,B26,C7]', async () => {
+  const cases = [
+    { code: 'NO_ITEM', message: 'No item exists.' },
+    { code: 'FUTURE_REMOTE_RULE', message: 'The service refused.', next: 'ask its owner to restore the board' },
+    { code: 'SPEC_NOT_APPROVED', message: 'The rule is pending; ask the person to approve it.' },
+    refusalFromReceipt(recordedRefusal(new Refused('GATE_RED', 'gate red; fix it, commit, submit again'))),
+  ];
+  for (const error of cases) {
+    let text = '';
+    const io = lightCommandOutput(['show', '1', '--json'], { stdout: { write(value) { text += value; } }, stderr: { write() {} } });
+    io.caller('seat', '/fixture');
+    io.refusal(error);
+    await io.prepareRefusal();
+    io.flush(1);
+    io.flush(1);
+    assert.deepEqual(JSON.parse(text), refusalDocument(error, { caller: 'seat' }), 'lazy preparation preserves the synchronous public envelope and caller guidance');
+  }
+  let text = '';
+  const io = lightCommandOutput(['version', '--json'], { stdout: { write(value) { text += value; } }, stderr: { write() {} } });
+  io.result({ release: '0.9.2' });
+  io.flush(0);
+  io.flush(0);
+  assert.deepEqual(JSON.parse(text), { version: 1, release: '0.9.2' }, 'success needs no refusal preparation and flushes once');
 });

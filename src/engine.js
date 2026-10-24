@@ -1,17 +1,12 @@
-import { HANDOFF_ENGINE } from './handoff-engine.js';
-import { handoffMoveProblem } from './handoff-state.js';
-import { requireHandoffActive } from './handoff-state.js';
-import { LINE_CAPACITY_ENGINE } from './line-capacity-engine.js';
+import { boundProofReceipt } from './proof-receipts.js';
+import {
+  handoffMoveProblem,
+  requireHandoffActive,
+} from './handoff-state.js';
+import { manualLandingFailureQuoted } from './manual-landing-failure-quoted.js';
 import { lineSettings } from './line-settings.js';
-import { outsideSource } from './outside-source.js';
 import { requireOutsideReceipt } from './outside-proof.js';
-import { OUTSIDE_INTAKE_ENGINE } from './outside-intake-engine.js';
-import { BAR_READY_ENGINE } from './bar-ready-engine.js';
-import { barReadySetting } from './bar-readiness.js';
-import { ITEM_SHOUT_ENGINE } from './item-shout-engine.js';
-import { RIGOR_AUTO_ENGINE } from './rigor-auto-engine.js';
 /** Versioned, deterministic replay through the CLI's existing board engine [H3,H16]. */
-import { VERDICT_WITHDRAW_ENGINE } from './verdict-withdraw-engine.js';
 import {
   createHash,
   randomUUID,
@@ -19,48 +14,14 @@ import {
 import * as store from './board.js';
 import { COORDINATOR } from './config.js';
 import { recordedRefusal } from './recorded-refusal.js';
-import {
-  BAR_ENGINE,
-  carriesBarReason,
-} from './bar-corrections.js';
-import {
-  carriesImplies,
-  IMPLIES_ENGINE,
-} from './implies.js';
-import {
-  carriesConflict,
-  CONFLICT_ENGINE,
-} from './trunk-conflict.js';
-import { CHECK_ACCEPT_ENGINE } from './check-accept.js';
-import { HEALTH_SENTINEL_ENGINE } from './health-receipts.js';
-import { BOARD_SENTINEL_ENGINE } from './sentinels.js';
-import { RECURRING_JOB_ENGINE } from './job-engine.js';
 import { PEOPLE_ENGINE } from './people-engine.js';
-import { SPEC_APPROVAL_ENGINE } from './spec-approval-engine.js';
-import { GATE_RUN_ENGINE } from './gate-run-engine.js';
 import { requireBound } from './quarantine.js';
 import {
-  REOPEN_FIRST_REFUSAL_ENGINE,
-  QUOTED_LANDING_FAILURE_ENGINE,
-  CAUSE_ENGINE,
   ENGINE_VERSION,
   VERIFIER_STANDING_ENGINE,
-  VERDICT_REVIEW_ENGINE,
-  MILESTONE_RANK_ENGINE,
-  ROW_DRAFT_ENGINE,
-  SUBMITTED_CONFLICT_ENGINE,
 } from './machine.js';
-import {
-  MILESTONE_SHIP_ENGINE,
-  canonicalMilestoneTarget,
-} from './milestones.js';
+import { canonicalMilestoneTarget } from './milestones.js';
 import { Refused } from './refused.js';
-import {
-  firstRefusal,
-  manualLandingFailureQuoted,
-} from './claims.js';
-import { boundProofReceipt } from './proof-receipts.js';
-import { PROOF_RUN_ENGINE } from './proof-run-engine.js';
 import {
   requestMoveProblem,
   recordRequestMove,
@@ -76,110 +37,17 @@ import {
   SUBMISSION_PROOF_ENGINE,
   submissionProof,
 } from './submit-invariants.js';
-import {
-  CI_FLAKE_ENGINE,
-  NATIVE_FLAKE_ENGINE,
-  carriesFlakeDiagnostics,
-} from './flake-engine.js';
-import { LOCAL_LANDING_ENGINE } from './land-engine.js';
-import { REVIEW_SKIP_ENGINE } from './review-skip-engine.js';
-import { COORDINATOR_HOLD_ENGINE } from './coordinator-hold-engine.js';
 import { requireCoordinatorHold } from './coordinator-hold.js';
-import { LANDING_ENVIRONMENT_ENGINE } from './landing-environment-engine.js';
-import { carriesLandingEnvironment } from './execution-environment.js';
-import { LANDING_LEASE_ENGINE } from './landing-lease-engine.js';
-import { LINE_ORDER_ENGINE } from './line-order-engine.js';
-import { LINE_SETTINGS_ENGINE } from './line-settings-engine.js';
-import { LAND_COLLISION_ENGINE } from './landing-collision-engine.js';
-import { PR_BRIDGE_ENGINE } from './pr-bridge-engine.js';
-import { LANDING_LOCAL_LEASE_ENGINE } from './landing-local-lease-engine.js';
 
-const ITEM_ID_FIRST_ARGUMENT = new Set(['signBar', 'acceptCheck', 'editItem', 'escalate', 'recordAttempt', 'claim', 'release', 'submit', 'reserveReview', 'verify', 'merged', 'withdraw', 'refreeze', 'reopen', 'appendFact']);
+import {
+  MOVE_REGISTRY,
+  MOVE_OPERATIONS as ENGINE_OPERATIONS,
+  minimumMoveEngine as minimumOperationEngine,
+} from './move-registry.js';
+export { ENGINE_OPERATIONS };
 
-/** Only these public board operations may be requested by an encrypted move. */
-export const ENGINE_OPERATIONS = Object.freeze([
-  'openHandoff', 'takeHandoff', 'intakeOutside', 'approveOutside', 'setBarReady', 'signBar', 'register', 'ensureCoordinator', 'addItem', 'editItem', 'completeCheckBaseline', 'escalate', 'recordAttempt',
-  'claim', 'release', 'submit', 'reserveReview', 'reserveNextReview', 'verify', 'merged',
-  'withdraw', 'refreeze', 'reopen', 'shout', 'passDecision', 'answerDecision', 'holdLane', 'releaseLane', 'holdItem', 'releaseItemHold',
-  'addMilestone', 'editMilestoneItems', 'orderMilestoneItems', 'moveMilestone', 'editMilestone', 'removeMilestone', 'shipMilestone',
-  'recordRowDecisions', 'applyRowDecisions', 'draftSpecRow', 'appendFact', 'recordSpecApprovalBaseline',
-  'recordLandingBatch', 'recordLandingWaiver', 'recordLandingFlake', 'recordLandingTestDefect', 'finishLandingBatch', 'acceptCheck',
-  'recordHealthFindings', 'proposeSentinel', 'decideSentinel', 'beginSentinelRun', 'finishSentinelRun',
-  'setLineSetting', 'recordFlakeObservation', 'recordGateRun', 'recordProofRun', 'declareJob', 'recordJobRun', 'takeCoordinator', 'landingLeaseMove',
-  'recordPublishFinding',
-]);
-
-/** Engine version at which each ordered operation first has stable replay semantics. */
-const OPERATION_ENGINE = Object.freeze({ setLineSetting: LINE_SETTINGS_ENGINE, draftSpecRow: ROW_DRAFT_ENGINE, orderMilestoneItems: MILESTONE_RANK_ENGINE, reopen: 8, recordLandingBatch: 8, recordLandingWaiver: 8, recordLandingFlake: 8, finishLandingBatch: 8, acceptCheck: CHECK_ACCEPT_ENGINE,
-  shipMilestone: MILESTONE_SHIP_ENGINE, recordSpecApprovalBaseline: SPEC_APPROVAL_ENGINE, takeCoordinator: COORDINATOR_HOLD_ENGINE });
-
-/** Dependency edits, causes, sealed reviews, submission proofs, trunk conflicts, health observations and milestone targets retain distinct recorded engine meanings. */
-function minimumOperationEngine(operation, args, board, at) {
-  const outside = ['intakeOutside', 'approveOutside'].includes(operation) || operation === 'verify' && args[1]?.sandbox !== undefined
-    || board && ['claim', 'submit', 'verify', 'merged'].includes(operation) && Boolean(outsideSource(board, args[0]));
-  const capacity = operation === 'claim' && args[1]?.lineCapacity === true;
-  return Math.max(outside ? OUTSIDE_INTAKE_ENGINE : 1, capacity ? LINE_CAPACITY_ENGINE : 1,
-    operation === 'reopen' && args[1]?.withdrawVerdict === true ? VERDICT_WITHDRAW_ENGINE : 1, minimumExistingOperationEngine(operation, args, board, at));
-}
-
-/** Preserve each pre-existing move's required feature level when composing outside metadata. */
-function minimumExistingOperationEngine(operation, args, board, at) {
-  if (['openHandoff', 'takeHandoff'].includes(operation)) return HANDOFF_ENGINE;
-  const quotedLandingFailureEngine = operation === 'reopen' && args[1]?.quotedLandingFailure === true
-    ? QUOTED_LANDING_FAILURE_ENGINE : 1;
-  if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('conflict:')) return Math.max(RIGOR_AUTO_ENGINE, quotedLandingFailureEngine);
-  if (['setBarReady', 'signBar'].includes(operation) || board && ['claim', 'submit', 'editItem', 'addItem', 'refreeze'].includes(operation) && barReadySetting(board).enabled) return BAR_READY_ENGINE;
-  if (operation === 'recordPublishFinding') return PR_BRIDGE_ENGINE;
-  if (operation === 'setLineSetting' && args[0]?.key === 'collisionFreeBatch') return LAND_COLLISION_ENGINE;
-  if (operation === 'setLineSetting' && args[0]?.key === 'order') return LINE_ORDER_ENGINE;
-  if (operation === 'recordLandingTestDefect' || operation === 'verify' && args[1]?.environment !== undefined
-    || operation === 'recordGateRun' && Object.hasOwn(args[0]?.receipt ?? {}, 'environment')
-    || operation === 'recordLandingBatch' && carriesLandingEnvironment(args[0]?.batch)) return LANDING_ENVIRONMENT_ENGINE;
-  if (board && ['recordLandingBatch', 'finishLandingBatch'].includes(operation)) {
-    if (store.landingTestDefects(board).length) return LANDING_ENVIRONMENT_ENGINE;
-    const id = operation === 'recordLandingBatch' ? args[0]?.batch?.id : args[0]?.id;
-    if (store.landingBatches(board).some(batch => batch.id === id && carriesLandingEnvironment(batch))) return LANDING_ENVIRONMENT_ENGINE;
-  }
-  if (operation === 'landingLeaseMove' && args[0]?.localHeartbeat === true) return LANDING_LOCAL_LEASE_ENGINE;
-
-  if (operation === 'shout' && args[0]?.item !== undefined) return ITEM_SHOUT_ENGINE;
-  if (operation === 'landingLeaseMove' || args[0]?.landingFence !== undefined) return LANDING_LEASE_ENGINE;
-  if (['verify', 'reopen'].includes(operation) && args[1]?.reopenFirstRefusalMinutes !== undefined
-    || ['claim', 'release'].includes(operation) && board && firstRefusal(board, args[0], at)) return Math.max(REOPEN_FIRST_REFUSAL_ENGINE, quotedLandingFailureEngine);
-  // A batch landed on the local trunk before it is published (#801).
-  if (operation === 'recordLandingBatch' && args[0]?.batch?.state === 'trunk'
-    || operation === 'finishLandingBatch' && board && store.landingBatches(board).find(batch => batch.id === args[0]?.id)?.state === 'trunk') return LOCAL_LANDING_ENGINE;
-  if (operation === 'recordFlakeObservation') return args[0]?.observation?.kind === 'ci' ? CI_FLAKE_ENGINE : NATIVE_FLAKE_ENGINE;
-  if (operation === 'recordLandingBatch' && carriesFlakeDiagnostics(args[0]?.batch)) return NATIVE_FLAKE_ENGINE;
-  if (['proposeSentinel', 'decideSentinel', 'beginSentinelRun', 'finishSentinelRun'].includes(operation) || typeof args[1]?.cause === 'string' && args[1].cause.startsWith('sentinel:')) return Math.max(BOARD_SENTINEL_ENGINE, quotedLandingFailureEngine);
-  if (['declareJob', 'recordJobRun'].includes(operation)) return RECURRING_JOB_ENGINE;
-  if (operation === 'recordGateRun') return GATE_RUN_ENGINE;
-  if (operation === 'recordProofRun') return PROOF_RUN_ENGINE;
-  if (operation === 'recordHealthFindings') return HEALTH_SENTINEL_ENGINE;
-  if (operation === 'reserveNextReview' && Array.isArray(args[0]?.skipIds) && args[0].skipIds.length) return REVIEW_SKIP_ENGINE;
-  const options = args[1];
-  if (carriesConflict(operation, args)) return Math.max(board && store.itemById(board, args[0])?.item_status === 'submitted' ? SUBMITTED_CONFLICT_ENGINE : CONFLICT_ENGINE,
-    quotedLandingFailureEngine);
-  if (operation === 'submit' && options?.submissionProof !== undefined
-    || operation === 'recordLandingBatch' && args[0]?.batch?.invariantEvidence !== undefined) return SUBMISSION_PROOF_ENGINE;
-  const given = (name) => Boolean(options && typeof options === 'object' && Object.hasOwn(options, name) && options[name] !== undefined && options[name] !== null && options[name] !== false);
-  if (board && ['recordLandingBatch', 'finishLandingBatch'].includes(operation)) {
-    const id = operation === 'recordLandingBatch' ? args[0]?.batch?.id : args[0]?.id;
-    const prior = id && store.landingBatches(board).find(batch => batch.id === id);
-    if (prior?.invariantEvidence) return SUBMISSION_PROOF_ENGINE;
-    if (prior && ['items', 'candidates'].some(key => Array.isArray(prior[key]) && prior[key].some(entry => entry && Object.hasOwn(entry, 'reviewedCommit')))) return VERDICT_REVIEW_ENGINE;
-  }
-  if (operation === 'verify' && options && Object.hasOwn(options, 'review')) return VERDICT_REVIEW_ENGINE;
-  if (operation === 'recordLandingBatch' && args[0]?.batch
-    && ['items', 'candidates'].some(key => Array.isArray(args[0].batch[key]) && args[0].batch[key].some(entry => entry && typeof entry === 'object' && Object.hasOwn(entry, 'reviewedCommit')))) return VERDICT_REVIEW_ENGINE;
-  if (['verify', 'reopen', 'appendFact'].includes(operation) && (given('cause') || given('neverAgain') || given('asPerson'))) return Math.max(CAUSE_ENGINE, quotedLandingFailureEngine);
-  if (carriesImplies(operation, args)) return IMPLIES_ENGINE;
-  if (carriesBarReason(operation, args)) return BAR_ENGINE;
-  if (operation === 'editMilestone' && options && Object.hasOwn(options, 'target') && options.target !== undefined) return MILESTONE_SHIP_ENGINE;
-  const operationEngine = operation === 'editItem' && options && Object.hasOwn(options, 'after') && options.after !== undefined
-    ? 10 : OPERATION_ENGINE[operation] ?? 1;
-  return Math.max(operationEngine, quotedLandingFailureEngine);
-}
+/** Each operation owns its item-id flag; no parallel hand-kept list remains [C7,V4]. */
+const ITEM_ID_FIRST_ARGUMENT = new Set(ENGINE_OPERATIONS.filter(operation => MOVE_REGISTRY[operation].itemIdFirstArgument));
 
 /** Read a replica's committed prefix without trusting an independently saved transport cursor. */
 export function appliedSequence(board) {
@@ -220,6 +88,11 @@ export function prepareEngineMove(board, operation, args, { id = randomUUID(), a
   const values = args.map((value) => value && typeof value === 'object' ? { ...value } : value);
   if (operation === 'reopen' && values[1] && typeof values[1] === 'object'
     && manualLandingFailureQuoted(values[1].note)) values[1].quotedLandingFailure = true;
+  // Seal native stored facts at origin; replicas replay these bytes without the origin file.
+  if (operation === 'recordProofRun') {
+    const receipt = boundProofReceipt(board, args[0]);
+    values[0] = { agentId: args[0].agentId, itemId: args[0].itemId, receipt };
+  }
   if (operation === 'submit' && ENGINE_VERSION >= SUBMISSION_PROOF_ENGINE) submissionProof(values[1]?.submissionProof);
   if (operation === 'claim' && ['wipPerReviewer', 'takeoverMinutes'].some(key => typeof lineSettings(board)[key] === 'number')) {
     values[1] = { ...values[1], lineCapacity: true };
@@ -229,10 +102,6 @@ export function prepareEngineMove(board, operation, args, { id = randomUUID(), a
   // A gate run is sealed only as its gate's own receipt; a run made up by hand is refused before it reaches any replica.
   if (operation === 'recordGateRun') requireBound(board, values[0]?.receipt);
   if (operation === 'verify' && values[1]?.sandbox !== undefined) requireOutsideReceipt(board, values[1].sandbox);
-  if (operation === 'recordProofRun') {
-    const receipt = boundProofReceipt(board, args[0]);
-    values[0] = { agentId: args[0].agentId, itemId: args[0].itemId, receipt };
-  }
   if (operation === 'release') {
     const problem = store.reviewReleaseNoteProblem(board, values[0], values[1], values[2]);
     if (problem) throw problem;
