@@ -1,3 +1,4 @@
+import { recordedMoveRefusal } from './recorded-move.js';
 import {
   recoverySummary,
   unlinkedRelayStatus,
@@ -1086,7 +1087,7 @@ function outboxLink(root, file, state, io) {
 }
 
 /** Send one board operation before executing it locally, and report its canonical engine result. */
-export async function relayOperation(root, operation, args, io, command, applyLocally) {
+export async function relayOperation(root, operation, args, io, command, applyLocally, onRecorded) {
   const file = linkFile(root);
   return locked(file, async () => {
     const state = loadLink(file);
@@ -1105,6 +1106,7 @@ export async function relayOperation(root, operation, args, io, command, applyLo
     if (!moves) { moves = new Set(); CHECKPOINT_MOVES.set(io, moves); }
     if (moves.has(state.board)) CHECKPOINT_NOTICES.get(io)?.delete(state.board);
     moves.add(state.board);
+    let requestedMove;
     try {
       let ordered;
       const queue = guarded.queue;
@@ -1134,6 +1136,7 @@ export async function relayOperation(root, operation, args, io, command, applyLo
       }
       const previousReceipt = io.personRequestMoveId && localRecords(root, board => engineReceipt(board, io.personRequestMoveId));
       if (previousReceipt) {
+        if (!previousReceipt.outcome.error) onRecorded?.();
         if (state.recovered?.move?.id === io.personRequestMoveId) {
           delete state.recovered;
           saveLink(file, state);
@@ -1143,10 +1146,12 @@ export async function relayOperation(root, operation, args, io, command, applyLo
         return previousReceipt.outcome.result;
       }
       let move = recoveredMove(root, state, operation, args, command);
+      requestedMove = move;
       try {
         if (!move) {
           const sent = withSeatName(root, operation, args);
           move = stampCoordinatorHolder(localRecords(root, (board) => prepareEngineMove(board, operation, sent, io.personRequestMoveId ? { id: io.personRequestMoveId } : {})), state.machine);
+          requestedMove = move;
           if (io.personRequest) move.personRequest = structuredClone(io.personRequest);
           const problem = move.personRequest && localRecords(root, board => requestMoveProblem(board, move, { checkExecutorLease: false }));
           if (problem) throw problem;
@@ -1174,6 +1179,7 @@ export async function relayOperation(root, operation, args, io, command, applyLo
       }
       const receipt = localRecords(root, (board) => engineReceipt(board, move.id));
       if (!receipt) throw new Refused('RELAY_RESPONSE', 'the acknowledged operation has no replay receipt; fetch a consistent relay snapshot');
+      if (!receipt.outcome.error) onRecorded?.();
       delete state.recovered;
       saveLink(file, state);
       // A phone reads the next checkpoint; the background publisher sends it once moves go quiet (#1014).
@@ -1184,8 +1190,10 @@ export async function relayOperation(root, operation, args, io, command, applyLo
         catch (error) {
           if (!(error instanceof Refused)) throw error;
           if (confirmedDeletion(state, error)) forgetDeletedCopy(root, file, state, io);
-          else if (error.code === 'AUTH_REQUIRED') reportExpiredSignIn(state, io);
-          else io.err(`pullboard: ${error.message}`);
+          else if (error.code === 'AUTH_REQUIRED') {
+            if (!receipt.outcome.error) io.err(`pullboard: ${recordedMoveRefusal({ recordedMove: true }, error).message}`);
+            reportExpiredSignIn(state, io);
+          } else io.err(`pullboard: ${recordedMoveRefusal({ recordedMove: !receipt.outcome.error }, error).message}`);
         }
       }
       if (receipt.outcome.error) throw refusalFromReceipt(receipt.outcome.error);
@@ -1193,6 +1201,13 @@ export async function relayOperation(root, operation, args, io, command, applyLo
       for (const event of receipt.outcome.events ?? []) io.onEvent?.(event);
       return receipt.outcome.result;
     } catch (error) {
+      // Catch-up may commit the requested receipt before a later link write refuses. A refused receipt counts as nothing.
+      if (requestedMove && onRecorded) {
+        try {
+          const committed = localRecords(root, board => engineReceipt(board, requestedMove.id));
+          if (committed && !committed.outcome.error) onRecorded();
+        } catch { /* No readable durable receipt means no recorded-outcome claim. */ }
+      }
       if (confirmedDeletion(state, error)) {
         forgetDeletedCopy(root, file, state, io);
         return deletedMoveResult(root, operation, args, command, io, applyPausedMoveLocally);

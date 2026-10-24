@@ -1506,6 +1506,9 @@ async function main(args) {
   }
   const actions = await (await import('../src/test-action-cache.js')).planTestActions(process.cwd(), args, { fullSuite, landing: process.env[LANDING_RUN_ENV] === '1', listFiles: () => fullSuite ? trackedDefaultTestFiles(process.cwd(), process.env) : explicitTestFiles(args) });
   if (actions.done) return;
+  const { testsNeedGui } = await import('../src/gui-admission.js');
+  const guiFiles = actions.files ?? (fullSuite ? trackedDefaultTestFiles(process.cwd(), process.env) : explicitTestFiles(args));
+  const gui = testsNeedGui(process.cwd(), guiFiles);
   let signal = null;
   /** Keep sandbox lifetime inside the held lease, including the complete child process. */
   const shardLabel = process.env[LANDING_SHARD_ENV];
@@ -1586,7 +1589,7 @@ async function main(args) {
         process.stdout.write(result.output);
         process.exitCode = result.exitCode;
       }, {
-        browser, kind: fullSuite ? 'gate' : 'focused', shortEligible,
+        browser, gui, kind: fullSuite ? 'gate' : 'focused', shortEligible,
         remote: Boolean(canShipRunner),
         onWait: ({ holders, runnerUnavailable }) => {
           if (runnerUnavailable) {

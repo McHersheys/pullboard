@@ -143,7 +143,7 @@ test('a repo without package.json is told a gate that fits it [C7,B26]', () => {
   assert.equal(existsSync(marker), false, 'init does not execute a project command it has not detected');
   assert.match(initialized.out, /ask the person which command tests this project/u);
   const initializedGate = JSON.parse(readFileSync(join(root, 'pullboard.json'), 'utf8')).gate;
-  const pending = box.run(root, 'resume', '--json');
+  const pending = box.run(root, 'resume', '--diagnostics', '--json');
   assert.equal(pending.code, 0, pending.err || pending.out);
   assert.equal(JSON.parse(pending.out).setup.steps.find(step => step.number === 3).done, false,
     'an unknown project keeps its gate choice unanswered');
@@ -193,7 +193,7 @@ test('a repo without package.json is told a gate that fits it [C7,B26]', () => {
   writeFileSync(join(root, 'pullboard.json'), JSON.stringify(chosenConfig, null, 2));
   box.git(root, 'add', 'pullboard.json');
   box.git(root, 'commit', '-q', '-m', 'chore: choose the project test command');
-  const chosen = box.run(root, 'resume', '--json');
+  const chosen = box.run(root, 'resume', '--diagnostics', '--json');
   assert.equal(chosen.code, 0, chosen.err || chosen.out);
   assert.equal(JSON.parse(chosen.out).setup.steps.find(step => step.number === 3).done, true,
     'the person choosing an actual project command completes the gate step');
@@ -236,14 +236,14 @@ test('the gate is set with one pullboard command [I1,A1,B26]', () => {
   box.git(root, 'add', '-A');
   box.git(root, 'commit', '-q', '-m', 'chore: prepare a board without a gate');
 
-  const resumed = box.run(root, 'resume', '--json');
+  const resumed = box.run(root, 'resume', '--diagnostics', '--json');
   assert.equal(resumed.code, 0, resumed.err || resumed.out);
   assert.equal(JSON.parse(resumed.out).setup.step, 3);
   const step = JSON.parse(resumed.out).setup.steps.find(entry => entry.number === 3);
   assert.equal(step.done, false);
   assert.match(step.command, /^pullboard gate set /u);
   assert.doesNotMatch(step.command, /node -e|writeFileSync/u);
-  const resumedText = box.run(root, 'resume');
+  const resumedText = box.run(root, 'resume', '--diagnostics');
   assert.equal(resumedText.code, 0, resumedText.err || resumedText.out);
   assert.ok(resumedText.out.includes(step.command));
   assert.doesNotMatch(resumedText.out, /node -e.*pullboard\.json/u);
@@ -264,7 +264,7 @@ test('the gate is set with one pullboard command [I1,A1,B26]', () => {
   assert.equal(JSON.parse(configured.out).gate, command);
   assert.deepEqual(JSON.parse(readFileSync(configFile, 'utf8')), { ...before, gate: command });
   assert.equal(existsSync(marker), false, 'setting the command neither executes it nor stamps it green');
-  const answered = box.run(root, 'resume', '--json');
+  const answered = box.run(root, 'resume', '--diagnostics', '--json');
   assert.equal(answered.code, 0, answered.err || answered.out);
   assert.equal(JSON.parse(answered.out).setup.steps.find(entry => entry.number === 3).done, true);
 

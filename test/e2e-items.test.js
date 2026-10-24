@@ -53,7 +53,7 @@ test('decisions are asked, listed and answered, and evidence attached, from the 
   const head = box.git(box.web, 'rev-parse', 'HEAD');
   const proved = box.run(box.web, 'shout', 'coordinator', 'FINISH', 'the page', '--evidence', 'receipt', '--outcome', 'measured', '--item', '1', '--commit', 'HEAD');
   assert.equal(proved.code, 0, proved.err);
-  assert.match(box.run(box.repo, 'inbox').out, new RegExp(`web-1 \\(Test Model\\) -> coordinator \\(unknown\\): FINISH the page\\n {2}receipt: measured, #1 at ${head.slice(0, 12)}`));
+  assert.match(box.run(box.repo, 'inbox').out, new RegExp(`web-1 \\(Test Model\\) -> item:1 \\(unknown\\): FINISH the page\\n {2}receipt: measured, #1 at ${head.slice(0, 12)}`));
   assert.match(box.run(box.web, 'shout', 'coordinator', 'x', '--evidence', 'receipt', '--outcome', 'measured', '--item', '1', '--commit', 'nope').err, /BAD_EVIDENCE.*"nope"/);
 });
 

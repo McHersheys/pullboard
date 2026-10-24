@@ -23,7 +23,7 @@ export function personNeedsSummary(root, { board, config }) {
   const projected = projectSpecApprovals({ ...rows,
     decisions: store.openDecisions(board, store.PERSON), holds: store.laneHolds(board),
     agents: store.listAgents(board).map(agent => ({ ...agent, displayName: displayAgentName(agent, config.agents.names) })),
-    rigorDrafts: rigorDraftNeeds(rows), sentinelDrafts: sentinelDraftNeeds(sentinels(board)), blocks: recentBlocks(repoInfo(root).commonDir, board),
+    rigorDrafts: rigorDraftNeeds(rows, store.rowDrafts(board), store.rowDecisions(board)), sentinelDrafts: sentinelDraftNeeds(sentinels(board)), blocks: recentBlocks(repoInfo(root).commonDir, board),
   }, specApprovalState(root, { board, config, spec }));
   return projected;
 }

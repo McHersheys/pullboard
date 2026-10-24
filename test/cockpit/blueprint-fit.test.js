@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** Cockpit blueprint fit checks, using the shared real-board fixtures [N26,S1]. */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';

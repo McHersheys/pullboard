@@ -7,6 +7,12 @@ import {
 } from './rigor.js';
 import { parseSpec } from './spec.js';
 import {
+  automaticRigorNeeds,
+  automaticSourceFromText,
+  readAutomaticRigorSource,
+} from './rigor-auto-source.js';
+import { RIGOR_AUTO_ENGINE } from './rigor-auto-engine.js';
+import {
   readRigorSource,
   RIGOR_NOTICE_ENGINE,
 } from './rigor-source.js';
@@ -26,7 +32,8 @@ function declinedRigorSource(source) {
   let rows;
   try { rows = parseSpec(`## Source\n${source}\n`).rows; }
   catch { return null; } // Historical metadata is optional; a parser refusal must never abort the original item move.
-  return rows.length === 1 ? readRigorSource(rows[0].source) : null;
+  return rows.length === 1 ? readRigorSource(rows[0].source)
+    ?? readAutomaticRigorSource(automaticSourceFromText(rows[0].text)) : null;
 }
 
 /** Reconstruct notice and exact person-decline state from ordered receipts, never free text. */
@@ -40,7 +47,7 @@ function noticeState(events, person) {
       if (event.item_id !== null) seen.get(key).add(event.item_id);
     }
     const detail = JSON.parse(event.event_detail);
-    if (event.event_kind === 'rigor-notice' && event.event_by === 'rigor' && detail.engine === RIGOR_NOTICE_ENGINE
+    if (event.event_kind === 'rigor-notice' && event.event_by === 'rigor' && [RIGOR_NOTICE_ENGINE, RIGOR_AUTO_ENGINE].includes(detail.engine)
       && typeof detail.cause === 'string' && !causeProblem(detail.cause)) notified.set(detail.cause, event.event_id);
     if (event.event_kind !== 'row_decision' || event.event_by !== person || detail.record?.decision !== 'decline') continue;
     const source = declinedRigorSource(detail.record.source);
@@ -76,19 +83,20 @@ function rigorRows(state) {
 }
 
 /** Proved drafts are individual person calls, with their real evidence and both executed commits. */
-export function rigorDraftNeeds(state) {
-  return rigorRows(state).filter(({ row }) => row.status === 'draft' && !row.decision).map(({ row, source }) => ({
+export function rigorDraftNeeds(state, drafts = [], decisions = []) {
+  return [...automaticRigorNeeds(state, drafts, decisions), ...rigorRows(state).filter(({ row }) => row.status === 'draft' && !row.decision).map(({ row, source }) => ({
     kind: 'rigor-draft', id: `${row.kind}:${row.id}`, ref: row.kind === 'doctrine' ? `doctrine:${row.id}` : row.id,
     text: `Rigor draft: ${row.text}`, what: 'Approve or Decline', target: `${row.kind}:${row.id}`,
     cause: source.key, evidence: source.evidence, proof: source.proof,
-  }));
+  }))];
 }
 
 /** Resume asks the coordinator to draft each repeated cause that has no live or approved proved row. */
-export function undraftedRigor(events, state, { person }) {
+export function undraftedRigor(events, state, { person, drafts = [], decisions = [] }) {
   const notices = noticeState(events, person);
   const drafted = new Set(rigorRows(state).filter(({ row }) => row.decision?.decision === 'approve'
     || (!row.decision && ['draft', 'pending', 'approved'].includes(row.status))).map(({ source }) => source.key));
+  for (const need of automaticRigorNeeds(state, drafts, decisions)) drafted.add(need.cause);
   return rigorReport(events, { person }).causes.filter(cause => !drafted.has(cause.key) && !declinedRepeat(cause, notices));
 }
 

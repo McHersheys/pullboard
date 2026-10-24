@@ -1,4 +1,5 @@
 /** Keep the view's exact named-port refusal covered in a core-owned file [N26]. */
+import { awaitNestedRun } from '../src/test-file-pool.js';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -100,10 +101,10 @@ test('the suite runs while a view holds the default port [N26,C7]', async (t) =>
     'pullboard view uses its fixed default port and reuses its authenticated listener',
     'a reused authenticated view completes setup for its new board',
   ];
-  const result = await runFixtureChildAsync(process.execPath, [
+  const result = await awaitNestedRun(runFixtureChildAsync(process.execPath, [
     resolve(import.meta.dirname, '../bin/run-tests.js'), '--test-name-pattern', names.join('|'),
     resolve(import.meta.dirname, 'view-port.test.js'), resolve(import.meta.dirname, 'resume-flow.test.js'),
-  ], { cwd: resolve(import.meta.dirname, '..'), env: { ...process.env } });
+  ], { cwd: resolve(import.meta.dirname, '..'), env: { ...process.env } }));
   if (result.status !== 0) t.diagnostic(safeErrorSummary(result.stdout));
   assert.equal(result.status, 0, result.failure ?? result.stderr);
   for (const name of names) {

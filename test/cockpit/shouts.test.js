@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** Cockpit shouts checks, using the shared real-board fixtures [N26]. */
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';

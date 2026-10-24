@@ -100,11 +100,12 @@ export function agentDoctrine(ctx, board) {
  *
  * @param {any} ctx the CLI context
  * @param {any} doctrine the shared doctrine from agentDoctrine
+ * @param {{ headDoctrine?: any }} options exact committed HEAD doctrine from the same fresh source batch
  * @returns {any[]}
  */
-export function staleDoctrineRows(ctx, doctrine) {
+export function staleDoctrineRows(ctx, doctrine, { headDoctrine } = {}) {
   const working = loadDoctrine(ctx.info.root, ctx.config);
-  const committed = doctrineFromSource(doctrineAt(ctx.info.root, 'HEAD', working.name).source, working.name);
+  const committed = headDoctrine ?? doctrineFromSource(doctrineAt(ctx.info.root, 'HEAD', working.name).source, working.name);
   const before = new Map(committed.rows.map(row => [row.id, row]));
   const current = new Map(working.rows.map(row => [row.id, row]));
   const rows = new Map(doctrine.rows.map(row => [row.id, row]));

@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** Real Chrome readiness over the disposable demo's exported API (I13,A10). */
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';

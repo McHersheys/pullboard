@@ -1,3 +1,4 @@
+import { recordedMoveRefusal } from './recorded-move.js';
 /**
  * The command line's entry: parse the arguments, bind the checkout, run the relay and baseline work around the
  * command when there is any, and dispatch through the lazy command table. It loads a module only when the command
@@ -32,6 +33,8 @@ export function traceServeStartup(phase) {
 
 const OPTIONS = {
   criterion: { type: 'string' },
+  sandbox: { type: 'boolean' },
+  lane: { type: 'string' },
   specs: { type: 'string' },
   parent: { type: 'string' },
   reason: { type: 'string' },
@@ -56,6 +59,7 @@ const OPTIONS = {
   after: { type: 'string' },
   brief: { type: 'string' },
   'brief-file': { type: 'string' },
+  'coverage-file': { type: 'string' },
   text: { type: 'string' },
   gate: { type: 'string' },
   aim: { type: 'boolean' },
@@ -82,10 +86,12 @@ const OPTIONS = {
   budget: { type: 'string' },
   'draft-quality': { type: 'boolean' },
   yes: { type: 'boolean' },
+  diagnostics: { type: 'boolean' },
   landing: { type: 'boolean' },
   adopt: { type: 'boolean' },
   waive: { type: 'string' },
   until: { type: 'string' },
+  take: { type: 'string' },
   agent: { type: 'string' },
   'agent-light': { type: 'string' },
   'agent-mid': { type: 'string' },
@@ -176,13 +182,14 @@ async function runCommand(argv, io) {
     ? (await import('./cli-help.js')).selectedHelp(command, first, second, rest, values) : null;
   if (help) return await (await COMMANDS.help()).run(io, args, help);
   try {
-    if (values.as === 'person' && !['answer', 'decisions', 'fact'].includes(command)) {
-      throw new Refused('USAGE', '--as person works only with pullboard answer, decisions, or fact --never-again');
+    if (values.as === 'person' && !['answer', 'decisions', 'fact', 'add', 'edit'].includes(command) && !(command === 'bar' && first === 'sign')) {
+      throw new Refused('USAGE', '--as person works with answer, decisions, fact --never-again, add, edit, or bar sign');
     }
     const load = COMMANDS[command];
     if (!load) return (await import('./cli-help.js')).unknownCommand(io, command);
     return await (await load()).run(io, args);
   } catch (error) {
+    error = recordedMoveRefusal(io, error);
     if (error instanceof Refused) {
       io.refusal?.(error);
       io.err(`pullboard: ${await displayedRefusal(io, error)}\nnext: ${io.refusalDocument(error).error.next}`);
@@ -224,7 +231,7 @@ async function bindCheckoutSession(io, positionals, values) {
   if (command === 'takeover' && (positionals.length !== 1 || Object.keys(values).some((key) => key !== 'json'))) {
     throw new Refused('USAGE', 'pullboard takeover takes no arguments; run pullboard takeover [--json]');
   }
-  const writes = ['init', 'join', 'worktree', 'hooks', 'hook', 'skills', 'add', 'edit', 'fact', 'escalate', 'run', 'sweep',
+  const writes = ['handoff', 'bar', 'init', 'join', 'worktree', 'hooks', 'hook', 'skills', 'add', 'edit', 'fact', 'escalate', 'run', 'sweep',
     'next', 'claim', 'hold', 'release', 'submit', 'done', 'verify', 'check', 'merged', 'land', 'withdraw', 'refreeze', 'reopen', 'shout', 'answer', 'pass', 'import', 'milestone', 'takeover', 'forget'];
   if (!writes.includes(command) && !(command === 'lane' && first === 'add') && !(command === 'settings' && first) && !(command === 'spec' && first === 'apply') && !(command === 'relay' && ['on', 'off'].includes(first))) return;
   if (command === 'answer' && values.as === 'person') return;

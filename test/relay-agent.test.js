@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** Private end-to-end proof for ordered agent enrollment and scoped relay credentials [H2,H9,A4]. */
 import assert from 'node:assert/strict';
 import { startFixtureChild as spawn, runFixtureChild as spawnSync, cleanupFixtureChildren, runFixtureChild, runFixtureChildAsync } from './fixture-child.js';

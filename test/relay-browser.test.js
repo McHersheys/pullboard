@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** Real Chrome reads and follows device-sealed boards; the relay never receives its key [H5,H15,H18]. */
 import assert from 'node:assert/strict';
 import { AssertionError } from 'node:assert';

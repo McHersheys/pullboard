@@ -127,15 +127,26 @@ export function decideSentinel(board, { agentId, channel, name, digest, decision
   });
 }
 
-/** Atomically claim a due approved check, so simultaneous resume/view workers cannot run it twice. */
+/** Apply the same cadence and live-run rules to a notice and an atomic run claim. */
+function isDue(row, now) {
+  return row.status === 'approved' && !(row.activeRun && Date.parse(row.activeRun.until) > now)
+    && !(row.lastRun && !row.lastRun.aborted && Date.parse(row.lastRun.at) + INTERVALS[row.every] > now);
+}
+
+/** List due watches without starting a command or consuming a run lease. */
+export function dueSentinels(board) {
+  const now = board.clock.now().getTime();
+  return sentinels(board).filter(row => isDue(row, now));
+}
+
+/** Atomically claim a due approved check, so simultaneous scheduled workers cannot run it twice. */
 export function beginSentinelRun(board, { agentId, name, digest, run }) {
   return atomic(board, () => {
     requireSentinelActor(board, agentId);
     const row = currentSentinel(board, name, digest);
     const now = board.clock.now().getTime();
     if (typeof run !== 'string' || !/^[a-zA-Z0-9-]{1,80}$/u.test(run)) throw new Refused('BAD_SENTINEL', 'start a sentinel with a unique run id');
-    if (row.status !== 'approved' || row.activeRun && Date.parse(row.activeRun.until) > now
-        || row.lastRun && !row.lastRun.aborted && Date.parse(row.lastRun.at) + INTERVALS[row.every] > now) return null;
+    if (!isDue(row, now)) return null;
     const until = new Date(now + row.timeoutMs + 10_000).toISOString(); // budget: command hang ceiling plus exact-child shutdown grace.
     logEvent(board, agentId, 'sentinel-start', null, { name, digest, run, until, engine: BOARD_SENTINEL_ENGINE });
     return { ...row, run, until };
