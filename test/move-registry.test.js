@@ -49,7 +49,7 @@ export default { operation: ${JSON.stringify(name)}, order: ${engine + 1000}, en
 test('today\'s move order, actors, recovery text and recorded SQLite prefix are unchanged [C7,V4,H3,H16]', t => {
   assert.deepEqual(ENGINE_OPERATIONS.filter(name => name !== 'recordProofRun'), SNAPSHOT.operations);
   assert.equal(ENGINE_OPERATIONS.filter(name => name === 'recordProofRun').length, 1);
-  assert.deepEqual(Object.fromEntries(Object.entries(NEXT_STEPS).filter(([key]) => key !== 'SHOUT_TOO_LONG' && !key.startsWith('PROOF_RUN_'))), SNAPSHOT.nextSteps);
+  assert.deepEqual(Object.fromEntries(Object.entries(NEXT_STEPS).filter(([key]) => !['SHOUT_TOO_LONG', 'PROOF_RUN_UNAVAILABLE', 'PROOF_RUN_UNBOUND', 'PROOF_RUN_ACTOR', 'PROOF_RUN_STALE', 'PROOF_RUN_CHANGED'].includes(key))), SNAPSHOT.nextSteps);
   assert.equal(minimumMoveEngine('recordProofRun', [{ landingFence: {}, receipt: { environment: {} } }, { cause: 'conflict:new' }]), PROOF_RUN_ENGINE);
   assert.equal(MOVE_REGISTRY.recordProofRun.engine, PROOF_RUN_ENGINE);
   assert.equal(MOVE_REGISTRY.recordProofRun.itemIdFirstArgument, false);
