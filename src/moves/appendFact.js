@@ -1,0 +1,31 @@
+import { RIGOR_AUTO_ENGINE } from '../rigor-auto-engine.js';
+/** Routing metadata owned by appendFact, discovered without a shared registry edit [C7,V4,H16]. */
+import { CAUSE_ENGINE } from '../engine-metadata.js';
+import { LANDING_LEASE_ENGINE } from '../landing-lease-engine.js';
+import { IMPLIES_ENGINE } from '../move-engine-constants.js';
+import { carriesImplies } from '../move-implies.js';
+import { BOARD_SENTINEL_ENGINE } from '../sentinel-engine.js';
+
+/** Preserve this operation's historical first-matching engine conditions [H16]. */
+function minimumEngine(args, board, at) {
+  if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('conflict:')) return RIGOR_AUTO_ENGINE;
+  if (args[0]?.landingFence !== undefined) return LANDING_LEASE_ENGINE;
+  if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('sentinel:')) return BOARD_SENTINEL_ENGINE;
+  if (['cause', 'neverAgain', 'asPerson'].some(name => Boolean(args[1] && typeof args[1] === 'object' && Object.hasOwn(args[1], name) && args[1][name] !== undefined && args[1][name] !== null && args[1][name] !== false))) return CAUSE_ENGINE;
+  if (carriesImplies('appendFact', args)) return IMPLIES_ENGINE;
+  return 1;
+}
+
+/** Read precisely the actor argument used by this operation [H2,H16]. */
+function actor(move) { return move.args[1]?.agentId ?? null; }
+
+export default Object.freeze({ operation: "appendFact", order: 40, engine: 1,
+  itemIdFirstArgument: true, minimumEngine, actor,
+  nextSteps: Object.freeze({
+  "BAD_FACT_ID": "upgrade to the current Pullboard engine, then retry the original fact operation",
+  "BAD_FACT_KIND": "use a supported kind, such as note: pullboard fact <id> note \"<what you observed>\"",
+  "EMPTY_FACT": "give nonempty fact text: pullboard fact <id> note \"<what you saw>\"",
+  "FACT_JUDGEMENT": "use a nonjudgement fact kind such as note, or ask the coordinator to record a judgement: pullboard fact <id> note \"<what you observed>\"",
+  "NO_AGENT": "create and join a lane worktree: pullboard worktree <lane> --model \"<model name>\"",
+  "NO_FACT": "name a fact id from pullboard show <id> --json"
+}) });

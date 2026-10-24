@@ -149,7 +149,7 @@ export function refusalLine(kept) {
 }
 
 /** The ordered operations whose first argument is an item number; a decision's answer names a shout instead. */
-const FIRST_ITEM = ['editItem', 'completeCheckBaseline', 'escalate', 'recordAttempt', 'claim', 'release', 'submit', 'reserveReview', 'verify',
+const FIRST_ITEM = ['approveOutside', 'signBar', 'editItem', 'completeCheckBaseline', 'escalate', 'recordAttempt', 'claim', 'release', 'submit', 'reserveReview', 'verify',
   'merged', 'withdraw', 'refreeze', 'reopen', 'holdItem', 'releaseItemHold', 'appendFact', 'acceptCheck'];
 
 /**
@@ -158,6 +158,8 @@ const FIRST_ITEM = ['editItem', 'completeCheckBaseline', 'escalate', 'recordAtte
  * (test/relay-outbox.test.js walks them all) (#922).
  */
 export const ITEM_SLOTS = Object.freeze({
+  setBarReady: [], setLineSetting: [],
+  recordPublishFinding: [[0, 'item']],
   register: [], ensureCoordinator: [], shout: [], passDecision: [], holdLane: [], releaseLane: [],
   moveMilestone: [], editMilestone: [], removeMilestone: [], shipMilestone: [],
   recordRowDecisions: [], applyRowDecisions: [], draftSpecRow: [], recordSpecApprovalBaseline: [],
@@ -165,6 +167,7 @@ export const ITEM_SLOTS = Object.freeze({
   recordHealthFindings: [], decideSentinel: [], beginSentinelRun: [], finishSentinelRun: [],
   recordFlakeObservation: [], recordGateRun: [], declareJob: [], recordJobRun: [], takeCoordinator: [], landingLeaseMove: [],
   ...Object.fromEntries(FIRST_ITEM.map((operation) => [operation, [[0]]])),
+  intakeOutside: [[0, 'item', 'parentId'], [0, 'item', 'after', '*']],
   addItem: [[0, 'parentId'], [0, 'after', '*']],
   editItem: [[0], [1, 'after', '*']],
   verify: [[0], [1, 'implies', '*']],

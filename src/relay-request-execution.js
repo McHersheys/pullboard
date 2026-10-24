@@ -13,7 +13,6 @@ import {
   repoInfo,
 } from './git.js';
 import { laneNames } from './lanes.js';
-import { refusalDocument } from './json.js';
 import { Refused } from './refused.js';
 import {
   relayLinked,
@@ -88,7 +87,10 @@ export async function executePersonRequests(root, io, runCommand) {
       if (['PERSON_REQUEST_TAKEN', 'PERSON_REQUEST_CLOSED', 'RELAY_PERSON_ONLY'].includes(error.code)) continue;
       if (transportRefusal(error)) { io.err('pullboard: ' + error.message); continue; }
       const record = requests(coordinatorRoot).find(entry => entry.id === initial.id);
-      if (record?.executor === executor && record.status === 'waiting') await receipt(coordinatorRoot, record, executor, 'refuse', io, refusalDocument(error).error);
+      if (record?.executor === executor && record.status === 'waiting') {
+        const { refusalDocument } = await import('./json.js');
+        await receipt(coordinatorRoot, record, executor, 'refuse', io, refusalDocument(error).error);
+      }
     }
   }
 }
