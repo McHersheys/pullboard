@@ -1411,7 +1411,6 @@ test('Pipeline view dates an expired claim from its recorded deadline [N26,N38]'
   } finally { await view.stop(); }
 });
 
-
 test('the view shows what is new once after an upgrade [N26]', async () => {
   const executable = chromeExecutable();
   assert.ok(executable, 'real Chrome is required for the upgrade journey');
