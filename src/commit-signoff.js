@@ -33,6 +33,9 @@ function maintainersAt(root, commit, required) {
     if (error instanceof Refused) throw error;
     throw new Refused('BAD_CONFIG', 'Restore valid JSON in the committed pullboard.json before checking sign-offs.');
   }
+  if (!config || typeof config !== 'object' || Array.isArray(config)) {
+    throw new Refused('BAD_CONFIG', 'Restore an object in the trusted pullboard.json before checking sign-offs.');
+  }
   if (config.maintainers === undefined && !required) return null;
   if (!Array.isArray(config.maintainers) || config.maintainers.some(email =>
     typeof email !== 'string' || !email || email.trim() !== email || /[<>\u0000-\u001f\u007f]/u.test(email))) {
