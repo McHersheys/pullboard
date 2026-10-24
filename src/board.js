@@ -1,3 +1,4 @@
+import { recordVerdict } from './verdict-assurance.js';
 import { logEvent } from './board-event-log.js';
 export { logEvent };
 /**
@@ -15,6 +16,7 @@ import {
   checkedLandingCommit,
 } from './verdict-reviews.js';
 export { verdictReviewProblem, verdictsFor, acceptedVerdict, checkedLandingCommit };
+export { landingTestDefects, recordLandingTestDefect } from './landing-test-defects.js';
 export { landingLeaseMove, landingLeaseState } from './landing-lease.js';
 import { guardLandingWrite } from './landing-lease.js';
 import {
@@ -48,6 +50,11 @@ import {
   briefFiles,
   briefSections,
 } from './brief.js';
+import {
+  itemFiles,
+  itemFileCollisions,
+} from './item-files.js';
+export { itemFiles };
 import { COORDINATOR } from './config.js';
 import {
   manualLandingFailure,
@@ -74,7 +81,9 @@ import {
 } from './machine.js';
 import { LOCAL_LANDING_ENGINE } from './land-engine.js';
 import { SPEC_APPROVAL_ENGINE } from './spec-approval-engine.js';
+import * as landingEnvironment from './landing-environment-guards.js';
 import { Refused } from './refused.js';
+import { saveJoinedSession } from './parent-session.js';
 import { itemAuthorProblem } from './item-authors.js';
 import { refuseMaskedExit } from './check-mask.js';
 import {
@@ -128,7 +137,6 @@ import {
   landingWaiverKind,
 } from './landing-exceptions.js';
 import { parseSpec } from './spec.js';
-import { quarantineWaivers } from './quarantine.js';
 import { invariantEvidence } from './submit-invariants.js';
 import { landingBatches } from './landing-batch-history.js';
 import {
@@ -141,6 +149,7 @@ import { validateLandingRevision } from './submit-invariants.js';
 import { submissionProof } from './submit-invariants.js';
 import { SUBMISSION_PROOF_ENGINE } from './submit-invariants.js';
 export { landingFlakes, landingWaiverCovers, landingWaiverKind };
+export { landingWaivers, landingWaiverFor, waivedLandingProof } from './landing-waivers.js';
 export { acceptCheck } from './check-accept.js';
 export { declareJob, recordJobRun } from './recurring-jobs.js';
 export { proposeSentinel, decideSentinel, beginSentinelRun, finishSentinelRun } from './sentinels.js';
@@ -583,10 +592,11 @@ function current(board, item) {
  * the relay already issued a token for the next name; ids then skip taken names.
  *
  * @param {any} board
- * @param {{ lane: string, path: string, route?: string, family?: string | null, model?: string | null, createdBy?: string, id?: string }} who
+ * @param {{ lane: string, path: string, route?: string, family?: string | null, model?: string | null, parent?: string | null, session?: string | null, createdBy?: string, id?: string }} who
  * @returns {string} The agent's id.
  */
-export function register(board, { lane, path, route = 'strong', family, model, createdBy, id: named }) {
+export function register(board, who) {
+  let { lane, path, route = 'strong', family, model, createdBy, id: named } = who;
   const engine = board.executionEngineVersion ?? ENGINE_VERSION;
   if (engine < 8) model = undefined;
   if (engine < VERIFIER_STANDING_ENGINE) { createdBy = undefined; named = undefined; }
@@ -603,6 +613,7 @@ export function register(board, { lane, path, route = 'strong', family, model, c
           `this worktree is ${existing.agent_id} in the ${existing.agent_lane} lane, routed ${existing.agent_route}; use another worktree for ${lane} routed ${route}`,
         );
       }
+      saveJoinedSession(board, existing.agent_id, who);
       if (family !== undefined && family !== existing.agent_family) {
         board.db.prepare('UPDATE agent SET agent_family = ? WHERE agent_id = ?').run(family, existing.agent_id);
         logEvent(board, existing.agent_id, 'family', null, { family });
@@ -629,6 +640,7 @@ export function register(board, { lane, path, route = 'strong', family, model, c
         'INSERT INTO agent (agent_id, agent_lane, agent_path, agent_route, agent_family, agent_created_at) VALUES (?, ?, ?, ?, ?, ?)',
       )
       .run(id, lane, path, route, family ?? null, now(board));
+    saveJoinedSession(board, id, who);
     if ((board.executionEngineVersion ?? ENGINE_VERSION) >= 8) saveAgentModel(board, id, model);
     if (createdBy !== undefined) board.db.prepare('INSERT INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run(`agent_creator:${id}`, createdBy);
     // Only a relay replica replaying a receipt-bound registration marks the seat enrolled.
@@ -1545,12 +1557,13 @@ function reserveWithin(board, id, { agentId, leaseMs, policy, familyPolicy = 'of
  * @param {{ agentId: string, decision: string, reason?: string, note?: string, cause?: string, head: string, digest: string, policy: string, familyPolicy?: string, check?: 'none' | 'green', review?: {commit: string, head?: string, trunk: string, paths: string[]}, implies?: number[], impliesId?: string }} verdict - implies: items this verdict changes (B29)
  * @returns {{ decision: string, reason: string, check?: 'none' | 'green' }}
  */
-export function verify(board, id, { agentId, decision, reason, note = '', cause, head, digest, policy, familyPolicy = 'off', check, review, implies, impliesId, reopenFirstRefusalMinutes }) {
+export function verify(board, id, { agentId, decision, reason, note = '', cause, head, digest, policy, familyPolicy = 'off', check, review, implies, impliesId, reopenFirstRefusalMinutes, environment }) {
   const verb = { ACCEPT: 'accept', REJECT: 'reject' }[decision];
   if (!verb) throw new Refused('BAD_DECISION', 'the decision is accept or reject');
   const isAccept = verb === 'accept';
   const code = isAccept ? ACCEPT_REASON : reason;
   const engine = board.executionEngineVersion ?? ENGINE_VERSION;
+  landingEnvironment.requireVerdict(board, environment);
   const declaration = MOVES.find(move => move.verb === verb);
   const newReview = engine >= VERDICT_REVIEW_ENGINE && review !== undefined;
   // Without the new sealed metadata, old moves keep their exact submitted-only semantics.
@@ -1585,16 +1598,7 @@ export function verify(board, id, { agentId, decision, reason, note = '', cause,
         noteGiven: () => (note.trim() ? null : new Refused('NOTE_REQUIRED', 'a reject says what failed: --note "..."')),
         causeWellFormed: () => causeProblem(cause),
       },
-      before: (found) => {
-        const family = board.db.prepare('SELECT agent_family FROM agent WHERE agent_id = ?').get(agentId)?.agent_family ?? null;
-        board.db
-          .prepare(
-            `INSERT INTO verdict (item_id, verdict_by, verdict_decision, verdict_reason, verdict_note,
-               verdict_commit, verdict_digest, verdict_head, verdict_verifier_family, verdict_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          )
-          .run(id, agentId, decision, code, note.trim(), found.item_commit, digest, head, family, now(board));
-      },
+      before: (found) => recordVerdict(board, found, { agentId, decision, reason: code, note, digest, head }),
       set: (found) => ({ item_verdict: decision, item_verified_by: isAccept ? agentId : null, item_owner: isAccept ? found.item_owner : null }),
     });
     const returnedAt = !isAccept && engine >= REOPEN_FIRST_REFUSAL_ENGINE && reopenFirstRefusalMinutes > 0 && item.item_built_by ? board.clock.now() : undefined;
@@ -1602,6 +1606,7 @@ export function verify(board, id, { agentId, decision, reason, note = '', cause,
     const detail = { ...reservation, reason: code, commit: item.item_commit, ...(!isAccept && cause !== undefined && cause !== null ? { cause } : {}) };
     if (isAccept && engine >= SPEC_APPROVAL_ENGINE) detail.note = note.trim();
     if (isAccept && check !== undefined) detail.check = check;
+    if (environment !== undefined) detail.environment = environment;
     if (newReview) detail.review = { commit: review.commit, ...(Object.hasOwn(review, 'head') ? { head: review.head } : {}), trunk: review.trunk, paths: [...review.paths] };
     logEvent(board, agentId, verb, id, implies?.length ? { ...detail, implies } : detail, returnedAt);
     const trigger = board.lastEvent;
@@ -2339,6 +2344,7 @@ export function nextFor(board, { agentId, lane, verify = false, policy = 'any', 
     if (hold) { selectedLanes.delete(name); reasons.push(`${hold.hold_by} holds the ${name} lane: ${hold.hold_reason}`); }
   }
   const compare = buildOrder(board, { warm });
+  const inFlight = listItems(board, { all: true });
   const recent = new Set(warm);
   const mainRed = new Set(priority);
   const laneItems = items.filter((entry) => entry.item_status === 'open' && selectedLanes.has(entry.item_lane));
@@ -2370,6 +2376,8 @@ export function nextFor(board, { agentId, lane, verify = false, policy = 'any', 
       .filter((before) => before.item_status !== 'verified');
     const reserved = firstRefusalReason(board, entry.item_id, agentId);
     if (reserved) { reasons.push(reserved); continue; }
+    const collisions = itemFileCollisions(entry, inFlight);
+    if (collisions.length) { reasons.push(...collisions); continue; }
     if (!waiting.length) return { item: entry, reasons, shared };
     reasons.push(`#${entry.item_id} waits on ${waiting.map(waitingOn).join(', ')}`);
   }
@@ -2408,18 +2416,6 @@ function idleReason(items, lane, routed) {
   const awaiting = items.filter((entry) => entry.item_lane === lane && entry.item_status === 'submitted').map((entry) => `#${entry.item_id}`);
   if (!awaiting.length) return reason;
   return `${reason}; ${awaiting.join(', ')} still await${awaiting.length === 1 ? 's' : ''} a verdict, and a rejected item comes back to this lane. A lane is done when its items are verified`;
-}
-
-/**
- * The files an item touches, as far as the board knows: the files its submission changed, else the
- * files its brief names.
- *
- * @param {any} item
- * @returns {string[]}
- */
-export function itemFiles(item) {
-  const changed = (item.item_files ?? '').split('\n').filter(Boolean);
-  return [...new Set([...changed, ...briefFiles(item.item_brief ?? '')])];
 }
 
 /**
@@ -2655,6 +2651,7 @@ export { landingBatches };
 /** Append one coordinator-owned batch revision without changing the board schema [B3,R3]. */
 export function recordLandingBatch(board, { agentId, batch, revision = 0, landingFence }) {
   coordinatorOnly(agentId, 'records landing batches');
+  landingEnvironment.requireBatch(board, batch);
   if (carriesFlakeDiagnostics(batch) && (board.executionEngineVersion ?? ENGINE_VERSION) < NATIVE_FLAKE_ENGINE) {
     throw new Refused('ENGINE_VERSION', `typed landing diagnostics require engine ${NATIVE_FLAKE_ENGINE}; upgrade Pullboard`);
   }
@@ -2668,6 +2665,7 @@ export function recordLandingBatch(board, { agentId, batch, revision = 0, landin
   return atomic(board, () => {
     guardLandingWrite(board, landingFence);
     const previous = landingBatches(board).find((entry) => entry.id === batch.id);
+    landingEnvironment.requireRevision(board, previous, batch);
     preserveInvariantEvidence(previous, evidence, board.executionEngineVersion ?? ENGINE_VERSION);
     validateLandingRevision(previous, batch, revision);
     const recorded = { ...batch, revision: revision + 1, updatedAt: now(board) };
@@ -2696,20 +2694,6 @@ export function recordLandingWaiver(board, { agentId, channel, id, test, until, 
   });
 }
 
-/** Read every person waiver, retaining expired entries as evidence [B3,R3]. */
-export function landingWaivers(board) {
-  return board.db.prepare("SELECT event_by,event_detail FROM event WHERE event_kind = 'landing_waiver' ORDER BY event_id").all()
-    .filter((row) => row.event_by === PERSON)
-    .map((row) => JSON.parse(row.event_detail).waiver).concat(quarantineWaivers(board)); // A proven flake's quarantine, when on [C7,D1].
-}
-
-/** Find a live person's waiver and derive its match kind without rewriting history [B3,R3,H16]. */
-export function landingWaiverFor(board, failure) {
-  const waiver = landingWaivers(board).findLast((entry) => Date.parse(entry.until) > board.clock.now().getTime()
-    && landingWaiverCovers(entry, failure));
-  return waiver ? { ...waiver, kind: waiver.kind ?? landingWaiverKind(waiver.test) } : null;
-}
-
 /** File one durable defect per flaky test and retain its source digest [B3,R3]. */
 export function recordLandingFlake(board, { agentId, test, hash, names, lane, batchId }) {
   coordinatorOnly(agentId, 'files landing flakes');
@@ -2727,24 +2711,15 @@ export function recordLandingFlake(board, { agentId, test, hash, names, lane, ba
   });
 }
 
-/** Validate a distinct waived landing proof without creating an ordinary gate stamp [B3,R3]. */
-export function waivedLandingProof(board, tree) {
-  return landingBatches(board).findLast((batch) => ['ready', 'pushed', 'landed'].includes(batch.state)
-    && batch.proof?.tree === tree && Array.isArray(batch.proof.failures) && batch.proof.failures.length > 0
-    && batch.proof.failures.every((failure) => {
-      const waiver = landingWaivers(board).find((entry) => entry.id === failure.waiver);
-      return waiver && Date.parse(waiver.until) > board.clock.now().getTime()
-        && landingWaiverCovers(waiver, failure);
-    })) ?? null;
-}
-
 /** Atomically record a pushed batch's first-containing merges and one main-moved receipt [B3,R3]. */
 export function finishLandingBatch(board, { agentId, id, tip, landingFence }) {
   coordinatorOnly(agentId, 'finishes a landing');
+  landingEnvironment.requireTrunk(board);
   return atomic(board, () => {
     guardLandingWrite(board, landingFence);
     const batch = landingBatches(board).find((entry) => entry.id === id);
     if (!batch || batch.tip !== tip) throw new Refused('LAND_BATCH', 'the pushed tip must match its recorded batch; run pullboard land --adopt');
+    landingEnvironment.requireStoredBatch(board, batch);
     if (batch.state === 'landed') return batch;
     if (batch.state !== 'pushed' && !(batch.state === 'trunk' && (board.executionEngineVersion ?? ENGINE_VERSION) >= LOCAL_LANDING_ENGINE)) throw new Refused('LAND_NOT_PUSHED', 'record a successful push before landing receipts; run pullboard land --adopt');
     for (const entry of batch.items) {

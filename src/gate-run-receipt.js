@@ -12,6 +12,7 @@ import {
 } from 'node:path';
 import { tryGit } from './git.js';
 import { proofFields } from './proof-provenance.js';
+import { environmentProblem } from './execution-environment.js';
 
 /** The folder beside the board that holds gate run receipts. */
 export const RECEIPT_FOLDER = 'gate-receipts';
@@ -64,6 +65,7 @@ export function receiptFields(value) {
 /** The checks behind receiptFields; each malformed field throws, and receiptFields turns that into null. */
 function checkedFields(value) {
   const bad = () => new TypeError('malformed gate receipt');
+  if (Object.hasOwn(value ?? {}, 'environment') && value.environment !== null && environmentProblem(value.environment)) throw bad();
   const proof = value?.version === 2 ? proofFields(value.proof) : null;
   const version = value?.version;
   const kinds = version === 2 ? ['check', 'submit', 'verdict'] : ['gate', 'land', 'submit'];
@@ -83,7 +85,7 @@ function checkedFields(value) {
     || !Number.isSafeInteger(load.cpus) || load.cpus < 1 || !Number.isSafeInteger(load.freeMB) || load.freeMB < 0)) throw bad();
   return { version, id: value.id, kind: value.kind, tree: value.tree, head: value.head, main: value.main, command: value.command,
     green: value.green, failures, load: load === null ? null : { average: [...load.average], cpus: load.cpus, freeMB: load.freeMB }, at: value.at,
-    ...(proof ? { proof } : {}) };
+    ...(proof ? { proof } : {}), ...(Object.hasOwn(value, 'environment') ? { environment: value.environment } : {}) };
 }
 
 /**

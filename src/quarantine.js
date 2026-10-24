@@ -13,6 +13,7 @@ import {
   logEvent,
 } from './board.js';
 import { GATE_RUN_ENGINE } from './gate-run-engine.js';
+import { LANDING_ENVIRONMENT_ENGINE } from './landing-environment-engine.js';
 import {
   boardReceiptStore,
   receiptBinds,
@@ -108,6 +109,7 @@ export function requireBound(board, receipt) {
  * @returns {{ run: object, duplicate?: boolean, quarantined: {file: string, name: string, item: number}[] }}
  */
 export function recordGateRun(board, { agentId, receipt, lane }) {
+  if (Object.hasOwn(receipt ?? {}, 'environment') && (board.executionEngineVersion ?? ENGINE_VERSION) < LANDING_ENVIRONMENT_ENGINE) throw new Refused('ENGINE_VERSION', `gate environments require engine ${LANDING_ENVIRONMENT_ENGINE}`);
   if ((board.executionEngineVersion ?? ENGINE_VERSION) < GATE_RUN_ENGINE) throw new Refused('ENGINE_VERSION', `gate runs require engine ${GATE_RUN_ENGINE}; upgrade Pullboard`);
   if (!listAgents(board).some(agent => agent.agent_id === agentId)) throw new Refused('NOT_JOINED', 'join this board before recording a gate run');
   const value = runReceipt(receipt);
@@ -121,7 +123,7 @@ export function recordGateRun(board, { agentId, receipt, lane }) {
       if (JSON.stringify(stored) !== JSON.stringify(value)) throw new Refused('GATE_RUN_CHANGED', 'a run id already binds different evidence; keep the original and use a new id');
       return { run: stored, duplicate: true, quarantined: [] };
     }
-    logEvent(board, agentId, 'gate-run', null, { engine: GATE_RUN_ENGINE, run: value });
+    logEvent(board, agentId, 'gate-run', null, { engine: Object.hasOwn(value, 'environment') ? LANDING_ENVIRONMENT_ENGINE : GATE_RUN_ENGINE, run: value });
     // Only the coordinator's runs prove a flake: its landing and main-checkout gates run accepted work, and no seat can
     // send a move as the coordinator. A seat's runs stay on the board as evidence of what it saw [C7,D1].
     const sameTree = gateRuns(board).filter(entry => entry.tree === value.tree && entry.by === COORDINATOR);

@@ -64,6 +64,186 @@ function summary(count, totalMinutes, averageMinutes, medianMinutes, unmeasuredC
   return { count, totalMinutes, averageMinutes, medianMinutes, unmeasuredCompleted };
 }
 
+test('a flow window reports stage quartiles and the slowest items with their cause [R1,R2]', t => {
+  const a = 'a'.repeat(40), b = 'b'.repeat(40), c = 'c'.repeat(40);
+  const entries = [
+    ...cycle(1, [10, 20, 5, 10], 250), ...cycle(2, [20, 40, 10, 20], 250),
+    ...cycle(3, [30, 60, 15, 30], 250), ...cycle(4, [40, 80, 20, 40], 250),
+    ...cycle(5, [50, 60, 70, 80], 250, { legacy: true }),
+    [0, 'coordinator', 'add', 6, { lane: 'core' }],
+    [250, 'core-6', 'claim', 6, { leaseUntil: at(1000) }], [260, 'core-6', 'submit', 6, { commit: a }],
+    [265, 'review-1', 'reserve', 6, { until: at(1000) }], [270, 'review-1', 'reject', 6, { commit: a }],
+    [300, 'core-6', 'claim', 6, { leaseUntil: at(1000) }], [320, 'core-6', 'submit', 6, { commit: b }],
+    [330, 'review-1', 'reserve', 6, { until: at(1000) }], [340, 'review-1', 'reject', 6, { commit: b }],
+    [350, 'core-6', 'claim', 6, { leaseUntil: at(1000) }], [380, 'core-6', 'submit', 6, { commit: c }],
+    [400, 'review-1', 'reserve', 6, { until: at(1000) }], [420, 'review-1', 'accept', 6, { commit: c }],
+    [500, 'coordinator', 'merged', 6],
+    ...cycle(7, [1, 1, 1, 1], 1), [500, 'coordinator', 'merged', 7],
+    ...cycle(8, [1, 1, 1, 1], 700),
+    [100, 'coordinator', 'add', 9, { lane: 'core' }], [480, 'coordinator', 'merged', 9],
+    [300, 'coordinator', 'add', 10, { lane: 'core' }],
+  ];
+  const { board, stats } = fixture(t, entries, 600);
+  const history = store.events(board);
+  const result = flowStats(history, null, BASE + 600 * 60_000, stats(), { windowMinutes: 360 });
+  const window = result.window;
+  assert.ok(window, 'the existing event-derived flow projection carries the requested window');
+  assert.equal(window.since, at(240));
+  assert.equal(window.until, at(600));
+  assert.equal(window.landedItems, 7, 'include an incompletely recorded landing, but not future or repeated old receipts');
+  assert.deepEqual(window.arrivals, { added: 1, landed: 7 });
+  const { stages } = window;
+  assert.deepEqual([stages.build.count, stages.build.fastQuarterMinutes, stages.build.medianMinutes,
+    stages.build.slowQuarterMinutes, stages.build.worstMinutes, stages.build.unmeasuredCompleted], [6, 20, 35, 50, 60, 1]);
+  assert.deepEqual([stages.reviewWait.count, stages.reviewWait.fastQuarterMinutes, stages.reviewWait.medianMinutes,
+    stages.reviewWait.slowQuarterMinutes, stages.reviewWait.worstMinutes, stages.reviewWait.unmeasuredCompleted], [5, 35, 40, 60, 80, 2]);
+  assert.equal(stages.reviewWait.overTargetMinutes, 95, 'sum each landed item\'s excess over the 30-minute target');
+  assert.deepEqual(window.constraint, { stage: 'reviewWait', overTargetMinutes: 95 });
+  assert.deepEqual(stages.reviewWait.tail.map(item => item.id), [4, 3, 2]);
+  assert.equal(stages.reviewWait.tail[0].eligibility, 'unmeasured', 'waiting alone cannot establish reviewer ineligibility');
+  assert.deepEqual(stages.build.tail.map(item => item.id), [6, 5, 4]);
+  assert.equal(stages.build.tail[0].cause, 'rework');
+  assert.equal(stages.build.tail[0].submissions, 3);
+  assert.equal(stages.build.arrivals, 8);
+  assert.equal(stages.build.completions, 8);
+  assert.deepEqual(stages.build.seats, ['core-1', 'core-2', 'core-3', 'core-4', 'core-5', 'core-6']);
+  assert.deepEqual([stages.sendBackIdle.count, stages.sendBackIdle.medianMinutes, stages.sendBackIdle.unmeasuredCompleted], [1, 40, 6]);
+  assert.equal(stages.sendBackIdle.tail[0].cause, 'send-back-idle');
+  assert.deepEqual(stages.mergeWait.tail.map(item => item.id), [5, 6, 4], 'equal tail durations use ascending item id');
+  assert.equal(stages.mergeWait.tail[0].cause, 'landing-queue');
+  assert.deepEqual(store.events(board), history, 'statistics append no synthetic measurement moves');
+});
+
+test('flow windows retain released reviews, lease boundaries and repeated accept evidence [R1,R2]', t => {
+  const commit = 'a'.repeat(40);
+  const { board, stats } = fixture(t, [
+    [0, 'coordinator', 'add', 1, { lane: 'core' }],
+    [10, 'core-1', 'claim', 1, { leaseUntil: at(1000) }],
+    [20, 'core-1', 'submit', 1, { commit }],
+    [30, 'review-1', 'reserve', 1, { until: at(35) }],
+    [40, 'review-2', 'reserve', 1, { until: at(50) }],
+    [50, 'review-2', 'release', 1, { review: true }],
+    [60, 'review-1', 'reserve', 1, { until: at(70) }],
+    [70, 'review-1', 'accept', 1, { commit }],
+    [80, 'review-1', 'accept', 1, { commit }],
+    [90, 'coordinator', 'merged', 1],
+    [0, 'coordinator', 'add', 2, { lane: 'core' }],
+    [10, 'core-2', 'claim', 2, { leaseUntil: at(25) }],
+    [0, 'coordinator', 'add', 3, { lane: 'core' }],
+    [10, 'core-3', 'claim', 3, { leaseUntil: at(1000) }],
+    [20, 'core-3', 'submit', 3, { commit }],
+    [30, 'review-2', 'reserve', 3, { until: at(40) }],
+  ], 100);
+  const history = store.events(board);
+  const prepared = prepareFlowHistory(history, { window: true });
+  const before = JSON.stringify(prepared);
+  const window = projectFlowStats(prepared, null, BASE + 100 * 60_000, stats(), { windowMinutes: 100 }).window;
+  assert.equal(window.landedItems, 1);
+  assert.equal(window.stages.build.medianMinutes, 10);
+  assert.equal(window.stages.reviewWait.medianMinutes, 25, 'wait is 20-30 plus 35-40 plus 50-60');
+  assert.equal(window.stages.review.medianMinutes, 25, 'review ends at recorded expiry or release; a verdict at expiry remains valid');
+  assert.equal(window.stages.mergeWait.medianMinutes, 20, 'repeated acceptance cannot erase the first acceptance');
+  assert.deepEqual(window.stages.review.seats, ['review-1', 'review-2']);
+  assert.equal(window.stages.review.completions, 4, 'includes the still-submitted item reservation expiry');
+  assert.equal(window.stages.build.completions, 3, 'includes a claim expiring without another move');
+  assert.equal(window.stages.reviewWait.arrivals, 5, 'includes observed waiting after expiry');
+  assert.equal(JSON.stringify(prepared), before, 'time-specific expiry observation does not mutate reusable history');
+  assert.deepEqual(store.events(board), history);
+});
+
+test('flow windows leave missing starts and empty distributions unmeasured [R1,R2]', t => {
+  const commit = 'a'.repeat(40);
+  const { board, stats } = fixture(t, [
+    [0, 'coordinator', 'add', 1, { lane: 'core' }],
+    [10, 'core-1', 'submit', 1, { commit }],
+    [20, 'review-1', 'reject', 1, { commit }],
+    [30, 'core-1', 'claim', 1, { leaseUntil: at(1000) }],
+    [40, 'core-1', 'submit', 1, { commit: 'b'.repeat(40) }],
+    [50, 'review-1', 'reserve', 1, { until: at(1000) }],
+    [60, 'review-1', 'accept', 1, { commit: 'b'.repeat(40) }],
+    [70, 'coordinator', 'merged', 1],
+  ], 100);
+  const history = store.events(board);
+  const window = flowStats(history, null, BASE + 100 * 60_000, stats(), { windowMinutes: 100 }).window;
+  assert.equal(window.stages.build.count, 0, 'one measured rework cannot fill a missing original start');
+  assert.equal(window.stages.build.medianMinutes, null);
+  assert.equal(window.stages.reviewWait.count, 0, 'an unreserved original verdict leaves the whole item total incomplete');
+  assert.equal(window.stages.reviewWait.arrivals, 2, 'a missing close cannot erase a known arrival');
+  assert.equal(window.stages.sendBackIdle.medianMinutes, 10);
+  const empty = flowStats(history, null, BASE + 100 * 60_000, stats(), { windowMinutes: 10 }).window;
+  assert.equal(empty.landedItems, 0);
+  assert.equal(empty.stages.build.count, 0);
+  assert.equal(empty.stages.build.worstMinutes, null);
+  assert.deepEqual(empty.stages.build.tail, []);
+  assert.deepEqual(empty.constraint, { stage: null, overTargetMinutes: 0 });
+});
+
+test('flow windows retain recorded idle after reopen and builder release [R1,R2]', t => {
+  const a = 'a'.repeat(40), b = 'b'.repeat(40);
+  const { board, stats } = fixture(t, [
+    [0, 'coordinator', 'add', 1, { lane: 'core' }],
+    [10, 'core-1', 'claim', 1, { leaseUntil: at(1000) }],
+    [20, 'core-1', 'submit', 1, { commit: a }],
+    [30, 'review-1', 'reserve', 1, { until: at(1000) }],
+    [40, 'review-1', 'accept', 1, { commit: a }],
+    [50, 'coordinator', 'reopen', 1],
+    [80, 'core-1', 'claim', 1, { leaseUntil: at(1000) }],
+    [90, 'core-1', 'submit', 1, { commit: b }],
+    [100, 'review-1', 'reserve', 1, { until: at(1000) }],
+    [110, 'review-1', 'accept', 1, { commit: b }],
+    [120, 'coordinator', 'merged', 1],
+    [0, 'coordinator', 'add', 2, { lane: 'core' }],
+    [10, 'core-2', 'claim', 2, { leaseUntil: at(1000) }],
+    [20, 'core-2', 'release', 2],
+    [60, 'core-2', 'claim', 2, { leaseUntil: at(1000) }],
+    [70, 'core-2', 'submit', 2, { commit: a }],
+    [80, 'review-1', 'reserve', 2, { until: at(1000) }],
+    [90, 'review-1', 'reject', 2, { commit: a }],
+    [100, 'coordinator', 'reopen', 2],
+    [120, 'core-2', 'claim', 2, { leaseUntil: at(1000) }],
+    [130, 'core-2', 'submit', 2, { commit: b }],
+    [140, 'review-1', 'reserve', 2, { until: at(1000) }],
+    [150, 'review-1', 'accept', 2, { commit: b }],
+    [160, 'coordinator', 'merged', 2],
+  ], 200);
+  const window = flowStats(store.events(board), null, BASE + 200 * 60_000, stats(), { windowMinutes: 200 }).window;
+  assert.equal(window.stages.sendBackIdle.count, 2, 'every recorded return-to-work has a measured idle interval');
+  assert.equal(window.stages.sendBackIdle.totalMinutes, 100, '30 reopened plus 40 released plus 30 rejected/reopened');
+  assert.deepEqual(window.stages.sendBackIdle.tail.map(row => [row.id, row.minutes]), [[2, 70], [1, 30]]);
+  assert.equal(window.stages.sendBackIdle.arrivals, 3, 'a repeated open move does not invent another arrival');
+  assert.equal(window.stages.sendBackIdle.completions, 3);
+  assert.equal(window.stages.build.totalMinutes, 50, 'released building work remains measured');
+});
+
+test('flow windows never substitute a merge receipt for an unrecorded stage end [R1,R2]', t => {
+  const commit = 'a'.repeat(40);
+  const { board, stats } = fixture(t, [
+    [0, 'coordinator', 'add', 1, { lane: 'core' }],
+    [10, 'core-1', 'claim', 1, { leaseUntil: at(1000) }],
+    [50, 'coordinator', 'merged', 1],
+    [0, 'coordinator', 'add', 2, { lane: 'core' }],
+    [10, 'core-2', 'submit', 2, { commit }],
+    [50, 'coordinator', 'merged', 2],
+    [0, 'coordinator', 'add', 3, { lane: 'core' }],
+    [0, 'core-3', 'claim', 3, { leaseUntil: at(1000) }],
+    [10, 'core-3', 'submit', 3, { commit }],
+    [20, 'review-1', 'reserve', 3, { until: at(1000) }],
+    [50, 'coordinator', 'merged', 3],
+    [0, 'coordinator', 'add', 4, { lane: 'core' }],
+    [0, 'core-4', 'claim', 4, { leaseUntil: at(1000) }],
+    [10, 'core-4', 'submit', 4, { commit }],
+    [20, 'review-1', 'reserve', 4, { until: at(1000) }],
+    [30, 'review-1', 'reject', 4, { commit }],
+    [50, 'coordinator', 'merged', 4],
+  ], 100);
+  const window = flowStats(store.events(board), null, BASE + 100 * 60_000, stats(), { windowMinutes: 100 }).window;
+  assert.equal(window.stages.build.count, 2, 'a merge without a submit cannot finish building');
+  assert.equal(window.stages.reviewWait.count, 2, 'a merge without a reservation cannot finish waiting');
+  assert.equal(window.stages.review.count, 1, 'a merge without a verdict cannot finish reviewing');
+  assert.equal(window.stages.sendBackIdle.count, 0, 'a merge without a reclaim cannot finish sent-back idle');
+  assert.equal(window.stages.mergeWait.count, 0, 'no acceptance-to-landing interval was recorded');
+});
+
 test('flow numbers match a hand computation through rework, released reviews and every live queue [R1,R2]', t => {
   const a = 'a'.repeat(40), b = 'b'.repeat(40), c = 'c'.repeat(40);
   const entries = [
