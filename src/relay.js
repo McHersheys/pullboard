@@ -94,6 +94,7 @@ import { locked } from './relay-lock.js';
 import { checkpointPublisher } from './relay-checkpoint-publish.js';
 import {
   checkpointInBackground,
+  requestCheckpointCheck,
   scheduleCheckpoint,
 } from './relay-checkpoint.js';
 import {
@@ -1249,9 +1250,10 @@ export async function syncRelay(root, io) {
         saveLink(file, state);
         io.err(`pullboard: the relay ${state.url} did not sequence the previous move; retry that move explicitly if still wanted`);
       }
-      // In the background, a command never builds the presentation to compare it: only a saved, unsent checkpoint
-      // asks for a publisher. Otherwise the command publishes a changed presentation itself, as before #1014.
-      if (checkpointInBackground()) { if (state.checkpoint) scheduleCheckpoint(root, file); }
+      // In the background, a command never builds the presentation to compare it: a saved, unsent checkpoint asks
+      // for an upload, and any other command asks the publisher to compare, so a spec edit alone still reaches the
+      // phone. Otherwise the command publishes a changed presentation itself, as before #1014.
+      if (checkpointInBackground()) { if (state.checkpoint) scheduleCheckpoint(root, file); else requestCheckpointCheck(root, file); }
       else if (state.checkpoint || state.presentationDigest !== presentationDigest(relayPresentation(root))) await publishCheckpoint(root, file, state, io);
       await deliverDeviceWraps(root, io);
       return summary(root, state);

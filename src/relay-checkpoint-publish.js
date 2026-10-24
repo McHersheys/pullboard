@@ -57,10 +57,12 @@ export function checkpointPublisher({ request, saveLink, loadLink, linkFile, rea
    * Decide what checkpoint to send and save its exact sealed record first; null when nothing is to be sent (no machine
    * credential, an upload pause not yet over, or a definitive rejection of this same image).
    */
-  async function stageCheckpoint(root, file, state, io, prepared) {
+  async function stageCheckpoint(root, file, state, io, prepared, { probe = true } = {}) {
     if (!state.token?.startsWith('pm_') || process.env.PULLBOARD_RELAY_TOKEN) return null;
     const resumed = Boolean(state.checkpointRefusal);
     if (state.checkpointRefusal && uploadPauseType(state.checkpointRefusal)) {
+      // The background publisher probes before taking the lock; a pause that appeared since waits for its next pass.
+      if (!probe) return null;
       if (!await uploadRetryReady(state, state.checkpointRefusal, path => request(state, path, {}, io))) {
         saveLink(file, state); reportCheckpointRefusal(state, io); return null;
       }
@@ -109,23 +111,36 @@ export function checkpointPublisher({ request, saveLink, loadLink, linkFile, rea
    * before the relay lock, the lock is held only to save the sealed record and later to record the reply, and the
    * upload itself holds no lock. A board whose link is gone or being removed publishes nothing.
    *
+   * With `ifChanged`, a board whose page matches the last acknowledged one, and that has no unsent checkpoint,
+   * uploads nothing: a command's check request must not re-send an unchanged 6 MB page.
+   *
    * @param {string} root
    * @param {{ err: (line: string) => void, say: (line: string) => void }} io
-   * @returns {Promise<boolean>} Whether a linked board was published.
+   * @param {{ ifChanged?: boolean }} [options]
+   * @returns {Promise<boolean>} Whether a linked board was published or found already current.
    */
-  async function publishLatestCheckpoint(root, io) {
+  async function publishLatestCheckpoint(root, io, { ifChanged = false } = {}) {
     const file = linkFile(root);
     const linked = loadLink(file);
     if (!linked || linked.unlinking) return false;
+    // Without a machine credential nothing is uploaded, so the board is not read (stageCheckpoint decides the same).
+    if (!linked.token?.startsWith('pm_') || process.env.PULLBOARD_RELAY_TOKEN) return false;
+    // A pending recovery or an unacknowledged send is settled by a command's own sync first, never published around.
+    if (linked.recovery || linked.pending) return false;
+    const paused = Boolean(linked.checkpointRefusal && uploadPauseType(linked.checkpointRefusal));
+    if (!await probeUploadPause(file, linked, io)) return false;
     // Reading and sealing a large board takes about a second; it happens before the lock, so moves never wait on it.
     const prepared = await prepareCheckpoint(root, linked);
     const staged = await locked(file, async () => {
       const state = loadLink(file);
-      if (!state || state.unlinking || state.board !== linked.board) return null;
-      const result = await stageCheckpoint(root, file, state, io, prepared);
-      return result && { ...result, sent: state.checkpoint, copy: structuredClone(state) };
+      if (!state || state.unlinking || state.recovery || state.pending || state.board !== linked.board) return null;
+      if (ifChanged && !state.checkpoint && !state.checkpointRefusal && state.presentationDigest === prepared.digest) return { current: true };
+      const result = await stageCheckpoint(root, file, state, io, prepared, { probe: false });
+      // A pause the probe ended counts as resumed, so its notices clear once this upload is acknowledged.
+      return result && { ...result, resumed: result.resumed || paused, sent: state.checkpoint, copy: structuredClone(state) };
     }, io);
     if (!staged) return false;
+    if (staged.current) return true;
     // The upload holds no lock, so a move during it returns at once and the next checkpoint covers it. It runs on a
     // copy of the link: the copy saves nothing, and what the upload learns is carried back under the lock below.
     let outcome;
@@ -139,6 +154,32 @@ export function checkpointPublisher({ request, saveLink, loadLink, linkFile, rea
       recordCheckpointUpload(file, state, io, staged, staged.sent, outcome);
     }, io);
     return true;
+  }
+
+  /**
+   * Ask the relay whether a quota or size pause is over, holding no lock while the request is out: a slow probe must
+   * never keep a move waiting. The probe runs on a copy of the link; its answer is applied under the lock only while
+   * the link still carries the same pause. Returns whether an upload may go ahead.
+   *
+   * @param {string} file
+   * @param {any} linked - The link as read before the probe.
+   * @param {{ err: (line: string) => void }} io
+   * @returns {Promise<boolean>}
+   */
+  async function probeUploadPause(file, linked, io) {
+    if (!linked.checkpointRefusal || !uploadPauseType(linked.checkpointRefusal)) return true;
+    const copy = structuredClone(linked);
+    const ready = await uploadRetryReady(copy, copy.checkpointRefusal, path => request(copy, path, {}, io));
+    return locked(file, async () => {
+      const state = loadLink(file);
+      if (!state || state.board !== linked.board || JSON.stringify(state.checkpointRefusal) !== JSON.stringify(linked.checkpointRefusal)) return false;
+      if (copy.snapshotApiVersion !== undefined) state.snapshotApiVersion = copy.snapshotApiVersion;
+      if (copy.storage !== undefined) state.storage = copy.storage;
+      if (ready) delete state.checkpointRefusal;
+      saveLink(file, state);
+      if (!ready) reportCheckpointRefusal(state, io);
+      return ready;
+    }, io);
   }
 
   return { publishCheckpoint, publishLatestCheckpoint };

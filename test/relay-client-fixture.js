@@ -240,6 +240,8 @@ globalThis.fetch = function tracedFetch(input, init) {
   let stallApi = false;
   let holdPublishes = false;
   const heldPublishes = [];
+  let holdProbes = false;
+  const heldProbes = [];
   let loseSnapshotReply = null;
   const lostSnapshotReplies = [];
   let rejectSnapshotWrites = null;
@@ -388,6 +390,10 @@ globalThis.fetch = function tracedFetch(input, init) {
     // A held API2 checkpoint publish waits until released, so a test can act while an upload is in flight (#1014).
     if (holdPublishes && req.method === 'POST' && /^\/api\/v2\/boards\/[0-9a-f]{32}\/uploads\/[^/]+\/publish$/u.test(req.url ?? '')) {
       await new Promise(release => heldPublishes.push(release));
+    }
+    // A held upload-pause probe waits too, so a test can move while the publisher asks whether a pause is over (#1014).
+    if (holdProbes && req.method === 'GET' && /^\/api\/v2(?:\/boards\/[0-9a-f]{32}\/storage)?$/u.test(req.url ?? '')) {
+      await new Promise(release => heldProbes.push(release));
     }
     if (legacySnapshotApi && req.method === 'GET' && req.url === '/api/v2') {
       res.writeHead(legacySnapshotApi === 'bad-route' ? 400 : 200, { 'content-type': 'application/json' });
@@ -776,6 +782,13 @@ globalThis.fetch = function tracedFetch(input, init) {
     },
     /** How many API2 checkpoint publishes are being held. */
     heldPublishes() { return heldPublishes.length; },
+    /** Hold every upload-pause probe (the API version and storage reads) until called with false. */
+    holdProbes(value = true) {
+      holdProbes = value;
+      if (!value) for (const release of heldProbes.splice(0)) release();
+    },
+    /** How many upload-pause probes are being held. */
+    heldProbes() { return heldProbes.length; },
     /**
      * Let the real relay accept the next API1 snapshot PUT, then drop its reply by closing the socket,
      * optionally answering later state reads with a chosen refusal, as the #919 lost-ACK review did.

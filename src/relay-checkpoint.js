@@ -50,14 +50,16 @@ export function checkpointQuietMs(env = process.env) {
 
 /**
  * The files the publisher keeps beside the relay link: when the last move happened, which move the last upload
- * covered, and which process publishes.
+ * covered, when a command last asked for a presentation check, when the last checkpoint was read, and which
+ * process publishes.
  *
  * @param {string} file - The relay link file.
- * @returns {{ due: string, done: string, pid: string, log: string }}
+ * @returns {{ due: string, done: string, asked: string, checked: string, pid: string, log: string }}
  */
 export function checkpointFiles(file) {
   const directory = dirname(file);
   return { due: join(directory, 'relay-checkpoint.due'), done: join(directory, 'relay-checkpoint.done'),
+    asked: join(directory, 'relay-checkpoint.asked'), checked: join(directory, 'relay-checkpoint.checked'),
     pid: join(directory, 'relay-checkpoint.pid'), log: join(directory, 'relay-checkpoint.log') };
 }
 
@@ -95,8 +97,26 @@ export function alive(pid) {
  * @param {string} file - The relay link file.
  */
 export function scheduleCheckpoint(root, file) {
-  const { due, pid } = checkpointFiles(file);
-  writeFileSync(due, `${Date.now()}\n`, { mode: 0o600 });
+  notePublisher(root, file, 'due');
+}
+
+/**
+ * Ask the publisher to read the board once things are quiet and upload only if the presentation changed. A spec,
+ * doctrine or config edit changes the phone's page without any move, and a command cannot afford to build the
+ * presentation to find out, so every synced command asks and the publisher compares in the background.
+ *
+ * @param {string} root
+ * @param {string} file - The relay link file.
+ */
+export function requestCheckpointCheck(root, file) {
+  notePublisher(root, file, 'asked');
+}
+
+/** Note the time in one of the publisher's files and start a publisher unless a live one holds the board. */
+function notePublisher(root, file, marker) {
+  const files = checkpointFiles(file);
+  const { pid } = files;
+  writeFileSync(files[marker], `${Date.now()}\n`, { mode: 0o600 });
   if (publisherHolding(pid)) return;
   const child = spawn(process.execPath, [WORKER, root, file], { cwd: root, detached: true, stdio: 'ignore', env: process.env });
   child.unref();

@@ -21,16 +21,30 @@ import {
 import { publishLatestCheckpoint } from './relay.js';
 
 const [root, file] = process.argv.slice(2);
-const { due, done, pid, log } = checkpointFiles(file);
+const { due, done, asked, checked, pid, log } = checkpointFiles(file);
 
-/** Read the time of the last move, or 0 when none was noted. */
-function lastMove() {
-  try { return Number(readFileSync(due, 'utf8')) || 0; } catch { return 0; }
+/** Read a time one of the publisher's files holds, or 0 when none was noted. */
+function noted(path) {
+  try { return Number(readFileSync(path, 'utf8')) || 0; } catch { return 0; }
 }
 
+/** Read the time of the last move, or 0 when none was noted. */
+function lastMove() { return noted(due); }
+
 /** Read the move time the last upload covered, or 0. */
-function lastCovered() {
-  try { return Number(readFileSync(done, 'utf8')) || 0; } catch { return 0; }
+function lastCovered() { return noted(done); }
+
+/** Whether a command asked for a presentation check after the board was last read for a checkpoint. */
+function checkWanted() { return noted(asked) > noted(checked); }
+
+/**
+ * Read and seal the board, noting when it was read: a check asked before then is answered by this read. A read
+ * that fails or finds nothing to send answers it too; the next command asks again, so this publisher never spins.
+ */
+async function publishFrom(options) {
+  const reading = Date.now();
+  try { return await publishLatestCheckpoint(root, io, options); }
+  finally { writeFileSync(checked, `${reading}\n`, { mode: 0o600 }); }
 }
 
 /**
@@ -48,6 +62,13 @@ async function claim() {
   }, io);
 }
 
+// Budget: refresh the claim well inside its ten-minute staleness, even during one long read or upload, so a live
+// publisher is never taken for a dead one and a second publisher never uploads beside it.
+const HEARTBEAT_MS = 60_000;
+setInterval(() => {
+  try { if (Number(readFileSync(pid, 'utf8')) === process.pid) utimesSync(pid, new Date(), new Date()); } catch { /* No claim to refresh. */ }
+}, HEARTBEAT_MS).unref();
+
 /** Give up the claim under the relay lock, and only while it is still this process's own. */
 async function release() {
   await locked(file, () => {
@@ -62,21 +83,31 @@ const io = {
   err(line) { try { appendFileSync(log, `${new Date().toISOString()} ${String(line).trim()}\n`, { mode: 0o600 }); } catch { /* No log is no worse than none. */ } },
 };
 
-/** Publish until a checkpoint covers the last move; returns the time of the move it covered. */
+/**
+ * Publish until a checkpoint covers the last move and answers the last check request; returns the time of the move
+ * it covered. Moves go first; a check reads the board once commands go quiet and uploads only a changed page.
+ */
 async function publishUntilQuiet() {
   const quiet = checkpointQuietMs();
   for (;;) {
     // Refresh the claim, so a scheduler never takes this live publisher for a dead one.
     try { utimesSync(pid, new Date(), new Date()); } catch { /* A removed claim is re-made by the next pass. */ }
     const moved = lastMove();
-    // An earlier publisher already covered this move: nothing to send.
-    if (lastCovered() >= moved) return moved;
-    const wait = quiet - (Date.now() - moved);
+    const movePending = lastCovered() < moved;
+    // An earlier publisher already covered this move and answered every check: nothing to send.
+    if (!movePending && !checkWanted()) return moved;
+    const since = movePending ? moved : noted(asked);
+    const wait = quiet - (Date.now() - since);
     if (wait > 0) { await new Promise(next => setTimeout(next, wait)); continue; }
-    io.say(`publishing for the move at ${new Date(moved).toISOString()}`);
-    if (await publishLatestCheckpoint(root, io)) writeFileSync(done, `${moved}\n`, { mode: 0o600 });
-    io.say('published');
-    if (lastMove() === moved) return moved;
+    if (movePending) {
+      io.say(`publishing for the move at ${new Date(moved).toISOString()}`);
+      if (await publishFrom()) writeFileSync(done, `${moved}\n`, { mode: 0o600 });
+      io.say('published');
+      if (lastMove() === moved && !checkWanted()) return moved;
+    } else {
+      io.say('checking the presentation');
+      await publishFrom({ ifChanged: true });
+    }
   }
 }
 
@@ -86,5 +117,5 @@ for (let covered = -1; await claim();) {
   try { covered = await publishUntilQuiet(); }
   catch (error) { io.err(`checkpoint not published: ${error.message}`); covered = Infinity; }
   finally { await release(); }
-  if (lastMove() <= covered) break;
+  if (lastMove() <= covered && !checkWanted()) break;
 }

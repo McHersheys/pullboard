@@ -122,3 +122,62 @@ test('publishers that find a dead holder\'s claim together upload one checkpoint
   assert.equal(box.calls.slice(from).filter(checkpointUpload).length, 1, 'four publishers recovering one dead claim sent one checkpoint');
   assert.equal(existsSync(join(directory, 'relay-checkpoint.pid')), false, 'the claim is released');
 });
+
+test('a spec edit with no move reaches the next checkpoint, and an idle command uploads none [H5,H16]', async (t) => {
+  const inline = process.env[CHECKPOINT_BACKGROUND_ENV];
+  delete process.env[CHECKPOINT_BACKGROUND_ENV];
+  t.after(() => { if (inline === undefined) delete process.env[CHECKPOINT_BACKGROUND_ENV]; else process.env[CHECKPOINT_BACKGROUND_ENV] = inline; });
+  const box = await relayClientFixture(t);
+  await box.link();
+  const warm = box.calls.length;
+  assert.equal((await box.cli('shout', 'all', 'warm up')).code, 0);
+  await publisherDone(box, warm, 1);
+
+  // Nothing changed: the publisher reads the board, finds the page the relay already has, and uploads nothing.
+  const idle = box.calls.length;
+  assert.equal((await box.cli('status')).code, 0);
+  await new Promise(next => setTimeout(next, 4_000)); // budget: declared quiet period plus a read, so an upload would show.
+  assert.equal(box.calls.slice(idle).filter(checkpointUpload).length, 0, 'an idle command re-sent no unchanged page');
+
+  // A draft spec row changes only the presentation; the next command's check sends it within a few seconds.
+  writeFileSync(join(box.root, 'SPEC.md'), '# Checkpoint fixture spec\n\n## G · Goals\n\n- G1 [draft, must] SPEC_ONLY_CHECKPOINT_1014 | gate: review\n');
+  const edited = box.calls.length;
+  const started = Date.now();
+  assert.equal((await box.cli('status')).code, 0);
+  await publisherDone(box, edited, 1);
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 5_000, `the spec edit reached a checkpoint in ${elapsed} ms`); // budget: ceiling from the review: a presentation-only change goes out within five seconds.
+});
+
+test('a move returns while the publisher asks whether an upload pause is over [H5,H17]', async (t) => {
+  const inline = process.env[CHECKPOINT_BACKGROUND_ENV];
+  delete process.env[CHECKPOINT_BACKGROUND_ENV];
+  t.after(() => { if (inline === undefined) delete process.env[CHECKPOINT_BACKGROUND_ENV]; else process.env[CHECKPOINT_BACKGROUND_ENV] = inline; });
+  const box = await relayClientFixture(t);
+  await box.link();
+  const warm = box.calls.length;
+  assert.equal((await box.cli('shout', 'all', 'warm up')).code, 0);
+  await publisherDone(box, warm, 1);
+
+  // A size pause from an earlier refused upload; the publisher's next pass first asks the relay if it is over.
+  const link = JSON.parse(readFileSync(box.linkFile, 'utf8'));
+  link.checkpointRefusal = { code: 'BAD_REQUEST', message: 'the snapshot exceeds the size limit', status: 413, size: true };
+  writeFileSync(box.linkFile, JSON.stringify(link));
+  box.holdProbes(true);
+  const release = setTimeout(() => box.holdProbes(false), 10_000); // budget: ceiling: a held probe ends well after the move's limit.
+  t.after(() => { clearTimeout(release); box.holdProbes(false); });
+  const from = box.calls.length;
+  assert.equal((await box.cli('status')).code, 0);
+  const deadline = Date.now() + 15_000;
+  while (box.heldProbes() === 0 && Date.now() < deadline) await new Promise(next => setTimeout(next, 50));
+  assert.equal(box.heldProbes(), 1, 'the publisher\'s pause probe is in flight and held');
+  const started = performance.now();
+  const moved = await box.cli('shout', 'all', 'moves during the held probe');
+  const elapsed = performance.now() - started;
+  assert.equal(moved.code, 0, JSON.stringify(moved.document));
+  assert.equal(box.heldProbes(), 1, 'the move returned while the probe was still held');
+  assert.ok(elapsed < 2000, `the move took ${Math.round(elapsed)} ms; it must not wait for the probe`); // budget: ceiling for one CLI move with headroom, far under the held probe.
+  box.holdProbes(false);
+  await publisherDone(box, from, 1);
+  assert.equal(JSON.parse(readFileSync(box.linkFile, 'utf8')).checkpointRefusal, undefined, 'the ended pause is cleared');
+});
