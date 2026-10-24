@@ -414,7 +414,9 @@ function landingWorkerCommandMatchesFile(processInfo, file) {
   const executable = command.match(/^(?:"([^"]+)"|'([^']+)'|(\S+))/u);
   if (!executable) return false;
   const executablePath = executable[1] ?? executable[2] ?? executable[3];
-  if (basename(executablePath) !== basename(process.execPath)) return false;
+  // ps prints an executable containing spaces without shell quotes; match its complete known path first.
+  const exactExecutable = command.startsWith(process.execPath) && /^(?:\s|$)/u.test(command.slice(process.execPath.length));
+  if (!exactExecutable && basename(executablePath) !== basename(process.execPath)) return false;
   let offset = command.indexOf(file);
   while (offset !== -1) {
     const before = offset === 0 || /[\s"']/u.test(command[offset - 1]);
@@ -430,7 +432,10 @@ function landingWorkerCommandMatchesFile(processInfo, file) {
 function landingChildCommandMatchesSpawn(processInfo, receipt) {
   const command = processInfo.command.trimEnd();
   const executable = command.match(/^(?:"([^"]+)"|'([^']+)'|(\S+))/u);
-  if (!executable || basename(executable[1] ?? executable[2] ?? executable[3]) !== basename(receipt.spawnFile ?? '')) return false;
+  const spawnFile = receipt.spawnFile;
+  const exactExecutable = typeof spawnFile === 'string' && spawnFile.length > 0
+    && command.startsWith(spawnFile) && /^(?:\s|$)/u.test(command.slice(spawnFile.length));
+  if (!exactExecutable && (!executable || basename(executable[1] ?? executable[2] ?? executable[3]) !== basename(spawnFile ?? ''))) return false;
   return receipt.spawnArgs.slice(1).every(argument => {
     if (typeof argument !== 'string' || !argument) return false;
     let offset = command.indexOf(argument);
