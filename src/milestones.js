@@ -1,3 +1,5 @@
+import { MILESTONE_SHIP_ENGINE } from './move-engine-constants.js';
+export { MILESTONE_SHIP_ENGINE };
 /**
  * The roadmap's milestones: ordered names, notes, targets and item references kept in one
  * board_meta value, and the moves that change them (N26). Only the coordinator changes them.
@@ -23,8 +25,6 @@ import {
   PERSON,
 } from './board.js';
 
-/** The engine at which a milestone carries a target and ships; older moves replay as they did. */
-export const MILESTONE_SHIP_ENGINE = 45;
 
 
 /** The engine a move runs under: its recorded one during replay, else this client's. */

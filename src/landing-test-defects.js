@@ -1,3 +1,5 @@
+import { landingTestDefects } from './landing-test-defect-history.js';
+export { landingTestDefects };
 /** Durable test defects hold a trunk when bisection identifies no item culprit [E29]. */
 import {
   addItem,
@@ -9,15 +11,6 @@ import { ENGINE_VERSION } from './machine.js';
 import { LANDING_ENVIRONMENT_ENGINE } from './landing-environment-engine.js';
 import { Refused } from './refused.js';
 
-/** Read the latest defect for each trunk and test, without rewriting its prior evidence. */
-export function landingTestDefects(board) {
-  const defects = new Map();
-  for (const row of board.db.prepare("SELECT event_detail FROM event WHERE event_kind = 'landing-test-defect' ORDER BY event_id").all()) {
-    const { defect } = JSON.parse(row.event_detail);
-    defects.set(`${defect.branch}\0${defect.test}`, defect);
-  }
-  return [...defects.values()];
-}
 
 /** File a neutral repair item: an interaction is not proof that a named item or test is flaky. */
 export function recordLandingTestDefect(board, { agentId, test, hash, blob, trunkBlob, names, lane, batchId, branch }) {

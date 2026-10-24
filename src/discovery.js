@@ -17,6 +17,12 @@ export const ENGINE_CANDIDATE = /^[^/]*-engine\.js$/u;
 /** An engine file name machine.js accepts: letters, digits, underscores and hyphens before -engine.js. */
 export const ENGINE_FILE = /^[\w-]+-engine\.js$/u;
 
+/** Every JavaScript file in src/moves/ declares one board operation. */
+export const MOVE_CANDIDATE = /^[^/]+\.js$/u;
+
+/** Operation file names follow the same strict spelling as discovered commands. */
+export const MOVE_FILE = /^[\w-]+\.js$/u;
+
 /**
  * Keep the candidates of a folder that the strict pattern accepts, refusing the rest by name.
  *

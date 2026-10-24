@@ -2,21 +2,8 @@ import { takeoverReady } from './line-capacity.js';
 /** Durable first-refusal windows for reopened work [B13,B5]. */
 import { Refused } from './refused.js';
 
-/** Read the latest return's window, ignoring review releases and earlier submissions. */
-export function firstRefusal(board, id, at = board.clock.now()) {
-  const history = board.db.prepare("SELECT event_kind, event_detail, event_by FROM event WHERE item_id = ? AND event_kind IN ('reject', 'reopen', 'submit', 'release') ORDER BY event_id DESC").all(id);
-  const releases = [];
-  for (const event of history) {
-    const detail = JSON.parse(event.event_detail);
-    if (event.event_kind === 'release') { releases.push(event); continue; }
-    if (event.event_kind === 'submit') return null;
-    const window = detail.reopenFirstRefusal;
-    if (!window || !window.builder || !Number.isFinite(Date.parse(window.until))) return null;
-    if (releases.some(release => release.event_by === window.builder && JSON.parse(release.event_detail).review !== true)) return null;
-    return at.getTime() < Date.parse(window.until) ? window : null;
-  }
-  return null;
-}
+import { firstRefusal } from './first-refusal-window.js';
+export { firstRefusal };
 
 /** Give the original builder first refusal while preserving every ordinary claim guard. */
 export function firstRefusalProblem(board, id, agentId) {
@@ -57,27 +44,7 @@ export function firstRefusalArgs(operation, args, config) {
   return [args[0], { ...args[1], reopenFirstRefusalMinutes: minutes }, ...args.slice(2)];
 }
 
-/** Whether a manual landing note quotes a semicolon-delimited test name, including malformed attempts. */
-export function manualLandingFailureQuoted(note) {
-  if (typeof note !== 'string') return false;
-  const generatedPrefix = /^Landing batch [a-z0-9_-]{1,80} failed /iu.exec(note);
-  if (generatedPrefix) return false;
-  const opening = /(?:^|;[ \t]*)(?:[\w.-]+\/)*[\w.-]+\.[a-z0-9]+:[ \t]*"/giu;
-  for (const match of note.matchAll(opening)) {
-    let escaped = false;
-    let containsSeparator = false;
-    for (let index = match.index + match[0].length; index < note.length; index += 1) {
-      const character = note[index];
-      if (character === ';') containsSeparator = true;
-      if (character === '\r' || character === '\n') break;
-      if (escaped) { escaped = false; continue; }
-      if (character === '\\') { escaped = true; continue; }
-      if (character === '"') break;
-    }
-    if (containsSeparator) return true;
-  }
-  return false;
-}
+export { manualLandingFailureQuoted } from './manual-landing-failure-quoted.js';
 
 /** Read a quoted test name and its end offset, refusing malformed escapes or multiline text. */
 function quotedLandingTestName(text, start) {

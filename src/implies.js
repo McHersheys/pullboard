@@ -1,4 +1,11 @@
 import {
+  IMPLYING_OPERATIONS,
+  carriesImplies,
+} from './move-implies.js';
+export { IMPLYING_OPERATIONS, carriesImplies };
+import { IMPLIES_ENGINE } from './move-engine-constants.js';
+export { IMPLIES_ENGINE };
+import {
   decisionFields,
   factFromEvent,
 } from './board-query.js';
@@ -32,11 +39,7 @@ import { COORDINATOR } from './config.js';
 import { ENGINE_VERSION } from './engine-metadata.js';
 import { Refused } from './refused.js';
 
-/** The engine whose moves may carry `implies`, or supersede an answer; older replays never do. */
-export const IMPLIES_ENGINE = 20;
 
-/** The operations whose sealed options may carry `implies`. */
-export const IMPLYING_OPERATIONS = Object.freeze(['appendFact', 'answerDecision', 'verify']);
 
 /**
  * Parse an `--implies` value into item ids, accepting `12,13` or `#12, #13`.
@@ -53,20 +56,6 @@ export function parseImplies(text) {
   return [...new Set(parts.map((part) => Number(part.replace('#', ''))))];
 }
 
-/**
- * True when a sealed move carries this engine's meaning: items it implies, or an answer it supersedes.
- * The relay refuses such a move from an older engine before it changes any board.
- *
- * @param {string} operation
- * @param {any[]} args
- * @returns {boolean}
- */
-export function carriesImplies(operation, args) {
-  const options = args?.[1];
-  if (!IMPLYING_OPERATIONS.includes(operation) || !options || typeof options !== 'object') return false;
-  return (Array.isArray(options.implies) && options.implies.length > 0)
-    || (operation === 'answerDecision' && options.supersedes !== undefined && options.supersedes !== null);
-}
 
 /**
  * Validate the implied ids before any part of the decision is written, naming the first unknown one.
