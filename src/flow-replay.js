@@ -57,7 +57,7 @@ function schedule(observations, policy) {
   const batchSize = policy.settings.landingBatchSize || Infinity;
   const cadence = (policy.settings.landingCadenceMinutes || 0) * MINUTE;
   const batched = !policy.recorded && (batchSize !== Infinity || cadence > 0);
-  let now = observations.origin, batch = new Set(), batchStarted = -Infinity, batchFinished = -Infinity;
+  let now = observations.origin, batch = new Set(), batchStarted = -Infinity, batchFinished = -Infinity, batchUnstarted = false;
   /** A measured task starts after arrival, its prior stage and the seat's recorded availability. */
   const readyAt = task => Math.max(arrival.get(task.item), observations.resources.get(task.by).available,
     task.prior ? completed.get(task.prior.id)?.end ?? Infinity : -Infinity, policy.recorded ? task.start : -Infinity);
@@ -71,12 +71,13 @@ function schedule(observations, policy) {
     }
     if (batched && !batch.size && now >= Math.max(batchStarted + cadence, batchFinished)) {
       const ready = [...pending.values()].filter(task => task.stage === 'landing' && readyAt(task) <= now).sort(compare).slice(0, batchSize);
-      if (ready.length) { batch = new Set(ready.map(task => task.id)); batchStarted = now; }
+      if (ready.length) { batch = new Set(ready.map(task => task.id)); batchUnstarted = true; }
     }
     for (const task of [...pending.values()].sort(compare)) {
       if (batched && task.stage === 'landing' && !batch.has(task.id)) continue;
       if (readyAt(task) > now || running.filter(row => row.task.stage === task.stage).length >= capacity[task.stage]
         || running.filter(row => row.task.by === task.by).length >= observations.resources.get(task.by).capacity) continue;
+      if (batched && task.stage === 'landing' && batchUnstarted) { batchStarted = now; batchUnstarted = false; }
       pending.delete(task.id);
       running.push({ task, start: now, end: now + task.duration });
     }
