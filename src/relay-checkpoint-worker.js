@@ -42,6 +42,8 @@ async function claim() {
     const holder = publisherHolding(pid);
     if (holder && holder !== process.pid) return false;
     writeFileSync(pid, `${process.pid}\n`, { mode: 0o600 });
+    writeFileSync(log, '', { mode: 0o600 }); // Each publisher keeps only its own short story.
+    io.say(`claimed by ${process.pid}`);
     return true;
   }, io);
 }
@@ -55,7 +57,8 @@ async function release() {
 
 /** Keep a short record of failures beside the link; the next command's status reports pending uploads. */
 const io = {
-  say() {},
+  // Progress goes to the same short log as failures, so a stalled publisher shows how far it got.
+  say(line) { io.err(line); },
   err(line) { try { appendFileSync(log, `${new Date().toISOString()} ${String(line).trim()}\n`, { mode: 0o600 }); } catch { /* No log is no worse than none. */ } },
 };
 
@@ -70,7 +73,9 @@ async function publishUntilQuiet() {
     if (lastCovered() >= moved) return moved;
     const wait = quiet - (Date.now() - moved);
     if (wait > 0) { await new Promise(next => setTimeout(next, wait)); continue; }
+    io.say(`publishing for the move at ${new Date(moved).toISOString()}`);
     if (await publishLatestCheckpoint(root, io)) writeFileSync(done, `${moved}\n`, { mode: 0o600 });
+    io.say('published');
     if (lastMove() === moved) return moved;
   }
 }
