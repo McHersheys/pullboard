@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** Newcomer journeys use a fresh init and the actual retained tour board [N26]. */
 import assert from 'node:assert/strict';
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';

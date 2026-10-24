@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** Cockpit items checks, using the shared real-board fixtures [N26]. */
 import { submitFixture } from '../board-submit-fixture.js';
 import assert from 'node:assert/strict';
@@ -1409,7 +1410,6 @@ test('Pipeline view dates an expired claim from its recorded deadline [N26,N38]'
     assert.match(open(), new RegExp(new Date(base+40*60_000).toISOString()), 'expired claim age starts at its native lease deadline');
   } finally { await view.stop(); }
 });
-
 
 test('the view shows what is new once after an upgrade [N26]', async () => {
   const executable = chromeExecutable();

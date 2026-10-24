@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** Cockpit layout checks, using the shared real-board fixtures [N26]. */
 import assert from 'node:assert/strict';
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
