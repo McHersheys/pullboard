@@ -372,7 +372,7 @@ export function projectState(root, { seen = null, board: providedBoard = null, i
     });
     // Pending person decisions govern the calls on the API, sealed relay and exported page alike.
     const rigorRows = projectRowDecisions(store.rowDecisions(board), { root: info.root, spec: loadSpec(info.root, config).rows, practice: doctrine.rows });
-    const projected = { ...state, rigorDrafts: rigorDraftNeeds(rigorRows), sentinelDrafts: sentinelDraftNeeds(sentinels(board)) };
+    const projected = { ...state, rigorDrafts: rigorDraftNeeds(rigorRows, store.rowDrafts(board), store.rowDecisions(board)), sentinelDrafts: sentinelDraftNeeds(sentinels(board)) };
     return { ...projected, needs: personNeeds(projected) };
   }, providedBoard);
 }

@@ -27,6 +27,7 @@ export default Object.freeze({ operation: "appendFact", order: 40, engine: 1,
   "BAD_FACT_ID": "upgrade to the current Pullboard engine, then retry the original fact operation",
   "BAD_FACT_KIND": "use a supported kind, such as note: pullboard fact <id> note \"<what you observed>\"",
   "EMPTY_FACT": "give nonempty fact text: pullboard fact <id> note \"<what you saw>\"",
+  "FACT_INDEX_NOT_READY": "have the owning main checkout open this board once, then retry the original fact operation",
   "FACT_JUDGEMENT": "use a nonjudgement fact kind such as note, or ask the coordinator to record a judgement: pullboard fact <id> note \"<what you observed>\"",
   "NO_AGENT": "create and join a lane worktree: pullboard worktree <lane> --model \"<model name>\"",
   "NO_FACT": "name a fact id from pullboard show <id> --json"
