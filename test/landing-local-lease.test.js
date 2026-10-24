@@ -7,9 +7,9 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import * as store from '../src/board.js';
 import { applyEngineMove, prepareEngineMove } from '../src/engine.js';
-import { exportBoard, importBoard, semanticBoardDigest } from '../src/exchange.js';
+import { exportBoard, importBoard, restoreRelaySnapshot, semanticBoardDigest } from '../src/exchange.js';
 import { assertLandingLease } from '../src/landing-lease.js';
-import { LANDING_LOCAL_PREFIX } from '../src/landing-local-lease.js';
+import { LANDING_LOCAL_PREFIX, localLandingEntry } from '../src/landing-local-lease.js';
 import { takeLandingResource } from '../src/landing-resource.js';
 
 /** Give each test two physical boards and a private receipt clock, never a live coordinator credential. */
@@ -56,7 +56,7 @@ test('a relay stalled for 120 seconds cannot block the holder local landing hear
     assert.equal(shared.tables.board_meta.some(row => row.meta_key.startsWith(LANDING_LOCAL_PREFIX)), false);
     importBoard(replica, shared);
     assert.equal(replica.db.prepare('SELECT count(*) AS n FROM board_meta WHERE meta_key GLOB ?').get(LANDING_LOCAL_PREFIX + '*').n, 0);
-    importBoard(board, shared, true);
+    restoreRelaySnapshot(board, shared, 1, digest);
     assertLandingLease(board, lease.fence); // checkpoint replacement retains only this physical board's local heartbeat.
     const foreign = { agentId: 'coordinator', action: 'request', token: randomUUID(), branch: 'refs/heads/main', pid: process.pid };
     assert.equal(store.landingLeaseMove(replica, foreign).acquired, false, 'a replica cannot grant past unseen local renewals using its expired shared clock');
@@ -78,4 +78,22 @@ test('coordinator takeover fences an unreleased foreign landing without inventin
   const successor = box.move(replica, 'landingLeaseMove', [second], 'private-lineage-b', 'private-machine-b');
   assert.equal(successor.acquired, true);
   assert.ok(successor.generation > grant.generation);
+});
+
+
+test('physical heartbeat identity cannot attach to another board or arrive in an import [Q1,Q3,H16]', async t => {
+  const box = fixture(t); const [board, replica] = box.boards;
+  const lease = await takeLandingResource({ board, branch: 'refs/heads/main', write: async (operation, args) => box.move(board, operation, args) });
+  try {
+    const holder = store.landingLeaseState(board).holder;
+    const row = board.db.prepare('SELECT * FROM board_meta WHERE meta_key=?').get(LANDING_LOCAL_PREFIX + holder.token);
+    const document = exportBoard(board);
+    document.tables.board_meta.push(row); // imported local metadata is deliberately untrusted, even with an exact token.
+    importBoard(replica, document);
+    assert.equal(localLandingEntry(replica, holder), null);
+    const old = board.db.prepare("SELECT meta_value FROM board_meta WHERE meta_key='board_id'").get().meta_value;
+    board.db.prepare("UPDATE board_meta SET meta_value=? WHERE meta_key='board_id'").run('different-private-board');
+    assert.equal(localLandingEntry(board, holder), null, 'board identity participates in the local token/generation binding');
+    board.db.prepare("UPDATE board_meta SET meta_value=? WHERE meta_key='board_id'").run(old);
+  } finally { await lease.release(); }
 });
