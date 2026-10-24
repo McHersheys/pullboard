@@ -108,7 +108,14 @@ const NON_MOVE_ENTRY_POINTS = [
 ];
 
 /** Board functions handed a function to call, and the one the CLI and the runner hand them. */
-const CALLBACKS = { 'board.js': { freeze: 'cli.js#freezer' } };
+const CALLBACKS = {
+  'board.js': { freeze: 'cli.js#freezer' },
+  'line-capacity-board.js': {
+    nextFor: 'board.js#nextFor',
+    reviewerChecks: 'board.js#reviewerChecks',
+    reviewReleaseCooldown: 'board.js#reviewReleaseCooldown',
+  },
+};
 
 /**
  * Calls whose refusals an entry point catches and reports as another: submit and verify read a
@@ -117,6 +124,8 @@ const CALLBACKS = { 'board.js': { freeze: 'cli.js#freezer' } };
  * reads committed doctrine rules leniently: a doctrine it cannot parse carries no check [D1].
  */
 const CAUGHT = {
+  // Review eligibility returns Refused values as data, and this helper also catches thrown eligibility refusals.
+  'line-capacity-board.js#oldestCapacityReview': ['board.js#reviewerChecks'],
   'commands/submit.js#submitHere': ['native-flakes.js#observeFailure', 'cli.js#freezer', 'main-red.js#compareMainFailures', 'main-red.js#matchingReworks', 'doctrine-checks.js#checkRulesAt'],
   // observeNativeFailure catches its optional pair/recording errors; they cannot become lifecycle refusals.
   'commands/verify.js#verifyHere': ['cli.js#freezer', 'native-flakes.js#observeFailure'],
@@ -997,11 +1006,14 @@ test('claim refuses in the declared order, one failure peeled at a time, on a re
     store.editItem(board, target, { agentId: 'coordinator', criterion: 'A new bar, so the next claim freezes it.' });
     fired.push(claimAs(target, strong, 'web'));
     store.releaseLane(board, 'web', { agentId: 'coordinator' });
+    store.setLineSetting(board, { agentId: 'coordinator', key: 'wipPerReviewer', value: 1.5, reason: 'peel the actual capacity guard', window: { activeReviewers: 1 } });
+    fired.push(claimAs(target, strong, 'web'));
+    store.setLineSetting(board, { agentId: 'coordinator', key: 'wipPerReviewer', value: false, reason: 'peel the remaining existing guards', window: { activeReviewers: 1 } });
     fired.push(claimAs(target, strong, 'web'));
     store.release(board, spare, strong);
     fired.push(claimAs(target, strong, 'web'), claimAs(target, strong, 'web', freeze));
     assert.deepEqual(fired, [...declaredBoardOrder('claim'), 'ok']);
-    assert.deepEqual(fired, ['NO_ITEM', 'NOT_CLAIMABLE', 'BAR_NOT_READY', 'ITEM_HELD', 'WRONG_LANE', 'ROUTE', 'BLOCKED', 'HELD', 'REOPEN_HELD_FOR_BUILDER', 'PENDING_REFREEZE', 'LANE_HELD', 'ONE_CLAIM', 'UNKNOWN_SPEC', 'ok']);
+    assert.deepEqual(fired, ['NO_ITEM', 'NOT_CLAIMABLE', 'BAR_NOT_READY', 'ITEM_HELD', 'WRONG_LANE', 'ROUTE', 'BLOCKED', 'HELD', 'REOPEN_HELD_FOR_BUILDER', 'PENDING_REFREEZE', 'LANE_HELD', 'LINE_WIP_LIMIT', 'ONE_CLAIM', 'UNKNOWN_SPEC', 'ok']);
   } finally {
     lab.done();
   }

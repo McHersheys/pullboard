@@ -56,6 +56,7 @@ export function personRequestGuidance(message, { caller, leading = false } = {})
 
 /** @type {Readonly<Record<string, string>>} */
 export const NEXT_STEPS = Object.freeze({
+  LINE_WIP_LIMIT: 'review the oldest eligible waiting submission: pullboard next --verify; if none is eligible, ask the coordinator to arrange a reviewer',
   OUTSIDE_NATIVE_BUILD: 'the outside author revises the PR; ask the coordinator to return it, then intake its new exact head',
   CHECK_NO_PROOF: 'strengthen the trusted criterion so it fails before the outside change, then ask the coordinator to refreeze it',
   OUTSIDE_URL: 'use a GitHub issue or pull request URL with owner/repository and its positive number',

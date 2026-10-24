@@ -264,3 +264,22 @@ test('[Q1,V15,N14] the unattended runner keeps building and records its review b
   assert.ok(Number.isSafeInteger(skipped.offeredItem));
   assert.equal(store.listItems(box.board).some((item) => item.item_review_by === box.builderId), false, 'the runner reserves no review');
 });
+
+test('[N2,B13,H16] plain next follows recorded line capacity without a reviewer role flag', async t => {
+  const box = await project(t, 99);
+  const ids = Array.from({ length: 5 }, () => submitted(box));
+  const id = build(box);
+  for (const [key, value] of [['reviewsFirst', true], ['wipPerReviewer', 1.5]]) {
+    store.setLineSetting(box.board, { agentId: 'coordinator', key, value, reason: 'private five-item capacity window', window: { activeReviewers: 1 } });
+  }
+  const offered = await run(box, box.builder, ['next', '--json']);
+  assert.equal(offered.code, 0, offered.stderr);
+  assert.equal(offered.data.review, true);
+  assert.ok(ids.includes(offered.data.offer.item));
+  assert.equal(offered.data.offer.ratio, 1.5);
+  assert.equal(store.getItem(box.board, id).item_status, 'open');
+  const refused = await run(box, box.builder, ['claim', String(id), '--json']);
+  assert.equal(refused.code, 1);
+  assert.equal(refused.data.error.code, 'LINE_WIP_LIMIT');
+  assert.match(refused.data.error.message, new RegExp(`#${ids[0]}`));
+});
