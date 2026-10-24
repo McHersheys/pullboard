@@ -25,6 +25,7 @@ export function nativeBarActorForSeat(board, agent, environment = process.env) {
 /** Unknown provenance stays unknown; a replay never consults another process's runtime. */
 export function normalizeBarActor(value) {
   if (value == null) return { session: null, parent: null };
+  if (value.authority === 'person' && value.session === null && value.parent === null) return { authority: 'person', session: null, parent: null };
   if (!/^[a-f0-9]{64}$/u.test(value.session) || !/^[a-f0-9]{64}$/u.test(value.parent)) {
     throw new Refused('BAR_PARENT_UNKNOWN', 'bar authorship needs the current native session and its parent; run this move from the real runtime session, without borrowing another seat');
   }

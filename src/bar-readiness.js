@@ -129,12 +129,16 @@ export function signBar(board, id, { agentId, revision, digest, note, coverage, 
     if (status.revision.revision !== revision || status.revision.digest !== digest) throw new Refused('BAR_SIGN_STALE', `#${id}'s bar changed; read it again before pullboard bar sign ${id}`);
     const signerActor = normalizeBarActor(barActor);
     const signerParent = signerActor.parent;
+    const signerPerson = signerActor.authority === 'person';
     const authors = Object.values(status.revision.authors);
-    if (!signerParent || authors.some(author => !author.parent)) throw new Refused('BAR_PARENT_UNKNOWN', `#${id} needs known author and signer session identities; join from the real runtime session, then author a new bar revision`);
-    if (authors.some(author => author.agent === agentId || author.parent === signerParent)) throw new Refused('BAR_SELF_SIGN', `#${id}'s author and its helpers cannot sign their own bar; ask another parent session`);
+    const agentAuthors = authors.filter(author => author.authority !== 'person');
+    if (agentAuthors.some(author => !author.parent) || !signerPerson && agentAuthors.length && !signerParent) throw new Refused('BAR_PARENT_UNKNOWN', `#${id} needs known agent author and signer session identities; join from the real runtime session, then author a new bar revision`);
+    const selfSign = signerPerson ? authors.some(author => author.authority === 'person')
+      : agentAuthors.some(author => author.agent === agentId || author.parent === signerParent);
+    if (selfSign) throw new Refused('BAR_SELF_SIGN', `#${id}'s author and its helpers cannot sign their own bar; ask another authority or parent session`);
     if (typeof note !== 'string' || !note.trim()) throw new Refused('NOTE_REQUIRED', 'say whether a builder can meet this bar and two reviewers would grade it the same: --note "..."');
     const plan = normalizeBarCoverage(coverage, item);
-    const signed = { revision, digest, coverage: plan, coverageDigest: barCoverageDigest(plan), baselineDigest: status.baselineDigest, authorParents: authors, signerParent, signerSession: signerActor.session, note: note.trim() };
+    const signed = { revision, digest, coverage: plan, coverageDigest: barCoverageDigest(plan), baselineDigest: status.baselineDigest, authorParents: authors, signerParent, signerSession: signerActor.session, signerAuthority: signerPerson ? 'person' : 'agent', note: note.trim() };
     logEvent(board, agentId, 'bar-sign', id, signed);
     save(board, `bar_sign:${id}`, { ...signed, by: agentId, event: board.lastEvent.event_id });
     return { id, ...signed };

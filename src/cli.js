@@ -898,9 +898,16 @@ function relayOutboxSetting(root) {
 }
 
 /** Capture bar provenance only at author/sign commands, never during unrelated lifecycle dispatch. */
-export function barActorForCommand(ctx, board) {
-  if (!barReadySetting(board).enabled || ctx.io.personChannel === 'view' || ctx.io.personRequest) return null;
+export function barActorForCommand(ctx, board, { asPerson = false } = {}) {
+  if (!barReadySetting(board).enabled) return null;
   const actor = ctx.info.isMain ? COORDINATOR : store.agentAt(board, ctx.info.root)?.agent_id;
+  const phone = ctx.io.personRequest?.phase === 'execute';
+  if (asPerson || phone || ctx.io.personChannel === 'view' && actor === COORDINATOR) {
+    if (!phone) requirePersonChannel(ctx.io.personChannel);
+    if (!ctx.info.isMain || actor !== COORDINATOR) throw new Refused('B26_PERSON_ANSWER', 'the person authors or signs a bar from the main checkout or its authenticated view');
+    return { authority: 'person', session: null, parent: null };
+  }
+  if (ctx.io.personChannel === 'view' || ctx.io.personRequest) return null;
   return nativeBarActorForSeat(board, actor);
 }
 
@@ -2231,8 +2238,8 @@ async function runCommand(argv, io) {
   const help = selectedHelp(command, first, second, rest, values);
   if (help) return await (await COMMANDS.help()).run(io, args, help);
   try {
-    if (values.as === 'person' && !['answer', 'decisions', 'fact'].includes(command)) {
-      throw new Refused('USAGE', '--as person works only with pullboard answer, decisions, or fact --never-again');
+    if (values.as === 'person' && !['answer', 'decisions', 'fact', 'add', 'edit'].includes(command) && !(command === 'bar' && first === 'sign')) {
+      throw new Refused('USAGE', '--as person works with answer, decisions, fact --never-again, add, edit, or bar sign');
     }
     const load = COMMANDS[command];
     if (!load) return unknownCommand(io, command);
