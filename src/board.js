@@ -274,51 +274,16 @@ import {
   carriesFlakeDiagnostics,
 } from './flake-engine.js';
 export { landingFlakes, landingWaiverCovers, landingWaiverKind };
-export {
-  landingWaivers,
-  landingWaiverFor,
-  waivedLandingProof,
-} from './landing-waivers.js';
+export { landingWaivers, landingWaiverFor, waivedLandingProof } from './landing-waivers.js';
 export { acceptCheck } from './check-accept.js';
-export {
-  declareJob,
-  recordJobRun,
-} from './recurring-jobs.js';
-export {
-  proposeSentinel,
-  decideSentinel,
-  beginSentinelRun,
-  finishSentinelRun,
-} from './sentinels.js';
-export {
-  flakeLedger,
-  recordFlakeObservation,
-} from './flakes.js';
-export {
-  flakeQuarantines,
-  gateRuns,
-  recordGateRun,
-} from './quarantine.js';
-export {
-  personProposals,
-  personSigning,
-  proposePersonMove,
-  setPersonSigning,
-} from './person-signing.js'; // Signed person moves [E22].
+export { declareJob, recordJobRun } from './recurring-jobs.js';
+export { proposeSentinel, decideSentinel, beginSentinelRun, finishSentinelRun } from './sentinels.js';
+export { flakeLedger, recordFlakeObservation } from './flakes.js';
+export { flakeQuarantines, gateRuns, recordGateRun } from './quarantine.js';
+export { personProposals, personSigning, proposePersonMove, setPersonSigning } from './person-signing.js'; // Signed person moves [E22].
 export { recordPublishFinding } from './pr-findings.js';
 /** The seat readers live in seats.js; the board re-exports them so `store.*` callers keep one import. */
-export {
-  agentAt,
-  agentById,
-  agentCreator,
-  coordinatorHolder,
-  listAgents,
-  nextSeatId,
-  seatEnrolled,
-  seatLineage,
-  takeCoordinator,
-  withVerifierStanding,
-} from './seats.js';
+export { agentAt, agentById, agentCreator, coordinatorHolder, listAgents, nextSeatId, seatEnrolled, seatLineage, takeCoordinator, withVerifierStanding } from './seats.js';
 
 export const ACCEPT_REASON = 'CRITERION_MET';
 export { PERSON } from './board-query.js';
@@ -2220,27 +2185,10 @@ export function releaseItemHold(board, id, { agentId }) {
 
 
 // A lane agent's drafted rows live in row-drafts.js (#878); exported here so the engine dispatches them.
-export {
-  draftSpecRow,
-  rowDrafts,
-} from './row-drafts.js';
-export {
-  recordSpecApprovalBaseline,
-  specApprovalBaseline,
-  specApprovalBaselineExists,
-} from './spec-approval-baseline.js';
+export { draftSpecRow, rowDrafts } from './row-drafts.js';
+export { recordSpecApprovalBaseline, specApprovalBaseline, specApprovalBaselineExists } from './spec-approval-baseline.js';
 // The roadmap's moves live in milestones.js; the board keeps exporting them so the engine replays them.
-export {
-  addMilestone,
-  canonicalMilestoneTarget,
-  editMilestone,
-  editMilestoneItems,
-  orderMilestoneItems,
-  moveMilestone,
-  removeMilestone,
-  roadmap,
-  shipMilestone,
-} from './milestones.js';
+export { addMilestone, canonicalMilestoneTarget, editMilestone, editMilestoneItems, orderMilestoneItems, moveMilestone, removeMilestone, roadmap, shipMilestone } from './milestones.js';
 
 export { rowDecisions } from './board-query.js';
 
@@ -2305,14 +2253,7 @@ export function applyRowDecisions(board, { agentId, events }) {
 }
 
 
-export {
-  recentShouts,
-  eventsOfKinds,
-  recentEvents,
-  lastMoves,
-  decisionAndEvidenceShouts,
-  submitInvariantEvents,
-} from './board-hot.js';
+export { recentShouts, eventsOfKinds, recentEvents, lastMoves, decisionAndEvidenceShouts, submitInvariantEvents } from './board-hot.js';
 
 export { stats } from './board-stats.js';
 

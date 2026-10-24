@@ -1,15 +1,7 @@
 /** The public, versioned JSON surface of every pullboard command (A1). */
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import {
-  runFixtureExecFile as execFileSync,
-  startFixtureChild as spawn,
-  runFixtureChild as spawnSync,
-  reportFixtureChildFailure,
-  runFixtureChild,
-  runFixtureGit,
-  safeFixtureDiagnostic,
-} from './fixture-child.js';
+import { runFixtureExecFile as execFileSync, startFixtureChild as spawn, runFixtureChild as spawnSync, reportFixtureChildFailure, runFixtureChild, runFixtureGit, safeFixtureDiagnostic } from './fixture-child.js';
 import { performance } from 'node:perf_hooks';
 import {
   appendFileSync,
@@ -27,46 +19,17 @@ import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
-import {
-  join,
-  dirname,
-  resolve,
-  basename,
-  delimiter,
-} from 'node:path';
-import {
-  after,
-  test,
-} from 'node:test';
-import {
-  main,
-  resultCommands,
-} from '../src/cli.js';
+import { join, dirname, resolve, basename, delimiter } from 'node:path';
+import { after, test } from 'node:test';
+import { main, resultCommands } from '../src/cli.js';
 import { createLocalApiHandler } from '../src/api.js';
 import { serveApi } from '../src/api.js';
 import * as apiExports from '../src/api.js';
-import {
-  addItem as addBoardItem,
-  allShouts,
-  EVENT_LOG_VERSION,
-  closeBoard,
-  events as boardEvents,
-  openBoard,
-  verdictsFor,
-} from '../src/board.js';
+import { addItem as addBoardItem, allShouts, EVENT_LOG_VERSION, closeBoard, events as boardEvents, openBoard, verdictsFor } from '../src/board.js';
 import { SIGNED_EVENT_LOG_VERSION } from '../src/board.js';
-
-// The newest event-log format this Pullboard reads: a board with signed person moves is format 2 [E22].
-const READABLE_EVENT_LOG = Math.max(EVENT_LOG_VERSION, SIGNED_EVENT_LOG_VERSION);
-import {
-  presentationShout,
-  relayPresentation,
-} from '../src/relay-presentation.js';
+import { presentationShout, relayPresentation } from '../src/relay-presentation.js';
 import { JSON_SHAPES } from '../src/json.js';
-import {
-  projectState,
-  serveView,
-} from '../src/serve.js';
+import { projectState, serveView } from '../src/serve.js';
 import { registerProject } from '../src/projects.js';
 import { SSH_SHELL_MARKERS } from '../src/person.js';
 import {
@@ -76,6 +39,9 @@ import {
   nextSseEvent,
   timedMs,
 } from './api-fixture.js';
+
+// The newest event-log format this Pullboard reads: a board with signed person moves is format 2 [E22].
+const READABLE_EVENT_LOG = Math.max(EVENT_LOG_VERSION, SIGNED_EVENT_LOG_VERSION);
 
 const BIN = resolve(import.meta.dirname, '../bin/pullboard.js');
 const TEMP_DIRS = [];
@@ -608,10 +574,7 @@ test('[A5, A6] a future-schema worktree cannot migrate the shared board; main ca
   writeFileSync(guardedSource, unguardedText);
   const mutationProbe = join(unguarded, '.schema-mutation-probe.mjs');
   writeFileSync(mutationProbe, `
-    import {
-  openBoard,
-  closeBoard,
-} from './src/board.js';
+    import { openBoard, closeBoard } from './src/board.js';
     const board = openBoard(process.env.PULLBOARD_FIXTURE_BOARD, undefined, { isMain: false });
     closeBoard(board);
   `);
