@@ -10,6 +10,8 @@ import { localRunnerDescriptor } from '../src/runner-load.js';
 import { recordReceipt } from '../src/gate-receipt.js';
 import * as runnerApi from '../src/runners.js';
 import { runFixtureGit } from './fixture-child.js';
+import { takeResource } from '../src/resources.js';
+import { readRunnerStage } from '../src/runner-stage-read.js';
 
 /** Capture the actual CLI response while supplying a deterministic observation clock. */
 async function run(root, args, clock) {
@@ -89,4 +91,80 @@ test('[C7,O5] legacy receipt timestamps leave runner shares and counts unknown',
   }], { from: '2026-10-24T11:00:00.000Z', to: '2026-10-24T12:00:00.000Z' });
   assert.deepEqual(stage.runners.map(row => [row.busyShare, row.runsServed]), [[null, null], [null, null]]);
   assert.deepEqual(stage.slotWait, { fastQuarterMs: 10, medianMs: 10, slowQuarterMs: 10, worstMs: 10, count: 1 });
+});
+
+
+/** Keep a real local admission open while observing a controlled physical interval. */
+test('[C7,O5] an ongoing physical local holder contributes window occupancy without a completion', async t => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-live-runner-stage-')));
+  runFixtureGit(['init', '-q', '-b', 'main'], { cwd: root, stdio: 'pipe' });
+  const board = store.openBoard(join(root, '.git', 'pullboard', 'board.sqlite'));
+  const machineHome = join(root, 'machine');
+  mkdirSync(machineHome, { recursive: true });
+  writeFileSync(join(machineHome, 'settings.json'), JSON.stringify({ gateSlots: 2, browserSlots: 1 }));
+  const prior = process.env.PULLBOARD_MACHINE_HOME;
+  process.env.PULLBOARD_MACHINE_HOME = machineHome;
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ['Date'], now });
+  let lease;
+  try {
+    lease = await takeResource({ name: 'gate', capacity: 2, scope: 'machine', root,
+      agent: 'private-ongoing-holder', item: 'ongoing', kind: 'check' });
+    t.mock.timers.tick(10_000);
+    const stage = readRunnerStage(root, { from: new Date(now).toISOString(), to: new Date(now + 10_000).toISOString() });
+    const local = stage.runners.find(runner => runner.kind === 'local');
+    assert.equal(local.active, 1);
+    assert.equal(local.busyShare, 0.5, 'one physical admission occupied half of two slots through the observation');
+    assert.equal(local.runsServed, 0, 'the still-held run is not a completion');
+    assert.equal(stage.slotWait.count, 0, 'an open admission does not invent a completed receipt wait');
+  } finally {
+    lease?.release();
+    if (prior === undefined) delete process.env.PULLBOARD_MACHINE_HOME;
+    else process.env.PULLBOARD_MACHINE_HOME = prior;
+    store.closeBoard(board);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
+test('[C7,O5] open observations clip occupancy and leave remote admission or timing exclusivity unknown', () => {
+  const window = { from: '2026-10-24T11:00:00.000Z', to: '2026-10-24T12:00:00.000Z' };
+  const local = { id: 'local:open', kind: 'local', slots: { current: 2, limit: 2, elastic: false },
+    capabilities: { os: 'darwin', browser: true }, active: 1 };
+  const remote = { ...local, id: 'ssh:reserved', kind: 'ssh' };
+  const stage = runnerApi.runnerStage([local, remote], [
+    { ongoing: true, runner: local, admittedAt: '2026-10-24T10:30:00.000Z', observedUntil: '2026-10-24T11:30:00.000Z', waitMs: 999 },
+    { ongoing: true, runner: remote, admittedAt: null, observedUntil: '2026-10-24T11:30:00.000Z' },
+  ], window);
+  assert.equal(stage.runners[0].busyShare, 0.25);
+  assert.equal(stage.runners[0].runsServed, 0);
+  assert.equal(stage.runners[1].busyShare, null, 'a controller reservation has no actual worker admitted boundary');
+  assert.equal(stage.runners[1].runsServed, 0);
+  assert.equal(stage.slotWait.count, 0);
+  const timing = runnerApi.runnerStage([local], [{ ongoing: true, runner: local, timing: true,
+    admittedAt: window.from, observedUntil: window.to }], window);
+  assert.equal(timing.runners[0].busyShare, null, 'a timing flag alone cannot attest absence of legacy peers');
+});
+
+
+test('[C7,O5] measured browser saturation scales compatible elastic capacity without blocking ordinary work', () => {
+  const window = { from: '2026-10-24T11:00:00.000Z', to: '2026-10-24T12:00:00.000Z' };
+  const fixed = { id: 'fixed', kind: 'ssh', slots: { current: 2, limit: 2, elastic: false },
+    capabilities: { os: 'darwin', browser: true }, active: 1, browserSlots: 1, browserActive: 1 };
+  const elastic = { id: 'elastic', kind: 'elastic', slots: { current: 0, limit: 4, elastic: true },
+    capabilities: { os: 'darwin', browser: true }, active: 0 };
+  const stage = { ...runnerApi.runnerStage([fixed, elastic], [], window), slotWait: { medianMs: 50 } };
+  const browser = { capabilities: { browser: true }, slotWaitTargetMs: 10 };
+  assert.deepEqual(runnerApi.placeRunner(stage, browser), { action: 'scale', runnerId: 'elastic', slots: 1 });
+  assert.deepEqual(runnerApi.placeRunner(stage, { ...browser, slotWaitTargetMs: 100 }), { action: 'wait' });
+  assert.deepEqual(runnerApi.placeRunner(stage, { capabilities: { browser: false }, slotWaitTargetMs: 10 }), { action: 'run', runnerId: 'fixed' });
+  const full = { ...stage, runners: stage.runners.map(runner => runner.id === 'elastic'
+    ? { ...runner, slots: { ...runner.slots, current: 4 }, active: 4 } : runner) };
+  assert.deepEqual(runnerApi.placeRunner(full, browser), { action: 'request' });
+  const unknown = { ...stage, runners: stage.runners.map(runner => {
+    if (runner.id !== 'fixed') return runner;
+    const { browserSlots, browserActive, ...rest } = runner;
+    return rest;
+  }) };
+  assert.deepEqual(runnerApi.placeRunner(unknown, browser), { action: 'wait' }, 'unknown browser occupancy is not measured saturation');
 });

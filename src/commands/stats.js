@@ -39,12 +39,11 @@ export function run(io, { values }) {
     if (windowMinutes !== undefined) board.db.exec('SAVEPOINT stats_window_read');
     try {
       const stats = proofStats(board, { since: values.since, now });
-      return { stats, agents: store.listAgents(board), ...(windowMinutes === undefined ? {} : {
-        window: flowStats(store.events(board), null, now, stats, { windowMinutes,
-          executionCapacity: readRunnerStage(ctx.info.root, {
-            from: new Date(now - windowMinutes * 60_000).toISOString(), to: new Date(now).toISOString(),
-          }) }).window,
-      }) };
+      // The lifecycle projection validates the date range before capacity reads use its bounds.
+      const window = windowMinutes === undefined ? undefined
+        : flowStats(store.events(board), null, now, stats, { windowMinutes }).window;
+      if (window) window.executionCapacity = readRunnerStage(ctx.info.root, { from: window.since, to: window.until });
+      return { stats, agents: store.listAgents(board), ...(window ? { window } : {}) };
     } finally {
       if (windowMinutes !== undefined) board.db.exec('RELEASE stats_window_read');
     }

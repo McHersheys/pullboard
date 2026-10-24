@@ -19,8 +19,7 @@ function reportedPlatform(receipts, id) {
 }
 
 /** Build current descriptors from validated settings and the live admission databases. */
-function currentRunners(settings, receipts) {
-  const machineResources = listResources({ scope: 'machine' });
+function currentRunners(settings, receipts, machineResources) {
   const gate = machineResources.find(resource => resource.name === 'gate');
   const browserPool = machineResources.find(resource => resource.name === 'browser');
   const localCapacity = gate?.capacity ?? settings.gateSlots;
@@ -47,8 +46,28 @@ function currentRunners(settings, receipts) {
 
 /** Read retained physical-run receipts and live capacity for exactly `[from,to)`. */
 export function readRunnerStage(root, { from, to }) {
-  const receipts = retainedReceipts(root, { from, to });
   const settings = loadMachineSettings();
-  const runners = currentRunners(settings, receipts);
-  return runnerStage(runners, receipts, { from, to });
+  // Bracket the receipt read with physical-holder snapshots. Changed snapshots are unmeasured,
+  // avoiding a finished receipt plus a stale open observation counting the same work twice.
+  const before = listResources({ scope: 'machine' }).find(resource => resource.name === 'gate')?.holders ?? [];
+  const receipts = retainedReceipts(root, { from, to });
+  const resources = listResources({ scope: 'machine' });
+  const holders = resources.find(resource => resource.name === 'gate')?.holders ?? [];
+  const observedUntil = new Date().toISOString();
+  const runners = currentRunners(settings, receipts, resources);
+  const local = runners[0];
+  const live = [];
+  if (JSON.stringify(before) !== JSON.stringify(holders)) {
+    live.push({ ongoing: true, observedUntil, admittedAt: null, runner: local });
+  } else {
+    for (const holder of holders) live.push({ ongoing: true, admittedAt: holder.since, observedUntil,
+      runner: local, timing: holder.timing === true,
+      // A timing bit does not attest the absence of unfenced legacy clients.
+      ...(holder.timing ? { exclusive: null } : {}) });
+  }
+  for (const runner of runners.slice(1)) {
+    // These are controller reservations, not the worker's physical admission timestamps.
+    if (runner.active > 0) live.push({ ongoing: true, admittedAt: null, observedUntil, runner });
+  }
+  return runnerStage(runners, [...receipts, ...live], { from, to });
 }

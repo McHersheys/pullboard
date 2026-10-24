@@ -115,6 +115,24 @@ export function runnerStage(runners, receipts, window = {}) {
   const waits = [];
   for (const receipt of receipts) {
     if (!record(receipt) || receipt.inherited === true || receipt.slot?.kind === 'inherited') continue;
+    const ongoing = receipt.ongoing === true;
+    // A live observation is not a completion and never supplies a completed-run wait sample.
+    if (ongoing) {
+      const entry = record(receipt.runner) ? byId.get(receipt.runner.id) : null;
+      if (!entry) continue;
+      const admitted = timestamp(receipt.admittedAt);
+      const observed = timestamp(receipt.observedUntil);
+      const slots = record(receipt.runner.slots) ? receipt.runner.slots.current : null;
+      if (admitted === null || observed === null || observed < admitted || slots !== entry.runner.slots.current
+        || !nonnegativeInteger(slots) || receipt.timing !== undefined && typeof receipt.timing !== 'boolean'
+        || receipt.timing === true && (receipt.exclusive !== true || !Array.isArray(receipt.unfencedClients) || receipt.unfencedClients.length)) {
+        entry.unknownShare = true;
+        continue;
+      }
+      const overlap = Math.min(observed, end) - Math.max(admitted, start);
+      if (overlap > 0) entry.slotMs += overlap * (receipt.timing === true ? slots : 1);
+      continue;
+    }
     const legacyAt = timestamp(receipt.at);
     const legacyIntervalRelevant = timestamp(receipt.admittedAt) !== null && timestamp(receipt.finishedAt) !== null
       && timestamp(receipt.finishedAt) > start && timestamp(receipt.admittedAt) < end;
@@ -201,6 +219,14 @@ function capabilityMatch(runner, requested) {
   return unknown ? 'unknown' : 'yes';
 }
 
+/** Use the same known slot and browser-capacity facts for placement and saturation. */
+function availableCapacity(runner, capabilities) {
+  if (runner.unavailable || runner.draining || runner.active >= runner.slots.current) return false;
+  if (capabilities.browser !== true) return true;
+  if (runner.browserSlots !== undefined) return runner.browserActive < runner.browserSlots;
+  return runner.active === 0;
+}
+
 /** Prefer known-compatible, fixed and less-busy available candidates deterministically. */
 function candidateOrder(left, right) {
   return Number(left.match !== 'yes') - Number(right.match !== 'yes')
@@ -233,12 +259,7 @@ export function placeRunner(stage, request = {}) {
   if (new Set(rows.map(runner => runner.id)).size !== rows.length) invalid('runner IDs must be unique');
   const candidates = rows.map(runner => ({ runner, match: capabilityMatch(runner, capabilities) }))
     .filter(candidate => candidate.match !== 'no');
-  const available = candidates.filter(({ runner }) => {
-    if (runner.unavailable || runner.draining || runner.active >= runner.slots.current) return false;
-    if (capabilities.browser !== true) return true;
-    if (runner.browserSlots !== undefined) return runner.browserActive < runner.browserSlots;
-    return runner.active === 0;
-  }).sort(candidateOrder);
+  const available = candidates.filter(({ runner }) => availableCapacity(runner, capabilities)).sort(candidateOrder);
   if (available.length) {
     const best = available[0];
     if (best.match === 'yes') return { action: 'run', runnerId: best.runner.id };
@@ -248,7 +269,11 @@ export function placeRunner(stage, request = {}) {
 
   const fixed = candidates.filter(({ runner }) => !runner.slots.elastic && !runner.unavailable && !runner.draining);
   const elastic = candidates.filter(({ runner, match }) => runner.slots.elastic && match === 'yes' && !runner.unavailable && !runner.draining);
-  const fixedBusy = fixed.length > 0 && fixed.every(({ runner }) => runner.active >= runner.slots.current);
+  const fixedBusy = fixed.length > 0 && fixed.every(({ runner }) => {
+    // Unknown browser use may require waiting, but does not establish measured browser saturation.
+    if (capabilities.browser === true && runner.active < runner.slots.current && runner.browserSlots === undefined) return false;
+    return !availableCapacity(runner, capabilities);
+  });
   const highWait = stage.slotWait.medianMs !== null && stage.slotWait.medianMs > slotWaitTargetMs;
   if (fixedBusy && highWait) {
     const expandable = elastic.filter(({ runner }) => runner.slots.current < runner.slots.limit)
