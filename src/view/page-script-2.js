@@ -720,7 +720,9 @@ function flowSvg(p) {
     shortcut.depth = (index ? shortcuts[index - 1].depth + 24 : 30) + 15 * (shortcut.lines.length - 1);
   });
   const shortcutDepth = shortcuts.length ? shortcuts[shortcuts.length - 1].depth : 0;
-  const lowerGap = Math.max(80, shortcutDepth + 30);
+  // A straight incoming route labels the midpoint of this gap: its words must also sit below
+  // every shortcut, not just place the off-row boxes below them.
+  const lowerGap = Math.max(80, 2 * shortcutDepth + 32);
 
   // A state off the row sits below the last state on it that leads there.
   const below = FLOW.states.filter((s) => !pos.has(s.id));
