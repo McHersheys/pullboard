@@ -48,6 +48,11 @@ import {
   briefFiles,
   briefSections,
 } from './brief.js';
+import {
+  itemFiles,
+  itemFileCollisions,
+} from './item-files.js';
+export { itemFiles };
 import { COORDINATOR } from './config.js';
 import {
   manualLandingFailure,
@@ -2335,6 +2340,7 @@ export function nextFor(board, { agentId, lane, verify = false, policy = 'any', 
     if (hold) { selectedLanes.delete(name); reasons.push(`${hold.hold_by} holds the ${name} lane: ${hold.hold_reason}`); }
   }
   const compare = buildOrder(board, { warm });
+  const inFlight = listItems(board, { all: true });
   const recent = new Set(warm);
   const mainRed = new Set(priority);
   const laneItems = items.filter((entry) => entry.item_status === 'open' && selectedLanes.has(entry.item_lane));
@@ -2366,6 +2372,8 @@ export function nextFor(board, { agentId, lane, verify = false, policy = 'any', 
       .filter((before) => before.item_status !== 'verified');
     const reserved = firstRefusalReason(board, entry.item_id, agentId);
     if (reserved) { reasons.push(reserved); continue; }
+    const collisions = itemFileCollisions(entry, inFlight);
+    if (collisions.length) { reasons.push(...collisions); continue; }
     if (!waiting.length) return { item: entry, reasons, shared };
     reasons.push(`#${entry.item_id} waits on ${waiting.map(waitingOn).join(', ')}`);
   }
@@ -2404,18 +2412,6 @@ function idleReason(items, lane, routed) {
   const awaiting = items.filter((entry) => entry.item_lane === lane && entry.item_status === 'submitted').map((entry) => `#${entry.item_id}`);
   if (!awaiting.length) return reason;
   return `${reason}; ${awaiting.join(', ')} still await${awaiting.length === 1 ? 's' : ''} a verdict, and a rejected item comes back to this lane. A lane is done when its items are verified`;
-}
-
-/**
- * The files an item touches, as far as the board knows: the files its submission changed, else the
- * files its brief names.
- *
- * @param {any} item
- * @returns {string[]}
- */
-export function itemFiles(item) {
-  const changed = (item.item_files ?? '').split('\n').filter(Boolean);
-  return [...new Set([...changed, ...briefFiles(item.item_brief ?? '')])];
 }
 
 /**

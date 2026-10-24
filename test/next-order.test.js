@@ -3,6 +3,7 @@ import { submitFixture } from './board-submit-fixture.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as store from '../src/board.js';
+import { workQueue } from '../src/queue.js';
 import { applyEngineMove, applyRelayMove, prepareEngineMove } from '../src/engine.js';
 import { ENGINE_VERSION, MILESTONE_RANK_ENGINE } from '../src/machine.js';
 import { exportBoard, importBoard } from '../src/exchange.js';
@@ -151,7 +152,7 @@ function crossLaneFixture(t) {
   function add(lane, title, route = 'strong') {
     return json(box.run(box.repo, 'add', lane, title, '--specs', lane === 'api' ? 'G2' : 'G1', '--route', route,
       ...(route === 'strong' ? [] : ['--criterion', 'The item can be built and checked from its brief.', '--check', 'true',
-        '--brief', `Files: ${lane}/page.js\nChange: build the fixture item\nTest: the check proves the fixture`]), '--json')).item.item_id;
+        '--brief', `Files: ${lane}/${route}.js\nChange: build the fixture item\nTest: the check proves the fixture`]), '--json')).item.item_id;
   }
   /** Keep the test's queue order explicit without touching a production board. */
   function milestone(name, id) {
@@ -530,4 +531,107 @@ test('a reserve-next move with skipIds needs engine 69 and older engines replay 
   assert.throws(() => replay(68, true), { code: 'RELAY_MOVE' }, 'a skipIds move below engine 69 is refused, not replayed differently');
   const plain = replay(68, false);
   assert.equal(plain.outcome.result.item.item_id, plain.own, 'a move without skipIds replays at engine 68 as it always did');
+});
+
+/** The native lifecycle is seeded here; these are board-state records, not claimed gate executions. */
+test('next never hands out work that collides with work in flight [N2,B13,N20]', (t) => {
+  const { board, builder, reviewer } = boardFixture();
+  t.after(() => store.closeBoard(board));
+  const other = store.register(board, { lane: 'core', path: '/busy-builder', route: 'strong' });
+  /** Name the actual files as a coordinator's ordinary brief does. */
+  const add = (title, file) => store.addItem(board, { by: 'coordinator', lane: 'core', title,
+    brief: `Files: ${file}\nTest: the native queue respects in-flight work` });
+  const a = add('A is changing the shared file', 'src/x.js');
+  const b = add('B would collide', 'src/x.js');
+  const c = add('C can progress independently', 'src/z.js');
+  store.claim(board, a, { agentId: other, lane: 'core', leaseMs: HOUR, freeze: FREEZE });
+  /** Exercise the same board selector the CLI and runners use, including its explanation. */
+  function avoids(stage) {
+    const next = store.nextFor(board, { agentId: builder, lane: 'core' });
+    assert.equal(next.item.item_id, c, `${stage}: C progresses before overlapping B`);
+    assert.ok(next.reasons.some(reason => reason.includes(`#${b}`) && reason.includes(`#${a}`) && reason.includes('src/x.js')),
+      `${stage}: B names the item and file it waits behind`);
+  }
+  avoids('claimed');
+  const commit = 'a'.repeat(40);
+  submitFixture(board, a, { agentId: other, commit, tree: commit });
+  avoids('submitted');
+  const item = store.getItem(board, a);
+  store.verify(board, a, { agentId: reviewer, decision: 'ACCEPT', policy: 'any', head: commit,
+    digest: item.item_frozen_digest, note: 'Synthetic accepted lifecycle record; no gate execution claimed.' });
+  avoids('accepted but not landed');
+  store.merged(board, a, { agentId: 'coordinator', commit: 'b'.repeat(40) });
+  assert.equal(store.nextFor(board, { agentId: builder, lane: 'core' }).item.item_id, b,
+    'landing A releases B to its original order');
+});
+
+test('an explicit colliding claim warns but remains available to the builder [N2,B13,N20]', (t) => {
+  const box = crossLaneFixture(t);
+  const busy = box.seat('collision-busy', 'web', 'collision-busy-session');
+  const manual = box.seat('collision-manual', 'web', 'collision-manual-session');
+  /** A real coordinator-created brief in the private project's permitted web lane. */
+  const add = title => box.json(box.run(box.repo, 'add', 'web', title, '--specs', 'G1',
+    '--brief', 'Files: web/shared.js\nTest: an explicit choice names its overlap', '--json')).item.item_id;
+  const a = add('A holds the shared file');
+  const b = add('B is an explicit override');
+  box.json(box.runAs('collision-busy-session', busy.root, 'claim', String(a), '--json'));
+  const claimed = box.runAs('collision-manual-session', manual.root, 'claim', String(b));
+  assert.equal(claimed.code, 0, claimed.out + claimed.err);
+  assert.match(claimed.out, new RegExp(`warn.*#${a}.*web/shared\\.js`, 'iu'),
+    'the normal successful claim warns about the other in-flight item and shared file');
+  const renewed = box.json(box.runAs('collision-manual-session', manual.root, 'claim', String(b), '--json'));
+  assert.ok(renewed.warnings?.some(warning => warning.includes(`#${a}`) && warning.includes('web/shared.js')),
+    'machine-readable claims retain the same warning');
+});
+
+test('next considers other lanes but expired claims never block a file [N2,B4,N20]', (t) => {
+  const { board, builder } = boardFixture();
+  t.after(() => store.closeBoard(board));
+  let at = Date.parse('2026-10-24T00:00:00Z');
+  board.clock = { now: () => new Date(at) };
+  const busy = store.register(board, { lane: 'api', path: '/other-lane', route: 'strong' });
+  const a = store.addItem(board, { by: 'coordinator', lane: 'api', title: 'Another lane changes a shared file',
+    brief: 'Files: src/shared.js' });
+  const b = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Same file in this lane',
+    brief: 'Files: src/shared.js' });
+  const c = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Independent file',
+    brief: 'Files: src/free.js' });
+  store.claim(board, a, { agentId: busy, lane: 'api', leaseMs: HOUR, freeze: FREEZE });
+  assert.equal(store.nextFor(board, { agentId: builder, lane: 'core' }).item.item_id, c,
+    'a live claim in another lane still protects its named file');
+  at += HOUR;
+  assert.equal(store.nextFor(board, { agentId: builder, lane: 'core' }).item.item_id, b,
+    'the exact lease boundary releases that file without changing the stored claim');
+});
+
+test('next leaves a brief without named files in its original order [N2,N20]', (t) => {
+  const { board, builder } = boardFixture();
+  t.after(() => store.closeBoard(board));
+  const busy = store.register(board, { lane: 'core', path: '/busy-unspecified', route: 'strong' });
+  const a = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'An in-flight file',
+    brief: 'Files: src/shared.js' });
+  const b = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'No declared file set',
+    brief: 'Change: investigate the next useful improvement' });
+  store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Later work', brief: 'Files: src/free.js' });
+  store.claim(board, a, { agentId: busy, lane: 'core', leaseMs: HOUR, freeze: FREEZE });
+  assert.equal(store.nextFor(board, { agentId: builder, lane: 'core' }).item.item_id, b,
+    'missing file declarations do not invent a reservation or change selection');
+});
+
+test('the queue names the same noncolliding work next can serve [N2,N20]', (t) => {
+  const { board, builder } = boardFixture();
+  t.after(() => store.closeBoard(board));
+  const busy = store.register(board, { lane: 'core', path: '/queue-busy', route: 'strong' });
+  const a = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Already changing a file',
+    brief: 'Files: src/shared.js' });
+  const b = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Must wait for that file',
+    brief: 'Files: src/shared.js' });
+  const c = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Can proceed now',
+    brief: 'Files: src/free.js' });
+  store.claim(board, a, { agentId: busy, lane: 'core', leaseMs: HOUR, freeze: FREEZE });
+  const queue = workQueue(board);
+  assert.equal(queue.first.strong, c, 'queue does not advertise a file collision as available');
+  assert.equal(queue.first.strong, store.nextFor(board, { agentId: builder, lane: 'core' }).item.item_id);
+  assert.ok(queue.unreleased.find(item => item.id === b).waits.some(reason => reason.includes(`#${a}`)
+    && reason.includes('src/shared.js')), 'queue retains the same actionable blocking item and file');
 });
