@@ -340,6 +340,8 @@ test('[H5,H18] the Railway smoke links, reads one unsealed move and unlinks loca
   assert.equal(smoke.code, 0, smoke.failure);
   const result = smoke.result;
   assert.equal(result.ok, true);
+  assert.match(result.board, /^[0-9a-f]{32}$/u, 'the smoke identifies its actual remote board');
+  assert.notEqual(result.board, previous.board, 'relinking after relay off creates a fresh remote board');
   assert.equal(typeof result.item, 'number');
   assert.equal(result.sequence, 1);
   assert.equal(existsSync(box.linkFile), false, 'relay off forgets the private link metadata');
@@ -348,12 +350,12 @@ test('[H5,H18] the Railway smoke links, reads one unsealed move and unlinks loca
     'the smoke only unlinks locally and cannot delete the relay copy without phone approval');
   assert.equal(result.remoteCopyRetained, true);
   assert.match(result.notice, /relay copy stays until you approve deleting it on your phone/u);
-  const retained = await fetch(`${previous.url}/api/v2/boards/${previous.board}/state`, {
+  const retained = await fetch(`${previous.url}/api/v2/boards/${result.board}/state`, {
     headers: { authorization: `Bearer ${phone.token}`, 'x-pullboard-engine': String(ENGINE_VERSION) },
   });
   assert.equal(retained.status, 200, 'local smoke cleanup retains the sealed relay copy for explicit phone deletion');
   const smokeReads = box.calls.slice(beforeSmoke).filter((call) => call.method === 'GET'
-    && new RegExp(`^/api/v[12]/boards/${previous.board}/(?:events|state)(?:\\?|$)`, 'u').test(call.path));
+    && new RegExp(`^/api/v[12]/boards/${result.board}/(?:events|state)(?:\\?|$)`, 'u').test(call.path));
   assert.ok(smokeReads.length >= 2, 'the smoke reads the mirrored event and its native checkpoint over the real HTTP API');
   assert.ok(smokeReads.every((call) => call.engine === String(ENGINE_VERSION)), 'every smoke board-content read declares the current engine after the relay minimum is raised');
   const local = (await box.cli('export')).document;
