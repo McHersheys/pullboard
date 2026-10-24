@@ -290,7 +290,7 @@ test('a verdict reads stale when main moves under its files [E8]', { timeout: 12
     const move = prepareEngineMove(board, 'verify', [1, {
       agentId: verdict.verdict_by, decision: 'ACCEPT', note: verdict.verdict_note,
       head: verdict.verdict_head, digest: verdict.verdict_digest, policy: 'any',
-      check: verdict.check, review: verdict.review,
+      check: verdict.check, review: verdict.review, environment: verdict.environment,
     }]);
     return applyEngineMove(board, move, { sequence: 1, at: verdict.verdict_at });
   });
