@@ -31,7 +31,7 @@ function realGitPath() {
 }
 
 /** Build a private real repo and linked agent worktree with an instrumented Git executable. */
-function fixture(t) {
+function fixture(t, { ruleProof = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'pullboard-git-calls-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const repo = join(dir, 'repo');
@@ -65,10 +65,19 @@ function fixture(t) {
     GIT_COMMITTER_EMAIL: 'agent@example.com',
   };
   writeFileSync(join(repo, 'pullboard.json'), JSON.stringify({
-    spec: 'SPEC.md', practice: 'DOCTRINE.md', gate: 'true',
+    spec: 'SPEC.md', practice: 'DOCTRINE.md', gate: ruleProof ? 'node --test test/proven.test.js' : 'true',
     lanes: { core: { owns: ['src/'], specs: ['C7'] } },
   }));
   writeFileSync(join(repo, 'SPEC.md'), '# Test spec\n\n## C · Core\n- C7 [approved, must] A command reads each Git fact once. | gate: test/git-calls.test.js\n');
+  if (ruleProof) {
+    // Establish this private board's approved rows before init records their original approval baseline.
+    writeFileSync(join(repo, 'SPEC.md'), '# Rule budget fixture\n\n## C · Core\n' +
+      '- C7 [approved, must] Current trunk proof stays cheap to read. | gate: test/proven.test.js\n' +
+      '- C8 [approved, must] Recent red remains visible. | gate: test/red.test.js\n');
+    mkdirSync(join(repo, 'test'));
+    for (const name of ['proven', 'red']) writeFileSync(join(repo, 'test', `${name}.test.js`),
+      `import { test } from 'node:test';\ntest('${name}', () => {});\n`);
+  }
   const git = (cwd, ...args) => {
     const result = runFixtureChild(realGit, args, { cwd, env, encoding: 'utf8', stdio: 'pipe' });
     if (result.status !== 0) throw new Error(result.failure);
@@ -141,19 +150,7 @@ function seedRuleBudgetRun(box, { green = true, days = 0, tree, command, failure
 }
 
 test('populated rule receipt history preserves the linked status Git budget and current proof [C7,S1,A1]', (t) => {
-  const box = fixture(t);
-  const config = JSON.parse(readFileSync(join(box.repo, 'pullboard.json'), 'utf8'));
-  config.gate = 'node --test test/proven.test.js';
-  writeFileSync(join(box.repo, 'pullboard.json'), JSON.stringify(config));
-  writeFileSync(join(box.repo, 'SPEC.md'), '# Rule budget fixture\n\n## C · Core\n' +
-    '- C7 [approved, must] Current trunk proof stays cheap to read. | gate: test/proven.test.js\n' +
-    '- C8 [approved, must] Recent red remains visible. | gate: test/red.test.js\n');
-  mkdirSync(join(box.repo, 'test'));
-  for (const name of ['proven', 'red']) writeFileSync(join(box.repo, 'test', `${name}.test.js`),
-    `import { test } from 'node:test';\ntest('${name}', () => {});\n`);
-  box.git(box.repo, 'add', '-A');
-  box.git(box.repo, 'commit', '-q', '-m', 'test(fixture): add committed rule gates');
-  box.git(box.worker, 'merge', '-q', '--ff-only', 'main');
+  const box = fixture(t, { ruleProof: true });
   seedRuleBudgetRun(box, { green: false, days: 8, failures: [{ file: 'test/proven.test.js', name: 'expired red' }] });
   seedRuleBudgetRun(box, { green: false, days: 2, failures: [{ file: 'test/red.test.js', name: 'recent red' }] });
   seedRuleBudgetRun(box, { tree: 'f'.repeat(40) });
