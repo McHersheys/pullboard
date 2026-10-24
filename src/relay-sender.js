@@ -13,7 +13,7 @@ export function relayMoveActor(move) {
   if (['recordHealthFindings', 'recordFlakeObservation', 'recordGateRun', 'declareJob', 'recordJobRun', 'takeCoordinator', 'landingLeaseMove'].includes(move.operation)) return args[0]?.agentId ?? null;
   if (['holdLane', 'releaseLane'].includes(move.operation) && args[1]?.asPerson) return 'person';
   if (move.operation === 'release') return args[1] ?? null;
-  if (['reserveNextReview', 'addMilestone', 'recordRowDecisions', 'applyRowDecisions', 'draftSpecRow', 'recordSpecApprovalBaseline', 'recordLandingBatch', 'recordLandingWaiver', 'recordLandingFlake', 'finishLandingBatch'].includes(move.operation)) return args[0]?.agentId ?? null;
+  if (['reserveNextReview', 'addMilestone', 'recordRowDecisions', 'applyRowDecisions', 'draftSpecRow', 'recordSpecApprovalBaseline', 'recordLandingBatch', 'recordLandingWaiver', 'recordLandingFlake', 'recordLandingTestDefect', 'finishLandingBatch'].includes(move.operation)) return args[0]?.agentId ?? null;
   if (['acceptCheck', 'completeCheckBaseline', 'appendFact', 'editItem', 'escalate', 'recordAttempt', 'claim', 'submit', 'reserveReview', 'verify', 'merged', 'withdraw', 'refreeze',
     'passDecision', 'answerDecision', 'holdLane', 'releaseLane', 'holdItem', 'releaseItemHold', 'reopen', 'editMilestoneItems', 'orderMilestoneItems', 'moveMilestone', 'editMilestone', 'removeMilestone', 'shipMilestone'].includes(move.operation)) return args[1]?.agentId ?? null;
   return null;
