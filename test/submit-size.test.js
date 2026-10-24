@@ -42,7 +42,7 @@ process.exit(fs.existsSync('web/big.txt') ? 0 : 1);
 test('a submit far over the size budget prints a split suggestion and still submits [V4,C7]', { timeout: 180_000 }, t => { // budget: six real Git/SQLite submissions prove configurable boundaries.
   const helpers = createE2eHelpers();
   t.after(helpers.cleanup);
-  for (const [lines, budget, expected] of [[250, undefined, true], [200, undefined, false], [100, 50, false], [101, 50, true], [250, 200, false], [401, 200, true]]) {
+  for (const [lines, budget, expected] of [[101, 50, true], [250, undefined, true], [200, undefined, false], [100, 50, false], [250, 200, false], [401, 200, true]]) {
     const output = submitSized(helpers, lines, budget);
     const notes = output.match(/[^\n]*consider splitting[^\n]*/gu) ?? [];
     assert.equal(notes.length, expected ? 1 : 0, `${lines} changed lines with budget ${budget ?? 100}: ${output}`);
