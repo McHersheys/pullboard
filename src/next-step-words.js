@@ -72,6 +72,13 @@ export const NEXT_STEPS = Object.freeze({
   SANDBOX_CLEANUP_REQUIRED: 'restore Docker and remove the exact named owned container before another verification',
   SANDBOX_CHECK_REQUIRED: 'set a trusted full gate and frozen causal criterion before intake',
 
+  PERSON_ENROLL_AUTH: 'authenticate a fresh enrollment with the locally trusted person credential',
+  PERSON_ENROLL_EXPIRED: 'create a fresh person-authenticated challenge valid for at most ten minutes',
+  PERSON_ENROLL_REVOKED: 'authenticate a different non-revoked device with the person credential',
+  PERSON_ENROLL_ACCOUNT: 'sign in to the exact account named in the person challenge',
+  PERSON_ENROLL_MISSING: 'use this account’s own person-authenticated enrollment',
+  PERSON_ENROLL_REPLAY: 'create a fresh one-time person challenge; do not reuse the consumed nonce',
+  PERSON_ENVELOPE_AUTH: 'use the original independently retained person material and exact account envelope context',
   PUBLISH_GITHUB: 'inspect gh auth status and the configured GitHub remote, then publish again',
   PUBLISH_STATE: 'preserve publish-pr.json and ask the coordinator to recover its recorded PR identities',
   PUBLISH_UNPROVEN: 'restore the item’s acceptance at its exact submitted commit before publishing',
