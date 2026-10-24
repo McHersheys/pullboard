@@ -142,7 +142,7 @@ export { childResult as relayFixtureChild };
  * fixture once used, a loaded machine kept the test process busy enough that browser replies queued past their
  * deadlines (#955, #979). A case that needs a faster poll passes pollMs by name and says why.
  */
-export async function relayClientFixture(t, { cliChildren, coordinatorModel, accountStorageBytes, pollMs = 200 } = {}) {
+export async function relayClientFixture(t, { cliChildren, coordinatorModel, accountStorageBytes, pollMs = 200, traceCliPhases = false } = {}) {
   const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-relay-cleanup-')));
   const root = join(scratch, 'repo');
   const home = join(scratch, 'home');
@@ -563,9 +563,9 @@ globalThis.fetch = function tracedFetch(input, init) {
     /** Observe only this child's received work; retries consume the same finite six-unit allowance. */
     const observedWork = () => ({ legacyUploads: snapshotWriteCount - writesBefore,
       ...Object.fromEntries(Object.entries(pageWork).map(([name, count]) => [name, count - pagesBefore[name]])) });
-    const phaseFile = args[0] === 'export' ? join(scratch, `export-phase-${cliChildIndex}-${Date.now()}.jsonl`) : null;
+    const phaseFile = (traceCliPhases || args[0] === 'export') ? join(scratch, `export-phase-${cliChildIndex}-${Date.now()}.jsonl`) : null;
     const phaseEnv = phaseFile ? { ...env, PULLBOARD_STARTUP_TRACE_ENTRY: CLI, PULLBOARD_STARTUP_TRACE_FILE: phaseFile } : env;
-    const childEnv = traceSnapshotWrites ? { ...env, PULLBOARD_TEST_RELAY_TRACE_FILE: traceFile,
+    const childEnv = traceSnapshotWrites ? { ...phaseEnv, PULLBOARD_TEST_RELAY_TRACE_FILE: traceFile,
       PULLBOARD_TEST_RELAY_TRACE_ORIGIN: origin,
       NODE_OPTIONS: [env.NODE_OPTIONS, '--import=' + pathToFileURL(tracePreload).href].filter(Boolean).join(' ') } : phaseEnv;
     const traceLinesBefore = traceSnapshotWrites ? readFileSync(traceFile, 'utf8').split('\n').filter(Boolean).length : 0;
@@ -589,9 +589,9 @@ globalThis.fetch = function tracedFetch(input, init) {
     } finally {
       if (phaseFile) {
         try {
-          t.diagnostic('export CLI phase timing: ' + JSON.stringify({ child: cliChildIndex,
+          t.diagnostic('private CLI phase timing: ' + JSON.stringify({ child: cliChildIndex, command: args[0],
             phases: existsSync(phaseFile) ? readFileSync(phaseFile, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line)) : [] }));
-        } catch (error) { t.diagnostic('export CLI phase timing unavailable: ' + error.code); }
+        } catch (error) { t.diagnostic('private CLI phase timing unavailable: ' + error.code); }
       }
     }
     if (traceSnapshotWrites) result.snapshotTrace = childTrace();
