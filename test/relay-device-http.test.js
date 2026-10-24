@@ -60,7 +60,7 @@ test('excluded inventories keep names sealed, isolate accounts and refuse revoke
     origin: box.origin, body: { board, repository: 'fixture/repository' } })).response.status, 200);
   const issued = await deviceRequest(box, '/auth/machines', { method: 'POST', cookie: owner,
     origin: box.origin, body: { board, machine } });
-  assert.equal(issued.response.status, 200);
+  assert.equal(issued.response.status, 201);
   const token = issued.document.token;
   assert.equal((await deviceRequest(box, path, { method: 'POST', token, engine: ENGINE_VERSION, body })).response.status, 200,
     'the enrolled machine can publish immediately without a retained person session');
