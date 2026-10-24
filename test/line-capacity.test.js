@@ -126,5 +126,9 @@ test('legacy submissions without recorded submit history still consume native WI
   assert.equal(snapshot.wip, 1);
   assert.equal(snapshot.pending[0].item_id, waiting);
   assert.equal(snapshot.pending[0].submitted_order, null, 'missing history is unknown, never an invented submit time');
+  store.setLineSetting(replica, { agentId: 'coordinator', key: 'wipPerReviewer', value: 1.5, reason: 'legacy queue control', window: { activeReviewers: 1 } });
+  const next = store.addItem(replica, { by: 'coordinator', lane: 'core', title: 'new work beside legacy submission' });
+  assert.throws(() => store.claim(replica, next, { agentId: f.reviewer, lane: 'core', leaseMs: HOUR, freeze: FREEZE }),
+    error => error.code === 'LINE_WIP_LIMIT' && error.message.includes('submit age unknown') && error.message.includes(`#${waiting}`));
   assert.deepEqual(store.events(f.board, { itemId: waiting }), original);
 });

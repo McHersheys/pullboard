@@ -32,8 +32,9 @@ export function lineCapacityProblem(board, { renewal, oldestReview } = {}) {
   const limit = lineWipLimit(ratio, snapshot.activeReviewers);
   if (snapshot.wip + 1 <= limit) return null;
   const review = oldestReview?.(snapshot.pending);
+  const age = review?.submitted_order === null ? 'waiting item (submit age unknown)' : 'oldest waiting item';
   return new Refused('LINE_WIP_LIMIT', `the line has ${snapshot.wip} live claims and submissions against limit ${limit}; `
-    + (review ? `review oldest waiting item #${review.item_id}: pullboard next --verify ${review.item_id}`
+    + (review ? `review ${age} #${review.item_id}: pullboard next --verify ${review.item_id}`
       : 'no waiting review is eligible for this seat; ask the coordinator to arrange an eligible reviewer'));
 }
 
