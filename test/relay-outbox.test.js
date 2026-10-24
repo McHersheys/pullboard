@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { ENGINE_OPERATIONS } from '../src/engine.js';
+import { rememberCreatedItems } from '../src/relay-created-items.js';
 import {
   ITEM_SLOTS,
   bindRefs,
@@ -307,3 +308,31 @@ test('a milestone edit naming an offline item follows that item when another mac
 });
 
 test('a relay refusal after a recorded move says it was recorded [C6,N26,H16]', recordedRelayRefusal);
+
+
+test('created-item bindings distinguish repair outputs and survive reordered multi-repair results [B26,H16,H17]', () => {
+  const publication = { move: { id: 'publication', operation: 'recordPublishFinding' } };
+  rememberCreatedItems(publication, { item: 9, repair: 12 });
+  const gate = { move: { id: 'gate', operation: 'recordGateRun' } };
+  rememberCreatedItems(gate, { quarantined: [{ file: 'test/a.test.js', name: 'a', item: 13 },
+    { file: 'test/b.test.js', name: 'b', item: 14 }] });
+  const outbox = { moves: [publication, gate], results: {} };
+  const move = { operation: 'addItem', args: [{ parentId: 12, after: [13, 14, 9] }] };
+  const entry = { move, refs: bindRefs(outbox, move) };
+  assert.equal(entry.refs.length, 3, 'the original publication item is not a newly created repair');
+  outbox.results.publication = { item: 9, repair: 22 };
+  outbox.results.gate = { quarantined: [{ file: 'test/b.test.js', name: 'b', item: 24 },
+    { file: 'test/a.test.js', name: 'a', item: 23 }] };
+  const resolved = resolveMove(entry, outbox);
+  assert.deepEqual(resolved.move.args, [{ parentId: 22, after: [23, 24, 9] }]);
+  assert.deepEqual(resolved.lost, []);
+  outbox.results.gate.quarantined.shift();
+  assert.deepEqual(resolveMove(entry, outbox).lost, [14], 'a missing repair is lost rather than bound to a different array member');
+  outbox.results.publication = null;
+  assert.deepEqual(resolveMove(entry, outbox).lost, [12, 14], 'a refused creator cannot redirect its dependent move');
+  rememberCreatedItems(gate, { quarantined: [{ file: 'test/a.test.js', name: 'a', item: 33 },
+    { file: 'test/b.test.js', name: 'b', item: 34 }] });
+  rememberCreatedItems(publication, { item: 9, repair: 32 });
+  assert.deepEqual(resolveMove(entry, outbox, { local: true }).move.args, [{ parentId: 32, after: [33, 34, 9] }],
+    'partial replay uses each newly shown local repair identity');
+});
