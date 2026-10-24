@@ -11,6 +11,7 @@ import { exportBoard, importBoard, restoreRelaySnapshot, semanticBoardDigest } f
 import { assertLandingLease } from '../src/landing-lease.js';
 import { LANDING_LOCAL_PREFIX, localLandingEntry } from '../src/landing-local-lease.js';
 import { takeLandingResource } from '../src/landing-resource.js';
+import { LANDING_LEASE_ENGINE } from '../src/landing-lease-engine.js';
 
 /** Give each test two physical boards and a private receipt clock, never a live coordinator credential. */
 function fixture(t) {
@@ -96,4 +97,22 @@ test('physical heartbeat identity cannot attach to another board or arrive in an
     assert.equal(localLandingEntry(board, holder), null, 'board identity participates in the local token/generation binding');
     board.db.prepare("UPDATE board_meta SET meta_value=? WHERE meta_key='board_id'").run(old);
   } finally { await lease.release(); }
+});
+
+
+test('historical landing lease receipts retain their original renewal events [Q1,H16]', t => {
+  const box = fixture(t); const [board] = box.boards;
+  const request = { agentId: 'coordinator', action: 'request', token: randomUUID(), branch: 'refs/heads/main', pid: process.pid };
+  let sequence = 0;
+  /** Replay the old sealed protocol rather than silently rewriting historical event meaning. */
+  const oldMove = args => {
+    const move = { ...prepareEngineMove(board, 'landingLeaseMove', [args]), engine: LANDING_LEASE_ENGINE };
+    const outcome = applyEngineMove(board, move, { sequence: ++sequence, at: board.clock.now().toISOString() });
+    assert.equal(outcome.error, undefined, JSON.stringify(outcome.error));
+    return outcome.result;
+  };
+  const grant = oldMove(request);
+  box.advance(1000);
+  oldMove({ ...request, action: 'renew', generation: grant.generation });
+  assert.equal(board.db.prepare("SELECT count(*) AS n FROM event WHERE event_kind='landing_lease'").get().n, 2);
 });
