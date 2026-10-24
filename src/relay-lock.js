@@ -1,3 +1,4 @@
+import { beginCommandPhase } from './command-phase.js';
 /** The per-board link lock: one worktree sends at a time, and a sibling waits instead of failing (#919). */
 import { randomUUID } from 'node:crypto';
 import {
@@ -97,37 +98,41 @@ function takeDirectory(lock) {
  * after 15 s failed for a reason the person cannot fix (#919); the wait is up to 2 minutes with a progress line.
  */
 export async function locked(file, work, io) {
-  const lock = file + '.lock';
-  mkdirSync(dirname(file), { recursive: true });
-  const startedAt = Date.now();
-  const deadline = startedAt + (io?.relayLockWaitMs ?? LOCK_WAIT_MS);
-  const progressEvery = io?.relayLockProgressMs ?? LOCK_PROGRESS_MS;
-  let nextProgress = startedAt + progressEvery;
-  const lease = openLease(file);
-  const token = randomUUID();
+  const finishWait = beginCommandPhase('waiting-lock');
   try {
-    while (!(takeLease(lease, token) && takeDirectory(lock))) {
-      if (Date.now() >= deadline) throw new Refused('RELAY_BUSY', `another worktree was still sending this board after ${Math.round((Date.now() - startedAt) / 1000)} s; this attempt was not recorded; run the command again`);
-      if (io?.err && Date.now() >= nextProgress) {
-        nextProgress = Date.now() + progressEvery;
-        io.err(`pullboard: waiting for another worktree to finish sending this board (${Math.round((Date.now() - startedAt) / 1000)} s of ${Math.round((deadline - startedAt) / 1000)} s)`);
-      }
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
+    const lock = file + '.lock';
+    mkdirSync(dirname(file), { recursive: true });
+    const startedAt = Date.now();
+    const deadline = startedAt + (io?.relayLockWaitMs ?? LOCK_WAIT_MS);
+    const progressEvery = io?.relayLockProgressMs ?? LOCK_PROGRESS_MS;
+    let nextProgress = startedAt + progressEvery;
+    const lease = openLease(file);
+    const token = randomUUID();
     try {
-      // Only the current lock holder can have a live link write; remove crashed legacy bearer fragments.
-      for (const name of readdirSync(dirname(file))) {
-        if (/^relay\.json\.[0-9a-f-]+\.tmp$/u.test(name)) rmSync(join(dirname(file), name), { force: true });
+      while (!(takeLease(lease, token) && takeDirectory(lock))) {
+        if (Date.now() >= deadline) throw new Refused('RELAY_BUSY', `another worktree was still sending this board after ${Math.round((Date.now() - startedAt) / 1000)} s; this attempt was not recorded; run the command again`);
+        if (io?.err && Date.now() >= nextProgress) {
+          nextProgress = Date.now() + progressEvery;
+          io.err(`pullboard: waiting for another worktree to finish sending this board (${Math.round((Date.now() - startedAt) / 1000)} s of ${Math.round((deadline - startedAt) / 1000)} s)`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
       }
-      return await work();
+      finishWait();
+      try {
+        // Only the current lock holder can have a live link write; remove crashed legacy bearer fragments.
+        for (const name of readdirSync(dirname(file))) {
+          if (/^relay\.json\.[0-9a-f-]+\.tmp$/u.test(name)) rmSync(join(dirname(file), name), { force: true });
+        }
+        return await work();
+      } finally {
+        // Remove only this command's own directory lock; another's is never ours to free.
+        let owner = null;
+        try { owner = ownerOf(lock); } catch { /* Already gone, or never named: nothing of ours to keep. */ }
+        if (owner === process.pid) rmSync(lock, { recursive: true, force: true });
+      }
     } finally {
-      // Remove only this command's own directory lock; another's is never ours to free.
-      let owner = null;
-      try { owner = ownerOf(lock); } catch { /* Already gone, or never named: nothing of ours to keep. */ }
-      if (owner === process.pid) rmSync(lock, { recursive: true, force: true });
+      releaseLease(lease, token);
+      lease.close();
     }
-  } finally {
-    releaseLease(lease, token);
-    lease.close();
-  }
+  } finally { finishWait(); }
 }

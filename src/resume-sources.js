@@ -1,4 +1,5 @@
 /** Fresh, bounded Git facts for the ordinary resume card; detailed diagnostics stay explicit [N19,D1]. */
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { readFileSync } from 'node:fs';
@@ -17,6 +18,7 @@ import { loadDoctrine } from './doctrine.js';
 import { agentDoctrine } from './doctrine-rulings.js';
 import { cleanGitEnvironment } from './git.js';
 import { headCommit } from './git.js';
+import { mainSourceBlobs } from './git.js';
 import { mainCheckout } from './git.js';
 import { tryGit } from './git.js';
 import { Refused } from './refused.js';
@@ -62,10 +64,27 @@ async function doctrineSourceAt(read, commit, name) {
   return { name, source };
 }
 
+/** Use working bytes only after their exact Git blob identities match this command's committed snapshot. */
+function matchedDoctrine(ctx, primary, main, validatedPrimary) {
+  const blobs = mainSourceBlobs(ctx.info.root);
+  if (!blobs || blobs.commit !== main?.commit || !samePath(primary, validatedPrimary)) return null;
+  try {
+    const config = readFileSync(join(primary, CONFIG_FILE));
+    const doctrine = readFileSync(join(primary, DOCTRINE_FILE));
+    /** Git hashes the type and byte length together with the original bytes, in the repository's object format. */
+    const matches = (bytes, oid) => createHash(oid.length === 64 ? 'sha256' : 'sha1')
+      .update(`blob ${bytes.length}\0`).update(bytes).digest('hex') === oid;
+    if (!matches(config, blobs.config) || !matches(doctrine, blobs.doctrine)) return null;
+    if (configFromSource(config.toString('utf8')).practice !== DOCTRINE_FILE) return null;
+    return { shared: doctrineFromSource(doctrine.toString('utf8'), DOCTRINE_FILE) };
+  } catch { return null; } // Missing or unreadable working copies retain the committed Git reader and its refusals.
+}
+
 /** Read shared committed guidance and optional stale-overlay HEAD through one fresh Git child. */
-async function sharedDoctrine(ctx, board, primary, main, includeHeadDoctrine) {
+async function sharedDoctrine(ctx, board, primary, main, includeHeadDoctrine, validatedPrimary) {
   if (!main?.commit) return { doctrine: agentDoctrine(ctx, board) };
-  const snapshot = await withCommittedFiles(ctx.info.root, async read => {
+  const matched = !includeHeadDoctrine && matchedDoctrine(ctx, primary, main, validatedPrimary);
+  const snapshot = matched || await withCommittedFiles(ctx.info.root, async read => {
     const config = await read(main.commit, CONFIG_FILE);
     let shared = ctx.doctrine;
     if (config !== null) {
@@ -109,5 +128,5 @@ export async function readResumeSources(ctx, board, { compareBranch = true, incl
   }
   // Guidance follows Git's listed primary exactly as agentDoctrine does, even when placement cannot be proven.
   const guidanceRoot = listed[0]?.path;
-  return { ...await sharedDoctrine(ctx, board, guidanceRoot, main, includeHeadDoctrine), primary, branch, mainRef: main?.branch, ahead, behind };
+  return { ...await sharedDoctrine(ctx, board, guidanceRoot, main, includeHeadDoctrine, primary), primary, branch, mainRef: main?.branch, ahead, behind };
 }
