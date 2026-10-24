@@ -4,7 +4,11 @@
  * tree's id in the git dir, so the same tree is never checked twice. An agent sees a digest of the
  * run, not the run (V10): a passing suite's output costs tokens and says nothing.
  */
-import { checkNeedsGui, projectNeedsGui, testsNeedGui } from './gui-admission.js';
+import {
+  checkNeedsGui,
+  projectNeedsGui,
+  testsNeedGui,
+} from './gui-admission.js';
 import {
   spawn,
   spawnSync,
