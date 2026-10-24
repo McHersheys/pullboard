@@ -178,11 +178,13 @@ export function handAnsweredQuestions(before, after, readDecisions) {
 function decisionReceipt({ event, at, applied, appliedAt, ...record }) { return record; }
 
 /** Preflight every file and signature before an apply writes even its first byte. */
-export function planRowApply(root, config, records) {
+export function planRowApply(root, config, records, { passkeyDecision = () => false } = {}) {
   const pending = records.filter((record) => !record.applied);
   const files = new Map();
   for (const record of pending) {
-    verifyRowDecision(root, record);
+    const verifiedPasskey = passkeyDecision(record);
+    if (verifiedPasskey) verifySignedRecords(root, readRawRecords(root));
+    else verifyRowDecision(root, record);
     const file = record.kind === 'spec' ? config.spec : loadDoctrine(root, config).name;
     const aliases = new Set(['DOCTRINE.md', 'PRACTICE.md']);
     if (file !== record.file && !(record.kind === 'doctrine' && aliases.has(file) && aliases.has(record.file))) throw new Refused('STALE_ROW_DECISION', `${record.id}'s file changed; ask the person to approve its current row again`);
@@ -191,6 +193,7 @@ export function planRowApply(root, config, records) {
     const lines = (change.after ?? change.before).split('\n');
     const parsed = loadSpec(root, { ...config, spec: file });
     const matches = parsed.rows.filter((row) => row.id === record.id);
+    if (verifiedPasskey && matches[0]?.signers?.length) throw new Refused('PERSON_SIGNER_REQUIRED', `${record.id} names its SSH signers ${matches[0].signers.join(', ')}`, 'a passkey does not claim any named SSH identity');
     const index = matches.length === 1 ? matches[0].line - 1 : -1;
     const source = index < 0 ? '' : lines[index].replace(/\r$/u, '');
     if (source !== record.source && source !== record.replacement) throw new Refused('STALE_ROW_DECISION', `${record.id}'s exact row changed after the person's decision; ask the person to approve its current text again`);
