@@ -1,3 +1,4 @@
+import { ENGINE_VERSION } from '../src/machine.js';
 /** @pullboard-test-input source-tree */
 /** @pullboard-test-input test-tree */
 /** @pullboard-test-loads src/move-registry.js src/moves/*.js */
@@ -59,7 +60,11 @@ test('today\'s move order, actors, recovery text and recorded SQLite prefix are 
     assert.deepEqual(applyEngineMove(board, move, options), outcome, move.operation);
     assert.deepEqual(applyEngineMove(board, move, options), outcome, 'same-position retry returns its immutable receipt');
   }
-  assert.equal(JSON.stringify(exportBoard(board)), JSON.stringify(SNAPSHOT.replay.acceptedExpected), 'items, events, receipts and replay cursor retain accepted-main bytes for the exact historical moves');
+  const expected = structuredClone(SNAPSHOT.replay.acceptedExpected);
+  // This tag describes the current reader/writer capability, not the engine of an immutable old receipt.
+  const capability = expected.tables.board_meta.find(row => row.meta_key === 'relay_engine_version');
+  capability.meta_value = String(ENGINE_VERSION);
+  assert.equal(JSON.stringify(exportBoard(board)), JSON.stringify(expected), 'items, events, receipts and cursor retain accepted-main bytes; only the explicit current-engine capability tag advances');
 });
 
 test('two new board moves declared in two files need no edit to engine.js, relay-sender.js or next-step-words.js [C7,V4,H3,H16]', t => {

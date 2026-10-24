@@ -14,12 +14,17 @@ function target(move) {
 
 /** A version marker is not a grant: it only prevents an older engine bypassing a new seat or claim. */
 export function agentGrantMinimum(board, move) {
+  // Communication and review administration neither widen nor replace a claim. An old claim could erase its version marker.
+  if (move.operation !== 'claim' && (ADMINISTRATIVE.has(move.operation) || !target(move))) return 1;
   const actor = MOVE_REGISTRY[move.operation]?.actor(move);
   if (typeof actor !== 'string' || ['person', 'coordinator', 'machine'].includes(actor)) return 1;
   const event = board.db.prepare("SELECT event_detail FROM event WHERE event_by=? AND event_kind IN ('join','claim','renew') ORDER BY event_id DESC LIMIT 1").get(actor);
-  if (!event) return 1;
-  const version = JSON.parse(event.event_detail).grantEngine;
-  return Number.isSafeInteger(version) && version >= AGENT_GRANT_ENGINE ? AGENT_GRANT_ENGINE : 1;
+  const item = target(move)?.item ?? (move.operation === 'claim' ? move.args?.[0] : null);
+  const claimed = Number.isSafeInteger(item) ? board.db.prepare("SELECT event_detail FROM event WHERE item_id=? AND event_kind IN ('claim','renew') ORDER BY event_id DESC LIMIT 1").get(item) : null;
+  return [event, claimed].some(row => {
+    const version = row && JSON.parse(row.event_detail).grantEngine;
+    return Number.isSafeInteger(version) && version >= AGENT_GRANT_ENGINE;
+  }) ? AGENT_GRANT_ENGINE : 1;
 }
 
 /** Refuse out-of-grant item changes at the same ordered instant on every replica. */

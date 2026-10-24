@@ -723,7 +723,10 @@ globalThis.fetch = function tracedFetch(input, init) {
     assert.equal((await childResult(otherRoot, initEnv, [CLI, 'init', '--json'])).code, 0, 'the cloned project initializes its private local board');
     const joined = await run('relay', 'join', code, '--url', origin);
     const document = joined.document;
-    if (joined.code !== 0) throw new Error('real clone did not join the one-use pairing code');
+    if (joined.code !== 0) {
+      const refusal = document?.error?.code;
+      throw new Error(`real clone did not join the one-use pairing code (${typeof refusal === 'string' && /^[A-Z0-9_]+$/u.test(refusal) ? refusal : 'NO_TYPED_REFUSAL'})`);
+    }
     const exported = await run('export');
     if (exported.code !== 0) throw new Error('paired clone could not read its restored board');
     const link = JSON.parse(readFileSync(join(otherRoot, '.git', 'pullboard', 'relay.json'), 'utf8'));

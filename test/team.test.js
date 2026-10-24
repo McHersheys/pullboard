@@ -915,7 +915,7 @@ test('an agent grant narrows at claim and expires identically on independent rep
   assert.equal(fact(1, 'The expired lease no longer authorizes a move', expired).error?.code,
     'AGENT_GRANT_EXPIRED', 'ordered receipt time, not the receiving machine clock, ends the grant');
   // Administrative communication and release cannot be trapped behind the grant being reported.
-  assert.equal(replay('shout', [{ from: actor, to: 'coordinator', text: 'My claim expired; arranging the next work.' }], expired).error,
+  assert.equal(replay('shout', [{ from: actor, to: 'coordinator', text: 'My claim expired; arranging the next work.', lanes: ['web', 'api'] }], expired).error,
     undefined, 'ordinary coordination remains available after expiry');
   assert.equal(replay('release', [1, actor, 'Done with this claim.'], expired).error, undefined);
   assert.equal(fact(1, 'Release does not revive an expired grant', expired).error?.code, 'AGENT_GRANT_EXPIRED',
@@ -944,6 +944,7 @@ test('an agent grant narrows at claim without changing old receipts or permittin
   };
   apply('register', [{ lane: 'coordinator', path: box.repo, model: 'fixture-model' }]);
   const actor = apply('register', [{ lane: 'web', path: box.web, model: 'fixture-model' }]).outcome.result;
+  const other = apply('register', [{ lane: 'web', path: join(box.dir, 'legacy-other-seat'), model: 'fixture-model' }]).outcome.result;
   for (const title of ['First', 'Second']) apply('addItem', [{ by: 'coordinator', lane: 'web', title,
     criterion: 'A real file must exist', specIds: [], check: 'test -f grant-proof' }]);
   /** Freeze an actual private Git revision; replicas receive only the canonical frozen value. */
@@ -957,6 +958,8 @@ test('an agent grant narrows at claim without changing old receipts or permittin
   const prior = apply('appendFact', [2, { agentId: actor, kind: 'note', text: 'Legacy behavior stays recorded.' }]);
   const forged = prepareEngineMove(boards[0], 'appendFact', [2, { agentId: actor, kind: 'note', text: 'Old engine cannot bypass the new claim.' }]);
   forged.engine = legacy;
+  const oldPeer = prepareEngineMove(boards[0], 'appendFact', [1, { agentId: other, kind: 'note', text: 'Another old seat must understand the new item grant.' }]);
+  oldPeer.engine = legacy;
   apply('claim', [1, options], AGENT_GRANT_ENGINE);
   for (const board of boards) {
     const before = store.itemThread(board, 2);
@@ -965,6 +968,9 @@ test('an agent grant narrows at claim without changing old receipts or permittin
     assert.throws(() => applyEngineMove(board, forged, { sequence: appliedSequence(board) + 1, at: clock.now().toISOString() }),
       error => error.code === 'RELAY_MOVE' && error.message.includes(String(AGENT_GRANT_ENGINE)),
       'a freshly sealed old-engine move cannot bypass new-claim authority');
+    assert.throws(() => applyEngineMove(board, oldPeer, { sequence: appliedSequence(board) + 1, at: clock.now().toISOString() }),
+      error => error.code === 'RELAY_MOVE' && error.message.includes(String(AGENT_GRANT_ENGINE)),
+      'another legacy seat cannot interpret a newly claimed item under old grant semantics');
     assert.deepEqual(store.itemThread(board, 2), before, 'neither old receipt replay nor a forged old move adds a fact');
   }
 });

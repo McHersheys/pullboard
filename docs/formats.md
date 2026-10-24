@@ -406,10 +406,12 @@ Each connection also has a temporary `moving(token INTEGER)` table and `status_t
 
 The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its append-only record format has the independent `EVENT_LOG_VERSION`. Each event has an increasing integer id, an ISO timestamp, the actor, the event kind, an optional item id, and a JSON object in `event_detail`. Board moves append their event inside the same immediate transaction as the move. Events are append-only; board triggers reject updates and deletes. The actor column is the acting agent id, except guard-repair events, which use `board`. Under engine 8 and later, each event by a registered agent also carries a `model` string snapshot in `event_detail`; legacy agents without a declaration use `unknown`. Declared models live under `agent_model:<agent id>` in `board_meta`, without changing the agent table or stable ids. Rejoining with another model appends a `model` event whose common snapshot holds the new declaration. This common snapshot is separate from the per-kind payload fields listed below. The following rows name the emitted kinds and the union of their operation-specific detail keys; CLI accept events additionally carry the frozen-check result described below:
 
+The computed-grant engine adds `grantEngine` to new join, claim and renewal events as a version marker only. It stores no grant or scope: permission is computed from the seat lane, current claim and lease, or the current review reservation. Older event bytes remain unchanged. A new marker prevents an older engine from reinterpreting a narrowed claim; communication and review administration keep their existing engine floors.
+
 <!-- events:start -->
 | Kind | Actor | Detail fields |
 | --- | --- | --- |
-| `join` | joining agent | `lane`, `route` |
+| `join` | joining agent | `lane`, `route`, optional `grantEngine` |
 | `family` | agent | `family` |
 | `model` | agent | — |
 | `moved` | coordinator | `path` |
@@ -418,8 +420,8 @@ The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its ap
 | `escalate` | builder | `from`, `to`, `note`, `attempt` |
 | `attempt` | reporting agent | `n`, `seconds`, `result` |
 | `fact` | author | `id`, `kind`, `text`, `ref`, `supersedes`, engine-20 `implies`, `decision`, `supersededBy`, engine-30 `cause`, `neverAgain`, `channel` |
-| `claim` | builder | `leaseUntil`, `digest` |
-| `renew` | builder | `leaseUntil`, `digest` |
+| `claim` | builder | `leaseUntil`, `digest`, optional `grantEngine` |
+| `renew` | builder | `leaseUntil`, `digest`, optional `grantEngine` |
 | `release` | builder | — |
 | `submit` | builder | `commit`, `tree`, `policyCommit`, engine-9 `criterionDigest`, engine-38 `submissionProof` |
 | `reserve` | reviewer | `until` |

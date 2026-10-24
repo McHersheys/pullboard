@@ -158,6 +158,13 @@ export const GUARDS = [
   { id: 'conflictAccepted', refuse: 'NOT_ACCEPTED', alsoRefuses: [{ code: 'BAD_CONFLICT', next: 'run pullboard reopen <id> --conflict <file> from the main checkout' }, { code: 'ENGINE_VERSION', next: 'upgrade Pullboard on every linked device before using --conflict' }], rule: 'a trunk conflict reopens an accepted item, names its files and the full trunk commit, and replays only under engine 52 or later', next: 'reopen a submission with --note "why"', source: 'board', when: 'only for reopen --conflict' },
 ];
 
+/** Shared named item-grant refusals reachable through native dispatch. */
+const AGENT_GRANT_REFUSALS = [
+  { code: 'AGENT_GRANT_EXPIRED', rule: 'an item mutation has a live claim or review grant', next: 'claim the intended item, or shout the coordinator if its claim is unavailable' },
+  { code: 'AGENT_GRANT_ITEM', rule: 'an item mutation belongs to the current claim or review grant', next: 'finish or release the claim, then claim the intended item; use shout for coordination' },
+  { code: 'AGENT_GRANT_LANE', rule: 'an item mutation stays inside the unclaimed seat lane', next: 'join a seat in the intended lane or ask its owner to make the item change' },
+];
+
 /** @type {Move[]} */
 export const MOVES = [
   { verb: 'intake', from: ['open'], to: 'submitted', by: ['agent', 'coordinator'], refuse: 'NOT_CLAIMABLE',
@@ -175,6 +182,7 @@ export const MOVES = [
   {
     verb: 'submit', from: ['claimed'], to: 'submitted', by: ['agent', 'coordinator'], refuse: 'NOT_YOURS',
     guards: ['joined', 'itemExists', IN_STATE, 'isHolder', 'correctionRefrozen', 'checkProvesSomething', 'barReady', 'criterionUnchanged', 'treeClean', 'nothingUntracked', 'hasCommit', 'withinLane', 'trunkMergeClean', 'trunkInCandidate', 'noUnverifiedStack', 'infraExplained', 'doctrineHolds', 'gateConfigured', 'queuedItemLease', 'gateGreen', 'treeStillDuringGate', 'submissionProofValid', 'childrenDone', 'headIsNew'],
+    alsoRefuses: AGENT_GRANT_REFUSALS,
     sets: ['item_built_by', 'item_commit'], command: 'pullboard submit <id>',
   },
   {
@@ -185,13 +193,13 @@ export const MOVES = [
   {
     verb: 'accept', from: ['submitted', 'verified'], to: 'verified', by: ['agent', 'coordinator'], refuse: 'NOT_SUBMITTED',
     guards: ['coordinatorSaysAs', 'joined', 'itemExists', IN_STATE, 'atSubmittedCommit', 'notMerged', 'verdictReviewRecorded', 'reviewTreeCurrent', 'notBuilder', 'routeAllows', 'policyAllows', 'familyAllows', 'reviewFree', 'criterionUnchanged', 'reasonIsMet', 'trunkMergeClean', 'noUnverifiedStack', 'queuedItemLease', 'itemCheckGreen', 'proofNoted'],
-    alsoRefuses: [{ code: 'VERDICT_ENVIRONMENT', rule: 'optional recorded verdict environment contains exact platform, architecture and Node version', next: 'run the frozen check with current Pullboard, then have an independent reviewer record a fresh verdict with its actual executor environment' }, { code: 'LAND_HEADER', rule: 'a displayed merge command fits the commit-header limit', next: 'shorten the item title or cited rows so the merge header fits' }, { code: 'ENGINE_VERSION', rule: 'a verdict that implies items replays only under engine 20 or later', next: 'upgrade Pullboard on every linked device before using --implies' }],
+    alsoRefuses: [...AGENT_GRANT_REFUSALS, { code: 'VERDICT_ENVIRONMENT', rule: 'optional recorded verdict environment contains exact platform, architecture and Node version', next: 'run the frozen check with current Pullboard, then have an independent reviewer record a fresh verdict with its actual executor environment' }, { code: 'LAND_HEADER', rule: 'a displayed merge command fits the commit-header limit', next: 'shorten the item title or cited rows so the merge header fits' }, { code: 'ENGINE_VERSION', rule: 'a verdict that implies items replays only under engine 20 or later', next: 'upgrade Pullboard on every linked device before using --implies' }],
     sets: ['item_verified_by'], command: 'pullboard verify <id> accept --note "..."',
   },
   {
     verb: 'reject', from: ['submitted', 'verified'], to: 'open', by: ['agent', 'coordinator'], refuse: 'NOT_SUBMITTED',
     guards: ['coordinatorSaysAs', 'joined', 'itemExists', IN_STATE, 'atSubmittedCommit', 'notMerged', 'verdictReviewRecorded', 'reviewTreeCurrent', 'notBuilder', 'routeAllows', 'policyAllows', 'familyAllows', 'reviewFree', 'criterionUnchanged', 'reasonCoded', 'noteGiven', 'causeWellFormed'],
-    alsoRefuses: [{ code: 'VERDICT_ENVIRONMENT', rule: 'optional recorded verdict environment contains exact platform, architecture and Node version', next: 'run the frozen check with current Pullboard, then have an independent reviewer record a fresh verdict with its actual executor environment' }, { code: 'LAND_HEADER', rule: 'a displayed merge command fits the commit-header limit', next: 'shorten the item title or cited rows so the merge header fits' }, { code: 'ENGINE_VERSION', rule: 'a verdict that implies items replays only under engine 20 or later', next: 'upgrade Pullboard on every linked device before using --implies' }, { code: 'NOT_YOURS', rule: 'the automatic escalation is authorized as the coordinator or item holder', next: 'ask the coordinator to inspect the item and its route' }, { code: 'CLOSED', rule: 'the rejected item remains open or claimed when automatic escalation starts', next: 'pullboard show <id>, then ask the coordinator to inspect its current state' }],
+    alsoRefuses: [...AGENT_GRANT_REFUSALS, { code: 'VERDICT_ENVIRONMENT', rule: 'optional recorded verdict environment contains exact platform, architecture and Node version', next: 'run the frozen check with current Pullboard, then have an independent reviewer record a fresh verdict with its actual executor environment' }, { code: 'LAND_HEADER', rule: 'a displayed merge command fits the commit-header limit', next: 'shorten the item title or cited rows so the merge header fits' }, { code: 'ENGINE_VERSION', rule: 'a verdict that implies items replays only under engine 20 or later', next: 'upgrade Pullboard on every linked device before using --implies' }, { code: 'NOT_YOURS', rule: 'the automatic escalation is authorized as the coordinator or item holder', next: 'ask the coordinator to inspect the item and its route' }, { code: 'CLOSED', rule: 'the rejected item remains open or claimed when automatic escalation starts', next: 'pullboard show <id>, then ask the coordinator to inspect its current state' }],
     command: 'pullboard verify <id> reject --reason CODE --note "..."',
   },
   {
