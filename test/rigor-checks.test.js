@@ -27,6 +27,7 @@ import { draftConflictSplits } from '../src/rigor-splits.js';
 import { proposeDoctrine } from '../src/doctrine-rulings.js';
 import { conflictNote } from '../src/trunk-conflict.js';
 import { conflictNoteFiles, conflictReport } from '../src/rigor-conflicts.js';
+import { RIGOR_AUTO_ENGINE } from '../src/rigor-auto-engine.js';
 import {
   breachLine,
   changeRange,
@@ -138,9 +139,10 @@ function fixture(name) {
 }
 
 /** Record synthetic conflict history through public board moves, without claiming gates ran. */
-function conflictHistory() {
+function conflictHistory({ automatic = true } = {}) {
   const box = conflictE2e.project('true');
   const board = store.openBoard(join(box.repo, '.git/pullboard/board.sqlite'));
+  if (!automatic) board.executionEngineVersion = RIGOR_AUTO_ENGINE - 1;
   try {
     const builder = store.register(board, { lane: 'web', path: join(box.dir, 'history-builder'), model: 'Fixture builder' });
     const reviewer = store.register(board, { lane: 'web', path: join(box.dir, 'history-reviewer'), model: 'Fixture reviewer' });
@@ -194,7 +196,7 @@ test('a hot file becomes a draft split proposal [D1,C7]', () => {
   assert.equal(row.gate, 'review', 'a suggestion has no fabricated executable proof');
   assert.match(row.text, /splitting "src\/cli\.js"/u);
   assert.match(row.text, /one module per command/u);
-  assert.match(row.text, /Source: conflict-split:/u);
+  assert.match(row.text, /Source: rigor-auto:/u, 'the explicit command materializes the advice already created by the failure move');
   assert.doesNotMatch(row.text, /Source: rigor:/u);
   assert.deepEqual(doctrine.repo.rows.filter(row => row.id !== draft.row.id), original, 'existing judgments remain unchanged');
   assert.equal(readFileSync(join(box.repo, 'SPEC.md'), 'utf8'), beforeSpec);
@@ -422,8 +424,8 @@ test('Pullboard\'s four checks count what main has [D1, C7]', async (t) => {
   });
 });
 
-test('a split draft resumes after its row is reserved [D1]', async () => {
-  const box = conflictHistory();
+test('a legacy split draft resumes after its row is reserved [D1,H16]', async () => {
+  const box = conflictHistory({ automatic: false });
   const board = store.openBoard(join(box.repo, '.git/pullboard/board.sqlite'));
   try {
     const report = conflictReport(store.events(board));
@@ -464,8 +466,8 @@ test('a split draft resumes after its row is reserved [D1]', async () => {
 });
 
 
-test('concurrent split proposals keep one reserved row [D1]', async () => {
-  const box = conflictHistory();
+test('concurrent legacy split proposals keep one reserved row [D1,H16]', async () => {
+  const box = conflictHistory({ automatic: false });
   const board = store.openBoard(join(box.repo, '.git/pullboard/board.sqlite'));
   try {
     const report = conflictReport(store.events(board));

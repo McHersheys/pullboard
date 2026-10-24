@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** A paired person can use narrow CLI actions; agents cannot impersonate those actions [H12,H16,B26]. */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

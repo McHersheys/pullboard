@@ -180,6 +180,7 @@ export const NEXT_STEPS = Object.freeze({
   BRIEF_TOO_LONG: 'shorten the brief and point to a longer doc by path, or pass --brief-file <file>',
   BROWSER_SLOT_REQUIRED: 'release the gate lease and take it again with browser: true',
   RUNNER_CAPACITY_BUSY: 'nothing to do on that runner: rerun once its running jobs end, and it runs at its new registered size',
+  RUNNER_GUI_SESSION_REQUIRED: 'nothing to do: the run reruns locally; log in to a GUI session on the runner before sending GUI-marked files there',
   RUNNER_BROWSER_SLOT_REQUIRED: 'nothing to do: the run reruns on a local gate slot; if it repeats, set gate.browserByLaunch the same on this machine and that runner',
   CANNOT_SIGN: 'sign only approved rows: pullboard spec signoff <approved ids>',
   CHECKOUT_SESSION: 'run pullboard takeover from the agent session that owns this checkout',
