@@ -10,6 +10,11 @@ import { Refused } from './refused.js';
 import { syncRelay } from './relay.js';
 import { executePersonRequests } from './relay-request-execution.js';
 import { autoLinkProject } from './relay-setup.js';
+import { gitSyncLinked } from './local-state.js';
+import {
+  context,
+  withBoard,
+} from './cli-context.js';
 
 /** Codes a checkout with no board refuses with, which the sync around a command keeps quiet. */
 const QUIET = ['NOT_A_REPO', 'NO_REPO', 'NO_CONFIG', 'CORE_BARE'];
@@ -27,6 +32,10 @@ async function reportQuietly(io, error) {
 /** A network refusal preserves offline reads; linked mutation dispatch requires an acknowledgement. */
 export async function retrySync(io) {
   try {
+    if (io.relayCommand?.cliOperation !== 'sync' && gitSyncLinked(io.cwd)) {
+      const ctx = context(io);
+      await withBoard(ctx, board => import('./sync.js').then(sync => sync.syncGitBoard(io.cwd, board, io)));
+    }
     io.relayOutbox ??= () => relayOutboxSetting(io.cwd);
     await syncRelay(io.cwd, io);
     await retryCheckBaselines(io.cwd, io);
@@ -36,7 +45,7 @@ export async function retrySync(io) {
 
 /** Before a command: link this project when the machine links new ones, sync, then run the person's waiting requests. */
 export async function syncBefore(io, main) {
-  try { await autoLinkProject(io.cwd, io); } catch (error) { if (!(error instanceof Refused)) throw error; }
+  try { if (io.relayCommand?.cliOperation !== 'sync' && !gitSyncLinked(io.cwd)) await autoLinkProject(io.cwd, io); } catch (error) { if (!(error instanceof Refused)) throw error; }
   await retrySync(io);
   // An off that only the relay can vouch for is checked against the relay's own authority before anything reads it (#408).
   try { await (await import('./person-signing-cli.js')).attestBeforeCommand(io.cwd, io); }

@@ -157,10 +157,12 @@ test('a trunk conflict is not counted as a test cause [D1,B3]', () => {
 
   const reopenOf = (id) => readItem(box, id).thread.findLast((entry) => entry.type === 'move' && entry.kind === 'reopen').detail;
   assert.deepEqual(reopenOf(red.id).landingFailure.tests, [{ file: 'web/landing.test.js', name: 'keeps the landed behavior' }], 'a red landing names its failing test');
-  assert.equal(reopenOf(red.id).cause, undefined);
+  assert.equal(reopenOf(red.id).cause, 'test:web/landing.test.js::keeps the landed behavior', 'a red landing derives the cause of its failing test (engine 102)');
   const conflict = reopenOf(item.id);
   assert.equal(conflict.landingFailure, undefined, 'a trunk conflict names no failing test');
-  assert.equal(conflict.cause, 'refusal:MERGE_CONFLICT', 'its cause key is the merge-conflict refusal, which rigor never counts');
+  assert.equal(conflict.cause, `conflict:${ALL_FILES[0]}`, 'its cause key is the conflict kind (engine 102), never a test: key');
+  assert.ok(conflict.cause.startsWith('conflict:') && !conflict.cause.startsWith('test:'), 'a merge conflict is not a test cause');
+  assert.equal(conflict.causeDerivation.kind, 'merge-conflict', 'it names the merge conflict as its derivation');
   assert.deepEqual(conflict.conflict, { files: ALL_FILES, trunk });
   assert.equal(conflict.note, 'two accepted items changed web/feature.js', 'a note the coordinator gives is kept');
   assert.ok(!Object.keys(conflict).some((key) => /test/iu.test(key)), 'no field records a test');

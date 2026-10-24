@@ -47,6 +47,8 @@ export function createRelayBrowserHandler({ authenticate }) {
     ['/relay/device-keys.js', ['text/javascript', readFileSync(new URL('../src/relay-device-keys.js', import.meta.url), 'utf8')]],
     ['/relay/relay-approval.js', ['text/javascript', readFileSync(new URL('../src/relay-approval.js', import.meta.url), 'utf8').replace("'./relay-device-keys.js'", "'./device-keys.js'")]],
     ['/relay/browser-devices.js', ['text/javascript', readFileSync(new URL('./browser-devices.js', import.meta.url), 'utf8')]],
+    ['/relay/browser-excluded.js', ['text/javascript', readFileSync(new URL('./browser-excluded.js', import.meta.url), 'utf8')]],
+    ['/relay/excluded-notice.js', ['text/javascript', readFileSync(new URL('./excluded-notice.js', import.meta.url), 'utf8')]],
     ['/relay/browser-approval-card.js', ['text/javascript', readFileSync(new URL('./browser-approval-card.js', import.meta.url), 'utf8')]],
     ['/relay/browser-passkeys.js', ['text/javascript', readFileSync(new URL('./browser-passkeys.js', import.meta.url), 'utf8')]],
     ['/relay/client.js', ['text/javascript', readFileSync(new URL('./browser-client.js', import.meta.url), 'utf8')]],

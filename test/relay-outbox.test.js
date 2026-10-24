@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { ENGINE_OPERATIONS } from '../src/engine.js';
+import { rememberCreatedItems } from '../src/relay-created-items.js';
 import {
   ITEM_SLOTS,
   bindRefs,
@@ -140,6 +141,51 @@ test('an item added while the relay is down keeps its queued moves when another 
   }
 });
 
+test('an offline hand-off keeps its own item number after another machine adds [B3,B26,H16,H17]', async (t) => {
+  const { box, other } = await twoMachines(t, 'Before the offline hand-off');
+  /** Join a real local worktree before the outage so both hand-off actors have authenticated seats. */
+  async function seat(name) {
+    const path = join(dirname(box.root), name);
+    runFixtureGit(['worktree', 'add', '-q', '-b', `agent/${name}`, path], { cwd: box.root, env: box.env });
+    const joined = await box.cliAt(path, 'join', box.lane, '--model', 'fixture-model');
+    assert.equal(joined.code, 0, joined.failure);
+    return { path, id: joined.document.agent };
+  }
+  const outgoing = await seat('outgoing');
+  const incoming = await seat('incoming');
+  await box.stopRelay();
+  const opened = await box.cliAt(outgoing.path, 'handoff');
+  assert.equal(opened.code, 0, opened.failure);
+  const local = opened.document.handoff.item;
+  const fact = await box.cliAt(outgoing.path, 'fact', String(local), 'note', 'Keep this note on its own hand-off');
+  assert.equal(fact.code, 0, fact.failure);
+  const taken = await box.cliAt(incoming.path, 'handoff', '--take', String(local));
+  assert.equal(taken.code, 0, taken.failure);
+  assert.equal(taken.document.handoff.item, local);
+
+  await box.restartRelay();
+  const remote = await (await otherAgent(box, other))('add', box.lane, 'Remote item takes the offline number');
+  assert.equal(remote.code, 0, remote.failure);
+  assert.equal(remote.document.item.item_id, local);
+  const replayed = await box.cli('status');
+  assert.equal(replayed.code, 0, replayed.failure);
+  assert.equal(replayed.document.relay.outboxRefusals, undefined, 'the fact and take follow their own hand-off instead of the remote item');
+  assert.deepEqual(replayed.document.relay.outboxRenumbered, [{ was: local, is: local + 1 }]);
+  for (const machine of [box, other]) {
+    const exported = await machine.cli('export');
+    const tables = exported.document.tables;
+    assert.equal(tables.item.find(row => row.item_id === local).item_title, 'Remote item takes the offline number');
+    const thread = await machine.cli('show', String(local + 1));
+    assert.equal(thread.code, 0, thread.failure);
+    const notes = tables.event.filter(row => row.event_kind === 'fact' && JSON.parse(row.event_detail).text === 'Keep this note on its own hand-off');
+    assert.equal(notes.length, 1, 'the original fact is recorded once');
+    assert.equal(notes[0].item_id, local + 1, 'the fact is bound to the hand-off');
+    const takes = tables.event.filter(row => row.event_kind === 'handoff-take');
+    assert.equal(takes.length, 1, 'the incoming seat takes over once');
+    assert.equal(takes[0].item_id, local + 1, 'the take is bound to the hand-off');
+  }
+});
+
 test('an offline item stays bound to its queued moves through a replay that stops part way and new work after it [B26,H16,H17]', async (t) => {
   const { box, other } = await twoMachines(t, 'Added before the outage');
   await box.stopRelay();
@@ -262,3 +308,31 @@ test('a milestone edit naming an offline item follows that item when another mac
 });
 
 test('a relay refusal after a recorded move says it was recorded [C6,N26,H16]', recordedRelayRefusal);
+
+
+test('created-item bindings distinguish repair outputs and survive reordered multi-repair results [B26,H16,H17]', () => {
+  const publication = { move: { id: 'publication', operation: 'recordPublishFinding' } };
+  rememberCreatedItems(publication, { item: 9, repair: 12 });
+  const gate = { move: { id: 'gate', operation: 'recordGateRun' } };
+  rememberCreatedItems(gate, { quarantined: [{ file: 'test/a.test.js', name: 'a', item: 13 },
+    { file: 'test/b.test.js', name: 'b', item: 14 }] });
+  const outbox = { moves: [publication, gate], results: {} };
+  const move = { operation: 'addItem', args: [{ parentId: 12, after: [13, 14, 9] }] };
+  const entry = { move, refs: bindRefs(outbox, move) };
+  assert.equal(entry.refs.length, 3, 'the original publication item is not a newly created repair');
+  outbox.results.publication = { item: 9, repair: 22 };
+  outbox.results.gate = { quarantined: [{ file: 'test/b.test.js', name: 'b', item: 24 },
+    { file: 'test/a.test.js', name: 'a', item: 23 }] };
+  const resolved = resolveMove(entry, outbox);
+  assert.deepEqual(resolved.move.args, [{ parentId: 22, after: [23, 24, 9] }]);
+  assert.deepEqual(resolved.lost, []);
+  outbox.results.gate.quarantined.shift();
+  assert.deepEqual(resolveMove(entry, outbox).lost, [14], 'a missing repair is lost rather than bound to a different array member');
+  outbox.results.publication = null;
+  assert.deepEqual(resolveMove(entry, outbox).lost, [12, 14], 'a refused creator cannot redirect its dependent move');
+  rememberCreatedItems(gate, { quarantined: [{ file: 'test/a.test.js', name: 'a', item: 33 },
+    { file: 'test/b.test.js', name: 'b', item: 34 }] });
+  rememberCreatedItems(publication, { item: 9, repair: 32 });
+  assert.deepEqual(resolveMove(entry, outbox, { local: true }).move.args, [{ parentId: 32, after: [33, 34, 9] }],
+    'partial replay uses each newly shown local repair identity');
+});

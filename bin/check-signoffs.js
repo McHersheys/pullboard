@@ -16,6 +16,8 @@ function main() {
   if (result.problem) {
     process.stderr.write(result.problem + '\n');
     process.exitCode = 1;
+  } else if (result.policyInactive) {
+    process.stdout.write('sign-off policy not active at base ' + (range.base ?? '(none)') + '\n');
   } else process.stdout.write('Contributor sign-offs checked: ' + result.checked + ' non-merge commits.\n');
 }
 
