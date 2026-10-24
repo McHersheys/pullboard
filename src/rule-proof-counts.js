@@ -59,6 +59,7 @@ export function ruleProofCounts(root, board, rows, { now = board.clock.now().get
     const fingerprint = proofCoverageFingerprint();
     const source = proofCounter(board, `rule-green:${head}:${fingerprint}`);
     if (!source || source.head !== head || source.fingerprint !== fingerprint) return counts;
+    if (source.runtime !== null && source.runtime !== process.execPath) return counts;
     const included = new Set(source.files);
     counts.proven = gated.filter(row => { const files = rowFiles(row); return files.length > 0 && files.every(file => included.has(file)); }).length;
     counts.unproven = gated.length - counts.proven;

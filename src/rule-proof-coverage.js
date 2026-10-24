@@ -5,9 +5,9 @@ import { tryGit } from './git.js';
 import { literalShellWords } from './literal-shell-words.js';
 const FILE = /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*\.(?:[cm]?js|cts)$/u;
 
-/** Bind cached interpretation to the exact installed parser, canonical runner and runtime command identity. */
+/** Bind cached interpretation to installed parser and canonical runner bytes, independent of reader runtime. */
 export function proofCoverageFingerprint() {
-  const hash = createHash('sha256').update(JSON.stringify([process.execPath, process.version]));
+  const hash = createHash('sha256').update('rule-coverage-source-v2');
   for (const name of ['./rule-proof-coverage.js', './literal-shell-words.js', '../bin/run-tests.js']) {
     hash.update(name).update(readFileSync(new URL(name, import.meta.url)));
   }
@@ -40,14 +40,14 @@ function keepsShellContext(words) {
 }
 
 /** Resolve supported configured test commands at the receipt's committed source; opaque commands prove no file. */
-function includedFiles(root, commit, command, tracked, depth = 0) {
+function includedFiles(root, commit, command, tracked, depth = 0, context = {}) {
   if (depth > 4) return [];
   const words = literalShellWords(command);
   if (!words) {
     // A green AND chain proves its selected commands only if no earlier part changed the shell's cwd/environment.
     const parts = command.split(' && ');
     return parts.length > 1 && parts.every(part => keepsShellContext(literalShellWords(part)))
-      ? parts.flatMap(part => includedFiles(root, commit, part, tracked, depth + 1)) : [];
+      ? parts.flatMap(part => includedFiles(root, commit, part, tracked, depth + 1, context)) : [];
   }
   if (words[0] === 'npm' && (words[1] === 'test' && words.length === 2 || words[1] === 'run' && words.length === 3)) {
     try {
@@ -55,10 +55,11 @@ function includedFiles(root, commit, command, tracked, depth = 0) {
       const manifest = JSON.parse(source.stdout);
       if (Object.hasOwn(manifest, 'workspaces') || tracked.has('.npmrc')) return [];
       const script = manifest.scripts?.[words[1] === 'test' ? 'test' : words[2]];
-      return typeof script === 'string' ? includedFiles(root, commit, script, tracked, depth + 1) : [];
+      return typeof script === 'string' ? includedFiles(root, commit, script, tracked, depth + 1, context) : [];
     } catch { return []; }
   }
   if (words[0] !== 'node' && words[0] !== process.execPath) return [];
+  if (words[0] === process.execPath) context.execPath = process.execPath;
   if (words[1] === '--test') return selectedFiles(words.slice(2), tracked, false);
   if (words[1]?.replace(/^\.\//u, '') === 'bin/run-tests.js' && tracked.has('bin/run-tests.js')) {
     const source = tryGit(root, ['show', `${commit}:bin/run-tests.js`]);
@@ -80,7 +81,9 @@ export function committedRuleCoverage(root, head) {
     if (tree.status !== 0 || entries.status !== 0) return null;
     const tracked = new Set(entries.stdout.split('\0').filter(entry => /^(?:100644|100755) blob /u.test(entry))
       .map(entry => entry.slice(entry.indexOf('\t') + 1)));
+    const context = {};
+    const files = [...new Set(includedFiles(root, head, config.gate, tracked, 0, context))];
     return { head, tree: tree.stdout.trim(), command: createHash('sha256').update(config.gate).digest('hex'),
-      fingerprint: proofCoverageFingerprint(), files: [...new Set(includedFiles(root, head, config.gate, tracked))] };
+      fingerprint: proofCoverageFingerprint(), runtime: context.execPath ?? null, files };
   } catch { return null; }
 }

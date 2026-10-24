@@ -32,12 +32,14 @@ export function appendRuleProof(board, event, detail, get, put) {
   const root = sourceRoot(board);
   if (!root) return;
   const fingerprint = proofCoverageFingerprint();
-  const key = `rule-source:${run.head}:${fingerprint}:${encodeURIComponent(root)}`;
+  const key = `rule-source:${run.head}:${fingerprint}:${encodeURIComponent(root)}:${encodeURIComponent(process.execPath)}`;
   let source = get(key);
   if (!source) {
     source = committedRuleCoverage(root, run.head);
     if (source) put(key, source);
   }
   if (!source || source.head !== run.head || source.tree !== run.tree || source.command !== run.command || source.fingerprint !== fingerprint) return;
+  // Another writer may not recognize an absolute Node path; its opaque result cannot erase known coverage.
+  if (!source.files.length) return;
   put(`rule-green:${run.head}:${fingerprint}`, { ...source, event: event.event_id });
 }
