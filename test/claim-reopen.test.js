@@ -118,7 +118,7 @@ test('[B13,B5] first refusal does not bypass the existing one-live-claim rule', 
   const f = fixture(t);
   const id = returned(f, 'landing', 30);
   const second = store.addItem(f.board, { by: 'coordinator', lane: 'core', title: 'another', route: 'mid',
-    criterion: 'prove', check: 'true', brief: 'Files: src/a.js\nTest: proves another fix' });
+    criterion: 'prove', check: 'true', brief: 'Files: src/unrelated.js\nTest: proves another fix' });
   claim(f, second, f.builder);
   assert.throws(() => claim(f, id, f.builder), error => error.code === 'ONE_CLAIM');
   store.release(f.board, second, f.builder);
@@ -130,7 +130,7 @@ test('[B13,B5] releasing another review cannot cancel the builder reservation', 
   const f = fixture(t);
   const id = returned(f, 'reject', 30);
   const another = store.addItem(f.board, { by: 'coordinator', lane: 'core', title: 'review another', route: 'mid',
-    criterion: 'prove', check: 'true', brief: 'Files: src/a.js\nTest: proves another fix' });
+    criterion: 'prove', check: 'true', brief: 'Files: src/unrelated.js\nTest: proves another fix' });
   claim(f, another, f.other);
   submitFixture(f.board, another, { agentId: f.other, commit: COMMIT, tree: COMMIT });
   store.reserveReview(f.board, another, { agentId: f.builder, leaseMs: 1_800_000, policy: 'any' });
@@ -207,7 +207,7 @@ function signReady(f, id, agentId = f.other) {
     note: 'The builder can meet this bar; two reviewers can use the named witness and listed edges to grade it alike.' });
 }
 
-test('[U113,V1,H16] a claim waits for a bar signed by another session', (t) => {
+test('[B4,V2,V1,H16] a claim waits for a bar signed by another session', (t) => {
   const f = fixture(t);
   readyAuthors(f);
   setBarReady(f.board, { agentId: 'coordinator', enabled: true });
@@ -230,7 +230,7 @@ test('[U113,V1,H16] a claim waits for a bar signed by another session', (t) => {
   assert.equal(barReadiness(replica, store.getItem(replica, id)).missing.length, 0);
 });
 
-test('[U113,H16] readiness is default off and activation preserves old frozen work', (t) => {
+test('[B4,V2,H16] readiness is default off and activation preserves old frozen work', (t) => {
   const f = fixture(t);
   assert.equal(barReadySetting(f.board).enabled, false);
   const old = readyItem(f, 'green');
@@ -239,7 +239,8 @@ test('[U113,H16] readiness is default off and activation preserves old frozen wo
   const activation = setBarReady(f.board, { agentId: 'coordinator', enabled: true });
   assert.deepEqual(setBarReady(f.board, { agentId: 'coordinator', enabled: true }), activation, 'repeating on cannot grandfather new obligations');
   claim(f, old, f.builder);
-  store.release(f.board, old, f.builder);
+  claim(f, old, f.builder);
+  submitFixture(f.board, old, { agentId: f.builder, commit: COMMIT, tree: COMMIT });
   const fresh = readyItem(f, 'green');
   assert.throws(() => claim(f, fresh, f.builder), error => error.code === 'BAR_NOT_READY' && error.message.includes('red check baseline'));
   setBarReady(f.board, { agentId: 'coordinator', enabled: false });
@@ -250,7 +251,7 @@ test('[U113,H16] readiness is default off and activation preserves old frozen wo
   assert.throws(() => setBarReady(f.board, { agentId: f.other, enabled: false }), error => error.code === 'COORDINATOR_ONLY');
 });
 
-test('[U113,V2] all missing bar parts are named and content reversal cannot revive a signature', (t) => {
+test('[B4,V2] all missing bar parts are named and content reversal cannot revive a signature', (t) => {
   const f = fixture(t);
   readyAuthors(f);
   setBarReady(f.board, { agentId: 'coordinator', enabled: true });
@@ -267,7 +268,7 @@ test('[U113,V2] all missing bar parts are named and content reversal cannot revi
   claim(f, id, f.builder);
 });
 
-test('[U113,V1] unknown lineage and a changed baseline cannot masquerade as peer approval', (t) => {
+test('[B4,V1] unknown lineage and a changed baseline cannot masquerade as peer approval', (t) => {
   const f = fixture(t);
   setBarReady(f.board, { agentId: 'coordinator', enabled: true });
   const id = readyItem(f);

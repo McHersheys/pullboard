@@ -34,19 +34,32 @@ export function setBarReady(board, { agentId, enabled }) {
   return atomic(board, () => {
     const prior = barReadySetting(board);
     if (prior.enabled === enabled) return prior;
-    logEvent(board, agentId, 'bar-ready', null, { enabled });
+    const grandfathered = enabled ? board.db.prepare('SELECT * FROM item WHERE item_frozen_digest IS NOT NULL').all().map(item => ({ id: item.item_id, digest: barDigest(item), frozen: item.item_frozen_digest, revision: read(board, `bar_revision:${item.item_id}`)?.revision ?? 0 })) : [];
+    logEvent(board, agentId, 'bar-ready', null, { enabled, grandfathered });
     const setting = { enabled, since: board.lastEvent.event_id };
+    for (const bar of grandfathered) save(board, `bar_grandfather:${bar.id}`, { ...bar, since: setting.since });
     save(board, 'bar_ready_setting', setting);
     return setting;
   });
+}
+/** Retain every field's prior author when readiness is enabled on an existing open item. */
+function historicalAuthors(board, item) {
+  const fields = Object.fromEntries(FIELDS.map(field => [field, item.item_created_by]));
+  for (const event of board.db.prepare("SELECT event_by,event_detail FROM event WHERE item_id=? AND event_kind='edit' ORDER BY event_id").all(item.item_id)) {
+    const detail = JSON.parse(event.event_detail);
+    for (const [key, field] of Object.entries({ brief: 'item_brief', criterion: 'item_criterion', check: 'item_check', after: 'item_after', route: 'item_route' })) {
+      if (Object.hasOwn(detail, key)) fields[field] = event.event_by;
+    }
+  }
+  return Object.fromEntries(Object.entries(fields).map(([field, agent]) => [field, { agent, parent: parent(board, agent) }]));
 }
 /** Snapshot authors on semantic edits, never retroactively upgrading an unknown historical parent. */
 export function recordBarRevision(board, item, by, before = null) {
   if ((board.executionEngineVersion ?? ENGINE_VERSION) < BAR_READY_ENGINE || !barReadySetting(board).enabled) return;
   const previous = read(board, `bar_revision:${item.item_id}`);
-  const changed = FIELDS.filter(key => !previous || !before || before[key] !== item[key]);
-  if (!changed.length) return;
-  const authors = { ...(previous?.authors ?? {}) };
+  const changed = FIELDS.filter(key => !before || before[key] !== item[key]);
+  if (!changed.length && previous) return;
+  const authors = previous?.authors ?? historicalAuthors(board, item);
   for (const field of FIELDS) {
     if (changed.includes(field)) authors[field] = { agent: by, parent: parent(board, by) };
     else if (!authors[field]) authors[field] = { agent: item.item_created_by, parent: parent(board, item.item_created_by) };
@@ -72,9 +85,10 @@ export function barReadinessRequired(board, item) {
   const setting = barReadySetting(board);
   if (!setting.enabled) return false;
   if (!item.item_frozen_digest) return true;
-  const edited = read(board, `bar_revision:${item.item_id}`)?.revision ?? 0;
-  const frozen = board.db.prepare("SELECT MAX(event_id) AS id FROM event WHERE item_id=? AND event_kind IN ('claim','refreeze')").get(item.item_id).id ?? 0;
-  return Math.max(edited, frozen) > setting.since;
+  const old = read(board, `bar_grandfather:${item.item_id}`);
+  const revision = read(board, `bar_revision:${item.item_id}`)?.revision ?? 0;
+  return !old || old.since !== setting.since || old.digest !== barDigest(item)
+    || old.frozen !== item.item_frozen_digest || old.revision !== revision;
 }
 /** Mechanical omissions are aggregated, so the coordinator can repair the bar in one pass. */
 export function barReadiness(board, item, { signature = true } = {}) {
