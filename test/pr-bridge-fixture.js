@@ -124,7 +124,7 @@ export async function bridgeProvider(t, box) {
     const commitsRoute = /^\/repos\/fixture\/repository\/pulls\/(\d+)\/commits$/u.exec(url.pathname);
     if (commitsRoute) {
       const pull = state.pulls.find(p => p.number === Number(commitsRoute[1]));
-      const commits = box.git(box.repo, 'rev-list', `${pull.base.sha}..${pull.head.sha}`).split('\n').filter(Boolean);
+      const commits = box.git(box.remote, 'rev-list', `${pull.base.sha}..${pull.head.sha}`).split('\n').filter(Boolean);
       return reply(200, commits.slice((Number(url.searchParams.get('page') ?? 1) - 1) * 100,
         Number(url.searchParams.get('page') ?? 1) * 100).map(sha => ({ sha })));
     }
@@ -132,7 +132,7 @@ export async function bridgeProvider(t, box) {
     const filesRoute = /\/pulls\/(\d+)\/files$/u.exec(url.pathname);
     if (filesRoute) {
       const pull = state.pulls.find(p => p.number === Number(filesRoute[1]));
-      const files = box.git(box.repo, 'diff', '--name-only', `${pull.base.sha}...${pull.head.sha}`).split('\n').filter(Boolean);
+      const files = box.git(box.remote, 'diff', '--name-only', `${pull.base.sha}...${pull.head.sha}`).split('\n').filter(Boolean);
       return reply(200, files.map(filename => ({ filename })));
     }
     const pullRoute = /^\/repos\/fixture\/repository\/pulls\/(\d+)$/u.exec(url.pathname);
@@ -143,7 +143,7 @@ export async function bridgeProvider(t, box) {
         Object.assign(pull, { title: body.title, body: body.body });
         pull.head.sha = box.git(box.remote, 'rev-parse', `refs/heads/${pull.head.ref}`);
       }
-      pull.commits = box.git(box.repo, 'rev-list', `${pull.base.sha}..${pull.head.sha}`).split('\n').filter(Boolean).length;
+      pull.commits = box.git(box.remote, 'rev-list', `${pull.base.sha}..${pull.head.sha}`).split('\n').filter(Boolean).length;
       return reply(200, pull);
     }
     const statusRoute = /^\/repos\/fixture\/repository\/statuses\/([a-f0-9]+)$/u.exec(url.pathname);
