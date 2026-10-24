@@ -112,7 +112,26 @@ test('a new fact id is checked by index across current, legacy and archived fact
   board.db.prepare("INSERT INTO event (event_at,event_by,event_kind,item_id,event_detail) VALUES (?,?,?,?,?)")
     .run(clock.now().toISOString(), 'coordinator', 'fact', first, "{id:'legacy-json5',text:'kept'}");
   assert.throws(() => store.appendFact(board, second, options('legacy-json5')), { code: 'BAD_FACT_ID' }, 'strict-invalid but readable JSON5 keeps its identity');
-  store.appendFact(board, second, options('after-json5'));
+  board.db.prepare("INSERT INTO event_archive (event_id,event_at,event_by,event_kind,item_id,event_detail) VALUES (?,?,?,?,?,?)")
+    .run(900001, clock.now().toISOString(), 'coordinator', 'fact', first, "{id:'cold-json5',text:'kept'}");
+  assert.throws(() => store.appendFact(board, second, options('cold-json5')), { code: 'BAD_FACT_ID' }, 'readable cold JSON5 keeps its global identity');
+  const json5Plans = [];
+  const json5Prepare = board.db.prepare.bind(board.db);
+  /** Observe the real post-JSON5 lookup, with no replacement result or inferred pre-legacy plan. */
+  board.db.prepare = (sql) => {
+    if (/^SELECT\b/iu.test(sql) && /json_(?:extract|valid)/u.test(sql)) {
+      const bindings = sql.includes('?') ? ['after-json5'] : [];
+      json5Plans.push({ sql, plan: json5Prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...bindings).map((row) => row.detail) });
+    }
+    return json5Prepare(sql);
+  };
+  try { store.appendFact(board, second, options('after-json5')); }
+  finally { board.db.prepare = json5Prepare; }
+  const json5IdentityPlans = json5Plans.filter(({ sql }) => sql.includes('json_extract'));
+  assert.ok(json5IdentityPlans.length >= 2 && json5IdentityPlans.every(({ plan }) =>
+    plan.some((detail) => /SEARCH event(?:_archive)?\b.*<expr>=\?/u.test(detail)) &&
+    !plan.some((detail) => /SEARCH event(?:_archive)?\b.*event_kind=\?(?!.*<expr>)/u.test(detail))),
+  `both physical partitions must retain indexed new-ID lookups after readable legacy JSON5: ${JSON.stringify(json5Plans)}`);
 
   const beforeMalformed = board.db.prepare('SELECT count(*) AS n FROM event').get().n;
   board.db.prepare("INSERT INTO event (event_at,event_by,event_kind,item_id,event_detail) VALUES (?,?,?,?,?)")
