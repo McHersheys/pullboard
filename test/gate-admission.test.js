@@ -8,8 +8,47 @@ import { test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { runFixtureChild, runFixtureChildAsync, startFixtureChild } from './fixture-child.js';
 import { TEST_FILE_CORES_ENV, TEST_FILE_POOL_ENV, occupiedPlaces } from '../src/test-file-pool.js';
+import { GATE_SLOT_HELD_ENV, GATE_SLOT_POOL_ENV, GATE_SLOT_TOKEN_ENV, BROWSER_SLOT_HELD_ENV } from '../src/resources.js';
 
 const runner = fileURLToPath(new URL('../bin/run-tests.js', import.meta.url));
+
+test('a shell check is admitted by the test files it runs [C7,Q1,Q3]', async (t) => {
+  const { root, env } = fixture(t, 2);
+  mkdirSync(join(root, 'bin'));
+  mkdirSync(join(root, 'test'));
+  writeFileSync(join(root, 'bin/run-tests.js'), "throw new Error('classification must not execute the runner');\n");
+  writeFileSync(join(root, 'test/core.test.js'), "import { test } from 'node:test';\nthrow new Error('classification must not execute tests');\n");
+  writeFileSync(join(root, 'test/browser.test.js'), "import { spawn } from 'node:child_process';\nspawn('Google Chrome');\n");
+  const admission = new URL('../src/browser-admission.js', import.meta.url).href;
+  const gate = new URL('../src/gate.js', import.meta.url).href;
+  const commands = [
+    ['browser', 'out=$(node bin/run-tests.js test/browser.test.js 2>&1); rc=$?; printf "%s\\n" "$out"; [ "$rc" -eq 0 ]', true],
+    ['unknown', 'eval "$CHECK"', true],
+    ['core', 'out=$(node bin/run-tests.js test/core.test.js 2>&1); rc=$?; printf "%s\\n" "$out"; [ "$rc" -eq 0 ]', false],
+  ];
+  const source = `import { checkNeedsBrowser } from ${JSON.stringify(admission)};
+import { withGateSlot } from ${JSON.stringify(gate)};
+const decisions = [];
+for (const [name, command] of ${JSON.stringify(commands)}) {
+  const fallbacks = [];
+  const browser = await checkNeedsBrowser(process.cwd(), command, { onFallback: value => fallbacks.push(value) });
+  const actual = await withGateSlot(process.cwd(), lease => lease.browser, { browser, remote: false, agent: 'admission-fixture', kind: 'check' });
+  decisions.push({ name, browser, actual, fallbacks });
+}
+process.stdout.write(JSON.stringify(decisions));`;
+  // Only this private machine fixture drops the outer proof's admission markers.
+  for (const key of [GATE_SLOT_HELD_ENV, GATE_SLOT_POOL_ENV, GATE_SLOT_TOKEN_ENV, BROWSER_SLOT_HELD_ENV]) delete env[key];
+  const result = await runFixtureChildAsync(process.execPath, ['--input-type=module', '-e', source], { cwd: root, env });
+  assert.equal(result.status, 0, result.failure ?? result.stderr);
+  const decisions = JSON.parse(result.stdout);
+  for (const [index, [name, , expected]] of commands.entries()) {
+    assert.equal(decisions[index].name, name);
+    assert.equal(decisions[index].actual, expected, `${name} uses its classified machine gate slot`);
+    assert.equal(decisions[index].browser, expected, `${name} classifier matches the actual lease`);
+  }
+  assert.ok(decisions[1].fallbacks.length, 'unparseable shell retains an explicit browser-fallback reason');
+  assert.deepEqual(decisions[2].fallbacks, [], 'understood core selection needs no browser fallback');
+});
 
 /** A fixture test file that logs when its body starts and ends, holding its token for `ms`. */
 function timedFile(name, ms, body = '') {
