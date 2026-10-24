@@ -3,6 +3,11 @@ import {
   headCommit,
 } from '../git.js';
 import {
+  getItem,
+  listItems,
+} from '../board.js';
+import { itemFileCollisions } from '../item-files.js';
+import {
   MainSpecMerged,
   actOn,
   claimFreezer,
@@ -27,7 +32,9 @@ export async function run(io, { first }) {
       me = whoAmI(ctx, board);
     }
   }
-  io.result?.({ id: idArg(first), ...result });
+  const warnings = itemFileCollisions(getItem(board, id), listItems(board, { all: true }));
+  io.result?.({ id, ...result, ...(warnings.length ? { warnings } : {}) });
+  for (const warning of warnings) io.say(`warning: ${warning}; explicit claim retained`);
   io.say(`${result.renewed ? 'renewed' : 'claimed'} #${first} until ${result.leaseUntil}; criterion frozen as ${result.digest.slice(0, 12)}`);
   return 0;
 });

@@ -6,6 +6,7 @@
  * next cannot disagree. It is for agents and coordinators; the person reads the Roadmap instead.
  */
 import { Refused } from './refused.js';
+import { itemFileCollisions } from './item-files.js';
 import {
   buildOrder,
   canTake,
@@ -31,19 +32,20 @@ function holderOf(item, now) {
 }
 
 /**
- * What an item waits on before an agent can take it: unverified items it comes after, and a hold.
+ * What an item waits on before an agent can take it: dependencies, file collisions and holds.
  *
  * @param {any} board
  * @param {any} item
+ * @param {any[]} inFlight
  * @returns {string[]}
  */
-function waitsOf(board, item) {
+function waitsOf(board, item, inFlight) {
   const after = (item.item_after ? item.item_after.split(',').map(Number) : [])
     .map((id) => itemById(board, id))
     .filter((before) => before && before.item_status !== 'verified')
     .map((before) => `#${before.item_id} (${before.item_status})`);
   const lane = laneHold(board, item.item_lane);
-  return [...after, ...(item.item_hold_reason ? [`held: ${item.item_hold_reason}`] : []), ...(lane ? [`${item.item_lane} lane held: ${lane.hold_reason}`] : [])];
+  return [...after, ...itemFileCollisions(item, inFlight), ...(item.item_hold_reason ? [`held: ${item.item_hold_reason}`] : []), ...(lane ? [`${item.item_lane} lane held: ${lane.hold_reason}`] : [])];
 }
 
 /**
@@ -58,12 +60,13 @@ export function workQueue(board) {
   const release = milestonePriorities(board);
   const planned = roadmap(board, (reference) => ({ id: reference, title: reference, status: 'unavailable' }));
   const items = listItems(board).sort(buildOrder(board));
+  const inFlight = listItems(board, { all: true });
   const entry = (item) => ({ id: item.item_id, title: item.item_title, route: item.item_route, lane: item.item_lane,
-    status: item.item_status, holder: holderOf(item, now), waits: waitsOf(board, item) });
+    status: item.item_status, holder: holderOf(item, now), waits: waitsOf(board, item, inFlight) });
   const releases = planned.map((milestone, index) => ({ name: milestone.name, landed: milestone.landed, total: milestone.total, shipped: Boolean(milestone.shipped),
     items: items.filter((item) => release(item) === index).map(entry) })).filter((milestone) => !milestone.shipped || milestone.items.length);
   const unreleased = items.filter((item) => release(item) >= planned.length).map(entry);
-  const pullable = items.filter((item) => item.item_status === 'open' && !waitsOf(board, item).length);
+  const pullable = items.filter((item) => item.item_status === 'open' && !waitsOf(board, item, inFlight).length);
   const first = Object.fromEntries([...ROUTES].reverse().map((route) => [route, pullable.find((item) => canTake(route, item.item_route))?.item_id ?? null]));
   return { releases: releases.map(({ shipped, ...milestone }) => milestone), unreleased, first };
 }
