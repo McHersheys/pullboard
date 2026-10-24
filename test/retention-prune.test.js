@@ -47,6 +47,13 @@ async function pruner() {
   return import('../src/landing-worktree-prune.js');
 }
 
+/** Retain the complete local attempt receipt before the private repository is cleaned up. */
+function recordReceipt(t, result) {
+  const receipt = JSON.parse(readFileSync(result.receipt, 'utf8'));
+  t.diagnostic(`prune-receipt: ${JSON.stringify(receipt)}`);
+  return receipt;
+}
+
 test('a landing prunes only its landed clean worktree and names dirty and process-cwd trees [R3,C7]', async t => {
   const box = repository(t);
   const clean = box.tree('clean-seat');
@@ -64,6 +71,7 @@ test('a landing prunes only its landed clean worktree and names dirty and proces
   const messages = [];
   const result = await pruneRetiredWorktrees(box.root, { tip: box.tip, targets: [clean, dirty, busy],
     revalidate: () => null, say: line => messages.push(line) });
+  const receipt = recordReceipt(t, result);
   assert.equal(existsSync(clean.path), false, 'only the landed clean checkout is removed');
   assert.equal(existsSync(dirty.path), true);
   assert.equal(existsSync(busy.path), true);
@@ -73,7 +81,6 @@ test('a landing prunes only its landed clean worktree and names dirty and proces
   assert.ok(result.skipped.some(entry => entry.path === busy.path && /in.use/u.test(entry.reason)));
   assert.ok(messages.some(line => line.includes(dirty.path)));
   assert.ok(messages.some(line => line.includes(busy.path)));
-  const receipt = JSON.parse(readFileSync(result.receipt, 'utf8'));
   const busyReceipt = receipt.attempts.find(entry => entry.path === busy.path);
   assert.ok(busyReceipt.pids.includes(child.pid), 'only matching target process ids explain an in-use refusal');
   assert.doesNotMatch(JSON.stringify(receipt), /processes|commandLine|argv/u, 'no global process arguments are retained');
@@ -95,6 +102,7 @@ test('landing prune retains untracked ignored and unlanded work without touching
   const foreign = { ...untracked, agent: 'foreign-seat', path: foreignPath };
   const result = await pruneRetiredWorktrees(box.root, { tip: box.tip,
     targets: [untracked, ignored, ahead, foreign], revalidate: () => null });
+  recordReceipt(t, result);
   assert.equal(result.removed.length, 0);
   assert.deepEqual(new Set(result.skipped.map(entry => entry.path)), new Set([untracked.path, ignored.path, ahead.path, foreignPath]));
   for (const target of [untracked, ignored, ahead, foreign]) assert.ok(existsSync(target.path));
@@ -111,6 +119,7 @@ test('landing prune excludes protected trees and revalidates immediately before 
   const result = await pruneRetiredWorktrees(box.root, { tip: box.tip,
     targets: [protectedTree, claimed, ordinary], exclude: [protectedTree.path],
     revalidate: target => { calls.push(target.agent); return target.agent === claimed.agent ? 'new live claim' : null; } });
+  recordReceipt(t, result);
   assert.deepEqual(calls, [claimed.agent, ordinary.agent]);
   assert.ok(existsSync(protectedTree.path));
   assert.ok(existsSync(claimed.path));
@@ -118,6 +127,7 @@ test('landing prune excludes protected trees and revalidates immediately before 
   assert.ok(result.skipped.some(entry => entry.path === claimed.path && /new live claim/u.test(entry.reason)));
   const unsafe = box.tree('no-callback-seat');
   const missing = await pruneRetiredWorktrees(box.root, { tip: box.tip, targets: [unsafe] });
+  recordReceipt(t, missing);
   assert.equal(missing.removed.length, 0);
   assert.ok(existsSync(unsafe.path), 'missing board revalidation never permits deletion');
 });
@@ -144,6 +154,7 @@ test('landing prune refuses main caller aliases and a replaced common directory 
   const main = { ...aliased, agent: 'main-is-not-a-finished-seat', path: box.root };
   const result = await pruneRetiredWorktrees(box.root, { tip: box.tip,
     targets: [main, { ...aliased, path: alias }, changed], revalidate: () => null });
+  recordReceipt(t, result);
   assert.equal(result.removed.length, 0);
   assert.ok(existsSync(box.root));
   assert.ok(existsSync(aliased.path));
@@ -153,6 +164,7 @@ test('landing prune refuses main caller aliases and a replaced common directory 
   try {
     process.chdir(caller.path);
     const active = await pruneRetiredWorktrees(box.root, { tip: box.tip, targets: [caller], revalidate: () => null });
+    recordReceipt(t, active);
     assert.match(active.skipped[0].reason, /caller/u);
     assert.ok(existsSync(caller.path));
   } finally { process.chdir(initialCwd); }
