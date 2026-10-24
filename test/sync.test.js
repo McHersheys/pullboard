@@ -1,7 +1,7 @@
 /** @pullboard-test-input source-tree */
 /** Two independent Git clones and SQLite replicas exercise account-free sharing [H11]. */
 import assert from 'node:assert/strict';
-import { chmodSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { createE2eHelpers } from './e2e-helpers.js';
@@ -54,4 +54,42 @@ test('two machines share a board through git [H11]', async t => {
     assert.equal(board.tables.event.filter(event => event.event_kind === 'add' && event.item_id === retried).length, 1, 'the retried move is recorded once');
     assert.equal(board.tables.event.filter(event => event.event_kind === 'claim').length, 1, 'only the winning claim becomes a move');
   }
+});
+
+test('Git sharing preserves offline reads, a pending move and ordinary code gates [H11,H10,C3]', t => {
+  const helpers = createE2eHelpers();
+  t.after(helpers.cleanup);
+  const box = helpers.project();
+  const remote = join(box.dir, 'remote.git');
+  box.git(box.dir, 'clone', '--bare', box.repo, remote);
+  box.git(box.repo, 'remote', 'add', 'origin', remote);
+  document(box.run(box.repo, 'sync', '--json'), 'enable Git board sharing');
+  renameSync(remote, remote + '.offline');
+  assert.equal(document(box.run(box.repo, 'export'), 'read the board while offline').tables.item.length, 0);
+  const refused = box.run(box.repo, 'add', 'web', 'One pending move', '--json');
+  assert.notEqual(refused.code, 0, 'an offline move cannot report success');
+  assert.equal(JSON.parse(refused.out).error.code, 'GIT_SYNC_REMOTE');
+  const pendingFile = join(box.repo, '.git', 'pullboard', 'git-sync-pending.json');
+  assert.ok(existsSync(pendingFile), 'the refused command retains its sealed intent');
+  const moveId = JSON.parse(readFileSync(pendingFile, 'utf8')).move.id;
+  assert.equal(document(box.run(box.repo, 'export'), 'offline read does not apply the pending move').tables.item.length, 0);
+  renameSync(remote + '.offline', remote);
+  const recovered = document(box.run(box.repo, 'add', 'web', 'One pending move', '--json'), 'retry the same public command');
+  assert.equal(recovered.item.item_id, 1);
+  assert.equal(existsSync(pendingFile), false);
+  const exported = document(box.run(box.repo, 'export'), 'read the acknowledged pending move');
+  assert.equal(exported.tables.item.length, 1, 'the retried command creates one item');
+  assert.ok(exported.tables.board_meta.some(row => row.meta_key === 'relay_receipt_' + moveId), 'the original sealed identity was acknowledged');
+  writeFileSync(join(box.repo, 'web.txt'), 'a source change\n');
+  box.git(box.repo, 'add', 'web.txt');
+  box.git(box.repo, 'commit', '-m', 'feat(web): a code change [G1]');
+  writeFileSync(join(box.repo, 'RED'), 'the code gate fails\n');
+  assert.notEqual(box.tryGit(box.repo, 'push', 'origin', 'HEAD:main').status, 0, 'ordinary code pushes still run and fail the code gate');
+  document(box.run(box.repo, 'add', 'web', 'Board data while code gate is red', '--json'), 'normal Git push accepts validated board data without shipping code');
+  const before = box.git(box.repo, 'ls-remote', 'origin', 'refs/pullboard/board');
+  const tip = before.split(/\s/u)[0];
+  const wrongTree = box.git(box.repo, 'rev-parse', 'HEAD^{tree}');
+  const badData = box.git(box.repo, 'commit-tree', wrongTree, '-p', tip, '-m', 'not board data');
+  assert.notEqual(box.tryGit(box.repo, 'push', 'origin', badData + ':refs/pullboard/board').status, 0, 'a fast-forward code tree cannot masquerade as the board-data ref');
+  assert.equal(box.git(box.repo, 'ls-remote', 'origin', 'refs/pullboard/board'), before, 'the malformed data push leaves the remote untouched');
 });
