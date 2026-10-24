@@ -976,8 +976,9 @@ async function bindCheckoutSession(io, positionals, values) {
   let agent = info.isMain ? COORDINATOR : null;
   if (!info.isMain) {
     const ctx = context(io);
+    const ownsLandingRoot = command === 'hook' ? (await import('./landing-candidates.js')).landingBatchOwnsRoot : () => false;
     agent = withBoard(ctx, (board) => store.agentAt(board, info.root)?.agent_id
-      ?? (command === 'hook' && store.landingBatches(board).some((batch) => batch.root === info.root && !['landed', 'blocked'].includes(batch.state)) ? COORDINATOR : null));
+      ?? (command === 'hook' && store.landingBatches(board).some((batch) => ownsLandingRoot(batch, info.root)) ? COORDINATOR : null));
     if (!agent && command !== 'join') throw withBoard(ctx, (board) => seatCheckout.unjoinedRefusal(info, store.listAgents(board)));
   }
   if (['shout', 'fact'].includes(command) && localSessionMatches(info, { agent: agent ?? 'unjoined agent', digest })) {
