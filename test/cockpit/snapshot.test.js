@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** Cockpit snapshot checks, using the shared real-board fixtures [N26]. */
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';

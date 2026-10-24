@@ -415,7 +415,7 @@ function recordEventContract() {
     result: { green: false, code: 1, timedOut: false, durationMs: 0, output: 'synthetic format receipt' } });
   const rows = events(board).map((row) => ({ ...row, detail: JSON.parse(row.event_detail) }));
   closeBoard(board);
-  return { rows, actors: { [coordinator]: 'coordinator', [builder]: 'builder', [returnedBuilder]: 'builder', [reviewer]: 'reviewer', [PERSON]: 'person', board: 'board' } };
+  return { rows, actors: { [coordinator]: 'coordinator', [builder]: 'builder', [returnedBuilder]: 'builder', [reviewer]: 'reviewer', [PERSON]: 'person', board: 'board', rigor: 'rigor' } };
 }
 
 /** Reopen a file after removing old-format objects and report the repaired guard event. */
@@ -707,6 +707,7 @@ test('[A5] schema, versions, event kinds and event detail fields match live beha
     fact: 'author',
     guards: 'board',
     'rigor-notice': 'rigor',
+    'rigor-draft': 'rigor',
     shout: 'sender',
     pass: 'coordinator',
     answer: 'answerer',

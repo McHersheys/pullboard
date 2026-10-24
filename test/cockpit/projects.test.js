@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** @pullboard-test-loads src/serve.js src/api.js src/cli.js */
 /** Cockpit projects checks, using the shared real-board fixtures [N26]. */
 import assert from 'node:assert/strict';
