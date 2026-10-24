@@ -37,9 +37,9 @@ export function githubSource(root, url) {
   git(root, ['fetch', '--no-tags', '--no-recurse-submodules', `https://github.com/${source.repository}.git`, `refs/pull/${source.number}/head`]);
   const fetched = git(root, ['rev-parse', 'FETCH_HEAD^{commit}']).trim();
   if (fetched !== data.head.sha) throw new Refused('OUTSIDE_HEAD_CHANGED', 'the pull request moved while intake fetched it; read and intake its new exact head');
-  const paths = files.map(file => file.filename);
+  const paths = [...new Set(files.flatMap(file => [file.filename, ...(file.previous_filename ? [file.previous_filename] : [])]))];
   if (paths.some(path => typeof path !== 'string' || path.includes('\n') || path.startsWith('/') || path.split('/').includes('..'))) throw new Refused('OUTSIDE_FETCH', 'GitHub returned an invalid changed path; restore its file metadata');
-  const changed = git(root, ['diff', '--name-only', '-z', `${data.base.sha}...${fetched}`]).split('\0').filter(Boolean);
+  const changed = git(root, ['diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--name-only', '-z', `${data.base.sha}...${fetched}`]).split('\0').filter(Boolean);
   if (changed.length !== paths.length || changed.some(path => !paths.includes(path))) throw new Refused('OUTSIDE_FETCH', 'the changed-file list differs from the fetched exact commit; refresh GitHub metadata');
   const sensitivity = outsideSensitivity(root, data.base.sha, fetched, paths);
   return { ...common, commit: fetched, tree: git(root, ['rev-parse', `${fetched}^{tree}`]).trim(), base: data.base.sha, files: paths, sensitivity, sensitive: sensitivity.length > 0 };

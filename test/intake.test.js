@@ -169,7 +169,7 @@ test('renaming an existing sealing boundary cannot hide its touched old path [B2
   const box = intakeFixture(t, { baseFiles: { 'src/seal.js': content } });
   advanceOutsideFixture(box, 'lib/moved-boundary.js', content, ['src/seal.js', 'relay/outside.js']);
   const facts = JSON.parse(readFileSync(box.facts, 'utf8'));
-  facts.files = facts.files.filter(file => file.filename !== 'lib/moved-boundary.js');
+  facts.files = facts.files.filter(file => !['lib/moved-boundary.js', 'src/seal.js'].includes(file.filename));
   facts.files.push({ filename: 'lib/moved-boundary.js', previous_filename: 'src/seal.js', status: 'renamed' });
   writeFileSync(box.facts, JSON.stringify(facts));
   const filed = fixtureJSON(box, box.repo, 'intake', box.pull.html_url, '--criterion', 'the fixture behavior works', '--check', 'node --test test/contribution.test.js');

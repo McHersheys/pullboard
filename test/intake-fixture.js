@@ -140,7 +140,7 @@ export function advanceOutsideFixture(box, path, content, remove = []) {
   box.git(box.origin, 'fetch', '-q', box.fork, '+HEAD:refs/pull/7/head');
   const facts = JSON.parse(readFileSync(box.facts, 'utf8'));
   facts.pull.head.sha = commit;
-  facts.files = box.git(box.fork, 'diff', '--name-only', `${box.base}...${commit}`).split('\n').filter(Boolean).map(filename => ({ filename, status: 'added' }));
+  facts.files = box.git(box.fork, 'diff', '--no-renames', '--name-only', `${box.base}...${commit}`).split('\n').filter(Boolean).map(filename => ({ filename, status: 'added' }));
   writeFileSync(box.facts, JSON.stringify(facts));
   return { commit, tree: box.git(box.fork, 'rev-parse', 'HEAD^{tree}') };
 }

@@ -11,8 +11,10 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import {
+  isAbsolute,
+  join,
+} from 'node:path';
 import {
   git,
   repoInfo,
@@ -66,6 +68,7 @@ function provider(root) {
   const value = mainPolicy(root).config.sandbox;
   if (!value || value.provider !== 'docker' || typeof value.executable !== 'string' || !value.executable.startsWith('/') ||
       typeof value.endpoint !== 'string' || !/^unix:\/\/\/[^\r\n]+$/u.test(value.endpoint) ||
+      value.exportRoot !== undefined && (typeof value.exportRoot !== 'string' || !isAbsolute(value.exportRoot) || /[\r\n\0]/u.test(value.exportRoot)) ||
       !['minimum', 'current'].every(role => /^node@sha256:[a-f0-9]{64}$/u.test(value.images?.[role] ?? ''))) {
     throw new Refused('SANDBOX_PROVIDER_REQUIRED', 'configure sandbox.provider=docker with an absolute executable, explicit Unix endpoint and pinned node@sha256 images for minimum/current in committed main pullboard.json; no host fallback is permitted');
   }
@@ -98,7 +101,12 @@ async function container(runtime, environment, directory, image, source, stage, 
 /** Verify both pinned image roles inside actual containers, then execute the trusted full gate and frozen criterion. */
 export async function verifyOutsideSandbox(root, item, policy, lease) {
   const runtime = provider(root);
-  const directory = mkdtempSync(join(tmpdir(), 'pullboard-outside-'));
+  const exportRoot = runtime.exportRoot ?? join(repoInfo(root).commonDir, 'pullboard', 'sandbox-exports');
+  let directory;
+  try {
+    mkdirSync(exportRoot, { recursive: true, mode: 0o700 });
+    directory = mkdtempSync(join(exportRoot, 'pullboard-outside-'));
+  } catch { throw new Refused('SANDBOX_EXPORT', 'create a writable private sandbox.exportRoot shared with the configured Docker daemon, then verify again'); }
   try {
     const environment = clientEnvironment(directory, runtime.endpoint);
     const command = JSON.parse(item.item_frozen).check;
@@ -128,6 +136,7 @@ export async function verifyOutsideSandbox(root, item, policy, lease) {
       catch { throw new Refused('SANDBOX_IMAGE_REQUIRED', 'the configured image has no readable digest receipt; restore the pinned official Node image'); }
       if (!imageFacts?.RepoDigests?.includes(image)) throw new Refused('SANDBOX_IMAGE_REQUIRED', 'the local runtime image does not match the configured digest; preload that exact official Node image');
       const measured = record(role, 'environment', await container(runtime, environment, directory, image, candidate.target, 'environment', 'node -p ' + "'JSON.stringify({node:process.versions.node,platform:process.platform,arch:process.arch})'"));
+      if (measured.exitCode !== 0) throw new Refused('SANDBOX_EXECUTION', 'the container environment did not execute; restore Docker and its pinned image, and configure sandbox.exportRoot as a private path shared with that daemon\n' + measured.output.slice(-2000));
       let actual;
       try { actual = JSON.parse(measured.output.trim()); }
       catch { throw new Refused('SANDBOX_RUNTIME', 'the container did not report its actual Node environment; restore the pinned Node runtime'); }
