@@ -881,6 +881,10 @@ test('an agent grant narrows at claim and expires identically on independent rep
     run(box, box.repo, 'add', 'web', title, '--specs', 'G1', '--check', 'test -f web/grant-proof');
   }
   run(box, box.repo, 'add', 'api', 'Other lane', '--specs', 'G2', '--check', 'test -f api/grant-proof');
+  const fresh = join(box.dir, 'fresh-seat');
+  box.git(box.repo, 'worktree', 'add', '-q', '--detach', fresh, 'main');
+  run(box, fresh, 'join', 'web');
+  const freshActor = withBoard(box.repo, board => store.listAgents(board).find(agent => agent.agent_path === fresh).agent_id);
   run(box, box.web, 'claim', '1');
   const actor = withBoard(box.repo, board => store.listAgents(board).find(agent => agent.agent_path === box.web).agent_id);
   const held = withBoard(box.repo, board => store.getItem(board, 1));
@@ -900,7 +904,7 @@ test('an agent grant narrows at claim and expires identically on independent rep
     return outcomes[0];
   };
   /** Facts are ordinary item mutations, not a claim-only or CLI-only permission check. */
-  const fact = (item, text, at) => replay('appendFact', [item, { agentId: actor, kind: 'note', text }], at);
+  const fact = (item, text, at, by = actor) => replay('appendFact', [item, { agentId: by, kind: 'note', text }], at);
   assert.equal(fact(1, 'Own claimed item remains writable').error, undefined, 'positive own-item mutation reached the engine');
   const before = roots.map(root => withBoard(root, board => store.itemThread(board, 2).filter(entry => entry.type === 'fact')));
   const outside = fact(2, 'This must not reach another item');
@@ -913,6 +917,8 @@ test('an agent grant narrows at claim and expires identically on independent rep
   assert.equal(replay('shout', [{ from: actor, to: 'coordinator', text: 'My claim expired; arranging the next work.' }], expired).error,
     undefined, 'ordinary coordination remains available after expiry');
   assert.equal(replay('release', [1, actor, 'Done with this claim.'], expired).error, undefined);
-  assert.equal(fact(3, 'An agent cannot mutate another lane', expired).error?.code, 'AGENT_GRANT_LANE',
-    'the unclaimed seat still has only its registered lane');
+  assert.equal(fact(1, 'Release does not revive an expired grant', expired).error?.code, 'AGENT_GRANT_EXPIRED',
+    'a fresh claim is required after expiry even after administrative release');
+  assert.equal(fact(3, 'An agent cannot mutate another lane', expired, freshActor).error?.code, 'AGENT_GRANT_LANE',
+    'a fresh unclaimed seat still has only its registered lane');
 });
