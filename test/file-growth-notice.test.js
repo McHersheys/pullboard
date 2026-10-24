@@ -13,10 +13,10 @@ const HOUR = 60 * 60 * 1000;
 /** Seed only private claim state, using a real project and its normal board file. */
 function fixture(t, { sameHolder = false, expiredPeer = false } = {}) {
   const helpers = createE2eHelpers();
-  t.after(helpers.cleanup);
+  let board;
+  t.after(() => { if (board) store.closeBoard(board); helpers.cleanup(); });
   const box = helpers.project('true');
-  const board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
-  t.after(() => store.closeBoard(board));
+  board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
   // This is a board-clock boundary control, not an actual physical lease or elapsed-time claim.
   let at = Date.parse('2026-10-24T00:00:00Z');
   board.clock = { now: () => new Date(at) };
