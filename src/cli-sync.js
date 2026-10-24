@@ -1,3 +1,4 @@
+import { recordedMoveRefusal } from './recorded-move.js';
 /**
  * The relay and baseline work around a command: link a new project, sync the relay, deliver finished baselines and
  * run the person's waiting requests. The command line loads it only when one of them could act [C7].
@@ -15,6 +16,7 @@ const QUIET = ['NOT_A_REPO', 'NO_REPO', 'NO_CONFIG', 'CORE_BARE'];
 
 /** Report a refusal from the work around a command without stopping the command. */
 function reportQuietly(io, error) {
+  error = recordedMoveRefusal(io, error);
   if (!(error instanceof Refused)) throw error;
   if (!QUIET.includes(error.code)) io.err(`pullboard: ${displayedRefusal(io, error)}\nnext: ${io.refusalDocument(error).error.next}`);
 }

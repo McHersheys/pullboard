@@ -27,6 +27,7 @@ export async function run(io, { first, second, values }) {
   return act(async (ctx, board, me) => {
   const recovered = await relayCommandReceipt(ctx.info.root, io.relayCommand);
   if (recovered) {
+    io.recordedMove = true;
     for (const event of recovered.events) io.onEvent?.(event);
     const commit = recovered.move.args[1].commit;
     io.result?.({ id: idArg(first), commit });
