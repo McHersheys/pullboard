@@ -1,5 +1,6 @@
 /** @pullboard-test-loads bin/run-tests.js src/test-isolation.js src/child-journal-preload.js src/machine-home.js src/settings.js src/resources.js src/view-port.js */
 /** A test's verdict never depends on the machine it runs on: settings, resources, runners, host markers, ports [C7]. */
+import { awaitNestedRun } from './fixture-child.js';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
@@ -100,14 +101,14 @@ test('a test reads no machine state outside its own private home [C7]', async (t
   const machine = { ...base, PULLBOARD_ACCOUNT_HOME: hostile, CI: '1', NODE_OPTIONS: runnerImport,
     PULLBOARD_RUNNER_PRELOAD: runnerImport, PULLBOARD_VIEW_PORT: '4891' };
 
-  const calm = await runFixtureChildAsync(process.execPath, [RUNNER, 'test/probe.test.js'], { cwd: root, env: plain });
-  const busy = await runFixtureChildAsync(process.execPath, [RUNNER, 'test/probe.test.js'], { cwd: root, env: machine });
+  const calm = await awaitNestedRun(runFixtureChildAsync(process.execPath, [RUNNER, 'test/probe.test.js'], { cwd: root, env: plain }));
+  const busy = await awaitNestedRun(runFixtureChildAsync(process.execPath, [RUNNER, 'test/probe.test.js'], { cwd: root, env: machine }));
   assert.deepEqual(verdicts(calm.stdout), PROBES.map((name, index) => `ok ${index + 1} - ${name}`), calm.stdout + calm.stderr);
   assert.deepEqual(verdicts(busy.stdout), verdicts(calm.stdout), `hostile machine settings changed a verdict:\n${busy.stdout}${busy.stderr}`);
   assert.equal(busy.status, 0, busy.stderr);
 
   // The probes are a real guard: run without the private home, the same suite reads the hostile machine and fails.
-  const exposed = await runFixtureChildAsync(process.execPath, ['--test', '--test-reporter=tap', 'test/probe.test.js'], { cwd: root, env: machine });
+  const exposed = await awaitNestedRun(runFixtureChildAsync(process.execPath, ['--test', '--test-reporter=tap', 'test/probe.test.js'], { cwd: root, env: machine }));
   assert.notEqual(exposed.status, 0, 'a test that reads the machine home fails the guard');
   const seen = verdicts(exposed.stdout);
   for (const index of [0, 1, 2]) assert.match(seen[index], /^not ok /u, `${PROBES[index]} catches the machine it reads`);

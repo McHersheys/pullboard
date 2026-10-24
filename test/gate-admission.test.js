@@ -1,6 +1,7 @@
 /** Test files on one machine never outnumber its cores, and the longest files start first [C7]. */
+import { awaitNestedRun } from './fixture-child.js';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,7 +41,7 @@ for (const [name, command] of ${JSON.stringify(commands)}) {
 process.stdout.write(JSON.stringify(decisions));`;
   // Only this private machine fixture drops the outer proof's admission markers.
   for (const key of [GATE_SLOT_HELD_ENV, GATE_SLOT_POOL_ENV, GATE_SLOT_TOKEN_ENV, BROWSER_SLOT_HELD_ENV]) delete env[key];
-  const result = await runFixtureChildAsync(process.execPath, ['--input-type=module', '-e', source], { cwd: root, env });
+  const result = await awaitNestedRun(runFixtureChildAsync(process.execPath, ['--input-type=module', '-e', source], { cwd: root, env }));
   assert.equal(result.status, 0, result.failure ?? result.stderr);
   const decisions = JSON.parse(result.stdout);
   for (const [index, [name, , expected]] of commands.entries()) {
@@ -80,7 +81,7 @@ const decisions = [];
 for (const [command] of ${JSON.stringify(commands)}) decisions.push(await checkNeedsBrowser(process.cwd(), command));
 const short = await explicitCheckFiles(process.cwd(), ${JSON.stringify(core)});
 process.stdout.write(JSON.stringify({ decisions, short }));`;
-  const result = await runFixtureChildAsync(process.execPath, ['--input-type=module', '-e', source], { cwd: root, env });
+  const result = await awaitNestedRun(runFixtureChildAsync(process.execPath, ['--input-type=module', '-e', source], { cwd: root, env }));
   assert.equal(result.status, 0, result.failure ?? result.stderr);
   const actual = JSON.parse(result.stdout);
   assert.deepEqual(actual.decisions, commands.map(([, browser]) => browser));
@@ -132,8 +133,8 @@ test('four runs never hold more test files than cores, and the longest-recorded 
   const { root, env, log } = fixture(t, 4);
   const files = ['a.test.js', 'b.test.js', 'c.test.js', 'd.test.js', 'e.test.js', 'z-slow.test.js'];
   for (const file of files) writeFileSync(join(root, file), timedFile(file, 300));
-  const runs = await Promise.all([1, 2, 3, 4].map(run => runFixtureChildAsync(process.execPath, [runner, ...files],
-    { cwd: root, env: { ...env, FIXTURE_RUN: String(run) } })));
+  const runs = await Promise.all([1, 2, 3, 4].map(run => awaitNestedRun(runFixtureChildAsync(process.execPath, [runner, ...files],
+    { cwd: root, env: { ...env, FIXTURE_RUN: String(run) } }))));
   for (const result of runs) assert.equal(result.status, 0, `${result.failure ?? ""}\n${result.stdout.slice(-3000)}`);
   const events = log();
   assert.equal(events.filter(event => event.at === 'start').length, 24, 'every file of every run ran');
@@ -161,7 +162,7 @@ test('a file waiting on a nested run lends its place, so saturated parents still
   for (const file of ['outer-a.test.js', 'outer-b.test.js']) {
     writeFileSync(join(root, file), timedFile(file, 0, nested).replace("mark('start');", '').replace("mark('end');", ''));
   }
-  const result = await runFixtureChildAsync(process.execPath, [runner, 'outer-a.test.js', 'outer-b.test.js'], { cwd: root, env: { ...env, FIXTURE_RUN: 'outer' } });
+  const result = await awaitNestedRun(runFixtureChildAsync(process.execPath, [runner, 'outer-a.test.js', 'outer-b.test.js'], { cwd: root, env: { ...env, FIXTURE_RUN: 'outer' } }));
   assert.equal(result.status, 0, result.failure ?? result.stdout);
   const events = log();
   assert.equal(events.filter(event => event.at === 'start').length, 4, 'both inner files ran under both outer files');
@@ -213,11 +214,243 @@ test('busy parent', async () => {
   }
 });
 `);
-  const result = await runFixtureChildAsync(process.execPath, [runner, 'busy.test.js'], { cwd: root, env: { ...env, FIXTURE_RUN: 'outer' } });
+  const result = await awaitNestedRun(runFixtureChildAsync(process.execPath, [runner, 'busy.test.js'], { cwd: root, env: { ...env, FIXTURE_RUN: 'outer' } }));
   assert.equal(result.status, 0, result.failure ?? result.stdout);
   const events = log();
   assert.equal(events.filter(event => event.at === 'start').length, 2, 'both nested files ran');
   assert.equal(peak(events), 1, 'with the busy parent holding one of 2 places, its nested files share the one left');
+});
+
+test('an async parent lends its token through awaitNestedRun [C7]', async (t) => {
+  const poolModule = new URL('../src/test-file-pool.js', import.meta.url).href;
+  const api = await import(poolModule);
+  assert.equal(typeof api.awaitNestedRun, 'function', 'an explicit yielding-wait helper is available');
+  const { root, env, log } = fixture(t, 1);
+  writeFileSync(join(root, 'inner.test.js'), timedFile('inner.test.js', 0));
+  writeFileSync(join(root, 'parent.test.js'), `import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { test } from 'node:test';
+import { awaitNestedRun } from ${JSON.stringify(poolModule)};
+test('yielding parent', async () => {
+  const child = spawn(process.execPath, [${JSON.stringify(runner)}, 'inner.test.js'], { cwd: ${JSON.stringify(root)}, env: { ...process.env, FIXTURE_RUN: 'inner' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  child.stdout.resume();
+  child.stderr.resume();
+  const result = await awaitNestedRun(child);
+  assert.equal(result.status, 0);
+  assert.equal(result.signal, null);
+});
+`);
+  const result = await awaitNestedRun(runFixtureChildAsync(process.execPath, [runner, 'parent.test.js'], { cwd: root, env: { ...env, FIXTURE_RUN: 'outer' } }));
+  assert.equal(result.status, 0, result.failure ?? result.stdout);
+  assert.equal(log().filter(event => event.at === 'start').length, 1, 'the nested file ran despite a one-token pool');
+  assert.equal(await occupiedPlaces(env.PULLBOARD_MACHINE_HOME), 0, 'no holder remains after the parent exits');
+  const db = new DatabaseSync(join(env.PULLBOARD_MACHINE_HOME, 'test-file-pool.sqlite'));
+  try { assert.equal(db.prepare('SELECT count(*) AS n FROM file_call').get().n, 0, 'the explicit loan drained and closed'); }
+  finally { db.close(); }
+
+  const blocked = fixture(t, 1);
+  writeFileSync(join(blocked.root, 'inner.test.js'), timedFile('inner.test.js', 0));
+  writeFileSync(join(blocked.root, 'parent.test.js'), `import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { DatabaseSync } from 'node:sqlite';
+import { join } from 'node:path';
+import { test } from 'node:test';
+test('parent without the explicit wait', { timeout: 10_000 }, async (t) => {
+  const child = spawn(process.execPath, [${JSON.stringify(runner)}, 'inner.test.js'], { cwd: ${JSON.stringify(blocked.root)}, env: process.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  let live = true;
+  t.after(() => { if (live) { try { process.kill(-child.pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; } } });
+  let text = '';
+  const closed = new Promise(resolve => child.once('close', code => { live = false; resolve(code); }));
+  await new Promise(resolve => {
+    const sample = chunk => { text += chunk; if (text.includes('holding its token while nested files wait')) resolve(); };
+    child.stdout.on('data', sample); child.stderr.on('data', sample);
+  });
+  const home = JSON.parse(process.env.PULLBOARD_TEST_FILE_POOL).home;
+  const db = new DatabaseSync(join(home, 'test-file-pool.sqlite'), { readOnly: true });
+  try {
+    assert.equal(db.prepare('SELECT count(*) AS n FROM file_holder WHERE pid = ?').get(process.pid).n, 1);
+    assert.ok(db.prepare('SELECT count(*) AS n FROM file_waiter').get().n > 0);
+    assert.equal(db.prepare('SELECT count(*) AS n FROM file_call').get().n, 0);
+  } finally { db.close(); }
+  assert.ok(text.includes('use awaitNestedRun(child) only while yielding'));
+  process.kill(-child.pid, 'SIGTERM');
+  await closed;
+});
+`);
+  const noLoan = await awaitNestedRun(runFixtureChildAsync(process.execPath, [runner, 'parent.test.js'], { cwd: blocked.root, env: blocked.env }));
+  assert.equal(noLoan.status, 0, `${noLoan.failure ?? ''}\n${noLoan.stdout}`);
+  assert.equal(await occupiedPlaces(blocked.env.PULLBOARD_MACHINE_HOME), 0, 'the bounded negative control cleaned its real processes');
+});
+
+test('an explicit async loan refuses duplicate and concurrent waits and preserves child failures [C7]', async (t) => {
+  const { root, env } = fixture(t, 1);
+  const poolModule = new URL('../src/test-file-pool.js', import.meta.url).href;
+  writeFileSync(join(root, 'inner.test.js'), timedFile('inner.test.js', 0));
+  writeFileSync(join(root, 'parent.test.js'), `import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { test } from 'node:test';
+import { awaitNestedRun } from ${JSON.stringify(poolModule)};
+test('explicit wait contracts', { timeout: 10_000 }, async (t) => {
+  const start = () => {
+    const child = spawn(process.execPath, [${JSON.stringify(runner)}, 'inner.test.js'], { cwd: ${JSON.stringify(root)}, stdio: ['ignore', 'pipe', 'pipe'] });
+    child.stdout.resume(); child.stderr.resume();
+    return child;
+  };
+  const first = start();
+  const waiting = awaitNestedRun(first);
+  await assert.rejects(awaitNestedRun(first), { code: 'NESTED_RUN_WAIT_REUSED' });
+  const second = start();
+  await assert.rejects(awaitNestedRun(second), { code: 'NESTED_RUN_WAIT_ACTIVE' });
+  assert.equal((await waiting).status, 0);
+  assert.equal((await awaitNestedRun(second)).status, 0);
+  const missing = spawn(${JSON.stringify(join(root, 'missing-child'))}, [], { stdio: 'ignore' });
+  await assert.rejects(awaitNestedRun(missing), { code: 'ENOENT' });
+  const failed = spawn(process.execPath, ['-e', 'process.exit(7)'], { stdio: 'ignore' });
+  assert.deepEqual(await awaitNestedRun(failed), { status: 7, signal: null });
+  const late = spawn(${JSON.stringify(join(root, 'missing-late-child'))}, [], { stdio: 'ignore' });
+  const seen = new Promise(resolve => { late.on('error', () => {}); late.once('close', resolve); });
+  await seen;
+  await assert.rejects(awaitNestedRun(late), { code: 'ENOENT' });
+  const separate = { ...process.env };
+  delete separate.PULLBOARD_TEST_FILE_POOL;
+  const independent = spawn(${JSON.stringify(join(root, 'missing-independent-child'))}, [], { env: separate, stdio: 'ignore' });
+  await assert.rejects(awaitNestedRun(independent), { code: 'ENOENT' });
+  const fallback = spawn(process.execPath, [${JSON.stringify(runner)}, 'inner.test.js'], { env: false, detached: true, stdio: 'ignore' });
+  let live = true;
+  fallback.once('close', () => { live = false; });
+  t.after(() => { if (live) { try { process.kill(-fallback.pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; } } });
+  assert.equal((await awaitNestedRun(fallback)).status, 0, 'a native falsy-env fallback still borrows in a one-token pool');
+});
+`);
+  const result = await awaitNestedRun(runFixtureChildAsync(process.execPath, [runner, 'parent.test.js'], { cwd: root, env }));
+  assert.equal(result.status, 0, result.failure ?? result.stdout);
+  assert.equal(await occupiedPlaces(env.PULLBOARD_MACHINE_HOME), 0);
+});
+
+test('async offers preserve spawn argument overloads and Node validation [C7]', async (t) => {
+  const { root, env } = fixture(t, 1);
+  const poolModule = new URL('../src/test-file-pool.js', import.meta.url).href;
+  const probe = join(root, 'options.sh');
+  const marker = join(root, 'options-output');
+  writeFileSync(probe, String.raw`#!/bin/sh
+printf '%s\n' "$ASYNC_OFFER_MODE" > "$ASYNC_OFFER_DEST"
+`);
+  chmodSync(probe, 0o755);
+  writeFileSync(join(root, 'spawn-cases.mjs'), `import { existsSync, readFileSync, rmSync } from 'node:fs';
+const probe = ${JSON.stringify(probe)};
+const marker = ${JSON.stringify(marker)};
+export const variants = ['undefined-args', 'null-args', 'object-options', 'array-args', 'invalid-args', 'invalid-options', 'null-array-options', 'null-undefined-options', 'null-null-options', 'inherited-env', 'inherited-options', 'false-env', 'zero-env', 'empty-env', 'separate-env', 'own-env-getter', 'separate-env-getter'];
+export function startVariant(start, variant) {
+  rmSync(marker, { force: true });
+  process.env.ASYNC_OFFER_MODE = 'fallback';
+  process.env.ASYNC_OFFER_DEST = marker;
+  const options = { cwd: ${JSON.stringify(root)}, env: { ...process.env, ASYNC_OFFER_MODE: 'retained-options' }, stdio: 'ignore' };
+  if (variant === 'undefined-args') return start(probe, undefined, options);
+  if (variant === 'null-args') return start(probe, null, options);
+  if (variant === 'object-options') return start(probe, options);
+  if (variant === 'array-args') return start(probe, [], options);
+  if (variant === 'invalid-args') return start(probe, 'invalid args');
+  if (variant === 'invalid-options') return start(probe, [], 'invalid options');
+  if (variant === 'null-array-options') return start(probe, [], null);
+  if (variant === 'null-undefined-options') return start(probe, undefined, null);
+  if (variant === 'null-null-options') return start(probe, null, null);
+  if (variant === 'inherited-env') {
+    options.env = Object.assign(Object.create({ ASYNC_OFFER_MODE: 'inherited-value' }), {
+      PULLBOARD_TEST_FILE_POOL: process.env.PULLBOARD_TEST_FILE_POOL, ASYNC_OFFER_DEST: marker,
+    });
+  } else if (variant === 'inherited-options') {
+    return start(probe, Object.assign(Object.create({ env: { ASYNC_OFFER_MODE: 'ignored' }, cwd: '/missing/inherited-spawn-option' }), { stdio: 'ignore' }));
+  } else if (variant === 'false-env') options.env = false;
+  else if (variant === 'zero-env') options.env = 0;
+  else if (variant === 'empty-env') options.env = '';
+  else if (variant === 'separate-env') options.env.PULLBOARD_TEST_FILE_POOL = 'separate-fixture-pool';
+  else if (variant === 'own-env-getter' || variant === 'separate-env-getter') {
+    let reads = 0;
+    Object.defineProperty(options, 'env', { enumerable: true, get() {
+      reads++;
+      return { ...process.env, ASYNC_OFFER_MODE: 'getter-' + reads,
+        ...(variant === 'separate-env-getter' ? { PULLBOARD_TEST_FILE_POOL: 'separate-fixture-pool' } : {}) };
+    } });
+  }
+  return start(probe, [], options);
+}
+export function observation(result) {
+  return { status: result.status, signal: result.signal, mode: existsSync(marker) ? readFileSync(marker, 'utf8').trim() : null };
+}
+`);
+  const oracle = join(root, 'native-oracle.mjs');
+  writeFileSync(oracle, `import { spawnSync } from 'node:child_process';
+import { variants, startVariant, observation } from './spawn-cases.mjs';
+const records = variants.map(variant => {
+  try { return { variant, observed: observation(startVariant(spawnSync, variant)) }; }
+  catch (error) { return { variant, observed: { error: error.code } }; }
+});
+process.stdout.write(JSON.stringify(records));
+`);
+  // This private non-test oracle loads no runner/preload, so its primitive is independent of both loan wrappers.
+  const oracleEnv = { ...env, NODE_OPTIONS: '' };
+  delete oracleEnv.NODE_TEST_CONTEXT;
+  const native = runFixtureChild(process.execPath, [oracle], { cwd: root, env: oracleEnv, encoding: 'utf8' });
+  assert.equal(native.status, 0, native.failure ?? native.stderr);
+  const expected = JSON.parse(native.stdout);
+  t.diagnostic('independent Node spawn observations: ' + JSON.stringify(expected));
+  writeFileSync(join(root, 'expected.json'), JSON.stringify(expected));
+  writeFileSync(join(root, 'parent.test.js'), `import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { test } from 'node:test';
+import { awaitNestedRun } from ${JSON.stringify(poolModule)};
+import { variants, startVariant, observation } from './spawn-cases.mjs';
+test('offered spawn matches independently loaded Node', async () => {
+  const expected = JSON.parse(readFileSync('expected.json', 'utf8'));
+  for (const variant of variants) {
+    let observed;
+    try { observed = observation(await awaitNestedRun(startVariant(spawn, variant))); }
+    catch (error) { observed = { error: error.code }; }
+    assert.deepEqual(observed, expected.find(record => record.variant === variant).observed, variant);
+  }
+});
+`);
+  const result = await awaitNestedRun(runFixtureChildAsync(process.execPath, [runner, 'parent.test.js'], { cwd: root, env }));
+  assert.equal(result.status, 0, `${result.failure ?? ''}\n${result.stdout}`);
+  assert.equal(await occupiedPlaces(env.PULLBOARD_MACHINE_HOME), 0);
+});
+
+test('an async loan whose cleanup fails exits without resuming its parent [C7]', async (t) => {
+  const { root, env } = fixture(t, 1);
+  const poolModule = new URL('../src/test-file-pool.js', import.meta.url).href;
+  writeFileSync(join(root, 'inner.test.js'), `import { existsSync, writeFileSync } from 'node:fs';
+import { test } from 'node:test';
+test('borrowed child', async () => {
+  writeFileSync('inner-ready', 'ready');
+  while (!existsSync('release-inner')) await new Promise(next => setTimeout(next, 10));
+});
+`);
+  writeFileSync(join(root, 'parent.test.js'), `import { spawn } from 'node:child_process';
+import { existsSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { test } from 'node:test';
+import { awaitNestedRun } from ${JSON.stringify(poolModule)};
+test('a broken private pool must not return a live loan', async () => {
+  const child = spawn(process.execPath, [${JSON.stringify(runner)}, 'inner.test.js'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  child.stdout.resume(); child.stderr.resume();
+  const waiting = awaitNestedRun(child);
+  while (!existsSync('inner-ready')) await new Promise(next => setTimeout(next, 10));
+  const home = JSON.parse(process.env.PULLBOARD_TEST_FILE_POOL).home;
+  const db = new DatabaseSync(join(home, 'test-file-pool.sqlite'));
+  db.exec('DROP TABLE file_call');
+  db.close();
+  writeFileSync('release-inner', 'release');
+  try { await waiting; } catch { writeFileSync('parent-resumed', 'caught'); }
+  writeFileSync('parent-resumed', 'returned');
+});
+`);
+  const result = await awaitNestedRun(runFixtureChildAsync(process.execPath, [runner, 'parent.test.js'], { cwd: root, env }));
+  assert.equal(result.status, 1, `${result.failure ?? ''}\n${result.stdout}`);
+  assert.match(result.stdout + result.stderr, /cannot close the nested loan safely/);
+  assert.equal(existsSync(join(root, 'parent-resumed')), false, 'neither return nor catch resumed the parent');
+  assert.equal(await occupiedPlaces(env.PULLBOARD_MACHINE_HOME), 0);
 });
 
 test('a run a synchronous call leaves behind lends nothing once the call returns [C7]', async (t) => {
@@ -229,7 +462,7 @@ test('a run a synchronous call leaves behind lends nothing once the call returns
   const until = Date.now() + 1500;
   while (Date.now() < until) { /* computing in its own place */ }`;
   writeFileSync(join(root, 'parent.test.js'), timedFile('parent.test.js', 0, detached));
-  const result = await runFixtureChildAsync(process.execPath, [runner, 'parent.test.js'], { cwd: root, env: { ...env, FIXTURE_RUN: 'outer' } });
+  const result = await awaitNestedRun(runFixtureChildAsync(process.execPath, [runner, 'parent.test.js'], { cwd: root, env: { ...env, FIXTURE_RUN: 'outer' } }));
   assert.equal(result.status, 0, result.failure ?? result.stdout);
   const deadline = Date.now() + 30_000;
   while (log().filter(event => event.run === 'inner' && event.at === 'end').length < 2 && Date.now() < deadline) await new Promise(next => setTimeout(next, 100));
@@ -249,7 +482,7 @@ test('a synchronous call returns only after the file it lent its place to has ex
   execSync(${JSON.stringify(`${JSON.stringify(process.execPath)} ${JSON.stringify(runner)} inner.test.js > /dev/null 2>&1 & ${started}`)}, { cwd: ${JSON.stringify(root)}, env: { ...process.env, FIXTURE_RUN: 'inner' } });
   mark('resume');`;
   writeFileSync(join(root, 'parent.test.js'), timedFile('parent.test.js', 0, lingering));
-  const result = await runFixtureChildAsync(process.execPath, [runner, 'parent.test.js'], { cwd: root, env: { ...env, FIXTURE_RUN: 'outer' } });
+  const result = await awaitNestedRun(runFixtureChildAsync(process.execPath, [runner, 'parent.test.js'], { cwd: root, env: { ...env, FIXTURE_RUN: 'outer' } }));
   assert.equal(result.status, 0, result.failure ?? result.stdout);
   const deadline = Date.now() + 30_000;
   while (!log().some(event => event.file === 'inner.test.js' && event.at === 'end') && Date.now() < deadline) await new Promise(next => setTimeout(next, 100));
@@ -274,7 +507,7 @@ test('c', () => { execSync(${JSON.stringify(startD)}, { cwd: ${JSON.stringify(ro
   catch { /* C was killed, so its run fails; P only resumes. */ }
   mark('resume');`;
   writeFileSync(join(root, 'p.test.js'), timedFile('p.test.js', 0, runC));
-  const result = await runFixtureChildAsync(process.execPath, [runner, 'p.test.js'], { cwd: root, env: { ...env, FIXTURE_RUN: 'p' } });
+  const result = await awaitNestedRun(runFixtureChildAsync(process.execPath, [runner, 'p.test.js'], { cwd: root, env: { ...env, FIXTURE_RUN: 'p' } }));
   assert.equal(result.status, 0, `${result.failure ?? ''}\n${result.stdout.slice(-3000)}`);
   const deadline = Date.now() + 30_000;
   while (!log().some(event => event.file === 'd.test.js' && event.at === 'end') && Date.now() < deadline) await new Promise(next => setTimeout(next, 100));
