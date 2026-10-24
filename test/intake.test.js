@@ -7,6 +7,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import {
+  advanceOutsideFixture,
   calls,
   configureFixtureSandbox,
   fixtureJSON,
@@ -93,4 +94,43 @@ test('outside issue intake retains source state and distinguishes a maintainer r
   assert.equal(item.outside.state, 'closed');
   assert.equal(item.outside.maintainerReplied, true);
   assert.equal(item.item_status, 'open', 'GitHub closure alone does not verify or land a local board item');
+});
+
+
+test('outside sealing and command-bearing changes require owner approval [B26,V3]', t => {
+  const box = intakeFixture(t);
+  // Remove the original relay path so it cannot conceal an omitted sealing classification.
+  advanceOutsideFixture(box, 'src/seal.js', 'export const sealFixture = true;\n', ['relay/outside.js']);
+  const filed = fixtureJSON(box, box.repo, 'intake', box.pull.html_url, '--criterion', 'the fixture behavior works', '--check', 'node --test test/contribution.test.js');
+  const id = String(filed.item.item_id);
+  assert.equal(fixtureJSON(box, box.repo, 'show', id).outside.sensitive, true, 'the existing sealing boundary needs owner approval even without a relay change');
+});
+
+test('a returned outside pull request cannot be claimed as native build work [V1,V3]', t => {
+  const box = intakeFixture(t);
+  const filed = fixtureJSON(box, box.repo, 'intake', box.pull.html_url, '--criterion', 'the fixture behavior works', '--check', 'node --test test/contribution.test.js');
+  const id = String(filed.item.item_id);
+  fixtureJSON(box, box.repo, 'reopen', id, '--note', 'outside author must revise its pull request');
+  refusal(box.run(box.web, 'claim', id, '--json'), 'OUTSIDE_NATIVE_BUILD');
+  const item = fixtureJSON(box, box.repo, 'show', id);
+  assert.equal(item.item_status, 'open');
+  assert.equal(item.item_built_by, 'outside:github:outside-contributor');
+});
+
+test('an outside author revision is re-intaken only after normal return and clears exact-commit approval [V1,V3,B26]', t => {
+  const box = intakeFixture(t);
+  const filed = fixtureJSON(box, box.repo, 'intake', box.pull.html_url, '--criterion', 'the fixture behavior works', '--check', 'node --test test/contribution.test.js');
+  const id = String(filed.item.item_id);
+  fixtureJSON(box, box.repo, 'intake', 'approve', id);
+  const next = advanceOutsideFixture(box, 'relay/outside.js', 'export const outside = "revised owned fixture";\n');
+  refusal(box.run(box.repo, 'intake', box.pull.html_url, '--criterion', 'the fixture behavior works', '--check', 'node --test test/contribution.test.js', '--json'), 'OUTSIDE_HEAD_CHANGED');
+  assert.equal(fixtureJSON(box, box.repo, 'show', id).item_commit, box.commit, 'source refresh cannot replace an active submission');
+  fixtureJSON(box, box.repo, 'reopen', id, '--note', 'outside author supplied a new exact head');
+  const refreshed = fixtureJSON(box, box.repo, 'intake', box.pull.html_url, '--criterion', 'the fixture behavior works', '--check', 'node --test test/contribution.test.js');
+  assert.equal(refreshed.item.item_id, Number(id));
+  assert.equal(refreshed.item.item_status, 'submitted');
+  assert.equal(refreshed.item.item_commit, next.commit);
+  assert.equal(refreshed.item.item_tree, next.tree);
+  assert.equal(refreshed.item.outside.ownerApproval, null, 'the old owner approval never authorizes the new source commit');
+  assert.equal(refreshed.item.outside.sandbox, null, 'the new outside head must be executed in the sandbox again');
 });

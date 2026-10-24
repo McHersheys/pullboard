@@ -5,8 +5,12 @@ import {
   mkdirSync,
   readFileSync,
   writeFileSync,
+  unlinkSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import {
+  dirname,
+  join,
+} from 'node:path';
 import { createE2eHelpers } from './e2e-helpers.js';
 
 /** Quote an owned fixture path for the tiny executable shim. */
@@ -73,7 +77,7 @@ let value;
 if(args[0]==='repo'&&args[1]==='view') value={nameWithOwner:'fixture/project',defaultBranchRef:{name:'main'}};
 else if(args[0]!=='api'||args.includes('--method')||args.includes('-X')) { process.stderr.write('fixture refuses posting or unknown commands'); process.exit(2); }
 else if(route==='repos/fixture/project/pulls/7') value=facts.pull;
-else if(route==='repos/fixture/project/pulls/7/files') value=[{filename:'relay/outside.js',status:'added'},{filename:'test/contribution.test.js',status:'added'}];
+else if(route==='repos/fixture/project/pulls/7/files') value=facts.files||[{filename:'relay/outside.js',status:'added'},{filename:'test/contribution.test.js',status:'added'}];
 else if(route==='repos/fixture/project/pulls/7/reviews') value=[];
 else if(route==='repos/fixture/project/issues/6') value=facts.issue;
 else if(route==='repos/fixture/project/issues/6/comments') value=facts.issueComments||[];
@@ -115,4 +119,20 @@ else if(!['rm','kill'].includes(args[0])) { process.stderr.write('unknown fixtur
 export function calls(path) {
   try { return readFileSync(path, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line)); }
   catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+}
+
+/** Advance only this owned fork/ref and its public metadata; never execute its contributed program. */
+export function advanceOutsideFixture(box, path, content, remove = []) {
+  for (const deleted of remove) unlinkSync(join(box.fork, deleted));
+  mkdirSync(dirname(join(box.fork, path)), { recursive: true });
+  writeFileSync(join(box.fork, path), content);
+  box.git(box.fork, 'add', '-A');
+  box.git(box.fork, 'commit', '-q', '--author', 'Outside Contributor <outside@example.test>', '-m', 'feat: revise owned outside fixture\n\nSigned-off-by: Outside Contributor <outside@example.test>');
+  const commit = box.git(box.fork, 'rev-parse', 'HEAD');
+  box.git(box.origin, 'fetch', '-q', box.fork, '+HEAD:refs/pull/7/head');
+  const facts = JSON.parse(readFileSync(box.facts, 'utf8'));
+  facts.pull.head.sha = commit;
+  facts.files = box.git(box.fork, 'diff', '--name-only', `${box.base}...${commit}`).split('\n').filter(Boolean).map(filename => ({ filename, status: 'added' }));
+  writeFileSync(box.facts, JSON.stringify(facts));
+  return { commit, tree: box.git(box.fork, 'rev-parse', 'HEAD^{tree}') };
 }
