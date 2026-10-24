@@ -1,6 +1,10 @@
 /** One authenticated, machine-local heartbeat per command, independent of shared-board write locks [B3]. */
 import { context } from './cli-read-context.js';
-import { agentAt, closeBoard, openBoardForRead } from './board-query.js';
+import {
+  agentAt,
+  closeBoard,
+  openBoardForRead,
+} from './board-query.js';
 import { heartbeatSeat } from './seat-presence.js';
 
 const recorded = new WeakSet();
@@ -16,6 +20,6 @@ export function heartbeatCommand(io) {
     const seat = agentAt(board, ctx.info.root);
     if (seat && heartbeatSeat(board, seat.agent_id)) recorded.add(io);
   } catch (error) {
-    if (error.code !== 'NO_CONFIG') io.err(`presence heartbeat unavailable: ${error.message}`);
+    if (!['NO_CONFIG', 'NOT_A_REPO'].includes(error.code)) io.err(`presence heartbeat unavailable: ${error.message}`);
   } finally { if (board) closeBoard(board); }
 }
