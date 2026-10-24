@@ -1,9 +1,10 @@
 /** Prove concurrent landing gates against actual private Git, SQLite and gate subprocesses [B3,V4]. */
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { runFixtureChild } from './fixture-child.js';
+import { runFixtureChild, startFixtureChild } from './fixture-child.js';
+import * as store from '../src/board.js';
 import { GATE_SLOT_HELD_ENV, GATE_SLOT_POOL_ENV, GATE_SLOT_TOKEN_ENV, BROWSER_SLOT_HELD_ENV } from '../src/resources.js';
 
 /** Read append-only subprocess markers; each completed line is one independently observed transition. */
@@ -102,4 +103,153 @@ export function assertParallelLanding({ landProject, itemWorktree, submitItem, a
       assert.equal(sets.filter(value => value === 'land-2.test.js').length, 1, 'the distinct B-alone control confirms culpability rather than blaming an interaction');
     } else assert.equal(maximum, 1, 'the default serial behavior remains serial');
   }
+}
+
+/** Configure only the private project's accepted trunk before creating its submitted items. */
+function parallelCliProject(landProject) {
+  const box = landProject();
+  mkdirSync(box.env.PULLBOARD_MACHINE_HOME, { recursive: true });
+  // Capacity belongs only to this sandbox's independent machine home, never the user's pool.
+  writeFileSync(join(box.env.PULLBOARD_MACHINE_HOME, 'settings.json'), JSON.stringify({ gateSlots: 2, browserSlots: 2 }));
+  const path = join(box.repo, 'pullboard.json');
+  const config = JSON.parse(readFileSync(path, 'utf8'));
+  config.landing = { ...config.landing, parallel: true };
+  writeFileSync(path, JSON.stringify(config, null, 2));
+  box.git(box.repo, 'add', 'pullboard.json');
+  box.git(box.repo, 'commit', '-q', '-m', 'chore: configure private parallel landing');
+  return box;
+}
+
+/** Observe a real CLI landing without replacing its configuration, lease or guardian callbacks. */
+function startParallelCli(box, BIN) {
+  const env = { ...box.env };
+  for (const key of [GATE_SLOT_HELD_ENV, GATE_SLOT_POOL_ENV, GATE_SLOT_TOKEN_ENV, BROWSER_SLOT_HELD_ENV]) delete env[key];
+  const child = startFixtureChild(process.execPath, [BIN, 'land', '--json'], {
+    cwd: box.repo, env, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8').on('data', part => { stdout += part; });
+  child.stderr.setEncoding('utf8').on('data', part => { stderr += part; });
+  const closed = new Promise(resolveClose => {
+    child.once('error', error => resolveClose({ error }));
+    child.once('close', (code, signal) => resolveClose({ code, signal, stdout, stderr }));
+  });
+  return { child, closed };
+}
+
+/** Exercise real CLI opt-in and authority loss on separate private, normally verified projects. */
+export async function assertParallelCliLease({ landProject, itemWorktree, submitItem, acceptItem, onBoard, waitFor, BIN }) {
+  for (const loseLease of [false, true]) {
+    const box = parallelCliProject(landProject);
+    const entries = [1, 2].map(number => itemWorktree(box, number));
+    for (const entry of entries) submitItem(box, entry);
+    for (const entry of entries) acceptItem(box, entry);
+    const localBefore = box.git(box.repo, 'rev-parse', 'main');
+    const remoteBefore = box.git(box.remote, 'rev-parse', 'main');
+    writeFileSync(box.hold, 'armed');
+    const running = startParallelCli(box, BIN);
+    let terminal;
+    let held;
+    let batch;
+    try {
+      await waitFor(() => existsSync(box.entered), 'the parallel CLI entered its real gate');
+      ({ held, batch } = onBoard(box, board => ({ held: store.landingLeaseState(board).holder,
+        batch: store.landingBatches(board).at(-1) })));
+      assert.ok(held && Number.isSafeInteger(held.guardianPid) && held.guardianPid > 0, 'the real guardian is bound to an actual lease');
+      assert.equal(held.branch, batch.branch);
+      assert.ok(Number.isSafeInteger(held.generation) && held.generation > 0);
+      assert.equal(batch.parallelCandidates.length, 2, 'the CLI parsed the committed opt-in and dispatched both prefixes');
+      assert.equal(new Set(batch.parallelCandidates.map(candidate => candidate.snapshot.root)).size, 2);
+      if (loseLease) {
+        // This private fixture owns the observed invocation. Release its actual public grant;
+        // no SQL, invented token, elapsed-clock override, takeover identity or signal is used.
+        onBoard(box, board => store.landingLeaseMove(board, { agentId: 'coordinator', action: 'release',
+          token: held.token, generation: held.generation, branch: held.branch, pid: held.pid }));
+        assert.equal(onBoard(box, board => store.landingLeaseState(board).holder), null);
+      }
+    } finally {
+      // Always release the cooperative gate. Any authority-loss cancellation is the product
+      // guardian's own fenced shutdown; this test never signals an arbitrary process/group.
+      writeFileSync(box.release, 'release');
+      terminal = await running.closed;
+    }
+    assert.equal(terminal.error, undefined);
+    assert.equal(terminal.signal, null, terminal.stderr);
+    const result = JSON.parse(terminal.stdout);
+    const snapshot = onBoard(box, board => ({ holder: store.landingLeaseState(board).holder,
+      batch: store.landingBatches(board).find(row => row.id === batch.id), events: store.events(board),
+      statuses: entries.map(entry => store.getItem(board, entry.item).item_status) }));
+    assert.equal(snapshot.holder, null, 'the CLI leaves no live landing grant');
+    if (loseLease) {
+      assert.notEqual(terminal.code, 0, terminal.stderr);
+      assert.equal(result.error?.code, 'LAND_LEASE_LOST', terminal.stdout);
+      assert.equal(box.git(box.repo, 'rev-parse', 'main'), localBefore);
+      assert.equal(box.git(box.remote, 'rev-parse', 'main'), remoteBefore);
+      assert.equal(snapshot.events.filter(event => event.event_kind === 'main-moved').length, 0);
+      assert.deepEqual(snapshot.batch.culprits ?? [], [], 'authority loss attributes no item failure');
+      assert.deepEqual(snapshot.statuses, ['verified', 'verified']);
+    } else {
+      assert.equal(terminal.code, 0, terminal.stderr);
+      assert.deepEqual(result.landed, entries.map(entry => entry.item));
+      assert.equal(box.git(box.repo, 'rev-parse', 'main'), result.batch.tip);
+      assert.equal(box.git(box.remote, 'rev-parse', 'main'), result.batch.tip);
+      assert.equal(snapshot.events.filter(event => event.event_kind === 'main-moved').length, 1);
+      assert.equal(snapshot.batch.state, 'landed');
+    }
+  }
+}
+
+/** Prove nested parallel refusal under a real private live gate grant through both public entries. */
+export function assertParallelNestedGate({ landProject, itemWorktree, submitItem, acceptItem, onBoard, BIN }) {
+  const box = parallelCliProject(landProject);
+  const entry = itemWorktree(box, 1);
+  submitItem(box, entry);
+  acceptItem(box, entry);
+  const before = { main: box.git(box.repo, 'rev-parse', 'main'), remote: box.git(box.remote, 'rev-parse', 'main'),
+    calls: readFileSync(box.calls, 'utf8'), batches: onBoard(box, board => store.landingBatches(board)),
+    paths: existsSync(join(box.repo, '.git', 'pullboard', 'landings'))
+      ? readdirSync(join(box.repo, '.git', 'pullboard', 'landings'), { recursive: true }).sort() : null };
+  /** Resolve the running installed source for a real private controller child. */
+  const url = name => pathToFileURL(join(import.meta.dirname, '../src', name)).href;
+  const direct = [
+    `import * as store from ${JSON.stringify(url('board.js'))};`,
+    `import { runLandingBatch } from ${JSON.stringify(url('land.js'))};`,
+    "import { join } from 'node:path';",
+    'const root = process.argv[1]; const board = store.openBoard(join(root, ".git", "pullboard", "board.sqlite"));',
+    'try { await runLandingBatch({ root, board, owner: "private-nested-api", write: async (operation, args) => store[operation](board, ...args), say: () => {} }); console.log(JSON.stringify({ code: null })); }',
+    'catch (error) { console.log(JSON.stringify({ code: error.code, message: error.message })); } finally { store.closeBoard(board); }',
+  ].join('\n');
+  const controller = [
+    "import assert from 'node:assert/strict';",
+    `import { withGateSlot } from ${JSON.stringify(url('gate.js'))};`,
+    `import { gateSlotEnvironment, holdsLease } from ${JSON.stringify(url('resources.js'))};`,
+    `import { runFixtureChild } from ${JSON.stringify(pathToFileURL(join(import.meta.dirname, 'fixture-child.js')).href)};`,
+    'const [root, bin] = process.argv.slice(1); let owned;',
+    'await withGateSlot(root, async lease => { owned = lease; const env = { ...process.env, ...gateSlotEnvironment(lease) };',
+    'assert.equal(holdsLease(lease), true);',
+    'const cli = runFixtureChild(process.execPath, [bin, "land", "--json"], { cwd: root, env, encoding: "utf8" });',
+    'assert.notEqual(cli.status, 0); assert.equal(JSON.parse(cli.stdout).error?.code, "LAND_PARALLEL_NESTED_GATE");',
+    'assert.equal(holdsLease(lease), true, "the CLI refusal cannot release its caller grant");',
+    `const api = runFixtureChild(process.execPath, ["--input-type=module", "-e", ${JSON.stringify(direct)}, root], { cwd: root, env, encoding: "utf8" });`,
+    'assert.equal(api.status, 0, api.stderr); assert.equal(JSON.parse(api.stdout).code, "LAND_PARALLEL_NESTED_GATE");',
+    'assert.equal(holdsLease(lease), true, "the API refusal cannot release its caller grant");',
+    '}, { browser: false, remote: false, agent: "coordinator", kind: "check" });',
+    'assert.equal(holdsLease(owned), false, "only the actual owner releases the grant when its action ends");',
+    'console.log(JSON.stringify({ cli: "LAND_PARALLEL_NESTED_GATE", api: "LAND_PARALLEL_NESTED_GATE", ownerReleased: true }));',
+  ].join('\n');
+  const env = { ...box.env };
+  for (const key of [GATE_SLOT_HELD_ENV, GATE_SLOT_POOL_ENV, GATE_SLOT_TOKEN_ENV, BROWSER_SLOT_HELD_ENV]) delete env[key];
+  const result = runFixtureChild(process.execPath, ['--input-type=module', '-e', controller, box.repo, BIN], {
+    cwd: box.repo, env, encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, `${result.failure ?? result.stderr}\n${result.stdout}`);
+  assert.deepEqual(JSON.parse(result.stdout), { cli: 'LAND_PARALLEL_NESTED_GATE', api: 'LAND_PARALLEL_NESTED_GATE', ownerReleased: true });
+  assert.equal(box.git(box.repo, 'rev-parse', 'main'), before.main);
+  assert.equal(box.git(box.remote, 'rev-parse', 'main'), before.remote);
+  assert.equal(readFileSync(box.calls, 'utf8'), before.calls, 'neither entry launches a candidate gate');
+  assert.deepEqual(onBoard(box, board => store.landingBatches(board)), before.batches, 'no new candidate batch is persisted');
+  const paths = existsSync(join(box.repo, '.git', 'pullboard', 'landings'))
+    ? readdirSync(join(box.repo, '.git', 'pullboard', 'landings'), { recursive: true }).sort() : null;
+  assert.deepEqual(paths, before.paths, 'neither entry creates candidate paths');
 }

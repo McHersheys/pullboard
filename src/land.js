@@ -54,6 +54,7 @@ import {
 } from './landing-lease.js';
 import { runLandingWorker } from './landing-worker.js';
 import { runLandingCandidateWorker } from './landing-candidates.js';
+import { inheritedGateSlot } from './resources.js';
 import { Refused } from './refused.js';
 import { requireLandingHost } from './landing-host.js';
 import {
@@ -1111,6 +1112,13 @@ function cadenceDeferral(board, config, branch, say) {
   return { batch: null, landed: [], conflicts: [], blocked: [], culprits: [], flakes: [], deferredUntil };
 }
 
+/** Require a separate admitted slot for every speculative gate, without holding a parent gate open. */
+function requireParallelGateAdmission(root, config) {
+  if (config.landing?.parallel === true && inheritedGateSlot({ root, namedFiles: true })) {
+    throw new Refused('LAND_PARALLEL_NESTED_GATE', 'parallel landing needs separately admitted gate slots; run pullboard land outside the current gate command');
+  }
+}
+
 /** Build, gate, diagnose and durably land one coordinator batch; all external actions stay in its worktree. */
 export async function land(options) {
   if (options.dryRun) return runLandingBatch(options);
@@ -1118,6 +1126,7 @@ export async function land(options) {
   const trunk = mainCheckout(options.root);
   const branch = trunk?.branch;
   if (!branch) throw new Refused('LAND_TRUNK', 'landing needs the coordinator’s primary branch; return its checkout to the trunk');
+  if (trunk.commit) requireParallelGateAdmission(options.root, policyAt(options.root, trunk.commit).config);
   if (trunk.commit && !options.adopt) {
     requireConfirmedLanding(options.board);
     const deferred = cadenceDeferral(options.board, policyAt(options.root, trunk.commit).config, branch, options.say);
@@ -1191,6 +1200,7 @@ export async function runLandingBatch({ root, board, config, write, say, owner, 
   if (!trunk?.commit) throw new Refused('LAND_TRUNK', 'landing needs the coordinator’s primary branch; return its checkout to the trunk');
   // Pin accepted policy after any recorded-landed repair, never before admission or from candidate files.
   config ??= policyAt(root, trunk.commit).config;
+  if (!dryRun) requireParallelGateAdmission(root, config);
   board.quarantineEnabled = () => config.flakes?.quarantine === true;
   const environment = dryRun ? null : requireLandingHost(store.boardId(board), config);
   const testDefects = heldTestDefects(root, board, trunk);

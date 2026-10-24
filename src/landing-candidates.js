@@ -9,6 +9,13 @@ import { Refused } from './refused.js';
 
 const FILE = fileURLToPath(import.meta.url);
 
+/** Recognize only the exact worktrees registered by an active canonical landing batch. */
+export function landingBatchOwnsRoot(batch, root) {
+  if (['landed', 'blocked'].includes(batch.state)) return false;
+  return batch.root === root || (batch.parallelCandidates ?? []).some(candidate => candidate.snapshot?.root === root
+    && candidate.snapshot.base === batch.base && candidate.snapshot.branch === batch.branch);
+}
+
 /** Run one exact prefix in the existing guardian's process group, never publishing it. */
 export async function runLandingCandidateWorker(options, { write, checkLease, say, onWait, onStart }) {
   const child = spawn(process.execPath, [FILE, 'candidate'], {
