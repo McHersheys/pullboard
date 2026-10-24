@@ -27,7 +27,7 @@ function row(box, id) {
   return parseSpec(readFileSync(join(box.repo, 'SPEC.md'), 'utf8')).rows.find(entry => entry.id === id);
 }
 
-test('a proposed change to an approved row waits in Needs you and applies only when the person approves it', { timeout: 120_000 }, () => {
+test('a proposed change to an approved row waits in Needs you and applies only when the person approves it [P6,B23,N39]', { timeout: 120_000 }, () => {
   const box = fixtures.project('true');
   const file = join(box.repo, 'SPEC.md');
   const original = readFileSync(file, 'utf8');
