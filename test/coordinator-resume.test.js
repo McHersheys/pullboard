@@ -245,12 +245,12 @@ test("the coordinator's handoff brief orders current work and leaves agent resum
   assert.equal(ordinary.code, 0, ordinary.err || ordinary.out);
   const indexed = JSON.parse(ordinary.out);
   assert.equal(indexed.openDecisions.length, 5, 'ordinary resume retains current coordinator obligations');
-  assert.ok(indexed.acceptedAwaitingLanding.some(item => item.item_id === conflictId),
-    'the old receipt remains visible without claiming its verdict is current');
-  for (const name of ['toMerge', 'staleVerdicts', 'verifiedNotMerged']) {
-    assert.equal(Object.hasOwn(indexed, name), false, 'fresh merge eligibility is an explicit diagnostic');
-  }
-  assert.equal(indexed.diagnostics.command, 'pullboard resume --diagnostics');
+  assert.ok(indexed.staleVerdicts.some(item => item.item_id === conflictId),
+    'JSON v1 retains the stale receipt without claiming its verdict is current');
+  assert.ok(!indexed.toMerge.some(item => item.item_id === conflictId), 'a stale receipt is never ready to land');
+  assert.equal(typeof indexed.newWorktreeLocation, 'string', 'JSON v1 retains the validated checkout guidance');
+  assert.ok(indexed.verifiedNotMerged.conflicts.some(entry => entry.item.item_id === conflictId),
+    'JSON v1 retains complete integration diagnostics');
   assert.doesNotMatch(indexed.next, /^git merge|^merge #/u, 'ordinary guidance retains guarded landing authority');
 
   const resumed = box.run(box.repo, 'resume', '--diagnostics');

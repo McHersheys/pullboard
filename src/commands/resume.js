@@ -241,6 +241,7 @@ export async function resumeHere(io, view, diagnostics = false, { json = false }
   for (const problem of card.hookProblems ?? []) say(`${problem.message}; ${problem.next}`);
   const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
   say(`resume: ${me.displayName}${me.family ? ` [family ${me.family}]` : ''}, ${me.lane} lane${isMain ? ', the main checkout' : ''}, at ${root}`);
+  if (card.inbox) for (const line of coordinatorInboxLines(card.inbox, name, (at) => span(ctx, at), firstLine)) say(line);
   if (card.proofStatsFallback) say(card.proofStatsFallback);
   if (card.health.recordedAt) {
     say(`Health recorded ${card.health.recordedAt}: ${card.health.findings.length} finding${card.health.findings.length === 1 ? '' : 's'}; refresh with pullboard sentinel run.`);
@@ -249,7 +250,6 @@ export async function resumeHere(io, view, diagnostics = false, { json = false }
   card.view = view;
   // A view left running needs no line at every session start; a start, a busy port or a failure does.
   if (view.state !== 'running' && backgroundViewLine(view)) say(backgroundViewLine(view));
-  if (card.inbox) for (const line of coordinatorInboxLines(card.inbox, name, (at) => span(ctx, at), firstLine)) say(line);
   if (diagnostics) {
     say(`New agent worktrees: ${card.newWorktreeLocation}`);
     card.setup = withBoardRead(ctx, board => withStarterWork(boardSetup(ctx, card, setupScope, { decisions: setupDecisions }), { board, me, main: isMain, config: ctx.config, root, seat: ctx.io.callerRole() === 'seat' }));
@@ -262,7 +262,7 @@ export async function resumeHere(io, view, diagnostics = false, { json = false }
     if (card.setup.afterAnswer) say(card.setup.afterAnswer);
     if (card.setup.meanwhile) say(card.setup.meanwhile);
   }
-  const dirty = diagnostics ? dirtyFiles(root).length : undefined;
+  const dirty = diagnostics || !json ? dirtyFiles(root).length : undefined;
   if (!isMain && !json) {
     const { branch, mainRef, behind = 0, ahead = 0 } = sources;
     // Fresh command facts compare the actual primary branch, not an unrelated detached review HEAD.
