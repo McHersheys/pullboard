@@ -89,6 +89,7 @@ export function gateQueueSettings() {
 /** Board-owned controller inputs; false means off, independently of machine gate settings. */
 export const LINE_SETTING_DEFINITIONS = Object.freeze({
   order: Object.freeze({ type: 'boolean' }),
+  focusMilestone: Object.freeze({ type: 'milestone' }),
   reviewsFirst: Object.freeze({ type: 'boolean' }),
   wipPerReviewer: Object.freeze({ type: 'number', min: 1.5, max: 3, integer: false }),
   barReady: Object.freeze({ type: 'boolean' }),
@@ -108,7 +109,8 @@ export function validateLineSetting(key, value) {
 export function validateKnownLineSetting(key, value) {
   const definition = LINE_SETTING_DEFINITIONS[key];
   if (value === false || definition.type === 'boolean' && value === true) return;
+  if (definition.type === 'milestone' && typeof value === 'string' && value.trim() === value && value.length > 0 && !/[\r\n]/u.test(value)) return;
   if (definition.type === 'number' && typeof value === 'number' && Number.isFinite(value)
     && value >= definition.min && value <= definition.max && (!definition.integer || Number.isSafeInteger(value))) return;
-  throw new Refused('LINE_SETTING_RANGE', `${key} accepts off or ${definition.type === 'boolean' ? 'on' : `${definition.integer ? 'whole numbers ' : 'numbers '}${definition.min} to ${definition.max}`}; read pullboard settings line`);
+  throw new Refused('LINE_SETTING_RANGE', `${key} accepts off or ${definition.type === 'boolean' ? 'on' : definition.type === 'milestone' ? 'a milestone name' : `${definition.integer ? 'whole numbers ' : 'numbers '}${definition.min} to ${definition.max}`}; read pullboard settings line`);
 }
