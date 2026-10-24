@@ -108,12 +108,12 @@ test('a ruling the person approves reaches every agent once [D1,D3,B27]', (t) =>
 
   const replacement = 'A builder stops after two failed attempts. Source: chat, 2026-10-16';
   json(box.repo, 'spec', 'approve', drafted.id, '--text', replacement);
-  assert.deepEqual(json(box.web, 'resume').stale, [], 'an unapplied change does not replace the in-force ruling');
+  assert.deepEqual(json(box.web, 'resume', '--diagnostics').stale, [], 'an unapplied change does not replace the in-force ruling');
   json(box.repo, 'spec', 'apply');
-  const changed = json(box.web, 'resume');
+  const changed = json(box.web, 'resume', '--diagnostics');
   assert.ok(changed.stale.some(entry => entry.id === item.item_id && entry.rows.includes(drafted.id)), 'the old checkout detects the changed frozen row');
   assert.equal(changed.doctrineNotes[0].text, replacement);
-  const again = json(box.web, 'resume');
+  const again = json(box.web, 'resume', '--diagnostics');
   assert.deepEqual(again.doctrineNotes, []);
   assert.ok(again.stale.some(entry => entry.id === item.item_id), 'staleness remains after its one-time notice');
 
@@ -167,19 +167,19 @@ test('local doctrine edits flag their frozen row without hiding shared approved 
     json(box.web, 'release', String(item.item_id));
   }
   const frozen = [shared, edited].map(item => json(box.web, 'show', String(item.item_id)).item_frozen);
-  const baseline = json(box.web, 'resume');
+  const baseline = json(box.web, 'resume', '--diagnostics');
   assert.deepEqual(baseline.stale, [], 'unchanged old-checkout files retain the shared approved rule');
   assert.ok(baseline.doctrineNotes.some(note => note.id === drafted.id));
   const file = join(box.web, 'DOCTRINE.md');
   const original = readFileSync(file, 'utf8');
   assert.ok(!original.includes('Keep shared approved guidance visible.'));
   writeFileSync(file, original + '\n## Local diagnostic edit\n- PB1 [approved, must] A changed local inherited rule. | gate: true\n');
-  const changed = json(box.web, 'resume');
+  const changed = json(box.web, 'resume', '--diagnostics');
   assert.deepEqual(changed.stale.map(item => [item.id, item.rows]), [[edited.item_id, ['doctrine:PB1']]],
     'only the locally edited rule is stale; shared approved guidance is still available');
   assert.deepEqual(changed.doctrineNotes, [], 'an unapproved working-copy edit is not announced as new guidance');
   assert.equal(box.git(box.web, 'rev-parse', 'HEAD'), oldHead, 'diagnostics never advance the old checkout');
   assert.deepEqual([shared, edited].map(item => json(box.web, 'show', String(item.item_id)).item_frozen), frozen);
   writeFileSync(file, original);
-  assert.deepEqual(json(box.web, 'resume').stale, [], 'restoring the working file clears only its diagnostic change');
+  assert.deepEqual(json(box.web, 'resume', '--diagnostics').stale, [], 'restoring the working file clears only its diagnostic change');
 });

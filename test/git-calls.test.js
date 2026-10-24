@@ -7,7 +7,7 @@ import {
 import * as store from '../src/board.js';
 import { receiptBody } from '../src/gate-run-receipt.js';
 import { runFixtureExecFile as execFileSync, runFixtureChild as spawnSync, runFixtureChild } from './fixture-child.js';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { delimiter, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
@@ -131,6 +131,33 @@ test('help starts no Git and linked-worktree status spawns at most four Git proc
   const status = resetAndCount(box, box.worker, 'status', '--json');
   assert.ok(status.count <= 4, `linked-worktree status started ${status.count} Git processes`);
   assert.equal(JSON.parse(status.result.stdout).me.id, 'core-1');
+
+});
+
+/** Keep the ordinary work card on indexed reads and four fresh Git children, with diagnostics explicit. */
+test('ordinary resume reads its indexed work card with at most four Git processes [N19,N26,C7]', t => {
+  const box = fixture(t);
+  const resumed = resetAndCount(box, box.worker, 'resume', '--json');
+  assert.ok(resumed.count <= 4, `linked-worktree resume started ${resumed.count} Git processes`);
+  const card = JSON.parse(resumed.result.stdout);
+  assert.equal(card.me.id, 'core-1');
+  assert.equal(realpathSync(card.root), realpathSync(box.worker));
+  assert.equal(card.dirty, 0, 'JSON v1 measures the clean private checkout');
+  assert.deepEqual(card.toMerge, []);
+  assert.deepEqual(card.stale, []);
+  assert.equal(typeof card.newWorktreeLocation, 'string');
+  assert.equal(typeof card.next, 'string');
+  mkdirSync(join(box.worker, 'src'), { recursive: true });
+  writeFileSync(join(box.worker, 'src/ahead.txt'), 'real branch divergence\n');
+  box.git(box.worker, 'add', 'src/ahead.txt');
+  box.git(box.worker, 'commit', '-q', '-m', 'test(core): retain real branch divergence [C7]');
+  writeFileSync(join(box.worker, 'dirty.txt'), 'real untracked diagnostic\n');
+  const diverged = resetAndCount(box, box.worker, 'resume', '--json');
+  assert.ok(diverged.count <= 4, `diverged JSON v1 resume started ${diverged.count} Git processes`);
+  assert.equal(JSON.parse(diverged.result.stdout).dirty, 1, 'v1 retains a real nonzero dirty value');
+  const text = resetAndCount(box, box.worker, 'resume');
+  assert.ok(text.count <= 4, `diverged text resume started ${text.count} Git processes`);
+  assert.match(text.result.stdout, /1 ahead of main, 0 behind/u, 'text compares real differing HEAD and main');
 });
 
 /** Record schema-valid private fixture history, never represented as a real gate execution. */
@@ -382,4 +409,41 @@ console.log(JSON.stringify(facts));
   assert.equal(result.refusal, null, 'an API read outside a Git repository returns normally');
   assert.deepEqual({ head: result.head, tree: result.tree }, { head: null, tree: null },
     'missing HEAD facts stay null rather than turning into a NOT_A_REPO refusal');
+});
+
+/** Exercise real Git batch framing, pinned bytes and refusal cleanup rather than mocking the stream. */
+test('committed resume files use one framed Git child and retain pinned Unicode bytes [N19,D1,C7]', t => {
+  const box = fixture(t);
+  const file = 'rules with spaces.md';
+  const source = '# Rules\n\nλ 🙂 café\n';
+  writeFileSync(join(box.repo, file), source);
+  writeFileSync(join(box.repo, 'empty.md'), '');
+  mkdirSync(join(box.repo, 'nested'));
+  writeFileSync(join(box.repo, 'nested/item.md'), 'nested\n');
+  box.git(box.repo, 'add', file, 'empty.md', 'nested/item.md');
+  box.git(box.repo, 'commit', '-q', '-m', 'test: commit framed doctrine sources');
+  const commit = box.git(box.repo, 'rev-parse', 'HEAD');
+  writeFileSync(join(box.repo, file), 'uncommitted replacement');
+  const moduleUrl = pathToFileURL(resolve(import.meta.dirname, '../src/committed-file-reader.js')).href;
+  const result = readFactScenario(box, box.worker, `
+import assert from 'node:assert/strict';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { withCommittedFiles } from ${JSON.stringify(moduleUrl)};
+const root = process.argv[1];
+const commit = ${JSON.stringify(commit)};
+writeFileSync(process.env.PULLBOARD_GIT_CALLS, '');
+const values = await withCommittedFiles(root, async read => Promise.all([
+  read(commit, ${JSON.stringify(file)}), read(commit, 'missing.md'),
+  read(commit, 'empty.md'), read(commit, 'nested/item.md'), read(commit, ${JSON.stringify(file)}),
+]));
+assert.deepEqual(values, [${JSON.stringify(source)}, null, '', 'nested\\n', ${JSON.stringify(source)}]);
+const count = readFileSync(process.env.PULLBOARD_GIT_CALLS, 'utf8').trim().split('\\n').filter(Boolean).length;
+assert.equal(count, 1, 'dependent and concurrent reads share exactly one Git child');
+await assert.rejects(withCommittedFiles(root, read => read('a'.repeat(41), 'file')), error => error.code === 'NO_POLICY');
+await assert.rejects(withCommittedFiles(root, read => read(commit, 'line\\nprotocol')), error => error.code === 'NO_POLICY');
+await assert.rejects(withCommittedFiles(root, read => read(commit, 'nested')), error => error.code === 'NO_POLICY');
+console.log(JSON.stringify({ count, values }));
+`);
+  assert.equal(result.count, 1);
+  assert.deepEqual(result.values, [source, null, '', 'nested\n', source]);
 });

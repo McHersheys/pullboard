@@ -114,21 +114,21 @@ test("init's spec has its sections and no rows, and the README's example fits un
 });
 
 test("the coordinator's resume names its next step from the spec and the board, stage by stage [N32, I9]", async () => {
-  const next = (box, cwd) => /^next: (.*)$/m.exec(box.run(cwd, 'resume').out)?.[1] ?? '';
+  const next = (box, cwd) => /^next: (.*)$/m.exec(box.run(cwd, 'resume', '--diagnostics').out)?.[1] ?? '';
   const fresh = sandbox();
   const repo = join(fresh.dir, 'fresh');
   mkdirSync(repo);
   fresh.git(repo, 'init', '-q', '-b', 'main');
   const initialized = fresh.run(repo, 'init', '--verbose');
   assert.match(initialized.out, /^Next: ask your agent to set up Pullboard here; in Claude Code, start a new session first so it loads the Pullboard skills\.$/m, 'init gives one setup instruction and preserves Claude Code skill loading');
-  const firstSetup = JSON.parse(fresh.run(repo, 'resume', '--json').out).setup;
+  const firstSetup = JSON.parse(fresh.run(repo, 'resume', '--diagnostics', '--json').out).setup;
   assert.equal(firstSetup?.step, 1, 'a new board starts by asking what the person wants');
   assert.equal(next(fresh, repo), firstSetup.command);
   assert.equal(fresh.run(repo, 'add', 'coordinator', 'Tidy the readme').code, 0);
   assert.equal(fresh.run(repo, 'claim', '1').code, 0);
-  assert.equal(JSON.parse(fresh.run(repo, 'resume', '--json').out).setup.step, 2, 'a working board with an item and no spec rows treats the spec as optional (#866)');
+  assert.equal(JSON.parse(fresh.run(repo, 'resume', '--diagnostics', '--json').out).setup.step, 2, 'a working board with an item and no spec rows treats the spec as optional (#866)');
   writeFileSync(join(repo, 'SPEC.md'), '# Fresh\n\n## G · Goals\n- G1 [draft, must] It works. | gate: test\n');
-  assert.equal(JSON.parse(fresh.run(repo, 'resume', '--json').out).setup.step, 1, 'nor the approval');
+  assert.equal(JSON.parse(fresh.run(repo, 'resume', '--diagnostics', '--json').out).setup.step, 1, 'nor the approval');
   writeFileSync(join(repo, 'SPEC.md'), '# Fresh\n\n## G · Goals\n- G1 [approved, must] It works. | gate: test\n');
   writeFileSync(join(repo, 'pullboard.json'), JSON.stringify(CONFIG));
   fresh.env.PULLBOARD_VIEW_FOREGROUND = '1';
@@ -140,7 +140,7 @@ test("the coordinator's resume names its next step from the spec and the board, 
   box.env.PULLBOARD_VIEW_FOREGROUND = '1';
   const view = await startView(box, box.repo);
   await view.stop();
-  const firstItem = JSON.parse(box.run(box.repo, 'resume', '--json').out).setup;
+  const firstItem = JSON.parse(box.run(box.repo, 'resume', '--diagnostics', '--json').out).setup;
   assert.equal(firstItem?.step, 4, 'setup asks for the first small piece before planning the remaining rows');
   assert.equal(next(box, box.repo), firstItem.command);
   box.run(box.repo, 'add', 'web', 'Page', '--specs', 'G1');

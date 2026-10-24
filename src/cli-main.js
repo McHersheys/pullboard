@@ -32,6 +32,8 @@ export function traceServeStartup(phase) {
 
 const OPTIONS = {
   criterion: { type: 'string' },
+  sandbox: { type: 'boolean' },
+  lane: { type: 'string' },
   specs: { type: 'string' },
   parent: { type: 'string' },
   reason: { type: 'string' },
@@ -83,6 +85,7 @@ const OPTIONS = {
   budget: { type: 'string' },
   'draft-quality': { type: 'boolean' },
   yes: { type: 'boolean' },
+  diagnostics: { type: 'boolean' },
   landing: { type: 'boolean' },
   adopt: { type: 'boolean' },
   waive: { type: 'string' },
