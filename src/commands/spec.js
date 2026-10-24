@@ -390,6 +390,7 @@ export async function specCommand(io, { first, second, rest, values }) {
     return errors ? 1 : 0;
   }
   if (first === 'signers' && second === 'add') {
+    if (signsPersonMoves(ctx.info.root)) throw new Refused('PERSON_SIGNER_REQUIRED', `SSH signer ${values.by ?? defaultPrincipal(ctx.info.root)} cannot be enrolled by a passkey identity`, 'keep signing on and use passkey row approvals; named SSH signer changes wait until signing is off');
     requirePersonChannel(io.personChannel);
     const signer = addSigner(ctx.info.root, { by: values.by, key: values.key });
     io.result?.(signer);

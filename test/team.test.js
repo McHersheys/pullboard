@@ -54,7 +54,10 @@ import {
   grantChallenge,
   softwarePasskey,
 } from './person-passkey-fixture.js';
-import { optionalPasskeyApply } from './person-optional-apply-fixture.js';
+import {
+  optionalPasskeyApply,
+  optionalPasskeyApplyThroughCli,
+} from './person-optional-apply-fixture.js';
 import { firstUnpairedAuthorityInsertion } from './person-first-pin-fixture.js';
 import { refuseNamedSigners } from '../src/person-signing-cli.js';
 import { createE2eHelpers } from './e2e-helpers.js';
@@ -135,7 +138,10 @@ async function holdForReviewQueue(box) {
   const source = `
 import {setTimeout as pause} from 'node:timers/promises';
 import {writeFileSync} from 'node:fs';
-import {takeResource,listResources} from ${JSON.stringify(new URL('../src/resources.js', import.meta.url).href)};
+import {
+  takeResource,
+  listResources,
+} from ${JSON.stringify(new URL('../src/resources.js', import.meta.url).href)};
 import {loadMachineSettings} from ${JSON.stringify(new URL('../src/settings.js', import.meta.url).href)};
 const [root,ready,observed]=process.argv.slice(1);
 const capacity=loadMachineSettings().gateSlots;
@@ -1190,6 +1196,9 @@ test('person-only moves are signed [E22,B26,H16]', { timeout: relayWorkBudgetMs(
   const namedSignoff = await cli(cleared, 'spec', 'signoff', 'G6');
   assert.equal(namedSignoff.document.error?.code, 'PERSON_SIGNER_REQUIRED');
   assert.match(namedSignoff.document.error.message, /G6 names its SSH signers alice@example\.com/u);
+  const signerChange = await cli(cleared, 'spec', 'signers', 'add', '--by', 'alice@example.com', '--key', 'unread-key');
+  assert.equal(signerChange.document.error?.code, 'PERSON_SIGNER_REQUIRED');
+  assert.match(signerChange.document.error.message, /alice@example\.com/u);
 
   const waiver = await confirmTerminal(['land', '--waive', 'gate:lint', '--until', '2099-01-01', '--reason', 'An explicit bounded fixture exception'], 'land-waive');
   assert.equal(waiver.waiver.test, 'gate:lint');
@@ -1210,3 +1219,6 @@ test('person-only moves are signed before the first authority pin [E22,B26,H16]'
 
 /** Optional SSH policy must accept a genuinely bound passkey row decision without using an SSH key. */
 test('person-only moves are signed through optional SSH apply [E22,H16]', optionalPasskeyApply);
+
+/** The actual CLI applies and projects the recorded passkey approval even with optional SSH enabled. */
+test('person-only moves are signed through native CLI apply [E22,H16]', optionalPasskeyApplyThroughCli);

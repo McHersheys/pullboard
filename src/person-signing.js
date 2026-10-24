@@ -14,13 +14,11 @@ import {
   SIGNED_EVENT_LOG_VERSION,
 } from './board.js';
 import { createHash } from 'node:crypto';
-import { isDeepStrictEqual } from 'node:util';
 import { Refused } from './refused.js';
 import { validatePersonRequest } from './person-request.js';
 import {
   personRequestRecords,
   requestIntentDigest,
-  requestRowDecisionsMatch,
 } from './relay-requests.js';
 import { validPresence } from './relay-sender.js';
 import { presenceSigned } from './person-presence.js';
@@ -209,15 +207,7 @@ export function requestPresence(board, id, { strict = true } = {}) {
     && stampHolds(board, presence, strict) ? presence : null;
 }
 
-/** Verify an optional row's exact committed result against the original relay-attested passkey intent. */
-export function verifiedPasskeyRowDecision(board, decision) {
-  if (typeof decision.passkeyRequest !== 'string' || decision.by !== 'person' || decision.signature !== undefined) return false;
-  const request = personRequestRecords(board).find(record => record.id === decision.passkeyRequest && !record.duplicateOf);
-  if (!request || !Number.isSafeInteger(request.resultSequence) || !requestPresence(board, request.id)
-    || !requestRowDecisionsMatch(board, request, request.result)) return false;
-  const strip = ({ event, at, applied, appliedAt, ...value }) => value;
-  return request.result.some(record => record.event === decision.event && isDeepStrictEqual(strip(record), strip(decision)));
-}
+export { verifiedPasskeyRowDecision } from './person-row-proof.js';
 
 /** Whether this command or move carries out a person request a passkey confirmed. */
 export function passkeyConfirmed(board, personRequest, { strict = true } = {}) {

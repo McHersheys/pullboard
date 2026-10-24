@@ -43,7 +43,7 @@ function sshPublicLine(publicKey) {
 }
 
 /** Exercise actual engine receipt validation and native apply on an owned project, with a separately pinned fixture relay key. */
-export async function optionalPasskeyApply(t) {
+export async function optionalPasskeyApply(t, { throughCli = false } = {}) {
   const box = await relayClientFixture(t);
   const specFile = join(box.root, 'SPEC.md');
   const text = 'An optional SSH row approved by its exact passkey request.';
@@ -86,6 +86,19 @@ export async function optionalPasskeyApply(t) {
   decisions.forEach(record => { record.passkeyRequest = document.id; });
   assert.equal(decisions[0].signature, undefined, 'optional passkey approval does not invoke SSH signing');
   execute('recordRowDecisions', [{ agentId: 'person', channel: 'view', decisions }], 'execute');
+  if (throughCli) {
+    const applied = await box.cli('spec', 'apply');
+    assert.equal(applied.code, 0, JSON.stringify(applied.document));
+    assert.match(readFileSync(specFile, 'utf8'), /- G21 \[approved, must\] An optional SSH row approved by its exact passkey request\./u);
+    const status = await box.cli('status');
+    assert.equal(status.code, 0, JSON.stringify(status.document));
+    assert.equal(status.document.specApprovalBaseline?.pending, false, 'the approval projection must not skip behind an uncaptured baseline');
+    assert.equal(status.document.needs.some(need => need.kind === 'agent-approved' && need.id === 'G21'), false,
+      'the actual status projection recognizes the applied passkey approval');
+    assert.equal((status.document.specApprovalEvidenceErrors ?? []).some(error => error.id === 'G21'), false,
+      'the optional SSH approval carries valid provenance through the real CLI');
+    return;
+  }
   const plan = planRowApply(box.root, loadConfig(box.root), store.rowDecisions(board), {
     passkeyDecision: record => signing.verifiedPasskeyRowDecision(board, record),
   });
@@ -93,3 +106,6 @@ export async function optionalPasskeyApply(t) {
   assert.match(plan.files[0].after, /- G21 \[approved, must\] An optional SSH row approved by its exact passkey request\./u);
   assert.equal(readFileSync(specFile, 'utf8').includes('G21 [draft'), true, 'planning does not write before the caller commits its ordered apply');
 }
+
+/** Reuse real engine intake and exercise the ordinary native command and approval projection. */
+export function optionalPasskeyApplyThroughCli(t) { return optionalPasskeyApply(t, { throughCli: true }); }

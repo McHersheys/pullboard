@@ -5,8 +5,7 @@ import { recordedRefusal } from './recorded-refusal.js';
 import { Refused } from './refused.js';
 import { answerQuestion } from './blueprints.js';
 import { personSigning } from './person-signing.js';
-import { parseSpec } from './spec.js';
-import { rowDecisionReplacement } from './row-decision-text.js';
+import { signedRowDecisionsMatch } from './person-row-proof.js';
 import { parseImplies } from './implies.js';
 import { validatePersonRequest } from './person-request.js';
 import { relayMoveActor } from './relay-sender.js';
@@ -143,7 +142,7 @@ function fulfilsIntent(record, move, board) {
     return value?.agentId === 'person' && value.channel === 'view' && value.decisions?.length === 1
       && value.decisions[0].id === args.row && value.decisions[0].kind === 'spec'
       && value.decisions[0].decision === 'approve' && value.decisions[0].text === text && value.decisions[0].by === 'person'
-      && value.decisions[0].signature === undefined && boundSignedRow(record, value.decisions[0], args.row, text);
+      && value.decisions[0].signature === undefined && signedRowDecisionsMatch(record, value.decisions);
   }
   if (intent.verb === 'hold') return value === args.lane && options?.asPerson === true && options.channel === 'view'
     && (args.off || options.reason === (args.reason ?? ''));
@@ -171,24 +170,8 @@ function fulfilsIntent(record, move, board) {
       && row.decision === (intent.verb === 'spec-approve' ? 'approve' : 'decline')
       && (intent.verb !== 'spec-decline' || row.reason === args.reason.trim())
       && (args.text === undefined ? !requiresShown || row.text === shown.find(entry => entry.id === ids[index])?.text : row.text === args.text.trim())
-      && (!requiresShown || row.by === 'person' && row.signature === undefined && boundSignedRow(record, row, ids[index], row.text)));
-}
-
-/** A signed decision cannot substitute the source text, named SSH identity or unrelated row fields. */
-function boundSignedRow(request, row, id, text) {
-  let shown;
-  let original;
-  try {
-    shown = JSON.parse(request.encoded).rows?.find(entry => entry.id === id);
-    original = parseSpec(`## Decision\n${row.source}\n`).rows[0];
-  } catch { return false; }
-  return Boolean(shown && original && original.id === row.id && original.text === shown.text && !original.signers?.length
-    && row.passkeyRequest === request.id && row.replacement === rowDecisionReplacement(row.source, row.decision, text));
-}
-
-/** Recheck the entire committed row-result effect against its original signed request, independently of mutable flags. */
-export function requestRowDecisionsMatch(board, request, rows) {
-  return Array.isArray(rows) && fulfilsIntent(request, { operation: 'recordRowDecisions', args: [{ agentId: 'person', channel: 'view', decisions: rows }] }, board);
+      && (!requiresShown || row.by === 'person' && row.signature === undefined))
+    && (!requiresShown || signedRowDecisionsMatch(record, rows));
 }
 
 /** The item ids a request's `implies` text names, parsed as `--implies` is, or null when it names none validly. */
