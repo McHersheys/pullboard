@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** Cockpit demo checks, using the shared real-board fixtures [N26]. */
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
