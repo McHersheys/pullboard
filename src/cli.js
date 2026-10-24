@@ -1,3 +1,7 @@
+import {
+  focusReviewFirst,
+  focusReasons,
+} from './focus-milestone.js';
 import { requireHandoffActive } from './handoff-state.js';
 import { requestedCommandMove } from './recorded-move.js';
 export { barActorForCommand } from './bar-actor.js';
@@ -1543,7 +1547,7 @@ function nextPick(ctx, board, values) {
   const findOffer = () => store.reviewOffer(board, { agentId: me.id, lane: me.lane, policy: ctx.config.verify.policy,
     familyPolicy: ctx.config.verify.family, ratio: ctx.config.verify.reviewRatio, runnable: values.runnable, routes: values.routes });
   const offer = held ? null : relayLinked(ctx.info.root) ? store.withVerifierStanding(board, { root: true }, findOffer) : findOffer();
-  if (offer && !values.build) return { item: offer.item, offer, build: item ?? null };
+  if (offer && !values.build && focusReviewFirst(board, offer.item, item)) return { item: offer.item, offer, build: item ?? null, reasons: focusReasons(board, offer.item) };
   if (!item) return { reasons, laneWork: ctx.info.isMain ? mainLaneWork(store.listItems(board)) : null };
   const reviewSkipped = values.build && !held
     ? { offeredItem: offer?.item.item_id ?? null, ratio: offer?.ratio ?? ctx.config.verify.reviewRatio, ...store.reviewQueue(board) } : null;
