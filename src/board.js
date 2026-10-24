@@ -1,3 +1,4 @@
+import { FILE_GROWTH_NOTICE_ENGINE } from './file-growth-notice-engine.js';
 import {
   recordBarRevision,
   barReadyProblem,
@@ -106,6 +107,7 @@ import {
 import {
   itemFiles,
   itemFileCollisions,
+  addedFileCollisions,
 } from './item-files.js';
 export { itemFiles };
 import { COORDINATOR } from './config.js';
@@ -713,6 +715,7 @@ export function editItem(board, id, { agentId, brief, route, criterion, check, a
       ...bar,
     });
     recordBarRevision(board, itemById(board, id), agentId, item, barActor);
+    notifyFileGrowth(board, item, itemById(board, id));
     if (pendingRefreeze) {
       insertShout(board, {
         from: COORDINATOR,
@@ -722,6 +725,27 @@ export function editItem(board, id, { agentId, brief, route, criterion, check, a
       });
     }
   });
+}
+
+/** Persist both holder notices with the edit; a fixed system sender also reaches an editing holder's inbox. */
+function notifyFileGrowth(board, before, after) {
+  if ((board.executionEngineVersion ?? ENGINE_VERSION) < FILE_GROWTH_NOTICE_ENGINE
+    || !['claimed', 'submitted'].includes(before.item_status)) return;
+  for (const collision of addedFileCollisions(before, after, listItems(board, { all: true }))) {
+    const recipients = new Map();
+    for (const item of [before, collision.item]) {
+      const holder = item.item_owner || item.item_built_by;
+      const to = holder && board.db.prepare('SELECT 1 FROM agent WHERE agent_id=?').get(holder) ? holder : COORDINATOR;
+      recipients.set(to, [...(recipients.get(to) ?? []), item.item_id]);
+    }
+    const text = `New file overlap: #${after.item_id} grew into #${collision.item.item_id} on ${collision.shared.join(', ')}. Coordinate both items; the edit is retained.`;
+    for (const [to, items] of recipients) {
+      const detail = { changedItem: after.item_id, otherItem: collision.item.item_id, files: collision.shared };
+      const shout = persistShout(board, { from: 'overlap', to, text, detail: { ...detail, item: items[0] } });
+      // One holder may own both items: deliver once while retaining the notice on both item threads.
+      for (const item of items.slice(1)) logEvent(board, 'overlap', 'shout', item, { ...detail, shout, to, text });
+    }
+  }
 }
 
 /** Validate an edit without side effects, so a refused change never starts a shell baseline; a bar correction needs a reason [B31]. */
