@@ -462,7 +462,7 @@ test('a detail read after a cache miss on a linked board spawns no git process [
     const controls = JSON.parse(lines[0]).provenanceChecks;
     assert.deepEqual(controls.map(control => control.status), ['unknown main status', 'true main status']);
     for (const control of controls) {
-      assert.equal(control.processes.git, 2, JSON.stringify(control));
+      assert.equal(control.processes.git, 1, JSON.stringify(control));
       assert.ok(control.processes.gitCalls.some(call => call.stack.some(line => line.includes('readCodeIsFromMain'))),
         'unknown and true main status still check actual code provenance');
       assert.equal(control.processes.node + control.processes.other, 0, JSON.stringify(control));
