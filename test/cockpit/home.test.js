@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** The view opens on whether the rules hold, then what needs the person; Items stay one click away [N26,U91]. */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';

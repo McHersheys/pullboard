@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** Cockpit items checks, using the shared real-board fixtures [N26]. */
 import { submitFixture } from '../board-submit-fixture.js';
 import assert from 'node:assert/strict';
