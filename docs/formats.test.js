@@ -247,7 +247,7 @@ function liveIndexes(db) {
 function documentedIndexes() {
   return block('<!-- board-indexes:start -->', '<!-- board-indexes:end -->').split(/\r?\n/).flatMap((line) => {
     const row = /^\| `([^`]+)` \| `([^`]+)` \| (.+) \| (yes|no) \|$/.exec(line);
-    return row ? [{ name: row[1], table: row[2], columns: [...row[3].matchAll(/`([^`]+)`/g)].map((match) => match[1]), unique: row[4] }] : [];
+    return row ? [{ name: row[1], table: row[2], columns: [...row[3].matchAll(/`([^`]+)`/g)].map((match) => match[1] === '(expression)' ? null : match[1]), unique: row[4] }] : [];
   });
 }
 

@@ -46,6 +46,8 @@ import {
 } from './init.js';
 import { relayOfferEnabled } from './settings.js';
 import { Refused } from './refused.js';
+import { publishExcludedBoards } from './relay-excluded.js';
+import { plannedRelayBoard } from './relay-relink.js';
 
 /** Say which paired phone must approve a new board's link, and when the request ends in this computer's time. */
 function approvalWait(name, pending, devices) {
@@ -68,7 +70,7 @@ export function unlinkedRelayProjects() {
 /** Read the registered local board identity without executing any person action. */
 function projectBoard(root) {
   const board = store.openBoard(join(repoInfo(root).commonDir, 'pullboard', 'board.sqlite'), undefined, { isMain: codeIsFromMain() });
-  try { return store.boardId(board); } finally { store.closeBoard(board); }
+  try { return plannedRelayBoard(root, store.boardId(board)); } finally { store.closeBoard(board); }
 }
 
 /**
@@ -433,6 +435,7 @@ export async function relayOnAll(address, io, { signal, onPairingURL, onSignIn, 
   const approved = await waitForLinkApprovals(waiting, io, { signal });
   result.linked.push(...approved.linked);
   result.failed.push(...approved.failed);
+  await publishExcludedBoards(session, io, relayDeviceRequest);
   return { ...result, ...pairing, autoLink: true };
 }
 

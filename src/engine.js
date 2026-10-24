@@ -73,8 +73,12 @@ export function checkpointSequence(board, sequence) {
 }
 
 /** Start an explicitly relinked remote epoch while keeping all local board rows and history. */
-export function startRelayEpoch(board) {
+export function startRelayEpoch(board, boardId) {
   store.atomic(board, () => {
+    if (boardId !== undefined) {
+      if (!/^[0-9a-f]{32}$/u.test(boardId)) throw new Refused('RELAY_STORAGE', 'restore a valid native board identity before starting its relay epoch');
+      metadata(board, 'board_id', boardId);
+    }
     board.db.prepare("DELETE FROM board_meta WHERE meta_key LIKE 'relay_receipt_%'").run();
     board.db.prepare("DELETE FROM board_meta WHERE meta_key LIKE 'relay_refusal_%'").run();
     metadata(board, 'relay_applied_sequence', '0');
