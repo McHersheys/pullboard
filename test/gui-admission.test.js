@@ -30,3 +30,12 @@ test('GUI-domain observations distinguish confirmed presence, known absence, and
   assert.equal(guiSession({ platform: 'darwin', getuid: () => -1, run: () => { throw new Error('must not run'); } }), null);
   assert.equal(guiSession({ platform: 'linux', run: () => { throw new Error('must not run'); } }), null);
 });
+
+test('GUI marker text in code does not turn an ordinary file into desktop work [C7,V4]', t => {
+  const root = mkdtempSync(join(tmpdir(), 'pullboard-gui-literal-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, 'literal.test.js'), '/** Ordinary source test. */\nconst example = "/** @pullboard-test-gui */";');
+  assert.equal(testsNeedGui(root, ['literal.test.js']), false, 'code strings are not header annotations');
+  writeFileSync(join(root, 'licensed.test.js'), '/** License. */\n/** @pullboard-test-gui */\nconst flags = ["--headless=new"];');
+  assert.equal(testsNeedGui(root, ['licensed.test.js']), true, 'the explicit marker may follow a leading license comment');
+});
