@@ -81,7 +81,7 @@ test('a new fact id is checked by index across current, legacy and archived fact
   const legacy = new DatabaseSync(file);
   // A synthetic physical cold partition exercises compatibility without importing unlanded retention code.
   legacy.exec(`CREATE TABLE event_archive AS SELECT * FROM event WHERE 0;
-    DROP INDEX event_fact_identity_v2; DROP INDEX event_fact_malformed_v2;
+    DROP INDEX event_fact_identity_v2; DROP INDEX event_fact_malformed_v2; DROP INDEX event_fact_unknown_v2;
     CREATE INDEX event_fact_identity ON event(json_extract(event_detail,'$.id')) WHERE event_kind='fact' AND json_valid(event_detail);
     CREATE INDEX event_fact_legacy ON event(event_id) WHERE event_kind='fact' AND NOT json_valid(event_detail);`);
   legacy.prepare("INSERT INTO event_archive (event_id,event_at,event_by,event_kind,item_id,event_detail) VALUES (?,?,?,?,?,?)")
@@ -167,6 +167,28 @@ test('a new fact id is checked by index across current, legacy and archived fact
     plan.some((detail) => /SEARCH event(?:_archive)?\b.*<expr>=\?/u.test(detail)) &&
     !plan.some((detail) => /SEARCH event(?:_archive)?\b.*event_kind=\?(?!.*<expr>)/u.test(detail))),
   `both physical partitions must retain indexed new-ID lookups after readable legacy JSON5: ${JSON.stringify(json5Plans)}`);
+
+  // Coordinator27318: arbitrary corrupt binary history is unsupported, never a reason to scan or crash an append.
+  const jsonb = board.db.prepare('SELECT jsonb(?) AS value').get('{"id":"unsupported-id","unused":{"tail":123}}').value;
+  const corrupt = Uint8Array.from(jsonb);
+  corrupt[corrupt.length - 1] = 255;
+  board.db.prepare("INSERT INTO event (event_at,event_by,event_kind,item_id,event_detail) VALUES (?,?,?,?,?)")
+    .run(clock.now().toISOString(), 'coordinator', 'fact', first, corrupt);
+  board.db.prepare("INSERT INTO event_archive (event_id,event_at,event_by,event_kind,item_id,event_detail) VALUES (?,?,?,?,?,?)")
+    .run(900002, clock.now().toISOString(), 'coordinator', 'fact', first, corrupt);
+  const unknownEvents = board.db.prepare("SELECT * FROM event WHERE typeof(event_detail)='blob'").all();
+  const unknownCold = board.db.prepare("SELECT * FROM event_archive WHERE typeof(event_detail)='blob'").all();
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = line => warnings.push(line);
+  try {
+    store.appendFact(board, second, options('unsupported-id'));
+    store.appendFact(board, second, options('after-unknown'));
+  } finally { console.warn = originalWarn; }
+  assert.equal(warnings.length, 1, 'public append emits only one diagnostic for corrupt binary legacy facts');
+  assert.match(warnings[0], /^\[FACT_ID_UNKNOWN\]/u);
+  assert.deepEqual(board.db.prepare("SELECT * FROM event WHERE typeof(event_detail)='blob'").all(), unknownEvents);
+  assert.deepEqual(board.db.prepare("SELECT * FROM event_archive WHERE typeof(event_detail)='blob'").all(), unknownCold);
 
   const beforeMalformed = board.db.prepare('SELECT count(*) AS n FROM event').get().n;
   board.db.prepare("INSERT INTO event (event_at,event_by,event_kind,item_id,event_detail) VALUES (?,?,?,?,?)")
