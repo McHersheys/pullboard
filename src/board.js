@@ -1,4 +1,10 @@
 import {
+  beginBoardWrite,
+  finishBoardWrite,
+  closeBoardWrites,
+  prepareBoardWriteIdentity,
+} from './board-write-lock.js';
+import {
   focusOrder,
   focusReasons,
 } from './focus-milestone.js';
@@ -312,10 +318,10 @@ export { openBoardReadOnly } from './board-read-open.js';
  *
  * @param {string} file
  * @param {{ now: () => Date }} [clock]
- * @param {{ isMain?: boolean, onDiagnostic?: (message: string) => void }} [options] Only the main checkout may upgrade a shared board.
+ * @param {{ isMain?: boolean, onDiagnostic?: (message: string) => void, writeContext?: {command?:string, seat?:string, path?:string} }} [options] Only the main checkout may upgrade a shared board.
  * @returns {{ db: DatabaseSync, clock: { now: () => Date } }}
  */
-export function openBoard(file, clock = systemClock, { isMain, onDiagnostic } = {}) {
+export function openBoard(file, clock = systemClock, { isMain, onDiagnostic, writeContext } = {}) {
   isMain = sharedSchemaOwner(file, isMain);
   if (file !== ':memory:' && isMain === false) {
     let boardVersion = 0;
@@ -350,13 +356,13 @@ export function openBoard(file, clock = systemClock, { isMain, onDiagnostic } = 
     db = new DatabaseSync(file);
     db.exec(`PRAGMA busy_timeout = ${BOARD_BUSY_TIMEOUT_MS}`);
     if (file !== ':memory:' && isMain !== false) db.exec('PRAGMA journal_mode = WAL');
-    const board = { db, clock };
+    const board = { db, clock, writeContext };
     let warmCounters = true;
     if (isMain !== false || file === ':memory:') {
       // Migrate and audit only a board whose version is behind; a drifted shape is reported and left alone (#1047).
       const standing = boardStanding(db, SCHEMA_DIGEST, SCHEMA_VERSION, readEventLogVersion(db) < EVENT_LOG_VERSION);
       if (standing === 'behind') {
-        migrateEventLogVersion(db);
+        migrateEventLogVersion(db, writeContext);
         migrate(db);
         ensureHotIndexes(db);
         db.prepare('INSERT OR IGNORE INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run('board_id', randomBytes(16).toString('hex'));
@@ -383,7 +389,7 @@ export function openBoard(file, clock = systemClock, { isMain, onDiagnostic } = 
     if (warmCounters) atomic(board, () => ensureProofCounters(board));
     return board;
   } catch (error) {
-    try { db?.close(); } catch {}
+    try { db?.close(); if (db) closeBoardWrites(db); } catch { /* Preserve the opening failure when SQLite cleanup also fails. */ }
     throw boardNotWritable(file, boardBusyError(file, startedAt, error));
   }
 }
@@ -449,8 +455,11 @@ function guardStore(board) {
 export { readEventLogVersion } from './board-read-open.js';
 
 /** Refuse unknown future event records before migrating anything, and mark older boards current. */
-function migrateEventLogVersion(db) {
+function migrateEventLogVersion(db, writeContext) {
+  prepareBoardWriteIdentity();
   db.exec('BEGIN IMMEDIATE');
+  const record = beginBoardWrite(db, writeContext);
+  let released = false;
   try {
     db.exec(SCHEMA);
     const version = readEventLogVersion(db);
@@ -459,9 +468,13 @@ function migrateEventLogVersion(db) {
         .run('event_log_version', String(EVENT_LOG_VERSION));
     }
     db.exec('COMMIT');
+    released = true;
   } catch (error) {
     db.exec('ROLLBACK');
+    released = true;
     throw error;
+  } finally {
+    finishBoardWrite(record, released, 'migration-released');
   }
 }
 
@@ -484,23 +497,32 @@ const TRANSACTION_DEPTH = new WeakMap();
 export function atomic(board, work) {
   const depth = TRANSACTION_DEPTH.get(board) ?? 0;
   const savepoint = `pullboard_atomic_${depth}`;
+  if (!depth) prepareBoardWriteIdentity();
   const startedAt = Date.now();
   try { board.db.exec(depth ? `SAVEPOINT ${savepoint}` : 'BEGIN IMMEDIATE'); }
   catch (error) { throw boardWriteBusyError(board.db, startedAt, error); }
   TRANSACTION_DEPTH.set(board, depth + 1);
+  const writeRecord = depth ? null : beginBoardWrite(board.db, board.writeContext);
+  let released = false;
+  let outcome = 'release-failed';
   const lastEvent = board.lastEvent;
   const emitted = board.emittedEvents?.length ?? 0;
   try {
     const result = work();
     board.db.exec(depth ? `RELEASE ${savepoint}` : 'COMMIT');
+    released = true;
+    outcome = 'committed';
     return result;
   } catch (error) {
     board.db.exec(depth ? `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}` : 'ROLLBACK');
+    released = true;
+    outcome = 'rolled-back';
     board.lastEvent = lastEvent;
     board.emittedEvents?.splice(emitted);
     throw error;
   } finally {
     TRANSACTION_DEPTH.set(board, depth);
+    finishBoardWrite(writeRecord, released, outcome);
   }
 }
 

@@ -5,6 +5,7 @@ import { after, test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { join, resolve } from 'node:path';
 import { writeFileSync } from 'node:fs';
+import { boardWriteHolderText } from '../src/board-write-lock.js';
 import { exportBoard } from '../src/exchange.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { runFixtureChild, startFixtureChild } from './fixture-child.js';
@@ -164,7 +165,7 @@ test('a refused writer names the board lock holder [C7,P4,B2]', async t => {
   }
   assert.match(message, /private-lock-holder/u, 'the refusal names the real instrumented command');
   assert.match(message, /coordinator/u, 'the refusal names the real holder seat');
-  assert.match(message, new RegExp(`\b${holder.pid}\b`, 'u'), 'the refusal names the live holder PID');
+  assert.match(message, new RegExp(String.raw`\b${holder.pid}\b`, 'u'), 'the refusal names the live holder PID');
   const lines = holder.stderr().split('\n').filter(line => line.startsWith('pullboard: long board write '));
   assert.equal(lines.length, 1, 'only the outer transaction emits one long-write line');
   const record = JSON.parse(lines[0].slice('pullboard: long board write '.length));
@@ -172,4 +173,88 @@ test('a refused writer names the board lock holder [C7,P4,B2]', async t => {
   assert.equal(record.seat, 'coordinator');
   assert.equal(record.pid, holder.pid);
   assert.ok(record.durationMs > 2_000, 'the real busy timeout held the writer longer than the declared 2 s threshold');
+});
+
+
+/** Read only the product's structured long-write diagnostic, leaving other stderr intact. */
+function longWrites(stderr) {
+  return stderr.split('\n').filter(line => line.startsWith('pullboard: long board write '))
+    .map(line => JSON.parse(line.slice('pullboard: long board write '.length)));
+}
+
+test('a nested rolled-back writer logs once and leaves no live advisory record [C7,P4,B2]', () => {
+  const box = e2e.project();
+  const file = join(box.repo, '.git', 'pullboard', 'board.sqlite');
+  const before = snapshot(file);
+  const source = `
+    import * as store from ${JSON.stringify(new URL('../src/board.js', import.meta.url).href)};
+    const board = store.openBoard(process.argv[1], undefined, { writeContext: { command: 'private-rollback', seat: 'coordinator' } });
+    try {
+      store.atomic(board, () => store.atomic(board, () => {
+        // budget: a genuine held write must cross the product's two-second diagnostic threshold.
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2_100);
+        throw new Error('private rollback control');
+      }));
+    } catch (error) {
+      if (error.message !== 'private rollback control') throw error;
+    } finally { store.closeBoard(board); }
+  `;
+  const result = runFixtureChild(process.execPath, ['--input-type=module', '-e', source, file], {
+    cwd: box.repo, env: box.env, encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, result.context);
+  const records = longWrites(result.stderr);
+  assert.equal(records.length, 1, 'nested savepoints do not duplicate the outer hold');
+  assert.equal(records[0].command, 'private-rollback');
+  assert.equal(records[0].outcome, 'rolled-back');
+  assert.ok(records[0].durationMs > 2_000);
+  assert.equal(boardWriteHolderText(file), '', 'released writers do not remain current');
+  assert.deepEqual(snapshot(file), before, 'diagnostic metadata never changes native board state');
+  const stale = join(file + '.write-holders', `${process.pid}-deadbeef.json`);
+  writeFileSync(stale, JSON.stringify({ version: 1, pid: process.pid, started: 'not this process start',
+    processSha256: 'a'.repeat(64), command: 'stale-private-writer', seat: 'coordinator', acquiredAt: Date.now() }));
+  assert.equal(boardWriteHolderText(file), '', 'a reused PID without matching identity is not a current holder');
+});
+
+test('a real CLI writer labels its long transaction without changing JSON or native counts [C7,P4,B2]', () => {
+  const box = e2e.project();
+  const file = join(box.repo, '.git', 'pullboard', 'board.sqlite');
+  const before = snapshot(file);
+  const preload = join(box.dir, 'hold-private-shout.mjs');
+  writeFileSync(preload, `
+    import { DatabaseSync } from 'node:sqlite';
+    const prepare = DatabaseSync.prototype.prepare;
+    let delayed = false;
+    /** Delay one actual private shout insertion after its outer transaction has acquired the lock. */
+    DatabaseSync.prototype.prepare = function(sql, ...args) {
+      const statement = prepare.call(this, sql, ...args);
+      if (!sql.includes('INSERT INTO shout')) return statement;
+      const run = statement.run;
+      statement.run = function(...values) {
+        if (!delayed) {
+          delayed = true;
+          // budget: exercise the genuine long-hold diagnostic, not a performance assertion.
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2_100);
+        }
+        return run.apply(this, values);
+      };
+      return statement;
+    };
+  `);
+  const result = runFixtureChild(process.execPath, ['--import', preload, BIN, 'shout', 'all', 'private timed shout', '--json'], {
+    cwd: box.web, env: box.env, encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, result.context);
+  assert.equal(JSON.parse(result.stdout).version, 1, 'the diagnostic stays off JSON stdout');
+  const records = longWrites(result.stderr);
+  assert.equal(records.length, 1);
+  assert.equal(records[0].command, 'shout');
+  assert.equal(records[0].seat, 'web-1');
+  assert.equal(records[0].outcome, 'committed');
+  assert.ok(Number.isSafeInteger(records[0].pid));
+  assert.ok(records[0].durationMs > 2_000);
+  const after = snapshot(file);
+  assert.equal(after.tables.shout.length, before.tables.shout.length + 1);
+  assert.equal(after.tables.event.length, before.tables.event.length + 1);
+  assert.equal(boardWriteHolderText(file), '');
 });
