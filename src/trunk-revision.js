@@ -4,7 +4,7 @@ import {
   statSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import { trunkRef } from './trusted-policy.js';
+import { trunkRef } from './trusted-policy-read.js';
 
 /** Invalidate a retained branch lookup only when its local configuration changes. */
 function fileMarkerForPath(path) {

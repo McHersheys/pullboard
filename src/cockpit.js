@@ -1321,6 +1321,12 @@ function render() {
   // The coordinator's mark is the board's own: a square with the Pullboard logo, so it stands out from the agents.
   const LEAD = '<svg viewBox="0 0 64 64" aria-hidden="true"><path fill="currentColor" d="M8 7h35a6 6 0 0 1 6 6v7H8a5 5 0 0 1-5-5v-3a5 5 0 0 1 5-5Z"/><rect width="56" height="14" x="3" y="25" fill="var(--accent)" rx="5"/><path fill="currentColor" d="M8 43h35a6 6 0 0 1 6 6v8H8a5 5 0 0 1-5-5v-4a5 5 0 0 1 5-5Z"/></svg>';
   const lead = (from) => from === 'coordinator';
+  // A shout's recipient in product words: the reserved coordinator+person address and item:<id> are internal.
+  const shoutTo = (to) => {
+    if (to === 'coordinator+person') return 'coordinator and you';
+    const item = /^item:([1-9]\\d*)$/.exec(String(to));
+    return item ? '<a class="ref" href="' + esc(itemAddress(item[1], view.root)) + '" data-go="item:' + item[1] + '">#' + item[1] + '</a>' : shoutAgentName(to);
+  };
   // Opened from the status bar's unread, the feed is exactly those shouts, the ones after the mark the person had.
   const unread = view.unread?.root === view.root ? view.unread : null;
   const addressed = addressedShouts.get(JSON.stringify([view.root, view.shout]));
@@ -1346,7 +1352,7 @@ function render() {
   // feed's copy carries the band and the id an answer's link lands on, so an ask shown twice never repeats an id.
   // The person's own shout is signed "you", plainly, never as the coordinator that ran it.
   const card = (x, tail = '', inFeed = true) => '<article class="shout h' + hue(x.shout_from) + (lead(x.shout_from) ? ' lead' : '') + (openShouts.has(x.shout_id) ? ' open' : '') + (inFeed && x.shout_id === view.shout ? ' found' : '') + '"' + (inFeed ? ' id="shout-' + x.shout_id + '"' : '') + ' data-shout-id="' + x.shout_id + '">'
-    + (lead(x.shout_from) ? '<span class="avatar">' + LEAD + '</span>' : '<span class="avatar' + (initials(x.shout_from).length > 3 ? ' wide' : '') + '" aria-hidden="true">' + esc(initials(x.shout_from)) + '</span>') + '<div class="shout-main">' + (inFeed && x.shout_id === view.shout ? '<h2 class="visually-hidden">Shout #' + x.shout_id + '</h2>' : '') + '<header><b class="who">' + (x.shout_from === 'person' ? 'you' : shoutAgentName(x.shout_from)) + '</b><span class="to">→ ' + shoutAgentName(x.shout_to) + '</span>'
+    + (lead(x.shout_from) ? '<span class="avatar">' + LEAD + '</span>' : '<span class="avatar' + (initials(x.shout_from).length > 3 ? ' wide' : '') + '" aria-hidden="true">' + esc(initials(x.shout_from)) + '</span>') + '<div class="shout-main">' + (inFeed && x.shout_id === view.shout ? '<h2 class="visually-hidden">Shout #' + x.shout_id + '</h2>' : '') + '<header><b class="who">' + (x.shout_from === 'person' ? 'you' : shoutAgentName(x.shout_from)) + '</b><span class="to">→ ' + shoutTo(x.shout_to) + '</span>'
     + (itemOf(x) ? '<span class="item">#' + esc(itemOf(x)) + '</span>' : '') + mark(x) + '<time class="long" data-ago="' + esc(x.shout_at) + '" title="' + esc(when(x.shout_at)) + '">' + agoLong(x.shout_at) + '</time></header>'
     + '<div class="text">' + rich(x.shout_text, titles) + '</div><button class="more" data-more type="button">' + (openShouts.has(x.shout_id) ? 'less' : 'more') + '</button>' + (inFeed ? band(x) + heardBy(x) : '') + evidence(x) + tail + '</div></article>';
   $('feed').innerHTML = (view.shout !== null && !feedShouts.some((entry) => entry.shout_id === view.shout) ? '<p class="empty" id="shout-address-status" role="status">' + esc(addressed?.error || 'Loading shout #' + view.shout + '…') + '</p>' : '') + bar + (heard.length ? dayRules(heard, (x) => x.shout_at, card) : '<div class="empty">' + (unread ? 'No unread shouts.' : view.agent ? 'No shouts with ' + esc(agentName(view.agent)) + ' among the last forty.' : 'No shouts yet.') + '</div>');
