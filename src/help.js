@@ -133,6 +133,8 @@ Work
                                         a verdict takes --implies <ids>; a later verdict on the item supersedes it
                                         any --note can be --note-file <file>, which keeps quotes, $ and backticks intact
   pullboard shout <lane|agent|person|all> <text>  pullboard inbox
+  pullboard shout --item <id> <text>             message the item builder, reviewer and coordinator
+  A seat shout to all reaches only coordinator and person; their broadcasts reach everyone.
   pullboard shout [<to>] <text> --decision       ask for a decision; defaults to your coordinator or the person
   pullboard shout <to> <text> --evidence attempt|receipt --outcome <word> --item <id> --commit <rev>
   pullboard answer <shout-id> <text> [--as person] [--implies <ids>] [--supersedes <answer-id>]

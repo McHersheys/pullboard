@@ -152,8 +152,9 @@ test('the runner returns a claimed dependent item when its verified dependency c
   box.git(box.web, 'merge', '-q', '--ff-only', dependencyCommit);
   assert.match(box.run(box.web, 'verify', '1', 'accept', '--note', 'The exact upstream API check passed.').out, /verified #1/);
 
+  const dependentBrief = LIGHT_BRIEF.replace('web/page.js', 'api/client.js');
   box.run(box.repo, 'add', 'api', 'Dependent API', '--after', '1', '--route', 'light', '--specs', 'G2', '--criterion', 'integrates upstream API',
-    '--check', 'grep -q upstream api/server.js', '--brief', brief);
+    '--check', 'test -f api/client.js && grep -q upstream api/server.js', '--brief', dependentBrief);
   const blocked = box.run(localRunner, 'run', '--agent-light', 'true', '--attempts', '1');
   assert.notEqual(blocked.code, 0, blocked.out);
   assert.match(blocked.err, /MERGE_CONFLICT/);
@@ -286,6 +287,9 @@ test('next takes work near your recent files; submit records them; show names re
   box.git(box.repo, 'switch', '-q', '--detach', 'web/one');
   box.run(box.repo, 'verify', '2', 'accept', '--note', 'emptied the header; the page lost it', '--as', 'coordinator');
   box.git(box.repo, 'switch', '-q', 'main');
+  const verifiedCommit = JSON.parse(box.run(box.repo, 'show', '2', '--json').out).item_commit;
+  box.git(box.repo, 'merge', '--no-ff', verifiedCommit, '-m', 'chore(merge): land #2 [G1]');
+  assert.equal(box.run(box.repo, 'merged', '2', 'HEAD').code, 0);
   box.run(box.repo, 'add', 'web', 'Menu', '--specs', 'G1', '--brief', 'Files: web/nav.html, web/menu.html');
   assert.match(box.run(box.repo, 'show', '3').out, /related: #2 Header: web\/nav\.html \(git log -p -1 [0-9a-f]{12} -- web\/nav\.html\)/);
   const warm = box.run(box.web, 'next');
