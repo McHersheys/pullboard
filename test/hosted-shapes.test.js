@@ -1038,6 +1038,11 @@ test('an excluded board is named as excluded with the step that includes it [H5,
   const cleared = await fetch(box.origin + '/api/v1/devices/exclusions', { headers: { cookie: 'pb_session=' + session } });
   assert.equal(cleared.status, 200);
   assert.deepEqual((await cleared.json()).exclusions, [], 'including the board clears its published exclusion');
+  assert.equal((await box.cliAt(excluded, 'relay', 'off')).code, 0,
+    'off also publishes from the removed board’s own machine credential');
+  const removed = await fetch(box.origin + '/api/v1/devices/exclusions', { headers: { cookie: 'pb_session=' + session } });
+  assert.equal(removed.status, 200);
+  assert.equal((await removed.json()).exclusions[0]?.count, 1, 'a linked board’s removal publishes without setup or its forgotten board key');
 });
 
 test('a board awaiting a phone approval is mentioned on a non-phone paired browser [H5]', {
