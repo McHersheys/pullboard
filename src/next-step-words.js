@@ -56,6 +56,8 @@ export function personRequestGuidance(message, { caller, leading = false } = {})
 
 /** @type {Readonly<Record<string, string>>} */
 export const NEXT_STEPS = Object.freeze({
+  EXCLUDED_REPOSITORY: 'restore the GitHub origin of each excluded project, then run pullboard relay on --all',
+  EXCLUDED_INVENTORY: 'restore at most 256 excluded boards and their active paired devices, then run pullboard relay on --all',
   BAD_VERDICT_WITHDRAW: 'use --withdraw-verdict with a note, or report a conflict separately',
   VERDICT_WITHDRAW_FORBIDDEN: 'ask the accepting reviewer or coordinator to withdraw this verdict',
   VERDICT_WITHDRAW_STATE: 'refresh the item; withdraw only a current acceptance before landing',
