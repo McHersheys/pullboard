@@ -123,6 +123,8 @@ const CAUGHT = {
   // Invalid approval evidence is data, not a lifecycle refusal; runtime controls keep it unconfirmed.
   'spec-approval.js#approvalEvidence': ['spec.js#readSignoffs'],
   'spec-approval.js#confirmedDecision': ['signature.js#verifyRowDecision'],
+  // specApprovalState turns a Refused from the canonical baseline reader into invalid evidence.
+  'spec-approval.js#specApprovalState': ['board-query.js#specApprovalBaseline'],
   // Historical decline metadata is parsed inside a non-throwing boundary, covered by the Rigor history control.
   'board.js#reopen': ['rigor-notices.js#declinedRigorSource'],
 };
@@ -201,6 +203,8 @@ function codeWalk(read, { caught = false } = {}) {
     seen.add(key);
     const [file, name] = key.split('#');
     const { bodies, named, spaces } = load(file);
+    // A facade may import and re-export the helper; follow its real definition after extraction.
+    if (!bodies.has(name) && named.has(name)) return refusalsOf(named.get(name), skip, seen);
     const body = bodies.get(name) ?? '';
     const codes = new Set([...body.matchAll(/new Refused\(\s*(['"])([A-Z][A-Z0-9_]*)\1/g)].map((match) => match[2]));
     const callees = [
@@ -536,6 +540,17 @@ test('a broken copy of the declaration fails the check against the code, both wa
 });
 
 test('a broken copy of the code fails the check: a refusal added wherever a move reaches [M1, M4]', () => {
+  const inCaughtBaseline = editedSource('board-query.js', /^export function specApprovalBaseline\(board\) \{$/m,
+    "$&\n  if (!board) throw new Refused('MOON_PHASE', 'wait for the full moon');");
+  assert.deepEqual(codeProblems(MACHINE, inCaughtBaseline), [], 'the real caller catches a Refused from the baseline reader');
+  const inBaselineCaller = editedSource('spec-approval.js', /^export function specApprovalState\(root, .*$/m,
+    "$&\n  if (!root) throw new Refused('MOON_PHASE', 'wait for the full moon');");
+  assert.deepEqual(codeProblems(MACHINE, inBaselineCaller).sort(), [
+    'MOON_PHASE is raised by accept and reject but not declared there',
+    'MOON_PHASE is raised by claim but not declared there',
+    'MOON_PHASE is raised by refreeze but not declared there',
+  ], 'the caller is not exempt: only the exact reader call is inside its catch');
+
   const inFreeze = editedSource('spec.js', /^export function frozenCriterion\(spec, item, doctrine = null\) \{$/m, "$&\n  if (item.item_title === 'moon') throw new Refused('MOON_PHASE', 'wait for the full moon');");
   assert.deepEqual(codeProblems(MACHINE, inFreeze).sort(), [
     'MOON_PHASE is raised by claim but not declared there',
@@ -556,7 +571,7 @@ test('a broken copy of the code fails the check: a refusal added wherever a move
     'NO_ROUTE is raised by reserve but not declared there',
   ], 'reserve reaches the route check through the reviewer checks it shares with a verdict');
 
-  const doubleQuoted = editedSource('cli.js', /^(?:export )?const cdTo = .*$/m, "const cdTo = (root) => { if (!root) throw new Refused(\"NO_ROOT\", 'no root'); return 'cd ' + root + ' &&'; };");
+  const doubleQuoted = editedSource('cli-read-context.js', /^(?:export )?const cdTo = .*$/m, "const cdTo = (root) => { if (!root) throw new Refused(\"NO_ROOT\", 'no root'); return 'cd ' + root + ' &&'; };");
   assert.deepEqual(codeProblems(MACHINE, doubleQuoted), [
     'NO_ROOT is raised by submit but not declared there',
     'NO_ROOT is raised by accept and reject but not declared there',
@@ -1320,7 +1335,8 @@ function statusWriters(read) {
   const writers = [];
   for (const file of readdirSync(new URL('../src/', import.meta.url)).filter((name) => name.endsWith('.js'))) {
     const source = read(file);
-    const allowed = file === 'board.js' ? ['moveItem', 'setItem', 'current'].map((name) => functionsIn(source).get(name)) : [];
+    const allowedNames = file === 'board.js' ? ['moveItem', 'setItem'] : file === 'board-query.js' ? ['current'] : [];
+    const allowed = allowedNames.map((name) => functionsIn(source).get(name));
     const spans = allowed.filter(Boolean).map((body) => [source.indexOf(body), source.indexOf(body) + body.length]);
     if (file === 'json.js') {
       const catalog = /^export const JSON_SHAPES = \{[\s\S]*?^\};/m.exec(source);
@@ -1339,6 +1355,9 @@ function statusWriters(read) {
 
 test('only moveItem writes an item\'s status, and a write anywhere else fails the check [M1]', () => {
   assert.deepEqual(statusWriters(fromDisk), []);
+  const besideReader = editedSource('board-query.js', /^export function current/m,
+    "export function reopenByHand(board, id) {\n  board.db.prepare(\"update item set item_status = 'open' where item_id = ?\").run(id);\n}\n\nexport function current");
+  assert.deepEqual(statusWriters(besideReader), ['board-query.js#reopenByHand'], 'the projection exemption never covers a writer beside it');
   assert.match(functionsIn(fromDisk('board.js')).get('moveItem'), /item_status: move\.to/, 'moveItem is the writer');
   const planted = editedSource('board.js', /set: \(found\) => \(\{ item_route: nextRoute\(found\.item_route\), item_owner: null, item_lease_until: null \}\),/, "set: (found) => ({ item_route: nextRoute(found.item_route), item_status: 'open', item_owner: null, item_lease_until: null }),");
   assert.deepEqual(statusWriters(planted), ['board.js#escalate']);

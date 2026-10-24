@@ -1,0 +1,426 @@
+import {
+  COORDINATION_SHOUT,
+  itemShoutReader,
+  shoutItemId,
+  UNREAD_SHOUT_SQL,
+  unreadShoutBindings,
+} from './shout-audience.js';
+/** Canonical board queries shared by reads and the synchronous write store [C7]. */
+import { COORDINATOR } from './config.js';
+import { itemFiles } from './item-files.js';
+import { parseSpec } from './spec.js';
+import { BOARD_SENTINEL_ENGINE } from './sentinel-engine.js';
+import { Refused } from './refused.js';
+export { closeBoard, openBoardForRead, openBoardReadOnly, readEventLogVersion, systemClock } from './board-read-open.js';
+export { schemaMissing, writeRefused } from './board-migrate.js';
+export { stats } from './board-stats.js';
+export { submitInvariantEvents } from './board-hot.js';
+export { acceptedVerdict, verdictReviewProblem, verdictsFor } from './verdict-reviews.js';
+
+export const PERSON = 'person';
+
+/**
+ * The board's time as ISO text.
+ *
+ * @param {any} board
+ * @returns {string}
+ */
+export const now = (board) => board.clock.now().toISOString();
+
+/**
+ * True while someone holds the item under a lease that has not lapsed.
+ *
+ * @param {any} board
+ * @param {any} item
+ * @returns {boolean}
+ */
+export function isHeld(board, item) {
+  return item.item_status === 'claimed' && (item.item_lease_until ?? '') > now(board);
+}
+
+/**
+ * The item as a reader should see it: a claim whose lease lapsed reads as open (B4).
+ *
+ * @param {any} board
+ * @param {any} item
+ * @returns {any}
+ */
+export function current(board, item) {
+  if (item.item_status !== 'claimed' || isHeld(board, item)) return { ...item };
+  return { ...item, item_status: 'open', item_owner: null, item_lease_until: null };
+}
+
+/** Read an observation only when it still describes the item's current check command. */
+export function itemCheckBaseline(board, item) {
+  const row = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?').get(`item_check_baseline_${item.item_id}`);
+  if (!row) return null;
+  const baseline = JSON.parse(row.meta_value);
+  return baseline.command === item.item_check ? baseline : null;
+}
+
+/** Find review releases after the current submission, optionally for one reviewer [V1,R1].
+ * Older releases are ignored because a new submission starts a fresh review.
+ */
+export function reviewReleasesSinceSubmit(board, itemId, agentId = null) {
+  const events = board.db.prepare("SELECT event_id, event_at, event_by, event_kind, event_detail FROM event WHERE item_id=? AND event_kind IN ('submit','release') ORDER BY event_id DESC")
+    .all(itemId);
+  const releases = [];
+  for (const event of events) {
+    if (event.event_kind === 'submit') return releases;
+    if (event.event_by !== agentId && agentId !== null) continue;
+    try {
+      const detail = JSON.parse(event.event_detail);
+      if (detail.review === true || detail.review === undefined) releases.push({ ...event, legacy: detail.review === undefined,
+        reason: detail.reason ?? 'reason not recorded' });
+    } catch { /* Ignore malformed legacy details rather than treating them as review releases. */ }
+  }
+  return releases;
+}
+
+/** The persistent local and relay identity of this board (A2). */
+export function boardId(board) {
+  return board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?').get('board_id').meta_value;
+}
+
+/**
+ * The item with this id, or a refusal naming the id.
+ *
+ * @param {any} board
+ * @param {number} id
+ * @returns {any}
+ */
+export function itemById(board, id) {
+  const item = board.db.prepare('SELECT * FROM item WHERE item_id = ?').get(id);
+  if (!item) throw new Refused('NO_ITEM', `no item #${id}; see: pullboard list`);
+  return item;
+}
+
+/**
+ * One item as a reader should see it.
+ *
+ * @param {any} board
+ * @param {number} id
+ * @returns {any}
+ */
+export function getItem(board, id) {
+  const item = current(board, itemById(board, id));
+  const baseline = itemCheckBaseline(board, item);
+  return baseline ? { ...item, item_check_baseline: baseline } : item;
+}
+
+/**
+ * Items, newest first, as a reader should see them. Closed items (verified, withdrawn) only when
+ * asked.
+ *
+ * @param {any} board
+ * @param {{ lane?: string, all?: boolean }} [filter]
+ * @returns {any[]}
+ */
+export function listItems(board, { lane, all = false } = {}) {
+  const hasLane = lane !== undefined && lane !== null;
+  const rows = board.db
+    .prepare(`SELECT * FROM item WHERE ${all ? '1' : "item_status NOT IN ('verified','withdrawn')"}${hasLane ? ' AND item_lane=?' : ''} ORDER BY item_id DESC`)
+    .all(...(hasLane ? [lane] : []));
+  const items = rows.map((item) => current(board, item));
+  return items;
+}
+
+/** Read a stored status/owner slice, excluding claims whose leases have expired rather than caching items. */
+export function itemsInStatus(board, status, owner = null) {
+  return board.db.prepare(`SELECT * FROM item WHERE item_status=?${owner === null ? '' : ' AND item_owner=?'} ORDER BY item_id DESC`)
+    .all(status, ...(owner === null ? [] : [owner])).map(item => current(board, item)).filter(item => item.item_status === status);
+}
+
+/**
+ * Who holds an item's review under a live lease (V15), or null. A reservation counts only while the
+ * item is submitted and its lease has not run out, and a new submission starts with none.
+ *
+ * @param {any} board
+ * @param {any} item
+ * @returns {string | null}
+ */
+export function reviewHolder(board, item) {
+  return item.item_status === 'submitted' && item.item_review_by && (item.item_review_until ?? '') > now(board) ? item.item_review_by : null;
+}
+
+/** Count unreserved submissions by whether they are awaiting a first reviewer or were released [R1]. */
+export function reviewQueueBreakdown(board) {
+  let awaitingFirstReview = 0;
+  let releasedWithoutVerdict = 0;
+  const releasedItems = [];
+  for (const item of itemsInStatus(board, 'submitted').filter((entry) => !reviewHolder(board, entry))) {
+    const releases = reviewReleasesSinceSubmit(board, item.item_id);
+    if (releases.length) {
+      releasedWithoutVerdict += 1;
+      releasedItems.push({ item: item.item_id, releases: releases.length, reason: releases[0].reason });
+    } else awaitingFirstReview += 1;
+  }
+  return { awaitingFirstReview, releasedWithoutVerdict, releasedItems };
+}
+
+/** Summarize outstanding reviews using live leases and the latest submission's age [Q1,V15]. */
+export function reviewQueue(board) {
+  const pending = itemsInStatus(board, 'submitted');
+  const holders = pending.map((item) => reviewHolder(board, item)).filter(Boolean);
+  // Only the current queue needs an age. Seek each item's history, including legacy timestamps,
+  // instead of grouping every submission ever made on the board.
+  const submittedAt = board.db.prepare("SELECT MAX(event_at) AS at FROM event WHERE item_id=? AND event_kind='submit'");
+  const oldestSubmittedAt = pending.map((item) => submittedAt.get(item.item_id).at).filter(Boolean).sort()[0] ?? null;
+  return { pending: pending.length, reviewing: new Set(holders).size, reserved: holders.length, oldestSubmittedAt,
+    ageMs: oldestSubmittedAt ? Math.max(0, board.clock.now().getTime() - Date.parse(oldestSubmittedAt)) : 0 };
+}
+
+/**
+ * Shouts that asked for a decision nobody has answered yet, oldest first (B21). An optional
+ * recipient limits the queue; an array matches any listed recipient. Without one this returns
+ * every open decision for internal readers.
+ *
+ * @param {any} board
+ * @param {string | string[]} [recipient]
+ * @returns {any[]}
+ */
+export function openDecisions(board, recipient = null) {
+  if (recipient === null) {
+    return board.db
+      .prepare('SELECT * FROM shout ask WHERE ask.shout_decision = 1 AND NOT EXISTS (SELECT 1 FROM shout reply WHERE reply.shout_answers = ask.shout_id) ORDER BY ask.shout_id')
+      .all();
+  }
+  const recipients = [...new Set(Array.isArray(recipient) ? recipient : [recipient])];
+  if (!recipients.length) return [];
+  return openDecisions(board).filter((ask) => recipients.includes(ask.shout_to)
+    || (ask.shout_to === COORDINATION_SHOUT && recipients.includes(COORDINATOR))
+    || (shoutItemId(ask.shout_to) !== null && recipients.some((agent) => itemShoutReader(board.db, shoutItemId(ask.shout_to), agent))));
+}
+
+/**
+ * How many shouts an agent has not read, without marking them.
+ *
+ * @param {any} board
+ * @param {string} agentId
+ * @returns {number}
+ */
+export function unreadCount(board, agentId) {
+  const agent = board.db.prepare('SELECT * FROM agent WHERE agent_id = ?').get(agentId);
+  if (!agent) return 0;
+  const { total } = board.db
+    .prepare(`SELECT COUNT(*) AS total ${UNREAD_SQL}`)
+    .get(...unreadShoutBindings(agent.agent_last_shout_id, agentId, agent.agent_lane));
+  return total;
+}
+
+/**
+ * The event log, oldest first, for one item or the whole board.
+ *
+ * @param {any} board
+ * @param {{ itemId?: number }} [filter]
+ * @returns {any[]}
+ */
+export function events(board, { itemId } = {}) {
+  if (itemId === undefined || itemId === null) {
+    return board.db.prepare('SELECT * FROM event ORDER BY event_id').all();
+  }
+  return board.db.prepare('SELECT * FROM event WHERE item_id = ? ORDER BY event_id').all(itemId);
+}
+
+/** Read every move and fact in append order, including superseded facts and full original text [B31,B32]. */
+export function itemThread(board, id) {
+  itemById(board, id);
+  return events(board, { itemId: id }).map((event) => event.event_kind === 'fact'
+    ? { type: 'fact', ...factFromEvent(event) }
+    : { type: 'move', eventId: event.event_id, kind: event.event_kind, by: event.event_by,
+      at: event.event_at, detail: JSON.parse(event.event_detail) });
+}
+
+/**
+ * Every held lane.
+ *
+ * @param {any} board
+ * @returns {any[]}
+ */
+export function laneHolds(board) {
+  return board.db.prepare('SELECT * FROM hold ORDER BY hold_lane').all();
+}
+
+/** Current person decisions, including applied receipts, stored without checkout-dependent state. */
+export function rowDecisions(board) {
+  const row = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get('row_decisions');
+  return row ? JSON.parse(row.meta_value) : [];
+}
+
+/**
+ * The SQL that picks an agent's unread shouts: to it, to its lane, or to all, from anyone else.
+ */
+export const UNREAD_SQL = UNREAD_SHOUT_SQL;
+
+/**
+ * The agent registered for a worktree path, if any.
+ *
+ * @param {any} board
+ * @param {string} path
+ * @returns {any}
+ */
+export function agentAt(board, path) {
+  const agent = board.db.prepare('SELECT * FROM agent WHERE agent_path = ?').get(path);
+  return withModel(board, agent);
+}
+
+/** Read one seat and its model without loading every registered seat and model on the board. */
+export function agentById(board, id) {
+  return withModel(board, board.db.prepare('SELECT * FROM agent WHERE agent_id = ?').get(id));
+}
+
+/** Read the model label kept beside other board metadata, avoiding any board-schema migration. */
+export function agentModel(board, id) {
+  return board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?').get(`agent_model:${id}`)?.meta_value ?? null;
+}
+
+/** Attach an agent's model to a row from the legacy stable agent table. */
+export function withModel(board, agent) {
+  return agent ? { ...agent, agent_model: agentModel(board, agent.agent_id), agent_parent_session: agentParent(board, agent.agent_id) } : agent;
+}
+
+/**
+ * Every registered agent, oldest first.
+ *
+ * @param {any} board
+ * @returns {any[]}
+ */
+export function listAgents(board) {
+  return board.db.prepare(`SELECT agent.*, board_meta.meta_value AS agent_model FROM agent
+    LEFT JOIN board_meta ON board_meta.meta_key='agent_model:' || agent.agent_id ORDER BY agent.rowid`).all().map(agent => ({ ...agent, agent_parent_session: agentParent(board, agent.agent_id) }));
+}
+
+/** The optional engine-20 fields of a fact, present only when its event set them. */
+export function decisionFields(detail) {
+  return { ...(detail.implies ? { implies: detail.implies } : {}), ...(detail.decision ? { decision: detail.decision } : {}),
+    ...(detail.supersededBy ? { supersededBy: detail.supersededBy } : {}) };
+}
+
+/** Give facts the same stamped identity on CLI, API, export and replica reads; a never-again keeps its cause [B29,B31,D1]. */
+export function factFromEvent(event) {
+  const detail = JSON.parse(event.event_detail);
+  return { id: detail.id, eventId: event.event_id, kind: detail.kind, text: detail.text,
+    by: event.event_by, at: event.event_at, ref: detail.ref ?? null, supersedes: detail.supersedes ?? null, ...decisionFields(detail),
+    ...(detail.neverAgain ? { cause: detail.cause, neverAgain: true } : {}) };
+}
+
+export const KEY = 'spec_approval_baseline';
+
+/** Validate the exact source carried by an ordered snapshot, including the empty initial set. */
+export function validBaseline(value) {
+  if (!value || value.version !== 1 || typeof value.file !== 'string' || !value.file
+    || !(value.anchor === null || /^[a-f0-9]{40,64}$/u.test(value.anchor)) || !Array.isArray(value.rows)) return false;
+  const seen = new Set();
+  return value.rows.every(row => {
+    if (!row || typeof row.id !== 'string' || typeof row.text !== 'string' || typeof row.source !== 'string'
+      || /[\r\n]/u.test(row.source) || seen.has(row.id)) return false;
+    const parsed = parseSpec(`## Baseline\n${row.source}\n`).rows;
+    seen.add(row.id);
+    return parsed.length === 1 && parsed[0].id === row.id && parsed[0].text === row.text && parsed[0].status === 'approved';
+  });
+}
+
+/** Compare the snapshot payload without incidental event attribution or JSON property order. */
+export function canonicalBaseline(baseline) {
+  return { version: 1, file: baseline.file, anchor: baseline.anchor,
+    rows: baseline.rows.map(({ id, text, source }) => ({ id, text, source })) };
+}
+
+/** Distinguish a missing migration marker from an unreadable one without replacing either. */
+export function specApprovalBaselineExists(board) {
+  return Boolean(board.db.prepare('SELECT 1 FROM board_meta WHERE meta_key=?').get(KEY)
+    || board.db.prepare('SELECT 1 FROM event WHERE event_kind=? LIMIT 1').get(KEY));
+}
+
+/** Read the original snapshot without interpreting it as authenticated approval or reseeding it. */
+export function specApprovalBaseline(board) {
+  const stored = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get(KEY);
+  const events = board.db.prepare('SELECT event_by,event_detail FROM event WHERE event_kind=?').all(KEY);
+  if (!stored && !events.length) return null;
+  let value;
+  let recorded;
+  try {
+    value = stored && JSON.parse(stored.meta_value);
+    recorded = events.length === 1 && events[0].event_by === COORDINATOR && JSON.parse(events[0].event_detail);
+  } catch { /* The same typed recovery covers malformed and incompatible records. */ }
+  if (!validBaseline(value) || !validBaseline(recorded)
+    || JSON.stringify(canonicalBaseline(value)) !== JSON.stringify(canonicalBaseline(recorded))) {
+    throw new Refused('SPEC_APPROVAL_BASELINE', 'the approval baseline is unreadable or disagrees with its original event; restore it from a known-good board export');
+  }
+  return value;
+}
+
+/** Pending watches are the person's calls: one Needs-you entry each, with the evidence that proposed it. */
+export function sentinelDraftNeeds(rows) {
+  return rows.filter(row => row.status === 'pending').map(row => ({
+    kind: 'sentinel-draft', id: `sentinel:${row.name}`, ref: row.name,
+    check: row.check, directory: row.directory, every: row.every, owner: row.owner, digest: row.digest,
+    text: `Sentinel draft: ${row.name} runs ${row.check} ${row.every === 'daily' || row.every === 'hourly' ? row.every : 'every ' + row.every}, reporting to ${row.owner}`,
+    what: `pullboard sentinel approve ${row.name}, or decline it with --reason`, target: `sentinel:${row.name}`,
+    ...(row.evidence ? { cause: row.evidence.key, evidence: row.evidence } : {}),
+  }));
+}
+
+/** Read only allocated receipts; legacy events with similar names never enable command execution. */
+export function sentinels(board) {
+  const rows = new Map();
+  const events = board.db.prepare("SELECT * FROM event WHERE event_kind IN ('sentinel-proposal','sentinel-decision','sentinel-start','sentinel-run') ORDER BY event_id").all();
+  for (const event of events) {
+    const detail = JSON.parse(event.event_detail);
+    if (detail.engine !== BOARD_SENTINEL_ENGINE) continue;
+    if (event.event_kind === 'sentinel-proposal') {
+      rows.set(detail.row.name, { ...detail.row, digest: detail.digest, status: 'pending', proposedBy: event.event_by,
+        proposedAt: event.event_at, evidence: detail.evidence ?? null, lastRun: null, activeRun: null, history: [] });
+      continue;
+    }
+    const row = rows.get(detail.name);
+    if (!row || row.digest !== detail.digest) continue;
+    if (event.event_kind === 'sentinel-decision' && event.event_by === PERSON) {
+      row.status = detail.decision === 'approve' ? 'approved' : 'declined';
+      row.reason = detail.reason; row.decidedAt = event.event_at; row.activeRun = null;
+    } else if (event.event_kind === 'sentinel-start') {
+      row.activeRun = { id: detail.run, by: event.event_by, startedAt: event.event_at, until: detail.until };
+    } else if (event.event_kind === 'sentinel-run' && row.activeRun?.id === detail.run) {
+      row.lastRun = { ...detail.result, id: detail.run, at: event.event_at };
+      row.history.push(row.lastRun); row.activeRun = null;
+    }
+  }
+  return [...rows.values()];
+}
+
+/** Ask the CLI adapter for the original coordinator-housekeeping write path. */
+export class ReadNeedsWrite extends Error {}
+
+/** A matching coordinator needs no write; registration or a path change uses the full store. */
+export function ensureCoordinator(board, path) {
+  const existing = agentById(board, COORDINATOR);
+  if (!existing || existing.agent_path !== path) throw new ReadNeedsWrite('coordinator registration or path update requires the write store');
+  return COORDINATOR;
+}
+
+/**
+ * Finished items that touched the same files as this one, most shared first (N21). A builder
+ * starting cold reads how its neighbours were done instead of rediscovering it. File overlap, not
+ * word similarity: in one real build, an item shared a source file with one of the three before it
+ * in its lane 56% of the time.
+ *
+ * @param {any} board
+ * @param {any} item
+ * @param {number} [limit]
+ * @returns {{ item: any, shared: string[] }[]}
+ */
+export function relatedItems(board, item, limit = 3) {
+  const mine = new Set(itemFiles(item));
+  if (!mine.size) return [];
+  return listItems(board, { all: true })
+    .filter((other) => other.item_id !== item.item_id && other.item_status === 'verified')
+    .map((other) => ({ item: other, shared: itemFiles(other).filter((path) => mine.has(path)) }))
+    .filter((entry) => entry.shared.length)
+    .sort((first, second) => second.shared.length - first.shared.length || second.item.item_id - first.item.item_id)
+    .slice(0, limit);
+}
+
+/** Read a seat's immutable parent session digest; unknown parents remain separate seats. */
+export function agentParent(board, id) {
+  return board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?').get(`agent_parent_session:${id}`)?.meta_value ?? null;
+}
