@@ -166,7 +166,9 @@ Coordinator
   pullboard hold <lane|id> --off        lift a lane or item hold
 
 Receipts
-  pullboard stats [--since <date>]      proof numbers from the event log; --json for sites and tools
+  pullboard stats [--since <date> | --window <duration>]  proof numbers from the event log; --json for sites and tools
+                                        --window 6h (also 30m or 1d): landed-item stage quartiles, tails and excess over targets;
+                                        includes all attempts and sent-back idle; missing intervals stay unmeasured;
                                         stage averages/medians count ends inside the inclusive UTC window;
                                         build: first claim to final submit (including rework);
                                         review wait: final submit to the closing review reservation;
