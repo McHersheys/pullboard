@@ -91,15 +91,14 @@ function job(name) {
 
 test('CI runs the gate on every push and pull request, Node 22.13 and 24, on Linux and, once public, macOS [C7]', () => {
   assert.match(WORKFLOW, /\non:\n {2}push:\n {4}branches: \[main\]\n {2}pull_request:\n/, 'pushes to main and pull requests');
-  assert.match(job('signoffs'), /if: github\.event_name == 'push' \|\| github\.event_name == 'pull_request'/u);
-  assert.match(job('signoffs'), /fetch-depth: 0/u, 'the sign-off job can read every incoming commit');
-  assert.match(job('signoffs'), /run: node bin\/check-signoffs\.js/u, 'CI runs the range checker against its structured event');
   for (const [name, system] of [['linux', 'ubuntu-latest'], ['macos', 'macos-latest']]) {
     const text = job(name);
     assert.ok(text.includes(`\n    runs-on: ${system}\n`), `${name} runs on ${system}`);
     assert.match(text, /\n {8}node: \['22\.13', '24'\]\n/, `${name} runs Node 22.13 and 24`);
     assert.match(text, /\n {10}node-version: \$\{\{ matrix\.node \}\}\n/, `${name} sets up the matrix's Node`);
     assert.match(text, /\n {10}fetch-depth: 0\n/, `${name} checks out full history, which spec check reads`);
+    assert.match(text, /if: github\.event_name == 'push' \|\| github\.event_name == 'pull_request'\n\s+run: node bin\/check-signoffs\.js/u,
+      `${name} includes sign-offs in the matrix gate that publication requires`);
     assert.equal([...text.matchAll(/\n {6}- run: node bin\/pullboard\.js spec check(?=\n)/gu)].length, 1,
       `${name} checks the spec exactly once in every matrix job`);
     assert.ok(text.includes('npm test -- --shard=${{ matrix.shard }}/${{ matrix.shards }}'),

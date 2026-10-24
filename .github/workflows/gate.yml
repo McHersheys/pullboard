@@ -20,19 +20,6 @@ permissions:
   contents: read
 
 jobs:
-  signoffs:
-    name: contributor sign-offs
-    if: github.event_name == 'push' || github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22.13'
-      - run: node bin/check-signoffs.js
-
   linux:
     name: linux (${{ matrix.node }}) ${{ matrix.shard }}/${{ matrix.shards }}
     runs-on: ubuntu-latest
@@ -49,6 +36,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
+      - if: github.event_name == 'push' || github.event_name == 'pull_request'
+        run: node bin/check-signoffs.js
       - run: node bin/pullboard.js spec check
       - run: npm test -- --shard=${{ matrix.shard }}/${{ matrix.shards }}
 
@@ -69,6 +58,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
+      - if: github.event_name == 'push' || github.event_name == 'pull_request'
+        run: node bin/check-signoffs.js
       - run: node bin/pullboard.js spec check
       - run: npm test -- --shard=${{ matrix.shard }}/${{ matrix.shards }}
 
