@@ -1,6 +1,13 @@
 /** Preserve merged history while recording one linked neutral CI repair [B2,R3]. */
 import { createHash } from 'node:crypto';
-import { addItem, appendFact, atomic, getItem, linkPublishRepair, logEvent } from './board.js';
+import {
+  addItem,
+  appendFact,
+  atomic,
+  getItem,
+  linkPublishRepair,
+  logEvent,
+} from './board.js';
 import { COORDINATOR } from './config.js';
 import { Refused } from './refused.js';
 

@@ -1,12 +1,30 @@
 /** Publish proven GitHub proposal branches without pushing or merging the protected trunk [B3,R3]. */
-import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  createHash,
+  randomUUID,
+} from 'node:crypto';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import * as store from './board.js';
-import { git, repoInfo, tryGit, cleanGitEnvironment } from './git.js';
+import {
+  git,
+  repoInfo,
+  tryGit,
+  cleanGitEnvironment,
+} from './git.js';
 import { runGate } from './gate.js';
-import { githubPullClient, githubRepository } from './pr-github.js';
+import {
+  githubPullClient,
+  githubRepository,
+} from './pr-github.js';
 import { Refused } from './refused.js';
 
 /** Keep publisher-local transport state distinct from the shared board and legacy push state. */
