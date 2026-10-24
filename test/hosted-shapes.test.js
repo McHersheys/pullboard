@@ -927,23 +927,30 @@ test('a forced hosted cell failure captures its final page state without raising
   });
   const cell = cells().find(entry => entry.id === 'board-view/signed-in/paired/approval/fresh');
   assert.ok(cell, 'the control selects one actual committed matrix cell');
-  // Only this control's fresh contexts hide the seeded chain: the real page, relay and local view still run.
+  const beforeFault = [];
+  // Only this control's fresh contexts remove the chain, after witnessing the genuine seeded board.
   const forced = {
     name: engine.name,
-    /** Open a genuine fresh browser context with only this control's display fault. */
+    /** Open a real fresh context; only this control's page navigation adds a display fault. */
     async newContext() {
       const context = await engine.newContext();
       const open = context.newPage.bind(context);
       return {
         ...context,
-        /** Keep the real browser page and add the owned chain-hiding bootstrap. */
-        newPage(options) {
-          const hide = `document.addEventListener('DOMContentLoaded', () => {
-            const style = document.createElement('style');
-            style.textContent = '#chain { display: none !important; }';
-            document.head.append(style);
-          }, { once: true });`;
-          return open({ ...options, bootstrap: (options.bootstrap ?? '') + ';' + hide });
+        /** Keep the actual browser page, witness the board, then remove its owned display node. */
+        async newPage(options) {
+          const page = await open(options);
+          return {
+            ...page,
+            /** Navigate normally and remove only the already witnessed item-chain node. */
+            async navigate(url) {
+              await page.navigate(url);
+              const shown = await page.poll(`(${READ_SCREEN}).board`, 8_000); // budget: existing blocker-settle fixture ceiling, not a speed assertion.
+              assert.ok(shown, 'the real seeded board appears before this control injects its fault');
+              beforeFault.push(await page.evaluate(READ_SCREEN));
+              await page.evaluate(`document.querySelector('#chain').remove()`);
+            },
+          };
         },
       };
     },
@@ -953,15 +960,16 @@ test('a forced hosted cell failure captures its final page state without raising
   assert.deepEqual(Object.keys(failures), [cell.id], 'exactly the selected cell genuinely fails');
   assert.match(failures[cell.id], /the board did not show within 3000 ms/u, 'the original cell judge still owns the failure');
   assert.equal(report.length, 1, 'the control does not run another matrix cell');
+  assert.ok(beforeFault.length > 0 && beforeFault.every(seen => seen.board), 'every injected fault follows the actual seeded-board positive witness');
   assert.match(failures[cell.id], /PAGE_STATE=/u, 'the actual matrix failure message carries the final page capture');
   const state = JSON.parse(failures[cell.id].split('PAGE_STATE=')[1]);
   assert.equal(state.budgetMs, 3000, 'capture never raises the board budget');
   assert.ok(state.elapsedMs >= state.budgetMs, 'the real forced visit reached the unchanged budget');
   assert.equal(typeof state.screen, 'string');
   assert.equal(typeof state.busy, 'boolean');
-  assert.equal(state.chain.present, true, 'the genuine local board still renders its seeded chain');
-  assert.equal(state.chain.visible, false, 'the owned control alone hides that chain');
-  assert.equal(state.chain.hasExpectedItem, true, 'an empty or wrong board is not the control');
+  assert.equal(state.chain.present, false, 'capture observes the owned control removing the chain');
+  assert.equal(state.chain.visible, false, 'the removed chain cannot count as visible');
+  assert.equal(state.chain.hasExpectedItem, false, 'the positive witness was removed rather than replaced with another board');
   assert.equal(typeof state.noBoardsYet.visible, 'boolean');
   assert.match(state.noBoardsYet.text, /No boards yet/u, 'capture records the empty-state text even when hidden');
 });
