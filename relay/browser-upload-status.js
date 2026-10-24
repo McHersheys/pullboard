@@ -20,7 +20,8 @@ export async function readUploadSize(documentAt, entry) {
   const plain = await withBrowserDeadline(() => unseal(entry.key, bytes, { boardId: entry.id, kind: 'snapshot', sequence: 0 }));
   const value = JSON.parse(new TextDecoder().decode(plain));
   if (Object.keys(value).sort().join(',') !== 'board,engine,kind,limit,sealedBytes,version'
-      || value.version !== 1 || value.kind !== 'snapshot-size-refusal' || value.board !== entry.id || value.engine !== ENGINE_VERSION
+      || value.version !== 1 || value.kind !== 'snapshot-size-refusal' || value.board !== entry.id
+      || !Number.isSafeInteger(value.engine) || value.engine < 1 || value.engine > ENGINE_VERSION
       || !Number.isSafeInteger(value.limit) || value.limit < 1 || value.limit > SEALED_SNAPSHOT_BYTES
       || !Number.isSafeInteger(value.sealedBytes) || value.sealedBytes <= value.limit || value.sealedBytes > SNAPSHOT_BODY_BYTES) {
     throw new Refused('RELAY_RESPONSE', 'Refresh this board to read its authenticated upload notice.');
