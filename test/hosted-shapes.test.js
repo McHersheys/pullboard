@@ -977,6 +977,27 @@ test('a forced hosted cell failure captures its final page state without raising
   assert.match(state.noBoardsYet.text, /No boards yet/u, 'capture records the empty-state text even when hidden');
 });
 
+test('an excluded board is named as excluded with the step that includes it [H5,H17]', {
+  timeout: 180_000, // budget: real relay sign-in, board view and one fresh browser context.
+}, async t => {
+  assert.ok(hostedEngines().find(engine => engine.name === 'chromium')?.available, 'real Chrome is required');
+  const engine = await openEngine('chromium');
+  t.after(() => engine.close());
+  const built = await buildBoards(t, 'excluded', [engine]);
+  const context = await engine.newContext();
+  t.after(() => context.close());
+  const seen = await visit(context, {
+    route: built.front.route(built.unpairedSession, null), phone: true,
+    bootstrap: storedScript('fresh', { boards: [] }),
+  }, false);
+  assert.equal(seen.board, false, 'exclusion does not link or disclose the board');
+  assert.match(seen.words, /fixture\/repository[^.]*excluded/iu, 'the signed-in page names the excluded repository');
+  assert.ok(seen.commands.some(command => /pullboard relay on(?:\s|$)/u.test(command)
+    && !/--all/u.test(command)), 'the page offers the command that includes this board');
+  assert.equal(seen.commands.some(command => /pullboard relay on --all/u.test(command)), false,
+    'the page does not repeat the command that already skipped this board');
+});
+
 test('a board awaiting a phone approval is mentioned on a non-phone paired browser [H5]', {
   timeout: 180_000,
 }, async (t) => {
