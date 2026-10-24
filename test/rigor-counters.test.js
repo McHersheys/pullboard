@@ -15,6 +15,7 @@ import { RIGOR_COLD_NOTICE } from '../src/rigor-counters.js';
 import { RIGOR_TAIL_LIMIT } from '../src/rigor-counters.js';
 import { undraftedRigor } from '../src/rigor-notices.js';
 import { rigorSource } from '../src/rigor-source.js';
+import { parseSpec } from '../src/spec.js';
 
 const PREFIX = 'local:proof-stats:rigor:v1:';
 
@@ -242,4 +243,21 @@ test('malformed historical detail preserves native writes and the legacy read fa
   assert.equal(summary.last, store.events(board).at(-1).event_id);
   assert.throws(() => resumeRigorCounters(board, {}), error => error.constructor === failure.constructor && error.message === failure.message,
     'a caught-up invalid projection delegates to the exact legacy reader, never empty or falsely green');
+});
+
+
+test('invalid historical cause and decline grammar remain data during a current native move [M1,D1,H16]', t => {
+  const { board, item } = fixture(t);
+  oldRepeat(board, item);
+  oldAppend(board, 'reject', item, { cause: 'not a cause key' });
+  oldAppend(board, 'fact', item, { cause: 'not a cause key', neverAgain: true }, store.PERSON);
+  const source = '<!-- pullboard-grammar 999 -->\n- G1 [draft, must] Unsupported.';
+  assert.throws(() => parseSpec(source), { code: 'A5_GRAMMAR_VERSION' });
+  oldAppend(board, 'row_decision', null, { record: { decision: 'decline', source } }, store.PERSON);
+  const oracle = expected(board);
+  const before = store.events(board).length;
+  store.appendFact(board, item, { agentId: 'coordinator', kind: 'note', text: 'A valid move survives optional historical metadata.' });
+  assert.equal(store.events(board).length, before + 1);
+  assert.deepEqual(resumeRigorCounters(board, {}).causes, oracle);
+  assert.equal(resumeRigorCounters(board, {}).notice, null);
 });
