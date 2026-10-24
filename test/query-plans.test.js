@@ -19,6 +19,7 @@ import { personNeedsSummary } from '../src/needs-summary.js';
 import { resumeNeeds } from '../src/resume-needs.js';
 import { undraftedRigor } from '../src/rigor-notices.js';
 import { runFixtureChild, runFixtureGit } from './fixture-child.js';
+import { applyEngineMove, prepareEngineMove } from '../src/engine.js';
 
 const BIN = resolve(import.meta.dirname, '../bin/pullboard.js');
 const SERVE = pathToFileURL(resolve(import.meta.dirname, '../src/serve.js')).href;
@@ -30,6 +31,69 @@ const sandboxes = [];
 // Writable open warms both proof and Rigor counters before these hot reads. No whole-history
 // exception remains; cold readers are covered separately without weakening this hot-path check.
 const WHOLE_HISTORY = [];
+
+test('a new fact id is checked by index across current, legacy and archived facts [B29,B31,C7]', (t) => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-fact-index-')));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const file = join(directory, 'board.sqlite');
+  const clock = { now: () => new Date('2026-10-24T00:00:00.000Z') };
+  let board = store.openBoard(file, clock);
+  t.after(() => store.closeBoard(board));
+  store.register(board, { lane: 'coordinator', path: '/synthetic-fact-index' });
+  const first = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'First identity owner' });
+  const second = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Another identity owner' });
+  /** Keep all append options fixed except the identity under test. */
+  const options = (factId) => ({ agentId: 'coordinator', kind: 'note', text: 'Private identity evidence', factId });
+  const insert = board.db.prepare("INSERT INTO event (event_at,event_by,event_kind,item_id,event_detail) VALUES (?,?,?,?,?)");
+  // Explicitly synthetic legacy history, not benchmark data or ordered-move proof.
+  for (let index = 0; index < 400; index += 1) {
+    insert.run(clock.now().toISOString(), 'coordinator', 'fact', first, JSON.stringify({ id: `legacy-${index}`, text: 'Legacy note' }));
+  }
+  const plans = [];
+  const prepare = board.db.prepare.bind(board.db);
+  /** Record plans for actual duplicate checks without substituting their SQLite results. */
+  board.db.prepare = (sql) => {
+    if (/^SELECT 1\b/iu.test(sql) && /json_(?:extract|valid)/u.test(sql)) {
+      const bindings = sql.includes('?') ? ['fresh-identity'] : [];
+      plans.push({ sql, plan: prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...bindings).map((row) => row.detail) });
+    }
+    return prepare(sql);
+  };
+  store.appendFact(board, first, options('fresh-identity'));
+  board.db.prepare = prepare;
+  const identityPlans = plans.filter(({ sql }) => sql.includes('json_extract'));
+  assert.ok(identityPlans.length > 0, 'the real appendFact executed its identity lookup');
+  assert.ok(identityPlans.every(({ plan }) => plan.some((detail) => /SEARCH event\b.*<expr>=\?/u.test(detail))),
+    `new fact identity must search an expression index, not scan every fact: ${JSON.stringify(plans)}`);
+  assert.throws(() => store.appendFact(board, second, options('fresh-identity')), { code: 'BAD_FACT_ID' }, 'identity is global across items');
+  assert.throws(() => store.appendFact(board, second, options('legacy-399')), { code: 'BAD_FACT_ID' });
+
+  store.closeBoard(board);
+  const legacy = new DatabaseSync(file);
+  // A synthetic physical cold partition exercises compatibility without importing unlanded retention code.
+  legacy.exec('CREATE TABLE event_archive AS SELECT * FROM event WHERE 0; PRAGMA user_version=2');
+  legacy.prepare("INSERT INTO event_archive (event_id,event_at,event_by,event_kind,item_id,event_detail) VALUES (?,?,?,?,?,?)")
+    .run(900000, clock.now().toISOString(), 'coordinator', 'fact', first, JSON.stringify({ id: 'cold-identity', text: 'Cold legacy note' }));
+  legacy.close();
+  board = store.openBoard(file, clock);
+  assert.throws(() => store.appendFact(board, second, options('cold-identity')), { code: 'BAD_FACT_ID' }, 'cold identity remains reserved');
+  store.appendFact(board, second, options('after-migration'));
+  const coldPlans = board.db.prepare("EXPLAIN QUERY PLAN SELECT 1 FROM event_archive WHERE event_kind='fact' AND json_valid(event_detail) AND json_extract(event_detail,'$.id')=?")
+    .all('cold-identity').map((row) => row.detail);
+  assert.ok(coldPlans.some((detail) => /SEARCH event_archive\b.*<expr>=\?/u.test(detail)), JSON.stringify(coldPlans));
+
+  const move = prepareEngineMove(board, 'appendFact', [second, options('ignored-local-id')], { id: 'sealed-fact-index' });
+  const replay = applyEngineMove(board, move, { sequence: 1, at: clock.now().toISOString() });
+  assert.equal(replay.result.id, move.id);
+  assert.deepEqual(applyEngineMove(board, move, { sequence: 1, at: clock.now().toISOString() }), replay, 'same sealed move retries its receipt');
+  assert.equal(store.events(board).filter((event) => event.event_kind === 'fact' && JSON.parse(event.event_detail).id === move.id).length, 1);
+
+  const beforeMalformed = board.db.prepare('SELECT count(*) AS n FROM event').get().n;
+  board.db.prepare("INSERT INTO event (event_at,event_by,event_kind,item_id,event_detail) VALUES (?,?,?,?,?)")
+    .run(clock.now().toISOString(), 'coordinator', 'fact', first, '{malformed');
+  assert.throws(() => store.appendFact(board, second, options('after-malformed')), /malformed JSON/iu, 'malformed fact remains a failure, never silently ignored');
+  assert.equal(board.db.prepare('SELECT count(*) AS n FROM event').get().n, beforeMalformed + 1, 'failed append has no partial event');
+});
 
 after(() => {
   for (const dir of sandboxes) rmSync(dir, { recursive: true, force: true });
