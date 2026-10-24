@@ -7,8 +7,8 @@ import { exportBoard, importBoard } from '../src/exchange.js';
 
 /** An unlanded engine leaf, as an item adds one under #1101. */
 function unlandedLeaf(name) {
-  // The comment names the placeholder too: only the export line itself may be rewritten.
-  return `/** The ${name} feature's engine, written as ${name.toUpperCase()}_ENGINE = unassignedEngine(); until it lands. */\nimport { unassignedEngine } from './engine-next.js';\nexport const ${name.toUpperCase()}_ENGINE = unassignedEngine();\n`;
+  // A comment line ends with the placeholder too: only the export line itself may be rewritten.
+  return `/**\n * The ${name} feature's engine, written until it lands as\n * ${name.toUpperCase()}_ENGINE = unassignedEngine();\n */\nimport { unassignedEngine } from './engine-next.js';\nexport const ${name.toUpperCase()}_ENGINE = unassignedEngine();\n`;
 }
 
 /** The engine number a leaf holds at a commit, or null when the leaf is not there or not yet numbered. */
