@@ -13,7 +13,8 @@ export function recordedMoveRefusal(io, error) {
   if (!io.recordedMove || !(error instanceof Refused) || !/^(?:RELAY_|AUTH_|TOKEN_)/u.test(error.code)) return error;
   const recorded = 'a move from this command was already recorded; any pending relay work remains queued locally; do not repeat the original command';
   const next = 'run pullboard status to inspect the recorded work and pending relay sync; do not repeat the original command';
-  if (['RELAY_BUSY', 'RELAY_UNAVAILABLE', 'RELAY_RESPONSE'].includes(error.code)) return new Refused(error.code, recorded, next);
+  const unsafeRetry = /\b(?:run|retry|repeat) (?:the |this |original )?(?:command|move)(?: again)?\b/iu.test(error.message + ' ' + (error.next ?? ''));
+  if (['RELAY_BUSY', 'RELAY_UNAVAILABLE', 'RELAY_RESPONSE'].includes(error.code) && unsafeRetry) return new Refused(error.code, recorded, next);
   return new Refused(error.code, recordedRecovery(error.message.replace(/^\[[A-Z0-9_]+\] /u, '')) + '; ' + recorded,
     recordedRecovery(error.next) ?? next);
 }
