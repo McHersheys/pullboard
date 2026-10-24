@@ -303,6 +303,7 @@ function recordEventContract() {
   register(board, { lane: 'small', path: '/small', route: 'light' });
   ensureCoordinator(board, '/coordinator-moved');
   shout(board, { from: builder, to: 'all', text: 'sample announcement', lanes: ['docs', 'tests'] });
+  shout(board, { from: coordinator, to: 'all', text: 'sample explicit release news', lanes: ['docs', 'tests'], news: true });
   const passed = shout(board, { from: builder, to: coordinator, text: 'sample decision', lanes: ['docs', 'tests'], decision: true });
   assert.throws(
     () => passDecision(board, passed, { agentId: builder, note: 'try to pass it', lanes: ['docs', 'tests'] }),

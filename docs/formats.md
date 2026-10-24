@@ -447,7 +447,7 @@ The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its ap
 | `guards` | board | `missing`, `changed`, `stale` |
 | `rigor-notice` | rigor | `cause`, `items`, `occurrences`, `neverAgain`, `engine`, automatic-Rigor `drafts` |
 | `rigor-draft` | rigor | `id`, `target`, `cause`, exact typed `source`, `unproved` (always true), `items`, `occurrences`, `engine` |
-| `shout` | sender | `shout`, `to`, `decision`, `request`, `answers` |
+| `shout` | sender | `shout`, `to`, `decision`, `request`, `answers`, `news`, `newsFormat` |
 | `flake-observation` | reporting agent | `engine`, `observation` |
 | `flake-repair` | reporting agent | `engine`, `key`, `item` |
 | `health-scan` | observing agent | `active`, `engine` |
@@ -648,3 +648,21 @@ its number at landing; no event-log or envelope format changes.
 With `reviewsFirst` on, ordinary `next` offers an eligible review before a build when outstanding submissions exceed `wipPerReviewer` times the active-reviewer count (or ratio 3 while that numeric control is off). No permanent builder/reviewer seat type or role flag is required. Active reviewers are distinct registered seats with a reservation or verdict inside the flow window; its default is the last hour, and an empty window counts as one reviewer. The window uses the same validated boundaries as `stats --window`; its native duration is the shared `ACTIVE_REVIEWER_WINDOW_MINUTES` constant (60), not the measurement metadata or a new board setting.
 
 With numeric `wipPerReviewer` on, a new claim that would exceed that limit is refused as `LINE_WIP_LIMIT`, naming the oldest eligible pending review when there is one. Live claimed items and outstanding submissions count; expired claims do not. The shared pure `lineWipLimit` function computes the total cap without rounding, using at least one observed reviewer. Renewals remain possible. The native claim carries the configured verifier and family policies so its suggested review never relaxes those guards. With `takeoverMinutes` on, a sent-back item's idle interval can end its original builder's first-refusal window early; a live claim is never stolen, and normal claim appends preserve the old history. Disabled controls retain the previous behavior. New claims under these controls carry a true `lineCapacity` argument and the line-capacity engine floor; marker-absent older recorded claims keep their historical meaning during replay.
+
+
+Explicit announcement news adds `news: true, newsFormat: 1` to a shout event without adding a SQLite column.
+Only coordinator or person messages to `all` may be news; combining news with an item,
+decision, request or answer refuses as `BAD_NEWS`. Its unassigned activity-news engine leaf is
+numbered at landing; news takes the maximum applicable feature engine floor. Unversioned old
+metadata remains an ordinary message. Older ordinary
+shout arguments retain their historical replay conditions. Untyped broadcasts retain their
+existing direct delivery, including governing holds and questions.
+
+The inbox's optional JSON v1 `activity` object contains event references, selected entries,
+one-line lane/news digests and a continuation cursor. Its private checkout delivery file is
+`pullboard-activity.json` in the checkout's Git directory: version 1, board id, agent, current native session
+digest, last delivered event id and last session-start news event id. It is local delivery state,
+not a native move, parent identity, configuration or authority record. Missing/damaged state
+replays activity. Reads freeze an event high-water mark before observing Git; subsequent events
+and messages remain pending. News has a separate cursor so an ordinary poll cannot consume a
+future session-start digest.

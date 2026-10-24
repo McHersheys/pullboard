@@ -1,3 +1,4 @@
+import { activityNewsDetail } from './activity-news.js';
 import {
   focusOrder,
   focusReasons,
@@ -1649,11 +1650,12 @@ export { getItem } from './board-query.js';
  * Insert a shout within the caller's transaction.
  *
  * @param {any} board
- * @param {{ from: string, to: string, text: string, lanes: string[], item?: number, decision?: boolean, answers?: number | null, evidence?: any, request?: boolean, channel?: 'terminal' | 'view', detail?: object }} message - detail: extra event fields
+ * @param {{ from: string, to: string, text: string, lanes: string[], item?: number, decision?: boolean, answers?: number | null, evidence?: any, request?: boolean, news?: boolean, channel?: 'terminal' | 'view', detail?: object }} message - detail: extra event fields
  * @returns {number}
  */
-function insertShout(board, { from, to, text, lanes, item, decision = false, answers = null, evidence = null, request = false, channel = 'terminal', detail = {} }) {
+function insertShout(board, { from, to, text, lanes, item, decision = false, answers = null, evidence = null, request = false, news, channel = 'terminal', detail = {} }) {
   const engine = board.executionEngineVersion ?? ENGINE_VERSION;
+  detail = { ...detail, ...activityNewsDetail({ news, from, to, item, decision, request, answers, detail }, engine) };
   if (item !== undefined) {
     if (engine < ITEM_SHOUT_ENGINE) throw new Refused('ENGINE_VERSION', 'item messages require engine 93; upgrade every linked device before sending one');
     to = itemShoutTarget(board.db, item);
@@ -1718,7 +1720,7 @@ function persistShout(board, { from, to, text, decision = false, answers = null,
  * Shout to a lane, an agent, `all`, or the person (B7, B25, B26). The caller passes declared lanes.
  *
  * @param {any} board
- * @param {{ from: string, to: string, text: string, lanes: string[], item?: number, decision?: boolean, answers?: number | null, evidence?: any, request?: boolean, channel?: 'terminal' | 'view' }} message
+ * @param {{ from: string, to: string, text: string, lanes: string[], item?: number, decision?: boolean, answers?: number | null, evidence?: any, request?: boolean, news?: boolean, channel?: 'terminal' | 'view' }} message
  * @returns {number}
  */
 export function shout(board, message) {
@@ -1849,28 +1851,7 @@ function checkEvidence(board, { kind, outcome, item, commit }) {
 export { openDecisions } from './board-query.js';
 
 
-/**
- * Unread shouts for an agent, oldest first, then marked read.
- *
- * @param {any} board
- * @param {string} agentId
- * @returns {any[]}
- */
-export function inbox(board, agentId) {
-  return atomic(board, () => {
-    const agent = board.db.prepare('SELECT * FROM agent WHERE agent_id = ?').get(agentId);
-    if (!agent) throw new Refused('NO_AGENT', `no agent ${agentId}`);
-    const shouts = board.db
-      .prepare(`SELECT * ${UNREAD_SQL} ORDER BY shout_id`)
-      .all(...unreadShoutBindings(agent.agent_last_shout_id, agentId, agent.agent_lane));
-    const last = shouts.at(-1)?.shout_id ?? agent.agent_last_shout_id;
-    board.db.prepare('UPDATE agent SET agent_last_shout_id = ? WHERE agent_id = ?').run(last, agentId);
-    if (agentId !== COORDINATOR) return shouts;
-    const requests = openRequests(board);
-    const ids = new Set(requests.map((shout) => shout.shout_id));
-    return [...requests, ...shouts.filter((shout) => !ids.has(shout.shout_id))];
-  });
-}
+export { inbox } from './inbox-store.js';
 
 export { unreadCount } from './board-query.js';
 
@@ -2393,3 +2374,6 @@ export function intakeOutside(board, options) { return applyOutsideIntake(board,
 
 /** Record the person's exact-commit owner approval. */
 export function approveOutside(board, id, options) { return applyOutsideApproval(board, id, options, atomic); }
+
+/** Tailored inbox activity is the same canonical read projection as other board queries. */
+export { agentActivity } from './board-query.js';

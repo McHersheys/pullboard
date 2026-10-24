@@ -1,5 +1,10 @@
 import { itemById } from './board-item-read.js';
-import { itemActivity } from './activity-feed.js';
+import {
+  activityEventDetail,
+  activityInterests,
+  itemActivity,
+  projectAgentActivity,
+} from './activity-feed.js';
 export { itemById };
 import { outsideSource } from './outside-source.js';
 import {
@@ -426,4 +431,80 @@ export function relatedItems(board, item, limit = 3) {
 /** Read a seat's immutable parent session digest; unknown parents remain separate seats. */
 export function agentParent(board, id) {
   return board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?').get(`agent_parent_session:${id}`)?.meta_value ?? null;
+}
+
+
+/** Read the adjacent batch receipt, never a per-item scan of all landing history. */
+function activityBatchBase(board, event) {
+  const detail = activityEventDetail(event);
+  if (!detail) return null;
+  for (const [operator, order] of [['>', 'ASC'], ['<', 'DESC']]) {
+    const batch = board.db.prepare(`SELECT json_extract(CASE WHEN json_valid(event_detail) THEN event_detail ELSE '{}' END,'$.batch.id') AS id,
+      json_extract(CASE WHEN json_valid(event_detail) THEN event_detail ELSE '{}' END,'$.batch.base') AS base,
+      json_extract(CASE WHEN json_valid(event_detail) THEN event_detail ELSE '{}' END,'$.batch.tip') AS tip
+      FROM event WHERE event_kind='landing_batch' AND event_id${operator}? ORDER BY event_id ${order} LIMIT 1`).get(event.event_id);
+    if (batch?.id === detail.batch && batch.tip === detail.sha && /^[a-f0-9]{40}$/u.test(batch.base ?? '')) return batch.base;
+  }
+  return null;
+}
+
+/**
+ * One canonical activity history boundary for inbox readers; batch item queries rather than
+ * re-reading every global landing receipt for each item. Projection never acknowledges messages.
+ */
+export function agentActivity(board, agentId, { after = 0, newsAfter = 0, workingFiles = [], changesForMain, sessionStart = false } = {}) {
+  const agent = board.db.prepare('SELECT * FROM agent WHERE agent_id=?').get(agentId);
+  if (!agent) throw new Refused('NO_AGENT', `no agent ${agentId}; join your own worktree first`);
+  if (![after, newsAfter].every(value => Number.isSafeInteger(value) && value >= 0)) {
+    throw new Refused('BAD_ACTIVITY_CURSOR', 'activity cursors are nonnegative event ids; remove the damaged local inbox cursor and read inbox again');
+  }
+  // Freeze a high-water mark before any Git seam or other query; later events must remain pending.
+  const cursor = board.db.prepare('SELECT COALESCE(MAX(event_id),0) AS id FROM event').get().id;
+  const items = listItems(board, { all: true });
+  const builds = items.filter(item => item.item_status === 'claimed' && item.item_owner === agentId);
+  const observed = typeof workingFiles === 'function' ? workingFiles(builds) : workingFiles;
+  const observedFiles = Array.isArray(observed) ? observed : observed.files;
+  const interests = activityInterests(agent, items, { workingFiles: observedFiles, at: now(board) });
+  interests.unknownWorkingFiles = !Array.isArray(observed) && observed.unknown === true;
+  const wanted = [...new Set([...interests.related, ...[...interests.byId.values()]
+    .filter(item => item.item_lane === agent.agent_lane).map(item => item.item_id)])];
+  const rows = new Map();
+  for (let offset = 0; offset < wanted.length; offset += 500) {
+    const ids = wanted.slice(offset, offset + 500);
+    for (const event of board.db.prepare(`SELECT * FROM event WHERE event_id>? AND event_id<=? AND item_id IN (${ids.map(() => '?').join(',')}) ORDER BY event_id`).all(after, cursor, ...ids)) rows.set(event.event_id, event);
+  }
+  for (const event of board.db.prepare(`SELECT * FROM event WHERE event_id>? AND event_id<=?
+    AND event_kind IN ('main-moved','row_decision','row_apply','row_draft','shout','pass','answer') ORDER BY event_id`).all(after, cursor)) rows.set(event.event_id, event);
+  if (sessionStart) for (const event of board.db.prepare(`SELECT * FROM event WHERE event_id>? AND event_id<=? AND event_kind='shout'
+    AND json_valid(event_detail) AND json_extract(event_detail,'$.news')=1
+    AND json_extract(event_detail,'$.newsFormat')=1 ORDER BY event_id`).all(newsAfter, cursor)) rows.set(event.event_id, event);
+  const shoutCursor = Math.max(0, ...['shout', 'answer', 'pass'].map(kind => board.db.prepare(
+    `SELECT json_extract(event_detail,'$.shout') AS id FROM event WHERE event_kind=? AND event_id<=? ORDER BY event_id DESC LIMIT 1`)
+    .get(kind, cursor)?.id ?? 0));
+  const messages = board.db.prepare(`SELECT * ${UNREAD_SQL} AND shout_id<=? ORDER BY shout_id`)
+    .all(...unreadShoutBindings(agent.agent_last_shout_id, agentId, agent.agent_lane), shoutCursor);
+  // News delivery uses its own cursor so ordinary inbox reads cannot consume a future session's digest.
+  const newsIds = [...rows.values()].filter(event => event.event_kind === 'shout'
+    && activityEventDetail(event)?.news === true && activityEventDetail(event)?.newsFormat === 1)
+    .map(event => activityEventDetail(event).shout);
+  for (let offset = 0; offset < newsIds.length; offset += 500) {
+    const ids = newsIds.slice(offset, offset + 500);
+    messages.push(...board.db.prepare(`SELECT * FROM shout WHERE shout_id IN (${ids.map(() => '?').join(',')}) AND shout_to='all'`).all(...ids));
+  }
+  for (const event of rows.values()) if (event.event_kind === 'main-moved') event.activityBase = activityBatchBase(board, event);
+  for (const event of rows.values()) if (event.event_kind === 'row_apply') {
+    const ids = activityEventDetail(event)?.events;
+    event.activityRows = [];
+    if (!Array.isArray(ids)) continue;
+    for (let offset = 0; offset < ids.length; offset += 500) {
+      const chunk = ids.slice(offset, offset + 500).filter(id => Number.isSafeInteger(id) && id > 0 && id < event.event_id);
+      if (chunk.length) for (const row of board.db.prepare(`SELECT * FROM event WHERE event_kind='row_decision'
+        AND event_id IN (${chunk.map(() => '?').join(',')})`).all(...chunk)) {
+        const id = activityEventDetail(row)?.record?.id;
+        if (typeof id === 'string') event.activityRows.push(id);
+      }
+    }
+  }
+  return { ...projectAgentActivity({ agent, interests, events: [...rows.values()].toSorted((a, b) => a.event_id - b.event_id),
+    shouts: messages, changesForMain, sessionStart, after, newsAfter, cursor }), shoutCursor, newsShouts: newsIds };
 }

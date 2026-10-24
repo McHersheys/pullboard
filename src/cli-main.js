@@ -123,6 +123,7 @@ const OPTIONS = {
   since: { type: 'string' },
   window: { type: 'string' },
   decision: { type: 'boolean' },
+  news: { type: 'boolean' },
   evidence: { type: 'string' },
   outcome: { type: 'string' },
   item: { type: 'string' },

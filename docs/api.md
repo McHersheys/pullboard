@@ -651,3 +651,13 @@ Verification output, current item detail and the ledger qualify affected accepte
 Run `pullboard handoff` from the outgoing agent worktree. It creates or finds one hand-off item and prints its claims, recent moves, asks and answers, worktree state and existing facts. Record unfinished ownership, principles and taste, open threads, outside files and context only that chat knows with `pullboard fact <id> note "..."`. Pullboard carries board records, not a chat transcript.
 
 The incoming agent joins a new worktree and runs `pullboard handoff --take <id>`. It reads the same hand-off and outgoing work card, and records a timed takeover fact. The first incoming seat wins; its repeat is idempotent. Claims are reported rather than silently reassigned. After takeover, the outgoing seat cannot make board moves except `pullboard shout --item <id> "..."` on that exact hand-off. Both seats read and answer that item channel. The command ends with that same sign-off command. The main checkout retains its separate coordinator takeover flow.
+
+
+`pullboard inbox --json` retains its `shouts` array for direct coordination and adds optional
+`activity: { entries, digests, cursor }`. Entries carry their original event id, timestamp, kind
+and item reference where relevant. They select the caller's active builds/reviews and their
+upstream/downstream dependencies, files from its plan or actual Git diff, cited row decisions,
+and addressed messages. Other lane activity is summarized. Explicit coordinator/person
+`shout all <text> --news` announcements appear in a one-line digest at session start;
+untyped broadcasts are direct. A missing Git object reports unknown overlap, never zero.
+The existing item `show`/`log` paths retain the full evidence behind compact activity entries.
