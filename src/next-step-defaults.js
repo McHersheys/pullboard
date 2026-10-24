@@ -1,5 +1,6 @@
 /** General CLI recovery text; operation-owned codes live in src/moves/ [P4,C7]. */
 export const DEFAULT_NEXT_STEPS = Object.freeze({
+  "RUNNER_GUI_SESSION_REQUIRED": "nothing to do: the run reruns locally; log in to a GUI session on the runner before sending GUI-marked files there",
   "OUTSIDE_NATIVE_BUILD": "the outside author revises the PR; ask the coordinator to return it, then intake its new exact head",
   "OUTSIDE_URL": "use a GitHub issue or pull request URL with owner/repository and its positive number",
   "OUTSIDE_FETCH": "restore read-only gh API and Git fetch access, then intake the exact source again",

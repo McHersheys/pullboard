@@ -3502,6 +3502,2270 @@
       ],
       "state": "first-refusal",
       "expected": 8
+    },
+    {
+      "operation": "intakeOutside",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "approveOutside",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "setBarReady",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "signBar",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "register",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "ensureCoordinator",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "addItem",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "editItem",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "completeCheckBaseline",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "escalate",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "recordAttempt",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "claim",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "release",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "submit",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "reserveReview",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "reserveNextReview",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "verify",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "merged",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "withdraw",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "refreeze",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "reopen",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "shout",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "passDecision",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "answerDecision",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "holdLane",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "releaseLane",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "holdItem",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "releaseItemHold",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "addMilestone",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "editMilestoneItems",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "orderMilestoneItems",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "moveMilestone",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "editMilestone",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "removeMilestone",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "shipMilestone",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "recordRowDecisions",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "applyRowDecisions",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "draftSpecRow",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "appendFact",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "recordSpecApprovalBaseline",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "recordLandingBatch",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "recordLandingWaiver",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "recordLandingFlake",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "recordLandingTestDefect",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "finishLandingBatch",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "acceptCheck",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "recordHealthFindings",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "proposeSentinel",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "decideSentinel",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "beginSentinelRun",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "finishSentinelRun",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "setLineSetting",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "recordFlakeObservation",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "recordGateRun",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "declareJob",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "recordJobRun",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "takeCoordinator",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "landingLeaseMove",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "recordPublishFinding",
+      "args": [
+        {
+          "landingFence": "fixture"
+        },
+        {
+          "cause": "conflict:fixture",
+          "environment": {},
+          "conflict": {
+            "files": [
+              "a"
+            ]
+          }
+        }
+      ],
+      "state": null,
+      "expected": 102
+    },
+    {
+      "operation": "claim",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "bar-ready",
+      "expected": 102
+    },
+    {
+      "operation": "release",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "bar-ready",
+      "expected": 102
+    },
+    {
+      "operation": "submit",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "bar-ready",
+      "expected": 102
+    },
+    {
+      "operation": "verify",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "bar-ready",
+      "expected": 102
+    },
+    {
+      "operation": "merged",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "bar-ready",
+      "expected": 102
+    },
+    {
+      "operation": "editItem",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "bar-ready",
+      "expected": 102
+    },
+    {
+      "operation": "addItem",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "bar-ready",
+      "expected": 102
+    },
+    {
+      "operation": "refreeze",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "bar-ready",
+      "expected": 102
+    },
+    {
+      "operation": "recordLandingBatch",
+      "args": [
+        {
+          "id": "snapshot-batch",
+          "batch": {
+            "id": "snapshot-batch"
+          }
+        },
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "bar-ready",
+      "expected": 102
+    },
+    {
+      "operation": "finishLandingBatch",
+      "args": [
+        {
+          "id": "snapshot-batch",
+          "batch": {
+            "id": "snapshot-batch"
+          }
+        },
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "bar-ready",
+      "expected": 102
+    },
+    {
+      "operation": "claim",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "outside",
+      "expected": 102
+    },
+    {
+      "operation": "release",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "outside",
+      "expected": 102
+    },
+    {
+      "operation": "submit",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "outside",
+      "expected": 102
+    },
+    {
+      "operation": "verify",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "outside",
+      "expected": 102
+    },
+    {
+      "operation": "merged",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "outside",
+      "expected": 102
+    },
+    {
+      "operation": "editItem",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "outside",
+      "expected": 102
+    },
+    {
+      "operation": "addItem",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "outside",
+      "expected": 102
+    },
+    {
+      "operation": "refreeze",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "outside",
+      "expected": 102
+    },
+    {
+      "operation": "recordLandingBatch",
+      "args": [
+        {
+          "id": "snapshot-batch",
+          "batch": {
+            "id": "snapshot-batch"
+          }
+        },
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "outside",
+      "expected": 102
+    },
+    {
+      "operation": "finishLandingBatch",
+      "args": [
+        {
+          "id": "snapshot-batch",
+          "batch": {
+            "id": "snapshot-batch"
+          }
+        },
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "outside",
+      "expected": 102
+    },
+    {
+      "operation": "claim",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:trunk",
+      "expected": 102
+    },
+    {
+      "operation": "release",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:trunk",
+      "expected": 102
+    },
+    {
+      "operation": "submit",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:trunk",
+      "expected": 102
+    },
+    {
+      "operation": "verify",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:trunk",
+      "expected": 102
+    },
+    {
+      "operation": "merged",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:trunk",
+      "expected": 102
+    },
+    {
+      "operation": "editItem",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:trunk",
+      "expected": 102
+    },
+    {
+      "operation": "addItem",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:trunk",
+      "expected": 102
+    },
+    {
+      "operation": "refreeze",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:trunk",
+      "expected": 102
+    },
+    {
+      "operation": "recordLandingBatch",
+      "args": [
+        {
+          "id": "snapshot-batch",
+          "batch": {
+            "id": "snapshot-batch"
+          }
+        },
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:trunk",
+      "expected": 102
+    },
+    {
+      "operation": "finishLandingBatch",
+      "args": [
+        {
+          "id": "snapshot-batch",
+          "batch": {
+            "id": "snapshot-batch"
+          }
+        },
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:trunk",
+      "expected": 102
+    },
+    {
+      "operation": "claim",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:environment",
+      "expected": 102
+    },
+    {
+      "operation": "release",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:environment",
+      "expected": 102
+    },
+    {
+      "operation": "submit",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:environment",
+      "expected": 102
+    },
+    {
+      "operation": "verify",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:environment",
+      "expected": 102
+    },
+    {
+      "operation": "merged",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:environment",
+      "expected": 102
+    },
+    {
+      "operation": "editItem",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:environment",
+      "expected": 102
+    },
+    {
+      "operation": "addItem",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:environment",
+      "expected": 102
+    },
+    {
+      "operation": "refreeze",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:environment",
+      "expected": 102
+    },
+    {
+      "operation": "recordLandingBatch",
+      "args": [
+        {
+          "id": "snapshot-batch",
+          "batch": {
+            "id": "snapshot-batch"
+          }
+        },
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:environment",
+      "expected": 102
+    },
+    {
+      "operation": "finishLandingBatch",
+      "args": [
+        {
+          "id": "snapshot-batch",
+          "batch": {
+            "id": "snapshot-batch"
+          }
+        },
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:environment",
+      "expected": 102
+    },
+    {
+      "operation": "claim",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:invariant",
+      "expected": 102
+    },
+    {
+      "operation": "release",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:invariant",
+      "expected": 102
+    },
+    {
+      "operation": "submit",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:invariant",
+      "expected": 102
+    },
+    {
+      "operation": "verify",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:invariant",
+      "expected": 102
+    },
+    {
+      "operation": "merged",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:invariant",
+      "expected": 102
+    },
+    {
+      "operation": "editItem",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:invariant",
+      "expected": 102
+    },
+    {
+      "operation": "addItem",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:invariant",
+      "expected": 102
+    },
+    {
+      "operation": "refreeze",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:invariant",
+      "expected": 102
+    },
+    {
+      "operation": "recordLandingBatch",
+      "args": [
+        {
+          "id": "snapshot-batch",
+          "batch": {
+            "id": "snapshot-batch"
+          }
+        },
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:invariant",
+      "expected": 102
+    },
+    {
+      "operation": "finishLandingBatch",
+      "args": [
+        {
+          "id": "snapshot-batch",
+          "batch": {
+            "id": "snapshot-batch"
+          }
+        },
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:invariant",
+      "expected": 102
+    },
+    {
+      "operation": "claim",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:reviewed",
+      "expected": 102
+    },
+    {
+      "operation": "release",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:reviewed",
+      "expected": 102
+    },
+    {
+      "operation": "submit",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:reviewed",
+      "expected": 102
+    },
+    {
+      "operation": "verify",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:reviewed",
+      "expected": 102
+    },
+    {
+      "operation": "merged",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:reviewed",
+      "expected": 102
+    },
+    {
+      "operation": "editItem",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:reviewed",
+      "expected": 102
+    },
+    {
+      "operation": "addItem",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:reviewed",
+      "expected": 102
+    },
+    {
+      "operation": "refreeze",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:reviewed",
+      "expected": 102
+    },
+    {
+      "operation": "recordLandingBatch",
+      "args": [
+        {
+          "id": "snapshot-batch",
+          "batch": {
+            "id": "snapshot-batch"
+          }
+        },
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:reviewed",
+      "expected": 102
+    },
+    {
+      "operation": "finishLandingBatch",
+      "args": [
+        {
+          "id": "snapshot-batch",
+          "batch": {
+            "id": "snapshot-batch"
+          }
+        },
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "batch:reviewed",
+      "expected": 102
+    },
+    {
+      "operation": "claim",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "defects",
+      "expected": 102
+    },
+    {
+      "operation": "release",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "defects",
+      "expected": 102
+    },
+    {
+      "operation": "submit",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "defects",
+      "expected": 102
+    },
+    {
+      "operation": "verify",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "defects",
+      "expected": 102
+    },
+    {
+      "operation": "merged",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "defects",
+      "expected": 102
+    },
+    {
+      "operation": "editItem",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "defects",
+      "expected": 102
+    },
+    {
+      "operation": "addItem",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "defects",
+      "expected": 102
+    },
+    {
+      "operation": "refreeze",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "defects",
+      "expected": 102
+    },
+    {
+      "operation": "recordLandingBatch",
+      "args": [
+        {
+          "id": "snapshot-batch",
+          "batch": {
+            "id": "snapshot-batch"
+          }
+        },
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "defects",
+      "expected": 102
+    },
+    {
+      "operation": "finishLandingBatch",
+      "args": [
+        {
+          "id": "snapshot-batch",
+          "batch": {
+            "id": "snapshot-batch"
+          }
+        },
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "defects",
+      "expected": 102
+    },
+    {
+      "operation": "claim",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "first-refusal",
+      "expected": 102
+    },
+    {
+      "operation": "release",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "first-refusal",
+      "expected": 102
+    },
+    {
+      "operation": "submit",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "first-refusal",
+      "expected": 102
+    },
+    {
+      "operation": "verify",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "first-refusal",
+      "expected": 102
+    },
+    {
+      "operation": "merged",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "first-refusal",
+      "expected": 102
+    },
+    {
+      "operation": "editItem",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "first-refusal",
+      "expected": 102
+    },
+    {
+      "operation": "addItem",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "first-refusal",
+      "expected": 102
+    },
+    {
+      "operation": "refreeze",
+      "args": [
+        1,
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "first-refusal",
+      "expected": 102
+    },
+    {
+      "operation": "recordLandingBatch",
+      "args": [
+        {
+          "id": "snapshot-batch",
+          "batch": {
+            "id": "snapshot-batch"
+          }
+        },
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "first-refusal",
+      "expected": 102
+    },
+    {
+      "operation": "finishLandingBatch",
+      "args": [
+        {
+          "id": "snapshot-batch",
+          "batch": {
+            "id": "snapshot-batch"
+          }
+        },
+        {
+          "cause": "conflict:fixture",
+          "reopenFirstRefusalMinutes": 0,
+          "environment": {}
+        }
+      ],
+      "state": "first-refusal",
+      "expected": 102
+    },
+    {
+      "operation": "setLineSetting",
+      "args": [
+        {
+          "key": "collisionFreeBatch"
+        }
+      ],
+      "state": null,
+      "expected": 101
+    },
+    {
+      "operation": "setLineSetting",
+      "args": [
+        {
+          "key": "collisionFreeBatch"
+        },
+        {
+          "cause": "conflict:fixture"
+        }
+      ],
+      "state": null,
+      "expected": 102
     }
   ],
   "nextSteps": {
@@ -3528,12 +5792,12 @@
     "PERSON_ENROLL_EXPIRED": "create a fresh person-authenticated challenge valid for at most ten minutes",
     "PERSON_ENROLL_REVOKED": "authenticate a different non-revoked device with the person credential",
     "PERSON_ENROLL_ACCOUNT": "sign in to the exact account named in the person challenge",
-    "PERSON_ENROLL_MISSING": "use this account’s own person-authenticated enrollment",
+    "PERSON_ENROLL_MISSING": "use this account\u2019s own person-authenticated enrollment",
     "PERSON_ENROLL_REPLAY": "create a fresh one-time person challenge; do not reuse the consumed nonce",
     "PERSON_ENVELOPE_AUTH": "use the original independently retained person material and exact account envelope context",
     "PUBLISH_GITHUB": "inspect gh auth status and the configured GitHub remote, then publish again",
     "PUBLISH_STATE": "preserve publish-pr.json and ask the coordinator to recover its recorded PR identities",
-    "PUBLISH_UNPROVEN": "restore the item’s acceptance at its exact submitted commit before publishing",
+    "PUBLISH_UNPROVEN": "restore the item\u2019s acceptance at its exact submitted commit before publishing",
     "PUBLISH_COMPOSITION": "compose the accepted work with the actual remote base, resolve conflicts normally, then publish",
     "PUBLISH_FINDING": "record the exact merged item, publication head and failing GitHub job/run evidence",
     "ACCOUNT_STORAGE_LIMIT": "remove an unneeded relay copy through the approved phone flow, or ask the relay operator to increase the account quota; uploads resume when space is available",
@@ -3847,13 +6111,13 @@
     "NO_REPO": "run pullboard init in the repo, or pick a project in pullboard view",
     "NO_ROLE": "choose one of the roles listed by pullboard skills",
     "NO_ROW": "list the rows with pullboard spec --json, then name one of them",
-    "NO_SECTION": "add a section heading such as \"## G · Goals\" to the spec, then draft the row",
+    "NO_SECTION": "add a section heading such as \"## G \u00b7 Goals\" to the spec, then draft the row",
     "NO_SHOUT": "name a shout id from pullboard inbox",
     "NO_SIGNERS": "add an SSH signer: pullboard spec signers add",
     "NO_SIGNING_COMMIT": "commit the repo, then sign again",
     "NO_SPEC": "run pullboard init",
     "NO_TITLE": "give a title: pullboard add <lane> \"<title>\"",
-    "NO_TRUNK": "in the main checkout, switch to the repository’s trunk branch and run pullboard inbox",
+    "NO_TRUNK": "in the main checkout, switch to the repository\u2019s trunk branch and run pullboard inbox",
     "O2_FAMILY_MATCH": "ask the coordinator for a verifier from another family: pullboard shout coordinator \"#<id> needs a verifier from another family\"",
     "OAUTH_CANCELLED": "start sign-in again: pullboard relay on",
     "OAUTH_CLEANUP": "run pullboard relay on again once the relay answers",
@@ -4034,7 +6298,7 @@
     "VIEW_PAIRING_CLEANUP": "run pullboard relay off, then pullboard relay on --all to finish pairing cleanup",
     "VIEW_STATE": "check that the Pullboard home folder is writable, then run pullboard view again",
     "VIEW_UNAVAILABLE": "start the view with pullboard view, then export again",
-    "VIEW_PAIRING_NOT_READY": "read this sign-in’s status again: pullboard view",
+    "VIEW_PAIRING_NOT_READY": "read this sign-in\u2019s status again: pullboard view",
     "VIEW_SIGN_IN_AUTH": "open the link pullboard view printed and send its session key only in the x-pullboard-key header",
     "VIEW_SIGN_IN_BUSY": "finish or cancel the sign-in already in progress, then start it again",
     "VIEW_SIGN_IN_FAILED": "start sign-in again from pullboard view and read the reported error if it still cannot finish",
@@ -4047,7 +6311,8 @@
     "VIEW_SIGN_IN_UNKNOWN": "start sign-in again with pullboard view",
     "WITHDRAWN": "wait on an item that is not withdrawn; see pullboard list --all",
     "WRONG_BOARD": "open the repository registered to this board and confirm its identity with pullboard status",
-    "WRONG_LANE": "create a worktree in the required lane with pullboard worktree <lane> --model \"<model name>\", or take an item in your lane with pullboard next"
+    "WRONG_LANE": "create a worktree in the required lane with pullboard worktree <lane> --model \"<model name>\", or take an item in your lane with pullboard next",
+    "RUNNER_GUI_SESSION_REQUIRED": "nothing to do: the run reruns locally; log in to a GUI session on the runner before sending GUI-marked files there"
   },
   "replay": {
     "initial": {
@@ -4466,5 +6731,17 @@
     "sourceSHA256": "4d4565bbf05b8dfd611f3a31cd30e83d8d4f439f768505cfa6884c8e99dddcf7",
     "observerSHA256": "28170938cc7530c97c4768e5b2f04e24ce01a116249a4aa018690b64012ebe64",
     "qualification": "Read-only diagnostic projection: unchanged accepted26 engine imports, OPERATION_ENGINE and both floor-function bodies, relocated imports only and export added. Not production source or independent proof. Snapshot collected before authored product edits."
+  },
+  "acceptedDelta": {
+    "head": "cc6fc1c0b5e62a82f8a236629221bae374ca16bc",
+    "engine": 102,
+    "scope": "Source-derived assertions from exact actuallyLANDED main; NOT a new executedobserver snapshot. Original26 observer285floorinputs/354actors/59oporder/3recordedengine100 replay inputs+expectations retained. Actualmain59oporder+actors source unchanged; only twofloorbranches andoneCLIrecoveryentry changed inthreeconsumers.",
+    "newFloorExpectations": 141,
+    "newRecoveryCode": "RUNNER_GUI_SESSION_REQUIRED",
+    "sourceConditions": [
+      "minimumExistingOperationEngine first: cause.startsWith('conflict:') -> RIGOR_AUTO_ENGINE102",
+      "setLineSetting collisionFreeBatch -> LAND_COLLISION_ENGINE101, beforeorder"
+    ],
+    "originalReplayInputSHA256": "944bd3a1f53799b01f58b1dddec39c487205b5daf0a2860c30bc7a73e9ddcd5e"
   }
 }

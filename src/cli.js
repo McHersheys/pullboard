@@ -768,7 +768,7 @@ function prepareClaimSpec(ctx, item) {
   } catch {
     throw specBehindMain(policy.config.spec, missing);
   }
-  Object.assign(ctx, context(ctx.io));
+  Object.defineProperties(ctx, Object.getOwnPropertyDescriptors(context(ctx.io)));
   return missing;
 }
 

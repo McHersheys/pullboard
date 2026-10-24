@@ -1,3 +1,4 @@
+import { RIGOR_AUTO_ENGINE } from '../rigor-auto-engine.js';
 /** Routing metadata owned by recordLandingBatch, discovered without a shared registry edit [C7,V4,H16]. */
 import { VERDICT_REVIEW_ENGINE } from '../engine-metadata.js';
 import { carriesLandingEnvironment } from '../execution-environment.js';
@@ -15,6 +16,7 @@ import { SUBMISSION_PROOF_ENGINE } from '../submit-invariants.js';
 
 /** Preserve this operation's historical first-matching engine conditions [H16]. */
 function minimumEngine(args, board, at) {
+  if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('conflict:')) return RIGOR_AUTO_ENGINE;
   if (carriesLandingEnvironment(args[0]?.batch)) return LANDING_ENVIRONMENT_ENGINE;
   if (board) {
     if (landingTestDefects(board).length) return LANDING_ENVIRONMENT_ENGINE;

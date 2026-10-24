@@ -6,6 +6,8 @@ Notable changes to Pullboard, for people using it. The format follows [Keep a Ch
 
 ### Added
 
+- A test that needs a desktop runs only on a runner with a confirmed logged-in session; the runner checks again before it starts. (#1134)
+
 - You can pair a second phone or browser with the command the page shows. (#978)
 
 - Teams that work in pull requests can have Pullboard open one pull request per release, carrying each item's proof; merging it ships the release. (#987)
