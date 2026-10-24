@@ -534,3 +534,59 @@ The engine-68 `recordSpecApprovalBaseline` move carries `{agentId, baseline: {ve
 Landing queue grants, first queue entries and releases are shared ordered transitions. New landing-local-heartbeat engine moves leave renewal and repeated-poll events out of history; old engine receipts keep their recorded meaning. `local:landing-lease:<token>` board metadata binds a physical board id, token/generation, process, branch and coordinator lineage to its local deadline. It is excluded from exports, imports and semantic digests and is retained only on the receiving physical board during a same-board relay snapshot restore. A linked foreign holder has no clock-based expiry: release or coordinator takeover fences it; local heartbeat deadlines never authorize another machine to merge.
 
 Engine 93 adds item-addressed shouts. A shout move's optional `item` names an existing item; its event belongs to that item and includes the message text. Its canonical `shout_to` is `item:<id>`, read by the item's current builder and reviewer and the coordinator. Inbox, resume and seat watch use the same audience; an explicit seat or lane destination with `--item` still uses the item's audience. An item decision is answerable by its current participants or coordinator; replies stay in its thread and audience. The coordinator can still pass it to the person through the existing decision flow. A registered seat's shout to `all` is accepted and stored at reserved address `coordinator+person`, read only by coordination audiences. The plus sign cannot occur in valid lane names or their derived seat ids. Coordinator and person broadcasts retain `all` and reach everyone; recorded older-engine `all` rows retain their original global meaning without a retrospective sender filter. Main-checkout watch remains the person's board-wide observer. A joined seat's default watch filters shouts to its own address, lane, items and `all`, while ordinary lifecycle events remain visible.
+
+### Outside intake and sandbox receipts
+
+`pullboard intake <GitHub PR URL> --criterion "behavior" --check "command"`
+reads GitHub metadata and fetches the exact server-owned pull ref. It records an
+outside author (`outside:github:<login>`), commit, tree, source state and maintainer
+reply, and enters `submitted` without claiming that a native builder gated the PR.
+No contributor program is checked out or executed on the host. An issue URL records
+an open local source item; the GitHub issue closing does not accept the local item.
+Repeating intake refreshes source state and replies. A PR head can change only after
+normal return to open; re-intake invalidates its earlier sandbox proof and owner
+approval. Native agents cannot claim or submit an outside PR as their own build.
+
+Public source facts are in `board_meta` under `outside:<item-id>` and appear as
+`outside` on `show` JSON. Ordered `intakeOutside` and `approveOutside` moves retain
+`outside-intake`, `outside-refresh` and `outside-owner-approval` events. Approval is
+person authority bound to the exact commit, not an agent or parent-session claim.
+These facts survive board export and ordered replay. The local container logs are
+beside the board in `outside-check-output/<item-id>/<receipt-id>`; an ordered accept
+must match the executor's exact local receipt and output digests before transport.
+
+Sandbox verification reads operational provider settings from committed trusted
+main, not from the PR's configuration. `sandbox.provider` is `docker`,
+`sandbox.executable` is an absolute Docker-compatible CLI path, `sandbox.endpoint`
+is an explicit Unix daemon socket, and `sandbox.images.minimum` and
+`sandbox.images.current` are immutable `node@sha256:<digest>` references. Images
+must already be present; verification uses `--pull never`. The actual container
+must report Linux Node 22.13.x and Node 24.x respectively, the two roles in the
+committed CI matrix; this is not a claim about the latest global Node release.
+Each role executes the trusted full gate and frozen criterion, with the criterion
+also required to fail at the recorded base. Protocol stand-ins in unit tests are
+not evidence of real containment or actual image execution.
+
+Every container has no network, an empty temporary HOME, a read-only root and
+private source export, no added capabilities, and no host credential environment.
+The Docker client has a fresh empty configuration and explicitly constructed
+environment. The source export contains independent exact-commit Git objects and
+files, never an operational checkout, its board database, worktree pointer,
+alternates or credential state. It is copied into a temporary writable container
+work directory. Exports default beside the native board under `sandbox-exports`;
+`sandbox.exportRoot` may name a private absolute directory shared with a VM-backed
+Docker daemon. Only a newly created child is exported and cleaned up. Missing
+runtime, inaccessible export or cleanup failure refuses; no host-process fallback
+is available. Normal physical gate/browser admission still applies.
+
+Owner-sensitive reasons are retained as `outside.sensitivity`, each with `path`,
+`rule` and `detail`; `outside.sensitive` is true when any reason matches. Defaults
+cover relay, sealing/signing/keys, person-move and hook code, hook configuration,
+`bin/`, CI workflows and command-bearing package fields. Trusted main may extend
+this with `intake.sensitivePaths`, relative exact files or trailing-slash prefixes;
+contributions cannot remove the defaults. Newly added process imports/calls or
+shell-runner calls and unreadable changed files also require approval. Renames
+retain both old and new touched paths. Ordinary source is not sensitive merely
+because it is source. The owner runs `pullboard intake approve <id>` through the
+person channel before sensitive work can land. Intake has no autonomous posting
+operation; each future result post still needs the person's separate OK.

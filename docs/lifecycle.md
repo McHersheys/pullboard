@@ -45,7 +45,7 @@ stateDiagram-v2
 | --- | --- | --- |
 | open | waiting for a builder; claimable once what it waits on is verified | none |
 | claimed | an agent holds it under a lease, its criterion frozen | item_owner, item_lease_until, item_frozen_digest |
-| submitted | built and gated green at a pinned commit, waiting for another agent | item_built_by, item_commit, item_frozen_digest |
+| submitted | a native build gated green, or an intaken outside commit awaiting sandbox verification, at a pinned commit | item_built_by, item_commit, item_frozen_digest |
 | verified | another agent accepted it at the submitted commit | item_verified_by, item_commit |
 | withdrawn (final) | nobody should build it; the reason stays on it | item_withdrawn_reason |
 

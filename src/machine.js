@@ -82,7 +82,7 @@ export const RECORDS = { event: 'append', verdict: 'append', item: 'keep' };
 export const STATES = [
   { id: 'open', means: 'waiting for a builder; claimable once what it waits on is verified', requires: [] },
   { id: 'claimed', means: 'an agent holds it under a lease, its criterion frozen', requires: ['item_owner', 'item_lease_until', 'item_frozen_digest'] },
-  { id: 'submitted', means: 'built and gated green at a pinned commit, waiting for another agent', requires: ['item_built_by', 'item_commit', 'item_frozen_digest'] },
+  { id: 'submitted', means: 'a native build gated green, or an intaken outside commit awaiting sandbox verification, at a pinned commit', requires: ['item_built_by', 'item_commit', 'item_frozen_digest'] },
   {
     id: 'verified', means: 'another agent accepted it at the submitted commit', requires: ['item_verified_by', 'item_commit'],
     proof: {
