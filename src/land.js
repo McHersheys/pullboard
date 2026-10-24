@@ -64,7 +64,11 @@ import {
 import { browserFreeChecksEnabled } from './settings.js';
 import { tightenLandingDoctrine } from './landing-doctrine.js';
 import { policyAt } from './trusted-policy.js';
-import { landingFileTimes, validateLandingBatch, validateLandingRevision } from './submit-invariants.js';
+import {
+  landingFileTimes,
+  validateLandingBatch,
+  validateLandingRevision,
+} from './submit-invariants.js';
 import {
   flakeSource,
   observeNativeFailure,

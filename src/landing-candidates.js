@@ -1,9 +1,16 @@
 /** Isolate speculative landing gates while their one parent retains the board lease [B3,V4]. */
 import { spawn } from 'node:child_process';
-import { join, resolve } from 'node:path';
+import {
+  join,
+  resolve,
+} from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as store from './board.js';
-import { invalidateGitFacts, mainCheckout, repoInfo } from './git.js';
+import {
+  invalidateGitFacts,
+  mainCheckout,
+  repoInfo,
+} from './git.js';
 import { assertLandingLease } from './landing-lease.js';
 import { Refused } from './refused.js';
 
