@@ -86,7 +86,7 @@ export function landBridgeItems(box) {
 
 /** Stand in for GitHub over real HTTP, refusing every merge endpoint. */
 export async function bridgeProvider(t, box) {
-  const state = { requests: [], pulls: [], checks: [], annotations: [], next: 1 };
+  const state = { requests: [], pulls: [], checks: [], annotations: [], annotationsByRun: {}, next: 1 };
   const server = createServer(async (req, res) => {
     let raw = '';
     for await (const chunk of req) raw += chunk;
@@ -96,7 +96,8 @@ export async function bridgeProvider(t, box) {
     const reply = (status, value) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(value)); };
     if (url.pathname.endsWith('/merge') && req.method !== 'GET') return reply(403, { message: 'agents never merge' });
     if (url.pathname === '/repos/fixture/repository/pulls') {
-      if (req.method === 'GET') return reply(200, state.pulls.filter(p => p.state === (url.searchParams.get('state') ?? 'open')));
+      if (req.method === 'GET') return reply(200, state.pulls.filter(p => p.state === (url.searchParams.get('state') ?? 'open') &&
+        (!url.searchParams.get('head') || url.searchParams.get('head') === 'fixture:' + p.head.ref)));
       if (req.method === 'POST') {
         const head = box.git(box.remote, 'rev-parse', `refs/heads/${body.head}`);
         const pull = { number: state.next++, html_url: `https://github.com/fixture/repository/pull/${state.next - 1}`,
@@ -109,11 +110,15 @@ export async function bridgeProvider(t, box) {
     if (pullRoute) {
       const pull = state.pulls.find(p => p.number === Number(pullRoute[1]));
       if (!pull) return reply(404, { message: 'missing private pull' });
-      if (req.method === 'PATCH') Object.assign(pull, { title: body.title, body: body.body });
+      if (req.method === 'PATCH') {
+        Object.assign(pull, { title: body.title, body: body.body });
+        pull.head.sha = box.git(box.remote, 'rev-parse', `refs/heads/${pull.head.ref}`);
+      }
       return reply(200, pull);
     }
     if (/\/commits\/[a-f0-9]+\/check-runs$/u.test(url.pathname)) return reply(200, { total_count: state.checks.length, check_runs: state.checks });
-    if (/\/check-runs\/\d+\/annotations$/u.test(url.pathname)) return reply(200, state.annotations);
+    const annotations = /\/check-runs\/(\d+)\/annotations$/u.exec(url.pathname);
+    if (annotations) return reply(200, state.annotationsByRun[annotations[1]] ?? state.annotations);
     if (/\/commits\/[a-f0-9]+\/status$/u.test(url.pathname)) return reply(200, { state: 'success', statuses: [] });
     return reply(404, { message: 'unexpected private provider endpoint' });
   });
@@ -133,4 +138,40 @@ export async function bridgeProvider(t, box) {
   writeFileSync(shim, `#!/bin/sh\nexec "${process.execPath}" "${adapter}" "$@"\n`);
   chmodSync(shim, 0o755);
   return state;
+}
+
+/** Fix only the linked private repair through the same real item lifecycle. */
+export function landBridgeRepair(box, id, file) {
+  const path = join(box.dir, `repair-${id}`);
+  box.git(box.repo, 'worktree', 'add', '-q', '-b', `web/repair-${id}`, path, 'main');
+  assert.equal(box.run(path, 'join', 'web').code, 0);
+  const edited = box.run(box.repo, 'edit', String(id), '--criterion', 'the private CI finding is repaired',
+    '--check', 'test ! -f RED', '--brief', 'Change the named private web fixture and retain the linked finding.');
+  assert.equal(edited.code, 0, edited.err);
+  assert.equal(box.run(path, 'claim', String(id)).code, 0);
+  assert.equal(box.commitFile(box, path, file, 'PASS REPAIRED\n', 'fix(web): repair private CI finding [G1]').status, 0);
+  const commit = box.git(path, 'rev-parse', 'HEAD');
+  const submitted = box.run(path, 'submit', String(id));
+  assert.equal(submitted.code, 0, submitted.err);
+  box.git(box.repo, 'switch', '-q', '--detach', commit);
+  try {
+    const accepted = box.run(box.repo, 'verify', String(id), 'accept', '--as', 'coordinator', '--note', 'private repair proof passed');
+    assert.equal(accepted.code, 0, accepted.err);
+  } finally { box.git(box.repo, 'switch', '-q', 'main'); }
+  box.git(box.repo, 'merge', '-q', '--no-ff', '-m', 'chore(merge): land private CI repair [G1]', commit);
+  const merged = box.run(box.repo, 'merged', String(id), box.git(box.repo, 'rev-parse', 'HEAD'));
+  assert.equal(merged.code, 0, merged.err);
+  return commit;
+}
+
+/** Perform an actual private merge outside the product, with a separately reported provider actor. */
+export function mergeBridgeAs(box, pull, actor, type = 'User') {
+  const person = join(box.dir, `person-${pull.number}`);
+  box.git(box.dir, 'clone', '-q', '--branch', 'main', box.remote, person);
+  box.git(person, 'fetch', '-q', 'origin', pull.head.ref);
+  box.git(person, 'merge', '-q', '--no-ff', '-m', 'chore: external private proposal merge [G1]', 'FETCH_HEAD');
+  box.git(person, 'push', '-q', 'origin', 'main');
+  pull.state = 'closed'; pull.merged = true;
+  pull.merge_commit_sha = box.git(person, 'rev-parse', 'HEAD');
+  pull.merged_by = { login: actor, type, id: pull.number + 1000 };
 }
