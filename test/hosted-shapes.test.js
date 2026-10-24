@@ -455,6 +455,7 @@ import { enrollProtocolPhone } from './relay-device-enrollment-fixture.js';
 import { hostedEngines } from './hosted-browsers.js';
 import { openEngine } from './hosted-browsers.js';
 import {
+  BOARD_ITEM,
   BOARDS,
   HOSTED,
   READ_SCREEN,
@@ -975,6 +976,61 @@ test('a forced hosted cell failure captures its final page state without raising
   assert.equal(state.chain.hasExpectedItem, false, 'the positive witness was removed rather than replaced with another board');
   assert.equal(typeof state.noBoardsYet.visible, 'boolean');
   assert.match(state.noBoardsYet.text, /No boards yet/u, 'capture records the empty-state text even when hidden');
+});
+
+test('a board over the size limit is named with its size and the limit, beside a healthy board too [H5,H17]', {
+  timeout: 180_000, // budget: real enrollment, refused upload, healthy sibling and bounded-snapshot recovery.
+}, async t => {
+  assert.ok(hostedEngines().find(engine => engine.name === 'chromium')?.available, 'real Chrome is required');
+  const engine = await openEngine('chromium');
+  const contexts = [];
+  t.after(async () => {
+    for (const context of contexts) await context.close();
+    await engine.close();
+  });
+  const box = await relayClientFixture(t);
+  box.env.PULLBOARD_MACHINE_HOME = box.env.PULLBOARD_HOME;
+  box.legacySnapshotApi(true);
+  box.limitSnapshots(128);
+  const front = await hostedFront(box.origin);
+  t.after(() => front.close());
+  const paired = await engine.newContext();
+  contexts.push(paired);
+  const session = await freshSession(box);
+  let page;
+  await relayOnAll(box, async link => {
+    page = await paired.newPage({ route: front.route(session, null) });
+    await page.navigate(link);
+  });
+  await page.close();
+  const link = linkOf(box, box.root);
+  const refusal = box.sizeRefusals().find(value => value.board === link.id);
+  assert.ok(refusal && refusal.sealedBytes > refusal.limit, 'the configured relay refused an actually oversized upload');
+  const local = JSON.parse(readFileSync(join(box.root, '.git', 'pullboard', 'relay.json'), 'utf8'));
+  assert.equal(local.baselinePause.status, 400, 'the native command received the permanent upload refusal');
+  assert.equal(Buffer.from(local.snapshot.sealed, 'base64url').byteLength, refusal.sealedBytes,
+    'the retained snapshot is exactly the upload measured by the relay');
+  const alone = await visit(paired, { route: front.route(session, null), phone: true }, false);
+  assert.match(alone.words, /fixture\/repository[^.]*too (?:big|large)/iu, 'name the size blocker rather than a missing first copy');
+  assert.ok(alone.words.includes(refusal.sealedBytes + ' bytes'), 'show the measured sealed size');
+  assert.ok(alone.words.includes(refusal.limit + ' bytes'), 'show the limit reported by this relay');
+  assert.match(alone.words, /upgrade[^.]*relay[^.]*bounded snapshots/iu, 'offer the step that removes the actual limit');
+
+  box.limitSnapshots(null);
+  const healthy = await siblingProject(box, 'healthy-sibling', 'fixture/healthy-sibling');
+  const healthyLane = Object.keys(JSON.parse(readFileSync(join(healthy, 'pullboard.json'), 'utf8')).lanes)[0];
+  assert.equal((await box.cliAt(healthy, 'add', healthyLane, BOARD_ITEM)).code, 0,
+    'the healthy board has the real item required by the unchanged visibility probe');
+  assert.equal((await box.cliAt(healthy, 'relay', 'on', '--url', box.origin)).code, 0);
+  const mixed = await visit(paired, { route: front.route(session, null), phone: true }, true);
+  assert.equal(mixed.board, true, 'the healthy sibling remains readable');
+  assert.match(mixed.words, /fixture\/repository[^.]*too (?:big|large)/iu, 'keep the size blocker beside the healthy board');
+  assert.ok(mixed.words.includes(refusal.sealedBytes + ' bytes') && mixed.words.includes(refusal.limit + ' bytes'));
+  box.legacySnapshotApi(false);
+  assert.equal((await box.cli('status')).code, 0, 'the offered bounded-snapshot upgrade actually resumes publication');
+  const recovered = await visit(paired, { route: front.route(session, null), phone: true }, true);
+  assert.equal(recovered.board, true);
+  assert.doesNotMatch(recovered.words, /too (?:big|large)|128 bytes/iu, 'a successful snapshot clears its stale size notice');
 });
 
 test('an excluded board is named as excluded with the step that includes it [H5,H17]', {

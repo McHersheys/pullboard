@@ -58,6 +58,19 @@ test('a signed-in phone names its empty-board blocker and one next step [N26,H5,
   });
 });
 
+test('a phone keeps waiting visible when its optional size notice stalls or refuses authentication [H5,H17]', chromeOptions, async t => {
+  for (const uploadStatus of ['pending', 'unauthorized']) await t.test(uploadStatus, async t => {
+    const box = await emptyPhoneFixture(t, { savedKey: true, uploadStatus });
+    await box.chrome.waitFor("document.querySelector('#relay-notice')?.textContent.includes('waiting for its first snapshot')", 3000, // budget: the existing three-second hosted board screen ceiling, independent of optional I/O.
+      'the waiting screen does not depend on the optional size response');
+    const shown = await emptyPhoneScreen(box.chrome);
+    assert.equal(shown.visible, true);
+    assert.match(shown.text, /waiting for its first snapshot/iu);
+    assert.doesNotMatch(shown.text, /too (?:big|large)|sign in again/iu, 'no authenticated size diagnosis or session loss was established');
+    assert.ok(box.calls.some(path => path.endsWith('/upload-status')), 'the real optional read was attempted without blocking the screen');
+  });
+});
+
 test('a signed-in second computer names a linked board blocker without asking to share again [H5,H17]', chromeOptions, async t => {
   for (const [name, options, command] of [
     ['unpaired', {}, 'pullboard relay pair --new-browser'],
