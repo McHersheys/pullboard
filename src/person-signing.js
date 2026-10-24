@@ -111,12 +111,14 @@ function stampHolds(board, stamp, strict) {
  */
 export function personSigning(board, { strict = true } = {}) {
   let state = { signed: false };
+  const consumed = new Set();
   for (const row of board.db.prepare("SELECT event_by, event_at, event_detail FROM event WHERE event_kind = 'person_signing' ORDER BY event_id").all()) {
     let detail;
     try { detail = JSON.parse(row.event_detail); }
     catch { continue; } // An unreadable record turns nothing off; an on before it still holds.
     if (detail?.signed === true) state = { signed: true, by: row.event_by, at: row.event_at };
-    else if (detail?.signed === false && row.event_by === PERSON && offIntent(detail) && stampHolds(board, detail.presence, strict)) {
+    else if (detail?.signed === false && row.event_by === PERSON && !consumed.has(detail.request) && offIntent(detail) && stampHolds(board, detail.presence, strict)) {
+      consumed.add(detail.request);
       state = { signed: false, by: PERSON, at: row.event_at };
     }
   }
