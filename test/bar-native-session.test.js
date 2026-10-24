@@ -79,3 +79,13 @@ test('[V1,H16] a supported coordinator takeover cannot let its honestly joined h
     assert.equal(board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get('agent_session:coordinator').meta_value,parentSessionDigest('private-author-a'),'takeover did not rewrite historical seat identity');
   }finally{store.closeBoard(board);}
 });
+
+
+test('[V1,H16] a helper takeover with unknown current parent fails closed instead of signing its parent’s bar',()=>{
+  const box=setup();const id=add(box,'private-author-a');
+  const helper=join(box.dir,'restarted-helper');box.git(box.repo,'worktree','add','-qb','api/restarted',helper,'main');
+  succeeds(act(box,'private-helper-before',helper,'join','api','--model','Private helper','--parent','private-author-a'));
+  succeeds(act(box,'private-helper-after',helper,'takeover'));
+  const signed=act(box,'private-helper-after',helper,'bar','sign',String(id),'--note','A restart must not turn a helper into an independent author.');
+  assert.notEqual(signed.code,0,`${signed.out}\n${signed.err}`);assert.match(signed.err,/BAR_PARENT_UNKNOWN/);
+});
