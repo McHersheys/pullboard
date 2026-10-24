@@ -1,3 +1,4 @@
+/** @pullboard-test-input source-tree */
 /** Keep the format guide aligned with parser behavior, live SQLite schema and static export [A5,A10]. */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -537,7 +538,7 @@ test('[A5,H16] grammar and executable engine versions match the format guide', (
   }
 });
 
-test('[A5,H16] a branch with one unassigned engine leaf matches the guide's landed number', (t) => {
+test("[A5,H16] a branch with one unassigned engine leaf matches the guide's landed number", (t) => {
   const versions = block('<!-- format-versions:start -->', '<!-- format-versions:end -->');
   const guideEngine = Number(/^\| `move engine` \| `(\d+)` \|/mu.exec(versions)?.[1]);
   assert.ok(Number.isSafeInteger(guideEngine), 'the guide declares its landed move engine number');
