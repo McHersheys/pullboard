@@ -1118,11 +1118,11 @@ export function recordSetupState(ctx, identity, state) {
   renameSync(temporary, file);
 }
 
-/** Derive the next setup question from the real requirements, config, items and view receipt. */
-export function boardSetup(ctx, card, identity) {
+/** Derive setup from real inputs; a caller may share its already-read current decision snapshot. */
+export function boardSetup(ctx, card, identity, { decisions: capturedDecisions } = {}) {
   const rows = loadSpec(ctx.info.root, ctx.config).rows;
   const approved = rows.filter(row => row.status === 'approved');
-  const decisions = withBoard(ctx, (board) => store.rowDecisions(board));
+  const decisions = capturedDecisions ?? withBoard(ctx, (board) => store.rowDecisions(board));
   const open = setupDecisionRows(ctx.info.root, ctx.config, decisions, rows);
   const toApply = open.filter(row => row.decision);
   const drafted = open.filter(row => !row.decision);
@@ -1744,4 +1744,3 @@ export function privateNames(root, board, spec) {
   add(hostname().split('.')[0]);
   return { names: [...names], parts: [...parts] };
 }
-

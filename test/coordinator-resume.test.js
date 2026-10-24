@@ -241,7 +241,19 @@ test("the coordinator's handoff brief orders current work and leaves agent resum
   const currentSpec = readFileSync(join(box.repo, 'SPEC.md'), 'utf8');
   writeFileSync(join(box.repo, 'SPEC.md'), currentSpec.replace('The first feature works.', 'The first feature works differently.'));
 
-  const resumed = box.run(box.repo, 'resume');
+  const ordinary = box.run(box.repo, 'resume', '--json');
+  assert.equal(ordinary.code, 0, ordinary.err || ordinary.out);
+  const indexed = JSON.parse(ordinary.out);
+  assert.equal(indexed.openDecisions.length, 5, 'ordinary resume retains current coordinator obligations');
+  assert.ok(indexed.acceptedAwaitingLanding.some(item => item.item_id === conflictId),
+    'the old receipt remains visible without claiming its verdict is current');
+  for (const name of ['toMerge', 'staleVerdicts', 'verifiedNotMerged']) {
+    assert.equal(Object.hasOwn(indexed, name), false, 'fresh merge eligibility is an explicit diagnostic');
+  }
+  assert.equal(indexed.diagnostics.command, 'pullboard resume --diagnostics');
+  assert.doesNotMatch(indexed.next, /^git merge|^merge #/u, 'ordinary guidance retains guarded landing authority');
+
+  const resumed = box.run(box.repo, 'resume', '--diagnostics');
   assert.equal(resumed.code, 0, resumed.err);
   assert.ok(resumed.out.length < 4_000, `handoff brief should stay short (${resumed.out.length} characters)`);
   assert.equal((resumed.out.match(/^open decision /gmu) ?? []).length, 3, 'text caps each section while JSON keeps all records');
@@ -256,7 +268,7 @@ test("the coordinator's handoff brief orders current work and leaves agent resum
   assert.match(resumed.out, new RegExp(`waiting on the person: #${personQuestionId} from coordinator`));
   assert.match(resumed.out, /review queue:/u);
   assert.match(resumed.out, new RegExp(`review queue:[\\s\\S]*?to verify: #${reviewId} web \\(`));
-  assert.match(resumed.out, /4 stale follow-ups; list them with pullboard resume --json/u,
+  assert.match(resumed.out, /4 stale follow-ups; list them with pullboard resume --diagnostics --json/u,
     'the three stale row follow-ups and expired evidence collapse into one counted line');
   assert.equal((resumed.out.match(/^stale:/gmu) ?? []).length, 0, 'stale details collapse to one line');
   const positions = [
@@ -269,7 +281,7 @@ test("the coordinator's handoff brief orders current work and leaves agent resum
   assert.ok(positions.every((position) => position >= 0) && positions.every((position, index) => index === 0 || positions[index - 1] < position),
     'the handoff sections stay in the requested order');
 
-  const json = box.run(box.repo, 'resume', '--json');
+  const json = box.run(box.repo, 'resume', '--diagnostics', '--json');
   assert.equal(json.code, 0, json.err || json.out);
   const document = JSON.parse(json.out);
   assert.equal(document.version, 1);
@@ -296,12 +308,12 @@ test("the coordinator's handoff brief orders current work and leaves agent resum
   assert.equal(document.staleFollowUps.count, 4);
   assert.deepEqual(document.staleFollowUps.items.map((item) => item.id).sort((a, b) => a - b), [cleanId, conflictId, activeId]);
   assert.deepEqual(document.staleFollowUps.integrations.map((entry) => entry.item.item_id), [expiredId]);
-  assert.equal(document.staleFollowUps.list, 'pullboard resume --json');
+  assert.equal(document.staleFollowUps.list, 'pullboard resume --diagnostics --json');
 
-  const agentText = box.run(cleanBuilder, 'resume').out;
+  const agentText = box.run(cleanBuilder, 'resume', '--diagnostics').out;
   assert.match(agentText, /^resume: web-1/u);
   assert.doesNotMatch(agentText, /open decision |recent decision |verified, not merged|waiting on the person|review queue:/u);
-  const agentJson = JSON.parse(box.run(cleanBuilder, 'resume', '--json').out);
+  const agentJson = JSON.parse(box.run(cleanBuilder, 'resume', '--diagnostics', '--json').out);
   for (const section of ['openDecisions', 'recentAnswers', 'verifiedNotMerged', 'personQuestions', 'reviewQueue', 'staleFollowUps']) {
     assert.equal(Object.hasOwn(agentJson, section), false, `agent resume keeps coordinator-only ${section} fields absent`);
   }
