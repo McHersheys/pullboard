@@ -86,7 +86,11 @@ test('old recorded claims ignore new capacity while new claims retain the featur
   const snapshot = exportBoard(f.board);
   const options = { agentId: f.reviewer, lane: 'core', leaseMs: HOUR, freeze: FREEZE };
   const move = prepareEngineMove(f.board, 'claim', [id, options]);
-  const old = applyEngineMove(f.board, { ...move, engine: LINE_CAPACITY_ENGINE - 1 }, { sequence: 1, at: f.board.clock.now().toISOString() });
+  assert.equal(move.args[1].lineCapacity, true, 'newly prepared claims bind their new meaning explicitly');
+  const legacy = structuredClone(move);
+  delete legacy.args[1].lineCapacity;
+  assert.throws(() => applyEngineMove(f.board, { ...move, engine: LINE_CAPACITY_ENGINE - 1 }, { sequence: 1, at: f.board.clock.now().toISOString() }), { code: 'RELAY_MOVE' }, 'the true marker cannot be forged onto an older engine');
+  const old = applyEngineMove(f.board, { ...legacy, engine: LINE_CAPACITY_ENGINE - 1 }, { sequence: 1, at: f.board.clock.now().toISOString() });
   assert.equal(old.error, undefined, JSON.stringify(old.error));
   const replica = store.openBoard(join(f.root, 'replica.sqlite'), f.board.clock);
   t.after(() => store.closeBoard(replica));

@@ -105,7 +105,7 @@ const OPERATION_ENGINE = Object.freeze({ setLineSetting: LINE_SETTINGS_ENGINE, d
 function minimumOperationEngine(operation, args, board, at) {
   const outside = ['intakeOutside', 'approveOutside'].includes(operation) || operation === 'verify' && args[1]?.sandbox !== undefined
     || board && ['claim', 'submit', 'verify', 'merged'].includes(operation) && Boolean(outsideSource(board, args[0]));
-  const capacity = board && operation === 'claim' && ['wipPerReviewer', 'takeoverMinutes'].some(key => typeof lineSettings(board)[key] === 'number');
+  const capacity = operation === 'claim' && args[1]?.lineCapacity === true;
   return Math.max(outside ? OUTSIDE_INTAKE_ENGINE : 1, capacity ? LINE_CAPACITY_ENGINE : 1, minimumExistingOperationEngine(operation, args, board, at));
 }
 
@@ -197,6 +197,9 @@ export function startRelayEpoch(board) {
 export function prepareEngineMove(board, operation, args, { id = randomUUID(), actor } = {}) {
   if (!ENGINE_OPERATIONS.includes(operation) || !Array.isArray(args)) throw new Refused('RELAY_MOVE', 'use a supported board-engine operation with its argument array');
   if (operation === 'submit' && ENGINE_VERSION >= SUBMISSION_PROOF_ENGINE) submissionProof(args[1]?.submissionProof);
+  if (operation === 'claim' && ['wipPerReviewer', 'takeoverMinutes'].some(key => typeof lineSettings(board)[key] === 'number')) {
+    args = [args[0], { ...args[1], lineCapacity: true }, ...args.slice(2)];
+  }
   const minimumEngine = minimumOperationEngine(operation, args, board);
   if (ENGINE_VERSION < minimumEngine) throw new Refused('ENGINE_VERSION', `${operation} requires engine version ${minimumEngine}; this pullboard uses engine ${ENGINE_VERSION}; upgrade before sending it`);
   // A gate run is sealed only as its gate's own receipt; a run made up by hand is refused before it reaches any replica.

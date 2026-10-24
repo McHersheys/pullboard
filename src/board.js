@@ -1275,9 +1275,14 @@ export function reviewOffer(board, { agentId, lane, policy = 'any', familyPolicy
 
 /** Find the oldest eligible submission with exactly the reservation guards, including cooldown and ownership. */
 function oldestCapacityReview(board, pending, who) {
-  const checks = Object.values(reviewerChecks(board, who));
-  return pending.find(item => !reviewHolder(board, item) && !reviewReleaseCooldown(board, item.item_id, who.agentId)
-    && checks.every(check => !check(item))) ?? null;
+  try {
+    const checks = Object.values(reviewerChecks(board, who));
+    return pending.find(item => !reviewHolder(board, item) && !reviewReleaseCooldown(board, item.item_id, who.agentId)
+      && checks.every(check => !check(item))) ?? null;
+  } catch (error) {
+    if (error instanceof Refused) return null; // Eligibility failures are not a different claim refusal.
+    throw error;
+  }
 }
 
 /**
