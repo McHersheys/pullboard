@@ -159,9 +159,9 @@ test('[P6,B23] revision plans preserve omitted fields and refuse formatting-only
   const status = planSpecRevision(box.repo, config, { ...unchanged, status: 'retired' });
   assert.equal(status.replacement, status.source.replace('[approved]', '[retired]'));
   assert.ok(validSpecRevision(status));
-  assert.equal(validSpecRevision({ ...text, status: 'not-a-status',
-    replacement: text.replacement.replace('[approved]', '[not-a-status]') }), false,
-  'the ordered draft validator independently rejects unknown statuses');
+  assert.equal(validSpecRevision({ ...text, status: 'bogus',
+    replacement: text.replacement.replace('[approved]', '[bogus]') }), false,
+    'the ordered draft validator independently rejects syntactically parsed but unknown statuses');
   assert.equal(validSpecRevision({ ...text, replacement: `${text.replacement} | signers: someone-else` }), false,
     'a revision payload cannot silently introduce fields outside text, gate and status');
   assert.equal(readFileSync(file, 'utf8'), source, 'planning never writes the private row file');
