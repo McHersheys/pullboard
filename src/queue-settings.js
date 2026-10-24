@@ -88,6 +88,7 @@ export function gateQueueSettings() {
 
 /** Board-owned controller inputs; false means off, independently of machine gate settings. */
 export const LINE_SETTING_DEFINITIONS = Object.freeze({
+  order: Object.freeze({ type: 'boolean' }),
   reviewsFirst: Object.freeze({ type: 'boolean' }),
   wipPerReviewer: Object.freeze({ type: 'number', min: 1.5, max: 3, integer: false }),
   barReady: Object.freeze({ type: 'boolean' }),

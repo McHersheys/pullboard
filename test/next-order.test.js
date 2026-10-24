@@ -711,5 +711,9 @@ test('line order sends a send-back home first and gives the scarcest review firs
   ranked.order(true);
   assert.equal(store.nextFor(ranked.board, { agentId: ranked.builder, lane: 'core' }).item.item_id, dependency, 'being waited on precedes ready-bar and coordinator rank');
   store.withdraw(ranked.board, dependency, { agentId: 'coordinator', reason: 'private selection control: remove the prerequisite' });
-  assert.equal(store.nextFor(ranked.board, { agentId: ranked.builder, lane: 'core' }).item.item_id, ready, 'a ready bar precedes the coordinator rank among otherwise tied available items');
+  assert.equal(store.nextFor(ranked.board, { agentId: ranked.builder, lane: 'core' }).item.item_id, ordinary, 'the signed-readiness tier is inert until its authoritative predicate lands');
+  const readiness = (_board, item) => item.item_id === ready;
+  const withSignedReadiness = [ordinary, ready].map(id => store.getItem(ranked.board, id))
+    .sort(store.buildOrder(ranked.board, { agentId: ranked.builder, readiness }));
+  assert.equal(withSignedReadiness[0].item_id, ready, 'the injected readiness predicate precedes coordinator rank without manufacturing signed records');
 });

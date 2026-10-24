@@ -1,3 +1,9 @@
+import {
+  lineOrderEnabled,
+  lineBuildOrder,
+  reviewerScarcity,
+  barReadyForOrder,
+} from './line-order.js';
 export { lineSettings, setLineSetting } from './line-settings.js';
 import { recordVerdict } from './verdict-assurance.js';
 import { logEvent } from './board-event-log.js';
@@ -2264,15 +2270,16 @@ function milestoneRanks(board, priority) {
 }
 
 /** Make the shared build-queue comparator once: milestone, explicit rank, route, recent files, then oldest. */
-export function buildOrder(board, { warm = [] } = {}) {
+export function buildOrder(board, { warm = [], agentId, readiness = barReadyForOrder } = {}) {
   const milestonePriority = milestonePriorities(board);
   const rank = milestoneRanks(board, milestonePriority);
   const recent = new Set(warm);
   const shared = (entry) => itemFiles(entry).filter((path) => recent.has(path)).length;
-  return (first, second) => milestonePriority(first) - milestonePriority(second)
+  const fallback = (first, second) => milestonePriority(first) - milestonePriority(second)
     || rank(first) - rank(second)
     || ROUTES.indexOf(second.item_route) - ROUTES.indexOf(first.item_route)
     || shared(second) - shared(first) || first.item_id - second.item_id;
+  return lineOrderEnabled(board) ? lineBuildOrder({ agentId, release: milestonePriority, rank, items: listItems(board, { all: true }), ready: item => readiness(board, item), fallback }) : fallback;
 }
 
 /**
@@ -2318,8 +2325,12 @@ export function nextFor(board, { agentId, lane, verify = false, policy = 'any', 
     if (heldByMe) return { item: heldByMe, reasons: [] };
     const milestonePriority = milestonePriorities(board);
     const rank = milestoneRanks(board, milestonePriority);
-    candidates.sort((first, second) => milestonePriority(first.entry) - milestonePriority(second.entry)
-      || rank(first.entry) - rank(second.entry));
+    const scarcity = lineOrderEnabled(board) ? reviewerScarcity(board, candidates.map(candidate => candidate.entry), (entry, reviewer) =>
+      Object.values(reviewerChecks(board, { agentId: reviewer, policy, familyPolicy })).every(guard => !guard(entry))) : null;
+    const lineCompare = scarcity ? buildOrder(board, { agentId }) : null;
+    candidates.sort((first, second) => (scarcity ? scarcity.get(first.entry.item_id) - scarcity.get(second.entry.item_id)
+      || lineCompare(first.entry, second.entry) : milestonePriority(first.entry) - milestonePriority(second.entry)
+      || rank(first.entry) - rank(second.entry)));
     const item = candidates.find((candidate) => !candidate.holder && !candidate.cooldown)?.entry;
     if (item) return { item, reasons: [] };
     const held = candidates.filter((candidate) => candidate.holder && candidate.holder !== agentId)
@@ -2340,7 +2351,7 @@ export function nextFor(board, { agentId, lane, verify = false, policy = 'any', 
     const hold = laneHold(board, name);
     if (hold) { selectedLanes.delete(name); reasons.push(`${hold.hold_by} holds the ${name} lane: ${hold.hold_reason}`); }
   }
-  const compare = buildOrder(board, { warm });
+  const compare = buildOrder(board, { warm, agentId });
   const inFlight = listItems(board, { all: true });
   const recent = new Set(warm);
   const mainRed = new Set(priority);
@@ -2350,7 +2361,7 @@ export function nextFor(board, { agentId, lane, verify = false, policy = 'any', 
     .map((entry, order) => ({ entry, order, shared: itemFiles(entry).filter((path) => recent.has(path)) }))
     .sort((first, second) => compare(first.entry, second.entry));
   // Move only evidenced reworks ahead of their own tier; with no evidence, normal order is exact.
-  for (const route of ROUTES) {
+  for (const route of lineOrderEnabled(board) ? [] : ROUTES) {
     const routeTier = ROUTES.indexOf(route);
     const selected = mine.findIndex(({ entry }) => tier(entry) === routeTier && mainRed.has(entry.item_id));
     const firstTierItem = mine.findIndex(({ entry }) => tier(entry) === routeTier);

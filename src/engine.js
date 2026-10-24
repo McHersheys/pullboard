@@ -69,6 +69,7 @@ import { requireCoordinatorHold } from './coordinator-hold.js';
 import { LANDING_ENVIRONMENT_ENGINE } from './landing-environment-engine.js';
 import { carriesLandingEnvironment } from './execution-environment.js';
 import { LANDING_LEASE_ENGINE } from './landing-lease-engine.js';
+import { LINE_ORDER_ENGINE } from './line-order-engine.js';
 import { LINE_SETTINGS_ENGINE } from './line-settings-engine.js';
 
 const ITEM_ID_FIRST_ARGUMENT = new Set(['acceptCheck', 'editItem', 'escalate', 'recordAttempt', 'claim', 'release', 'submit', 'reserveReview', 'verify', 'merged', 'withdraw', 'refreeze', 'reopen', 'appendFact']);
@@ -91,6 +92,7 @@ const OPERATION_ENGINE = Object.freeze({ setLineSetting: LINE_SETTINGS_ENGINE, d
 
 /** Dependency edits, causes, sealed reviews, submission proofs, trunk conflicts, health observations and milestone targets retain distinct recorded engine meanings. */
 function minimumOperationEngine(operation, args, board, at) {
+  if (operation === 'setLineSetting' && args[0]?.key === 'order') return LINE_ORDER_ENGINE;
   if (operation === 'recordLandingTestDefect' || operation === 'verify' && args[1]?.environment !== undefined
     || operation === 'recordGateRun' && Object.hasOwn(args[0]?.receipt ?? {}, 'environment')
     || operation === 'recordLandingBatch' && carriesLandingEnvironment(args[0]?.batch)) return LANDING_ENVIRONMENT_ENGINE;

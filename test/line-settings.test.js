@@ -66,7 +66,7 @@ test('the settings inventory exposes board line values and defaults without audi
   } finally {
     for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
   }
-  assert.equal(rows.length, 6);
+  assert.equal(rows.length, 7);
   assert.deepEqual(rows.find(row => row.key === 'line.wipPerReviewer'), { key: 'line.wipPerReviewer', scope: 'board',
     board: store.boardId(board), root: box.repo, value: 2, default: false,
     source: join(box.repo, '.git', 'pullboard', 'board.sqlite'), origin: 'configured' });

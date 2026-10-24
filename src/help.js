@@ -25,7 +25,7 @@ Set up
                                         in a linked main checkout it also takes the board's coordinator here
   pullboard resources                  local resource holders and their FIFO queues
   pullboard settings line [<name> <on|off|number> --reason "why" --window <json>]  read or record board controller inputs; all off by default, no queue enforcement
-                                        names: reviewsFirst, wipPerReviewer (1.5-3), barReady, takeoverMinutes (15-60), landingBatchSize (1-8), landingCadenceMinutes (5-30)
+                                        names: order, reviewsFirst, wipPerReviewer (1.5-3), barReady, takeoverMinutes (15-60), landingBatchSize (1-8), landingCadenceMinutes (5-30)
   pullboard settings [gateSlots <n> | browserSlots <n>]  view or set machine capacity (gate default 2; browser default 1)
                                         browser-free check slots are opt-in: gate.browserFreeChecks in ~/.pullboard/settings.json (default false)
                                         a test file takes a browser slot only if it launches Chrome: gate.browserByLaunch (default false)
