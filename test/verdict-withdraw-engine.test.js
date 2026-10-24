@@ -27,7 +27,7 @@ function acceptedSnapshot(context = false) {
   assert.equal(box.run(box.web, 'submit', '1').code, 0);
   const reviewer = join(box.dir, 'reviewer');
   box.git(box.repo, 'worktree', 'add', '-q', reviewer, '-b', 'api/reviewer');
-  assert.equal(box.run(reviewer, 'join', 'api').code, 0);
+  assert.equal(box.run(reviewer, 'join', context ? 'web' : 'api').code, 0);
   assert.equal(box.run(reviewer, 'next', '--verify', '1').code, 0);
   box.git(reviewer, 'switch', '-q', '--detach', box.git(box.web, 'rev-parse', 'HEAD'));
   const accepted = box.run(reviewer, 'verify', '1', 'accept', '--note', 'native private check passed', '--json');
