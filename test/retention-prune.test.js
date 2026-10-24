@@ -1,3 +1,4 @@
+/** @pullboard-test-input source-tree */
 /** Local landing cleanup preserves dirty, active and unrelated worktrees [R3,C7]. */
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
