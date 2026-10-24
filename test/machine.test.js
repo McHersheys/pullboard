@@ -6,7 +6,15 @@
  */
 import { submitFixture } from './board-submit-fixture.js';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -16,8 +24,22 @@ import * as store from '../src/board.js';
 import { HELP } from '../src/cli.js';
 import { loadConfig } from '../src/config.js';
 import { Refused } from '../src/refused.js';
-import { BLANKS, IN_STATE, MACHINE, effectiveGuards, lifecycleHelp, lifecycleMarkdown, machineProblems, storeTriggers } from '../src/machine.js';
-import { runFixtureExecFile as execFileSync, runFixtureChild as spawnSync, runFixtureChild, runFixtureGit } from './fixture-child.js';
+import {
+  BLANKS,
+  IN_STATE,
+  MACHINE,
+  effectiveGuards,
+  lifecycleHelp,
+  lifecycleMarkdown,
+  machineProblems,
+  storeTriggers,
+} from '../src/machine.js';
+import {
+  runFixtureExecFile as execFileSync,
+  runFixtureChild as spawnSync,
+  runFixtureChild,
+  runFixtureGit,
+} from './fixture-child.js';
 
 /**
  * Refusals that are not about an item's lifecycle, so no move declares them: command input, caller
@@ -82,6 +104,8 @@ const NOT_MOVES = {
   CHECKOUT_SESSION: 'the checkout-local session binding is readable before any item move',
   CHECKOUT_BUSY: 'a hook gives up waiting for a checkout another command holds, before any item move',
   UNMERGED_SCHEMA: 'shared-board schema compatibility checked before a command opens the database',
+  PERSON_SIGNED: 'a person-only move on a board that signs person moves needs a passkey; no item move is person-only',
+  PERSON_SIGNING_CORRUPT: 'the signing policy record is read before ordering any move; it is no item lifecycle rule',
 };
 
 /**

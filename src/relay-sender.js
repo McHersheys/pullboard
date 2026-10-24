@@ -10,7 +10,7 @@ export function relayMoveActor(move) {
   if (move.operation === 'addItem') return args[0]?.by ?? null;
   if (move.operation === 'shout') return args[0]?.from ?? null;
   if (['proposeSentinel', 'decideSentinel', 'beginSentinelRun', 'finishSentinelRun'].includes(move.operation)) return args[0]?.agentId ?? null;
-  if (['recordHealthFindings', 'recordFlakeObservation', 'recordGateRun', 'declareJob', 'recordJobRun', 'takeCoordinator', 'landingLeaseMove'].includes(move.operation)) return args[0]?.agentId ?? null;
+  if (['recordHealthFindings', 'recordFlakeObservation', 'recordGateRun', 'declareJob', 'recordJobRun', 'takeCoordinator', 'landingLeaseMove', 'setPersonSigning', 'proposePersonMove'].includes(move.operation)) return args[0]?.agentId ?? null;
   if (['holdLane', 'releaseLane'].includes(move.operation) && args[1]?.asPerson) return 'person';
   if (move.operation === 'release') return args[1] ?? null;
   if (['reserveNextReview', 'addMilestone', 'recordRowDecisions', 'applyRowDecisions', 'draftSpecRow', 'recordSpecApprovalBaseline', 'recordLandingBatch', 'recordLandingWaiver', 'recordLandingFlake', 'recordLandingTestDefect', 'finishLandingBatch'].includes(move.operation)) return args[0]?.agentId ?? null;
@@ -29,7 +29,19 @@ export function validRelaySender(sender) {
     (sender.lineage === undefined || typeof sender.lineage === 'string' && sender.lineage.length > 0 && sender.lineage.length <= 64) &&
     (sender.login === undefined || typeof sender.login === 'string' && /^[A-Za-z0-9-]{1,39}$/u.test(sender.login)) &&
     (sender.approver === undefined || typeof sender.approver === 'boolean') &&
-    (sender.engine === undefined || Number.isSafeInteger(sender.engine) && sender.engine > 0));
+    (sender.engine === undefined || Number.isSafeInteger(sender.engine) && sender.engine > 0) &&
+    (sender.presence === undefined || sender.kind === 'person' && validPresence(sender.presence)));
+}
+
+/**
+ * The relay's passkey stamp on a person request: the board, the request id and intent digest it was granted for,
+ * the passkey, when, and the relay's signature over them [E22].
+ */
+export function validPresence(value) {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).sort().join() === 'at,board,credential,digest,request,signature' &&
+    typeof value.request === 'string' && /^[A-Za-z0-9_-]{1,80}$/u.test(value.request) && typeof value.credential === 'string' &&
+    /^[A-Za-z0-9_-]{1,1400}$/u.test(value.credential) && Number.isSafeInteger(value.at) && value.at > 0 &&
+    /^[0-9a-f]{32}$/u.test(value.board ?? '') && /^[0-9a-f]{64}$/u.test(value.digest ?? '') && /^[A-Za-z0-9_-]{86}$/u.test(value.signature ?? ''));
 }
 
 /**
@@ -37,8 +49,8 @@ export function validRelaySender(sender) {
  * person fact or request, or any move whose actor is the person. On a board that names approvers, only an approver's
  * session makes one [E4].
  */
-function personAuthority(move) {
-  return personFact(move) || ['recordRowDecisions', 'decideSentinel'].includes(move?.operation) || move?.operation === 'answerDecision' && Boolean(move.args?.[1]?.asPerson) ||
+export function personAuthority(move) {
+  return personFact(move) || ['holdLane', 'releaseLane'].includes(move?.operation) && Boolean(move.args?.[1]?.asPerson) || ['recordRowDecisions', 'decideSentinel'].includes(move?.operation) || move?.operation === 'answerDecision' && Boolean(move.args?.[1]?.asPerson) ||
     move?.operation === 'shout' && Boolean(move.args?.[0]?.request) || relayMoveActor(move) === 'person';
 }
 

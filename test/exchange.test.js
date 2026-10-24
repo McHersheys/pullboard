@@ -3,13 +3,28 @@
  */
 import { submitFixture } from './board-submit-fixture.js';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { runFixtureChild, runFixtureGit } from './fixture-child.js';
+import {
+  mkdtempSync,
+  mkdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import {
+  runFixtureChild,
+  runFixtureGit,
+} from './fixture-child.js';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import {
+  join,
+  resolve,
+} from 'node:path';
 import { test } from 'node:test';
 import * as store from '../src/board.js';
-import { exportBoard, importBoard } from '../src/exchange.js';
+import {
+  exportBoard,
+  importBoard,
+} from '../src/exchange.js';
+import { SIGNED_EVENT_LOG_VERSION } from '../src/board.js';
 
 const SHA = 'a'.repeat(40);
 const BIN = resolve(import.meta.dirname, '../bin/pullboard.js');
@@ -98,10 +113,10 @@ test('[A5] imported event logs refuse future formats and upgrade older formats',
     const before = exportBoard(target);
     const future = structuredClone(exportBoard(source));
     const futureVersion = future.tables.board_meta.find((row) => row.meta_key === 'event_log_version');
-    futureVersion.meta_value = String(store.EVENT_LOG_VERSION + 1);
+    futureVersion.meta_value = String(SIGNED_EVENT_LOG_VERSION + 1); // Format 2 is a signed board's, which this Pullboard reads [E22].
     assert.throws(() => importBoard(target, future), (error) => {
       assert.equal(error.code, 'EVENT_LOG_VERSION');
-      assert.match(error.message, new RegExp(`version ${store.EVENT_LOG_VERSION + 1}.*version ${store.EVENT_LOG_VERSION}`));
+      assert.match(error.message, new RegExp(`version ${SIGNED_EVENT_LOG_VERSION + 1}.*version ${SIGNED_EVENT_LOG_VERSION}`));
       assert.match(error.message, /upgrade pullboard/i);
       return true;
     });

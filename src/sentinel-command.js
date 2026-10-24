@@ -1,5 +1,6 @@
 /** CLI proposal and exact person decisions for board-owned watches [A6,D3]. */
 import { PERSON } from './board.js';
+import { requireSignedPerson } from './person-signing-cli.js';
 import { requirePersonChannel } from './person.js';
 import { Refused } from './refused.js';
 import { sentinels } from './sentinels.js';
@@ -22,7 +23,6 @@ export async function sentinelCommand({ ctx, words, values, withBoard, whoAmI, o
   if (extra.length || !['propose', 'approve', 'decline'].includes(verb) || !name) {
     throw new Refused('USAGE', 'use pullboard sentinel propose <name> --check "<command>" --every 10m --owner <seat or lane>, sentinel approve <name>, sentinel decline <name> --reason "<why>", or pullboard sentinels');
   }
-  if (verb !== 'propose') requirePersonChannel(ctx.io.personChannel);
   return withBoard(ctx, async board => {
     const me = whoAmI(ctx, board);
     let row;
@@ -37,6 +37,9 @@ export async function sentinelCommand({ ctx, words, values, withBoard, whoAmI, o
       if (!current) throw new Refused('STALE_SENTINEL', 'read the current proposals with pullboard sentinels');
       const digest = values.digest ?? current.digest;
       if (digest !== current.digest) throw new Refused('STALE_SENTINEL', 'this proposal changed after it was shown; refresh the pending watch and decide its current command, directory and schedule');
+      const confirmed = await requireSignedPerson(ctx, board, me, { verb: `sentinel-${verb}`, args: { name, digest, ...(verb === 'decline' ? { reason: String(values.reason ?? '') } : {}) } });
+      if (confirmed !== null) return confirmed;
+      requirePersonChannel(ctx.io.personChannel);
       row = await ordered(ctx, board, 'decideSentinel', [{ agentId: PERSON, channel: ctx.io.personChannel ?? 'terminal',
         name, digest, decision: verb, reason: (values.reason ?? '').trim() }]);
     }

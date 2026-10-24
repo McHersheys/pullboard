@@ -3,6 +3,7 @@ import * as store from './board.js';
 import { createHash } from 'node:crypto';
 import { recordedRefusal } from './recorded-refusal.js';
 import { Refused } from './refused.js';
+import { answerQuestion } from './blueprints.js';
 import { parseImplies } from './implies.js';
 import { validatePersonRequest } from './person-request.js';
 import { relayMoveActor } from './relay-sender.js';
@@ -69,7 +70,7 @@ export function receivePersonRequest(board, document, { sequence, at, sender }) 
       if (sender?.kind !== 'person' || typeof sender.userId !== 'string' || !sender.userId || sender.userId.length > 256) throw new Refused('RELAY_PERSON_ONLY', 'only the authenticated person can send a relay request; use the paired view with the person session');
       request = validatePersonRequest(document);
       // On a board that names approvers, a phone request that acts as the person must come from one [E4].
-      if (sender.approver === false && ['answer', 'hold', 'spec-approve', 'spec-decline', 'sentinel-approve', 'sentinel-decline'].includes(request.move?.verb)) {
+      if (sender.approver === false && ['answer', 'hold', 'spec-approve', 'spec-decline', 'spec-answer', 'fact', 'sentinel-approve', 'sentinel-decline'].includes(request.move?.verb)) {
         throw new Refused('NOT_APPROVER', `${sender.login ?? 'this person'} is not an approver of this board; ask an approver to answer, hold or decide rows and sentinels`);
       }
     } catch (cause) {
@@ -122,6 +123,24 @@ function fulfilsIntent(record, move) {
   // item or superseded answer the phone did not name, and none it named left out.
   if (intent.verb === 'answer') return value === intent.item && options?.asPerson === true && options.channel === 'view' && options.text === args.text
     && JSON.stringify(options.implies ?? []) === JSON.stringify(requestedImplies(args.implies)) && (options.supersedes ?? null) === requestedAnswer(args.supersedes);
+  if (intent.verb === 'fact') return value === intent.item && options?.asPerson === true && options.channel === 'view'
+    && options.kind === args.kind && options.text === args.text && (options.supersedes ?? null) === (args.supersedes ?? null)
+    && (options.ref ?? null) === (args.ref ?? null) && (options.cause ?? null) === (args.cause ?? null)
+    && Boolean(options.neverAgain) === Boolean(args['never-again'])
+    && JSON.stringify(options.implies ?? []) === JSON.stringify(requestedImplies(args.implies));
+  if (intent.verb === 'spec-answer') {
+    let document;
+    let text;
+    try {
+      document = JSON.parse(record.encoded);
+      const shown = document.rows?.find(row => row.id === args.row);
+      if (!shown) return false;
+      text = answerQuestion(shown.text, args.answer, args.row).text;
+    } catch { return false; }
+    return value?.agentId === 'person' && value.channel === 'view' && value.decisions?.length === 1
+      && value.decisions[0].id === args.row && value.decisions[0].kind === 'spec'
+      && value.decisions[0].decision === 'approve' && value.decisions[0].text === text;
+  }
   if (intent.verb === 'hold') return value === args.lane && options?.asPerson === true && options.channel === 'view'
     && (args.off || options.reason === (args.reason ?? ''));
   if (['sentinel-approve', 'sentinel-decline'].includes(intent.verb)) {
@@ -132,7 +151,12 @@ function fulfilsIntent(record, move) {
       && (value.reason ?? '') === (decline ? args.reason.trim() : '')
       && Object.keys(value).every(key => ['agentId', 'channel', 'name', 'digest', 'decision', 'reason'].includes(key));
   }
+  // Signed person moves [E22]: the waiver and the signing switch carry exactly the request's values, and its id.
+  if (intent.verb === 'land-waive') return value?.agentId === 'person' && value.channel === 'view' && value.test === args.waive
+    && value.until === args.until && value.reason === args.reason;
+  if (intent.verb === 'signing') return value?.signed === (args.signed === 'on') && (args.signed === 'on' || value.agentId === 'person' && value.request === record.id);
   const rows = value?.decisions;
+  if (!['spec-approve', 'spec-decline', 'spec-answer'].includes(intent.verb) || typeof args.ids !== 'string') return false;
   const ids = args.ids.split(/[\s,]+/u).filter(Boolean);
   return value?.agentId === 'person' && value.channel === 'view' && Array.isArray(rows) && rows.length === ids.length
     && rows.every((row, index) => (row.kind === 'doctrine' ? 'doctrine:' : '') + row.id === ids[index]
@@ -157,7 +181,7 @@ export function requestStageText(record, phase) {
   const text = phase === 'claim' ? 'Received a request from the paired view.'
     : phase === 'refuse' ? 'Could not fulfil this request. Read its recorded refusal and next step.'
     : 'Apply the person’s recorded row decision with pullboard spec apply, or decline this request with a reason. '
-      + record.move.verb + ': ' + record.move.args.ids;
+      + record.move.verb + ': ' + (record.move.args.ids ?? record.move.args.row);
   return 'View request ' + record.id + ': ' + text;
 }
 
@@ -167,7 +191,7 @@ function fulfilsStage(record, move, tag) {
   return move.operation === 'shout' && move.args.length === 1 && value?.from === 'person' && value.to === 'coordinator'
     && value.text === requestStageText(record, tag.phase, tag.error) && !value.decision && value.answers == null && value.evidence == null
     && Boolean(value.request) === (tag.phase === 'repo-request')
-    && (tag.phase !== 'repo-request' || ['spec-approve', 'spec-decline'].includes(record.move.verb))
+    && (tag.phase !== 'repo-request' || ['spec-approve', 'spec-decline', 'spec-answer'].includes(record.move.verb))
     && Object.keys(value).every(key => ['from', 'to', 'text', 'lanes', 'request', 'decision', 'answers', 'evidence'].includes(key));
 }
 
@@ -196,7 +220,7 @@ export function requestMoveProblem(board, move, { checkExecutorLease = true } = 
   const actor = relayMoveActor(move);
   if (!['coordinator', 'person'].includes(actor)) return new Refused('PERSON_REQUEST_RECEIPT', 'only the coordinator fulfils an authenticated person request');
   if (tag.phase === 'execute') {
-    const expected = { add: 'addItem', shout: 'shout', answer: 'answerDecision', hold: record.move.args.off ? 'releaseLane' : 'holdLane', 'spec-approve': 'recordRowDecisions', 'spec-decline': 'recordRowDecisions', 'sentinel-approve': 'decideSentinel', 'sentinel-decline': 'decideSentinel' }[record.move.verb];
+    const expected = { add: 'addItem', shout: 'shout', answer: 'answerDecision', hold: record.move.args.off ? 'releaseLane' : 'holdLane', 'spec-approve': 'recordRowDecisions', 'spec-decline': 'recordRowDecisions', 'spec-answer': 'recordRowDecisions', fact: 'appendFact', 'sentinel-approve': 'decideSentinel', 'sentinel-decline': 'decideSentinel', 'land-waive': 'recordLandingWaiver', signing: 'setPersonSigning' }[record.move.verb];
     if (move.operation !== expected || !fulfilsIntent(record, move)) return new Refused('PERSON_REQUEST_RECEIPT', 'the ordinary move does not fulfil this request; execute its original CLI intent');
   }
   if (move.engine >= 6 && ['claim', 'repo-request', 'refuse'].includes(tag.phase) && !fulfilsStage(record, move, tag)) return new Refused('PERSON_REQUEST_RECEIPT', 'publish only the exact stage for this authenticated phone request');
@@ -233,7 +257,7 @@ export function recordRequestMove(board, move, outcome, sequence, at) {
   } else if (tag.phase === 'execute') {
     record.result = outcome.result;
     record.resultSequence = sequence;
-    if (!['spec-approve', 'spec-decline'].includes(record.move.verb)) record.status = 'done';
+    if (!['spec-approve', 'spec-decline', 'spec-answer'].includes(record.move.verb)) record.status = 'done';
   } else if (tag.phase === 'repo-request') {
     record.coordinatorRequest = outcome.result;
   }

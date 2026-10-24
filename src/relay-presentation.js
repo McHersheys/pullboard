@@ -13,7 +13,10 @@ import { loadConfig } from './config.js';
 import { projectState } from './serve.js';
 import { personNeeds } from './needs.js';
 import { personBlockWords } from './blocks.js';
-import { personRequestStatuses } from './relay-requests.js';
+import {
+  personRequestRecords,
+  personRequestStatuses,
+} from './relay-requests.js';
 import {
   cachedVerdictStates,
   verdictProjector,
@@ -42,7 +45,11 @@ function readRelayPresentation(root, providedBoard) {
       const verdictState = derived.get(item.id);
       return verdictState ? { ...item, verdictState } : item;
     });
-    return { version: 1, state: { ...store.projectItemThreads(board, state), personRequests: personRequestStatuses(board) }, config: loadConfig(root), shouts: store.allShouts(board) }; }
+    // The passkey device reads whether person moves are signed and which terminal-started moves wait for it [E22].
+    const requested = new Set(personRequestRecords(board).map((record) => record.id));
+    const personProposals = store.personProposals(board).filter((proposal) => !requested.has(proposal.id));
+    return { version: 1, state: { ...store.projectItemThreads(board, state), personRequests: personRequestStatuses(board),
+      personSigning: { signed: store.personSigning(board).signed }, personProposals }, config: loadConfig(root), shouts: store.allShouts(board) }; }
   finally { if (!providedBoard) store.closeBoard(board); }
 }
 /** Resolve one shout from the complete history carried only inside the sealed presentation. */

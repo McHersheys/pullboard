@@ -31,6 +31,7 @@ Set up
                                         release priority is opt-in: gate.queue.currentReleaseFirst (default false), within each board's otherwise-tied positions
                                         memory hold is opt-in: gate.memoryFloorMB in ~/.pullboard/settings.json holds the queue under that many MB free or critical pressure (default off)
                                         short slots for runs that name their test files are opt-in: pullboard settings gate.shortSlots <n> (default 0)
+                                        signed person moves are opt-in: pullboard settings person.signed on makes each wait for your passkey; only the passkey turns it off
   pullboard runner add <ssh-host> --slots <n> --browser <n> [--node <remote-path>] [--root <remote-path>]
                                         register SSH test capacity; no runner sign-in; root defaults to ~/.pullboard-runner
   pullboard runner list                 each runner's registered slots and browsers, which it runs at

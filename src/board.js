@@ -61,8 +61,14 @@ import {
   checkedLandingCommit,
 } from './verdict-reviews.js';
 export { verdictReviewProblem, verdictsFor, acceptedVerdict, checkedLandingCommit };
-export { landingTestDefects, recordLandingTestDefect } from './landing-test-defects.js';
-export { landingLeaseMove, landingLeaseState } from './landing-lease.js';
+export {
+  landingTestDefects,
+  recordLandingTestDefect,
+} from './landing-test-defects.js';
+export {
+  landingLeaseMove,
+  landingLeaseState,
+} from './landing-lease.js';
 import { guardLandingWrite } from './landing-lease.js';
 import {
   randomBytes,
@@ -88,7 +94,10 @@ import {
   recordSchemaStamp,
   reportDrift,
 } from './board-migrate.js';
-export { schemaMissing, writeRefused } from './board-migrate.js';
+export {
+  schemaMissing,
+  writeRefused,
+} from './board-migrate.js';
 import {
   briefFiles,
   briefSections,
@@ -192,20 +201,56 @@ import { validateLandingRevision } from './submit-invariants.js';
 import { submissionProof } from './submit-invariants.js';
 import { SUBMISSION_PROOF_ENGINE } from './submit-invariants.js';
 export { landingFlakes, landingWaiverCovers, landingWaiverKind };
-export { landingWaivers, landingWaiverFor, waivedLandingProof } from './landing-waivers.js';
+export {
+  landingWaivers,
+  landingWaiverFor,
+  waivedLandingProof,
+} from './landing-waivers.js';
 export { acceptCheck } from './check-accept.js';
-export { declareJob, recordJobRun } from './recurring-jobs.js';
-export { proposeSentinel, decideSentinel, beginSentinelRun, finishSentinelRun } from './sentinels.js';
-export { flakeLedger, recordFlakeObservation } from './flakes.js';
-export { flakeQuarantines, gateRuns, recordGateRun } from './quarantine.js';
-
+export {
+  declareJob,
+  recordJobRun,
+} from './recurring-jobs.js';
+export {
+  proposeSentinel,
+  decideSentinel,
+  beginSentinelRun,
+  finishSentinelRun,
+} from './sentinels.js';
+export {
+  flakeLedger,
+  recordFlakeObservation,
+} from './flakes.js';
+export {
+  flakeQuarantines,
+  gateRuns,
+  recordGateRun,
+} from './quarantine.js';
+export {
+  personProposals,
+  personSigning,
+  proposePersonMove,
+  setPersonSigning,
+} from './person-signing.js'; // Signed person moves [E22].
 /** The seat readers live in seats.js; the board re-exports them so `store.*` callers keep one import. */
-export { agentAt, agentById, agentCreator, coordinatorHolder, listAgents, nextSeatId, seatEnrolled, seatLineage, takeCoordinator, withVerifierStanding } from './seats.js';
+export {
+  agentAt,
+  agentById,
+  agentCreator,
+  coordinatorHolder,
+  listAgents,
+  nextSeatId,
+  seatEnrolled,
+  seatLineage,
+  takeCoordinator,
+  withVerifierStanding,
+} from './seats.js';
 
 export const ACCEPT_REASON = 'CRITERION_MET';
 export { PERSON } from './board-query.js';
 
 export { EVENT_LOG_VERSION } from './board-schema-source.js';
+export { SIGNED_EVENT_LOG_VERSION } from './board-schema-source.js';
 
 export { BOARD_BUSY_TIMEOUT_MS } from './board-schema-source.js';
 
@@ -2259,10 +2304,27 @@ export function milestones(board) {
 }
 
 // A lane agent's drafted rows live in row-drafts.js (#878); exported here so the engine dispatches them.
-export { draftSpecRow, rowDrafts } from './row-drafts.js';
-export { recordSpecApprovalBaseline, specApprovalBaseline, specApprovalBaselineExists } from './spec-approval-baseline.js';
+export {
+  draftSpecRow,
+  rowDrafts,
+} from './row-drafts.js';
+export {
+  recordSpecApprovalBaseline,
+  specApprovalBaseline,
+  specApprovalBaselineExists,
+} from './spec-approval-baseline.js';
 // The roadmap's moves live in milestones.js; the board keeps exporting them so the engine replays them.
-export { addMilestone, canonicalMilestoneTarget, editMilestone, editMilestoneItems, orderMilestoneItems, moveMilestone, removeMilestone, roadmap, shipMilestone } from './milestones.js';
+export {
+  addMilestone,
+  canonicalMilestoneTarget,
+  editMilestone,
+  editMilestoneItems,
+  orderMilestoneItems,
+  moveMilestone,
+  removeMilestone,
+  roadmap,
+  shipMilestone,
+} from './milestones.js';
 
 export { rowDecisions } from './board-query.js';
 
@@ -2343,7 +2405,14 @@ export function peekShouts(board, agentId, limit = 2) {
     .reverse();
 }
 
-export { recentShouts, eventsOfKinds, recentEvents, lastMoves, decisionAndEvidenceShouts, submitInvariantEvents } from './board-hot.js';
+export {
+  recentShouts,
+  eventsOfKinds,
+  recentEvents,
+  lastMoves,
+  decisionAndEvidenceShouts,
+  submitInvariantEvents,
+} from './board-hot.js';
 
 export { stats } from './board-stats.js';
 

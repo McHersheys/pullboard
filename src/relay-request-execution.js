@@ -80,7 +80,7 @@ export async function executePersonRequests(root, io, runCommand) {
         }
       }
       const completed = requests(coordinatorRoot).find(entry => entry.id === record.id);
-      if (['spec-approve', 'spec-decline'].includes(record.move.verb) && completed.status === 'waiting' && !completed.coordinatorRequest) {
+      if (['spec-approve', 'spec-decline', 'spec-answer'].includes(record.move.verb) && completed.status === 'waiting' && !completed.coordinatorRequest) {
         await receipt(coordinatorRoot, completed, executor, 'repo-request', io);
       }
     } catch (error) {

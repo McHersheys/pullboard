@@ -43,6 +43,15 @@ import {
   productProblems,
 } from '../products.js';
 import {
+  personSigning,
+} from '../person-signing.js';
+import {
+  refuseNamedSigners,
+  requireShownRows,
+  requireSignedPerson,
+  signsPersonMoves,
+} from '../person-signing-cli.js';
+import {
   Refused,
 } from '../refused.js';
 import {
@@ -189,11 +198,22 @@ export async function specCommand(io, { first, second, rest, values }) {
     return 0;
   }
   if (first === 'approve' || first === 'decline') {
-    requirePersonChannel(io.personChannel);
     return withBoard(ctx, async (board) => {
       const me = whoAmI(ctx, board);
-      if (!ctx.info.isMain || me.id !== COORDINATOR) throw new Refused('B26_PERSON_APPROVAL', 'only the person from the main checkout approves or declines rows; use pullboard view for the person to decide');
       const ids = [second, ...rest].filter(Boolean).flatMap((text) => text.split(/[\s,]+/u)).filter(Boolean);
+      // With signed person moves on, the decision goes to the person's passkey; a named SSH signer has no passkey yet [E22].
+      const shown = [...spec.rows, ...(practice.rows ?? []).map(row => ({ ...row, id: `doctrine:${row.id}` }))].filter(row => ids.includes(row.id));
+      if (personSigning(board).signed) refuseNamedSigners(shown, ids);
+      const confirmed = await requireSignedPerson(ctx, board, me, { verb: `spec-${first}`, args: { ids: ids.join(','),
+        ...(values.text === undefined ? {} : { text: values.text }), ...(values.reason === undefined ? {} : { reason: values.reason }) } }, shown.map(({ id, text }) => ({ id, text })));
+    if (confirmed !== null) return confirmed;
+      requirePersonChannel(io.personChannel);
+      if (!ctx.info.isMain || me.id !== COORDINATOR) throw new Refused('B26_PERSON_APPROVAL', 'only the person from the main checkout approves or declines rows; use pullboard view for the person to decide');
+      if (personSigning(board).signed) {
+        const decidable = [...spec.rows, ...(practice.rows ?? []).map((row) => ({ ...row, id: `doctrine:${row.id}` }))];
+        refuseNamedSigners(decidable, ids);
+        requireShownRows(board, io.personRequest, decidable, ids);
+      }
       // An approve keeps a pending answer: plain, it approves the answered text; --text says what it replaces.
       const kept = first === 'approve' ? pendingAnswers(ctx.info.root, ctx.config, ids, store.rowDecisions(board)) : new Map();
       const decide = { decision: first, reason: values.reason, by: values.by, on: new Date().toISOString(), commit: headCommit(ctx.info.root) ?? '' };
@@ -210,7 +230,35 @@ export async function specCommand(io, { first, second, rest, values }) {
       return 0;
     });
   }
+  // Read without creating a board: a repo that has none signs nothing [E22].
+  if (first === 'signoff' && signsPersonMoves(ctx.info.root)) {
+    return withBoard(ctx, async board => {
+      const ids = [second, ...rest].filter(Boolean).flatMap(text => idList(text));
+      if (!ids.length) throw new Refused('USAGE', 'pullboard spec signoff <ids>');
+      const rows = ids.map(id => spec.rows.find(row => row.id === id));
+      if (rows.some(row => !row || row.status !== 'approved')) throw new Refused('CANNOT_SIGN', 'only approved rows in this spec are signed');
+      refuseNamedSigners(rows, ids);
+      if (values.by) throw new Refused('PERSON_SIGNER_REQUIRED', `the requested SSH signer ${values.by} has no passkey identity`, 'omit --by for a person approval, or wait until signing is off to use that named SSH principal');
+      if (values.note !== undefined || values['note-file'] !== undefined) throw new Refused('USAGE', 'signed optional sign-off records the exact row approval, without an SSH sign-off note', 'use spec approve <ids> to confirm those rows with your passkey');
+      const proof = specProof(ctx);
+      const testFiles = citedTestFiles(ctx.info.root);
+      const evidence = ids.map(id => ({ id, ...rowEvidence(ctx.info.root, id, { ...proof, testFiles }) }));
+      const missing = evidence.filter(row => !row.files.length && !row.verified.length).map(row => row.id);
+      if (missing.length) throw new Refused('NO_EVIDENCE', `${missing.join(', ')} has no evidence; build it or cite its id in a test first`);
+      const completed = await requireSignedPerson(ctx, board, whoAmI(ctx, board), { verb: 'spec-approve', args: { ids: ids.join(',') } }, rows.map(({ id, text }) => ({ id, text })));
+      if (completed === null) throw new Refused('PERSON_SIGNED', 'confirm optional sign-off as a row approval through its original terminal request', 'run spec approve <ids> with your passkey');
+      io.result?.({ count: ids.length, by: 'person', ids, evidence });
+      return completed;
+    });
+  }
   if (first === 'answer') {
+    const completed = await withBoard(ctx, async board => {
+      const row = spec.rows.find(entry => entry.id === second);
+      if (!row) throw new Refused('NO_ROW', `${second} is not a row in ${ctx.config.spec}`);
+      if (personSigning(board).signed) refuseNamedSigners([row], [second]);
+      return requireSignedPerson(ctx, board, whoAmI(ctx, board), { verb: 'spec-answer', args: { row: second, answer: rest.join(' ').trim() } }, [{ id: row.id, text: row.text }]);
+    });
+    if (completed !== null) return completed;
     requirePersonChannel(io.personChannel, process.env, { command: personCommand(primaryCheckoutRoot(ctx.info) ?? ctx.info.root, ['spec', 'answer', second, rest.join(' ')]) });
     return withBoard(ctx, async (board) => {
       const me = whoAmI(ctx, board);
@@ -220,6 +268,7 @@ export async function specCommand(io, { first, second, rest, values }) {
       const row = spec.rows.find((entry) => entry.id === second);
       if (!row) throw new Refused('NO_ROW', `${second} is not a row in ${ctx.config.spec}`, 'list the pending questions with pullboard spec --json, then answer one of them');
       if (row.status !== 'pending') throw new Refused('SPEC_ANSWER', `${second} is ${row.status}, not a pending question`, `read it with pullboard spec show ${second}; only a pending row takes an answer`);
+      if (personSigning(board).signed) requireShownRows(board, io.personRequest, [row], [second]);
       const { text } = answerQuestion(row.text, given, second);
       const records = prepareRowDecisions(ctx.info.root, ctx.config, { ids: [second], decision: 'approve', text, on: new Date().toISOString(), commit: headCommit(ctx.info.root) ?? '' });
       const decisions = await ordered(ctx, board, 'recordRowDecisions', [{ agentId: store.PERSON, channel: io.personChannel ?? 'terminal', decisions: records }]);

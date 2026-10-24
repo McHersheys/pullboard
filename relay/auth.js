@@ -1,6 +1,17 @@
 /** Hash-only relay sessions and board credentials, authorized by current GitHub roles [H8, H1, H13, H14, H16, H3]. */
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { chmodSync, mkdirSync } from 'node:fs';
+import {
+  createHash,
+  createPrivateKey,
+  generateKeyPairSync,
+  randomBytes,
+  randomUUID,
+  sign,
+  timingSafeEqual,
+} from 'node:crypto';
+import {
+  chmodSync,
+  mkdirSync,
+} from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Refused } from '../src/refused.js';
@@ -8,6 +19,13 @@ import { repositoryName } from './github.js';
 import { approvalContext } from '../src/relay-approval.js';
 import { VERIFIER_STANDING_ENGINE } from '../src/machine.js';
 import { PEOPLE_ENGINE } from '../src/people-engine.js';
+import {
+  grantChallenge,
+  passkeyBytes,
+  verifyAssertion,
+  verifyRegistration,
+} from './passkeys.js';
+import { presenceAttestation } from '../src/person-presence.js';
 
 export const ACCESS_WINDOW_MS = 10 * 60_000;
 const MAX_TTL = 30 * 24 * 3600_000;
@@ -52,6 +70,9 @@ export function createRelayAuth({ database, github, now = Date.now, sessionTTL =
       CREATE TABLE IF NOT EXISTS relay_seats (board TEXT NOT NULL, agent TEXT NOT NULL,
         origin TEXT NOT NULL CHECK(origin IN ('machine','registered','root')), creator TEXT, sequence INTEGER, digest TEXT,
         first_id TEXT, first_created INTEGER, first_expires INTEGER, PRIMARY KEY (board, agent));
+      CREATE TABLE IF NOT EXISTS relay_passkeys (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES relay_users(id),
+        public_key TEXT NOT NULL, algorithm INTEGER NOT NULL, counter INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS relay_person_authority (slot INTEGER PRIMARY KEY CHECK(slot=1), private_key TEXT NOT NULL, public_key TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS relay_coordinator_events (id TEXT PRIMARY KEY, board TEXT NOT NULL,
         reason TEXT NOT NULL CHECK(reason IN ('bootstrap','reissue','reset')), session_id TEXT NOT NULL,
         revoked TEXT NOT NULL, issued_id TEXT NOT NULL, at INTEGER NOT NULL);
@@ -94,6 +115,8 @@ export function createRelayAuth({ database, github, now = Date.now, sessionTTL =
   const webFlows = new Map();
   const deviceFlows = new Map();
   const deviceConfirmations = new Map();
+  // Passkey registration challenges by hash, held in memory for their five minutes like the sign-in flows [E22].
+  const passkeyChallenges = new Map();
   // A hashed ticket may revoke only its minted session, retained until that session expires.
   const deviceSessionReceipts = new Map();
   const sessionGuards = new Set();
@@ -116,6 +139,26 @@ export function createRelayAuth({ database, github, now = Date.now, sessionTTL =
       db.exec('COMMIT'); return result;
     } catch (error) { db.exec('ROLLBACK'); throw error; }
     finally { locked = false; }
+  }
+
+  /** The relay's own Ed25519 key for passkey stamps; only its public half ever leaves this database [E22]. */
+  function personAuthorityKeys() {
+    return lifecycle(() => {
+      let keys = db.prepare('SELECT private_key,public_key FROM relay_person_authority WHERE slot=1').get();
+      if (!keys) {
+        const pair = generateKeyPairSync('ed25519');
+        keys = { private_key: pair.privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64url'),
+          public_key: pair.publicKey.export({ type: 'spki', format: 'der' }).toString('base64url') };
+        db.prepare('INSERT INTO relay_person_authority(slot,private_key,public_key) VALUES(1,?,?)').run(keys.private_key, keys.public_key);
+      }
+      return keys;
+    });
+  }
+
+  /** Require the person's own session for a passkey action; machine and agent credentials never qualify. */
+  function personOnly(principal) {
+    if (principal?.kind !== 'session') throw new Refused('HUMAN_REQUIRED', 'only the person, signed in on their phone or browser, uses a passkey; agents and machines cannot');
+    return principal;
   }
 
   /** Revoke a server-held device session when its person declined or abandoned confirmation. */
@@ -810,6 +853,98 @@ export function createRelayAuth({ database, github, now = Date.now, sessionTTL =
       return db.prepare('SELECT id,reason,session_id,revoked,issued_id,at FROM relay_coordinator_events WHERE board=? ORDER BY at,rowid').all(board)
         .map((row) => ({ id: row.id, reason: row.reason, session: row.session_id, revoked: JSON.parse(row.revoked), issued: row.issued_id, at: row.at }));
     },
+    /** Publish the public half of the passkey stamp key, which boards pin from their own configured relay origin [E22]. */
+    personAuthority() {
+      return { version: 1, algorithm: 'Ed25519', publicKey: personAuthorityKeys().public_key };
+    },
+    /** Start a passkey registration for the signed-in person: a single-use challenge, valid five minutes. */
+    passkeyChallenge(principal) {
+      personOnly(principal);
+      const challenge = randomBytes(32).toString('base64url');
+      const expires = now() + 300_000;
+      for (const [key, entry] of passkeyChallenges) if (entry.expires <= now()) passkeyChallenges.delete(key);
+      passkeyChallenges.set(hash(challenge), { user: principal.user.id, expires });
+      return { challenge, expires, user: { id: Buffer.from(principal.user.id).toString('base64url'), name: principal.user.login } };
+    },
+    /** Keep a passkey the person registered with user presence, consuming its challenge once. */
+    registerPasskey(principal, body, expected) {
+      personOnly(principal);
+      if (!body || Object.keys(body).sort().join() !== 'authenticatorData,challenge,clientDataJSON,id' || typeof body.challenge !== 'string') {
+        throw new Refused('PASSKEY_REGISTRATION', 'send the challenge, id, clientDataJSON and authenticatorData of one new passkey');
+      }
+      passkeyBytes(body.id, 'PASSKEY_REGISTRATION', 1400);
+      const pending = passkeyChallenges.get(hash(body.challenge));
+      passkeyChallenges.delete(hash(body.challenge));
+      if (!pending || pending.user !== principal.user.id || pending.expires <= now()) throw new Refused('PASSKEY_REGISTRATION', 'the registration challenge expired or belongs to another sign-in; add the passkey again');
+      return lifecycle(() => {
+        const passkey = verifyRegistration(body, { ...expected, challenge: body.challenge });
+        const owner = db.prepare('SELECT user_id FROM relay_passkeys WHERE id=?').get(passkey.id);
+        if (owner && owner.user_id !== principal.user.id) throw new Refused('PASSKEY_REGISTRATION', 'this passkey belongs to another account; add a new passkey');
+        db.prepare('INSERT INTO relay_passkeys(id,user_id,public_key,algorithm,counter,created) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET public_key=excluded.public_key,algorithm=excluded.algorithm,counter=excluded.counter')
+          .run(passkey.id, principal.user.id, JSON.stringify(passkey.jwk), passkey.algorithm, passkey.counter, now());
+        return { id: passkey.id, created: now() };
+      });
+    },
+    /** The ids of the signed-in person's passkeys, for the browser's allowCredentials list. */
+    passkeys(principal) {
+      personOnly(principal);
+      return db.prepare('SELECT id FROM relay_passkeys WHERE user_id=? ORDER BY created,id').all(principal.user.id).map((row) => row.id);
+    },
+    /**
+     * Mint a single-use grant for one person request on one board, bound to the digest of its exact intent. The
+     * grant is a bearer value the browser holds in memory only; its passkey assertion signs the grant's digest.
+     */
+    issuePersonGrant(principal, board, body) {
+      personOnly(principal);
+      if (!body || Object.keys(body).sort().join() !== 'digest,request' || typeof body.request !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/u.test(body.request)
+          || typeof body.digest !== 'string' || !/^[0-9a-f]{64}$/u.test(body.digest)) {
+        throw new Refused('BAD_REQUEST', 'ask for a person grant with the request id and the SHA-256 of its exact intent');
+      }
+      const credentials = auth.passkeys(principal);
+      if (!credentials.length) throw new Refused('PASSKEY_REQUIRED', 'add a passkey on this phone or browser first: it confirms each person move with Face ID, Touch ID or a key touch');
+      const grant = random('pg_');
+      const expires = now() + 120_000;
+      lifecycle(() => db.prepare('INSERT INTO relay_action_grants(hash,request,user_id,context,expires) VALUES(?,?,?,?,?)')
+        .run(hash(grant), 'person:' + randomUUID(), principal.user.id, JSON.stringify({ kind: 'person', board, request: body.request, digest: body.digest }), expires));
+      return { grant, expires, credentials };
+    },
+    /**
+     * Check a passkey answer for a person request on this board and return the relay's signed stamp, with a commit
+     * that spends the grant and advances the passkey's counter. The caller commits only once the request is stored.
+     */
+    personPresence(principal, board, presence, expected) {
+      personOnly(principal);
+      if (!presence || Object.keys(presence).sort().join() !== 'authenticatorData,clientDataJSON,credential,grant,signature'
+          || typeof presence.grant !== 'string' || !/^pg_[A-Za-z0-9_-]{43}$/u.test(presence.grant)) {
+        throw new Refused('PASSKEY_ASSERTION', 'send the grant and the passkey answer for this request');
+      }
+      const row = db.prepare('SELECT * FROM relay_action_grants WHERE hash=?').get(hash(presence.grant));
+      let context = null;
+      try { context = row ? JSON.parse(row.context) : null; } catch { context = null; } // An unreadable grant row grants nothing.
+      if (!row || row.used || row.expires <= now() || row.user_id !== principal.user.id || context?.kind !== 'person' || context.board !== board) {
+        throw new Refused('PHONE_APPROVAL_USED', 'this grant was used, expired or names another board; confirm the move again on your passkey');
+      }
+      const passkey = db.prepare('SELECT * FROM relay_passkeys WHERE id=? AND user_id=?').get(presence.credential, principal.user.id);
+      if (!passkey) throw new Refused('PASSKEY_ASSERTION', 'this passkey is not registered to your account; add it on this phone or browser first');
+      const counter = verifyAssertion(presence, { ...expected, challenge: grantChallenge(presence.grant),
+        passkey: { jwk: JSON.parse(passkey.public_key), algorithm: passkey.algorithm, counter: passkey.counter } });
+      const at = now();
+      const unsigned = { board, request: context.request, digest: context.digest, credential: passkey.id, at };
+      const key = createPrivateKey({ key: Buffer.from(personAuthorityKeys().private_key, 'base64url'), format: 'der', type: 'pkcs8' });
+      const stamp = { ...unsigned, signature: sign(null, presenceAttestation(unsigned), key).toString('base64url') };
+      return {
+        stamp,
+        /** Spend the grant once and keep the passkey's new counter, under the caller's board lock. */
+        commit() {
+          lifecycle(() => {
+            if (!db.prepare('UPDATE relay_action_grants SET used=1 WHERE hash=? AND used=0').run(hash(presence.grant)).changes) {
+              throw new Refused('PHONE_APPROVAL_USED', 'this grant was already used; confirm the move again on your passkey');
+            }
+            db.prepare('UPDATE relay_passkeys SET counter=? WHERE id=? AND counter<=?').run(counter, passkey.id, counter);
+          });
+        },
+      };
+    },
     /** Mint a short-lived grant only after an authenticated phone approves an immutable action context. */
     async issueActionGrant(token, value) {
       const context = approvalContext(value);
@@ -861,7 +996,7 @@ export function createRelayAuth({ database, github, now = Date.now, sessionTTL =
     close() {
       if (closed) return;
       closed = true;
-      webFlows.clear(); deviceFlows.clear(); deviceConfirmations.clear(); deviceSessionReceipts.clear(); sessionGuards.clear(); permissions.clear(); db.close();
+      webFlows.clear(); deviceFlows.clear(); passkeyChallenges.clear(); deviceConfirmations.clear(); deviceSessionReceipts.clear(); sessionGuards.clear(); permissions.clear(); db.close();
     },
   };
   return auth;

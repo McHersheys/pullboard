@@ -13,8 +13,13 @@ import {
 } from './machine.js';
 import {
   EVENT_LOG_VERSION,
+  SIGNED_EVENT_LOG_VERSION,
   specApprovalBaseline,
 } from './board.js';
+import {
+  exportedMeta,
+  guardRestore,
+} from './person-signing.js';
 
 const VERSION = 1;
 
@@ -67,6 +72,8 @@ export function exportBoard(board) {
       nativeRows(db, table),
     ]));
     db.exec('COMMIT');
+    // The pinned relay key stays with this board file; an export never carries it to another [E22].
+    tables.board_meta = exportedMeta(tables.board_meta ?? []);
     return { version: VERSION, tables };
   } catch (error) {
     db.exec('ROLLBACK');
@@ -127,8 +134,8 @@ function validateDocument(db, document, names) {
   if (!Number.isSafeInteger(eventLogVersion) || eventLogVersion < 0) {
     throw new Refused('EVENT_LOG_VERSION', `event log version ${eventLog?.meta_value ?? 'missing'} in this export is invalid; export it again or upgrade pullboard`);
   }
-  if (eventLogVersion > EVENT_LOG_VERSION) {
-    throw new Refused('EVENT_LOG_VERSION', `event log version ${eventLogVersion} in this export is newer than this pullboard version ${EVENT_LOG_VERSION}; upgrade pullboard to read it`);
+  if (eventLogVersion > Math.max(EVENT_LOG_VERSION, SIGNED_EVENT_LOG_VERSION)) {
+    throw new Refused('EVENT_LOG_VERSION', `event log version ${eventLogVersion} in this export is newer than this pullboard version ${SIGNED_EVENT_LOG_VERSION}; upgrade pullboard to read it`);
   }
 }
 
@@ -230,6 +237,7 @@ function restoreDocument(board, document, replace = false, expectedNativeDigest 
         table,
         nativeRows(db, table),
       ])) };
+      current.tables.board_meta = exportedMeta(current.tables.board_meta);
       const actual = semanticBoardDigest(current);
       if (actual !== expectedNativeDigest) throw new Refused('RELAY_LOCAL_CHANGED', 'the local board changed before checkpoint restore; its changes were preserved, export them and retry recovery');
       localAgentCursors = new Map(current.tables.agent.map((row) => [row.agent_id, row.agent_last_shout_id]));
@@ -240,6 +248,8 @@ function restoreDocument(board, document, replace = false, expectedNativeDigest 
     if (occupied.length && !initCoordinator && !replace) {
       throw new Refused('IMPORT_NOT_EMPTY', `board tables already have rows (${occupied.join(', ')}); import into a repo with an empty board`);
     }
+    // Signed person moves survive a restore: this board keeps its own relay key pin and its signing state [E22].
+    const signing = guardRestore(db, document);
     const triggers = db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'machine_%'").all();
     for (const { name } of triggers) db.exec(`DROP TRIGGER ${identifier(name)}`);
     if (replace) {
@@ -265,6 +275,7 @@ function restoreDocument(board, document, replace = false, expectedNativeDigest 
     }
     db.prepare('INSERT INTO board_meta (meta_key, meta_value) VALUES (?, ?) ON CONFLICT(meta_key) DO UPDATE SET meta_value = excluded.meta_value')
       .run('event_log_version', String(EVENT_LOG_VERSION));
+    signing();
     const setSequence = db.prepare('UPDATE sqlite_sequence SET seq = ? WHERE name = ?');
     for (const row of document.tables.sqlite_sequence ?? []) {
       if (!setSequence.run(row.seq, row.name).changes) db.prepare('INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)').run(row.name, row.seq);

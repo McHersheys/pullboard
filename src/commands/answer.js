@@ -10,6 +10,9 @@ import {
   requirePersonChannel,
 } from '../person.js';
 import {
+  requireSignedPerson,
+} from '../person-signing-cli.js';
+import {
   actOn,
   agentDisplayName,
   idArg,
@@ -22,6 +25,10 @@ export async function run(io, { first, second, rest, values }) {
   const act = (work) => actOn(io, work);
   return act(async (ctx, board, me) => {
   const asPerson = personMode(ctx, me, values);
+  // With signed person moves on, the answer goes to the person's passkey as this exact request [E22].
+  if (asPerson) { const confirmed = await requireSignedPerson(ctx, board, me, { verb: 'answer', item: idArg(first), args: { as: 'person', text: [second, ...rest].filter(Boolean).join(' '),
+    ...(values.implies === undefined ? {} : { implies: String(values.implies) }), ...(values.supersedes === undefined ? {} : { supersedes: String(values.supersedes) }) } });
+  if (confirmed !== null) return confirmed; }
   if (asPerson) requirePersonChannel(ctx.io.personChannel);
   const implies = parseImplies(values.implies);
   const supersedes = values.supersedes === undefined ? undefined : idArg(String(values.supersedes).replace(/^#/u, ''));

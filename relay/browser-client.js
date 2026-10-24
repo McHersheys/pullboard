@@ -1,18 +1,60 @@
 /** Device-only relay transport: cookie authorization, local keys and authenticated ciphertext [H5,H15,H16,H17]. */
-import { rememberDevicePairing, enrollPhone, deviceBoardKeyState, installPhoneApprovals, forgetDevice } from './browser-devices.js';
-import { decodeBoardKey, encodeBoardKey, seal, unseal } from './seal.js';
-import { preparePersonRequest, validatePersonRequest } from './person-request.js';
-import { snapshotState, presentationState } from './model.js';
+import {
+  rememberDevicePairing,
+  enrollPhone,
+  deviceBoardKeyState,
+  installPhoneApprovals,
+  forgetDevice,
+} from './browser-devices.js';
+import {
+  decodeBoardKey,
+  encodeBoardKey,
+  seal,
+  unseal,
+} from './seal.js';
+import {
+  preparePersonRequest,
+  validatePersonRequest,
+} from './person-request.js';
+import {
+  snapshotState,
+  presentationState,
+} from './model.js';
 import { ENGINE_VERSION } from './engine.js';
 import { Refused } from './refused.js';
 import { SNAPSHOT_BODY_BYTES } from './relay-limits.js';
-import { enqueueStream, followStream } from './browser-stream.js';
-import { emptyBoardStep, homeLineDismissed, homeScreenLine, noticeLines, rememberOwnedRequestId, showRelayScreen, storedOwnedRequestState } from './browser-notice.js';
-import { registerApp, requestPairingPersistence } from './install.js';
-import { browserJSON, withBrowserDeadline } from './browser-deadline.js';
-import { phoneApprovalStatus, placePhoneApprovals, forgetPhoneApprovals } from './browser-approval-card.js';
+import {
+  enqueueStream,
+  followStream,
+} from './browser-stream.js';
+import {
+  emptyBoardStep,
+  homeLineDismissed,
+  homeScreenLine,
+  noticeLines,
+  rememberOwnedRequestId,
+  showRelayScreen,
+  storedOwnedRequestState,
+} from './browser-notice.js';
+import {
+  registerApp,
+  requestPairingPersistence,
+} from './install.js';
+import {
+  browserJSON,
+  withBrowserDeadline,
+} from './browser-deadline.js';
+import {
+  phoneApprovalStatus,
+  placePhoneApprovals,
+  forgetPhoneApprovals,
+} from './browser-approval-card.js';
 import { phoneSnapshotPages } from './browser-pages.js';
 import { createPhoneHistory } from './browser-history.js';
+import {
+  installPersonPasskeys,
+  passkeyPresence,
+} from './browser-passkeys.js';
 
 const CHECKPOINT_WAIT_MS = 15_000;
 const KEYS = 'pullboard.relay.keys.v1';
@@ -119,6 +161,8 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
   let accessLost = false;
   let accessError = null;
   const access = new AbortController();
+  // Passkey answers for requests in flight, by request id: memory only, spent by the relay on first use [E22].
+  const presences = new Map();
   let persistenceRequest = null;
   // New viewers acknowledge their first actual render; old viewers retain the prior transition contract.
   let rendered = waitForRender !== true;
@@ -701,8 +745,9 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
       const envelope = entry.outbox;
       let response;
       try {
+        const presence = presences.get(value.id);
         response = await documentAt('/api/v1/boards/' + entry.id + '/requests', denied, {
-          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sequence: envelope.sequence, sealed: envelope.sealed }),
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sequence: envelope.sequence, sealed: envelope.sealed, ...(presence ? { presence } : {}) }),
         });
       } catch (error) { if (['SEQUENCE_REPEAT', 'SEQUENCE_GAP'].includes(error.code)) continue; throw error; }
       if (response.event?.event_id !== envelope.sequence || response.event.kind !== 'request' || response.event.sealed !== envelope.sealed) throw new Refused('RELAY_RESPONSE', 'The relay acknowledgement differs from this request. Retry this board.');
@@ -710,6 +755,7 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
       const record = entry.state.personRequests.find(request => request.id === value.id);
       if (!record) throw new Refused('RELAY_RESPONSE', 'The request acknowledgement has no receipt. Retry this board.');
       acknowledge(entry, value.id);
+      presences.delete(value.id);
       notice();
       onUpdate();
       return { version: 1, event: response.event, result: { request: structuredClone(record) } };
@@ -782,6 +828,30 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
     keys, openApprovedBoard, access.signal).catch(() => {
     if (!accessLost) phoneApprovalStatus(document, 'Requests from your computer did not load. Open this page again to retry.');
   });
+  /**
+   * Seal and send one person request. While the board signs person moves, a passkey confirms this exact request first,
+   * with the person present; its answer rides with the send and is never stored [E22].
+   */
+  function sendPersonRequest(entry, value) {
+    return enqueue(entry, async () => {
+      await flushOutbox(entry);
+      await snapshot(entry); await catchUp(entry);
+      // A signed row decision names the exact text of each row this page shows; the passkey confirms that text.
+      if (entry.state.personSigning?.signed && ['spec-approve', 'spec-decline'].includes(value.move.verb) && !value.rows) {
+        value = preparePersonRequest(value.move, value.id, value.move.args.ids.split(/[\s,]+/u).filter(Boolean).map(id => ({ id,
+          text: (id.startsWith('doctrine:') ? entry.state.practice : entry.state.spec).find(row => row.id === id.replace(/^doctrine:/u, ''))?.text ?? '' })));
+      }
+      if (entry.state.personSigning?.signed && !presences.has(value.id)) {
+        presences.set(value.id, await passkeyPresence((path, options) => documentAt(path, denied, { ...options, signal: access.signal }), entry.id, value));
+      }
+      entry.outbox = await requestEnvelope(entry, value, entry.cursor + 1);
+      saveOutbox(entry);
+      return sendOutbox(entry);
+    });
+  }
+  installPersonPasskeys(document, { documentAt: (path, options) => documentAt(path, denied, { ...options, signal: access.signal }),
+    boards: () => [...paired.values()], signal: access.signal,
+    confirm: (board, proposal) => sendPersonRequest(paired.get(board), preparePersonRequest(proposal.move, proposal.id, proposal.rows)) });
   return {
     /** Give the startup frame back only after an opted-in viewer has drawn a readable board. */
     didRender() { rendered = true; notice(); for (const entry of paired.values()) entry.history?.start(); },
@@ -802,15 +872,7 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
       if (body !== undefined && body !== null) {
         if (shoutMatch || itemMatch) throw new Refused('BAD_REQUEST', 'Read item or shout detail with GET; send person intent to the board moves endpoint.');
         if (!['moves', 'requests'].includes(match[2])) throw new Refused('BAD_REQUEST', 'Send person intent to this board’s moves endpoint.');
-        const value = preparePersonRequest(body);
-        const send = enqueue(entry, async () => {
-          await flushOutbox(entry);
-          await snapshot(entry); await catchUp(entry);
-          entry.outbox = await requestEnvelope(entry, value, entry.cursor + 1);
-          saveOutbox(entry);
-          return sendOutbox(entry);
-        });
-        return send;
+        return sendPersonRequest(entry, preparePersonRequest(body));
       }
       if (itemMatch) return enqueue(entry, async () => {
         await flushOutbox(entry); await snapshot(entry); await catchUp(entry);

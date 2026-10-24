@@ -18,6 +18,9 @@ import {
   loadSpec,
 } from '../spec.js';
 import {
+  signingLine,
+} from '../person-signing-words.js';
+import {
   submitInvariantLine,
   submitInvariantProposals,
 } from '../submit-invariants.js';
@@ -33,12 +36,14 @@ export async function run(io, { values }) {
   const relay = hasRelayState ? await import('../relay.js') : null;
   const environment = hasRelayState && process.env.PULLBOARD_RELAY_TOKEN !== undefined
     ? await import('../relay-environment.js') : null;
-  const summary = await withBoardRead(ctx, (board, readers) => {
+  const summary = await withBoardRead(ctx, async (board, readers) => {
     const me = identifyCaller(ctx, board, { environmentAgent: environment?.environmentAgent ?? (() => null),
       relayLinked: relay?.relayLinked ?? (() => false) }, readers);
     const mine = store.itemsInStatus(board, 'claimed', me.id);
     const approvalState = personNeedsSummary(ctx.info.root, { board, config: ctx.config });
-    return { me, mine, ruleCounts: ruleProofCounts(ctx.info.root, board, approvalState.spec), needs: approvalState.needs, specApprovalBaseline: approvalState.specApprovalBaseline, specApprovalEvidenceErrors: approvalState.specApprovalEvidenceErrors, stats: store.stats(board), reviewQueue: { ...store.reviewQueue(board), ...store.reviewQueueBreakdown(board) }, unread: store.unreadCount(board, me.id), relay: relay ? relay.relayStatus(ctx.info.root) : unlinkedRelayStatus(),
+    const person = board.db.prepare("SELECT 1 FROM event WHERE event_kind='person_signing' LIMIT 1").get()
+      ? { signed: (await import('../person-signing.js')).personSigning(board).signed } : { signed: false };
+    return { me, mine, person, ruleCounts: ruleProofCounts(ctx.info.root, board, approvalState.spec), needs: approvalState.needs, specApprovalBaseline: approvalState.specApprovalBaseline, specApprovalEvidenceErrors: approvalState.specApprovalEvidenceErrors, stats: store.stats(board), reviewQueue: { ...store.reviewQueue(board), ...store.reviewQueueBreakdown(board) }, unread: store.unreadCount(board, me.id), relay: relay ? relay.relayStatus(ctx.info.root) : unlinkedRelayStatus(),
       submitInvariantProposals: submitInvariantProposals(store.submitInvariantEvents(board, ctx.config), ctx.config) };
   });
   if (values.json) {
@@ -53,6 +58,7 @@ export async function run(io, { values }) {
   if (summary.specApprovalBaseline?.pending) io.say('approval baseline pending: the next coordinator or person command in the main checkout records the existing approved rows; lane work may continue and none are flagged until then');
   if (summary.specApprovalBaseline?.invalid) io.say('approval baseline unreadable: existing rows need approval evidence; restore a known-good board export to recover the original baseline');
   io.say(reviewQueueLine(ctx, summary.reviewQueue, span));
+  io.say(signingLine(summary.person));
   for (const proposal of summary.submitInvariantProposals) io.say(submitInvariantLine(proposal));
   for (const need of summary.needs.filter(need => need.kind === 'agent-approved')) io.say(`${need.text}; ${need.what}`);
   if (!summary.relay.linked && !originRepository(ctx.info.root, { optional: true })) {

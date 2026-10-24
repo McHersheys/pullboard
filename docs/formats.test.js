@@ -1,9 +1,19 @@
 /** Keep the format guide aligned with parser behavior, live SQLite schema and static export [A5,A10]. */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import {
+  join,
+  relative,
+} from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { submitFixture } from '../test/board-submit-fixture.js';
@@ -17,7 +27,10 @@ import { COORDINATOR } from '../src/config.js';
 import { JSON_SHAPES } from '../src/json.js';
 import { exportView } from '../src/serve.js';
 import { ENGINE_VERSION } from '../src/machine.js';
-import { applyEngineMove, prepareEngineMove } from '../src/engine.js';
+import {
+  applyEngineMove,
+  prepareEngineMove,
+} from '../src/engine.js';
 import {
   ACCEPT_REASON,
   answerDecision,
@@ -56,8 +69,21 @@ import {
   verify,
   withdraw,
 } from '../src/board.js';
-import { ID_RE, readSignoffs, SPEC_GRAMMAR_VERSION, STATUSES, TIERS, lintSpec, parseSpec, unmetRows } from '../src/spec.js';
-import { sha256, signRows } from '../src/signature.js';
+import {
+  ID_RE,
+  readSignoffs,
+  SPEC_GRAMMAR_VERSION,
+  STATUSES,
+  TIERS,
+  lintSpec,
+  parseSpec,
+  unmetRows,
+} from '../src/spec.js';
+import {
+  sha256,
+  signRows,
+} from '../src/signature.js';
+import { recordSigningEvents } from '../test/person-passkey-fixture.js';
 
 const guide = readFileSync(new URL('./formats.md', import.meta.url), 'utf8');
 
@@ -358,6 +384,7 @@ function recordEventContract() {
   withdraw(board, withdrawn, { agentId: coordinator, reason: 'duplicate fixture' });
   holdLane(board, 'view', { agentId: coordinator, reason: 'fixture hold' });
   releaseLane(board, 'view', { agentId: coordinator });
+  recordSigningEvents(board, coordinator);
   appendFact(board, first, { agentId: coordinator, kind: 'root-cause', text: 'A typed immediate Rigor format example', cause: 'doctrine:C3', neverAgain: true, asPerson: true, channel: 'terminal' });
   // A synthetic health observation exercises receipt fields only; the health tests prove scanning.
   const healthFinding = { key: `CLAIM_LAPSED:item:${corrected}`, cause: 'CLAIM_LAPSED', item: corrected,
@@ -658,11 +685,13 @@ test('[A5] schema, versions, event kinds and event detail fields match live beha
     'sentinel-start': 'running agent',
     'sentinel-run': 'running agent',
     'sentinel-failure': 'sentinel',
+    person_proposal: 'proposing agent',
   };
   for (const row of actualRows) {
     const kind = row.event_kind;
     const entry = actual[kind] ?? { actors: new Set(), fields: new Set() };
-    const actor = kind === 'refreeze' && row.event_by !== COORDINATOR
+    const actor = kind === 'person_signing' && row.event_by !== PERSON ? 'enabling agent'
+      : kind === 'refreeze' && row.event_by !== COORDINATOR
       ? 'live holder adopting a pending correction'
       : actorByKind[kind] ?? actors[row.event_by] ?? 'unknown';
     entry.actors.add(actor);

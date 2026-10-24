@@ -56,6 +56,17 @@ export function personRequestGuidance(message, { caller, leading = false } = {})
 
 /** @type {Readonly<Record<string, string>>} */
 export const NEXT_STEPS = Object.freeze({
+  PASSKEY_ASSERTION: 'confirm the move again on your passkey from the relay view',
+  PASSKEY_PRESENCE: 'confirm the move again with Face ID, Touch ID or a key touch',
+  PASSKEY_REGISTRATION: 'add the passkey again from the relay view on this phone or browser',
+  PASSKEY_REQUIRED: 'add a passkey in the relay view on your phone or browser, then confirm the move',
+  PERSON_AUTHORITY: 'upgrade the relay so it publishes its passkey stamp key, then retry',
+  PERSON_AUTHORITY_CHANGED: 'check which relay this board belongs to; link it to the relay it pinned',
+  PERSON_PROPOSAL: 'start the person move from a terminal seat, then confirm it with your passkey',
+  PERSON_SIGNED: 'confirm it with your passkey in the relay view; pair a phone or browser first with pullboard relay on --all',
+  PERSON_SIGNER_REQUIRED: 'decide the other rows with your passkey; a row that names SSH signers waits until signing is off',
+  PERSON_SIGNING_CORRUPT: 'restore the board from a known-good export',
+  PERSON_SIGNING_ERASED: 'restore a known-good board that keeps its signing history',
   ACCOUNT_STORAGE_LIMIT: 'remove an unneeded relay copy through the approved phone flow, or ask the relay operator to increase the account quota; uploads resume when space is available',
   BAD_PAGE: 'retry the saved upload with a current linked CLI; send only its original bounded encrypted objects',
   BAD_PAGE_PATH: 'refresh the board on the phone, then follow the encrypted references from its new read pin',

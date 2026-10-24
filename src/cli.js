@@ -109,6 +109,8 @@ import {
   agentSessionDigest,
   personCommand,
 } from './person.js';
+import { signedMoveProblem } from './person-signing.js';
+import { personAuthority } from './relay-sender.js';
 import {
   bindLocalSession,
   HOOK_CHECKOUT_WAIT_MS,
@@ -494,7 +496,7 @@ export function checkMainVerifier(ctx, board, values) {
  */
 export function personMode(ctx, me, values) {
   if (values.as === undefined) return false;
-  if (values.as !== 'person') throw new Refused('USAGE', '--as person is supported for answer, decisions and fact --never-again');
+  if (values.as !== 'person') throw new Refused('USAGE', '--as person is supported for answer, decisions, hold and fact --never-again');
   if (!ctx.info.isMain || me.id !== COORDINATOR) {
     throw new Refused('B26_PERSON_ANSWER', 'only the main checkout can act as the person; ask your coordinator to answer or pass this decision');
   }
@@ -559,6 +561,9 @@ export function relayOutboxSetting(root) {
 }
 
 export async function ordered(ctx, board, operation, args) {
+  // With signed person moves on, a person-only move counts only as a passkey-confirmed request [E22].
+  const unsigned = signedMoveProblem(board, personAuthority({ operation, args }), ctx.io.personRequest, { strict: true });
+  if (unsigned) throw unsigned;
   const initialBaseline = initialSpecApprovalBaseline(ctx, board, operation);
   // Only a reject or a reopen can open a builder's first-refusal window (#954), so an accept never reads the coordinator's policy.
   if (operation === 'reopen' || operation === 'verify' && args[1]?.decision === 'REJECT') args = firstRefusalArgs(operation, args, configFromSource(coordinatorFile(ctx.info.root, CONFIG_FILE).stdout));

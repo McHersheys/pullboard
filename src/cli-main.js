@@ -176,8 +176,8 @@ async function runCommand(argv, io) {
     ? (await import('./cli-help.js')).selectedHelp(command, first, second, rest, values) : null;
   if (help) return await (await COMMANDS.help()).run(io, args, help);
   try {
-    if (values.as === 'person' && !['answer', 'decisions', 'fact'].includes(command)) {
-      throw new Refused('USAGE', '--as person works only with pullboard answer, decisions, or fact --never-again');
+    if (values.as === 'person' && !['answer', 'decisions', 'fact', 'hold'].includes(command)) {
+      throw new Refused('USAGE', '--as person works only with pullboard answer, decisions, hold, or fact --never-again');
     }
     const load = COMMANDS[command];
     if (!load) return (await import('./cli-help.js')).unknownCommand(io, command);
@@ -276,7 +276,7 @@ async function runMain(argv, streams) {
       const [command, verb] = parsed.positionals;
       const remoteRelayOn = command === 'relay' && verb === 'on' && !parsed.values.all;
       if (!parsed.values.help && !parsed.values.version &&
-          (parsed.values.as === 'person' && command !== 'decisions' || command === 'relay' && ['on', 'join', 'revoke'].includes(verb) && !remoteRelayOn)) {
+          (parsed.values.as === 'person' && command !== 'decisions' && !(await import('./person-signing-cli.js')).signsPersonMoves(io.cwd) || command === 'relay' && ['on', 'join', 'revoke'].includes(verb) && !remoteRelayOn)) {
         (await import('./person.js')).requirePersonChannel(io.personChannel);
         io.caller('person');
       }

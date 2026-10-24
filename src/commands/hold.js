@@ -1,5 +1,7 @@
 /** The pullboard hold command, in its own module so an item adding another command never edits these lines. */
 import * as store from '../board.js';
+import { requireSignedPerson } from '../person-signing-cli.js';
+import { requirePersonChannel } from '../person.js';
 import {
   isLane,
 } from '../lanes.js';
@@ -10,6 +12,7 @@ import {
   actOn,
   idArg,
   ordered,
+  personMode,
 } from '../cli.js';
 
 /** Run `pullboard hold` and return its exit code. */
@@ -31,11 +34,18 @@ export async function run(io, { first, second, rest, values }) {
     return 0;
   }
   if (!first || !isLane(ctx.config, first)) throw new Refused('NO_LANE', `no lane "${first ?? ''}"; see: pullboard lanes`);
+  const asPerson = io.personChannel === 'view' || values.as === 'person' && personMode(ctx, me, values);
+  if (asPerson) {
+    const confirmed = await requireSignedPerson(ctx, board, me, { verb: 'hold', args: { lane: first,
+      ...(values.off ? { off: true } : { reason: String(values.reason ?? '') }) } });
+    if (confirmed !== null) return confirmed;
+    requirePersonChannel(io.personChannel);
+  }
   if (values.off) {
-    await ordered(ctx, board, 'releaseLane', [first, { agentId: me.id, asPerson: io.personChannel === 'view', channel: io.personChannel ?? 'terminal' }]);
+    await ordered(ctx, board, 'releaseLane', [first, { agentId: me.id, asPerson, channel: io.personChannel ?? 'terminal' }]);
     io.say(`released the ${first} lane`);
   } else {
-    await ordered(ctx, board, 'holdLane', [first, { agentId: me.id, reason: values.reason ?? '', asPerson: io.personChannel === 'view', channel: io.personChannel ?? 'terminal' }]);
+    await ordered(ctx, board, 'holdLane', [first, { agentId: me.id, reason: values.reason ?? '', asPerson, channel: io.personChannel ?? 'terminal' }]);
     io.say(`holding the ${first} lane: ${values.reason}. Release it with: pullboard hold ${first} --off`);
   }
   io.result?.({ lane: first, held: !values.off, reason: values.off ? null : values.reason });
