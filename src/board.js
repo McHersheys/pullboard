@@ -1,4 +1,5 @@
-import { AGENT_GRANT_ENGINE } from './agent-grant-engine.js';
+import * as computedConflictEvidence from './computed-conflict-receipt.js';
+import { reopenAuthority } from './reopen-authority.js';
 import {
   focusOrder,
   focusReasons,
@@ -189,7 +190,6 @@ import {
   IN_STATE,
   MOVES,
   STATES,
-  SUBMITTED_CONFLICT_ENGINE,
   UNKNOWN_MOVE,
   VERIFIER_STANDING_ENGINE,
   effectiveGuards,
@@ -1454,9 +1454,11 @@ export function verify(board, id, { agentId, decision, reason, note = '', cause,
  * @param {{ agentId: string, note: string, cause?: string, withdrawVerdict?: boolean }} request
  * @returns {{ id: number, commit: string, supersedes?: number, landingFailure?: object }}
  */
-export function reopen(board, id, { agentId, note = '', conflict, cause, reopenFirstRefusalMinutes, quotedLandingFailure, withdrawVerdict }) {
+export function reopen(board, id, { agentId, note = '', conflict, cause, reopenFirstRefusalMinutes, quotedLandingFailure, withdrawVerdict, computedConflict }) {
   return atomic(board, () => {
     let submittedCommit = null;
+    const assertedConflict = conflict;
+    conflict = computedConflictEvidence.conflictValue(computedConflict, conflict);
     const forMerge = conflict !== undefined && conflict !== null;
     let supersedes, landingFailure, withdrawnVerdict;
     const forWithdrawal = withdrawVerdict === true;
@@ -1469,13 +1471,8 @@ export function reopen(board, id, { agentId, note = '', conflict, cause, reopenF
       checks: {
         joined: null,
         [IN_STATE]: (found) => new Refused('NOT_SUBMITTED', `item #${id} is ${current(board, found).item_status}, not submitted`),
-        // Historic joined-seat conflict reports keep their authority; current conflicts belong to the coordinator.
-        reopenAuthority: (found) => {
-          if (forWithdrawal) { withdrawnVerdict = verdictWithdrawal.verdictWithdrawalTarget(board, found, agentId); return null; }
-          return (forMerge && found.item_status === 'submitted' && currentEngine >= SUBMITTED_CONFLICT_ENGINE
-            && currentEngine < AGENT_GRANT_ENGINE && listAgents(board).some((agent) => agent.agent_id === agentId)
-          ? null : onlyCoordinator(agentId, 'reopens submissions'));
-        },
+        reopenAuthority: (found) => reopenAuthority(board, found, agentId,
+          { forWithdrawal, forMerge, currentEngine, computedConflict, assertedConflict }, value => { withdrawnVerdict = value; }),
         noteGiven: () => (forMerge || note.trim() ? null : new Refused('NOTE_REQUIRED', 'say why the criterion needs correction: --note "why"')),
         causeWellFormed: () => causeProblem(cause),
         notMerged: (found) => found.item_status !== 'verified' || !found.item_merged_commit
@@ -1521,7 +1518,7 @@ export function reopen(board, id, { agentId, note = '', conflict, cause, reopenF
     });
     const returnedAt = (forMerge || landingFailure || forWithdrawal) && currentEngine >= REOPEN_FIRST_REFUSAL_ENGINE && reopenFirstRefusalMinutes > 0 && item.item_built_by ? board.clock.now() : undefined;
     const reservation = (forMerge || landingFailure || forWithdrawal) && currentEngine >= REOPEN_FIRST_REFUSAL_ENGINE ? firstRefusalDetail(board, item, reopenFirstRefusalMinutes, returnedAt) : {};
-    const returned = forWithdrawal ? { supersedes, withdrawnVerdict } : forMerge ? { supersedes, ...conflictDetail(conflict) } : supersedes ? { supersedes, landingFailure } : {};
+    const returned = forWithdrawal ? { supersedes, withdrawnVerdict } : forMerge ? { supersedes, ...conflictDetail(conflict), ...(computedConflict !== undefined ? { computedConflict } : {}) } : supersedes ? { supersedes, landingFailure } : {};
     const derivedCause = currentEngine >= RIGOR_AUTO_ENGINE
       ? deriveRigorCause(board, item, { cause, conflict, landingFailure, agentId }) : cause != null ? { cause } : {};
     const returnedWithCause = currentEngine >= RIGOR_AUTO_ENGINE ? { ...returned, ...derivedCause } : { ...derivedCause, ...returned };

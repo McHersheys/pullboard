@@ -1,3 +1,4 @@
+import { computedReturnArgs } from './computed-conflict-return.js';
 import { AGENT_GRANT_ENGINE } from './agent-grant-engine.js';
 import { requireAgentGrant } from './agent-grant.js';
 import {
@@ -572,6 +573,7 @@ export function relayOutboxSetting(root) {
 }
 
 export async function ordered(ctx, board, operation, args) {
+  if (operation === 'reopen') args = computedReturnArgs(board, args);
   const initialBaseline = initialSpecApprovalBaseline(ctx, board, operation);
   // Only a reject or a reopen can open a builder's first-refusal window (#954), so an accept never reads the coordinator's policy.
   if (operation === 'reopen' || operation === 'verify' && args[1]?.decision === 'REJECT') args = firstRefusalArgs(operation, args, configFromSource(coordinatorFile(ctx.info.root, CONFIG_FILE).stdout));

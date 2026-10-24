@@ -333,3 +333,66 @@ test('recorded pre-grant submitted-conflict moves retain joined-seat authority [
     assert.deepEqual(store.events(board), legacyStore.events(legacy), 'replay preserves historical event bytes');
   }
 });
+
+
+test('automatic conflict returns bind native evidence and replay without caller assertions [V4,H16]', t => {
+  const copies = [];
+  t.after(() => copies.forEach(board => store.closeBoard(board)));
+  const { box, json, conflicted, reviewer, build } = staleHeadFixture(t);
+  const source = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
+  copies.push(source);
+  const actor = store.agentAt(source, reviewer).agent_id;
+  const original = exportBoard(source);
+  const move = prepareEngineMove(source, 'reopen', [conflicted, { agentId: actor, automaticConflict: true }]);
+  const evidence = move.args[1].computedConflict;
+  assert.equal(move.args[1].automaticConflict, undefined, 'a caller boolean does not enter the executable move');
+  assert.equal(move.args[1].conflict, undefined, 'the agent asserts no conflict tuple');
+  assert.equal(evidence.head, store.getItem(source, conflicted).item_commit);
+  assert.equal(evidence.trunk, box.git(box.repo, 'rev-parse', 'HEAD'));
+  assert.deepEqual(evidence.files, ['web/list.html']);
+  assert.equal(evidence.actor, actor, 'the move retains the actual reviewer actor');
+  const forged = { ...evidence, id: 'ffffffff-ffff-ffff-ffff-ffffffffffff' };
+  const { digest: ignored, ...forgedFields } = forged;
+  forged.digest = createHash('sha256').update(JSON.stringify(forgedFields)).digest('hex');
+  for (const receipt of [forged, { ...evidence, files: ['web/false.html'] }]) {
+    assert.throws(() => prepareEngineMove(source, 'reopen', [conflicted, { agentId: actor, computedConflict: receipt }]),
+      error => error.code === 'COORDINATOR_ONLY', 'unbound or mutated evidence cannot be sealed');
+    assert.throws(() => store.reopen(source, conflicted, { agentId: actor, computedConflict: receipt }),
+      error => error.code === 'COORDINATOR_ONLY', 'the direct origin API also requires its own stored evidence');
+  }
+  assert.deepEqual(exportBoard(source), original, 'evidence preparation and refusals do not change the board');
+  /** Each imported replica has no native evidence store or usable coordinator repository binding. */
+  const replica = name => {
+    const board = store.openBoard(join(box.dir, `${name}.sqlite`));
+    copies.push(board); importBoard(board, original); return board;
+  };
+  for (const [name, options] of [
+    ['flag', { agentId: actor, automaticConflict: true }],
+    ['mutated', { agentId: actor, computedConflict: { ...evidence, files: ['web/false.html'] } }],
+    ['actor', { agentId: store.agentAt(source, box.web).agent_id, computedConflict: evidence }],
+  ]) {
+    const board = replica(name);
+    const result = applyEngineMove(board, { ...move, id: `${move.id}-${name}`, args: [conflicted, options] },
+      { sequence: 1, at: new Date().toISOString() });
+    assert.equal(result.error?.code, 'COORDINATOR_ONLY', 'a flag, altered evidence or different actor grants no replay authority');
+    assert.equal(store.getItem(board, conflicted).item_status, 'submitted');
+  }
+  const left = replica('valid-left'), right = replica('valid-right');
+  assert.throws(() => prepareEngineMove(left, 'reopen', [conflicted, { agentId: actor, automaticConflict: true }]),
+    error => error.code === 'COORDINATOR_ONLY', 'an imported replica cannot fabricate native origin evidence');
+  assert.throws(() => applyEngineMove(left, { ...move, engine: AGENT_GRANT_ENGINE - 1 }, { sequence: 1, at: new Date().toISOString() }),
+    error => error.code === 'RELAY_MOVE', 'an older engine cannot interpret the new computed-return record');
+  const receipt = { sequence: 1, at: new Date().toISOString() };
+  const results = [left, right].map(board => applyEngineMove(board, move, receipt));
+  assert.deepEqual(results[0], results[1]);
+  assert.equal(results[0].error, undefined);
+  assert.deepEqual(store.events(left), store.events(right));
+  assert.equal(store.getItem(left, conflicted).item_status, 'open');
+  const second = join(box.dir, 'clean-computed-return');
+  box.git(box.repo, 'worktree', 'add', '-q', second, '-b', 'web/clean-return', 'main');
+  json(box.run(second, 'join', 'web', '--json'));
+  const clean = build('Keep a clean footer', 'web/footer.html', '<footer>clean</footer>\n', second);
+  assert.throws(() => prepareEngineMove(source, 'reopen', [clean, { agentId: actor, automaticConflict: true }]),
+    error => error.code === 'NOT_CONFLICTING', 'a clean submitted head cannot acquire computed conflict evidence');
+  assert.equal(store.getItem(source, clean).item_status, 'submitted');
+});

@@ -1,3 +1,5 @@
+import { computedReturnArgs } from './computed-conflict-return.js';
+import { requireComputedConflictBound } from './computed-conflict-receipt.js';
 import { agentGrantMinimum } from './agent-grant.js';
 import { requireAgentGrant } from './agent-grant.js';
 import {
@@ -90,6 +92,7 @@ export function startRelayEpoch(board, boardId) {
 /** Turn caller-only callbacks into deterministic values before sealing an executable operation. */
 export function prepareEngineMove(board, operation, args, { id = randomUUID(), actor } = {}) {
   if (!ENGINE_OPERATIONS.includes(operation) || !Array.isArray(args)) throw new Refused('RELAY_MOVE', 'use a supported board-engine operation with its argument array');
+  if (operation === 'reopen') args = computedReturnArgs(board, args);
   const values = args.map((value) => value && typeof value === 'object' ? { ...value } : value);
   if (operation === 'reopen' && values[1] && typeof values[1] === 'object'
     && manualLandingFailureQuoted(values[1].note)) values[1].quotedLandingFailure = true;
@@ -101,6 +104,10 @@ export function prepareEngineMove(board, operation, args, { id = randomUUID(), a
   if (ENGINE_VERSION < minimumEngine) throw new Refused('ENGINE_VERSION', `${operation} requires engine version ${minimumEngine}; this pullboard uses engine ${ENGINE_VERSION}; upgrade before sending it`);
   // A gate run is sealed only as its gate's own receipt; a run made up by hand is refused before it reaches any replica.
   if (operation === 'recordGateRun') requireBound(board, values[0]?.receipt);
+  if (operation === 'reopen' && values[1]?.computedConflict !== undefined) {
+    if (values[1].conflict !== undefined) throw new Refused('COORDINATOR_ONLY', 'automatic conflict evidence accepts no caller conflict assertion');
+    requireComputedConflictBound(board, values[1].computedConflict);
+  }
   if (operation === 'verify' && values[1]?.sandbox !== undefined) requireOutsideReceipt(board, values[1].sandbox);
   if (operation === 'release') {
     const problem = store.reviewReleaseNoteProblem(board, values[0], values[1], values[2]);
