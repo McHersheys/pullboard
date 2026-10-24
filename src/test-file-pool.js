@@ -113,6 +113,7 @@ async function openPool(home) {
   addColumn('file_call', 'closing', 'INTEGER NOT NULL DEFAULT 0');
   addColumn('file_call', 'path', 'TEXT');
   addColumn('file_holder', 'path', 'TEXT');
+  addColumn('file_holder', 'dispatch', 'TEXT');
   return db;
 }
 
@@ -216,11 +217,24 @@ export async function takeTestFileToken(env = process.env) {
   if (!pool) return 0;
   const asked = Date.now();
   const db = await openPool(pool.home);
-  immediate(db, () => db.prepare('INSERT OR IGNORE INTO file_waiter(pid) VALUES (?)').run(process.pid));
+  const dispatched = pool.dispatch;
+  if (dispatched) {
+    if (!Number.isSafeInteger(dispatched.parent) || dispatched.parent !== process.ppid
+      || typeof dispatched.nonce !== 'string' || !dispatched.nonce) {
+      db.close();
+      throw new Error('test-file admission does not name this worker parent');
+    }
+    const adopted = immediate(db, () => db.prepare('UPDATE file_holder SET pid = ? WHERE pid = ? AND dispatch = ?')
+      .run(process.pid, dispatched.parent, dispatched.nonce).changes);
+    if (adopted !== 1) {
+      db.close();
+      throw new Error('test-file admission was lost before worker startup');
+    }
+  } else immediate(db, () => db.prepare('INSERT OR IGNORE INTO file_waiter(pid) VALUES (?)').run(process.pid));
   let pruned = 0;
   let reported = false;
   let path;
-  while (true) {
+  while (!dispatched) {
     const { taken, ahead } = standing(db);
     // A dead holder only goes in the write path, so look there at least once a second even when nothing looks free.
     if (pool.call || ahead < pool.cores - taken || Date.now() - pruned >= PRUNE_MS) {
@@ -235,8 +249,13 @@ export async function takeTestFileToken(env = process.env) {
     }
     await new Promise(done => setTimeout(done, POLL_MS));
   }
+  if (dispatched) path = db.prepare('SELECT path FROM file_holder WHERE pid = ?').get(process.pid)?.path ?? '';
   process.once('exit', () => {
-    try { db.prepare('DELETE FROM file_holder WHERE pid = ?').run(process.pid); db.close(); }
+    try {
+      // The dispatcher's row stays charged through every exit listener until the actual process has exited.
+      if (!dispatched) db.prepare('DELETE FROM file_holder WHERE pid = ?').run(process.pid);
+      db.close();
+    }
     catch { /* A row left behind is pruned once this process is gone. */ }
   });
   env[TEST_FILE_POOL_ENV] = JSON.stringify({ home: pool.home, cores: pool.cores });
@@ -244,6 +263,73 @@ export async function takeTestFileToken(env = process.env) {
   lendThroughAsyncSpawn(pool, env, db, path);
   lendThroughSyncCalls(pool, env, db, path);
   return Date.now() - asked;
+}
+
+/**
+ * Reserve one FIFO place before the dispatcher starts a file. A dispatcher has only one pending reservation;
+ * its actual file worker atomically adopts that existing row, preserving the lender/call/path and charge.
+ * This uses the same holder/waiter tables, not a second capacity pool or run registry.
+ */
+export async function reserveTestFileToken(env, signal) {
+  if (ownsFileToken) throw new Error('a test file must start a separate runner before dispatching nested files');
+  const pool = JSON.parse(testFilePoolValue(env));
+  const db = await openPool(pool.home);
+  const nonce = randomUUID();
+  let reserved = false;
+  try {
+    signal?.throwIfAborted();
+    immediate(db, () => db.prepare('INSERT INTO file_waiter(pid) VALUES (?)').run(process.pid));
+    let reported = false;
+    while (!reserved) {
+      signal?.throwIfAborted();
+      reserved = admit(db, pool.cores, pool.lender, pool.call) !== false;
+      if (!reserved && !reported && pool.call?.startsWith('async:') && pool.lender &&
+        db.prepare('SELECT 1 FROM file_holder h WHERE h.pid = ? AND NOT EXISTS (SELECT 1 FROM file_call WHERE lender = h.pid)').get(pool.lender)) {
+        process.stderr.write(`test-file-pool: parent ${pool.lender} is holding its token while nested files wait; use awaitNestedRun(child) only while yielding.\n`);
+        reported = true;
+      }
+      if (!reserved) await new Promise(done => setTimeout(done, POLL_MS));
+    }
+    db.prepare('UPDATE file_holder SET dispatch = ? WHERE pid = ?').run(nonce, process.pid);
+    const owned = () => db.prepare('SELECT pid FROM file_holder WHERE dispatch = ?').get(nonce);
+    let closed = false;
+    return {
+      value: JSON.stringify({ ...pool, dispatch: { parent: process.pid, nonce } }),
+      /** Do not acquire another place under this PID until the actual worker has adopted the first. */
+      async transferred() {
+        while (!closed && owned()?.pid === process.pid) {
+          signal?.throwIfAborted();
+          await new Promise(done => setTimeout(done, POLL_MS));
+        }
+      },
+      /** A stream error does not authorize returning a token that its worker still owns. */
+      async drained() {
+        while (!closed) {
+          const holder = owned();
+          if (!holder || holder.pid === process.pid || !alive(holder.pid)) return;
+          await new Promise(done => setTimeout(done, POLL_MS));
+        }
+      },
+      /** Release only after the actual worker exits, or before any file was started. */
+      release() {
+        if (closed) return;
+        const holder = owned();
+        if (holder && holder.pid !== process.pid && alive(holder.pid)) {
+          throw new Error('cannot release a test-file token while its actual worker is alive');
+        }
+        db.prepare('DELETE FROM file_holder WHERE dispatch = ?').run(nonce);
+        db.close();
+        closed = true;
+      },
+    };
+  } catch (error) {
+    immediate(db, () => {
+      db.prepare('DELETE FROM file_waiter WHERE pid = ?').run(process.pid);
+      if (reserved) db.prepare('DELETE FROM file_holder WHERE pid = ?').run(process.pid);
+    });
+    db.close();
+    throw error;
+  }
 }
 
 /** Block this thread for a moment without spinning: the caller is inside a synchronous call anyway. */
