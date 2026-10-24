@@ -24,19 +24,19 @@ export function requestedCommandMove(command, operation) {
   if (!command) return false;
   const forms = {
     add: ['addItem'], edit: ['editItem'], merged: ['merged'], submit: ['submit'],
-    claim: ['claim'], release: ['release'], verify: ['verify'], withdraw: ['withdraw'],
-    refreeze: ['refreeze'], reopen: ['reopen'], escalate: ['escalate'],
-    next: ['claim', 'reserveReview', 'reserveNextReview'], run: ['claim', 'submit', 'reserveReview', 'reserveNextReview', 'verify'],
-    join: ['register'], worktree: ['register'], takeover: ['takeCoordinator'],
+    claim: ['claim'], release: ['release'], verify: ['verify'], withdraw: ['withdraw', 'editMilestoneItems'],
+    refreeze: ['refreeze'], reopen: ['reopen'], escalate: ['escalate', 'shout'],
+    next: ['claim', 'reserveReview', 'reserveNextReview'], run: ['claim', 'release', 'submit', 'reserveReview', 'reserveNextReview', 'verify', 'escalate', 'shout'],
+    init: ['register'], join: ['register'], worktree: ['register'], takeover: ['takeCoordinator'],
     shout: ['shout'], answer: ['answerDecision'], pass: ['passDecision'], fact: ['appendFact'],
     hold: ['holdLane', 'releaseLane', 'holdItem', 'releaseItemHold'],
     bar: ['setBarReady', 'signBar'], settings: ['setLineSetting', 'setPersonSigning'], check: ['acceptCheck'],
-    spec: ['recordRowDecisions', 'applyRowDecisions', 'draftSpecRow'],
-    blueprint: ['draftSpecRow', 'addItem', 'appendFact'],
+    spec: ['recordRowDecisions', 'applyRowDecisions', 'draftSpecRow', 'appendFact', 'editItem', 'withdraw'],
+    blueprint: ['draftSpecRow', 'addItem', 'appendFact'], rigor: ['draftSpecRow', 'proposeSentinel'], sweep: ['addItem'],
     milestone: ['addMilestone', 'editMilestoneItems', 'orderMilestoneItems', 'moveMilestone', 'editMilestone', 'removeMilestone', 'shipMilestone'],
     land: ['recordLandingBatch', 'recordLandingWaiver', 'finishLandingBatch'],
-    sentinel: ['proposeSentinel', 'decideSentinel', 'beginSentinelRun', 'finishSentinelRun'],
-    health: ['recordHealthFindings'], loop: ['declareJob', 'recordJobRun'],
+    sentinel: ['proposeSentinel', 'decideSentinel', 'beginSentinelRun', 'finishSentinelRun', 'recordHealthFindings'],
+    flakes: ['recordFlakeObservation'], loop: ['declareJob', 'recordJobRun'],
     intake: ['intakeOutside', 'approveOutside'], publish: ['recordPublishFinding'],
   };
   return Object.hasOwn(forms, command) && forms[command].includes(operation);
