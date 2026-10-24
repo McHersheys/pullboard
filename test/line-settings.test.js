@@ -8,7 +8,7 @@ import * as store from '../src/board.js';
 import { applyRelayMove, prepareEngineMove } from '../src/engine.js';
 import { settingsInventory } from '../src/settings-inventory.js';
 import { createE2eHelpers } from './e2e-helpers.js';
-import { LAND_COLLISION_ENGINE } from '../src/land-collision-engine.js';
+import { LAND_COLLISION_ENGINE } from '../src/landing-collision-engine.js';
 
 /** A private SQLite board with coordinator and builder identities. */
 function fixture(t) {

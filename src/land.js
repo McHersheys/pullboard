@@ -1312,7 +1312,9 @@ export async function runLandingBatch({ root, board, config, write, say, owner, 
       }
       const build = await mergeGroup(state, initialItems);
       await save(state, { ...build, conflicts: [...state.batch.conflicts, ...build.conflicts] });
-      for (const entry of state.batch.blocked ?? []) say(`${entry.code} #${entry.id}${entry.stacked ? ` carries #${entry.stacked}` : ''}`);
+      for (const entry of state.batch.blocked ?? []) say(entry.code === 'LAND_FILE_OVERLAP'
+        ? `#${entry.id} waits on overlapping files ${entry.files.join(', ')}; once this batch lands, its reviewer must merge current main and re-accept it without reopening`
+        : `${entry.code} #${entry.id}${entry.stacked ? ` carries #${entry.stacked}` : ''}`);
       if (!build.items.length) await save(state, { state: 'blocked' });
       else if (landsOnTrunk(state.config)) await landOnTrunk(state);
       else if (!await inlineDeferredGuards(state)) await save(state, { state: 'blocked' });

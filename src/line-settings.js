@@ -8,7 +8,7 @@ import {
 } from './queue-settings.js';
 import { LINE_ORDER_ENGINE } from './line-order-engine.js';
 import { LINE_SETTINGS_ENGINE } from './line-settings-engine.js';
-import { LAND_COLLISION_ENGINE } from './land-collision-engine.js';
+import { LAND_COLLISION_ENGINE } from './landing-collision-engine.js';
 import { Refused } from './refused.js';
 
 const PREFIX = 'line_setting:';

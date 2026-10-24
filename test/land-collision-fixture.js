@@ -28,10 +28,23 @@ export function assertCollisionFreeLanding({ landProject, itemWorktree, submitIt
     assert.deepEqual(first.culprits, []);
     if (enabled) {
       assert.equal(json(box, box.repo, 'show', String(entries[1].item)).item_status, 'verified', 'deferred overlap keeps its verdict');
+      const notices = json(box, box.repo, 'inbox').shouts.filter(row => row.shout_from === 'landing' && row.shout_to === `item:${entries[1].item}`);
+      assert.equal(notices.length, 1, 'the deferred item and its reviewer receive one landed-batch notice');
+      assert.match(notices[0].shout_text, /fresh merge-only re-accept.*no builder cycle or reopening/u);
+      // A stale same-path review is never exempted: the independent private coordinator composes
+      // and re-accepts the new trunk, without changing the submitted commit or asking its builder.
+      const retainedCommit = json(box, box.repo, 'show', String(entries[1].item)).item_commit;
+      box.git(box.repo, 'switch', '-q', '--detach', entries[1].commit);
+      box.git(box.repo, 'merge', '--no-edit', 'main');
+      const reviewed = { ...entries[1], commit: box.git(box.repo, 'rev-parse', 'HEAD') };
+      box.git(box.repo, 'switch', '-q', 'main');
+      acceptItem(box, reviewed);
+      assert.equal(json(box, box.repo, 'show', String(entries[1].item)).item_commit, retainedCommit, 'merge-only review preserves the builder submission');
       const second = json(box, box.repo, 'land', '--max', '3');
       assert.deepEqual(second.landed, [entries[1].item], 'the deferred item leads the next batch');
       assert.deepEqual(second.conflicts, []);
       assert.deepEqual(second.culprits, []);
+      onBoard(box, board => assert.equal(store.allShouts(board).filter(row => row.shout_from === 'landing' && row.shout_to === `item:${entries[1].item}`).length, 1, 'later landing does not repeat the notice'));
     }
     for (const entry of entries) {
       const item = json(box, box.repo, 'show', String(entry.item));
