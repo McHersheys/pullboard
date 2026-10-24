@@ -87,6 +87,10 @@ test('[P6,B23,N39] revisions require a reason and stale proposals cannot change 
   const box = fixtures.project('true');
   assert.notEqual(box.run(box.web, 'spec', 'draft', 'Missing reason.', '--revises', 'G1').code, 0);
   assert.notEqual(box.run(box.web, 'spec', 'draft', 'Missing target.', '--revises', 'G99', '--reason', 'No such row.').code, 0);
+  const statusOnly = JSON.parse(succeeds(box.run(box.web, 'spec', 'draft', '--revises', 'G1', '--status', 'retired', '--reason', 'Consider retirement.', '--json')).out);
+  const statusNeed = personNeedsState(box.repo).needs.find(entry => entry.id === statusOnly.id);
+  assert.equal(statusNeed.proposed.text, 'The page renders.', 'omitted text preserves the approved wording');
+  succeeds(box.run(box.repo, 'spec', 'decline', statusOnly.id, '--reason', 'Keep it.'));
   const first = JSON.parse(succeeds(box.run(box.web, 'spec', 'draft', 'An obsolete proposal.', '--revises', 'G1', '--reason', 'First idea.', '--json')).out);
   const second = JSON.parse(succeeds(box.run(box.web, 'spec', 'draft', 'The replacement the person chooses.', '--revises', 'G1', '--reason', 'Better idea.', '--json')).out);
   succeeds(box.run(box.repo, 'spec', 'approve', second.id));

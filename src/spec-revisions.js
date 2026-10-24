@@ -36,15 +36,16 @@ export function planSpecRevision(root, config, { revises, text, gate, status, re
   const wanted = status ?? row.status;
   if (!STATUSES.includes(wanted)) throw new Refused('SPEC_REVISION', `unknown status ${wanted}; use one of ${STATUSES.join(', ')}`);
   const nextGate = gate ?? row.gate;
+  const nextText = text ?? row.text;
   let replacement = source.replace(/\[[a-z]+(?=,|\])/u, () => `[${wanted}`)
-    .replace(/(\]\s+)[^|]*/u, (_, start) => `${start}${text} `);
+    .replace(/(\]\s+)[^|]*/u, (_, start) => `${start}${nextText} `);
   replacement = /\|\s*gate\s*:/u.test(replacement)
     ? replacement.replace(/(\|\s*gate\s*:\s*)[^|]*/u, (_, start) => `${start}${nextGate} `)
     : `${replacement.trimEnd()} | gate: ${nextGate}`;
   replacement = replacement.trimEnd();
   if (replacement === source) throw new Refused('SPEC_REVISION', 'the proposed row is unchanged; give new text, gate or status');
   const prefix = /^([A-Z][A-Z0-9]*?)\d+(?:\.\d+)*$/u.exec(revises)?.[1];
-  const plan = draftRow(root, config, { target: 'spec', text, gate: nextGate, tier: row.tier, section: prefix, taken, write: false });
+  const plan = draftRow(root, config, { target: 'spec', text: nextText, gate: nextGate, tier: row.tier, section: prefix, taken, write: false });
   return { ...plan.row, target: 'spec', revises, file: config.spec, source, replacement, status: wanted, reason: reason.trim() };
 }
 

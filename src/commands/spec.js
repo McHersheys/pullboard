@@ -163,7 +163,7 @@ export async function specCommand(io, { first, second, rest, values }) {
     if (second && /\|\s*gate\s*:/iu.test(second)) {
       throw new Refused('INLINE_GATE', 'move the gate after the requirement as --gate "<check>"');
     }
-    if (!second?.trim() || rest.length || /[\r\n|]/u.test(second)) {
+    if (rest.length || (second !== undefined && (!second.trim() || /[\r\n|]/u.test(second)))) {
       throw new Refused('USAGE', 'give one nonempty, single-line requirement: pullboard spec draft "<text>"');
     }
     if (values.gate !== undefined && (!values.gate.trim() || /[\r\n|]/u.test(values.gate))) {
@@ -172,7 +172,7 @@ export async function specCommand(io, { first, second, rest, values }) {
     if (values.revises !== undefined) {
       if (values.doctrine || values.aim || values.section || values.source) throw new Refused('FLAG_NOT_ALLOWED', 'a revision keeps the approved row\'s section and tier; use --revises with text, --gate, --status and --reason');
       const drafts = hookRead(ctx, board => store.rowDrafts(board)) ?? [];
-      const row = planSpecRevision(ctx.info.root, ctx.config, { revises: values.revises, text: second.trim(),
+      const row = planSpecRevision(ctx.info.root, ctx.config, { revises: values.revises, text: second?.trim(),
         gate: values.gate?.trim(), status: values.status, reason: values.reason,
         taken: [...drafts.map(draft => draft.id), ...trunkRowIds(ctx.info.root, primaryCheckoutRoot(ctx.info), ctx.config)] });
       const entry = await reserveRow(ctx, row, false);
@@ -180,6 +180,7 @@ export async function specCommand(io, { first, second, rest, values }) {
       io.say(entry.id);
       return 0;
     }
+    if (!second?.trim()) throw new Refused('USAGE', 'give one nonempty requirement: pullboard spec draft "<text>"');
     if (values.status !== undefined || values.reason !== undefined) throw new Refused('FLAG_NOT_ALLOWED', '--status and --reason belong to spec draft --revises <id>');
     if (values.doctrine) {
       if (typeof values.source !== 'string' || !values.source.trim() || /[\r\n|]/u.test(values.source)) {
