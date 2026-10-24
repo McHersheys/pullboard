@@ -1,4 +1,4 @@
-import { nativeBarActor } from './bar-actor.js';
+import { nativeBarActorForSeat } from './bar-actor.js';
 import { barReadinessRequired, barReadiness, barReadySetting } from './bar-readiness.js';
 import { barCoverageCommand, barCoverageForPolicy } from './bar-coverage.js';
 /**
@@ -900,7 +900,8 @@ function relayOutboxSetting(root) {
 export async function ordered(ctx, board, operation, args) {
   if (['addItem','editItem','signBar'].includes(operation) && barReadySetting(board).enabled) {
     const at = operation === 'addItem' ? 0 : 1;
-    const barActor = ctx.io.personChannel === 'view' || ctx.io.personRequest ? null : nativeBarActor();
+    const actor = ctx.info.isMain ? COORDINATOR : store.agentAt(board, ctx.info.root)?.agent_id;
+    const barActor = ctx.io.personChannel === 'view' || ctx.io.personRequest ? null : nativeBarActorForSeat(board, actor);
     args = args.map((value, index) => index === at ? { ...value, barActor } : value);
   }
   const initialBaseline = initialSpecApprovalBaseline(ctx, board, operation);

@@ -140,3 +140,12 @@ test('[V1,H16] native authorship captures only the current runtime, not a histor
   assert.equal(first.session,first.parent);
   assert.notEqual(first.parent,second.parent);
 });
+
+
+test('[V1,H16] a declared helper parent applies only to the actual session that joined', () => {
+  const env={CLAUDE_CODE_SESSION_ID:'synthetic-private-helper'};
+  const own=nativeBarActor(env);
+  const parent='e'.repeat(64);
+  assert.equal(nativeBarActor(env,{session:own.session,parent}).parent,parent);
+  assert.equal(nativeBarActor(env,{session:'f'.repeat(64),parent}).parent,own.session,'a replacement native runtime cannot borrow the old coordinator parent');
+});

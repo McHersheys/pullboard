@@ -311,7 +311,7 @@ test('[B4,V1,H16] takeover authorship uses the captured current runtime, preserv
   // This private move models the normal CLI's new runtime after takeover, not an identity rewrite.
   const current = { session: 'e'.repeat(64), parent: 'e'.repeat(64) };
   f.actors.coordinator=current;
-  const child=store.register(f.board,{lane:'core',path:'/new-coordinator-helper',parent:'synthetic-new-parent',session:'synthetic-new-helper'});
+  const child=store.register(f.board,{lane:'core',path:'/new-coordinator-helper',parentDigest:'e'.repeat(64),sessionDigest:'f'.repeat(64)});
   f.actors[child]={session:'f'.repeat(64),parent:'e'.repeat(64)};
   setBarReady(f.board,{agentId:'coordinator',enabled:true});const id=readyItem(f);
   assert.equal(f.board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get('agent_session:coordinator').meta_value,old);

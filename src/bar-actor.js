@@ -1,11 +1,23 @@
+import { agentParent } from './seats.js';
 /** Current bar authorship survives native takeover without rewriting historical seats [V1,H16]. */
 import { runtimeSessionIdentity, parentSessionDigest } from './parent-session.js';
 import { Refused } from './refused.js';
 
 /** Capture only this runtime's own session and discovered parent before sealing an ordered move. */
-export function nativeBarActor(environment = process.env) {
+export function nativeBarActor(environment = process.env, registered = {}) {
   const identity = runtimeSessionIdentity(environment);
-  return identity ? { session: parentSessionDigest(identity.session), parent: parentSessionDigest(identity.parent ?? identity.session) } : null;
+  if (!identity) return null;
+  const session = parentSessionDigest(identity.session);
+  const declared = registered.session === session ? registered.parent : null;
+  const parent = identity.parent ? parentSessionDigest(identity.parent) : declared ?? session;
+  if (identity.parent && declared && parent !== declared) throw new Refused('BAR_PARENT_UNKNOWN', 'the native parent and this session’s joined declaration disagree; use a fresh correctly joined worktree before authoring or signing a bar');
+  return { session, parent };
+}
+
+/** A declared parent is usable only for the exact current native session that joined that seat. */
+export function nativeBarActorForSeat(board, agent, environment = process.env) {
+  const session = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get(`agent_session:${agent}`)?.meta_value ?? null;
+  return nativeBarActor(environment, { session, parent: agentParent(board, agent) });
 }
 /** Unknown provenance stays unknown; a replay never consults another process's runtime. */
 export function normalizeBarActor(value) {
