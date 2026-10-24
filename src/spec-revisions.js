@@ -67,7 +67,7 @@ export function validSpecRevision(row) {
     && typeof row.replacement === 'string' && !/[\r\n]/u.test(row.replacement)
     && typeof row.reason === 'string' && row.reason.trim() && !/[\r\n|]/u.test(row.reason)
     && before.length === 1 && before[0].status === 'approved' && before[0].id === row.revises
-    && after.length === 1 && after[0].id === row.revises && after[0].text === row.text
+    && after.length === 1 && STATUSES.includes(after[0].status) && after[0].id === row.revises && after[0].text === row.text
     && after[0].gate === row.gate && after[0].status === row.status && row.source !== row.replacement
     && [...new Set([...Object.keys(before[0]), ...Object.keys(after[0])])].filter(key => !['text', 'gate', 'status', 'line', 'section'].includes(key))
       .every(key => JSON.stringify(before[0][key]) === JSON.stringify(after[0][key]));
