@@ -1,8 +1,21 @@
 /** Best-effort local pruning follows an ordered retirement receipt, never changes the board [R3,C7]. */
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  realpathSync,
+  renameSync,
+  writeFileSync,
+} from 'node:fs';
+import {
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from 'node:path';
 import { cleanGitEnvironment } from './git.js';
 
 const COMMIT = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/iu;
