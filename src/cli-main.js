@@ -279,6 +279,7 @@ async function runMain(argv, streams) {
     needsRepo = !(parsed.values.help || parsed.values.version || command === 'help' || command === 'version');
   } catch { sync = false; needsRepo = false; }
   const git = needsRepo ? await import('./git.js') : null;
+  git?.setResumeSourceFacts(parsed?.positionals[0] === 'resume');
   if (parsed) {
     try {
       // Checkout identity supplies the display role even if a person-channel check refuses first.
