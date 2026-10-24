@@ -98,19 +98,20 @@ function actorsFrom(history, boundary) {
 }
 
 /** Assemble the public statistics shared by the CLI and local board state from one event snapshot. */
-export function proofStats(board, { since, now = Date.now() } = {}) {
+export function proofStats(board, { since, now = Date.now(), onFallback } = {}) {
   const boundary = sinceDate(since);
   // A SAVEPOINT is read-only until a write occurs, and nests inside callers' transactions.
   // Hold one snapshot across the cursor, projection shards, and verdicts while other seats append.
   board.db.exec('SAVEPOINT proof_stats_read');
-  try { return proofStatsSnapshot(board, boundary, now); }
+  try { return proofStatsSnapshot(board, boundary, now, onFallback); }
   finally { board.db.exec('RELEASE proof_stats_read'); }
 }
 
 /** Assemble cached or legacy statistics within the caller's already established read snapshot. */
-function proofStatsSnapshot(board, boundary, now) {
+function proofStatsSnapshot(board, boundary, now, onFallback) {
   const counted = counterProofStats(board, boundary, now);
   if (counted) return counted;
+  onFallback?.();
   const history = events(board);
   const counts = countsFrom(history, boundary);
   const verdicts = board.db.prepare('SELECT * FROM verdict ORDER BY verdict_id').all();
