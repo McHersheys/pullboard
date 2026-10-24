@@ -165,7 +165,7 @@ export const ITEM_SLOTS = Object.freeze({
   recordRowDecisions: [], applyRowDecisions: [], draftSpecRow: [], recordSpecApprovalBaseline: [],
   recordLandingBatch: [], recordLandingWaiver: [], recordLandingFlake: [], recordLandingTestDefect: [], finishLandingBatch: [],
   recordHealthFindings: [], decideSentinel: [], beginSentinelRun: [], finishSentinelRun: [],
-  recordFlakeObservation: [], recordGateRun: [], recordProofRun: [[0, 'itemId']], declareJob: [], recordJobRun: [], takeCoordinator: [], landingLeaseMove: [],
+  recordFlakeObservation: [], recordGateRun: [], recordProofRun: [[0, 'itemId']], declareJob: [], recordJobRun: [], takeCoordinator: [], openHandoff: [], landingLeaseMove: [],
   ...Object.fromEntries(FIRST_ITEM.map((operation) => [operation, [[0]]])),
   intakeOutside: [[0, 'item', 'parentId'], [0, 'item', 'after', '*']],
   addItem: [[0, 'parentId'], [0, 'after', '*']],
@@ -177,6 +177,7 @@ export const ITEM_SLOTS = Object.freeze({
   addMilestone: [[0, 'items', '*']],
   editMilestoneItems: [[1, 'add', '*'], [1, 'remove', '*']],
   orderMilestoneItems: [[1, 'items', '*']],
+  takeHandoff: [[0, 'item']],
   proposeSentinel: [[0, 'evidence', 'items', '*', 'id']],
 });
 
