@@ -1,6 +1,6 @@
 /** The relay lock has one holder at a time, even when many waiters find the same dead owner [H5]. */
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -72,4 +72,23 @@ test('a lease left by a dead holder is taken over by one waiter at a time [H5]',
   const root = mkdtempSync(join(tmpdir(), 'pullboard-relay-lock-lease-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   for (let index = 0; index < 10; index += 1) await round(root, index, { deadLease: true });
+});
+
+test('a lock left with no owner by a command that died making it is recovered once it is old [H5]', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'pullboard-relay-lock-unowned-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const file = join(root, 'relay.json');
+  const log = join(root, 'log');
+  writeFileSync(log, '');
+  // The command made the directory and died before writing its pid; the lock is past the stale age.
+  mkdirSync(`${file}.lock`);
+  const old = new Date(Date.now() - 120_000);
+  utimesSync(`${file}.lock`, old, old);
+  await new Promise((done, fail) => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', WAITER, LOCK_MODULE, log, file], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', part => { stderr += part; });
+    child.once('exit', code => (code === 0 ? done() : fail(new Error(stderr))));
+  });
+  assert.equal(readFileSync(log, 'utf8').trim().split('\n').filter(line => line.startsWith('enter')).length, 1, 'the waiter took the recovered lock');
 });

@@ -75,7 +75,15 @@ function takeDirectory(lock) {
   try { mkdirSync(lock, { mode: 0o700 }); writeFileSync(join(lock, 'pid'), String(process.pid)); return true; }
   catch (error) { if (error.code !== 'EEXIST') throw error; }
   let owner = null;
-  try { owner = ownerOf(lock); } catch (error) { if (error.code === 'ENOENT') return false; }
+  try { owner = ownerOf(lock); }
+  catch (error) {
+    // No pid file: either the lock is gone, or its maker died between creating it and naming itself, which the
+    // age check below recovers.
+    if (error.code !== 'ENOENT') owner = null;
+    else {
+      try { lstatSync(lock); } catch (missing) { if (missing.code === 'ENOENT') return false; throw missing; }
+    }
+  }
   let stale;
   try { stale = owner !== null ? gone(owner) : Date.now() - lstatSync(lock).mtimeMs > UNOWNED_STALE_MS; }
   catch (error) { if (error.code === 'ENOENT') return false; throw error; }
