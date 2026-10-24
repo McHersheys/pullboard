@@ -28,6 +28,7 @@ export function discoverEngines(directory = new URL('./', import.meta.url)) {
 }
 
 export { REOPEN_FIRST_REFUSAL_ENGINE } from './reopen-first-refusal-engine.js';
+export { QUOTED_LANDING_FAILURE_ENGINE } from './quoted-landing-failure-engine.js';
 
 /** Every feature engine by name, discovered from the *-engine.js files beside this one. */
 export const ENGINE_REGISTRY = discoverEngines();

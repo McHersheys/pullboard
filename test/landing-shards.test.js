@@ -1,4 +1,5 @@
 /** The landing gate splits its test files into shards across local slots and runners [C7,V4]. */
+import { awaitNestedRun } from '../src/test-file-pool.js';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -286,6 +287,11 @@ function scenario(box, mode, { dropOnce } = {}) {
  * group. Past its deadline the whole group is stopped and the scenario fails naming itself.
  */
 async function landingGate(box, label, deadlineMs, repo = box.repo) {
+  return await awaitNestedRun(startLandingGate(box, label, deadlineMs, repo));
+}
+
+/** Start a landing immediately; callers may start several before lending their one place serially. */
+function startLandingGate(box, label, deadlineMs, repo = box.repo) {
   const gateUrl = pathToFileURL(join(repo, 'src', 'gate.js')).href;
   const configUrl = pathToFileURL(join(repo, 'src', 'config.js')).href;
   const script = `const { runGate } = await import(${JSON.stringify(gateUrl)});
@@ -299,17 +305,24 @@ process.stdout.write(JSON.stringify({ isGreen: gate.isGreen, output: gate.output
   child.stdout.setEncoding('utf8').on('data', part => { stdout += part; });
   child.stderr.setEncoding('utf8').on('data', part => { stderr += part; });
   const closed = new Promise(resolveClose => child.once('close', (status, signal) => resolveClose({ status, signal })));
-  let timer;
-  const deadline = new Promise(resolveDeadline => { timer = setTimeout(() => resolveDeadline(null), deadlineMs); });
-  const ended = await Promise.race([closed, deadline]);
-  clearTimeout(timer);
-  if (!ended) {
-    for (const signal of ['SIGTERM', 'SIGKILL']) { try { process.kill(-child.pid, signal); } catch { /* already gone */ } }
-    await closed;
-    throw new Error(`landing gate scenario "${label}" passed its ${deadlineMs} ms deadline\n${stdout.slice(-4_000)}\n${stderr.slice(-4_000)}`);
-  }
-  assert.equal(ended.status, 0, `scenario "${label}": the gate process failed\n${stderr.slice(-4_000)}`);
-  return { ...JSON.parse(stdout), stderr };
+  // Deadline cancellation stays inside the helper, never outside a raced loan promise.
+  const terminal = (async () => {
+    let timer;
+    const deadline = new Promise(resolveDeadline => { timer = setTimeout(() => resolveDeadline(null), deadlineMs); });
+    const ended = await Promise.race([closed, deadline]);
+    clearTimeout(timer);
+    if (!ended) {
+      for (const signal of ['SIGTERM', 'SIGKILL']) { try { process.kill(-child.pid, signal); } catch { /* already gone */ } }
+      await closed;
+      throw new Error(`landing gate scenario "${label}" passed its ${deadlineMs} ms deadline\n${stdout.slice(-4_000)}\n${stderr.slice(-4_000)}`);
+    }
+    assert.equal(ended.status, 0, `scenario "${label}": the gate process failed\n${stderr.slice(-4_000)}`);
+    return { ...JSON.parse(stdout), stderr };
+  })();
+  terminal.child = child;
+  // A sibling may finish before this promise gets its turn to borrow; retain its original rejection.
+  void terminal.catch(() => {});
+  return terminal;
 }
 
 /** The merged log's per-file lines as {file: {shard, host}}. */
@@ -412,7 +425,14 @@ test('a landing gate split into shards reports one result [C7,V4]', { timeout: 3
   const pair = fixture({ runner: false, repoNames: ['first', 'second'] });
   t.after(() => rmSync(pair.dir, { recursive: true, force: true }));
   scenario(pair, 'green');
-  const both = await Promise.all(pair.repos.map((repo, index) => landingGate(pair, `concurrent landing ${index + 1}`, 120_000, repo)));
+  const started = pair.repos.map((repo, index) => startLandingGate(pair, `concurrent landing ${index + 1}`, 120_000, repo));
+  const both = [];
+  let firstFailure;
+  for (const terminal of started) {
+    try { both.push(await awaitNestedRun(terminal)); }
+    catch (error) { firstFailure ??= error; }
+  }
+  if (firstFailure) throw firstFailure;
   for (const landing of both) {
     assert.equal(landing.isGreen, true, landing.output);
     assert.equal(Object.keys(mergedFiles(landing.output)).length, 6);
@@ -455,16 +475,20 @@ process.stdout.write(JSON.stringify({ isGreen: result.isGreen, output, calls, pr
   child.stdout.setEncoding('utf8').on('data', part => { stdout += part; });
   child.stderr.setEncoding('utf8').on('data', part => { stderr += part; });
   const closed = new Promise(resolveClose => child.once('close', status => resolveClose({ status })));
-  let timer;
-  const ended = await Promise.race([closed, new Promise(resolveDeadline => { timer = setTimeout(() => resolveDeadline(null), deadlineMs); })]);
-  clearTimeout(timer);
-  if (!ended) {
-    for (const signal of ['SIGTERM', 'SIGKILL']) { try { process.kill(-child.pid, signal); } catch { /* already gone */ } }
-    await closed;
-    throw new Error(`runner answer "${answer}" passed its ${deadlineMs} ms deadline\n${stderr.slice(-4_000)}`);
-  }
-  assert.equal(ended.status, 0, `runner answer "${answer}": the landing process failed\n${stderr.slice(-4_000)}`);
-  return JSON.parse(stdout);
+  const terminal = (async () => {
+    let timer;
+    const ended = await Promise.race([closed, new Promise(resolveDeadline => { timer = setTimeout(() => resolveDeadline(null), deadlineMs); })]);
+    clearTimeout(timer);
+    if (!ended) {
+      for (const signal of ['SIGTERM', 'SIGKILL']) { try { process.kill(-child.pid, signal); } catch { /* already gone */ } }
+      await closed;
+      throw new Error(`runner answer "${answer}" passed its ${deadlineMs} ms deadline\n${stderr.slice(-4_000)}`);
+    }
+    assert.equal(ended.status, 0, `runner answer "${answer}": the landing process failed\n${stderr.slice(-4_000)}`);
+    return JSON.parse(stdout);
+  })();
+  terminal.child = child;
+  return await awaitNestedRun(terminal);
 }
 
 test('a runner refusal in a sharded landing is handled by its class [C7,V4]', { timeout: 300_000 }, async (t) => { // budget: five bounded landings on one fixture.

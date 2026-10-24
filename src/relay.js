@@ -1,3 +1,4 @@
+import { recordedMoveRefusal } from './recorded-move.js';
 import {
   recoverySummary,
   unlinkedRelayStatus,
@@ -94,6 +95,12 @@ import {
 import { terminalQr } from './qr.js';
 import { environmentLink } from './relay-environment.js';
 import { locked } from './relay-lock.js';
+import { checkpointPublisher } from './relay-checkpoint-publish.js';
+import {
+  checkpointInBackground,
+  requestCheckpointCheck,
+  scheduleCheckpoint,
+} from './relay-checkpoint.js';
 import {
   decideUncertainBaseline,
   remoteBoardMissing,
@@ -835,45 +842,11 @@ async function replayRelayRecord(board, key, state, record) {
   }
 }
 
-/** Persist the exact checkpoint before uploading, so a lost reply retries identical ciphertext. */
-async function publishCheckpoint(root, file, state, io) {
-  if (!state.token?.startsWith('pm_') || process.env.PULLBOARD_RELAY_TOKEN) return;
-  const resumed = Boolean(state.checkpointRefusal);
-  if (state.checkpointRefusal && uploadPauseType(state.checkpointRefusal)) {
-    if (!await uploadRetryReady(state, state.checkpointRefusal, path => request(state, path, {}, io))) {
-      saveLink(file, state); reportCheckpointRefusal(state, io); return;
-    }
-    delete state.checkpointRefusal;
-    saveLink(file, state);
-  } else {
-    const document = relaySnapshot(root);
-    const sequence = Number(document.tables.board_meta.find((row) => row.meta_key === 'relay_applied_sequence')?.meta_value ?? 0);
-    const digest = presentationDigest(document.presentation);
-    if (!state.checkpoint || state.checkpoint.sequence !== sequence || state.checkpointPresentationDigest !== digest) {
-      delete state.checkpointRefusal;
-      state.checkpointPresentationDigest = digest;
-      state.checkpoint = { sequence, sealed: await sealedRecord(readBoardKey(state.board), document, state, 'snapshot', sequence) };
-      saveLink(file, state);
-    }
-    // A definitive rejection retries only a fresh image after the board changes.
-    if (state.checkpointRefusal) { reportCheckpointRefusal(state, io); return; }
-  }
-  let reply;
-  try { reply = await request(state, '/api/v1/boards/' + state.board + '/state', { method: 'PUT', body: state.checkpoint }, io); }
-  catch (error) {
-    if (!(error instanceof Refused) || !permanentUploadRefusal(error)) throw error;
-    state.checkpointRefusal = { code: safePauseCode(error), message: safePauseMessage(error), status: error.httpStatus };
-    saveLink(file, state);
-    reportCheckpointRefusal(state, io);
-    return;
-  }
-  if (reply.state?.sequence !== state.checkpoint.sequence || reply.state.sealed !== state.checkpoint.sealed) throw new Refused('RELAY_RESPONSE', 'the relay did not acknowledge this checkpoint; retry the configured relay');
-  state.presentationDigest = state.checkpointPresentationDigest;
-  delete state.checkpoint;
-  delete state.checkpointPresentationDigest;
-  saveLink(file, state);
-  if (resumed) clearUploadPauseNotices(state);
-}
+// Checkpoint publishing lives in its own module, over these link and transport helpers (#1014).
+const checkpoints = checkpointPublisher({ request, saveLink, loadLink, linkFile, readBoardKey, sealedRecord, reportCheckpointRefusal, safePauseCode, safePauseMessage });
+const publishCheckpoint = (...args) => checkpoints.publishCheckpoint(...args);
+/** Publish this board's checkpoint once, as the background publisher's one step (#1014). */
+export const publishLatestCheckpoint = (...args) => checkpoints.publishLatestCheckpoint(...args);
 
 /** Drain a legacy source once, refusing foreign history before it can be silently checkpointed. */
 async function ensureOrdered(root, file, state, io) {
@@ -1114,7 +1087,7 @@ function outboxLink(root, file, state, io) {
 }
 
 /** Send one board operation before executing it locally, and report its canonical engine result. */
-export async function relayOperation(root, operation, args, io, command, applyLocally) {
+export async function relayOperation(root, operation, args, io, command, applyLocally, onRecorded) {
   const file = linkFile(root);
   return locked(file, async () => {
     const state = loadLink(file);
@@ -1133,6 +1106,7 @@ export async function relayOperation(root, operation, args, io, command, applyLo
     if (!moves) { moves = new Set(); CHECKPOINT_MOVES.set(io, moves); }
     if (moves.has(state.board)) CHECKPOINT_NOTICES.get(io)?.delete(state.board);
     moves.add(state.board);
+    let requestedMove;
     try {
       let ordered;
       const queue = guarded.queue;
@@ -1162,6 +1136,7 @@ export async function relayOperation(root, operation, args, io, command, applyLo
       }
       const previousReceipt = io.personRequestMoveId && localRecords(root, board => engineReceipt(board, io.personRequestMoveId));
       if (previousReceipt) {
+        if (!previousReceipt.outcome.error) onRecorded?.();
         if (state.recovered?.move?.id === io.personRequestMoveId) {
           delete state.recovered;
           saveLink(file, state);
@@ -1171,10 +1146,12 @@ export async function relayOperation(root, operation, args, io, command, applyLo
         return previousReceipt.outcome.result;
       }
       let move = recoveredMove(root, state, operation, args, command);
+      requestedMove = move;
       try {
         if (!move) {
           const sent = withSeatName(root, operation, args);
           move = stampCoordinatorHolder(localRecords(root, (board) => prepareEngineMove(board, operation, sent, io.personRequestMoveId ? { id: io.personRequestMoveId } : {})), state.machine);
+          requestedMove = move;
           if (io.personRequest) move.personRequest = structuredClone(io.personRequest);
           const problem = move.personRequest && localRecords(root, board => requestMoveProblem(board, move, { checkExecutorLease: false }));
           if (problem) throw problem;
@@ -1202,21 +1179,35 @@ export async function relayOperation(root, operation, args, io, command, applyLo
       }
       const receipt = localRecords(root, (board) => engineReceipt(board, move.id));
       if (!receipt) throw new Refused('RELAY_RESPONSE', 'the acknowledged operation has no replay receipt; fetch a consistent relay snapshot');
+      if (!receipt.outcome.error) onRecorded?.();
       delete state.recovered;
       saveLink(file, state);
-      // A phone can read a compacted checkpoint; failed presentation uploads do not undo the move.
-      try { await publishCheckpoint(root, file, state, io); }
-      catch (error) {
-        if (!(error instanceof Refused)) throw error;
-        if (confirmedDeletion(state, error)) forgetDeletedCopy(root, file, state, io);
-        else if (error.code === 'AUTH_REQUIRED') reportExpiredSignIn(state, io);
-        else io.err(`pullboard: ${error.message}`);
+      // A phone reads the next checkpoint; the background publisher sends it once moves go quiet (#1014).
+      if (checkpointInBackground()) scheduleCheckpoint(root, file);
+      else {
+        // A phone can read a compacted checkpoint; failed presentation uploads do not undo the move.
+        try { await publishCheckpoint(root, file, state, io); }
+        catch (error) {
+          if (!(error instanceof Refused)) throw error;
+          if (confirmedDeletion(state, error)) forgetDeletedCopy(root, file, state, io);
+          else if (error.code === 'AUTH_REQUIRED') {
+            if (!receipt.outcome.error) io.err(`pullboard: ${recordedMoveRefusal({ recordedMove: true }, error).message}`);
+            reportExpiredSignIn(state, io);
+          } else io.err(`pullboard: ${recordedMoveRefusal({ recordedMove: !receipt.outcome.error }, error).message}`);
+        }
       }
       if (receipt.outcome.error) throw refusalFromReceipt(receipt.outcome.error);
       if (existsSync(file) && ['register', 'ensureCoordinator'].includes(operation)) await actorTransport(root, file, state, receipt.outcome.result, io);
       for (const event of receipt.outcome.events ?? []) io.onEvent?.(event);
       return receipt.outcome.result;
     } catch (error) {
+      // Catch-up may commit the requested receipt before a later link write refuses. A refused receipt counts as nothing.
+      if (requestedMove && onRecorded) {
+        try {
+          const committed = localRecords(root, board => engineReceipt(board, requestedMove.id));
+          if (committed && !committed.outcome.error) onRecorded();
+        } catch { /* No readable durable receipt means no recorded-outcome claim. */ }
+      }
       if (confirmedDeletion(state, error)) {
         forgetDeletedCopy(root, file, state, io);
         return deletedMoveResult(root, operation, args, command, io, applyPausedMoveLocally);
@@ -1249,7 +1240,11 @@ export async function syncRelay(root, io) {
         saveLink(file, state);
         io.err(`pullboard: the relay ${state.url} did not sequence the previous move; retry that move explicitly if still wanted`);
       }
-      if (state.checkpoint || state.presentationDigest !== presentationDigest(relayPresentation(root))) await publishCheckpoint(root, file, state, io);
+      // In the background, a command never builds the presentation to compare it: a saved, unsent checkpoint asks
+      // for an upload, and any other command asks the publisher to compare, so a spec edit alone still reaches the
+      // phone. Otherwise the command publishes a changed presentation itself, as before #1014.
+      if (checkpointInBackground()) { if (state.checkpoint) scheduleCheckpoint(root, file); else requestCheckpointCheck(root, file); }
+      else if (state.checkpoint || state.presentationDigest !== presentationDigest(relayPresentation(root))) await publishCheckpoint(root, file, state, io);
       await deliverDeviceWraps(root, io);
       return summary(root, state);
     }

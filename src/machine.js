@@ -97,8 +97,9 @@ export const STATES = [
 export const GUARDS = [
   { id: 'outsideSubmission', refuse: 'OUTSIDE_SOURCE', rule: 'an outside author and exact fetched commit/tree are recorded with a trusted frozen criterion, without pretending a native builder gated it', next: 'fetch and intake the exact GitHub pull request again', source: 'board' },
   { id: IN_STATE, refuse: '', rule: "the move can start from the item's current state", next: 'pullboard show <id>', source: 'board' },
-  { id: 'joined', refuse: 'NOT_JOINED', alsoRefuses: [{ code: 'SESSION_LEDGER', next: 'make the agent-session ledger named in the message readable and writable by this user, then run the command again' }], rule: 'the caller is the main checkout, or a worktree that joined a lane; an agent session\'s claims, submits and verdicts can be checked against its local ledger', next: 'pullboard join <lane> --model "<model name>" (see: pullboard lanes)', source: 'cli' },
+  { id: 'joined', refuse: 'NOT_JOINED', alsoRefuses: [{ code: 'AGENT_REPLACED', next: 'read the takeover and only shout on its exact hand-off item; continue work from the incoming agent worktree' }, { code: 'SESSION_LEDGER', next: 'make the agent-session ledger named in the message readable and writable by this user, then run the command again' }], rule: 'the caller is the main checkout, or an unreplaced worktree seat that joined a lane; an agent session\'s claims, submits and verdicts can be checked against its local ledger', next: 'pullboard join <lane> --model "<model name>" (see: pullboard lanes)', source: 'cli' },
   { id: 'itemExists', refuse: 'NO_ITEM', rule: 'the item exists', next: 'pullboard list --all', source: 'board' },
+  { id: 'reopenAuthority', refuse: 'COORDINATOR_ONLY', rule: 'the coordinator reopens, a joined seat reports a submitted trunk conflict, or the exact accepting reviewer withdraws its verdict', next: 'ask the coordinator or the reviewer who recorded the accept', source: 'board', alsoRefuses: [{ code: 'VERDICT_WITHDRAW_FORBIDDEN', next: 'ask the accepting reviewer or coordinator to withdraw the verdict' }, { code: 'VERDICT_WITHDRAW_STATE', next: 'refresh the item; only a current acceptance before landing can be withdrawn' }] },
   { id: 'coordinatorOnly', refuse: 'COORDINATOR_ONLY', rule: 'the caller is the coordinator', next: 'run it from the main checkout', source: 'board' },
   { id: 'roadmapReadable', refuse: 'MILESTONES_CORRUPT', alsoRefuses: [{ code: 'LINE_SETTING_RANGE', rule: 'the recorded board line-order setting has a valid registry value', next: 'restore the recorded board line setting from its ordered event history, then retry next --verify' }], rule: 'the recorded queue policy and roadmap are readable when selecting the next review', next: 'restore board metadata from a known-good board export', source: 'board', when: 'only next --verify selection; a review reserved by id does not consult the roadmap' },
   { id: 'coordinatorSaysAs', refuse: 'MAIN_IS_COORDINATOR', rule: 'in the main checkout, the caller says it is the coordinator', next: 'verify from your own worktree; the coordinator adds --as coordinator', source: 'cli' },
@@ -194,11 +195,11 @@ export const MOVES = [
     command: 'pullboard verify <id> reject --reason CODE --note "..."',
   },
   {
-    verb: 'reopen', from: ['submitted', 'verified'], to: 'open', by: ['coordinator'], refuse: 'NOT_SUBMITTED',
-    guards: ['joined', 'itemExists', IN_STATE, 'coordinatorOnly', 'noteGiven', 'causeWellFormed', 'notMerged', 'landingFailureRecorded', 'trunkConflicts', 'conflictAccepted'],
-    alsoRefuses: [{ code: 'BAD_CONFIG', rule: 'the configured first-refusal duration fits a valid UTC deadline', next: 'set claim.reopenFirstRefusalMinutes to a non-negative whole number within the supported date range, or 0 to disable' }],
+    verb: 'reopen', from: ['submitted', 'verified'], to: 'open', by: ['agent', 'coordinator'], refuse: 'NOT_SUBMITTED',
+    guards: ['joined', 'itemExists', IN_STATE, 'reopenAuthority', 'noteGiven', 'causeWellFormed', 'notMerged', 'landingFailureRecorded', 'trunkConflicts', 'conflictAccepted'],
+    alsoRefuses: [{ code: 'BAD_VERDICT_WITHDRAW', rule: 'the explicit withdrawal flag is boolean and is not combined with a conflict', next: 'use --withdraw-verdict with --note only, or report a conflict separately' }, { code: 'ENGINE_VERSION', rule: 'the withdrawal move is replayed by an engine defining its meaning', next: 'update Pullboard before withdrawing a verdict' }, { code: 'BAD_CONFIG', rule: 'the configured first-refusal duration fits a valid UTC deadline', next: 'set claim.reopenFirstRefusalMinutes to a non-negative whole number within the supported date range, or 0 to disable' }],
     sets: ['item_verdict', 'item_verified_by', 'item_owner', 'item_lease_until', 'item_review_by', 'item_review_until'],
-    command: 'pullboard reopen <id> --note "why" | --conflict <file> [--conflict <file>]',
+    command: 'pullboard reopen <id> [--withdraw-verdict] --note "why" | --conflict <file> [--conflict <file>]',
   },
   {
     verb: 'escalate', from: ['open', 'claimed'], to: 'open', by: ['agent', 'coordinator'], refuse: 'CLOSED',

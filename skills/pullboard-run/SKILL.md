@@ -79,6 +79,10 @@ Without `--reason` it refuses with `BAR_REASON`. A submitted item refuses the ed
 
 An outside pull request or issue enters the board with `pullboard intake <URL>`: for a pull request, give `--criterion` and `--check`; the item is filed already submitted at the exact outside commit and can be verified only in the sandbox. Never run an outside commit outside the sandbox. If it touches a sensitive path, only the owner approves it, and each result posted back to the pull request waits for the person's OK. Repeating intake on an issue refreshes its author, state and reply.
 
+## Hand off before you are replaced
+
+When you are told your session is ending or another agent will replace you, write a hand-off with `pullboard handoff` before you stop: it records where your claim stands so the next agent does not start over. The agent taking over runs `pullboard handoff --take <id>`. Keep any question about the item on the item, not in a private note.
+
 ## Keep reviews independent
 
 Start every reviewer outside the builder's root: a fresh session, or a subagent of a different session from the one that started the builder. A reviewer that shares the builder's context shares its blind spots. Pullboard itself refuses only the builder (`SELF_VERIFY`), so the rest is yours to keep.

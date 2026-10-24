@@ -1,3 +1,4 @@
+import { recordedMoveRefusal } from './recorded-move.js';
 /**
  * The command line's entry: parse the arguments, bind the checkout, run the relay and baseline work around the
  * command when there is any, and dispatch through the lazy command table. It loads a module only when the command
@@ -90,6 +91,7 @@ const OPTIONS = {
   adopt: { type: 'boolean' },
   waive: { type: 'string' },
   until: { type: 'string' },
+  take: { type: 'string' },
   agent: { type: 'string' },
   'agent-light': { type: 'string' },
   'agent-mid': { type: 'string' },
@@ -130,6 +132,7 @@ const OPTIONS = {
   ref: { type: 'string' },
   supersedes: { type: 'string' },
   conflict: { type: 'string', multiple: true },
+  'withdraw-verdict': { type: 'boolean' },
   cause: { type: 'string' },
   'never-again': { type: 'boolean' },
   'draft-splits': { type: 'boolean' },
@@ -190,6 +193,7 @@ async function runCommand(argv, io) {
     if (!load) return (await import('./cli-help.js')).unknownCommand(io, command);
     return await (await load()).run(io, args);
   } catch (error) {
+    error = recordedMoveRefusal(io, error);
     if (error instanceof Refused) {
       io.refusal?.(error);
       io.err(`pullboard: ${await displayedRefusal(io, error)}\nnext: ${io.refusalDocument(error).error.next}`);
@@ -231,7 +235,7 @@ async function bindCheckoutSession(io, positionals, values) {
   if (command === 'takeover' && (positionals.length !== 1 || Object.keys(values).some((key) => key !== 'json'))) {
     throw new Refused('USAGE', 'pullboard takeover takes no arguments; run pullboard takeover [--json]');
   }
-  const writes = ['bar', 'init', 'join', 'worktree', 'hooks', 'hook', 'skills', 'add', 'edit', 'fact', 'escalate', 'run', 'sweep',
+  const writes = ['handoff', 'bar', 'init', 'join', 'worktree', 'hooks', 'hook', 'skills', 'add', 'edit', 'fact', 'escalate', 'run', 'sweep',
     'next', 'claim', 'hold', 'release', 'submit', 'done', 'verify', 'check', 'merged', 'land', 'withdraw', 'refreeze', 'reopen', 'shout', 'answer', 'pass', 'import', 'milestone', 'takeover', 'forget'];
   if (!writes.includes(command) && !(command === 'lane' && first === 'add') && !(command === 'settings' && first) && !(command === 'spec' && first === 'apply') && !(command === 'relay' && ['on', 'off'].includes(first))) return;
   if (command === 'answer' && values.as === 'person') return;
