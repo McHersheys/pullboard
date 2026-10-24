@@ -14,9 +14,9 @@ import { MARKER_NOT_YET, readMarker } from './land-marker-fixture.js';
 import { assertLandingStopIdentity } from './land-stop-fixture.js';
 import { assertLandingDoctrineCounts } from './land-doctrine-fixture.js';
 import { onBoard, events, calls } from './land-board-fixture.js';
-
 import { landingTimeoutFixture } from './landing-timeout-fixture.js';
 import { assertParallelLanding, assertParallelCliLease, assertParallelNestedGate } from './land-parallel-fixture.js';
+import { landEnginesInOrder } from './land-engine-fixture.js';
 const e2e = createE2eHelpers();
 after(e2e.cleanup);
 const { sandbox, project, commitFile, waitFor, BIN } = e2e;
@@ -33,7 +33,6 @@ test('a landing records a falling doctrine count and holds a rising count [B3,R3
 test('a repo with no remote lands into the local trunk and status reads as normal [I1,B3,R3,H5]', () => {
   assertNoRemoteLanding(sandbox, commitFile);
 });
-
 /** Start a separate process holding an exclusive write transaction on the fixture board. */
 function startExclusiveBoardWriter(box, boardFile, name) {
   const ready = join(box.dir, `${name}-ready`);
@@ -58,7 +57,6 @@ function startExclusiveBoardWriter(box, boardFile, name) {
   });
   return { child, closed: childOutcome(child), ready, release, released };
 }
-
 /** Resolve when an owned fixture child closes or fails to spawn. */
 function childOutcome(child) {
   return new Promise((resolveOutcome) => {
@@ -67,7 +65,6 @@ function childOutcome(child) {
     child.once('close', (code, signal) => resolveOutcome({ code, signal, error: spawnError }));
   });
 }
-
 /** Run the real pre-commit hook with a preload observing its agentAt SQLite read. */
 function startHookRead(box, probe, marker) {
   const env = { ...box.env, HOOK_READ_ATTEMPT: marker };
@@ -1498,3 +1495,6 @@ async () => assertParallelCliLease({ landProject, itemWorktree, submitItem, acce
 
 test('parallel landing refuses a live inherited gate before scheduling [B3,V4,Q1,Q3]', { timeout: 90_000 }, // budget: private verified item plus two immediate guarded entries; hang ceiling only.
 () => assertParallelNestedGate({ landProject, itemWorktree, submitItem, acceptItem, onBoard, BIN }));
+test('the landing merge assigns engine numbers in landing order, either order, and the board replays [B3,R3,H16]', () => {
+  for (const order of [[0, 1], [1, 0]]) landEnginesInOrder({ landProject, itemWorktree, submitItem, acceptItem, json, onBoard }, order);
+});
