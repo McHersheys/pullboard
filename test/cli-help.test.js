@@ -114,6 +114,7 @@ test('an unknown command names its closest match and where to see every command 
   assert.equal(result.status, 2);
   assert.match(result.stderr, /no command "cliam"; closest match is "claim"/);
   assert.match(result.stderr, /pullboard help --all/);
+  assert.doesNotMatch(result.stderr, /presence heartbeat unavailable/, 'an uninitialized directory has no seat to heartbeat');
   const help = run('help', 'cliam');
   assert.equal(help.status, 2);
   assert.match(help.stderr, /closest match is "claim"/);
