@@ -95,6 +95,7 @@ Everything durable lives on one volume at `/data`: `auth.sqlite`, then `devices.
 | `page_upload` | `boards/<board>.journal.sqlite` | Per staged page upload: id, the sender's account id, kind and agent or machine name, the sequence it covers and its expiry. | It is published, or it expires. |
 | `page_upload_object` | `boards/<board>.journal.sqlite` | Which sealed pages a staged upload holds: the upload id and the page id. | Its upload is deleted. |
 | `page_pin` | `boards/<board>.journal.sqlite` | Per read in flight: id, the reader's account id, kind and agent or machine name, the root page it reads and its expiry. | It expires. |
+| `journal_upload_status` | `boards/<board>.journal.sqlite` | One opaque, board-key-sealed notice of a refused snapshot upload. The relay cannot read its repository name, measured size or reported limit. | The next accepted snapshot clears it atomically, or the board is deleted or expires. A later notice is ignored once a snapshot exists. |
 | `storage_warning` | `boards/storage-quota.sqlite` | Per board refused for account storage: the board, the account id and login in clear, the bytes used and allowed, and the bytes the refused write needed. | The board's next stored checkpoint, or the board is unlinked. |
 
 Once a day the relay copies each journal into `backups/` and keeps each copy for 14 days; deleting a board deletes its copies at once (`relay/retention.js`). After 60 days without activity the relay warns on the next contact, and at 90 days it deletes the board.
