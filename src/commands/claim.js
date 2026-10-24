@@ -2,7 +2,10 @@
 import {
   headCommit,
 } from '../git.js';
-import { getItem, listItems } from '../board.js';
+import {
+  getItem,
+  listItems,
+} from '../board.js';
 import { itemFileCollisions } from '../item-files.js';
 import {
   MainSpecMerged,

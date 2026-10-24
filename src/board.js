@@ -48,7 +48,10 @@ import {
   briefFiles,
   briefSections,
 } from './brief.js';
-import { itemFiles, itemFileCollisions } from './item-files.js';
+import {
+  itemFiles,
+  itemFileCollisions,
+} from './item-files.js';
 export { itemFiles };
 import { COORDINATOR } from './config.js';
 import {
