@@ -175,6 +175,13 @@ export async function resumeHere(io, view, diagnostics = false, { json = false }
     const decisionSections = isMain ? coordinatorDecisionSections(board, ctx) : null;
     const { shouts = [], ...decisions } = decisionSections ?? {};
     const needsState = resumeNeeds(root, { board, config: ctx.config, includeRigorUndrafted: me.id === COORDINATOR });
+    let proofStatsFallback;
+    const flow = decisionSections ? proofStats(board, { now: ctx.clock.now().getTime(),
+      /** Keep the cold-path notice in text and JSON without changing the statistics object. */
+      onFallback: () => {
+        proofStatsFallback = 'Proof statistics: counters are unavailable; reading the complete event history for this resume. The next writable command will build the counters.';
+      },
+    }).flow : null;
     return {
       me,
       health: recordedHealthFindings(board),
@@ -182,7 +189,7 @@ export async function resumeHere(io, view, diagnostics = false, { json = false }
       needsYou: personNeeds(needsState),
       ...(me.id === COORDINATOR ? { rigor: { undrafted: needsState.rigorUndrafted, ...(needsState.rigorNotice ? { notice: needsState.rigorNotice } : {}) } } : {}),
       ...(decisionSections ? { ...decisions, ...(diagnostics ? verifiedMergeGroups(root, pendingMerges, shouts, ctx.clock.now().getTime()) : {}),
-        flow: proofStats(board, { now: ctx.clock.now().getTime() }).flow } : {}),
+        flow, ...(proofStatsFallback ? { proofStatsFallback } : {}) } : {}),
       requests: me.id === COORDINATOR ? store.openRequests(board) : [],
       holding: all.filter((item) => item.item_status === 'claimed' && item.item_owner === me.id),
       held: all.filter((item) => item.item_status === 'claimed' && item.item_owner === me.id)
@@ -235,6 +242,7 @@ export async function resumeHere(io, view, diagnostics = false, { json = false }
   const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
   say(`resume: ${me.displayName}${me.family ? ` [family ${me.family}]` : ''}, ${me.lane} lane${isMain ? ', the main checkout' : ''}, at ${root}`);
   if (card.inbox) for (const line of coordinatorInboxLines(card.inbox, name, (at) => span(ctx, at), firstLine)) say(line);
+  if (card.proofStatsFallback) say(card.proofStatsFallback);
   if (card.health.recordedAt) {
     say(`Health recorded ${card.health.recordedAt}: ${card.health.findings.length} finding${card.health.findings.length === 1 ? '' : 's'}; refresh with pullboard sentinel run.`);
     for (const finding of card.health.findings) say(`  ${finding.subject}: ${finding.why}; next: ${finding.next}`);
