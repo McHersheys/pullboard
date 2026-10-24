@@ -240,6 +240,7 @@ test('the activity tab draws the lifecycle from the declaration, as the README d
       'open>claimed': 'claim 6',
       'claimed>open': 'release · lapse · escalate · refreeze (none yet)',
       'claimed>submitted': 'submit 3',
+      'open>submitted': 'intake (none yet)',
       'submitted>verified': 'accept 1',
       'submitted>open': 'reject 1',
       'open>withdrawn': verifiedIsFinal ? 'withdraw 4' : 'withdraw 1',
