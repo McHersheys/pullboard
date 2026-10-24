@@ -974,3 +974,40 @@ test('an agent grant narrows at claim without changing old receipts or permittin
     assert.deepEqual(store.itemThread(board, 2), before, 'neither old receipt replay nor a forged old move adds a fact');
   }
 });
+
+
+test('an agent grant narrows at claim without trapping its own handoff facts [E21,B3]', () => {
+  const box = helpers.project();
+  for (const title of ['Claimed work', 'Unrelated work']) {
+    run(box, box.repo, 'add', 'web', title, '--specs', 'G1', '--check', 'test -f web/grant-proof');
+  }
+  run(box, box.web, 'claim', '1');
+  const actor = withBoard(box.repo, board => store.listAgents(board).find(agent => agent.agent_path === box.web).agent_id);
+  const held = withBoard(box.repo, board => store.getItem(board, 1));
+  const snapshot = withBoard(box.repo, exportBoard);
+  const peer = join(box.dir, 'handoff-grant-replica');
+  box.git(box.dir, 'clone', '-q', box.repo, peer);
+  withBoard(peer, board => importBoard(board, snapshot));
+  const roots = [box.repo, peer];
+  const during = new Date(Date.parse(held.item_lease_until) - 1000).toISOString();
+  const expired = new Date(Date.parse(held.item_lease_until) + 1).toISOString();
+  /** Apply one genuine engine record at the same ordered time on independent databases. */
+  const replay = (operation, args, at = during) => {
+    const move = withBoard(box.repo, board => prepareEngineMove(board, operation, args));
+    const outcomes = roots.map(root => withBoard(root, board => applyEngineMove(board, move,
+      { sequence: appliedSequence(board) + 1, at })));
+    assert.deepEqual(outcomes[0], outcomes[1]);
+    return outcomes[0];
+  };
+  assert.equal(replay('openHandoff', [{ agentId: actor }]).error, undefined, 'a claim does not trap channel creation');
+  const channels = roots.map(root => withBoard(root, board => board.db.prepare(
+    "SELECT item_id FROM event WHERE event_by=? AND event_kind='handoff-open' ORDER BY event_id DESC LIMIT 1").get(actor).item_id));
+  assert.equal(channels[0], channels[1]);
+  /** A channel fact remains an ordinary fact move, scoped by its canonical handoff-open event. */
+  const fact = (item, text, at) => replay('appendFact', [item, { agentId: actor, kind: 'note', text }], at);
+  assert.equal(fact(channels[0], 'Context for the incoming seat').error, undefined,
+    'the live build claim cannot block facts on its own handoff channel');
+  assert.equal(fact(2, 'Not a handoff channel').error?.code, 'AGENT_GRANT_ITEM');
+  assert.equal(fact(channels[0], 'More context after the build lease ended', expired).error, undefined);
+  assert.equal(fact(2, 'Expiry is not general authority', expired).error?.code, 'AGENT_GRANT_EXPIRED');
+});
