@@ -67,8 +67,6 @@ test('[B4,V1,V2,H16] real native sessions sign and freeze one bar before normal 
   succeeds(act(box,'private-builder',box.web,'join','web','--model','Private builder'));
   const unsigned=act(box,'private-builder',box.web,'claim',String(id));
   assert.notEqual(unsigned.code,0);assert.match(unsigned.err,/BAR_NOT_READY/);
-  const self=act(box,'private-author-a',box.repo,'bar','sign',String(id),'--note','can be built and graded alike');
-  assert.notEqual(self.code,0);assert.match(self.err,/BAR_SELF_SIGN/);
   const reviewer=join(box.dir,'outside-review');box.git(box.repo,'worktree','add','-qb','api/outside',reviewer,'main');
   succeeds(act(box,'private-reviewer',reviewer,'join','api','--model','Private reviewer'));
   const unknownDuration=act(box,'private-reviewer',reviewer,'bar','sign',String(id),'--note','Whole coverage still needs measured evidence.');
@@ -78,6 +76,8 @@ test('[B4,V1,V2,H16] real native sessions sign and freeze one bar before normal 
   const coverageFile=join(box.dir,'coverage.json');
   writeFileSync(coverageFile,JSON.stringify({files:[{path:'test/witness.test.mjs',mode:'whole',evidence:box.wholeEvidence}],
     named:{durationMs:baseline.seconds*1000,selection:'named-check',ref:baselineRef,sha256:createHash('sha256').update(baselineText).digest('hex'),source:baseline.main,runtime:process.version,outcome:'fail'}}));
+  const self=act(box,'private-author-a',box.repo,'bar','sign',String(id),'--coverage-file',coverageFile,'--note','can be built and graded alike');
+  assert.notEqual(self.code,0);assert.match(self.err,/BAR_SELF_SIGN/);
   succeeds(act(box,'private-reviewer',reviewer,'bar','sign',String(id),'--coverage-file',coverageFile,'--note','Builder can meet this witness; measured whole-file coverage fits and two reviewers can grade absent and present output alike.'));
   succeeds(act(box,'private-builder',box.web,'claim',String(id)));
   const frozen=JSON.parse(readItem(box,id).item_frozen);
