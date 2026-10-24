@@ -134,10 +134,11 @@ function noticeHistory(box) {
   return history(box.file, { freeze: item => frozenCriterion(loadSpec(box.repo, config), item, loadDoctrine(box.repo, config)) });
 }
 
-test('a repeated cause tells the coordinator once [D1,D3]', () => {
+test('engine 43 repeated-cause notices retain their deferred proved-draft workflow [D1,D3,H16]', () => {
   const box = freshBoard();
   const proof = noticeProof(box);
   const historyBox = noticeHistory(box);
+  historyBox.board.executionEngineVersion = RIGOR_NOTICE_ENGINE;
   const cause = 'doctrine:C3';
   const ids = ['First', 'Second', 'Third', 'After decline', 'Still quiet'].map(historyBox.add);
   const notices = () => store.allShouts(historyBox.board).filter(shout => shout.shout_from === 'rigor');
@@ -353,7 +354,7 @@ test('a repeated failure cause is noticed [D1,V1]', () => {
   const secondSha = board.submit(third); board.reject(third, 'refusal:UNDECLARED_REFUSAL');
   // A single: one failure on one item at one commit never lists.
   board.submit(single); board.reject(single, 'row:G1');
-  // An uncaused reject: no structured cause and no --cause, so it records no key and is counted.
+  // No explicit cause or failure receipt: use the coarse coded verdict, never the test named in prose.
   const uncausedItem = board.add('Uncaused');
   board.submit(uncausedItem); board.reject(uncausedItem, undefined, `${catalog.slice('test:'.length).replace('::', ': ')} failed`);
   // Merge conflicts on two items never list, however often they recur.
@@ -372,7 +373,7 @@ test('a repeated failure cause is noticed [D1,V1]', () => {
   assert.equal(refusal.reads, 'work', 'a refusal is about how the work is done');
   assert.ok(!repeated.causes.some((cause) => cause.key === 'row:G1'), 'a single failure does not list');
   assert.ok(!repeated.causes.some((cause) => /conflicts with/u.test(cause.key)), 'a merge conflict never lists');
-  assert.equal(repeated.uncaused, 1, 'the uncaused reject is counted, and its note naming the catalog test is never read as a key');
+  assert.equal(repeated.uncaused, 0, 'the coded verdict supplies a coarse key without parsing its note as test evidence');
   assert.equal(test.items.length, 2, 'the uncaused reject does not join the catalog cause');
 
   // A person's never-again lists at once, from one fact and no failure at all.
@@ -390,14 +391,14 @@ test('a repeated failure cause is noticed [D1,V1]', () => {
   assert.match(lines[0], /^doctrine:C3 {2}reads as work {2}never again \(the person\) {2}items #\d+$/u);
   assert.equal(lines[1], `${catalog}  reads as both  2 failures  items #${first}, #${second}`);
   assert.equal(lines[2], `refusal:UNDECLARED_REFUSAL  reads as work  2 failures  items #${third} (2 commits)`);
-  assert.equal(lines[3], '1 rejects and reopens carry no cause key; name one with --cause <key> (test:<file>::<title>, refusal:<CODE>, row:<id>, doctrine:<id>, sentinel:<name>)',
-    'rigor says how many rejects and reopens are uncaused');
-  assert.equal(lines.length, 4);
+  assert.equal(lines[3], '0 rejects and reopens carry no cause key; name one with --cause <key> (test:<file>::<title>, refusal:<CODE>, row:<id>, doctrine:<id>, sentinel:<name>, conflict:<file>)');
+  assert.equal(lines.length, 4, 'the single coarse verdict is not a repeat; the zero-uncaused footer remains explicit');
 });
 
 test('rigor reads old events by their structured fields only, never by their notes [D1,V1]', () => {
   const box = freshBoard();
   const board = history(box.file);
+  board.board.executionEngineVersion = RIGOR_NOTICE_ENGINE;
   const [first, second, third, fourth] = ['First', 'Second', 'Third', 'Fourth'].map(board.add);
   const landing = { file: 'test/machine.test.js', name: 'the declaration matches the refusals board.js and cli.js raise [M1]' };
   // Reopens after a red landing carry their failing tests as structured fields, with no cause key.

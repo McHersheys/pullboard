@@ -1,4 +1,5 @@
 /** @pullboard-test-input test-tree */
+/** @pullboard-test-gui */
 import assert from 'node:assert/strict';
 import { appendFileSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
