@@ -1,0 +1,57 @@
+/** @pullboard-test-input source-tree */
+/** Two independent Git clones and SQLite replicas exercise account-free sharing [H11]. */
+import assert from 'node:assert/strict';
+import { chmodSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { test } from 'node:test';
+import { createE2eHelpers } from './e2e-helpers.js';
+
+/** Read one successful public CLI JSON response, preserving failures in the assertion. */
+function document(result, purpose) {
+  assert.equal(result.code, 0, `${purpose}: ${result.err || result.out}`);
+  return JSON.parse(result.out);
+}
+
+test('two machines share a board through git [H11]', async t => {
+  const helpers = createE2eHelpers();
+  t.after(helpers.cleanup);
+  const box = helpers.project();
+  const remote = join(box.dir, 'remote.git');
+  box.git(box.dir, 'clone', '--bare', box.repo, remote);
+  box.git(box.repo, 'remote', 'add', 'origin', remote);
+  document(box.run(box.repo, 'sync', '--json'), 'explicit sync shares the first machine without a relay account');
+  const clone = join(box.dir, 'second');
+  box.git(box.dir, 'clone', remote, clone);
+  assert.equal(box.run(clone, 'init').code, 0, 'initialize only the clone-local board');
+  document(box.run(clone, 'sync', '--json'), 'the second machine joins the same board');
+  const secondSeat = join(box.dir, 'second-web');
+  box.git(clone, 'worktree', 'add', secondSeat, '-b', 'web/second');
+  document(box.run(secondSeat, 'join', 'web', '--model', 'fixture', '--json'), 'join a distinct seat on machine two');
+  /** Start a public CLI command so independent machines can race real Git pushes. */
+  async function run(root, ...args) {
+    const child = helpers.launch(box, root, process.execPath, [helpers.BIN, ...args, '--json']);
+    const result = await child.closed;
+    return { code: result.code, out: child.stdoutText, err: child.stderrText };
+  }
+  const additions = await Promise.all([
+    run(box.repo, 'add', 'web', 'From machine one'),
+    run(clone, 'add', 'web', 'From machine two'),
+  ]);
+  const ids = additions.map(result => document(result, 'concurrent addition').item.item_id);
+  assert.notEqual(ids[0], ids[1], 'competing additions receive globally ordered IDs');
+  const claims = await Promise.all([run(box.web, 'claim', String(ids[0])), run(secondSeat, 'claim', String(ids[0]))]);
+  assert.equal(claims.filter(result => result.code === 0).length, 1, 'one holder wins');
+  assert.equal(JSON.parse(claims.find(result => result.code !== 0).out).error.code, 'HELD');
+  // A real receive hook loses one push. Retrying must publish just one addition.
+  const hook = join(remote, 'hooks', 'pre-receive');
+  writeFileSync(hook, '#!/bin/sh\nrm -- "$0"\nexit 1\n');
+  chmodSync(hook, 0o755);
+  const retried = document(await run(box.repo, 'add', 'web', 'Survives one lost push'), 'retry the refused push').item.item_id;
+  for (const root of [box.repo, clone]) {
+    document(box.run(root, 'sync', '--json'), 'synchronize the accepted prefix');
+    const board = document(box.run(root, 'export'), 'export the converged public board');
+    assert.deepEqual(board.tables.item.map(item => item.item_id).sort((a, b) => a - b), [...ids, retried].sort((a, b) => a - b));
+    assert.equal(board.tables.event.filter(event => event.event_kind === 'add' && event.item_id === retried).length, 1, 'the retried move is recorded once');
+    assert.equal(board.tables.event.filter(event => event.event_kind === 'claim').length, 1, 'only the winning claim becomes a move');
+  }
+});
