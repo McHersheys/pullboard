@@ -36,8 +36,8 @@ test('a relink after relay off seals moves with the new key [H15,H17]', async t 
   const exported = (await box.cli('export')).document;
   assert.ok(exported.tables.shout.some(row => row.shout_text === 'before explicit unlink'));
   assert.ok(exported.tables.shout.some(row => row.shout_text === 'after explicit relink'));
-  const response = await fetch(box.origin + '/api/v1/boards/' + oldLink.board + '/state', {
-    headers: { authorization: 'Bearer ' + (await box.phoneSession()).token },
+  const response = await fetch(box.origin + '/api/v2/boards/' + oldLink.board + '/state', {
+    headers: { authorization: 'Bearer ' + (await box.phoneSession()).token, 'x-pullboard-engine': String(ENGINE_VERSION) },
   });
   assert.equal(response.status, 200, 'the old remote copy remains until the person deletes it');
 });
@@ -71,8 +71,11 @@ test('relink snapshots actual local queued effects and retains old encrypted obl
   writeFileSync(configFile, JSON.stringify({ ...config, relay: { outbox: true } }) + '\n');
   const cli = fileURLToPath(new URL('../bin/pullboard.js', import.meta.url));
   writeFileSync(join(box.env.PATH, 'pullboard'), `#!/bin/sh\nexec node "${cli}" "$@"\n`, { mode: 0o700 });
-  runFixtureGit(['add', 'pullboard.json'], { cwd: box.root, env: box.env });
-  runFixtureGit(['commit', '-q', '-m', 'chore(config): queue relay moves while offline [H17]'], { cwd: box.root, env: box.env });
+  const draft = await box.cli('spec', 'draft', 'Queue local relay moves while the relay is offline');
+  assert.equal(draft.code, 0);
+  runFixtureGit(['add', 'pullboard.json', config.spec ?? 'SPEC.md'], { cwd: box.root, env: box.env });
+  runFixtureGit(['commit', '-q', '-m', 'chore(config): queue relay moves while offline [' + draft.document.id + ']'],
+    { cwd: box.root, env: box.env });
   await box.link();
   const old = JSON.parse(readFileSync(box.linkFile, 'utf8'));
   await box.stopRelay();
