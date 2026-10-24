@@ -10,11 +10,11 @@ export function relayMoveActor(move) {
   if (move.operation === 'addItem') return args[0]?.by ?? null;
   if (move.operation === 'shout') return args[0]?.from ?? null;
   if (['proposeSentinel', 'decideSentinel', 'beginSentinelRun', 'finishSentinelRun'].includes(move.operation)) return args[0]?.agentId ?? null;
-  if (['recordHealthFindings', 'recordFlakeObservation', 'recordGateRun', 'declareJob', 'recordJobRun', 'takeCoordinator', 'landingLeaseMove', 'setPersonSigning', 'proposePersonMove', 'recordPublishFinding'].includes(move.operation)) return args[0]?.agentId ?? null;
+  if (['setBarReady', 'recordHealthFindings', 'recordFlakeObservation', 'recordGateRun', 'declareJob', 'recordJobRun', 'takeCoordinator', 'landingLeaseMove', 'setPersonSigning', 'proposePersonMove', 'recordPublishFinding'].includes(move.operation)) return args[0]?.agentId ?? null;
   if (['holdLane', 'releaseLane'].includes(move.operation) && args[1]?.asPerson) return 'person';
   if (move.operation === 'release') return args[1] ?? null;
   if (['reserveNextReview', 'addMilestone', 'recordRowDecisions', 'applyRowDecisions', 'draftSpecRow', 'recordSpecApprovalBaseline', 'recordLandingBatch', 'recordLandingWaiver', 'recordLandingFlake', 'recordLandingTestDefect', 'finishLandingBatch'].includes(move.operation)) return args[0]?.agentId ?? null;
-  if (['acceptCheck', 'completeCheckBaseline', 'appendFact', 'editItem', 'escalate', 'recordAttempt', 'claim', 'submit', 'reserveReview', 'verify', 'merged', 'withdraw', 'refreeze',
+  if (['signBar', 'acceptCheck', 'completeCheckBaseline', 'appendFact', 'editItem', 'escalate', 'recordAttempt', 'claim', 'submit', 'reserveReview', 'verify', 'merged', 'withdraw', 'refreeze',
     'passDecision', 'answerDecision', 'holdLane', 'releaseLane', 'holdItem', 'releaseItemHold', 'reopen', 'editMilestoneItems', 'orderMilestoneItems', 'moveMilestone', 'editMilestone', 'removeMilestone', 'shipMilestone'].includes(move.operation)) return args[1]?.agentId ?? null;
   return null;
 }
@@ -35,6 +35,11 @@ export function validRelaySender(sender) {
 
 export { validPresence } from './person-presence.js';
 import { validPresence } from './person-presence.js';
+/** Person bar provenance follows the same authenticated authority as existing person moves. */
+function personBarMove(move) {
+  const at = move?.operation === 'addItem' ? 0 : ['editItem', 'signBar'].includes(move?.operation) ? 1 : null;
+  return at !== null && move.args?.[at]?.barActor?.authority === 'person';
+}
 
 /**
  * True for a move only the person may make: a row decision, a sentinel decision, an answer or hold as the person, a
@@ -42,7 +47,7 @@ import { validPresence } from './person-presence.js';
  * session makes one [E4].
  */
 export function personAuthority(move) {
-  return personFact(move) || ['holdLane', 'releaseLane'].includes(move?.operation) && Boolean(move.args?.[1]?.asPerson) || ['recordRowDecisions', 'decideSentinel'].includes(move?.operation) || move?.operation === 'answerDecision' && Boolean(move.args?.[1]?.asPerson) ||
+  return personBarMove(move) || personFact(move) || ['holdLane', 'releaseLane'].includes(move?.operation) && Boolean(move.args?.[1]?.asPerson) || ['recordRowDecisions', 'decideSentinel'].includes(move?.operation) || move?.operation === 'answerDecision' && Boolean(move.args?.[1]?.asPerson) ||
     move?.operation === 'shout' && Boolean(move.args?.[0]?.request) || relayMoveActor(move) === 'person';
 }
 
@@ -84,7 +89,7 @@ export function relaySenderProblem(move, sender, kind, { phoneReceipt = false } 
         move.operation === 'ensureCoordinator' && typeof move.args?.[0] === 'string')) return null;
     return new Refused('RELAY_PERSON_ONLY', 'a machine cannot act as the person; approve this action on the paired phone');
   }
-  if (kind === 'snapshot' || move?.operation === 'recordRowDecisions' || move?.operation === 'decideSentinel' || move?.operation === 'answerDecision' && move.args?.[1]?.asPerson ||
+  if (personBarMove(move) || kind === 'snapshot' || move?.operation === 'recordRowDecisions' || move?.operation === 'decideSentinel' || move?.operation === 'answerDecision' && move.args?.[1]?.asPerson ||
     move?.operation === 'shout' && move.args?.[0]?.request || relayMoveActor(move) === 'person') {
     return new Refused('RELAY_PERSON_ONLY', `agent ${sender.agent} cannot make a person-only relay ${kind}; use the person's authenticated session`);
   }
@@ -101,7 +106,7 @@ export function credentialActor(move) {
     return typeof creator === 'string' && creator !== 'machine' ? creator : 'machine';
   }
   if (move.personRequest || ['register', 'ensureCoordinator'].includes(move.operation)) return 'machine';
-  if (['recordRowDecisions', 'recordLandingWaiver'].includes(move.operation)
+  if (personBarMove(move) || ['recordRowDecisions', 'recordLandingWaiver'].includes(move.operation)
     || move.operation === 'answerDecision' && args[1]?.asPerson
     || move.operation === 'shout' && args[0]?.request) return 'person';
   return relayMoveActor(move);
