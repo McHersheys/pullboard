@@ -1,8 +1,8 @@
 /** Native provenance rejects borrowed evidence and keeps unknown facts explicit [C7,H16]. */
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import * as store from '../src/board.js';
 import { prepareEngineMove, applyEngineMove } from '../src/engine.js';
@@ -46,7 +46,11 @@ test('native receipts carry each child reported runtime instead of borrowing the
   const paths = [join(box.dir, 'first-runtime.json'), join(box.dir, 'second-runtime.json')];
   const programs = paths.map(path => `require('node:fs').writeFileSync(${JSON.stringify(path)},JSON.stringify({pid:process.pid,node:process.versions.node,platform:process.platform,arch:process.arch}));`);
   // Separate actual processes must remain distinct even when they happen to run the same Node version.
-  const command = programs.map(program => `${JSON.stringify(process.execPath)} -e ${JSON.stringify(program)}`).join(' && ');
+  // Approved MIN/current runner images have both versions; a single-runtime install still exercises two real children.
+  const alternate = ['24.21.0', '22.13.1'].map(version => join(dirname(process.execPath), '..', '..', 'v' + version, 'bin', 'node'))
+    .find(path => path !== process.execPath && existsSync(path)) ?? process.execPath;
+  const executables = [process.execPath, alternate];
+  const command = programs.map((program, index) => `${JSON.stringify(executables[index])} -e ${JSON.stringify(program)}`).join(' && ');
   const board = store.openBoard(join(box.repo, '.git/pullboard/board.sqlite'));
   t.after(() => store.closeBoard(board));
   const id = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'Two actual check runtimes',
@@ -59,13 +63,18 @@ test('native receipts carry each child reported runtime instead of borrowing the
   assert.equal(shown.code, 0, shown.err + shown.out);
   const [receipt] = JSON.parse(shown.out).proofReceipts;
   assert.ok(Array.isArray(receipt.testRuntimes), 'the receipt lists child reports, not only one worker environment');
+  const actualChildren = [];
   for (const path of paths) {
     const actual = JSON.parse(readFileSync(path, 'utf8'));
+    actualChildren.push(actual);
     const recorded = receipt.testRuntimes.find(runtime => runtime.pid === actual.pid);
     assert.ok(recorded, 'every actual command child has a self-reported receipt');
     assert.deepEqual(recorded.environment, { node: actual.node, platform: actual.platform, arch: actual.arch });
   }
   assert.equal(new Set(receipt.testRuntimes.map(runtime => runtime.pid)).size, receipt.testRuntimes.length);
+  const versions = new Set(actualChildren.map(child => child.node));
+  t.diagnostic('actual child Node versions: ' + [...versions].join(', '));
+  if (versions.size > 1) assert.equal(receipt.environment, null, 'a mixed actual run has no invented common Node version');
 });
 
 test('proof counters retain explicit totals and do not invent success from missing output [C7,H16]', () => {
