@@ -310,7 +310,7 @@ test('opening an older board names and logs its genuine index-building write [C7
     };
   `);
   const child = startFixtureChild(process.execPath, ['--import', preload, BIN, 'shout', 'all', 'private maintenance move', '--json'], {
-    cwd: box.web, env: box.env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    cwd: box.repo, env: box.env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   });
   let stdout = '';
   let stderr = '';
@@ -322,12 +322,12 @@ test('opening an older board names and logs its genuine index-building write [C7
   async function release() {
     if (!released) { released = true; writeFileSync(releaseFile, 'release\n'); }
     const result = await closed;
-    assert.deepEqual(result, { code: 0, signal: null }, stderr || child.fixtureFailure);
+    assert.deepEqual(result, { code: 0, signal: null }, `${stdout}\n${stderr}`.trim() || child.fixtureFailure);
   }
   t.after(release);
   await new Promise((resolveReady, rejectReady) => {
     child.once('error', rejectReady);
-    child.once('close', (code, signal) => rejectReady(new Error(`private maintenance exited before index evaluation: ${code}/${signal}: ${stderr}`)));
+    child.once('close', (code, signal) => rejectReady(new Error(`private maintenance exited before index evaluation: ${code}/${signal}: ${stdout}\n${stderr}`)));
     child.on('message', message => { if (message?.kind === 'index-write-held') resolveReady(); });
   });
   const contender = new DatabaseSync(file);
@@ -343,10 +343,10 @@ test('opening an older board names and logs its genuine index-building write [C7
   const records = longWrites(stderr);
   assert.equal(records.length, 1, 'one real behind-schema index transaction must log its long write');
   assert.equal(records[0].command, 'shout');
-  assert.equal(records[0].seat, 'web-1');
+  assert.equal(records[0].seat, 'coordinator');
   assert.equal(records[0].pid, child.pid);
   assert.ok(records[0].durationMs > 2_000); // budget: declared #1197 over-2s logging threshold.
-  assert.ok(heldText.includes('shout') && heldText.includes('web-1'), heldText);
+  assert.ok(heldText.includes('shout') && heldText.includes('coordinator'), heldText);
   assert.equal(boardWriteHolderText(file), '');
   const after = snapshot(file);
   for (const [name, rows] of Object.entries(before.tables)) {
