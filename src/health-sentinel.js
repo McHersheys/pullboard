@@ -20,7 +20,7 @@ export function scanHealthSentinel(file, { root, config, now, cpu = agentCpuFind
     const report = healthReport({ db, root, config, now });
     const last = db.prepare("SELECT event_detail FROM event WHERE event_kind = 'health-scan' ORDER BY event_id DESC LIMIT 1").get();
     const processes = cpu(db);
-    report.stuck.push(...(processes ?? (last ? JSON.parse(last.event_detail).active : []).filter(finding => finding.cause === 'AGENT_CPU')));
+    report.stuck.push(...(processes ?? (last ? JSON.parse(last.event_detail).active : []).filter(finding => finding.cause === 'AGENT_CPU').map(finding => ({ ...finding, owner: { who: finding.owner } }))));
     const before = (last ? JSON.parse(last.event_detail).active : []).map(healthFindingIdentity).sort();
     const after = normalizedHealthFindings(report.stuck).map(healthFindingIdentity).sort();
     db.exec('COMMIT');
