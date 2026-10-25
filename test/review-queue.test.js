@@ -491,3 +491,42 @@ test('automatic conflict returns reject local history overrides before replay [V
   }
   assert.deepEqual(results[0], results[1], 'cleaned replicas apply the same actual recorded conflict');
 });
+
+test('a recorded automatic conflict return first replays after the replica trunk advances [V4,H16]', t => {
+  const { box, json, conflicted, reviewer } = staleHeadFixture(t);
+  const remote = join(box.dir, 'recorded-return.git');
+  box.git(box.dir, 'clone', '--bare', box.repo, remote);
+  box.git(box.repo, 'remote', 'add', 'origin', remote);
+  json(box.run(box.repo, 'sync', '--json'));
+  const replica = join(box.dir, 'behind-return-replica');
+  box.git(box.dir, 'clone', remote, replica);
+  const inheritedModel = box.env.PULLBOARD_MODEL;
+  delete box.env.PULLBOARD_MODEL;
+  try { assert.equal(box.run(replica, 'init').code, 0, 'initialize only the replica-local board'); }
+  finally { if (inheritedModel !== undefined) box.env.PULLBOARD_MODEL = inheritedModel; }
+  json(box.run(replica, 'sync', '--json'));
+  const before = json(box.run(replica, 'export'));
+  assert.equal(before.tables.item.find(item => item.item_id === conflicted).item_status, 'submitted');
+  const origin = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
+  t.after(() => store.closeBoard(origin));
+  const head = store.getItem(origin, conflicted).item_commit;
+  const offered = box.run(reviewer, 'next', '--verify', '--json');
+  assert.match(offered.err, /returned .*unreviewed/, 'the origin records its real current-trunk automatic return');
+  const sealed = json(box.run(box.repo, 'export'));
+  const record = sealed.tables.board_meta.filter(row => row.meta_key.startsWith('relay_receipt_'))
+    .map(row => JSON.parse(row.meta_value)).find(receipt => JSON.parse(receipt.move).operation === 'reopen');
+  assert.ok(record, 'the origin has an acknowledged exact move in its board log');
+  assert.equal(record.outcome.error, undefined);
+  assert.equal(before.tables.board_meta.some(row => row.meta_key === 'relay_receipt_' + JSON.parse(record.move).id), false,
+    'the replica has never applied this position: this is not duplicate acknowledgement replay');
+  box.git(box.repo, 'merge', '-q', '--no-edit', '-s', 'ours', head);
+  box.git(replica, 'fetch', box.repo, 'main');
+  box.git(replica, 'merge', '-q', '--ff-only', 'FETCH_HEAD');
+  assert.notEqual(box.git(replica, 'rev-parse', 'HEAD'), JSON.parse(record.move).args[1].computedConflict.trunk);
+  json(box.run(replica, 'sync', '--json'));
+  const replayed = json(box.run(replica, 'export'));
+  assert.equal(replayed.tables.item.find(item => item.item_id === conflicted).item_status, 'open',
+    'first delivery of the validated Git-log record uses its immutable recorded trunk, not current local main');
+  const acknowledged = replayed.tables.board_meta.find(row => row.meta_key === 'relay_receipt_' + JSON.parse(record.move).id);
+  assert.deepEqual(JSON.parse(acknowledged.meta_value).outcome, record.outcome);
+});
