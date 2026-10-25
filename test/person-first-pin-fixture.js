@@ -52,13 +52,17 @@ export function firstUnpairedAuthorityInsertion(t) {
 }
 
 /**
- * Without the test runner's preload, the real CLI takes a first pin only from the built-in relay over TLS: a linked
- * loopback relay over http, or any other origin, cannot vouch for the person, so signing stays off and nothing is pinned.
+ * The shipped CLI takes a first pin only from the built-in relay over TLS: a linked loopback relay over http, or any
+ * other origin, cannot vouch for the person, even with a planted preload or variable, so signing stays off and nothing
+ * is pinned. Only a caller's own explicit parameter (test/person-trusted-cli.js) can name another relay.
  */
 export async function firstPinNeedsBuiltInRelay(t) {
   const box = await relayClientFixture(t);
   assert.equal((await box.link()).code, 0);
-  const env = { ...box.env, NODE_OPTIONS: (box.env.NODE_OPTIONS ?? '').split(' ').filter(option => !option.includes('person-authority-fixture-origin')).join(' ') };
+  // Any switch a shell can set is no authority: a preload that plants a trust hook, as an agent could, changes nothing.
+  const planted = `globalThis[Symbol.for('pullboard.personAuthorityFixtureOrigin')] = () => true; globalThis.trustedRelayOrigin = ${JSON.stringify(box.origin)};`;
+  const env = { ...box.env, PULLBOARD_TRUSTED_RELAY_ORIGIN: box.origin,
+    NODE_OPTIONS: [box.env.NODE_OPTIONS, `--import=data:text/javascript,${encodeURIComponent(planted)}`].filter(Boolean).join(' ') };
   const pinned = () => {
     const board = store.openBoard(join(box.root, '.git', 'pullboard', 'board.sqlite'));
     try { return board.db.prepare("SELECT meta_value FROM board_meta WHERE meta_key='person_authority_local'").get(); }

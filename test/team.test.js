@@ -97,6 +97,8 @@ import { landingQueueCase } from './landing-queue-fixture.js';
 import { DatabaseSync } from 'node:sqlite';
 
 const CLI = join(import.meta.dirname, '..', 'bin', 'pullboard.js');
+/** The shipped command run with an explicit trusted fixture relay; test-only, never published (#408). */
+const TRUSTED_CLI = join(import.meta.dirname, 'person-trusted-cli.js');
 
 const helpers = createE2eHelpers();
 after(helpers.cleanup);
@@ -610,10 +612,10 @@ async function phoneRequest(box, session, move) {
   return document.id;
 }
 
-/** The phone requests this board has received, by id. */
-async function receivedRequests(box) {
-  assert.equal((await box.cli('status')).code, 0, 'the coordinator reads the relay');
-  const meta = (await box.cli('export')).document.tables.board_meta.find((row) => row.meta_key === 'relay_person_requests');
+/** The phone requests this board has received, by id, read through `run` (a test may pass its trusted command). */
+async function receivedRequests(box, run = (...args) => box.cli(...args)) {
+  assert.equal((await run('status')).code, 0, 'the coordinator reads the relay');
+  const meta = (await run('export')).document.tables.board_meta.find((row) => row.meta_key === 'relay_person_requests');
   return Object.fromEntries((meta ? JSON.parse(meta.meta_value) : []).map((record) => [record.id, record]));
 }
 
@@ -963,8 +965,11 @@ function holdsNoPersonCredential(directory) {
 
 test('person-only moves are signed [E22,B26,H16]', { timeout: relayWorkBudgetMs(60) }, async (t) => { // budget: hang ceiling for real CLI runs and relay calls; not a speed target.
   const box = await relayClientFixture(t);
-  /** Run the real CLI in the main checkout with a chosen environment. */
-  const cli = (env, ...args) => relayFixtureChild(box.root, env, [CLI, ...args, '--json']);
+  // The shipped command, handed the loopback fixture relay as an explicit trusted parameter in this test's own call path:
+  // no environment variable or global can make the real CLI trust it (#408 rulings 38756cb3 and 28611).
+  const trusted = [TRUSTED_CLI, box.origin];
+  /** Run the command in the main checkout with a chosen environment, trusting only this fixture relay. */
+  const cli = (env, ...args) => relayFixtureChild(box.root, env, [...trusted, ...args, '--json']);
   // S10a: an agent that cleared AI_AGENT and CLAUDECODE has exactly the person's shell markers.
   const cleared = { ...box.env };
   const marked = { ...box.env, AI_AGENT: '1', CLAUDECODE: '1' };
@@ -1021,7 +1026,7 @@ test('person-only moves are signed [E22,B26,H16]', { timeout: relayWorkBudgetMs(
   renameSync(`${box.linkFile}.unpaired`, box.linkFile);
   assert.ok(holdsNoPersonCredential(box.root) && holdsNoPersonCredential(box.env.HOME), 'no file holds a person session or grant');
   const terminal = helpers.launch({ ...box, env: { ...cleared, SSH_CONNECTION: '127.0.0.1 40000 127.0.0.1 22' } },
-    box.root, process.execPath, [CLI, 'answer', String(ask), 'Signed on the passkey', '--as', 'person', '--json']);
+    box.root, process.execPath, [...trusted, 'answer', String(ask), 'Signed on the passkey', '--as', 'person', '--json']);
   t.after(async () => { if (terminal.exitCode === null && terminal.signalCode === null) terminal.kill('SIGTERM'); await terminal.closed; });
   /** Observe fixture SQLite directly; no second command may execute the waiting action. */
   const nativeRows = (sql, ...args) => {
@@ -1115,7 +1120,7 @@ test('person-only moves are signed [E22,B26,H16]', { timeout: relayWorkBudgetMs(
   } finally { raw.close(); }
   assert.equal((await box.cli('status')).document.person.signed, true, 'the hand-written off turns nothing off');
   const waitingAgain = helpers.launch({ ...box, env: cleared }, box.root, process.execPath,
-    [CLI, 'answer', String(ask), 'still signed', '--as', 'person', '--json']);
+    [...trusted, 'answer', String(ask), 'still signed', '--as', 'person', '--json']);
   try {
     await helpers.waitFor(() => { assert.equal(waitingAgain.exitCode, null, waitingAgain.stderrText); return waitingAgain.stderrText.includes('this terminal is waiting'); },
       'a cleared-marker terminal still waits for a new confirmation', relayWorkBudgetMs(5));
@@ -1135,13 +1140,13 @@ test('person-only moves are signed [E22,B26,H16]', { timeout: relayWorkBudgetMs(
     const rowGrant = await grantFor(request);
     assert.equal((await passkeyRequest(box, phone, request, { grant: rowGrant, ...passkey.get(grantChallenge(rowGrant)) })).status, 200);
   }
-  received = await receivedRequests(box);
+  received = await receivedRequests(box, (...args) => cli(box.env, ...args));
   assert.equal(received[blind.id].error?.code, 'STALE_ROW_DECISION', 'a decision that does not name the rows shown is refused');
   assert.notEqual(received[seen.id].status, 'refused', JSON.stringify(received[seen.id]));
   const decided = (await box.cli('export')).document.tables.event.filter((row) => row.event_kind === 'row_decision');
   assert.deepEqual(decided.map((row) => [row.event_by, JSON.parse(row.event_detail).record.id]), [['person', 'G1']], 'the passkey decided exactly the row it showed');
   // The real CLI applies that decision, checked against the authority its relay vouches for, never a stored key (#408).
-  const applied = await box.cli('spec', 'apply');
+  const applied = await cli(box.env, 'spec', 'apply');
   assert.equal(applied.code, 0, JSON.stringify(applied.document));
   assert.match(readFileSync(join(box.root, 'SPEC.md'), 'utf8'), /- G1 \[approved, must\] A row the person decides on the passkey\./u, 'the native CLI applies the passkey approval');
   assert.throws(() => refuseNamedSigners([{ id: 'G2', signers: ['alice@example.com'] }], ['G2']), { code: 'PERSON_SIGNER_REQUIRED', message: /G2 names its SSH signers alice@example\.com/u });
@@ -1150,7 +1155,7 @@ test('person-only moves are signed [E22,B26,H16]', { timeout: relayWorkBudgetMs(
   async function confirmTerminal(argv, expectedVerb) {
     const beforeIds = new Set(JSON.parse(nativeRows('SELECT meta_value FROM board_meta WHERE meta_key=?', 'person_proposals')[0]?.meta_value ?? '[]').map(entry => entry.id));
     const child = helpers.launch({ ...box, env: { ...cleared, SSH_CONNECTION: '127.0.0.1 40000 127.0.0.1 22' } },
-      box.root, process.execPath, [CLI, ...argv, '--json']);
+      box.root, process.execPath, [...trusted, ...argv, '--json']);
     try {
       const proposal = await helpers.waitFor(() => {
         assert.equal(child.exitCode, null, child.stderrText);
@@ -1225,7 +1230,7 @@ test('person-only moves are signed [E22,B26,H16]', { timeout: relayWorkBudgetMs(
   // Only the passkey turns signing off; unlinking offline keeps it on.
   const switchedOff = await confirmTerminal(['settings', 'person.signed', 'off'], 'signing');
   assert.equal(switchedOff.person.signed, false);
-  assert.equal((await box.cli('status')).document.person.signed, false, 'the passkey turned signing off');
+  assert.equal((await cli(box.env, 'status')).document.person.signed, false, 'the passkey turned signing off');
   assert.equal((await cli(marked, 'settings', 'person.signed', 'on')).code, 0);
   await box.stopRelay();
   await cli(cleared, 'relay', 'off');

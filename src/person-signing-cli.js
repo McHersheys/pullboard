@@ -38,13 +38,13 @@ const AUTHORITY_PATH = '/.well-known/pullboard-person-authority';
 const BUILT_IN_AUTHORITY_ORIGIN = new URL(DEFAULT_RELAY).origin;
 
 /**
- * Whether a person authority may be read from this origin: the built-in relay over TLS, or the loopback fixture relay
- * only when the test runner's own preload admits it. Never pullboard.json or a board row (#408 trust-anchor ruling).
+ * Whether a person authority may be read from this origin: the built-in relay over TLS, or the one origin an
+ * in-process caller hands this command as `io.trustedRelayOrigin`. That parameter exists only in a caller's own call
+ * path, never in pullboard.json, a board row, an environment variable or a global, so no shell can set it (#408).
  */
-function authorityOrigin(origin) {
+function authorityOrigin(origin, io) {
   if (origin === BUILT_IN_AUTHORITY_ORIGIN) return process.env.NODE_TLS_REJECT_UNAUTHORIZED !== '0';
-  const fixture = globalThis[Symbol.for('pullboard.personAuthorityFixtureOrigin')];
-  return typeof fixture === 'function' && fixture(origin) === true;
+  return typeof io?.trustedRelayOrigin === 'string' && io.trustedRelayOrigin === origin;
 }
 
 /**
@@ -62,7 +62,7 @@ export async function pinRelayAuthority(root, board, io = {}, { timeoutMs = 10_0
   const relay = relayStatus(root);
   if (!relay.linked || !relay.url) return null;
   const origin = new URL(relay.url).origin;
-  if (!authorityOrigin(origin)) {
+  if (!authorityOrigin(origin, io)) {
     io.err?.(`pullboard: [PERSON_AUTHORITY_ORIGIN] ${origin} is not the built-in relay ${BUILT_IN_AUTHORITY_ORIGIN} over TLS, so it cannot vouch for the person; person moves wait for the built-in relay`);
     return null;
   }
