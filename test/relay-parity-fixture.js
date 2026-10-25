@@ -96,8 +96,11 @@ try { console.log(JSON.stringify(await exerciseOperationParity(JSON.parse(readFi
         await running;
       });
       const result = await running;
-      assert.equal(result.status, 0, result.failure ?? result.context);
-      return JSON.parse(result.stdout.trim());
+      let document;
+      try { document = JSON.parse(result.stdout.trim()); }
+      catch { assert.fail(`operation child did not return JSON: ${result.failure ?? result.context}`); }
+      assert.equal(result.status, 0, `${document.error ?? 'operation child failed'}\n${result.failure ?? result.context}`);
+      return document;
     } finally { rmSync(file, { force: true }); }
   }
   return { native, relay, exercised: seeded.exercised, exerciseOperations };

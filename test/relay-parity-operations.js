@@ -22,8 +22,10 @@ export async function exerciseOperationParity({ root, origin, token, boardId, la
   const board = store.openBoard(join(root, '.git', 'pullboard', 'board.sqlite'));
   const notices = [];
   const io = { say() {}, err(message) { notices.push(message); } };
+  let observing = 'initial baseline';
   /** Publish with the actual production capture/seal/HTTP path, then compare both full readers before covering the move. */
   async function verifyAfterMutation({ operation, after }) {
+    observing = operation;
     assert.equal(await publishLatestCheckpoint(root, io), true, `the ${operation} checkpoint is acknowledged`);
     const { native, relay } = await reader.read();
     assert.ok(native.sequence >= after, `the ${operation} observation includes its actual native event`);
@@ -57,6 +59,9 @@ export async function exerciseOperationParity({ root, origin, token, boardId, la
     const missing = tracking.missing(MOVE_OPERATIONS);
     assert.deepEqual(missing, [], `every declared native operation must pass the complete oracle; setup refusals=${JSON.stringify(tracking.setupRefusals)}`);
     return { covered: [...tracking.covered].sort(), declared: [...MOVE_OPERATIONS].sort() };
+  } catch (error) {
+    error.message = `while observing ${observing}: ${error.message}; covered=${JSON.stringify([...tracking.covered])}; setupRefusals=${JSON.stringify(tracking.setupRefusals)}`;
+    throw error;
   } finally {
     store.closeBoard(board);
     await reader.close();
