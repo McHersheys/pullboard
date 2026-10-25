@@ -5,10 +5,13 @@ import {
 import {
   installHooks,
 } from '../hooks.js';
+import { configureAgentHooks } from '../agent-hooks.js';
 
 /** Run `pullboard hooks` and return its exit code. */
-export function run(io) {
-  const notes = installHooks(repoInfo(io.cwd).root);
+export function run(io, { first } = {}) {
+  const root = repoInfo(io.cwd).root;
+  const notes = first === 'uninstall' ? configureAgentHooks(root, { remove: true })
+    : [...installHooks(root), ...configureAgentHooks(root)];
   io.result?.({ notes });
   notes.forEach((note) => io.say(note));
   return 0;

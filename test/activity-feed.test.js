@@ -13,10 +13,45 @@ import { ACTIVITY_NEWS_ENGINE } from '../src/activity-news-engine.js';
 import { ITEM_SHOUT_ENGINE } from '../src/item-shout-engine.js';
 import { LANDING_LEASE_ENGINE } from '../src/landing-lease-engine.js';
 import shoutMove from '../src/moves/shout.js';
+import { ACTIVITY_DELIVERY_ENGINE } from '../src/activity-delivery-engine.js';
+import { relaySenderProblem } from '../src/relay-sender.js';
+import { readActivityDelivery } from '../src/activity-delivery-read.js';
 import { activityMainFiles, activityWorkingFiles, readActivityCursor, saveActivityCursor } from '../src/activity-inbox.js';
 
 const e2e = createE2eHelpers();
 after(e2e.cleanup);
+
+test('a recorded submit stays successful when its later activity delivery fails [N26,H16,V4]', () => {
+  const box = e2e.project('true');
+  const boardPath = join(box.repo, '.git', 'pullboard', 'board.sqlite');
+  const board = store.openBoard(boardPath);
+  const id = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'Submission survives a delivery failure',
+    criterion: 'The private file is committed.' });
+  store.closeBoard(board);
+  const claimed = box.run(box.web, 'claim', String(id), '--json');
+  assert.equal(claimed.code, 0, claimed.out + claimed.err);
+  const committed = e2e.commitFile(box, box.web, 'web/delivery-failure.txt', 'private proof\n', 'feat(web): delivery failure fixture [G1]');
+  assert.equal(committed.status, 0, committed.stderr);
+  const broken = store.openBoard(boardPath);
+  // Corrupt only this private derived read state; the authoritative item and move log remain genuine.
+  broken.db.prepare('INSERT INTO board_meta(meta_key,meta_value) VALUES (?,?)').run('activity:web-1:cursor:', '{');
+  store.closeBoard(broken);
+  const submitted = box.run(box.web, 'submit', String(id), '--json');
+  assert.equal(submitted.code, 0, submitted.out + submitted.err);
+  const document = JSON.parse(submitted.out);
+  assert.equal(document.id, id);
+  assert.equal(document.gate.green, true);
+  assert.equal(document.activity.receipt.recorded, false);
+  assert.equal(document.activity.receipt.code, 'ACTIVITY_DELIVERY_FAILED');
+  assert.match(document.diagnostics.join('\n'), /submitted .*activity delivery failed.*inbox/u);
+  const after = store.openBoard(boardPath);
+  try {
+    assert.equal(store.getItem(after, id).item_status, 'submitted');
+    assert.equal(store.getItem(after, id).item_commit, document.commit);
+    assert.equal(store.events(after).filter(event => event.event_kind === 'submit').length, 1);
+    assert.equal(store.events(after).filter(event => event.event_kind === 'activity-delivered').length, 0);
+  } finally { store.closeBoard(after); }
+});
 
 /** Freeze a private item's exact requirement without claiming a test gate ran in this board-state fixture. */
 function freeze() {
@@ -231,6 +266,8 @@ test('activity cursors leave events arriving during an observation pending [N26]
   const intact = exportBoard(board);
   const unknown = store.agentActivity(board, 'web-1', { after: next.cursor });
   assert.equal(unknown.entries.some(entry => entry.item === item && entry.unknown === true), true);
+  assert.equal(readActivityDelivery(board, 'web-1', { sessionStart: false }).entries.some(entry => entry.item === item && entry.unknown), true,
+    'an unreadable historical obligation stays an immediate notice, never a quiet digest count');
   assert.equal(unknown.entries.some(entry => entry.text === 'Governing messages survive unknown old detail'), true);
   assert.deepEqual(exportBoard(board), intact, 'unknown legacy detail is reported without rewriting it');
   assert.throws(() => store.inbox(board, 'web-1', { through: -1 }), error => error.code === 'BAD_ACTIVITY_CURSOR');
@@ -282,8 +319,8 @@ test('inbox delivery uses real Git paths and board-bound cursors without consumi
   const feed = JSON.parse(one.out);
   assert.ok(feed.shouts.some(shout => shout.shout_text === 'A governing instruction stays direct.'));
   assert.equal(feed.shouts.some(shout => shout.shout_id === firstNews), false);
-  assert.ok(feed.activity.entries.some(entry => entry.kind === 'fact' && entry.item === id));
-  assert.deepEqual(feed.activity.entries.find(entry => entry.kind === 'main-moved')?.files, [rowFile],
+  assert.ok(feed.activity.digests.some(entry => entry.kind === 'fact' && entry.count > 0), 'routine facts become a counted break-time summary');
+  assert.deepEqual(feed.activity.interrupts.find(entry => entry.kind === 'main-moved')?.files, [rowFile],
     'the real CLI compares the exact recorded Git base and tip against the active file plan');
   assert.deepEqual(feed.activity.digests.find(digest => digest.kind === 'news')?.shouts, [firstNews]);
   const continued = box.run(box.web, 'inbox', '--json');
@@ -364,4 +401,133 @@ test('old ordinary shout replay does not become newly typed news [H16,N26]', (t)
   const restored = store.agentActivity(replica, 'web-1', { sessionStart: true });
   assert.ok(restored.entries.some(entry => entry.text === exactText), 'native restore never upgrades old detail into news');
   assert.deepEqual(restored.digests.find(digest => digest.kind === 'news')?.shouts, [typed.result]);
+});
+
+
+test('interrupts arrive at once and the digest arrives as a short summary at a break [R2,N26,H16]', t => {
+  const box = e2e.project('true');
+  const foreignRoot = join(box.dir, 'interrupt-other');
+  box.git(box.repo, 'worktree', 'add', '-q', '--detach', foreignRoot, 'main');
+  assert.equal(box.run(foreignRoot, 'join', 'api', '--json').code, 0);
+  const base = box.git(box.web, 'rev-parse', 'HEAD');
+  assert.equal(e2e.commitFile(box, box.web, 'web/interrupt.txt', 'private interrupt fixture\n', 'feat(web): interrupt fixture [G1]').status, 0);
+  const commit = box.git(box.web, 'rev-parse', 'HEAD');
+  const tree = box.git(box.web, 'rev-parse', 'HEAD^{tree}');
+  // A real sibling commit keeps this rejected fixture out of the later item's ancestry.
+  const rejectedCommit = box.git(box.repo, 'commit-tree', tree, '-p', base, '-m', 'private rejected sibling');
+  const board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
+  t.after(() => store.closeBoard(board));
+  const reviewer = store.register(board, { lane: 'api', path: join(box.dir, 'interrupt-reviewer') });
+  const rejected = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'Private rejected work' });
+  store.claim(board, rejected, { agentId: 'web-1', lane: 'web', leaseMs: 3_600_000, head: base, freeze });
+  submitFixture(board, rejected, { agentId: 'web-1', commit: rejectedCommit, tree });
+  store.verify(board, rejected, { agentId: reviewer, decision: 'REJECT', reason: 'TEST_FAILURE',
+    note: 'Synthetic board-state refusal, not an executed gate.', head: rejectedCommit, digest: freeze().digest,
+    policy: 'any', familyPolicy: 'off', reopenFirstRefusalMinutes: 30,
+    review: { commit: rejectedCommit, head: rejectedCommit, trunk: base, paths: ['web/interrupt.txt'] } });
+  const active = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'Private lapsing work',
+    criterion: 'The private break file is committed.', brief: 'Files: web/interrupt.txt\nTest: preserve the private fixture\n' });
+  const nativeClaim = box.run(box.web, 'claim', String(active), '--json');
+  assert.equal(nativeClaim.code, 0, `${nativeClaim.err}\n${nativeClaim.out}`);
+  // Shorten only this real native claim's lease; its actual frozen criterion remains unchanged.
+  store.claim(board, active, { agentId: 'web-1', lane: 'web', leaseMs: 4 * 60_000, head: base, freeze });
+  const question = store.shout(board, { from: 'web-1', to: 'coordinator', text: 'Which private path?', decision: true, lanes: ['web', 'api'] });
+  store.answerDecision(board, question, { agentId: 'coordinator', text: 'Use the private reviewed path.', lanes: ['web', 'api'] });
+  // A synthetic landing receipt exercises real Git overlap; it is not a claim of a live landing proof.
+  store.recordLandingBatch(board, { agentId: 'coordinator', batch: { version: 1, id: 'interrupt-private-main',
+    state: 'pushed', base, tip: commit, root: box.web, branch: 'refs/heads/main', owner: 'private-fixture',
+    logPath: join(box.dir, 'private-interrupt.log'), items: [] } });
+  store.finishLandingBatch(board, { agentId: 'coordinator', id: 'interrupt-private-main', tip: commit });
+  const other = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'Private digest work' });
+  store.appendFact(board, other, { agentId: 'coordinator', kind: 'note', text: 'PRIVATE_RAW_STATUS_MUST_NOT_BE_DIGEST_TEXT' });
+  const claimBefore = store.getItem(board, active);
+  const first = box.run(box.web, 'inbox', '--json');
+  assert.equal(first.code, 0, first.err);
+  const feed = JSON.parse(first.out).activity;
+  assert.ok(Array.isArray(feed.interrupts), 'the actual inbox separates actionable interrupts from the digest');
+  assert.deepEqual(new Set(feed.interrupts.map(entry => entry.reason)),
+    new Set(['rejected', 'claim-lapsing', 'answered', 'files-changed']), 'every required interrupt reaches the next check');
+  assert.ok(feed.interrupts.find(entry => entry.reason === 'files-changed').files.includes('web/interrupt.txt'));
+  assert.ok(feed.digests.length, 'session start delivers a short summary');
+  assert.equal(JSON.stringify(feed.digests).includes('PRIVATE_RAW_STATUS_MUST_NOT_BE_DIGEST_TEXT'), false);
+  const delivered = store.events(board).filter(event => event.event_kind === 'activity-delivered');
+  assert.ok(delivered.length, 'delivery is recorded on the canonical board, not just a checkout cursor');
+  assert.ok(delivered.every(event => event.event_by === 'web-1'), 'the recipient owns its delivery receipts');
+  assert.deepEqual(store.getItem(board, active), claimBefore, 'delivery grants no claim or lease authority');
+  const again = box.run(box.web, 'inbox', '--json');
+  assert.equal(again.code, 0, again.err);
+  assert.deepEqual(new Set(JSON.parse(again.out).activity.interrupts.map(entry => entry.id)), new Set(feed.interrupts.map(entry => entry.id)),
+    'reading or advancing a checkout cursor never means acted-on');
+  assert.deepEqual(JSON.parse(again.out).activity.digests, [], 'ordinary checks do not deliver the digest');
+  const ids = feed.interrupts.map(entry => entry.id).join(',');
+  const beforeForeign = exportBoard(board);
+  const foreign = box.run(foreignRoot, 'inbox', '--acted-on', ids, '--json');
+  assert.equal(JSON.parse(foreign.out).error?.code, 'ACTIVITY_NOT_DELIVERED');
+  assert.deepEqual(exportBoard(board), beforeForeign, 'another recipient cannot acknowledge these obligations');
+  const acted = box.run(box.web, 'inbox', '--acted-on', ids, '--json');
+  assert.equal(acted.code, 0, acted.err);
+  assert.deepEqual(JSON.parse(acted.out).activity.interrupts, []);
+  const actedEvents = store.events(board).filter(event => event.event_kind === 'activity-acted');
+  assert.equal(actedEvents.length, 1);
+  assert.deepEqual(new Set(JSON.parse(actedEvents[0].event_detail).interrupts), new Set(feed.interrupts.map(entry => entry.id)));
+  store.appendFact(board, other, { agentId: 'coordinator', kind: 'note', text: 'SECOND_PRIVATE_RAW_STATUS_BODY' });
+  const beforeBreak = box.run(box.web, 'inbox', '--json');
+  assert.equal(beforeBreak.code, 0, beforeBreak.err);
+  assert.deepEqual(JSON.parse(beforeBreak.out).activity.digests, [], 'new digest activity waits for a natural break');
+  assert.equal(e2e.commitFile(box, box.web, 'web/after-break.txt', 'private submit break\n', 'feat(web): submit break [G1]').status, 0);
+  const submitted = box.run(box.web, 'submit', String(active), '--json');
+  assert.equal(submitted.code, 0, `${submitted.err}\n${submitted.out}`);
+  const summary = JSON.parse(submitted.out).activity;
+  assert.ok(summary.digests.length, 'the actual successful submit delivers the pending short digest');
+  assert.equal(JSON.stringify(summary.digests).includes('SECOND_PRIVATE_RAW_STATUS_BODY'), false);
+
+});
+
+
+test('interrupt receipts replay once and only their recipient can acknowledge delivered work [N26,H2,H16]', t => {
+  const boards = ['origin', 'left', 'right'].map(() => store.openBoard(':memory:'));
+  t.after(() => { for (const board of boards) store.closeBoard(board); });
+  const [source, left, right] = boards;
+  store.register(source, { lane: 'coordinator', path: '/interrupt-replay' });
+  store.register(source, { lane: 'web', path: '/interrupt-replay/web-1' });
+  store.register(source, { lane: 'web', path: '/interrupt-replay/web-2' });
+  const question = store.shout(source, { from: 'web-1', to: 'coordinator', text: 'Choose a private path', decision: true, lanes: ['web'] });
+  store.answerDecision(source, question, { agentId: 'coordinator', text: 'Use the reviewed path', lanes: ['web'] });
+  const event = store.events(source).findLast(row => row.event_kind === 'answer');
+  const initial = exportBoard(source);
+  for (const board of [left, right]) importBoard(board, initial);
+  const interrupt = { id: `event:${event.event_id}`, eventId: event.event_id, reason: 'answered', text: 'An answer is waiting' };
+  const payload = { agentId: 'web-1', through: event.event_id, interrupts: [interrupt] };
+  const beforeRead = exportBoard(left);
+  const changes = left.db.prepare('SELECT total_changes() AS count').get().count;
+  assert.equal(readActivityDelivery(left, 'web-1', { sessionStart: true }).interrupts[0]?.reason, 'answered');
+  assert.deepEqual(exportBoard(left), beforeRead, 'the public read projection neither delivers nor acknowledges');
+  assert.equal(left.db.prepare('SELECT total_changes() AS count').get().count, changes);
+  const delivery = prepareEngineMove(source, 'recordActivityDelivery', [payload]);
+  const at = new Date().toISOString();
+  assert.equal(relaySenderProblem(delivery, { kind: 'agent', agent: 'web-2', userId: 'private-user' }, 'move')?.code, 'RELAY_SENDER_MISMATCH');
+  const untouched = exportBoard(left);
+  assert.throws(() => applyEngineMove(left, { ...delivery, engine: ACTIVITY_DELIVERY_ENGINE - 1 }, { sequence: 1, at }),
+    error => error.code === 'RELAY_MOVE');
+  assert.deepEqual(exportBoard(left), untouched, 'an older engine changes neither native history nor the replay prefix');
+  const outcomes = boards.map(board => applyEngineMove(board, delivery, { sequence: 1, at }));
+  assert.equal(outcomes[0].error, undefined);
+  assert.deepEqual(outcomes[1], outcomes[2]);
+  assert.equal(store.activityDeliveryState(left, 'web-1').pending.length, 1);
+  assert.deepEqual(applyEngineMove(left, delivery, { sequence: 1, at }), outcomes[1]);
+  assert.equal(store.events(left).filter(row => row.event_kind === 'activity-delivered').length, 1);
+  const beforeBad = exportBoard(left);
+  assert.throws(() => store.actOnActivity(left, { agentId: 'web-2', ids: [interrupt.id] }), error => error.code === 'ACTIVITY_NOT_DELIVERED');
+  assert.throws(() => store.actOnActivity(left, { agentId: 'web-1', ids: [interrupt.id, 'event:999999'] }), error => error.code === 'ACTIVITY_NOT_DELIVERED');
+  assert.deepEqual(exportBoard(left), beforeBad, 'a forged or partly invalid acknowledgement is atomic');
+  const ack = prepareEngineMove(source, 'actOnActivity', [{ agentId: 'web-1', ids: [interrupt.id] }]);
+  const acknowledged = boards.map(board => applyEngineMove(board, ack, { sequence: 2, at }));
+  assert.deepEqual(acknowledged[1], acknowledged[2]);
+  assert.equal(store.activityDeliveryState(left, 'web-1').pending.length, 0);
+  assert.equal(store.events(left).filter(row => row.event_kind === 'activity-acted').length, 1);
+  assert.deepEqual(exportBoard(left), exportBoard(right));
+  const beforeRetry = exportBoard(left);
+  store.recordActivityDelivery(left, payload);
+  store.actOnActivity(left, { agentId: 'web-1', ids: [interrupt.id] });
+  assert.deepEqual(exportBoard(left), beforeRetry, 'a new local retry cannot redeliver or re-acknowledge the same source event');
 });
