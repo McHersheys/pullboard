@@ -778,6 +778,8 @@ test('person recovery explicitly skips one future-engine blocker and publishes a
     { cwd: box.root, env: { ...box.env, PULLBOARD_HOME: box.home }, encoding: 'utf8' });
   assert.equal(inboxCommand.status, 0, inboxCommand.stderr);
   assert.match(inboxCommand.stdout, /read cursor recovery probe/);
+  assert.match(inboxCommand.stdout, /activity delivery was not recorded: .*RELAY_RECOVERY_PENDING/u,
+    'the local read reports its deferred canonical delivery without claiming acknowledgement');
   const afterInbox = store.openBoard(join(box.root, '.git/pullboard/board.sqlite'));
   let cursorAfterInbox;
   try { cursorAfterInbox = afterInbox.db.prepare("SELECT agent_last_shout_id FROM agent WHERE agent_id='coordinator'").get().agent_last_shout_id; }
@@ -1049,7 +1051,7 @@ test('recovery collision status preserves the retry while the winner catches an 
   const winningNative = await openCheckpoint(box, winningCheckpoint);
   process.env.PULLBOARD_HOME = secondHome;
   const futureNative = structuredClone(winningNative);
-  futureNative.tables.board_meta.find((row) => row.meta_key === 'relay_engine_version').meta_value = '99';
+  futureNative.tables.board_meta.find((row) => row.meta_key === 'relay_engine_version').meta_value = String(ENGINE_VERSION + 1);
   const futureSeal = Buffer.from(await sealMove(box.key, new TextEncoder().encode(JSON.stringify(futureNative)),
     { boardId: box.id, kind: 'snapshot', sequence: 1 })).toString('base64url');
   assert.equal((await box.call(box.path + '/state', { method: 'PUT', token: box.person.token, body: { sequence: 1, sealed: futureSeal } })).status, 200);
