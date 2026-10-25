@@ -5,6 +5,9 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import * as store from '../src/board.js';
 import { createE2eHelpers } from './e2e-helpers.js';
+import { applyEngineMove, applyRelayMove, prepareEngineMove } from '../src/engine.js';
+import { exportBoard, importBoard } from '../src/exchange.js';
+import { FLOW_SIZE_ENGINE } from '../src/flow-size-engine.js';
 
 test('a native submit records its immutable changed-line base and head for flow buckets [R1,R2,V4]', { timeout: 60_000 }, t => {
   const helpers = createE2eHelpers();
@@ -50,4 +53,52 @@ test('a native submit records its immutable changed-line base and head for flow 
     assert.equal(store.events(board).find(event => event.event_id === submission.event_id).event_detail, before,
       'advancing the trunk leaves the earlier submission measurement unchanged');
   } finally { store.closeBoard(board); }
+});
+
+test('submission size replays identically and refuses unsupported or malformed measurements [R1,R2,H16]', t => {
+  const helpers = createE2eHelpers();
+  t.after(helpers.cleanup);
+  const box = helpers.sandbox();
+  const source = store.openBoard(join(box.dir, 'source.sqlite'));
+  const copies = [];
+  t.after(() => { for (const board of [source, ...copies]) store.closeBoard(board); });
+  store.register(source, { lane: 'coordinator', path: '/fixture/main' });
+  store.register(source, { lane: 'web', path: '/fixture/web' });
+  const id = store.addItem(source, { by: 'coordinator', lane: 'web', title: 'Size replay' });
+  store.claim(source, id, { agentId: 'web-1', lane: 'web', leaseMs: 3_600_000,
+    freeze: () => ({ text: '{"rows":[]}', digest: 'f'.repeat(64) }) });
+  const document = exportBoard(source);
+  for (let index = 0; index < 4; index += 1) {
+    const board = store.openBoard(join(box.dir, `replica-${index}.sqlite`));
+    importBoard(board, document);
+    copies.push(board);
+  }
+  const size = { base: 'a'.repeat(40), head: 'b'.repeat(40), lines: 0, method: 'added-plus-deleted-no-renames' };
+  const options = { agentId: 'web-1', commit: size.head, tree: 'c'.repeat(40), submissionSize: size,
+    submissionProof: { version: 1, files: [], full: false, deferred: true, reason: 'private replay fixture' } };
+  const move = prepareEngineMove(source, 'submit', [id, options], { id: 'size-replay', actor: 'web-1' });
+  const receipt = { sequence: 1, at: '2026-10-25T06:00:00.000Z', kind: 'move',
+    sender: { kind: 'agent', userId: 'fixture', agent: 'web-1' } };
+  const first = applyRelayMove(copies[0], move, receipt);
+  assert.equal(first.error, undefined);
+  assert.deepEqual(applyRelayMove(copies[1], move, receipt), first);
+  assert.deepEqual(store.events(copies[0]), store.events(copies[1]));
+  assert.deepEqual(JSON.parse(store.events(copies[0]).findLast(event => event.event_kind === 'submit').event_detail).submissionSize, size,
+    'a measured zero remains known, with its exact base and head');
+  const before = store.events(copies[2]);
+  assert.throws(() => applyEngineMove(copies[2], { ...move, engine: FLOW_SIZE_ENGINE - 1 }, receipt), { code: 'RELAY_MOVE' });
+  assert.deepEqual(store.events(copies[2]), before, 'unsupported metadata cannot partially change native history');
+  for (const change of [{ lines: -1 }, { lines: 0.5 }, { lines: null }, { lines: Number.MAX_SAFE_INTEGER + 1 },
+    { head: 'd'.repeat(40) }, { base: 'missing' }, { method: 'guess' }]) {
+    const forged = structuredClone(move);
+    Object.assign(forged.args[1].submissionSize, change);
+    assert.equal(applyRelayMove(copies[2], forged, receipt).error?.code, 'SUBMISSION_PROOF');
+    assert.deepEqual(store.events(copies[2]), before);
+  }
+  const legacy = structuredClone(move);
+  legacy.engine = FLOW_SIZE_ENGINE - 1;
+  delete legacy.args[1].submissionSize;
+  assert.equal(applyRelayMove(copies[3], legacy, receipt).error, undefined);
+  assert.equal(Object.hasOwn(JSON.parse(store.events(copies[3]).findLast(event => event.event_kind === 'submit').event_detail), 'submissionSize'), false,
+    'an older sealed submit remains executable and its missing size remains unknown');
 });

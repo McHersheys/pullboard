@@ -1,3 +1,11 @@
+import { reportEvent } from './stats-flow-report.js';
+import { affectedReportItems } from './stats-flow-report.js';
+import { indexReportItem } from './stats-flow-report.js';
+import { prepareReportMove } from './stats-flow-report.js';
+import { newReportPolicy } from './stats-flow-report.js';
+import { advanceReport } from './stats-flow-report.js';
+import { recordReport } from './stats-flow-report.js';
+import { recordReportPolicy } from './stats-flow-report.js';
 import { appendRigorCounter } from './rigor-counters.js';
 import { ensureRigorCounters } from './rigor-counters.js';
 import { NATIVE_FLAKE_ENGINE } from './flake-engine.js';
@@ -59,7 +67,7 @@ export function clearProofCounters(board) {
 /** Start a bounded all-time aggregate; window-specific contributions live in separate event shards. */
 function emptySummary() {
   return { last: 0, submissions: 0, rejections: 0, merged: 0, mergedWithoutAccept: 0,
-    firstEventAt: null, lastEventAt: null, invalid: false };
+    firstEventAt: null, lastEventAt: null, invalid: false, reportVersion: 1 };
 }
 
 /** Advance an item's acceptance audit separately from its flow lifecycle, whose rules differ. */
@@ -121,6 +129,16 @@ export function appendProofCounter(board, event) {
   if (summary.invalid) { put(board, 'summary', summary); return; }
   if (summary.firstEventAt === null || at < Date.parse(summary.firstEventAt)) summary.firstEventAt = event.event_at;
   if (summary.lastEventAt === null || at >= Date.parse(summary.lastEventAt)) summary.lastEventAt = event.event_at;
+  const reporting = reportEvent(event, detail);
+  const reportPolicy = reporting ? proofCounter(board, 'report-policy') ?? newReportPolicy() : null;
+  const beforePolicy = reporting ? JSON.stringify(reportPolicy) : null;
+  for (const id of reporting ? affectedReportItems(reportPolicy, event, detail) : []) {
+    const row = proofCounter(board, `item:${id}`);
+    if (!row) continue;
+    advanceReport(row.flow, reportPolicy, at);
+    put(board, `item:${id}`, row);
+  }
+  if (reporting) recordReportPolicy(reportPolicy, event, detail, event.item_id == null ? null : proofCounter(board, `item:${event.item_id}`)?.flow);
   const key = `item:${event.item_id}`;
   const item = proofCounter(board, key) ?? { id: event.item_id, flow: { id: event.item_id, lane: 'unknown' } };
   const contribution = countItem(summary, item, event, detail);
@@ -130,7 +148,9 @@ export function appendProofCounter(board, event) {
     if (event.event_kind === 'add' || event.event_kind === 'merged' && item.flow.mergeAt === undefined) {
       put(board, `daily:${event.event_id}`, { at, kind: event.event_kind === 'add' ? 'added' : 'merged' });
     }
-    moveFlowItem(item.flow, event, detail, at);
+    if (reporting) { advanceReport(item.flow, reportPolicy, at); prepareReportMove(item.flow, event, detail); }
+    if (reporting) moveFlowItem(item.flow, event, detail, at);
+    if (reporting) { recordReport(item.flow, event, detail); indexReportItem(reportPolicy, item.flow); }
     put(board, key, item);
   } else if (['submit', 'accept', 'reject', 'merged'].includes(event.event_kind)) {
     // Legacy counts also audit a null item id, while flow deliberately excludes it.
@@ -143,6 +163,7 @@ export function appendProofCounter(board, event) {
   if (keepCatch(event, detail)) {
     put(board, `catch:${event.event_id}`, { event_id: event.event_id, event_at: event.event_at, event_by: event.event_by, event_kind: event.event_kind, item_id: event.item_id, detail });
   }
+  if (reporting && JSON.stringify(reportPolicy) !== beforePolicy) put(board, 'report-policy', reportPolicy);
   appendRuleProof(board, event, detail, key => proofCounter(board, key), (key, value) => put(board, key, value));
   put(board, 'summary', summary);
 }
@@ -169,7 +190,7 @@ export function rebuildProofCounters(board) {
 export function ensureProofCounters(board) {
   ensureRigorCounters(board);
   const summary = proofCounter(board, 'summary');
-  if (!summary) { rebuildProofCounters(board); return; }
+  if (!summary || summary.reportVersion !== 1) { rebuildProofCounters(board); return; }
   replayProofTail(board, summary.last);
 }
 
