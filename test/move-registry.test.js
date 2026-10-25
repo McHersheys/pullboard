@@ -14,6 +14,7 @@ import { unpackRelease } from './release-archive.js';
 import * as store from '../src/board.js';
 import { exportBoard, importBoard } from '../src/exchange.js';
 import { applyEngineMove, ENGINE_OPERATIONS } from '../src/engine.js';
+import { ENGINE_VERSION } from '../src/machine.js';
 import { relayMoveActor } from '../src/relay-sender.js';
 import { NEXT_STEPS } from '../src/next-step-words.js';
 import { REGISTRY_AT, registryFixtureBoard } from './move-registry-fixture.js';
@@ -21,7 +22,6 @@ import { importsIn } from '../src/module-imports.js';
 import { readdirSync } from 'node:fs';
 import { minimumMoveEngine } from '../src/move-registry.js';
 import { SPEC_REVISION_ENGINE } from '../src/spec-revision-engine.js';
-import { ENGINE_VERSION } from '../src/machine.js';
 
 const SNAPSHOT = JSON.parse(readFileSync(new URL('./move-registry-baseline.json', import.meta.url), 'utf8'));
 const CONSUMERS = ['src/engine.js', 'src/relay-sender.js', 'src/next-step-words.js'];
@@ -50,7 +50,7 @@ export default { operation: ${JSON.stringify(name)}, order: ${engine + 1000}, en
 `;
 }
 
-test('today\'s move order, actors, recovery text and recorded SQLite prefix are unchanged [C7,V4,H3,H16]', t => {
+test('today\'s move order, actors, refusal recovery text and recorded SQLite prefix are unchanged [C7,V4,H3,H16]', t => {
   assert.deepEqual(ENGINE_OPERATIONS, SNAPSHOT.operations);
   assert.deepEqual(NEXT_STEPS, SNAPSHOT.nextSteps);
   for (const operation of SNAPSHOT.operations) {
@@ -65,12 +65,29 @@ test('today\'s move order, actors, recovery text and recorded SQLite prefix are 
     assert.deepEqual(applyEngineMove(board, move, options), outcome, move.operation);
     assert.deepEqual(applyEngineMove(board, move, options), outcome, 'same-position retry returns its immutable receipt');
   }
-  const expected = structuredClone(SNAPSHOT.replay.acceptedExpected);
-  const writer = expected.tables.board_meta.find(row => row.meta_key === 'relay_engine_version');
-  assert.equal(writer.meta_value, '107', 'the historical golden retains its original writer engine');
-  // Replay always records the current writer version, independently of each historical move's engine.
-  writer.meta_value = String(ENGINE_VERSION);
-  assert.equal(JSON.stringify(exportBoard(board)), JSON.stringify(expected), 'items, events, receipts and replay cursor retain accepted-main bytes, with the current writer engine');
+  const replay = exportBoard(board);
+  const acceptedExpected = SNAPSHOT.replay.acceptedExpected;
+  const engineRows = acceptedExpected.tables.board_meta.filter(row => row.meta_key === 'relay_engine_version');
+  assert.equal(engineRows.length, 1, 'the accepted snapshot has one receiver engine-version field');
+  assert.equal(engineRows[0].meta_value, '107', 'the historical golden retains its original writer engine');
+  for (const { move } of SNAPSHOT.replay.records) {
+    const key = `relay_receipt_${move.id}`;
+    const expected = acceptedExpected.tables.board_meta.find(row => row.meta_key === key);
+    const actual = replay.tables.board_meta.find(row => row.meta_key === key);
+    assert.ok(expected, `${key} is part of the immutable accepted snapshot`);
+    assert.equal(actual?.meta_value, expected.meta_value, `${key} retains its exact historical bytes`);
+  }
+  // Receiver capability advances with this engine; the historical move receipts stay pinned above.
+  const replayExpected = {
+    ...acceptedExpected,
+    tables: {
+      ...acceptedExpected.tables,
+      board_meta: acceptedExpected.tables.board_meta.map(row => row.meta_key === 'relay_engine_version'
+        ? { ...row, meta_value: String(ENGINE_VERSION) }
+        : row),
+    },
+  };
+  assert.equal(JSON.stringify(replay), JSON.stringify(replayExpected), 'items, events, receipts and replay cursor retain accepted-main bytes for the exact historical moves');
 });
 
 test('two new board moves declared in two files need no edit to engine.js, relay-sender.js or next-step-words.js [C7,V4,H3,H16]', t => {
