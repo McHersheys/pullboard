@@ -320,6 +320,7 @@ function unreadableTestOptions(source, quoted) {
 
 /** Find CPU-load options without evaluating a test module; unknown identifier values require runner admission. */
 export function cpuLoadOptionsIn(sources) {
+  const commonJs = commonJsIn(sources);
   const quoted = sources.map(quotedProperties);
   const occurrences = sources.map((source, index) => [
     ...source.matchAll(/(?:\bcpuLoad\b|["']cpuLoad["'])/gu), ...source.matchAll(UNICODE_ESCAPE),
@@ -340,7 +341,7 @@ export function cpuLoadOptionsIn(sources) {
   const parsed = look([...sources, ...variants]);
   let next = sources.length;
   return sources.map((source, index) => {
-    let found = !parsed[index].compiles || unreadableTestOptions(source, quoted[index]);
+    let found = !parsed[index].compiles || commonJs[index] || unreadableTestOptions(source, quoted[index]);
     for (const { disabled } of occurrences[index]) {
       if (!parsed[next].compiles && !disabled) found = true;
       next += 1;

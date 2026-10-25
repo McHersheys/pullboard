@@ -162,3 +162,16 @@ test('a readable false direct subtest and context lifecycle hook stay local [C7]
   assert.equal(local.executor?.liveLease, true);
   assert.equal(local.executor?.runnerExecution, false);
 });
+
+
+// AFTER-only: unresolved CommonJS registration is conservatively placed without executing it.
+test('opaque CommonJS registration uses its genuine runner and browser lease [C7]', async () => {
+  const box = cpuLoadFixture(e2e, { commonjs: true, binding: 'register',
+    declaration: 'Object.fromEntries([[ ["cpu", "Load"].join(""), true ]])' });
+  const remote = await box.runGate();
+  assert.equal(remote.result.status, 0, remote.result.context);
+  assert.equal(box.requestsMade().length, 1);
+  assert.equal(remote.executor?.runnerExecution, true);
+  assert.equal(remote.executor?.browserLease, true, 'the conservative CommonJS browser requirement has a real private holder');
+  assert.notEqual(remote.executor?.cwd, box.repo);
+});
