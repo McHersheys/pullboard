@@ -365,6 +365,12 @@ test('opening an older board names and logs its genuine index-building write [C7
   assert.equal(boardWriteHolderText(file), '');
   const after = snapshot(file);
   for (const [name, rows] of Object.entries(before.tables)) {
+    if (name === 'sqlite_sequence') {
+      const sequences = Object.fromEntries(rows.map(row => [row.name, row.seq]));
+      for (const table of ['event', 'shout']) sequences[table] = (sequences[table] ?? 0) + 1;
+      assert.deepEqual(after.tables[name].map(row => [row.name, row.seq]), Object.entries(sequences).sort());
+      continue;
+    }
     assert.deepEqual(after.tables[name].slice(0, rows.length), rows, `existing native ${name} rows survive maintenance`);
     assert.equal(after.tables[name].length, rows.length + (['event', 'shout'].includes(name) ? 1 : 0));
   }
@@ -379,7 +385,10 @@ test('opening an older board names and logs its genuine index-building write [C7
 
 test('native import observes committed and rolled-back write ownership without changing restored rows [A7,C7,P4]', () => {
   const box = e2e.project();
+  const added = box.run(box.repo, 'add', 'web', 'private restored item', '--specs', 'G1', '--criterion', 'the private page renders', '--json');
+  assert.equal(added.code, 0, added.err);
   const document = snapshot(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
+  assert.equal(document.tables.item.length, 1);
   const input = join(box.dir, 'native-import.json');
   writeFileSync(input, JSON.stringify(document));
   for (const rollback of [false, true]) {
@@ -417,7 +426,7 @@ test('native import observes committed and rolled-back write ownership without c
           assert.deepEqual(exportBoard(board), before);
         } else {
           importBoard(board, document);
-          assert.deepEqual(exportBoard(board), document);
+          assert.deepEqual(JSON.parse(JSON.stringify(exportBoard(board))), document);
         }
         assert.equal(held, true);
         assert.equal(boardWriteHolderText(file), '');
@@ -462,6 +471,8 @@ test('journal conversion reports total wait-plus-hold separately and preserves i
       if (fail) assert.throws(() => configureBoardJournal(db, { command: 'private-journal', seat: 'coordinator' }), error => error === sentinel);
       else assert.equal(configureBoardJournal(db, { command: 'private-journal', seat: 'coordinator' }), undefined);
     }
+    assert.throws(() => configureBoardJournal(db, null), error => error === sentinel,
+      'invalid optional diagnostic context must preserve the original journal failure');
     db.close();
   `;
   const result = runFixtureChild(process.execPath, ['--input-type=module', '-e', source, file], {
