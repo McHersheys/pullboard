@@ -1,81 +1,59 @@
 /** A decision records where it came from, and pullboard why <file> names the decisions behind a file [N29,B29,P6]. */
 import assert from 'node:assert/strict';
-import { runFixtureChild, runFixtureGit } from './fixture-child.js';
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { after, test } from 'node:test';
+import * as store from '../src/board.js';
+import { createE2eHelpers } from './e2e-helpers.js';
 import { minimumMoveEngine } from '../src/move-registry.js';
 import { DECISION_ORIGIN_ENGINE } from '../src/decision-origin-engine.js';
 import { originOf } from '../src/decision-origin.js';
+import { whyFile } from '../src/why-file.js';
 
-const BIN = resolve(import.meta.dirname, '../bin/pullboard.js');
-const sandboxes = [];
-const SPEC = '# Why fixture\n\n## G · Goals\n- G1 [approved, must] The feature works. | gate: test\n';
+const e2e = createE2eHelpers();
+after(e2e.cleanup);
 
-after(() => {
-  for (const dir of sandboxes) rmSync(dir, { recursive: true, force: true });
-});
-
-/** Make an isolated real-Git repo with a board, a coordinator, one web builder and two web items. */
+/** Real Git/SQLite items use public submit, verdict and native landing before file history is queried. */
 function fixture() {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-why-')));
-  sandboxes.push(dir);
-  const shims = join(dir, 'bin');
-  mkdirSync(shims);
-  writeFileSync(join(shims, 'pullboard'), `#!/bin/sh\nexec "${process.execPath}" "${BIN}" "$@"\n`, { mode: 0o755 });
-  chmodSync(join(shims, 'pullboard'), 0o755);
-  const env = {
-    ...process.env,
-    PATH: `${shims}:${process.env.PATH}`,
-    GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1',
-    GIT_AUTHOR_NAME: 'Test Agent', GIT_AUTHOR_EMAIL: 'agent@example.com',
-    GIT_COMMITTER_NAME: 'Test Agent', GIT_COMMITTER_EMAIL: 'agent@example.com',
-    PULLBOARD_HOME: join(dir, 'home'), PULLBOARD_MACHINE_HOME: join(dir, 'machine-home'),
-  };
-  for (const name of Object.keys(env)) if (name.startsWith('GIT_') && !name.startsWith('GIT_CONFIG') && !name.startsWith('GIT_AUTHOR') && !name.startsWith('GIT_COMMITTER')) delete env[name];
-  delete env.PULLBOARD_RELAY_TOKEN;
-  const repo = join(dir, 'repo');
-  mkdirSync(repo);
-  /** Run Git in this private fixture with its isolated identity. */
-  const git = (cwd, ...args) => runFixtureGit(args, { cwd, env });
-  /** Run the actual CLI in a fixture checkout and keep both output streams. */
-  const run = (cwd, ...args) => {
-    const result = runFixtureChild(process.execPath, [BIN, ...args], { cwd, env, encoding: 'utf8' });
-    return { code: result.status, out: result.stdout ?? '', err: result.failure ?? result.stderr ?? '' };
-  };
-  /** Run a command that must succeed with --json and return its one document. */
-  const json = (cwd, ...args) => {
-    const result = run(cwd, ...args, '--json');
+  const box = e2e.project('true');
+  const config = JSON.parse(readFileSync(join(box.repo, 'pullboard.json'), 'utf8'));
+  config.landing = { publish: 'separate' };
+  writeFileSync(join(box.repo, 'pullboard.json'), JSON.stringify(config, null, 2));
+  const seed = e2e.commitFile(box, box.repo, 'web/shared.txt', 'one\ntwo\nthree\n', 'chore: configure private why landing');
+  assert.equal(seed.status, 0, seed.stderr);
+  const other = e2e.commitFile(box, box.repo, 'web/other.txt', 'other\n', 'chore: seed other why history');
+  assert.equal(other.status, 0, other.stderr);
+  box.git(box.web, 'merge', '-q', '--ff-only', 'main');
+  /** Return one public JSON result only after its native command succeeds. */
+  function json(cwd, ...args) {
+    const result = box.run(cwd, ...args, '--json');
     assert.equal(result.code, 0, `${args.join(' ')}: ${result.err}${result.out}`);
     return JSON.parse(result.out);
-  };
-  git(repo, 'init', '-q', '-b', 'main');
-  assert.equal(run(repo, 'init').code, 0);
-  writeFileSync(join(repo, 'pullboard.json'), JSON.stringify({
-    gate: 'true', spec: 'SPEC.md', verify: 'any', lease: '2h',
-    lanes: { web: { owns: ['web/'], specs: ['G1'] } },
-  }, null, 2));
-  writeFileSync(join(repo, 'SPEC.md'), SPEC);
-  mkdirSync(join(repo, 'web'));
-  writeFileSync(join(repo, 'web', 'shared.txt'), 'one\ntwo\nthree\n');
-  writeFileSync(join(repo, 'web', 'other.txt'), 'other\n');
-  git(repo, 'add', '-A');
-  git(repo, 'commit', '-q', '-m', 'chore: create why fixture');
-  for (const title of ['First item', 'Second item']) {
-    json(repo, 'add', 'web', title, '--specs', 'G1', '--criterion', `${title} works`, '--check', 'true');
   }
-  return { git, repo, run, json };
+  for (const [index, title] of ['First item', 'Second item'].entries()) {
+    json(box.repo, 'add', 'web', title, '--specs', 'G1', '--criterion', `${title} exists`,
+      '--check', `test -f web/built-${index + 1}`);
+  }
+  /** Land an actual submitted item, preserving its item trailer and durable merge receipt. */
+  function landItem(id, file, text) {
+    box.git(box.web, 'merge', '-q', '--ff-only', 'main');
+    json(box.web, 'claim', String(id));
+    const result = e2e.commitFile(box, box.web, file, text, `feat(web): build why item ${id} [G1]`);
+    assert.equal(result.status, 0, result.stderr);
+    const flag = e2e.commitFile(box, box.web, `web/built-${id}`, 'built\n', `feat(web): complete why item ${id} [G1]`);
+    assert.equal(flag.status, 0, flag.stderr);
+    const submitted = json(box.web, 'submit', String(id));
+    box.git(box.repo, 'switch', '-q', '--detach', submitted.commit);
+    try { json(box.repo, 'verify', String(id), 'accept', '--as', 'coordinator', '--note', 'The committed result exists.'); }
+    finally { box.git(box.repo, 'switch', '-q', 'main'); }
+    assert.deepEqual(json(box.repo, 'land').landed, [id]);
+  }
+  return { ...box, json, landItem };
 }
 
 test('a decision records its origin and pullboard why names the decisions behind a file [N29,B29,P6]', () => {
   const box = fixture();
-  const web = box.json(box.repo, 'worktree', 'web', '--route', 'strong', '--model', 'fixture-model').path;
-
-  writeFileSync(join(box.repo, 'web', 'shared.txt'), 'one\nTWO\nthree\n');
-  box.git(box.repo, 'commit', '-q', '-am', 'feat(web): change line two [G1]\n\nPullboard-Item: #1');
-  writeFileSync(join(box.repo, 'web', 'other.txt'), 'other, changed\n');
-  box.git(box.repo, 'commit', '-q', '-am', 'feat(web): change the other file [G1]\n\nPullboard-Item: #2');
+  const web = box.web;
 
   const ask = box.json(web, 'shout', 'coordinator', 'Keep line two upper case?', '--decision').id;
   const answer = box.json(box.repo, 'answer', String(ask), 'Keep it upper case', '--implies', '1',
@@ -83,10 +61,19 @@ test('a decision records its origin and pullboard why names the decisions behind
   const askOther = box.json(web, 'shout', 'coordinator', 'Change the other file?', '--decision').id;
   const answerOther = box.json(box.repo, 'answer', String(askOther), 'Change it', '--implies', '2').id;
 
+  const inheritedAsk = box.json(web, 'shout', 'coordinator', 'Keep the inherited convention?', '--decision').id;
+  const inherited = box.json(box.repo, 'answer', String(inheritedAsk), 'Keep the convention', '--implies', '2',
+    '--origin', 'inherited', '--rationale', 'the earlier design supplies no named decider').id;
+  const personAsk = box.json(web, 'shout', 'person', 'Approve the other change?', '--decision').id;
+  const person = box.json(box.repo, 'answer', String(personAsk), 'I approve this change', '--as', 'person', '--implies', '2').id;
+
   const third = box.json(web, 'shout', 'coordinator', 'One more?', '--decision').id;
   const forged = box.run(box.repo, 'answer', String(third), 'x', '--origin', 'person');
   assert.notEqual(forged.code, 0, 'an agent cannot name the person as the origin');
   assert.match(forged.err, /BAD_ORIGIN/u);
+
+  box.landItem(1, 'web/shared.txt', 'one\nTWO\nthree\n');
+  box.landItem(2, 'web/other.txt', 'other, changed\n');
 
   const file = box.json(box.repo, 'why', 'web/shared.txt');
   assert.equal(file.file, 'web/shared.txt');
@@ -96,7 +83,7 @@ test('a decision records its origin and pullboard why names the decisions behind
   assert.deepEqual({ id: file.decisions[0].id, statement: file.decisions[0].statement, rationale: file.decisions[0].rationale,
     decidedBy: file.decisions[0].decidedBy, relayedBy: file.decisions[0].relayedBy, origin: file.decisions[0].origin },
   { id: answer, statement: 'Keep it upper case', rationale: 'the person wants it to read as a heading',
-    decidedBy: 'coordinator', relayedBy: 'coordinator', origin: 'person-relayed' });
+    decidedBy: 'unknown', relayedBy: 'coordinator', origin: 'person-relayed' });
 
   const text = box.run(box.repo, 'why', 'web/shared.txt');
   assert.equal(text.code, 0, text.err);
@@ -106,11 +93,30 @@ test('a decision records its origin and pullboard why names the decisions behind
   assert.deepEqual(box.json(box.repo, 'why', 'web/shared.txt:2').items.map((item) => item.id), [1], 'the changed line');
   assert.deepEqual(box.json(box.repo, 'why', 'web/shared.txt:1').items, [], 'a line no landed commit touched');
   const other = box.json(box.repo, 'why', 'web/other.txt');
-  assert.deepEqual(other.decisions.map((entry) => [entry.id, entry.origin]), [[answerOther, 'agent']], 'an answer that names no origin is an agent decision');
+  assert.deepEqual(other.decisions.map((entry) => [entry.id, entry.origin, entry.decidedBy]),
+    [[answerOther, 'agent', 'coordinator'], [inherited, 'inherited', 'unknown'], [person, 'person', 'person']],
+    'actual person answers and agent answers retain their authority; an inherited decider stays unknown');
+
+  const board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
+  try {
+    let queries = 0;
+    const db = { prepare(sql) { queries += 1; return board.db.prepare(sql); } };
+    assert.deepEqual(whyFile({ ...board, db }, box.repo, 'web/shared.txt').items.map(item => item.id), [1]);
+    assert.equal(queries, 1, 'items, rows and answers resolve in one board query');
+  } finally { store.closeBoard(board); }
 
   assert.equal(originOf({}), 'unknown', 'a decision with no recorded origin is unknown');
   assert.equal(originOf({ provenance: { origin: 'inherited' } }), 'inherited');
   assert.equal(box.json(box.repo, 'why', 'web/missing.txt').items.length, 0, 'a file no commit touched has nothing behind it');
+  const pending = box.json(box.repo, 'add', 'web', 'Not landed', '--specs', 'G1', '--criterion', 'Pending exists', '--check', 'test -f web/not-landed').id;
+  box.git(web, 'merge', '-q', '--ff-only', 'main');
+  box.json(web, 'claim', String(pending));
+  const unlanded = e2e.commitFile(box, web, 'web/shared.txt', 'one\nUNLANDED\nthree\n',
+    `feat(web): pending change [G1]\n\nPullboard-Item: #${pending}`);
+  assert.equal(unlanded.status, 0, unlanded.stderr);
+  assert.deepEqual(box.json(web, 'why', 'web/shared.txt').items.map(item => item.id), [1],
+    'a builder checkout cannot present its unlanded history as the primary branch');
+
 });
 
 

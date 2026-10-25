@@ -33,8 +33,8 @@ function runFile(io, ctx, target) {
   io.result?.(found);
   const where = found.line === null ? found.file : `${found.file}:${found.line}`;
   if (!found.items.length) io.say(`no landed commit that names an item touched ${where}`);
-  for (const item of found.items) io.say(`item #${item.id} (${item.status}): ${item.title}`);
-  for (const row of found.rows) io.say(`row ${row.id}, served by ${row.items.map((id) => `#${id}`).join(', ')}`);
+  for (const item of found.items) io.say(`item #${item.id} (${item.status}) [${item.origin}]: ${item.title}`);
+  for (const row of found.rows) io.say(`row ${row.id} [${row.origin}], served by ${row.items.map((id) => `#${id}`).join(', ')}`);
   for (const entry of found.decisions) {
     const relay = entry.relayedBy ? `, relayed by ${entry.relayedBy}` : '';
     io.say(`decision #${entry.id} [${entry.origin}] by ${entry.decidedBy}${relay}: ${entry.statement.split('\n')[0]}${entry.rationale ? `  (because ${entry.rationale})` : ''}`);

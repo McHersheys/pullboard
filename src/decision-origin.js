@@ -42,9 +42,9 @@ export function answerProvenance(board, { agentId, asPerson, text, origin, ratio
     throw new Refused('BAD_ORIGIN', `an origin is ${NAMEABLE_ORIGINS.join(', ')}, not "${origin}"; only a real person answer is the person's origin: pullboard answer <id> <text> --origin person-relayed`);
   }
   if (asPerson && named) throw new Refused('BAD_ORIGIN', 'a person answer is its own origin; leave out --origin');
-  const decidedBy = asPerson ? 'person' : agentId;
   const chosen = asPerson ? 'person' : (origin ?? 'agent');
-  return { statement: String(text).trim(), rationale: reason, decidedBy, relayedBy: chosen === 'person-relayed' ? agentId : null, origin: chosen };
+  const decidedBy = asPerson ? 'person' : chosen === 'agent' ? agentId : 'unknown';
+  return { statement: String(text).trim(), rationale: reason, decidedBy, relayedBy: ['person-relayed', 'inherited'].includes(chosen) ? agentId : null, origin: chosen };
 }
 
 /**
@@ -56,32 +56,4 @@ export function answerProvenance(board, { agentId, asPerson, text, origin, ratio
 export function originOf(detail) {
   const origin = detail?.provenance?.origin;
   return typeof origin === 'string' && origin ? origin : 'unknown';
-}
-
-/**
- * The answered decisions behind some items: answers that imply an item, or were addressed to it.
- *
- * @param {any} board
- * @param {number[]} itemIds
- * @returns {{ id: number, items: number[], statement: string, rationale: string, decidedBy: string, relayedBy: string | null, origin: string, at: string }[]}
- */
-export function decisionsBehind(board, itemIds) {
-  if (!itemIds.length) return [];
-  const marks = itemIds.map(() => '?').join(',');
-  const byShout = new Map();
-  const note = (shout, item) => byShout.set(shout, [...new Set([...(byShout.get(shout) ?? []), item])].sort((a, b) => a - b));
-  for (const row of board.db.prepare(`SELECT item_id, event_detail FROM event WHERE event_kind = 'fact' AND item_id IN (${marks}) AND json_extract(event_detail, '$.decision.source') = 'answer' AND json_extract(event_detail, '$.supersededBy') IS NULL`).all(...itemIds)) {
-    note(JSON.parse(row.event_detail).decision.id, row.item_id);
-  }
-  for (const row of board.db.prepare(`SELECT item_id, event_detail FROM event WHERE event_kind = 'answer' AND item_id IN (${marks})`).all(...itemIds)) {
-    note(JSON.parse(row.event_detail).shout, row.item_id);
-  }
-  return [...byShout].sort(([left], [right]) => left - right).map(([id, items]) => {
-    const shout = board.db.prepare('SELECT shout_from, shout_text, shout_at FROM shout WHERE shout_id = ?').get(id);
-    const event = board.db.prepare("SELECT event_detail FROM event WHERE event_kind = 'answer' AND json_extract(event_detail, '$.shout') = ?").get(id);
-    const recorded = event ? JSON.parse(event.event_detail).provenance : undefined;
-    return { id, items, statement: recorded?.statement ?? shout.shout_text, rationale: recorded?.rationale ?? '',
-      decidedBy: recorded?.decidedBy ?? shout.shout_from, relayedBy: recorded?.relayedBy ?? null,
-      origin: originOf({ provenance: recorded }), at: shout.shout_at };
-  });
 }

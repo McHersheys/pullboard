@@ -8,13 +8,17 @@ import { carriesImplies } from '../move-implies.js';
 import { BOARD_SENTINEL_ENGINE } from '../sentinel-engine.js';
 
 /** Preserve this operation's historical first-matching engine conditions [H16]. */
-function minimumEngine(args, board, at) {
+function historicalMinimumEngine(args, board, at) {
   if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('conflict:')) return RIGOR_AUTO_ENGINE;
   if (args[0]?.landingFence !== undefined) return LANDING_LEASE_ENGINE;
   if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('sentinel:')) return BOARD_SENTINEL_ENGINE;
   if (carriesImplies('answerDecision', args)) return IMPLIES_ENGINE;
-  if (carriesOrigin(args)) return DECISION_ORIGIN_ENGINE;
   return 1;
+}
+
+/** New provenance composes with every older option; clause-free recorded moves keep their selection [H16]. */
+function minimumEngine(args, board, at) {
+  return Math.max(historicalMinimumEngine(args, board, at), carriesOrigin(args) ? DECISION_ORIGIN_ENGINE : 1);
 }
 
 /** Read precisely the actor argument used by this operation [H2,H16]. */
