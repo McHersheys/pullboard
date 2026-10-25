@@ -57,8 +57,8 @@ function processNamespaces(source) {
   return namespaces;
 }
 
-/** Unknown member-valued executables need admission; Node's own executable identities are known. */
-function unresolvedMemberCommand(expression) {
+/** Unknown command members stay bound; call results retain the Chrome-bearing-source fallback. */
+function unresolvedCommandValue(expression, browserSource) {
   const compact = expression.replace(/\s/gu, '');
   // A conditional's predicate is not one of the executable values it returns.
   let nested = 0;
@@ -76,12 +76,16 @@ function unresolvedMemberCommand(expression) {
           at = end;
         } else if (compact[at] === '?' && !['?', '.'].includes(compact[at + 1]) && compact[at - 1] !== '?') nested += 1;
         else if (compact[at] === ':' && nested-- === 0) {
-          return unresolvedMemberCommand(compact.slice(start, at)) || unresolvedMemberCommand(compact.slice(at + 1));
+          return unresolvedCommandValue(compact.slice(start, at), browserSource)
+            || unresolvedCommandValue(compact.slice(at + 1), browserSource);
         }
       }
       return true;
     }
   }
+  // A call result is not a proven non-browser executable. Retain main's conservative
+  // Chrome-bearing-source rule only when that value actually supplies a command.
+  if (browserSource && /(?:[$\w]|\]|\))\s*(?:\?\.)?\s*\(/u.test(compact)) return true;
   // Calls and object/template construction do not return the value of each member they read.
   // In particular, a pid used to build a directory name is not an executable-valued alias.
   let brackets = 0;
@@ -153,6 +157,7 @@ export function sourceLaunchesBrowser(source, reviewedExecutors = []) {
   /** A span's literals or executable environment references can name a browser. */
   const browserIn = (start, end) => CHROME.test(code.slice(start, end))
     || strings.some(string => string.start >= start && string.start < end && browserText(string.text));
+  const browserSource = browserIn(0, code.length);
   // Union executable identifier assignments, including later writes and conditional branches.
   // Never let a later non-browser value erase a possible browser value; strings/comments are blank in code.
   for (const match of code.matchAll(/(?<![\w$.])([$A-Z_a-z][$\w]*)\s*=(?!=|>)/gu)) {
@@ -163,7 +168,7 @@ export function sourceLaunchesBrowser(source, reviewedExecutors = []) {
     if (end === null) return CHROME.test(source);
     const prior = bindings.get(match[1]) ?? { browser: false, unresolved: false, aliases: new Set(), dependencies: new Set() };
     prior.browser ||= browserIn(start, end);
-    prior.unresolved ||= unresolvedMemberCommand(code.slice(start, end));
+    prior.unresolved ||= unresolvedCommandValue(code.slice(start, end), browserSource);
     const alias = /^\s*([$A-Z_a-z][$\w]*)\s*$/u.exec(code.slice(start, end));
     if (alias) prior.aliases.add(alias[1]);
     for (const word of code.slice(start, end).matchAll(WORD)) prior.dependencies.add(word[0]);
@@ -205,7 +210,7 @@ export function sourceLaunchesBrowser(source, reviewedExecutors = []) {
       const commandEnd = expressionEnd(code, start + 1, false);
       if (commandEnd === null) return true;
       const command = code.slice(start + 1, commandEnd);
-      if (unresolvedMemberCommand(command)
+      if (unresolvedCommandValue(command, browserSource)
         || [...command.matchAll(WORD)].some(word => namedBrowser(word[0], new Set(), true))) return true;
     }
   }
