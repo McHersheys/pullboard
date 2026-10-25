@@ -52,6 +52,7 @@ const OPTIONS = {
   'no-open': { type: 'boolean' },
   lan: { type: 'boolean' },
   'no-permissions': { type: 'boolean' },
+  'no-hooks': { type: 'boolean' },
   note: { type: 'string' },
   infra: { type: 'string' },
   'note-file': { type: 'string' },
@@ -288,6 +289,11 @@ async function runMain(argv, streams) {
       && !(command === 'join' && parsed.positionals[1] === (await import('./config.js')).COORDINATOR);
     needsRepo = !(parsed.values.help || parsed.values.version || command === 'help' || command === 'version');
   } catch { sync = false; needsRepo = false; }
+  // Agent nudges never enter Git-hook identity, synchronization or refusal machinery.
+  if (parsed?.positionals[0] === 'hook' && !parsed.values.help && !parsed.values.version
+      && !['pre-commit', 'pre-merge-commit', 'commit-msg', 'pre-push'].includes(parsed.positionals[1])) {
+    return (await import('./agent-hook.js')).runAgentHook(io, parsed.positionals[1]);
+  }
   const git = needsRepo ? await import('./git.js') : null;
   git?.setResumeSourceFacts(parsed?.positionals[0] === 'resume');
   if (parsed) {
