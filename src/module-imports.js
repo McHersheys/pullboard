@@ -230,6 +230,10 @@ function unreadableTestOptions(source) {
   const code = lex(source).code;
   const names = new Set(['test', 'it', 'describe']);
   for (const match of source.matchAll(/\bimport\s+([^;'"]+?)\s+from\s*(['"])node:test\2/gu)) {
+    const defaultBinding = /^\s*([A-Za-z_$][\w$]*)(?:\s*,|\s*$)/u.exec(match[1]);
+    if (defaultBinding) names.add(defaultBinding[1]);
+    const namespace = /^\s*\*\s+as\s+([A-Za-z_$][\w$]*)/u.exec(match[1]);
+    if (namespace) names.add(namespace[1]);
     const bindings = match[1].replace(/[{}*]/gu, ' ').split(',');
     for (const binding of bindings) {
       const [original, alias] = binding.trim().split(/\s+as\s+/u);
