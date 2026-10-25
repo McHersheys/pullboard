@@ -62,6 +62,7 @@ test('verify admits a GUI check through the GUI slot like the gate [C7,V4]', asy
       assert.equal((await holder.closed).code, 0, holder.stderrText);
       if (verification) assert.equal((await verification.closed).code, 0, verification.stdoutText + verification.stderrText);
     }
+    assert.equal(queued.browser, 1, 'both verification requests preserve the default browser-slot requirement');
     assert.equal(queued.gui, Number(gui), 'verify preserves the same explicit GUI requirement as the gate');
     assert.equal(document(box.run(box.repo, 'show', '1', '--json')).item_status, 'verified');
   }
