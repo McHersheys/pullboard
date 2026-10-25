@@ -64,7 +64,7 @@ test('a decision records its origin and pullboard why names the decisions behind
   const inheritedAsk = box.json(web, 'shout', 'coordinator', 'Keep the inherited convention?', '--decision').id;
   const inherited = box.json(box.repo, 'answer', String(inheritedAsk), 'Keep the convention', '--implies', '2',
     '--origin', 'inherited', '--rationale', 'the earlier design supplies no named decider').id;
-  const personAsk = box.json(web, 'shout', 'person', 'Approve the other change?', '--decision').id;
+  const personAsk = box.json(box.repo, 'shout', 'person', 'Approve the other change?', '--decision').id;
   const person = box.json(box.repo, 'answer', String(personAsk), 'I approve this change', '--as', 'person', '--implies', '2').id;
 
   const third = box.json(web, 'shout', 'coordinator', 'One more?', '--decision').id;
