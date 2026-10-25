@@ -157,6 +157,7 @@ Work
                                         a verdict takes --implies <ids>; a later verdict on the item supersedes it
                                         any --note can be --note-file <file>, which keeps quotes, $ and backticks intact
   pullboard shout <lane|agent|person|all> <text>  pullboard inbox
+  pullboard inbox --acted-on <interrupt-ids>     acknowledge comma-separated ids only after acting; reading is not acting
   pullboard shout --item <id> <text>             message the item builder, reviewer and coordinator
   A seat shout to all reaches only coordinator and person; their broadcasts reach everyone.
   pullboard shout all <text> --news              coordinator/person release or focus news, digested at session start
@@ -360,7 +361,7 @@ const HELP_ALIASES = {
   lane: { usage: 'pullboard lane add <name> --owns <path>[,<path>]', source: 'lane add' },
   status: { usage: 'pullboard status', source: 'whoami' },
   done: { usage: 'pullboard done <id>', source: 'submit <id>' },
-  inbox: { usage: 'pullboard inbox', source: null },
+  inbox: { usage: 'pullboard inbox', source: null, extraFlags: ['--acted-on <interrupt-ids>'] },
   'check accept': { usage: 'pullboard check accept <id>', source: 'check accept' },
   relay: { source: 'relay', every: true },
   lifecycle: { usage: 'pullboard lifecycle', source: null },
