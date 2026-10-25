@@ -5,6 +5,8 @@ import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { after, test } from 'node:test';
+import { minimumMoveEngine } from '../src/move-registry.js';
+import { DECISION_ORIGIN_ENGINE } from '../src/decision-origin-engine.js';
 import { originOf } from '../src/decision-origin.js';
 
 const BIN = resolve(import.meta.dirname, '../bin/pullboard.js');
@@ -109,4 +111,15 @@ test('a decision records its origin and pullboard why names the decisions behind
   assert.equal(originOf({}), 'unknown', 'a decision with no recorded origin is unknown');
   assert.equal(originOf({ provenance: { origin: 'inherited' } }), 'inherited');
   assert.equal(box.json(box.repo, 'why', 'web/missing.txt').items.length, 0, 'a file no commit touched has nothing behind it');
+});
+
+
+test('decision origin and rationale retain their floor when an answer implies an item [H16,N29]', () => {
+  for (const detail of [{ origin: 'agent' }, { rationale: 'the recorded reason' }]) {
+    for (const options of [{ implies: [1] }, { cause: 'conflict:src/fixture.js' }, { cause: 'sentinel:fixture' }]) {
+      const args = [1, { agentId: 'coordinator', text: 'Keep the change', ...options, ...detail }];
+      assert.ok(minimumMoveEngine('answerDecision', args) >= DECISION_ORIGIN_ENGINE,
+        `every mixed answer retains its recorded origin meaning: ${JSON.stringify(args)}`);
+    }
+  }
 });
