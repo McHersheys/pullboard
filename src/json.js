@@ -22,7 +22,7 @@ export const JSON_SHAPES = {
     takeover: shape({ agent: 'string', path: 'string' }),
     worktree: shape({ agent: 'string', lane: 'string', route: 'string', path: 'string', branch: 'string', prompt: 'string', model: 'string', displayName: 'string' }),
     resume: shape({ me: 'object', all: 'array', requests: 'array', holding: 'array', sentBack: 'array', awaiting: 'array', toVerify: 'array', toMerge: 'array', open: 'array', stale: 'array', doctrineNotes: 'array', holds: 'array', unread: 'number', newest: 'array', root: 'string', newWorktreeLocation: 'string', dirty: 'number', next: 'string' }),
-    whoami: shape({ id: 'string', lane: 'string', path: 'string', model: 'string', displayName: 'string' }),
+    whoami: shape({ address: 'string', id: 'string', lane: 'string', path: 'string', model: 'string', displayName: 'string' }),
     agents: shape({ agents: 'array' }),
     lanes: shape({ lanes: 'object', shared: 'array', coordinator: 'string' }),
     'lane add': shape({ lane: 'string', owns: 'array' }),

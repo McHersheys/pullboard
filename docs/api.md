@@ -86,7 +86,7 @@ For example: `flow: review wait average 61 min (1 measured; > 60 min); bottlenec
 | `takeover` | `version:number`, `agent:string`, `path:string` |
 | `worktree` | `version:number`, `agent:string`, `lane:string`, `route:string`, `path:string`, `branch:string`, `prompt:string`, `model:string`, `displayName:string` |
 | `resume` | `version:number`, `me:object`, `all:array`, `requests:array`, `holding:array`, `sentBack:array`, `awaiting:array`, `toVerify:array`, `toMerge:array`, `open:array`, `stale:array`, `doctrineNotes:array`, `holds:array`, `unread:number`, `newest:array`, `root:string`, `newWorktreeLocation:string`, `dirty:number`, `next:string` |
-| `whoami` | `version:number`, `id:string`, `lane:string`, `path:string`, `model:string`, `displayName:string` |
+| `whoami` | `address:string`, `version:number`, `id:string`, `lane:string`, `path:string`, `model:string`, `displayName:string` |
 | `agents` | `version:number`, `agents:array` |
 | `lanes` | `version:number`, `lanes:object`, `shared:array`, `coordinator:string` |
 | `lane add` | `version:number`, `lane:string`, `owns:array` |
@@ -673,3 +673,7 @@ When `publish.pullRequest` is enabled, `pullboard publish` reconciles the GitHub
 A board-recorded item merge covers its introduced commits only when its exact submitted commit has that receipt and is an ancestor of the recorded merge. `Pullboard-Companion: #N` is covered only on a board-recorded trunk containing item N's landing. Unreceipted commits, including release bumps and synthetic publication commits, remain unverified. An outside PR is allowed and initially reads `not verified`; the JSON result's `verification[].intake` names the existing `pullboard intake` command that files it for review. Outside intake can cover only its exact accepted head, never its earlier commits by inference.
 
 The JSON result includes `verification` entries with PR number, exact head, state, assurance, receipt identities, and any unverified commit IDs. GitHub statuses are shared by PRs with the same head: if an outside or unproven PR shares a commit with a proven proposal, the shared status stays red rather than lending the proposal's green status to it. Publishing observes and posts statuses; it never merges a PR or requires outside authors to use Pullboard.
+
+### Seat addresses
+
+`whoami.address` and each `agents` entry expose `pullboard:<board-id>:<percent-encoded-seat-id>`. The address uses the persistent board identity and registered seat id, not its checkout path. Send with `pullboard shout <address> "<text>"` from a checkout linked to that board with the sender’s own grant; the existing sealed relay authenticates the sender and orders the ordinary shout. Another board’s address is refused with `SEAT_ADDRESS_BOARD`. An address grants no access, and revoked credentials cannot deliver a message.
