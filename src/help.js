@@ -57,6 +57,7 @@ Set up
   pullboard relay [status|on|off|pair|join <code>] [--url <address>] [--name <computer>]  link, inspect or unlink this board's sealed relay
                                         on signs in through GitHub; the address defaults to https://app.pullboard.dev
                                         pair prints a one-use machine code; join stores it in another clone
+  pullboard relay members set <login> [<login> ...] | clear  publish an approver-signed membership list
   pullboard relay pair --new-browser    sign in and pair one more browser; existing browsers stay paired
   pullboard relay on --all [--url <address>] [--name <computer>]  link every registered project after one sign-in; pair the phone once
                                         keep this command open until pairing finishes; later projects link on registration
