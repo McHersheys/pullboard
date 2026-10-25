@@ -1,5 +1,6 @@
 /** Native person enrollment uses pinned roots and board-scoped machine authority [H15]. */
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { relayClientFixture } from './relay-client-fixture.js';
@@ -10,6 +11,8 @@ import { ENGINE_VERSION } from '../src/machine.js';
 
 test('a native key holder verifies a pinned person root before delivering each granted board [H15]',
   { timeout: 180_000 }, async t => { // budget: hang ceiling for three private CLI board setups and real HTTP delivery/refusal controls.
+    t.diagnostic('runtime ' + JSON.stringify({ node: process.version, sqlite: process.versions.sqlite,
+      executable: process.execPath, binarySha256: createHash('sha256').update(readFileSync(process.execPath)).digest('hex') }));
     const box = await relayClientFixture(t);
     await box.link();
     const second = await box.additionalBoard('second granted board');
