@@ -1,3 +1,5 @@
+import * as activityDeliveryStore from './activity-delivery-store.js';
+import { requireFactKind } from './item-notes.js';
 import { activityNewsFlag } from './activity-news.js';
 import { migrateEventLogVersion } from './board-event-log-migrate.js';
 import {
@@ -8,6 +10,7 @@ import {
   focusOrder,
   focusReasons,
 } from './focus-milestone.js';
+import { answerProvenance } from './decision-origin.js';
 import { ensureProofCounters } from './proof-counters.js';
 import { correctedNoVerdictReopen } from './reopen-history.js';
 import {
@@ -245,6 +248,10 @@ import { RIGOR_NOTICE_ENGINE } from './rigor-source.js';
 import { RIGOR_AUTO_ENGINE } from './rigor-auto-engine.js';
 import { CPU_SENTINEL_ENGINE } from './cpu-sentinel-engine.js';
 import { hasPendingCpuNotices } from './health-receipts.js';
+import {
+  milestoneRanks,
+  workOrderCompare,
+} from './work-order.js';
 import {
   deriveRigorCause,
   recordAutomaticRigorDrafts,
@@ -1767,10 +1774,10 @@ export function passDecision(board, id, { agentId, note, lanes }) {
  *
  * @param {any} board
  * @param {number} id
- * @param {{ agentId: string, text: string, lanes: string[], asPerson?: boolean, channel?: 'terminal' | 'view', implies?: number[], supersedes?: number | null, impliesId?: string }} options - implies and supersedes tell items (B29,B31)
+ * @param {{ agentId: string, text: string, lanes: string[], asPerson?: boolean, channel?: 'terminal' | 'view', implies?: number[], supersedes?: number | null, impliesId?: string, origin?: string, rationale?: string }} options - implies and supersedes tell items (B29,B31); origin and rationale record where the decision came from (N29)
  * @returns {number}
  */
-export function answerDecision(board, id, { agentId, text, lanes, asPerson = false, channel = 'terminal', implies, supersedes = null, impliesId }) {
+export function answerDecision(board, id, { agentId, text, lanes, asPerson = false, channel = 'terminal', implies, supersedes = null, impliesId, origin, rationale }) {
   return atomic(board, () => {
     const ask = getShout(board, id);
     if (ask.shout_request) {
@@ -1793,7 +1800,8 @@ export function answerDecision(board, id, { agentId, text, lanes, asPerson = fal
       throw new Refused('NOT_YOUR_DECISION', `shout #${id} is addressed to ${ask.shout_to}, not ${lane} (agent ${agentId})`);
     }
     const from = personAnswer ? PERSON : agentId;
-    const answerId = tellAnswerImplications(board, (by, itemId, fact) => logEvent(board, by, 'fact', itemId, fact), insertShout(board, { from, to: ask.shout_from, text, lanes, answers: id, channel, ...(addressedItem === null ? {} : { item: addressedItem }), detail: { ...(implies?.length ? { implies } : {}), ...(supersedes !== null ? { supersedes } : {}) } }), { seed: impliesId, implies, supersedes, from, person: PERSON });
+    const provenance = answerProvenance(board, { agentId, asPerson: personAnswer, text, origin, rationale });
+    const answerId = tellAnswerImplications(board, (by, itemId, fact) => logEvent(board, by, 'fact', itemId, fact), insertShout(board, { from, to: ask.shout_from, text, lanes, answers: id, channel, ...(addressedItem === null ? {} : { item: addressedItem }), detail: { ...(implies?.length ? { implies } : {}), ...(supersedes !== null ? { supersedes } : {}), ...(provenance ? { provenance } : {}) } }), { seed: impliesId, implies, supersedes, from, person: PERSON });
     if (personAnswer && ask.shout_answers !== null) {
       const original = getShout(board, ask.shout_answers);
       insertShout(board, { from: PERSON, to: original.shout_from, text: `Person answered #${id}: ${String(text).trim()}`, lanes, answers: original.shout_id, channel, ...(shoutItemId(original.shout_to) === null ? {} : { item: shoutItemId(original.shout_to) }) });
@@ -1833,8 +1841,7 @@ export { unreadCount } from './board-query.js';
 
 export { events } from './board-query.js';
 
-/** Fact labels distinguish observations from judgements reserved to an item's live holder [B29,B30]. */
-export const FACT_KINDS = Object.freeze(['capture', 'measurement', 'note', 'diff', 'decision', 'rejection', 'supersession', 'root-cause', 'bar-check', 'bar-answer']);
+export { FACT_KINDS } from './item-notes.js';
 const FACT_JUDGEMENTS = new Set(['decision', 'rejection', 'supersession', 'root-cause']);
 export { factReference };
 
@@ -1849,7 +1856,7 @@ export function appendFact(board, id, { agentId, kind, text, ref = null, superse
   return atomic(board, () => {
     const item = current(board, itemById(board, id));
     if (!board.db.prepare('SELECT 1 FROM agent WHERE agent_id = ?').get(agentId)) throw new Refused('NO_AGENT', `no registered agent ${agentId}; join a worktree before appending a fact`);
-    if (!FACT_KINDS.includes(kind)) throw new Refused('BAD_FACT_KIND', `unknown fact kind ${String(kind)}; use ${FACT_KINDS.join(', ')}`);
+    requireFactKind(board, kind);
     if (typeof text !== 'string' || !text.trim()) throw new Refused('EMPTY_FACT', 'a fact needs nonempty text; supply the observation or judgement');
     const barFields = barCheckFactFields(board, item, { agentId, kind, text, answers, supersedes });
     if ((FACT_JUDGEMENTS.has(kind) || supersedes !== null) && agentId !== COORDINATOR && (!isHeld(board, item) || item.item_owner !== agentId)) {
@@ -1885,28 +1892,16 @@ function postRigorNotices(board, trigger) {
 }
 
 
-/** Explicit item ranks belong to the same first unfinished milestone as its priority [N2,B13]. */
-function milestoneRanks(board, priority) {
-  if ((board.executionEngineVersion ?? ENGINE_VERSION) < MILESTONE_RANK_ENGINE) return () => 0;
-  const ranks = new Map();
-  for (const [index, milestone] of milestones(board).entries()) {
-    for (const [rank, id] of (milestone.order ?? []).entries()) {
-      if (milestone.items.includes(id) && priority({ item_id: id }) === index && !ranks.has(id)) ranks.set(id, rank);
-    }
-  }
-  return entry => ranks.get(entry.item_id) ?? Number.MAX_SAFE_INTEGER;
-}
-
-/** Make the shared build-queue comparator once: milestone, explicit rank, route, recent files, then oldest. */
-export function buildOrder(board, { warm = [], agentId, readiness = barReadyForOrder } = {}) {
-  const milestonePriority = milestonePriorities(board);
+/** Make the shared build-queue comparator once: milestone, explicit rank, then the self-ordered queue (#1017; older engines: route, recent files, oldest). */
+export function buildOrder(board, { warm = [], agentId, readiness = barReadyForOrder, tierFirst = false, priority } = {}) {
+  const milestonePriority = priority ?? milestonePriorities(board);
   const rank = milestoneRanks(board, milestonePriority);
   const recent = new Set(warm);
   const shared = (entry) => itemFiles(entry).filter((path) => recent.has(path)).length;
-  const fallback = (first, second) => milestonePriority(first) - milestonePriority(second)
+  const fallback = workOrderCompare(board, { priority: milestonePriority, rank, shared, tierFirst }) ?? ((first, second) => milestonePriority(first) - milestonePriority(second)
     || rank(first) - rank(second)
     || ROUTES.indexOf(second.item_route) - ROUTES.indexOf(first.item_route)
-    || shared(second) - shared(first) || first.item_id - second.item_id;
+    || shared(second) - shared(first) || first.item_id - second.item_id);
   return focusOrder(board, lineOrderEnabled(board) ? lineBuildOrder({ agentId, release: milestonePriority, rank, items: listItems(board, { all: true }), ready: item => readiness(board, item), fallback }) : fallback);
 }
 
@@ -1981,7 +1976,7 @@ export function nextFor(board, { agentId, lane, verify = false, policy = 'any', 
     const hold = laneHold(board, name);
     if (hold) { selectedLanes.delete(name); reasons.push(`${hold.hold_by} holds the ${name} lane: ${hold.hold_reason}`); }
   }
-  const compare = buildOrder(board, { warm, agentId });
+  const compare = buildOrder(board, { warm, agentId, tierFirst: true });
   const inFlight = listItems(board, { all: true });
   const recent = new Set(warm);
   const mainRed = new Set(priority);
@@ -2345,3 +2340,18 @@ export function approveOutside(board, id, options) { return applyOutsideApproval
 
 /** Tailored inbox activity is the same canonical read projection as other board queries. */
 export { agentActivity } from './board-query.js';
+
+/** Read recipient delivery state without mutating any cursor or receipt. */
+export function activityDeliveryState(board, agentId) {
+  return activityDeliveryStore.activityDeliveryState(board, agentId);
+}
+
+/** Record the exact interrupts included in an authenticated recipient response. */
+export function recordActivityDelivery(board, options) {
+  return activityDeliveryStore.recordActivityDelivery(board, options, { atomic, logEvent });
+}
+
+/** Record an explicit recipient acknowledgement separately from delivery. */
+export function actOnActivity(board, options) {
+  return activityDeliveryStore.actOnActivity(board, options, { atomic, logEvent });
+}

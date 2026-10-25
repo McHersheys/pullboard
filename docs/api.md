@@ -20,7 +20,7 @@ Release priority is separately opt-in with `"gate": { "queue": { "currentRelease
 
 `pullboard init` and `pullboard resume` keep `pullboard view` running in the background, so pullboard.dev finds this computer's boards with no command. When no view answers on the view port (4890, or `PULLBOARD_VIEW_PORT`), they start one detached, writing its output to a private `view-<port>.log` beside the view's session record in `~/.pullboard`; a view already running is left alone, and a busy port is one line that fails neither command. init prints one line naming where the view runs, its log and the `kill <pid>` that stops it; resume prints that line only when it starts the view or cannot. Both JSON results carry `view` with `state` (`started`, `running`, `busy`, `off` or `failed`), `port` and, for a view, `pid`. It is on unless the machine sets `"view": { "background": false }` in `~/.pullboard/settings.json`; `PULLBOARD_VIEW_BACKGROUND=0` turns it off for one process tree, and the test runner sets it so tests leave no view behind.
 
-The memory hold is opt-in per machine with `"gate": { "memoryFloorMB": <n> }` in `~/.pullboard/settings.json`; absent, it is off and the pool admits by slots alone, as before. When set, before admitting a run the machine gate pool reads the machine's memory: on macOS the kernel's memory pressure level and free percentage, on Linux `MemAvailable` and the pressure stall averages in `/proc/pressure/memory`. The whole queue, landings included, waits in place while pressure is critical or free memory is under that many megabytes (`0` leaves only the pressure check). A held run prints one line naming why and the three biggest processes by memory, with pid, size and working directory, and starts once memory recovers. While the floor is set, `pullboard resources` prints the same line and returns it as `memory` in JSON; with no floor it reads no memory and `memory` is `null`. Where memory cannot be read, the pool admits by slots alone and prints one warning that memory is not checked there.
+The memory hold is opt-in per machine with `"gate": { "memoryFloorMB": <n> }` in `~/.pullboard/settings.json`; absent, it is off and the pool admits by slots alone, as before. When set, before admitting a run the machine gate pool reads the machine's memory: on macOS the kernel's memory pressure level and free percentage, on Linux `MemAvailable` and the pressure stall averages in `/proc/pressure/memory`. Only runs executing on this machine, including local landing and short-slot runs, wait while pressure is critical or free memory is under that many megabytes (`0` leaves only the pressure check). A compatible runner-bound run bypasses this local hold and waits for runner capacity instead; it does not acquire a local executor while the hold applies. A held run prints one line naming why and the three biggest processes by memory, with pid, size and working directory, and starts once memory recovers. While the floor is set, `pullboard resources` prints the same line and returns it as `memory` in JSON; with no floor it reads no memory and `memory` is `null`. Where memory cannot be read, the pool admits by slots alone and prints one warning that memory is not checked there. `pullboard resources` marks locally memory-held queue entries with `memoryHeld: true`. `pullboard status --json` adds optional `memoryHeld`, an array of current held runs (`agent`, `repo`, `item`, `kind`, `since`), empty when no runs are held or the floor is off, and `null` if that read is unavailable. Text status names each held run. This is a read-only resource-queue projection; it never migrates the pool.
 
 Short gate slots are opt-in per machine with `pullboard settings gate.shortSlots <n>`, stored as `"gate": { "shortSlots": n }`; the default `0` keeps them off and the pool behaves as before. With `n` above `0`, up to `n` runs that name their test files (a `pullboard check` or a review whose check is a literal `node bin/run-tests.js` call over test files, or a direct `node bin/run-tests.js <files>`) are admitted on short slots while every gate slot is held. Whole suites, directories, landings, diagnostics and anything the parser cannot read never use them, and a child that does not name its files cannot reuse a short lease (`SHORT_SLOT_FULL_SUITE`). Short slots do not add to `gateSlots`, and browser runs still count against `browserSlots`. `pullboard settings` prints `gate.shortSlots`; `pullboard resources --json` reports `shortSlots`, each gate holder's `slot` (`gate` or `short`), and `requestedSlot: "short-eligible"` on a waiting run that may take one.
 
@@ -39,6 +39,8 @@ The board setting `submit.requireInfraNote` in the coordinator's accepted `pullb
 `pullboard stats [--since <date>] --json` returns `{version: 1, stats: {...}}` from the append-only event log. `submissions` and `rejections` count moves, including repeated attempts; `rejectionShare` is rejections divided by submissions (zero when the window has no submissions). `merged` counts distinct items with a merge move; `mergedWithoutAccept` counts those whose merge lacks an earlier acceptance of the latest submitted commit. That audit uses earlier history even when the acceptance falls before the selected window. Current item and verdict rows do not replace event evidence.
 
 `stats.caught` lists what the board caught in the window, read from moves it already records and never pushed: `counts` per kind (`sentBack`, `conflict`, `redHead`, `flake`, `stuck`), `total`, and `entries` of `{kind, item, at, text}`. A `sentBack` entry carries the gap the reviewer named; `conflict` is a reopen naming a trunk conflict; `redHead` is a reopen after the full suite failed at landing; `flake` is a flake proven by a paired rerun; `stuck` is a sentinel health finding. Text `stats` prints a `caught:` count line and one line per entry, and `pullboard digest` carries the same list for the last 30 days under `What the board caught`. It appears only when someone runs one of those commands.
+
+`pullboard test <files>` runs the named test files with the board's focused test runner (`affectedTests` in `pullboard.json`) under one gate slot, so a machine with `gate.runnersFirst` on deals them to its registered runners first; the focused runner's per-file timeout applies there as here. A dirty worktree runs too: its tracked and untracked files, ignored ones left out, become a snapshot commit made with a private index, checked out cleanly for the run, and the worktree's own index and branches stay as they are. `--json` returns the runner's unchanged TAP as `output`, `runner` (the runner host, or `this machine`), `seconds` and `files`. When a file fails, each failed file is compared with main's own run of it, cached per main commit and file beside the board: `known` lists `{file, result}` with `result` `red` when main fails it too (a known main failure), `green` when main passes it, or `absent` when main does not have the file, and `main` names that commit. A runner whose transport dropped rejoins the pool after five minutes.
 
 `gateWaits`, beside `stats`, lists, for each kind of gated run in the last day (`check`, `review`, `doctrine`, `gate`, `landing`), its `runs`, `medianWaitMs`, `slowestWaitMs` and `medianRunMs`, read from the board's gate receipts; text `stats` prints them under `gate waits, last day:`. A gate receipt is written for every run that takes a gate slot. Its fields are `waitMs` (queued for a slot), `admissionMs` (deciding and queueing, then handing over), `setupMs`, `runMs` and `evidenceMs` (reading the result and writing its record), and `slot: {kind, reason}`, where `kind` is `ordinary`, `browser`, `short`, `runner` or `inherited`. A timing profile carries it as `receipt`, `check --json` returns it as `receipt`, and the timing lines print it as `phases: ...; slot: <kind> (<reason>)`. A doctrine hold at submit prints its own `doctrine hold phases:` line.
 
@@ -86,7 +88,7 @@ For example: `flow: review wait average 61 min (1 measured; > 60 min); bottlenec
 | `takeover` | `version:number`, `agent:string`, `path:string` |
 | `worktree` | `version:number`, `agent:string`, `lane:string`, `route:string`, `path:string`, `branch:string`, `prompt:string`, `model:string`, `displayName:string` |
 | `resume` | `version:number`, `me:object`, `all:array`, `requests:array`, `holding:array`, `sentBack:array`, `awaiting:array`, `toVerify:array`, `toMerge:array`, `open:array`, `stale:array`, `doctrineNotes:array`, `holds:array`, `unread:number`, `newest:array`, `root:string`, `newWorktreeLocation:string`, `dirty:number`, `next:string` |
-| `whoami` | `version:number`, `id:string`, `lane:string`, `path:string`, `model:string`, `displayName:string` |
+| `whoami` | `address:string`, `version:number`, `id:string`, `lane:string`, `path:string`, `model:string`, `displayName:string` |
 | `agents` | `version:number`, `agents:array` |
 | `lanes` | `version:number`, `lanes:object`, `shared:array`, `coordinator:string` |
 | `lane add` | `version:number`, `lane:string`, `owns:array` |
@@ -101,6 +103,9 @@ For example: `flow: review wait average 61 min (1 measured; > 60 min); bottlenec
 | `milestone add` | `version:number`, `milestone:object` |
 | `milestone items` | `version:number`, `milestone:object` |
 | `milestone order` | `version:number`, `milestone:object` |
+| `milestone pin` | `version:number`, `milestone:object` |
+| `milestone sink` | `version:number`, `milestone:object` |
+| `milestone lift` | `version:number`, `milestone:object` |
 | `milestone move` | `version:number`, `milestone:object` |
 | `milestone edit` | `version:number`, `milestone:object` |
 | `milestone remove` | `version:number`, `milestone:object` |
@@ -123,6 +128,7 @@ For example: `flow: review wait average 61 min (1 measured; > 60 min); bottlenec
 | `edit` | `version:number`, `item:object` |
 | `fact` | `version:number`, `item:number`, `fact:object` |
 | `why` | `version:number`, `id:number`, `decisions:array` |
+| `why file` | `version:number`, `file:string`, `line:number|null`, `items:array`, `rows:array`, `decisions:array` |
 | `escalate` | `version:number`, `id:number`, `from:string`, `to:string` |
 | `run` | `version:number`, `messages:array` |
 | `sweep` | `version:number`, `messages:array` |
@@ -130,6 +136,7 @@ For example: `flow: review wait average 61 min (1 measured; > 60 min); bottlenec
 | `badge` | `version:number`, `items:number`, `checked:number`, `percent:number\|null`, `changed:array` |
 | `check` | `version:number`, `id:number`, `green:boolean`, `seconds:number`, `check:string`, `receipt:object`, `report:string` |
 | `check accept` | `version:number`, `id:number`, `digest:string`, `check:string` |
+| `test` | `version:number`, `green:boolean`, `output:string`, `runner:string`, `seconds:number`, `files:array`, `known:array`, `main:string\|null` |
 | `claim` | `version:number`, `id:number`, `renewed:boolean`, `leaseUntil:string`, `digest:string` |
 | `hold` | `version:number`, `lane:string`, `held:boolean` |
 | `release` | `version:number`, `id:number` |
@@ -265,7 +272,7 @@ Starting with engine 50, the second REJECT verdict since an item's latest route 
 
 ## Item threads
 
-`pullboard fact <id> <kind> "<text>"` appends a fact to an existing item. The observation kinds are `capture`, `measurement`, `note` and `diff`; any registered agent may append them. The judgement kinds are `decision`, `rejection`, `supersession` and `root-cause`; only the item's live lease holder or the coordinator may append them. An expired lease gives no judgement permission. Facts do not change the item's status or its claim.
+`pullboard fact <id> <kind> "<text>"` appends a fact to an existing item. The observation kinds are `capture`, `measurement`, `note`, `diff`, `question`, `answer`, `plan` and `risk`; any registered agent may append them. Typed conversation notes stay on the item thread, without creating a shout or an approval decision. Builder and reviewer read them with `show`; the runner also includes that item’s stamped facts in its context pack. Generic `answer` notes are observations; `--answers` remains reserved for the existing `bar-answer` workflow. The judgement kinds are `decision`, `rejection`, `supersession` and `root-cause`; only the item's live lease holder or the coordinator may append them. An expired lease gives no judgement permission. Facts do not change the item's status or its claim.
 
 The result is `{version: 1, item: <item-id>, fact: {...}}`. A fact has `id` (stable string identity), `eventId` (board-local event sequence), `kind`, exact `text`, `by` (registered author), `at` (UTC timestamp), `ref` and `supersedes`. The board supplies identity, author and time. `ref` and `supersedes` are `null` when omitted.
 
@@ -323,6 +330,8 @@ Only the coordinator sets or edits an item's `--check`. `pullboard check [id]` p
 | `envelope` | `version:number`, `error:object` |
 | `error` | `code:string`, `message:string`, `next:string` |
 <!-- api-refusal-shapes:end -->
+
+`relay on`, `relay on --all`, and `relay join <code>` accept `--name "<computer>"` for a person-given display name. Coordinator holds, refusals and device lists use that name; unnamed computers keep `computer <last 8 of machine id>`. Labels never come from a hostname or path.
 
 `relay on`, `relay`, and `relay off` share the relay result shape. Successful `pullboard relay recover --skip N` returns that same shape with optional `skipped: N` naming the explicitly refused sequence and `adopted: true` when it adopts a different authenticated person checkpoint that proves the same blocked refusal. Every relay result includes `recovery: { pending, skip, next }`; when a saved recovery is pending, `next` is the exact retry command. The `behind` count remains the number of pending uploads and does not include recovery. `status` includes this relay object alongside the local board summary. Human status and relay output show the recovery sequence and retry command when one is saved. The local `agent_last_shout_id` inbox read cursor is metadata: recovery ignores only that field in its guarded digest and preserves the greater valid cursor for matching agents. Other native changes remain protected; if a semantic local write changes while recovery is pending, the CLI preserves it and refuses automatic restoration. Exporting alone does not unblock that conflict; this prototype has no merge or discard command, so the person must reconcile the export and remote checkpoint before continuing. Successful results may include `diagnostics` for a relay refusal or inactivity notice; a local move still succeeds when its upload must wait. Device sign-in instructions are written immediately to stderr, including with `--json`, so the person can sign in before the command returns.
 
@@ -616,6 +625,8 @@ When the runner's own resource pool refuses the run's setup, the run fails at on
 
 Agents and the coordinator can set explicit item ranks with `milestone order <name> <ids>` (comma-separated ids from that milestone). It replaces that milestone’s `order` list in board metadata; other items stay unranked. `next` compares milestone, explicit rank, then its existing route/recent-file/age tie-breaks. A never-ranked board keeps its existing order. Removing an item drops its rank; adding it again leaves it unranked. This does not change newcomer help or person flows.
 
+`queue` and `next` order each milestone's unranked items by themselves (#1017). An item's unblock count is the unfinished items that wait on it, directly or through others; its effort is its route (light 1, mid 2, strong 3); its score is (unblocks + 1) / effort. Ready items that unblock others alternate with quick wins (light or mid items that unblock nothing) while both last, the rest of the ready work follows by score, and each route with ready work gets an item near the top. Blocked items follow in the order their blockers clear, then held items. `next` takes its own route first within that order. The coordinator overrides the order with `milestone pin <name> <ids> --reason "<why>"` (above the computed order, after any `milestone order` ranks) or `milestone sink <name> <ids> --reason "<why>"` (below it), and `milestone lift <name> <ids>` removes either; an override stays through every re-rank until lifted. Pins extend the milestone's `order`, sinks are its `sunk` list, and each reason is in its `reasons` map by item id. Each `queue` item carries `unblocks:number`, `effort:number` and `why:string`, and text `queue` prints them under the item.
+
 `resume` on the coordinator seat includes `rigor: {undrafted: [...]}`, naming each repeated cause that has no live or approved proved draft. Each entry retains the ordinary Rigor cause key, item evidence and commits. The text resume names the proof-bearing `pullboard rigor draft` command. Declined repeats stay quiet until a new item repeats them. `needsYou` may contain an individual `kind: "rigor-draft"` call with `cause`, `evidence`, `proof`, a qualified spec or doctrine `target`, and `what: "Approve or Decline"`. An ordinary draft remains in the existing aggregate count; a Rigor draft is not counted twice. These fields add no person permission: the existing person-only approval and decline channels still apply.
 
 Automatic evidence-only calls additionally carry `unproved: true`, `proof: null`, `materialized` and `collision`. Before materialization, `what` asks the coordinator to run `spec apply`; the browser labels the advice unproved and does not open a nonexistent file row. After materialization, the person uses the existing exact-row approval/decline path. A pending automatic proposal also satisfies the `undrafted` obligation. An unanswered automatic proposal appears once in each digest after the board's landing cadence (one day by default). No automatic proposal establishes a proved remedy or grants person authority.
@@ -673,3 +684,51 @@ When `publish.pullRequest` is enabled, `pullboard publish` reconciles the GitHub
 A board-recorded item merge covers its introduced commits only when its exact submitted commit has that receipt and is an ancestor of the recorded merge. `Pullboard-Companion: #N` is covered only on a board-recorded trunk containing item N's landing. Unreceipted commits, including release bumps and synthetic publication commits, remain unverified. An outside PR is allowed and initially reads `not verified`; the JSON result's `verification[].intake` names the existing `pullboard intake` command that files it for review. Outside intake can cover only its exact accepted head, never its earlier commits by inference.
 
 The JSON result includes `verification` entries with PR number, exact head, state, assurance, receipt identities, and any unverified commit IDs. GitHub statuses are shared by PRs with the same head: if an outside or unproven PR shares a commit with a proven proposal, the shared status stays red rather than lending the proposal's green status to it. Publishing observes and posts statuses; it never merges a PR or requires outside authors to use Pullboard.
+
+`pullboard why <file>[:<line>] --json` uses the `why file` catalog shape; this names the file form, not a literal `file` argument. It traces commits on the repository's actual primary branch, then resolves their item trailers, served row IDs and answered decisions in one board query. The legacy `why <id>` shape is unchanged. Answered decisions carry their recorded origin, statement, rationale, decider and relayer; absent historical provenance remains `unknown`. Row and item origins are also `unknown` unless recorded, rather than inferred from a related decision. An agent may label a relayed or inherited answer but cannot use that label to mint a person-origin record. Unproven original decider identities remain unknown, with the answering relay seat recorded separately.
+
+
+### Cross-board decision handoffs
+
+`decisionHandoffs(db, { boardId, authorize })` in `src/decision-handoff.js` is
+an I-D persistence port, not an aggregation CLI or a board-name resolver.
+Each participant supplies its own SQLite connection, opaque immutable board ID,
+and existing authority adapter. Call mutations inside the caller’s ordered
+write boundary. No transaction or database connection spans boards.
+
+`deliver(handoff, options)` checks the exact version-1 wire shape and original
+option-set digest, then asks `authorize("disclose", handoff)` and, for answers,
+`authorize("answer", handoff)`. The adapter must authenticate the requester,
+source decision, destination, question, option digest and answer; a supplied
+opaque authority value alone grants nothing. Accepted deliveries persist before
+returning. Transport retries the returned wire independently at the other board.
+Changed correlation or a conflicting answer refuses; late questions preserve
+answers. `optionsDigest(options)` hashes a unique option set independent of order.
+
+`query(source, participants, authority)` requires source-board read authority
+for the exact namespaced reference and participant set. It returns
+`{ complete, agreed, answers }`; callers must not act on an incomplete or
+disagreeing result. Each destination contributes at most one answer, and a
+query cannot omit a destination already recorded for that source decision.
+This contract stores and returns answers to the source/requester’s authorized
+query; it does not execute the decision or grant cross-board authority.
+
+
+## Cross-board offer and private receipt contracts
+
+`src/item-offer.js` exposes `acceptItemOffer`, `declineItemOffer`, `itemOfferAnnouncement`, `recordItemOfferResult` and `readItemOffer`. An `ItemOffer` has exactly `{ version: 1, offerId, sourceBoardId, parentItem, destinationBoardId, proposedContent, disposition, childRef, reason }`. Pending offers have null child/reason; accepted results name `{boardId,item}` on the destination; declines carry a reason. Disclosed proposal fields are `lane`, `title`, and optional `criterion`, `specIds`, `brief`, `route`, `check`; a foreign parent never becomes a destination-local parent. State announcements omit `proposedContent` entirely. The destination stores only a request digest and state result, and retries return the same child after reopening SQLite. Different content or dispositions under the same source/offer id conflict.
+
+Consumers supply the existing canonical resolver as `resolveBoardRef(id) -> {boardId}` without alias normalization here, their local `boardId`, and a synchronous authenticated `authorize({action,boardId,document})` port. Actions are `accepted`, `declined`, and `receive-result`. The port must verify the appropriate source/destination authority for the exact document; there is no permissive default. The destination's synchronous `createChild(content)` port must perform its native child move on this same board and return its item id. Invoke these contracts inside the consumer's ordered move: child creation and the destination retry record share one SQLite transaction. Source result delivery is a separately authorized, idempotent transaction. These contracts add no offer orchestration, two-board transaction or landing sequencer.
+
+`minimalItemReceipt(fields,{sign})` accepts only `{version:1,sourceBoardId,item,commit,verifier,verdict}` and appends `integrity:{digest,signature}` over canonical permitted bytes. `verifyItemReceipt(receipt,{resolveBoardRef,verify},expected)` requires all expected references to match, checks the digest, and calls `verify(bytes,signature,sourceBoardId)` against the consumer's established source trust. Signatures are supplied through the existing authority adapter; a digest alone proves no authority. Titles, criteria, notes and unknown fields are refused even on verification. Private landing consumers still establish the real landing and verdict before issuing this reduced envelope.
+## Agent lifecycle nudges
+
+`init` merges project-local Claude Code `.claude/settings.json` and Codex `.codex/hooks.json` handlers for `SessionStart` and `Stop`, preserving other handlers and settings. Each installed line resolves the local, main-checkout or PATH executable and calls `pullboard hook <event>`; a missing executable exits successfully without output. `init --no-hooks` skips these agent nudges. Existing Git gate hooks are independent. `hooks uninstall` removes only Pullboard's exact agent-handler lines.
+
+`SessionStart` returns the normal resume card as `hookSpecificOutput.additionalContext`. `Stop` returns a `systemMessage` when this seat has committed, unsubmitted work. A local error or two-second worker timeout returns a warning and exit zero, with no blocking decision. Unknown events are silent no-ops. These shapes follow the current [Codex hooks](https://learn.chatgpt.com/docs/hooks) and [Claude Code hooks](https://code.claude.com/docs/en/hooks) contracts.
+
+`doctor --json` adds `agentHooks`, with each vendor's `configured` flag, installed `events`, and `trust`. Codex trust is `unverified`: file installation never grants vendor trust, and the Stop reminder may be off until the person reviews the exact definitions with `/hooks`. Text doctor output reports configured hooks; with no agent-hook files it retains its existing one-line clean-board result.
+
+### Seat addresses
+
+`whoami.address` and each `agents` entry expose `pullboard:<board-id>:<percent-encoded-seat-id>`. The address uses the persistent board identity and registered seat id, not its checkout path. Send with `pullboard shout <address> "<text>"` from a checkout linked to that board with the sender’s own grant; the existing sealed relay authenticates the sender and orders the ordinary shout. Another board’s address is refused with `SEAT_ADDRESS_BOARD`. An address grants no access, and revoked credentials cannot deliver a message.

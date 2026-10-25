@@ -1036,3 +1036,13 @@ code.inline.long { white-space: break-spaces; overflow-wrap: anywhere; }
 /* Approval provenance is literal text, including an unabridged commit on a phone. */
 .agent-approval p { margin: 6px 0; overflow-wrap: anywhere; }
 .agent-approval .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* Revision proposals compare complete row bytes even on a phone; authority stays in the core. */
+.row.spec-revision { display: block; cursor: default; }
+.row.spec-revision > div { display: block; min-width: 0; }
+.spec-revision .revision-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
+.spec-revision section { min-width: 0; padding: 8px; border: 1px solid var(--line); border-radius: 6px; }
+.spec-revision h3 { margin: 0 0 6px; color: var(--ink-muted); font-size: 12px; }
+.spec-revision pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px var(--mono); }
+.spec-revision .revision-reason { margin: 8px 0; overflow-wrap: anywhere; }
+.spec-revision .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }

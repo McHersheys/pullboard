@@ -132,7 +132,10 @@ function privateProbe(root, commit, command, lease, policyCommit) {
   const check = checkAtCommit(root, item, { gateLease: lease });
   const output = check.outputPath ? readFileSync(check.outputPath, 'utf8') : '';
   return { isGreen: check.state === 'pass', unverified: check.state === 'unverified', output, log: check.outputPath,
-    executionRoot: check.executionRoot, executionSourceUnchanged: check.executionSourceUnchanged, profilePath: check.profilePath, profile: check.profile };
+    executionRoot: check.executionRoot, executionSourceUnchanged: check.executionSourceUnchanged, profilePath: check.profilePath, profile: check.profile,
+    executionRunner: check.executionRunner, executionLoad: check.executionLoad, executionMain: check.executionMain,
+    executionSource: check.executionSource, environment: check.environment,
+    rawOutputPath: check.rawOutputPath, rawOutputSha256: check.rawOutputSha256 };
 }
 
 /**

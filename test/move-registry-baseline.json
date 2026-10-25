@@ -62,7 +62,9 @@
     "recordJobRun",
     "takeCoordinator",
     "landingLeaseMove",
-    "recordPublishFinding"
+    "recordPublishFinding",
+    "actOnActivity",
+    "recordActivityDelivery"
   ],
   "itemIdFirstArgument": [
     "signBar",
@@ -625,6 +627,22 @@
       null
     ],
     "recordPublishFinding": [
+      null,
+      "first",
+      null,
+      null,
+      null,
+      null
+    ],
+    "actOnActivity": [
+      null,
+      "first",
+      null,
+      null,
+      null,
+      null
+    ],
+    "recordActivityDelivery": [
       null,
       "first",
       null,
@@ -6672,6 +6690,8 @@
     "MILESTONE_NAME": "pullboard milestone add <name>",
     "MILESTONE_NOTE": "pass the note text: --note \"<text>\"",
     "MILESTONE_ORDER": "move it before a different milestone; see pullboard roadmap",
+    "MILESTONE_PLACE": "pin, sink or lift: pullboard milestone pin <name> <ids> --reason \"<why>\"",
+    "MILESTONE_REASON": "say why the item moves: pullboard milestone sink <name> <ids> --reason \"<why>\"",
     "MILESTONE_SHIPPED": "add the item to the next milestone instead: pullboard milestone items <next> --add <id>",
     "MILESTONE_TARGET": "pass a date and time: pullboard milestone edit <name> --target 2026-10-20T18:00Z",
     "MISSING_SIGNATURE": "have the person repeat approval for the named row: pullboard spec approve <id>",
@@ -6716,6 +6736,8 @@
     "RIGOR_UNPROVEN": "name a check that fails at --red and passes at --green: pullboard rigor draft <key> \"<rule>\" --check \"<command>\" --red <commit> --green <commit>",
     "RIGOR_PERSON_ONLY": "ask the person to mark it from the main checkout: pullboard fact <id> root-cause \"<why>\" --cause <key> --never-again --as person",
     "SANDBOX_BLOCKED": "ask the coordinator to bring it to the person: pullboard shout coordinator \"<what is needed>\" --decision; or run the gate outside the sandbox; keep the tests unchanged",
+    "BAD_ORIGIN": "name where the decision came from with --origin person-relayed, agent or inherited, or leave --origin out",
+    "WHY_GIT": "run pullboard why from inside the repository, with a path that git can read",
     "NOT_YOUR_DECISION": "answer only decisions addressed to you; see pullboard inbox",
     "NO_AGENT": "create and join a lane worktree: pullboard worktree <lane> --model \"<model name>\"",
     "NO_BOARD": "initialize the board in this repository: pullboard init",
@@ -6881,6 +6903,7 @@
     "SEAL_FORMAT": "fetch the board again: pullboard relay",
     "SEAL_KEY": "pair this device again: pullboard relay on --all",
     "SEAL_VERSION": "upgrade Pullboard on this device: npm install -g pullboard@latest",
+    "SEAT_ADDRESS_BOARD": "open a linked checkout of the addressed board with your own grant, then run pullboard shout <address> <text>",
     "SELF_SHOUT": "name another agent, a lane or all: pullboard shout all \"<text>\"",
     "SELF_VERIFY": "ask a different agent to verify it; from main create its worktree with pullboard worktree <lane> --model \"<model name>\"",
     "SESSION_LEDGER": "make the agent-session ledger named in the message writable by this user, then run the command again",
@@ -6950,7 +6973,10 @@
     "WRONG_BOARD": "open the repository registered to this board and confirm its identity with pullboard status",
     "WRONG_LANE": "create a worktree in the required lane with pullboard worktree <lane> --model \"<model name>\", or take an item in your lane with pullboard next",
     "EXCLUDED_REPOSITORY": "restore the GitHub origin of each excluded project, then run pullboard relay on --all",
-    "EXCLUDED_INVENTORY": "restore at most 256 excluded boards and their active paired devices, then run pullboard relay on --all"
+    "EXCLUDED_INVENTORY": "restore at most 256 excluded boards and their active paired devices, then run pullboard relay on --all",
+    "BAD_ACTIVITY_RECEIPT": "read your own inbox again and use its exact interrupt ids",
+    "ACTIVITY_NOT_DELIVERED": "read your own inbox before marking its interrupt acted on",
+    "STALE_ACTIVITY_RECEIPT": "read inbox again; the claim changed before delivery was recorded"
   },
   "replay": {
     "initial": {
@@ -7406,7 +7432,7 @@
           },
           {
             "meta_key": "relay_engine_version",
-            "meta_value": "106"
+            "meta_value": "107"
           },
           {
             "meta_key": "relay_receipt_registry-snapshot-2",
@@ -8106,6 +8132,7 @@
     "SEAL_FORMAT": "fetch the board again: pullboard relay",
     "SEAL_KEY": "pair this device again: pullboard relay on --all",
     "SEAL_VERSION": "upgrade Pullboard on this device: npm install -g pullboard@latest",
+    "SEAT_ADDRESS_BOARD": "open a linked checkout of the addressed board with your own grant, then run pullboard shout <address> <text>",
     "SELF_SHOUT": "name another agent, a lane or all: pullboard shout all \"<text>\"",
     "SELF_VERIFY": "ask a different agent to verify it; from main create its worktree with pullboard worktree <lane> --model \"<model name>\"",
     "SESSION_LEDGER": "make the agent-session ledger named in the message writable by this user, then run the command again",

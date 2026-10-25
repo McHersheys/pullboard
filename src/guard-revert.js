@@ -70,7 +70,8 @@ export function guardRevertNote(root, item, lease) {
   const guard = guardOf(item);
   if (!guard) return '';
   let problem = '';
-  const run = checkAtCommit(root, item, { gateLease: lease, mutate: (directory) => { problem = revert(directory, guard); return problem; } });
+  const run = checkAtCommit(root, item, { gateLease: lease, guard, mutate: (directory) => { problem = revert(directory, guard); return problem; } });
+  problem ||= run.guardProblem ?? '';
   if (problem) throw new Refused('GUARD_NOT_FOUND', `#${item.item_id}'s guard ${guard.text} cannot be reverted: ${problem}`);
   if (run.state === 'pass') {
     throw new Refused('GUARD_CANNOT_FAIL', `#${item.item_id}'s check stays green with its guard ${guard.text} reverted, so the check does not test the guard`);

@@ -127,3 +127,19 @@ test('a pending question names pullboard spec answer [S1,B26]', async (t) => {
   const checked = box.run(repo, 'spec', 'check');
   assert.equal(checked.code, 0, checked.err || checked.out);
 });
+
+test('only materialized Rigor proposals need the person while coordinator work stays intact [N26,B26,A6]', async () => {
+  const { personNeeds } = await import('../src/needs.js');
+  const waiting = { kind: 'rigor-draft', id: 'doctrine:RG1', target: 'doctrine:RG1', unproved: true, materialized: false,
+    text: 'Review a repeated cause.', evidence: { occurrences: 2 }, what: 'Coordinator: materialize with pullboard spec apply' };
+  const ready = { ...waiting, id: 'doctrine:RG2', target: 'doctrine:RG2', materialized: true };
+  const collision = { ...ready, id: 'doctrine:RG3', collision: true };
+  const proved = { kind: 'rigor-draft', id: 'spec:G3', target: 'spec:G3', text: 'A proved draft.' };
+  const state = { rigorDrafts: [waiting, ready, collision, proved] };
+  const before = JSON.stringify(state);
+  assert.deepEqual(personNeeds(state).map(row => row.id), ['doctrine:RG2', 'spec:G3']);
+  assert.equal(personNeeds(state)[0].unproved, true, 'materialization does not invent executed proof');
+  assert.equal(JSON.stringify(state), before, 'coordinator proposals and their evidence remain available');
+  const browserBuilder = runInNewContext(`(${personNeeds.toString()})`);
+  assert.deepEqual(JSON.parse(JSON.stringify(browserBuilder(state))), personNeeds(state), 'browser and server share the exact filter');
+});
