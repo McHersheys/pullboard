@@ -319,9 +319,9 @@ test('a write after a heartbeat uploads once [B3,H16]', {
   assert.equal(fresh.code, 0);
   const heartbeat = fixtureDatabase(presenceFile, db => db.prepare('SELECT seat,at FROM heartbeat').all());
   assert.equal(heartbeat.length, 1, 'this disposable fixture has only its coordinator heartbeat');
-  assert.ok(Date.now() - Date.parse(heartbeat[0].at) < 60_000, 'the first write has a genuinely fresh production heartbeat');
+  assert.ok(Date.now() - Date.parse(heartbeat[0].at) < 60_000, 'the first write has a genuinely fresh production heartbeat'); // budget: declared production freshness boundary from seat-presence.js, not a latency target.
   const agedAt = new Date(Date.now() - 120_000).toISOString();
-  fixtureDatabase(presenceFile, db => assert.equal(db.prepare('UPDATE heartbeat SET at=? WHERE seat=?').run(agedAt, heartbeat[0].seat).changes, 1));
+  fixtureDatabase(presenceFile, db => assert.equal(db.prepare('UPDATE heartbeat SET at=? WHERE seat=?').run(agedAt, heartbeat[0].seat).changes, 1)); // budget: derived fixture age is two production refresh intervals; this equality counts SQLite rows, not elapsed time.
   const aged = await box.cliWithSnapshotTrace(1, 'status');
   t.diagnostic('publish aged presentation: ' + JSON.stringify(traceEvidence(aged)));
   assert.equal(aged.code, 0);
