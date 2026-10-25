@@ -457,7 +457,7 @@ The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its ap
 | `shout_news` | sender | `shout`, `to`, `decision`, `request`, `answers` |
 | `flake-observation` | reporting agent | `engine`, `observation` |
 | `flake-repair` | reporting agent | `engine`, `key`, `item` |
-| `health-scan` | observing agent | `active`, `engine` |
+| `health-scan` | observing agent | `active`, optional `pendingCpu`, `engine` |
 | `health-failure` | sentinel | `key`, `cause`, `since`, `subject`, `owner`, `commit`, `engine` |
 | `health-resolved` | sentinel | `key`, `cause`, `since`, `subject`, `owner`, `commit`, `engine` |
 | `sentinel-proposal` | proposing agent | `row`, `digest`, `engine` |
@@ -697,3 +697,5 @@ future session-start digest.
 A seat address is `pullboard:<board-id>:<percent-encoded-seat-id>`, where `board-id` is the board’s existing 32-character hexadecimal `board_id` and the seat component is the canonical JavaScript `encodeURIComponent` encoding of its registered agent id. It is independent of machine and checkout path. `whoami` and `agents` expose it; `shout` resolves it only within the current board and records the existing shout event with the exact recipient agent id. It is a destination, never a grant. Existing relay board credentials and authenticated sender attribution remain required on linked boards. No new stored event or file format is introduced.
 
 The activity-delivery engine, numbered at landing, adds recipient-owned `recordActivityDelivery` and `actOnActivity` moves. Interrupt ids bind a native event (`event:<id>`) or an exact claim lease (`claim:<item>:<lease-until>`). A delivery event lists only interrupts actually included in that recipient's response; an acted event records a separate explicit acknowledgement. An inbox cursor or reading a response never means acted-on. Both moves use the joined recipient as their authenticated actor, preserve earlier event history, and refuse on an older replay engine before changing its prefix. Delivery state in indexed `board_meta` keys is part of the native board and its exports, not a checkout-only cursor. `through` is the safely covered interrupt prefix, `observedThrough` is the read snapshot's high-water mark, and optional `digestThrough` is the separately delivered digest prefix; an elided interrupt must remain available after a later small interrupt is delivered.
+
+The CPU-sentinel engine, numbered at landing, names an agent-worktree process after more than twenty CPU minutes, once per host, PID and start time. Current `health-scan` receipts carry `pendingCpu`, the findings whose coordinator notice was held by the existing ten-notice cap. Later scans drain that durable queue without inventing another health-failure episode. An older engine refuses while this queue is pending, preserving its history; older receipts retain their original fields. Observation never signals a process.
