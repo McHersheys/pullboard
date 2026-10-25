@@ -369,12 +369,13 @@ test("an architecture blueprint's rows each arrive with a check that runs red be
       `${item.item_title} check is green after its fixture is built`);
   }
   const uncovered = { ...blueprint, name: 'uncovered-edge-api', items: [blueprint.items[0]] };
-  writeFileSync(join(box.repo, 'uncovered-edge-api.json'), `${JSON.stringify(uncovered)}\n`);
-  const before = readFileSync(join(box.repo, 'SPEC.md'), 'utf8');
-  const refused = box.run('blueprint', 'add', 'uncovered-edge-api.json', '--json');
+  const uncoveredBox = freshBoard({ gate: 'true' });
+  writeFileSync(join(uncoveredBox.repo, 'uncovered-edge-api.json'), `${JSON.stringify(uncovered)}\n`);
+  const before = readFileSync(join(uncoveredBox.repo, 'SPEC.md'), 'utf8');
+  const refused = uncoveredBox.run('blueprint', 'add', 'uncovered-edge-api.json', '--json');
   assert.equal(refused.status, 1, refused.stdout + refused.stderr);
   assert.equal(JSON.parse(refused.stdout).error.code, 'BLUEPRINT_RULE_UNCHECKED');
-  assert.equal(readFileSync(join(box.repo, 'SPEC.md'), 'utf8'), before, 'a missing must-row check writes nothing');
+  assert.equal(readFileSync(join(uncoveredBox.repo, 'SPEC.md'), 'utf8'), before, 'a missing must-row check writes nothing');
 });
 
 test('an architecture must-row without a checked starter item is refused at add [S1,I1]', () => {
@@ -387,6 +388,10 @@ test('an architecture must-row without a checked starter item is refused at add 
   assert.equal(JSON.parse(refused.stdout).error.code, 'BLUEPRINT_RULE_UNCHECKED');
   assert.equal(readFileSync(join(box.repo, 'SPEC.md'), 'utf8'), before, 'the blueprint is refused before writing rows');
   assert.equal(json(box, 'list', '--all').items.length, 0, 'no starter item is filed');
+
+  const aimOnly = { ...SOURCED, name: 'optional-aim', rules: [SOURCED.rules[0], { ...SOURCED.rules[1], tier: 'aim' }], items: [SOURCED.items[0]] };
+  writeFileSync(join(box.repo, 'optional-aim.json'), `${JSON.stringify(aimOnly)}\n`);
+  assert.equal(json(box, 'blueprint', 'add', 'optional-aim.json').blueprint.name, 'optional-aim', 'an uncovered aim row is optional');
 });
 
 test('a drafted row records its rule source [S1,I1]', () => {
