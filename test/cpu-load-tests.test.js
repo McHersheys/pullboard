@@ -21,6 +21,7 @@ test('a declared CPU-load test runs only on a runner when one is registered [C7]
   assert.ok(withinRunner && withinRunner !== '..' && !withinRunner.startsWith(`..${sep}`));
   assert.equal(remote.executor.gatePool, join(box.remoteMachineHome, 'resources.sqlite'));
   box.command('runner', 'remove', 'fixture-host');
+  box.commitProbeChange();
   const local = await box.runGate();
   assert.equal(local.result.status, 0, local.result.context);
   assert.equal(box.requestsMade().length, 1, 'no unregistered executor is used for the fallback');

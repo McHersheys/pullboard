@@ -50,6 +50,13 @@ test('declared load stand-in', ${declaration}, () => {
     ...box, env, requests, remoteHome, remoteMachineHome, command,
     /** Count real completed SSH requests without treating a configured host as execution proof. */
     requestsMade() { return existsSync(requests) ? readFileSync(requests, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : []; },
+    /** Commit a harmless source change so the next public gate executes instead of reusing a green tree. */
+    commitProbeChange() {
+      const probe = join(box.repo, 'test', 'cpu-probe.test.js');
+      writeFileSync(probe, readFileSync(probe, 'utf8') + '\n// A new fixture revision exercises ordinary gate execution again.\n');
+      box.git(box.repo, 'add', 'test/cpu-probe.test.js');
+      box.git(box.repo, 'commit', '-q', '-m', 'test: advance the CPU placement fixture source');
+    },
     /** Run the public landing gate under its ordinary lease and wait on its original child promise. */
     async runGate() {
       const result = await awaitNestedRun(runFixtureChildAsync(process.execPath, [cli, 'gate', '--landing', '--json'],
