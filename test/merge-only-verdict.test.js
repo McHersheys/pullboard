@@ -110,10 +110,21 @@ test('a merge-only resubmission keeps its accept and records the resolution diff
     assert.equal(store.getItem(origin, id).item_status, 'verified');
     assert.deepEqual(withoutObjects, withObjects, 'one canonical move must emit identical events and event IDs without Git objects');
     assert.deepEqual(exportBoard(objectless), exportBoard(origin), 'replicas must retain exactly identical native state');
+    const freshReview = prepareEngineMove(origin, 'verify', [id, { agentId: 'coordinator', decision: 'ACCEPT',
+      note: 'a fresh verdict still requires its own reviewer authority', head,
+      digest: pending.item.item_frozen_digest, check: 'green',
+      review: { commit: head, head, trunk, paths: detail.paths } }]);
+    const unprivilegedCoordinator = { kind: 'agent', agent: 'coordinator', userId: 'private-coordinator-without-root',
+      policy: MERGE_ONLY_VERDICT_ENGINE };
+    const denied = applyRelayMove(origin, freshReview, { sequence: 2, at, sender: unprivilegedCoordinator, kind: 'move' });
+    assert.equal(denied.error?.code, 'VERIFIER_STANDING', 'retaining a verdict must never authorize a fresh unprivileged review');
+    assert.deepEqual(applyRelayMove(objectless, freshReview,
+      { sequence: 2, at, sender: unprivilegedCoordinator, kind: 'move' }), denied);
+    assert.deepEqual(store.verdictsFor(origin, id), original.verdicts);
     const subsequent = prepareEngineMove(origin, 'reopen', [id, { agentId: 'coordinator', withdrawVerdict: true,
       note: 'withdraw the original acceptance after canonical carry' }]);
-    const next = applyEngineMove(origin, subsequent, { sequence: 2, at });
-    assert.deepEqual(applyEngineMove(objectless, subsequent, { sequence: 2, at }), next,
+    const next = applyEngineMove(origin, subsequent, { sequence: 3, at });
+    assert.deepEqual(applyEngineMove(objectless, subsequent, { sequence: 3, at }), next,
       'a later verdict-ID-bound move must retain the same outcome and event IDs');
     assert.deepEqual(exportBoard(objectless), exportBoard(origin));
 
