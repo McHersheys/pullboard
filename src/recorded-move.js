@@ -28,6 +28,7 @@ export function requestedCommandMove(command, operation) {
     refreeze: ['refreeze'], reopen: ['reopen'], escalate: ['escalate', 'shout'],
     next: ['claim', 'reserveReview', 'reserveNextReview'], run: ['claim', 'release', 'submit', 'reserveReview', 'reserveNextReview', 'verify', 'escalate', 'shout'],
     init: ['register'], join: ['register'], worktree: ['register'], takeover: ['takeCoordinator'],
+    relay: ['setBoardMembers'],
     shout: ['shout'], answer: ['answerDecision'], pass: ['passDecision'], fact: ['appendFact'],
     hold: ['holdLane', 'releaseLane', 'holdItem', 'releaseItemHold'],
     bar: ['setBarReady', 'signBar'], settings: ['setLineSetting', 'setPersonSigning'], check: ['acceptCheck'],

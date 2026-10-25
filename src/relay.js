@@ -1260,7 +1260,7 @@ export async function syncRelay(root, io) {
       if (checkpointInBackground()) { if (state.checkpoint) scheduleCheckpoint(root, file); else requestCheckpointCheck(root, file); }
       else if (state.checkpoint || state.presentationDigest !== presentationDigest(relayPresentation(root))) await publishCheckpoint(root, file, state, io);
       await deliverDeviceWraps(root, io);
-      if (io.keyRequestsWaiting && !state.environment) await (await import('./relay-handover.js')).handOverKeys(state, readBoardKey(state.board), request, io); // an agent token never hands over a key
+      if (io.keyRequestsWaiting && !state.environment) await (await import('./relay-handover.js')).handOverKeys(root, state, readBoardKey(state.board), request, io); // an agent token never hands over a key
       return summary(root, state);
     }
     catch (error) {

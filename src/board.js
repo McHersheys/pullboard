@@ -1,3 +1,4 @@
+export { readBoardMembers, setBoardMembers } from './board-members.js';
 import { requireFactKind } from './item-notes.js';
 import { activityNewsFlag } from './activity-news.js';
 import { migrateEventLogVersion } from './board-event-log-migrate.js';

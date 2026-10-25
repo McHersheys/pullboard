@@ -427,6 +427,7 @@ The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its ap
 | `edit` | editor | `brief`, `route`, `criterion`, `check`, `unfrozen`, optional `after`, optional `pendingRefreeze`, engine-19 `reason`, `barCorrection` |
 | `escalate` | builder | `from`, `to`, `note`, `attempt` |
 | `attempt` | reporting agent | `n`, `seconds`, `result` |
+| `board_members` | coordinator | `document` (exact version-1 body with board, repository, revision and complete members, approving login and SSH signature; native moves and checkpoints carry it sealed) |
 | `fact` | author | `id`, `kind`, `text`, `ref`, `supersedes`, engine-20 `implies`, `decision`, `supersededBy`, engine-30 `cause`, `neverAgain`, `channel` |
 | `claim` | builder | `leaseUntil`, `digest` |
 | `renew` | builder | `leaseUntil`, `digest` |
@@ -676,3 +677,7 @@ not a native move, parent identity, configuration or authority record. Missing/d
 replays activity. Reads freeze an event high-water mark before observing Git; subsequent events
 and messages remain pending. News has a separate cursor so an ordinary poll cannot consume a
 future session-start digest.
+
+### Signed board membership
+
+`setBoardMembers` records an exact next revision in `board_meta.board_members` and a `board_members` event. Its signed document is `{body:{v:1,board,repository,revision,members},by,signature}`; the SSH namespace is `pullboard-board-members` and the bytes are the JSON array `["pullboard-board-members",body,by]`. Repeating the identical document is idempotent. A new empty list removes all additional members. Native ordered transport and checkpoints seal this document with the board key. A key handover independently checks the approving login against committed `pullboard.json` approvers and its SSH signature against GitHub; stored or relay-provided identity flags alone never authorize a handover. Every requester also proves ownership of its own device key. The current native revision is authoritative; an old signature cannot roll back that state.

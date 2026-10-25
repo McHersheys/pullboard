@@ -1,17 +1,4 @@
 /** A member's new device gets its board key from an online member device, vouched by an SSH key on GitHub [E17]. */
-import { spawnSync } from 'node:child_process';
-import {
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
-import {
-  homedir,
-  tmpdir,
-} from 'node:os';
-import { join } from 'node:path';
 import {
   createDeviceKeys,
   unwrapDeviceBoardKey,
@@ -19,6 +6,10 @@ import {
 } from './relay-device-keys.js';
 import { ENGINE_VERSION } from './machine.js';
 import { Refused } from './refused.js';
+import { signSshVouch, verifySshVouch } from './relay-ssh-proof.js';
+import { authorizeMember } from './relay-membership.js';
+import { readBoardMembers } from './board-members.js';
+import { localRecords } from './relay.js';
 
 const NAMESPACE = 'pullboard-device-key';
 const TEN_MINUTES = 10 * 60_000;
@@ -26,58 +17,6 @@ const POLL_MS = 1000;
 
 /** The exact bytes an SSH key signs: the statement, domain-separated from every other signature. */
 export function statementBytes(statement) { return JSON.stringify([NAMESPACE, statement]); }
-
-/** Run ssh-keygen in a private scratch folder, refusing plainly when OpenSSH is not installed. */
-function sshKeygen(args, input) {
-  const result = spawnSync('ssh-keygen', args, { input, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 30_000 });
-  if (result.error?.code === 'ENOENT') throw new Refused('RELAY_SSH_KEYGEN', 'ssh-keygen is not installed; install OpenSSH, then run pullboard relay on again');
-  return result;
-}
-
-/** Work with files in a fresh owner-only folder that is always removed. */
-function scratch(work) {
-  const folder = mkdtempSync(join(tmpdir(), 'pullboard-vouch-'));
-  try { return work(folder); } finally { rmSync(folder, { recursive: true, force: true }); }
-}
-
-/** The SSH key that vouches for this device: PULLBOARD_SSH_KEY, or the usual key files under ~/.ssh. */
-function signingKey(environment = process.env) {
-  if (environment.PULLBOARD_SSH_KEY) return environment.PULLBOARD_SSH_KEY;
-  const found = ['id_ed25519', 'id_ecdsa', 'id_rsa'].map(name => join(homedir(), '.ssh', name)).find(existsSync);
-  if (!found) throw new Refused('RELAY_SSH_KEY', 'no SSH key here vouches for this device; add one to your GitHub account with ssh-keygen -t ed25519 and gh ssh-key add, or set PULLBOARD_SSH_KEY to its path');
-  return found;
-}
-
-/**
- * Sign the statement with the person's SSH key. With an agent running, the public half lets ssh-agent sign for a key
- * with a passphrase; otherwise ssh-keygen reads the private key file itself.
- */
-function sshSign(bytes) {
-  const key = signingKey();
-  return scratch(folder => {
-    const file = join(folder, 'statement');
-    writeFileSync(file, bytes, { mode: 0o600 });
-    const tries = process.env.SSH_AUTH_SOCK && existsSync(key + '.pub') ? [key + '.pub', key] : [key];
-    let failure = '';
-    for (const signer of tries) {
-      const result = sshKeygen(['-Y', 'sign', '-q', '-n', NAMESPACE, '-f', signer, file]);
-      if (result.status === 0 && existsSync(file + '.sig')) return readFileSync(file + '.sig', 'utf8');
-      failure = String(result.stderr ?? '').trim().split('\n')[0];
-    }
-    throw new Refused('RELAY_SSH_SIGN', `ssh-keygen could not sign with ${key}${failure ? ' (' + failure + ')' : ''}; load the key with ssh-add, or set PULLBOARD_SSH_KEY to a key on your GitHub account`);
-  });
-}
-
-/** Whether one of the login's GitHub SSH keys made this signature over this exact statement. */
-async function vouched(statement, signature, login, githubKeys) {
-  const keys = await githubKeys(login);
-  if (!keys.length) return false;
-  return scratch(folder => {
-    writeFileSync(join(folder, 'allowed'), keys.map(key => `${login} namespaces="${NAMESPACE}" ${key}`).join('\n') + '\n', { mode: 0o600 });
-    writeFileSync(join(folder, 'statement.sig'), signature, { mode: 0o600 });
-    return sshKeygen(['-Y', 'verify', '-f', join(folder, 'allowed'), '-I', login, '-n', NAMESPACE, '-s', join(folder, 'statement.sig')], statementBytes(statement)).status === 0;
-  });
-}
 
 /** Wait between polls without keeping a finished command alive. */
 function pause(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
@@ -94,7 +33,7 @@ export async function requestBoardKey(link, login, send, io) {
   const statement = { v: 1, board: link.board, repository: link.repository, device: keys.deviceId, publicKey: keys.publicKey,
     login, engine: ENGINE_VERSION, expires: Date.now() + TEN_MINUTES - 30_000 };
   const path = '/api/v1/boards/' + link.board + '/key-requests';
-  const posted = await send(link, path, { method: 'POST', body: { statement, signature: sshSign(statementBytes(statement)) } }, io);
+  const posted = await send(link, path, { method: 'POST', body: { statement, signature: signSshVouch(statementBytes(statement), NAMESPACE) } }, io);
   let said = false;
   while (Date.now() < statement.expires) {
     const answer = await send(link, path + '/' + posted.id, {}, io);
@@ -118,19 +57,20 @@ export async function requestBoardKey(link, login, send, io) {
  * person's GitHub SSH keys signed, and refuse the rest by name. GitHub being unreachable leaves a request waiting.
  * `send` is the relay transport and `githubKeys` reads a login's public SSH keys from GitHub.
  */
-export async function handOverBoardKeys(state, key, { send, githubKeys }, io) {
+export async function handOverBoardKeys(state, key, { send, githubKeys, root, document = null, identity = null }, io) {
   const path = '/api/v1/boards/' + state.board + '/key-requests';
   const { requests } = await send(state, path, {}, io);
   for (const entry of Array.isArray(requests) ? requests : []) {
     const statement = entry.statement;
     let body;
     try {
-      if (statement?.board !== state.board || statement.repository.toLowerCase() !== String(state.repository).toLowerCase() || statement.login !== entry.login || !(statement.expires > Date.now())) {
+      if (statement?.board !== state.board || typeof statement.repository !== 'string' || statement.repository.toLowerCase() !== String(state.repository).toLowerCase() || statement.login !== entry.login || !(statement.expires > Date.now())) {
         throw new Refused('RELAY_KEY_VOUCH', 'the key request names another board, repository or person; run pullboard relay on again in the clone');
       }
-      if (!await vouched(statement, entry.signature, entry.login, githubKeys)) {
+      if (!await verifySshVouch(statementBytes(statement), entry.signature, entry.login, githubKeys, NAMESPACE)) {
         throw new Refused('RELAY_KEY_VOUCH', `no SSH key on ${entry.login}'s GitHub account signed this device key; add the key that signed it to GitHub with gh ssh-key add, then run pullboard relay on again`);
       }
+      await authorizeMember(root, state, document, entry.login, { githubKeys, identity });
       const wrapped = await wrapDeviceBoardKey(key, statement.publicKey, { board: state.board, device: statement.device, engine: statement.engine });
       body = { wrapped: Buffer.from(JSON.stringify(wrapped)).toString('base64url') };
     } catch (error) {
@@ -144,7 +84,7 @@ export async function handOverBoardKeys(state, key, { send, githubKeys }, io) {
 }
 
 /** The public SSH keys on a GitHub account, read from GitHub itself so the relay cannot add one. */
-async function githubKeys(login) {
+export async function githubKeys(login) {
   const base = new URL(process.env.PULLBOARD_GITHUB_API || 'https://api.github.com');
   if (base.protocol !== 'https:' && !(base.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname))) {
     throw new Refused('GITHUB_UNAVAILABLE', 'PULLBOARD_GITHUB_API must be an HTTPS address, or loopback HTTP for tests');
@@ -160,8 +100,17 @@ async function githubKeys(login) {
 }
 
 /** Hand this board's key to member devices that asked; a failure here never fails the command that noticed [E17]. */
-export async function handOverKeys(state, key, send, io) {
+export async function handOverKeys(root, state, key, send, io) {
   delete io.keyRequestsWaiting;
-  try { await handOverBoardKeys(state, key, { send, githubKeys }, io); }
-  catch (error) { if (!(error instanceof Refused)) throw error; io.err(`pullboard: a new device's key request waits: ${error.message}`); }
+  try {
+    // This proof is made with this device's local SSH key, never accepted from a relay response.
+    let identity = null;
+    if (typeof state.login === 'string' && state.login) {
+      const body = { v: 1, board: state.board, repository: state.repository, login: state.login };
+      try { identity = { body, signature: signSshVouch(JSON.stringify(['pullboard-person-identity', body]), 'pullboard-person-identity') }; }
+      catch (error) { if (!(error instanceof Refused)) throw error; }
+    }
+    const document = localRecords(root, readBoardMembers);
+    await handOverBoardKeys(state, key, { send, githubKeys, root, document, identity }, io);
+  } catch (error) { if (!(error instanceof Refused)) throw error; io.err(`pullboard: a new device's key request waits: ${error.message}`); }
 }

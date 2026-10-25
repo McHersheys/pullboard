@@ -62,7 +62,8 @@
     "recordJobRun",
     "takeCoordinator",
     "landingLeaseMove",
-    "recordPublishFinding"
+    "recordPublishFinding",
+    "setBoardMembers"
   ],
   "itemIdFirstArgument": [
     "signBar",
@@ -625,6 +626,14 @@
       null
     ],
     "recordPublishFinding": [
+      null,
+      "first",
+      null,
+      null,
+      null,
+      null
+    ],
+    "setBoardMembers": [
       null,
       "first",
       null,
@@ -6952,7 +6961,10 @@
     "WRONG_BOARD": "open the repository registered to this board and confirm its identity with pullboard status",
     "WRONG_LANE": "create a worktree in the required lane with pullboard worktree <lane> --model \"<model name>\", or take an item in your lane with pullboard next",
     "EXCLUDED_REPOSITORY": "restore the GitHub origin of each excluded project, then run pullboard relay on --all",
-    "EXCLUDED_INVENTORY": "restore at most 256 excluded boards and their active paired devices, then run pullboard relay on --all"
+    "EXCLUDED_INVENTORY": "restore at most 256 excluded boards and their active paired devices, then run pullboard relay on --all",
+    "BOARD_MEMBERS_INVALID": "ask a committed approver to publish a complete signed board member list",
+    "BOARD_MEMBERS_REVISION": "read the current member revision, then sign a new list",
+    "RELAY_NOT_MEMBER": "ask a committed approver to publish the board member list with pullboard relay members <login>, then retry relay on"
   },
   "replay": {
     "initial": {
@@ -7569,6 +7581,10 @@
         "EXCLUDED_INVENTORY"
       ],
       "qualification": "#983 adds only these2 explicitfeature recovery entries; all557 accepted8ba/f0 entries,61ops,366actors,477floors and historicalreplay remain unchanged. These two strings are explicit newfeature contract, not a regenerated snapshot from candidate execution."
+    },
+    "feature342": {
+      "newOperation": "setBoardMembers",
+      "qualification": "Only this feature operation, its six actor outcomes and three new recovery strings are added explicitly. Existing operation order, historical floors and replay captures are not regenerated; pre-existing main golden differences remain separate."
     }
   },
   "historicalOperations": [
