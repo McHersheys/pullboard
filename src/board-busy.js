@@ -1,3 +1,4 @@
+import { boardWriteHolderText } from './board-write-lock.js';
 /** Translate SQLite lock contention without coupling error reporting to the full board store [C7]. */
 import { Refused } from './refused.js';
 
@@ -17,7 +18,7 @@ function isBusy(error) {
  */
 export function boardBusyError(file, startedAt, error) {
   if (!isBusy(error)) return error;
-  return new Refused('BOARD_BUSY', `board file ${file} remained held by another process after ${Date.now() - startedAt}ms; wait for it to finish and retry`);
+  return new Refused('BOARD_BUSY', `board file ${file} remained held by another process after ${Date.now() - startedAt}ms; wait for it to finish and retry${boardWriteHolderText(file)}`);
 }
 
 /** Name a failed write admission; resolve its board path only after real contention occurs. */

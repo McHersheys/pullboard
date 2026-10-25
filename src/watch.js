@@ -21,7 +21,7 @@ import { Refused } from './refused.js';
 import { runningView } from './view-session.js';
 
 /** The kinds that carry a shout, so --to can match their addressee. */
-const SHOUT_KINDS = new Set(['shout', 'answer', 'pass']);
+const SHOUT_KINDS = new Set(['shout', 'shout_news', 'answer', 'pass']);
 
 /** How long to wait before following the stream again after it drops. */
 const RECONNECT_MS = 200;
