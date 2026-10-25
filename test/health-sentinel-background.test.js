@@ -151,6 +151,9 @@ test('the actual background sentinel scans once, honors off switches and drains 
   await tick(); assert.equal(receipts().notices.length, 0, 'the machine off switch prevents a real child scan');
   writeFileSync(settingsFile, JSON.stringify(settings));
   await tick();
+  const scans = observations().filter(row => row.kind === 'loaded' && row.argv.includes('sentinel') && row.argv.includes('run'));
+  assert.equal(scans.length, 1, 'one real CLI child performs the enabled scan');
+  assert.ok(scans[0].argv.includes('--health-only'), 'the observer explicitly excludes approved board watches');
   const first = receipts();
   assert.equal(first.notices.length, 2, 'the actual worker child scans the real board and publishes its finding');
   assert.deepEqual(first.notices.map(row => row.shout_to).sort(), ['coordinator', builder].sort());

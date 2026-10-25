@@ -27,6 +27,10 @@ import {
 import { cleanGitEnvironment } from './git.js';
 import { Refused } from './refused.js';
 import {
+  renamedGatePath,
+  revisionGateCommand,
+} from './spec-gate-renames.js';
+import {
   hasSignerFile,
   isVerifiedSignoff,
   readRawRecords,
@@ -50,6 +54,13 @@ const LEGACY_SIGNER_RE = /^[A-Z][A-Za-z]{1,11}$/;
 
 const FIELD_NAMES = ['gate', 'serves', 'signers', 'count', 'runs', 'mode', 'files', 'source'];
 const CHECK_FIELDS = ['count', 'runs', 'mode', 'files'];
+
+/** Replace the complete gate field, including check pipelines, while preserving other row fields. */
+export function replaceRowGate(source, gate) {
+  const field = new RegExp(`(\\|\\s*gate\\s*:\\s*)(.*?)(?=\\|\\s*(?:${FIELD_NAMES.join('|')})\\s*:|$)`, 'u');
+  return field.test(source) ? source.replace(field, (_, start, old) => `${start}${gate}${old.match(/\s*$/u)?.[0] ?? ''}`)
+    : `${source.trimEnd()} | gate: ${gate}`;
+}
 
 /**
  * One row's trailing fields, after the text: `| gate: ...`, `| serves: a, b` and `| signers: CO,AB`.
@@ -296,7 +307,10 @@ export function missingGateFindings(spec, root) {
       if (existsSync(join(root, file))) continue;
       const lost = lastCommitOf(root, file);
       if (row.status === 'approved' && row.tier === 'must' && lost) {
-        findings.push({ level: 'error', line: row.line, id: row.id, message: `gate file ${file} was removed from the repository (last in ${lost}); restore it or point the row at its new home` });
+        const renamed = renamedGatePath(root, file);
+        const revisedGate = renamed ? row.gate.replace(GATE_FILE_RE, (match, path) => posix.normalize(path) === file ? match.slice(0, match.length - path.length) + renamed : match) : null;
+        const next = renamed ? `renamed to ${renamed}; propose the change: ${revisionGateCommand(row, revisedGate, file, renamed)}` : 'restore it or point the row at its new home';
+        findings.push({ level: 'error', line: row.line, id: row.id, message: `gate file ${file} was removed from the repository (last in ${lost}); ${next}` });
       } else {
         findings.push({ level: 'warning', line: row.line, id: row.id, message: `gate file ${file} does not exist yet; write the test it names` });
       }
