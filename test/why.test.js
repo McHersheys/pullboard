@@ -108,7 +108,7 @@ test('a decision records its origin and pullboard why names the decisions behind
   assert.equal(originOf({}), 'unknown', 'a decision with no recorded origin is unknown');
   assert.equal(originOf({ provenance: { origin: 'inherited' } }), 'inherited');
   assert.equal(box.json(box.repo, 'why', 'web/missing.txt').items.length, 0, 'a file no commit touched has nothing behind it');
-  const pending = box.json(box.repo, 'add', 'web', 'Not landed', '--specs', 'G1', '--criterion', 'Pending exists', '--check', 'test -f web/not-landed').id;
+  const pending = box.json(box.repo, 'add', 'web', 'Not landed', '--specs', 'G1', '--criterion', 'Pending exists', '--check', 'test -f web/not-landed').item.item_id;
   box.git(web, 'merge', '-q', '--ff-only', 'main');
   box.json(web, 'claim', String(pending));
   const unlanded = e2e.commitFile(box, web, 'web/shared.txt', 'one\nUNLANDED\nthree\n',
