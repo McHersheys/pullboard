@@ -44,6 +44,8 @@ test('an accepted offer makes at most one child and a receipt carries no text [B
   destination.board = store.openBoard(destination.file);
   assert.deepEqual(api.acceptItemOffer(destination.board, offer, ports), accepted, 'retry after reopen returns the saved child');
   assert.equal(store.listItems(destination.board, { all: true }).length, 1);
+  const reordered = Object.fromEntries(Object.entries(offer).reverse());
+  assert.deepEqual(api.acceptItemOffer(destination.board, reordered, ports), accepted, 'wire key order does not change retry identity');
   assert.throws(() => api.acceptItemOffer(destination.board, { ...offer, proposedContent: { ...offer.proposedContent, title: 'Changed' } }, ports), { code: 'OFFER_CONFLICT' });
   assert.throws(() => api.acceptItemOffer(destination.board, { ...offer, offerId: 'bad', title: 'Hidden' }, ports), { code: 'ITEM_OFFER' });
   const count = store.listItems(destination.board, { all: true }).length;
@@ -73,6 +75,9 @@ test('an accepted offer makes at most one child and a receipt carries no text [B
   }
   for (const change of [{ sourceBoardId: source.id }, { item: 999 }, { commit: 'b'.repeat(40) }, { verifier: 'other' }, { verdict: 'other' }]) {
     assert.throws(() => api.verifyItemReceipt(receipt, { resolveBoardRef, verify: () => true }, { ...fields, ...change }), { code: 'ITEM_RECEIPT' });
+  }
+  for (const integrity of [{ ...receipt.integrity, digest: '0'.repeat(64) }, { ...receipt.integrity, signature: 'tampered' }]) {
+    assert.throws(() => api.verifyItemReceipt({ ...receipt, integrity }, { resolveBoardRef, verify: (text, signature) => sign(text) === signature }, fields), { code: 'ITEM_RECEIPT' });
   }
   assert.throws(() => api.verifyItemReceipt(receipt, { resolveBoardRef, verify: () => false }, fields), { code: 'ITEM_RECEIPT' });
 });
