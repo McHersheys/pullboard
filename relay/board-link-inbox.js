@@ -17,12 +17,6 @@ function withDatabase(file, write, work) {
     if (!write) return work(db);
     db.exec('BEGIN IMMEDIATE');
     try {
-      db.exec(`CREATE TABLE IF NOT EXISTS board_link_delivery (
-        delivery_id INTEGER PRIMARY KEY AUTOINCREMENT, source_board TEXT NOT NULL,
-        correlation TEXT NOT NULL, link_id TEXT NOT NULL, generation INTEGER NOT NULL,
-        position INTEGER NOT NULL, digest TEXT NOT NULL, envelope TEXT NOT NULL, receipt TEXT NOT NULL,
-        UNIQUE(source_board,correlation))`);
-      db.exec('CREATE INDEX IF NOT EXISTS board_link_delivery_position ON board_link_delivery(source_board,link_id,generation,position DESC)');
       const result = work(db);
       db.exec('COMMIT');
       return result;
