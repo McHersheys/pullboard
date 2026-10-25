@@ -185,19 +185,18 @@ export async function compareMainFailures(root, profile, onWait, output = '') {
     let failed = null;
     for (const path of missing) {
       try {
-        await withGateSlot(root, async lease => {
-          const measured = await withMainCheckout(root, main.commit, async checkout => {
-            const command = `${policy.config.affectedTests.trimEnd()} ${shellWord('./' + path)}`;
-            const run = await runProfiledShellAsync(checkout, command, { gateLease: lease, waitMs: lease.waitMs });
-            return { result: run.isGreen ? 'green' : 'red' };
-          });
-          if (measured.unavailable) throw new Error(measured.unavailable);
-          // The cache lease excludes other comparisons; persist each result before yielding again.
-          cache = readCache(file);
-          cache.entries[main.commit] ??= {};
-          cache.entries[main.commit][path] = measured;
-          writeCache(file, cache);
-        }, { diagnostic: true, browser: true, agent: process.env.PULLBOARD_AGENT, kind: 'main-red', onWait });
+        // The slot is taken on the clean main checkout, so a runner can take it even when this worktree is dirty.
+        const measured = await withMainCheckout(root, main.commit, checkout => withGateSlot(checkout, async lease => {
+          const command = `${policy.config.affectedTests.trimEnd()} ${shellWord('./' + path)}`;
+          const run = await runProfiledShellAsync(checkout, command, { gateLease: lease, waitMs: lease.waitMs });
+          return { result: run.isGreen ? 'green' : 'red' };
+        }, { diagnostic: true, browser: true, agent: process.env.PULLBOARD_AGENT, kind: 'main-red', onWait }));
+        if (measured.unavailable) throw new Error(measured.unavailable);
+        // The cache lease excludes other comparisons; persist each result before yielding again.
+        cache = readCache(file);
+        cache.entries[main.commit] ??= {};
+        cache.entries[main.commit][path] = measured;
+        writeCache(file, cache);
       }
       catch (error) { failed ??= error; }
     }
