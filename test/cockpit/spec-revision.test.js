@@ -15,7 +15,7 @@ test('a spec revision shows old and proposed rows side by side with proposal-id 
     `- G${id} [approved, must] Original requirement ${id}. | gate: true\n`).join('');
   const alpha = project(box, 'revision-board', spec);
   const proposals = [1, 2, 3, 4].map(id => JSON.parse(box.run(alpha.web, 'spec', 'draft',
-    `Proposed requirement ${id}.`, '--revises', `G${id}`, '--reason', `Reason for revision ${id}.`, '--json').out).id);
+    `Proposed requirement ${id}.`, '--revises', `G${id}`, '--reason', `Reason for revision ${id}.`, '--json')).id);
   assert.ok(proposals.every((id, index) => id && id !== `G${index + 1}`), 'the real core assigns distinct proposal identities');
   const view = await startView(box), profile = mkdtempSync(join(tmpdir(), 'pullboard-revision-chrome-'));
   let chrome;
