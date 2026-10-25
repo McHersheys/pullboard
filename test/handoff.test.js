@@ -140,10 +140,11 @@ test('handoff takeover is first-wins and cannot be forged by facts or an authent
     assert.equal(box.replay('addItem', [{ by: outgoing, lane: 'core', title: 'Old actor must fail', route: 'strong' }], outgoing, engine).error.code, 'AGENT_REPLACED');
   }
   assert.equal(store.listItems(box.board, { all: true }).length, count);
-  assert.equal(box.replay('register', [{ lane: 'core', path: join(box.directory, 'escape'), createdBy: outgoing }], outgoing).error.code, 'AGENT_REPLACED');
-  assert.equal(box.replay('shout', [{ from: outgoing, to: 'coordinator', text: 'wrong target', lanes: ['core'] }], outgoing).error.code, 'AGENT_REPLACED');
-  assert.equal(box.replay('shout', [{ from: outgoing, item: id, text: 'allowed answer', lanes: ['core'] }], outgoing).error, undefined);
-  assert.equal(box.replay('addItem', [{ by: incoming, lane: 'core', title: 'Incoming can work', route: 'strong' }], incoming).error, undefined);
+  // After the explicit current-engine probe, the activated prefix requires current moves.
+  assert.equal(box.replay('register', [{ lane: 'core', path: join(box.directory, 'escape'), createdBy: outgoing }], outgoing, ENGINE_VERSION).error.code, 'AGENT_REPLACED');
+  assert.equal(box.replay('shout', [{ from: outgoing, to: 'coordinator', text: 'wrong target', lanes: ['core'] }], outgoing, ENGINE_VERSION).error.code, 'AGENT_REPLACED');
+  assert.equal(box.replay('shout', [{ from: outgoing, item: id, text: 'allowed answer', lanes: ['core'] }], outgoing, ENGINE_VERSION).error, undefined);
+  assert.equal(box.replay('addItem', [{ by: incoming, lane: 'core', title: 'Incoming can work', route: 'strong' }], incoming, ENGINE_VERSION).error, undefined);
 });
 
 test('handoff rejects main and ordinary items, and a closed untaken channel is replaced [B3,N19]', async t => {
