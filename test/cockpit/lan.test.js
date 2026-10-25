@@ -84,6 +84,6 @@ test('LAN mode selects one private interface and refuses when none is assigned [
   assert.equal(viewLanAddress(interfaces), '192.168.7.9', 'an assigned physical private interface wins over the tunnel');
   assert.deepEqual(interfaces, before, 'address selection does not rewrite OS interface data');
   assert.throws(() => viewLanAddress({ lo0: [row('127.0.0.1', true)], en0: [row('203.0.113.5')] }),
-    error => error.code === 'LAN_UNAVAILABLE' && error.message.includes('local IPv4'),
+    error => error.code === 'LAN_UNAVAILABLE' && error.message.includes('local IPv4') && error.next.includes('pullboard view --lan'),
     'no wildcard or public listener is used when a private IPv4 interface is unavailable');
 });

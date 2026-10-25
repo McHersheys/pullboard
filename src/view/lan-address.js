@@ -18,6 +18,7 @@ export function viewLanAddress(interfaces = networkInterfaces()) {
     .map(row => ({ name, address: row.address })));
   addresses.sort((first, second) => Number(!/^(en|eth|wl)/u.test(first.name)) - Number(!/^(en|eth|wl)/u.test(second.name))
     || first.name.localeCompare(second.name) || first.address.localeCompare(second.address));
-  if (!addresses.length) throw new Refused('LAN_UNAVAILABLE', 'connect to a local IPv4 network, then run pullboard view --lan again; ordinary pullboard view remains available on this machine');
+  if (!addresses.length) throw new Refused('LAN_UNAVAILABLE', 'this machine has no assigned private local IPv4 address for a LAN view',
+    'connect to a local IPv4 network, then run pullboard view --lan; ordinary pullboard view remains available on this machine');
   return addresses[0].address;
 }
