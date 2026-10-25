@@ -228,6 +228,43 @@ function callbackSource(source) {
   return Boolean(parameters && code.slice(parameters.end + 1).trimStart().startsWith('=>'));
 }
 
+/** A callback's context can register subtests; unreadable member use or aliasing must fail closed. */
+function opaqueTestContext(source) {
+  let code = lex(source).code.trim().replace(/^async\s+/u, '');
+  let parameters, body;
+  if (/^function\b/u.test(code)) {
+    const prefix = /^function(?:\s+[A-Za-z_$][\w$]*)?\s*\(/u.exec(code);
+    if (!prefix) return true;
+    const args = sourceParts(code, prefix[0].length, ')');
+    if (!args) return true;
+    parameters = code.slice(prefix[0].length, args.end).trim();
+    body = code.slice(args.end + 1);
+  } else if (code.startsWith('(')) {
+    const args = sourceParts(code, 1, ')');
+    if (!args) return true;
+    parameters = code.slice(1, args.end).trim();
+    body = code.slice(args.end + 1).trimStart().slice(2);
+  } else {
+    const arrow = /^([A-Za-z_$][\w$]*)\s*=>/u.exec(code);
+    if (!arrow) return true;
+    parameters = arrow[1]; body = code.slice(arrow[0].length);
+  }
+  if (!parameters) return false;
+  if (!/^[A-Za-z_$][\w$]*$/u.test(parameters)) return true;
+  const readable = new Set(['test', 'after', 'before', 'afterEach', 'beforeEach', 'diagnostic',
+    'assert', 'mock', 'plan', 'skip', 'todo', 'runOnly', 'name', 'fullName', 'signal', 'passed', 'error']);
+  for (const word of body.matchAll(/\b[A-Za-z_$][\w$]*\b/gu)) {
+    if (word[0] !== parameters) continue;
+    let tail = body.slice(word.index + word[0].length).trimStart();
+    if (tail.startsWith('?.')) tail = tail.slice(2);
+    else if (tail.startsWith('.')) tail = tail.slice(1);
+    else return true; // Computed access, passing the context away or aliasing it is unresolved.
+    const member = /^\s*([A-Za-z_$][\w$]*)/u.exec(tail)?.[1];
+    if (!readable.has(member)) return true;
+  }
+  return false;
+}
+
 /** Unknown test option expressions are declarations under the conservative placement contract. */
 function unreadableTestOptions(source, quoted) {
   const code = lex(source).code;
@@ -270,6 +307,9 @@ function unreadableTestOptions(source, quoted) {
     const [first, second] = args;
     const firstText = source.slice(...first).trim();
     const named = /^(?:['"`])/u.test(firstText);
+    const callback = source.slice(...args.at(-1));
+    if (callbackSource(callback) && opaqueTestContext(callback)) return true;
+    if (args.length >= 3 && !callbackSource(callback)) return true;
     if (named && args.length === 1 || !named && args.length === 1 && callbackSource(firstText)) continue;
     if (named && args.length === 2 && callbackSource(source.slice(...second))) continue;
     const options = named ? second : first;

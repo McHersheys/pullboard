@@ -24,7 +24,7 @@ import { DatabaseSync } from 'node:sqlite';
 // Example text is not a declaration: { cpuLoad: true }
 const example = '{ cpuLoad: true }';
 finish(() => {});
-${subtest ? `${binding}('parent', async t => { await ${subtest}` : binding}('declared load stand-in', ${declaration}, () => {
+${subtest ? `${binding}('parent', async t => { t.after(() => {}); await ${subtest}` : binding}('declared load stand-in', ${declaration}, () => {
   const db = new DatabaseSync(process.env.PULLBOARD_GATE_SLOT_POOL, { readOnly: true });
   const row = db.prepare('SELECT * FROM holder WHERE token=?').get(process.env.PULLBOARD_GATE_SLOT_TOKEN);
   db.close();

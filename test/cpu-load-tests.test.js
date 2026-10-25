@@ -150,3 +150,15 @@ for (const [kind, subtest] of [
   assert.equal(remote.executor?.runnerExecution, true);
   assert.notEqual(remote.executor?.cwd, box.repo);
 });
+
+
+// AFTER-only negative: a readable direct subtest and its ordinary lifecycle hook are not opaque load.
+test('a readable false direct subtest and context lifecycle hook stay local [C7]', async () => {
+  const box = cpuLoadFixture(e2e, { subtest: 't.test', declaration: '{ cpuLoad: false }' });
+  const local = await box.runGate();
+  assert.equal(local.result.status, 0, local.result.context);
+  assert.equal(box.requestsMade().length, 0);
+  assert.equal(local.executor?.cwd, box.repo);
+  assert.equal(local.executor?.liveLease, true);
+  assert.equal(local.executor?.runnerExecution, false);
+});
