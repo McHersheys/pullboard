@@ -4,7 +4,7 @@ import { lex } from './js-lex.js';
 const PROCESS_CALLS = new Set(['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork',
   'runFixtureChild', 'runFixtureChildAsync', 'startFixtureChild', 'Worker', 'SharedWorker',
   'runInContext', 'runInNewContext', 'runInThisContext', 'compileFunction', 'SourceTextModule', 'Script']);
-const CHROME = /PULLBOARD_CHROME|google-chrome|Google Chrome|chromium|puppeteer|playwright/iu;
+const CHROME = /PULLBOARD_CHROME|google-chrome|Google Chrome|\bchrome\b|chromium|puppeteer|playwright/iu;
 const WORD = /[$A-Z_a-z][$\w]*/gu;
 
 /** Decode only character escapes for a conservative executable-name comparison; never evaluate source. */
