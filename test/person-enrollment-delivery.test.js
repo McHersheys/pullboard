@@ -22,7 +22,7 @@ test('a native key holder verifies a pinned person root before delivering each g
     const box = await relayClientFixture(t);
     await box.link();
     const second = await box.additionalBoard('second granted board');
-    const third = await box.additionalBoard('linked but ungranted board');
+    const third = await box.additionalBoard('linked but ungranted board', { sharedHome: true });
     const link = JSON.parse(readFileSync(box.linkFile, 'utf8'));
     const session = await box.phoneSession();
     const root = await createPersonRoot();
@@ -45,8 +45,8 @@ test('a native key holder verifies a pinned person root before delivering each g
         expires: Date.now() + 600_000, grants: [link.board, second.id], ...overrides });
     }
     /** The fixture supplies only the public pin; initial person/passkey bootstrap belongs to #408. */
-    async function pin(publicKey) {
-      const result = await box.script(`
+    async function pin(publicKey, holder = box) {
+      const result = await holder.script(`
         const { updateRelayMachine } = await import(${JSON.stringify(new URL('../src/relay-machine.js', import.meta.url).href)});
         updateRelayMachine(state => { state.personRoots = ${JSON.stringify(publicKey
           ? [{ account: '7', url: box.origin, origin: box.origin, publicKey }] : [])}; });
@@ -71,6 +71,7 @@ test('a native key holder verifies a pinned person root before delivering each g
     const crossBoard = await call(base + '/' + signed.nonce, { method: 'PUT', machine: true,
       body: { ...first.wraps[0], board: second.id } });
     assert.equal(crossBoard.error?.code, 'TOKEN_BOARD', 'machine A cannot consume board B completion');
+    await pin(root.publicKey, second);
     assert.equal((await second.cli('relay', 'status')).code, 0);
     const complete = await call(base + '/' + signed.nonce);
     assert.deepEqual(complete.wraps.map(row => row.board).sort(), [link.board, second.id].sort());
