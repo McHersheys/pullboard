@@ -489,9 +489,13 @@ export async function serveView({ port = 0, secret = randomBytes(18).toString('b
   const cookieName = `pullboard_view_${randomBytes(9).toString('hex')}`;
   const session = randomBytes(18).toString('base64url');
   const sessionKey = Buffer.from(session);
-  /** Only same-origin browser requests may authenticate by this session cookie. */
-  const cookieMatches = (req) => credentialMatches(Buffer.from(requestCookie(req.headers.cookie, cookieName) ?? ''), sessionKey)
-    && (req.headers['sec-fetch-site'] === undefined || req.headers['sec-fetch-site'] === 'same-origin');
+  /** Match this view's session cookie only in same-origin requests or a typed top-level page visit. */
+  const cookieMatches = (req) => {
+    if (!credentialMatches(Buffer.from(requestCookie(req.headers.cookie, cookieName) ?? ''), sessionKey)) return false;
+    const site = req.headers['sec-fetch-site'];
+    return site === undefined || site === 'same-origin'
+      || (site === 'none' && req.method === 'GET' && req.headers.origin === undefined && req.headers['sec-fetch-dest'] === 'document');
+  };
   let bound = 0;
   // The API reads projectState and codeAt from this module. Load its factory after our exports
   // initialize, and use the real CLI entry point without adding a second move implementation.

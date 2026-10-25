@@ -749,7 +749,12 @@ test('a foreign origin or wrong Host is refused by the local view [N26,A2]', { t
     const own = await call(view, '/api/v1/boards', { headers: { ...key, origin: view.base } });
     assert.equal(own.status, 200, 'the view\'s own page still reads');
     assert.equal(own.headers['access-control-allow-origin'], undefined, 'and needs no cross-origin permission');
-    assert.equal((await call(view, view.link.pathname + view.link.search)).status, 200, 'the printed link still opens the board');
+    const openedLink = await call(view, view.link.pathname + view.link.search);
+    assert.equal(openedLink.status, 303, 'the printed link first exchanges its key');
+    const openedCookie = (openedLink.headers['set-cookie'] ?? [])[0]?.split(';')[0];
+    assert.ok(openedCookie, 'the printed link sets its session cookie');
+    const cleanLink = await call(view, openedLink.headers.location ?? '/', { headers: { cookie: openedCookie } });
+    assert.equal(cleanLink.status, 200, 'the clean address opens the board with the exchanged cookie');
   } finally {
     await view.stop();
   }
@@ -1394,7 +1399,11 @@ test('a browser without the key gets a page that sends it to app.pullboard.dev [
     assert.equal(JSON.parse(api.body).error.code, 'AUTH_REQUIRED');
     assert.match(api.headers['content-type'], /^application\/json\b/);
     const authenticated = await call(view, '/?k=' + encodeURIComponent(view.key), { headers: { accept: 'text/html' } });
-    assert.equal(authenticated.status, 200, 'the printed private link still opens its board');
-    assert.ok(!authenticated.body.includes('The board opens at app.pullboard.dev'), 'authenticated board is not replaced by public guidance');
+    assert.equal(authenticated.status, 303, 'the printed private link exchanges its key and redirects');
+    const cookie = (authenticated.headers['set-cookie'] ?? [])[0]?.split(';')[0];
+    assert.ok(cookie, 'the exchange sets the private-view cookie');
+    const clean = await call(view, authenticated.headers.location ?? '/', { headers: { accept: 'text/html', cookie } });
+    assert.equal(clean.status, 200, 'the clean private address opens with the cookie alone');
+    assert.ok(!clean.body.includes('The board opens at app.pullboard.dev'), 'authenticated board is not replaced by public guidance');
   } finally { await view.stop(); }
 });

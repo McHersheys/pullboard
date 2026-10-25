@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { serveView } from '../../src/serve.js';
+import { chromeExecutable, closeSnapshotChrome, openSnapshotChrome } from './fixture.js';
 
 /**
  * Send one GET to a running view on a connection of its own, following no redirect, so the test sees
@@ -131,6 +132,7 @@ test('[N39,N26] the view key becomes a cookie', async (t) => {
     assert.equal((await get(port, path, { cookie: pair, 'sec-fetch-site': 'same-site' })).status >= 400, true, 'a same-site foreign-port request cannot borrow the cookie');
     assert.equal((await get(port, path, { cookie: pair, origin: 'https://app.pullboard.dev' })).status >= 400, true, 'the hosted origin still needs its explicit key header');
   }
+  assert.equal((await get(port, '/', { cookie: pair, 'sec-fetch-site': 'none' })).status, 403, 'a typed-site marker without a top-level document destination cannot use the cookie');
   assert.equal((await get(port, '/api/v1/view-link', { cookie: pair })).status, 200, 'the local invitation uses the cookie too');
 
   // The key is not single-use: the printed link opens again, and scripts still send it as a header.
@@ -166,4 +168,115 @@ test('[N39,N26] the view key becomes a cookie', async (t) => {
   assert.equal((await get(port, '/', { cookie: pair })).status, 403, "the later session's page refuses the earlier session's cookie");
   assert.equal((await get(port, '/api/v1/boards', { cookie: pair })).status, 401, "and so does its API");
   assert.equal((await get(port, '/', { cookie: `${pair}; ${renewed.pair}` })).status, 200, 'its own cookie opens it beside the stale one');
+});
+
+test('[N39,N26] a direct browser visit can use its view cookie', { timeout: 60_000 }, async (t) => { // budget: hang ceiling for one real Chrome navigation and its same-origin control.
+  const executable = chromeExecutable();
+  assert.ok(executable, 'the direct-navigation cookie check needs real Chrome');
+  const home = mkdtempSync(join(tmpdir(), 'pullboard-view-cookie-navigation-'));
+  const profile = mkdtempSync(join(tmpdir(), 'pullboard-view-cookie-chrome-'));
+  const before = process.env.PULLBOARD_HOME;
+  process.env.PULLBOARD_HOME = home;
+  let view, chrome, timer;
+  t.after(async () => {
+    clearTimeout(timer);
+    if (before === undefined) delete process.env.PULLBOARD_HOME;
+    else process.env.PULLBOARD_HOME = before;
+    try { if (chrome) await closeSnapshotChrome(chrome); }
+    finally {
+      try { if (view) await view.close(); }
+      finally { rmSync(profile, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); }
+    }
+  });
+
+  view = await serveView();
+  chrome = await openSnapshotChrome(executable, 'about:blank', profile);
+  const base = new URL(view.url);
+  const navigation = [];
+  const byNetwork = new Map();
+  const recordsByRequest = new Map();
+  const extraByRequest = new Map();
+  let resolveCleanResponse;
+  const cleanResponse = new Promise((resolve, reject) => {
+    timer = setTimeout(() => reject(new Error('Chrome did not report the clean page response')), 15_000); // budget: hang ceiling for one local HTTP redirect and final response.
+    resolveCleanResponse = resolve;
+  });
+  /** Pair ordered request-extra-info rows with the corresponding redirect-chain request without retaining secrets. */
+  const pairExtraHeaders = (requestId) => {
+    const records = recordsByRequest.get(requestId) ?? [];
+    const extras = extraByRequest.get(requestId) ?? [];
+    while (records.length && extras.length) {
+      const record = records.shift();
+      const headers = Object.fromEntries(Object.entries(extras.shift()).map(([name, value]) => [name.toLowerCase(), value]));
+      record.fetchSite = headers['sec-fetch-site'] ?? null;
+      record.hasCookie = headers.cookie !== undefined;
+      record.extraHeadersSeen = true;
+      if (record.status !== null && !record.hasKeyQuery) {
+        resolveCleanResponse?.(record);
+        resolveCleanResponse = null;
+      }
+    }
+    if (!records.length) recordsByRequest.delete(requestId);
+    if (!extras.length) extraByRequest.delete(requestId);
+  };
+  /** Keep only the URL shape, fetch-metadata value and status; never retain the key or cookie value. */
+  const observe = ({ data }) => {
+    const message = JSON.parse(String(data));
+    if (message.method === 'Network.requestWillBeSent') {
+      const { requestId, request, redirectResponse } = message.params;
+      const asked = new URL(request.url);
+      if (asked.origin === base.origin && asked.pathname === '/') {
+        const record = {
+          networkId: requestId,
+          hasKeyQuery: asked.searchParams.has('k'),
+          fetchSite: null,
+          hasCookie: false,
+          hasKeyHeader: Object.keys(request.headers ?? {}).some((name) => name.toLowerCase() === 'x-pullboard-key'),
+          hasAuthorization: Object.keys(request.headers ?? {}).some((name) => name.toLowerCase() === 'authorization'),
+          redirectStatus: redirectResponse?.status ?? null,
+          status: null,
+          extraHeadersSeen: false,
+        };
+        navigation.push(record);
+        const records = recordsByRequest.get(requestId) ?? [];
+        records.push(record);
+        recordsByRequest.set(requestId, records);
+        if (!record.hasKeyQuery) byNetwork.set(requestId, record);
+        pairExtraHeaders(requestId);
+      }
+    }
+    if (message.method === 'Network.requestWillBeSentExtraInfo') {
+      const extras = extraByRequest.get(message.params.requestId) ?? [];
+      extras.push(message.params.headers ?? {});
+      extraByRequest.set(message.params.requestId, extras);
+      pairExtraHeaders(message.params.requestId);
+    }
+    if (message.method === 'Network.responseReceived') {
+      const record = byNetwork.get(message.params.requestId);
+      if (!record) return;
+      record.status = message.params.response.status;
+      if (record.extraHeadersSeen) {
+        resolveCleanResponse?.(record);
+        resolveCleanResponse = null;
+      }
+    }
+  };
+  chrome.socket.addEventListener('message', observe);
+  t.after(() => chrome?.socket.removeEventListener('message', observe));
+
+  await chrome.send('Page.navigate', { url: view.url });
+  const clean = await cleanResponse;
+  clearTimeout(timer);
+  await chrome.waitFor("document.readyState === 'complete'");
+  const sameOriginStatus = await chrome.stable("fetch('/api/v1/boards').then(response => response.status)");
+  assert.equal(sameOriginStatus, 200, 'the same Chrome session can use the cookie on an ordinary same-origin API request');
+  assert.equal(clean.redirectStatus, 303, 'the first keyed navigation exchanges the key before its clean request');
+  assert.equal(clean.fetchSite, 'none', 'Chrome marks the redirect-following top-level visit as typed/bookmarked');
+  assert.equal(clean.hasCookie, true, 'Chrome sends the exchanged cookie on the clean page request');
+  assert.equal(clean.hasKeyQuery, false, 'the clean page request has no key in its address');
+  assert.equal(clean.hasKeyHeader, false, 'the clean page request has no secret header');
+  assert.equal(clean.hasAuthorization, false, 'the clean page request has no authorization header');
+  assert.equal(clean.status, 200, 'the cookie opens the clean top-level page');
+  assert.equal(new URL(await chrome.stable('location.href')).search, '', 'the visible address stays clean');
+  assert.ok(navigation.length >= 2, 'Chrome made both the keyed and clean page requests');
 });
