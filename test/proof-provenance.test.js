@@ -8,6 +8,9 @@ import * as store from '../src/board.js';
 import { prepareEngineMove, applyEngineMove } from '../src/engine.js';
 import { boardReceiptStore, receiptBody, receiptFields } from '../src/gate-run-receipt.js';
 import { proofCounts } from '../src/proof-provenance.js';
+import { captureTestRuntimes } from '../src/execution-environment.js';
+import { runFixtureChild } from './fixture-child.js';
+import { fileURLToPath } from 'node:url';
 import { bindRefs, resolveMove, strayItemRefs } from '../src/relay-outbox.js';
 import { recordNativeProof } from '../src/proof-cli.js';
 import { createE2eHelpers } from './e2e-helpers.js';
@@ -75,6 +78,27 @@ test('native receipts carry each child reported runtime instead of borrowing the
   const versions = new Set(actualChildren.map(child => child.node));
   t.diagnostic('actual child Node versions: ' + [...versions].join(', '));
   if (versions.size > 1) assert.equal(receipt.environment, null, 'a mixed actual run has no invented common Node version');
+});
+
+test('runtime capture binds the admitted file to its closed actual worker [C7,H16]', t => {
+  const helpers = createE2eHelpers();
+  t.after(helpers.cleanup);
+  const box = helpers.project('true');
+  mkdirSync(join(box.repo, 'test'), { recursive: true });
+  const file = join(box.repo, 'test/runtime-child.test.js');
+  writeFileSync(file, "require('node:test')('the actual worker executes [G1]',()=>{});\n");
+  box.git(box.repo, 'add', 'test/runtime-child.test.js');
+  box.git(box.repo, 'commit', '-q', '-m', 'test: record the actual admitted test file');
+  const capture = captureTestRuntimes(box.env);
+  t.after(() => capture.finish());
+  const result = runFixtureChild(process.execPath, [fileURLToPath(new URL('../bin/run-tests.js', import.meta.url)), file],
+    { cwd: box.repo, env: capture.env, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.failure || result.stderr || result.stdout);
+  const children = capture.finish();
+  assert.ok(children && children.length === 1, 'the dispatcher identifies exactly one test child rather than its launcher');
+  assert.equal(children[0].file, 'test/runtime-child.test.js');
+  assert.deepEqual(children[0].environment, { platform: process.platform, arch: process.arch, node: process.versions.node });
+  assert.notEqual(children[0].pid, process.pid);
 });
 
 test('proof counters retain explicit totals and do not invent success from missing output [C7,H16]', () => {
