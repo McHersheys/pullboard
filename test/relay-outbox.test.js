@@ -108,7 +108,7 @@ test('a move on an accepted relay link waits in the ordered outbox while the rel
   assert.equal(item(there.document).item_status, 'withdrawn');
 });
 
-test('an opted-in outbox retains a move through a GitHub permission outage and replays it once [H8,H16,H17]', async (t) => {
+test('an opted-in outbox retains a move through a GitHub permission outage and replays it once [H8,H16,H21]', async (t) => {
   const box = await relayClientFixture(t);
   enableOutbox(box);
   await box.link();
