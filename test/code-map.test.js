@@ -19,6 +19,7 @@ const sliceMap = {
     loc: 3,
     job: 'A fixture leaf module.',
     dependencies: [],
+    external: [],
     importedBy: [],
     tests: ['test/leaf.test.js'],
     functions: [{
