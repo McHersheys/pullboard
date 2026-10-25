@@ -25,6 +25,7 @@ import {
 } from './git.js';
 import { literalShellWords } from './literal-shell-words.js';
 import { foreignNodeOptions } from './test-isolation.js';
+import { sourceLaunchesBrowser } from './browser-launch-source.js';
 
 const MODULE_SUFFIXES = ['.js', '.mjs', '.cjs', '.cts', '.json'];
 const CHROME_FIXTURE = 'test/chrome-fixture.js';
@@ -52,8 +53,6 @@ const LAUNCH_FREE_CHROME_EXPORTS = new Set(['requireBrowserSlot', 'waitForTarget
   'createEvaluator', 'createPageStepEvaluator']);
 /** Imports that let a module start another process or module, which by launch counts only with a Chrome reference. */
 const PROCESS_STARTERS = new Set(['node:child_process', 'node:worker_threads', 'node:cluster', 'node:module', 'node:vm']);
-/** A Chrome executable named in source: the paths and variable a direct launcher uses outside the guarded fixture. */
-const CHROME_EXECUTABLE = /PULLBOARD_CHROME|google-chrome|Google Chrome|chromium|puppeteer|playwright/iu;
 const VALUE_OPTIONS = new Set(['--test-concurrency', '--test-name-pattern', '--test-shard', '--test-skip-pattern', '--test-timeout']);
 /** What module-imports reports for a dynamic import whose target is not one plain string. */
 const COMPUTED_IMPORT = '(computed)';
@@ -248,7 +247,7 @@ function launchFreeChromeImport(source, request) {
 
 /** Detect direct literal Chrome launchers without treating help text or refusal messages as launches. */
 function namesChromeLauncher(source) {
-  return /\b(?:spawn|spawnSync|exec|execSync|execFile|execFileSync|fork)\s*\(\s*(['"`])[^'"`\r\n]*\b(?:chrome|chromium|playwright|puppeteer)\b/iu.test(source);
+  return sourceLaunchesBrowser(source);
 }
 
 /** Detect dynamic process builtin access, which can load launch-capable modules.
@@ -542,8 +541,9 @@ async function testsNeedBrowserInTree(root, files, committed = null, onFallback,
         }
       }
       if (!sources.length) break;
+      const browserCalls = sources.map(namesChromeLauncher);
       if (paths.some((path, index) => (path.startsWith('test/') || SAFE_CHILD_PROCESS_MODULES.has(path))
-        && namesChromeLauncher(sources[index]))) return true;
+        && browserCalls[index])) return true;
       // By launch, a process or module starter launches a browser only beside a Chrome executable reference.
       const starts = sources.map(source => byLaunch && usesDynamicBuiltinLoader(source));
       const dynamicLoaderIndex = byLaunch ? -1 : sources.findIndex(usesDynamicBuiltinLoader);
@@ -587,7 +587,7 @@ async function testsNeedBrowserInTree(root, files, committed = null, onFallback,
           }
           if (!target.endsWith('.json') && !seen.has(target)) next.add(target);
         }
-        if (starts[index] && CHROME_EXECUTABLE.test(sources[index])) return true;
+        if (starts[index] && browserCalls[index]) return true;
       }
       frontier = [...next];
     }

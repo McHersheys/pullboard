@@ -483,6 +483,7 @@ test('generated Chrome programs stay launch-free while executable launcher argum
     'test/variable-call.test.js': "import { spawnSync } from 'node:child_process';\nconst executable = '/opt/browser/google-chrome';\nspawnSync(executable, []);",
     'test/environment-call.test.js': "import { spawnSync } from 'node:child_process';\nspawnSync(process.env.PULLBOARD_CHROME, []);",
     'test/interpolation-call.test.js': "import { spawnSync } from 'node:child_process';\nexport const output = `${spawnSync('google-chrome', [])}`;",
+    'test/worker-call.test.js': "import { Worker as Thread } from 'node:worker_threads';\nnew Thread(\"require('child_process').execSync('google-chrome')\", { eval: true });",
     'test/computed-loader.test.js': "const source = process['getBuiltinModule']('child_process');\nsource.spawnSync(process.env.PULLBOARD_CHROME, []);",
   });
   for (const name of ['quoted-program', 'template-program', 'comment-program']) {
@@ -490,7 +491,7 @@ test('generated Chrome programs stay launch-free while executable launcher argum
     assert.equal(await testsNeedBrowser(root, [file], { byLaunch: true }), false, `${name}: generated source is not a browser launch in this module`);
     assert.equal(await testsNeedBrowser(root, [file], { byLaunch: false }), true, `${name}: the default classification remains conservative`);
   }
-  for (const name of ['direct-call', 'alias-call', 'shell-call', 'variable-call', 'environment-call', 'interpolation-call', 'computed-loader']) {
+  for (const name of ['direct-call', 'alias-call', 'shell-call', 'variable-call', 'environment-call', 'interpolation-call', 'worker-call', 'computed-loader']) {
     assert.equal(await testsNeedBrowser(root, [`test/${name}.test.js`], { byLaunch: true }), true, `${name}: executable or uncertain Chrome launch remains browser-bound`);
   }
 });
