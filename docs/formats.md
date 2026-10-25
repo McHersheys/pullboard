@@ -444,6 +444,7 @@ The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its ap
 | `main-moved` | coordinator | `batch`, `items`, `sha` |
 | `withdraw` | coordinator | `reason` |
 | `refreeze` | coordinator, or live holder adopting a pending correction | `before`, `after`, optional `retainedClaim` |
+| `lane-lead` | coordinator | `lane`, `seat` |
 | `hold` | coordinator | `lane`, `reason` |
 | `unhold` | coordinator | `lane` |
 | `hold_item` | coordinator | `reason` |
@@ -451,7 +452,7 @@ The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its ap
 | `guards` | board | `missing`, `changed`, `stale` |
 | `rigor-notice` | rigor | `cause`, `items`, `occurrences`, `neverAgain`, `engine`, automatic-Rigor `drafts` |
 | `rigor-draft` | rigor | `id`, `target`, `cause`, exact typed `source`, `unproved` (always true), `items`, `occurrences`, `engine` |
-| `shout` | sender | `shout`, `to`, `decision`, `request`, `answers` |
+| `shout` | sender | `shout`, `to`, `decision`, `request`, `answers`, `messageKind` |
 | `shout_news` | sender | `shout`, `to`, `decision`, `request`, `answers` |
 | `flake-observation` | reporting agent | `engine`, `observation` |
 | `flake-repair` | reporting agent | `engine`, `key`, `item` |
@@ -463,7 +464,7 @@ The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its ap
 | `sentinel-start` | running agent | `name`, `digest`, `run`, `until`, `engine` |
 | `sentinel-run` | running agent | `name`, `digest`, `run`, `result`, `engine` |
 | `sentinel-failure` | sentinel | `name`, `digest`, `run`, `cause`, `engine` |
-| `pass` | coordinator | `shout`, `to`, `decision`, `request`, `answers` |
+| `pass` | coordinator, or lane lead | `shout`, `to`, `decision`, `request`, `answers` |
 | `answer` | answerer | `shout`, `to`, `decision`, `request`, `answers`, `outcome`, `channel`, engine-20 `implies`, `supersedes`, decision-origin `provenance` |
 | `row_decision` | person | `record`, `channel` |
 | `row_draft` | builder, or rigor | engine-55 `row`, `written` |
@@ -511,7 +512,7 @@ A project with `"submitGate": "landing"` can also set `"submitInvariants": ["tes
 With `"submitGate": "landing"`, `"submitDeferAbove": N` (a whole number, 1 or more; absent by default) moves an affected selection of more than N test files from submit to landing. Such a submit runs its frozen check, the static checks and `submitInvariants` only, records the selection as `submissionProof.deferredFiles`, and notes `<count> affected test files deferred to the landing gate` on the submission, where `show` prints it. A full-gate landing already runs every file. A landing with `"landing": { "publish": "separate" }` runs the recorded files on the merged tree before anything lands; a red sends back each item whose own deferred files failed, and nothing in that batch lands.
 
 <!-- pass-rule:start -->
-The `pass` event is emitted by `passDecision` only for the coordinator; another agent receives `COORDINATOR_ONLY`. Its event actor is the coordinator. The person receives the passed decision, while the event table records who performed the pass.
+The `pass` event is emitted by `passDecision` only for the coordinator in the historical protocol; another agent receives `COORDINATOR_ONLY`. The lane-lead engine also permits the addressed lead to escalate its own lane question to the coordinator. Its event actor is the coordinator or that lane lead. The coordinator passes to the person; the lead passes to the coordinator, while the event table records who performed the pass.
 <!-- pass-rule:end -->
 
 ## Static view export
@@ -676,3 +677,5 @@ not a native move, parent identity, configuration or authority record. Missing/d
 replays activity. Reads freeze an event high-water mark before observing Git; subsequent events
 and messages remain pending. News has a separate cursor so an ordinary poll cannot consume a
 future session-start digest.
+
+The lane-lead engine, numbered at landing, adds coordinator-only `setLaneLead` with `{agentId, lane, seat, lanes}`. The seat is an existing agent in that lane, or `null` to remove the lead. Its `lane-lead` event records `lane` and `seat`. Typed shout routing records `messageKind` (`question`, `blocker` or `decision`); a status shout is refused. Older recorded engines retain their original routing and event details. Questions and blockers go to the named lead; lead decisions and explicit escalations go to the coordinator. Naming a lead grants no claim, lease or person authority.

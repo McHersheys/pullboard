@@ -62,6 +62,10 @@ test('a lane question reaches its lead and only the decision reaches the coordin
   assert.equal(message(box, blocked.id).shout_to, leadId);
   const status = box.run(box.web, 'shout', 'coordinator', 'Still implementing', '--kind', 'status', '--json');
   assert.equal(JSON.parse(status.out).error?.code, 'STATUS_IS_ACTIVITY');
+  const beforeDeniedDecision = document(box, box.repo, 'export');
+  const decision = box.run(box.web, 'shout', 'coordinator', 'Worker cannot decide for the lane', '--kind', 'decision', '--json');
+  assert.equal(JSON.parse(decision.out).error?.code, 'NOT_LANE_LEAD');
+  assert.deepEqual(document(box, box.repo, 'export'), beforeDeniedDecision, 'a refused non-lead decision changes no durable history');
   const answer = document(box, lead, 'answer', String(question.id), 'Use the local interface');
   assert.ok(document(box, box.web, 'inbox').shouts.some(row => row.shout_id === answer.id));
   assert.ok(document(box, box.repo, 'inbox').shouts.some(row => row.shout_from === leadId && row.shout_text.includes('Use the local interface')),

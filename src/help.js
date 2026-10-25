@@ -348,7 +348,7 @@ const HELP_ALIASES = {
   help: { usage: 'pullboard help', source: null },
   version: { usage: 'pullboard version', source: null },
   whoami: { usage: 'pullboard whoami', source: 'whoami' },
-  lanes: { usage: 'pullboard lanes [lead <lane> <seat|off>]', source: 'whoami' },
+  lanes: { usage: 'pullboard lanes', source: 'whoami' },
   agents: { usage: 'pullboard agents', source: 'whoami' },
   lane: { usage: 'pullboard lane add <name> --owns <path>[,<path>]', source: 'lane add' },
   status: { usage: 'pullboard status', source: 'whoami' },
