@@ -106,6 +106,8 @@ Both text and JSON resumes record the displayed version once per checkout. Later
 
 The board file is in the repository's Git common directory at `.git/pullboard/board.sqlite`. File-backed connections use WAL mode, so `board.sqlite-wal` and `board.sqlite-shm` can sit beside it while connections are open. SQLite `PRAGMA user_version` records the board schema version; it also marks whether trigger repairs are reported in the event log. Schema objects are created from `src/board.js` when a board opens.
 
+The version table is generated from the source-owned declarations in `src/formats/*.json` and their existing version constants. Add a declaration beside the format source instead of editing the table; `node bin/update-formats.js` refreshes it, and the native landing train refreshes it after merging.
+
 <!-- format-versions:start -->
 | Format | Version | Version source | Upgrade rule |
 | --- | --- | --- | --- |
