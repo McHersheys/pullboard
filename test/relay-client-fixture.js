@@ -761,6 +761,8 @@ globalThis.fetch = function tracedFetch(input, init) {
       return childResult(otherRoot, envKey, [CLI, ...args, '--json']);
     }
     return { joined: document, machine: link.machine, exported: exported.document, cli: run, root: otherRoot, env: otherEnv, syncWithEnvironmentKey,
+      /** Run a second-device worktree with that device's own keys and bounded asynchronous child. */
+      cliAt(cwd, ...args) { return childResult(cwd, otherEnv, [CLI, ...args, '--json']); },
       /** Check that the paired clone still has no persisted board-key file. */
       keyFileExists() { return existsSync(otherKeyFile); } };
   }
