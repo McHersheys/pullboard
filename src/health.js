@@ -343,11 +343,11 @@ function queueFaults(board, { items, at, retired = [], gone = new Set() }) {
   for (const claim of items.filter((item) => item.item_status === 'claimed' && Date.parse(item.item_lease_until ?? '') > at)) {
     const holder = agents.find((agent) => agent.id === claim.item_owner);
     if (!holder) continue;
-    // Free work that waits only on files the holder's own claims touch is free to the holder once it releases (#1114).
-    const own = items.filter((item) => item.item_status === 'claimed' && item.item_owner === holder.id).map((item) => item.item_id);
-    // The suggested release removes this holder's overlap occupancy before next chooses again.
-    const compare = buildOrder(board, { releasedClaims: own });
-    const freeToHolder = (entry) => entry.waits.every((wait) => own.some((id) => wait.startsWith(`#${entry.id} waits for #${id} (claimed) on `)));
+    // Model exactly the release printed below: legal child or returned claims remain occupied.
+    const releasedClaims = [claim.item_id];
+    const compare = buildOrder(board, { releasedClaims });
+    // Historical hard-collision waits clear only when this one named claim is released (#1114).
+    const freeToHolder = (entry) => entry.waits.every((wait) => wait.startsWith(`#${entry.id} waits for #${claim.item_id} (claimed) on `));
     const ahead = open.filter((entry) => freeToHolder(entry) && entry.lane === holder.lane && canTake(holder.route, entry.route))
       .map((entry) => raw.get(entry.id))
       .filter((item) => item && compare(item, claim) < 0)
