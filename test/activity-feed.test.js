@@ -365,3 +365,46 @@ test('old ordinary shout replay does not become newly typed news [H16,N26]', (t)
   assert.ok(restored.entries.some(entry => entry.text === exactText), 'native restore never upgrades old detail into news');
   assert.deepEqual(restored.digests.find(digest => digest.kind === 'news')?.shouts, [typed.result]);
 });
+
+
+test('interrupts arrive at once and the digest arrives as a short summary at a break [R2,N26,H16]', t => {
+  const box = e2e.project('true');
+  const base = box.git(box.web, 'rev-parse', 'HEAD');
+  assert.equal(e2e.commitFile(box, box.web, 'web/interrupt.txt', 'private interrupt fixture\n', 'feat(web): interrupt fixture [G1]').status, 0);
+  const commit = box.git(box.web, 'rev-parse', 'HEAD');
+  const tree = box.git(box.web, 'rev-parse', 'HEAD^{tree}');
+  const board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
+  t.after(() => store.closeBoard(board));
+  const reviewer = store.register(board, { lane: 'api', path: join(box.dir, 'interrupt-reviewer') });
+  const rejected = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'Private rejected work' });
+  store.claim(board, rejected, { agentId: 'web-1', lane: 'web', leaseMs: 3_600_000, head: base, freeze });
+  submitFixture(board, rejected, { agentId: 'web-1', commit, tree });
+  store.verify(board, rejected, { agentId: reviewer, decision: 'REJECT', reason: 'TEST_FAILURE',
+    note: 'Synthetic board-state refusal, not an executed gate.', head: commit, digest: freeze().digest,
+    policy: 'any', familyPolicy: 'off', reopenFirstRefusalMinutes: 30,
+    review: { commit, head: commit, trunk: base, paths: ['web/interrupt.txt'] } });
+  const active = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'Private lapsing work',
+    brief: 'Files: web/interrupt.txt\nTest: preserve the private fixture\n' });
+  store.claim(board, active, { agentId: 'web-1', lane: 'web', leaseMs: 60_000, head: base, freeze });
+  const question = store.shout(board, { from: 'web-1', to: 'coordinator', text: 'Which private path?', decision: true, lanes: ['web', 'api'] });
+  store.answerDecision(board, question, { agentId: 'coordinator', text: 'Use the private reviewed path.', lanes: ['web', 'api'] });
+  // A synthetic landing receipt exercises real Git overlap; it is not a claim of a live landing proof.
+  store.recordLandingBatch(board, { agentId: 'coordinator', batch: { version: 1, id: 'interrupt-private-main',
+    state: 'pushed', base, tip: commit, root: box.web, branch: 'refs/heads/main', owner: 'private-fixture',
+    logPath: join(box.dir, 'private-interrupt.log'), items: [] } });
+  store.finishLandingBatch(board, { agentId: 'coordinator', id: 'interrupt-private-main', tip: commit });
+  const other = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'Private digest work' });
+  store.appendFact(board, other, { agentId: 'coordinator', kind: 'note', text: 'PRIVATE_RAW_STATUS_MUST_NOT_BE_DIGEST_TEXT' });
+  const first = box.run(box.web, 'inbox', '--json');
+  assert.equal(first.code, 0, first.err);
+  const feed = JSON.parse(first.out).activity;
+  assert.ok(Array.isArray(feed.interrupts), 'the actual inbox separates actionable interrupts from the digest');
+  assert.deepEqual(new Set(feed.interrupts.map(entry => entry.reason)),
+    new Set(['rejected', 'claim-lapsing', 'answered', 'files-changed']), 'every required interrupt reaches the next check');
+  assert.ok(feed.interrupts.find(entry => entry.reason === 'files-changed').files.includes('web/interrupt.txt'));
+  assert.ok(feed.digests.length, 'session start delivers a short summary');
+  assert.equal(JSON.stringify(feed.digests).includes('PRIVATE_RAW_STATUS_MUST_NOT_BE_DIGEST_TEXT'), false);
+  const delivered = store.events(board).filter(event => event.event_kind === 'activity-delivered');
+  assert.ok(delivered.length, 'delivery is recorded on the canonical board, not just a checkout cursor');
+  assert.ok(delivered.every(event => event.event_by === 'web-1'), 'the recipient owns its delivery receipts');
+});
