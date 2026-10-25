@@ -172,3 +172,60 @@ test('a local heartbeat persists once per minute and refreshes after clock rollb
   assert.equal(heartbeatSeat(board, id), true);
   assert.equal(local.prepare('SELECT n FROM writes').get().n, 2, 'the rollback replacement is itself throttled');
 });
+
+
+test('read commands never refresh presence while committed writes and hooks do [B3,C7]', async (t) => {
+  const { createE2eHelpers } = await import('./e2e-helpers.js');
+  const { DatabaseSync } = await import('node:sqlite');
+  const helpers = createE2eHelpers();
+  t.after(helpers.cleanup);
+  const box = helpers.project('true');
+  const added = box.run(box.repo, 'add', 'web', 'Read-only presence control', '--criterion', 'Keep the same item', '--check', 'true', '--json');
+  assert.equal(added.code, 0, added.err + added.out);
+  const id = JSON.parse(added.out).item.item_id;
+  const file = join(box.repo, '.git', 'pullboard', 'board.sqlite');
+  const board = store.openBoard(file);
+  const local = new DatabaseSync(`${file}.presence.sqlite`);
+  t.after(() => { local.close(); store.closeBoard(board); });
+  board.db.prepare("UPDATE item SET item_status='withdrawn' WHERE item_id=?").run(id);
+  const identity = board.db.prepare("SELECT meta_value FROM board_meta WHERE meta_key='board_id'").get().meta_value;
+  const key = JSON.stringify([identity, 'web-1']);
+  const stale = '2000-01-01T00:00:00.000Z';
+  local.prepare('UPDATE heartbeat SET at=? WHERE seat=?').run(stale, key);
+  local.exec('CREATE TABLE writes(n INTEGER NOT NULL); INSERT INTO writes VALUES(0); CREATE TRIGGER count_update AFTER UPDATE ON heartbeat BEGIN UPDATE writes SET n=n+1; END');
+  board.db.exec('BEGIN IMMEDIATE');
+  try {
+    const status = box.run(box.web, 'status', '--json');
+    assert.equal(status.code, 0, status.err + status.out);
+    const summary = JSON.parse(status.out);
+    assert.equal(summary.agents.find(seat => seat.agent_id === 'web-1').presence, 'gone', 'status projects the stored observation without reviving it');
+    assert.equal(local.prepare('SELECT at FROM heartbeat WHERE seat=?').get(key).at, stale);
+    for (const args of [['show', String(id), '--json'], ['list', '--json']]) {
+      const result = box.run(box.web, ...args);
+      assert.equal(result.code, 0, result.err + result.out);
+      assert.equal(JSON.parse(result.out).version, 1);
+    }
+    const next = box.run(box.web, 'next', '--json');
+    assert.ok([0, 1].includes(next.code), next.err + next.out);
+    assert.equal(board.db.prepare("SELECT COUNT(*) AS n FROM item WHERE item_status='claimed'").get().n, 0, 'the next control really makes no claim');
+    assert.equal(local.prepare('SELECT n FROM writes').get().n, 0, 'none of the read commands writes the private sidecar');
+  } finally { board.db.exec('ROLLBACK'); }
+  const shouted = box.run(box.web, 'shout', 'coordinator', 'Committed write refreshes this seat', '--json');
+  assert.equal(shouted.code, 0, shouted.err + shouted.out);
+  assert.equal(local.prepare('SELECT n FROM writes').get().n, 1);
+  const shout = board.db.prepare('SELECT shout_at FROM shout WHERE shout_from=? ORDER BY shout_id DESC LIMIT 1').get('web-1');
+  const observed = local.prepare('SELECT at FROM heartbeat WHERE seat=?').get(key).at;
+  assert.ok(Date.parse(observed) >= Date.parse(shout.shout_at), 'the local refresh follows the committed native shout');
+  local.prepare('UPDATE heartbeat SET at=? WHERE seat=?').run(stale, key);
+  local.exec('UPDATE writes SET n=0');
+  const refused = box.run(box.web, 'shout', 'missing-reader', 'This write must refuse', '--json');
+  assert.equal(refused.code, 1, refused.err + refused.out);
+  assert.equal(JSON.parse(refused.out).error.code, 'NO_READER');
+  assert.equal(local.prepare('SELECT n FROM writes').get().n, 0, 'a refused native write cannot refresh presence');
+  const events = board.db.prepare('SELECT COUNT(*) AS n FROM event').get().n;
+  const hook = box.run(box.web, 'heartbeat', '--json');
+  assert.equal(hook.code, 0, hook.err + hook.out);
+  assert.equal(JSON.parse(hook.out).presence, 'live');
+  assert.equal(local.prepare('SELECT n FROM writes').get().n, 1, 'an explicit agent hook still refreshes the stale private observation');
+  assert.equal(board.db.prepare('SELECT COUNT(*) AS n FROM event').get().n, events, 'the hook remains local, not an ordered move');
+});
