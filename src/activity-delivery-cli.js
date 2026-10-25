@@ -1,6 +1,7 @@
 /** Inbox and successful-submit delivery share one canonical receipt path [R2,N26,H16]. */
 import * as store from './board.js';
 import { readActivityDelivery } from './activity-delivery-read.js';
+import { handoffMoveProblem } from './handoff-state.js';
 import {
   activityMainFiles,
   activityWorkingFiles,
@@ -28,6 +29,7 @@ export function activityDeliveryLines({ shouts, agents, activity }, config) {
   const direct = new Set(shouts.map(shout => shout.shout_id));
   for (const entry of activity.entries) if (!direct.has(entry.shout)) lines.push(`${entry.at.slice(0, 16)}  ${entry.text}`);
   for (const digest of activity.digests) lines.push(digest.text);
+  if (activity.receipt?.recorded === false) lines.push(`activity delivery was not recorded: ${activity.receipt.message}`);
   if (!lines.length) lines.push('no new shouts or activity');
   return lines;
 }
@@ -60,7 +62,9 @@ export async function deliverActivity(ctx, { actedIds = [], afterSubmit = false,
     const shouts = directShouts ? store.inbox(board, me.id, { through: shoutCursor })
       .filter(shout => !newsShouts.includes(shout.shout_id)) : [];
     // Pending obligations survive an output failure: delivery is not acknowledgement.
-    await recordIncluded(ctx, board, me.id, observation);
+    const retired = handoffMoveProblem(board, me.id, 'recordActivityDelivery', [{ agentId: me.id }]);
+    if (retired) activity.receipt = { recorded: false, code: retired.code, message: retired.message };
+    else await recordIncluded(ctx, board, me.id, observation);
     return { shouts, agents: store.listAgents(board), activity, local };
   });
   if (!saveActivityCursor(delivered.local, delivered.activity.cursor)) {

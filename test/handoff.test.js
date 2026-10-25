@@ -101,7 +101,16 @@ test('handoff takeover prints real work and retires only the outgoing seat [B3,N
   const inbox = await box.cli(1, ['inbox']);
   assert.ok(inbox.document.shouts.some(row => row.shout_text === 'The final context is here.'));
   assert.equal((await box.cli(1, ['shout', '--item', String(id), 'One last question.'])).code, 0);
-  assert.ok((await box.cli(0, ['inbox'])).document.shouts.some(row => row.shout_text === 'One last question.'));
+  const beforeRetiredRead = store.events(box.board).length;
+  const retiredInbox = await box.cli(0, ['inbox']);
+  assert.equal(retiredInbox.code, 0, retiredInbox.error);
+  assert.ok(retiredInbox.document.shouts.some(row => row.shout_text === 'One last question.'));
+  assert.equal(retiredInbox.document.activity.receipt.recorded, false);
+  assert.equal(retiredInbox.document.activity.receipt.code, 'AGENT_REPLACED');
+  assert.equal(store.events(box.board).length, beforeRetiredRead, 'reading a retired seat does not record a delivery');
+  const retiredAck = await box.cli(0, ['inbox', '--acted-on', 'event:1']);
+  assert.equal(retiredAck.document.error.code, 'AGENT_REPLACED');
+  assert.equal(store.events(box.board).length, beforeRetiredRead, 'retirement still blocks acknowledgements without partial writes');
   assert.equal(readFileSync(join(box.paths[0], 'unfinished.txt'), 'utf8'), 'unfinished ownership');
 });
 
