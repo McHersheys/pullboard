@@ -67,6 +67,7 @@ export const JSON_SHAPES = {
     edit: shape({ item: 'object' }),
     fact: shape({ item: 'number', fact: 'object' }),
     why: shape({ id: 'number', decisions: 'array' }),
+    'why file': shape({ file: 'string', line: 'number|null', items: 'array', rows: 'array', decisions: 'array' }),
     escalate: shape({ id: 'number', from: 'string', to: 'string' }),
     run: shape({ messages: 'array' }),
     sweep: shape({ messages: 'array' }),

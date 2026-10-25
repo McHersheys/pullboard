@@ -347,6 +347,7 @@ catalogCase('[A1] command results match the catalog across roots and subcommands
   await json(box, repo, 'fact', ['1', 'note', 'API fact']);
   await json(box, repo, 'fact', ['1', 'decision', 'API decision', '--implies', '1']);
   assert.equal((await json(box, repo, 'why', ['1'])).decisions[0].line, 'API decision', 'why lists the decision that implies the item [N29]');
+  assert.equal((await json(box, repo, 'why', ['SPEC.md'], 'file')).file, 'SPEC.md', 'file provenance has its own additive JSON shape [A1,N29]');
   await json(box, repo, 'edit', ['1', '--criterion', 'the edited API item is verified', '--check', 'true']);
   await json(box, repo, 'show', ['1']);
   await json(box, repo, 'list', ['--all']);
