@@ -78,12 +78,19 @@ test('status moves are feed events and the board sends no status shout [B3,R2,N2
 
 test('an agent feed shows only activity that touches its items files rows and lane [R2,N26,H16]', (t) => {
   assert.equal(typeof store.agentActivity, 'function', 'the inbox needs a tailored activity projection, not the global event log');
-  const board = store.openBoard(':memory:');
+  const git = e2e.project();
+  const base = git.git(git.web, 'rev-parse', 'HEAD');
+  assert.equal(e2e.commitFile(git, git.web, 'web/feed-fixture.txt', 'private fixture\n', 'feat(web): private feed fixture [G1]').status, 0);
+  const commit = git.git(git.web, 'rev-parse', 'HEAD');
+  const tree = git.git(git.web, 'rev-parse', 'HEAD^{tree}');
+  let leaseTime = Date.now();
+  // Only this private board's lease clock advances; admission and elapsed-time clocks stay real.
+  const board = store.openBoard(':memory:', { now: () => new Date(leaseTime) });
   t.after(() => store.closeBoard(board));
   for (const [lane, path] of [['coordinator', '/feed-fixture'], ['web', '/feed-fixture/web-1'],
     ['web', '/feed-fixture/web-2'], ['api', '/feed-fixture/api-1']]) store.register(board, { lane, path });
   const lanes = ['coordinator', 'web', 'api'];
-  /** Create ordinary private items; their later synthetic statuses exercise projection, not move authority. */
+  /** Create ordinary private items; public lifecycle moves later establish their projection state. */
   const add = (title, lane = 'api', options = {}) => store.addItem(board, { by: 'coordinator', lane, title, ...options });
   const ancestor = add('Upstream ancestor');
   const dependency = add('Direct dependency', 'api', { after: [ancestor] });
@@ -99,19 +106,29 @@ test('an agent feed shows only activity that touches its items files rows and la
   const prefixOnly = add('A similar spelling is not the same file', 'api', { brief: 'Files: src/edit.js.backup\nTest: private fixture\n' });
   const laneOnly = add('Other work in my lane', 'web');
   const unrelated = add('Unrelated work');
-  const expired = add('My old expired claim');
+  const expired = add('My old expired claim', 'web');
   const expiredReview = add('My old expired review');
-  const later = new Date(Date.now() + 3_600_000).toISOString();
-  const earlier = new Date(Date.now() - 3_600_000).toISOString();
-  // Projection-only synthetic status rows in this private in-memory board are not claims or gate receipts.
-  board.db.prepare("UPDATE item SET item_status='claimed',item_owner='web-1',item_lease_until=?,item_files=? WHERE item_id=?")
-    .run(later, 'src/diff-only.js', mine);
-  board.db.prepare("UPDATE item SET item_status='submitted',item_review_by='web-1',item_review_until=? WHERE item_id=?")
-    .run(later, reviewed);
-  board.db.prepare("UPDATE item SET item_status='claimed',item_owner='web-1',item_lease_until=? WHERE item_id=?")
-    .run(earlier, expired);
-  board.db.prepare("UPDATE item SET item_status='submitted',item_review_by='web-1',item_review_until=? WHERE item_id=?")
-    .run(earlier, expiredReview);
+  /** Use normal private lifecycle moves; these synthetic submission receipts do not claim a gate ran. */
+  const submit = id => {
+    store.claim(board, id, { agentId: 'api-1', lane: 'api', leaseMs: 3_600_000, head: base, freeze });
+    submitFixture(board, id, { agentId: 'api-1', commit, tree });
+  };
+  /** Verify prerequisites with the existing private lifecycle fixture contract. */
+  const accept = id => {
+    submit(id);
+    store.verify(board, id, { agentId: 'web-2', decision: 'ACCEPT', head: commit, digest: freeze().digest,
+      note: 'Private projection fixture, not runtime proof.', policy: 'any', familyPolicy: 'off', check: 'green',
+      review: { commit, head: commit, trunk: base, paths: ['web/feed-fixture.txt'] } });
+  };
+  store.claim(board, expired, { agentId: 'web-1', lane: 'web', leaseMs: 1000, head: base, freeze });
+  submit(expiredReview);
+  store.reserveReview(board, expiredReview, { agentId: 'web-1', leaseMs: 1000, policy: 'any' });
+  leaseTime += 2000;
+  accept(ancestor);
+  accept(dependency);
+  store.claim(board, mine, { agentId: 'web-1', lane: 'web', leaseMs: 3_600_000, head: base, freeze });
+  submit(reviewed);
+  store.reserveReview(board, reviewed, { agentId: 'web-1', leaseMs: 3_600_000, policy: 'any' });
   const question = store.shout(board, { from: 'web-1', to: 'api-1', text: 'Which direction?', lanes, decision: true });
   const otherQuestion = store.shout(board, { from: 'web-2', to: 'api-1', text: 'Someone else asked', lanes, decision: true });
   const since = board.db.prepare('SELECT MAX(event_id) AS id FROM event').get().id;
@@ -139,7 +156,7 @@ test('an agent feed shows only activity that touches its items files rows and la
   const snapshot = exportBoard(board);
   /** This private Git seam declares fixture paths, not a claim about the live repository. */
   const changesForMain = commit => commit === sha ? ['src/edit.js', 'src/diff-only.js', 'src/working.js', 'src/unrelated.js'] : null;
-  const options = { after: since, workingFiles: ['src/working.js'], changesForMain, sessionStart: true, newsAfter: 0 };
+  const options = { after: since, workingFiles: ['src/diff-only.js', 'src/working.js'], changesForMain, sessionStart: true, newsAfter: 0 };
   const feed = store.agentActivity(board, 'web-1', options);
   assert.deepEqual(feed.entries.filter(entry => entry.kind === 'fact').map(entry => entry.item).sort((a, b) => a - b),
     expectedItems.sort((a, b) => a - b), 'both dependency directions are transitive, but a prerequisite sibling is not my dependent');
@@ -156,8 +173,8 @@ test('an agent feed shows only activity that touches its items files rows and la
   assert.equal(main.text, 'main changed 3 files you are editing');
   const digest = feed.digests.find(entry => entry.kind === 'lane');
   assert.equal(digest.lane, 'web');
-  assert.equal(digest.count, 1);
-  assert.deepEqual(digest.items, [laneOnly]);
+  assert.equal(digest.count, 2, 'an expired own-lane claim is summarized rather than treated as active work');
+  assert.deepEqual(digest.items, [laneOnly, expired]);
   assert.doesNotMatch(JSON.stringify(feed), /Private lane detail|Unrelated answer/, 'digests do not leak the underlying unrelated prose');
   assert.equal(new Set(feed.entries.map(entry => entry.eventId)).size, feed.entries.length, 'overlapping reasons deliver one event');
   assert.deepEqual(feed.entries.map(entry => entry.eventId), feed.entries.map(entry => entry.eventId).toSorted((a, b) => a - b));
@@ -218,8 +235,9 @@ test('activity cursors leave events arriving during an observation pending [N26]
   assert.deepEqual(exportBoard(board), intact, 'unknown legacy detail is reported without rewriting it');
   assert.throws(() => store.inbox(board, 'web-1', { through: -1 }), error => error.code === 'BAD_ACTIVITY_CURSOR');
   const oldMessage = store.shout(board, { from: 'coordinator', to: 'all', text: 'A legacy message still has its body', lanes: ['web'] });
-  const oldEvent = board.db.prepare("SELECT event_id FROM event WHERE event_kind='shout' ORDER BY event_id DESC LIMIT 1").get();
-  board.db.prepare('UPDATE event SET event_detail=? WHERE event_id=?').run('{broken legacy message event', oldEvent.event_id);
+  // Construct an additional legacy-corrupt row without rewriting any append-only event.
+  board.db.prepare('INSERT INTO event(event_at,event_by,event_kind,item_id,event_detail) VALUES (?,?,?,?,?)')
+    .run(new Date().toISOString(), 'coordinator', 'shout', null, '{broken legacy message event');
   const legacy = store.agentActivity(board, 'web-1', { after: unknown.cursor });
   assert.ok(store.inbox(board, 'web-1', { through: legacy.shoutCursor }).some(shout => shout.shout_id === oldMessage),
     'a corrupt old event cannot block delivery from the canonical message table');
@@ -293,8 +311,11 @@ test('inbox delivery uses real Git paths and board-bound cursors without consumi
   assert.equal(saveActivityCursor(delivery, 1), false, 'a refused cursor save reports failure without hiding it');
   const refusedSave = box.run(box.web, 'inbox', '--json');
   assert.equal(refusedSave.code, 0, refusedSave.err);
-  assert.ok(JSON.parse(refusedSave.out).activity, 'delivery remains readable when local persistence fails');
-  assert.match(refusedSave.err, /activity cursor could not be saved/u, 'JSON callers receive the persistence warning too');
+  const savedFailure = JSON.parse(refusedSave.out);
+  const saveDiagnostic = JSON.stringify({ activityPresent: Boolean(savedFailure.activity), diagnostics: savedFailure.diagnostics });
+  assert.ok(savedFailure.activity, `delivery remains readable when local persistence fails: ${saveDiagnostic}`);
+  assert.ok(savedFailure.diagnostics?.includes('activity cursor could not be saved; activity may repeat when you read inbox again'),
+    `JSON callers receive the complete persistence warning in the standard diagnostics array: ${saveDiagnostic}`);
   rmSync(delivery.file, { recursive: true });
 });
 
