@@ -268,6 +268,7 @@ async function mergeGroup(state, items) {
     if (stale) throw staleVerdictRefusal(item, stale);
     // The body is the item trailer alone: the subject carries the title, and no lane branch is named [B3,R3].
     // merge.log is switched off on this call, so a local Git config cannot append a shortlog to the body.
+    const trunk = headCommit(batch.root);
     const result = tryGit(batch.root, ['-c', 'merge.log=false', 'merge', '--no-ff', '--no-log', checked, '-m', landingSubject(item), '-m', `Pullboard-Item: #${item.item_id}`]);
     if (result.status !== 0) {
       const files = tryGit(batch.root, ['diff', '--name-only', '--diff-filter=U']).stdout.split('\n').filter(Boolean);
@@ -280,7 +281,7 @@ async function mergeGroup(state, items) {
         state.say(`mechanical merge #${item.item_id}: ${files.join(', ')}`);
       } else {
         git(batch.root, ['merge', '--abort']);
-        conflicts.push({ id: item.item_id, files, commit: item.item_commit, reviewedCommit: checked });
+        conflicts.push({ id: item.item_id, files, trunk, commit: item.item_commit, reviewedCommit: checked });
         state.say(`conflict #${item.item_id}: ${files.join(', ')}`);
         continue;
       }
@@ -919,7 +920,7 @@ async function returnMergeConflicts(state) {
     if (item.item_status !== 'verified' || item.item_merged_commit || item.item_commit !== conflict.commit
       || store.checkedLandingCommit(state.board, item) !== conflict.reviewedCommit) continue;
     await state.write('reopen', [item.item_id, { agentId: 'coordinator',
-      note: `landing conflict: ${conflict.files.join(', ')}; merge current main and resubmit`, conflict: conflict.files }]);
+      note: `landing conflict: ${conflict.files.join(', ')}; merge current main and resubmit`, conflict: { files: conflict.files, trunk: conflict.trunk } }]);
   }
 }
 

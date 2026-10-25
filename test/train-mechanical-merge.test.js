@@ -104,7 +104,7 @@ test('mechanical resolution refuses changed context, duplicate disagreements and
   const alpha = BASE.replace('  base:', '  alpha: { item: true },\n  base:');
   const beta = BASE.replace('  base:', '  beta: { item: true },\n  base:');
   assert.ok(mergeMechanicalSources(FILE, BASE, alpha, beta));
-  for (const changed of [beta.replace('item: true', 'item: false'), beta + '// changed context\n',
+  for (const changed of [beta.replace('base: { item: true', 'base: { item: false'), beta + '// changed context\n',
     BASE.replace('  base:', '  alpha: { item: false },\n  base:'),
     BASE.replace('  base:', '  beta: { item: true }; steal(); { item: true },\n  base:')]) {
     assert.equal(mergeMechanicalSources(FILE, BASE, alpha, changed), null);
