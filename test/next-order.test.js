@@ -64,7 +64,7 @@ test('next offers the item on the longest remaining path first [N2,B13,N20]', t 
   store.addMilestone(board, { agentId: 'coordinator', name: 'later', items: [outside, outsideMiddle, outsideEnd, outsideLast] });
   store.addMilestone(board, { agentId: 'coordinator', name: 'focus', items: [independent, wide, ...wideChildren, longest, middle, end] });
   setLineSetting(board, { agentId: 'coordinator', key: 'focusMilestone', value: 'focus',
-    reason: 'Synthetic focused DAG scheduling fixture.' });
+    reason: 'Synthetic focused DAG scheduling fixture.', window: { items: 14 } });
   assert.equal(store.nextFor(board, { agentId: builder, lane: 'core' }).item.item_id, longest,
     'remaining path length leads age and fan-out count inside the focus');
   assert.equal(workQueue(board).first.strong, longest, 'queue and next share the same critical-chain preference');
