@@ -18,8 +18,9 @@ export function scanHealthSentinel(file, { root, config, now, cpu = agentCpuFind
     db.exec('BEGIN');
     const observedRevision = db.prepare('SELECT COALESCE(MAX(event_id), 0) AS revision FROM event').get().revision;
     const report = healthReport({ db, root, config, now });
-    report.stuck.push(...cpu(db));
     const last = db.prepare("SELECT event_detail FROM event WHERE event_kind = 'health-scan' ORDER BY event_id DESC LIMIT 1").get();
+    const processes = cpu(db);
+    report.stuck.push(...(processes ?? (last ? JSON.parse(last.event_detail).active : []).filter(finding => finding.cause === 'AGENT_CPU')));
     const before = (last ? JSON.parse(last.event_detail).active : []).map(healthFindingIdentity).sort();
     const after = normalizedHealthFindings(report.stuck).map(healthFindingIdentity).sort();
     db.exec('COMMIT');

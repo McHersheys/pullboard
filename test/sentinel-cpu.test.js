@@ -19,10 +19,11 @@ test('the sentinel names an agent process past 20 CPU minutes once [A6,H16]', as
   store.register(board, { lane: 'coordinator', path: root });
   const seat = store.register(board, { lane: 'core', path: work });
   t.after(() => { store.closeBoard(board); rmSync(directory, { recursive: true }); });
-  let birth = 'Mon Oct 19 12:00:00 2026', cpu = '21:30.00', cwd = work, present = true;
+  let birth = 'Mon Oct 19 12:00:00 2026', cpu = '21:30.00', cwd = work, present = true, unavailable = false;
   const calls = [];
   const run = (command, args) => {
     calls.push([command, args]);
+    if (unavailable) throw new Error('native observation unavailable');
     if (command === '/bin/ps') return present ? ` 4321 ${cpu} ${birth} /usr/bin/git\n 4322 19:59.99 ${birth} /usr/bin/node\n` : '';
     assert.equal(command, '/usr/sbin/lsof');
     return `p4321\nn${cwd}\n`;
@@ -37,6 +38,8 @@ test('the sentinel names an agent process past 20 CPU minutes once [A6,H16]', as
   assert.equal(notices().length, 1);
   for (const value of ['4321', 'git', seat, '21.50 CPU minutes']) assert.ok(notices()[0].shout_text.includes(value), value);
   assert.equal(notices()[0].shout_from, 'sentinel');
+  unavailable = true; scan(); unavailable = false;
+  assert.equal(store.allShouts(board).filter(row => row.shout_text.startsWith('Resolved:') && row.shout_text.includes('AGENT_CPU')).length, 0, 'an unavailable observation does not claim resolution');
   cpu = '01:22:30'; scan(); scan();
   assert.equal(notices().length, 1, 'increasing CPU time does not create another process episode');
   present = false; scan(); present = true; scan();
@@ -49,6 +52,7 @@ test('the sentinel names an agent process past 20 CPU minutes once [A6,H16]', as
   assert.equal(notices().length, 2, 'exactly twenty CPU minutes has not exceeded twenty minutes');
   cpu = '1-00:00:01';
   assert.equal(observe()[0].why.includes('1440.02 CPU minutes'), true, 'day-form CPU time is parsed');
+  assert.equal(agentCpuFindings(board.db, { platform: 'linux', run, readLink: path => { assert.equal(path, '/proc/4321/cwd'); return work; } })[0].cause, 'AGENT_CPU');
   assert.ok(calls.some(([command, args]) => command === '/bin/ps' && args.includes('time=')));
   assert.ok(calls.some(([command]) => command === '/usr/sbin/lsof'));
 });

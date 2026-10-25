@@ -29,6 +29,10 @@ function canonical(path) {
 /** Report only native cwd ownership revalidated against the same PID birth after the cwd observation. */
 export function agentCpuFindings(db, { platform = process.platform, run = native, readLink = readlinkSync } = {}) {
   if (!['darwin', 'linux'].includes(platform)) return [];
+  const agents = db.prepare('SELECT agent_id, agent_path FROM agent WHERE agent_id != ?').all('coordinator')
+    .map(agent => ({ ...agent, path: canonical(agent.agent_path) })).filter(agent => agent.path)
+    .sort((left, right) => right.path.length - left.path.length);
+  if (!agents.length) return [];
   const format = ['pid=', 'time=', 'lstart=', 'comm='].flatMap(field => ['-o', field]);
   let candidates, confirmed, directories = new Map();
   try {
@@ -48,10 +52,7 @@ export function agentCpuFindings(db, { platform = process.platform, run = native
       }
     }
     confirmed = new Set(rows(run('/bin/ps', ['-p', candidates.map(row => row.pid).join(','), ...format])).map(row => `${row.pid}:${row.since}`));
-  } catch { return []; /* Unavailable native observations cannot prove process ownership or CPU use. */ }
-  const agents = db.prepare('SELECT agent_id, agent_path FROM agent WHERE agent_id != ?').all('coordinator')
-    .map(agent => ({ ...agent, path: canonical(agent.agent_path) })).filter(agent => agent.path)
-    .sort((left, right) => right.path.length - left.path.length);
+  } catch { return null; /* Unavailable observations cannot establish that a previously seen process resolved. */ }
   return candidates.flatMap(row => {
     const cwd = directories.get(row.pid);
     if (!cwd || !confirmed.has(`${row.pid}:${row.since}`)) return [];
