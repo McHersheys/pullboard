@@ -95,7 +95,8 @@ Work
   pullboard roadmap                     ordered milestones, N/M landed, targets, and each item as landed,
                                         accepted or its status
   pullboard milestone add <name> [--note ...] [--items 1,2,3]   create a milestone and optionally add items
-  pullboard milestone items <name> --add ids [--swap id] | --remove ids
+  pullboard milestone items <name> --add ids [--swap id]   add items; --swap replaces an existing item
+  pullboard milestone items <name> --remove ids            remove items from the milestone
   pullboard milestone order <name> <ids>                       rank these items within their milestone (agents)
   pullboard milestone move <name> --before <other>             reorder a milestone
   pullboard milestone edit <name> [--name <new>] [--note <text>] [--target <date and time>|none] [--limit <n>|none]
