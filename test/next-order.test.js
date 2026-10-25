@@ -66,24 +66,46 @@ test('next offers the item on the longest remaining path first [N2,B13,N20]', t 
   store.addMilestone(board, { agentId: 'coordinator', name: 'focus', items: [independent, wide, ...wideChildren, longest, middle, end] });
   setLineSetting(board, { agentId: 'coordinator', key: 'focusMilestone', value: 'focus',
     reason: 'Synthetic focused DAG scheduling fixture.', window: { items: 14 } });
-  assert.equal(store.nextFor(board, { agentId: builder, lane: 'core' }).item.item_id, longest,
-    'remaining path length leads age and fan-out count inside the focus');
-  assert.equal(workQueue(board).first.strong, longest, 'queue and next share the same critical-chain preference');
+  assert.equal(store.nextFor(board, { agentId: builder, lane: 'core' }).item.item_id, wide,
+    'ruling 29931: higher (unblocks + 1) / effort wins before the longer path inside the focus');
+  assert.equal(workQueue(board).first.strong, wide, 'queue and next share the primary score order');
 });
 
-test('a file overlap is a soft preference and never strands ready work [N2,N20]', t => {
+/** The sharpened primary score leaves a real equal-score tie for the critical path to resolve. */
+test('equal primary scores use the longer remaining path before age [N2,B13,N20]', t => {
+  const { board, builder } = boardFixture();
+  t.after(() => store.closeBoard(board));
+  const add = (title, after = []) => store.addItem(board, {
+    by: 'coordinator', lane: 'core', title, after, route: 'strong',
+  });
+  const wide = add('Older short fan-out with two successors');
+  const children = [add('First short successor', [wide]), add('Second short successor', [wide])];
+  const long = add('Newer chain with the same two descendants');
+  const middle = add('Chain middle', [long]);
+  const end = add('Chain end', [middle]);
+  store.addMilestone(board, { agentId: 'coordinator', name: 'equal-score focus', items: [wide, ...children, long, middle, end] });
+  setLineSetting(board, { agentId: 'coordinator', key: 'focusMilestone', value: 'equal-score focus',
+    reason: 'Equal-score critical-path tie fixture under ruling 29931.', window: { items: 6 } });
+  assert.equal(store.nextFor(board, { agentId: builder, lane: 'core' }).item.item_id, long,
+    'both roots score 3/3; only the remaining path distinguishes them before their age');
+  assert.equal(workQueue(board).first.strong, long, 'the queue resolves the same equal-score tie');
+});
+
+test('a file overlap keeps the hard collision skip under the sharpened precedence [N2,N20]', t => {
   const { board, builder } = boardFixture();
   t.after(() => store.closeBoard(board));
   const busy = store.register(board, { lane: 'api', path: '/soft-overlap', route: 'strong' });
   const active = store.addItem(board, { by: 'coordinator', lane: 'api', title: 'A live shared file', brief: 'Files: src/shared.js' });
   store.claim(board, active, { agentId: busy, lane: 'api', leaseMs: HOUR, freeze: FREEZE });
   const colliding = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Ready overlapping work', brief: 'Files: src/shared.js' });
-  assert.equal(store.nextFor(board, { agentId: builder, lane: 'core' }).item?.item_id, colliding,
-    'the only ready work remains offerable despite overlap');
-  assert.equal(workQueue(board).first.strong, colliding, 'queue does not hard-block the same offer');
+  assert.equal(store.nextFor(board, { agentId: builder, lane: 'core' }).item, null,
+    'ruling 29931 retains the hard collision skip even when the colliding item is the only ready work');
+  assert.equal(workQueue(board).first.strong, null, 'queue and next both retain the collision block');
+  assert.ok(workQueue(board).releases.flatMap(release => release.items).concat(workQueue(board).unreleased)
+    .find(item => item.id === colliding).waits.length > 0, 'the blocked offer still explains its live collision');
   const free = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Equally short independent work', brief: 'Files: src/free.js' });
   assert.equal(store.nextFor(board, { agentId: builder, lane: 'core' }).item.item_id, free,
-    'equal remaining paths prefer the item with no live overlap');
+    'an independent item remains offerable while the collision stays blocked');
 });
 
 test('next reviews the longer remaining path with line ordering off [N2,B13,H16]', t => {
