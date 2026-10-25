@@ -1,8 +1,9 @@
 /** Stable seat destinations use existing sealed relay grants and preserve inbox isolation [H2,H16,N26]. */
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { runFixtureGit } from './fixture-child.js';
 import { relayClientFixture } from './relay-client-fixture.js';
 
@@ -22,6 +23,8 @@ async function seat(box, root, environment, name, cli) {
 
 test("a message sent to a seat address lands in that seat's inbox and nowhere else [H2,H16,N26]", async t => {
   const box = await relayClientFixture(t);
+  // Install the actual CLI in this private PATH so project commits exercise its normal hooks.
+  symlinkSync(fileURLToPath(new URL('../bin/pullboard.js', import.meta.url)), join(box.env.PATH, 'pullboard'));
   runFixtureGit(['add', '-A'], { cwd: box.root, env: box.env });
   runFixtureGit(['commit', '-m', 'chore: commit private seat-address policy'], { cwd: box.root, env: box.env });
   const recipient = await seat(box, box.root, box.env, 'recipient', box.cliAt);
