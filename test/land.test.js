@@ -564,12 +564,19 @@ test('land names sibling conflicts whose reviews share the unchanged main [B3,R3
   assert.deepEqual(dry.blocked, [], 'neither acceptance is stale against unchanged main');
   assert.deepEqual(dry.conflicts, [], 'each sibling merges with the current main considered individually');
   assert.deepEqual(dry.items, entries.map(entry => entry.item));
+  const base = box.git(box.repo, 'rev-parse', 'main');
+  const firstCommit = box.git(entries[0].path, 'rev-parse', 'HEAD');
   const reviewedCommit = box.git(entries[1].path, 'rev-parse', 'HEAD');
   const result = json(box, box.repo, 'land');
   assert.deepEqual(result.landed, [entries[0].item]);
-  const trunk = box.git(box.repo, 'rev-parse', 'main');
+  const trunk = result.conflicts[0]?.trunk;
+  assert.match(trunk, /^[a-f0-9]{40}$/u, 'the collision records an exact Git composition');
+  assert.deepEqual(box.git(box.repo, 'show', '-s', '--format=%P', trunk).split(' '), [base, firstCommit],
+    'the conflicting trunk contains the base and only the first reviewed sibling');
+  assert.equal(box.git(box.repo, 'rev-parse', `${trunk}^{tree}`), box.git(box.repo, 'rev-parse', 'main^{tree}'),
+    'the recorded speculative composition has the tree that actually lands');
   assert.deepEqual(result.conflicts, [{ id: entries[1].item, files: [FILES[0]], trunk,
-    commit: reviewedCommit, reviewedCommit }], 'the actual batch binds the sibling collision to the landed trunk and exact reviewed commit');
+    commit: reviewedCommit, reviewedCommit }], 'the actual batch binds the sibling collision to its exact composition and reviewed commit');
 });
 
 /** Keep the complete private diagnostic refusal in a failing assertion before fixture cleanup deletes its logs. */
