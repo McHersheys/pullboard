@@ -1,5 +1,6 @@
 /** Durable work-health observations, separate from the person's decisions [A6,H16]. */
 import { Refused } from './refused.js';
+import { CPU_SENTINEL_ENGINE } from './cpu-sentinel-engine.js';
 
 /** The allocated engine for ordered sentinel observations; earlier moves keep their meaning. */
 export const HEALTH_SENTINEL_ENGINE = 42;
@@ -9,6 +10,13 @@ export { HEALTH_CAP_ENGINE };
 
 /** The most stuck or resolved notices one health run shouts one by one (#940). */
 export const HEALTH_SHOUT_CAP = 10;
+
+/** Pending CPU deliveries require an engine that can preserve their durable queue [A6,H16]. */
+export function hasPendingCpuNotices(board) {
+  if (!board) return false;
+  const last = board.db.prepare("SELECT event_detail FROM event WHERE event_kind = 'health-scan' ORDER BY event_id DESC LIMIT 1").get();
+  return Boolean(last && JSON.parse(last.event_detail).pendingCpu?.length);
+}
 
 /** Validate and retain only the fields needed to identify and explain a health finding. */
 export function normalizedHealthFindings(findings) {
@@ -66,17 +74,24 @@ export function healthTargets(finding, { engine, coordinator, person, lanes, age
  * @param {{ resolved: any[], added: any[], engine: number, coordinator: string, targets: (finding: any) => string[],
  *   shout: (to: string, text: string) => void, log: (finding: any, cleared: boolean) => void }} run
  */
-export function deliverHealthNotices({ resolved, added, engine, coordinator, targets, shout, log }) {
+export function deliverHealthNotices({ resolved, added, pending = [], engine, coordinator, targets, shout, log }) {
   const capped = engine >= HEALTH_CAP_ENGINE;
+  const durableCpu = engine >= CPU_SENTINEL_ENGINE;
+  const deferred = [];
   let sent = 0;
   let held = 0;
-  for (const [finding, cleared] of [...resolved.map((entry) => [entry, true]), ...added.map((entry) => [entry, false])]) {
+  for (const [finding, cleared, retry] of [...(durableCpu ? pending : []).map(entry => [entry, false, true]),
+    ...resolved.map(entry => [entry, true, false]), ...added.map(entry => [entry, false, false])]) {
+    let coordinatorSent = false;
     for (const to of targets(finding)) {
       if (capped && sent >= HEALTH_SHOUT_CAP) { held += 1; continue; }
       shout(to, healthFindingNotice(finding, cleared));
       sent += 1;
+      if (to === coordinator) coordinatorSent = true;
     }
-    log(finding, cleared);
+    if (durableCpu && !cleared && finding.cause === 'AGENT_CPU' && !coordinatorSent) deferred.push(finding);
+    if (!retry) log(finding, cleared);
   }
   if (held) shout(coordinator, `Health: ${held} more notices from this run were held back, so one run never floods a feed; pullboard health lists every finding.`);
+  return durableCpu ? deferred : undefined;
 }
