@@ -248,6 +248,8 @@ import {
 } from './rigor-notices.js';
 import { RIGOR_NOTICE_ENGINE } from './rigor-source.js';
 import { RIGOR_AUTO_ENGINE } from './rigor-auto-engine.js';
+import { CPU_SENTINEL_ENGINE } from './cpu-sentinel-engine.js';
+import { hasPendingCpuNotices } from './health-receipts.js';
 import {
   milestoneRanks,
   workOrderCompare,
@@ -1718,8 +1720,9 @@ export function shout(board, message) {
 /** Record one current health snapshot atomically, notifying each new or resolved episode once [A6]. */
 export function recordHealthFindings(board, { agentId, observedRevision, findings }) {
   return atomic(board, () => {
-    if ((board.executionEngineVersion ?? ENGINE_VERSION) < HEALTH_SENTINEL_ENGINE) {
-      throw new Refused('ENGINE_VERSION', `sentinel receipts require engine ${HEALTH_SENTINEL_ENGINE}; upgrade Pullboard before scanning`);
+    const minimum = hasPendingCpuNotices(board) || (Array.isArray(findings) && findings.some(finding => finding?.cause === 'AGENT_CPU')) ? CPU_SENTINEL_ENGINE : HEALTH_SENTINEL_ENGINE;
+    if ((board.executionEngineVersion ?? ENGINE_VERSION) < minimum) {
+      throw new Refused('ENGINE_VERSION', `sentinel receipts require engine ${minimum}; upgrade Pullboard before scanning`);
     }
     if (!board.db.prepare('SELECT 1 FROM agent WHERE agent_id = ?').get(agentId)) {
       throw new Refused('NOT_JOINED', 'join this board before recording a health scan: pullboard join <lane>');
@@ -1735,7 +1738,8 @@ export function recordHealthFindings(board, { agentId, observedRevision, finding
     const after = new Map(active.map(finding => [healthFindingIdentity(finding), finding]));
     const added = active.filter(finding => !before.has(healthFindingIdentity(finding)));
     const resolved = previous.filter(finding => !after.has(healthFindingIdentity(finding)));
-    if (!added.length && !resolved.length) return { added: [], resolved: [] };
+    const pending = last ? JSON.parse(last.event_detail).pendingCpu ?? [] : [];
+    if (!added.length && !resolved.length && !pending.length) return { added: [], resolved: [] };
     const agents = listAgents(board);
     const lanes = [...new Set(agents.map(agent => agent.agent_lane))];
     const engine = board.executionEngineVersion ?? ENGINE_VERSION;
@@ -1747,9 +1751,9 @@ export function recordHealthFindings(board, { agentId, observedRevision, finding
         owner: finding.owner, commit: item?.item_commit ?? null, engine: HEALTH_SENTINEL_ENGINE,
       });
     };
-    deliverHealthNotices({ resolved, added, engine, log, coordinator: COORDINATOR, shout: (to, text) => insertShout(board, { from: 'sentinel', to, text, lanes }),
+    const deferred = deliverHealthNotices({ resolved, added, pending, engine, log, coordinator: COORDINATOR, shout: (to, text) => insertShout(board, { from: 'sentinel', to, text, lanes }),
       targets: finding => healthTargets(finding, { engine, coordinator: COORDINATOR, person: PERSON, lanes, agents }) });
-    logEvent(board, agentId, 'health-scan', null, { active, engine: HEALTH_SENTINEL_ENGINE });
+    logEvent(board, agentId, 'health-scan', null, { active, ...(deferred === undefined ? {} : { pendingCpu: deferred }), engine: HEALTH_SENTINEL_ENGINE });
     return { added: added.map(finding => finding.key), resolved: resolved.map(finding => finding.key) };
   });
 }
