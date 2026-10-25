@@ -2,16 +2,24 @@
 import assert from 'node:assert/strict';
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { awaitNestedRun } from '../src/test-file-pool.js';
 import { runFixtureChildAsync } from './fixture-child.js';
 import { HOST, installSshStandIn } from './runner-ssh-fixture.js';
 
 const SOURCE = resolve(import.meta.dirname, '..');
+let fixtureSequence = 0;
 
 /** Build an ordinary CLI fixture whose declared test reports its actual checkout and live holder. */
 export function cpuLoadFixture(e2e, { declaration = '{ cpuLoad: true }', binding = 'test', subtest = null, commonjs = false, dynamicImport = false, importBinding = null, moduleSpecifier = 'node:test', importedOptions = false, registrationHelper = false, lifecycleHelper = false } = {}) {
+  const fixture = ++fixtureSequence;
+  const started = performance.now();
+  /** Expose only bounded phase metadata so a timed-out diagnostic retains the last reached setup step. */
+  const stage = phase => console.error('CPU_LOAD_STAGE ' + JSON.stringify({ fixture, phase, elapsedMs: Math.round(performance.now() - started) }));
+  stage('project-start');
   const probeFile = `cpu-probe.test.${commonjs ? 'cjs' : 'js'}`;
   const box = e2e.project(`node bin/run-tests.js test/${probeFile}`);
+  stage('project-ready');
   const bin = join(box.dir, 'ssh-bin');
   const remoteHome = join(box.dir, 'runner-home');
   const remoteMachineHome = join(remoteHome, '.pullboard');
@@ -49,6 +57,7 @@ ${subtest ? '});' : ''}
 `);
   box.git(box.repo, 'add', '-A');
   box.git(box.repo, 'commit', '-q', '-m', 'test: commit declared CPU placement probe');
+  stage('source-committed');
   installSshStandIn({ bin, worker: join(box.dir, 'worker'), home: remoteHome, machineHome: remoteMachineHome, requests });
   const env = { ...box.env, PATH: `${bin}:${box.env.PATH}` };
   for (const key of Object.keys(env)) if (/^PULLBOARD_(GATE|BROWSER|TEST|LANDING)_/u.test(key) || key === 'NODE_OPTIONS' || key === 'NODE_TEST_CONTEXT') delete env[key];
@@ -62,6 +71,7 @@ ${subtest ? '});' : ''}
   command('runner', 'add', HOST, '--slots', '1', '--browser', commonjs ? '1' : '0');
   command('settings', 'gate.runnersFirst', 'off');
   command('settings', 'gateSlots', '1');
+  stage('runner-registered');
   const cli = join(SOURCE, 'bin', 'pullboard.js');
   return {
     ...box, env, requests, remoteHome, remoteMachineHome, command,
@@ -76,8 +86,10 @@ ${subtest ? '});' : ''}
     },
     /** Run the public landing gate under its ordinary lease and wait on its original child promise. */
     async runGate() {
+      stage('gate-start');
       const result = await awaitNestedRun(runFixtureChildAsync(process.execPath, [cli, 'gate', '--landing', '--json'],
         { cwd: box.repo, env, encoding: 'utf8' }));
+      stage('gate-returned');
       const log = readFileSync(join(box.repo, '.git', 'pullboard-gate.log'), 'utf8');
       if (result.status !== 0) console.error('CPU placement gate output:', result.stdout, '\nGate log:', log);
       const match = /^# CPU_LOAD_EXECUTOR (.+)$/mu.exec(log);
