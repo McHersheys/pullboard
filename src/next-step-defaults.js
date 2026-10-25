@@ -28,6 +28,7 @@ export const DEFAULT_NEXT_STEPS = Object.freeze({
   "PERSON_ENROLL_MISSING": "use this account’s own person-authenticated enrollment",
   "PERSON_ENROLL_REPLAY": "create a fresh one-time person challenge; do not reuse the consumed nonce",
   "PERSON_ENVELOPE_AUTH": "use the original independently retained person material and exact account envelope context",
+  "PERSON_VAULT_AUTH": "use the original credential or saved recovery key with the pinned public root, account and revision; restore an unaltered vault copy if its ciphertext changed",
   "PUBLISH_GITHUB": "inspect gh auth status and the configured GitHub remote, then publish again",
   "PUBLISH_STATE": "preserve publish-pr.json and ask the coordinator to recover its recorded PR identities",
   "PUBLISH_UNPROVEN": "restore the item’s acceptance at its exact submitted commit before publishing",
