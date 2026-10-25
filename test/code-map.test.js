@@ -27,7 +27,7 @@ test('pullboard map prints the overview, a card and an item slice from one scan 
     ' */',
     'export function renderHome() { return \"home\"; }',
     '/* function fakeExport() { return 0; } */',
-    'const decoy = \"import { hidden } from \\'./hidden.js\\'; function fakeString() {}\";',
+    'const decoy = ' + JSON.stringify("import { hidden } from './hidden.js'; function fakeString() {}") + ';',
     templateDecoy,
     'const unsupportedObjectMethod = { nestedMethod() { return true; } };',
   ].join('\n') + '\n');
