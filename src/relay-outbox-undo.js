@@ -117,6 +117,8 @@ export function undoQueued(board, entries) {
       db.exec('PRAGMA defer_foreign_keys = ON');
       const triggers = db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'machine_%'").all();
       for (const { name } of triggers) db.exec(`DROP TRIGGER "${name.replaceAll('"', '""')}"`);
+      // This connection lets an item's status change only under moveItem's token; taking a move back holds it too.
+      db.exec('CREATE TEMP TABLE IF NOT EXISTS moving (token INTEGER); INSERT INTO temp.moving (token) VALUES (1)');
       for (const entry of [...entries].reverse()) {
         for (const change of [...(entry.changes ?? [])].reverse()) {
           // A row changed again since, as a seat's read position is, is put back all the same (its newer read
@@ -132,6 +134,7 @@ export function undoQueued(board, entries) {
         const insert = db.prepare('INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)');
         for (const row of counters) insert.run(row.name, row.seq);
       }
+      db.exec('DELETE FROM temp.moving');
       for (const { sql } of storeTriggers()) db.exec(sql);
     });
   } catch (error) {
