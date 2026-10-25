@@ -24,6 +24,8 @@ import { readEngineLeaves } from '../src/engine-numbers.js';
 import { applyEngineMove, prepareEngineMove } from '../src/engine.js';
 import {
   ACCEPT_REASON,
+  actOnActivity,
+  recordActivityDelivery,
   answerDecision,
   addItem,
   requestCompanion,
@@ -316,6 +318,12 @@ function recordEventContract() {
   answerDecision(board, personQuestion, { agentId: coordinator, text: 'approved', lanes: ['docs', 'tests'], asPerson: true });
   const request = shout(board, { from: PERSON, to: coordinator, text: 'sample request', lanes: ['docs', 'tests'], request: true });
   answerDecision(board, request, { agentId: coordinator, text: 'done', lanes: ['docs', 'tests'] });
+  const deliveryQuestion = shout(board, { from: builder, to: coordinator, text: 'sample delivery question', decision: true, lanes: ['docs', 'tests'] });
+  answerDecision(board, deliveryQuestion, { agentId: coordinator, text: 'sample delivery answer', lanes: ['docs', 'tests'] });
+  const deliveryEvent = events(board).findLast(event => event.event_kind === 'answer');
+  recordActivityDelivery(board, { agentId: builder, through: deliveryEvent.event_id, digestThrough: deliveryEvent.event_id,
+    interrupts: [{ id: `event:${deliveryEvent.event_id}`, eventId: deliveryEvent.event_id, reason: 'answered' }] });
+  actOnActivity(board, { agentId: builder, ids: [`event:${deliveryEvent.event_id}`] });
   const decisions = recordRowDecisions(board, { agentId: PERSON, channel: 'terminal', decisions: [{ kind: 'spec', file: 'SPEC.md', id: 'A1', source: '- A1 [draft] Exact row.', replacement: '- A1 [approved] Exact row.', text: 'Exact row.', decision: 'approve', reason: '' }] });
   applyRowDecisions(board, { agentId: coordinator, events: decisions.map((record) => record.event) });
   draftSpecRow(board, { agentId: builder, row: { id: 'A2', text: 'A lane drafted row.', gate: 'review', tier: 'must', section: 'A · Fixture' } });
@@ -346,7 +354,9 @@ function recordEventContract() {
   refreeze(board, first, { agentId: coordinator, freeze: freeze('second') });
   claim(board, first, { agentId: builder, lane: 'docs', leaseMs: 60_000, freeze: freeze('unused') });
   const acceptedCommit = 'a'.repeat(40);
-  submitFixture(board, first, { agentId: builder, commit: acceptedCommit, tree: 'b'.repeat(40), files: ['docs/formats.md'], policyCommit: 'a'.repeat(40) });
+  // Synthetic metadata exercises the optional event shape; real Git counting is tested separately.
+  submitFixture(board, first, { agentId: builder, commit: acceptedCommit, tree: 'b'.repeat(40), files: ['docs/formats.md'], policyCommit: 'a'.repeat(40),
+    submissionSize: { base: 'c'.repeat(40), head: acceptedCommit, lines: 100, method: 'added-plus-deleted-no-renames' } });
   reserveReview(board, first, { agentId: reviewer, leaseMs: 60_000, policy: 'agents' });
   verify(board, first, { agentId: reviewer, decision: 'ACCEPT', reason: ACCEPT_REASON, note: 'checked the example', head: acceptedCommit, digest: 'second', policy: 'agents', implies: [dependency] });
   verify(board, first, { agentId: reviewer, decision: 'ACCEPT', note: 'checked a newer composition',
@@ -730,6 +740,8 @@ test('[A5] schema, versions, event kinds and event detail fields match live beha
     'rigor-notice': 'rigor',
     'rigor-draft': 'rigor',
     shout: 'sender',
+    'activity-delivered': 'recipient',
+    'activity-acted': 'recipient',
     shout_news: 'sender',
     pass: 'coordinator',
     answer: 'answerer',

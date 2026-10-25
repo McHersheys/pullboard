@@ -17,8 +17,9 @@ const TAKEN = new WeakMap();
 
 /** The coordinator move's arguments: this checkout's relay machine id names it in the hold. */
 function takeArgs(root) {
-  const machine = relayMachineContext(root)?.machine;
-  return [{ agentId: COORDINATOR, ...(typeof machine === 'string' ? { machine } : {}) }];
+  const state = relayMachineContext(root);
+  const machine = state?.machine;
+  return [{ agentId: COORDINATOR, ...(typeof machine === 'string' ? { machine } : {}), ...(state?.computerName === undefined ? {} : { name: state.computerName }) }];
 }
 
 /**

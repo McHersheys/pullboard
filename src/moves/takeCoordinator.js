@@ -3,9 +3,11 @@ import { RIGOR_AUTO_ENGINE } from '../rigor-auto-engine.js';
 import { COORDINATOR_HOLD_ENGINE } from '../coordinator-hold-engine.js';
 import { LANDING_LEASE_ENGINE } from '../landing-lease-engine.js';
 import { BOARD_SENTINEL_ENGINE } from '../sentinel-engine.js';
+import { COMPUTER_NAME_ENGINE } from '../computer-name-engine.js';
 
 /** Preserve this operation's historical first-matching engine conditions [H16]. */
 function minimumEngine(args, board, at) {
+  if (args[0]?.name !== undefined) return COMPUTER_NAME_ENGINE;
   if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('conflict:')) return RIGOR_AUTO_ENGINE;
   if (args[0]?.landingFence !== undefined) return LANDING_LEASE_ENGINE;
   if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('sentinel:')) return BOARD_SENTINEL_ENGINE;

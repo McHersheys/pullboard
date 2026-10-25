@@ -11,6 +11,7 @@ import { blueprintRowIds, starterStates } from '../src/blueprint-report.js';
 import { parseSpec } from '../src/spec.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { assertStarterChecks } from './blueprint-starter-fixture.js';
+import { assertArchitectureBlueprintCoverage } from './blueprint-architecture-coverage.js';
 
 const BIN = resolve(import.meta.dirname, '../bin/pullboard.js');
 const PUBLISHED = JSON.parse(readFileSync(resolve(import.meta.dirname, '../src/blueprints/web-app.json'), 'utf8'));
@@ -334,9 +335,17 @@ const SOURCED = {
     { key: 'EA2', text: 'No function runs past its time limit.', why: 'the platform stops it there.', source: { name: 'Example Lens' } },
   ],
   questions: [{ key: 'Q1', ask: 'It runs on', choices: ['AWS', 'Cloudflare'], default: 'AWS' }],
-  items: [{ key: '1', title: 'Every function has an alarm', cites: ['EA1'], criterion: 'A test fails on a function without an alarm.', check: 'true' }],
+  items: [
+    { key: '1', title: 'Every function has an alarm', cites: ['EA1'], criterion: 'A test fails on a function without an alarm.', check: 'true' },
+    { key: '2', title: 'No function exceeds its deadline', cites: ['EA2'], criterion: 'A test fails when a function exceeds its deadline.', check: 'true' },
+  ],
 };
-
+test("an architecture blueprint's rows each arrive with a check that runs red before it is built [S1,I1]", () => {
+  assertArchitectureBlueprintCoverage({ blueprint: { ...SOURCED, items: [
+    { key: '1', title: 'Add an alarm', cites: ['EA1'], criterion: 'The alarm is present.', check: 'test -f app/src/alarm.js' },
+    { key: '2', title: 'Set a deadline', cites: ['EA2'], criterion: 'The deadline is set.', check: 'test -f app/src/deadline.js' },
+  ] }, freshBoard, json, runFixtureChild });
+});
 test('a drafted row records its rule source [S1,I1]', () => {
   // blueprint add copies each rule's source onto its drafted row as a source field; the row's text
   // stays the rule and its reason, so the person approves the rule and reads where it came from.
