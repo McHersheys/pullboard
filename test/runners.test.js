@@ -1479,7 +1479,7 @@ test('the runner round trip deadline holds under a loaded test machine and still
 test('fixture context forwarding is not a CPU-load declaration [C7]', async t => {
   const sources = [
     ['forwarded context', "import test from 'node:test'; function fixture(context) { context.after(() => {}); } test('ordinary', async t => { fixture(t); });"],
-    ['regular expression method', "import test from 'node:test'; test('ordinary', () => { /strong/.test('row text'); });"],
+    ['regular expression method', "import test from 'node:test'; test('ordinary', () => { const row = { text: 'strong' }; /strong/.test(row.text); });"],
   ];
   for (const [name, source] of sources) await t.test(name, () => {
     assert.equal(cpuLoadOptionsIn([source])[0], false, 'ordinary executable code is not an explicit CPU-load option');
