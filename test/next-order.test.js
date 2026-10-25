@@ -99,6 +99,34 @@ test('next reviews the longer remaining path with line ordering off [N2,B13,H16]
     'review offers also advance the longer remaining path with the separate line.order switch off');
 });
 
+test('recorded review selection keeps its historical path priority on replay [N2,H16]', t => {
+  for (const engine of [CRITICAL_PATH_ENGINE - 1, ENGINE_VERSION]) {
+    const { board, builder, reviewer } = boardFixture();
+    const replica = store.openBoard(':memory:');
+    t.after(() => { store.closeBoard(board); store.closeBoard(replica); });
+    const independent = submitted(board, builder, 'Older independent review', 'strong', 1);
+    const root = submitted(board, builder, 'Review that unlocks a longer path', 'strong', 2);
+    const follower = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Blocked follow-up', after: [root] });
+    store.addMilestone(board, { agentId: 'coordinator', name: 'focus', items: [independent, root, follower] });
+    setLineSetting(board, { agentId: 'coordinator', key: 'focusMilestone', value: 'focus',
+      reason: 'Synthetic old/current selection replay fixture.', window: { items: 3 } });
+    importBoard(replica, exportBoard(board));
+    const prepared = prepareEngineMove(board, 'reserveNextReview', [{ agentId: reviewer, lane: 'review', leaseMs: HOUR, policy: 'any' }]);
+    const move = { ...prepared, engine };
+    const receipt = { sequence: 1, at: '2026-10-25T12:00:00Z' };
+    const outcomes = [board, replica].map(current => applyEngineMove(current, move, receipt));
+    assert.equal(outcomes[0].error, undefined, JSON.stringify(outcomes[0]));
+    assert.deepEqual(outcomes[0], outcomes[1], 'independent SQLite replicas select and record the same offer');
+    assert.equal(outcomes[0].result.item.item_id, engine < CRITICAL_PATH_ENGINE ? independent : root,
+      'only current-feature moves acquire longest-path selection');
+    for (const current of [board, replica]) {
+      const count = store.events(current).length;
+      assert.deepEqual(applyEngineMove(current, move, receipt), outcomes[0], 'same move identity reuses its immutable outcome');
+      assert.equal(store.events(current).length, count, 'receipt replay appends no duplicate reservation');
+    }
+  }
+});
+
 test('a reviewer gets the earliest milestone\'s submissions first [B16]', (t) => {
   const { board, builder, reviewer } = boardFixture();
   t.after(() => store.closeBoard(board));
