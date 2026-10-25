@@ -16,7 +16,7 @@ import { submitFixture } from './board-submit-fixture.js';
 function fixture(t, { item = true, now } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'pullboard-report-cache-'));
   runFixtureGit(['init', '-q', '-b', 'main'], { cwd: root, stdio: 'pipe' });
-  const board = store.openBoard(join(root, '.git', 'board.sqlite'), { now });
+  const board = store.openBoard(join(root, '.git', 'board.sqlite'), now ? { now } : undefined);
   store.register(board, { lane: 'coordinator', path: root });
   if (item) store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Known open history' });
   t.after(() => { store.closeBoard(board); rmSync(root, { recursive: true, force: true }); });
