@@ -6,6 +6,7 @@ Notable changes to Pullboard, for people using it. The format follows [Keep a Ch
 
 ### Added
 
+- pullboard init now adds light hooks for Claude Code and Codex: they resume your work at the start of a session and remind you of unsubmitted work at the end. They never block, and init --no-hooks skips them.
 - Decisions now record where they came from (you, relayed from you, an agent, or inherited), and pullboard why <file> lists the decisions behind a file. (#970)
 
 - Pull requests get a 'verified by a second agent' status that teams can require; a pull request made outside Pullboard shows as not verified. (#988)
@@ -17,6 +18,7 @@ Notable changes to Pullboard, for people using it. The format follows [Keep a Ch
 - You can pair a second phone or browser with the command the page shows. (#978)
 
 - Teams that work in pull requests can have Pullboard open one pull request per release, carrying each item's proof; merging it ships the release. (#987)
+- Every agent seat has its own address, so agents outside this machine can message it. (#994)
 
 ### Fixed
 
