@@ -157,20 +157,29 @@ export function commonJsIn(sources) {
   });
 }
 
-/** Find CPU-load option properties in code without evaluating a test module. Unknown values require runner admission. */
+/** Find CPU-load options without evaluating a test module; unknown identifier values require runner admission. */
 export function cpuLoadOptionsIn(sources) {
-  const occurrences = sources.map(source => [...source.matchAll(/(?:\bcpuLoad\b|["']cpuLoad["'])\s*:/gu), ...source.matchAll(UNICODE_ESCAPE)]);
-  const variants = sources.flatMap((source, index) => occurrences[index].map(match => {
-    const at = match.index + match[0].length;
-    return source.slice(0, at) + '\u0000' + source.slice(at);
+  const occurrences = sources.map(source => [
+    ...source.matchAll(/(?:\bcpuLoad\b|["']cpuLoad["'])/gu), ...source.matchAll(UNICODE_ESCAPE),
+  ].flatMap(match => {
+    const end = match.index + match[0].length;
+    let tail = pastGap(source, end);
+    const quoted = /^["']/u.test(match[0]);
+    if (quoted && tail.startsWith(']')) tail = pastGap(tail, 1);
+    const property = tail.startsWith(':');
+    if (quoted && !property) return [];
+    const at = property ? source.length - tail.length + 1 : end;
+    const value = property ? pastGap(source, at) : '';
+    const disabled = property && /^false\b/u.test(value) && /^[,}]/u.test(pastGap(value, 5));
+    return [{ at, disabled }];
   }));
+  const variants = sources.flatMap((source, index) => occurrences[index].map(({ at }) =>
+    source.slice(0, at) + '\u0000' + source.slice(at)));
   const parsed = look([...sources, ...variants]);
   let next = sources.length;
   return sources.map((source, index) => {
     let found = !parsed[index].compiles;
-    for (const match of occurrences[index]) {
-      const value = pastGap(source, match.index + match[0].length);
-      const disabled = /^false\b/u.test(value) && /^[,}]/u.test(pastGap(value, 5));
+    for (const { disabled } of occurrences[index]) {
       if (!parsed[next].compiles && !disabled) found = true;
       next += 1;
     }
