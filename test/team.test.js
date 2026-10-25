@@ -945,8 +945,8 @@ test('an item waits across repos [B24,H16]', async t => {
   const options = { agentId: 'web-1', lane: 'web', leaseMs: 60_000, freeze };
   assert.equal(store.nextFor(local, { agentId: 'web-1', lane: 'web' }).item.item_id, dependent);
   assert.equal(store.nextFor(replica, { agentId: 'web-1', lane: 'web' }).item.item_id, dependent);
-  store.claim(local, dependent, options);
-  store.claim(replica, dependent, options);
+  const move = prepareEngineMove(local, 'claim', [dependent, options]);
+  assert.deepEqual(applyEngineMove(local, move), applyEngineMove(replica, move), 'one ordered claim returns the same receipt on both replicas');
   assert.equal(store.getItem(local, dependent).item_status, 'claimed');
   assert.equal(store.getItem(replica, dependent).item_status, 'claimed', 'replica uses canonical received state, not a local registry or foreign-board path');
   assert.deepEqual(exportBoard(replica), exportBoard(local), 'same canonical state and claim produce exact replica rows and event IDs');
