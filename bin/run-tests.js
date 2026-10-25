@@ -7,6 +7,7 @@
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, lstatSync, realpathSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, delimiter, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import {
   devNull,
@@ -268,6 +269,12 @@ function testEnvironment(sandbox, gateMarkers = {}) {
   return env;
 }
 
+/** Load a caller-selected reporter at the CLI boundary; the dispatcher imports only its fixed dependencies. */
+async function loadCustomReporter(reporter) {
+  return (await import(reporter.startsWith('.') || reporter.startsWith('/')
+    ? pathToFileURL(resolve(reporter)).href : reporter)).default;
+}
+
 /**
  * Run ordinary mode through admitted files and return its result for faithful exit handling.
  *
@@ -282,7 +289,7 @@ async function runTests(args, env, concurrency) {
   const { options } = await landingTestOptions(normalized.args, env, normalized.concurrency);
   if (env.PULLBOARD_TEST_ACTIONS) options.reporters.push({ reporter: fileURLToPath(new URL('../src/test-action-reporter.js', import.meta.url)), destination: devNull });
   if (env.PULLBOARD_TEST_SELECTION) options.reporters.push({ reporter: fileURLToPath(new URL('../src/test-selection.js', import.meta.url)), destination: devNull });
-  return reportDispatchedTests(options, env);
+  return reportDispatchedTests(options, env, loadCustomReporter);
 }
 
 /** Convert the Node test CLI subset to the supported node:test run() options. */

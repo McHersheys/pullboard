@@ -1,6 +1,6 @@
 /** Parent-controlled file admission and one structured result stream [C7]. */
 /** @pullboard-module-loads ** */
-// Reporter modules are caller-selected, just as in bin/run-tests.js.
+// Native test files are caller-selected, just as in bin/run-tests.js.
 import { spawnSync } from 'node:child_process';
 import { devNull } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +12,8 @@ import { availableParallelism } from 'node:os';
 import { resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { run } from 'node:test';
+import * as testReporters from 'node:test/reporters';
+import { glob } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { testsNeedBrowser } from './browser-admission.js';
 import { takeResource } from './resources.js';
@@ -215,7 +217,7 @@ export function dispatchTestFiles(options, env) {
 }
 
 /** Native mode keeps running after a test failure and initializes each public/internal reporter exactly once. */
-export async function reportDispatchedTests(options, env) {
+export async function reportDispatchedTests(options, env, loadCustomReporter) {
   const controller = new AbortController();
   const inputs = [];
   const ends = [];
@@ -227,9 +229,7 @@ export async function reportDispatchedTests(options, env) {
   try {
     for (const entry of options.reporters) {
       const builtin = ['tap', 'spec', 'dot', 'junit', 'lcov'].includes(entry.reporter);
-      const reporter = builtin ? (await import('node:test/reporters'))[entry.reporter]
-        : (await import(entry.reporter.startsWith('.') || entry.reporter.startsWith('/')
-          ? pathToFileURL(resolve(entry.reporter)).href : entry.reporter)).default;
+      const reporter = builtin ? testReporters[entry.reporter] : await loadCustomReporter(entry.reporter);
       if (typeof reporter !== 'function') throw new Error(`unknown test reporter: ${entry.reporter}`);
       const input = new PassThrough({ objectMode: true });
       const output = input.compose(reporter);
@@ -397,7 +397,6 @@ export async function testFileOptions(args, env, concurrency, { runner, optionTa
     options.concurrency = Math.min(concurrency.files, requested);
   }
   if (selectors.length) {
-    const { glob } = await import('node:fs/promises');
     const files = [];
     for (const selector of selectors) {
       if (!/[?*[{]/u.test(selector)) {
@@ -424,7 +423,6 @@ export async function testFileOptions(args, env, concurrency, { runner, optionTa
   }
   let selectedCandidates = options.files;
   if (!selectedCandidates) {
-    const { glob } = await import('node:fs/promises');
     const defaults = ['**/*.test.{cjs,mjs,js}', '**/*-test.{cjs,mjs,js}', '**/*_test.{cjs,mjs,js}',
       '**/test-*.{cjs,mjs,js}', '**/test.{cjs,mjs,js}', '**/test/**/*.{cjs,mjs,js}'];
     const matches = new Set();
