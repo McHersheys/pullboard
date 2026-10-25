@@ -1,10 +1,7 @@
 import { migrateEventLogVersion } from './board-event-log-migrate.js';
 import {
-  beginBoardWrite,
   configureBoardJournal,
-  finishBoardWrite,
   closeBoardWrites,
-  prepareBoardWriteIdentity,
 } from './board-write-lock.js';
 import {
   focusOrder,
@@ -110,8 +107,11 @@ import {
   unreadShoutBindings,
 } from './shout-audience.js';
 import { recordVerdict } from './verdict-assurance.js';
-import { logEvent } from './board-event-log.js';
-export { logEvent };
+import {
+  atomic,
+  logEvent,
+} from './board-event-log.js';
+export { atomic, logEvent };
 /**
  * The board (B1–B7, V1–V8, R1–R3): items, claims, submissions, verdicts and shouts in one SQLite
  * file in the git common dir, so every worktree sees the same board and nothing is committed.
@@ -158,7 +158,6 @@ import {
   requireFactIdentityIndexes,
 } from './fact-identity.js';
 import { NEXT_STEPS } from './next-step-words.js';
-import { boardWriteBusyError } from './board-busy.js';
 export { boardBusyError } from './board-access.js';
 import {
   boardStanding,
@@ -463,50 +462,6 @@ export { readEventLogVersion } from './board-read-open.js';
 export { boardId } from './board-query.js';
 
 export { closeBoard } from './board-read-open.js';
-
-const TRANSACTION_DEPTH = new WeakMap();
-
-/**
- * Run `work` in one immediate transaction: the write lock is taken before the first read, so two
- * agents can never both see an item as free (B2). Nested moves use savepoints so a replay receipt
- * and its board mutation can commit together, while a refused move rolls back only its work.
- *
- * @template T
- * @param {any} board
- * @param {() => T} work
- * @returns {T}
- */
-export function atomic(board, work) {
-  const depth = TRANSACTION_DEPTH.get(board) ?? 0;
-  const savepoint = `pullboard_atomic_${depth}`;
-  if (!depth) prepareBoardWriteIdentity();
-  const startedAt = Date.now();
-  try { board.db.exec(depth ? `SAVEPOINT ${savepoint}` : 'BEGIN IMMEDIATE'); }
-  catch (error) { throw boardWriteBusyError(board.db, startedAt, error); }
-  TRANSACTION_DEPTH.set(board, depth + 1);
-  const writeRecord = depth ? null : beginBoardWrite(board.db, board.writeContext);
-  let released = false;
-  let outcome = 'release-failed';
-  const lastEvent = board.lastEvent;
-  const emitted = board.emittedEvents?.length ?? 0;
-  try {
-    const result = work();
-    board.db.exec(depth ? `RELEASE ${savepoint}` : 'COMMIT');
-    released = true;
-    outcome = 'committed';
-    return result;
-  } catch (error) {
-    board.db.exec(depth ? `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}` : 'ROLLBACK');
-    released = true;
-    outcome = 'rolled-back';
-    board.lastEvent = lastEvent;
-    board.emittedEvents?.splice(emitted);
-    throw error;
-  } finally {
-    TRANSACTION_DEPTH.set(board, depth);
-    finishBoardWrite(writeRecord, released, outcome);
-  }
-}
 
 /** Log an authenticated relay refusal without making an item, shout or verdict move [H2,H16]. */
 export function recordRelayRefusal(board, { by, sequence, kind, operation, actor, code, itemId = null, person = null }) {
