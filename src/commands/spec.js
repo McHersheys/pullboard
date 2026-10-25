@@ -221,6 +221,12 @@ export async function specCommand(io, { first, second, rest, values }) {
     return withBoard(ctx, async (board) => {
       const me = whoAmI(ctx, board);
       const ids = [second, ...rest].filter(Boolean).flatMap((text) => text.split(/[\s,]+/u)).filter(Boolean);
+      const drafts = store.rowDrafts(board);
+      const revisionIds = ids.filter(id => drafts.some(draft => draft.id === id && draft.revises));
+      // A passkey request cannot yet show a revision proposal's exact rows, so a signed board refuses rather than guess [E22].
+      if (revisionIds.length && personSigning(board).signed) {
+        throw new Refused('PERSON_SIGNED', 'a proposed revision to an approved row cannot be confirmed with a passkey yet', 'turn signed person moves off with your passkey to decide revision proposals, then turn them on again');
+      }
       // With signed person moves on, the decision goes to the person's passkey; a named SSH signer has no passkey yet [E22].
       const shown = [...spec.rows, ...(practice.rows ?? []).map(row => ({ ...row, id: `doctrine:${row.id}` }))].filter(row => ids.includes(row.id));
       if (personSigning(board).signed) {
@@ -232,7 +238,7 @@ export async function specCommand(io, { first, second, rest, values }) {
         ...(values.text === undefined ? {} : { text: values.text }), ...(values.reason === undefined ? {} : { reason: values.reason }) } },
       () => shownDecisionRows(ctx.info.root, ctx.config, ids));
     if (confirmed !== null) return confirmed;
-      const sources = shownDecisionRows(ctx.info.root, ctx.config, ids);
+      const sources = personSigning(board).signed ? shownDecisionRows(ctx.info.root, ctx.config, ids) : [];
       requirePersonChannel(io.personChannel);
       if (!ctx.info.isMain || me.id !== COORDINATOR) throw new Refused('B26_PERSON_APPROVAL', 'only the person from the main checkout approves or declines rows; use pullboard view for the person to decide');
       if (personSigning(board).signed) {
@@ -240,8 +246,6 @@ export async function specCommand(io, { first, second, rest, values }) {
         refuseNamedSigners(decidable, ids);
         requireShownRows(board, io.personRequest, decidable, ids, sources);
       }
-      const drafts = store.rowDrafts(board);
-      const revisionIds = ids.filter(id => drafts.some(draft => draft.id === id && draft.revises));
       if (revisionIds.length) {
         if (revisionIds.length !== ids.length || values.text !== undefined) throw new Refused('SPEC_REVISION', 'decide exact revision proposals separately; draft a new proposal to change its text');
         const records = prepareSpecRevisionDecisions(ctx.info.root, ctx.config, drafts, { ids, decision: first,
