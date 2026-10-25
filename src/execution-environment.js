@@ -52,7 +52,8 @@ export function carriesLandingEnvironment(batch) {
 
 /** The exact trusted preload reports from inside each Node process, independently of its launcher. */
 export function runtimeCaptureSource(directory) {
-  return `import { writeFileSync } from 'node:fs';
+  return `import { lstatSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { channel } from 'node:diagnostics_channel';
 import { randomUUID } from 'node:crypto';
 const directory=${JSON.stringify(directory)};
@@ -65,6 +66,25 @@ channel('child_process').subscribe(({process:child})=>{
     try { writeFileSync(directory+'/child-'+process.pid+'-'+child.pid+'.json',JSON.stringify({parent:process.pid,pid:child.pid}),{flag:'wx',mode:0o400}); } catch {}
   };
   if (Number.isSafeInteger(child.pid)) record(); else child.once('spawn',record);
+  // Node's native --test parent chooses these workers; bind only its own closed Node child.
+  if (process.execArgv.includes('--test')) child.once('close',()=>{
+    if (child.spawnfile!==process.execPath || !Number.isSafeInteger(child.pid)) return;
+    const selected=child.spawnargs?.at(-1);
+    if (typeof selected!=='string' || !/\\.[cm]?js$/u.test(selected)) return;
+    try {
+      const names=readdirSync(directory).filter(name=>name.startsWith('runtime-'+child.pid+'-')&&name.endsWith('.json'));
+      if (names.length!==1) return;
+      const path=join(directory,names[0]);
+      const stat=lstatSync(path);
+      if (!stat.isFile() || stat.mode&0o222 || stat.size>8192) return;
+      const own=JSON.parse(readFileSync(path,'utf8'));
+      if (own.pid!==child.pid || own.file!==null) return;
+      const target=resolve(selected);
+      const selectedPath=relative(realpathSync(process.cwd()),join(realpathSync(dirname(target)),basename(target))).replaceAll('\\\\','/');
+      const file=selectedPath && !selectedPath.split('/').some(part=>!part||part==='.'||part==='..') && !/[\\r\\n\\0]/u.test(selectedPath) ? selectedPath : null;
+      writeFileSync(directory+'/binding-'+child.pid+'.json',JSON.stringify({pid:child.pid,file}),{flag:'wx',mode:0o600});
+    } catch { /* An unavailable worker/path remains unknown, never becomes the launcher. */ }
+  });
 });
 writeFileSync(file,JSON.stringify({pid:process.pid,environment:{platform:process.platform,arch:process.arch,node:process.version.slice(1)},file:null}),{flag:'wx',mode:0o400});
 // Synchronous spawns have no diagnostics-channel event. An unbound custom process that
