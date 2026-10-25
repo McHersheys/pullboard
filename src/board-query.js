@@ -229,6 +229,17 @@ export function itemThread(board, id) {
 }
 
 /**
+ * The hold on a lane, or null.
+ *
+ * @param {any} board
+ * @param {string} lane
+ * @returns {any | null}
+ */
+export function laneHold(board, lane) {
+  return board.db.prepare('SELECT * FROM hold WHERE hold_lane = ?').get(lane) ?? null;
+}
+
+/**
  * Every held lane.
  *
  * @param {any} board

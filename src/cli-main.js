@@ -38,6 +38,8 @@ const OPTIONS = {
   specs: { type: 'string' },
   parent: { type: 'string' },
   reason: { type: 'string' },
+  revises: { type: 'string' },
+  status: { type: 'string' },
   off: { type: 'boolean' },
   port: { type: 'string' },
   slots: { type: 'string' },
@@ -78,6 +80,7 @@ const OPTIONS = {
   directory: { type: 'string' },
   timeout: { type: 'string' },
   sentinel: { type: 'boolean' },
+  'health-only': { type: 'boolean' },
   digest: { type: 'string' },
   // The rigor quality draft's options.
   base: { type: 'string' },
