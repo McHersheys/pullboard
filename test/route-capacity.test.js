@@ -33,14 +33,20 @@ function fixture(t) {
     const observation = scanHealthSentinel(file, { root, config, now: clock.now() });
     return observation ? store.recordHealthFindings(board, { agentId: 'coordinator', ...observation }) : null;
   }
-  return { directory, root, file, board, clock, config, scan };
+  /** Keep the seeded mid items valid under the ordinary cold-build brief requirement. */
+  function addFree(title) {
+    return store.addItem(board, { by: 'coordinator', lane: 'core', title, route: 'mid',
+      criterion: 'The private fixture item can be built cold.', check: 'false',
+      brief: 'Files:\n- src/fixture.js\nTest:\nThe fixture test asserts its declared behavior.' });
+  }
+  return { directory, root, file, board, clock, config, scan, addFree };
 }
 
 test('the coordinator is told to split work when a route has more idle seats than free items [A6,N2,B13]', t => {
   const box = fixture(t);
   const agents = [1, 2].map(number => store.register(box.board,
     { lane: 'core', path: join(box.directory, 'seat-' + number), route: 'mid' }));
-  store.addItem(box.board, { by: 'coordinator', lane: 'core', title: 'One free item', route: 'mid' });
+  box.addFree('One free item');
   box.clock.at += 31 * 60_000;
   for (const agent of agents) store.shout(box.board, { from: agent, to: 'coordinator', text: 'Available now', lanes: ['core'] });
   const observation = scanHealthSentinel(box.file, { root: box.root, config: box.config, now: box.clock.now() });
@@ -59,6 +65,6 @@ test('the coordinator is told to split work when a route has more idle seats tha
   const eventCount = store.events(box.board).length;
   assert.equal(box.scan(), null, 'identical shortages do not keep shouting');
   assert.equal(store.events(box.board).length, eventCount);
-  store.addItem(box.board, { by: 'coordinator', lane: 'core', title: 'Second free item', route: 'mid' });
+  box.addFree('Second free item');
   assert.ok(box.scan().resolved.includes(shortage.key), 'enough claimable work resolves the shortage');
 });
