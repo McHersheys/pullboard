@@ -417,7 +417,7 @@ async function blockedRecoveryFixture(box) {
     url: box.origin, repository: 'fixture/repository', token: box.machines[0].token, sequence: 0, cursor: box.document.tables.event.at(-1).event_id }) + '\n', { mode: 0o600 });
   const initial = Buffer.from(await sealMove(box.key, new TextEncoder().encode(JSON.stringify(box.document)), { boardId: box.id, kind: 'snapshot', sequence: 0 })).toString('base64url');
   assert.equal((await box.call(box.path + '/state', { method: 'PUT', token: box.person.token, body: { sequence: 0, sealed: initial } })).status, 200);
-  const future = { version: 1, engine: 99, id: 'future-engine-record', operation: 'futureOperation', args: [] };
+  const future = { version: 1, engine: ENGINE_VERSION + 1, id: 'future-engine-record', operation: 'futureOperation', args: [] };
   const sealed = Buffer.from(await sealMove(box.key, new TextEncoder().encode(JSON.stringify(future)), { boardId: box.id, kind: 'move', sequence: 1 })).toString('base64url');
   assert.equal((await box.call(box.path + '/moves', { method: 'POST', token: box.one.token, body: { sequence: 1, sealed } })).status, 200);
   return { future, sealed };
@@ -677,7 +677,7 @@ test('person recovery explicitly skips one future-engine blocker and publishes a
     url: box.origin, repository: 'fixture/repository', token: box.machines[0].token, sequence: 0, cursor: box.document.tables.event.at(-1).event_id }) + '\n', { mode: 0o600 });
   assert.equal((await box.call(box.path + '/state', { method: 'PUT', token: box.person.token,
     body: { sequence: 0, sealed: Buffer.from(await sealMove(box.key, new TextEncoder().encode(JSON.stringify(box.document)), { boardId: box.id, kind: 'snapshot', sequence: 0 })).toString('base64url') } })).status, 200);
-  const future = { version: 1, engine: 99, id: 'future-engine-record', operation: 'unknownFromFuture', args: [] };
+  const future = { version: 1, engine: ENGINE_VERSION + 1, id: 'future-engine-record', operation: 'unknownFromFuture', args: [] };
   assert.throws(() => requireSupportedEngine(future), { code: 'ENGINE_VERSION' });
   assert.equal((await box.call(box.path + '/moves', { method: 'POST', token: box.one.token,
     body: { sequence: 1, sealed: Buffer.from(await sealMove(box.key, new TextEncoder().encode(JSON.stringify(future)), { boardId: box.id, kind: 'move', sequence: 1 })).toString('base64url') } })).status, 200);
@@ -975,7 +975,7 @@ test('two future-engine blockers recover one durable position at a time on two r
   for (let sequence = 1; sequence <= 5; sequence += 1) await upload({ version: 1, engine: ENGINE_VERSION,
     id: 'prefix-' + sequence, operation: 'unknownCurrentOperation', args: [] }, 'move', sequence, box.one.token);
   for (let index = 0; index < roots.length; index += 1) await replayClient(roots[index], envs[index], 'relay');
-  for (const sequence of [6, 7]) await upload({ version: 1, engine: 99, id: 'future-' + sequence,
+  for (const sequence of [6, 7]) await upload({ version: 1, engine: ENGINE_VERSION + 1, id: 'future-' + sequence,
     operation: 'futureOperation', args: [] }, 'move', sequence, box.one.token);
   await upload({ version: 1, engine: ENGINE_VERSION, id: 'later-person-eight', operation: 'shout',
     args: [{ from: 'person', to: 'coordinator', text: 'Person after two blockers', lanes: ['web'] }] }, 'move', 8, box.person.token);
