@@ -178,6 +178,7 @@ export const ITEM_SLOTS = Object.freeze({
   recordLandingBatch: [], recordLandingWaiver: [], recordLandingFlake: [], recordLandingTestDefect: [], finishLandingBatch: [],
   recordHealthFindings: [], decideSentinel: [], beginSentinelRun: [], finishSentinelRun: [],
   recordFlakeObservation: [], recordGateRun: [], declareJob: [], recordJobRun: [], takeCoordinator: [], openHandoff: [], landingLeaseMove: [],
+  recordActivityDelivery: [], actOnActivity: [], recordRowVerification: [], setBoardMembers: [],
   ...Object.fromEntries(FIRST_ITEM.map((operation) => [operation, [[0]]])),
   intakeOutside: [[0, 'item', 'parentId'], [0, 'item', 'after', '*']],
   addItem: [[0, 'parentId'], [0, 'after', '*']],
@@ -486,11 +487,15 @@ function settle(link, outbox, entry, receipt) {
   outbox.results[entry.move.id] = receipt.outcome.error ? null : receipt.outcome.result;
   for (const { item: was, resultPath } of entryCreatedItems(entry)) {
     const is = createdItemAt(receipt.outcome.result, resultPath);
-    if (!receipt.outcome.error && Number.isSafeInteger(is) && is !== was) {
-      state.outboxRenumbered = [...(state.outboxRenumbered ?? []), { was, is }].slice(-KEPT_REFUSALS);
-      io.err(`pullboard: the item this machine showed as #${was} while the relay was down is #${is} on the board; its queued moves follow it`);
-    }
+    if (!receipt.outcome.error) noteRenumbered(link, was, is);
   }
+}
+
+/** Say once that an item this machine showed under one number now has another, and keep it for status. */
+function noteRenumbered({ state, io }, was, is) {
+  if (!Number.isSafeInteger(was) || !Number.isSafeInteger(is) || is === was) return;
+  state.outboxRenumbered = [...(state.outboxRenumbered ?? []), { was, is }].slice(-KEPT_REFUSALS);
+  io.err(`pullboard: the item this machine showed as #${was} while the relay was down is #${is} on the board; its queued moves follow it`);
 }
 
 /**
@@ -565,7 +570,11 @@ async function rebuild(link, key, pulled) {
       catch (error) { if (!(error instanceof Refused)) throw error; return null; }
     });
     // A re-applied add may get another number here; later moves reach it through their bound add, not the number.
+    const shown = entryCreatedItems(entry);
     rememberCreatedItems(entry, result);
+    for (const { item: was, resultPath } of shown) {
+      noteRenumbered(link, was, entryCreatedItems(entry).find((row) => JSON.stringify(row.resultPath) === JSON.stringify(resultPath))?.item);
+    }
   }
   await writeOutbox(where, key, state.board, outbox);
   saveOutboxSummary(link, outbox);

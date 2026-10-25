@@ -227,6 +227,7 @@ globalThis.fetch = function tracedFetch(input, init) {
   let override = null;
   let mintFailures = 0;
   let refuseEventReads = false;
+  let refuseMoveSends = false;
   let revokeOnNextListing = false;
   const boardsWithoutSnapshots = new Map();
   const injectedSnapshotWriteDelayMs = Number(process.env.PULLBOARD_TEST_SNAPSHOT_WRITE_DELAY_MS ?? 0);
@@ -495,6 +496,12 @@ globalThis.fetch = function tracedFetch(input, init) {
       stateReadStarted += 1;
       if (stateReadHold) await stateReadHold;
       else await new Promise(resolveDelay => setTimeout(resolveDelay, stateReadDelayMs));
+    }
+    // Checked before the move hook, so a hook that turns refusal on lets its own move through (#1013).
+    if (refuseMoveSends && req.method === 'POST' && /\/api\/v1\/boards\/[0-9a-f]{32}\/moves$/.test(req.url ?? '')) {
+      res.writeHead(503, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ version: 1, error: { code: 'RELAY_UNAVAILABLE', message: 'fixture move outage' } }));
+      request.resume(); return;
     }
     if (beforeMove && req.method === 'POST' && /\/api\/v1\/boards\/[0-9a-f]{32}\/moves$/.test(req.url ?? '')) {
       const action = beforeMove; beforeMove = null; await action();
@@ -890,6 +897,8 @@ globalThis.fetch = function tracedFetch(input, init) {
     /** Revoke the real session when the next listing arrives so its HTTP authorization refusal is exercised. */
     revokeSessionOnNextListing() { revokeOnNextListing = true; },
     refuseReads(value) { refuseEventReads = value; },
+    /** Answer every move send with a temporary outage, as a relay that stops taking moves part way (#1013). */
+    refuseMoves(value) { refuseMoveSends = value; },
     /** Return a selected listed-board read's missing-snapshot refusal over real HTTP. */
     noBoardOnReads(id, paths = ['state']) {
       boardsWithoutSnapshots.set(id, new Set(paths));
