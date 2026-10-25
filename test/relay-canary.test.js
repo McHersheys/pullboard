@@ -24,18 +24,18 @@ async function canaryApi() {
   }
 }
 
-/** Enable the existing opt-in ordered outbox through the fixture's committed project setting. */
-function enableOutbox(box) {
+/** Commit the fixture's initialized project so real sibling worktrees receive its coordinator configuration. */
+function commitConfiguration(box, { outbox = false } = {}) {
   const file = join(box.root, 'pullboard.json');
   const config = JSON.parse(readFileSync(file, 'utf8'));
-  writeFileSync(file, JSON.stringify({ ...config, relay: { outbox: true } }, null, 2) + '\n');
+  writeFileSync(file, JSON.stringify({ ...config, ...(outbox ? { relay: { ...config.relay, outbox: true } } : {}) }, null, 2) + '\n');
   const cli = fileURLToPath(new URL('../bin/pullboard.js', import.meta.url));
   const privateBin = box.env.PATH.split(delimiter)[0];
   const pullboard = join(privateBin, 'pullboard');
   assert.equal(existsSync(pullboard), false, 'the fixture has no preexisting private Pullboard wrapper to overwrite');
   writeFileSync(pullboard, `#!/bin/sh\nexec node "${cli}" "$@"\n`, { mode: 0o700 });
   runFixtureGit(['add', 'pullboard.json'], { cwd: box.root, env: box.env });
-  runFixtureGit(['commit', '-q', '-m', 'chore(config): enable the relay outbox'], { cwd: box.root, env: box.env });
+  runFixtureGit(['commit', '-q', '-m', 'chore(config): prepare the canary project'], { cwd: box.root, env: box.env });
 }
 
 /** Create an ordinary registered seat in a real fixture worktree, sharing its linked board. */
@@ -75,6 +75,7 @@ function displayText(value) {
 test('a failed round trip alerts within two minutes and names the failed step [H2,H15,C7]', { timeout: 60_000 }, async t => { // budget: private relay startup, four real probes, and fixture cleanup; alert timing uses the injected clock.
   const { probeRelayCanary, observeRelayHealth, readRelayHealth } = await canaryApi();
   const box = await relayClientFixture(t);
+  commitConfiguration(box);
   await box.link();
   const root = canarySeat(box);
   const joined = await box.cliAt(root, 'join', box.lane, '--model', 'canary-fixture');
@@ -160,7 +161,7 @@ test('the health history waits for ten minutes of slow successful round-trip sam
 test('the client shows queued moves while the relay is degraded [H16,H17,C7]', { timeout: 60_000 }, async t => { // budget: linked fixture setup, two queued moves, two real probes, and cleanup.
   const { probeRelayCanary, observeRelayHealth } = await canaryApi();
   const box = await relayClientFixture(t);
-  enableOutbox(box);
+  commitConfiguration(box, { outbox: true });
   await box.link();
   const root = canarySeat(box);
   const joined = await box.cliAt(root, 'join', box.lane, '--model', 'canary-outbox-fixture');
