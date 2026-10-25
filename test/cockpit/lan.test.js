@@ -1,0 +1,70 @@
+/** @pullboard-test-gui */
+/** A private board is usable through its actual LAN address, with explicit pairing authority [H19]. */
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { networkInterfaces, tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { test } from 'node:test';
+import {
+  chromeExecutable, closeSnapshotChrome, fetchLive, machine, openSnapshotChrome, project, startView,
+} from './fixture.js';
+import { assertLanRefusal, lanBoundaryReply, startLanView } from './lan-fixture.js';
+
+test('a phone reaches the board on the local network [H19]', { timeout: 180_000 }, async t => { // budget: one real private board, two owned view listeners and a mobile Chrome session.
+  const box = machine();
+  const alpha = project(box, 'private-lan-fixture');
+  const title = 'LAN fixture obligation';
+  box.run(alpha.repo, 'add', 'web', title, '--specs', 'G1', '--criterion', 'remains visible to its paired person');
+  const view = await startLanView(t, box);
+  const assigned = Object.values(networkInterfaces()).flat().filter(row => row && row.family === 'IPv4' && !row.internal)
+    .map(row => row.address);
+  assert.ok(assigned.includes(view.link.hostname), 'the printed link names an assigned non-loopback interface');
+  assert.ok(view.key && view.key.length >= 24, 'the pairing code has at least 144 bits of random capacity');
+  assert.notEqual(view.link.hostname, '0.0.0.0', 'a wildcard bind is never printed as a usable address');
+
+  const headers = { 'x-pullboard-key': view.key };
+  const boardsReply = await fetchLive(view.base + '/api/v1/boards', { headers });
+  assert.equal(boardsReply.status, 200, 'the authenticated API answers on the actual LAN interface');
+  const boards = (await boardsReply.json()).boards;
+  assert.deepEqual(boards.map(board => board.root), [alpha.repo], 'only the private fixture is exposed');
+  for (const [path, requestHeaders] of [
+    ['/', {}], ['/api/v1/boards', {}], ['/?k=invalid-fixture-code', {}],
+    ['/api/v1/boards', { 'x-pullboard-key': 'invalid-fixture-code' }],
+    ['/', { ...headers, host: 'foreign.invalid:' + view.link.port }],
+    ['/api/v1/boards', { ...headers, host: 'foreign.invalid:' + view.link.port }],
+    ['/', { ...headers, origin: 'https://foreign.invalid' }],
+    ['/api/v1/boards', { ...headers, origin: 'https://foreign.invalid' }],
+    ['/local/view', {}], ['/local/connect', {}],
+  ]) assertLanRefusal(await lanBoundaryReply(view, path, requestHeaders), view, title);
+
+  const executable = chromeExecutable();
+  assert.ok(executable, 'real Chrome is required for the mobile LAN view');
+  const profile = mkdtempSync(join(tmpdir(), 'pullboard-lan-chrome-'));
+  let chrome;
+  t.after(async () => { if (chrome) await closeSnapshotChrome(chrome); rmSync(profile, { recursive: true, force: true }); });
+  chrome = await openSnapshotChrome(executable, view.link.href, profile);
+  await chrome.send('Emulation.setDeviceMetricsOverride', { width: 375, height: 812, deviceScaleFactor: 1, mobile: false });
+  await chrome.waitFor(`innerWidth === 375 && document.body.innerText.includes(${JSON.stringify(title)})`);
+  assert.equal(await chrome.stable('location.hostname'), view.link.hostname, 'the browser uses the LAN address, not a loopback stand-in');
+  await chrome.click('document.querySelector(\'[data-tab="shouts"]\')');
+  const message = 'LAN fixture person request';
+  await chrome.stable(`document.querySelector('#shout-text').value = ${JSON.stringify(message)}`);
+  await chrome.click("document.querySelector('#shout-send')");
+  await chrome.waitFor(`document.querySelector('#shout-text').value === '' && document.body.innerText.includes(${JSON.stringify(message)})`);
+  const native = JSON.parse(box.run(alpha.repo, 'export', '--json'));
+  const recorded = native.tables.shout.filter(row => row.shout_text === message)
+    .map(({ shout_from, shout_to, shout_request }) => ({ shout_from, shout_to, shout_request }));
+  assert.deepEqual(recorded, [{ shout_from: 'person', shout_to: 'coordinator', shout_request: 1 }],
+    'the mobile action is a real native person request, recorded exactly once');
+  assert.equal(await chrome.stable('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true,
+    'the phone view stays within its viewport');
+
+  const local = await startView(box);
+  t.after(() => local.stop());
+  assert.equal(local.link.hostname, '127.0.0.1', 'ordinary view still starts as loopback only');
+  const localForeign = await lanBoundaryReply({ ...local, base: local.base }, '/api/v1/boards', {
+    'x-pullboard-key': local.key, host: view.link.hostname + ':' + local.link.port,
+  });
+  assertLanRefusal(localForeign, local, title);
+  t.diagnostic('Real LAN-interface HTTP and 375px Chrome; both clients run on this machine, not a second physical phone.');
+});
