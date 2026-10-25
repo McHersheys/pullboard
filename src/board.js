@@ -1901,7 +1901,7 @@ function milestoneRanks(board, priority) {
 }
 
 /** Share focus/release, remaining path and soft overlap ordering across build offers and queue display. */
-export function buildOrder(board, { warm = [], agentId, readiness = barReadyForOrder } = {}) {
+export function buildOrder(board, { warm = [], agentId, readiness = barReadyForOrder, releasedClaims = [] } = {}) {
   const milestonePriority = milestonePriorities(board);
   const items = listItems(board, { all: true });
   const rank = milestoneRanks(board, milestonePriority);
@@ -1915,7 +1915,7 @@ export function buildOrder(board, { warm = [], agentId, readiness = barReadyForO
   const focus = milestoneFocus(board);
   const group = item => focus?.ids.has(item.item_id) ? -1 : milestonePriority(item);
   if (!criticalPathEnabled(board)) return focusOrder(board, previous);
-  const paths = criticalPathOrder({ items, group, fallback: previous });
+  const paths = criticalPathOrder({ items, group, fallback: previous, releasedClaims });
   const returnHome = lineOrderEnabled(board);
   const returning = item => returnHome && !focus?.ids.has(item.item_id)
     && item.item_verdict === 'REJECT' && item.item_built_by === agentId;

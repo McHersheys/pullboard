@@ -338,7 +338,6 @@ function queueFaults(board, { items, at, retired = [], gone = new Set() }) {
     }));
   }
 
-  const compare = buildOrder(board);
   const open = [...queue.releases.flatMap((release) => release.items), ...queue.unreleased].filter((entry) => entry.status === 'open');
   // A lapsed claim is CLAIM_LAPSED's to report; only a live claim can rank behind free work.
   for (const claim of items.filter((item) => item.item_status === 'claimed' && Date.parse(item.item_lease_until ?? '') > at)) {
@@ -346,6 +345,8 @@ function queueFaults(board, { items, at, retired = [], gone = new Set() }) {
     if (!holder) continue;
     // Free work that waits only on files the holder's own claims touch is free to the holder once it releases (#1114).
     const own = items.filter((item) => item.item_status === 'claimed' && item.item_owner === holder.id).map((item) => item.item_id);
+    // The suggested release removes this holder's overlap occupancy before next chooses again.
+    const compare = buildOrder(board, { releasedClaims: own });
     const freeToHolder = (entry) => entry.waits.every((wait) => own.some((id) => wait.startsWith(`#${entry.id} waits for #${id} (claimed) on `)));
     const ahead = open.filter((entry) => freeToHolder(entry) && entry.lane === holder.lane && canTake(holder.route, entry.route))
       .map((entry) => raw.get(entry.id))

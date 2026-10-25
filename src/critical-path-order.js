@@ -39,9 +39,10 @@ export function remainingPaths(items, group) {
 }
 
 /** Index live declared/changed paths once; an overlap lowers preference but never eligibility. */
-function overlapCounts(items) {
+function overlapCounts(items, releasedClaims) {
   const holders = new Map();
   for (const item of items) {
+    if (releasedClaims.has(item.item_id)) continue;
     if (!['claimed', 'submitted'].includes(item.item_status)
       && !(item.item_status === 'verified' && !item.item_merged_commit)) continue;
     for (const path of itemFiles(item)) {
@@ -56,10 +57,10 @@ function overlapCounts(items) {
   }));
 }
 
-/** Release/focus membership precedes longest path, then soft overlap and the established deterministic ties. */
-export function criticalPathOrder({ items, group, fallback }) {
+/** Order by release/path/overlap; health may omit only the claims its suggested release would remove. */
+export function criticalPathOrder({ items, group, fallback, releasedClaims = [] }) {
   const paths = remainingPaths(items, group);
-  const overlaps = overlapCounts(items);
+  const overlaps = overlapCounts(items, new Set(releasedClaims));
   return (first, second) => group(first) - group(second)
     || (paths.get(second.item_id) ?? 0) - (paths.get(first.item_id) ?? 0)
     || (overlaps.get(first.item_id) ?? 0) - (overlaps.get(second.item_id) ?? 0)
