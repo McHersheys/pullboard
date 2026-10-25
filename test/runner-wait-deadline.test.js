@@ -143,3 +143,20 @@ test('a registered runner that never answers is canceled at the deadline and the
     }
   }
 });
+
+test('the public runner deadline setting has a five-minute default and rejects unsafe timer values [C7]', () => {
+  const box = e2e.project('true');
+  const initial = cli(box.repo, box.env, 'settings', '--json');
+  assert.equal(initial.status, 0, fixtureResultContext(initial));
+  assert.equal(JSON.parse(initial.stdout).settings.gate.runnerWaitMs, 300_000);
+  const changed = cli(box.repo, box.env, 'settings', 'gate.runnerWaitMs', '1500', '--json');
+  assert.equal(changed.status, 0, fixtureResultContext(changed));
+  assert.equal(JSON.parse(changed.stdout).settings.gate.runnerWaitMs, 1500);
+  const file = join(box.env.PULLBOARD_MACHINE_HOME, 'settings.json');
+  const before = readFileSync(file, 'utf8');
+  for (const value of ['0', '-1', '1.5', '2147483648', 'Infinity']) {
+    const invalid = cli(box.repo, box.env, 'settings', 'gate.runnerWaitMs', value);
+    assert.notEqual(invalid.status, 0, fixtureResultContext(invalid));
+    assert.equal(readFileSync(file, 'utf8'), before, 'invalid settings never replace the last valid deadline');
+  }
+});

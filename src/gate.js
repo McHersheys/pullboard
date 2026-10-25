@@ -75,6 +75,7 @@ import {
 import {
   browserFreeChecksEnabled,
   gateRunnersFirstEnabled,
+  gateRunnerWaitMs,
   gateQueueSettings,
   gateShortSlots,
   loadMachineSettings,
@@ -235,7 +236,7 @@ export function runProfiledShell(root, command, { waitMs = 0, artifactDirectory,
   };
   // The registered worker returns the same complete stage/component accounting as a local run.
   gateLease?.tracker?.mark('runAt');
-  const run = gateLease?.runner ? { ...runOnRunner(root, command, { runner: gateLease.runner, source: gateLease.source,
+  const run = gateLease?.runner ? { ...runOnRunner(root, command, { runner: gateLease.runner, source: gateLease.source, runnerWaitDeadline: gateLease.runnerWaitDeadline,
     browser: gateLease.browser, pipefail, stages, waivers: landing ? waivers : [], metadata: { ...(gateLease.runMetadata ?? {}), landing, ...(timeoutMs ? { timeoutMs } : {}) } }) }
     : runShell(root, command, { pipefail, env: inherited, stages, timeoutMs });
   gateLease?.tracker?.mark('ranAt');
@@ -267,7 +268,7 @@ export async function runProfiledShellAsync(root, command, { waitMs = 0, gateSlo
   const started = Date.now();
   gateLease?.tracker?.mark('runAt');
   if (gateLease?.runner) {
-    const run = await runOnRunnerAsync(root, command, { runner: gateLease.runner, source: gateLease.source,
+    const run = await runOnRunnerAsync(root, command, { runner: gateLease.runner, source: gateLease.source, runnerWaitDeadline: gateLease.runnerWaitDeadline,
       browser: gateLease.browser, metadata: { ...(gateLease.runMetadata ?? {}), landing } });
     gateLease.environment = run.environment ?? null;
     gateLease.gui = run.executionCapabilities?.gui ?? null;
@@ -440,6 +441,7 @@ async function withOneGateSlot(root, action, { landing = false, itemCheck = fals
     remote: remote && Boolean(source),
     runnerProvider: () => loadMachineSettings().runners ?? [],
     runnersFirstProvider: gateRunnersFirstEnabled,
+    runnerWaitMs: gateRunnerWaitMs(),
     releaseContext,
     memory: floorMB === null ? undefined : memoryAdmission({ floorBytes: () => (memoryFloorMB() ?? floorMB) * 1024 ** 2, read: readMemory }),
     onWait,

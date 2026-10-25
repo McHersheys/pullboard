@@ -673,6 +673,8 @@ export async function runOnRunnerAsync(root, command, options) {
   if (options.signal?.aborted) throw new RunnerDropped(options.runner.host);
   const request = requestFor(root, command, options);
   let removeAbort = () => {};
+  let runnerWaitTimer;
+  let runnerWaitKill;
   let rawFd = null;
   try {
     if (request.rawOutputPath) rawFd = openSync(request.rawOutputPath, 'wx', 0o600);
@@ -683,6 +685,13 @@ export async function runOnRunnerAsync(root, command, options) {
     let rawBytes = 0, head = Buffer.alloc(0), tail = Buffer.alloc(0);
     const half = 4 * 1024 ** 2;
     const abort = () => { error ??= new Error('runner transport canceled'); child.stdin.destroy(); child.kill('SIGTERM'); };
+    // Only admission is bounded here. NEED is emitted after the worker owns its gate slot;
+    // an admitted test may run longer than the runner wait without being truncated.
+    if (Number.isSafeInteger(options.runnerWaitDeadline)) runnerWaitTimer = setTimeout(() => {
+      abort();
+      // Budget: a non-responsive SSH child cannot retain a local reservation forever.
+      runnerWaitKill = setTimeout(() => child.kill('SIGKILL'), 1_000);
+    }, Math.max(0, options.runnerWaitDeadline - Date.now()));
     options.signal?.addEventListener('abort', abort, { once: true });
     removeAbort = () => options.signal?.removeEventListener('abort', abort);
     if (options.signal?.aborted) abort();
@@ -726,6 +735,7 @@ export async function runOnRunnerAsync(root, command, options) {
         if (!line.startsWith(prefix)) continue;
         if (requested) { error = new Error('duplicate runner inventory'); child.kill(); return; }
         requested = true;
+        clearTimeout(runnerWaitTimer);
         transfer = (async () => {
           const inventory = JSON.parse(Buffer.from(line.slice(prefix.length), 'base64').toString('utf8'));
           if (!Array.isArray(inventory.tips) || inventory.tips.length > 1024
@@ -751,5 +761,5 @@ export async function runOnRunnerAsync(root, command, options) {
     const bounded = request.rawOutputPath ? Buffer.concat([head, ...(rawBytes > half * 2 ? [Buffer.from('\n[output capped at 8 MiB; middle omitted]\n')] : []), tail]) : Buffer.concat(output);
     return resultFrom(request, { status, error, stdout: bounded, stderr: Buffer.concat(diagnostics),
       ...(request.rawOutputPath ? { rawOutputPath: request.rawOutputPath, rawBytes, rawSha256: rawHash.digest('hex') } : {}) });
-  } finally { if (rawFd !== null) closeSync(rawFd); removeAbort(); request.cleanup(); }
+  } finally { clearTimeout(runnerWaitTimer); clearTimeout(runnerWaitKill); if (rawFd !== null) closeSync(rawFd); removeAbort(); request.cleanup(); }
 }
