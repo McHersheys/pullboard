@@ -39,6 +39,32 @@ async function consent(api, authority, parent, child, linkId, disclosure = 'stat
   return api.approveBoardLink(record, child.reference.boardId, authority, { by: child.by, key: child.key });
 }
 
+test('opening a relay journal installs delivery storage before the first link envelope [E32,H16,H17]', async t => {
+  const { DatabaseSync } = await import('node:sqlite');
+  const { createRelayJournal } = await import('../relay/journal.js');
+  const directory = mkdtempSync(join(tmpdir(), 'pullboard-link-opener-'));
+  const boardId = 'a'.repeat(32);
+  const file = join(directory, boardId + '.journal.sqlite');
+  let journal = null;
+  t.after(() => { journal?.close(); rmSync(directory, { recursive: true, force: true }); });
+  journal = createRelayJournal({ directory, boardId });
+  const db = new DatabaseSync(file);
+  try {
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='board_link_delivery'").get().n, 1,
+      'opening the store installs every delivery table, before any append');
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM board_link_delivery').get().n, 0);
+  } finally { db.close(); }
+  journal.append(1, Buffer.from('opaque existing bytes'), 'move', { kind: 'agent', userId: 'fixture', agent: 'fixture-agent' });
+  journal.close(); journal = null;
+  const old = new DatabaseSync(file);
+  try { old.exec('DROP TABLE board_link_delivery'); } finally { old.close(); }
+  journal = createRelayJournal({ directory, boardId });
+  assert.equal(journal.after()[0].bytes.toString(), 'opaque existing bytes', 'additive initialization preserves existing journal bytes');
+  const upgraded = new DatabaseSync(file, { readOnly: true });
+  try { assert.equal(upgraded.prepare('SELECT COUNT(*) AS n FROM board_link_delivery').get().n, 0); }
+  finally { upgraded.close(); }
+});
+
 test('a signed two-sided link carries only its disclosure mode and refuses a cycle [E32,H16,H17]', async t => {
   const loaded = await import('../src/board-link.js').then(api => ({ api }), error => ({ error }));
   assert.equal(loaded.error, undefined, 'the shared production board-link boundary must exist');
