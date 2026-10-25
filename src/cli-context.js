@@ -42,6 +42,7 @@ export {
  */
 export function withBoard(ctx, work, opened) {
   const board = opened ?? store.openBoard(ctx.file, ctx.clock, { isMain: ctx.allowSchemaUpgrade,
+    writeContext: { command: ctx.io.relayCommand?.cliOperation, path: ctx.info.root, ...(ctx.info.isMain ? { seat: 'coordinator' } : {}) },
     /** Report each source mismatch once through this invocation's text or JSON diagnostics. */
     onDiagnostic(message) {
       ctx.io.schemaDiagnostics ??= new Set();
