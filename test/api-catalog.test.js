@@ -810,7 +810,7 @@ catalogCase('[A1] intake records a real outside pull request through the CLI', a
 catalogCase('[A1,C7] test runs named test files and reports where they ran', async () => {
   const box = await project();
   const configFile = join(box.repo, 'pullboard.json');
-  writeFileSync(configFile, JSON.stringify({ ...JSON.parse(readFileSync(configFile, 'utf8')), affectedTests: 'env -u NODE_TEST_CONTEXT node --test' }, null, 2)); // this file's own runner must not nest it
+  writeFileSync(configFile, JSON.stringify({ ...JSON.parse(readFileSync(configFile, 'utf8')), affectedTests: 'env -u NODE_TEST_CONTEXT node --test --test-reporter=tap' }, null, 2)); // this file's own runner must not nest it
   mkdirSync(join(box.repo, 'test'));
   writeFileSync(join(box.repo, 'test', 'catalog.test.js'), "import { test } from 'node:test';\ntest('catalog passes', () => {});\n");
   await box.git(box.repo, 'add', '-A');

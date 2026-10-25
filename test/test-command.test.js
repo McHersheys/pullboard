@@ -40,7 +40,7 @@ test('pullboard test runs files on the runner pool with a per-file timeout [C7]'
   }
   // Main holds the focused runner, with its per-test timeout, and a test that hangs on main as well.
   const config = JSON.parse(readFileSync(join(box.repo, 'pullboard.json'), 'utf8'));
-  writeFileSync(join(box.repo, 'pullboard.json'), JSON.stringify({ ...config, affectedTests: 'node --test --test-timeout=3000' }, null, 2));
+  writeFileSync(join(box.repo, 'pullboard.json'), JSON.stringify({ ...config, affectedTests: 'node --test --test-reporter=tap --test-timeout=3000' }, null, 2));
   mkdirSync(join(box.repo, 'test'));
   for (const [name, text] of [['ok', PASSES], ['hang', HANGS], ['changed', PASSES]]) writeFileSync(join(box.repo, 'test', `${name}.test.js`), text);
   box.git(box.repo, 'add', '-A');
@@ -75,7 +75,7 @@ test('pullboard test runs files on the runner pool with a per-file timeout [C7]'
 test('pullboard test names why it ran on this machine, and every installed hook points at it [C7]', { timeout: 120_000 }, () => { // budget: hang ceiling for real init, join and one local run; not a speed target.
   const box = e2e.project('true');
   const config = JSON.parse(readFileSync(join(box.repo, 'pullboard.json'), 'utf8'));
-  writeFileSync(join(box.repo, 'pullboard.json'), JSON.stringify({ ...config, affectedTests: 'env -u NODE_TEST_CONTEXT node --test' }, null, 2));
+  writeFileSync(join(box.repo, 'pullboard.json'), JSON.stringify({ ...config, affectedTests: 'env -u NODE_TEST_CONTEXT node --test --test-reporter=tap' }, null, 2));
   mkdirSync(join(box.repo, 'test'));
   writeFileSync(join(box.repo, 'test', 'ok.test.js'), PASSES);
   box.git(box.repo, 'add', '-A');
