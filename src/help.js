@@ -73,7 +73,7 @@ Set up
                                         unread shouts, what to do next; run it to start any session
   pullboard badge                       write board-derived Shields endpoint JSON to docs/badges/
   pullboard hooks [uninstall]           install Git hooks and agent nudges; uninstall removes only Pullboard's agent nudges
-  pullboard hook SessionStart|Stop     native agent nudges; errors/timeouts warn and never block
+  pullboard hook SessionStart|Stop|SessionEnd     native agent nudges; errors/timeouts warn and never block
 
 Work
   pullboard add <lane> <title> [--criterion "..."] [--specs G1.2,K3] [--after 3,4] [--parent <id>]
@@ -384,7 +384,7 @@ const HELP_ALIASES = {
   'spec signers': { usage: 'pullboard spec signers add [--key <path>] [--by <principal>]', source: 'spec signers add' },
   'spec signers add': { usage: 'pullboard spec signers add [--key <path>] [--by <principal>]', source: 'spec signers add' },
   doctrine: { usage: 'pullboard doctrine check', source: 'doctrine check' },
-  hook: { usage: 'pullboard hook SessionStart|Stop|pre-commit|pre-merge-commit|commit-msg|pre-push', source: 'hook' },
+  hook: { usage: 'pullboard hook SessionStart|Stop|SessionEnd|pre-commit|pre-merge-commit|commit-msg|pre-push', source: 'hook' },
   'gate set': { usage: 'pullboard gate set "<command>"', source: 'gate set' },
   'hook pre-commit': { usage: 'pullboard hook pre-commit', source: 'hook' },
   'hook pre-merge-commit': { usage: 'pullboard hook pre-merge-commit', source: 'hook' },

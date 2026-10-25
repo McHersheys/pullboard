@@ -19,7 +19,7 @@ export const AGENT_HOOK_EVENTS = ['SessionStart', 'Stop'];
 const CLAUDE_HOOK_EVENTS = [...AGENT_HOOK_EVENTS, 'SessionEnd'];
 export const LEGACY_RESUME_HOOK =
   'm=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/..; for p in node_modules/.bin/pullboard "$m/node_modules/.bin/pullboard"; do [ -x "$p" ] && exec "$p" resume; done; command -v pullboard >/dev/null && exec pullboard resume; true';
-const SOURCES = [['Claude Code', '.claude/settings.json'], ['Codex', '.codex/hooks.json']];
+const SOURCES = [['Claude Code', '.claude/settings.json', CLAUDE_HOOK_EVENTS], ['Codex', '.codex/hooks.json', AGENT_HOOK_EVENTS]];
 
 /** Resolve the same local/main/PATH installations as I6; a missing executable is a silent no-op. */
 export function agentHookCommand(event) {
@@ -49,24 +49,24 @@ function regularProjectPath(root, name) {
 }
 
 /** Read an existing object without replacing malformed settings or hook arrays. */
-function settingsAt(root, name) {
+function settingsAt(root, name, events) {
   if (!regularProjectPath(root, name)) throw new Error('configuration is not a regular project file');
   const value = existsSync(join(root, name)) ? JSON.parse(readFileSync(join(root, name), 'utf8')) : {};
   if (!value || typeof value !== 'object' || Array.isArray(value)
       || value.hooks !== undefined && (!value.hooks || typeof value.hooks !== 'object' || Array.isArray(value.hooks))) throw new Error('configuration is not an object');
-  for (const event of CLAUDE_HOOK_EVENTS) if (value.hooks?.[event] !== undefined
+  for (const event of events) if (value.hooks?.[event] !== undefined
       && (!Array.isArray(value.hooks[event]) || value.hooks[event].some(group => !group || typeof group !== 'object' || !Array.isArray(group.hooks)))) throw new Error('hook groups are not arrays');
   return value;
 }
 
 /** Merge or remove only Pullboard's exact handlers, preserving unrelated settings and groups. */
 export function configureAgentHooks(root, { remove = false, legacyResume = LEGACY_RESUME_HOOK, onWrite = () => {} } = {}) {
-  return SOURCES.map(([vendor, name]) => {
+  return SOURCES.map(([vendor, name, events]) => {
     try {
       if (remove && !existsSync(join(root, name))) return `${vendor} agent hooks are not installed`;
-      const value = settingsAt(root, name), before = JSON.stringify(value);
+      const value = settingsAt(root, name, events), before = JSON.stringify(value);
       value.hooks ??= {};
-      for (const event of vendor === 'Claude Code' ? CLAUDE_HOOK_EVENTS : AGENT_HOOK_EVENTS) {
+      for (const event of events) {
         const groups = value.hooks[event] ?? [];
         const kept = groups.flatMap(group => {
           const hooks = group.hooks.filter(handler => !owned(handler)
@@ -103,11 +103,11 @@ export function configureAgentHooks(root, { remove = false, legacyResume = LEGAC
 
 /** File presence is installation evidence, never proof that a vendor trusted a definition. */
 export function agentHookStatus(root) {
-  return SOURCES.map(([vendor, name]) => {
+  return SOURCES.map(([vendor, name, supportedEvents]) => {
     let events = [];
     try {
-      const value = settingsAt(root, name);
-      events = (vendor === 'Claude Code' ? CLAUDE_HOOK_EVENTS : AGENT_HOOK_EVENTS).filter(event => value.hooks?.[event]?.some(group => group.hooks.some(handler => owned(handler)
+      const value = settingsAt(root, name, supportedEvents);
+      events = supportedEvents.filter(event => value.hooks?.[event]?.some(group => group.hooks.some(handler => owned(handler)
         && [agentHookCommand(event), `pullboard hook ${event}`].includes(handler.command))));
     } catch { /* Invalid configuration remains visibly inactive. */ }
     return { vendor, configured: existsSync(join(root, name)), events, trust: vendor === 'Codex' ? 'unverified' : null };
