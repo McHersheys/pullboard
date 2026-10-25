@@ -46,7 +46,7 @@ test('SSH relay off then on confirms replacement and retains the old-board off r
     assert.equal(completed.code, 0, 'the actual SSH CLI receives the confirmed replacement');
     const state = JSON.parse(readFileSync(box.linkFile, 'utf8'));
     assert.notEqual(state.board, previous);
-    assert.deepEqual(box.auth.boardOff(previous), { board: previous, replacedBy: state.board, userId: '7', at: box.auth.boardOff(previous).at });
+    assert.deepEqual({ ...box.auth.boardOff(previous) }, { board: previous, replacedBy: state.board, userId: '7', at: box.auth.boardOff(previous).at });
     assert.equal(JSON.parse(readFileSync(box.root + '/pullboard.json', 'utf8')).relay.board, state.board);
     const sessions = box.auth.linkedBoards().filter(row => !box.auth.boardOff(row.id));
     assert.deepEqual(sessions.map(row => row.id), [state.board], 'exactly one repository link stays active');
