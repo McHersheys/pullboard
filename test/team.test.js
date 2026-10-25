@@ -936,5 +936,5 @@ test("one decision list across a project's repos [N34]", { timeout: 180_000 }, a
   assert.deepEqual(listed().decisions.map(({ repo }) => repo), ['alpha']);
   const unknown = box.run(box.repo, 'answer', 'nowhere#1', 'x', '--as', 'person');
   assert.notEqual(unknown.code, 0);
-  assert.match(unknown.err, /NO_REPO/);
+  assert.match(unknown.err, /PROJECT_REPO_UNKNOWN/);
 });

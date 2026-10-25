@@ -42,7 +42,7 @@ export function projectSiblings(root, config, projects = listApiProjects) {
 export function resolveSibling(repo, siblings) {
   const found = siblings.filter((entry) => entry.name === repo || basename(entry.root) === repo);
   if (found.length === 1) return found[0];
-  throw new Refused(found.length ? 'REPO_AMBIGUOUS' : 'NO_REPO',
+  throw new Refused(found.length ? 'PROJECT_REPO_AMBIGUOUS' : 'PROJECT_REPO_UNKNOWN',
     `${found.length ? 'more than one' : 'no'} repo of this project is named ${repo}; run pullboard decisions --as person to see each repo's name`);
 }
 

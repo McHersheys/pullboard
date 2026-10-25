@@ -1,5 +1,8 @@
 /** General CLI recovery text; operation-owned codes live in src/moves/ [P4,C7]. */
 export const DEFAULT_NEXT_STEPS = Object.freeze({
+  "DECISIONS_NOT_AVAILABLE": "read each board's state from the local API, which carries its own person decisions",
+  "PROJECT_REPO_AMBIGUOUS": "run pullboard decisions --as person and answer with the repo name it prints before the #",
+  "PROJECT_REPO_UNKNOWN": "run pullboard decisions --as person to see the repos of this project, then answer repo#id",
   "SHOUT_SPACES": "rewrite the shout with spaces between words, then send it again",
   "DECISION_HANDOFF_BINDING": "use the exact versioned handoff, namespaced source decision and original option set",
   "DECISION_HANDOFF_AUTH": "obtain authority for this exact question, answer or source query",
