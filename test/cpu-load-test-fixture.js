@@ -9,7 +9,7 @@ import { HOST, installSshStandIn } from './runner-ssh-fixture.js';
 const SOURCE = resolve(import.meta.dirname, '..');
 
 /** Build an ordinary CLI fixture whose declared test reports its actual checkout and live holder. */
-export function cpuLoadFixture(e2e, { declaration = '{ cpuLoad: true }', binding = 'test' } = {}) {
+export function cpuLoadFixture(e2e, { declaration = '{ cpuLoad: true }', binding = 'test', subtest = null } = {}) {
   const box = e2e.project('node bin/run-tests.js test/cpu-probe.test.js');
   const bin = join(box.dir, 'ssh-bin');
   const remoteHome = join(box.dir, 'runner-home');
@@ -24,13 +24,14 @@ import { DatabaseSync } from 'node:sqlite';
 // Example text is not a declaration: { cpuLoad: true }
 const example = '{ cpuLoad: true }';
 finish(() => {});
-${binding}('declared load stand-in', ${declaration}, () => {
+${subtest ? `${binding}('parent', async t => { await ${subtest}` : binding}('declared load stand-in', ${declaration}, () => {
   const db = new DatabaseSync(process.env.PULLBOARD_GATE_SLOT_POOL, { readOnly: true });
   const row = db.prepare('SELECT * FROM holder WHERE token=?').get(process.env.PULLBOARD_GATE_SLOT_TOKEN);
   db.close();
   console.log('CPU_LOAD_EXECUTOR ' + JSON.stringify({ cwd: process.cwd(), home: process.env.HOME,
     gatePool: process.env.PULLBOARD_GATE_SLOT_POOL, liveLease: Boolean(row), runnerExecution: row?.runner_execution === 1 }));
 });
+${subtest ? '});' : ''}
 `);
   box.git(box.repo, 'add', '-A');
   box.git(box.repo, 'commit', '-q', '-m', 'test: commit declared CPU placement probe');

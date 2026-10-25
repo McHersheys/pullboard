@@ -135,3 +135,18 @@ for (const [kind, declaration] of [
   assert.equal(remote.executor?.runnerExecution, true);
   assert.notEqual(remote.executor?.cwd, box.repo);
 });
+
+
+for (const [kind, subtest] of [
+  ['quoted', 't["test"]'],
+  ['template', 't[`test`]'],
+  ['computed', 't[["te", "st"].join("")]'],
+]) test(`a ${kind} subtest call with unreadable CPU options uses its runner [C7]`, async () => {
+  const box = cpuLoadFixture(e2e, { subtest,
+    declaration: 'Object.fromEntries([[ ["cpu", "Load"].join(""), true ]])' });
+  const remote = await box.runGate();
+  assert.equal(remote.result.status, 0, remote.result.context);
+  assert.equal(box.requestsMade().length, 1, 'valid computed subtest calls cannot hide unreadable CPU options');
+  assert.equal(remote.executor?.runnerExecution, true);
+  assert.notEqual(remote.executor?.cwd, box.repo);
+});
