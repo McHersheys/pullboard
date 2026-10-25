@@ -158,6 +158,26 @@ export function commonJsIn(sources) {
   });
 }
 
+/** Fail closed for executable module loading or code generation whose registrations are not statically known. */
+function opaqueLoadingIn(sources) {
+  const occurrences = sources.map(source => [
+    ...[...source.matchAll(IMPORT)].filter(match => pastGap(source, match.index + match[0].length).startsWith('(')),
+    ...source.matchAll(/(?<![\p{ID_Continue}$\u200c\u200d#])(?:eval|Function)(?![\p{ID_Continue}$\u200c\u200d])/gu),
+  ].map(match => match.index));
+  const variants = sources.flatMap((source, index) => occurrences[index].map(at =>
+    source.slice(0, at) + '\u0000' + source.slice(at)));
+  const parsed = look([...sources, ...variants]);
+  let next = sources.length;
+  return sources.map((source, index) => {
+    let found = !parsed[index].compiles || parsed[index].imports.some(name => ['node:vm', 'vm', 'node:module', 'module'].includes(name));
+    for (const _at of occurrences[index]) {
+      if (!parsed[next].compiles) found = true;
+      next += 1;
+    }
+    return found;
+  });
+}
+
 /** Decode bounded quoted keys by compiling static imports; repository expressions are never evaluated. */
 function quotedProperties(source) {
   const candidates = [];
@@ -321,6 +341,7 @@ function unreadableTestOptions(source, quoted) {
 /** Find CPU-load options without evaluating a test module; unknown identifier values require runner admission. */
 export function cpuLoadOptionsIn(sources) {
   const commonJs = commonJsIn(sources);
+  const opaqueLoading = opaqueLoadingIn(sources);
   const quoted = sources.map(quotedProperties);
   const occurrences = sources.map((source, index) => [
     ...source.matchAll(/(?:\bcpuLoad\b|["']cpuLoad["'])/gu), ...source.matchAll(UNICODE_ESCAPE),
@@ -341,7 +362,7 @@ export function cpuLoadOptionsIn(sources) {
   const parsed = look([...sources, ...variants]);
   let next = sources.length;
   return sources.map((source, index) => {
-    let found = !parsed[index].compiles || commonJs[index] || unreadableTestOptions(source, quoted[index]);
+    let found = !parsed[index].compiles || commonJs[index] || opaqueLoading[index] || unreadableTestOptions(source, quoted[index]);
     for (const { disabled } of occurrences[index]) {
       if (!parsed[next].compiles && !disabled) found = true;
       next += 1;

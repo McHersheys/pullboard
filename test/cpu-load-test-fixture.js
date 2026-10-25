@@ -9,7 +9,7 @@ import { HOST, installSshStandIn } from './runner-ssh-fixture.js';
 const SOURCE = resolve(import.meta.dirname, '..');
 
 /** Build an ordinary CLI fixture whose declared test reports its actual checkout and live holder. */
-export function cpuLoadFixture(e2e, { declaration = '{ cpuLoad: true }', binding = 'test', subtest = null, commonjs = false } = {}) {
+export function cpuLoadFixture(e2e, { declaration = '{ cpuLoad: true }', binding = 'test', subtest = null, commonjs = false, dynamicImport = false } = {}) {
   const probeFile = `cpu-probe.test.${commonjs ? 'cjs' : 'js'}`;
   const box = e2e.project(`node bin/run-tests.js test/${probeFile}`);
   const bin = join(box.dir, 'ssh-bin');
@@ -22,7 +22,9 @@ export function cpuLoadFixture(e2e, { declaration = '{ cpuLoad: true }', binding
   writeFileSync(join(box.repo, 'package.json'), JSON.stringify({ name: 'pullboard', version: '1.0.0', type: 'module' }) + '\n');
   writeFileSync(join(box.repo, 'test', probeFile), `${commonjs
     ? `const { test: ${binding}, after: finish } = require('node:test');\nconst { DatabaseSync } = require('node:sqlite');`
-    : `import { test${binding === 'test' ? '' : ` as ${binding}`}, after as finish } from 'node:test';\nimport { DatabaseSync } from 'node:sqlite';`}
+    : dynamicImport
+      ? `const { default: ${binding}, after: finish } = await import('node:test');\nimport { DatabaseSync } from 'node:sqlite';`
+      : `import { test${binding === 'test' ? '' : ` as ${binding}`}, after as finish } from 'node:test';\nimport { DatabaseSync } from 'node:sqlite';`}
 // Example text is not a declaration: { cpuLoad: true }
 const example = '{ cpuLoad: true }';
 finish(() => {});
