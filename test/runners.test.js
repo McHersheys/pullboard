@@ -26,6 +26,7 @@ import { runnerSourceRefusalCases } from './runner-source-refusal-fixture.js';
 import { writeCacheProbe, writeProbe } from './runner-probe-fixture.js';
 import { browserFreeRunnerCheck, browserRefusalTextStaysRed } from './runner-browser-free-fixture.js';
 import { runnerTimingReceipt, runnerUsesRegisteredCapacity } from './runner-capacity-fixture.js';
+import { runnerFirstPolicyCase } from './runner-first-fixture.js';
 import { removingBusyRunnerDrains, runnerRemoveKeepsSettings } from './runner-drain-fixture.js';
 import { awaitRoundTrip, cleanupToolingSnapshots, cli, committedToolingSnapshot, fixtureResultContext, gateResult, git, phaseCounts, ROUND_TRIP_DEADLINES, runThroughGate, startToolingCli, TOOLING_SNAPSHOTS } from './runner-tooling-fixture.js';
 import { runnerStageFixture } from './runner-stage-fixture.js';
@@ -1291,6 +1292,9 @@ syncBuiltinESMExports();\n`);
     }
   }
 });
+
+test('a machine with runners can run no tests itself [C7]', { timeout: 90_000 }, // budget: covers fixture setup plus three real runner transports and cleanup; not an execution-time target.
+  () => runnerFirstPolicyCase(e2e));
 
 const parentDeathTools = { cli, git, installSshStandIn, observe, startQueueController, waitForMarker, processIsAlive, shellQuote, HOST };
 test('a queued run executes on a registered runner and its result comes back [C7] (parent death drains a detached worker descendant before releasing its lease)',

@@ -1,6 +1,10 @@
 /** The pullboard spec command, in its own module so an item adding another command never edits these lines. */
 import { planAutomaticRigorApply } from '../rigor-auto-apply.js';
 import {
+  planSpecRevision,
+  prepareSpecRevisionDecisions,
+} from '../spec-revisions.js';
+import {
   fitCommand,
 } from '../blueprint-fit-command.js';
 import {
@@ -133,7 +137,7 @@ export async function specCommand(io, { first, second, rest, values }) {
     unmet: ['must'],
     signoff: ['by', 'note', 'note-file'],
     signers: ['key', 'by'],
-    draft: ['aim', 'gate', 'section', 'doctrine', 'source'],
+    draft: ['aim', 'gate', 'section', 'doctrine', 'source', 'revises', 'reason', 'status'],
     approve: ['by', 'text'],
     decline: ['reason'],
     answer: [],
@@ -159,12 +163,25 @@ export async function specCommand(io, { first, second, rest, values }) {
     if (second && /\|\s*gate\s*:/iu.test(second)) {
       throw new Refused('INLINE_GATE', 'move the gate after the requirement as --gate "<check>"');
     }
-    if (!second?.trim() || rest.length || /[\r\n|]/u.test(second)) {
+    if (rest.length || (second !== undefined && (!second.trim() || /[\r\n|]/u.test(second)))) {
       throw new Refused('USAGE', 'give one nonempty, single-line requirement: pullboard spec draft "<text>"');
     }
     if (values.gate !== undefined && (!values.gate.trim() || /[\r\n|]/u.test(values.gate))) {
       throw new Refused('USAGE', 'give one nonempty, single-line gate without a field separator, or omit --gate to use review');
     }
+    if (values.revises !== undefined) {
+      if (values.doctrine || values.aim || values.section || values.source) throw new Refused('FLAG_NOT_ALLOWED', 'a revision keeps the approved row\'s section and tier; use --revises with text, --gate, --status and --reason');
+      const drafts = hookRead(ctx, board => store.rowDrafts(board)) ?? [];
+      const row = planSpecRevision(ctx.info.root, ctx.config, { revises: values.revises, text: second?.trim(),
+        gate: values.gate?.trim(), status: values.status, reason: values.reason,
+        taken: [...drafts.map(draft => draft.id), ...trunkRowIds(ctx.info.root, primaryCheckoutRoot(ctx.info), ctx.config)] });
+      const entry = await reserveRow(ctx, row, false);
+      io.result?.({ id: entry.id, row: entry });
+      io.say(entry.id);
+      return 0;
+    }
+    if (!second?.trim()) throw new Refused('USAGE', 'give one nonempty requirement: pullboard spec draft "<text>"');
+    if (values.status !== undefined || values.reason !== undefined) throw new Refused('FLAG_NOT_ALLOWED', '--status and --reason belong to spec draft --revises <id>');
     if (values.doctrine) {
       if (typeof values.source !== 'string' || !values.source.trim() || /[\r\n|]/u.test(values.source)) {
         throw new Refused('USAGE', 'a doctrine ruling needs its source; give --source "shout 42" or --source "chat, 2026-10-16"');
@@ -195,6 +212,17 @@ export async function specCommand(io, { first, second, rest, values }) {
       const me = whoAmI(ctx, board);
       if (!ctx.info.isMain || me.id !== COORDINATOR) throw new Refused('B26_PERSON_APPROVAL', 'only the person from the main checkout approves or declines rows; use pullboard view for the person to decide');
       const ids = [second, ...rest].filter(Boolean).flatMap((text) => text.split(/[\s,]+/u)).filter(Boolean);
+      const drafts = store.rowDrafts(board);
+      const revisionIds = ids.filter(id => drafts.some(draft => draft.id === id && draft.revises));
+      if (revisionIds.length) {
+        if (revisionIds.length !== ids.length || values.text !== undefined) throw new Refused('SPEC_REVISION', 'decide exact revision proposals separately; draft a new proposal to change its text');
+        const records = prepareSpecRevisionDecisions(ctx.info.root, ctx.config, drafts, { ids, decision: first,
+          reason: values.reason, by: values.by, on: new Date().toISOString(), commit: headCommit(ctx.info.root) ?? '' });
+        const decisions = await ordered(ctx, board, 'decideSpecRevisions', [{ agentId: store.PERSON, channel: io.personChannel ?? 'terminal', decisions: records }]);
+        io.result?.({ decisions });
+        revisionIds.forEach(id => io.say(`${id}: ${first === 'approve' ? 'approved, pending apply' : 'declined; approved row unchanged'}`));
+        return 0;
+      }
       // An approve keeps a pending answer: plain, it approves the answered text; --text says what it replaces.
       const kept = first === 'approve' ? pendingAnswers(ctx.info.root, ctx.config, ids, store.rowDecisions(board)) : new Map();
       const decide = { decision: first, reason: values.reason, by: values.by, on: new Date().toISOString(), commit: headCommit(ctx.info.root) ?? '' };

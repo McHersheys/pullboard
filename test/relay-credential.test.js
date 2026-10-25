@@ -64,6 +64,7 @@ test('every current operation selects its native actor credential without a seco
     if (operation === 'applyRowDecisions') args = [{ agentId: actor, events: [] }];
     if (operation === 'draftSpecRow') args = [{ agentId: actor, row: { id: 'G9', text: 'A credential fixture row.', gate: 'review', tier: 'must', section: 'G · Goals' } }];
     if (operation === 'recordRowDecisions') { args = [{ agentId: 'person', channel: 'terminal', decisions: [] }]; kind = 'person'; }
+    if (operation === 'decideSpecRevisions') { args = [{ agentId: 'person', channel: 'terminal', decisions: [] }]; kind = 'person'; }
     // A gate run with no receipt from this machine's own gate is refused before it reaches transport.
     if (operation === 'recordGateRun') return { operation, args, kind, sent: false, expected: 'GATE_RUN_UNBOUND' };
     return { operation, args, kind, ...(kind === 'person' ? { sent: false } : {}) };

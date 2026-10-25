@@ -91,6 +91,7 @@ import {
   unreadCount,
   events,
   itemThread,
+  laneHold,
   laneHolds,
   rowDecisions,
   UNREAD_SQL,
@@ -199,6 +200,12 @@ import {
 } from './machine.js';
 import { LOCAL_LANDING_ENGINE } from './land-engine.js';
 import { SPEC_APPROVAL_ENGINE } from './spec-approval-engine.js';
+import { SPEC_REVISION_ENGINE } from './spec-revision-engine.js';
+import {
+  markAppliedRevisions,
+  validRevisionApproval,
+} from './spec-revisions.js';
+export { decideSpecRevisions } from './spec-revisions.js';
 import * as landingEnvironment from './landing-environment-guards.js';
 import { Refused } from './refused.js';
 import { saveJoinedSession } from './parent-session.js';
@@ -2147,18 +2154,7 @@ export function releaseLane(board, lane, { agentId, asPerson = false, channel = 
   });
 }
 
-/**
- * The hold on a lane, or null.
- *
- * @param {any} board
- * @param {string} lane
- * @returns {any | null}
- */
-export function laneHold(board, lane) {
-  return board.db.prepare('SELECT * FROM hold WHERE hold_lane = ?').get(lane) ?? null;
-}
-
-export { laneHolds } from './board-query.js';
+export { laneHold, laneHolds } from './board-query.js';
 
 /** Read an item's coordinator hold, or null when it is available for claims. */
 export function itemHold(board, id) {
@@ -2230,9 +2226,10 @@ export function recordRowDecisions(board, { agentId, channel, decisions }) {
     const validDeclineText = record.decision !== 'decline' || (engineVersion >= 12
       ? record.text === original[0]?.text
       : target?.text === record.reason);
-    if (original.length !== 1 || original[0].id !== record.id || replacement.length !== 1 || target.id !== record.id
+    const revision = record.revision !== undefined && engineVersion >= SPEC_REVISION_ENGINE && validRevisionApproval(board, record);
+    if (!revision && (record.revision !== undefined || original.length !== 1 || original[0].id !== record.id || replacement.length !== 1 || target.id !== record.id
       || target.status !== (record.decision === 'approve' ? 'approved' : 'wont') || target.text !== record.text
-      || !validDeclineText) throw new Refused('ROW_DECISION', 'the exact row must match its recorded approval or decline; use pullboard spec approve or decline');
+      || !validDeclineText)) throw new Refused('ROW_DECISION', 'the exact row must match its recorded approval or decline; use pullboard spec approve or decline');
     const key = `${record.kind}:${record.id}`;
     if (keys.has(key)) throw new Refused('ROW_DECISION', `${key} is named twice; use each row once`);
     keys.add(key);
@@ -2262,6 +2259,7 @@ export function applyRowDecisions(board, { agentId, events }) {
     if (!applied.length) return [];
     const at = now(board);
     writeRowDecisions(board, records.map((record) => events.includes(record.event) ? { ...record, applied: true, appliedAt: at } : record));
+    markAppliedRevisions(board, applied, at);
     logEvent(board, agentId, 'row_apply', null, { events: applied.map((record) => record.event) });
     return applied.map((record) => ({ ...record, applied: true, appliedAt: at }));
   });
