@@ -32,7 +32,7 @@ function canonical(path) {
 }
 /** Report only native cwd ownership revalidated against the same PID birth after the cwd observation. */
 export function agentCpuFindings(db, { platform = process.platform, run = native, readLink = readlinkSync, host = hostname() } = {}) {
-  if (!['darwin', 'linux'].includes(platform)) return [];
+  if (!['darwin', 'linux'].includes(platform)) return null;
   const prefix = `AGENT_CPU:${encodeURIComponent(host)}:`;
   const last = db.prepare("SELECT event_detail FROM event WHERE event_kind='health-scan' ORDER BY event_id DESC LIMIT 1").get();
   const previous = last ? JSON.parse(last.event_detail).active : [];
@@ -72,6 +72,6 @@ export function agentCpuFindings(db, { platform = process.platform, run = native
     const active = previous.some(finding => finding.key === key);
     if (!active && db.prepare("SELECT 1 FROM event WHERE event_kind='health-failure' AND json_extract(event_detail,'$.key')=? LIMIT 1").get(key)) return [];
     return [{ key, cause: 'AGENT_CPU', item: null, subject: `pid ${row.pid}`, title: row.name, since: row.since,
-      why: `${row.cpu.toFixed(2)} CPU minutes used in agent worktree ${agent.path}`, next: 'inspect the owning agent process before deciding whether to stop it', owner: { who: agent.agent_id } }];
+      why: `${row.cpu.toFixed(2)} CPU minutes used on ${host} in agent worktree ${agent.path}`, next: 'inspect the owning agent process before deciding whether to stop it', owner: { who: agent.agent_id } }];
   })];
 }
