@@ -47,8 +47,9 @@ test('pullboard map prints the overview, a card and an item slice from one scan 
   const itemId = JSON.parse(added.out).item.item_id;
   const board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
   store.ensureCoordinator(board, box.repo);
-  const agentId = store.agentAt(board, box.web);
-  assert.ok(agentId, 'the fixture builder remains joined to its web lane');
+  const agent = store.agentAt(board, box.web);
+  assert.ok(agent, 'the fixture builder remains joined to its web lane');
+  const agentId = agent.agent_id;
   const claimHead = box.git(box.repo, 'rev-parse', 'HEAD');
   const frozen = JSON.stringify({ criterion: 'src/home.js exports renderHome and test/home.test.js imports it' });
   const digest = createHash('sha256').update(frozen).digest('hex');
