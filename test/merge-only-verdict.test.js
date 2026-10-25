@@ -84,26 +84,45 @@ test('a merge-only resubmission keeps its accept and records the resolution diff
   assert.doesNotMatch(shown.out, /re-review: main merge only/u);
   const submitted = JSON.parse(carried.events.findLast(event => event.event_kind === 'submit').event_detail);
   const options = { agentId: pending.item.item_owner, commit: head, tree: submitted.tree,
-    policyCommit: submitted.policyCommit, submissionProof: submitted.submissionProof, mergeOnly: detail };
-  for (const key of ['commit', 'tree', 'trunk', 'acceptedHead', 'digest', 'verdict', 'reopen']) {
-    const replica = store.openBoard(':memory:');
+    policyCommit: submitted.policyCommit, submissionProof: submitted.submissionProof, gateGreen: submitted.gateGreen,
+    mergeOnly: detail };
+  for (const key of ['commit', 'tree', 'policyCommit']) {
+    const replica = store.openBoard(':memory:', undefined, { gitRoot: box.web });
     try {
       importBoard(replica, pending.snapshot);
-      const bad = { ...detail, [key]: typeof detail[key] === 'number' ? detail[key] + 100 : '0'.repeat(40) };
-      assert.throws(() => store.submit(replica, id, { ...options, mergeOnly: bad }), error => error.code === 'MERGE_ONLY_PROOF', key);
-      assert.equal(store.getItem(replica, id).item_status, 'claimed', 'invalid proof is atomic');
+      store.submit(replica, id, { ...options, [key]: '0'.repeat(40) });
+      assert.equal(store.getItem(replica, id).item_status, 'submitted', `${key}: unavailable or mismatched actual source gets ordinary review`);
       assert.equal(store.events(replica, { itemId: id }).filter(event => event.event_kind === 'merge-only-accept').length, 0);
     } finally { store.closeBoard(replica); }
   }
-  const refrozen = store.openBoard(':memory:');
+  for (const key of ['acceptedHead', 'digest', 'verdict', 'reopen']) {
+    const replica = store.openBoard(':memory:', undefined, { gitRoot: box.web });
+    try {
+      importBoard(replica, pending.snapshot);
+      const fake = { ...detail, [key]: typeof detail[key] === 'number' ? detail[key] + 100 : '0'.repeat(40) };
+      store.submit(replica, id, { ...options, mergeOnly: fake });
+      const receipt = JSON.parse(store.events(replica, { itemId: id }).findLast(event => event.event_kind === 'merge-only-accept').event_detail);
+      assert.equal(receipt[key], detail[key], `${key}: native history and Git replace caller-supplied facts`);
+    } finally { store.closeBoard(replica); }
+  }
+  const refrozen = store.openBoard(':memory:', undefined, { gitRoot: box.web });
   try {
     importBoard(refrozen, pending.snapshot);
     store.refreeze(refrozen, id, { agentId: 'coordinator', freeze: () => ({ text: pending.item.item_frozen, digest: 'a different frozen bar' }) });
     store.claim(refrozen, id, { agentId: options.agentId, lane: 'web', leaseMs: 7_200_000,
       freeze: () => ({ text: pending.item.item_frozen, digest: 'a different frozen bar' }) });
-    assert.throws(() => store.submit(refrozen, id, options), error => error.code === 'MERGE_ONLY_PROOF');
+    store.submit(refrozen, id, options);
+    assert.equal(store.getItem(refrozen, id).item_status, 'submitted', 'a changed frozen bar requires outside review');
     assert.equal(store.events(refrozen, { itemId: id }).filter(event => event.event_kind === 'merge-only-accept').length, 0);
   } finally { store.closeBoard(refrozen); }
+  for (const gateGreen of [false, undefined]) {
+    const ungated = store.openBoard(':memory:', undefined, { gitRoot: box.web });
+    try {
+      importBoard(ungated, pending.snapshot);
+      store.submit(ungated, id, { ...options, gateGreen });
+      assert.equal(store.getItem(ungated, id).item_status, 'submitted', 'an absent or waived gate cannot carry acceptance');
+    } finally { store.closeBoard(ungated); }
+  }
   // This private authenticated engine fixture must not upgrade a builder's invented source facts.
   // The real commit retains both merge parents but changes behavior outside the conflict region.
   writeFileSync(join(box.web, 'web/feature.js'), "export const choice = 'resolved';\n\nexport const unrelated = 'silently changed';\n");
@@ -111,18 +130,35 @@ test('a merge-only resubmission keeps its accept and records the resolution diff
   box.git(box.web, 'commit', '-q', '--amend', '--no-edit');
   const extraHead = box.git(box.web, 'rev-parse', 'HEAD');
   const extraTree = box.git(box.web, 'rev-parse', 'HEAD^{tree}');
-  const forged = store.openBoard(':memory:');
+  const forged = store.openBoard(':memory:', undefined, { gitRoot: box.web });
   try {
     importBoard(forged, pending.snapshot);
     const move = prepareEngineMove(forged, 'submit', [id, options]);
     move.args[1] = { ...options, commit: extraHead, tree: extraTree,
       mergeOnly: { ...detail, commit: extraHead, tree: extraTree } };
-    assert.throws(() => applyEngineMove(forged, move, { sequence: 1, at: '2026-01-01T00:00:00.000Z' }),
-      error => ['MERGE_ONLY_PROOF', 'COORDINATOR_ONLY'].includes(error.code),
+    applyEngineMove(forged, move, { sequence: 1, at: '2026-01-01T00:00:00.000Z' });
+    assert.equal(store.getItem(forged, id).item_status, 'submitted',
       'a serialized builder claim cannot lend the original verdict to unrelated same-file behavior');
-    assert.equal(store.getItem(forged, id).item_status, 'claimed');
+    assert.equal(store.events(forged, { itemId: id }).filter(event => event.event_kind === 'merge-only-accept').length, 0);
   } finally { store.closeBoard(forged); }
-  const replay = store.openBoard(':memory:');
+  const absent = store.openBoard(':memory:');
+  try {
+    importBoard(absent, pending.snapshot);
+    const move = prepareEngineMove(absent, 'submit', [id, { ...options, gitRoot: box.web }]);
+    applyEngineMove(absent, move,
+      { sequence: 1, at: '2026-01-01T00:00:00.000Z' });
+    assert.equal(store.getItem(absent, id).item_status, 'submitted', 'coordinator28566: replay without local Git needs ordinary review');
+  } finally { store.closeBoard(absent); }
+  const historical = store.openBoard(':memory:', undefined, { gitRoot: box.web });
+  try {
+    importBoard(historical, pending.snapshot);
+    const { gateGreen, mergeOnly, ...oldOptions } = options;
+    const move = prepareEngineMove(historical, 'submit', [id, oldOptions]);
+    applyEngineMove(historical, { ...move, engine: MERGE_ONLY_VERDICT_ENGINE - 1 },
+      { sequence: 1, at: '2026-01-01T00:00:00.000Z' });
+    assert.equal(store.getItem(historical, id).item_status, 'submitted', 'historical submit replay never gains carry semantics');
+  } finally { store.closeBoard(historical); }
+  const replay = store.openBoard(':memory:', undefined, { gitRoot: box.web });
   try {
     importBoard(replay, pending.snapshot);
     const move = prepareEngineMove(replay, 'submit', [id, options]);

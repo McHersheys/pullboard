@@ -1,12 +1,15 @@
 /** Bounded Git proof that a resubmission adds only trunk and actual conflict resolutions [V1,V4]. */
 import { spawnSync } from 'node:child_process';
-import { cleanGitEnvironment } from './git.js';
+import {
+  cleanGitEnvironment,
+  mainCheckout,
+} from './git.js';
 
 /** Read immutable objects with fixed merge rules, bounded time/output and no external diff drivers. */
 function readGit(root, args, statuses, deadline) {
   const remaining = Math.min(5000, deadline - Date.now());
   if (remaining <= 0) throw new Error('merge proof budget exhausted');
-  const result = spawnSync('git', ['--no-replace-objects', '-c', 'merge.conflictStyle=merge',
+  const result = spawnSync('git', ['--no-replace-objects', '-c', 'merge.conflictStyle=merge', '-c', 'merge.renormalize=false',
     '-c', 'core.attributesFile=/dev/null', ...args], {
     cwd: root, env: cleanGitEnvironment(), encoding: 'utf8', timeout: remaining, maxBuffer: 2 * 1024 * 1024,
   });
@@ -79,5 +82,17 @@ export function captureMergeOnly(root, basis, { commit, tree, trunk }) {
     return { version: 1, acceptedCommit: basis.acceptedCommit, acceptedHead: basis.acceptedHead,
       acceptedTree, commit, tree, trunk, mergeTree, digest: basis.digest, verdict: basis.verdict,
       reopen: basis.reopen, paths, resolutionDiff };
+  } catch { return null; }
+}
+
+/** Derive from this connection's real repository, never a serialized caller's proposed source facts. */
+export function deriveMergeOnly(root, basis, { commit, tree, policyCommit }) {
+  if (!root || !basis) return null;
+  try {
+    const branch = mainCheckout(root)?.branch;
+    if (!branch?.startsWith('refs/heads/')) return null;
+    const trunk = readGit(root, ['rev-parse', '--verify', `${branch}^{commit}`], [0], Date.now() + 5000).trim();
+    if (trunk !== policyCommit) return null;
+    return captureMergeOnly(root, basis, { commit, tree, trunk });
   } catch { return null; }
 }

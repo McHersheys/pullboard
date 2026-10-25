@@ -27,7 +27,7 @@ function existingEngine(args, board, at) {
 /** Keep outside-source isolation as the original maximum over the older engine rule. */
 function minimumEngine(args, board, at) {
   const outside = board && Boolean(outsideSource(board, args[0]));
-  return Math.max(args[1]?.mergeOnly !== undefined ? MERGE_ONLY_VERDICT_ENGINE : 1,
+  return Math.max(args[1]?.gateGreen !== undefined ? MERGE_ONLY_VERDICT_ENGINE : 1,
     outside ? OUTSIDE_INTAKE_ENGINE : 1, existingEngine(args, board, at));
 }
 

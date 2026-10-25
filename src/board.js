@@ -120,6 +120,7 @@ import {
   mergeOnlyProblem,
 } from './merge-only-verdict.js';
 import { MERGE_ONLY_VERDICT_ENGINE } from './merge-only-verdict-engine.js';
+import { deriveMergeOnly } from './merge-only-source.js';
 import {
   atomic,
   logEvent,
@@ -339,10 +340,10 @@ export { openBoardReadOnly } from './board-read-open.js';
  *
  * @param {string} file
  * @param {{ now: () => Date }} [clock]
- * @param {{ isMain?: boolean, onDiagnostic?: (message: string) => void, writeContext?: {command?:string, seat?:string, path?:string} }} [options] Only the main checkout may upgrade a shared board.
+ * @param {{ isMain?: boolean, onDiagnostic?: (message: string) => void, writeContext?: {command?:string, seat?:string, path?:string}, gitRoot?: string }} [options] Only main upgrades schema; gitRoot is a local verification port, never replicated metadata.
  * @returns {{ db: DatabaseSync, clock: { now: () => Date } }}
  */
-export function openBoard(file, clock = systemClock, { isMain, onDiagnostic, writeContext } = {}) {
+export function openBoard(file, clock = systemClock, { isMain, onDiagnostic, writeContext, gitRoot } = {}) {
   isMain = sharedSchemaOwner(file, isMain);
   if (file !== ':memory:' && isMain === false) {
     let boardVersion = 0;
@@ -377,7 +378,7 @@ export function openBoard(file, clock = systemClock, { isMain, onDiagnostic, wri
     db = new DatabaseSync(file);
     db.exec(`PRAGMA busy_timeout = ${BOARD_BUSY_TIMEOUT_MS}`);
     if (file !== ':memory:' && isMain !== false) configureBoardJournal(db, writeContext);
-    const board = { db, clock, writeContext };
+    const board = { db, clock, writeContext, gitRoot };
     let warmCounters = true;
     if (isMain !== false || file === ':memory:') {
       // Migrate and audit only a board whose version is behind; a drifted shape is reported and left alone (#1047).
@@ -1133,17 +1134,18 @@ export function release(board, id, agentId, note = '') {
  * @param {{ agentId: string, commit: string, tree: string, files?: string[], policyCommit?: string, note?: string }} at - `files`: what the
  *   item's own commits changed since its claim; a rework adds to what the first attempt changed.
  */
-export function submit(board, id, { agentId, commit, tree, files = [], policyCommit = null, note, submissionProof: proof, infra = null, mergeOnly }) {
+export function submit(board, id, { agentId, commit, tree, files = [], policyCommit = null, note, submissionProof: proof, infra = null, gateGreen }) {
   let recordedProof;
   if (note !== undefined && (typeof note !== 'string' || !note.trim() || /[\r\n\u2028\u2029]/u.test(note))) {
     throw new Refused('USAGE', 'a submission note, when present, is one nonempty line');
   }
   atomic(board, () => {
-    const carry = mergeOnly !== undefined;
-    const basis = carry ? mergeOnlyBasis(board, getItem(board, id)) : null;
-    const carriedProblem = found => (board.executionEngineVersion ?? ENGINE_VERSION) < MERGE_ONLY_VERDICT_ENGINE
-      ? new Refused('MERGE_ONLY_PROOF', 'upgrade Pullboard before carrying an acceptance across a merge')
-      : mergeOnlyProblem(board, found, mergeOnly, { agentId, commit, tree, policyCommit });
+    const modern = (board.executionEngineVersion ?? ENGINE_VERSION) >= MERGE_ONLY_VERDICT_ENGINE;
+    const basis = modern && gateGreen === true ? mergeOnlyBasis(board, getItem(board, id)) : null;
+    const mergeOnly = basis && !itemAuthorProblem(board, getItem(board, id), basis.by)
+      ? deriveMergeOnly(board.gitRoot, basis, { commit, tree, policyCommit }) : null;
+    const carry = Boolean(mergeOnly);
+    const carriedProblem = found => mergeOnlyProblem(board, found, mergeOnly, { commit, tree, policyCommit });
     const notYours = () => new Refused('NOT_YOURS', `item #${id} is not claimed by you; claim it first`);
     moveItem(board, id, 'submit', {
       ...(carry ? { transition: MOVES.find(move => move.verb === 'submit-merge') } : {}),
@@ -1216,6 +1218,7 @@ export function submit(board, id, { agentId, commit, tree, files = [], policyCom
       ...(criterionDigest ? { criterionDigest } : {}),
       ...(note === undefined ? {} : { note: note.trim() }),
       ...(recordedProof ? { submissionProof: recordedProof } : {}), ...(infra ? { infra } : {}),
+      ...(modern && gateGreen !== undefined ? { gateGreen: gateGreen === true } : {}),
       ...(carry ? { mergeOnly } : {}),
     });
   });
