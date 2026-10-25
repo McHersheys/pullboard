@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os';
 import { stripVTControlCharacters } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import {
+  runProfiledShell,
   runProfiledShellAsync,
   withGateSlot,
 } from './gate.js';
@@ -34,6 +35,7 @@ import { parseSpec } from './spec.js';
 import { listItems } from './board.js';
 import { takeResource } from './resources.js';
 import { Refused } from './refused.js';
+import { failureSignatures } from './main-failure-matches.js';
 
 const CACHE_RELATIVE = 'pullboard/main-red.json';
 
@@ -102,7 +104,11 @@ function readCache(file) {
       if (!/^[0-9a-f]{40,64}$/u.test(commit) || !files || typeof files !== 'object' || Array.isArray(files)) continue;
       entries[commit] = {};
       for (const [path, outcome] of Object.entries(files)) {
-        if (typeof path === 'string' && path && ['red', 'green'].includes(outcome?.result)) entries[commit][path] = { result: outcome.result };
+        if (typeof path === 'string' && path && ['red', 'green'].includes(outcome?.result)) {
+          const failures = Array.isArray(outcome.failures) && outcome.failures.every(row => row?.file === path
+            && typeof row.name === 'string' && row.name && /^[a-f0-9]{64}$/u.test(row.signature)) ? outcome.failures : undefined;
+          entries[commit][path] = { result: outcome.result, ...(failures ? { failures } : {}) };
+        }
       }
     }
     return { version: 1, entries };
@@ -162,10 +168,11 @@ async function withMainCheckout(root, commit, run) {
  * @param {object} profile
  * @param {(state:object)=>void} [onWait]
  * @param {string} [output] - The failed phase's unchanged reporter output.
+ * @param {{commit?: string, detailed?: boolean}} [options] - Capture the submit base and require exact test identities.
  * @returns {Promise<{ main: string|null, files: Array<{file:string,result:'red'|'green'}>, unavailable?: string }>}
  */
-export async function compareMainFailures(root, profile, onWait, output = '') {
-  const main = mainCheckout(root);
+export async function compareMainFailures(root, profile, onWait, output = '', { commit, detailed = false } = {}) {
+  const main = commit ? { commit } : mainCheckout(root);
   if (!main?.commit) return { main: null, files: [], unavailable: 'the primary checkout has no committed main snapshot' };
   const policy = policyAt(root, main.commit);
   if (typeof policy.config.affectedTests !== 'string' || !policy.config.affectedTests.trim()) {
@@ -181,29 +188,34 @@ export async function compareMainFailures(root, profile, onWait, output = '') {
   });
   try {
     let cache = readCache(file);
-    const missing = files.filter(path => !['red', 'green'].includes(cache.entries[main.commit]?.[path]?.result));
+    const missing = files.filter(path => !['red', 'green'].includes(cache.entries[main.commit]?.[path]?.result)
+      || detailed && !Array.isArray(cache.entries[main.commit][path].failures));
     let failed = null;
     for (const path of missing) {
       try {
-        await withGateSlot(root, async lease => {
-          const measured = await withMainCheckout(root, main.commit, async checkout => {
+        const measured = await withMainCheckout(root, main.commit, async checkout => {
+          // Match #1219: admission belongs to the clean exact-main checkout, including its runner source.
+          return withGateSlot(checkout, async lease => {
             const command = `${policy.config.affectedTests.trimEnd()} ${shellWord('./' + path)}`;
-            const run = await runProfiledShellAsync(checkout, command, { gateLease: lease, waitMs: lease.waitMs });
-            return { result: run.isGreen ? 'green' : 'red' };
-          });
-          if (measured.unavailable) throw new Error(measured.unavailable);
-          // The cache lease excludes other comparisons; persist each result before yielding again.
-          cache = readCache(file);
-          cache.entries[main.commit] ??= {};
-          cache.entries[main.commit][path] = measured;
-          writeCache(file, cache);
-        }, { diagnostic: true, browser: true, agent: process.env.PULLBOARD_AGENT, kind: 'main-red', onWait });
+            const run = detailed ? runProfiledShell(checkout, command, { gateLease: lease, waitMs: lease.waitMs, stages: true })
+              : await runProfiledShellAsync(checkout, command, { gateLease: lease, waitMs: lease.waitMs });
+            const failures = detailed ? run.isGreen ? [] : failureSignatures(run, checkout) : null;
+            if (detailed && !run.isGreen && !failures) throw new Error('focused main output has no complete named failure account');
+            return { result: run.isGreen ? 'green' : 'red', ...(failures ? { failures } : {}) };
+          }, { diagnostic: true, browser: true, agent: process.env.PULLBOARD_AGENT, kind: 'main-red', onWait });
+        });
+        if (measured.unavailable) throw new Error(measured.unavailable);
+        cache = readCache(file);
+        cache.entries[main.commit] ??= {};
+        cache.entries[main.commit][path] = measured;
+        writeCache(file, cache);
       }
       catch (error) { failed ??= error; }
     }
     if (failed) return { main: main.commit, files: [], unavailable: failed.message ?? 'main comparison could not be completed' };
     cache = readCache(file);
-    return { main: main.commit, files: files.map(path => ({ file: path, result: cache.entries[main.commit][path].result })) };
+    return { main: main.commit, files: files.map(path => ({ file: path, ...(detailed
+      ? cache.entries[main.commit][path] : { result: cache.entries[main.commit][path].result }) })) };
   } finally { cacheLease.release(); }
 }
 
@@ -219,6 +231,9 @@ export function mainRedAttribution(root, board, comparison) {
 
 /** Add only evidence the exact-main focused reruns established to an existing GATE_RED refusal. */
 export function mainRedMessage(root, board, profile, comparison) {
+  if (comparison.unavailable === 'focused main output has no complete named failure account') {
+    return 'main not checked: focused main output has no complete named failure account';
+  }
   if (comparison.unavailable === 'no focused test runner configured') {
     return 'main not checked: no focused test runner configured (affectedTests)';
   }

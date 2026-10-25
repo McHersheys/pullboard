@@ -5,6 +5,7 @@ import { chmodSync } from 'node:fs';
 import { mkdirSync } from 'node:fs';
 import { mkdtempSync } from 'node:fs';
 import { realpathSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { rmSync } from 'node:fs';
 import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -16,6 +17,10 @@ import { DatabaseSync } from 'node:sqlite';
 import { AGENT_SHELL_MARKERS } from '../src/person.js';
 import { runFixtureChild } from './fixture-child.js';
 import { runFixtureGit } from './fixture-child.js';
+import { submissionProof } from '../src/submit-invariants.js';
+import { KNOWN_MAIN_FAILURES_ENGINE } from '../src/known-main-failures-engine.js';
+import { matchingMainFailures } from '../src/main-failure-matches.js';
+import { failureSignatures } from '../src/main-failure-matches.js';
 
 const BIN = join(import.meta.dirname, '../bin/pullboard.js');
 
@@ -106,8 +111,13 @@ function submittedProof(box) {
 
 test('submit accepts a test that fails the same way on main and refuses one red only with the item [V4,B3]', t => {
   const known = fixture(t);
+  const cache = join(known.root, '.git/pullboard/main-red.json');
+  writeFileSync(cache, JSON.stringify({ version: 1, entries: { [known.main]: { 'test/inherited.test.js': { result: 'red' } } } }), { mode: 0o600 });
   const result = cli(known, known.builder, 'submit', String(known.item));
-  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const proofLog = runFixtureGit(['rev-parse', '--git-path', 'pullboard-submit.log.proof.log'], { cwd: known.builder, env: known.env }).trim();
+  const observed = result.status ? { cache: JSON.parse(readFileSync(cache, 'utf8')),
+    parsed: failureSignatures({ isGreen: false, stages: [{ status: 1, output: readFileSync(proofLog, 'utf8') }] }, known.builder) } : null;
+  assert.equal(result.status, 0, JSON.stringify({ response: result.stdout + result.stderr, observed }));
   const report = JSON.parse(result.stdout);
   assert.equal(report.gate.green, false, 'an inherited failure stays red in its receipt');
   assert.equal(report.gate.knownMainFailures.main, known.main);
@@ -117,8 +127,32 @@ test('submit accepts a test that fails the same way on main and refuses one red 
   const changed = fixture(t, { candidate: source('shared failure [G1]') + source('new item failure [G1]').split('\n').slice(2).join('\n') });
   const refused = cli(changed, changed.builder, 'submit', String(changed.item));
   assert.equal(refused.status, 1, refused.stdout + refused.stderr);
-  assert.match(refused.stderr, /GATE_RED/u);
+  assert.equal(JSON.parse(refused.stdout).error.code, 'GATE_RED');
   assert.equal(submittedProof(changed), null, 'a new failure in an already-red file still prevents submit');
+});
+
+test('known main receipts preserve exact identities and refuse unsupported historical envelopes [V4,B3,H16]', () => {
+  const failure = { file: 'test/one.test.js', name: 'one failure [V4]', signature: 'a'.repeat(64) };
+  const main = 'b'.repeat(40);
+  const proof = { version: 1, files: [failure.file], full: false, deferred: false, reason: '',
+    knownMainFailures: { main, failures: [failure] } };
+  assert.deepEqual(submissionProof(proof, KNOWN_MAIN_FAILURES_ENGINE).knownMainFailures, proof.knownMainFailures);
+  assert.throws(() => submissionProof(proof, KNOWN_MAIN_FAILURES_ENGINE - 1), { code: 'SUBMISSION_PROOF' });
+  const historical = { version: 1, files: [], full: true, deferred: false, reason: 'historical full gate' };
+  assert.deepEqual(submissionProof(historical, KNOWN_MAIN_FAILURES_ENGINE - 1), historical);
+  for (const bad of [{ main, failures: [] }, { main: 'unknown', failures: [failure] },
+    { main, failures: [{ ...failure, file: '../outside.test.js' }] }, { main, failures: [{ ...failure, signature: null }] }]) {
+    assert.throws(() => submissionProof({ ...proof, knownMainFailures: bad }), { code: 'SUBMISSION_PROOF' });
+  }
+  const compared = { main, files: [{ file: failure.file, result: 'red', failures: [failure] }] };
+  assert.deepEqual(matchingMainFailures([failure], compared, main), proof.knownMainFailures);
+  assert.equal(matchingMainFailures([failure], compared, 'c'.repeat(40)), null);
+  assert.equal(matchingMainFailures([failure], { ...compared, unavailable: 'timeout' }, main), null);
+  assert.equal(matchingMainFailures([failure], { main, files: [{ file: failure.file, result: 'red' }] }, main), null);
+  assert.equal(matchingMainFailures([{ ...failure, name: 'different failure' }], compared, main), null);
+  assert.equal(matchingMainFailures([{ ...failure, file: 'test/other.test.js' }], compared, main), null);
+  assert.equal(matchingMainFailures([{ ...failure, signature: 'd'.repeat(64) }], compared, main), null);
+  assert.equal(matchingMainFailures([failure], { main, files: [{ file: failure.file, result: 'red', failures: [failure, failure] }] }, main), null);
 });
 
 test('submit refuses changed failure details, an unaccounted stage, and a red frozen check [V4,B3]', t => {
@@ -130,7 +164,7 @@ test('submit refuses changed failure details, an unaccounted stage, and a red fr
     const box = fixture(t, options);
     const result = cli(box, box.builder, 'submit', String(box.item));
     assert.equal(result.status, 1, result.stdout + result.stderr);
-    assert.match(result.stderr, /GATE_RED/u);
+    assert.equal(JSON.parse(result.stdout).error.code, 'GATE_RED');
     assert.equal(submittedProof(box), null);
   }
 });

@@ -1156,7 +1156,7 @@ export function submit(board, id, { agentId, commit, tree, files = [], policyCom
         gateGreen: null,
         treeStillDuringGate: null,
         submissionProofValid: () => {
-          if ((board.executionEngineVersion ?? ENGINE_VERSION) >= SUBMISSION_PROOF_ENGINE) recordedProof = submissionProof(proof);
+          if ((board.executionEngineVersion ?? ENGINE_VERSION) >= SUBMISSION_PROOF_ENGINE) recordedProof = submissionProof(proof, board.executionEngineVersion ?? ENGINE_VERSION);
           return null;
         },
         childrenDone: () => {

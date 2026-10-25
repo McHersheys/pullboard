@@ -86,6 +86,8 @@ import {
   withBoard,
 } from '../cli.js';
 import { recordedRecovery } from '../recorded-recovery.js';
+import { failureSignatures } from '../main-failure-matches.js';
+import { matchingMainFailures } from '../main-failure-matches.js';
 
 /**
  * Submit: a clean tree, nothing untracked, the gate green at HEAD, then the board (V4).
@@ -196,15 +198,27 @@ export async function submitHere(ctx, id, infra) {
     ...(acceptedMain.config.submitInvariants.length ? { affectedTests: acceptedMain.config.affectedTests } : {}) };
   const gate = await runSubmitGate(root, submitConfig, { base: claimHead, trunk: acceptedMain.commit, check: frozenCheck(held), agent: me.id, item: String(id), onWait: queuedItemLease(ctx, held, me.id, 'build'), onBrowserFallback: browserAdmissionReporter(ctx.io, ctx.io.relayJson),
     onFailure: nativeFlakes.observer(ctx, { kind: 'submit', main: acceptedMain.commit, config: submitConfig }, { ordered, withBoard, resourceAgent }) });
-  // Only the person's live waivers can pass a red proof, failure by failure; the item's own check is never waived [B3].
+  // Only fully accounted exact-main failures or live person waivers pass a red proof; the item check stays mandatory [B3].
   const waived = !gate.isGreen && gate.check?.green ? withBoard(ctx, (board) => waivedFailures(board, accountedFailures(gate, root))) : null;
-  if (!gate.isGreen && !waived) {
-    const message = `the submission proof is red at ${commit.slice(0, 12)}; fix it, commit, submit again. ${submitGateReport(gate)}`;
+  let comparison;
+  let knownMainFailures;
+  const failures = !gate.isGreen && gate.check?.green && !waived ? failureSignatures(gate, root) : null;
+  if (failures) {
+    try {
+      comparison = await compareMainFailures(root, gate.profile, gateWaitReporter(ctx.io), gate.output, { commit: acceptedMain.commit, detailed: true });
+      knownMainFailures = matchingMainFailures(failures, comparison, acceptedMain.commit);
+    } catch { /* Unavailable exact-main proof never authorizes a red submission. */ }
+  }
+  if (!gate.isGreen && !waived && !knownMainFailures) {
+    const accountingNote = gate.check?.green && !failures ? '\nknown-main acceptance unavailable: the proof has no complete named failure diagnostics' : '';
+    const message = `the submission proof is red at ${commit.slice(0, 12)}; fix it, commit, submit again. ${submitGateReport(gate)}${accountingNote}`;
     // No submission can follow this verdict. Read-only main comparisons must not retain the seat's write lease.
     CHECKOUT_LEASES.get(ctx.io)?.release();
     CHECKOUT_LEASES.delete(ctx.io);
-    let comparison = { main: null, files: [], unavailable: 'main comparison could not be completed' };
-    try { comparison = await compareMainFailures(root, gate.profile, gateWaitReporter(ctx.io), gate.output); } catch { /* Keep the original gate refusal if main evidence is unavailable. */ }
+    comparison ??= { main: null, files: [], unavailable: 'main comparison could not be completed' };
+    if (!failures) {
+      try { comparison = await compareMainFailures(root, gate.profile, gateWaitReporter(ctx.io), gate.output); } catch { /* Keep the original gate refusal if main evidence is unavailable. */ }
+    }
     const mainNote = withBoard(ctx, board => mainRedMessage(root, board, gate.profile, comparison));
     throw new Refused('GATE_RED', `${message}${mainNote ? `\n${mainNote}` : ''}`, 'fix the reported test or gate, commit the change, and run pullboard submit <id> again');
   }
@@ -221,18 +235,22 @@ export async function submitHere(ctx, id, infra) {
     refuseUnverifiedStack(root, board, store.getItem(board, id), commit, currentTrunk);
     // The waived run is written to the item's thread before the submission, so no waived proof reads as green.
     if (waived) await ordered(ctx, board, 'appendFact', [id, { agentId: me.id, kind: 'measurement', text: `submission proof at ${commit.slice(0, 12)} was red and is recorded as waived, not green; every failure is covered by a live person waiver:\n${waivedLines.join('\n')}` }]);
+    if (knownMainFailures) await ordered(ctx, board, 'appendFact', [id, { agentId: me.id, kind: 'measurement', text: `submission proof at ${commit.slice(0, 12)} remains red; known main failures at ${acceptedMain.commit}: ${knownMainFailures.failures.map(row => `${row.file} (${row.name})`).join('; ')}. The item check passed; no new or unaccounted failure is accepted.` }]);
     return await ordered(ctx, board, 'submit', [id, { agentId: me.id, commit, tree: headTree(root) ?? '', files: filesSince(root, id, claimHead, commit), policyCommit: acceptedMain.commit, ...(infraRecord ? { infra: infraRecord } : {}),
-      submissionProof: { version: 1, files: gate.files, full: gate.full, deferred: gate.deferred, reason: gate.reason, ...(gate.deferredFiles ? { deferredFiles: gate.deferredFiles } : {}) },
+      submissionProof: { version: 1, files: gate.files, full: gate.full, deferred: gate.deferred, reason: gate.reason, ...(gate.deferredFiles ? { deferredFiles: gate.deferredFiles } : {}), ...(knownMainFailures ? { knownMainFailures } : {}) },
       ...(gate.deferred ? { note: gate.deferredFiles ? deferredSelectionNote(gate.deferredFiles) : 'full suite deferred to the landing gate' } : {}) }]);
   });
   // A large submit still goes through; the note only suggests a chain of smaller items (#1162).
   const sizeNote = oversizeNote(changedLines(root, currentTrunk.commit, commit), acceptedMain.config.itemSizeBudget);
   if (sizeNote) ctx.io.say(`note: ${sizeNote}`);
-  const report = waived
+  const report = knownMainFailures
+    ? `submission proof red with ${knownMainFailures.failures.length} known main failure(s) at ${knownMainFailures.main}; item check green; no new failures accepted. ${submitGateReport(gate)}`
+    : waived
     ? `submission proof waived, not green: ${waived.length} failure(s), each covered by a live person waiver; the whole output is in ${gate.log}\n${waivedLines.join('\n')}`
     : submitGateReport(gate);
   return reportSubmission(ctx, id, commit, { green: gate.isGreen, report, files: gate.files, full: gate.full, deferred: gate.deferred, deferFullFallback: gate.deferFullFallback, ...(gate.deferredFiles ? { deferredFiles: gate.deferredFiles } : {}), reason: gate.reason, check: gate.check,
     log: gate.log, profile: gate.profile, profilePath: gate.profilePath, proofLog: gate.proofLog, proofProfilePath: gate.proofProfilePath,
+    ...(knownMainFailures ? { knownMainFailures } : {}),
     ...(waived ? { waived: waived.map(({ file, name, waiver }) => ({ file, name, waiver: waiver.id, reason: waiver.reason, until: waiver.until })) } : {}) }, doctrine);
 }
 

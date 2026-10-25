@@ -1,4 +1,4 @@
-/** A red submit compares only its failed files with exact main and guides an inherited rework [V1]. */
+/** A red item check remains mandatory and compares its failed files with main for recovery guidance [V1,V4]. */
 import assert from 'node:assert/strict';
 import '../src/main-red.js'; // The private driver below invokes this production entry point.
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -34,6 +34,11 @@ function commit(root, env, subject = 'chore: fixture state') {
   runFixtureGit(['add', '-A'], { cwd: root, env });
   runFixtureGit(['commit', '-q', '-m', subject], { cwd: root, env });
   return runFixtureGit(['rev-parse', 'HEAD'], { cwd: root, env }).trim();
+}
+
+/** Count real runner calls separately from the bar-baseline calls made while defining items. */
+function runCount(box) {
+  return existsSync(box.env.MAIN_RED_RUNS) ? readFileSync(box.env.MAIN_RED_RUNS, 'utf8').trim().split('\n').length : 0;
 }
 
 /** Quote one executable path for the fixture's real CLI shim. */
@@ -91,7 +96,8 @@ function addItems(box, rows) {
   return rows.map(({ title, specId, route = 'mid' }) => {
     const file = { G1: 'test/inherited.test.js', G2: 'test/unrelated.test.js', G3: 'test/earlier.test.js', G4: 'test/middle.test.js' }[specId];
     const result = cli(box.root, box.env, 'add', 'core', title, '--specs', specId, '--route', route,
-      '--criterion', title, '--check', 'true', '--brief', `Files: ${file}\nTest: ${title}`);
+      // These recovery cases exercise an unsatisfied item check; inherited proof failures have separate acceptance coverage.
+      '--criterion', title, '--check', 'node test/runner.js', '--brief', `Files: ${file}\nTest: ${title}`);
     assert.equal(result.code, 0, result.err || result.out);
     return Number(/^#(\d+)$/mu.exec(result.out)?.[1]);
   });
@@ -277,13 +283,14 @@ test('an inherited red reads native spec reporter failure locations [V1]', t => 
   assert.equal(submitter.run('claim', String(submitItem)).code, 0);
   put(submitter.root, 'test/inherited.test.js', `${FAILING_TEST}// candidate-only comment\n`);
   commit(submitter.root, box.env, 'test(core): select spec-reported red [G2]');
+  const before = runCount(box);
   const unexplained = submitter.run('submit', String(submitItem));
   assert.match(unexplained.err, /\[INFRA_NOTE_REQUIRED\]/u, 'test edits need an explanation before any inherited-red comparison');
   const red = submitter.run('submit', String(submitItem), '--infra', 'append a candidate-only test marker to exercise native spec failure reporting');
   inheritedMessage(red, { row: 'G1', item: rework });
   const refusedItem = JSON.parse(submitter.run('show', String(submitItem), '--json').out);
   assert.equal(refusedItem.thread.some(entry => entry.kind === 'submit'), false, 'a red gate records no successful submit or infra note');
-  assert.equal(readFileSync(box.env.MAIN_RED_RUNS, 'utf8').trim().split('\n').length, 2,
+  assert.equal(runCount(box), before + 2,
     'the unchanged spec reporter command runs once on the candidate and once on exact main');
 });
 
@@ -305,12 +312,13 @@ test('a red with unreadable failure files says why main was not checked [V1]', t
   assert.equal(submitter.run('claim', String(submitItem)).code, 0);
   put(submitter.root, 'test/inherited.test.js', `${FAILING_TEST}// candidate-only comment\n`);
   commit(submitter.root, box.env, 'test(core): select unreadable runner red [G2]');
+  const before = runCount(box);
   const red = submitter.run('submit', String(submitItem), '--infra', 'append a candidate-only test marker to exercise unreadable runner failure reporting');
   assert.equal(red.code, 1, red.out || red.err);
   assert.match(red.err, /\[GATE_RED\]/u);
   assert.match(red.err, /main not checked: could not read which tests failed/u);
   assert.doesNotMatch(red.err, /also red on main|inherited main red/u);
-  assert.equal(readFileSync(box.env.MAIN_RED_RUNS, 'utf8').trim().split('\n').length, 1,
+  assert.equal(runCount(box), before + 1,
     'a location outside the spec reporter failure footer is not guessed to be a failed file');
 });
 
@@ -358,6 +366,7 @@ test('an inherited red names the rework that owns it [V1]', async (t) => {
     assert.equal(submitter.run('claim', String(submitItem)).code, 0);
     put(submitter.root, 'test/inherited.test.js', `${FAILING_TEST}// candidate-only comment\n`);
     commit(submitter.root, box.env, 'test(core): select inherited red [G1]');
+    const before = runCount(box);
     let red = submitter.run('submit', String(submitItem), '--infra', 'append a candidate-only test marker to exercise exact-main comparison caching');
     inheritedMessage(red, { row: 'G1', item: rework });
     const main = runFixtureGit(['rev-parse', 'main'], { cwd: box.root, env: box.env }).trim();
@@ -368,7 +377,7 @@ test('an inherited red names the rework that owns it [V1]', async (t) => {
     assert.equal((readFileSync(cachePath).length > 0), true);
     assert.equal(statSync(cachePath).mode & 0o077, 0, 'the result cache is private to this machine account');
     const firstCount = readFileSync(box.env.MAIN_RED_RUNS, 'utf8').trim().split('\n').length;
-    assert.equal(firstCount, 2, 'one selected candidate run and one exact-main run occurred');
+    assert.equal(firstCount, before + 2, 'one selected candidate run and one exact-main run occurred');
 
     put(submitter.root, 'test/inherited.test.js', `${FAILING_TEST}// second candidate-only comment\n`);
     commit(submitter.root, box.env, 'test(core): retry inherited red [G1]');
@@ -481,10 +490,11 @@ test('an inherited red names the rework that owns it [V1]', async (t) => {
     assert.equal(submitter.run('claim', String(submitItem)).code, 0);
     put(submitter.root, 'test/inherited.test.js', `${FAILING_TEST}// candidate-only comment\n`);
     commit(submitter.root, box.env, 'test(core): select red without focused runner [G2]');
+    const before = runCount(box);
     const red = submitter.run('submit', String(submitItem), '--infra', 'append a candidate-only test marker to exercise missing focused-runner guidance');
     assert.equal(red.code, 1, red.out || red.err);
     assert.match(red.err, /\[GATE_RED\]/u);
     assert.match(red.err, /main not checked: no focused test runner configured \(affectedTests\)/u);
-    assert.equal(readFileSync(box.env.MAIN_RED_RUNS, 'utf8').trim().split('\n').length, 1, 'the main comparison does not run a second full gate');
+    assert.equal(runCount(box), before + 1, 'the main comparison does not run a second full gate');
   });
 });
