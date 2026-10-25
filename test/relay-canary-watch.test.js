@@ -189,7 +189,7 @@ test('the canary command binds machine opt-in to its linked ordinary seat [H5,H1
   await box.link();
   const refused = await box.cli('relay', 'canary', 'on');
   assert.equal(refused.code, 1, 'a coordinator cannot substitute for the dedicated ordinary canary seat');
-  assert.match(refused.failure, /RELAY_CANARY_SEAT/u);
+  assert.equal(refused.document.error.code, 'RELAY_CANARY_SEAT');
   const seat = await joinedCanarySeat(box);
   const enabled = await box.cliAt(seat.root, 'relay', 'canary', 'on', '--timeout', '5000');
   assert.equal(enabled.code, 0, enabled.failure);
@@ -203,5 +203,5 @@ test('the canary command binds machine opt-in to its linked ordinary seat [H5,H1
   assert.equal(off.document.config.enabled, false);
   const stopped = await box.cliAt(seat.root, 'relay', 'canary', 'run');
   assert.equal(stopped.code, 1);
-  assert.match(stopped.failure, /RELAY_CANARY_CONFIG/u);
+  assert.equal(stopped.document.error.code, 'RELAY_CANARY_CONFIG');
 });
