@@ -16,7 +16,7 @@ Outside contributions
 
 Set up
   pullboard tour                        see it work: a reject and its rework, scripted, in thirty seconds
-  pullboard init [--model <name>] [--blueprint <name or file>]... [--no-permissions] [--yes] [--verbose]  short setup summary; --verbose shows recipes; --yes commits only setup's own files with your Git identity
+  pullboard init [--model <name>] [--blueprint <name or file>]... [--no-permissions] [--no-hooks] [--yes] [--verbose]  --no-hooks skips agent nudges; --yes commits only setup's own files with your Git identity
   pullboard worktree <lane> --model <name> [--route light] [--family <name>]   make and join a worktree for a new agent
                                         pullboard.json worktrees: inside or beside; init defaults to inside
   pullboard join <lane> --model <name> [--route light] [--family <name>] [--parent <session-id>]  register this worktree and its parent session
@@ -70,7 +70,8 @@ Set up
   pullboard resume [--diagnostics]      where you are: your claim, branch, what came back,
                                         unread shouts, what to do next; run it to start any session
   pullboard badge                       write board-derived Shields endpoint JSON to docs/badges/
-  pullboard hooks                       reinstall the git hooks (e.g. after a fresh clone)
+  pullboard hooks [uninstall]           install Git hooks and agent nudges; uninstall removes only Pullboard's agent nudges
+  pullboard hook SessionStart|Stop     native agent nudges; errors/timeouts warn and never block
 
 Work
   pullboard add <lane> <title> [--criterion "..."] [--specs G1.2,K3] [--after 3,4] [--parent <id>]
@@ -366,7 +367,7 @@ const HELP_ALIASES = {
   'spec signers': { usage: 'pullboard spec signers add [--key <path>] [--by <principal>]', source: 'spec signers add' },
   'spec signers add': { usage: 'pullboard spec signers add [--key <path>] [--by <principal>]', source: 'spec signers add' },
   doctrine: { usage: 'pullboard doctrine check', source: 'doctrine check' },
-  hook: { usage: 'pullboard hook pre-commit|pre-merge-commit|commit-msg|pre-push', source: 'hook' },
+  hook: { usage: 'pullboard hook SessionStart|Stop|pre-commit|pre-merge-commit|commit-msg|pre-push', source: 'hook' },
   'gate set': { usage: 'pullboard gate set "<command>"', source: 'gate set' },
   'hook pre-commit': { usage: 'pullboard hook pre-commit', source: 'hook' },
   'hook pre-merge-commit': { usage: 'pullboard hook pre-merge-commit', source: 'hook' },
