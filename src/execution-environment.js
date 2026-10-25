@@ -14,7 +14,10 @@ import {
   join,
   relative,
 } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import {
+  fileURLToPath,
+  pathToFileURL,
+} from 'node:url';
 
 /** Exact executor identity for gate receipts and landing policy [E27,E28]. */
 
