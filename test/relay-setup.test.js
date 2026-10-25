@@ -242,7 +242,7 @@ const CLI = resolve(import.meta.dirname, '../bin/pullboard.js');
 
 /** Pair a stand-in phone through the real relay: Node signs the same enrollment the phone page sends. */
 async function pairPhone(box, t) {
-  const child = startFixtureChild(process.execPath, [CLI, 'relay', 'on', '--all', '--url', box.origin, '--json'], { cwd: box.root, env: box.env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = startFixtureChild(process.execPath, [CLI, 'relay', 'on', '--all', '--url', box.origin, '--name', 'Kitchen computer', '--json'], { cwd: box.root, env: box.env, stdio: ['ignore', 'pipe', 'pipe'] });
   t.after(() => { if (child.exitCode === null) child.kill('SIGTERM'); });
   const exited = new Promise(done => child.once('close', done));
   const machineFile = join(box.env.PULLBOARD_HOME, 'relay-machine/state.json');
@@ -324,6 +324,7 @@ test('relay devices names phones and joined computers with paired date and board
   // The joined computer never paired the phone: it lists it by short id from the relay, with its status and board.
   const there = await joined.cli('relay', 'devices');
   assert.equal(there.code, 0, 'relay devices succeeds on the joined computer');
+  assert.equal(there.document.computers[0].name, 'Kitchen computer', 'on --all retains the explicit computer name');
   assert.equal(there.document.devices.length, 1, "the joined computer lists the linked computer's phone");
   const [phoneThere] = there.document.devices;
   assert.deepEqual([phoneThere.deviceId, phoneThere.pairedHere, phoneThere.label, phoneThere.revoked, phoneThere.boards],

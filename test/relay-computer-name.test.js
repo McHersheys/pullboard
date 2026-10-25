@@ -10,6 +10,7 @@ import { requireCoordinatorHold } from '../src/coordinator-hold.js';
 import { coordinatorHolder } from '../src/coordinator-hold.js';
 import { COMPUTER_NAME_ENGINE } from '../src/computer-name-engine.js';
 import { openBoard, closeBoard } from '../src/board.js';
+import { readFileSync } from 'node:fs';
 
 test('linked computers use person-given names in coordinator holds and devices [E19,H16]', { timeout: relayWorkBudgetMs(12) }, async t => { // budget: real two-device CLI sign-in, pairing, takeover and cleanup; no speed target.
   const box = await relayClientFixture(t);
@@ -36,6 +37,22 @@ test('linked computers use person-given names in coordinator holds and devices [
       assert.equal(first.document.error.message.includes(privateText), false, 'refusal does not disclose host or path');
     }
   }
+});
+
+test('linked computers without names use the machine tail in real refusals and devices [E19]', { timeout: relayWorkBudgetMs(12) }, async t => { // budget: real unnamed two-device pairing and refusal, not a speed target.
+  const box = await relayClientFixture(t);
+  await box.link();
+  const pairing = await box.cli('relay', 'pair');
+  const other = await box.otherDeviceJoin(pairing.document.code);
+  assert.equal((await box.cli('add', box.lane, 'Unnamed coordinator')).code, 0);
+  const refused = await other.cli('add', box.lane, 'Other unnamed coordinator');
+  const machine = JSON.parse(readFileSync(box.linkFile, 'utf8')).machine;
+  assert.equal(refused.document?.error?.code, 'COORDINATOR_HELD');
+  assert.ok(refused.document.error.message.includes(`computer ${machine.slice(-8)}`));
+  const roster = await box.cli('relay', 'devices');
+  assert.equal(roster.code, 0);
+  assert.equal(roster.document.computers[0].name, null);
+  assert.equal(JSON.stringify(roster.document).includes(hostname()), false);
 });
 
 test('unnamed computers retain ID-tail labels and invalid names are refused [E19,H16]', () => {
