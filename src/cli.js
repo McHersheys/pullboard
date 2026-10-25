@@ -104,6 +104,7 @@ import {
   configFromSource,
   loadConfig,
 } from './config.js';
+import { onlyNamedBoardChanged } from './relay-board-config.js';
 import { displayAgentName } from './agent-names.js';
 import {
   doctrineHistory,
@@ -580,7 +581,7 @@ export async function ordered(ctx, board, operation, args) {
     const joined = store.agentAt(board, ctx.info.root)?.agent_id;
     args = [{ ...args[0], createdBy: ctx.info.isMain ? COORDINATOR : joined ?? 'machine' }, ...args.slice(1)];
   }
-  const command = ['add', 'edit', 'merged'].includes(ctx.io.relayCommand?.cliOperation) ? ctx.io.relayCommand : undefined;
+  const command = ['add', 'companion', 'edit', 'merged'].includes(ctx.io.relayCommand?.cliOperation) ? ctx.io.relayCommand : undefined;
   /** Dispatch while this session holds the checkout, including long-running next/run loops. */
   const execute = async () => {
     /** Keep bootstrap in the same authenticated seat, without borrowing a person's action receipt. */
@@ -614,6 +615,7 @@ export async function ordered(ctx, board, operation, args) {
         ? relayOperation(ctx.info.root, operation, args, ctx.io, command, applyRequested,
           requested ? () => { ctx.io.recordedMove = true; } : undefined) : applyRequested());
     if (requested && gitSyncLinked(ctx.info.root)) ctx.io.recordedMove = true;
+    if (requested && ctx.io.recordedMove) (await import('./cli-presence.js')).heartbeatCommand(ctx.io, { ctx, board });
     return result;
   };
   const digest = agentSessionDigest();
@@ -1036,7 +1038,7 @@ export function verifiedMergeGroups(root, items, shouts, now) {
 export function coordinatorDecisionSections(board, ctx) {
   const shouts = store.decisionAndEvidenceShouts(board);
   const openDecisions = store.openDecisions(board, COORDINATOR).map((ask) => ({
-    id: ask.shout_id, asker: ask.shout_from, question: ask.shout_text, at: ask.shout_at, age: span(ctx, ask.shout_at),
+    id: ask.shout_id, asker: ask.shout_from, question: ask.shout_text, ...(ask.options ? { options: ask.options, item: ask.item } : {}), at: ask.shout_at, age: span(ctx, ask.shout_at),
   }));
   const answers = new Map(store.decisionAnswers(board).map(answer => [answer.shout_answers, answer]));
   const recentAnswers = shouts.filter((ask) => ask.shout_decision).flatMap((ask) => {
@@ -1248,7 +1250,8 @@ export function uncommittedPolicySetup(info) {
  */
 export function refuseUncommittedSetup(mainRoot, config) {
   const hasCommit = headCommit(mainRoot) !== null;
-  const differ = differFromHead(mainRoot, setupFiles(mainRoot, config));
+  const differ = differFromHead(mainRoot, setupFiles(mainRoot, config))
+    .filter(({ path, how }) => !(path === CONFIG_FILE && how === 'changed' && onlyNamedBoardChanged(mainRoot)));
   if (hasCommit && !differ.length) return;
   const why = hasCommit
     ? `a new worktree starts from the last commit, and these differ from it here: ${differ.map(({ path, how }) => `${path} (${how})`).join(', ')}`

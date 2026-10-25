@@ -23,11 +23,12 @@ export function recordedMoveRefusal(io, error) {
 export function requestedCommandMove(command, operation) {
   if (!command) return false;
   const forms = {
-    add: ['addItem'], edit: ['editItem'], merged: ['merged'], submit: ['submit'],
+    add: ['addItem'], companion: ['requestCompanion'], edit: ['editItem'], merged: ['merged'], submit: ['submit'],
     claim: ['claim'], release: ['release'], verify: ['verify'], withdraw: ['withdraw', 'editMilestoneItems'],
     refreeze: ['refreeze'], reopen: ['reopen'], escalate: ['escalate', 'shout'],
     next: ['claim', 'reserveReview', 'reserveNextReview'], run: ['claim', 'release', 'submit', 'reserveReview', 'reserveNextReview', 'verify', 'escalate', 'shout'],
     init: ['register'], join: ['register'], worktree: ['register'], takeover: ['takeCoordinator'],
+    relay: ['setBoardMembers'],
     inbox: ['recordActivityDelivery', 'actOnActivity'],
     shout: ['shout'], answer: ['answerDecision'], pass: ['passDecision'], fact: ['appendFact'],
     hold: ['holdLane', 'releaseLane', 'holdItem', 'releaseItemHold'],

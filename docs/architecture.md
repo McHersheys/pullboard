@@ -71,6 +71,7 @@ Everything durable lives on one volume at `/data`: `auth.sqlite`, then `devices.
 | --- | --- | --- | --- |
 | `relay_users` | `auth.sqlite` | Each signed-in GitHub account: its numeric id and login. | No deletion path. |
 | `relay_boards` | `auth.sqlite` | Each linked board: board id, repository `owner/name`, repository id, link time. | The board is deleted, or 90 days pass without activity. |
+| `relay_board_off` | `auth.sqlite` | Per board turned off by a relink: the board id, its repository id, the board that replaced it, the account that relinked and the time. It is the off receipt that keeps one active link per repository. | No deletion path. |
 | `relay_cleanup` | `auth.sqlite` | Board ids whose deletion is in progress. | The deletion finishes. |
 | `relay_deleted_credentials` | `auth.sqlite` | Per credential of a deleted board: its SHA-256 hash, the board id, its expiry. | The credential's own expiry. |
 | `relay_credentials` | `auth.sqlite` | Per credential: id, SHA-256 hash, kind, account, board, agent or machine name, created, expiry, revoked flag. | The board is deleted or expires. Session rows stay, expired or revoked. |
@@ -90,6 +91,7 @@ Everything durable lives on one volume at `/data`: `auth.sqlite`, then `devices.
 | `journal_record` | `boards/<board>.journal.sqlite` | Per record: sequence, arrival time, kind (move or request), sealed payload, sender kind, sender account, agent or machine name. | The next snapshot covers it. |
 | `journal_registration` | `boards/<board>.journal.sqlite` | Per seat a move registered: the target seat, its creator, the move's sequence and the sealed move's digest, so a replica checks who created a seat. | The board is deleted or expires. |
 | `journal_snapshot` | `boards/<board>.journal.sqlite` | One sealed snapshot: the sequence it covers, arrival time, sealed payload, sender. | The next snapshot replaces it. |
+| `board_link_delivery` | `boards/<board>.journal.sqlite` | Per cross-board envelope a linked board receives: the source board, a correlation id, the link id and generation, its position, digest, the sealed envelope and its receipt. The relay cannot open the envelope. | The board is deleted or expires; it counts toward the board storage quota. |
 | `page_meta` | `boards/<board>.journal.sqlite` | The board id and the history page format. | The board is deleted or expires. |
 | `page_object` | `boards/<board>.journal.sqlite` | Per sealed history page: its id, the sequence it reaches, the sealed payload, its child page ids and its creation time. | Collection deletes a page that no current root, pin or staged upload reaches. |
 | `page_upload` | `boards/<board>.journal.sqlite` | Per staged page upload: id, the sender's account id, kind and agent or machine name, the sequence it covers and its expiry. | It is published, or it expires. |

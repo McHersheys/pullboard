@@ -1,4 +1,5 @@
 import { laneMessageFloor } from '../lane-lead.js';
+import { DECISION_QUEUE_ENGINE } from '../decision-queue-engine.js';
 import { ACTIVITY_NEWS_ENGINE } from '../activity-news-engine.js';
 import { RIGOR_AUTO_ENGINE } from '../rigor-auto-engine.js';
 /** Routing metadata owned by shout, discovered without a shared registry edit [C7,V4,H16]. */
@@ -18,8 +19,9 @@ function historicalMinimumEngine(args, board, at) {
 /** News combines every applicable floor; old arguments retain their historical replay condition order. */
 function minimumEngine(args, board, at) {
   const laneFloor = laneMessageFloor(board, args[0]);
-  if (args[0]?.news !== true) return Math.max(laneFloor, historicalMinimumEngine(args, board, at));
-  return Math.max(laneFloor, ACTIVITY_NEWS_ENGINE,
+  const optionsFloor = args[0]?.options !== undefined ? DECISION_QUEUE_ENGINE : 1;
+  if (args[0]?.news !== true) return Math.max(laneFloor, optionsFloor, historicalMinimumEngine(args, board, at));
+  return Math.max(laneFloor, optionsFloor, ACTIVITY_NEWS_ENGINE,
     typeof args[1]?.cause === 'string' && args[1].cause.startsWith('conflict:') ? RIGOR_AUTO_ENGINE : 1,
     args[0]?.item !== undefined ? ITEM_SHOUT_ENGINE : 1,
     args[0]?.landingFence !== undefined ? LANDING_LEASE_ENGINE : 1,
@@ -38,6 +40,8 @@ export default Object.freeze({ operation: "shout", order: 23, engine: 1,
   NOT_LANE_LEAD: 'ask your named lane lead to send the decision upward',
   "B26_PERSON_CHANNEL": "record it as the person through pullboard view or the person's own terminal",
   "B26_PERSON_DECISION": "ask your coordinator: pullboard shout coordinator \"<question>\" --decision",
+  "BAD_DECISION_OPTIONS": "ask an item decision with --decision --item <id> --options '[\"first\",\"second\"]'",
+  "NOT_YOUR_ITEM_DECISION": "ask on an item you build or review, or ask the coordinator for a cross-item decision",
   "BAD_EVIDENCE": "pass the evidence fields the message names, then retry",
   "BAD_NEWS": "send news from the coordinator or person to all, without item, decision, request or answer",
   "BAD_REQUEST": "send the request body the message names as an application/json object",
@@ -49,5 +53,6 @@ export default Object.freeze({ operation: "shout", order: 23, engine: 1,
   "NO_SHOUT": "name a shout id from pullboard inbox",
   "REQUEST_CLOSED": "read pullboard inbox before answering another request",
   "REQUEST_OUTCOME": "pullboard answer <id> done \"<reason>\", or pullboard answer <id> declined \"<reason>\"",
+  "SHOUT_TOO_LONG": 'shorten the message to 400 characters or fewer; cite native proof receipt ids and read pullboard show <id> for the evidence chain',
   "SELF_SHOUT": "name another agent, a lane or all: pullboard shout all \"<text>\""
 }) });

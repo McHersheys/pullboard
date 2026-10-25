@@ -57,6 +57,7 @@ Set up
   pullboard relay [status|on|off|pair|join <code>] [--url <address>] [--name <computer>]  link, inspect or unlink this board's sealed relay
                                         on signs in through GitHub; the address defaults to https://app.pullboard.dev
                                         pair prints a one-use machine code; join stores it in another clone
+  pullboard relay members set <login> [<login> ...] | clear  publish an approver-signed membership list
   pullboard relay pair --new-browser    sign in and pair one more browser; existing browsers stay paired
   pullboard relay on --all [--url <address>] [--name <computer>]  link every registered project after one sign-in; pair the phone once
                                         keep this command open until pairing finishes; later projects link on registration
@@ -68,11 +69,12 @@ Set up
   pullboard relay revoke <token-id>     revoke one token from that list; other agents keep working
   pullboard relay recover --skip <sequence>  person-only recovery of one blocked next relay position
   pullboard handoff [--take <id>]        write or take an agent hand-off; keep questions on its item
+  pullboard heartbeat                 record this seat's local session activity; no board move
   pullboard resume [--diagnostics]      where you are: your claim, branch, what came back,
                                         unread shouts, what to do next; run it to start any session
   pullboard badge                       write board-derived Shields endpoint JSON to docs/badges/
   pullboard hooks [uninstall]           install Git hooks and agent nudges; uninstall removes only Pullboard's agent nudges
-  pullboard hook SessionStart|Stop     native agent nudges; errors/timeouts warn and never block
+  pullboard hook SessionStart|Stop|SessionEnd     native agent nudges; errors/timeouts warn and never block
 
 Work
   pullboard map [<module or function>] [--for <item>] [--budget <tokens>]  source map for main, a card, or an item's one-hop slice
@@ -124,6 +126,9 @@ Work
                                         reads the board and changes nothing; exits 1 when something is stuck
                                         pullboard.json health.stuck (default 1h), health.holds (1d), health.release (1d)
   pullboard skills --update            refresh unchanged Claude Code skills from shipped versions
+  pullboard companion <parent> <lane> "<title>" --key <key> [--criterion "<criterion>"] [--specs <ids>]
+                                        create one child in another lane; repeat the same parent, lane and key to find it
+                                        --brief "<brief>"; --route strong|mid|light; only the coordinator sets --check "<command>"
   pullboard show <id> [--history]       an item, the criterion frozen at claim, its verdicts: the latest in full,
                                         earlier ones as one line; --history prints every note in full
   pullboard fact <id> <kind> <text> [--answers <bar-check-fact-id>] [--supersedes <fact-id>] [--ref path:lines@full-sha] [--implies <ids>]
@@ -143,6 +148,7 @@ Work
                                         the command and its author print first; the project gate is pullboard gate
   pullboard test <files>                run named test files on the runner pool with the per-file timeout, uncommitted
                                         changes included; a red file is compared with main and named known or new
+                                        --affected selects the change and its accepted registry guards; no files needed
   pullboard check accept <id>           the person accepts an item's check that already passes on main, as it reads now;
                                         with checks.provesNothing "hold", claim and submit refuse that item until then
   pullboard bar ready [on|off]           coordinator: opt in to ready bars; existing frozen work needs no backfill
@@ -168,15 +174,19 @@ Work
   pullboard shout all <text> --news              coordinator/person release or focus news, digested at session start
   Inbox combines direct coordination with item/dependency, file and cited-row activity; other lane activity is summarized.
   pullboard shout [<to>] <text> --decision       ask for a decision; defaults to your coordinator or the person
+  pullboard shout coordinator <question> --item <id> --decision --options <json>
+                                        ask an item decision with choices, as --options '["first","second"]'
   pullboard shout <to> <text> --evidence attempt|receipt --outcome <word> --item <id> --commit <rev>
-  pullboard answer <shout-id> <text> [--as person]
+  pullboard answer <shout-id|repo#id> <text> [--as person]
                                         answer your decision; person mode is main-checkout only
+                                        repo#id answers a sibling repo's decision on its own board
                                         Other options: [--implies <ids>] [--supersedes <answer-id>]
                                                       [--origin person-relayed|agent|inherited] [--rationale <why>]
                                         --supersedes tells the items an earlier answer implied; only the person
                                         supersedes the person's answer
   pullboard pass <shout-id> <note>                lead escalates to coordinator; coordinator passes to person
   pullboard decisions [--as person]               shouts waiting for you; main checkout defaults to coordinator
+                                        as the person, a project's repos list together as repo#id
   pullboard watch [--to <agent|lane|all>] [--kinds <kinds>] [--item <id>] [--since <sequence>] [--json]
                 [--work <lane>] [--review-wait <minutes>]
                                         follow the board's live events, one line each as it happens, with or without the view
@@ -269,6 +279,7 @@ Spec
   pullboard spec check                  lint SPEC.md and the doctrine (house rules for agentic development)
   pullboard spec view [--out file]      the spec, open questions, sign-offs and doctrine as one page
   pullboard spec show <id> | unmet [--must] | signoff <ids> [--by <principal>]
+  pullboard spec verify <id> accepted|rejected --reason "why"  record an outside-parent verdict
                                         signoff: --note "what was checked" stays with the receipt
   pullboard spec draft <text> [--section <letter>] [--aim] [--gate "<gate>"]  any agent appends a draft row; never approves it
   pullboard spec draft <text> --revises <id> --reason "why" [--gate "<gate>"] [--status <status>]  propose an approved-row change in Needs you
@@ -328,6 +339,7 @@ const HELP_EXAMPLES = {
   tour: 'pullboard tour', init: 'pullboard init --blueprint web-app', worktree: 'pullboard worktree web --model "my-model"',
   join: 'pullboard join web --model "my-model"', resume: 'pullboard resume',
   intake: 'pullboard intake https://github.com/owner/repo/pull/7 --criterion "behavior" --check "npm test"',
+  companion: 'pullboard companion 12 api "Provide the API" --key api-part',
   add: ADD_EXAMPLE, list: 'pullboard list web', show: 'pullboard show 12',
   claim: 'pullboard claim 12', submit: 'pullboard submit 12', 'next --verify': 'pullboard next --verify',
   fact: 'pullboard fact 12 measurement "The check passes in 8 seconds"',
@@ -371,7 +383,7 @@ const HELP_ALIASES = {
   lanes: { usage: 'pullboard lanes', source: 'whoami' },
   agents: { usage: 'pullboard agents', source: 'whoami' },
   lane: { usage: 'pullboard lane add <name> --owns <path>[,<path>]', source: 'lane add' },
-  status: { usage: 'pullboard status', source: 'whoami' },
+  status: { usage: 'pullboard status [--all]', source: 'whoami' },
   done: { usage: 'pullboard done <id>', source: 'submit <id>' },
   inbox: { usage: 'pullboard inbox', source: null, extraFlags: ['--acted-on <interrupt-ids>'] },
   'check accept': { usage: 'pullboard check accept <id>', source: 'check accept' },
@@ -393,7 +405,7 @@ const HELP_ALIASES = {
   'spec signers': { usage: 'pullboard spec signers add [--key <path>] [--by <principal>]', source: 'spec signers add' },
   'spec signers add': { usage: 'pullboard spec signers add [--key <path>] [--by <principal>]', source: 'spec signers add' },
   doctrine: { usage: 'pullboard doctrine check', source: 'doctrine check' },
-  hook: { usage: 'pullboard hook SessionStart|Stop|pre-commit|pre-merge-commit|commit-msg|pre-push', source: 'hook' },
+  hook: { usage: 'pullboard hook SessionStart|Stop|SessionEnd|pre-commit|pre-merge-commit|commit-msg|pre-push', source: 'hook' },
   'gate set': { usage: 'pullboard gate set "<command>"', source: 'gate set' },
   'hook pre-commit': { usage: 'pullboard hook pre-commit', source: 'hook' },
   'hook pre-merge-commit': { usage: 'pullboard hook pre-merge-commit', source: 'hook' },
@@ -422,6 +434,10 @@ const HELP_FLAG_EXPLANATIONS = {
 
 /** Lines a command's own help adds after its example. */
 const HELP_NOTES = {
+  status: [
+    'Counts include live, idle and gone identities; plain text lists only live and idle seats.',
+    '--all includes gone seats. JSON retains the full identity history and presence counts.',
+  ],
   resume: [
     'Ordinary resume reads the current work card and recorded health without running diagnostics or watches.',
     'Use --diagnostics explicitly for setup, hooks, dirty files and stale-work checks.',

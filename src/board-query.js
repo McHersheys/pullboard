@@ -1,3 +1,5 @@
+import { withSeatPresence } from './seat-presence.js';
+import { projectItemDecisions } from './item-decision-queue.js';
 import { itemById } from './board-item-read.js';
 import {
   activityEventDetail,
@@ -108,6 +110,15 @@ export function getItem(board, id) {
   return { ...item, ...(baseline ? { item_check_baseline: baseline } : {}), ...(source ? { outside: source } : {}) };
 }
 
+/** Read an item's coordinator hold, or null when it is available for claims. */
+export function itemHold(board, id) {
+  const item = getItem(board, id);
+  return item.item_hold_reason ? {
+    item_id: item.item_id, item_hold_reason: item.item_hold_reason,
+    item_hold_by: item.item_hold_by, item_hold_at: item.item_hold_at,
+  } : null;
+}
+
 /**
  * Items, newest first, as a reader should see them. Closed items (verified, withdrawn) only when
  * asked.
@@ -181,9 +192,9 @@ export function reviewQueue(board) {
  */
 export function openDecisions(board, recipient = null) {
   if (recipient === null) {
-    return board.db
+    return projectItemDecisions(board, board.db
       .prepare('SELECT * FROM shout ask WHERE ask.shout_decision = 1 AND NOT EXISTS (SELECT 1 FROM shout reply WHERE reply.shout_answers = ask.shout_id) ORDER BY ask.shout_id')
-      .all();
+      .all());
   }
   const recipients = [...new Set(Array.isArray(recipient) ? recipient : [recipient])];
   if (!recipients.length) return [];
@@ -291,7 +302,7 @@ export function agentModel(board, id) {
 
 /** Attach an agent's model to a row from the legacy stable agent table. */
 export function withModel(board, agent) {
-  return agent ? { ...agent, agent_model: agentModel(board, agent.agent_id), agent_parent_session: agentParent(board, agent.agent_id) } : agent;
+  return agent ? withSeatPresence(board, [{ ...agent, agent_model: agentModel(board, agent.agent_id), agent_parent_session: agentParent(board, agent.agent_id) }])[0] : agent;
 }
 
 /**
@@ -301,9 +312,9 @@ export function withModel(board, agent) {
  * @returns {any[]}
  */
 export function listAgents(board) {
-  return board.db.prepare(`SELECT agent.*, model.meta_value AS agent_model, parent.meta_value AS agent_parent_session FROM agent
+  return withSeatPresence(board, board.db.prepare(`SELECT agent.*, model.meta_value AS agent_model, parent.meta_value AS agent_parent_session FROM agent
     LEFT JOIN board_meta model ON model.meta_key='agent_model:' || agent.agent_id
-    LEFT JOIN board_meta parent ON parent.meta_key='agent_parent_session:' || agent.agent_id ORDER BY agent.rowid`).all();
+    LEFT JOIN board_meta parent ON parent.meta_key='agent_parent_session:' || agent.agent_id ORDER BY agent.rowid`).all());
 }
 
 /** The optional engine-20 fields of a fact, present only when its event set them. */
@@ -440,6 +451,12 @@ export function relatedItems(board, item, limit = 3) {
 /** Read a seat's immutable parent session digest; unknown parents remain separate seats. */
 export function agentParent(board, id) {
   return board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?').get(`agent_parent_session:${id}`)?.meta_value ?? null;
+}
+
+/** Every stamped receipt for one item, in recorded order. */
+export function proofReceipts(board, itemId) {
+  return board.db.prepare("SELECT event_id, event_detail FROM event WHERE item_id = ? AND event_kind = 'proof-run' ORDER BY event_id").all(itemId)
+    .map(row => ({ eventId: row.event_id, ...JSON.parse(row.event_detail).receipt }));
 }
 
 

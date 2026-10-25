@@ -19,6 +19,7 @@ function storedBytes(file) {
       if (tables.has(name)) bytes += db.prepare(`SELECT COALESCE(SUM(length(payload)),0) AS bytes FROM ${name}`).get().bytes;
     }
     if (tables.has('page_object')) bytes += db.prepare('SELECT COALESCE(SUM(length(payload)+length(children)),0) AS bytes FROM page_object').get().bytes;
+    if (tables.has('board_link_delivery')) bytes += db.prepare('SELECT COALESCE(SUM(length(envelope)+length(receipt)),0) AS bytes FROM board_link_delivery').get().bytes;
     return bytes;
   } finally { db.close(); }
 }

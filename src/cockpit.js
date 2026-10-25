@@ -193,7 +193,7 @@ ${hostedLocal && !snapshot ? '<div class="hosted-mark" aria-hidden="true"><svg v
   </section>
   <section data-pane="shouts" class="two narrow" id="shouts-pane">
     <div class="primary">
-      <div class="card-panel shouts-card"><form id="shout-form" class="shout-form"><p class="answering" id="answering" hidden><span>Answering <b id="answering-who"></b>: <span id="answering-q"></span></span><button class="ghost" id="answer-cancel" type="button">Cancel</button></p><div class="composer"><input id="shout-to" type="hidden" value="coordinator"><span class="to-chip" id="shout-to-chip" hidden></span><textarea id="shout-text" required rows="1" placeholder="Shout to the coordinator" aria-label="Message"></textarea><button class="send" id="shout-send" type="submit" aria-label="Shout" title="Shout (Enter; Shift+Enter for a new line)"><svg viewBox="0 0 16 16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M8 13V3M3.5 7.5 8 3l4.5 4.5"/></svg></button></div><span class="asks-slot" id="asks-slot"></span></form><section class="needs-you" id="decisions" aria-label="Decisions needed" hidden></section><div class="feed" id="feed"></div></div>
+      <div class="card-panel shouts-card"><form id="shout-form" class="shout-form"><p class="answering" id="answering" hidden><span>Answering <b id="answering-who"></b>: <span id="answering-q"></span></span><button class="ghost" id="answer-cancel" type="button">Cancel</button></p><div class="composer"><input id="shout-to" type="hidden" value="coordinator"><span class="to-chip" id="shout-to-chip" hidden></span><textarea id="shout-text" required rows="1" placeholder="Shout to the coordinator" aria-label="Message"></textarea><button class="send" id="shout-send" type="submit" aria-label="Shout" title="Shout (Enter; Shift+Enter for a new line)"><svg viewBox="0 0 16 16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M8 13V3M3.5 7.5 8 3l4.5 4.5"/></svg></button></div><span class="asks-slot" id="asks-slot"></span></form><section class="needs-you" id="coordinator-decisions" aria-label="Coordinator decision queue" hidden></section><section class="needs-you" id="decisions" aria-label="Decisions needed" hidden></section><div class="feed" id="feed"></div></div>
     </div>
     <aside class="card-panel detail" aria-label="Agents and lanes">
       <div><h3 class="panel-head">Agents<button class="link" data-agents-toggle type="button">hide</button></h3><div id="agents"></div><section id="credentials" aria-label="Agent credentials"></section></div>
@@ -580,7 +580,7 @@ function replayProject(index) {
   const shouted = new Set(log.map((event) => JSON.parse(event.event_detail).shout).filter(Boolean));
   p.shouts = p.shouts.filter((shout) => shouted.has(shout.shout_id));
   p.decisions = p.decisions.filter((shout) => shouted.has(shout.shout_id));
-  p.asked = p.asked.filter((shout) => shouted.has(shout.shout_id));
+  p.asked = p.asked.filter((shout) => shouted.has(shout.shout_id)); p.decisionQueue = (p.decisionQueue || []).filter((shout) => shouted.has(shout.shout_id));
   const held = new Map();
   for (const event of log) {
     const detail = JSON.parse(event.event_detail);
@@ -817,9 +817,9 @@ function milestoneItem(entry, p) {
     root,
     titles: new Map((root === view.root ? p.items : root ? named[0].items : []).map((i) => [String(i.id), i.title])),
     state: read ? stateOf(read) : null,
-    stale: item ? staleChip(item) : '',
+    stale: item ? staleChip(item) : '', held: item ? heldNote(item, source, entry) : null,
     block: item ? roadmapBlock(detail?.item || item, {
-      holds: root === view.root ? source.holds : source.laneHolds, items: source.items, agents: source.agents, state: stateOf,
+      holds: root === view.root ? source.holds : source.laneHolds, itemHolds: source.itemHolds, items: source.items, agents: source.agents, state: stateOf,
       address: (id) => itemAddress(id, root), board: root === view.root ? null : root,
       releases: (p.milestones || []).filter((milestone) => milestone.items.some((ref) => ref.id === entry.id)).map((milestone) => milestone.name),
       error: expanded ? detail?.error : undefined,
@@ -882,18 +882,18 @@ function jumpToRoadmap(key) {
  * id and title on one line that ends in an ellipsis when cut, and the Items tab's chip. The whole
  * title is the row's tooltip. Every row expands in place; its compact detail alone links over to Items.
  */
-function milestoneRow(row, titles) {
+function milestoneRow(row, titles, hidden = false) {
   const title = row.title ? inline(String(row.title).replace(/\\s+/g, ' '), row.titles || titles, 'in-place', row.root) : '<span class="muted">' + esc(row.why) + '</span>';
   const label = '<span class="id">' + esc(row.label) + '</span>' + title;
   const text = row.block?.dot ? '<span class="milestone-title">' + label + '</span>' + row.block.dot : label;
   const key = 'i:' + row.label, open = view.roadmapOpen.get(JSON.stringify([view.root, key])) === true;
-  const status = (open && row.block?.dot ? '<span class="chip warn roadmap-blocked"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>blocked</span>' : '') + (row.stage === 'merged' ? '<span class="chip ok roadmap-landed">verified</span>' : row.stage === 'accepted' ? '<span class="chip ok">accepted</span>' : row.state ? chip(row.state) : '<span class="chip">' + esc(row.word) + '</span>');
+  const status = (open && row.block?.dot ? '<span class="chip warn roadmap-blocked"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>blocked</span>' : '') + (row.stage === 'merged' ? '<span class="chip ok roadmap-landed">verified</span>' : row.stage === 'accepted' ? '<span class="chip ok">accepted</span>' : row.held ? heldChip(row.held) : row.state ? chip(row.state) : '<span class="chip">' + esc(row.word) + '</span>');
   const inner = '<span class="dot' + (row.state ? ' ' + row.state : '') + '"></span><span class="t">' + text + '</span>' + (row.stale || '') + '<span class="roadmap-status">' + status + '</span>';
   const board = row.open && row.open.root !== view.root ? ' data-board="' + esc(row.open.root) + '"' : '';
   const toggle = 'class="milestone-item' + (row.block?.dot ? ' blocked' : '') + '" data-roadmap-key="' + esc(key) + '" aria-expanded="' + open + '"' + board + ' title="' + esc(row.title ? row.title + (!row.open && row.why ? ' (' + row.why + ')' : '') : row.why) + '"';
   const detail = row.block ? row.block.detail : '<p>' + esc(row.why || row.word) + '</p>';
   // Every row stays on the Roadmap; only its explicit Open in Items link navigates (#605).
-  return '<li><div ' + toggle + ' role="button" tabindex="0">' + inner + '</div>'
+  return '<li' + (hidden ? ' hidden' : '') + '><div ' + toggle + ' role="button" tabindex="0">' + inner + '</div>'
     + '<div class="milestone-why"' + (open ? '' : ' hidden') + (row.pending ? ' aria-busy="true"' : '') + '>' + detail + '</div></li>';
 }
 
@@ -940,7 +940,7 @@ function roadmapCards(p, titles) {
   const isOpen = (key, first) => view.roadmapOpen.has(JSON.stringify([view.root, key])) ? view.roadmapOpen.get(JSON.stringify([view.root, key])) : first;
   const caret = '<svg class="caret" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg>'; // The view's stroke chevron, set inside the title to centre on its first line (#870).
   const next = coming.find((m) => m.rows.length) || null;
-  const headerFor = roadmapHeaders(roadmapSummary, { time: when, address: itemAddress, root: view.root });
+  const headerFor = roadmapHeaders(roadmapSummary, { time: when, address: itemAddress, root: view.root, held: view.roadmapHeld });
   const stages = [['open', 'Open'], ['claimed', 'Building'], ['submitted', 'In review'], ['accepted', 'Accepted'], ['merged', 'Landed']];
   const counts = headerFor(next) ? null : Object.fromEntries(stages.map(([stage]) => [stage, next ? next.rows.filter((row) => row.stage === stage).length : 0]));
   const shippingCounts = headerFor(next)
@@ -959,7 +959,7 @@ function roadmapCards(p, titles) {
   const body = (read) => {
     const { milestone, rows, done, total } = read;
     const progress = headerFor(read) ? '' : '<svg class="milestone-progress" viewBox="0 0 100 1" preserveAspectRatio="none" role="progressbar" aria-label="' + esc(milestone.name) + ': ' + done + ' of ' + total + ' landed" aria-valuemin="0" aria-valuemax="' + total + '" aria-valuenow="' + done + '"><rect width="' + (total ? (100 * done) / total : 0) + '" height="1"/></svg>';
-    return (rows.length ? progress + '<ul>' + rows.map((row) => milestoneRow(row, titles)).join('') + '</ul>' : '<p class="milestone-empty">No items yet.</p>')
+    return (rows.length ? progress + '<ul>' + rows.map((row) => milestoneRow(row, titles, view.roadmapHeld === milestone.name && !row.held)).join('') + '</ul>' : '<p class="milestone-empty">No items yet.</p>')
       + (milestone.note ? '<p class="milestone-note">' + rich(milestone.note, titles) + '</p>' : '');
   };
   /** Keep folding consistent with the View's other keyboard-accessible disclosure controls. */
@@ -1227,7 +1227,7 @@ function render() {
   // While another project loads, the item picked there waits for its own board.
   if (data.root === view.root && !view.adding && !(view.tab === 'items' && view.addressDetail !== null && view.addressDetail !== 'pipeline') && !p.items.some((i) => i.id === view.item)) view.item = shown.length ? shown[0].id : null;
   // An open item's chip, the same in its row and its detail: gated, its lane held, or unclaimed.
-  const openChip = (i) => i.blockedBy.length || heldLanes.has(i.lane) ? '<span class="chip gate">' + (i.blockedBy.length ? 'gated' : 'lane held') + '</span>' : chip('open');
+  const openChip = (i) => (p.itemHolds || []).some((h) => h.item === i.id) ? heldChip(heldNote(i, p)) : i.blockedBy.length || heldLanes.has(i.lane) ? '<span class="chip gate">' + (i.blockedBy.length ? 'gated' : 'lane held') + '</span>' : chip('open');
   $('chain').innerHTML = shown.length ? shown.map((i) => {
     const s = stateOf(i);
     // What an open item waits on, if anything: items not yet verified, or a hold on its lane.
@@ -1357,11 +1357,11 @@ function render() {
   const card = (x, tail = '', inFeed = true) => '<article class="shout h' + hue(x.shout_from) + (lead(x.shout_from) ? ' lead' : '') + (openShouts.has(x.shout_id) ? ' open' : '') + (inFeed && x.shout_id === view.shout ? ' found' : '') + '"' + (inFeed ? ' id="shout-' + x.shout_id + '"' : '') + ' data-shout-id="' + x.shout_id + '">'
     + (lead(x.shout_from) ? '<span class="avatar">' + LEAD + '</span>' : '<span class="avatar' + (initials(x.shout_from).length > 3 ? ' wide' : '') + '" aria-hidden="true">' + esc(initials(x.shout_from)) + '</span>') + '<div class="shout-main">' + (inFeed && x.shout_id === view.shout ? '<h2 class="visually-hidden">Shout #' + x.shout_id + '</h2>' : '') + '<header><b class="who">' + (x.shout_from === 'person' ? 'you' : shoutAgentName(x.shout_from)) + '</b><span class="to">→ ' + shoutTo(x.shout_to) + '</span>'
     + (itemOf(x) ? '<span class="item">#' + esc(itemOf(x)) + '</span>' : '') + mark(x) + '<time class="long" data-ago="' + esc(x.shout_at) + '" title="' + esc(when(x.shout_at)) + '">' + agoLong(x.shout_at) + '</time></header>'
-    + '<div class="text">' + rich(x.shout_text, titles) + '</div><button class="more" data-more type="button">' + (openShouts.has(x.shout_id) ? 'less' : 'more') + '</button>' + (inFeed ? band(x) + heardBy(x) : '') + evidence(x) + tail + '</div></article>';
+    + '<div class="text">' + rich(x.shout_text, titles) + (x.options ? '<ol>' + x.options.map((option) => '<li>' + esc(option) + '</li>').join('') + '</ol>' : '') + '</div><button class="more" data-more type="button">' + (openShouts.has(x.shout_id) ? 'less' : 'more') + '</button>' + (inFeed ? band(x) + heardBy(x) : '') + evidence(x) + tail + '</div></article>';
   $('feed').innerHTML = (view.shout !== null && !feedShouts.some((entry) => entry.shout_id === view.shout) ? '<p class="empty" id="shout-address-status" role="status">' + esc(addressed?.error || 'Loading shout #' + view.shout + '…') + '</p>' : '') + bar + (heard.length ? dayRules(heard, (x) => x.shout_at, card) : '<div class="empty">' + (unread ? 'No unread shouts.' : view.agent ? 'No shouts with ' + esc(agentName(view.agent)) + ' among the last forty.' : 'No shouts yet.') + '</div>');
   foldShouts();
-  // Each ask waits here until it is answered (B21); the answer itself is typed in the form below. The
-  // person answers the ones passed up to them; the rest wait on whoever holds them (B26).
+  // Each ask waits here until answered (B21), typed in the form below; the person answers those passed up, the rest wait on their holder (B26).
+  const coordinatorQueue = p.decisionQueue || []; $('coordinator-decisions').hidden = !coordinatorQueue.length; $('coordinator-decisions').innerHTML = coordinatorQueue.length ? '<div class="head"><i></i>Coordinator decisions</div>' + coordinatorQueue.map((d) => card(d, !readOnly && !requests && !snapshot ? '<button class="ghost answer" data-go="coordinate:' + d.shout_id + '" type="button">Answer as coordinator</button>' : '', false)).join('') : '';
   $('decisions').hidden = !p.decisions.length && !(p.asked.length && view.open.waiting);
   // The asks waiting on others are a toggle at the end of the composer's line, beside Show agents while the panel is hidden.
   $('asks-slot').innerHTML = (p.asked.length ? '<button class="asks-toggle" data-fold="waiting" type="button" aria-expanded="' + Boolean(view.open.waiting) + '" title="' + esc('Asks between agents, waiting on others: ' + p.asked.map((d) => agentName(d.shout_from) + ' asks ' + agentName(d.shout_to)).join(', ')) + '">' + p.asked.length + (p.asked.length === 1 ? ' ask' : ' asks') + ' waiting <span aria-hidden="true">' + (view.open.waiting ? '▴' : '▾') + '</span></button>' : '')

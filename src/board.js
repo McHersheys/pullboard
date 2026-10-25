@@ -8,6 +8,11 @@ import {
 } from './lane-lead.js';
 export { laneLeads };
 
+import { companionPlan } from './companion.js';
+import { applyCompanionRequest } from './companion.js';
+export { readBoardMembers, setBoardMembers } from './board-members.js';
+import { heartbeatSeat } from './seat-presence.js';
+import * as itemDecisions from './item-decision-queue.js';
 import * as activityDeliveryStore from './activity-delivery-store.js';
 import { requireFactKind } from './item-notes.js';
 import { activityNewsFlag } from './activity-news.js';
@@ -113,6 +118,7 @@ import {
   unreadCount,
   events,
   itemThread,
+  itemHold,
   laneHold,
   laneHolds,
   rowDecisions,
@@ -309,6 +315,9 @@ export { declareJob, recordJobRun } from './recurring-jobs.js';
 export { proposeSentinel, decideSentinel, beginSentinelRun, finishSentinelRun } from './sentinels.js';
 export { flakeLedger, recordFlakeObservation } from './flakes.js';
 export { flakeQuarantines, gateRuns, recordGateRun } from './quarantine.js';
+export { proofReceipts, recordProofRun } from './proof-receipts.js';
+import { refuseLongShout } from './proof-receipts.js';
+import { PROOF_RUN_ENGINE } from './proof-run-engine.js';
 export { recordPublishFinding } from './pr-findings.js';
 /** The seat readers live in seats.js; the board re-exports them so `store.*` callers keep one import. */
 export { agentAt, agentById, agentCreator, coordinatorHolder, listAgents, nextSeatId, seatEnrolled, seatLineage, takeCoordinator, withVerifierStanding } from './seats.js';
@@ -593,6 +602,7 @@ export function register(board, who) {
       if (lineage) board.db.prepare('INSERT INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run(`agent_lineage:${id}`, lineage);
     }
     logEvent(board, id, 'join', null, route === 'strong' ? { lane } : { lane, route });
+    if (board.executionEngineVersion === undefined) heartbeatSeat(board, id);
     return id;
   });
 }
@@ -664,22 +674,36 @@ function checkRouted({ brief, route, criterion, check }) {
  */
 export function addItem(board, { by, lane, title, criterion = '', specIds = [], parentId = null, after = [], brief = '', route = 'strong', check, checkBaseline, barActor }) {
   return atomic(board, () => {
-    const { command, cleanTitle } = validateItemAddition(board, { by, lane, title, criterion, parentId, after, brief, route, check });
-    const baseline = normalizeCheckBaseline(by, command, checkBaseline);
-    const at = now(board);
-    const result = board.db
-      .prepare(
-        `INSERT INTO item (item_parent_id, item_lane, item_title, item_criterion, item_spec_ids,
-           item_after, item_brief, item_route, item_check, item_created_by, item_created_at, item_updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(parentId, lane, cleanTitle, criterion.trim(), specIds.join(','), after.join(','), brief.trim(), route, command, by, at, at);
-    const id = Number(result.lastInsertRowid);
-    saveCheckBaseline(board, id, baseline);
-    logEvent(board, by, 'add', id, { lane, specIds, after, route, ...(baseline ? { checkBaseline: baseline } : {}) });
-    recordBarRevision(board, itemById(board, id), by, null, barActor);
-    return id;
+    const item = { by, lane, title, criterion, specIds, parentId, after, brief, route, check, checkBaseline, barActor };
+    return insertItem(board, item, validateItemAddition(board, item));
   });
+}
+
+/** Insert an already validated ordinary or companion child without bypassing check or bar recording. */
+function insertItem(board, item, { command, cleanTitle }) {
+  const { by, lane, criterion, specIds, parentId, after, brief, route, checkBaseline, barActor } = item;
+  const baseline = normalizeCheckBaseline(by, command, checkBaseline);
+  const at = now(board);
+  const result = board.db
+    .prepare(
+      `INSERT INTO item (item_parent_id, item_lane, item_title, item_criterion, item_spec_ids,
+         item_after, item_brief, item_route, item_check, item_created_by, item_created_at, item_updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(parentId, lane, cleanTitle, criterion.trim(), specIds.join(','), after.join(','), brief.trim(), route, command, by, at, at);
+  const id = Number(result.lastInsertRowid);
+  saveCheckBaseline(board, id, baseline);
+  logEvent(board, by, 'add', id, { lane, specIds, after, route, ...(baseline ? { checkBaseline: baseline } : {}) });
+  recordBarRevision(board, itemById(board, id), by, null, barActor);
+  return id;
+}
+
+/** Read the canonical request plan before a CLI performs any authorized baseline work. */
+export function planCompanion(board, options) { return companionPlan(board, options, validateItemAddition); }
+
+/** The single ordered operation permitted to create a child in a different lane. */
+export function requestCompanion(board, options) {
+  return applyCompanionRequest(board, options, { validateAddition: validateItemAddition, insertItem });
 }
 
 /** Validate that dependencies exist, remain usable, and cannot lead back to the edited item. */
@@ -1165,6 +1189,7 @@ export function submit(board, id, { agentId, commit, tree, files = [], policyCom
         doctrineHolds: null,
         gateConfigured: null, queuedItemLease: null,
         gateGreen: null,
+        proofRecorded: null, // The CLI records and validates native receipts before sealing submit; replay needs no origin files.
         treeStillDuringGate: null,
         submissionProofValid: () => {
           if ((board.executionEngineVersion ?? ENGINE_VERSION) >= SUBMISSION_PROOF_ENGINE) recordedProof = submissionProof(proof);
@@ -1397,6 +1422,7 @@ export function verify(board, id, { agentId, decision, reason, note = '', cause,
         trunkMergeClean: null,
         noUnverifiedStack: null, queuedItemLease: null,
         itemCheckGreen: found => isAccept ? outsideSandboxProblem(board, found, sandbox) : null,
+        proofRecorded: null, // The native verifier records the gate receipt before this ordered outcome.
         proofNoted: () =>
           note.trim()
             ? null
@@ -1638,8 +1664,10 @@ export { getItem } from './board-query.js';
  * @param {{ from: string, to: string, text: string, lanes: string[], item?: number, decision?: boolean, answers?: number | null, evidence?: any, request?: boolean, news?: boolean, channel?: 'terminal' | 'view', detail?: object }} message - detail: extra event fields
  * @returns {number}
  */
-function insertShout(board, { from, to, text, lanes, item, decision = false, answers = null, evidence = null, request = false, news = false, channel = 'terminal', detail = {} }) {
+function insertShout(board, { from, to, text, lanes, item, decision = false, answers = null, evidence = null, request = false, news = false, channel = 'terminal', detail = {}, options }) {
   const engine = board.executionEngineVersion ?? ENGINE_VERSION;
+  const validatedDecision = itemDecisions.itemDecisionDetail(board, { options, decision, item, from }, engine);
+  detail = { ...detail, ...validatedDecision };
   if (item !== undefined) {
     if (engine < ITEM_SHOUT_ENGINE) throw new Refused('ENGINE_VERSION', 'item messages require engine 93; upgrade every linked device before sending one');
     to = itemShoutTarget(board.db, item);
@@ -1681,12 +1709,12 @@ function insertShout(board, { from, to, text, lanes, item, decision = false, ans
   if (personAnswer && !['terminal', 'view'].includes(channel)) {
     throw new Refused('B26_PERSON_CHANNEL', 'record the person answer through the terminal or the view; run pullboard view');
   }
-  return persistShout(board, { from, to, text, decision, answers, evidence, request, news, channel, detail, outcome, personAnswer });
+  return persistShout(board, { from, to, text, decision, answers, evidence, request, news, channel, detail, outcome, personAnswer, decisionRecord: validatedDecision.decisionOptions ? { item, options: validatedDecision.decisionOptions } : null });
 }
 
 /** Persist a validated message or a fixed internal notice inside the caller's transaction. */
 function persistShout(board, { from, to, text, decision = false, answers = null, evidence = null, request = false,
-  channel = 'terminal', detail = {}, outcome = '', personAnswer = false, news = false }) {
+  channel = 'terminal', detail = {}, outcome = '', personAnswer = false, decisionRecord = null, news = false }) {
   const result = board.db
     .prepare(
       `INSERT INTO shout (shout_from, shout_to, shout_text, shout_at, shout_decision, shout_answers,
@@ -1697,6 +1725,7 @@ function persistShout(board, { from, to, text, decision = false, answers = null,
     .run(from, to, text.trim(), now(board), decision ? 1 : 0, answers, evidence?.kind ?? null, evidence ? evidence.outcome.trim() : null, evidence?.item ?? null, evidence?.commit ?? null, request ? 1 : 0, outcome);
   const id = Number(result.lastInsertRowid);
   logEvent(board, from, answers === null ? (news ? 'shout_news' : 'shout') : decision ? 'pass' : 'answer', detail.item ?? null, { shout: id, to, decision: Boolean(decision), request: Boolean(request), answers, ...(outcome ? { outcome } : {}), ...(personAnswer ? { channel } : {}), ...detail });
+  itemDecisions.recordItemDecision(board, id, { decision, answers, record: decisionRecord });
   return id;
 }
 
@@ -1708,6 +1737,7 @@ function persistShout(board, { from, to, text, decision = false, answers = null,
  * @returns {number}
  */
 export function shout(board, message) {
+  if ((board.executionEngineVersion ?? ENGINE_VERSION) >= PROOF_RUN_ENGINE) refuseLongShout(message.text);
   return atomic(board, () => insertShout(board, routeLaneMessage(board, { ...message,
     news: activityNewsFlag(message, board.executionEngineVersion ?? ENGINE_VERSION) }, board.executionEngineVersion ?? ENGINE_VERSION)));
 }
@@ -2068,14 +2098,7 @@ export function releaseLane(board, lane, { agentId, asPerson = false, channel = 
 
 export { laneHold, laneHolds } from './board-query.js';
 
-/** Read an item's coordinator hold, or null when it is available for claims. */
-export function itemHold(board, id) {
-  const item = getItem(board, id);
-  return item.item_hold_reason ? {
-    item_id: item.item_id, item_hold_reason: item.item_hold_reason,
-    item_hold_by: item.item_hold_by, item_hold_at: item.item_hold_at,
-  } : null;
-}
+export { itemHold } from './board-query.js';
 
 /** Hold an open or already-claimed item without changing its current lifecycle state. */
 export function holdItem(board, id, { agentId, reason }) {
@@ -2315,6 +2338,7 @@ export function setLaneLead(board, options) {
 /** Tailored inbox activity is the same canonical read projection as other board queries. */
 export { agentActivity } from './board-query.js';
 
+export { recordRowVerification, rowVerifications } from './spec-verdicts.js';
 /** Read recipient delivery state without mutating any cursor or receipt. */
 export function activityDeliveryState(board, agentId) {
   return activityDeliveryStore.activityDeliveryState(board, agentId);

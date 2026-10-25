@@ -359,10 +359,13 @@ export function projectState(root, { seen = null, board: providedBoard = null, i
       // Every ask still waiting for an answer, however far back the forty shouts reach (B21): the
       // person's to answer here, and the rest with who holds them (B26).
       decisions: store.openDecisions(board, store.PERSON),
+      decisionQueue: store.openDecisions(board, COORDINATOR),
       asked: store.openDecisions(board).filter((ask) => ask.shout_to !== store.PERSON),
       events: log,
       agents: store.listAgents(board).map((agent) => ({ ...agent, model: agent.agent_model ?? 'unknown', displayName: displayAgentName(agent, config.agents.names), lastMoveAt: lastMove.get(agent.agent_id) ?? null })),
       holds: store.laneHolds(board),
+      // Each item held on its own, with its reason, so every list can say why it is not moving (#1256).
+      itemHolds: all.filter((item) => item.item_hold_reason).map((item) => ({ item: item.item_id, reason: item.item_hold_reason, by: item.item_hold_by, at: item.item_hold_at })),
       spec: rows(config.spec),
       practice: doctrine.rows.map(({ id, status: state, tier, text, gate, serves, section, origin, version, reason }) => ({
         id, status: state, tier, text, gate, serves, section, origin, version, reason,

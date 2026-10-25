@@ -1,4 +1,8 @@
 import { withBoardRead } from '../cli-board-read.js';
+import {
+  testRuntimeEnvironment,
+  testRuntimeRows,
+} from '../execution-environment.js';
 /** The pullboard show command, in its own module so an item adding another command never edits these lines. */
 import {
   displayAgentName,
@@ -39,9 +43,10 @@ import { relayStateExists } from '../local-state.js';
 export async function run(io, { first, values }) {
   const ctx = context(io);
   const id = idArg(first);
-  const { item, verdicts, moves, thread, related, reviewer, agents, mainMerge, infra, approval } = await withBoardRead(ctx, (board) => {
+  const { item, verdicts, moves, thread, related, reviewer, agents, mainMerge, infra, approval, proofReceipts } = await withBoardRead(ctx, (board) => {
     const item = verdictProjector(ctx.info.root, board).project(store.getItem(board, id));
     const result = { item, verdicts: store.verdictsFor(board, id), thread: store.itemThread(board, id),
+      proofReceipts: store.proofReceipts(board, id),
       approval: specApprovalState(ctx.info.root, { board, config: ctx.config }) };
     // JSON retains every public detail field; text-only labels and related-item searches add nothing to it.
     if (values.json) return result;
@@ -50,14 +55,17 @@ export async function run(io, { first, values }) {
       related: store.relatedItems(board, item), reviewer: store.reviewHolder(board, item),
       agents: store.listAgents(board), mainMerge: mainMergeFor(board, id), infra: infraNotes.infraNoteOf(history) };
   });
+
   const agentApproved = itemAgentApprovals(item, approval);
   const approvalQualification = agentApprovalLine(agentApproved);
   // #922: moves on this item made while the relay was down wait in this machine's relay outbox until it answers.
   // Without a relay link or deleted-copy notice there is no outbox to read, so the relay client never loads.
   const outbox = relayStateExists(ctx.info.commonDir) ? (await import('../relay.js')).relayStatus(ctx.info.root).outbox : undefined;
   const relayPending = (outbox ?? []).filter((move) => move.item === id);
+  const frozen = item.item_frozen ? JSON.parse(item.item_frozen) : null;
+  const checkText = frozen ? frozen.check ?? '' : item.item_check ?? '';
   if (values.json) {
-    io.result({ ...item, verdicts, thread, agentApproved, approvalQualification, ...(relayPending.length ? { relayPending } : {}) });
+    io.result({ ...item, checkText, verdicts, thread, ...(proofReceipts.length ? { proofReceipts } : {}), agentApproved, approvalQualification, ...(relayPending.length ? { relayPending } : {}) });
     return 0;
   }
   const agentName = (id) => displayAgentName(agents.find((agent) => agent.agent_id === id) ?? { agent_id: id }, ctx.config.agents.names);
@@ -65,7 +73,26 @@ export async function run(io, { first, values }) {
   if (item.item_status === 'verified' && approvalQualification) io.say(approvalQualification);
   if (item.item_verdict_state) io.say(staleVerdictRefusal(item, item.item_verdict_state).message);
   if (item.item_criterion) io.say(`criterion: ${item.item_criterion}`);
-  if (item.item_check) io.say(`check: ${item.item_check}`);
+  if (checkText) {
+    io.say(`check: ${checkText}`);
+    if (item.item_frozen_digest) io.say(`check digest: ${item.item_frozen_digest}`);
+  }
+  for (const receipt of proofReceipts) {
+    const hasTestRuntimes = Object.hasOwn(receipt, 'testRuntimes');
+    const testRuntimes = hasTestRuntimes ? testRuntimeRows(receipt.testRuntimes) : null;
+    const environment = hasTestRuntimes ? testRuntimeEnvironment(testRuntimes) : receipt.environment;
+    const runtime = environment ? `Node ${environment.node} ${environment.platform}/${environment.arch}` : 'runtime unknown';
+    const counts = Object.values(receipt.counts).some(value => value === null) ? 'test counts unknown'
+      : `${receipt.counts.passed} pass, ${receipt.counts.failed} fail, ${receipt.counts.skipped} skip`;
+    io.say(`receipt ${receipt.id}: ${receipt.kind}, item #${receipt.item}`);
+    io.say(`  commit ${receipt.commit ?? 'unknown'}; tree ${receipt.tree ?? 'unknown'}; frozen ${receipt.frozenDigest ?? 'unknown'}`);
+    io.say(`  ${runtime}; runner ${receipt.runner ?? 'unknown'}; seat ${receipt.seat}; parent ${receipt.parentSession ?? 'unknown'}`);
+    io.say(`  exit ${receipt.exitCode ?? 'unknown'}; ${counts}; ${receipt.durationMs}ms${receipt.sourceClean ? '' : '; source unproven'}`);
+    if (hasTestRuntimes && !testRuntimes) io.say('  test child runtimes unknown');
+    for (const child of testRuntimes ?? []) {
+      io.say(`  child ${child.pid}: Node ${child.environment.node} ${child.environment.platform}/${child.environment.arch}; ${child.file ?? 'test file unknown'}`);
+    }
+  }
   sayCheckBaseline(io, item);
   sayBrief(io, item.item_brief);
   for (const move of relayPending) io.say(`pending in the relay outbox: ${move.operation}${move.actor ? ` by ${move.actor}` : ''} (made ${move.queuedAt}); it goes up in order when the relay answers`);
@@ -78,8 +105,7 @@ export async function run(io, { first, values }) {
     const detail = JSON.parse(event.event_detail);
     io.say(`escalated ${detail.from} -> ${detail.to} by ${agentName(event.event_by)}${detail.attempt ? `, pinned at ${detail.attempt}` : ''}: ${detail.note.split('\n')[0]}`);
   }
-  if (item.item_frozen) {
-    const frozen = JSON.parse(item.item_frozen);
+  if (frozen) {
     io.say(`frozen at claim (${item.item_frozen_digest.slice(0, 12)}):`);
     frozen.rows.forEach((row) => io.say(`  ${row.id}: ${row.text}${row.gate ? `  | gate: ${row.gate}` : ''}`));
   }
@@ -102,6 +128,7 @@ export async function run(io, { first, values }) {
   if (item.item_withdrawn_reason) io.say(`withdrawn: ${item.item_withdrawn_reason}`);
   io.say('thread:');
   for (const entry of thread) {
+    if (entry.kind === 'proof-run') continue;
     const stamp = `  ${entry.at}  ${agentDisplayName(agents, ctx.config, entry.by)}  `;
     if (entry.type === 'fact') {
       io.say(`${stamp}fact ${entry.kind} ${entry.id}${entry.answers ? ' (answers ' + entry.answers + ')' : entry.supersedes ? ' (supersedes ' + entry.supersedes + ')' : ''}: ${entry.text}`);

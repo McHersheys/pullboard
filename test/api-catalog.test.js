@@ -287,6 +287,10 @@ catalogCase('[A1] command results match the catalog across roots and subcommands
   assert.equal(existsSync(join(box.env.PULLBOARD_HOME, 'config.json')), false, 'machine settings use the separate settings.json file');
   await json(box, repo, 'resume');
   await json(box, repo, 'status');
+  const heartbeat = await json(box, repo, 'heartbeat');
+  assert.equal(heartbeat.seat, 'coordinator');
+  assert.equal(heartbeat.presence, 'live');
+  assert.ok(Number.isFinite(Date.parse(heartbeat.heartbeatAt)), 'an explicit hook returns its real local observation');
   await json(box, repo, 'stats');
   await json(box, repo, 'badge');
   await json(box, repo, 'doctor');
@@ -735,6 +739,9 @@ catalogCase('[A1] catalog commands keep their real repository exercises', async 
   assert.equal((await json(source, source.repo, 'loop', ['declare', 'catalog-job', '--every', '10m', '--owner', 'coordinator'], 'declare')).job.every, '10m');
   assert.equal((await json(source, source.repo, 'loop', ['ran', 'catalog-job'], 'ran')).job.runs, 1);
   assert.equal((await json(source, source.repo, 'loop')).jobs[0].name, 'catalog-job');
+  const companion = await json(source, source.repo, 'companion', [String(catalog.item_id), 'coordinator', 'Catalog companion', '--key', 'catalog']);
+  assert.equal(companion.item.item_parent_id, catalog.item_id);
+  assert.equal(companion.created, true);
   await json(source, source.repo, 'milestone', ['add', 'Catalog', '--items', String(catalog.item_id)], 'add');
   await json(source, source.repo, 'milestone', ['items', 'Catalog', '--remove', String(catalog.item_id)], 'items');
   await json(source, source.repo, 'milestone', ['items', 'Catalog', '--add', String(catalog.item_id)], 'items');
