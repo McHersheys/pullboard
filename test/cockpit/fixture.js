@@ -192,6 +192,7 @@ async function startView(box, { bin = BIN, signal, onOwned } = {}) {
     });
     return stopPromise;
   };
+  let cookie;
   try { onOwned?.(stop); }
   catch (error) { await stop(); throw error; }
   signal?.addEventListener('abort', abortStartup, { once: true });
@@ -224,7 +225,12 @@ async function startView(box, { bin = BIN, signal, onOwned } = {}) {
       else signal?.addEventListener('abort', onAbort, { once: true });
     });
     throwIfFixtureAborted(signal);
-    const ready = await fetchLive(link, { signal: signal
+    const opened = await fetchLive(link, { redirect: 'manual', signal: signal
+      ? AbortSignal.any([AbortSignal.timeout(30_000), signal]) : AbortSignal.timeout(30_000) });
+    assert.equal(opened.status, 303, 'the printed link exchanges its key');
+    cookie = (opened.headers.get('set-cookie') ?? '').split(';')[0];
+    await opened.arrayBuffer();
+    const ready = await fetchLive(new URL(opened.headers.get('location') ?? '/', link), { headers: { cookie }, signal: signal
       ? AbortSignal.any([AbortSignal.timeout(30_000), signal]) : AbortSignal.timeout(30_000) });
     assert.equal(ready.status, 200, 'the view answers before the test fetches its page');
     await ready.arrayBuffer();
@@ -232,7 +238,7 @@ async function startView(box, { bin = BIN, signal, onOwned } = {}) {
     await stop();
     throw error;
   }
-  return { link, key: link.searchParams.get('k'), base: `http://127.0.0.1:${link.port}`, stop };
+  return { link, key: link.searchParams.get('k'), cookie, base: `http://127.0.0.1:${link.port}`, stop };
 }
 
 /**
@@ -360,7 +366,8 @@ function daysOn(days) {
  * is what that region holds; click() and type() act as the person would.
  */
 async function openPage(view, { width = 1280, later = 0, store = null, hold = false } = {}) {
-  const html = await (await fetchLive(view.link, { signal: AbortSignal.timeout(30_000) })).text();
+  const session = view.cookie ? { cookie: view.cookie } : {};
+  const html = await (await fetchLive(view.cookie ? new URL('/', view.link) : view.link, { headers: session, signal: AbortSignal.timeout(30_000) })).text();
   const script = html.slice(html.indexOf('<script>') + '<script>'.length, html.lastIndexOf('</script>'));
   const known = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]));
   const elements = new Map();
@@ -386,7 +393,7 @@ async function openPage(view, { width = 1280, later = 0, store = null, hold = fa
   if (!hold) release();
   const context = vm.createContext({
     document,
-    location: { search: `?k=${view.key}` },
+    location: { search: '' },
     URLSearchParams,
     structuredClone,
     innerWidth: width,
@@ -399,7 +406,7 @@ async function openPage(view, { width = 1280, later = 0, store = null, hold = fa
     clearTimeout,
     fetch: (path, init = {}) => {
       requests.push({ path, method: init?.method ?? 'GET', body: init?.body ? JSON.parse(init.body) : null });
-      const answer = held.then(() => fetchLive(`${view.base}${path}`, { ...init, signal: init.signal ?? AbortSignal.timeout(30_000) })).then(async (res) => {
+      const answer = held.then(() => fetchLive(`${view.base}${path}`, { ...init, headers: { ...init.headers, ...session }, signal: init.signal ?? AbortSignal.timeout(30_000) })).then(async (res) => {
         const body = await res.json();
         return { ok: res.ok, status: res.status, json: async () => body };
       });
