@@ -938,9 +938,9 @@ const SETUP_SPEC = `# Spec
 
 test('an approved row waits for apply, not for the person [S1,I1,P6]', (t) => {
   const box = specBox(t, { specSource: SETUP_SPEC });
-  /** The coordinator's resume, as an agent would read it at session start. */
+  /** Setup details live on the diagnostic card; retain all original person/apply assertions. */
   const resume = () => {
-    const read = runIn(box, box.root, ['resume']);
+    const read = runIn(box, box.root, ['resume', '--diagnostics']);
     assert.equal(read.status, 0, read.stdout + read.stderr);
     return read.stdout;
   };
@@ -1176,7 +1176,7 @@ test('a verdict on a spec row is recorded by an outside verifier [S1,V4,H16]', t
 
 
 test('verifier fields reject duplicate and malformed annotations without swallowing check pipelines [S1,V4]', () => {
-  const base = '- G1 [draft, must] A row. | gate: check printf yes | grep yes';
+  const base = '- G1 [draft, must] A row. | gate: check printf yes | grep yes | count: 0';
   assert.equal(parseSpec(`## G\n${base}\n`).rows[0].gate, 'check printf yes | grep yes');
   const valid = parseSpec(`## G\n${base} | verify: rejected by tests-2 | Missing evidence.\n`);
   assert.equal(valid.rows[0].gate, 'check printf yes | grep yes');
@@ -1185,4 +1185,33 @@ test('verifier fields reject duplicate and malformed annotations without swallow
     'verify: rejected by tests-2 | ', 'verify: accepted by tests-2 | Why. | verify: rejected by tests-3 | Why.']) {
     assert.ok(lintSpec(parseSpec(`## G\n${base} | ${suffix}\n`)).some(finding => finding.level === 'error'), suffix);
   }
+});
+
+
+test('spec verify binds the real caller and preserves a pending person decision [S1,V4,P6]', t => {
+  const box = specBox(t, { specSource: '# Demo\n\n## G · Goals\n' });
+  const board = store.openBoard(join(box.root, '.git', 'pullboard', 'board.sqlite'));
+  t.after(() => store.closeBoard(board));
+  store.register(board, { lane: 'coordinator', path: box.root, parentDigest: 'c'.repeat(64) });
+  const author = store.register(board, { lane: 'core', path: join(box.root, 'author'), parentDigest: 'a'.repeat(64) });
+  store.draftSpecRow(board, { agentId: author, row: { id: 'G1', text: 'Keep the actual requirement.',
+    gate: 'review', tier: 'must', section: 'G · Goals' } });
+  assert.equal(box.run('apply').status, 0);
+  const original = readFileSync(join(box.root, box.specName), 'utf8');
+  const result = box.run('verify', 'G1', 'accepted', '--reason', 'The exact draft was reviewed.', '--json');
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const record = JSON.parse(result.stdout).verification;
+  assert.equal(record.by, 'coordinator', 'the actual joined caller is the verifier; the CLI takes no claimed seat');
+  assert.equal(readFileSync(join(box.root, box.specName), 'utf8'), original, 'recording a verdict changes no spec file');
+  assert.equal(box.run('approve', 'G1').status, 0);
+  const pending = box.run('verify', 'G1', 'rejected', '--reason', 'A newer opinion.');
+  assert.equal(pending.status, 1);
+  assert.match(pending.stderr, /ROW_VERIFY_PENDING/u);
+  assert.equal(store.rowVerifications(board)[0].decision, 'accepted', 'the pending signed source cannot be superseded');
+  assert.equal(readFileSync(join(box.root, box.specName), 'utf8'), original);
+  assert.equal(box.run('apply').status, 0);
+  const applied = readFileSync(join(box.root, box.specName), 'utf8');
+  assert.match(applied, /G1 \[approved, must\]/u);
+  assert.ok(!applied.includes('verify:'), 'the stale draft verdict does not overwrite the person-approved replacement');
+  assert.equal(box.run('check').status, 0);
 });

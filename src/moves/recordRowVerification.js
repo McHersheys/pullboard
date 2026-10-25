@@ -11,5 +11,6 @@ export default Object.freeze({ operation: 'recordRowVerification', engine: SPEC_
   nextSteps: Object.freeze({
     ROW_VERIFY: 'pullboard spec show <id>, then pullboard spec verify <id> accepted --reason "why"',
     ROW_VERIFY_PROVENANCE: 'draft the row through pullboard spec draft and join normally before verifying it',
+    ROW_VERIFY_PENDING: 'ask the coordinator to run pullboard spec apply before recording a verifier verdict',
     ROW_VERIFY_SELF: 'ask an outside-parent verifier to run pullboard spec verify',
   }) });

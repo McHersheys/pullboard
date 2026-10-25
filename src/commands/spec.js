@@ -150,7 +150,7 @@ export async function specCommand(io, { first, second, rest, values }) {
     apply: [],
     fit: ['text', 'reason'],
   }[first ?? '--json'];
-  if (!commandFlags) throw new Refused('USAGE', 'use pullboard spec --json | check | view | show <id> | unmet [--must] | draft "<text>" | signoff <ids> | approve <ids> | decline <ids> --reason "why" | answer <id> "<choice or text>" | apply');
+  if (!commandFlags) throw new Refused('USAGE', 'use pullboard spec --json | check | view | show <id> | verify <id> accepted|rejected --reason "why" | unmet [--must] | draft "<text>" | signoff <ids> | approve <ids> | decline <ids> --reason "why" | answer <id> "<choice or text>" | apply');
   const allowedFlags = [...new Set([...commandFlags, 'json'])];
   for (const flag of Object.keys(values)) {
     if (!allowedFlags.includes(flag)) {

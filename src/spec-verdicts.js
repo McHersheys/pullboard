@@ -6,6 +6,7 @@ import {
   logEvent,
 } from './board.js';
 import { rowDrafts } from './board-query.js';
+import { rowDecisions } from './board-query.js';
 import {
   lintSpec,
   parseSpec,
@@ -58,6 +59,9 @@ export function recordRowVerification(board, { agentId, source, decision, reason
       throw new Refused('ROW_VERIFY', 'the verdict needs one exact spec row without malformed fields; run pullboard spec check first');
     }
     const row = parsed.rows[0];
+    if (rowDecisions(board).some(record => record.kind === 'spec' && record.id === row.id && !record.applied)) {
+      throw new Refused('ROW_VERIFY_PENDING', `${row.id} has a pending person decision; run pullboard spec apply before recording a verifier verdict`);
+    }
     const author = rowAuthor(board, row);
     outsideParent(board, author, agentId);
     const record = { id: row.id, source: base, decision, reason: reason.trim(), by: agentId, author };
