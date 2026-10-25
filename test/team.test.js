@@ -1039,6 +1039,10 @@ test('a relay supplied outside login receives no board key despite a valid SSH v
     return deliveries[0];
   }
   const refused = await answer(outsider);
+  const leaked = refused.wrapped ? await unwrapDeviceBoardKey(outsider.device.privateKey,
+    JSON.parse(Buffer.from(refused.wrapped, 'base64url').toString('utf8')),
+    { board: state.board, device: outsider.device.deviceId, engine: PEOPLE_VERSION }) : null;
+  assert.equal(leaked !== null && Buffer.from(leaked).equals(boardKey), false, 'the outsider cannot decrypt the actual board key');
   assert.equal(refused.refused?.code, 'RELAY_KEY_VOUCH', 'a valid outsider signature cannot establish trusted board membership');
   assert.equal(Object.hasOwn(refused, 'wrapped'), false, 'the relay receives no key ciphertext it could unwrap as the outsider');
   const allowed = await answer(member);
