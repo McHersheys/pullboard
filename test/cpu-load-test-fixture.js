@@ -9,7 +9,7 @@ import { HOST, installSshStandIn } from './runner-ssh-fixture.js';
 const SOURCE = resolve(import.meta.dirname, '..');
 
 /** Build an ordinary CLI fixture whose declared test reports its actual checkout and live holder. */
-export function cpuLoadFixture(e2e, { declaration = '{ cpuLoad: true }', binding = 'test', subtest = null, commonjs = false, dynamicImport = false, importBinding = null, moduleSpecifier = 'node:test', importedOptions = false, registrationHelper = false } = {}) {
+export function cpuLoadFixture(e2e, { declaration = '{ cpuLoad: true }', binding = 'test', subtest = null, commonjs = false, dynamicImport = false, importBinding = null, moduleSpecifier = 'node:test', importedOptions = false, registrationHelper = false, lifecycleHelper = false } = {}) {
   const probeFile = `cpu-probe.test.${commonjs ? 'cjs' : 'js'}`;
   const box = e2e.project(`node bin/run-tests.js test/${probeFile}`);
   const bin = join(box.dir, 'ssh-bin');
@@ -21,9 +21,12 @@ export function cpuLoadFixture(e2e, { declaration = '{ cpuLoad: true }', binding
   cpSync(join(SOURCE, 'bin'), join(box.repo, 'bin'), { recursive: true });
   writeFileSync(join(box.repo, 'package.json'), JSON.stringify({ name: 'pullboard', version: '1.0.0', type: 'module' }) + '\n');
   if (registrationHelper) {
-    writeFileSync(join(box.repo, 'test', 'registrations.js'), "export { test as launch, after } from 'node:test';\n");
+    writeFileSync(join(box.repo, 'test', 'registrations.js'), registrationHelper === 'wrapper'
+      ? "import { test, after } from 'node:test'; export { after }; export const launch = (...args) => test(...args);\n"
+      : "export { test as launch, after } from 'node:test';\n");
     writeFileSync(join(box.repo, 'test', 'registration-barrel.js'), "export { launch, after } from './registrations.js';\n");
   }
+  if (lifecycleHelper) writeFileSync(join(box.repo, 'test', 'lifecycle.js'), "import { after } from 'node:test'; after(() => {});\n// Text is not CPU load: { cpuLoad: true }\n");
   if (importedOptions) writeFileSync(join(box.repo, 'test', 'options.js'), 'export const options = { cpuLoad: true };\n');
   writeFileSync(join(box.repo, 'test', probeFile), `${commonjs
     ? `const { test: ${binding}, after: finish } = require('node:test');\nconst { DatabaseSync } = require('node:sqlite');`
@@ -31,6 +34,7 @@ export function cpuLoadFixture(e2e, { declaration = '{ cpuLoad: true }', binding
       ? `const { default: ${binding}, after: finish } = await import('node:test');\nimport { DatabaseSync } from 'node:sqlite';`
       : `import { ${importBinding ?? `test${binding === 'test' ? '' : ` as ${binding}`}`}, after as finish } from '${moduleSpecifier}';\nimport { DatabaseSync } from 'node:sqlite';`}
 ${importedOptions ? "import { options } from './options.js';" : ''}
+${lifecycleHelper ? "import './lifecycle.js';" : ''}
 // Example text is not a declaration: { cpuLoad: true }
 const example = '{ cpuLoad: true }';
 finish(() => {});

@@ -90,7 +90,7 @@ function dynamicAt(source, at) {
   const after = pastGap(argument, literal[0].length)[0];
   if (after !== ')' && after !== ',') return COMPUTED;
   try {
-    return new Function(`return ${literal[0]};`)();
+    return look([`import ${literal[0]};`])[0].imports[0] ?? COMPUTED;
   } catch {
     return COMPUTED;
   }
