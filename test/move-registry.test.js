@@ -15,7 +15,7 @@ import * as store from '../src/board.js';
 import { exportBoard, importBoard } from '../src/exchange.js';
 import { applyEngineMove, ENGINE_OPERATIONS } from '../src/engine.js';
 import { ENGINE_VERSION } from '../src/machine.js';
-import { MOVE_REGISTRY, minimumMoveEngine } from '../src/move-registry.js';
+import { MOVE_REGISTRY } from '../src/move-registry.js';
 import { PROOF_RUN_ENGINE } from '../src/proof-run-engine.js';
 import { relayMoveActor } from '../src/relay-sender.js';
 import { NEXT_STEPS } from '../src/next-step-words.js';
