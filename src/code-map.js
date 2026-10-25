@@ -2,9 +2,24 @@
 // It masks strings, templates, regex literals and comments so brace matching and call detection
 // see only code, then reads top-level declarations, JSDoc, imports, calls and side-effect markers.
 
-import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join, posix, resolve } from 'node:path';
+import {
+  execFileSync,
+} from 'node:child_process';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import {
+  dirname,
+  join,
+  posix,
+  resolve,
+} from 'node:path';
 
 const KEYWORDS = new Set(('if for while switch catch function return typeof instanceof new delete void await yield ' +
   'else do try finally throw case default break continue in of let const var class extends super this import export ' +

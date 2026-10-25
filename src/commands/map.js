@@ -1,8 +1,14 @@
 /** The local static code map command, kept lazy so ordinary reads do not build or load its scanner. */
-import { join } from 'node:path';
+import {
+  join,
+} from 'node:path';
 import * as store from '../board-query.js';
 import { withBoardRead } from '../cli-board-read.js';
-import { context, idArg, primaryCheckoutRoot } from '../cli.js';
+import {
+  context,
+  idArg,
+  primaryCheckoutRoot,
+} from '../cli.js';
 import { mainCheckout } from '../git.js';
 import { Refused } from '../refused.js';
 
