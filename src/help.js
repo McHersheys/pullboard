@@ -33,13 +33,14 @@ Set up
   pullboard settings line [<name> <value> --reason "why" --window <json>]  read or record board controller inputs; all off by default
       value is on, off, or a number within the setting range
                                         names: order, reviewsFirst, wipPerReviewer (1.5-3), barReady, bar.check, takeoverMinutes (15-60), collisionFreeBatch, landingBatchSize (1-8), landingCadenceMinutes (5-30)
-  pullboard settings [gateSlots <n> | browserSlots <n>]  view or set machine capacity (gate default 2; browser default 1)
+  pullboard settings [gateSlots <n> | browserSlots <n> | gate.runnersFirst on|off]  view or set machine gate policy and capacity (gate default 2; browser default 1)
                                         browser-free check slots are opt-in: gate.browserFreeChecks in ~/.pullboard/settings.json (default false)
                                         a test file takes a browser slot only if it launches Chrome: gate.browserByLaunch (default false)
                                         reviews-first queue order is opt-in: gate.queue.reviewsFirst (default false), gate.queue.agingMinutes (default 30)
                                         release priority is opt-in: gate.queue.currentReleaseFirst (default false), within each board's otherwise-tied positions
                                         memory hold is opt-in: gate.memoryFloorMB in ~/.pullboard/settings.json holds the queue under that many MB free or critical pressure (default off)
                                         short slots for runs that name their test files are opt-in: pullboard settings gate.shortSlots <n> (default 0)
+                                        runner-first dispatch is opt-in: pullboard settings gate.runnersFirst on|off (default off)
   pullboard runner add <ssh-host> --slots <n> --browser <n> [--node <remote-path>] [--root <remote-path>]
                                         register SSH test capacity; no runner sign-in; root defaults to ~/.pullboard-runner
   pullboard runner list                 each runner's registered slots and browsers, which it runs at
@@ -467,7 +468,7 @@ function overviewHelp(groups, firstRun = false) {
 }
 
 /** The settings forms settingsCommand dispatches with a value; each gets its own help, from this list (N2). */
-export const SETTING_FORMS = Object.freeze(['gateSlots', 'browserSlots', 'gate.shortSlots', 'landing.pool']);
+export const SETTING_FORMS = Object.freeze(['gateSlots', 'browserSlots', 'gate.shortSlots', 'gate.runnersFirst', 'landing.pool']);
 
 /** Help for each settings form the printed usage did not already name, so each form is covered (N2). */
 function settingFormHelp(commands) {
