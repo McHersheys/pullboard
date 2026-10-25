@@ -1,3 +1,4 @@
+import { privateGuard } from './runner-private-mode.js';
 import { runnerPrivateCheck } from './runner-private-check.js';
 import {
   mainPolicy,
@@ -167,8 +168,14 @@ export function checkAtCommit(root, item, { waitMs = 0, gateSlotHeld = false, ga
   try { policy = itemPolicy(root, item); config = policy.config; }
   catch { return checkResult('unverified', 'policy', '', '', { root, item }); }
   if (gateLease?.runner) {
-    if (mutate && !guard) return checkResult('unverified', 'a remote mutation requires a frozen declarative guard', '', '', { root, item });
-    return runnerPrivateCheck(root, item, command, policy, gateLease, guard, waitMs, checkResult);
+    let descriptor;
+    try { descriptor = privateGuard(guard); }
+    catch {
+      const problem = 'the frozen guard descriptor is invalid or escapes its private checkout';
+      return { ...checkResult('unverified', problem, '', '', { root, item }), guardProblem: problem };
+    }
+    if (mutate && !descriptor) return checkResult('unverified', 'a remote mutation requires a frozen declarative guard', '', '', { root, item });
+    return runnerPrivateCheck(root, item, command, policy, gateLease, descriptor, waitMs, checkResult);
   }
   const install = config.check.install;
   const timeout = config.check.timeoutMs;

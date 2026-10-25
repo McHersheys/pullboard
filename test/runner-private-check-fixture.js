@@ -113,6 +113,7 @@ export async function privateReviewRunnerEdges(t, e2e) {
     { name: 'install and check share one deadline', install: node("setTimeout(()=>console.log('INSTALL_COMPLETE'),1000)"), timeout: '3s', check: node("console.log('CHECK_STARTED');setTimeout(()=>console.log('CHECK_FINISHED'),3000)"), error: 'CHECK_UNVERIFIED', marker: 'CHECK_STARTED', absent: 'CHECK_FINISHED', problem: /check timed out/u },
     { name: 'a red check remains red', install: '', check: node("console.log('REMOTE_CHECK_RED');process.exit(9)"), error: 'CHECK_RED', marker: 'REMOTE_CHECK_RED' },
     { name: 'a missing guard is unverified rather than an ordinary red', install: '', check: node("console.log('RESTORED_CHECK_GREEN')"), guard: 'web/missing.cjs:1-1', error: 'GUARD_NOT_FOUND', marker: 'RESTORED_CHECK_GREEN' },
+    { name: 'an invalid guard path is rejected before a second dispatch', install: '', check: node("console.log('INVALID_GUARD_RESTORED_GREEN')"), guard: '../outside.cjs:1-1', error: 'GUARD_NOT_FOUND', marker: 'INVALID_GUARD_RESTORED_GREEN', dispatches: 1 },
     { name: 'an applied guard must turn the restored green check red', install: '', check: 'node web/guard.cjs', guard: 'web/guard.cjs:1-1', marker: 'GUARD_RESTORED_GREEN', applied: true },
     { name: 'successful install cleanup does not shorten a long check', install: node("console.log('INSTALL_DRAINED')"), check: node("setTimeout(()=>console.log('LONG_CHECK_FINISHED'),31000)"), marker: 'LONG_CHECK_FINISHED' },
   ];
@@ -161,7 +162,7 @@ export async function privateReviewRunnerEdges(t, e2e) {
     if (edge.error) assert.equal(response.error.code, edge.error, result.stdout);
     if (edge.problem) assert.match(response.error.message, edge.problem);
     const dispatched = readFileSync(requests, 'utf8').trim().split('\n').filter(Boolean);
-    assert.equal(dispatched.length, edge.guard ? 2 : 1, 'each restored or guard check actually dispatches to the worker');
+    assert.equal(dispatched.length, edge.dispatches ?? (edge.guard ? 2 : 1), 'a valid restored or guard check dispatches; an invalid descriptor cannot start another remote check');
     const outputRoot = join(box.repo, '.git/pullboard/check-output');
     const output = readdirSync(outputRoot).filter(name => name.startsWith('check-1-') && name.endsWith('.log')).map(name => readFileSync(join(outputRoot, name), 'utf8')).join('\n');
     assert.ok(output.includes(edge.marker), 'the complete phase artifact preserves the reached behavior');
