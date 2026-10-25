@@ -5,7 +5,7 @@ import { AGENT_HOOK_EVENTS } from './agent-hooks.js';
 
 /** Run a single owned worker group; no inherited vendor payload can choose executable arguments. */
 export async function runAgentHook(io, event) {
-  if (!AGENT_HOOK_EVENTS.includes(event)) return 0;
+  if (!AGENT_HOOK_EVENTS.includes(event) && event !== 'SessionEnd') return 0;
   let response;
   try {
     const result = await new Promise(resolveResult => {
