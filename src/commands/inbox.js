@@ -1,5 +1,8 @@
 /** The pullboard inbox command separates canonical interrupts from break-time summaries [R2,N26]. */
-import { activityDeliveryLines, deliverActivity } from '../activity-delivery-cli.js';
+import {
+  activityDeliveryLines,
+  deliverActivity,
+} from '../activity-delivery-cli.js';
 import { context } from '../cli.js';
 
 /** Read the feed, or explicitly mark only this recipient's delivered interrupt ids acted on. */

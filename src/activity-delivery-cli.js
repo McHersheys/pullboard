@@ -1,8 +1,19 @@
 /** Inbox and successful-submit delivery share one canonical receipt path [R2,N26,H16]. */
 import * as store from './board.js';
 import { readActivityDelivery } from './activity-delivery-read.js';
-import { activityMainFiles, activityWorkingFiles, readActivityCursor, saveActivityCursor } from './activity-inbox.js';
-import { agentDisplayName, evidenceLine, ordered, whoAmI, withBoard } from './cli.js';
+import {
+  activityMainFiles,
+  activityWorkingFiles,
+  readActivityCursor,
+  saveActivityCursor,
+} from './activity-inbox.js';
+import {
+  agentDisplayName,
+  evidenceLine,
+  ordered,
+  whoAmI,
+  withBoard,
+} from './cli.js';
 
 /** Render digest counts, actionable references and direct coordination without expanding digest bodies. */
 export function activityDeliveryLines({ shouts, agents, activity }, config) {

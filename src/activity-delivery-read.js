@@ -2,7 +2,10 @@
 import { agentActivity } from './board-query.js';
 import { activityEventDetail } from './activity-feed.js';
 import { classifyActivityDelivery } from './activity-delivery.js';
-import { activityDeliveryState, rejectionRecipient } from './activity-delivery-store.js';
+import {
+  activityDeliveryState,
+  rejectionRecipient,
+} from './activity-delivery-store.js';
 
 /** Retain exact native references when supplementing the legacy projection with an original builder's rejection. */
 function rejectionEntry(event, agentId) {
