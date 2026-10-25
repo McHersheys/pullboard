@@ -19,7 +19,7 @@ test('a seat with no claim is sent to pullboard next and never told to wait for 
   const resumed = box.run(box.web, 'resume', '--json');
   assert.equal(resumed.code, 0, resumed.err || resumed.out);
   const card = JSON.parse(resumed.out);
-  assert.equal(card.setup, undefined, 'the real board setup has finished before testing an idle seat');
+  assert.equal(card.setup, null, 'the real board setup has finished before testing an idle seat');
   assert.equal(card.holding.length, 0);
   assert.match(card.next, /^pullboard next(?:\s|$)/u, 'an idle seat pulls the ranked queue instead of waiting to be assigned');
   assert.doesNotMatch(card.next, /wait for (?:an? )?assignment|wait to be assigned/iu);
