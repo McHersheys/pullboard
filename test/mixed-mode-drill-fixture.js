@@ -9,7 +9,9 @@ import { createE2eHelpers } from './e2e-helpers.js';
 export function mixedModeProject(t) {
   const helpers = createE2eHelpers();
   t.after(helpers.cleanup);
-  const box = helpers.project('node web/drill-check.cjs');
+  const sandbox = helpers.sandbox();
+  sandbox.env.PULLBOARD_MODEL = 'Mixed-mode fixture model';
+  const box = helpers.project('node web/drill-check.cjs', sandbox);
   const configPath = join(box.repo, 'pullboard.json');
   const config = JSON.parse(readFileSync(configPath, 'utf8'));
   config.publish = { pullRequest: 'release' };
