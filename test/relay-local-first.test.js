@@ -215,8 +215,13 @@ test('one background sender per machine sends each new move once, asks GitHub on
   assert.equal(there.code, 0, there.failure);
   for (const text of texts) assert.equal(shoutTexts(there.document).filter(row => row === text).length, 1, `the other machine holds "${text}" once`);
 
+  // An agent seat on the other machine moves; its main checkout does not hold this board's coordinator (E19).
+  const otherPath = join(dirname(other.root), 'other-agent');
+  runFixtureGit(['worktree', 'add', '-q', '-b', 'agent/other', otherPath], { cwd: other.root, env: other.env });
+  const joined = await other.cliAt(otherPath, 'join', box.lane, '--model', 'fixture-model');
+  assert.equal(joined.code, 0, joined.failure);
   const reply = 'a move from the other machine';
-  const shouted = await other.cli('shout', 'all', reply);
+  const shouted = await other.cliAt(otherPath, 'shout', 'all', reply);
   assert.equal(shouted.code, 0, shouted.failure);
   const otherStatus = await other.cli('status');
   assert.equal(otherStatus.document.relay.outbox, undefined, 'the other machine sent its move');
