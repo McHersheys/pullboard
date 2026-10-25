@@ -6,6 +6,8 @@ Notable changes to Pullboard, for people using it. The format follows [Keep a Ch
 
 ### Added
 
+- Decisions now record where they came from (you, relayed from you, an agent, or inherited), and pullboard why <file> lists the decisions behind a file. (#970)
+
 - Pull requests get a 'verified by a second agent' status that teams can require; a pull request made outside Pullboard shows as not verified. (#988)
 
 - Agents can propose a change to an approved spec row, such as a moved gate file; it waits in Needs you with the old and new text until you approve or decline it. (#980)
