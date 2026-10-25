@@ -54,7 +54,8 @@ export function createRelayJournal({ directory, boardId, maxBytes = DEFAULT_BYTE
     } else if (saved.length !== 2 || saved[0].key !== 'board' || saved[0].value !== id || saved[1].key !== 'format' || !['2', '3', String(FORMAT)].includes(saved[1].value)) {
       throw new Refused('RELAY_STORAGE', 'open this journal with its original board identity and supported transport format');
     }
-    db.exec(`CREATE TABLE IF NOT EXISTS journal_head (slot INTEGER PRIMARY KEY CHECK(slot=1), sequence INTEGER NOT NULL);
+    db.exec(`CREATE TABLE IF NOT EXISTS journal_upload_status (slot INTEGER PRIMARY KEY CHECK(slot=1), payload BLOB NOT NULL);
+      CREATE TABLE IF NOT EXISTS journal_head (slot INTEGER PRIMARY KEY CHECK(slot=1), sequence INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS journal_snapshot (slot INTEGER PRIMARY KEY CHECK(slot=1), sequence INTEGER NOT NULL,
         received_at TEXT NOT NULL, payload BLOB NOT NULL, sender_kind TEXT NOT NULL CHECK(sender_kind IN ('person','machine')),
         sender_user TEXT NOT NULL, sender_agent TEXT, CHECK((sender_kind='person' AND sender_agent IS NULL) OR
@@ -186,7 +187,12 @@ export function createRelayJournal({ directory, boardId, maxBytes = DEFAULT_BYTE
 
   /** Require detached bounded opaque bytes before opening a write transaction. */
   function payload(bytes) {
-    if (!(bytes instanceof Uint8Array) || bytes.byteLength === 0 || bytes.byteLength > maxBytes) throw new Refused('BAD_UPLOAD', 'send nonempty opaque bytes within the configured upload limit');
+    if (!(bytes instanceof Uint8Array) || bytes.byteLength === 0) throw new Refused('BAD_UPLOAD', 'send nonempty opaque bytes within the configured upload limit');
+    if (bytes.byteLength > maxBytes) {
+      const error = new Refused('BAD_UPLOAD', 'send nonempty opaque bytes within the configured upload limit');
+      error.snapshotLimit = { sealedBytes: bytes.byteLength, limit: maxBytes };
+      throw error;
+    }
     return Buffer.from(bytes);
   }
 
@@ -254,6 +260,25 @@ export function createRelayJournal({ directory, boardId, maxBytes = DEFAULT_BYTE
     return row ? record(row) : null;
   }
 
+  /** Retain only a small opaque publisher notice, never a readable size or repository name. */
+  function saveUploadStatus(bytes) {
+    open();
+    if (!(bytes instanceof Uint8Array) || bytes.byteLength < 29 || bytes.byteLength > 16_384) {
+      throw new Refused('BAD_UPLOAD', 'Send one bounded sealed upload notice.');
+    }
+    return transaction(() => {
+      if (snapshot()) return false;
+      db.prepare('INSERT INTO journal_upload_status VALUES(1,?) ON CONFLICT(slot) DO UPDATE SET payload=excluded.payload').run(bytes);
+      return true;
+    });
+  }
+
+  /** Read an opaque notice without treating it as an uploaded board snapshot. */
+  function uploadStatus() {
+    open();
+    return db.prepare('SELECT payload FROM journal_upload_status WHERE slot=1').get()?.payload ?? null;
+  }
+
   /** Replace a covered snapshot and compact only its acknowledged prefix, keeping the head. */
   function saveSnapshot(sequence, bytes, principal, { initialOnly = false, apiVersion = 1, pageBytes = null } = {}) {
     open();
@@ -270,6 +295,7 @@ export function createRelayJournal({ directory, boardId, maxBytes = DEFAULT_BYTE
       if (!(at instanceof Date) || !Number.isFinite(at.getTime())) throw new Refused('RELAY_CONFIG', 'the journal clock must return a valid Date');
       db.prepare('INSERT INTO journal_snapshot (slot,sequence,received_at,payload,sender_kind,sender_user,sender_agent,api_version,page_bytes) VALUES (1,?,?,?,?,?,?,?,?) ON CONFLICT(slot) DO UPDATE SET sequence=excluded.sequence,received_at=excluded.received_at,payload=excluded.payload,sender_kind=excluded.sender_kind,sender_user=excluded.sender_user,sender_agent=excluded.sender_agent,api_version=excluded.api_version,page_bytes=excluded.page_bytes').run(sequence, at.toISOString(), sealed, who.kind, who.userId, who.agent, apiVersion, apiVersion === 2 ? pageBytes : null);
       db.prepare('DELETE FROM journal_record WHERE sequence <= ?').run(sequence);
+      db.prepare('DELETE FROM journal_upload_status').run();
       const result = snapshot();
       return result;
     });
@@ -299,5 +325,6 @@ export function createRelayJournal({ directory, boardId, maxBytes = DEFAULT_BYTE
     closed = true;
   }
 
-  return { board: id, latest, activity, append, appendNext, recordAt, registrationFor, after, snapshot, saveSnapshot, snapshotDelta, pages, close };
+  return { board: id, latest, activity, append, appendNext, recordAt, registrationFor, after, snapshot, saveSnapshot, snapshotDelta,
+    saveUploadStatus, uploadStatus, pages, close };
 }
