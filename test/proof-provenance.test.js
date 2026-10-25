@@ -16,10 +16,14 @@ import { bindRefs, resolveMove, strayItemRefs } from '../src/relay-outbox.js';
 import { recordNativeProof } from '../src/proof-cli.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 
-test('a real failed opaque native check records its exit with unknown runtime and counters [C7,H16]', (t) => {
+test('a real failed native check records its exit without invented runtime or counters [C7,H16]', (t) => {
   const helpers = createE2eHelpers();
   t.after(helpers.cleanup);
-  const command = `${JSON.stringify(process.execPath)} -e "process.exit(7)"`;
+  const directory = mkdtempSync(join(tmpdir(), 'pullboard-failed-runtime-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const trace = join(directory, 'actual-child.json');
+  const program = `require('node:fs').writeFileSync(${JSON.stringify(trace)},JSON.stringify({pid:process.pid,environment:{node:process.versions.node,platform:process.platform,arch:process.arch}}));process.exit(7);`;
+  const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(program)}`;
   const box = helpers.project(command);
   const board = store.openBoard(join(box.repo, '.git/pullboard/board.sqlite'));
   t.after(() => store.closeBoard(board));
@@ -40,8 +44,13 @@ test('a real failed opaque native check records its exit with unknown runtime an
   assert.equal(receipt.commit, null, 'a dirty check cannot attest the committed HEAD');
   assert.equal(receipt.tree, null, 'a dirty check cannot attest the committed tree');
   assert.deepEqual(receipt.counts, { passed: null, failed: null, skipped: null });
-  assert.equal(receipt.testRuntimes, null, 'an opaque node -e command has no closed selected test-worker binding');
-  assert.equal(receipt.environment, null, 'an unbound custom command never borrows its launcher runtime');
+  const actual = JSON.parse(readFileSync(trace, 'utf8'));
+  if (receipt.testRuntimes === null) {
+    assert.equal(receipt.environment, null, 'an unknown custom command never borrows its launcher runtime');
+  } else {
+    assert.deepEqual(receipt.testRuntimes, [{ ...actual, file: null }], 'a known runtime belongs to the actual failed child');
+    assert.deepEqual(receipt.environment, actual.environment, 'the common runtime matches the actual child, not the controller');
+  }
 });
 
 test('native receipts carry each child reported runtime instead of borrowing the launcher [C7,H16]', t => {
