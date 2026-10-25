@@ -114,6 +114,7 @@ export async function privateReviewRunnerEdges(t, e2e) {
     { name: 'a red check remains red', install: '', check: node("console.log('REMOTE_CHECK_RED');process.exit(9)"), error: 'CHECK_RED', marker: 'REMOTE_CHECK_RED' },
     { name: 'a missing guard is unverified rather than an ordinary red', install: '', check: node("console.log('RESTORED_CHECK_GREEN')"), guard: 'web/missing.cjs:1-1', error: 'GUARD_NOT_FOUND', marker: 'RESTORED_CHECK_GREEN' },
     { name: 'an invalid guard path is rejected before a second dispatch', install: '', check: node("console.log('INVALID_GUARD_RESTORED_GREEN')"), guard: '../outside.cjs:1-1', error: 'GUARD_NOT_FOUND', marker: 'INVALID_GUARD_RESTORED_GREEN', dispatches: 1 },
+    { name: 'a long missing guard retains a bounded typed diagnostic', install: '', check: node("console.log('LONG_GUARD_RESTORED_GREEN')"), guard: 'web/' + 'x'.repeat(4088) + '.cjs:1-1', error: 'GUARD_NOT_FOUND', marker: 'LONG_GUARD_RESTORED_GREEN' },
     { name: 'an applied guard must turn the restored green check red', install: '', check: 'node web/guard.cjs', guard: 'web/guard.cjs:1-1', marker: 'GUARD_RESTORED_GREEN', applied: true },
     { name: 'successful install cleanup does not shorten a long check', install: node("console.log('INSTALL_DRAINED')"), check: node("setTimeout(()=>console.log('LONG_CHECK_FINISHED'),31000)"), marker: 'LONG_CHECK_FINISHED' },
   ];

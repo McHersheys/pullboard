@@ -809,7 +809,7 @@ async function applyPrivateGuard(root, guard, env) {
       writeFileSync(path, lines.join('\n'));
     }
     return { applied: true, problem: '' };
-  } catch { return { applied: false, problem: `guard ${guard.text} cannot be reverted inside the submitted checkout` }; }
+  } catch { return { applied: false, problem: `guard ${guard.text} cannot be reverted inside the submitted checkout`.slice(0, 4096) }; }
 }
 
 /** Execute the trusted phases against one absolute policy deadline, with worker-owned byte boundaries. */
