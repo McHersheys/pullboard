@@ -45,7 +45,7 @@ export default { operation: ${JSON.stringify(name)}, order: ${engine + 1000}, en
 `;
 }
 
-test('today\'s move order, actors, recovery text and recorded SQLite prefix are unchanged [C7,V4,H3,H16]', t => {
+test('today\'s move order, actors, refusal recovery text and recorded SQLite prefix are unchanged [C7,V4,H3,H16]', t => {
   assert.deepEqual(ENGINE_OPERATIONS, SNAPSHOT.operations);
   assert.deepEqual(NEXT_STEPS, SNAPSHOT.nextSteps);
   for (const operation of SNAPSHOT.operations) {
