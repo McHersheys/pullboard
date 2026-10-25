@@ -1030,8 +1030,20 @@ async function publish(state) {
   await state.checkLease();
   const main = mainCheckout(state.root);
   if (main?.commit === state.batch.base && isClean(state.root) && !untracked(state.root).length) git(state.root, ['merge', '--ff-only', state.batch.tip]);
+  await refreshLandedCodeMap(state);
   state.say(`landed ${state.batch.items.map((entry) => `#${entry.id}`).join(', ')} at ${state.batch.tip}`);
   return state.batch;
+}
+
+/** Refresh the derived source map after the landing receipt and main fast-forward have completed. */
+async function refreshLandedCodeMap(state) {
+  try {
+    const { refreshLandedCodeMap: refresh } = await import('./code-map.js');
+    const map = refresh(state.root);
+    if (map) state.say('code map refreshed for main ' + map.mainCommit.slice(0, 12));
+  } catch (error) {
+    state.say('code map refresh deferred: ' + error.message);
+  }
 }
 
 /** Whether this project lands in two tiers: on the local trunk at once, and on the remote only through publish (#801). */
@@ -1133,6 +1145,7 @@ async function finishTrunk(state) {
   await state.checkLease();
   const main = mainCheckout(state.root);
   if (main?.commit === state.batch.base && isClean(state.root) && !untracked(state.root).length) git(state.root, ['merge', '--ff-only', state.batch.tip]);
+  await refreshLandedCodeMap(state);
   state.say(`landed ${state.batch.items.map((entry) => `#${entry.id}`).join(', ')} at ${state.batch.tip} on the local trunk; pullboard publish pushes it once the whole suite passes`);
 }
 
