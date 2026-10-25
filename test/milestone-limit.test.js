@@ -73,7 +73,7 @@ function fixture(t) {
 }
 
 
-test('a milestone with a limit refuses an add past it and accepts a swap', (t) => {
+test('a milestone with a limit refuses an add past it and accepts a swap [N26,H16]', (t) => {
   const box = fixture(t);
   const first = box.item('Unstarted release work', 'open');
   const building = box.item('Already building', 'open');
