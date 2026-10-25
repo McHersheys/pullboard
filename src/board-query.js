@@ -1,3 +1,5 @@
+import { withSeatPresence } from './seat-presence.js';
+import { projectItemDecisions } from './item-decision-queue.js';
 import { itemById } from './board-item-read.js';
 import {
   activityEventDetail,
@@ -190,9 +192,9 @@ export function reviewQueue(board) {
  */
 export function openDecisions(board, recipient = null) {
   if (recipient === null) {
-    return board.db
+    return projectItemDecisions(board, board.db
       .prepare('SELECT * FROM shout ask WHERE ask.shout_decision = 1 AND NOT EXISTS (SELECT 1 FROM shout reply WHERE reply.shout_answers = ask.shout_id) ORDER BY ask.shout_id')
-      .all();
+      .all());
   }
   const recipients = [...new Set(Array.isArray(recipient) ? recipient : [recipient])];
   if (!recipients.length) return [];
@@ -300,7 +302,7 @@ export function agentModel(board, id) {
 
 /** Attach an agent's model to a row from the legacy stable agent table. */
 export function withModel(board, agent) {
-  return agent ? { ...agent, agent_model: agentModel(board, agent.agent_id), agent_parent_session: agentParent(board, agent.agent_id) } : agent;
+  return agent ? withSeatPresence(board, [{ ...agent, agent_model: agentModel(board, agent.agent_id), agent_parent_session: agentParent(board, agent.agent_id) }])[0] : agent;
 }
 
 /**
@@ -310,9 +312,9 @@ export function withModel(board, agent) {
  * @returns {any[]}
  */
 export function listAgents(board) {
-  return board.db.prepare(`SELECT agent.*, model.meta_value AS agent_model, parent.meta_value AS agent_parent_session FROM agent
+  return withSeatPresence(board, board.db.prepare(`SELECT agent.*, model.meta_value AS agent_model, parent.meta_value AS agent_parent_session FROM agent
     LEFT JOIN board_meta model ON model.meta_key='agent_model:' || agent.agent_id
-    LEFT JOIN board_meta parent ON parent.meta_key='agent_parent_session:' || agent.agent_id ORDER BY agent.rowid`).all();
+    LEFT JOIN board_meta parent ON parent.meta_key='agent_parent_session:' || agent.agent_id ORDER BY agent.rowid`).all());
 }
 
 /** The optional engine-20 fields of a fact, present only when its event set them. */

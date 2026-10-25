@@ -62,8 +62,10 @@ export async function run(io, { first, values }) {
   // Without a relay link or deleted-copy notice there is no outbox to read, so the relay client never loads.
   const outbox = relayStateExists(ctx.info.commonDir) ? (await import('../relay.js')).relayStatus(ctx.info.root).outbox : undefined;
   const relayPending = (outbox ?? []).filter((move) => move.item === id);
+  const frozen = item.item_frozen ? JSON.parse(item.item_frozen) : null;
+  const checkText = frozen ? frozen.check ?? '' : item.item_check ?? '';
   if (values.json) {
-    io.result({ ...item, verdicts, thread, ...(proofReceipts.length ? { proofReceipts } : {}), agentApproved, approvalQualification, ...(relayPending.length ? { relayPending } : {}) });
+    io.result({ ...item, checkText, verdicts, thread, ...(proofReceipts.length ? { proofReceipts } : {}), agentApproved, approvalQualification, ...(relayPending.length ? { relayPending } : {}) });
     return 0;
   }
   const agentName = (id) => displayAgentName(agents.find((agent) => agent.agent_id === id) ?? { agent_id: id }, ctx.config.agents.names);
@@ -71,7 +73,10 @@ export async function run(io, { first, values }) {
   if (item.item_status === 'verified' && approvalQualification) io.say(approvalQualification);
   if (item.item_verdict_state) io.say(staleVerdictRefusal(item, item.item_verdict_state).message);
   if (item.item_criterion) io.say(`criterion: ${item.item_criterion}`);
-  if (item.item_check) io.say(`check: ${item.item_check}`);
+  if (checkText) {
+    io.say(`check: ${checkText}`);
+    if (item.item_frozen_digest) io.say(`check digest: ${item.item_frozen_digest}`);
+  }
   for (const receipt of proofReceipts) {
     const hasTestRuntimes = Object.hasOwn(receipt, 'testRuntimes');
     const testRuntimes = hasTestRuntimes ? testRuntimeRows(receipt.testRuntimes) : null;
@@ -100,8 +105,7 @@ export async function run(io, { first, values }) {
     const detail = JSON.parse(event.event_detail);
     io.say(`escalated ${detail.from} -> ${detail.to} by ${agentName(event.event_by)}${detail.attempt ? `, pinned at ${detail.attempt}` : ''}: ${detail.note.split('\n')[0]}`);
   }
-  if (item.item_frozen) {
-    const frozen = JSON.parse(item.item_frozen);
+  if (frozen) {
     io.say(`frozen at claim (${item.item_frozen_digest.slice(0, 12)}):`);
     frozen.rows.forEach((row) => io.say(`  ${row.id}: ${row.text}${row.gate ? `  | gate: ${row.gate}` : ''}`));
   }

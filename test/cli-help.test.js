@@ -77,10 +77,10 @@ test('command help forms and flags match the declaration, with a full list only 
   for (const name of resultCommands()) assert.ok(HELP.commands[name], `result command ${name} has a help declaration`);
   assert.deepEqual(HELP.commands.whoami.usages, ['pullboard whoami']);
   assert.deepEqual(HELP.commands.lanes.usages, ['pullboard lanes']);
-  assert.deepEqual(HELP.commands.status.usages, ['pullboard status']);
+  assert.deepEqual(HELP.commands.status.usages, ['pullboard status [--all]']);
   for (const name of ['whoami', 'lanes', 'status']) {
     const usages = run('help', name).stdout.match(/^Usage:.*$/gmu);
-    assert.deepEqual(usages, [`Usage: pullboard ${name}`]);
+    assert.deepEqual(usages, [`Usage: pullboard ${name}${name === 'status' ? ' [--all]' : ''}`]);
   }
   const mustHaveFlags = [
     ['spec signoff', ['--note', '--note-file <file>']],
@@ -114,6 +114,7 @@ test('an unknown command names its closest match and where to see every command 
   assert.equal(result.status, 2);
   assert.match(result.stderr, /no command "cliam"; closest match is "claim"/);
   assert.match(result.stderr, /pullboard help --all/);
+  assert.doesNotMatch(result.stderr, /presence heartbeat unavailable/, 'an uninitialized directory has no seat to heartbeat');
   const help = run('help', 'cliam');
   assert.equal(help.status, 2);
   assert.match(help.stderr, /closest match is "claim"/);
