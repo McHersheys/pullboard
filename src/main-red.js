@@ -132,8 +132,8 @@ function gitCall(cwd, args, env) {
   });
 }
 
-/** Build one clean temporary checkout at the exact main commit and always remove it. */
-async function withMainCheckout(root, commit, run) {
+/** Build one clean temporary checkout at an exact commit (main's, or a pullboard test snapshot) and always remove it. */
+export async function withMainCheckout(root, commit, run) {
   const directory = join(tmpdir(), `pullboard-main-red-${randomUUID()}`);
   mkdirSync(directory, { mode: 0o700 });
   const checkout = join(directory, 'checkout');
