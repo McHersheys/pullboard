@@ -324,7 +324,7 @@ function requireSourcePin(root, commit) {
     || gitText(root, ['rev-parse', 'main']) !== commit) {
     throw new Error('the primary source checkout is not at the requested main commit');
   }
-  if (gitText(root, ['status', '--porcelain', '--untracked-files=all', '--', 'src', 'bin', 'test'])) {
+  if (gitText(root, ['status', '--porcelain', '--untracked-files=all', '--ignored=matching', '--', 'src', 'bin', 'test'])) {
     throw new Error('src/, bin/ or test/ differs from the committed main source');
   }
 }
