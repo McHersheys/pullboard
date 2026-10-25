@@ -41,7 +41,7 @@ console.log('# fail 0'); console.log('# skipped 0');
   box.git(box.repo, 'remote', 'set-url', 'origin', 'https://github.com/fixture/repository.git');
   box.git(box.repo, 'config', `url.${remote}.insteadOf`, 'https://github.com/fixture/repository.git');
   const outside = join(box.dir, 'pull-request-developer');
-  box.git(box.dir, 'clone', '-q', '--no-hardlinks', remote, outside);
+  box.git(box.dir, 'clone', '-q', '--branch', 'main', '--no-hardlinks', remote, outside);
   /** Compare the committed contract rather than mutable rows or developer descriptions. */
   const contract = root => Object.fromEntries(['SPEC.md', 'DOCTRINE.md', 'pullboard.json', 'web/drill-check.cjs'].map(path =>
     [path, createHash('sha256').update(readFileSync(join(root, path))).digest('hex')]));
