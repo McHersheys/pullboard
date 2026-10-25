@@ -1169,6 +1169,7 @@ test('an agent grant narrows at claim after the recorded engine high-water mark 
   const { AGENT_GRANT_ENGINE } = await import('../src/agent-grant-engine.js');
   const box = helpers.project();
   const directory = join(box.dir, 'actual-pre-grant-writer');
+  mkdirSync(directory);
   unpackRelease('e4b7c30d674cde73803f8e8cb3f53fb2f9f62621', directory);
   const oldStore = await import(pathToFileURL(join(directory, 'src/board.js')).href);
   const oldEngine = await import(pathToFileURL(join(directory, 'src/engine.js')).href);
