@@ -1,5 +1,9 @@
 import { foreignBlockers } from './cross-repo-dependencies.js';
-import { dependencyValues, localDependencyIds, dependencyLabel } from './item-dependencies.js';
+import {
+  dependencyValues,
+  localDependencyIds,
+  dependencyLabel,
+} from './item-dependencies.js';
 import { heartbeatSeat } from './seat-presence.js';
 import * as itemDecisions from './item-decision-queue.js';
 import * as activityDeliveryStore from './activity-delivery-store.js';

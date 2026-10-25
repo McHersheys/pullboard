@@ -1,5 +1,8 @@
 import { foreignDependencyStates } from './cross-repo-dependencies.js';
-import { dependencyValues, localDependencyIds } from './item-dependencies.js';
+import {
+  dependencyValues,
+  localDependencyIds,
+} from './item-dependencies.js';
 /** The local API v1: the CLI's moves, persistent board identities and live events (A2). */
 import {
   createHash,

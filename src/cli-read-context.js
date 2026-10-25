@@ -1,4 +1,7 @@
-import { dependencyReferences, dependencyLabel } from './item-dependencies.js';
+import {
+  dependencyReferences,
+  dependencyLabel,
+} from './item-dependencies.js';
 /**
  * What every command shares and a read needs: the checkout's context, the board opened around one piece of work,
  * argument parsing and the one-line item format. It loads no gate, relay or landing module, so a read command that

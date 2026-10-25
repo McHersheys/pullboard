@@ -1,5 +1,8 @@
 import { foreignBlockers } from './cross-repo-dependencies.js';
-import { localDependencyIds, dependencyLabel } from './item-dependencies.js';
+import {
+  localDependencyIds,
+  dependencyLabel,
+} from './item-dependencies.js';
 /**
  * pullboard queue (#797): the work queue agents pull from, top to bottom. Each unshipped release is a
  * breakpoint with its landed count, then its pullable items in the order next serves them, each with

@@ -1,5 +1,8 @@
 import { foreignBlockers } from './cross-repo-dependencies.js';
-import { localDependencyIds, dependencyLabel } from './item-dependencies.js';
+import {
+  localDependencyIds,
+  dependencyLabel,
+} from './item-dependencies.js';
 import { counterCaught } from './proof-counter-read.js';
 /**
  * `pullboard digest`: a short Markdown briefing of one board, for a person or a chat assistant
