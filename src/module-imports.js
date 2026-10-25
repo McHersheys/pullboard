@@ -158,9 +158,9 @@ export function commonJsIn(sources) {
   });
 }
 
-/** Decode only a bounded quoted property literal, using the same literal-only grammar as dynamicAt. */
-function quotedCpuOptions(source) {
-  const points = [];
+/** Decode bounded quoted keys by compiling static imports; repository expressions are never evaluated. */
+function quotedProperties(source) {
+  const candidates = [];
   // Examine each quote independently: a quote in a regex or comment must not hide a later real key.
   for (const quote of source.matchAll(/["']/gu)) {
     const literal = /^(?:"(?:[^"\\]|\\[\s\S])*"|'(?:[^'\\]|\\[\s\S])*')/u.exec(source.slice(quote.index))?.[0];
@@ -168,16 +168,14 @@ function quotedCpuOptions(source) {
     let tail = pastGap(source, quote.index + literal.length);
     if (tail.startsWith(']')) tail = pastGap(tail, 1);
     if (!tail.startsWith(':')) continue;
-    let key;
-    try { key = new Function(`return ${literal};`)(); }
-    catch { continue; } // Invalid literals are covered by the whole-module compile failure below.
-    if (key !== 'cpuLoad') continue;
     const at = source.length - tail.length + 1;
     const value = pastGap(source, at);
     const disabled = /^false\b/u.test(value) && /^[,}]/u.test(pastGap(value, 5));
-    points.push({ at, disabled });
+    candidates.push({ quote: quote.index, literal, at, disabled });
   }
-  return points;
+  const parsed = candidates.length ? look(candidates.map(({ literal }) => `import ${literal};`)) : [];
+  return new Map(candidates.map((candidate, index) => [candidate.quote,
+    { ...candidate, key: parsed[index].compiles ? parsed[index].imports[0] : undefined }]));
 }
 
 /** Split an executable argument/property list using balanced delimiters, never executing expressions. */
@@ -198,7 +196,7 @@ function sourceParts(code, start, closing) {
 }
 
 /** Only a directly written object with readable property names proves that no opaque option hides load. */
-function opaqueOptions(source, code, from, to) {
+function opaqueOptions(source, code, quoted, from, to) {
   while (/\s/u.test(code[from] ?? '') && from < to) from++;
   while (/\s/u.test(code[to - 1] ?? '') && to > from) to--;
   if (code[from] !== '{') return true;
@@ -207,9 +205,14 @@ function opaqueOptions(source, code, from, to) {
   for (const [start, end] of object.parts) {
     const property = pastGap(source.slice(start, end), 0);
     if (!property) continue;
-    // Computed keys, spreads and prototype inputs cannot be resolved without running code.
-    if (property.startsWith('[') || property.startsWith('...') || /^(?:__proto__\b|"__proto__"|'__proto__')/u.test(property)) return true;
-    if (!/^(?:[A-Za-z_$][\w$]*|"(?:[^"\\]|\\[\s\S])*"|'(?:[^'\\]|\\[\s\S])*')/u.test(property)) return true;
+    const key = /^(?:[A-Za-z_$][\w$]*|"(?:[^"\\]|\\[\s\S])*"|'(?:[^'\\]|\\[\s\S])*')/u.exec(property)?.[0];
+    if (!key) return true;
+    const tail = pastGap(property, key.length);
+    const isQuoted = /^["']/u.test(key);
+    // A prefix such as get is not a readable key when followed by an accessor or method signature.
+    if (!tail.startsWith(':') && (tail || isQuoted)) return true;
+    const decoded = isQuoted ? quoted.get(end - property.length)?.key : key;
+    if (decoded === undefined || decoded === '__proto__') return true;
   }
   return false;
 }
@@ -226,7 +229,7 @@ function callbackSource(source) {
 }
 
 /** Unknown test option expressions are declarations under the conservative placement contract. */
-function unreadableTestOptions(source) {
+function unreadableTestOptions(source, quoted) {
   const code = lex(source).code;
   const names = new Set(['test', 'it', 'describe']);
   for (const match of source.matchAll(/\bimport\s+([^;'"]+?)\s+from\s*(['"])node:test\2/gu)) {
@@ -270,14 +273,15 @@ function unreadableTestOptions(source) {
     if (named && args.length === 1 || !named && args.length === 1 && callbackSource(firstText)) continue;
     if (named && args.length === 2 && callbackSource(source.slice(...second))) continue;
     const options = named ? second : first;
-    if (!options || opaqueOptions(source, code, ...options)) return true;
+    if (!options || opaqueOptions(source, code, quoted, ...options)) return true;
   }
   return false;
 }
 
 /** Find CPU-load options without evaluating a test module; unknown identifier values require runner admission. */
 export function cpuLoadOptionsIn(sources) {
-  const occurrences = sources.map(source => [
+  const quoted = sources.map(quotedProperties);
+  const occurrences = sources.map((source, index) => [
     ...source.matchAll(/(?:\bcpuLoad\b|["']cpuLoad["'])/gu), ...source.matchAll(UNICODE_ESCAPE),
   ].flatMap(match => {
     const end = match.index + match[0].length;
@@ -290,13 +294,13 @@ export function cpuLoadOptionsIn(sources) {
     const value = property ? pastGap(source, at) : '';
     const disabled = property && /^false\b/u.test(value) && /^[,}]/u.test(pastGap(value, 5));
     return [{ at, disabled }];
-  }).concat(quotedCpuOptions(source)));
+  }).concat([...quoted[index].values()].filter(entry => entry.key === 'cpuLoad')));
   const variants = sources.flatMap((source, index) => occurrences[index].map(({ at }) =>
     source.slice(0, at) + '\u0000' + source.slice(at)));
   const parsed = look([...sources, ...variants]);
   let next = sources.length;
   return sources.map((source, index) => {
-    let found = !parsed[index].compiles || unreadableTestOptions(source);
+    let found = !parsed[index].compiles || unreadableTestOptions(source, quoted[index]);
     for (const { disabled } of occurrences[index]) {
       if (!parsed[next].compiles && !disabled) found = true;
       next += 1;
