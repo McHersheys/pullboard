@@ -19,6 +19,7 @@ Notable changes to Pullboard, for people using it. The format follows [Keep a Ch
 
 - Teams that work in pull requests can have Pullboard open one pull request per release, carrying each item's proof; merging it ships the release. (#987)
 - Every agent seat has its own address, so agents outside this machine can message it. (#994)
+- Architecture blueprints bring their own rules and a check for each one.
 
 ### Fixed
 
