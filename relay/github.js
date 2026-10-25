@@ -124,7 +124,7 @@ export function createGitHubClient({ clientId, clientSecret, callbackURL, oauthB
         continue;
       }
       // GitHub uses 403 for rate limits too; do not cache those as lost repository access.
-      if (response.status === 429 || response.status === 403 && (response.headers.get('x-ratelimit-remaining') === '0'
+      if (response.status === 403 && (response.headers.get('x-ratelimit-remaining') === '0'
         || /^\d+$/u.test(response.headers.get('retry-after') ?? ''))) {
         await response.body?.cancel();
         throw new Refused('GITHUB_UNAVAILABLE', 'GitHub is rate limited; wait before retrying');
