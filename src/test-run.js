@@ -127,7 +127,7 @@ export async function runTestFiles(root, config, files, { agent, onWait, affecte
     const command = full ? `(${config.gate})${focused ? ' && ' + focused : ''}` : (focused || 'true');
     const browser = full || !browserFreeChecksEnabled() || await testsNeedBrowser(checkout, paths);
     return withGateSlot(checkout, (lease) => runProfiledShellAsync(checkout, command, { gateLease: lease, waitMs: lease.waitMs }),
-      { browser, gui: full ? projectNeedsGui(checkout) : testsNeedGui(checkout, paths), shortEligible: !full, agent, kind: 'test', onWait });
+      { browser, gui: (full && projectNeedsGui(checkout)) || testsNeedGui(checkout, paths), shortEligible: !full, agent, kind: 'test', onWait });
   });
   const result = { green: run.isGreen, output: run.output, runner: run.executionRunner || 'this machine', seconds: Math.round((Date.now() - started) / 1000), files: paths, known: [], main: null,
     ...(run.executionRunner ? {} : { local: localReason() }) };

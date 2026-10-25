@@ -634,7 +634,8 @@ export async function runSubmitGate(root, config, { base, trunk, changed, check,
     ? (proofFiles.length > 0 && (!allowBrowserFreeChecks || await testsNeedBrowser(root, proofFiles, { onFallback: onBrowserFallback })))
     : (selection.full || !allowBrowserFreeChecks || await testsNeedBrowser(root, proofFiles, { onFallback: onBrowserFallback }));
   const browser = checkUsesBrowser || proofUsesBrowser;
-  const gui = (check ? await checkNeedsGui(root, check) : false) || ((selection.full && !deferFullFallback && !deferSelection) ? projectNeedsGui(root) : testsNeedGui(root, proofFiles));
+  const gui = (check ? await checkNeedsGui(root, check) : false)
+    || ((selection.full && !deferFullFallback && !deferSelection) && projectNeedsGui(root)) || testsNeedGui(root, proofFiles);
   return await withGateSlot(root, async (lease) => {
     pinRunMain(lease, onFailure);
     const startedAt = Date.now();
