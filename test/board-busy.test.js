@@ -258,3 +258,105 @@ test('a real CLI writer labels its long transaction without changing JSON or nat
   assert.equal(after.tables.event.length, before.tables.event.length + 1);
   assert.equal(boardWriteHolderText(file), '');
 });
+
+test('opening an older board names and logs its genuine index-building write [C7,P4,B2]', async (t) => {
+  const box = e2e.project();
+  const file = join(box.repo, '.git', 'pullboard', 'board.sqlite');
+  const added = box.run(box.repo, 'add', 'web', 'private maintenance item', '--specs', 'G1', '--criterion', 'the private page renders', '--json');
+  assert.equal(added.code, 0, added.err);
+  const id = JSON.parse(added.out).item.item_id;
+  const fact = box.run(box.repo, 'fact', String(id), 'note', 'private native index input', '--json');
+  assert.equal(fact.code, 0, fact.err);
+  const before = snapshot(file);
+  const fixture = new DatabaseSync(file);
+  const indexes = fixture.prepare("SELECT name, sql FROM sqlite_master WHERE type='index' AND name LIKE 'event_fact_%_v2' ORDER BY name").all();
+  const version = fixture.prepare('PRAGMA user_version').get().user_version;
+  const stamp = fixture.prepare('PRAGMA application_id').get().application_id;
+  try {
+    assert.equal(indexes.length, 3);
+    for (const index of indexes) fixture.exec(`DROP INDEX "${index.name}"`);
+    fixture.exec(`PRAGMA user_version = ${version - 1}; PRAGMA application_id = 0`);
+  } finally { fixture.close(); }
+  const releaseFile = join(box.dir, 'release-private-index');
+  const preload = join(box.dir, 'hold-private-index.mjs');
+  writeFileSync(preload, `
+    import { DatabaseSync } from 'node:sqlite';
+    import { existsSync } from 'node:fs';
+    const originalExec = DatabaseSync.prototype.exec;
+    const reference = new DatabaseSync(':memory:');
+    const extract = reference.prepare('SELECT json_extract(?, ?) AS value');
+    let registered = false;
+    let held = false;
+    /** Pause inside actual SQLite index evaluation, preserving reference SQLite JSON semantics. */
+    DatabaseSync.prototype.exec = function(sql, ...args) {
+      if (!registered && sql.includes('CREATE INDEX IF NOT EXISTS event_fact_identity_v2')) {
+        registered = true;
+        /** Preserve SQLite's extraction result while the first evaluation exercises the real lock. */
+        function extractIdentity(value, path) {
+          if (!held) {
+            held = true;
+            process.send({ kind: 'index-write-held' });
+            const deadline = Date.now() + 30_000; // budget: bound cleanup of the owned private lock fixture.
+            while (!existsSync(${JSON.stringify(releaseFile)})) {
+              if (Date.now() >= deadline) throw new Error('private index writer was not released');
+              Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+            }
+          }
+          return extract.get(value, path).value;
+        }
+        this.function('json_extract', { deterministic: true }, extractIdentity);
+      }
+      return originalExec.call(this, sql, ...args);
+    };
+  `);
+  const child = startFixtureChild(process.execPath, ['--import', preload, BIN, 'shout', 'all', 'private maintenance move', '--json'], {
+    cwd: box.web, env: box.env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', chunk => { stdout += chunk; });
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  const closed = new Promise(resolveClosed => child.once('close', (code, signal) => resolveClosed({ code, signal })));
+  let released = false;
+  /** Release and drain only the CLI this fixture owns, including on an assertion failure. */
+  async function release() {
+    if (!released) { released = true; writeFileSync(releaseFile, 'release\n'); }
+    const result = await closed;
+    assert.deepEqual(result, { code: 0, signal: null }, stderr || child.fixtureFailure);
+  }
+  t.after(release);
+  await new Promise((resolveReady, rejectReady) => {
+    child.once('error', rejectReady);
+    child.once('close', (code, signal) => rejectReady(new Error(`private maintenance exited before index evaluation: ${code}/${signal}: ${stderr}`)));
+    child.on('message', message => { if (message?.kind === 'index-write-held') resolveReady(); });
+  });
+  const contender = new DatabaseSync(file);
+  try {
+    contender.exec('PRAGMA busy_timeout = 0');
+    assert.throws(() => contender.exec('BEGIN IMMEDIATE'), error => (error.errcode & 0xff) === 5,
+      'index evaluation must hold the genuine SQLite write lock, not merely sleep before SQL');
+  } finally { contender.close(); }
+  const heldText = boardWriteHolderText(file);
+  await new Promise(resolveDelay => setTimeout(resolveDelay, 2_100)); // budget: exercise the declared over-2s write diagnostic.
+  await release();
+  assert.equal(JSON.parse(stdout).version, 1, 'maintenance diagnostics stay off JSON stdout');
+  const records = longWrites(stderr);
+  assert.equal(records.length, 1, 'one real behind-schema index transaction must log its long write');
+  assert.equal(records[0].command, 'shout');
+  assert.equal(records[0].seat, 'web-1');
+  assert.equal(records[0].pid, child.pid);
+  assert.ok(records[0].durationMs > 2_000); // budget: declared #1197 over-2s logging threshold.
+  assert.ok(heldText.includes('shout') && heldText.includes('web-1'), heldText);
+  assert.equal(boardWriteHolderText(file), '');
+  const after = snapshot(file);
+  for (const [name, rows] of Object.entries(before.tables)) {
+    assert.deepEqual(after.tables[name].slice(0, rows.length), rows, `existing native ${name} rows survive maintenance`);
+    assert.equal(after.tables[name].length, rows.length + (['event', 'shout'].includes(name) ? 1 : 0));
+  }
+  const upgraded = new DatabaseSync(file, { readOnly: true });
+  try {
+    assert.equal(upgraded.prepare('PRAGMA user_version').get().user_version, version);
+    assert.equal(upgraded.prepare('PRAGMA application_id').get().application_id, stamp);
+    assert.deepEqual(upgraded.prepare("SELECT name, sql FROM sqlite_master WHERE type='index' AND name LIKE 'event_fact_%_v2' ORDER BY name").all(), indexes);
+  } finally { upgraded.close(); }
+});
