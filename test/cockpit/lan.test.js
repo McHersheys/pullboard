@@ -1,7 +1,8 @@
 /** @pullboard-test-gui */
 /** A private board is usable through its actual LAN address, with explicit pairing authority [H19]. */
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -12,6 +13,8 @@ import { assertLanRefusal, lanBoundaryReply, startLanView } from './lan-fixture.
 import { viewLanAddress } from '../../src/view/lan-address.js';
 
 test('a phone reaches the board on the local network [H19]', { timeout: 180_000 }, async t => { // budget: one real private board, two owned view listeners and a mobile Chrome session.
+  t.diagnostic('runtime ' + JSON.stringify({ node: process.version, sqlite: process.versions.sqlite,
+    executable: process.execPath, binarySha256: createHash('sha256').update(readFileSync(process.execPath)).digest('hex') }));
   const box = machine();
   const alpha = project(box, 'private-lan-fixture');
   const title = 'LAN fixture obligation';
