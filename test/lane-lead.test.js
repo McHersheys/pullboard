@@ -37,7 +37,7 @@ test('a lane question reaches its lead and only the decision reaches the coordin
   const denied = box.run(box.web, 'lanes', 'lead', 'web', 'off', '--json');
   assert.equal(JSON.parse(denied.out).error?.code, 'COORDINATOR_ONLY');
   assert.equal(document(box, box.repo, 'lanes').leads.web, leadId);
-  const question = document(box, box.web, 'shout', 'coordinator', 'Which interface?', '--kind', 'question', '--decision');
+  const question = document(box, box.web, 'shout', 'coordinator', 'Which interface?', '--decision');
   assert.equal(message(box, question.id).shout_to, leadId);
   assert.ok(document(box, lead, 'inbox').shouts.some(row => row.shout_id === question.id));
   assert.equal(document(box, box.repo, 'inbox').shouts.some(row => row.shout_id === question.id), false);

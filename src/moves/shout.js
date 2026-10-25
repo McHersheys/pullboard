@@ -1,3 +1,4 @@
+import { laneMessageFloor } from '../lane-lead.js';
 import { RIGOR_AUTO_ENGINE } from '../rigor-auto-engine.js';
 /** Routing metadata owned by shout, discovered without a shared registry edit [C7,V4,H16]. */
 import { ITEM_SHOUT_ENGINE } from '../item-shout-engine.js';
@@ -6,6 +7,8 @@ import { BOARD_SENTINEL_ENGINE } from '../sentinel-engine.js';
 
 /** Preserve this operation's historical first-matching engine conditions [H16]. */
 function minimumEngine(args, board, at) {
+  const laneFloor = laneMessageFloor(board, args[0]);
+  if (laneFloor > 1) return laneFloor;
   if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('conflict:')) return RIGOR_AUTO_ENGINE;
   if (args[0]?.item !== undefined) return ITEM_SHOUT_ENGINE;
   if (args[0]?.landingFence !== undefined) return LANDING_LEASE_ENGINE;
@@ -19,6 +22,10 @@ function actor(move) { return move.args[0]?.from ?? null; }
 export default Object.freeze({ operation: "shout", order: 23, engine: 1,
   itemIdFirstArgument: false, minimumEngine, actor,
   nextSteps: Object.freeze({
+  BAD_MESSAGE_KIND: 'use --kind question, blocker or decision',
+  STATUS_IS_ACTIVITY: 'keep working on the item; status is board activity, not a shout',
+  LANE_MESSAGE_ITEM: 'omit --kind for an item-specific message',
+  NOT_LANE_LEAD: 'ask your named lane lead to send the decision upward',
   "B26_PERSON_CHANNEL": "record it as the person through pullboard view or the person's own terminal",
   "B26_PERSON_DECISION": "ask your coordinator: pullboard shout coordinator \"<question>\" --decision",
   "BAD_EVIDENCE": "pass the evidence fields the message names, then retry",

@@ -1,3 +1,12 @@
+import { applyHealthFindings } from './board-health.js';
+import {
+  applyLaneLead,
+  isLaneEscalation,
+  laneLeads,
+  leadOwnsDecision,
+  routeLaneMessage,
+} from './lane-lead.js';
+export { laneLeads };
 import {
   focusOrder,
   focusReasons,
@@ -244,13 +253,6 @@ import {
   conflictProblem,
   returnedHeadNotice,
 } from './trunk-conflict.js';
-import {
-  HEALTH_SENTINEL_ENGINE,
-  deliverHealthNotices,
-  healthFindingIdentity,
-  healthTargets,
-  normalizedHealthFindings,
-} from './health-receipts.js';
 import { factReference } from './fact-reference.js';
 import {
   factFromEvent,
@@ -1730,46 +1732,12 @@ function persistShout(board, { from, to, text, decision = false, answers = null,
  * @returns {number}
  */
 export function shout(board, message) {
-  return atomic(board, () => insertShout(board, message));
+  return atomic(board, () => insertShout(board, routeLaneMessage(board, message, board.executionEngineVersion ?? ENGINE_VERSION)));
 }
 
-/** Record one current health snapshot atomically, notifying each new or resolved episode once [A6]. */
-export function recordHealthFindings(board, { agentId, observedRevision, findings }) {
-  return atomic(board, () => {
-    if ((board.executionEngineVersion ?? ENGINE_VERSION) < HEALTH_SENTINEL_ENGINE) {
-      throw new Refused('ENGINE_VERSION', `sentinel receipts require engine ${HEALTH_SENTINEL_ENGINE}; upgrade Pullboard before scanning`);
-    }
-    if (!board.db.prepare('SELECT 1 FROM agent WHERE agent_id = ?').get(agentId)) {
-      throw new Refused('NOT_JOINED', 'join this board before recording a health scan: pullboard join <lane>');
-    }
-    const revision = board.db.prepare('SELECT COALESCE(MAX(event_id), 0) AS revision FROM event').get().revision;
-    if (!Number.isSafeInteger(observedRevision) || observedRevision !== revision) {
-      throw new Refused('HEALTH_SCAN_STALE', 'the board changed while health was scanning; run pullboard resume again');
-    }
-    const active = normalizedHealthFindings(findings);
-    const last = board.db.prepare("SELECT event_detail FROM event WHERE event_kind = 'health-scan' ORDER BY event_id DESC LIMIT 1").get();
-    const previous = last ? JSON.parse(last.event_detail).active : [];
-    const before = new Map(previous.map(finding => [healthFindingIdentity(finding), finding]));
-    const after = new Map(active.map(finding => [healthFindingIdentity(finding), finding]));
-    const added = active.filter(finding => !before.has(healthFindingIdentity(finding)));
-    const resolved = previous.filter(finding => !after.has(healthFindingIdentity(finding)));
-    if (!added.length && !resolved.length) return { added: [], resolved: [] };
-    const agents = listAgents(board);
-    const lanes = [...new Set(agents.map(agent => agent.agent_lane))];
-    const engine = board.executionEngineVersion ?? ENGINE_VERSION;
-    /** Deliver through ordinary feed/inbox records without registering a synthetic worktree seat. */
-    const log = (finding, cleared) => {
-      const item = finding.item === null ? null : itemById(board, finding.item);
-      logEvent(board, 'sentinel', cleared ? 'health-resolved' : 'health-failure', finding.item, {
-        key: finding.key, cause: `refusal:${finding.cause}`, since: finding.since, subject: finding.subject,
-        owner: finding.owner, commit: item?.item_commit ?? null, engine: HEALTH_SENTINEL_ENGINE,
-      });
-    };
-    deliverHealthNotices({ resolved, added, engine, log, coordinator: COORDINATOR, shout: (to, text) => insertShout(board, { from: 'sentinel', to, text, lanes }),
-      targets: finding => healthTargets(finding, { engine, coordinator: COORDINATOR, person: PERSON, lanes, agents }) });
-    logEvent(board, agentId, 'health-scan', null, { active, engine: HEALTH_SENTINEL_ENGINE });
-    return { added: added.map(finding => finding.key), resolved: resolved.map(finding => finding.key) };
-  });
+/** Record one health snapshot through its unchanged transactional implementation [A6]. */
+export function recordHealthFindings(board, options) {
+  return applyHealthFindings(board, options, { atomic, insertShout });
 }
 
 /**
@@ -1782,13 +1750,14 @@ export function recordHealthFindings(board, { agentId, observedRevision, finding
  */
 export function passDecision(board, id, { agentId, note, lanes }) {
   return atomic(board, () => {
-    if (agentId !== COORDINATOR) throw new Refused('COORDINATOR_ONLY', 'only the coordinator can pass a decision up');
     const ask = getShout(board, id);
-    if (!ask.shout_decision || (ask.shout_to !== COORDINATOR && ask.shout_to !== COORDINATION_SHOUT && shoutItemId(ask.shout_to) === null)) throw new Refused('NOT_COORDINATOR_DECISION', `shout #${id} is not a decision waiting for the coordinator`);
+    const laneEscalation = leadOwnsDecision(board, ask, agentId);
+    if (agentId !== COORDINATOR && !laneEscalation) throw new Refused('COORDINATOR_ONLY', 'only the coordinator or the addressed lane lead can pass a decision up');
+    if (!ask.shout_decision || (!laneEscalation && ask.shout_to !== COORDINATOR && ask.shout_to !== COORDINATION_SHOUT && shoutItemId(ask.shout_to) === null)) throw new Refused('NOT_COORDINATOR_DECISION', `shout #${id} is not a decision waiting for the coordinator`);
     if (board.db.prepare('SELECT 1 FROM shout WHERE shout_answers = ?').get(id)) throw new Refused('ALREADY_ANSWERED', `shout #${id} already has an answer`);
     const text = `Passed up from ${ask.shout_from}: ${ask.shout_text}\nCoordinator note: ${String(note ?? '').trim()}`;
     if (!String(note ?? '').trim()) throw new Refused('EMPTY_NOTE', 'include a note with the reason for passing this decision');
-    return insertShout(board, { from: COORDINATOR, to: PERSON, text, lanes, decision: true, answers: id, detail: shoutItemId(ask.shout_to) === null ? {} : { item: shoutItemId(ask.shout_to), text } });
+    return insertShout(board, { from: agentId, to: laneEscalation ? COORDINATOR : PERSON, text, lanes, decision: true, answers: id, detail: shoutItemId(ask.shout_to) === null ? {} : { item: shoutItemId(ask.shout_to), text } });
   });
 }
 
@@ -1823,10 +1792,11 @@ export function answerDecision(board, id, { agentId, text, lanes, asPerson = fal
       throw new Refused('NOT_YOUR_DECISION', `shout #${id} is addressed to ${ask.shout_to}, not ${lane} (agent ${agentId})`);
     }
     const from = personAnswer ? PERSON : agentId;
+    if (!personAnswer && leadOwnsDecision(board, ask, agentId)) insertShout(board, { from, to: COORDINATOR, text: `Lane decision #${id}: ${String(text).trim()}`, lanes, detail: { messageKind: 'decision' } });
     const answerId = tellAnswerImplications(board, (by, itemId, fact) => logEvent(board, by, 'fact', itemId, fact), insertShout(board, { from, to: ask.shout_from, text, lanes, answers: id, channel, ...(addressedItem === null ? {} : { item: addressedItem }), detail: { ...(implies?.length ? { implies } : {}), ...(supersedes !== null ? { supersedes } : {}) } }), { seed: impliesId, implies, supersedes, from, person: PERSON });
-    if (personAnswer && ask.shout_answers !== null) {
+    if ((personAnswer || agentId === COORDINATOR && isLaneEscalation(board, ask)) && ask.shout_answers !== null) {
       const original = getShout(board, ask.shout_answers);
-      insertShout(board, { from: PERSON, to: original.shout_from, text: `Person answered #${id}: ${String(text).trim()}`, lanes, answers: original.shout_id, channel, ...(shoutItemId(original.shout_to) === null ? {} : { item: shoutItemId(original.shout_to) }) });
+      insertShout(board, { from, to: original.shout_from, text: `${personAnswer ? 'Person' : 'Coordinator'} answered #${id}: ${String(text).trim()}`, lanes, answers: original.shout_id, channel, ...(shoutItemId(original.shout_to) === null ? {} : { item: shoutItemId(original.shout_to) }) });
     }
     return answerId;
   });
@@ -2393,3 +2363,8 @@ export function intakeOutside(board, options) { return applyOutsideIntake(board,
 
 /** Record the person's exact-commit owner approval. */
 export function approveOutside(board, id, options) { return applyOutsideApproval(board, id, options, atomic); }
+
+/** Name a lane lead only through coordinator-owned ordered policy [B21]. */
+export function setLaneLead(board, options) {
+  return applyLaneLead(board, options, { atomic, logEvent });
+}

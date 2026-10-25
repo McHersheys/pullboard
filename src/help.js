@@ -151,13 +151,15 @@ Work
   pullboard shout <lane|agent|person|all> <text>  pullboard inbox
   pullboard shout --item <id> <text>             message the item builder, reviewer and coordinator
   A seat shout to all reaches only coordinator and person; their broadcasts reach everyone.
+  pullboard shout coordinator <text> --kind question|blocker --decision  route through a named lane lead
+  pullboard lanes lead <lane> <seat|off>          coordinator names or removes the existing lane seat
   pullboard shout [<to>] <text> --decision       ask for a decision; defaults to your coordinator or the person
   pullboard shout <to> <text> --evidence attempt|receipt --outcome <word> --item <id> --commit <rev>
   pullboard answer <shout-id> <text> [--as person] [--implies <ids>] [--supersedes <answer-id>]
                                         answer your decision; person mode is main-checkout only
                                         --supersedes tells the items an earlier answer implied; only the person
                                         supersedes the person's answer
-  pullboard pass <shout-id> <note>                coordinator passes a decision to the person
+  pullboard pass <shout-id> <note>                lead escalates to coordinator; coordinator passes to person
   pullboard decisions [--as person]               shouts waiting for you; main checkout defaults to coordinator
   pullboard watch [--to <agent|lane|all>] [--kinds <kinds>] [--item <id>] [--since <sequence>] [--json]
                 [--work <lane>] [--review-wait <minutes>]
@@ -339,7 +341,7 @@ const HELP_ALIASES = {
   help: { usage: 'pullboard help', source: null },
   version: { usage: 'pullboard version', source: null },
   whoami: { usage: 'pullboard whoami', source: 'whoami' },
-  lanes: { usage: 'pullboard lanes', source: 'whoami' },
+  lanes: { usage: 'pullboard lanes [lead <lane> <seat|off>]', source: 'whoami' },
   agents: { usage: 'pullboard agents', source: 'whoami' },
   lane: { usage: 'pullboard lane add <name> --owns <path>[,<path>]', source: 'lane add' },
   status: { usage: 'pullboard status', source: 'whoami' },
