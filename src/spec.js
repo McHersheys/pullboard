@@ -26,7 +26,10 @@ import {
 } from './config.js';
 import { cleanGitEnvironment } from './git.js';
 import { Refused } from './refused.js';
-import { parseRowVerification, rowVerificationFormatProblems } from './spec-verdict-format.js';
+import {
+  parseRowVerification,
+  rowVerificationFormatProblems,
+} from './spec-verdict-format.js';
 import {
   renamedGatePath,
   revisionGateCommand,

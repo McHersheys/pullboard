@@ -1,11 +1,20 @@
 /** Recorded outside-parent verdicts for known board-drafted spec rows [S1,V4,H16]. */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { atomic, logEvent } from './board.js';
+import {
+  atomic,
+  logEvent,
+} from './board.js';
 import { rowDrafts } from './board-query.js';
-import { parseSpec } from './spec.js';
+import {
+  lintSpec,
+  parseSpec,
+} from './spec.js';
 import { Refused } from './refused.js';
-import { rowVerificationSource, verifiedRowSource } from './spec-verdict-format.js';
+import {
+  rowVerificationSource,
+  verifiedRowSource,
+} from './spec-verdict-format.js';
 
 /** Read immutable recorded parent/session identity without treating an unknown seat as independent. */
 function recordedParent(board, id) {
@@ -45,7 +54,7 @@ export function recordRowVerification(board, { agentId, source, decision, reason
   return atomic(board, () => {
     const base = rowVerificationSource(source);
     const parsed = parseSpec(`## Verification\n${base}\n`);
-    if (parsed.problems.length || parsed.rows.length !== 1 || parsed.rows[0].unknown.length || parsed.rows[0].verify !== undefined) {
+    if (parsed.problems.length || parsed.rows.length !== 1 || parsed.rows[0].unknown.length || parsed.rows[0].verify !== undefined || lintSpec(parsed).some(finding => finding.level === 'error')) {
       throw new Refused('ROW_VERIFY', 'the verdict needs one exact spec row without malformed fields; run pullboard spec check first');
     }
     const row = parsed.rows[0];
@@ -71,7 +80,7 @@ export function rowVerificationFindings(board, parsed, source) {
     if (!record || lines[row.line - 1] !== verifiedRowSource(record)) message = 'ROW_VERIFY_RECEIPT: no matching exact-row verifier receipt; run pullboard spec verify before applying its verdict';
     else {
       try { outsideParent(board, rowAuthor(board, row), record.by); }
-      catch (error) { if (!(error instanceof Refused)) throw error; message = `${error.code}: ${error.message}`; }
+      catch (error) { if (!(error instanceof Refused) || !['ROW_VERIFY_PROVENANCE', 'ROW_VERIFY_SELF'].includes(error.code)) throw error; message = `${error.code}: ${error.message}`; }
     }
     return message ? [{ level: 'error', line: row.line, id: row.id, message }] : [];
   });
@@ -88,10 +97,13 @@ export function planRowVerificationApply(root, config, records, decisions) {
     const rows = parsed.rows.filter(row => row.id === record.id);
     if (rows.length !== 1 || decisions.some(decision => !decision.applied && decision.kind === 'spec' && decision.id === record.id)) continue;
     const row = rows[0];
-    if (rowVerificationSource(lines[row.line - 1]) !== record.source) continue;
+    const index = row.line - 1;
+    const carriage = lines[index].endsWith('\r') ? '\r' : '';
+    const current = carriage ? lines[index].slice(0, -1) : lines[index];
+    if (rowVerificationSource(current) !== record.source) continue;
     const after = verifiedRowSource(record);
-    if (lines[row.line - 1] === after) continue;
-    lines[row.line - 1] = after;
+    if (current === after) continue;
+    lines[index] = after + carriage;
     applied.push(record.id);
   }
   const after = lines.join('\n');

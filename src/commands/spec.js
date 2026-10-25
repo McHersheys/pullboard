@@ -1,5 +1,8 @@
 /** The pullboard spec command, in its own module so an item adding another command never edits these lines. */
-import { planRowVerificationApply, rowVerificationFindings } from '../spec-verdicts.js';
+import {
+  planRowVerificationApply,
+  rowVerificationFindings,
+} from '../spec-verdicts.js';
 import { planAutomaticRigorApply } from '../rigor-auto-apply.js';
 import {
   planSpecRevision,
@@ -97,6 +100,7 @@ import {
 } from '../view.js';
 import {
   mkdirSync,
+  readFileSync,
   writeFileSync,
 } from 'node:fs';
 import {

@@ -1153,4 +1153,36 @@ test('a verdict on a spec row is recorded by an outside verifier [S1,V4,H16]', t
   store.recordRowVerification(board, { agentId: verifier, source, decision: 'rejected', reason: 'A counterexample remains.' });
   assert.equal(box.run('apply').status, 0);
   assert.match(box.run('show', 'G1').stdout, /verify: rejected by/u);
+  const valid = readFileSync(join(box.root, box.specName), 'utf8');
+  writeFileSync(join(box.root, box.specName), valid.replace('A counterexample remains.', 'A forged reason.'));
+  const forged = box.run('check');
+  assert.equal(forged.status, 1);
+  assert.match(forged.stdout, /ROW_VERIFY_RECEIPT/u);
+  writeFileSync(join(box.root, box.specName), valid);
+  for (const changed of [source.replace('G1', 'G99'), source.replace('original row', 'different row')]) {
+    assert.throws(() => store.recordRowVerification(board, { agentId: verifier, source: changed, decision: 'accepted', reason }),
+      { code: 'ROW_VERIFY_PROVENANCE' });
+  }
+  const unknown = store.register(board, { lane: 'review', path: join(box.root, 'unknown') });
+  assert.throws(() => store.recordRowVerification(board, { agentId: unknown, source, decision: 'accepted', reason }),
+    { code: 'ROW_VERIFY_PROVENANCE' });
+  writeFileSync(join(box.root, box.specName), valid.replace(/\n/gu, '\r\n'));
+  store.recordRowVerification(board, { agentId: verifier, source, decision: 'accepted', reason });
+  assert.equal(box.run('apply').status, 0);
+  const windowsSource = readFileSync(join(box.root, box.specName), 'utf8');
+  assert.ok(!/(?<!\r)\n/u.test(windowsSource), 'applying a new verdict preserves CRLF source endings');
+  assert.equal(box.run('check').status, 0);
+});
+
+
+test('verifier fields reject duplicate and malformed annotations without swallowing check pipelines [S1,V4]', () => {
+  const base = '- G1 [draft, must] A row. | gate: check printf yes | grep yes';
+  assert.equal(parseSpec(`## G\n${base}\n`).rows[0].gate, 'check printf yes | grep yes');
+  const valid = parseSpec(`## G\n${base} | verify: rejected by tests-2 | Missing evidence.\n`);
+  assert.equal(valid.rows[0].gate, 'check printf yes | grep yes');
+  assert.deepEqual(lintSpec(valid), []);
+  for (const suffix of ['verify: maybe by tests-2 | Why.', 'verify: accepted by tests-2',
+    'verify: rejected by tests-2 | ', 'verify: accepted by tests-2 | Why. | verify: rejected by tests-3 | Why.']) {
+    assert.ok(lintSpec(parseSpec(`## G\n${base} | ${suffix}\n`)).some(finding => finding.level === 'error'), suffix);
+  }
 });
