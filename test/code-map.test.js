@@ -2,11 +2,11 @@
 /** @pullboard-test-loads src/board.js src/code-map.js src/commands/map.js src/commands/merged.js src/commands/index.js src/cli-main.js src/cli-help.js src/help.js src/land.js src/templates.js test/board-submit-fixture.js */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import * as store from '../src/board.js';
-import { renderItemSlice } from '../src/code-map.js';
+import { buildCodeMap, renderItemSlice } from '../src/code-map.js';
 import { submitFixture } from './board-submit-fixture.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { agentsBlock } from '../src/templates.js';
@@ -54,6 +54,36 @@ test('an item slice keeps the whole output within its approximate budget [C7]', 
 
 test('an item slice refuses a budget too small for its required header [C7]', () => {
   assert.throws(() => renderItemSlice(sliceMap, { item_id: 814 }, { budget: 1 }), /budget too small/u);
+});
+
+test('a main-stamped map refuses dirty, untracked and deleted test import edges [C7]', () => {
+  const box = e2e.project();
+  mkdirSync(join(box.repo, 'src'), { recursive: true });
+  mkdirSync(join(box.repo, 'test'), { recursive: true });
+  writeFileSync(join(box.repo, 'src/pinned.js'), 'export function pinned() { return true; }\n');
+  const tracked = join(box.repo, 'test/pinned.test.js');
+  const original = "import { pinned } from '../src/pinned.js';\nvoid pinned;\n";
+  writeFileSync(tracked, original);
+  box.git(box.repo, 'add', 'src/pinned.js', 'test/pinned.test.js');
+  box.git(box.repo, 'commit', '-q', '-m', 'test: commit the source and importer together');
+  const main = box.git(box.repo, 'rev-parse', 'main');
+  const clean = buildCodeMap(box.repo, main);
+  assert.deepEqual(clean.modules.find(module => module.path === 'src/pinned.js').tests, ['test/pinned.test.js']);
+  writeFileSync(tracked, 'export const changed = true;\n');
+  assert.throws(() => buildCodeMap(box.repo, main), /test\/.*differs|test.*differs/u,
+    'dirty tracked imports cannot acquire the committed main stamp');
+  writeFileSync(tracked, original);
+  const untracked = join(box.repo, 'test/untracked.test.js');
+  writeFileSync(untracked, original);
+  assert.throws(() => buildCodeMap(box.repo, main), /test\/.*differs|test.*differs/u,
+    'untracked importer paths cannot acquire the committed main stamp');
+  rmSync(untracked);
+  rmSync(tracked);
+  assert.throws(() => buildCodeMap(box.repo, main), /test\/.*differs|test.*differs/u,
+    'deleted importer paths cannot acquire the committed main stamp');
+  writeFileSync(tracked, original);
+  assert.deepEqual(buildCodeMap(box.repo, main).modules.find(module => module.path === 'src/pinned.js').tests,
+    ['test/pinned.test.js'], 'restoring the exact committed test bytes restores the map');
 });
 
 test('pullboard map prints the overview, a card and an item slice from one scan [C7]', t => {
