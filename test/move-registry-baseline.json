@@ -63,6 +63,7 @@
     "takeCoordinator",
     "landingLeaseMove",
     "recordPublishFinding",
+    "decideSpecRevisions",
     "proposePersonMove",
     "setPersonSigning"
   ],
@@ -627,6 +628,14 @@
       null
     ],
     "recordPublishFinding": [
+      null,
+      "first",
+      null,
+      null,
+      null,
+      null
+    ],
+    "decideSpecRevisions": [
       null,
       "first",
       null,
@@ -6966,6 +6975,8 @@
     "WITHDRAWN": "wait on an item that is not withdrawn; see pullboard list --all",
     "WRONG_BOARD": "open the repository registered to this board and confirm its identity with pullboard status",
     "WRONG_LANE": "create a worktree in the required lane with pullboard worktree <lane> --model \"<model name>\", or take an item in your lane with pullboard next",
+    "EXCLUDED_REPOSITORY": "restore the GitHub origin of each excluded project, then run pullboard relay on --all",
+    "EXCLUDED_INVENTORY": "restore at most 256 excluded boards and their active paired devices, then run pullboard relay on --all",
     "PASSKEY_ASSERTION": "confirm the move again on your passkey from the relay view",
     "PASSKEY_PRESENCE": "confirm the move again with Face ID, Touch ID or a key touch",
     "PASSKEY_REGISTRATION": "add the passkey again from the relay view on this phone or browser",
@@ -6977,13 +6988,13 @@
     "PERSON_SIGNER_REQUIRED": "decide the other rows with your passkey; a row that names SSH signers waits until signing is off",
     "PERSON_SIGNING_CORRUPT": "restore the board from a known-good export",
     "PERSON_SIGNING_ERASED": "restore a known-good board that keeps its signing history",
-    "EXCLUDED_REPOSITORY": "restore the GitHub origin of each excluded project, then run pullboard relay on --all",
-    "EXCLUDED_INVENTORY": "restore at most 256 excluded boards and their active paired devices, then run pullboard relay on --all",
     "GIT_SYNC_LOG": "restore the append-only refs/pullboard/board history on origin before running pullboard sync",
     "GIT_SYNC_REMOTE": "restore read/write access to origin, then retry the original command or run pullboard sync; keep its pending sealed move",
     "GIT_SYNC_LOCAL_CHANGED": "run pullboard export to preserve local moves, then ask the coordinator to reconcile the local and remote prefixes before syncing",
     "GIT_SYNC_LINKED": "use pullboard sync for a Git-shared board, or keep the existing relay linked; do not enable a second move order",
-    "FACT_INDEX_NOT_READY": "have the owning main checkout open this board once, then retry the original fact operation"
+    "RUNNER_REQUIRED_FOR_ZERO_CAPACITY": "restore positive gateSlots and browserSlots with pullboard settings before removing the last registered runner",
+    "FACT_INDEX_NOT_READY": "have the owning main checkout open this board once, then retry the original fact operation",
+    "SPEC_REVISION": "refresh Needs you and decide the exact pending proposal"
   },
   "replay": {
     "initial": {
