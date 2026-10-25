@@ -6,6 +6,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import * as store from '../src/board.js';
+import { renderItemSlice } from '../src/code-map.js';
 import { submitFixture } from './board-submit-fixture.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { agentsBlock } from '../src/templates.js';
@@ -97,6 +98,29 @@ test('pullboard map prints the overview, a card and an item slice from one scan 
   assert.equal(firstMap.mainCommit, box.git(box.repo, 'rev-parse', 'main'));
   assert.equal(firstMap.sourceCommit, firstMap.mainCommit);
   assert.deepEqual(firstMap.modules.find(module => module.path === 'src/home.js').functions.map(fn => fn.name), ['renderHome']);
+
+  const functionOnlySlice = renderItemSlice(firstMap, {
+    item_id: 812,
+    item_title: 'renderHome',
+    item_criterion: 'renderHome is the named leaf function',
+    item_brief: '',
+    item_files: '',
+  });
+  assert.match(functionOnlySlice, /## src\/home\.js/u, 'a named leaf includes its defining module');
+  assert.match(functionOnlySlice, /test\/home\.test\.js/u, 'a named leaf includes tests importing its module');
+
+  const oversizedHeader = renderItemSlice(firstMap, {
+    item_id: 813,
+    item_title: 'Long title '.repeat(300),
+    item_criterion: 'src/home.js is the named file',
+    item_brief: '',
+    item_files: 'src/home.js, '.repeat(300),
+  }, { budget: 64 });
+  assert.ok(oversizedHeader.length <= 64 * 4, 'the approximate budget covers headers, cards and the omission notice');
+  assert.match(oversizedHeader, /main: [a-f0-9]{40,64}/u, 'a bounded slice keeps its source stamp');
+  assert.match(oversizedHeader, /not evidence of no relationship/u, 'truncation explains that omitted context is not negative evidence');
+  assert.throws(() => renderItemSlice(firstMap, { item_id: 814 }, { budget: 1 }), /budget too small/u,
+    'the smallest budget is refused when it cannot contain required slice context');
 
   writeFileSync(join(box.repo, 'src/landed.js'), 'export function landed() { return true; }\n');
   box.git(box.repo, 'add', 'src/landed.js');
