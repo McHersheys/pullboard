@@ -18,7 +18,7 @@ export function run(io, { first, second, rest }) {
   for (const milestone of milestones) {
     const when = milestone.shipped ? ` · shipped at ${milestone.shipped.commit.slice(0, 12)} on ${milestone.shipped.at}`
       : milestone.target ? ` · target ${milestone.target}${milestone.pastTarget ? ', past target' : ''}` : '';
-    io.say(`${milestone.name}: ${milestone.landed}/${milestone.total} landed${when}`);
+    io.say(`${milestone.name}: ${milestone.landed}/${milestone.total} landed${milestone.limit == null ? '' : ` · ${milestone.count}/${milestone.limit} items`}${when}`);
     if (!milestone.shipped) {
       const summary = milestone.summary;
       const estimate = roadmapView.roadmapEstimate(summary);
