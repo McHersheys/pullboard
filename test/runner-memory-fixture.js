@@ -47,14 +47,15 @@ export async function assertRunnerMemoryAdmission() {
       'const root=process.cwd(); const output={};',
       '/** Keep the refusal path bounded: release only the private simulated pressure after observing it. */',
       'async function exercise(remote, agent, releaseOccupied){',
-      'let recovered=false; const held=[]; let status=null; let waited=0;',
+      'let recovered=false; const held=[]; let status=null; let runnerStatus=null; let waited=0;',
       'const readMemory=async()=>({checked:true,platform:process.platform,pressure:recovered?"normal":"critical",',
       'availableBytes:(recovered?8192:64)*1024**2,totalBytes:16*1024**3,processes:[]});',
       'const result=await withGateSlot(root,lease=>runProfiledShellAsync(root,"node memory-probe.cjs",{gateLease:lease,waitMs:lease.waitMs}),',
       '{remote,agent,kind:"focused",readMemory,onWait(state){waited+=1;',
       `status=JSON.parse(execFileSync(process.execPath,[${JSON.stringify(cli)},"status","--json"],{cwd:root,encoding:"utf8"}));`,
+      `runnerStatus=JSON.parse(execFileSync(process.execPath,[${JSON.stringify(cli)},"resources","--json"],{cwd:root,encoding:"utf8"})).runners.find(row=>row.host===${JSON.stringify(HOST)});`,
       'if(state.memory?.held){held.push(state.memory);recovered=true;} releaseOccupied?.();}});',
-      'return {green:result.isGreen,runner:result.executionRunner,output:result.output,held,status,waited};}',
+      'return {green:result.isGreen,runner:result.executionRunner,output:result.output,held,status,runnerStatus,waited};}',
       'let markOccupied,releaseOccupied;',
       'const ready=new Promise(resolve=>{markOccupied=resolve;});',
       'const release=new Promise(resolve=>{releaseOccupied=resolve;});',
@@ -76,6 +77,7 @@ export async function assertRunnerMemoryAdmission() {
     assert.equal(result.remote.runner, HOST, 'the actual stand-in worker executed this run');
     assert.match(result.remote.output, /REAL_RUNNER_MEMORY_PROBE/u);
     assert.deepEqual(result.remote.held, [], 'a runner-bound run is never held for local memory');
+    assert.equal(result.remote.runnerStatus.unavailable, false, 'public resources agrees the expired transport hold is retry-eligible');
     assert.ok(result.remote.waited > 0, 'the compatible runner was genuinely occupied before the real dispatch');
     assert.ok(!result.remote.status.memoryHeld.some(entry => entry.agent === 'remote-memory-control'), 'a capacity-blocked remote run is not listed as memory-held');
     assert.equal(result.local.green, true, result.local.output);

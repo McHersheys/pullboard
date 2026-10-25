@@ -476,12 +476,7 @@ function gateAdmission(db, ticket, capacity, shortCapacity, runners, runnersFirs
       browsers: remoteHolders.filter(holder => holder.browser === 1).length,
     }];
   }));
-  // A runner whose transport dropped rejoins the pool after RUNNER_RETRY_MS, so one network blip cannot send every
-  // later run to this machine; another drop quarantines it again. Unverified cleanup stays out until re-registered.
-  const unavailable = new Set([
-    ...db.prepare("SELECT host, since, detail FROM runner_unavailable").all()
-      .filter(row => row.detail !== 'TRANSPORT_LOST' || !(now - Date.parse(row.since) >= RUNNER_RETRY_MS)).map(row => row.host),
-    ...db.prepare('SELECT host FROM runner_draining').all().map(row => row.host)]);
+  const unavailable = unavailableRunnerHosts(db, now);
   /** Keep an already holding process from taking another slot ahead of a different landing. */
   const blockedByLanding = waiter => holders.some(holder => holder.pid === waiter.pid)
     && waiters.some(other => other.landing === 1 && other.pid !== waiter.pid);
@@ -559,6 +554,20 @@ function gateAdmission(db, ticket, capacity, shortCapacity, runners, runnersFirs
   return null;
 }
 
+/** A transport drop expires after the retry window; cleanup failures and unreadable timestamps stay blocked. */
+function runnerUnavailable(entry, now) {
+  return Boolean(entry && (entry.detail !== 'TRANSPORT_LOST' || !(now - Date.parse(entry.since) >= RUNNER_RETRY_MS)));
+}
+
+/** Use the same current transport and draining exclusions for admission and local-memory status. */
+function unavailableRunnerHosts(db, now) {
+  return new Set([
+    ...db.prepare('SELECT host, since, detail FROM runner_unavailable').all()
+      .filter(row => runnerUnavailable(row, now)).map(row => row.host),
+    ...db.prepare('SELECT host FROM runner_draining').all().map(row => row.host),
+  ]);
+}
+
 /** Capability/availability permits a remote executor even when every compatible slot is currently busy. */
 function runnerCompatible(db, runner, waiter, unavailable) {
   const observed = db.prepare('SELECT gui FROM runner_gui WHERE host = ?').get(runner.host);
@@ -580,7 +589,8 @@ export function runnerResourceStatus(runners) {
         const holders = db.prepare('SELECT agent, repo, since, browser, item, kind, runner, timing FROM holder WHERE name = ? ORDER BY since, token')
           .all(runnerResourceName(runner.host));
         if (runner.draining && !holders.length) return [];
-        const unavailable = db.prepare('SELECT since, detail FROM runner_unavailable WHERE host = ?').get(runner.host);
+        const recorded = db.prepare('SELECT since, detail FROM runner_unavailable WHERE host = ?').get(runner.host);
+        const unavailable = runnerUnavailable(recorded, Date.now()) ? recorded : null;
         const observed = db.prepare('SELECT gui, observed_at FROM runner_gui WHERE host = ?').get(runner.host);
         return [{ ...runner, gui: runner.gui ?? null, ...(observed ? { gui: observed.gui === null ? null : observed.gui === 1, guiObservedAt: observed.observed_at } : {}), inUse: holders.length, browserInUse: holders.filter(holder => holder.browser === 1).length,
           unavailable: Boolean(unavailable), ...(unavailable ? { unavailableSince: unavailable.since, unavailableReason: unavailable.detail } : {}), holders }];
@@ -926,7 +936,7 @@ export async function takeResource(options) {
         }
         // The marker follows this poll's setting, so a change mid-wait reaches every process's ranking.
         db.prepare('UPDATE waiter SET heartbeat = ?, classed = ? WHERE token = ?').run(Date.now(), classedMarker(order), token);
-        const unavailable = new Set(db.prepare('SELECT host FROM runner_unavailable UNION SELECT host FROM runner_draining').all().map(row => row.host));
+        const unavailable = unavailableRunnerHosts(db, now);
         const memoryHeld = Boolean(memory?.held && (name !== 'gate' || waiter.remote !== 1
           || !runners.some(runner => runnerCompatible(db, runner, waiter, unavailable))));
         db.prepare('UPDATE waiter SET memory_held = ? WHERE token = ?').run(Number(memoryHeld), token);
