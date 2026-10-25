@@ -45,9 +45,8 @@ function conflictEditsOnly(source, patch, accepted, trunk) {
 }
 
 /** Return a replayable source receipt, or null so an uncertain/changed build gets normal review. */
-export function captureMergeOnly(root, basis, { commit, tree, trunk }) {
+export function captureMergeOnly(root, basis, { commit, tree, trunk, deadline = Date.now() + 10000 }) {
   if (!basis) return null;
-  const deadline = Date.now() + 10000;
   /** Share one total deadline across this bounded set of immutable object reads. */
   const read = (args, statuses = [0]) => readGit(root, args, statuses, deadline);
   try {

@@ -39,15 +39,22 @@ export function mergeOnlyProblem(board, item, proof, { commit, tree, policyCommi
 }
 
 /** Re-prove a canonical carry against immutable Git before physical landing, including adoption. */
-export function mergeOnlyLandingProblem(root, board, item) {
+export function mergeOnlyLandingProblem(root, board, item, { seen = new Set(), deadline = Date.now() + 10000 } = {}) {
   const accepted = acceptedVerdict(board, item);
   if (!accepted?.carried) return null;
   const proof = accepted.carried;
+  if (seen.has(item.item_commit) || seen.size >= 32 || Date.now() >= deadline) {
+    return new Refused('STALE_VERDICT', `item #${item.item_id}: the retained acceptance chain cannot be proved within its Git budget; obtain an ordinary outside review`);
+  }
+  seen.add(item.item_commit);
+  const inherited = mergeOnlyLandingProblem(root, board, { ...item, item_commit: proof.acceptedCommit,
+    item_tree: proof.acceptedTree, item_merged_commit: null }, { seen, deadline });
+  if (inherited) return inherited;
   const event = board.db.prepare("SELECT event_id FROM event WHERE item_id = ? AND event_kind = 'merge-only-accept' AND json_extract(event_detail,'$.commit') = ? ORDER BY event_id DESC LIMIT 1")
     .get(item.item_id, item.item_commit);
   const basis = event && mergeOnlyBasis(board, { ...item, item_commit: proof.acceptedCommit }, { before: event.event_id });
   const actual = basis && basis.by === proof.by && proof.digest === item.item_frozen_digest
-    ? captureMergeOnly(root, basis, { commit: item.item_commit, tree: item.item_tree, trunk: proof.trunk }) : null;
+    ? captureMergeOnly(root, basis, { commit: item.item_commit, tree: item.item_tree, trunk: proof.trunk, deadline }) : null;
   return actual && Object.entries(actual).every(([key, value]) => JSON.stringify(value) === JSON.stringify(proof[key]))
     ? null : new Refused('STALE_VERDICT', `item #${item.item_id}: the recorded merge-only acceptance does not match real Git heads, trees and resolution diff; obtain an ordinary outside review before landing`);
 }
