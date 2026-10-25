@@ -5,6 +5,7 @@ import {
 } from './relay-snapshot-size.js';
 export { formatSnapshotLimit };
 import { beginCommandPhase } from './command-phase.js';
+import { deliverPersonEnrollments } from './relay-person-enrollment.js';
 import { recordedMoveRefusal } from './recorded-move.js';
 import {
   publishExcludedBoards,
@@ -1755,6 +1756,7 @@ export async function relayDeviceRequest(session, path, options, io) {
 export async function deliverDeviceWraps(root, io) {
   const state = loadLink(linkFile(root));
   if (!state || state.unlinking || !state.account) return;
+  await deliverPersonEnrollments(state, io, request);
   const devices = readRelayMachine().devices.filter(device => device.account === state.account && device.url === state.url);
   if (!devices.length) return;
   const key = readBoardKey(state.board);

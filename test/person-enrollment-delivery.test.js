@@ -4,8 +4,14 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { relayClientFixture } from './relay-client-fixture.js';
-import { createPersonRoot, signPersonEnrollment } from '../src/person-enrollment.js';
-import { createDeviceKeys, unwrapDeviceBoardKey } from '../src/relay-device-keys.js';
+import {
+  createPersonRoot,
+  signPersonEnrollment,
+} from '../src/person-enrollment.js';
+import {
+  createDeviceKeys,
+  unwrapDeviceBoardKey,
+} from '../src/relay-device-keys.js';
 import { decodeBoardKey } from '../src/seal.js';
 import { ENGINE_VERSION } from '../src/machine.js';
 
@@ -43,7 +49,7 @@ test('a native key holder verifies a pinned person root before delivering each g
       const result = await box.script(`
         const { updateRelayMachine } = await import(${JSON.stringify(new URL('../src/relay-machine.js', import.meta.url).href)});
         updateRelayMachine(state => { state.personRoots = ${JSON.stringify(publicKey
-          ? [{ account: '7', url: box.origin, publicKey }] : [])}; });
+          ? [{ account: '7', url: box.origin, origin: box.origin, publicKey }] : [])}; });
         process.stdout.write('{}');
       `);
       assert.equal(result.code, 0, 'only the private fixture public-root metadata is written');
