@@ -86,6 +86,19 @@ test('a file overlap is a soft preference and never strands ready work [N2,N20]'
     'equal remaining paths prefer the item with no live overlap');
 });
 
+test('next reviews the longer remaining path with line ordering off [N2,B13,H16]', t => {
+  const { board, builder, reviewer } = boardFixture();
+  t.after(() => store.closeBoard(board));
+  const independent = submitted(board, builder, 'Older independent submission', 'strong', 1);
+  const root = submitted(board, builder, 'Newer submission unlocks follow-up work', 'strong', 2);
+  const follower = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Follow-up waits for review', after: [root] });
+  store.addMilestone(board, { agentId: 'coordinator', name: 'focus', items: [independent, root, follower] });
+  setLineSetting(board, { agentId: 'coordinator', key: 'focusMilestone', value: 'focus',
+    reason: 'Synthetic review critical-chain fixture.', window: { items: 3 } });
+  assert.equal(store.nextFor(board, { agentId: reviewer, lane: 'review', verify: true }).item.item_id, root,
+    'review offers also advance the longer remaining path with the separate line.order switch off');
+});
+
 test('a reviewer gets the earliest milestone\'s submissions first [B16]', (t) => {
   const { board, builder, reviewer } = boardFixture();
   t.after(() => store.closeBoard(board));
