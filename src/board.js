@@ -1,4 +1,8 @@
 import { requireFactKind } from './item-notes.js';
+import {
+  criticalPathEnabled,
+  criticalPathOrder,
+} from './critical-path-order.js';
 import { activityNewsFlag } from './activity-news.js';
 import { migrateEventLogVersion } from './board-event-log-migrate.js';
 import {
@@ -8,6 +12,7 @@ import {
 import {
   focusOrder,
   focusReasons,
+  milestoneFocus,
 } from './focus-milestone.js';
 import { answerProvenance } from './decision-origin.js';
 import { ensureProofCounters } from './proof-counters.js';
@@ -1898,6 +1903,7 @@ function milestoneRanks(board, priority) {
 /** Make the shared build-queue comparator once: milestone, explicit rank, route, recent files, then oldest. */
 export function buildOrder(board, { warm = [], agentId, readiness = barReadyForOrder } = {}) {
   const milestonePriority = milestonePriorities(board);
+  const items = listItems(board, { all: true });
   const rank = milestoneRanks(board, milestonePriority);
   const recent = new Set(warm);
   const shared = (entry) => itemFiles(entry).filter((path) => recent.has(path)).length;
@@ -1905,7 +1911,10 @@ export function buildOrder(board, { warm = [], agentId, readiness = barReadyForO
     || rank(first) - rank(second)
     || ROUTES.indexOf(second.item_route) - ROUTES.indexOf(first.item_route)
     || shared(second) - shared(first) || first.item_id - second.item_id;
-  return focusOrder(board, lineOrderEnabled(board) ? lineBuildOrder({ agentId, release: milestonePriority, rank, items: listItems(board, { all: true }), ready: item => readiness(board, item), fallback }) : fallback);
+  const previous = lineOrderEnabled(board) ? lineBuildOrder({ agentId, release: milestonePriority, rank, items, ready: item => readiness(board, item), fallback }) : fallback;
+  const focus = milestoneFocus(board);
+  const group = item => focus?.ids.has(item.item_id) ? -1 : milestonePriority(item);
+  return focusOrder(board, criticalPathEnabled(board) ? criticalPathOrder({ items, group, fallback: previous }) : previous);
 }
 
 /**
@@ -1989,7 +1998,7 @@ export function nextFor(board, { agentId, lane, verify = false, policy = 'any', 
     .map((entry, order) => ({ entry, order, shared: itemFiles(entry).filter((path) => recent.has(path)) }))
     .sort((first, second) => compare(first.entry, second.entry));
   // Move only evidenced reworks ahead of their own tier; with no evidence, normal order is exact.
-  for (const route of lineOrderEnabled(board) ? [] : ROUTES) {
+  for (const route of lineOrderEnabled(board) || criticalPathEnabled(board) ? [] : ROUTES) {
     const routeTier = ROUTES.indexOf(route);
     const selected = mine.findIndex(({ entry }) => tier(entry) === routeTier && mainRed.has(entry.item_id));
     const firstTierItem = mine.findIndex(({ entry }) => tier(entry) === routeTier);
@@ -2014,8 +2023,9 @@ export function nextFor(board, { agentId, lane, verify = false, policy = 'any', 
     const reserved = firstRefusalReason(board, entry.item_id, agentId);
     if (reserved) { reasons.push(reserved); continue; }
     const collisions = itemFileCollisions(entry, inFlight);
-    if (collisions.length) { reasons.push(...collisions); continue; }
-    if (!waiting.length) return { item: entry, reasons: focusReasons(board, entry, reasons), shared };
+    if (collisions.length && !criticalPathEnabled(board)) { reasons.push(...collisions); continue; }
+    if (!waiting.length) return { item: entry, reasons: focusReasons(board, entry,
+      [...reasons, ...collisions.map(reason => reason.replace(' waits for ', ' overlaps with '))]), shared };
     reasons.push(`#${entry.item_id} waits on ${waiting.map(waitingOn).join(', ')}`);
   }
   if (!mine.length && !reasons.length) reasons.push(idleReason(items, lane, routed));

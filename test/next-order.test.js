@@ -9,6 +9,7 @@ import { ENGINE_VERSION, MILESTONE_RANK_ENGINE } from '../src/machine.js';
 import { LINE_ORDER_ENGINE } from '../src/line-order-engine.js';
 import { setLineSetting } from '../src/line-settings.js';
 import { FOCUS_MILESTONE_ENGINE } from '../src/focus-milestone-engine.js';
+import { CRITICAL_PATH_ENGINE } from '../src/critical-path-engine.js';
 import { exportBoard, importBoard } from '../src/exchange.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
@@ -577,9 +578,10 @@ test('a reserve-next move with skipIds needs engine 69 and older engines replay 
 });
 
 /** The native lifecycle is seeded here; these are board-state records, not claimed gate executions. */
-test('next never hands out work that collides with work in flight [N2,B13,N20]', (t) => {
+test('historical next never hands out work that collides with work in flight [N2,B13,N20,H16]', (t) => {
   const { board, builder, reviewer } = boardFixture();
   t.after(() => store.closeBoard(board));
+  board.executionEngineVersion = CRITICAL_PATH_ENGINE - 1;
   const other = store.register(board, { lane: 'core', path: '/busy-builder', route: 'strong' });
   /** Name the actual files as a coordinator's ordinary brief does. */
   const add = (title, file) => store.addItem(board, { by: 'coordinator', lane: 'core', title,
@@ -661,9 +663,10 @@ test('next leaves a brief without named files in its original order [N2,N20]', (
     'missing file declarations do not invent a reservation or change selection');
 });
 
-test('the queue names the same noncolliding work next can serve [N2,N20]', (t) => {
+test('the historical queue names the same noncolliding work next can serve [N2,N20,H16]', (t) => {
   const { board, builder } = boardFixture();
   t.after(() => store.closeBoard(board));
+  board.executionEngineVersion = CRITICAL_PATH_ENGINE - 1;
   const busy = store.register(board, { lane: 'core', path: '/queue-busy', route: 'strong' });
   const a = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Already changing a file',
     brief: 'Files: src/shared.js' });

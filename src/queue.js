@@ -6,6 +6,7 @@
  * next cannot disagree. It is for agents and coordinators; the person reads the Roadmap instead.
  */
 import { itemAuthorProblem } from './item-authors.js';
+import { criticalPathEnabled } from './critical-path-order.js';
 import { Refused } from './refused.js';
 import { itemFileCollisions } from './item-files.js';
 import {
@@ -46,7 +47,8 @@ function waitsOf(board, item, inFlight) {
     .filter((before) => before && before.item_status !== 'verified')
     .map((before) => `#${before.item_id} (${before.item_status})`);
   const lane = laneHold(board, item.item_lane);
-  return [...after, ...itemFileCollisions(item, inFlight), ...(item.item_hold_reason ? [`held: ${item.item_hold_reason}`] : []), ...(lane ? [`${item.item_lane} lane held: ${lane.hold_reason}`] : [])];
+  const collisions = criticalPathEnabled(board) ? [] : itemFileCollisions(item, inFlight);
+  return [...after, ...collisions, ...(item.item_hold_reason ? [`held: ${item.item_hold_reason}`] : []), ...(lane ? [`${item.item_lane} lane held: ${lane.hold_reason}`] : [])];
 }
 
 /**
