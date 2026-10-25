@@ -104,6 +104,24 @@ test('a merge-only resubmission keeps its accept and records the resolution diff
     assert.throws(() => store.submit(refrozen, id, options), error => error.code === 'MERGE_ONLY_PROOF');
     assert.equal(store.events(refrozen, { itemId: id }).filter(event => event.event_kind === 'merge-only-accept').length, 0);
   } finally { store.closeBoard(refrozen); }
+  // This private authenticated engine fixture must not upgrade a builder's invented source facts.
+  // The real commit retains both merge parents but changes behavior outside the conflict region.
+  writeFileSync(join(box.web, 'web/feature.js'), "export const choice = 'resolved';\n\nexport const unrelated = 'silently changed';\n");
+  box.git(box.web, 'add', 'web/feature.js');
+  box.git(box.web, 'commit', '-q', '--amend', '--no-edit');
+  const extraHead = box.git(box.web, 'rev-parse', 'HEAD');
+  const extraTree = box.git(box.web, 'rev-parse', 'HEAD^{tree}');
+  const forged = store.openBoard(':memory:');
+  try {
+    importBoard(forged, pending.snapshot);
+    const move = prepareEngineMove(forged, 'submit', [id, options]);
+    move.args[1] = { ...options, commit: extraHead, tree: extraTree,
+      mergeOnly: { ...detail, commit: extraHead, tree: extraTree } };
+    assert.throws(() => applyEngineMove(forged, move, { sequence: 1, at: '2026-01-01T00:00:00.000Z' }),
+      error => ['MERGE_ONLY_PROOF', 'COORDINATOR_ONLY'].includes(error.code),
+      'a serialized builder claim cannot lend the original verdict to unrelated same-file behavior');
+    assert.equal(store.getItem(forged, id).item_status, 'claimed');
+  } finally { store.closeBoard(forged); }
   const replay = store.openBoard(':memory:');
   try {
     importBoard(replay, pending.snapshot);
