@@ -6950,7 +6950,16 @@
     "WRONG_BOARD": "open the repository registered to this board and confirm its identity with pullboard status",
     "WRONG_LANE": "create a worktree in the required lane with pullboard worktree <lane> --model \"<model name>\", or take an item in your lane with pullboard next",
     "EXCLUDED_REPOSITORY": "restore the GitHub origin of each excluded project, then run pullboard relay on --all",
-    "EXCLUDED_INVENTORY": "restore at most 256 excluded boards and their active paired devices, then run pullboard relay on --all"
+    "EXCLUDED_INVENTORY": "restore at most 256 excluded boards and their active paired devices, then run pullboard relay on --all",
+    "BOARD_REFERENCE": "use an immutable board ID or one exact qualified name from the authorized project inventory",
+    "BOARD_LINK_FORMAT": "use the exact bounded version 1 board-link, approval, announcement or sealed envelope contract",
+    "BOARD_LINK_AUTH": "configure each board\u2019s established signer authority and the per-link sealing capability; never use an unsigned or full-board-key fallback",
+    "BOARD_LINK_CONFLICT": "refresh the current link and retain exact retry bytes; use a new generation or correlation ID for changed content",
+    "BOARD_LINK_CYCLE": "remove the directed parent-link cycle before obtaining fresh bilateral consent",
+    "BOARD_LINK_DISCLOSURE": "send only the consenting child\u2019s states, counts or no entries under its signed disclosure mode",
+    "BOARD_LINK_INACTIVE": "use a current non-revoked bilateral link generation for the exact source and receiving boards",
+    "BOARD_LINK_TRANSPORT": "read the exact durable delivery receipt or use the last nonnegative incoming cursor through the authenticated relay",
+    "BOARD_LINK_REPLAY": "send a newer source position; retry an existing delivery with its original correlation ID and sealed bytes"
   },
   "replay": {
     "initial": {

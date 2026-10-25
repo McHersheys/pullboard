@@ -13,6 +13,7 @@ export { resolveBoardReference } from './board-reference.js';
 export { boardItemReference } from './board-reference.js';
 
 const PREFIX = 'board_link:';
+const VERIFIED_LINKS = new WeakSet();
 
 /** Require a genuine authority operation instead of trusting document-supplied keys or flags. */
 function authorityMethod(authority, method) {
@@ -46,6 +47,12 @@ export async function verifyBoardLink(value, authority) {
     boardLinkSigningText(record, record.revocation.boardId, 'revoke'), record.revocation) !== true) {
     throw new Refused('BOARD_LINK_AUTH', 'obtain the revoking endpoint’s verified signature');
   }
+  Object.freeze(record.parent); Object.freeze(record.child);
+  for (const approval of record.approvals) Object.freeze(approval);
+  Object.freeze(record.approvals);
+  if (record.revocation) Object.freeze(record.revocation);
+  Object.freeze(record);
+  VERIFIED_LINKS.add(record);
   return record;
 }
 
@@ -95,7 +102,12 @@ function assertAcyclic(records) {
  * lock; generation, replay and cycle checks then use the catalog under that actual lock.
  */
 export async function applyBoardLink(board, value, authority) {
-  const record = await verifyBoardLink(value, authority);
+  return commitVerifiedBoardLink(board, await verifyBoardLink(value, authority));
+}
+
+/** Commit only an immutable object verified in this process, after a caller's final authentication await. */
+export function commitVerifiedBoardLink(board, record) {
+  if (!VERIFIED_LINKS.has(record)) throw new Refused('BOARD_LINK_AUTH', 'verify both board signatures before committing this link');
   return atomic(board, () => {
     const records = readBoardLinks(board);
     const previous = records.find(row => row.linkId === record.linkId);

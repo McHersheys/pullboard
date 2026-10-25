@@ -31,7 +31,8 @@ function proof(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) boardLinkFormat('Use a signed board approval');
   const allowed = ['version', 'type', 'firstCommit', 'initialHash', 'id', 'file', 'kind', 'source', 'replacement',
     'text', 'decision', 'reason', 'commit', 'by', 'on', 'note', 'signature', 'boardId'];
-  if (Object.keys(value).some(key => !allowed.includes(key))) boardLinkFormat('The approval has unsupported fields');
+  if (Object.keys(value).some(key => !allowed.includes(key))
+    || Object.values(value).some(entry => entry !== null && !['string', 'number', 'boolean'].includes(typeof entry))) boardLinkFormat('The approval has unsupported fields');
   let encoded;
   try { encoded = JSON.stringify(value); } catch { boardLinkFormat('Use a JSON signature record'); }
   if (typeof encoded !== 'string' || Buffer.byteLength(encoded) > 20000) boardLinkFormat('The approval exceeds its bound');

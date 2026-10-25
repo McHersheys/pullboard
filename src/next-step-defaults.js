@@ -1,5 +1,14 @@
 /** General CLI recovery text; operation-owned codes live in src/moves/ [P4,C7]. */
 export const DEFAULT_NEXT_STEPS = Object.freeze({
+  "BOARD_REFERENCE": "use an immutable board ID or one exact qualified name from the authorized project inventory",
+  "BOARD_LINK_FORMAT": "use the exact bounded version 1 board-link, approval, announcement or sealed envelope contract",
+  "BOARD_LINK_AUTH": "configure each board’s established signer authority and the per-link sealing capability; never use an unsigned or full-board-key fallback",
+  "BOARD_LINK_CONFLICT": "refresh the current link and retain exact retry bytes; use a new generation or correlation ID for changed content",
+  "BOARD_LINK_CYCLE": "remove the directed parent-link cycle before obtaining fresh bilateral consent",
+  "BOARD_LINK_DISCLOSURE": "send only the consenting child’s states, counts or no entries under its signed disclosure mode",
+  "BOARD_LINK_INACTIVE": "use a current non-revoked bilateral link generation for the exact source and receiving boards",
+  "BOARD_LINK_TRANSPORT": "read the exact durable delivery receipt or use the last nonnegative incoming cursor through the authenticated relay",
+  "BOARD_LINK_REPLAY": "send a newer source position; retry an existing delivery with its original correlation ID and sealed bytes",
   "GIT_SYNC_LOG": "restore the append-only refs/pullboard/board history on origin before running pullboard sync",
   "GIT_SYNC_REMOTE": "restore read/write access to origin, then retry the original command or run pullboard sync; keep its pending sealed move",
   "GIT_SYNC_LOCAL_CHANGED": "run pullboard export to preserve local moves, then ask the coordinator to reconcile the local and remote prefixes before syncing",

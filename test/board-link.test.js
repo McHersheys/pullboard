@@ -11,6 +11,8 @@ import { runFixtureChild, runFixtureGit, fixtureChildMessage } from './fixture-c
 /** Create an isolated native board with its established SSH signer authority. */
 function signedBoard(t, name) {
   const directory = mkdtempSync(join(tmpdir(), 'pullboard-board-link-'));
+  let board = null;
+  t.after(() => { if (board) store.closeBoard(board); rmSync(directory, { recursive: true, force: true }); });
   const root = join(directory, 'repo');
   const key = join(directory, 'signer');
   mkdirSync(root);
@@ -25,8 +27,7 @@ function signedBoard(t, name) {
   git('add', '.');
   git('commit', '-q', '-m', 'fixture: establish board signer root');
   addSigner(root, { by: name, key: key + '.pub' });
-  const board = store.openBoard(join(root, '.git', 'pullboard', 'board.sqlite'));
-  t.after(() => { store.closeBoard(board); rmSync(directory, { recursive: true, force: true }); });
+  board = store.openBoard(join(root, '.git', 'pullboard', 'board.sqlite'));
   return { root, key, by: name, board, reference: { boardId: store.boardId(board), organization: 'fixture', handle: name } };
 }
 
@@ -90,17 +91,23 @@ async function linkRelay(t, boards, authority) {
   const { request } = await import('../src/relay.js');
   const { generateBoardKey, seal } = await import('../src/seal.js');
   const { exportBoard } = await import('../src/exchange.js');
+  const { ENGINE_VERSION } = await import('../src/machine.js');
   const provider = await githubFixture(t);
   const directory = mkdtempSync(join(tmpdir(), 'pullboard-link-relay-'));
   let time = Date.now();
   const auth = createRelayAuth({ database: join(directory, 'auth.sqlite'),
     github: createGitHubClient(provider.config), now: () => time });
+  let service = null;
+  t.after(async () => {
+    try { if (service) await service.close(); }
+    finally { auth.close(); rmSync(directory, { recursive: true, force: true }); }
+  });
   const grant = await auth.beginDevice();
   provider.state.deviceAuthorized = true;
   time += grant.interval * 1000;
   const person = await auth.pollDevice(grant.ticket);
   for (const box of boards) await auth.linkBoard(person.token, box.reference.boardId, 'fixture/repository');
-  let service = await serveRelay({ directory: join(directory, 'relay'), auth, maintenanceMs: 0,
+  service = await serveRelay({ directory: join(directory, 'relay'), auth, maintenanceMs: 0,
     now: () => time, boardLinkAuthority: authority });
   let origin = 'http://127.0.0.1:' + service.port;
   const states = new Map();
@@ -108,12 +115,13 @@ async function linkRelay(t, boards, authority) {
     const board = box.reference.boardId;
     const key = await generateBoardKey();
     const snapshot = await seal(key, Buffer.from(JSON.stringify(exportBoard(box.board))), { boardId: board, kind: 'snapshot', sequence: 0 });
-    await request({ url: origin, token: person.token, board }, '/api/v1/boards/' + board + '/state',
-      { method: 'PUT', body: { sequence: 0, sealed: Buffer.from(snapshot).toString('base64url') } }, { ignoreRelayEnvironmentToken: true });
+    const uploaded = await fetch(origin + '/api/v1/boards/' + board + '/state', { method: 'PUT',
+      headers: { authorization: 'Bearer ' + person.token, 'x-pullboard-engine': String(ENGINE_VERSION), 'content-type': 'application/json' },
+      body: JSON.stringify({ sequence: 0, sealed: Buffer.from(snapshot).toString('base64url') }) });
+    assert.equal(uploaded.status, 200, JSON.stringify(await uploaded.json()));
     const issued = await auth.issueToken(person.token, { board, agent: 'link-agent' });
     states.set(board, { url: origin, token: issued.token, board, agent: 'link-agent' });
   }
-  t.after(async () => { await service.close(); auth.close(); rmSync(directory, { recursive: true, force: true }); });
   return { states, request,
     async restart() {
       await service.close();
