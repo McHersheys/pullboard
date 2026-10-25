@@ -10,7 +10,7 @@ import {
 export { formatSnapshotLimit, originRepository };
 import { beginCommandPhase } from './command-phase.js';
 import {
-  observeRelayHealth,
+  recordClientHealth,
   readRelayHealth,
 } from './relay-canary-health.js';
 import { deliverPersonEnrollments } from './relay-person-enrollment.js';
@@ -21,6 +21,7 @@ import {
 } from './relay-excluded.js';
 import {
   recoverySummary,
+  recoveryRefusalMatches,
   unlinkedRelayStatus,
 } from './relay-status-fields.js';
 import { originRepository } from './github-origin.js';
@@ -434,39 +435,9 @@ function nativeBoardDigest(board) {
   return semanticBoardDigest(exportBoard(board));
 }
 
-/** Confirm a recovered checkpoint contains the same durable refusal for the blocked transport slot. */
-function recoveryRefusalMatches(document, recovery) {
-  const boardMeta = Array.isArray(document?.tables?.board_meta) ? document.tables.board_meta : [];
-  const events = Array.isArray(document?.tables?.event) ? document.tables.event : [];
-  const meta = boardMeta.find((row) => row?.meta_key === 'relay_refusal_' + recovery.skip);
-  if (!meta || typeof meta.meta_value !== 'string') return false;
-  let refusal;
-  try { refusal = JSON.parse(meta.meta_value); } catch { return false; }
-  if (typeof refusal?.outcome?.error?.code !== 'string' ||
-      (recovery.blockerDigest && refusal.record !== recovery.blockerDigest)) return false;
-  return events.some((event) => {
-    if (event?.event_kind !== 'relay_refused' || typeof event.event_detail !== 'string') return false;
-    try {
-      const detail = JSON.parse(event.event_detail);
-      return detail.sequence === recovery.skip && detail.code === refusal.outcome.error.code;
-    } catch { return false; }
-  });
-}
-
 /** Count unapplied uploads using durable event ids, without counting relay transport metadata. */
 function behind(root, state) {
   return localRecords(root, (board) => board.db.prepare('SELECT COUNT(*) AS count FROM event WHERE event_id > ?').get(state.cursor).count);
-}
-
-/** Best-effort telemetry never changes the outcome or credential authority of a native move. */
-function recordClientHealth(root, ok, error, roundTripMs, step = 'push') {
-  const code = error?.code ?? 'OK';
-  if (/VERSION/u.test(code)) step = 'version';
-  else if (/AUTH|OAUTH|NOT_JOINED|RELAY_OFF/u.test(code)) step = 'sign-in';
-  else if (/SEAL|DECRYPT|RELAY_KEY/u.test(code)) step = 'unseal';
-  try { observeRelayHealth(root, { ok, step: ok ? 'complete' : step, code, roundTripMs,
-    relayVersion: ok ? 1 : error?.relayVersion ?? null }, { alerts: false }); }
-  catch { /* Losing optional local telemetry cannot undo a requested operation. */ }
 }
 
 /** Expose key-free link status; only an explicit link operation includes its pairing carrier. */

@@ -181,3 +181,14 @@ export function claimRelayCanaryTick(root, now = Date.now()) {
       .run(now + 60000, now).changes === 1;
   } finally { db.close(); }
 }
+
+/** Best-effort telemetry never changes the outcome or credential authority of a native move. */
+export function recordClientHealth(root, ok, error, roundTripMs, step = 'push') {
+  const code = error?.code ?? 'OK';
+  if (/VERSION/u.test(code)) step = 'version';
+  else if (/AUTH|OAUTH|NOT_JOINED|RELAY_OFF/u.test(code)) step = 'sign-in';
+  else if (/SEAL|DECRYPT|RELAY_KEY/u.test(code)) step = 'unseal';
+  try { observeRelayHealth(root, { ok, step: ok ? 'complete' : step, code, roundTripMs,
+    relayVersion: ok ? 1 : error?.relayVersion ?? null }, { alerts: false }); }
+  catch { /* Losing optional local telemetry cannot undo a requested operation. */ }
+}
