@@ -4,13 +4,14 @@ import { openBoardReadOnly } from './board.js';
 import { healthReport } from './health.js';
 import { healthSentinelEnabled } from './settings.js';
 import { Refused } from './refused.js';
+import { agentCpuFindings } from './sentinel-cpu.js';
 import {
   healthFindingIdentity,
   normalizedHealthFindings,
 } from './health-receipts.js';
 
 /** A missing board or an explicitly disabled sentinel has no observation to publish. */
-export function scanHealthSentinel(file, { root, config, now }) {
+export function scanHealthSentinel(file, { root, config, now, cpu = agentCpuFindings }) {
   if (!healthSentinelEnabled(config) || !existsSync(file)) return null;
   const db = openBoardReadOnly(file);
   try {
@@ -18,10 +19,12 @@ export function scanHealthSentinel(file, { root, config, now }) {
     const observedRevision = db.prepare('SELECT COALESCE(MAX(event_id), 0) AS revision FROM event').get().revision;
     const report = healthReport({ db, root, config, now });
     const last = db.prepare("SELECT event_detail FROM event WHERE event_kind = 'health-scan' ORDER BY event_id DESC LIMIT 1").get();
+    const processes = cpu(db);
+    report.stuck.push(...(processes ?? (last ? JSON.parse(last.event_detail).active : []).filter(finding => finding.cause === 'AGENT_CPU').map(finding => ({ ...finding, owner: { who: finding.owner } }))));
     const before = (last ? JSON.parse(last.event_detail).active : []).map(healthFindingIdentity).sort();
     const after = normalizedHealthFindings(report.stuck).map(healthFindingIdentity).sort();
     db.exec('COMMIT');
-    if (JSON.stringify(before) === JSON.stringify(after)) return null;
+    if (JSON.stringify(before) === JSON.stringify(after) && !(last && JSON.parse(last.event_detail).pendingCpu?.length)) return null;
     return { observedRevision, findings: report.stuck };
   } finally { db.close(); }
 }

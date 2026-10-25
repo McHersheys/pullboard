@@ -34,12 +34,14 @@ test("a hook nudges and never blocks, fails open on error or timeout, and init m
   assert.match(response.hookSpecificOutput.additionalContext, /pullboard|work|claim/i);
   const claude = join(box.repo, '.claude/settings.json'), codex = join(box.repo, '.codex/hooks.json');
   const mine = { permissions: { allow: ['Bash(my-check)'] }, hooks: { Stop: [{ hooks: [{ type: 'command', command: 'echo my-stop' }] }] } };
-  const codexMine = { description: 'My existing hooks', hooks: { SessionStart: [{ matcher: 'startup', hooks: [{ type: 'command', command: 'echo my-start' }] }] } };
+  const codexMine = { description: 'My existing hooks', hooks: { SessionEnd: 'unrelated vendor metadata', SessionStart: [{ matcher: 'startup', hooks: [{ type: 'command', command: 'echo my-start' }] }] } };
   writeFileSync(claude, JSON.stringify(mine));
   writeFileSync(codex, JSON.stringify(codexMine));
   assert.equal(box.run(box.repo, 'init', '--no-permissions').code, 0,
     'the actual init entrypoint merges existing agent hooks');
   const configured = [claude, codex].map(file => JSON.parse(readFileSync(file, 'utf8')));
+  assert.ok(configured[0].hooks.SessionEnd.some(group => group.hooks.some(handler => handler.command.includes('hook SessionEnd'))));
+  assert.equal(configured[1].hooks.SessionEnd, codexMine.hooks.SessionEnd, 'Codex preserves unrelated event data and installs only its existing supported events');
   assert.deepEqual(configured[0].permissions, mine.permissions);
   assert.deepEqual(configured[0].hooks.Stop[0], mine.hooks.Stop[0]);
   assert.deepEqual(configured[1].hooks.SessionStart[0], codexMine.hooks.SessionStart[0]);
