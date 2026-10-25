@@ -34,6 +34,7 @@ import { staleRowDecisions } from './row-decision-state.js';
 import { localReleaseRank } from './release-queue.js';
 import { workQueue } from './queue.js';
 import { trunkRef } from './trusted-policy.js';
+import { routeWorkShortages } from './route-capacity.js';
 
 /** Each threshold's pullboard.json key under "health" and its default. */
 export const HEALTH_DEFAULTS = Object.freeze({ stuck: '1h', holds: '1d', release: '1d' });
@@ -289,7 +290,8 @@ function queueFaults(board, { items, at, retired = [], gone = new Set() }) {
     const awaitsReview = items.some((item) => item.item_status === 'submitted' && item.item_built_by === row.id);
     const recent = !gone.has(row.path) && (lease || at - last < QUEUE_ACTIVE_MS);
     const pulled = Math.max(...[row.created, row.pulled_at].filter(Boolean).map((value) => Date.parse(value)));
-    return { ...row, last, recent, idle: recent && !lease && !awaitsReview && at - pulled >= QUEUE_ACTIVE_MS };
+    const idle = recent && !lease && !awaitsReview && at - pulled >= QUEUE_ACTIVE_MS;
+    return { ...row, last, recent, idle, idleSince: idle ? new Date(pulled + QUEUE_ACTIVE_MS).toISOString() : null };
   });
   const active = agents.filter((agent) => agent.recent);
   retired.push(...agents.filter((agent) => !agent.recent).map((agent) => ({ agent: agent.id, lane: agent.lane, since: new Date(agent.last).toISOString() })));
@@ -299,6 +301,17 @@ function queueFaults(board, { items, at, retired = [], gone = new Set() }) {
   const since = (id) => raw.get(id)?.item_updated_at ?? new Date(at).toISOString();
   const now = at;
   const findings = [];
+
+  for (const shortage of routeWorkShortages(board, waiting, agents)) {
+    const { route, free, idle, since } = shortage;
+    findings.push(finding('ROUTE_WORK_SHORTAGE', null, {
+      subject: `${route} route`, key: `ROUTE_WORK_SHORTAGE:route:${route}:free:${free}:idle:${idle}`, since, now,
+      title: 'needs more free work',
+      why: `${free} free items can be taken by ${idle} idle seats at the ${route} route`,
+      next: `split more items for the ${route} route so its idle agents have work they can take`,
+      owner: { role: 'coordinator', who: COORDINATOR }, detail: { route, free, idle },
+    }));
+  }
 
   for (const route of ROUTES) {
     const open = current.filter((entry) => entry.route === route && !lapsed(entry));

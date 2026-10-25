@@ -74,7 +74,7 @@ export async function run(io, { first, second, rest, values }) {
   }
   if (values.all) {
     if (first !== 'on' || second || rest.length) throw new Refused('USAGE', 'pullboard relay on --all [--url <address>]');
-    return await relayOnAllCommand(values.url, io);
+    return await relayOnAllCommand(values.url, io, { name: values.name });
   }
   if (['tokens', 'revoke'].includes(first)) {
     if (rest.length || values.url || (first === 'tokens' && second) || (first === 'revoke' && !second)) {
@@ -102,13 +102,13 @@ export async function run(io, { first, second, rest, values }) {
   if (first === 'join') {
     if (!second || rest.length) throw new Refused('USAGE', 'pullboard relay join <code> [--url <address>]');
     const ctx = context(io);
-    return await relayJoin(ctx.info.root, second, values.url, io);
+    return await relayJoin(ctx.info.root, second, values.url, io, { name: values.name });
   }
   if (second || rest.length || (first && !['on', 'off', 'status'].includes(first)) || (values.url && first !== 'on')) throw new Refused('USAGE', 'pullboard relay [status|on|off] [--url <address>]');
   const ctx = context(io);
   // pullboard relay status is the named form of plain pullboard relay: the same sync and report.
   if (!first || first === 'status') await relayRead(ctx.info.root, io);
-  const result = first === 'on' ? await relayOn(ctx.info.root, values.url, io)
+  const result = first === 'on' ? await relayOn(ctx.info.root, values.url, io, { name: values.name })
     : first === 'off' ? await relayOff(ctx.info.root, io) : relayStatus(ctx.info.root);
   io.result?.(result);
   const boardName = listApiProjects().find((project) => project.root === ctx.info.root)?.name ?? basename(ctx.info.root);
