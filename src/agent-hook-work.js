@@ -1,8 +1,12 @@
 /** Read ordinary local work for a native nudge; the parent bounds this whole worker [I6]. */
 import { fileURLToPath } from 'node:url';
 
-/** Session start uses normal resume; Stop only reads committed, unsubmitted work. */
+/** Native hook activity refreshes only the private sidecar before ordinary read-only context. */
 async function work(event) {
+  const { heartbeatCommand } = await import('./cli-presence.js');
+  try { heartbeatCommand({ cwd: process.cwd(), err: text => process.stderr.write(text + '\n') }); }
+  catch { /* A failed private observation must not suppress the ordinary native context. */ }
+  if (event === 'SessionEnd') return;
   if (event === 'SessionStart') {
     const { main } = await import('./cli.js');
     process.exitCode = await main(['resume'], { cwd: process.cwd(),
