@@ -1,5 +1,6 @@
 /** Recognize Chrome-bearing process arguments in executable code, not generated fixture programs [C7,O5]. */
 import { lex } from './js-lex.js';
+import { makeCallableCommandChecker } from './browser-call-values.js';
 
 const PROCESS_CALLS = new Set(['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork',
   'runFixtureChild', 'runFixtureChildAsync', 'startFixtureChild', 'Worker', 'SharedWorker',
@@ -58,7 +59,7 @@ function processNamespaces(source) {
 }
 
 /** Unknown command members stay bound without tainting unrelated calls in the same source. */
-function unresolvedCommandValue(expression, links, parameters) {
+function unresolvedCommandValue(expression, links) {
   const compact = expression.replace(/^\s*await\s+/u, '').replace(/\s/gu, '');
   // A conditional's predicate is not one of the executable values it returns.
   let nested = 0;
@@ -76,8 +77,8 @@ function unresolvedCommandValue(expression, links, parameters) {
           at = end;
         } else if (compact[at] === '?' && !['?', '.'].includes(compact[at + 1]) && compact[at - 1] !== '?') nested += 1;
         else if (compact[at] === ':' && nested-- === 0) {
-          return unresolvedCommandValue(compact.slice(start, at), links, parameters)
-            || unresolvedCommandValue(compact.slice(at + 1), links, parameters);
+          return unresolvedCommandValue(compact.slice(start, at), links)
+            || unresolvedCommandValue(compact.slice(at + 1), links);
         }
       }
       return true;
@@ -86,9 +87,6 @@ function unresolvedCommandValue(expression, links, parameters) {
   // Only returned values and bare aliases feed the command graph, never a conditional's predicate.
   const linked = /^([$A-Z_a-z][$\w]*)(?=$|(?:\?\.)?\()/u.exec(compact);
   if (linked && links) links.add(linked[1]);
-  // A returned input is not a proven non-browser executable. It affects only callers that
-  // actually supply a process command; unused callable parameters never taint literal launches.
-  if (parameters && [...compact.matchAll(WORD)].some(word => parameters.has(word[0]))) return true;
   // Calls and object/template construction do not return the value of each member they read.
   // In particular, a pid used to build a directory name is not an executable-valued alias.
   let brackets = 0;
@@ -124,15 +122,9 @@ function expressionEnd(code, start, newlineEnds = true) {
   return end;
 }
 
-/** Keep parameter binding names while omitting defaults, which are executable expressions. */
-function parameterNames(source) {
-  return new Set([...source.replace(/=[^,]*/gu, '').matchAll(WORD)].map(word => word[0]));
-}
-
 /** Read callable result spans without evaluating either a function body or its generated source. */
 function callableReturns(code, start, end) {
   let at = start + code.slice(start, end).search(/\S/u);
-  let names;
   const declared = /^(?:async\s+)?function(?:\s+[$A-Z_a-z][$\w]*)?\s*\(/u.exec(code.slice(at, end));
   if (declared) at += declared[0].length - 1;
   else {
@@ -142,12 +134,10 @@ function callableReturns(code, start, end) {
   if (code[at] === '(') {
     const parameters = closing(code, at);
     if (parameters === null) return [];
-    names = parameterNames(code.slice(at + 1, parameters));
     at = parameters + 1;
   } else {
     const parameter = /^[$A-Z_a-z][$\w]*/u.exec(code.slice(at, end));
     if (!parameter || declared) return [];
-    names = new Set([parameter[0]]);
     at += parameter[0].length;
   }
   at += code.slice(at, end).search(/\S/u);
@@ -155,7 +145,7 @@ function callableReturns(code, start, end) {
     if (code.slice(at, at + 2) !== '=>') return [];
     at += 2;
     at += code.slice(at, end).search(/\S/u);
-    if (code[at] !== '{') return [[at, end, names]];
+    if (code[at] !== '{') return [[at, end]];
   }
   if (code[at] !== '{') return [];
   const last = closing(code, at);
@@ -163,7 +153,7 @@ function callableReturns(code, start, end) {
   return [...code.slice(at + 1, last).matchAll(/\breturn[ \t]+/gu)].flatMap(match => {
     const first = at + 1 + match.index + match[0].length;
     const final = expressionEnd(code, first);
-    return final === null ? [] : [[first, final, names]];
+    return final === null ? [] : [[first, final]];
   });
 }
 
@@ -211,11 +201,12 @@ export function sourceLaunchesBrowser(source, reviewedExecutors = []) {
     const start = match.index + match[0].length;
     const end = expressionEnd(code, start);
     if (end === null) return CHROME.test(source);
-    const prior = bindings.get(match[1]) ?? { browser: false, unresolved: false, aliases: new Set(), dependencies: new Set() };
+    const prior = bindings.get(match[1]) ?? { browser: false, unresolved: false, aliases: new Set(), dependencies: new Set(), expressions: [] };
+    prior.expressions.push(code.slice(start, end));
     prior.browser ||= browserIn(start, end);
     prior.unresolved ||= unresolvedCommandValue(code.slice(start, end), prior.aliases);
-    for (const [first, last, parameters] of callableReturns(code, start, end)) {
-      prior.unresolved ||= unresolvedCommandValue(code.slice(first, last), prior.aliases, parameters);
+    for (const [first, last] of callableReturns(code, start, end)) {
+      prior.unresolved ||= unresolvedCommandValue(code.slice(first, last), prior.aliases);
     }
     for (const word of code.slice(start, end).matchAll(WORD)) prior.dependencies.add(word[0]);
     bindings.set(match[1], prior);
@@ -229,14 +220,13 @@ export function sourceLaunchesBrowser(source, reviewedExecutors = []) {
     if (code[body] !== '{') continue;
     const last = closing(code, body);
     if (last === null) continue;
-    const value = bindings.get(match[1]) ?? { browser: false, unresolved: false, aliases: new Set(), dependencies: new Set() };
-    const names = parameterNames(code.slice(match.index + match[0].length, parameters));
+    const value = bindings.get(match[1]) ?? { browser: false, unresolved: false, aliases: new Set(), dependencies: new Set(), expressions: [] };
     for (const returned of code.slice(body + 1, last).matchAll(/\breturn\s+(?![\r\n])/gu)) {
       const start = body + 1 + returned.index + returned[0].length;
       const end = expressionEnd(code, start);
       if (end === null) continue;
       value.browser ||= browserIn(start, end);
-      value.unresolved ||= unresolvedCommandValue(code.slice(start, end), value.aliases, names);
+      value.unresolved ||= unresolvedCommandValue(code.slice(start, end), value.aliases);
       for (const word of code.slice(start, end).matchAll(WORD)) value.dependencies.add(word[0]);
     }
     bindings.set(match[1], value);
@@ -249,6 +239,8 @@ export function sourceLaunchesBrowser(source, reviewedExecutors = []) {
     return Boolean(binding && (binding.browser || command && binding.unresolved
       || [...(command ? binding.aliases : binding.dependencies)].some(next => namedBrowser(next, seen, command))));
   }
+  const callableCommand = makeCallableCommandChecker(code, bindings, { unresolved: unresolvedCommandValue,
+    named: name => namedBrowser(name, new Set(), true) });
   const calls = [...code.matchAll(/(?<![\w$])([$A-Z_a-z][$\w]*)\s*(?:\?\.)?\s*\(/gu)]
     .filter(match => names.has(match[1])).map(match => {
       const before = code.slice(0, match.index).trimEnd();
@@ -277,7 +269,7 @@ export function sourceLaunchesBrowser(source, reviewedExecutors = []) {
       const commandEnd = expressionEnd(code, start + 1, false);
       if (commandEnd === null) return true;
       const command = code.slice(start + 1, commandEnd);
-      if (unresolvedCommandValue(command)
+      if (unresolvedCommandValue(command) || callableCommand(command)
         || [...command.matchAll(WORD)].some(word => namedBrowser(word[0], new Set(), true))) return true;
     }
   }
