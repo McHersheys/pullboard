@@ -317,15 +317,15 @@ function gitText(root, args) {
   return execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', maxBuffer: 128 * 1024 * 1024 }).trim();
 }
 
-/** Require source bytes to come from the exact clean primary main commit being indexed. */
+/** Pin source and importer-test bytes to the exact clean primary main commit being indexed. */
 function requireSourcePin(root, commit) {
   if (gitText(root, ['branch', '--show-current']) !== 'main'
     || gitText(root, ['rev-parse', 'HEAD']) !== commit
     || gitText(root, ['rev-parse', 'main']) !== commit) {
     throw new Error('the primary source checkout is not at the requested main commit');
   }
-  if (gitText(root, ['status', '--porcelain', '--untracked-files=all', '--', 'src', 'bin'])) {
-    throw new Error('src/ or bin/ differs from the committed main source');
+  if (gitText(root, ['status', '--porcelain', '--untracked-files=all', '--', 'src', 'bin', 'test'])) {
+    throw new Error('src/, bin/ or test/ differs from the committed main source');
   }
 }
 
