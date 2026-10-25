@@ -5,6 +5,10 @@ import { DatabaseSync } from 'node:sqlite';
 import { Refused } from '../src/refused.js';
 import { approvalContext } from '../src/relay-approval.js';
 import { createPersonEnrollmentStore } from './person-enrollment-store.js';
+import {
+  createExcludedStore,
+  createExcludedTables,
+} from './excluded-store.js';
 
 /** Keep device revocations durable so an in-flight native wrap cannot recreate deleted grants. */
 export function createDeviceStore({ directory, now = Date.now }) {
@@ -31,6 +35,7 @@ export function createDeviceStore({ directory, now = Date.now }) {
         CREATE UNIQUE INDEX IF NOT EXISTS phone_approval_pending ON phone_approval(account,board,action) WHERE state='waiting';`);
       // The phone's last contact lets its owner see from the linked computer whether it still reads the boards.
       if (!opened.prepare('PRAGMA table_info(device)').all().some(column => column.name === 'seen')) opened.exec('ALTER TABLE device ADD COLUMN seen INTEGER');
+      createExcludedTables(opened);
       db = opened;
       return db;
     } catch (error) { opened.close(); throw error; }
@@ -62,6 +67,7 @@ export function createDeviceStore({ directory, now = Date.now }) {
   }
   return {
     person: createPersonEnrollmentStore({ database, now }),
+    exclusions: createExcludedStore({ database, active }),
     /** Bind the public session id that actually uploaded enrollment, never its bearer credential. */
     bindSession(principal, device, { enrollment = false } = {}) {
       if (principal.kind !== 'session') return;

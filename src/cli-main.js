@@ -130,6 +130,7 @@ const OPTIONS = {
   commit: { type: 'string' },
   ref: { type: 'string' },
   supersedes: { type: 'string' },
+  answers: { type: 'string' },
   conflict: { type: 'string', multiple: true },
   'withdraw-verdict': { type: 'boolean' },
   cause: { type: 'string' },

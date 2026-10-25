@@ -30,6 +30,7 @@ export const JSON_SHAPES = {
     settings: shape({ settings: 'object' }),
     runner: shape({ runner: 'object' }),
     relay: shape({ linked: 'boolean', board: 'string', url: 'string', link: 'string', sequence: 'number', behind: 'number', recovery: 'object' }),
+    sync: shape({ ref: 'string', sequence: 'number', pending: 'string|null' }),
     list: shape({ items: 'array' }),
     queue: shape({ releases: 'array', unreleased: 'array', first: 'object' }),
     roadmap: shape({ milestones: 'array' }),
