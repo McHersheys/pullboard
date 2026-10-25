@@ -2011,7 +2011,7 @@ export function nextFor(board, { agentId, lane, verify = false, policy = 'any', 
     .map((entry, order) => ({ entry, order, shared: itemFiles(entry).filter((path) => recent.has(path)) }))
     .sort((first, second) => compare(first.entry, second.entry));
   // Move only evidenced reworks ahead of their own tier; with no evidence, normal order is exact.
-  for (const route of lineOrderEnabled(board) || criticalPathEnabled(board) ? [] : ROUTES) {
+  for (const route of lineOrderEnabled(board) ? [] : ROUTES) {
     const routeTier = ROUTES.indexOf(route);
     const selected = mine.findIndex(({ entry }) => tier(entry) === routeTier && mainRed.has(entry.item_id));
     const firstTierItem = mine.findIndex(({ entry }) => tier(entry) === routeTier);
