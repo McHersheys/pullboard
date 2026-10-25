@@ -17,7 +17,7 @@ export async function run(io, { first, second, rest, values }) {
   for (const entry of result.known) {
     io.err(entry.result === 'red'
       ? `known main failure: ${entry.file} fails on main ${String(result.main).slice(0, 12)} too`
-      : `new failure: ${entry.file} passes on main ${String(result.main).slice(0, 12)}`);
+      : `new failure: ${entry.file} ${entry.result === 'absent' ? 'is not on' : 'passes on'} main ${String(result.main).slice(0, 12)}`);
   }
   if (result.mainUnavailable) io.err(`main comparison unavailable: ${result.mainUnavailable}`);
   return result.green ? 0 : 1;

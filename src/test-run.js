@@ -105,7 +105,9 @@ export async function runTestFiles(root, config, files, { agent, onWait } = {}) 
   if (!run.isGreen) {
     const compared = await compareMainFailures(root, run.profile, onWait, run.output);
     result.main = compared.main;
-    result.known = compared.files;
+    // A file main does not have yet cannot fail there: its failure is new, whatever main's run of it said.
+    result.known = compared.files.map((entry) => compared.main && spawnSync('git', ['cat-file', '-e', `${compared.main}:${entry.file}`], { cwd: root, env: cleanGitEnvironment(), stdio: 'ignore' }).status !== 0
+      ? { ...entry, result: 'absent' } : entry);
     if (compared.unavailable) result.mainUnavailable = compared.unavailable;
   }
   return result;
