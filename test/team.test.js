@@ -1003,7 +1003,7 @@ test('a landing lease renewal or waiter poll writes no board event [Q1,Q2,Q3]', 
 });
 
 
-test('a relay supplied outside login receives no board key despite a valid SSH vouch [H15,E17]', async t => {
+test('a non-approver device without a signed member list receives no board key [H15,E17]', async t => {
   const folder = mkdtempSync(join(tmpdir(), 'pullboard-handover-membership-'));
   t.after(() => rmSync(folder, { recursive: true, force: true }));
   const state = { board: '7'.repeat(32), repository: 'fixture/repository', login: 'alice' };
@@ -1023,7 +1023,7 @@ test('a relay supplied outside login receives no board key despite a valid SSH v
     return { device, publicKey: readFileSync(file + '.pub', 'utf8').trim(),
       entry: { id: login, login, statement, signature: readFileSync(input + '.sig', 'utf8') } };
   }
-  const outsider = await request('mallory');
+  const outsider = await request('bob');
   const member = await request('alice');
   /** Present attacker-controlled relay entries while resolving SSH ownership directly for each account. */
   async function answer(person) {
