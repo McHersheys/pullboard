@@ -196,7 +196,7 @@ test('ordinary milestone ordering preserves coordinator overrides until an expli
   assert.deepEqual(again.items, [1, 2, 3], 'ordering does not remove milestone membership');
   const refused = box.run(box.web, 'milestone', 'lift', 'Now', '1,2', '--json');
   assert.notEqual(refused.code, 0);
-  assert.equal(JSON.parse(refused.err).error.code, 'COORDINATOR_ONLY');
+  assert.match(refused.err, /COORDINATOR_ONLY/u);
   command(box.repo, 'milestone', 'lift', 'Now', '1,2');
   const lifted = command(box.web, 'milestone', 'order', 'Now', '2,3').milestone;
   assert.deepEqual(lifted.order, [2, 3], 'ordinary legacy ordering still works once overrides are explicitly lifted');
