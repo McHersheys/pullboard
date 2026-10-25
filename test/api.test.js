@@ -158,7 +158,7 @@ test('local API admits only configured literal IPv4 hosts at their own origin [H
   const defaulted = await startLocalHandler(t, box);
   const denied = await apiFetch(defaulted, '/api/v1/boards', { headers: { host, origin } });
   assert.equal((await apiError(denied, 401)).code, 'AUTH_REQUIRED', 'omitting the allowlist preserves loopback-only Host authority');
-  for (const invalid of ['localhost', '0.0.0.0', '2001:db8::1']) assert.throws(() => createLocalApiHandler({
+  for (const invalid of ['localhost', '0.0.0.0', '2001:db8::1', '192.168.7', '192.168.7.256', '192.168.007.9', '192.168.7.9:80']) assert.throws(() => createLocalApiHandler({
     secret: randomUUID(), getPort: () => 1, runCommand: main, projects: () => [], allowedHosts: [invalid],
   }), TypeError, `invalid LAN host ${invalid} is rejected`);
 });

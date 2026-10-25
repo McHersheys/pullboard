@@ -1,4 +1,3 @@
-import { isIP } from 'node:net';
 /** The local API v1: the CLI's moves, persistent board identities and live events (A2). */
 import {
   createHash,
@@ -872,6 +871,12 @@ function credentialMatches(candidate, expected) {
   return candidate.length === expected.length && timingSafeEqual(candidate, expected);
 }
 
+/** Accept only canonical dotted-decimal IPv4 literals, without DNS or alternate numeric forms. */
+function isLiteralIPv4(host) {
+  const octets = host.split('.');
+  return octets.length === 4 && octets.every(octet => /^(?:0|[1-9]\d{0,2})$/u.test(octet) && Number(octet) <= 255);
+}
+
 /** Share the local router with the person's view and other local transports; the standalone API explicitly denies person authority.
  * @param {{ secret: string | Buffer, getPort: () => number, runCommand: Function, projects?: () => any[], scope?: { projectRoot: string }, isMain?: boolean, allowedOrigins?: string[], allowedHosts?: string[], onStateBuild?: Function, onItemBuild?: Function, personChannel?: string, stateDetail?: string, sessionCookie?: {name:string,value:string} }} [options]
  */
@@ -898,7 +903,7 @@ export function createLocalApiHandler({ secret, getPort, runCommand, projects = 
   const cookieKey = sessionCookie === undefined ? null : Buffer.from(sessionCookie.value);
   const permittedOrigins = new Set(allowedOrigins);
   // A transport may name exact literal interface addresses; DNS names, ports and wildcards are not authority.
-  if (!Array.isArray(allowedHosts) || allowedHosts.some(host => typeof host !== 'string' || isIP(host) !== 4 || host === '0.0.0.0')) {
+  if (!Array.isArray(allowedHosts) || allowedHosts.some(host => typeof host !== 'string' || !isLiteralIPv4(host) || host === '0.0.0.0')) {
     throw new TypeError('createLocalApiHandler allowedHosts needs literal IPv4 addresses, without ports or wildcard binds');
   }
   const permittedHosts = [...new Set(allowedHosts)];
