@@ -10,6 +10,7 @@ import {
 export function briefLines(state) {
   const lines = [];
   if (state.linked) lines.push(`relay: sequence ${state.sequence}; ${state.behind} pending uploads${state.recovery?.pending ? `; recovery pending for sequence ${state.recovery.skip}; retry ${state.recovery.next}` : ''}`);
+  if (state.health) lines.push(state.health.text);
   if (state.oversizedSnapshot && !state.refusedCheckpoint) lines.push(formatSnapshotLimit(state.oversizedSnapshot));
   if (state.storage) lines.push(relayStorageLine(state.storage));
   lines.push(...outboxLines(state));
