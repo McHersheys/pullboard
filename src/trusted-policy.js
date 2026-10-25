@@ -1,3 +1,4 @@
+import { runnerPrivateCheck } from './runner-private-check.js';
 import {
   mainPolicy,
   policyAt,
@@ -155,15 +156,20 @@ export function frozenCheck(item) {
 /** Run the frozen check at the exact submitted commit in a private clone, leaving live worktrees untouched.
  * @param {string} root
  * @param {object} item
- * @param {{ waitMs?: number, gateSlotHeld?: boolean, gateLease?: object, mutate?: (directory: string) => string }} [options] - Queue wait before the private check started;
+ * @param {{ waitMs?: number, gateSlotHeld?: boolean, gateLease?: object, mutate?: (directory: string) => string, guard?: object }} [options] - Queue wait before the private check started;
  *   mutate changes the scratch tree after checkout (a guard revert) and returns a reason when it cannot [C7,V4].
  */
-export function checkAtCommit(root, item, { waitMs = 0, gateSlotHeld = false, gateLease, mutate } = {}) {
+export function checkAtCommit(root, item, { waitMs = 0, gateSlotHeld = false, gateLease, mutate, guard } = {}) {
   const command = frozenCheck(item);
   if (!command) return { state: 'pass', green: true, checked: false, report: '' };
+  let policy;
   let config;
-  try { config = itemPolicy(root, item).config; }
+  try { policy = itemPolicy(root, item); config = policy.config; }
   catch { return checkResult('unverified', 'policy', '', '', { root, item }); }
+  if (gateLease?.runner) {
+    if (mutate && !guard) return checkResult('unverified', 'a remote mutation requires a frozen declarative guard', '', '', { root, item });
+    return runnerPrivateCheck(root, item, command, policy, gateLease, guard, waitMs, checkResult);
+  }
   const install = config.check.install;
   const timeout = config.check.timeoutMs;
   // Retain the physical root before cleanup; Node TAP resolves symlinks in test locations.

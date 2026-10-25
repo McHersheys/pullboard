@@ -75,7 +75,9 @@ export function verify(ctx, item, command, options, services) {
     pinRunMain(lease, observe);
     const result = checkAtCommit(ctx.info.root, item, { waitMs: lease.waitMs, gateLease: lease });
     if (result.state === 'red') await observe({ isGreen: false, output: result.outputPath ? readFileSync(result.outputPath, 'utf8') : result.output,
-      log: result.outputPath, profilePath: result.profilePath, executionRoot: result.executionRoot, executionSourceUnchanged: result.executionSourceUnchanged }, { root: ctx.info.root, command, lease });
+      log: result.outputPath, profilePath: result.profilePath, executionRoot: result.executionRoot, executionSourceUnchanged: result.executionSourceUnchanged, executionRunner: result.executionRunner,
+      executionLoad: result.executionLoad, executionMain: result.executionMain, executionSource: result.executionSource,
+      environment: result.environment, profile: result.profile, rawOutputPath: result.rawOutputPath, rawOutputSha256: result.rawOutputSha256 }, { root: ctx.info.root, command, lease });
     return result;
   };
 }

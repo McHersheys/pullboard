@@ -21,7 +21,9 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
+  writeSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import {
@@ -54,6 +56,7 @@ import {
 } from './git.js';
 import { Refused } from './refused.js';
 import { recordRunnerGui } from './resources.js';
+import { privateCheckEnvelope, privateCheckPhases } from './runner-private-mode.js';
 import {
   gateStages,
   readStages,
@@ -70,7 +73,7 @@ const MAX_BLOB_BYTES = 8 * 1024 ** 2;
 const MAX_HISTORY_TAGS = 1_024;
 const MAX_TAG_CHAIN = 8;
 const TOOL_ROOT = fileURLToPath(new URL('../', import.meta.url));
-const RUNTIME_NAMES = ['runner-custody.js', 'resources.js', 'git.js', 'machine-home.js', 'refused.js', 'process-census.js', 'queue-settings.js', 'queue-order.js', 'sandbox-denial.js', 'gate-stages.js', 'child-journal-preload.js', 'execution-environment.js', 'runner-load.js', 'gui-session.js'];
+const RUNTIME_NAMES = ['runner-custody.js', 'resources.js', 'git.js', 'machine-home.js', 'refused.js', 'process-census.js', 'queue-settings.js', 'queue-order.js', 'sandbox-denial.js', 'gate-stages.js', 'child-journal-preload.js', 'execution-environment.js', 'runner-load.js', 'gui-session.js', 'runner-private-mode.js'];
 
 /** Validate an SSH destination as one argument, never a command or an SSH option. */
 export function validateRunner(value) {
@@ -123,11 +126,12 @@ function sourceObjects(root, source) {
   const configRecord = records.find(record => record.endsWith('\tpullboard.json'));
   const configObject = configRecord?.match(/^\d+ blob ([a-f0-9]{40,64})\t/u)?.[1];
   const config = configObject ? configFromSource(sourceGit(root, ['cat-file', 'blob', configObject])) : defaults();
+  const protect = source.protect ?? config.protect;
   const blobs = records.map(record => {
     const match = /^(\d+) (\w+) ([a-f0-9]{40,64})\t([\s\S]+)$/u.exec(record);
     if (!match || match[2] !== 'blob') throw new Refused('RUNNER_SOURCE', 'runner source contains a submodule or unsupported object; keep this run local');
     const [, , , object, path] = match;
-    if (blockedPaths([path], config.protect).length || /(?:^|\/)board\.sqlite(?:-(?:wal|shm))?$/u.test(path)) {
+    if (blockedPaths([path], protect).length || /(?:^|\/)board\.sqlite(?:-(?:wal|shm))?$/u.test(path)) {
       throw new Refused('RUNNER_SECRET', 'committed runner source includes a blocked private file; remove it before remote execution');
     }
     return { object, path };
@@ -185,7 +189,7 @@ function sourceObjects(root, source) {
   if (secretsIn(commit.split('\n').map((text, index) => ({ path: 'commit', line: index + 1, text }))).length) {
     throw new Refused('RUNNER_SECRET', 'the commit metadata contains a possible secret; keep this run local and correct the metadata');
   }
-  return config.protect;
+  return protect;
 }
 
 /** Reject blocked historical paths as well as current ones before an object pack crosses SSH. */
@@ -306,7 +310,7 @@ function historyPack(root, source, tips, directory, tags = [], knownTagObjects =
   const knownTags = new Set(knownTagObjects);
   const known = sourceGit(root, ['cat-file', '--batch-check'], { input: tips.map(tip => `${tip}\n`).join('') })
     .split('\n').map(line => /^([a-f0-9]{40,64}) commit \d+$/u.exec(line)?.[1]).filter(Boolean);
-  const records = sourceGit(root, ['rev-list', '--objects', source.commit, '--not', ...known])
+  const records = sourceGit(root, ['rev-list', '--objects', source.commit, ...(source.extraCommits ?? []), '--not', ...known])
     .split('\n').filter(Boolean).map(line => {
       const match = /^([a-f0-9]{40,64})(?: (.*))?$/u.exec(line);
       if (!match) throw new Refused('RUNNER_SOURCE', 'unsupported history path; keep this run local');
@@ -316,7 +320,7 @@ function historyPack(root, source, tips, directory, tags = [], knownTagObjects =
   const names = new Map(records.map(record => [record.object, record.path]));
   for (const tag of tags) for (const object of tag.chain) names.set(object, tag.name);
   const historicalTrees = new Set();
-  const config = sourceGit(root, ['ls-tree', '--name-only', source.commit, '--', 'pullboard.json']).trim()
+  const config = source.protect ? { protect: source.protect } : sourceGit(root, ['ls-tree', '--name-only', source.commit, '--', 'pullboard.json']).trim()
     ? configFromSource(sourceGit(root, ['show', `${source.commit}:pullboard.json`])) : defaults();
   const metadata = sourceGit(root, ['cat-file', '--batch-check'], { input: objects.map(object => `${object}\n`).join('') });
   for (const line of metadata.split('\n').filter(Boolean)) {
@@ -472,27 +476,40 @@ function anonymousOrigin(root) {
 }
 
 /** Prepare the pinned request before negotiating history; cleanup owns only its scratch directory. */
-function requestFor(root, command, { runner, source, browser = false, byLaunch, pipefail = false, stages = false, waivers = [], metadata = {} }) {
+function requestFor(root, command, { runner, source, browser = false, byLaunch, pipefail = false, stages = false, waivers = [], metadata = {}, privateCheck, checkedSource, rawOutputPath }) {
   runner = validateRunner(runner);
   const current = runnerSource(root);
   if (!current || (source && (current.commit !== source.commit || current.tree !== source.tree))) {
     throw new Refused('RUNNER_SOURCE_CHANGED', 'the queued source changed; restore the committed tree and retry the run');
   }
-  if (secretsIn(command.split('\n').map((text, index) => ({ path: 'run command', line: index + 1, text }))).length) {
+  const trustedMode = privateCheck ? privateCheckEnvelope(privateCheck) : null;
+  let selected = current;
+  if (trustedMode) {
+    if (!checkedSource || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(checkedSource.commit ?? '')
+      || sourceGit(root, ['rev-parse', `${checkedSource.commit}^{tree}`]).trim() !== checkedSource.tree
+      || command !== trustedMode.check || typeof rawOutputPath !== 'string' || !isAbsolute(rawOutputPath)) {
+      throw new Refused('RUNNER_SOURCE_CHANGED', 'the trusted private check source or output capture is invalid; restore its pinned commit and retry');
+    }
+    const owner = configFromSource(sourceGit(root, ['show', `${trustedMode.policyCommit}:pullboard.json`]));
+    selected = { commit: checkedSource.commit, tree: checkedSource.tree,
+      extraCommits: [...new Set([trustedMode.policyCommit, trustedMode.trunk.commit])], protect: owner.protect };
+  }
+  if (secretsIn([command, trustedMode?.install ?? ''].flatMap(value => value.split('\n')).map((text, index) => ({ path: 'run command', line: index + 1, text }))).length) {
     throw new Refused('RUNNER_SECRET', 'the run command contains a possible secret; use a command that does not transfer credentials');
   }
-  const protect = sourceObjects(root, current);
-  protectHistory(root, current, protect);
+  const protect = sourceObjects(root, selected);
+  for (const commit of [selected.commit, ...(selected.extraCommits ?? [])]) protectHistory(root, { commit }, protect);
   const origin = anonymousOrigin(root);
-  const originBase = origin ? originAncestor(root, current) : undefined;
-  const tags = candidateTags(root, current);
+  const originBase = origin ? originAncestor(root, selected) : undefined;
+  const tags = candidateTags(root, selected);
   const repoId = createHash('sha256').update(realpathSync(repoInfo(root).commonDir)).digest('hex');
   const directory = mkdtempSync(join(tmpdir(), 'pullboard-runner-send-'));
   try {
     const { worker, tooling, runtime } = trustedTooling();
     const projection = metadata.landing === true && Array.isArray(waivers) ? waivers.filter(entry => ['file', 'name'].includes(entry?.kind) && typeof entry.test === 'string' && entry.test).map(({ kind, test }) => ({ kind, test })) : [];
     if (secretsIn([{ path: 'runner continuation', line: 1, text: JSON.stringify(projection) }]).length) throw new Refused('RUNNER_SECRET', 'the continuation projection contains a possible secret; keep this run local');
-    const spec = { version: 1, id: randomUUID(), repoId, ...(originBase ? { origin, originBase } : {}), runtime, tooling, tags, ...current, command, pipefail, slots: runner.slots,
+    const spec = { version: 1, id: randomUUID(), repoId, ...(originBase ? { origin, originBase } : {}), runtime, tooling, tags, commit: selected.commit, tree: selected.tree, command, pipefail, slots: runner.slots,
+      ...(trustedMode ? { trustedMode } : {}),
       browser: runner.browser, browserRequired: browser, guiRequired: metadata.gui === true, landing: metadata.landing === true,
       ...(metadata.landing === true && metadata.timeoutMs ? { timeoutMs: metadata.timeoutMs } : {}),
       // The classification this controller used, so the runner never reclassifies by its own settings (#1043).
@@ -507,7 +524,7 @@ function requestFor(root, command, { runner, source, browser = false, byLaunch, 
     // These are transport hang ceilings, independent of the command's execution budget.
     return { spec, runner, args: ['-T', '-o', 'BatchMode=yes', '-o', 'ForwardAgent=no', '-o', 'ClearAllForwardings=yes',
       '-o', 'SendEnv=-*', '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=10', '-o', 'ServerAliveCountMax=3',
-      '--', runner.host, remote], root, source: current, directory, frame: Buffer.concat([Buffer.from(`${encodedSpec.length}\n`), encodedSpec]), env: sshEnvironment(),
+      '--', runner.host, remote], root, source: selected, ...(trustedMode ? { rawOutputPath } : {}), directory, frame: Buffer.concat([Buffer.from(`${encodedSpec.length}\n`), encodedSpec]), env: sshEnvironment(),
     cleanup() { rmSync(directory, { recursive: true, force: true }); } };
   } catch (error) {
     rmSync(directory, { recursive: true, force: true });
@@ -529,7 +546,7 @@ function resultFrom(request, result) {
   if (result.error || result.status !== 0 || receipt.id !== request.spec.id || receipt.commit !== request.spec.commit
     || receipt.tree !== request.spec.tree || receipt.runtimeSha256 !== request.spec.runtime.sha256 || receipt.toolingSha256 !== request.spec.tooling.sha256 || !Number.isInteger(receipt.code) || receipt.code < 0 || receipt.code > 255
     || typeof receipt.root !== 'string' || !Number.isFinite(receipt.wallMs) || receipt.wallMs < 0
-    || receipt.outputSha256 !== createHash('sha256').update(output).digest('hex')) {
+    || receipt.outputSha256 !== (request.spec.trustedMode ? result.rawSha256 : createHash('sha256').update(output).digest('hex'))) {
     throw new RunnerDropped(request.runner.host);
   }
   if (receipt.gui !== undefined && ![true, false, null].includes(receipt.gui)) throw new RunnerDropped(request.runner.host);
@@ -562,6 +579,14 @@ function resultFrom(request, result) {
           ? pipes[index] : null } : stage) };
     }
   }
+  let privateResult = null;
+  if (request.spec.trustedMode) {
+    try {
+      if (result.rawOutputPath !== request.rawOutputPath || statSync(result.rawOutputPath).size !== result.rawBytes) throw new Error('missing complete private-check capture');
+      privateResult = privateCheckPhases(request.spec.trustedMode, receipt.trustedMode, result.rawBytes);
+      if ((privateResult.state === 'pass') !== (receipt.code === 0 && !receipt.signal)) throw new Error('inconsistent private-check completion');
+    } catch { throw new RunnerDropped(request.runner.host); }
+  } else if (receipt.trustedMode !== undefined) throw new RunnerDropped(request.runner.host);
   const text = staged?.output ?? output.toString('utf8');
   if (receipt.environment !== undefined && environmentProblem(receipt.environment)) throw new RunnerDropped(request.runner.host);
   if (receipt.browserRefused !== undefined && (receipt.browserRefused !== true || receipt.code === 0 || request.spec.browserRequired)) throw new RunnerDropped(request.runner.host);
@@ -579,6 +604,7 @@ function resultFrom(request, result) {
     seconds: Math.round(receipt.wallMs / 1000), exitCode: receipt.code,
     executionRunner: request.runner.host, executionRoot: receipt.root, remoteWallMs: receipt.wallMs,
     executionSource: { commit: receipt.commit, tree: receipt.tree, tooling: request.spec.tooling },
+    ...(privateResult ? { privateCheck: { ...privateResult, receipt: receipt.trustedMode }, rawOutputPath: result.rawOutputPath, rawOutputSha256: result.rawSha256 } : {}),
     executionMain: request.spec.main && receipt.main === request.spec.main ? receipt.main : null, executionLoad: remoteLoad(receipt.load), executionAdmission: admission };
 }
 
@@ -644,21 +670,41 @@ export async function runOnRunnerAsync(root, command, options) {
   if (options.signal?.aborted) throw new RunnerDropped(options.runner.host);
   const request = requestFor(root, command, options);
   let removeAbort = () => {};
+  let rawFd = null;
   try {
+    if (request.rawOutputPath) rawFd = openSync(request.rawOutputPath, 'wx', 0o600);
     const child = spawn('ssh', request.args, { env: request.env, stdio: ['pipe', 'pipe', 'pipe'] });
     const output = [], diagnostics = [];
     let bytes = 0, error, control = '', requested = false, transfer = null, cleanupReason = '';
+    const rawHash = createHash('sha256');
+    let rawBytes = 0, head = Buffer.alloc(0), tail = Buffer.alloc(0);
+    const half = 4 * 1024 ** 2;
     const abort = () => { error ??= new Error('runner transport canceled'); child.stdin.destroy(); child.kill('SIGTERM'); };
     options.signal?.addEventListener('abort', abort, { once: true });
     removeAbort = () => options.signal?.removeEventListener('abort', abort);
     if (options.signal?.aborted) abort();
     /** Bound both protocol streams before retaining a complete result. */
-    const capture = (target, chunk) => {
+    const capture = (target, chunk, raw = false) => {
+      if (raw && rawFd !== null) {
+        if (error) return;
+        try {
+          for (let offset = 0; offset < chunk.length;) {
+            const written = writeSync(rawFd, chunk, offset, chunk.length - offset);
+            if (written <= 0) throw new Error('private-check output made no capture progress');
+            offset += written;
+          }
+          rawHash.update(chunk); rawBytes += chunk.length;
+          const take = Math.min(chunk.length, half - head.length);
+          if (take) head = Buffer.concat([head, chunk.subarray(0, take)]);
+          if (chunk.length > take) tail = Buffer.concat([tail, chunk.subarray(take)]).subarray(-half);
+        } catch { error = new Refused('RUNNER_OUTPUT_LIMIT', 'the full private-check output could not be captured; restore its artifact storage before retrying'); child.kill('SIGTERM'); }
+        return;
+      }
       bytes += chunk.length;
       if (bytes > MAX_OUTPUT_BYTES) { error = new Refused('RUNNER_OUTPUT_LIMIT', 'runner output exceeded 64 MiB; reduce command output or keep this run local'); child.kill(); }
       else target.push(chunk);
     };
-    child.stdout.on('data', chunk => capture(output, chunk));
+    child.stdout.on('data', chunk => capture(output, chunk, true));
     child.stderr.on('data', chunk => {
       capture(diagnostics, chunk);
       control += chunk.toString('utf8');
@@ -698,6 +744,9 @@ export async function runOnRunnerAsync(root, command, options) {
     const status = await new Promise(resolve => child.once('close', resolve));
     if (transfer) await transfer;
     if (error instanceof Refused) throw error;
-    return resultFrom(request, { status, error, stdout: Buffer.concat(output), stderr: Buffer.concat(diagnostics) });
-  } finally { removeAbort(); request.cleanup(); }
+    if (rawFd !== null) { closeSync(rawFd); rawFd = null; }
+    const bounded = request.rawOutputPath ? Buffer.concat([head, ...(rawBytes > half * 2 ? [Buffer.from('\n[output capped at 8 MiB; middle omitted]\n')] : []), tail]) : Buffer.concat(output);
+    return resultFrom(request, { status, error, stdout: bounded, stderr: Buffer.concat(diagnostics),
+      ...(request.rawOutputPath ? { rawOutputPath: request.rawOutputPath, rawBytes, rawSha256: rawHash.digest('hex') } : {}) });
+  } finally { if (rawFd !== null) closeSync(rawFd); removeAbort(); request.cleanup(); }
 }
