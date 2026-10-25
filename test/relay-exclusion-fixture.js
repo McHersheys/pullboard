@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { ENGINE_VERSION } from '../src/engine-metadata.js';
 import { relayClientFixture } from './relay-client-fixture.js';
 import { fetchFresh } from './http-fixture.js';
+import { decodeBoardKey } from '../src/seal.js';
+import { openPagedSnapshot } from '../src/relay-page-layout.js';
 
 /** Read only this fixture's private local machine settings. */
 function machine(box) {
@@ -34,11 +36,25 @@ export async function deletedCopyRelinks(t) {
   const fresh = JSON.parse(readFileSync(box.linkFile, 'utf8'));
   assert.notEqual(fresh.board, old.board, 'the deleted remote epoch is replaced rather than resurrected');
   assert.notEqual(fresh.token, old.token, 'recovery obtains newly authorized machine credentials');
-  const state = await fetchFresh(`${box.origin}/api/v1/boards/${fresh.board}/state`, {
+  const state = await fetchFresh(`${box.origin}/api/v2/boards/${fresh.board}/state`, {
     headers: { authorization: `Bearer ${fresh.token}`, 'x-pullboard-engine': String(ENGINE_VERSION) },
   });
   assert.equal(state.status, 200, 'the fresh link actually uploads a relay snapshot');
-  assert.ok((await state.json()).state.sealed.length > 0, 'the replacement stores sealed state');
+  const head = (await state.json()).state;
+  const key = decodeBoardKey(readFileSync(join(box.env.PULLBOARD_HOME, 'relay-keys', fresh.board + '.key'), 'utf8').trim());
+  const opened = await openPagedSnapshot(head.root, { key, boardId: fresh.board, sequence: head.sequence,
+    async get(id, parents) {
+      const response = await fetchFresh(`${box.origin}/api/v2/boards/${fresh.board}/objects/${id}?pin=${encodeURIComponent(head.read.id)}`
+        + (parents.length ? '&via=' + encodeURIComponent(parents.join(',')) : ''), {
+        headers: { authorization: `Bearer ${fresh.token}`, 'x-pullboard-engine': String(ENGINE_VERSION) },
+      });
+      assert.equal(response.status, 200, 'only actual authenticated snapshot pages supply the recovered native document');
+      return Buffer.from((await response.json()).page.sealed, 'base64url');
+    },
+  }, { maxEngine: ENGINE_VERSION });
+  const remote = await opened.native();
+  assert.deepEqual(remote.tables.item, before.item, 'the uploaded sealed snapshot actually contains the existing native items');
+  assert.deepEqual(remote.tables.event.slice(0, before.event.length), before.event, 'unsealed remote history retains the entire original native event prefix');
   const after = (await box.cli('export')).document.tables;
   assert.deepEqual(after.item, before.item, 'the native items survive recovery');
   assert.deepEqual(after.event.slice(0, before.event.length), before.event, 'the complete existing native event prefix survives');
