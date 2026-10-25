@@ -767,9 +767,9 @@ globalThis.fetch = function tracedFetch(input, init) {
       keyFileExists() { return existsSync(otherKeyFile); } };
   }
   /** Link another independently initialized synthetic board through the same real person account. */
-  async function additionalBoard(title) {
+  async function additionalBoard(title, { sharedHome = false } = {}) {
     const nextRoot = mkdtempSync(join(scratch, 'additional-board-'));
-    const nextHome = mkdtempSync(join(scratch, 'additional-home-'));
+    const nextHome = sharedHome ? home : mkdtempSync(join(scratch, 'additional-home-'));
     const nextEnv = { ...env, HOME: nextHome, PULLBOARD_HOME: join(nextHome, '.pullboard') };
     /** Run this separate board without retaining credentials in diagnostic output. */
     const run = (...args) => childResult(nextRoot, nextEnv, [CLI, ...args, '--json']);
@@ -781,7 +781,9 @@ globalThis.fetch = function tracedFetch(input, init) {
     const state = JSON.parse(readFileSync(join(nextRoot, '.git', 'pullboard', 'relay.json'), 'utf8'));
     const encoded = readFileSync(join(nextEnv.PULLBOARD_HOME, 'relay-keys', state.board + '.key'), 'utf8').trim();
     privateKeys.add(encoded);
-    return { id: state.board, encoded, cli: run };
+    /** Run native fixture actions in this board's own home; no caller changes the parent process environment. */
+    async function script(source) { return childResult(nextRoot, nextEnv, ['--input-type=module', '-e', source]); }
+    return { id: state.board, encoded, cli: run, script };
   }
   /** Run multiple production commands in one process, emitting only safe counters. */
   async function script(source) {
