@@ -31,7 +31,7 @@ export function capturePrProof(board) {
         const query = sql.replace(/\s+/gu, ' ').trim();
         if (/^SELECT meta_value FROM board_meta WHERE meta_key\s*=\s*\?$/u.test(query)) return { get: key => metadata.get(key) };
         if (/^SELECT \* FROM verdict WHERE item_id\s*=\s*\? ORDER BY verdict_id$/u.test(query)) return { all: id => [...(verdicts.get(id) ?? [])] };
-        if (/^SELECT (?:\*|event_kind, event_detail) FROM event(?:_history)? WHERE item_id\s*=\s*\? AND event_kind (?:IN \('accept', 'reject'\)|= 'reopen') ORDER BY event_id$/u.test(query)) {
+        if (/^SELECT (?:\*|(?:event_id, )?event_kind, event_detail) FROM event(?:_history)? WHERE item_id\s*=\s*\? AND event_kind (?:IN \('accept', 'reject'\)|= 'reopen') ORDER BY event_id$/u.test(query)) {
           const kinds = /event_kind = 'reopen'/u.test(query) ? ['reopen'] : ['accept', 'reject'];
           return { all: id => (events.get(id) ?? []).filter(row => kinds.includes(row.event_kind)) };
         }

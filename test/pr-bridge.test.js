@@ -347,6 +347,8 @@ test('one publish pass computes pull request coverage once with bounded git call
       const walks = readFileSync(trace, 'utf8').split('\n').filter(line =>
         line.includes('log --no-decorate') && line.includes('trailers:key=Pullboard-Companion'));
       assert.equal(walks.length, 1, 'publication performs one shared proof walk after composing all proposals');
+      t.diagnostic(JSON.stringify({ proofCoverage: { smallGitCalls: calls, largerGitCalls: largerCalls,
+        publicationWalks: walks.length, proposals: provider.pulls.length } }));
     } finally { box.env = priorEnv; }
 
   } finally {
