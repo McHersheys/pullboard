@@ -6,6 +6,7 @@ export const DEFAULT_NEXT_STEPS = Object.freeze({
   "GIT_SYNC_LINKED": "use pullboard sync for a Git-shared board, or keep the existing relay linked; do not enable a second move order",
   "EXCLUDED_REPOSITORY": "restore the GitHub origin of each excluded project, then run pullboard relay on --all",
   "EXCLUDED_INVENTORY": "restore at most 256 excluded boards and their active paired devices, then run pullboard relay on --all",
+  "WHY_GIT": "run pullboard why from inside the repository, with a path that git can read",
   "NESTED_RUN_HANDLE_REQUIRED": "pass the original ChildProcess or fixture promise retaining .child to awaitNestedRun",
   "NESTED_RUN_OFFER_REQUIRED": "start the child with the current spawn export after test-file token admission, then await its original handle",
   "NESTED_RUN_WAIT_REUSED": "await the original returned wait; do not lend the same child a second time",

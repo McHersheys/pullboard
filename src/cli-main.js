@@ -135,6 +135,8 @@ const OPTIONS = {
   ref: { type: 'string' },
   supersedes: { type: 'string' },
   answers: { type: 'string' },
+  origin: { type: 'string' },
+  rationale: { type: 'string' },
   conflict: { type: 'string', multiple: true },
   'withdraw-verdict': { type: 'boolean' },
   cause: { type: 'string' },
