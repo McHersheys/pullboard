@@ -118,14 +118,8 @@ import {
   checkedLandingCommit,
 } from './verdict-reviews.js';
 export { verdictReviewProblem, verdictsFor, acceptedVerdict, checkedLandingCommit };
-export {
-  landingTestDefects,
-  recordLandingTestDefect,
-} from './landing-test-defects.js';
-export {
-  landingLeaseMove,
-  landingLeaseState,
-} from './landing-lease.js';
+export { landingTestDefects, recordLandingTestDefect } from './landing-test-defects.js';
+export { landingLeaseMove, landingLeaseState } from './landing-lease.js';
 import { guardLandingWrite } from './landing-lease.js';
 import {
   randomBytes,
@@ -163,10 +157,7 @@ import {
   recordSchemaStamp,
   reportDrift,
 } from './board-migrate.js';
-export {
-  schemaMissing,
-  writeRefused,
-} from './board-migrate.js';
+export { schemaMissing, writeRefused } from './board-migrate.js';
 import {
   briefFiles,
   briefSections,
