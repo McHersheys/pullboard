@@ -347,6 +347,7 @@ catalogCase('[A1] command results match the catalog across roots and subcommands
   await json(box, repo, 'fact', ['1', 'note', 'API fact']);
   await json(box, repo, 'fact', ['1', 'decision', 'API decision', '--implies', '1']);
   assert.equal((await json(box, repo, 'why', ['1'])).decisions[0].line, 'API decision', 'why lists the decision that implies the item [N29]');
+  assert.equal((await json(box, repo, 'why', ['SPEC.md'], 'file')).file, 'SPEC.md', 'file provenance has its own additive JSON shape [A1,N29]');
   await json(box, repo, 'edit', ['1', '--criterion', 'the edited API item is verified', '--check', 'true']);
   await json(box, repo, 'show', ['1']);
   await json(box, repo, 'list', ['--all']);
@@ -738,6 +739,10 @@ catalogCase('[A1] catalog commands keep their real repository exercises', async 
   await json(source, source.repo, 'milestone', ['items', 'Catalog', '--remove', String(catalog.item_id)], 'items');
   await json(source, source.repo, 'milestone', ['items', 'Catalog', '--add', String(catalog.item_id)], 'items');
   await json(source, source.repo, 'milestone', ['order', 'Catalog', String(catalog.item_id)], 'order');
+  await json(source, source.repo, 'milestone', ['pin', 'Catalog', String(catalog.item_id), '--reason', 'Catalog coverage first'], 'pin');
+  const sunk = await json(source, source.repo, 'milestone', ['sink', 'Catalog', String(catalog.item_id), '--reason', 'Catalog coverage last'], 'sink');
+  assert.deepEqual([sunk.milestone.sunk, sunk.milestone.reasons[String(catalog.item_id)]], [[catalog.item_id], 'Catalog coverage last'], 'a sink records the item and its reason');
+  assert.equal((await json(source, source.repo, 'milestone', ['lift', 'Catalog', String(catalog.item_id)], 'lift')).milestone.sunk, undefined, 'a lift returns the item to the computed order');
   await json(source, source.repo, 'milestone', ['add', 'Later'], 'add');
   await json(source, source.repo, 'milestone', ['move', 'Later', '--before', 'Catalog'], 'move');
   await json(source, source.repo, 'milestone', ['edit', 'Catalog', '--name', 'Release', '--note', 'Catalog coverage'], 'edit');
@@ -805,6 +810,21 @@ catalogCase('[A1] intake records a real outside pull request through the CLI', a
   assert.ok(Number.isSafeInteger(document.item.item_id));
   assert.equal(document.item.item_status, 'submitted');
   assert.equal(document.item.item_commit, box.commit);
+});
+
+catalogCase('[A1,C7] test runs named test files and reports where they ran', async () => {
+  const box = await project();
+  const configFile = join(box.repo, 'pullboard.json');
+  writeFileSync(configFile, JSON.stringify({ ...JSON.parse(readFileSync(configFile, 'utf8')), affectedTests: 'env -u NODE_TEST_CONTEXT node --test --test-reporter=tap' }, null, 2)); // this file's own runner must not nest it
+  mkdirSync(join(box.repo, 'test'));
+  writeFileSync(join(box.repo, 'test', 'catalog.test.js'), "import { test } from 'node:test';\ntest('catalog passes', () => {});\n");
+  await box.git(box.repo, 'add', '-A');
+  await box.git(box.repo, 'commit', '-q', '-m', 'test: a focused runner and one test file');
+  const result = await json(box, box.repo, 'test', ['test/catalog.test.js']);
+  assert.equal(result.green, true);
+  assert.deepEqual(result.files, ['test/catalog.test.js']);
+  assert.equal(result.runner, 'this machine', 'with no runner registered the files run here');
+  assert.match(result.output, /^ok 1 - catalog passes/mu);
 });
 
 catalogCase('[A1,H11] sync shares a board through a real Git remote without an account', async () => {

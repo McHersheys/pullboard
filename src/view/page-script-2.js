@@ -824,6 +824,9 @@ async function api(path, body) {
   const reply = await jsonRequest(path, body, base, headers); if (boardId && source?.kind === 'local' && path.includes('/state') && reply?.state) return { ...reply, state: { ...reply.state, root: source.board.root } }; return reply;
 }
 
+// Transport-only report identities never become public state fields or persisted browser data.
+const reportValidators = new WeakMap();
+
 /** Use one JSON request primitive, capturing its local route and session before awaiting a reply. */
 async function jsonRequest(path, body, base, headers, cache, format = 'json') {
   const session = localSession;
@@ -841,6 +844,9 @@ async function jsonRequest(path, body, base, headers, cache, format = 'json') {
     if (refusal && typeof refusal === 'object') error.code = refusal.code;
     throw error;
   }
+  const report = json?.state?.proofStats?.flow?.report ?? json?.delta?.replace?.proofStats?.flow?.report;
+  const reportValidator = res.headers.get('x-pullboard-report-validator');
+  if (report && typeof report === 'object' && /^[a-f0-9]{64}:[0-9]+$/.test(reportValidator ?? '')) reportValidators.set(report, reportValidator);
   return json;
 }
 

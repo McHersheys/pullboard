@@ -1,33 +1,16 @@
 /** Publish only exact native independent review coverage, never a PR author's proof claims [B3,R3]. */
-import * as store from './board.js';
-import {
-  git,
-  tryGit,
-  cleanGitEnvironment,
-  refuseGrafts,
-} from './git.js';
+import { refuseGrafts } from './git.js';
 import { Refused } from './refused.js';
-import { outsideSource } from './outside-source.js';
+import { readProofGraph } from './pr-proof-graph.js';
+import { capturePrProof } from './pr-proof-snapshot.js';
 
 export const PR_VERIFICATION_CONTEXT = 'pullboard/verified-by-second-agent';
 const COMMIT = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u;
 
-/** Read only the intended repository, never inherited Git directory or replacement selectors. */
-function exactGit(root, args) {
-  return git(root, args, { env: cleanGitEnvironment() });
-}
-
-/** A failed ancestry lookup supplies no coverage. */
-function gitStatus(root, args) {
-  return tryGit(root, args, { env: cleanGitEnvironment() }).status;
-}
-
 /** Unknown historical provenance or a different criterion cannot become independent proof later. */
-function itemReceipt(board, item) {
+function itemReceipt(snapshot, item) {
   if (item.item_status !== 'verified' || item.item_verdict !== 'ACCEPT') return null;
-  const verdict = store.acceptedVerdict(board, item);
-  const assurance = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?')
-    .get(`verdict_assurance:${verdict?.verdict_id}`)?.meta_value;
+  const verdict = snapshot.accepted.get(item.item_id), assurance = snapshot.assurance(verdict);
   if (!verdict || assurance !== 'independent' || verdict.check !== 'green'
       || verdict.verdict_digest !== item.item_frozen_digest || verdict.verdict_by === item.item_built_by
       || verdict.review?.commit !== item.item_commit || !COMMIT.test(verdict.review?.head ?? '')
@@ -36,94 +19,111 @@ function itemReceipt(board, item) {
     verdict: verdict.verdict_id, assurance, checked: verdict.review.head };
 }
 
-/** Only one unambiguous Git trailer can identify an item; prose and PR descriptions are not authority. */
-function trailerItem(root, commit, key) {
-  const values = exactGit(root, ['show', '-s', `--format=%(trailers:key=${key},valueonly)`, commit]).split('\n').filter(Boolean);
-  const match = values.length === 1 && /^#([1-9][0-9]*)$/u.exec(values[0]);
-  return match && Number.isSafeInteger(Number(match[1])) ? Number(match[1]) : null;
-}
-
-/** Resolve actual board-recorded landings, and companions only on the coordinator's trusted source history. */
-function coverage(root, board, commits, trustedHead) {
-  const items = store.listItems(board, { all: true });
-  const receipts = new Map(items.map(item => [item.item_id, itemReceipt(board, item)]).filter(([, receipt]) => receipt));
-  const recordedTrunks = [...items.map(item => item.item_merged_commit),
-    ...store.landingBatches(board).filter(batch => ['trunk', 'landed', 'pushed'].includes(batch.state)).map(batch => batch.tip)]
-    .filter(commit => COMMIT.test(commit ?? '') && gitStatus(root, ['merge-base', '--is-ancestor', commit, trustedHead]) === 0);
+/** Resolve actual native landings and companions using only the single exact graph captured for this pass. */
+function coverage(snapshot, receipts, graph, commits, trustedHead) {
+  const items = new Map(snapshot.items.map(item => [item.item_id, item]));
+  const recorded = [...new Set([...snapshot.items.map(item => item.item_merged_commit),
+    ...snapshot.batches.filter(batch => ['trunk', 'landed', 'pushed'].includes(batch.state)).map(batch => batch.tip)])]
+    .filter(commit => COMMIT.test(commit ?? '') && graph.isAncestor(commit, trustedHead));
+  const trunks = new Set(recorded), maximal = graph.maximal(recorded);
   const covered = new Map([...receipts.values()].map(receipt => [receipt.commit, receipt]));
-  for (const item of items) {
-    const commit = item.item_merged_commit;
-    const receipt = receipts.get(item.item_id);
-    if (receipt && COMMIT.test(commit ?? '') && recordedTrunks.includes(commit)
-        && trailerItem(root, commit, 'Pullboard-Item') === item.item_id
-        && exactGit(root, ['show', '-s', '--format=%P', commit]).split(' ').length > 1
-        && gitStatus(root, ['merge-base', '--is-ancestor', receipt.commit, commit]) === 0) {
-      for (const introduced of exactGit(root, ['rev-list', `${commit}^1..${commit}`]).split('\n').filter(Boolean)) covered.set(introduced, receipt);
+  for (const item of snapshot.items) {
+    const commit = item.item_merged_commit, receipt = receipts.get(item.item_id), node = graph.nodes.get(commit);
+    if (receipt && trunks.has(commit) && node?.item === item.item_id && node.parents.length > 1
+        && graph.isAncestor(receipt.commit, commit)) {
+      for (const introduced of graph.range(node.parents[0], commit)) covered.set(introduced, receipt);
     }
   }
   for (const commit of commits) {
-    const companion = receipts.get(trailerItem(root, commit, 'Pullboard-Companion'));
-    const companionItem = companion && items.find(item => item.item_id === companion.item);
-    if (companion && COMMIT.test(companionItem.item_merged_commit ?? '') && recordedTrunks.some(trunk =>
-      gitStatus(root, ['merge-base', '--is-ancestor', commit, trunk]) === 0
-      && gitStatus(root, ['merge-base', '--is-ancestor', companionItem.item_merged_commit, trunk]) === 0)) covered.set(commit, companion);
+    const companion = receipts.get(graph.nodes.get(commit)?.companion);
+    const landed = companion && items.get(companion.item)?.item_merged_commit;
+    if (companion && COMMIT.test(landed ?? '') && maximal.some(trunk =>
+      graph.isAncestor(commit, trunk) && graph.isAncestor(landed, trunk))) covered.set(commit, companion);
   }
   return covered;
 }
 
-/** A missing or procedural receipt explains a red status without exporting private notes or machine paths. */
-function unverifiedReason(board, commits) {
-  for (const item of store.listItems(board, { all: true }).filter(item => commits.includes(item.item_commit))) {
-    const verdict = store.acceptedVerdict(board, item);
-    const assurance = verdict && board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?')
-      .get(`verdict_assurance:${verdict.verdict_id}`)?.meta_value;
+/** Preserve the existing procedural-receipt explanation without fresh SQL or exporting private notes. */
+function unverifiedReason(snapshot, commits) {
+  const selected = new Set(commits);
+  for (const item of snapshot.items.filter(item => selected.has(item.item_commit))) {
+    const verdict = snapshot.accepted.get(item.item_id), assurance = verdict && snapshot.assurance(verdict);
     if (verdict && assurance !== 'independent') return "second agent's independence is unproven (" + (assurance ?? 'unknown') + ')';
   }
   return 'one or more commits lack an exact independent green receipt';
 }
 
-/** Check the complete provider range against Git objects and immutable native receipts, not merely its head. */
-export function pullRequestVerification({ root, board, client, pull, proposal, repository, trustedHead }) {
-  refuseGrafts(root);
+/** Collect provider ranges without giving an outside PR authority from a description or shared head. */
+function preparePull(snapshot, client, pull, proposal, repository) {
   const head = pull.head?.sha;
-  const outside = store.listItems(board, { all: true }).find(item => {
-    const source = outsideSource(board, item.item_id);
+  const outside = snapshot.items.find(item => {
+    const source = snapshot.outside.get(item.item_id);
     return source?.repository === repository && source.kind === 'pull-request' && source.number === pull.number && source.commit === head;
   });
-  const knownProposal = proposal && proposal.head === head;
-  if (!knownProposal && !outside) return { state: 'failure', description: 'not verified: outside pull request; use pullboard intake', assurance: 'unknown', receipts: [] };
-  if (!COMMIT.test(head ?? '') || !COMMIT.test(pull.base?.sha ?? '')) {
-    return { state: 'failure', description: 'not verified: exact pull request range is unavailable', assurance: 'unknown', receipts: [] };
-  }
-  // GitHub's PR-commits endpoint stops at 250; a larger open range is read from exact local Git objects.
+  if (!(proposal && proposal.head === head) && !outside) return { pull,
+    failure: { state: 'failure', description: 'not verified: outside pull request; use pullboard intake', assurance: 'unknown', receipts: [] } };
+  if (!COMMIT.test(head ?? '') || !COMMIT.test(pull.base?.sha ?? '')) return { pull,
+    failure: { state: 'failure', description: 'not verified: exact pull request range is unavailable', assurance: 'unknown', receipts: [] } };
+  // Larger ranges are resolved in the shared graph, never a separate Git process per PR.
   const rows = pull.commits <= 250 ? client.commits(pull.number) : null;
-  const range = rows ? null : tryGit(root, ['rev-list', `${pull.base.sha}..${head}`], { env: cleanGitEnvironment() });
-  const commits = rows ? rows.map(row => row.sha) : range.status === 0 ? range.stdout.trim().split('\n').filter(Boolean) : [];
-  if (!Number.isSafeInteger(pull.commits) || pull.commits < 1 || commits.length !== pull.commits
-      || commits.some(commit => !COMMIT.test(commit ?? '')) || new Set(commits).size !== commits.length
-      || !commits.includes(head) || commits.some(commit => gitStatus(root, ['merge-base', '--is-ancestor', commit, head]) !== 0)) {
-    return { state: 'failure', description: 'not verified: complete exact commit range is unavailable', assurance: 'unknown', receipts: [] };
-  }
-  const covered = coverage(root, board, commits, trustedHead);
-  const missing = commits.filter(commit => !covered.has(commit));
-  if (missing.length) return { state: 'failure', description: 'not verified: ' + unverifiedReason(board, missing), assurance: 'unproven', receipts: [], unverified: missing };
-  const receipts = [...new Map(commits.map(commit => { const receipt = covered.get(commit); return [receipt.verdict, receipt]; })).values()];
-  return { state: 'success', description: 'verified by a second agent (independent)', assurance: 'independent', receipts };
+  return { pull, commits: rows ? rows.map(row => row.sha) : null };
 }
 
-/** Reconcile open PRs, including outside contributions, without posting comments or merging anyone's work. */
-export function publishVerificationStatuses({ root, board, client, state, repository, trustedHead }) {
+/** Capture one receipt cohort and one Git graph for every PR, with no process-global proof cache. */
+function verificationPass({ root, board, client, entries, repository, trustedHead }) {
+  refuseGrafts(root);
+  const snapshot = capturePrProof(board);
+  const receipts = new Map(snapshot.items.map(item => [item.item_id, itemReceipt(snapshot, item)]).filter(([, receipt]) => receipt));
+  const prepared = entries.map(({ pull, proposal }) => preparePull(snapshot, client, pull, proposal, repository));
+  const endpoints = [trustedHead, ...snapshot.items.map(item => item.item_merged_commit),
+    ...snapshot.batches.map(batch => batch.tip), ...[...receipts.values()].map(receipt => receipt.commit),
+    ...prepared.flatMap(entry => entry.failure ? [] : [entry.pull.head.sha, entry.pull.base.sha, ...(entry.commits ?? [])])];
+  const graph = readProofGraph(root, endpoints);
+  for (const entry of prepared) if (!entry.failure && entry.commits === null) {
+    entry.commits = graph.nodes.has(entry.pull.base.sha) && graph.nodes.has(entry.pull.head.sha)
+      ? graph.range(entry.pull.base.sha, entry.pull.head.sha) : [];
+  }
+  const covered = coverage(snapshot, receipts, graph,
+    [...new Set(prepared.flatMap(entry => entry.commits ?? []))], trustedHead);
+  return prepared.map(entry => {
+    if (entry.failure) return entry.failure;
+    const { pull, commits } = entry;
+    if (!Number.isSafeInteger(pull.commits) || pull.commits < 1 || commits.length !== pull.commits
+        || commits.some(commit => !COMMIT.test(commit ?? '')) || new Set(commits).size !== commits.length
+        || !commits.includes(pull.head.sha) || commits.some(commit => !graph.isAncestor(commit, pull.head.sha))) {
+      return { state: 'failure', description: 'not verified: complete exact commit range is unavailable', assurance: 'unknown', receipts: [] };
+    }
+    const missing = commits.filter(commit => !covered.has(commit));
+    if (missing.length) return { state: 'failure', description: 'not verified: ' + unverifiedReason(snapshot, missing),
+      assurance: 'unproven', receipts: [], unverified: missing };
+    return { state: 'success', description: 'verified by a second agent (independent)', assurance: 'independent',
+      receipts: [...new Map(commits.map(commit => { const receipt = covered.get(commit); return [receipt.verdict, receipt]; })).values()] };
+  });
+}
+
+/** Check one complete provider range against the same native/graph interpretation used by a publish pass. */
+export function pullRequestVerification(options) {
+  return verificationPass({ ...options, entries: [{ pull: options.pull, proposal: options.proposal }] })[0];
+}
+
+/** Validate exact open PR identities before publication can create or update proposal branches. */
+export function verificationPulls(client, state, repository) {
   const numbers = [...new Set([...client.open().map(pull => pull.number),
     ...state.proposals.filter(proposal => proposal.repository === repository).map(proposal => proposal.number)])];
-  const results = numbers.map(number => {
+  return numbers.map(number => {
     if (!Number.isSafeInteger(number) || number < 1) throw new Refused('PUBLISH_GITHUB', 'the pull request lacks an exact provider identity; refresh it before publishing');
     const pull = client.read(number);
     if (pull.number !== number || !COMMIT.test(pull.head?.sha ?? '')) throw new Refused('PUBLISH_GITHUB', 'the pull request lacks an exact head; refresh it before publishing');
-    const proposal = state.proposals.find(entry => entry.repository === repository && entry.number === pull.number);
-    const verification = pullRequestVerification({ root, board, client, pull, proposal, repository, trustedHead });
-    return { number: pull.number, head: pull.head.sha, ...verification,
-      ...(proposal ? {} : { intake: `pullboard intake https://github.com/${repository}/pull/${pull.number} --criterion "behavior" --check "command"` }) };
+    return { pull, proposal: state.proposals.find(entry => entry.repository === repository && entry.number === pull.number) };
   });
+}
+
+/** Reconcile every open PR using one coverage pass, keeping commit-level provider statuses conservative. */
+export function publishVerificationStatuses({ root, board, client, state, repository, trustedHead }) {
+  const entries = verificationPulls(client, state, repository);
+  const verification = verificationPass({ root, board, client, entries, repository, trustedHead });
+  const results = entries.map(({ pull, proposal }, index) => ({ number: pull.number, head: pull.head.sha, ...verification[index],
+    ...(proposal ? {} : { intake: `pullboard intake https://github.com/${repository}/pull/${pull.number} --criterion "behavior" --check "command"` }) }));
   // GitHub statuses belong to a commit, not a PR: an outside PR sharing a head must never borrow green.
   for (const head of new Set(results.map(result => result.head))) {
     const sharing = results.filter(result => result.head === head);

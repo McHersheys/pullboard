@@ -25,8 +25,8 @@ export function verdictReviewProblem(review, commit, { checked } = {}) {
  */
 export function verdictsFor(board, id) {
   const verdicts = board.db.prepare('SELECT * FROM verdict WHERE item_id = ? ORDER BY verdict_id').all(id);
-  const receipts = board.db.prepare("SELECT event_kind, event_detail FROM event WHERE item_id = ? AND event_kind IN ('accept', 'reject') ORDER BY event_id").all(id);
-  const withdrawals = verdictWithdrawals(board, id);
+  const receipts = board.db.prepare("SELECT event_id, event_kind, event_detail FROM event WHERE item_id = ? AND event_kind IN ('accept', 'reject') ORDER BY event_id").all(id);
+  const withdrawals = verdictWithdrawals(board, id, verdicts.map((verdict, index) => ({ verdict, event: receipts[index] })));
   return verdicts.map((verdict, index) => {
     let detail = {};
     try { detail = JSON.parse(receipts[index]?.event_detail ?? '{}'); } catch { /* Malformed legacy details remain unknown. */ }

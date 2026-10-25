@@ -18,20 +18,22 @@ export async function run(io, { first, second, rest, values }) {
   const ids = (text) => (text ?? '').split(',').map((value) => value.trim()).filter(Boolean);
   let name;
   let entry;
+  if (values.limit !== undefined && first !== 'edit' || values.swap !== undefined && first !== 'items') throw new Refused('USAGE', 'use milestone edit --limit <n>|none, or milestone items --add <id> --swap <id>');
   if (first === 'add') {
     if (!second || rest.length || values.before !== undefined || values.add !== undefined || values.remove !== undefined || values.name !== undefined) {
       throw new Refused('USAGE', 'pullboard milestone add <name> [--note ...] [--items 1,2,3]');
     }
     name = await ordered(ctx, board, 'addMilestone', [{ agentId: me.id, name: second, note: values.note ?? null, items: ids(values.items) }]);
   } else if (first === 'items') {
-    if (!second || rest.length || Boolean(values.add) === Boolean(values.remove) || values.items !== undefined || values.note !== undefined || values.before !== undefined || values.name !== undefined) {
-      throw new Refused('USAGE', 'pullboard milestone items <name> --add ids or --remove ids');
+    if (!second || rest.length || Boolean(values.add) === Boolean(values.remove) || (values.swap !== undefined && (!values.add || values.remove)) || values.items !== undefined || values.note !== undefined || values.before !== undefined || values.name !== undefined) {
+      throw new Refused('USAGE', 'pullboard milestone items <name> --add ids [--swap id] or --remove ids');
     }
     name = second;
     const next = await ordered(ctx, board, 'editMilestoneItems', [name, {
       agentId: me.id,
       add: values.add === undefined ? [] : ids(values.add),
       remove: values.remove === undefined ? [] : ids(values.remove),
+      ...(values.swap === undefined ? {} : { swap: ids(values.swap) }),
     }]);
     entry = { ...store.milestones(board).find((value) => value.name === name), items: next };
   } else if (first === 'order') {
@@ -40,6 +42,13 @@ export async function run(io, { first, second, rest, values }) {
     }
     name = second;
     await ordered(ctx, board, 'orderMilestoneItems', [name, { agentId: me.id, items: ids(rest[0]) }]);
+  } else if (['pin', 'sink', 'lift'].includes(first)) {
+    if (!second || rest.length !== 1 || !rest[0].trim() || ['items', 'note', 'before', 'name', 'add', 'remove', 'target'].some((key) => values[key] !== undefined)
+      || (first === 'lift') !== (values.reason === undefined)) {
+      throw new Refused('USAGE', first === 'lift' ? 'pullboard milestone lift <name> <ids>' : `pullboard milestone ${first} <name> <ids> --reason "<why>"`);
+    }
+    name = second;
+    await ordered(ctx, board, 'orderMilestoneItems', [name, { agentId: me.id, items: ids(rest[0]), place: first, ...(first === 'lift' ? {} : { reason: values.reason }) }]);
   } else if (first === 'move') {
     if (!second || rest.length || !values.before || values.items !== undefined || values.note !== undefined || values.name !== undefined || values.add !== undefined || values.remove !== undefined) {
       throw new Refused('USAGE', 'pullboard milestone move <name> --before <other>');
@@ -48,11 +57,11 @@ export async function run(io, { first, second, rest, values }) {
     await ordered(ctx, board, 'moveMilestone', [name, { agentId: me.id, before: values.before }]);
     entry = store.milestones(board).find((value) => value.name === name);
   } else if (first === 'edit') {
-    if (!second || rest.length || (values.name === undefined && values.note === undefined && values.target === undefined) || values.items !== undefined || values.before !== undefined || values.add !== undefined || values.remove !== undefined || values.next !== undefined) {
-      throw new Refused('USAGE', 'pullboard milestone edit <name> [--name <new name>] [--note <text>] [--target <date and time>|none]');
+    if (!second || rest.length || (values.name === undefined && values.note === undefined && values.target === undefined && values.limit === undefined) || values.items !== undefined || values.before !== undefined || values.add !== undefined || values.remove !== undefined || values.next !== undefined) {
+      throw new Refused('USAGE', 'pullboard milestone edit <name> [--name <new name>] [--note <text>] [--target <date and time>|none] [--limit <n>|none]');
     }
     name = second;
-    entry = await ordered(ctx, board, 'editMilestone', [name, { agentId: me.id, newName: values.name, note: values.note, ...(values.target === undefined ? {} : { target: store.canonicalMilestoneTarget(values.target) }) }]);
+    entry = await ordered(ctx, board, 'editMilestone', [name, { agentId: me.id, newName: values.name, note: values.note, ...(values.target === undefined ? {} : { target: store.canonicalMilestoneTarget(values.target) }), ...(values.limit === undefined ? {} : { limit: values.limit }) }]);
     name = entry.name;
   } else if (first === 'ship') {
     if (!second || rest.length || ['items', 'note', 'before', 'name', 'add', 'remove', 'target'].some((key) => values[key] !== undefined)) {
@@ -73,7 +82,7 @@ export async function run(io, { first, second, rest, values }) {
     await ordered(ctx, board, 'removeMilestone', [name, { agentId: me.id }]);
     entry = { name };
   } else {
-    throw new Refused('USAGE', 'use pullboard milestone add, items, order, move, edit, ship or remove');
+    throw new Refused('USAGE', 'use pullboard milestone add, items, order, pin, sink, lift, move, edit, ship or remove');
   }
   entry ??= store.milestones(board).find((value) => value.name === name);
   io.result?.({ milestone: entry });
