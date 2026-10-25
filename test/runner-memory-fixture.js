@@ -45,16 +45,22 @@ export async function assertRunnerMemoryAdmission() {
       "import {execFileSync} from 'node:child_process';",
       'const root=process.cwd(); const output={};',
       '/** Keep the refusal path bounded: release only the private simulated pressure after observing it. */',
-      'async function exercise(remote, agent){',
-      'let recovered=false; const held=[]; let status=null;',
+      'async function exercise(remote, agent, releaseOccupied){',
+      'let recovered=false; const held=[]; let status=null; let waited=0;',
       'const readMemory=async()=>({checked:true,platform:process.platform,pressure:recovered?"normal":"critical",',
       'availableBytes:(recovered?8192:64)*1024**2,totalBytes:16*1024**3,processes:[]});',
       'const result=await withGateSlot(root,lease=>runProfiledShellAsync(root,"node memory-probe.cjs",{gateLease:lease,waitMs:lease.waitMs}),',
-      '{remote,agent,kind:"focused",readMemory,onWait(state){if(state.memory?.held){held.push(state.memory);',
+      '{remote,agent,kind:"focused",readMemory,onWait(state){waited+=1;',
       `status=JSON.parse(execFileSync(process.execPath,[${JSON.stringify(cli)},"status","--json"],{cwd:root,encoding:"utf8"}));`,
-      'recovered=true;}}});',
-      'return {green:result.isGreen,runner:result.executionRunner,output:result.output,held,status};}',
-      'output.remote=await exercise(true,"remote-memory-control");',
+      'if(state.memory?.held){held.push(state.memory);recovered=true;} releaseOccupied?.();}});',
+      'return {green:result.isGreen,runner:result.executionRunner,output:result.output,held,status,waited};}',
+      'let markOccupied,releaseOccupied;',
+      'const ready=new Promise(resolve=>{markOccupied=resolve;});',
+      'const release=new Promise(resolve=>{releaseOccupied=resolve;});',
+      'const occupied=withGateSlot(root,async lease=>{if(!lease.runner)throw new Error("occupying run did not reserve a runner");markOccupied();await release;},',
+      '{agent:"occupied-runner",kind:"focused",readMemory:async()=>({checked:true,pressure:"normal",availableBytes:8*1024**3,totalBytes:16*1024**3,processes:[]})});',
+      'await Promise.race([ready,occupied.then(()=>{throw new Error("occupying run ended before the queue control");})]);',
+      'try{output.remote=await exercise(true,"remote-memory-control",releaseOccupied);}finally{releaseOccupied();await occupied;}',
       'output.local=await exercise(false,"local-memory-control");',
       'console.log(JSON.stringify(output));',
     ].join('\n');
@@ -65,6 +71,8 @@ export async function assertRunnerMemoryAdmission() {
     assert.equal(result.remote.runner, HOST, 'the actual stand-in worker executed this run');
     assert.match(result.remote.output, /REAL_RUNNER_MEMORY_PROBE/u);
     assert.deepEqual(result.remote.held, [], 'a runner-bound run is never held for local memory');
+    assert.ok(result.remote.waited > 0, 'the compatible runner was genuinely occupied before the real dispatch');
+    assert.ok(!result.remote.status.memoryHeld.some(entry => entry.agent === 'remote-memory-control'), 'a capacity-blocked remote run is not listed as memory-held');
     assert.equal(result.local.green, true, result.local.output);
     assert.ok(result.local.held.length > 0, 'local-only work still waits for recovery');
     assert.ok(result.local.status.memoryHeld.some(entry => entry.agent === 'local-memory-control'), 'public status names the actual locally held run');
