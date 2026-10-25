@@ -7,6 +7,8 @@ import { test } from 'node:test';
 import * as store from '../src/board.js';
 import { runFixtureGit } from './fixture-child.js';
 import { scanHealthSentinel } from '../src/health-sentinel.js';
+import { CPU_SENTINEL_ENGINE } from '../src/cpu-sentinel-engine.js';
+import { HEALTH_SHOUT_CAP } from '../src/health-receipts.js';
 
 // CPU time is observed, not burned: the native utility port supplies an exact ps/lsof transcript.
 test('the sentinel names an agent process past 20 CPU minutes once [A6,H16]', async t => {
@@ -15,18 +17,19 @@ test('the sentinel names an agent process past 20 CPU minutes once [A6,H16]', as
   const root = join(directory, 'repo'), work = join(directory, 'core');
   mkdirSync(root); mkdirSync(work);
   runFixtureGit(['init', '-q', '-b', 'main'], { cwd: root });
-  const file = join(directory, 'board.sqlite'), board = store.openBoard(file);
+  const file = join(directory, 'board.sqlite');
+  let board = store.openBoard(file);
   store.register(board, { lane: 'coordinator', path: root });
   const seat = store.register(board, { lane: 'core', path: work });
   t.after(() => { store.closeBoard(board); rmSync(directory, { recursive: true }); });
-  let birth = 'Mon Oct 19 12:00:00 2026', cpu = '21:30.00', cwd = work, present = true, unavailable = false, host = 'host-a';
+  let birth = 'Mon Oct 19 12:00:00 2026', cpu = '21:30.00', cwd = work, present = true, unavailable = false, host = 'host-a', pids = [4321];
   const calls = [];
   const run = (command, args) => {
     calls.push([command, args]);
     if (unavailable) throw new Error('native observation unavailable');
-    if (command === '/bin/ps') return present ? ` 4321 ${cpu} ${birth} /usr/bin/git\n 4322 19:59.99 ${birth} /usr/bin/node\n` : '';
+    if (command === '/bin/ps') return present ? pids.map(pid => ` ${pid} ${cpu} ${birth} /usr/bin/git\n`).join('') + ` 9999 19:59.99 ${birth} /usr/bin/node\n` : '';
     assert.equal(command, '/usr/sbin/lsof');
-    return `p4321\nn${cwd}\n`;
+    return pids.map(pid => `p${pid}\nn${cwd}\n`).join('');
   };
   const observe = () => agentCpuFindings(board.db, { platform: 'darwin', run, host });
   const scan = () => {
@@ -38,6 +41,9 @@ test('the sentinel names an agent process past 20 CPU minutes once [A6,H16]', as
   assert.equal(notices().length, 1);
   for (const value of ['4321', 'git', seat, '21.50 CPU minutes']) assert.ok(notices()[0].shout_text.includes(value), value);
   assert.equal(notices()[0].shout_from, 'sentinel');
+  const moved = join(directory, 'another-seat'); mkdirSync(moved);
+  store.register(board, { lane: 'core', path: moved }); cwd = moved; scan(); cwd = work;
+  assert.equal(notices().length, 1, 'the same process changing worktree does not create another alert');
   unavailable = true; scan(); unavailable = false;
   assert.equal(store.allShouts(board).filter(row => row.shout_text.startsWith('Resolved:') && row.shout_text.includes('AGENT_CPU')).length, 0, 'an unavailable observation does not claim resolution');
   cpu = '01:22:30'; scan(); scan();
@@ -61,6 +67,26 @@ test('the sentinel names an agent process past 20 CPU minutes once [A6,H16]', as
   host = 'host-a'; scan(); host = 'host-b'; scan();
   assert.equal(notices().length, beforeHost + 1, 'alternating hosts do not repeat each other’s alert');
   assert.equal(store.allShouts(board).filter(row => row.shout_text.startsWith('Resolved:') && row.shout_text.includes('AGENT_CPU')).length, resolved, 'one host cannot resolve another host’s observation');
+  host = 'cap-host'; birth = 'Mon Oct 19 15:00:00 2026'; pids = Array.from({ length: 12 }, (_, index) => 5001 + index);
+  const beforeCap = notices().length;
+  const failureCount = () => store.events(board).filter(event => event.event_kind === 'health-failure').length;
+  const failuresBefore = failureCount();
+  const cappedScan = () => {
+    const count = store.allShouts(board).length; scan();
+    assert.ok(store.allShouts(board).length - count <= HEALTH_SHOUT_CAP + 1, 'cap ten plus one summary remains unchanged');
+  };
+  cappedScan();
+  assert.equal(notices().length - beforeCap, 5, 'sixth and later coordinator alerts wait rather than exceed the cap');
+  store.closeBoard(board); board = store.openBoard(file);
+  cappedScan(); cappedScan();
+  for (const pid of pids) assert.equal(notices().filter(row => row.shout_text.includes(`pid ${pid} `)).length, 1, `PID ${pid} is named exactly once after restart`);
+  assert.equal(notices().length - beforeCap, pids.length);
+  assert.equal(failureCount() - failuresBefore, pids.length, 'retrying capped delivery does not invent recurring health failures');
+  const eventsAfter = store.events(board).length; scan();
+  assert.equal(store.events(board).length, eventsAfter, 'a drained delivery queue makes no more events');
+  board.executionEngineVersion = CPU_SENTINEL_ENGINE - 1;
+  assert.throws(() => store.recordHealthFindings(board, { agentId: 'coordinator', observedRevision: eventsAfter, findings: observe() }), { code: 'ENGINE_VERSION' });
+  delete board.executionEngineVersion;
   assert.ok(calls.some(([command, args]) => command === '/bin/ps' && args.includes('time=')));
   assert.ok(calls.some(([command]) => command === '/usr/sbin/lsof'));
 });

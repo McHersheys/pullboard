@@ -69,8 +69,10 @@ export function agentCpuFindings(db, { platform = process.platform, run = native
     if (!agent) return [];
     const key = `${prefix}${row.pid}:${row.since}`;
     // Durable prior alerts survive temporary observation gaps and observer restarts; PID birth prevents reuse collisions.
-    const active = previous.some(finding => finding.key === key);
+    const recorded = previous.find(finding => finding.key === key);
+    const active = Boolean(recorded);
     if (!active && db.prepare("SELECT 1 FROM event WHERE event_kind='health-failure' AND json_extract(event_detail,'$.key')=? LIMIT 1").get(key)) return [];
+    if (recorded) return [{ ...recorded, owner: { who: recorded.owner } }];
     return [{ key, cause: 'AGENT_CPU', item: null, subject: `pid ${row.pid}`, title: row.name, since: row.since,
       why: `${row.cpu.toFixed(2)} CPU minutes used on ${host} in agent worktree ${agent.path}`, next: 'inspect the owning agent process before deciding whether to stop it', owner: { who: agent.agent_id } }];
   })];

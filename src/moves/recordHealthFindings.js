@@ -1,3 +1,4 @@
+import { CPU_SENTINEL_ENGINE } from '../cpu-sentinel-engine.js';
 import { RIGOR_AUTO_ENGINE } from '../rigor-auto-engine.js';
 /** Routing metadata owned by recordHealthFindings, discovered without a shared registry edit [C7,V4,H16]. */
 import { HEALTH_SENTINEL_ENGINE } from '../health-receipts.js';
@@ -9,6 +10,7 @@ function minimumEngine(args, board, at) {
   if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('conflict:')) return RIGOR_AUTO_ENGINE;
   if (args[0]?.landingFence !== undefined) return LANDING_LEASE_ENGINE;
   if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('sentinel:')) return BOARD_SENTINEL_ENGINE;
+  if (Array.isArray(args[0]?.findings) && args[0].findings.some(finding => finding?.cause === 'AGENT_CPU')) return CPU_SENTINEL_ENGINE;
   return HEALTH_SENTINEL_ENGINE;
 }
 
