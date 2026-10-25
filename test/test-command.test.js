@@ -1,3 +1,5 @@
+/** @pullboard-test-loads src/gate.js */
+/** @pullboard-test-loads src/commands/status.js */
 /** pullboard test runs named test files on the runner pool, and names a failure main already has [C7]. */
 import assert from 'node:assert/strict';
 import {
@@ -11,6 +13,7 @@ import {
   test,
 } from 'node:test';
 import { createE2eHelpers } from './e2e-helpers.js';
+import { assertRunnerMemoryAdmission } from './runner-memory-fixture.js';
 import {
   HOST,
   installSshStandIn,
@@ -91,4 +94,8 @@ test('pullboard test names why it ran on this machine, and every installed hook 
     assert.match(readFileSync(join(box.repo, '.githooks', hook), 'utf8'), /pullboard test <test files>/u, `${hook} names pullboard test`);
   }
   assert.match(readFileSync(join(box.repo, 'AGENTS.md'), 'utf8'), /pullboard test <test files>/u, 'the agent guidance names it too');
+});
+
+test('a runner-bound test run passes a local memory hold [C7]', async () => {
+  await assertRunnerMemoryAdmission();
 });

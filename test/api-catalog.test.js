@@ -743,6 +743,10 @@ catalogCase('[A1] catalog commands keep their real repository exercises', async 
   await json(source, source.repo, 'milestone', ['items', 'Catalog', '--remove', String(catalog.item_id)], 'items');
   await json(source, source.repo, 'milestone', ['items', 'Catalog', '--add', String(catalog.item_id)], 'items');
   await json(source, source.repo, 'milestone', ['order', 'Catalog', String(catalog.item_id)], 'order');
+  await json(source, source.repo, 'milestone', ['pin', 'Catalog', String(catalog.item_id), '--reason', 'Catalog coverage first'], 'pin');
+  const sunk = await json(source, source.repo, 'milestone', ['sink', 'Catalog', String(catalog.item_id), '--reason', 'Catalog coverage last'], 'sink');
+  assert.deepEqual([sunk.milestone.sunk, sunk.milestone.reasons[String(catalog.item_id)]], [[catalog.item_id], 'Catalog coverage last'], 'a sink records the item and its reason');
+  assert.equal((await json(source, source.repo, 'milestone', ['lift', 'Catalog', String(catalog.item_id)], 'lift')).milestone.sunk, undefined, 'a lift returns the item to the computed order');
   await json(source, source.repo, 'milestone', ['add', 'Later'], 'add');
   await json(source, source.repo, 'milestone', ['move', 'Later', '--before', 'Catalog'], 'move');
   await json(source, source.repo, 'milestone', ['edit', 'Catalog', '--name', 'Release', '--note', 'Catalog coverage'], 'edit');

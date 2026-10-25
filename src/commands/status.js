@@ -6,6 +6,7 @@ import { identifyCaller } from '../cli-read-context.js';
 import { relayStateExists } from '../local-state.js';
 import { unlinkedRelayStatus } from '../relay-status-fields.js';
 import { ruleProofCounts } from '../rule-proof-counts.js';
+import { memoryHeldRuns } from '../memory-held.js';
 import {
   reviewQueueLine,
 } from '../next-steps.js';
@@ -44,6 +45,7 @@ export async function run(io, { values }) {
     return { me, mine, agents, presenceCounts, ruleCounts: ruleProofCounts(ctx.info.root, board, approvalState.spec), needs: approvalState.needs, specApprovalBaseline: approvalState.specApprovalBaseline, specApprovalEvidenceErrors: approvalState.specApprovalEvidenceErrors, stats: store.stats(board), reviewQueue: { ...store.reviewQueue(board), ...store.reviewQueueBreakdown(board) }, unread: store.unreadCount(board, me.id), relay: relay ? relay.relayStatus(ctx.info.root) : unlinkedRelayStatus(),
       submitInvariantProposals: submitInvariantProposals(store.submitInvariantEvents(board, ctx.config), ctx.config) };
   });
+  summary.memoryHeld = memoryHeldRuns();
   if (values.json) {
     io.result(summary);
     return 0;
@@ -58,6 +60,8 @@ export async function run(io, { values }) {
   io.say(reviewQueueLine(ctx, summary.reviewQueue, span));
   io.say(`seats: ${summary.presenceCounts.live} live, ${summary.presenceCounts.idle} idle, ${summary.presenceCounts.gone} gone`);
   for (const seat of summary.agents.filter(seat => values.all || seat.presence !== 'gone')) io.say(`${seat.agent_id}: ${seat.presence}${seat.heartbeatAt ? ` (heartbeat ${seat.heartbeatAt})` : ' (no local heartbeat)'}`);
+  if (summary.memoryHeld === null) io.say('local memory hold status unavailable; pullboard resources shows the queue');
+  else for (const run of summary.memoryHeld) io.say(`local memory holds ${run.agent}${run.item ? ` #${run.item}` : ''}${run.kind ? ` (${run.kind})` : ''}${run.repo ? ` in ${run.repo}` : ''}`);
   for (const proposal of summary.submitInvariantProposals) io.say(submitInvariantLine(proposal));
   for (const need of summary.needs.filter(need => need.kind === 'agent-approved')) io.say(`${need.text}; ${need.what}`);
   if (!summary.relay.linked && !originRepository(ctx.info.root, { optional: true })) {

@@ -51,14 +51,14 @@ test('init adds a Claude Code session hook that runs resume, and keeps every oth
   assert.deepEqual(settings.permissions, { allow: [...mine.permissions.allow, ...claudeLoopRules({ gate: '' })] });
   assert.deepEqual(settings.sandbox, { filesystem: { allowWrite: [box.env.PULLBOARD_MACHINE_HOME] } });
   assert.deepEqual(Object.keys(settings).sort(), ['hooks', 'permissions', 'sandbox'], 'init adds no other top-level setting');
-  assert.deepEqual(Object.keys(settings.hooks).sort(), ['SessionEnd', 'SessionStart', 'Stop'], 'init installs only the three activity hook events');
-  assert.deepEqual(settings.hooks.Stop.slice(0, mine.hooks.Stop.length), mine.hooks.Stop, 'custom Stop hooks remain unchanged');
-  assert.ok(settings.hooks.Stop.at(-1).hooks[0].command.includes('pullboard heartbeat'));
+  assert.deepEqual(Object.keys(settings.hooks).sort(), ['SessionEnd', 'SessionStart', 'Stop'], 'init installs the three supported Claude activity hook events');
+  assert.deepEqual(settings.hooks.Stop.slice(0, mine.hooks.Stop.length), mine.hooks.Stop);
+  assert.equal(settings.hooks.Stop.length, mine.hooks.Stop.length + 1, 'only the new nonblocking Stop nudge is appended');
   assert.equal(settings.hooks.SessionStart.length, 1);
   const { command } = settings.hooks.SessionStart[0].hooks[0];
   const card = spawnSync('sh', ['-c', command], { cwd: repo, env: box.env, encoding: 'utf8' });
   assert.equal(card.status, 0, card.stderr);
-  assert.match(card.stdout, /^resume: coordinator/);
+  assert.match(JSON.parse(card.stdout).hookSpecificOutput.additionalContext, /^resume: coordinator/);
   const bare = spawnSync('sh', ['-c', command], { cwd: repo, env: { ...box.env, PATH: '/usr/bin:/bin' }, encoding: 'utf8' });
   assert.equal(bare.status, 0, 'without pullboard installed, the session still starts');
   assert.equal(bare.stdout, '');
@@ -213,7 +213,7 @@ test('a fresh worktree with no install of its own runs pullboard from the main c
   chmodSync(join(bin, 'pullboard'), 0o755);
   const committed = commit();
   assert.equal(committed.status, 0, committed.stderr);
-  assert.match(resume().stdout, /^resume: web-1 \(Test Model\), web lane/);
+  assert.match(JSON.parse(resume().stdout).hookSpecificOutput.additionalContext, /^resume: web-1 \(Test Model\), web lane/);
 });
 
 test('the gate reaches the agent as a digest: one line when green, the failure when red; the whole output stays in the git dir [V10]', () => {

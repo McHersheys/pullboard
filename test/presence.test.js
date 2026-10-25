@@ -83,7 +83,7 @@ test('status reads and explicit hooks heartbeat without a shared board write [B3
   const settings = JSON.parse(readFileSync(join(box.repo, '.claude', 'settings.json'), 'utf8'));
   for (const event of ['SessionStart', 'Stop', 'SessionEnd']) {
     const commands = settings.hooks[event].flatMap(entry => entry.hooks.map(hook => hook.command));
-    assert.ok(commands.some(command => command.includes(event === 'SessionStart' ? 'pullboard resume' : 'pullboard heartbeat')), event);
+    assert.ok(commands.some(command => command.includes(`hook ${event}`)), event);
   }
   const heartbeat = box.run(box.web, 'heartbeat', '--json');
   assert.equal(heartbeat.code, 0, heartbeat.err + heartbeat.out);
@@ -242,10 +242,19 @@ test('read commands never refresh presence while committed writes and hooks do [
   const { runFixtureChild } = await import('./fixture-child.js');
   const settings = JSON.parse(readFileSync(join(box.web, '.claude', 'settings.json'), 'utf8'));
   const command = settings.hooks.SessionStart[0].hooks[0].command;
-  assert.ok(command.includes('pullboard heartbeat') && command.includes('pullboard resume'));
+  assert.ok(command.includes('hook SessionStart'));
   const session = runFixtureChild('sh', ['-c', command], { cwd: box.web, env: box.env, encoding: 'utf8' });
   assert.equal(session.status, 0, session.failure || session.stderr || session.stdout);
   assert.equal(local.prepare('SELECT n FROM writes').get().n, 1, 'SessionStart explicitly observes activity before its read-only resume');
+  for (const event of ['Stop', 'SessionEnd']) {
+    local.prepare('UPDATE heartbeat SET at=? WHERE seat=?').run(stale, key);
+    local.exec('UPDATE writes SET n=0');
+    const command = settings.hooks[event].at(-1).hooks[0].command;
+    const observed = runFixtureChild('sh', ['-c', command], { cwd: box.web, env: box.env, encoding: 'utf8' });
+    assert.equal(observed.status, 0, observed.failure || observed.stderr || observed.stdout);
+    assert.equal(local.prepare('SELECT n FROM writes').get().n, 1, `${event} records actual local activity`);
+    assert.equal(board.db.prepare('SELECT COUNT(*) AS n FROM event').get().n, events, `${event} never writes shared history`);
+  }
 });
 
 
@@ -264,7 +273,7 @@ test('explicit SessionStart observation upgrades an existing resume hook without
   assert.equal(upgraded.code, 0, upgraded.err + upgraded.out);
   const after = JSON.parse(readFileSync(file, 'utf8'));
   assert.equal(after.hooks.SessionStart.length, 2);
-  assert.ok(after.hooks.SessionStart[0].hooks[0].command.includes('pullboard heartbeat'));
+  assert.ok(after.hooks.SessionStart[0].hooks[0].command.includes('hook SessionStart'));
   assert.deepEqual(after.hooks.SessionStart[1], custom, 'the existing user hook bytes remain its own command');
   const again = box.run(box.repo, 'init', '--verbose');
   assert.equal(again.code, 0, again.err + again.out);
