@@ -6969,7 +6969,20 @@
     "WRONG_LANE": "create a worktree in the required lane with pullboard worktree <lane> --model \"<model name>\", or take an item in your lane with pullboard next",
     "EXCLUDED_REPOSITORY": "restore the GitHub origin of each excluded project, then run pullboard relay on --all",
     "EXCLUDED_INVENTORY": "restore at most 256 excluded boards and their active paired devices, then run pullboard relay on --all",
-    "SPEC_REVISION": "refresh Needs you and decide the exact pending proposal"
+    "SPEC_REVISION": "refresh Needs you and decide the exact pending proposal",
+    "SHOUT_SPACES": "rewrite the shout with spaces between words, then send it again",
+    "DECISION_HANDOFF_BINDING": "use the exact versioned handoff, namespaced source decision and original option set",
+    "DECISION_HANDOFF_AUTH": "obtain authority for this exact question, answer or source query",
+    "DECISION_HANDOFF_CONFLICT": "use the recorded answer or create a new source decision",
+    "ITEM_OFFER": "refresh the offer using its exact permitted fields and canonical source and destination references",
+    "OFFER_AUTHORITY": "obtain the source or destination authority for this exact offer action on its actual board",
+    "OFFER_CONFLICT": "use the original offer and recorded disposition, or create a new offer id for different content",
+    "ITEM_RECEIPT": "obtain the exact minimal source receipt and verify its item, commit and verifier/verdict through the established trust port",
+    "PERSON_VAULT_AUTH": "use the original credential or saved recovery key with the pinned public root, account and revision; restore an unaltered vault copy if its ciphertext changed",
+    "NO_TEST_FILE": "name each test file by its path from the checkout root, then run pullboard test again",
+    "NO_TEST_RUNNER": "set affectedTests in pullboard.json to the command that runs named test files, then run pullboard test again",
+    "TEST_SNAPSHOT": "commit the work, then run pullboard test again",
+    "MILESTONE_LIMIT": "remove or swap an unstarted item, or edit the milestone with --limit <n>|none"
   },
   "replay": {
     "initial": {
