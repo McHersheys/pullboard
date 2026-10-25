@@ -300,7 +300,6 @@ test('opening an older board names and logs its genuine index-building write [C7
     import { existsSync } from 'node:fs';
     const originalExec = DatabaseSync.prototype.exec;
     const reference = new DatabaseSync(':memory:');
-    const extract = reference.prepare('SELECT json_extract(?, ?) AS value');
     let registered = false;
     let held = false;
     /** Pause inside actual SQLite index evaluation, preserving reference SQLite JSON semantics. */
@@ -318,7 +317,7 @@ test('opening an older board names and logs its genuine index-building write [C7
               Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
             }
           }
-          return extract.get(value, path).value;
+          return reference.prepare('SELECT json_extract(?, ?) AS value').get(value, path).value;
         }
         this.function('json_extract', { deterministic: true }, extractIdentity);
       }
