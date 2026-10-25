@@ -11,7 +11,9 @@ import { test } from 'node:test';
 /** The fixture capability authenticates the disclosed question, source, destination and option binding. */
 function signature(value) {
   const { authority, ...body } = value;
-  return createHmac('sha256', 'private-fixture-authority').update(JSON.stringify(body)).digest('hex');
+  const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
+    ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, child]) => [key, canonical(child)])) : value;
+  return createHmac('sha256', 'private-fixture-authority').update(JSON.stringify(canonical(body))).digest('hex');
 }
 
 test('a decision hand-off returns one matching answer to its source board, once [B21,H16]', async t => {
@@ -31,13 +33,13 @@ test('a decision hand-off returns one matching answer to its source board, once 
   const options = ['ship', 'wait'];
   const source = { boardId: 'source', decisionId: 17 };
   /** A separate capability is required for each exact disclosed destination and question. */
-  function offer(destinationBoardId, handoffId = destinationBoardId) {
-    const value = { version: 1, handoffId, source, destinationBoardId, requester: 'core-1',
+  function offer(destinationBoardId, handoffId = destinationBoardId, ref = source) {
+    const value = { version: 1, handoffId, source: ref, destinationBoardId, requester: 'core-1',
       question: 'Ship the reviewed change?', optionsDigest: optionsDigest(options), authority: '', answer: null };
     return { ...value, authority: signature(value) };
   }
   const signed = value => ({ ...value, authority: signature(value) });
-  const queryToken = participants => signature({ version: 1, source, participants });
+  const queryToken = (participants, ref = source) => signature({ version: 1, source: ref, participants });
   const original = offer('child');
   const home = open('source'), away = open('child');
   await assert.rejects(away.deliver({ ...original, authority: 'forged' }, options), { code: 'DECISION_HANDOFF_AUTH' });
@@ -49,6 +51,8 @@ test('a decision hand-off returns one matching answer to its source board, once 
   await away.deliver(answered, options);
   assert.deepEqual(await home.deliver(answered, options), answered);
   assert.deepEqual(await home.deliver(answered, options), answered, 'an exact answer retry returns the same result');
+  assert.deepEqual(await home.deliver(Object.fromEntries(Object.entries(answered).reverse()), options), answered,
+    'wire field order cannot change an idempotent delivery');
   assert.deepEqual(await home.deliver(original, options), answered, 'a late question cannot erase its answer');
   assert.deepEqual(await open('source').query(source, ['child'], queryToken(['child'])),
     { complete: true, agreed: true, answers: [{ boardId: 'child', option: 'ship' }] }, 'reopening preserves correlation and one answer');
@@ -66,6 +70,16 @@ test('a decision hand-off returns one matching answer to its source board, once 
   assert.equal(joint.complete, true);
   assert.equal(joint.agreed, false, 'different options never become a joint decision');
   assert.equal(joint.answers.length, 2);
+  await assert.rejects(home.query(source, ['child'], queryToken(['child'])), { code: 'DECISION_HANDOFF_BINDING' },
+    'a caller cannot omit a known dissenting participant');
+  const unanimous = { boardId: 'source', decisionId: 18 };
+  for (const boardId of ['a', 'b']) {
+    const request = offer(boardId, 'joint-' + boardId, unanimous);
+    await home.deliver(signed({ ...request, answer: { boardId, option: 'ship' } }), options);
+  }
+  assert.equal((await home.query(unanimous, ['a', 'b'], queryToken(['a', 'b'], unanimous))).agreed, true);
+  const foreign = offer('source', 'foreign-source', { boardId: 'peer', decisionId: 17 });
+  assert.equal((await home.deliver(foreign, options)).source.boardId, 'peer', 'equal decision ids on different boards stay distinct');
   await assert.rejects(home.query(source, ['child'], 'forged'), { code: 'DECISION_HANDOFF_AUTH' });
   const early = offer('late', 'early-answer');
   const earlyAnswer = signed({ ...early, answer: { boardId: 'late', option: 'ship' } });

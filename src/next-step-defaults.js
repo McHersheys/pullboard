@@ -1,5 +1,8 @@
 /** General CLI recovery text; operation-owned codes live in src/moves/ [P4,C7]. */
 export const DEFAULT_NEXT_STEPS = Object.freeze({
+  "DECISION_HANDOFF_BINDING": "use the exact versioned handoff, namespaced source decision and original option set",
+  "DECISION_HANDOFF_AUTH": "obtain authority for this exact question, answer or source query",
+  "DECISION_HANDOFF_CONFLICT": "use the recorded answer or create a new source decision",
   "GIT_SYNC_LOG": "restore the append-only refs/pullboard/board history on origin before running pullboard sync",
   "GIT_SYNC_REMOTE": "restore read/write access to origin, then retry the original command or run pullboard sync; keep its pending sealed move",
   "GIT_SYNC_LOCAL_CHANGED": "run pullboard export to preserve local moves, then ask the coordinator to reconcile the local and remote prefixes before syncing",
