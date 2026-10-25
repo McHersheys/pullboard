@@ -221,7 +221,7 @@ test('a stalled real board route is bounded by the probe deadline [H5,H17]', { t
   finally { box.stallApi(false); }
   assert.equal(result.ok, false, 'an unanswered board route is never a healthy round trip');
   assert.ok(['push', 'pull'].includes(result.step), JSON.stringify(result));
-  assert.ok(performance.now() - started < 5000, 'budget: the 250 ms probe deadline must drain below the normal five-second probe ceiling');
+  assert.ok(performance.now() - started < 5000, 'the probe drains before its normal ceiling'); // budget: the declared five-second probe ceiling bounds a stalled request.
   const healthy = await withFixtureEnvironment(box.env, () => probeRelayCanary(seat.root, { agentId: seat.agentId }));
   assert.equal(healthy.ok, true, JSON.stringify(healthy));
 });

@@ -1,14 +1,28 @@
 /** Explicit machine-local canary commands; all messages retain the caller's ordinary authority [H5,H17]. */
 import { realpathSync } from 'node:fs';
-import { context, ordered, withBoard, whoAmI } from '../cli.js';
-import { COORDINATOR } from '../config.js';
-import { PERSON } from '../board.js';
-import { Refused } from '../refused.js';
-import { relayMachineContext, relayStatus } from '../relay.js';
-import { loadMachineSettings, setRelayCanary } from '../settings.js';
-import { relayCanaryConfig } from '../relay-canary-config.js';
-import { readRelayHealth } from '../relay-canary-health.js';
-import { startRelayCanaryWatch, runRelayCanary } from '../relay-canary-watch.js';
+import {
+  context,
+  ordered,
+  withBoard,
+  whoAmI,
+} from './cli.js';
+import { COORDINATOR } from './config.js';
+import { PERSON } from './board.js';
+import { Refused } from './refused.js';
+import {
+  relayMachineContext,
+  relayStatus,
+} from './relay.js';
+import {
+  loadMachineSettings,
+  setRelayCanary,
+} from './settings.js';
+import { relayCanaryConfig } from './relay-canary-config.js';
+import { readRelayHealth } from './relay-canary-health.js';
+import {
+  startRelayCanaryWatch,
+  runRelayCanary,
+} from './relay-canary-watch.js';
 
 /** Read telemetry without contacting the relay or creating a health observation. */
 function status(root, config) {
