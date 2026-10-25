@@ -26,7 +26,7 @@ test('declared load stand-in', { cpuLoad: true }, () => {
   const row = db.prepare('SELECT * FROM holder WHERE token=?').get(process.env.PULLBOARD_GATE_SLOT_TOKEN);
   db.close();
   console.log('CPU_LOAD_EXECUTOR ' + JSON.stringify({ cwd: process.cwd(), home: process.env.HOME,
-    machineHome: process.env.PULLBOARD_MACHINE_HOME, liveLease: Boolean(row), runnerExecution: row?.runner_execution === 1 }));
+    gatePool: process.env.PULLBOARD_GATE_SLOT_POOL, liveLease: Boolean(row), runnerExecution: row?.runner_execution === 1 }));
 });
 `);
   box.git(box.repo, 'add', '-A');

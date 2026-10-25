@@ -19,7 +19,7 @@ test('a declared CPU-load test runs only on a runner when one is registered [C7]
   assert.notEqual(remote.executor.cwd, box.repo, 'the declared test body never starts in the coordinator checkout');
   const withinRunner = relative(join(box.remoteHome, '.pullboard-runner', 'jobs'), remote.executor.cwd);
   assert.ok(withinRunner && withinRunner !== '..' && !withinRunner.startsWith(`..${sep}`));
-  assert.equal(remote.executor.machineHome, box.remoteMachineHome);
+  assert.equal(remote.executor.gatePool, join(box.remoteMachineHome, 'resources.sqlite'));
   box.command('runner', 'remove', 'fixture-host');
   const local = await box.runGate();
   assert.equal(local.result.status, 0, local.result.context);
