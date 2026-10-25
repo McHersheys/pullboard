@@ -70,7 +70,7 @@ test('pullboard map prints the overview, a card and an item slice from one scan 
   assert.equal(overview.code, 0, overview.out + overview.err);
   const firstGeneration = JSON.parse(readFileSync(cache, 'utf8')).generatedAt;
   assert.match(overview.out, /Pullboard code map \([a-f0-9]{12}\)/u);
-  assert.match(overview.out, /Effects not covered by static patterns: not detected/u);
+  assert.match(overview.out, /Effects not covered by patterns: not detected/u);
   const commandHelp = box.run(box.repo, 'help', 'map');
   assert.equal(commandHelp.code, 0, commandHelp.out + commandHelp.err);
   assert.match(commandHelp.out, /--for <item>/u);
