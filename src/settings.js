@@ -13,6 +13,7 @@ import {
 } from './resources.js';
 import { validateRunner } from './runners.js';
 import { Refused } from './refused.js';
+import { relayCanaryConfig } from './relay-canary-config.js';
 import {
   carriedBrowserByLaunch,
   gateQueueSettings,
@@ -58,6 +59,7 @@ export function loadMachineSettings() {
   if (value.relay?.offerAtInit !== undefined && typeof value.relay.offerAtInit !== 'boolean') {
     throw new Refused('BAD_MACHINE_SETTINGS', `relay.offerAtInit in ${file} must be true or false`);
   }
+  relayCanaryConfig(value.relay?.canary);
   if (value.gate?.memoryFloorMB !== undefined && (!Number.isSafeInteger(value.gate.memoryFloorMB) || value.gate.memoryFloorMB < 0)) {
     throw new Refused('BAD_MACHINE_SETTINGS', `gate.memoryFloorMB in ${file} must be a whole number of megabytes, 0 or more; fix it before running Pullboard`);
   }
@@ -147,6 +149,15 @@ function writeMachineSettings(settings) {
     writeFileSync(temporary, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
     renameSync(temporary, file);
   } finally { rmSync(temporary, { force: true }); }
+}
+
+/** Persist an explicitly configured canary without changing any board's credentials or project policy. */
+export function setRelayCanary(value) {
+  const canary = relayCanaryConfig(value);
+  const settings = loadMachineSettings();
+  const next = { ...settings, relay: { ...settings.relay, canary } };
+  writeMachineSettings(next);
+  return canary;
 }
 
 /** Opt this machine into one board's landing pool without cancelling any admitted work. */

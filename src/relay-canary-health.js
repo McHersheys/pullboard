@@ -1,5 +1,6 @@
 /** Client-local round-trip evidence; a relay HTTP health response never establishes sync health [H5,C2]. */
 import { DatabaseSync } from 'node:sqlite';
+import { randomUUID } from 'node:crypto';
 import {
   existsSync,
   mkdirSync,
@@ -42,6 +43,7 @@ function projection(history, queued, now) {
     : status === 'healthy' ? `relay healthy; last sealed round trip ${Math.round(last.roundTripMs)} ms`
       : 'relay health unknown; no recent sealed round trip';
   return { status, since, lastAt: last?.at ?? null, roundTripMs: last?.roundTripMs ?? null,
+    alertSince: history?.alertSince ?? null, pendingNotifications: history?.pendingNotices?.length ?? 0,
     relayVersion: last?.relayVersion ?? null, step: last?.step ?? null, code: last?.code ?? null,
     consecutiveFailures: history?.consecutiveFailures ?? 0, p95Ms: history?.p95Ms ?? null, queued, text };
 }
@@ -94,6 +96,11 @@ function advance(previous, sample, now) {
     subject: 'relay', title: 'sealed round trips are degraded', since: history.alertSince,
     why: slow ? `Ten-minute p95 is ${Math.round(history.p95Ms)} ms` : `Two consecutive probes failed at ${sample.step} (${sample.code})`,
     next: 'inspect pullboard relay canary; keep working locally while queued moves await the relay', owner: 'coordinator' } : null;
+  if (transition) {
+    history.pendingNotices ??= [];
+    history.pendingNotices.push({ id: randomUUID(), kind: transition, at: sample.at, finding,
+      step: sample.step, code: sample.code });
+  }
   return { history, transition, finding };
 }
 
@@ -115,12 +122,14 @@ export function observeRelayHealthFile(file, result, { now = Date.now(), alerts 
     const previous = saved ? JSON.parse(saved.value) : null;
     const priorAlert = previous?.alertSince ?? null;
     const priorFailures = previous?.consecutiveFailures ?? 0;
+    const priorNotices = structuredClone(previous?.pendingNotices ?? []);
     const updated = advance(previous, sample, now);
     // Ordinary client transport failures update status; only the configured canary raises monitor alerts.
     if (!alerts) {
       updated.transition = null; updated.finding = null;
       updated.history.alertSince = priorAlert;
       updated.history.consecutiveFailures = priorFailures;
+      updated.history.pendingNotices = priorNotices;
     }
     db.prepare('INSERT INTO relay_health(id,value) VALUES (1,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value')
       .run(JSON.stringify(updated.history));
@@ -129,5 +138,43 @@ export function observeRelayHealthFile(file, result, { now = Date.now(), alerts 
   } catch (error) {
     try { db.exec('ROLLBACK'); } catch { /* A schema refusal may precede the transaction. */ }
     throw error;
+  } finally { db.close(); }
+}
+
+/** Retry alert/recovery delivery after an outage; a local observation is never a remote receipt. */
+export function pendingRelayCanaryNotices(root) {
+  return historyAt(healthFile(root))?.pendingNotices ?? [];
+}
+
+/** Remove only a notice the normal native move recorded, including its ordinary offline outbox. */
+export function markCanaryNoticeRecorded(root, id) {
+  const db = new DatabaseSync(healthFile(root));
+  try {
+    db.exec('PRAGMA busy_timeout=1000; BEGIN IMMEDIATE');
+    const row = db.prepare('SELECT value FROM relay_health WHERE id=1').get();
+    if (row) {
+      const history = JSON.parse(row.value);
+      history.pendingNotices = (history.pendingNotices ?? []).filter(notice => notice.id !== id);
+      db.prepare('UPDATE relay_health SET value=? WHERE id=1').run(JSON.stringify(history));
+    }
+    db.exec('COMMIT');
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* Keep the original storage refusal. */ }
+    throw error;
+  } finally { db.close(); }
+}
+
+/** Claim one due minute atomically so multiple local views cannot run duplicate monitor ticks. */
+export function claimRelayCanaryTick(root, now = Date.now()) {
+  if (!Number.isFinite(now)) throw new Refused('RELAY_HEALTH', 'run the canary with a valid local clock');
+  const file = healthFile(root);
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+  try { writeFileSync(file, '', { flag: 'wx', mode: 0o600 }); }
+  catch (error) { if (error.code !== 'EEXIST') throw error; }
+  const db = new DatabaseSync(file);
+  try {
+    db.exec('PRAGMA busy_timeout=1000; CREATE TABLE IF NOT EXISTS canary_schedule(id INTEGER PRIMARY KEY CHECK(id=1), next_due REAL NOT NULL)');
+    return db.prepare('INSERT INTO canary_schedule(id,next_due) VALUES (1,?) ON CONFLICT(id) DO UPDATE SET next_due=excluded.next_due WHERE canary_schedule.next_due<=?')
+      .run(now + 60000, now).changes === 1;
   } finally { db.close(); }
 }

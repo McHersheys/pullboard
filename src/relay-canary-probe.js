@@ -70,6 +70,10 @@ export async function probeRelayCanary(root, { agentId, deadlineMs = 5000, io = 
   const at = new Date(started).toISOString();
   let step = 'sign-in', relayVersion = null, sequence = null, moveId = null;
   const controller = new AbortController();
+  /** Stop this probe's own I/O when its watch is shutting down. */
+  const stop = () => controller.abort();
+  if (io.relaySignal?.aborted) stop();
+  io.relaySignal?.addEventListener('abort', stop, { once: true });
   let timer;
   /** Enforce the absolute deadline between local phases as well as inside requests and lock waits. */
   function remaining() {
@@ -159,5 +163,8 @@ export async function probeRelayCanary(root, { agentId, deadlineMs = 5000, io = 
     else if (/^SEAL_/u.test(error?.code ?? '') || error?.code === 'RELAY_KEY_MISSING') step = 'unseal';
     if (Number.isSafeInteger(error?.relayVersion)) relayVersion = error.relayVersion;
     return result(false, controller.signal.aborted ? 'RELAY_CANARY_DEADLINE' : safeCode(error));
-  } finally { clearTimeout(timer); }
+  } finally {
+    clearTimeout(timer);
+    io.relaySignal?.removeEventListener('abort', stop);
+  }
 }
