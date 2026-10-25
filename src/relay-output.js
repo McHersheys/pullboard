@@ -33,6 +33,8 @@ export function outboxLines(state) {
 export function detailLines(result, boardName) {
   const lines = [];
   lines.push(result.linked ? `${result.link}\nrelay: ${boardName} (board ${result.board}) is linked for GitHub ${result.login || `account ${result.account}`}; sequence ${result.sequence}; ${result.behind} pending uploads${result.recovery?.pending ? `; recovery pending for sequence ${result.recovery.skip}; retry ${result.recovery.next}` : ''}` : (result.notice || 'relay off; the local board is complete'));
+  if (result.health) lines.push(result.health.text);
+  lines.push(...outboxLines(result));
   if (result.storage) lines.push(relayStorageLine(result.storage));
   return lines;
 }

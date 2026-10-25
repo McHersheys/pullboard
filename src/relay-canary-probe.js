@@ -63,7 +63,7 @@ async function verifyReturnedMove(root, state, remote, expected) {
 
 /**
  * Exercise saved authentication, ordinary actor push, fresh pull and device-only unsealing under one deadline.
- * A failed probe may already have recorded its nonce; it never retries that write or changes credentials.
+ * A failed probe may already have recorded its nonce; the next run finishes that exact receipt before a fresh nonce.
  */
 export async function probeRelayCanary(root, { agentId, deadlineMs = 5000, io = {}, clock = () => Date.now() } = {}) {
   const started = clock();

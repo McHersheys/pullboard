@@ -28,7 +28,7 @@ export async function runRelayCanary(value, { io = {}, now = Date.now, notify } 
 
 /** Start one due local tick; shutdown aborts and awaits the active probe instead of abandoning a write. */
 export function startRelayCanaryWatch({ config = () => loadMachineSettings().relay?.canary,
-  run = runRelayCanary, now = Date.now, every = setInterval, cancel = clearInterval, onError = () => {}, notify } = {}) {
+  run = runRelayCanary, now = Date.now, every = setInterval, cancel = clearInterval, onError = () => {}, notify, keepAlive = false } = {}) {
   const lifetime = new AbortController();
   let pending = null;
   /** Read current machine opt-in on every tick and admit at most one local run for its minute. */
@@ -42,7 +42,7 @@ export function startRelayCanaryWatch({ config = () => loadMachineSettings().rel
     return pending;
   };
   const timer = every(tick, RELAY_CANARY_INTERVAL_MS);
-  timer.unref?.();
+  if (!keepAlive) timer.unref?.();
   void tick();
   return { tick,
     /** Stop scheduling first, then drain the exact in-flight probe under its shared deadline. */
