@@ -131,7 +131,7 @@ test('a local developer, a runner developer and a pull-request developer share o
   for (const root of [box.repo, box.web, box.runner, box.outside]) assert.deepEqual(box.contract(root), box.baseline,
     'every developer sees the same committed spec, doctrine configuration and tracked gate');
   assert.equal(provider.requests.some(request => request.path.endsWith('/merge') && request.method !== 'GET'), false);
-  assert.ok(performance.now() - started < 300_000, 'the complete drill stays under five minutes');
+  assert.ok(performance.now() - started < 300_000, 'the complete drill stays under five minutes'); // budget: declared by the #989 brief, the complete drill must stay under five minutes.
   console.log('MIXED_MODE_DRILL ' + JSON.stringify({ transport: actual ? 'actual-registered-runner' : 'isolated-ssh-stand-in',
     accepted: accepted.map(({ item, commit, verdict, receipt }) => ({ item, commit, verdict, receipt })), outside: { item: outside.item_id, commit: outsideHead, state: 'not verified' } }));
 });
