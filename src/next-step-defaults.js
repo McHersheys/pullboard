@@ -1,5 +1,11 @@
 /** General CLI recovery text; operation-owned codes live in src/moves/ [P4,C7]. */
 export const DEFAULT_NEXT_STEPS = Object.freeze({
+  "COMPANION_PARENT": "name the parent item: pullboard companion <parent> <lane> \"<title>\" --key <key>",
+  "COMPANION_KEY": "supply a stable --key and reuse it for this same parent and target lane",
+  "COMPANION_LANE": "choose a different target lane; ordinary same-lane children use pullboard add --parent",
+  "COMPANION_CONTENT": "supply title, criterion and brief text and existing spec ids for the companion",
+  "COMPANION_RECORD": "restore a consistent board export so the companion request index matches its child",
+
   "GIT_SYNC_LOG": "restore the append-only refs/pullboard/board history on origin before running pullboard sync",
   "GIT_SYNC_REMOTE": "restore read/write access to origin, then retry the original command or run pullboard sync; keep its pending sealed move",
   "GIT_SYNC_LOCAL_CHANGED": "run pullboard export to preserve local moves, then ask the coordinator to reconcile the local and remote prefixes before syncing",

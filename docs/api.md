@@ -105,6 +105,7 @@ For example: `flow: review wait average 61 min (1 measured; > 60 min); bottlenec
 | `milestone edit` | `version:number`, `milestone:object` |
 | `milestone remove` | `version:number`, `milestone:object` |
 | `milestone ship` | `version:number`, `milestone:object`, `into:string|null`, `moved:array`, `notMoved:array` |
+| `companion` | `version:number`, `item:object`, `created:boolean` |
 | `show` | `version:number`, `item_id:number`, `item_title:string`, `item_lane:string`, `item_status:string`, `verdicts:array`, `thread:array` |
 | `stats` | `version:number`, `stats:object`, `gateWaits:array` |
 | `status` | `version:number`, `me:object`, `mine:array`, `ruleCounts:object`, `stats:object`, `reviewQueue:object`, `unread:number`, `relay:object` |
@@ -673,3 +674,10 @@ When `publish.pullRequest` is enabled, `pullboard publish` reconciles the GitHub
 A board-recorded item merge covers its introduced commits only when its exact submitted commit has that receipt and is an ancestor of the recorded merge. `Pullboard-Companion: #N` is covered only on a board-recorded trunk containing item N's landing. Unreceipted commits, including release bumps and synthetic publication commits, remain unverified. An outside PR is allowed and initially reads `not verified`; the JSON result's `verification[].intake` names the existing `pullboard intake` command that files it for review. Outside intake can cover only its exact accepted head, never its earlier commits by inference.
 
 The JSON result includes `verification` entries with PR number, exact head, state, assurance, receipt identities, and any unverified commit IDs. GitHub statuses are shared by PRs with the same head: if an outside or unproven PR shares a commit with a proven proposal, the shared status stays red rather than lending the proposal's green status to it. Publishing observes and posts statuses; it never merges a PR or requires outside authors to use Pullboard.
+
+
+## Companion requests
+
+`pullboard companion <parent> <lane> "<title>" --key <stable-key>` creates a normally claimable child in another lane. Its durable identity is the parent item, target lane and explicit key (1–80 letters, digits, dots, underscores or hyphens). Concurrent requests with that identity return the same child and `created: false` after the first creation. A retry returns the original child without changing its title, criterion, brief or claim, including after the parent closes; different keys name different work. Only open or claimed parents accept a new companion. Ordinary `add --parent` retains its same-lane rule.
+
+The request accepts ordinary `--criterion`, `--brief`, `--specs` and `--route` content. Only the coordinator may supply `--check`; other builders use the existing coordinator check-setting workflow. The child is built and independently verified by its own lane, using normal exclusive leases. Requesting or finding it never claims it. Parent completion still waits for unfinished child items. The authenticated `requestCompanion` move binds the lookup and child insertion in one transaction; its feature engine is assigned at landing, and older engines refuse it. Relay outbox bindings preserve both the parent input identity and the created child result when final item numbers differ.

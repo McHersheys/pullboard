@@ -169,6 +169,7 @@ const FIRST_ITEM = ['approveOutside', 'signBar', 'editItem', 'completeCheckBasel
  */
 export const ITEM_SLOTS = Object.freeze({
   setBarReady: [], setLineSetting: [],
+  requestCompanion: [[0, 'parentId']],
   recordPublishFinding: [[0, 'item']],
   register: [], ensureCoordinator: [], shout: [], passDecision: [], holdLane: [], releaseLane: [],
   moveMilestone: [], editMilestone: [], removeMilestone: [], shipMilestone: [],

@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import * as store from '../src/board.js';
+import { prepareEngineMove, applyRelayMove } from '../src/engine.js';
+import { COMPANION_ENGINE } from '../src/companion-engine.js';
+import { createdItems } from '../src/relay-created-items.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 
 const helpers = createE2eHelpers();
@@ -57,4 +60,37 @@ test('a companion request becomes one claimable child item and a second request 
   } finally { store.closeBoard(read); }
   assert.equal(box.run(box.web, 'companion', String(parent), 'web', 'Wrong lane', '--key', 'wrong').code, 1);
   assert.equal(box.run(box.web, 'companion', String(parent), 'api', 'Missing key').code, 1);
+});
+
+
+test('companion delivery preserves authenticated actors, engine fences and durable child identities [B2,B12,H16]', () => {
+  const box = helpers.project('true');
+  const parent = run(box, box.repo, 'add', 'web', 'Transport parent', '--specs', 'G1', '--json').item.item_id;
+  const board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
+  try {
+    const agentId = store.agentAt(board, box.web).agent_id;
+    const request = { agentId, parentId: parent, lane: 'api', key: 'wire-part', title: 'API transport work', criterion: 'one child', specIds: ['G2'] };
+    const move = prepareEngineMove(board, 'requestCompanion', [request], { id: 'companion-wire-one', actor: agentId });
+    const options = { sequence: 1, at: new Date().toISOString(), kind: 'move', sender: { kind: 'agent', agent: agentId, userId: 'fixture-person' } };
+    assert.throws(() => applyRelayMove(board, { ...move, engine: COMPANION_ENGINE - 1 }, options), /RELAY_MOVE/u);
+    assert.equal(store.listItems(board, { all: true }).length, 1, 'an old engine creates no child');
+    const forged = applyRelayMove(board, { ...move, id: 'companion-forged-actor' }, { ...options, sender: { ...options.sender, agent: 'another-seat' } });
+    assert.equal(forged.error.code, 'RELAY_SENDER_MISMATCH');
+    const receipt = applyRelayMove(board, move, { ...options, sequence: 2 });
+    assert.equal(receipt.result.created, true);
+    assert.equal(store.getItem(board, receipt.result.item).item_created_by, agentId);
+    assert.deepEqual(applyRelayMove(board, move, { ...options, sequence: 2 }), receipt, 'duplicate delivery retains its original receipt');
+    assert.deepEqual(createdItems('requestCompanion', receipt.result), [{ resultPath: ['item'], item: receipt.result.item }], 'queued transport binds the child result rather than the parent argument');
+    const retry = store.requestCompanion(board, { ...request, title: 'Do not overwrite the original child' });
+    assert.equal(retry.created, false);
+    assert.equal(retry.item, receipt.result.item);
+    assert.equal(store.getItem(board, retry.item).item_title, request.title);
+    assert.throws(() => store.requestCompanion(board, { ...request, key: 'forged-check', check: 'true' }), /COORDINATOR_CHECK/u);
+    assert.throws(() => store.requestCompanion(board, { ...request, key: 'unjoined', agentId: 'unjoined-seat' }), /NOT_JOINED/u);
+    const extra = store.requestCompanion(board, { ...request, key: 'different-work' });
+    assert.notEqual(extra.item, retry.item, 'explicitly distinct requests remain separate children');
+    store.withdraw(board, parent, { agentId: 'coordinator', reason: 'No further companion requests' });
+    assert.equal(store.requestCompanion(board, request).item, retry.item, 'closed parents retain existing request identities');
+    assert.throws(() => store.requestCompanion(board, { ...request, key: 'new-after-close' }), /PARENT_CLOSED/u);
+  } finally { store.closeBoard(board); }
 });
