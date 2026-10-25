@@ -94,7 +94,7 @@ test('a failed round trip alerts within two minutes and names the failed step [H
       assert.equal(result.ok, false, 'the canary reports the deliberately failed fresh pull');
       assert.equal(result.step, 'pull', 'the failure is attributed to the fresh event pull, not setup or seat registration');
     } else {
-      assert.equal(result.ok, true, 'a normal authenticated sealed round trip establishes the healthy baseline and recovery');
+      assert.equal(result.ok, true, `a normal authenticated sealed round trip establishes the healthy baseline and recovery: ${JSON.stringify(result)}`);
       assert.equal(result.step, 'complete');
     }
     return result;

@@ -87,7 +87,7 @@ export async function probeRelayCanary(root, { agentId, deadlineMs = 5000, io = 
       throw new Refused('RELAY_CANARY_CONFIG', 'configure a positive bounded canary deadline');
     }
     timer = setTimeout(() => controller.abort(), deadlineMs);
-    const state = relayMachineContext(root);
+    let state = relayMachineContext(root);
     if (!state || state.unlinking || state.environment) {
       throw new Refused('RELAY_OFF', 'link this dedicated canary board through the person before probing it');
     }
@@ -95,7 +95,7 @@ export async function probeRelayCanary(root, { agentId, deadlineMs = 5000, io = 
     if (!actor || actor.agent_lane === 'coordinator') {
       throw new Refused('NOT_JOINED', 'join an ordinary noncoordinator seat on the dedicated canary board');
     }
-    const previousSequence = state.sequence;
+    let previousSequence = state.sequence;
     if (!Number.isSafeInteger(previousSequence) || previousSequence < 0) {
       throw new Refused('RELAY_STORAGE', 'restore the canary link sequence before probing it');
     }
@@ -117,6 +117,19 @@ export async function probeRelayCanary(root, { agentId, deadlineMs = 5000, io = 
     relayVersion = signed.version;
     if (signed.session?.kind !== 'board' || signed.session.agent !== agentId) {
       throw new Refused('RELAY_ACTOR', 'the canary sign-in does not belong to its configured seat');
+    }
+    const interrupted = state.pending?.move ?? state.recovered?.move;
+    if (interrupted) {
+      const prior = interrupted.args?.[0];
+      if (interrupted.operation !== 'shout' || interrupted.actor !== agentId || prior?.from !== agentId
+        || prior.to !== 'coordinator' || !/^Relay canary [a-f0-9-]{36}$/u.test(prior.text ?? '')) {
+        throw new Refused('RELAY_RETRY_PENDING', 'finish the interrupted ordinary command before probing this canary board');
+      }
+      // Receive the original outcome through normal replay; this is not the fresh probe's health evidence.
+      remaining();
+      await relayOperation(root, interrupted.operation, interrupted.args, probeIo);
+      state = relayMachineContext(root);
+      previousSequence = state.sequence;
     }
     const text = 'Relay canary ' + randomUUID();
     let verified;
