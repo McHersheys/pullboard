@@ -1119,3 +1119,44 @@ test('an agent grant narrows at claim without trapping its own verdict withdrawa
   const unrelated = replay('reopen', [control, { agentId: stranger, withdrawVerdict: true, note: 'Not this seat’s verdict' }]);
   assert.ok(unrelated.error, 'the exception gives a stranger no reopening authority');
 });
+
+
+/** Append-only findings are communication, not authority to change item state. */
+test('an agent grant narrows at claim but any joined seat can append attributed findings on every replica [E21,H16]', () => {
+  const box = helpers.project();
+  for (const title of ['Claimed work', 'Other work']) {
+    run(box, box.repo, 'add', 'web', title, '--specs', 'G1', '--check', 'test -f web/grant-proof');
+  }
+  run(box, box.repo, 'add', 'api', 'Different lane', '--specs', 'G2', '--check', 'test -f api/grant-proof');
+  const fresh = join(box.dir, 'finding-seat');
+  box.git(box.repo, 'worktree', 'add', '-q', '--detach', fresh, 'main');
+  run(box, fresh, 'join', 'web');
+  const freshActor = withBoard(box.repo, board => store.listAgents(board).find(agent => agent.agent_path === fresh).agent_id);
+  run(box, box.web, 'claim', '1');
+  const actor = withBoard(box.repo, board => store.listAgents(board).find(agent => agent.agent_path === box.web).agent_id);
+  const held = withBoard(box.repo, board => store.getItem(board, 1));
+  const snapshot = withBoard(box.repo, exportBoard);
+  const peer = join(box.dir, 'findings-replica');
+  box.git(box.dir, 'clone', '-q', box.repo, peer);
+  withBoard(peer, board => importBoard(board, snapshot));
+  const roots = [box.repo, peer];
+  const during = new Date(Date.parse(held.item_lease_until) - 1000).toISOString();
+  const expired = new Date(Date.parse(held.item_lease_until) + 1).toISOString();
+  /** Apply a genuine fact record on both private boards and inspect its public attribution. */
+  const finding = (item, by, at, text) => {
+    const move = withBoard(box.repo, board => prepareEngineMove(board, 'appendFact',
+      [item, { agentId: by, kind: 'note', text }]));
+    const outcomes = roots.map(root => withBoard(root, board => applyEngineMove(board, move,
+      { sequence: appliedSequence(board) + 1, at })));
+    assert.deepEqual(outcomes[0], outcomes[1], 'independent replicas agree on the public result');
+    assert.equal(outcomes[0].error, undefined, `${text}: ${JSON.stringify(outcomes[0])}`);
+    const threads = roots.map(root => withBoard(root, board => store.itemThread(board, item)));
+    assert.deepEqual(threads[0], threads[1], 'the attributed finding is the same on both replicas');
+    assert.ok(threads[0].some(entry => entry.type === 'fact' && entry.text === text), 'the finding is actually recorded');
+  };
+  finding(1, actor, during, 'Positive own-item finding');
+  finding(2, actor, during, 'A different claim cannot block a finding');
+  finding(3, freshActor, during, 'An unclaimed seat may report a different lane');
+  finding(2, actor, expired, 'An expired build claim cannot block a finding');
+  finding(3, actor, expired, 'No review reservation is required for a finding');
+});
