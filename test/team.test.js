@@ -1,7 +1,7 @@
-import { signedBoard, consent, linkRelay } from './board-link-fixture.js';
-import { submitFixture } from './board-submit-fixture.js';
 /** @pullboard-test-loads src/board.js src/engine.js src/exchange.js */
 /** Two independent Git/SQLite replicas derive verdict freshness without rewriting proof [E8]. */
+import { signedBoard, consent, linkRelay } from './board-link-fixture.js';
+import { submitFixture } from './board-submit-fixture.js';
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
