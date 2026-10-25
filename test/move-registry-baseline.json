@@ -6964,7 +6964,7 @@
     "EXCLUDED_INVENTORY": "restore at most 256 excluded boards and their active paired devices, then run pullboard relay on --all",
     "BOARD_MEMBERS_INVALID": "ask a committed approver to publish a complete signed board member list",
     "BOARD_MEMBERS_REVISION": "read the current member revision, then sign a new list",
-    "RELAY_NOT_MEMBER": "ask a committed approver to publish the board member list with pullboard relay members <login>, then retry relay on"
+    "RELAY_NOT_MEMBER": "ask a committed approver to publish the board member list with pullboard relay members set <login>, then retry relay on"
   },
   "replay": {
     "initial": {

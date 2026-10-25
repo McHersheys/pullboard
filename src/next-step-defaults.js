@@ -218,7 +218,7 @@ export const DEFAULT_NEXT_STEPS = Object.freeze({
   "BOARD_REPO_LINKED": "pull pullboard.json from main, which names the repository's board, then run pullboard relay on again to join it",
   "GITHUB_UNAVAILABLE": "run any pullboard command again once GitHub answers; the new device keeps waiting",
   "RELAY_JOIN_NOT_EMPTY": "keep this board, then run pullboard init and pullboard relay on in a fresh clone to join the team board",
-  "RELAY_NOT_MEMBER": "ask a committed approver to publish the board member list with pullboard relay members <login>, then retry relay on",
+  "RELAY_NOT_MEMBER": "ask a committed approver to publish the board member list with pullboard relay members set <login>, then retry relay on",
   "RELAY_KEY_VOUCH": "add the SSH key that signed this device to your GitHub account with gh ssh-key add, then run pullboard relay on again",
   "RELAY_KEY_WAIT_EXPIRED": "run pullboard relay on again while a linked computer of this repository is online",
   "RELAY_SSH_KEY": "make an SSH key with ssh-keygen -t ed25519, add it to GitHub with gh ssh-key add, then run pullboard relay on again",

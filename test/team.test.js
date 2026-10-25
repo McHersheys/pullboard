@@ -749,7 +749,7 @@ test('a clone of a linked repo joins its board; a member device hands over the k
   assert.equal(kept.document?.error?.code, 'RELAY_JOIN_NOT_EMPTY', `a clone with work of its own is not joined over it: ${JSON.stringify(kept.document?.error ?? null)}`);
   assert.equal(box.auth.linkedBoards().length, 1);
 
-  const members = await box.cli('relay', 'members', 'bob');
+  const members = await box.cli('relay', 'members', 'set', 'bob');
   assert.equal(members.code, 0, `alice publishes a real signed member list: ${members.stderr}`);
   assert.deepEqual(members.document.members, ['bob']);
 
