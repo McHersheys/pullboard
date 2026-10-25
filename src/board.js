@@ -1,6 +1,6 @@
+import { applyLaneLead } from './lane-lead-policy.js';
 import { applyHealthFindings } from './board-health.js';
 import {
-  applyLaneLead,
   isLaneEscalation,
   laneLeads,
   leadOwnsDecision,

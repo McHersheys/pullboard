@@ -6,25 +6,8 @@ import { LANE_LEAD_ENGINE } from './lane-lead-engine.js';
 export function laneLeads(board) {
   const row = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get('lane_leads');
   const values = row ? JSON.parse(row.meta_value) : {};
-  return Object.fromEntries(Object.entries(values).filter(([lane, seat]) => lane !== 'coordinator'
+  return Object.fromEntries(Object.entries(values).filter(([lane, seat]) => lane !== 'coordinator' && typeof seat === 'string'
     && board.db.prepare('SELECT 1 FROM agent WHERE agent_id=? AND agent_lane=?').get(seat, lane)));
-}
-
-/** Name an existing same-lane seat through the normal coordinator-only ordered transaction. */
-export function applyLaneLead(board, { agentId, lane, seat, lanes }, { atomic, logEvent }) {
-  return atomic(board, () => {
-    if (agentId !== 'coordinator') throw new Refused('COORDINATOR_ONLY', 'ask the coordinator to name or remove a lane lead');
-    if (!lanes.includes(lane) || lane === 'coordinator') throw new Refused('BAD_LANE_LEAD', 'name a configured non-coordinator lane');
-    if (seat !== null && !board.db.prepare('SELECT 1 FROM agent WHERE agent_id=? AND agent_lane=?').get(seat, lane)) {
-      throw new Refused('BAD_LANE_LEAD', 'name an existing seat in the same lane, or use off');
-    }
-    const leads = laneLeads(board);
-    if (seat === null) delete leads[lane]; else leads[lane] = seat;
-    board.db.prepare('INSERT INTO board_meta(meta_key,meta_value) VALUES (?,?) ON CONFLICT(meta_key) DO UPDATE SET meta_value=excluded.meta_value')
-      .run('lane_leads', JSON.stringify(leads));
-    logEvent(board, agentId, 'lane-lead', null, { lane, seat });
-    return leads;
-  });
 }
 
 /** Route only explicitly typed upward coordination; ordinary and item-specific notes stay unchanged. */
@@ -59,7 +42,7 @@ export function isLaneEscalation(board, ask) {
 
 /** Floor only operations that execute the new lane policy; historical untyped messages retain old semantics. */
 export function laneAnswerFloor(board, args) {
-  if (!board?.db) return 1;
+  if (!board?.db || !Number.isSafeInteger(args?.[0]) && typeof args?.[0] !== 'string') return 1;
   const ask = board.db.prepare('SELECT * FROM shout WHERE shout_id=?').get(args?.[0]);
   return ask && (leadOwnsDecision(board, ask, args?.[1]?.agentId) || isLaneEscalation(board, ask)) ? LANE_LEAD_ENGINE : 1;
 }
@@ -68,6 +51,7 @@ export function laneAnswerFloor(board, args) {
 export function laneMessageFloor(board, message) {
   if (message?.kind !== undefined) return LANE_LEAD_ENGINE;
   if (!board?.db || !message?.decision || message.answers != null || message.to !== 'coordinator' || message.item !== undefined) return 1;
+  if (typeof message.from !== 'string') return 1;
   const lane = board.db.prepare('SELECT agent_lane FROM agent WHERE agent_id=?').get(message.from)?.agent_lane;
   return lane && laneLeads(board)[lane] ? LANE_LEAD_ENGINE : 1;
 }

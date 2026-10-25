@@ -1,6 +1,22 @@
 /** Real lane coordination retains claims and the existing person boundary [B7,B21,B26,N26]. */
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
+import {
+  mkdtempSync,
+  rmSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import * as store from '../src/board.js';
+import {
+  applyEngineMove,
+  prepareEngineMove,
+} from '../src/engine.js';
+import {
+  exportBoard,
+  importBoard,
+} from '../src/exchange.js';
+import { LANE_LEAD_ENGINE } from '../src/lane-lead-engine.js';
+import { minimumMoveEngine } from '../src/move-registry.js';
 import { test } from 'node:test';
 import { createE2eHelpers } from './e2e-helpers.js';
 
@@ -63,4 +79,32 @@ test('a lane question reaches its lead and only the decision reaches the coordin
   document(box, box.repo, 'lanes', 'lead', 'web', 'off');
   const restored = document(box, box.web, 'shout', 'coordinator', 'Lead removed', '--kind', 'question', '--decision');
   assert.equal(message(box, restored.id).shout_to, 'coordinator');
+});
+
+
+test('lane policy replays identically and an older engine cannot reroute a new question [B21,H16]', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'pullboard-lane-lead-'));
+  const boards = ['origin', 'left', 'right'].map(name => store.openBoard(join(directory, name + '.sqlite')));
+  t.after(() => { for (const board of boards) store.closeBoard(board); rmSync(directory, { recursive: true, force: true }); });
+  const [source, left, right] = boards;
+  store.register(source, { lane: 'coordinator', path: '/private/lane-fixture' });
+  store.register(source, { lane: 'web', path: '/private/lane-fixture/worker' });
+  store.register(source, { lane: 'web', path: '/private/lane-fixture/lead' });
+  const initial = exportBoard(source);
+  for (const board of [left, right]) importBoard(board, initial);
+  const policy = prepareEngineMove(source, 'setLaneLead', [{ agentId: 'coordinator', lane: 'web', seat: 'web-2', lanes: ['web'] }]);
+  const at = new Date().toISOString();
+  assert.throws(() => applyEngineMove(left, { ...policy, engine: LANE_LEAD_ENGINE - 1 }, { sequence: 1, at }),
+    error => error.code === 'RELAY_MOVE');
+  const policies = boards.map(board => applyEngineMove(board, policy, { sequence: 1, at }));
+  assert.deepEqual(policies[1], policies[2]);
+  const question = prepareEngineMove(source, 'shout', [{ from: 'web-1', to: 'coordinator', text: 'Choose a path', decision: true, lanes: ['web'] }]);
+  assert.throws(() => applyEngineMove(left, { ...question, engine: LANE_LEAD_ENGINE - 1 }, { sequence: 2, at }),
+    error => error.code === 'RELAY_MOVE', 'a caller cannot discard the named lead by lowering its engine');
+  const results = boards.map(board => applyEngineMove(board, question, { sequence: 2, at }));
+  assert.deepEqual(results[1], results[2]);
+  assert.equal(store.getShout(left, results[1].result).shout_to, 'web-2');
+  assert.deepEqual(exportBoard(left), exportBoard(right));
+  assert.equal(minimumMoveEngine('answerDecision', [{}, {}], left, new Date(at)), 1,
+    'malformed historical arguments retain their ordinary validator instead of failing in routing lookup');
 });
