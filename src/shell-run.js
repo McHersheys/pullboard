@@ -36,10 +36,10 @@ import { sandboxBlockedOperation } from './sandbox-denial.js';
  *
  * @param {string} root
  * @param {string} command
- * @param {{ pipefail?: boolean, env?: NodeJS.ProcessEnv, stages?: boolean, timeoutMs?: number }} [options] - Gate-only pipefail, additional child environment values and per-stage accounting.
+ * @param {{ pipefail?: boolean, env?: NodeJS.ProcessEnv, stages?: boolean, timeoutMs?: number, captureRuntimes?: boolean }} [options] - Gate-only pipefail, additional child environment values and per-stage accounting.
  * @returns {{ isGreen: boolean, output: string, seconds: number, sandboxBlocked: string|null, stages?: Array<{ status: number|null, output: string, pipeline?: Array<{ status: number|null, output: string|null }> }> | null }}
  */
-export function runShell(root, command, { pipefail = false, env = {}, stages = false, timeoutMs } = {}) {
+export function runShell(root, command, { pipefail = false, env = {}, stages = false, timeoutMs, captureRuntimes = false } = {}) {
   const started = Date.now();
   const options = { cwd: root, env: { ...gitChildEnv(root), ...env }, shell: true, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', maxBuffer: 2 ** 30 };
   let prefix = '';
@@ -51,8 +51,10 @@ export function runShell(root, command, { pipefail = false, env = {}, stages = f
       throw new Refused('PIPEFAIL_UNAVAILABLE', 'the repo gate shell cannot enable pipefail; rewrite the gate without a pipe');
     }
   }
-  const runtimes = captureTestRuntimes(options.env);
-  options.env = runtimes.env;
+  // Read-only baselines and caller-output profiles have no proof receipt to bind.
+  // Leave their execution environment unchanged; only admitted proof runs collect children.
+  const runtimes = captureRuntimes ? captureTestRuntimes(options.env) : null;
+  if (runtimes) options.env = runtimes.env;
   try {
     const split = stages ? gateStages(command) : null;
     const marker = `PULLBOARD_STAGE_${randomUUID().replaceAll('-', '')}`;
@@ -71,7 +73,7 @@ export function runShell(root, command, { pipefail = false, env = {}, stages = f
     invalidateGitFacts();
     const pipeStatuses = pipes ? readPipes(split, pipes) : null;
     if (pipes) rmSync(pipes, { recursive: true, force: true });
-    const testRuntimes = runtimes.finish();
+    const testRuntimes = runtimes?.finish() ?? null;
     const environment = executionEnvironment();
     const raw = `${result.stdout ?? ''}${result.stderr ?? ''}`;
     const seconds = Math.round((Date.now() - started) / 1000);
@@ -82,7 +84,7 @@ export function runShell(root, command, { pipefail = false, env = {}, stages = f
     // Each pipeline component's own status rides on its stage, so no failing producer hides behind a later one.
     const withPipes = staged.stages.map((stage, index) => (pipeStatuses?.[index] ? { ...stage, pipeline: pipeStatuses[index] } : stage));
     return { isGreen: result.status === 0, exitCode: result.status, seconds, environment, testRuntimes, ...(timed ? { timedOut: result.timedOut } : {}), ...staged, stages: withPipes, sandboxBlocked: blocked(staged.output) };
-  } finally { runtimes.finish(); }
+  } finally { runtimes?.finish(); }
 }
 
 /** Conservatively detect a pipe when the configured gate shell cannot enforce every stage's status. */

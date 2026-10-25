@@ -63,7 +63,7 @@ export async function run(io, { first, values }) {
   const outbox = relayStateExists(ctx.info.commonDir) ? (await import('../relay.js')).relayStatus(ctx.info.root).outbox : undefined;
   const relayPending = (outbox ?? []).filter((move) => move.item === id);
   if (values.json) {
-    io.result({ ...item, verdicts, thread, proofReceipts, agentApproved, approvalQualification, ...(relayPending.length ? { relayPending } : {}) });
+    io.result({ ...item, verdicts, thread, ...(proofReceipts.length ? { proofReceipts } : {}), agentApproved, approvalQualification, ...(relayPending.length ? { relayPending } : {}) });
     return 0;
   }
   const agentName = (id) => displayAgentName(agents.find((agent) => agent.agent_id === id) ?? { agent_id: id }, ctx.config.agents.names);
