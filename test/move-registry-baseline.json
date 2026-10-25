@@ -63,9 +63,10 @@
     "takeCoordinator",
     "landingLeaseMove",
     "recordPublishFinding",
-    "requestCompanion",
     "actOnActivity",
-    "recordActivityDelivery"
+    "recordActivityDelivery",
+    "decideSpecRevisions",
+    "requestCompanion"
   ],
   "itemIdFirstArgument": [
     "signBar",
@@ -140,6 +141,7 @@
     }
   ],
   "actors": {
+    "decideSpecRevisions": [null, "first", null, null, null, null],
     "requestCompanion": [null, "first", null, null, null, null],
     "openHandoff": [
       null,
@@ -6411,6 +6413,8 @@
     }
   ],
   "nextSteps": {
+    "SPEC_REVISION": "refresh Needs you and decide the exact pending proposal",
+    "B26_PERSON_APPROVAL": "ask the person to decide in pullboard view",
     "COMPANION_PARENT": "name the parent item: pullboard companion <parent> <lane> \"<title>\" --key <key>",
     "COMPANION_KEY": "supply a stable --key and reuse it for this same parent and target lane",
     "COMPANION_LANE": "choose a different target lane; ordinary same-lane children use pullboard add --parent",
