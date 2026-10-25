@@ -25,6 +25,7 @@ import {
   githubPullClient,
   githubRepository,
 } from './pr-github.js';
+import { publishVerificationStatuses } from './pr-verification.js';
 import { Refused } from './refused.js';
 
 /** Keep publisher-local transport state distinct from the shared board and legacy push state. */
@@ -179,6 +180,7 @@ export async function publishPullRequests({ root, board, config, branch, remote,
   const repository = githubRepository(root, remote);
   const client = githubPullClient(root, repository);
   const state = readState(root);
+  let verification = publishVerificationStatuses({ root, board, client, state, repository, trustedHead: head });
   const releases = [];
   const findings = [];
   const unattributed = [];
@@ -197,7 +199,7 @@ export async function publishPullRequests({ root, board, config, branch, remote,
   await saveState(root, state);
   const releasedItems = new Set(state.proposals.filter(p => p.released).flatMap(p => p.entries.map(e => `${e.id}:${e.commit}`)));
   const entries = releaseEntries(root, board, published, head).filter(e => !releasedItems.has(`${e.id}:${e.commit}`));
-  if (tryGit(root, ['merge-base', '--is-ancestor', head, published]).status === 0) return { head, published: true, red: [], releases, findings, unattributed };
+  if (tryGit(root, ['merge-base', '--is-ancestor', head, published]).status === 0) return { head, published: true, red: [], releases, findings, unattributed, verification };
   const digest = createHash('sha256').update(branch).digest('hex').slice(0, 12);
   const repairRoots = new Map(store.events(board).filter(e => e.event_kind === 'pr-ci-finding').map(e => {
     const detail = JSON.parse(e.event_detail); return [detail.repair, detail.item];
@@ -205,7 +207,7 @@ export async function publishPullRequests({ root, board, config, branch, remote,
   const groups = config.publish.pullRequest === 'item' ? [...new Set(entries.map(e => repairRoots.get(e.id) ?? e.id))]
     .map(id => ({ key: `item-${id}`, entries: entries.filter(e => (repairRoots.get(e.id) ?? e.id) === id) })) : [{ key: 'release', entries }];
   const proposed = [];
-  if (!groups.length) return { head, published: false, waiting: true, red: [], releases, findings, unattributed,
+  if (!groups.length) return { head, published: false, waiting: true, red: [], releases, findings, unattributed, verification,
     reason: 'No unpublished accepted item remains; per-item mode does not certify unrelated local commits.' };
   for (const group of groups) {
     const name = `pullboard/${group.key}-${digest}`;
@@ -226,7 +228,8 @@ export async function publishPullRequests({ root, board, config, branch, remote,
       url: `https://github.com/${repository}/pull/${pull.number}`, entries: group.entries, released: false };
     if (old) state.proposals.splice(state.proposals.indexOf(old), 1, proposal); else state.proposals.push(proposal);
     await saveState(root, state); proposed.push(proposal);
+    verification = publishVerificationStatuses({ root, board, client, state, repository, trustedHead: head });
   }
   say(`proposed ${proposed.length} pull request(s); only a person can merge them`);
-  return { head, published: false, waiting: true, proposed: true, pullRequests: proposed.map(p => ({ number: p.number, url: p.url, head: p.head, items: p.entries.map(e => e.id) })), red: [], releases, findings, unattributed };
+  return { head, published: false, waiting: true, proposed: true, pullRequests: proposed.map(p => ({ number: p.number, url: p.url, head: p.head, items: p.entries.map(e => e.id) })), red: [], releases, findings, unattributed, verification };
 }
