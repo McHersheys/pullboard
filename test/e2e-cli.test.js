@@ -51,8 +51,9 @@ test('init adds a Claude Code session hook that runs resume, and keeps every oth
   assert.deepEqual(settings.permissions, { allow: [...mine.permissions.allow, ...claudeLoopRules({ gate: '' })] });
   assert.deepEqual(settings.sandbox, { filesystem: { allowWrite: [box.env.PULLBOARD_MACHINE_HOME] } });
   assert.deepEqual(Object.keys(settings).sort(), ['hooks', 'permissions', 'sandbox'], 'init adds no other top-level setting');
-  assert.deepEqual(Object.keys(settings.hooks).sort(), ['SessionStart', 'Stop'], 'init adds no other hook event');
-  assert.deepEqual(settings.hooks.Stop, mine.hooks.Stop);
+  assert.deepEqual(Object.keys(settings.hooks).sort(), ['SessionEnd', 'SessionStart', 'Stop'], 'init installs only the three activity hook events');
+  assert.deepEqual(settings.hooks.Stop.slice(0, mine.hooks.Stop.length), mine.hooks.Stop, 'custom Stop hooks remain unchanged');
+  assert.ok(settings.hooks.Stop.at(-1).hooks[0].command.includes('pullboard heartbeat'));
   assert.equal(settings.hooks.SessionStart.length, 1);
   const { command } = settings.hooks.SessionStart[0].hooks[0];
   const card = spawnSync('sh', ['-c', command], { cwd: repo, env: box.env, encoding: 'utf8' });

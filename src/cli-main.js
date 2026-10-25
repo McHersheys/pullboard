@@ -308,7 +308,6 @@ async function runMain(argv, streams) {
   }
   try {
     if (needsRepo) {
-      (await import('./cli-presence.js')).heartbeatCommand(io);
       await rememberTrunk(io, git);
     }
     traceServeStartup('cli-command-preamble-start');
@@ -320,7 +319,6 @@ async function runMain(argv, streams) {
     const code = await runCommand(argv, io);
     if (code === 0) {
       await checkoutSession?.finish?.();
-      if (needsRepo) (await import('./cli-presence.js')).heartbeatCommand(io);
     }
     if (code === 0) await (await syncWork())?.retrySync(io);
     const status = io.exitCode(code);

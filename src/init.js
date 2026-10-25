@@ -414,8 +414,12 @@ function writeAgentDocs(root, onWrite) {
  * The session hook's command: pullboard from this checkout's install, else the main checkout's,
  * else the PATH, and silence when there is none, so a session never fails to start over it.
  */
-export const RESUME_HOOK =
+const RESUME_ONLY_HOOK =
   'm=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/..; for p in node_modules/.bin/pullboard "$m/node_modules/.bin/pullboard"; do [ -x "$p" ] && exec "$p" resume; done; command -v pullboard >/dev/null && exec pullboard resume; true';
+const HEARTBEAT_HOOK = RESUME_ONLY_HOOK.replaceAll(' resume', ' heartbeat');
+export const RESUME_HOOK = RESUME_ONLY_HOOK
+  .replace('[ -x "$p" ] && exec "$p" resume', 'if [ -x "$p" ]; then "$p" heartbeat >/dev/null 2>&1; exec "$p" resume; fi')
+  .replace('command -v pullboard >/dev/null && exec pullboard resume', 'if command -v pullboard >/dev/null; then pullboard heartbeat >/dev/null 2>&1; exec pullboard resume; fi');
 
 /**
  * The MCP server command: pullboard from this checkout's install, else the main checkout's, else the PATH (#961).
@@ -713,9 +717,14 @@ function writeSessionHook(root, onWrite) {
   }
   settings.hooks = { ...settings.hooks };
   let changed = false;
-  for (const [event, command] of [['SessionStart', RESUME_HOOK], ['Stop', RESUME_HOOK.replaceAll(' resume', ' heartbeat')], ['SessionEnd', RESUME_HOOK.replaceAll(' resume', ' heartbeat')]]) {
+  for (const [event, command] of [['SessionStart', RESUME_HOOK], ['Stop', HEARTBEAT_HOOK], ['SessionEnd', HEARTBEAT_HOOK]]) {
     const hooks = settings.hooks[event] ?? [];
     if (!Array.isArray(hooks)) continue;
+    if (event === 'SessionStart' && JSON.stringify(hooks).includes('pullboard resume') && !JSON.stringify(hooks).includes('pullboard heartbeat')) {
+      // Preserve every existing command, including custom resume hooks; add an explicit local observation first.
+      settings.hooks[event] = [{ hooks: [{ type: 'command', command: `(${HEARTBEAT_HOOK}) >/dev/null 2>&1 || true`, timeout: 30 }] }, ...hooks];
+      changed = true;
+    }
     if (!JSON.stringify(hooks).includes(event === 'SessionStart' ? 'pullboard resume' : 'pullboard heartbeat')) {
       settings.hooks[event] = [...hooks, { hooks: [{ type: 'command', command, timeout: 30 }] }];
       changed = true;

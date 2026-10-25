@@ -614,6 +614,7 @@ export async function ordered(ctx, board, operation, args) {
         ? relayOperation(ctx.info.root, operation, args, ctx.io, command, applyRequested,
           requested ? () => { ctx.io.recordedMove = true; } : undefined) : applyRequested());
     if (requested && gitSyncLinked(ctx.info.root)) ctx.io.recordedMove = true;
+    if (requested && ctx.io.recordedMove) (await import('./cli-presence.js')).heartbeatCommand(ctx.io, { ctx, board });
     return result;
   };
   const digest = agentSessionDigest();
