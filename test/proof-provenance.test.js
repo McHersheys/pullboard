@@ -94,6 +94,7 @@ test('a receipted native node test preserves caller output and records its actua
   const helpers = createE2eHelpers();
   t.after(helpers.cleanup);
   const box = helpers.project('true');
+  delete box.env.NODE_TEST_CONTEXT;
   const trace = join(box.dir, 'native-worker.json');
   const file = join(box.dir, 'native-worker.test.cjs');
   writeFileSync(file, `require('node:fs').writeFileSync(${JSON.stringify(trace)},JSON.stringify({pid:process.pid,node:process.versions.node,argv:process.argv,execArgv:process.execArgv,nodeOptions:process.env.NODE_OPTIONS??'',hasNodeOptions:Object.hasOwn(process.env,'NODE_OPTIONS')}));require('node:test')('native selected worker [G1]',()=>{});`);
