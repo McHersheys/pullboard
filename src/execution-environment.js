@@ -56,7 +56,9 @@ export function runtimeCaptureSource(directory) {
 const { basename, dirname, join, relative, resolve } = require('node:path');
 const { channel } = require('node:diagnostics_channel');
 const { randomUUID } = require('node:crypto');
+const { isMainThread } = require('node:worker_threads');
 const directory=${JSON.stringify(directory)};
+if (isMainThread) {
 const file=directory+'/runtime-'+process.pid+'-'+randomUUID()+'.json';
 // Observe child identities without replacing spawn or changing any caller arguments/environment.
 channel('child_process').subscribe(({process:child})=>{
@@ -93,9 +95,15 @@ process.once('exit',()=>{
   if (!process.execArgv.includes('--test') && process.moduleLoadList.includes('NativeModule child_process'))
     writeFileSync(directory+'/custom-launcher-'+process.pid+'.json',JSON.stringify({pid:process.pid}),{flag:'wx',mode:0o400});
 });
+}
 // Node's --test parent only starts workers; retain capture until the actual test process boots.
 // User code sees its original NODE_OPTIONS, not this recorder's injected option.
 if (!process.execArgv.includes('--test')) {
+  const ownedPath=${JSON.stringify(join(directory, 'test-runtime-preload.cjs'))};
+  for (let index=process.execArgv.length-1; index>=0; index--) {
+    if (process.execArgv[index]==='--require='+ownedPath) process.execArgv.splice(index,1);
+    else if (process.execArgv[index]==='--require' && process.execArgv[index+1]===ownedPath) process.execArgv.splice(index,2);
+  }
   const token=${JSON.stringify('--require=' + JSON.stringify(join(directory, 'test-runtime-preload.cjs')))};
   const options=process.env.NODE_OPTIONS;
   if (options===token) {
