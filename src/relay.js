@@ -5,6 +5,7 @@ import {
 } from './relay-snapshot-size.js';
 export { formatSnapshotLimit };
 import { beginCommandPhase } from './command-phase.js';
+import { deliverPersonEnrollments } from './relay-person-enrollment.js';
 import { recordedMoveRefusal } from './recorded-move.js';
 import {
   publishExcludedBoards,
@@ -131,6 +132,7 @@ import {
   queueMove,
 } from './relay-outbox.js';
 import { stampCoordinatorHolder } from './coordinator-hold.js';
+import { computerName } from './computer-name.js';
 import { relayFiles } from './local-state.js';
 import {
   archiveRelinkOutbox,
@@ -1166,7 +1168,7 @@ export async function relayOperation(root, operation, args, io, command, applyLo
       try {
         if (!move) {
           const sent = withSeatName(root, operation, args);
-          move = stampCoordinatorHolder(localRecords(root, (board) => prepareEngineMove(board, operation, sent, io.personRequestMoveId ? { id: io.personRequestMoveId } : {})), state.machine);
+          move = stampCoordinatorHolder(localRecords(root, (board) => prepareEngineMove(board, operation, sent, io.personRequestMoveId ? { id: io.personRequestMoveId } : {})), state.machine, state.computerName);
           requestedMove = move;
           if (io.personRequest) move.personRequest = structuredClone(io.personRequest);
           const problem = move.personRequest && localRecords(root, board => requestMoveProblem(board, move, { checkExecutorLease: false }));
@@ -1568,7 +1570,8 @@ async function deviceSignIn(url, io, { signal, intent, onSignIn } = {}) {
 }
 
 /** Explicitly sign in through the relay and persist a sealed initial snapshot before uploading it. */
-export async function relayOn(root, address, io, { session, credential, quiet = false, strict = false } = {}) {
+export async function relayOn(root, address, io, { session, credential, quiet = false, strict = false, name } = {}) {
+  const label = computerName(name);
   const remoteShell = io.personChannel !== 'view' && isRemoteShell();
   const reusableSession = remoteShell ? undefined : session;
   const reusableCredential = remoteShell ? undefined : credential;
@@ -1619,7 +1622,8 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
       saveLink(file, state);
     }
     const machine = updateRelayMachine(settings => settings.machine);
-    const issued = reusableCredential ?? await request({ ...state, token: signed.token }, '/auth/machines', { method: 'POST', body: { board: state.board, machine } }, io);
+    const named = computerName(label ?? state.computerName ?? readRelayMachine().computerName);
+    const issued = reusableCredential ?? await request({ ...state, token: signed.token }, '/auth/machines', { method: 'POST', body: { board: state.board, machine, ...(named === undefined ? {} : { name: named }) } }, io);
     if (!/^pm_[A-Za-z0-9_-]{43}$/u.test(issued.token ?? '') || issued.board !== state.board || issued.machine !== machine) throw new Refused('RELAY_RESPONSE', 'the relay did not issue this board’s machine credential; sign in again');
     // Cached agent credentials belong to the account that minted them.
     if (state.account !== account) { delete state.agentTokens; delete state.login; }
@@ -1630,6 +1634,7 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
     state.token = issued.token;
     state.tokenId = issued.id;
     state.machine = machine;
+    if (named !== undefined) state.computerName = named;
     delete state.personReauth;
     saveLink(file, state);
     // The person's own sign-in sets up the coordinator's token, so no agent can mint it (#579).
@@ -1679,7 +1684,7 @@ export async function relayOff(root, io) {
     let joined = [];
     try {
       const roster = await request(state, '/auth/machines?board=' + state.board, {}, io);
-      if (Array.isArray(roster.machines)) joined = roster.machines.filter(entry => typeof entry.machine === 'string' && /^[A-Za-z0-9_.-]{1,128}$/u.test(entry.machine) && entry.machine !== state.machine).map(entry => ({ machine: entry.machine, name: typeof entry.host === 'string' && entry.host.trim() ? entry.host : entry.machine.slice(-8) }));
+      if (Array.isArray(roster.machines)) joined = roster.machines.filter(entry => typeof entry.machine === 'string' && /^[A-Za-z0-9_.-]{1,128}$/u.test(entry.machine) && entry.machine !== state.machine).map(entry => ({ machine: entry.machine, name: typeof entry.name === 'string' ? computerName(entry.name) : 'computer ' + entry.machine.slice(-8) }));
     } catch { /* Local unlink still completes when the relay cannot inventory joined computers. */ }
     const warning = joined.length ? ' If you approve deletion, joined computers ' + joined.map(entry => entry.name).join(', ') + ' lose the shared copy; their local boards keep working.' : '';
     if (warning) io.err(warning.trim());
@@ -1755,6 +1760,7 @@ export async function relayDeviceRequest(session, path, options, io) {
 export async function deliverDeviceWraps(root, io) {
   const state = loadLink(linkFile(root));
   if (!state || state.unlinking || !state.account) return;
+  await deliverPersonEnrollments(state, io, request);
   const devices = readRelayMachine().devices.filter(device => device.account === state.account && device.url === state.url);
   if (!devices.length) return;
   const key = readBoardKey(state.board);

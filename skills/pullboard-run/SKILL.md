@@ -97,6 +97,8 @@ When the board requires ready bars (the coordinator turns this on with `pullboar
 
 ## Turn a Rigor notice into a draft
 
+
+Proof is what the board records (doctrine T11): the frozen check, the gate and the verdict. Keep no evidence folders, packets, manifests or custody rules of your own; cite the board's receipts and facts. When the board's runs cannot decide an item, ask the coordinator to sharpen its bar.
 When the same cause fails work twice, turn it into a draft row in the same session, with its proof: the item ids and the failure each one hit. Rigor drafts rows and only the person approves them. `pullboard rigor draft <key>` does this from a Rigor notice once items #713 and #714 land. On main today, write the draft with `pullboard spec draft "<the rule>" --section D` and put the proof in the shout that asks the person to review it.
 
 ## Land in batches

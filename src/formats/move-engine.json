@@ -1,0 +1,9 @@
+{
+  "name": "move engine",
+  "order": 50,
+  "version": {
+    "kind": "engines"
+  },
+  "source": "`ENGINE_VERSION` in `src/machine.js`, carried as `engine` in every sealed executable move",
+  "upgrade": "Bump when a move's meaning changes, independently of the event log and sealed envelope. A newer engine is refused with `ENGINE_VERSION`, naming both versions and asking you to upgrade Pullboard."
+}

@@ -732,6 +732,14 @@ test('a foreign origin or wrong Host is refused by the local view [N26,A2]', { t
     assert.equal(read.status, 200, 'the hosted page reads with its header');
     assert.equal(read.headers['access-control-allow-origin'], HOSTED);
     const id = JSON.parse(read.body).boards[0].id;
+    const state = await call(view, `/api/v1/boards/${id}/state`, { headers: { ...key, origin: HOSTED } });
+    assert.equal(state.status, 200);
+    assert.match(state.headers['x-pullboard-report-validator'], /^[a-f0-9]{64}:[0-9]+$/u);
+    assert.equal(state.headers['access-control-expose-headers'], 'x-pullboard-report-validator',
+      'the already-allowed hosted browser may read the report token under CORS, without extra request authority');
+    const sameOriginState = await call(view, `/api/v1/boards/${id}/state`, { headers: { ...key, origin: view.base } });
+    assert.equal(sameOriginState.headers['access-control-expose-headers'], undefined,
+      'same-origin reads need no new cross-origin permission');
     const shout = JSON.stringify({ verb: 'shout', args: { to: 'all', text: 'from the hosted page' } });
     const plain = await call(view, `/api/v1/boards/${id}/moves`, { method: 'POST', headers: { ...key, origin: HOSTED, 'content-type': 'text/plain' }, body: shout });
     assert.equal(plain.status, 400, 'a write that is not JSON is refused, as a form could send it');

@@ -3,11 +3,16 @@
  * breakpoint with its landed count, then its pullable items in the order next serves them, each with
  * its route, lane, status, holder and what it waits on; a closing line names the item each route would
  * get from next now. The order is the board's own buildOrder, never a second copy, so the queue and
- * next cannot disagree. It is for agents and coordinators; the person reads the Roadmap instead.
+ * next cannot disagree. Each item also shows its unblock count, effort and why it sits where it does (#1017).
+ * It is for agents and coordinators; the person reads the Roadmap instead.
  */
 import { itemAuthorProblem } from './item-authors.js';
 import { Refused } from './refused.js';
 import { itemFileCollisions } from './item-files.js';
+import {
+  milestoneRanks,
+  queueReasons,
+} from './work-order.js';
 import {
   buildOrder,
   canTake,
@@ -54,20 +59,22 @@ function waitsOf(board, item, inFlight) {
  * no release after them, and the first item each route would pull now.
  *
  * @param {any} board
- * @returns {{ releases: { name: string, landed: number, total: number, items: any[] }[], unreleased: any[], first: Record<string, number | null> }}
+ * @returns {{ releases: { name: string, landed: number, total: number, items: any[] }[], unreleased: any[], first: Record<string, number | null> }} each item with its unblocks, effort and why
  */
 export function workQueue(board, reviewer = null) {
   const now = board.clock.now().getTime();
   const release = milestonePriorities(board);
   const planned = roadmap(board, (reference) => ({ id: reference, title: reference, status: 'unavailable' }));
-  const items = listItems(board).filter(item => !reviewer || item.item_status !== 'submitted' || !itemAuthorProblem(board, item, reviewer)).sort(buildOrder(board));
+  const items = listItems(board).filter(item => !reviewer || item.item_status !== 'submitted' || !itemAuthorProblem(board, item, reviewer)).sort(buildOrder(board, { priority: release }));
   const inFlight = listItems(board, { all: true });
+  const reasons = queueReasons(board, { priority: release, rank: milestoneRanks(board, release) });
   const entry = (item) => ({ id: item.item_id, title: item.item_title, route: item.item_route, lane: item.item_lane,
-    status: item.item_status, holder: holderOf(item, now), waits: waitsOf(board, item, inFlight) });
+    status: item.item_status, holder: holderOf(item, now), waits: waitsOf(board, item, inFlight), ...reasons(item) });
   const releases = planned.map((milestone, index) => ({ name: milestone.name, landed: milestone.landed, total: milestone.total, shipped: Boolean(milestone.shipped),
     items: items.filter((item) => release(item) === index).map(entry) })).filter((milestone) => !milestone.shipped || milestone.items.length);
   const unreleased = items.filter((item) => release(item) >= planned.length).map(entry);
-  const pullable = items.filter((item) => item.item_status === 'open' && !waitsOf(board, item, inFlight).length);
+  // next takes its own route first (B13), so each route's first item comes from that same order.
+  const pullable = items.filter((item) => item.item_status === 'open' && !waitsOf(board, item, inFlight).length).sort(buildOrder(board, { tierFirst: true, priority: release }));
   const first = Object.fromEntries([...ROUTES].reverse().map((route) => [route, pullable.find((item) => canTake(route, item.item_route))?.item_id ?? null]));
   return { releases: releases.map(({ shipped, ...milestone }) => milestone), unreleased, first };
 }
@@ -83,6 +90,7 @@ export function sayQueue(io, queue) {
   const line = (item) => {
     const who = item.holder ? ` · ${item.holder}` : '';
     io.say(`  ${++rank}. #${item.id} ${item.route} ${item.lane} ${item.status}${who}: ${item.title}`);
+    io.say(`     unblocks ${item.unblocks} · effort ${item.effort} · ${item.why}`);
     if (item.waits.length) io.say(`     waits on ${item.waits.join('; ')}`);
   };
   for (const release of queue.releases) {
