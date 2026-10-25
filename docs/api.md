@@ -679,3 +679,29 @@ A board-recorded item merge covers its introduced commits only when its exact su
 The JSON result includes `verification` entries with PR number, exact head, state, assurance, receipt identities, and any unverified commit IDs. GitHub statuses are shared by PRs with the same head: if an outside or unproven PR shares a commit with a proven proposal, the shared status stays red rather than lending the proposal's green status to it. Publishing observes and posts statuses; it never merges a PR or requires outside authors to use Pullboard.
 
 `pullboard why <file>[:<line>] --json` uses the `why file` catalog shape; this names the file form, not a literal `file` argument. It traces commits on the repository's actual primary branch, then resolves their item trailers, served row IDs and answered decisions in one board query. The legacy `why <id>` shape is unchanged. Answered decisions carry their recorded origin, statement, rationale, decider and relayer; absent historical provenance remains `unknown`. Row and item origins are also `unknown` unless recorded, rather than inferred from a related decision. An agent may label a relayed or inherited answer but cannot use that label to mint a person-origin record. Unproven original decider identities remain unknown, with the answering relay seat recorded separately.
+
+
+### Cross-board decision handoffs
+
+`decisionHandoffs(db, { boardId, authorize })` in `src/decision-handoff.js` is
+an I-D persistence port, not an aggregation CLI or a board-name resolver.
+Each participant supplies its own SQLite connection, opaque immutable board ID,
+and existing authority adapter. Call mutations inside the caller’s ordered
+write boundary. No transaction or database connection spans boards.
+
+`deliver(handoff, options)` checks the exact version-1 wire shape and original
+option-set digest, then asks `authorize("disclose", handoff)` and, for answers,
+`authorize("answer", handoff)`. The adapter must authenticate the requester,
+source decision, destination, question, option digest and answer; a supplied
+opaque authority value alone grants nothing. Accepted deliveries persist before
+returning. Transport retries the returned wire independently at the other board.
+Changed correlation or a conflicting answer refuses; late questions preserve
+answers. `optionsDigest(options)` hashes a unique option set independent of order.
+
+`query(source, participants, authority)` requires source-board read authority
+for the exact namespaced reference and participant set. It returns
+`{ complete, agreed, answers }`; callers must not act on an incomplete or
+disagreeing result. Each destination contributes at most one answer, and a
+query cannot omit a destination already recorded for that source decision.
+This contract stores and returns answers to the source/requester’s authorized
+query; it does not execute the decision or grant cross-board authority.
