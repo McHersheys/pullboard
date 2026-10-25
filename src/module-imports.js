@@ -232,8 +232,10 @@ function unreadableTestOptions(source) {
   for (const match of source.matchAll(/\bimport\s+([^;'"]+?)\s+from\s*(['"])node:test\2/gu)) {
     const bindings = match[1].replace(/[{}*]/gu, ' ').split(',');
     for (const binding of bindings) {
-      const name = binding.trim().split(/\s+as\s+/u).at(-1)?.trim();
-      if (/^[A-Za-z_$][\w$]*$/u.test(name ?? '')) names.add(name);
+      const [original, alias] = binding.trim().split(/\s+as\s+/u);
+      const name = (alias ?? original)?.trim();
+      if (['test', 'it', 'describe', 'suite', 'default'].includes(original?.trim())
+        && /^[A-Za-z_$][\w$]*$/u.test(name ?? '')) names.add(name);
     }
   }
   // A direct alias retains the same conservative rule, including renamed imported test functions.
