@@ -80,6 +80,7 @@ const OPTIONS = {
   directory: { type: 'string' },
   timeout: { type: 'string' },
   sentinel: { type: 'boolean' },
+  'health-only': { type: 'boolean' },
   digest: { type: 'string' },
   // The rigor quality draft's options.
   base: { type: 'string' },
