@@ -12,7 +12,7 @@ export function classifyActivityDelivery({ agentId, items, activity, shouts, at 
   for (const entry of activity.entries) {
     let reason;
     if (entry.kind === 'reject' && entry.recipient === agentId) reason = 'rejected';
-    else if (entry.kind === 'main-moved' && entry.files?.length) reason = 'files-changed';
+    else if (entry.kind === 'main-moved' && (entry.files?.length || entry.unknownFiles || entry.unknownAdditionalFiles)) reason = 'files-changed';
     else if (entry.kind === 'answer') {
       const reply = byShout.get(entry.shout);
       const question = byShout.get(reply?.shout_answers);

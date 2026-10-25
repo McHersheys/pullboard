@@ -284,8 +284,8 @@ test('inbox delivery uses real Git paths and board-bound cursors without consumi
   const feed = JSON.parse(one.out);
   assert.ok(feed.shouts.some(shout => shout.shout_text === 'A governing instruction stays direct.'));
   assert.equal(feed.shouts.some(shout => shout.shout_id === firstNews), false);
-  assert.ok(feed.activity.entries.some(entry => entry.kind === 'fact' && entry.item === id));
-  assert.deepEqual(feed.activity.entries.find(entry => entry.kind === 'main-moved')?.files, [rowFile],
+  assert.ok(feed.activity.digests.some(entry => entry.kind === 'fact' && entry.count > 0), 'routine facts become a counted break-time summary');
+  assert.deepEqual(feed.activity.interrupts.find(entry => entry.kind === 'main-moved')?.files, [rowFile],
     'the real CLI compares the exact recorded Git base and tip against the active file plan');
   assert.deepEqual(feed.activity.digests.find(digest => digest.kind === 'news')?.shouts, [firstNews]);
   const continued = box.run(box.web, 'inbox', '--json');
@@ -371,6 +371,9 @@ test('old ordinary shout replay does not become newly typed news [H16,N26]', (t)
 
 test('interrupts arrive at once and the digest arrives as a short summary at a break [R2,N26,H16]', t => {
   const box = e2e.project('true');
+  const foreignRoot = join(box.dir, 'interrupt-other');
+  box.git(box.repo, 'worktree', 'add', '-q', '--detach', foreignRoot, 'main');
+  assert.equal(box.run(foreignRoot, 'join', 'api', '--json').code, 0);
   const base = box.git(box.web, 'rev-parse', 'HEAD');
   assert.equal(e2e.commitFile(box, box.web, 'web/interrupt.txt', 'private interrupt fixture\n', 'feat(web): interrupt fixture [G1]').status, 0);
   const commit = box.git(box.web, 'rev-parse', 'HEAD');
@@ -387,7 +390,7 @@ test('interrupts arrive at once and the digest arrives as a short summary at a b
     review: { commit, head: commit, trunk: base, paths: ['web/interrupt.txt'] } });
   const active = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'Private lapsing work',
     brief: 'Files: web/interrupt.txt\nTest: preserve the private fixture\n' });
-  store.claim(board, active, { agentId: 'web-1', lane: 'web', leaseMs: 60_000, head: base, freeze });
+  store.claim(board, active, { agentId: 'web-1', lane: 'web', leaseMs: 4 * 60_000, head: base, freeze });
   const question = store.shout(board, { from: 'web-1', to: 'coordinator', text: 'Which private path?', decision: true, lanes: ['web', 'api'] });
   store.answerDecision(board, question, { agentId: 'coordinator', text: 'Use the private reviewed path.', lanes: ['web', 'api'] });
   // A synthetic landing receipt exercises real Git overlap; it is not a claim of a live landing proof.
@@ -397,6 +400,7 @@ test('interrupts arrive at once and the digest arrives as a short summary at a b
   store.finishLandingBatch(board, { agentId: 'coordinator', id: 'interrupt-private-main', tip: commit });
   const other = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'Private digest work' });
   store.appendFact(board, other, { agentId: 'coordinator', kind: 'note', text: 'PRIVATE_RAW_STATUS_MUST_NOT_BE_DIGEST_TEXT' });
+  const claimBefore = store.getItem(board, active);
   const first = box.run(box.web, 'inbox', '--json');
   assert.equal(first.code, 0, first.err);
   const feed = JSON.parse(first.out).activity;
@@ -409,6 +413,34 @@ test('interrupts arrive at once and the digest arrives as a short summary at a b
   const delivered = store.events(board).filter(event => event.event_kind === 'activity-delivered');
   assert.ok(delivered.length, 'delivery is recorded on the canonical board, not just a checkout cursor');
   assert.ok(delivered.every(event => event.event_by === 'web-1'), 'the recipient owns its delivery receipts');
+  assert.deepEqual(store.getItem(board, active), claimBefore, 'delivery grants no claim or lease authority');
+  const again = box.run(box.web, 'inbox', '--json');
+  assert.equal(again.code, 0, again.err);
+  assert.deepEqual(new Set(JSON.parse(again.out).activity.interrupts.map(entry => entry.id)), new Set(feed.interrupts.map(entry => entry.id)),
+    'reading or advancing a checkout cursor never means acted-on');
+  assert.deepEqual(JSON.parse(again.out).activity.digests, [], 'ordinary checks do not deliver the digest');
+  const ids = feed.interrupts.map(entry => entry.id).join(',');
+  const beforeForeign = exportBoard(board);
+  const foreign = box.run(foreignRoot, 'inbox', '--acted-on', ids, '--json');
+  assert.equal(JSON.parse(foreign.out).error?.code, 'ACTIVITY_NOT_DELIVERED');
+  assert.deepEqual(exportBoard(board), beforeForeign, 'another recipient cannot acknowledge these obligations');
+  const acted = box.run(box.web, 'inbox', '--acted-on', ids, '--json');
+  assert.equal(acted.code, 0, acted.err);
+  assert.deepEqual(JSON.parse(acted.out).activity.interrupts, []);
+  const actedEvents = store.events(board).filter(event => event.event_kind === 'activity-acted');
+  assert.equal(actedEvents.length, 1);
+  assert.deepEqual(new Set(JSON.parse(actedEvents[0].event_detail).interrupts), new Set(feed.interrupts.map(entry => entry.id)));
+  store.appendFact(board, other, { agentId: 'coordinator', kind: 'note', text: 'SECOND_PRIVATE_RAW_STATUS_BODY' });
+  const beforeBreak = box.run(box.web, 'inbox', '--json');
+  assert.equal(beforeBreak.code, 0, beforeBreak.err);
+  assert.deepEqual(JSON.parse(beforeBreak.out).activity.digests, [], 'new digest activity waits for a natural break');
+  assert.equal(e2e.commitFile(box, box.web, 'web/after-break.txt', 'private submit break\n', 'feat(web): submit break [G1]').status, 0);
+  const submitted = box.run(box.web, 'submit', String(active), '--json');
+  assert.equal(submitted.code, 0, submitted.err || submitted.out);
+  const summary = JSON.parse(submitted.out).activity;
+  assert.ok(summary.digests.length, 'the actual successful submit delivers the pending short digest');
+  assert.equal(JSON.stringify(summary.digests).includes('SECOND_PRIVATE_RAW_STATUS_BODY'), false);
+
 });
 
 

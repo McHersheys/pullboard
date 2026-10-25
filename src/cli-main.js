@@ -101,6 +101,7 @@ const OPTIONS = {
   'agent-mid': { type: 'string' },
   'agent-strong': { type: 'string' },
   attempts: { type: 'string' },
+  'acted-on': { type: 'string' },
   minutes: { type: 'string' },
   items: { type: 'string' },
   run: { type: 'string' },

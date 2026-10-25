@@ -1263,11 +1263,14 @@ export function refuseUncommittedSetup(mainRoot, config) {
 
 
 /** Report and pin the original submitted commit, including a recovered acknowledged outcome. */
-export function reportSubmission(ctx, id, commit, gate, doctrine = []) {
+export async function reportSubmission(ctx, id, commit, gate, doctrine = []) {
   const { root } = ctx.info;
   const pin = `refs/pullboard/items/${id}/${commit.slice(0, 12)}`;
   git(root, ['update-ref', pin, commit]);
-  ctx.io.result?.({ id, commit, pin, gate, ...(doctrine.length ? { doctrine } : {}) });
+  const { deliverActivity, activityDeliveryLines } = await import('./activity-delivery-cli.js');
+  const delivery = await deliverActivity(ctx, { afterSubmit: true, directShouts: false });
+  ctx.io.result?.({ id, commit, pin, gate, activity: delivery.activity, ...(doctrine.length ? { doctrine } : {}) });
+  for (const line of activityDeliveryLines(delivery, ctx.config)) ctx.io.say(line);
   ctx.io.say(`submitted #${id} at ${commit.slice(0, 12)}; ${gate.report}`);
   ctx.io.say(`pinned as ${pin}, so this work can't be lost; keep your worktree until it is merged`);
   ctx.io.say(`next: ${reviewerStartup(primaryCheckoutRoot(ctx.info), ctx.config, id)}`);

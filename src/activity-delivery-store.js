@@ -53,7 +53,7 @@ function canonicalInterrupt(board, agentId, input, observedThrough) {
       throw new Refused('STALE_ACTIVITY_RECEIPT', 'the claim changed; read inbox again before recording its delivery');
     }
     return { id: input.id, reason: input.reason, kind: 'claim', item: item.item_id,
-      leaseUntil: item.item_lease_until, text: `#${item.item_id} claim is lapsing; renew or release it` };
+      leaseUntil: item.item_lease_until, text: `#${item.item_id} claim lease ${item.item_lease_until} needed attention; acknowledge only after acting` };
   }
   if (!Number.isSafeInteger(input.eventId) || input.eventId < 1 || input.eventId > observedThrough || input.id !== `event:${input.eventId}`) {
     throw new Refused('BAD_ACTIVITY_RECEIPT', 'an interrupt must name an observed native event; read inbox again');
@@ -68,16 +68,21 @@ function canonicalInterrupt(board, agentId, input, observedThrough) {
     const question = answer && board.db.prepare('SELECT * FROM shout WHERE shout_id=?').get(answer.shout_answers);
     if (question?.shout_from === agentId && question.shout_decision) text = `question #${question.shout_id} was answered; read answer #${answer.shout_id}`;
   } else if (input.reason === 'files-changed' && event?.event_kind === 'main-moved') {
-    if (!Array.isArray(input.files) || !input.files.length || input.files.some(path => typeof path !== 'string' || !path || path.length > 4096)) {
+    const files = input.files ?? [];
+    if (!Array.isArray(files) || !files.length && input.unknownFiles !== true && input.unknownAdditionalFiles !== true
+      || files.some(path => typeof path !== 'string' || !path || path.length > 4096)) {
       throw new Refused('BAD_ACTIVITY_RECEIPT', 'a file interrupt needs its observed Git paths; read inbox again');
     }
     // Paths describe the recipient's Git observation. They grant no board or file authority.
-    text = `main changed ${new Set(input.files).size} files you are editing; inspect the recorded main change`;
+    text = input.unknownFiles || input.unknownAdditionalFiles
+      ? 'main changed; some working-file overlap is unknown; inspect the recorded main change'
+      : `main changed ${new Set(input.files).size} files you are editing; inspect the recorded main change`;
   }
   if (!text) throw new Refused('BAD_ACTIVITY_RECEIPT', 'that event is not this seat\'s interrupt; read your own inbox');
   return { id: input.id, eventId: event.event_id, at: event.event_at, by: event.event_by,
     reason: input.reason, kind: event.event_kind, ...(event.item_id === null ? {} : { item: event.item_id }),
-    ...(input.reason === 'files-changed' ? { files: [...new Set(input.files)].toSorted() } : {}), text };
+    ...(input.reason === 'files-changed' ? { files: [...new Set(input.files ?? [])].toSorted(), ...(input.unknownFiles ? { unknownFiles: true } : {}),
+      ...(input.unknownAdditionalFiles ? { unknownAdditionalFiles: true } : {}) } : {}), text };
 }
 
 /** Record only actually included interrupts, once; withheld and later events stay available. */
