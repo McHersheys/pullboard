@@ -358,7 +358,9 @@ function recordEventContract() {
   refreeze(board, first, { agentId: coordinator, freeze: freeze('second') });
   claim(board, first, { agentId: builder, lane: 'docs', leaseMs: 60_000, freeze: freeze('unused') });
   const acceptedCommit = 'a'.repeat(40);
-  submitFixture(board, first, { agentId: builder, commit: acceptedCommit, tree: 'b'.repeat(40), files: ['docs/formats.md'], policyCommit: 'a'.repeat(40) });
+  // Synthetic metadata exercises the optional event shape; real Git counting is tested separately.
+  submitFixture(board, first, { agentId: builder, commit: acceptedCommit, tree: 'b'.repeat(40), files: ['docs/formats.md'], policyCommit: 'a'.repeat(40),
+    submissionSize: { base: 'c'.repeat(40), head: acceptedCommit, lines: 100, method: 'added-plus-deleted-no-renames' } });
   reserveReview(board, first, { agentId: reviewer, leaseMs: 60_000, policy: 'agents' });
   verify(board, first, { agentId: reviewer, decision: 'ACCEPT', reason: ACCEPT_REASON, note: 'checked the example', head: acceptedCommit, digest: 'second', policy: 'agents', implies: [dependency] });
   verify(board, first, { agentId: reviewer, decision: 'ACCEPT', note: 'checked a newer composition',

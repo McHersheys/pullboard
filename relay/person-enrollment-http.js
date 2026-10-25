@@ -5,9 +5,17 @@ import { personEnrollmentBody } from '../src/person-enrollment.js';
 
 /** Deliver only within the authenticated account and its currently authorized boards. */
 export async function handlePersonEnrollment(req, res, { pathname, who, devices, authorizeBoard }) {
+  if (pathname === '/api/v1/devices/person-enrollments' && req.method === 'GET') {
+    if (who.kind !== 'machine') throw new Refused('HUMAN_REQUIRED', 'Discover enrollments with the linked board’s machine credential.');
+    await authorizeBoard(req, who.board);
+    apiJson(res, 200, { enrollments: devices.person.pending(who.user.id, who.board) });
+    return true;
+  }
   const route = /^\/api\/v1\/devices\/person-enrollments\/([A-Za-z0-9_-]{43})$/u.exec(pathname);
   if (!route) return false;
-  if (who.kind !== 'session') throw new Refused('HUMAN_REQUIRED', 'Use an authenticated person session for account enrollment.');
+  if (who.kind !== 'session' && !(who.kind === 'machine' && req.method === 'PUT')) {
+    throw new Refused('HUMAN_REQUIRED', 'Use a person session for enrollment or the linked machine for its board’s completion.');
+  }
   const account = who.user.id;
   const nonce = route[1];
   if (req.method === 'POST') {
@@ -27,6 +35,9 @@ export async function handlePersonEnrollment(req, res, { pathname, who, devices,
         !Number.isSafeInteger(body.engine) || body.engine < 1 || typeof body.wrapped !== 'string' ||
         !/^[A-Za-z0-9_-]{1,6000}$/u.test(body.wrapped) || Buffer.from(body.wrapped, 'base64url').toString('base64url') !== body.wrapped) {
       throw new Refused('DEVICE_WRAP', 'Send only a versioned opaque wrap and its exact board binding.');
+    }
+    if (who.kind === 'machine' && who.board !== body.board) {
+      throw new Refused('TOKEN_BOARD', 'Complete only the board bound to this machine credential.');
     }
     await authorizeBoard(req, body.board);
     apiJson(res, 200, devices.person.complete(account, nonce, body));
