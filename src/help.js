@@ -32,7 +32,7 @@ Set up
   pullboard resources                  local resource holders and their FIFO queues
   pullboard settings line [<name> <value> --reason "why" --window <json>]  read or record board controller inputs; all off by default
       value is on, off, or a number within the setting range
-                                        names: order, reviewsFirst, wipPerReviewer (1.5-3), barReady, takeoverMinutes (15-60), collisionFreeBatch, landingBatchSize (1-8), landingCadenceMinutes (5-30)
+                                        names: order, reviewsFirst, wipPerReviewer (1.5-3), barReady, bar.check, takeoverMinutes (15-60), collisionFreeBatch, landingBatchSize (1-8), landingCadenceMinutes (5-30)
   pullboard settings [gateSlots <n> | browserSlots <n>]  view or set machine capacity (gate default 2; browser default 1)
                                         browser-free check slots are opt-in: gate.browserFreeChecks in ~/.pullboard/settings.json (default false)
                                         a test file takes a browser slot only if it launches Chrome: gate.browserByLaunch (default false)
@@ -118,8 +118,9 @@ Work
   pullboard skills --update            refresh unchanged Claude Code skills from shipped versions
   pullboard show <id> [--history]       an item, the criterion frozen at claim, its verdicts: the latest in full,
                                         earlier ones as one line; --history prints every note in full
-  pullboard fact <id> <kind> <text> [--supersedes <fact-id>] [--ref path:lines@full-sha] [--implies <ids>]
-                                        append an observation or a holder/coordinator judgement to its thread
+  pullboard fact <id> <kind> <text> [--answers <bar-check-fact-id>] [--supersedes <fact-id>] [--ref path:lines@full-sha] [--implies <ids>]
+                                        append observations, bar-check notes and peer answers, or holder/coordinator judgements
+                                        a bar-answer uses --answers to name the bar-check fact it reviewed
                                         --implies 12,13: each named item gets a fact citing this decision,
                                         and is told again when the decision is superseded
                                         the person adds --cause <key> --never-again --as person: rigor lists it at once
