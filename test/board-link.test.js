@@ -228,4 +228,25 @@ test('sealed board-link delivery authenticates both boards and retains exact ret
   await receiver.publish(revoked);
   await assert.rejects(transportApi.deliverBoardState(child.board, { ...context, correlationId: 'state-11', position: 11 }, ports),
     error => error.code === 'BOARD_LINK_INACTIVE', 'authoritative revocation blocks a source whose local catalog is stale');
+  for (const [generation, mode] of [[2, 'counts'], [3, 'nothing']]) {
+    const renewed = await consent(api, authority, parent, child, record.linkId, mode, generation);
+    await api.applyBoardLink(child.board, renewed, authority);
+    await api.applyBoardLink(parent.board, renewed, authority);
+    await sender.publish(renewed);
+    const nextContext = { ...context, generation, position: generation, correlationId: 'mode-' + mode };
+    await assert.rejects(transportApi.deliverBoardState(child.board, nextContext, ports), error => error.code === 'BOARD_LINK_AUTH',
+      'a prior generation capability cannot seal new consent');
+    await assert.rejects(transportApi.deliverBoardState(child.board, nextContext, { authority, transport: sender }),
+      error => error.code === 'BOARD_LINK_AUTH', 'missing sealing authority never falls back to plaintext');
+    const scoped = createBoardLinkCapability(renewed, await generateBoardKey());
+    await transportApi.deliverBoardState(child.board, nextContext, { authority, capability: scoped, transport: sender });
+    const delivery = (await receiver.read()).deliveries.at(-1);
+    const allowed = await scoped.open(delivery.envelope);
+    assert.deepEqual(allowed.rows, mode === 'counts' ? { claimed: 1 } : []);
+    assert.equal(JSON.stringify(allowed).includes('must stay private'), false);
+    await transportApi.receiveBoardState(parent.board, delivery, { authority, capability: scoped });
+    scoped.close();
+    await assert.rejects(scoped.open(delivery.envelope), error => error.code === 'BOARD_LINK_AUTH');
+  }
+  capability.close();
 });

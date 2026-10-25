@@ -1,4 +1,17 @@
-/** Shared board links retain bilateral consent, current generations and a multiple-parent DAG [E32,H16,H17]. */
+/**
+ * Shared board links retain bilateral consent, current generations and a multiple-parent DAG [E32,H16,H17].
+ *
+ * Resolve BoardRefs through an explicitly authorized inventory, then approve the canonical record
+ * with each endpoint's caller-configured signer authority. applyBoardLink persists that accepted
+ * record on a real board/catalog; readBoardLinks is detached storage, not an authority assertion.
+ * Operations call authorizeBoardLink again, so restored records and asynchronous revocations do
+ * not inherit trust from a path, handle, registry entry or previous successful read.
+ *
+ * boardStateAnnouncement is only the common stripping serializer. Actual delivery is provided
+ * by board-link-relay.js with a board-bound authenticated transport and a separately provisioned
+ * board-link-envelope.js capability. Neither repository enrollment nor a relay bearer token
+ * replaces the two board approvals. There is no CLI, UI or automatic key-distribution policy here.
+ */
 import { Refused } from './refused.js';
 import { atomic } from './board-event-log.js';
 import { logEvent } from './board-event-log.js';
