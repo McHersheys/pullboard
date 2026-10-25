@@ -24,6 +24,8 @@ test('a spec revision shows old and proposed rows side by side with proposal-id 
     assert.equal(state.needs.filter(row => row.kind === 'spec-revision').length, 4, 'the actual API carries all four proposals');
     chrome = await openSnapshotChrome(executable, view.link.href, profile);
     await chrome.waitFor('data?.project?.specRevisions?.length === 4');
+    await press(chrome, "document.querySelector('[data-tab=items]')");
+    await chrome.waitFor("!document.querySelector('[data-pane=items]').hidden");
     assert.equal(await chrome.stable('document.querySelectorAll("#needs [data-spec-revision]").length'), 4,
       'Needs you renders each core-projected revision as its own actionable comparison');
     await chrome.stable(`window.revisionMoves = []; window.revisionFetch = window.fetch; window.fetch = function(input, init) {
@@ -37,11 +39,13 @@ test('a spec revision shows old and proposed rows side by side with proposal-id 
       const shown = JSON.parse(await chrome.stable(`(() => { const row = ${row}; const old = row.querySelector('[data-revision-before]');
         const proposed = row.querySelector('[data-revision-after]'); const a = old.getBoundingClientRect(), b = proposed.getBoundingClientRect();
         return JSON.stringify({ old: old.textContent, proposed: proposed.textContent, reason: row.textContent,
+          visible: a.width > 0 && a.height > 0 && b.width > 0 && b.height > 0,
           sideBySide: a.right <= b.left + 1 && Math.abs(a.top - b.top) <= 1, right: row.getBoundingClientRect().right }); })()`));
       const original = state.specRevisions.find(proposal => proposal.id === approve);
       assert.ok(shown.old.includes(original.source), `${width}: the complete old row is shown`);
       assert.ok(shown.proposed.includes(original.replacement), `${width}: the complete proposed row is shown`);
       assert.ok(shown.reason.includes(original.reason), `${width}: the reason is shown`);
+      assert.ok(shown.visible, `${width}: both row versions have visible layout boxes`);
       assert.ok(shown.sideBySide, `${width}: old and proposed columns are alongside each other`);
       assert.ok(shown.right <= width, `${width}: the comparison stays in the viewport`);
       await press(chrome, `${row}.querySelector('[data-row-decision="approve"]')`);
