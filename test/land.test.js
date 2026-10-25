@@ -573,8 +573,9 @@ test('land names sibling conflicts whose reviews share the unchanged main [B3,R3
   assert.match(trunk, /^[a-f0-9]{40}$/u, 'the collision records an exact Git composition');
   assert.deepEqual(box.git(box.repo, 'show', '-s', '--format=%P', trunk).split(' '), [base, firstCommit],
     'the conflicting trunk contains the base and only the first reviewed sibling');
-  assert.equal(box.git(box.repo, 'rev-parse', `${trunk}^{tree}`), box.git(box.repo, 'rev-parse', 'main^{tree}'),
-    'the recorded speculative composition has the tree that actually lands');
+  const expectedTree = box.git(box.repo, 'merge-tree', '--write-tree', base, firstCommit).split('\n')[0];
+  assert.equal(box.git(box.repo, 'rev-parse', `${trunk}^{tree}`), expectedTree,
+    'the recorded conflict-time tree is the independent Git composition before landing badges change');
   assert.deepEqual(result.conflicts, [{ id: entries[1].item, files: [FILES[0]], trunk,
     commit: reviewedCommit, reviewedCommit }], 'the actual batch binds the sibling collision to its exact composition and reviewed commit');
 });
