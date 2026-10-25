@@ -49,6 +49,14 @@ test('a signed two-sided link carries only its disclosure mode and refuses a cyc
   const second = signedBoard(t, 'second');
   const authority = createSshBoardLinkAuthority([parent, child, second]);
   const record = await consent(api, authority, parent, child, 'parent-child');
+  await assert.rejects(api.verifyBoardLink({ ...record, approvals: record.approvals.slice(0, 1) }, authority),
+    error => error.code === 'BOARD_LINK_AUTH', 'one endpoint cannot supply bilateral consent');
+  await assert.rejects(api.verifyBoardLink(record, createSshBoardLinkAuthority([])), error => error.code === 'BOARD_LINK_AUTH');
+  await assert.rejects(api.verifyBoardLink({ ...record, generation: 2 }, authority),
+    error => error.code === 'BOARD_LINK_AUTH', 'a new generation cannot reuse old signatures');
+  const forged = structuredClone(record);
+  forged.approvals[0].signature = 'not an SSH signature';
+  await assert.rejects(api.verifyBoardLink(forged, authority), error => error.code === 'BOARD_LINK_AUTH');
   assert.match(record.approvals[0].signature, /BEGIN SSH SIGNATURE/u, 'the existing SSH authority signs real consent');
   assert.match(record.approvals[1].signature, /BEGIN SSH SIGNATURE/u);
   assert.equal(readFileSync(join(parent.root, '.pullboard', 'signers'), 'utf8').includes('parent'), true);
@@ -57,6 +65,8 @@ test('a signed two-sided link carries only its disclosure mode and refuses a cyc
   assert.deepEqual(api.readBoardLinks(parent.board), [record]);
   assert.deepEqual(api.resolveBoardReference([parent.reference, child.reference], 'fixture/child'), child.reference);
   assert.deepEqual(api.resolveBoardReference([parent.reference, child.reference], { boardId: child.reference.boardId }), child.reference);
+  assert.throws(() => api.resolveBoardReference([parent.reference, { ...child.reference, handle: parent.reference.handle }], 'fixture/parent'),
+    error => error.code === 'BOARD_REFERENCE', 'qualified display names must be unambiguous in the authorized inventory');
   const announcement = api.boardStateAnnouncement(parent.board, { linkId: record.linkId,
     sourceBoardId: child.reference.boardId, destinationBoardId: parent.reference.boardId,
     generation: 1, position: 7,
@@ -80,6 +90,11 @@ test('a signed two-sided link carries only its disclosure mode and refuses a cyc
     generation: 1, position: 8, rows: [] }), error => error.code === 'BOARD_LINK_INACTIVE');
   await assert.rejects(api.applyBoardLink(parent.board, record, authority), error => error.code === 'BOARD_LINK_CONFLICT',
     'replaying old consent cannot undo a signed revocation');
+  const renewed = await consent(api, authority, parent, child, record.linkId, 'nothing', 2);
+  await api.applyBoardLink(parent.board, renewed, authority);
+  assert.deepEqual(api.boardStateAnnouncement(parent.board, { linkId: record.linkId, generation: 2,
+    sourceBoardId: child.reference.boardId, destinationBoardId: parent.reference.boardId,
+    position: 9, rows: [{ board: child.reference.boardId, id: 8, state: 'claimed', title: 'private' }] }).rows, []);
 });
 
 /** Start the existing authenticated relay with real stand-in OAuth and private native snapshots. */
@@ -123,12 +138,16 @@ async function linkRelay(t, boards, authority) {
     states.set(board, { url: origin, token: issued.token, board, agent: 'link-agent' });
   }
   return { states, request,
-    async restart() {
+    async restart(options = {}) {
       await service.close();
       service = await serveRelay({ directory: join(directory, 'relay'), auth, maintenanceMs: 0,
-        now: () => time, boardLinkAuthority: authority });
+        now: () => time, boardLinkAuthority: authority, accountStorageBytes: options.accountStorageBytes });
       origin = 'http://127.0.0.1:' + service.port;
       for (const state of states.values()) state.url = origin;
+    },
+    async storedBytes() {
+      const { boardStorageBytes } = await import('../relay/storage-quota.js');
+      return boards.reduce((total, box) => total + boardStorageBytes(join(directory, 'relay'), box.reference.boardId), 0);
     },
   };
 }
@@ -181,6 +200,25 @@ test('sealed board-link delivery authenticates both boards and retains exact ret
   const eventCount = parent.board.db.prepare('SELECT COUNT(*) AS n FROM event').get().n;
   assert.deepEqual(await transportApi.receiveBoardState(parent.board, delivered, { authority, capability }), received);
   assert.equal(parent.board.db.prepare('SELECT COUNT(*) AS n FROM event').get().n, eventCount, 'consumer retry makes no second event');
+  await assert.rejects(capability.open({ ...delivered.envelope, position: 11 }), error => error.code === 'SEAL_AUTH_FAILED');
+  await assert.rejects(capability.open({ ...delivered.envelope, correlationId: 'other' }), error => error.code === 'BOARD_LINK_FORMAT');
+  await assert.rejects(sender.send({ ...delivered.envelope, sourceBoardId: parent.reference.boardId }), error => error.code === 'BOARD_LINK_AUTH');
+  await assert.rejects(sender.send(await capability.seal('stale-9', { ...plain, position: 9 })),
+    error => error.code === 'BOARD_LINK_REPLAY', 'fresh correlation IDs cannot replay an older source position');
+  await assert.rejects(sender.send(await capability.seal('state-10', plain)), error => error.code === 'BOARD_LINK_CONFLICT',
+    'the same correlation cannot replace its retained ciphertext');
+  const stored = transportApi.readReceivedBoardState(parent.board, context);
+  stored.rows[0].state = 'withdrawn';
+  assert.equal(transportApi.readReceivedBoardState(parent.board, context).rows[0].state, 'claimed', 'reads return detached state');
+  const usedBytes = await box.storedBytes();
+  await box.restart({ accountStorageBytes: usedBytes + 1 });
+  const next = { ...context, position: 11, correlationId: 'quota-11' };
+  await assert.rejects(transportApi.deliverBoardState(child.board, next, ports), error => error.code === 'ACCOUNT_STORAGE_LIMIT');
+  assert.equal((await receiver.read()).deliveries.length, 1, 'quota refusal rolls back the incoming envelope');
+  assert.equal(await box.storedBytes(), usedBytes, 'refused delivery contributes no retained bytes');
+  await box.restart();
+  await transportApi.deliverBoardState(child.board, next, ports);
+  assert.equal((await receiver.read()).deliveries.length, 2, 'the unchanged durable outbox can retry after quota recovery');
   await assert.rejects(transportApi.deliverBoardState(child.board, { ...context,
     rows: [{ board: child.reference.boardId, id: 1, state: 'submitted' }] }, ports), error => error.code === 'BOARD_LINK_CONFLICT');
   await assert.rejects(box.request(box.states.get(child.reference.boardId),
