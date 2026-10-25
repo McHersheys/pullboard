@@ -49,3 +49,21 @@ test('a computed true CPU-load option is not mistaken for a literal false option
   assert.equal(remote.executor?.runnerExecution, true);
   assert.notEqual(remote.executor?.cwd, box.repo);
 });
+
+test('an inline comment in a CPU-load option keeps the test on its registered runner [C7]', async () => {
+  const box = cpuLoadFixture(e2e, { declaration: '{ cpuLoad /* explanation */ : true }' });
+  const remote = await box.runGate();
+  assert.equal(remote.result.status, 0, remote.result.context);
+  assert.equal(box.requestsMade().length, 1, 'valid inline comments do not hide the CPU-load declaration');
+  assert.equal(remote.executor?.runnerExecution, true);
+  assert.notEqual(remote.executor?.cwd, box.repo);
+});
+
+test('a shorthand CPU-load option keeps the test on its registered runner [C7]', async () => {
+  const box = cpuLoadFixture(e2e, { declaration: '(() => { const cpuLoad = true; return { cpuLoad }; })()' });
+  const remote = await box.runGate();
+  assert.equal(remote.result.status, 0, remote.result.context);
+  assert.equal(box.requestsMade().length, 1, 'a valid shorthand CPU-load option does not run on the coordinator');
+  assert.equal(remote.executor?.runnerExecution, true);
+  assert.notEqual(remote.executor?.cwd, box.repo);
+});
