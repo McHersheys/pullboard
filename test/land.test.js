@@ -564,9 +564,12 @@ test('land names sibling conflicts whose reviews share the unchanged main [B3,R3
   assert.deepEqual(dry.blocked, [], 'neither acceptance is stale against unchanged main');
   assert.deepEqual(dry.conflicts, [], 'each sibling merges with the current main considered individually');
   assert.deepEqual(dry.items, entries.map(entry => entry.item));
+  const reviewedCommit = box.git(entries[1].path, 'rev-parse', 'HEAD');
   const result = json(box, box.repo, 'land');
   assert.deepEqual(result.landed, [entries[0].item]);
-  assert.deepEqual(result.conflicts, [{ id: entries[1].item, files: [FILES[0]] }], 'the actual batch names the collision between the two fresh siblings');
+  const trunk = box.git(box.repo, 'rev-parse', 'main');
+  assert.deepEqual(result.conflicts, [{ id: entries[1].item, files: [FILES[0]], trunk,
+    commit: reviewedCommit, reviewedCommit }], 'the actual batch binds the sibling collision to the landed trunk and exact reviewed commit');
 });
 
 /** Keep the complete private diagnostic refusal in a failing assertion before fixture cleanup deletes its logs. */
