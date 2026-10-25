@@ -64,6 +64,12 @@ channel('child_process').subscribe(({process:child})=>{
   if (Number.isSafeInteger(child.pid)) record(); else child.once('spawn',record);
 });
 writeFileSync(file,JSON.stringify({pid:process.pid,environment:{platform:process.platform,arch:process.arch,node:process.version.slice(1)},file:null}),{flag:'wx',mode:0o400});
+// Synchronous spawns have no diagnostics-channel event. An unbound custom process that
+// loads child_process cannot prove it is the final executor, even if no async child was seen.
+process.once('exit',()=>{
+  if (!process.execArgv.includes('--test') && process.moduleLoadList.includes('NativeModule child_process'))
+    writeFileSync(directory+'/custom-launcher-'+process.pid+'.json',JSON.stringify({pid:process.pid}),{flag:'wx',mode:0o400});
+});
 // Node's --test parent only starts workers; retain capture until the actual test process boots.
 // User code sees its original NODE_OPTIONS, not this recorder's injected option.
 if (!process.execArgv.includes('--test')) {
@@ -180,6 +186,15 @@ export function captureTestRuntimes(env) {
         const files = checked.filter(row => boundPids.has(row.pid));
         if (files.length) return files;
         const reported = new Set(checked.map(row => row.pid));
+        for (const name of entries.filter(name => /^custom-launcher-[0-9]+\.json$/u.test(name))) {
+          const path = join(directory, name);
+          const stat = lstatSync(path);
+          if (!stat.isFile() || stat.mode & 0o222 || stat.size > 8192) return null;
+          const custom = JSON.parse(readFileSync(path, 'utf8'));
+          if (Object.keys(custom).join(',') !== 'pid' || !Number.isSafeInteger(custom.pid) || custom.pid < 1
+            || name !== 'custom-launcher-' + custom.pid + '.json') return null;
+          if (reported.has(custom.pid)) return null;
+        }
         const launchers = new Set();
         for (const name of entries.filter(name => /^child-[0-9]+-[0-9]+\.json$/u.test(name))) {
           const path = join(directory, name);
