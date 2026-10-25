@@ -95,6 +95,12 @@ export function createRelayJournal({ directory, boardId, maxBytes = DEFAULT_BYTE
     // first mint can take a name a creator registered, even if enrollment never finished (#579).
     db.exec(`CREATE TABLE IF NOT EXISTS journal_registration (target TEXT PRIMARY KEY, creator TEXT NOT NULL,
       sequence INTEGER NOT NULL UNIQUE, digest TEXT NOT NULL)`);
+    db.exec(`CREATE TABLE IF NOT EXISTS board_link_delivery (
+      delivery_id INTEGER PRIMARY KEY AUTOINCREMENT, source_board TEXT NOT NULL,
+      correlation TEXT NOT NULL, link_id TEXT NOT NULL, generation INTEGER NOT NULL,
+      position INTEGER NOT NULL, digest TEXT NOT NULL, envelope TEXT NOT NULL, receipt TEXT NOT NULL,
+      UNIQUE(source_board,correlation))`);
+    db.exec('CREATE INDEX IF NOT EXISTS board_link_delivery_position ON board_link_delivery(source_board,link_id,generation,position DESC)');
     db.exec('INSERT OR IGNORE INTO journal_head (slot,sequence) SELECT 1, COALESCE(MAX(sequence),0) FROM journal_record');
     if (!db.prepare('PRAGMA table_info(journal_head)').all().some((column) => column.name === 'last_activity_at')) {
       db.exec('ALTER TABLE journal_head ADD COLUMN last_activity_at TEXT');

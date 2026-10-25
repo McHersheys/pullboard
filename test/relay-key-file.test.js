@@ -137,11 +137,15 @@ test('owner-only key file links and reads with a locked keychain, migrates once,
     method: 'DELETE', headers: { authorization: 'Bearer ' + phone.token, 'x-pullboard-engine': String(ENGINE_VERSION) },
   });
   assert.equal(deleted.status, 200, 'the phone explicitly removes the old relay copy before linking with a new key');
-  assert.equal((await box.cli('relay', 'on', '--url', box.origin)).code, 0,
-    'the board can link again while the keychain remains locked');
-
-  const envKey = readFileSync(box.keyFile, 'utf8').trim();
-  rmSync(box.keyFile);
+  const relinked = await box.cli('relay', 'on', '--url', box.origin);
+  assert.equal(relinked.code, 0, 'the board can link again while the keychain remains locked');
+  assert.notEqual(relinked.document.board, legacyLink.board, 'explicit OFF relinks a fresh board epoch');
+  const currentKeyFile = join(box.env.PULLBOARD_HOME, 'relay-keys', relinked.document.board + '.key');
+  assert.equal(existsSync(box.keyFile), false, 'the previous epoch key stays forgotten');
+  assert.equal(statSync(currentKeyFile).mode & 0o777, 0o600, 'the new epoch key file is owner-only too');
+  const envKey = readFileSync(currentKeyFile, 'utf8').trim();
+  assert.notEqual(envKey, encoded, 'the fresh epoch does not reuse the old board key');
+  rmSync(currentKeyFile);
   box.env.PULLBOARD_RELAY_KEY = envKey;
   assert.equal((await box.cli('relay')).code, 0,
     'PULLBOARD_RELAY_KEY opens the linked board without a key file');
@@ -150,5 +154,5 @@ test('owner-only key file links and reads with a locked keychain, migrates once,
     'PULLBOARD_RELAY_KEY seals and sends a real move without a key file');
   assert.ok(box.calls.filter(call => call.method === 'POST' && call.path.endsWith('/moves')).length > moves,
     'the environment-only command reaches the real relay move endpoint');
-  assert.equal(existsSync(box.keyFile), false, 'the environment key is not copied to a file');
+  assert.equal(existsSync(currentKeyFile), false, 'the environment key is not copied to a file');
 });
