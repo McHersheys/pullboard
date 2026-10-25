@@ -245,3 +245,16 @@ test('pullboard map prints the overview, a card and an item slice from one scan 
   assert.notEqual(refreshed.generatedAt, firstMap.generatedAt);
   assert.match(agentsBlock(), /pullboard map --for <item>/u);
 });
+
+
+/** A scanned constructor is classified without ever evaluating the fixture source. */
+test('the map still detects a socket constructor as a network effect [C7,P5]', () => {
+  const box = e2e.project();
+  mkdirSync(join(box.repo, 'src'), { recursive: true });
+  writeFileSync(join(box.repo, 'src/socket.js'), 'export function connectSocket(address) { return new WebSocket(address); }\n');
+  box.git(box.repo, 'add', 'src/socket.js');
+  box.git(box.repo, 'commit', '-q', '-m', 'test: record unevaluated socket source');
+  const map = buildCodeMap(box.repo, box.git(box.repo, 'rev-parse', 'main'));
+  const connect = map.modules.find(module => module.path === 'src/socket.js').functions.find(fn => fn.name === 'connectSocket');
+  assert.ok(connect.effects.includes('network'));
+});

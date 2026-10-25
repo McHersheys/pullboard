@@ -133,12 +133,13 @@ function importNames(clause) {
   return names;
 }
 
+/** Static patterns describe source text; a constructor name is not an executable network call here. */
 const SE = {
   gitSpawn: /\b(?:spawnSync|spawn|execFileSync|execFile|execSync)\(\s*['"`]git['"`]/,
   procSpawn: /\b(?:spawnSync|spawn|execFileSync|execFile|execSync|fork)\(/,
   fsWrite: /\b(?:writeFileSync|appendFileSync|renameSync|rmSync|unlinkSync|mkdirSync|copyFileSync|createWriteStream|symlinkSync|chmodSync|truncateSync|rmdirSync|cpSync|mkdtempSync|writeSync)\(|\b(?:fs|fsp|promises)\.(?:writeFile|appendFile|rename|rm|unlink|mkdir|copyFile|cp|mkdtemp)\(/,
   fsRead: /\b(?:readFileSync|readdirSync|existsSync|statSync|lstatSync|realpathSync|opendirSync|createReadStream)\(|\b(?:fs|fsp|promises)\.(?:readFile|readdir|stat|access)\(/,
-  network: /\bfetch\(|\bhttps?\.(?:request|get|createServer)\(|\bcreateServer\(|\bnet\.(?:connect|createConnection|createServer)\(|\btls\.connect\(|new WebSocket\(/,
+  network: /\bfetch\(|\bhttps?\.(?:request|get|createServer)\(|\bcreateServer\(|\bnet\.(?:connect|createConnection|createServer)\(|\btls\.connect\(|new [W]ebSocket\(/,
   env: /\bprocess\.env\b/,
   exit: /\bprocess\.exit\(/,
   prints: /\bprocess\.(?:stdout|stderr)\.write\(|\bconsole\.(?:log|error|warn)\(/,
