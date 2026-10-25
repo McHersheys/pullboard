@@ -139,7 +139,7 @@ export function createAuthHandler({ auth, publicOrigin }) {
       } else if (route === 'POST /auth/boards/link') {
         const bearer = token(req, true);
         const input = await body(req);
-        json(res, 200, { board: await auth.linkBoard(bearer, input.board, input.repository) });
+        json(res, 200, { board: await auth.linkBoard(bearer, input.board, input.repository, Infinity, input.replaces ?? null) });
       } else if (route === 'GET /auth/machines') {
         json(res, 200, { machines: await auth.listMachines(token(req), url.searchParams.get('board')) });
       } else if (route === 'POST /auth/machines') {
