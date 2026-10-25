@@ -2,10 +2,12 @@
 import assert from 'node:assert/strict';
 import {
   readFileSync,
+  chmodSync,
+  existsSync,
   writeFileSync,
   rmSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { test } from 'node:test';
 import { bridgeProject, bridgeProvider, landBridgeItems, landBridgeRepair, mergeBridgeAs, runBridgeCLI } from './pr-bridge-fixture.js';
 import { onBoard } from './land-board-fixture.js';
@@ -14,6 +16,8 @@ import { exportBoard, importBoard } from '../src/exchange.js';
 import { prepareEngineMove, applyEngineMove } from '../src/engine.js';
 import { PR_BRIDGE_ENGINE } from '../src/pr-bridge-engine.js';
 import { configFromSource } from '../src/config.js';
+import { publishVerificationStatuses } from '../src/pr-verification.js';
+import { withGitFacts } from '../src/git.js';
 
 /** Read the real private gate invocations, retaining their exact Git heads. */
 function gateHeads(box) {
@@ -270,4 +274,47 @@ test('publication findings replay deterministically and ordinary closed-parent g
     criterion: 'ordinary closed parent remains refused', parentId: entries[0].id, route: 'strong' }), { code: 'PARENT_CLOSED' });
   assert.throws(() => store.recordPublishFinding(source, { ...request, agentId: 'web-1' }), { code: 'COORDINATOR_ONLY' });
   assert.throws(() => store.linkPublishRepair(source, { agentId: 'web-1', item: entries[0].id, repair: entries[1].id }), { code: 'COORDINATOR_ONLY' });
+});
+
+
+test('one publish pass computes pull request coverage once with bounded git calls [B3,R3]', async t => {
+  const box = bridgeProject(t);
+  landBridgeItems(box, { independent: true });
+  const head = box.git(box.repo, 'rev-parse', 'main');
+  const commits = box.git(box.repo, 'rev-list', `${box.published}..${head}`).split('\n').filter(Boolean);
+  const pulls = [1, 2, 3].map(number => ({ number, head: { sha: head }, base: { sha: box.published }, commits: commits.length }));
+  const state = { proposals: pulls.map(pull => ({ repository: 'fixture/repository', number: pull.number, head })) };
+  const statuses = [];
+  const client = { open: () => pulls, read: number => pulls.find(pull => pull.number === number),
+    commits: () => commits.map(sha => ({ sha })), statuses: sha => statuses.filter(status => status.sha === sha),
+    setStatus: (sha, value) => statuses.push({ sha, ...value }) };
+  const realGit = process.env.PATH.split(delimiter).map(directory => join(directory || '.', 'git')).find(existsSync);
+  assert.ok(realGit);
+  const trace = join(box.dir, 'proof-git-calls.log'), shim = join(box.dir, 'bin', 'git');
+  writeFileSync(shim, '#!/bin/sh\nprintf "git\\n" >> "$PB_PROOF_GIT_CALLS"\nexec "$PB_PROOF_REAL_GIT" "$@"\n');
+  chmodSync(shim, 0o755);
+  const before = { PATH: process.env.PATH, PB_PROOF_GIT_CALLS: process.env.PB_PROOF_GIT_CALLS,
+    PB_PROOF_REAL_GIT: process.env.PB_PROOF_REAL_GIT };
+  const board = store.openBoard(join(box.repo, '.git/pullboard/board.sqlite'));
+  let itemReads = 0;
+  const observed = { ...board, db: {
+    exec: sql => board.db.exec(sql),
+    prepare(sql) { if (/^SELECT \* FROM item WHERE/u.test(sql)) itemReads += 1; return board.db.prepare(sql); },
+  } };
+  try {
+    process.env.PATH = join(box.dir, 'bin') + delimiter + before.PATH;
+    process.env.PB_PROOF_GIT_CALLS = trace; process.env.PB_PROOF_REAL_GIT = realGit;
+    const results = await withGitFacts(() => publishVerificationStatuses({ root: box.repo, board: observed,
+      client, state, repository: 'fixture/repository', trustedHead: head }));
+    assert.ok(results.every(result => result.state === 'success'), JSON.stringify(results));
+    assert.equal(statuses.length, 1, 'provider statuses remain deduplicated by exact head');
+    const calls = readFileSync(trace, 'utf8').trim().split('\n').filter(Boolean).length;
+    assert.equal(itemReads, 1, 'one native item/receipt cohort serves all open pull requests');
+    assert.ok(calls <= 6, `coverage uses a bounded graph read, observed ${calls} Git processes`);
+  } finally {
+    store.closeBoard(board);
+    for (const [key, value] of Object.entries(before)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
 });
