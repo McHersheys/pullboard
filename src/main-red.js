@@ -20,6 +20,7 @@ import { stripVTControlCharacters } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import {
   runProfiledShell,
+  runProfiledShellAsync,
   withGateSlot,
 } from './gate.js';
 import {
@@ -197,7 +198,9 @@ export async function compareMainFailures(root, profile, onWait, output = '', { 
           /** Run main's copy of the file under one gate slot, retaining detailed identity when requested. */
           const measure = remote => withGateSlot(checkout, async lease => {
             const command = `${policy.config.affectedTests.trimEnd()} ${shellWord('./' + path)}`;
-            const run = runProfiledShell(checkout, command, { gateLease: lease, waitMs: lease.waitMs, stages: detailed });
+            const run = detailed
+              ? runProfiledShell(checkout, command, { gateLease: lease, waitMs: lease.waitMs, stages: true })
+              : await runProfiledShellAsync(checkout, command, { gateLease: lease, waitMs: lease.waitMs });
             const failures = detailed ? run.isGreen ? [] : failureSignatures(run, checkout) : null;
             if (detailed && !run.isGreen && !failures) throw new Error('focused main output has no complete named failure account');
             return { result: run.isGreen ? 'green' : 'red', ...(failures ? { failures } : {}) };

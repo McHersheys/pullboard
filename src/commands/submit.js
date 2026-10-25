@@ -178,6 +178,8 @@ export async function submitHere(ctx, id, infra) {
   if (stray.length) throw new Refused('UNTRACKED', `commit or ignore ${stray.length} untracked file(s), e.g. ${stray[0]}`);
   const commit = headCommit(root);
   if (!commit) throw new Refused('NO_COMMIT', 'nothing committed yet');
+  // A trunk checkout can have advanced since the claim; comparing it with itself would bless its own new red test.
+  const mainFailureBase = acceptedMain.commit === commit ? claimHead : acceptedMain.commit;
   withBoard(ctx, (board) => submitPreflight(board, id, { agentId: me.id, commit, tree: headTree(root) ?? '' }));
   const trunk = requireTrunkMerge(root, commit);
   if (requireComposition) requireSubmitComposition(root, commit, trunk, acceptedMain.commit);
@@ -203,10 +205,10 @@ export async function submitHere(ctx, id, infra) {
   let comparison;
   let knownMainFailures;
   const failures = !gate.isGreen && gate.check?.green && !waived ? failureSignatures(gate, root) : null;
-  if (failures) {
+  if (failures && mainFailureBase) {
     try {
-      comparison = await compareMainFailures(root, gate.profile, gateWaitReporter(ctx.io), gate.output, { commit: acceptedMain.commit, detailed: true });
-      knownMainFailures = matchingMainFailures(failures, comparison, acceptedMain.commit);
+      comparison = await compareMainFailures(root, gate.profile, gateWaitReporter(ctx.io), gate.output, { commit: mainFailureBase, detailed: true });
+      knownMainFailures = matchingMainFailures(failures, comparison, mainFailureBase);
     } catch { /* Unavailable exact-main proof never authorizes a red submission. */ }
   }
   if (!gate.isGreen && !waived && !knownMainFailures) {
@@ -216,8 +218,8 @@ export async function submitHere(ctx, id, infra) {
     CHECKOUT_LEASES.get(ctx.io)?.release();
     CHECKOUT_LEASES.delete(ctx.io);
     comparison ??= { main: null, files: [], unavailable: 'main comparison could not be completed' };
-    if (!failures) {
-      try { comparison = await compareMainFailures(root, gate.profile, gateWaitReporter(ctx.io), gate.output); } catch { /* Keep the original gate refusal if main evidence is unavailable. */ }
+    if (!failures && mainFailureBase) {
+      try { comparison = await compareMainFailures(root, gate.profile, gateWaitReporter(ctx.io), gate.output, { commit: mainFailureBase }); } catch { /* Keep the original gate refusal if main evidence is unavailable. */ }
     }
     const mainNote = withBoard(ctx, board => mainRedMessage(root, board, gate.profile, comparison));
     throw new Refused('GATE_RED', `${message}${mainNote ? `\n${mainNote}` : ''}`, 'fix the reported test or gate, commit the change, and run pullboard submit <id> again');
@@ -235,7 +237,7 @@ export async function submitHere(ctx, id, infra) {
     refuseUnverifiedStack(root, board, store.getItem(board, id), commit, currentTrunk);
     // The waived run is written to the item's thread before the submission, so no waived proof reads as green.
     if (waived) await ordered(ctx, board, 'appendFact', [id, { agentId: me.id, kind: 'measurement', text: `submission proof at ${commit.slice(0, 12)} was red and is recorded as waived, not green; every failure is covered by a live person waiver:\n${waivedLines.join('\n')}` }]);
-    if (knownMainFailures) await ordered(ctx, board, 'appendFact', [id, { agentId: me.id, kind: 'measurement', text: `submission proof at ${commit.slice(0, 12)} remains red; known main failures at ${acceptedMain.commit}: ${knownMainFailures.failures.map(row => `${row.file} (${row.name})`).join('; ')}. The item check passed; no new or unaccounted failure is accepted.` }]);
+    if (knownMainFailures) await ordered(ctx, board, 'appendFact', [id, { agentId: me.id, kind: 'measurement', text: `submission proof at ${commit.slice(0, 12)} remains red; known main failures at ${knownMainFailures.main}: ${knownMainFailures.failures.map(row => `${row.file} (${row.name})`).join('; ')}. The item check passed; no new or unaccounted failure is accepted.` }]);
     return await ordered(ctx, board, 'submit', [id, { agentId: me.id, commit, tree: headTree(root) ?? '', files: filesSince(root, id, claimHead, commit), policyCommit: acceptedMain.commit, ...(infraRecord ? { infra: infraRecord } : {}),
       submissionProof: { version: 1, files: gate.files, full: gate.full, deferred: gate.deferred, reason: gate.reason, ...(gate.deferredFiles ? { deferredFiles: gate.deferredFiles } : {}), ...(knownMainFailures ? { knownMainFailures } : {}) },
       ...(gate.deferred ? { note: gate.deferredFiles ? deferredSelectionNote(gate.deferredFiles) : 'full suite deferred to the landing gate' } : {}) }]);
