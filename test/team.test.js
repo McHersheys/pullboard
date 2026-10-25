@@ -12,7 +12,7 @@ import * as store from '../src/board.js';
 import { exportBoard, importBoard } from '../src/exchange.js';
 import { applyEngineMove, prepareEngineMove } from '../src/engine.js';
 import { relayClientFixture as sessionRelay, relayFixtureChild as sessionChild, relayClientFixture, relayFixtureChild } from './relay-client-fixture.js';
-import { runFixtureGit as sessionGit, runFixtureGit } from './fixture-child.js';
+import { runFixtureGit as sessionGit, runFixtureGit, runFixtureChild } from './fixture-child.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { serveApi } from '../src/api.js';
 import { main } from '../src/cli.js';
@@ -24,6 +24,8 @@ import { decodeBoardKey, seal } from '../src/seal.js';
 import { ENGINE_VERSION as PEOPLE_VERSION } from '../src/machine.js';
 import { relayWorkBudgetMs } from './relay-budget.js';
 import { hostname, tmpdir } from 'node:os';
+import { createDeviceKeys, unwrapDeviceBoardKey } from '../src/relay-device-keys.js';
+import { handOverBoardKeys, statementBytes } from '../src/relay-handover.js';
 import { assertMatchingLandingHost, assertNoCulpritTrunkHold } from './landing-environment-fixture.js';
 import { landingQueueCase } from './landing-queue-fixture.js';
 
@@ -998,4 +1000,51 @@ test('a landing lease renewal or waiter poll writes no board event [Q1,Q2,Q3]', 
   const state = store.landingLeaseState(board);
   assert.equal(state.holder, null);
   assert.equal(state.line.length, 1, 'suppressing polling events does not discard the waiting command');
+});
+
+
+test('a relay supplied outside login receives no board key despite a valid SSH vouch [H15,E17]', async t => {
+  const folder = mkdtempSync(join(tmpdir(), 'pullboard-handover-membership-'));
+  t.after(() => rmSync(folder, { recursive: true, force: true }));
+  const state = { board: '7'.repeat(32), repository: 'fixture/repository', login: 'alice' };
+  const boardKey = randomBytes(32);
+  /** Make an actual SSH signature and device key, independent of what the malicious relay asserts. */
+  async function request(login) {
+    const file = join(folder, login);
+    const made = runFixtureChild('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', file], { encoding: 'utf8' });
+    assert.equal(made.status, 0, 'OpenSSH creates the private fixture signing key');
+    const device = await createDeviceKeys();
+    const statement = { v: 1, board: state.board, repository: state.repository, login, device: device.deviceId,
+      publicKey: device.publicKey, engine: PEOPLE_VERSION, expires: Date.now() + 60_000 };
+    const input = file + '.statement';
+    writeFileSync(input, statementBytes(statement), { mode: 0o600 });
+    const signed = runFixtureChild('ssh-keygen', ['-Y', 'sign', '-q', '-n', 'pullboard-device-key', '-f', file, input], { encoding: 'utf8' });
+    assert.equal(signed.status, 0, "the request is genuinely signed by that login's SSH key");
+    return { device, publicKey: readFileSync(file + '.pub', 'utf8').trim(),
+      entry: { id: login, login, statement, signature: readFileSync(input + '.sig', 'utf8') } };
+  }
+  const outsider = await request('mallory');
+  const member = await request('alice');
+  /** Present attacker-controlled relay entries while resolving SSH ownership directly for each account. */
+  async function answer(person) {
+    const deliveries = [];
+    await handOverBoardKeys(state, boardKey, {
+      async send(_state, _path, options) {
+        if (options.method === 'PUT') { deliveries.push(options.body); return {}; }
+        return { requests: [person.entry] };
+      },
+      async githubKeys(login) { return login === person.entry.login ? [person.publicKey] : []; },
+    }, { err() {} });
+    assert.equal(deliveries.length, 1, 'each request gets one explicit refusal or delivery');
+    return deliveries[0];
+  }
+  const refused = await answer(outsider);
+  assert.equal(refused.refused?.code, 'RELAY_KEY_VOUCH', 'a valid outsider signature cannot establish trusted board membership');
+  assert.equal(Object.hasOwn(refused, 'wrapped'), false, 'the relay receives no key ciphertext it could unwrap as the outsider');
+  const allowed = await answer(member);
+  assert.ok(allowed.wrapped, 'the linked person can still bootstrap their own independently vouched device');
+  const unwrapped = await unwrapDeviceBoardKey(member.device.privateKey,
+    JSON.parse(Buffer.from(allowed.wrapped, 'base64url').toString('utf8')),
+    { board: state.board, device: member.device.deviceId, engine: PEOPLE_VERSION });
+  assert.deepEqual(Buffer.from(unwrapped), boardKey, 'the legitimate new device receives the actual board key');
 });
