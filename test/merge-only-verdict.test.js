@@ -9,6 +9,7 @@ import { after, test } from 'node:test';
 import * as store from '../src/board.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { captureMergeOnly } from '../src/merge-only-source.js';
+import { mergeOnlyBasis } from '../src/merge-only-verdict.js';
 import { runFixtureGit, runFixtureChild } from './fixture-child.js';
 import { exportBoard, importBoard } from '../src/exchange.js';
 import { prepareEngineMove, applyEngineMove } from '../src/engine.js';
@@ -174,6 +175,26 @@ test('a merge-only resubmission keeps its accept and records the resolution diff
     assert.equal(box.git(box.repo, 'rev-parse', 'HEAD'), beforeLanding);
     assert.deepEqual(store.verdictsFor(forged, id), original.verdicts);
     assert.deepEqual(store.landingBatches(forged), []);
+    store.reopen(forged, id, { agentId: 'coordinator',
+      note: `test/example.test.js: recorded failure; merge commit ${extraHead}` });
+    store.claim(forged, id, { agentId: options.agentId, lane: 'web', leaseMs: 7_200_000,
+      freeze: () => ({ text: pending.item.item_frozen, digest: pending.item.item_frozen_digest }) });
+    const nextTrunk = box.git(box.repo, 'commit-tree', box.git(box.repo, 'rev-parse', `${trunk}^{tree}`),
+      '-p', trunk, '-m', 'private next trunk');
+    const nextHead = box.git(box.repo, 'commit-tree', extraTree, '-p', extraHead, '-p', nextTrunk, '-m', 'private clean merge');
+    const nextOptions = { ...options, commit: nextHead, tree: extraTree, policyCommit: nextTrunk };
+    const nextProof = captureMergeOnly(box.web, mergeOnlyBasis(forged, store.getItem(forged, id)),
+      { commit: nextHead, tree: extraTree, trunk: nextTrunk });
+    assert.ok(nextProof, 'the newest merge alone is clean, but its inherited acceptance was forged');
+    const chained = prepareEngineMove(forged, 'submit', [id, nextOptions]);
+    chained.args[1].mergeOnly = nextProof;
+    applyEngineMove(forged, chained, { sequence: 2, at: '2026-01-01T00:00:01.000Z' });
+    assert.equal(store.getItem(forged, id).item_status, 'verified');
+    await assert.rejects(land({ root: box.repo, board: forged, dryRun: true, say: () => {},
+      config: { landing: { publish: 'separate' } } }), error => error.code === 'STALE_VERDICT',
+      'a later clean carry must not launder a forged earlier carry into a landable acceptance');
+    assert.equal(box.git(box.repo, 'rev-parse', 'HEAD'), beforeLanding);
+
 
   } finally { store.closeBoard(forged); }
   const absent = store.openBoard(':memory:');
