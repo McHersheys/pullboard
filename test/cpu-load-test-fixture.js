@@ -42,7 +42,6 @@ test('declared load stand-in', { cpuLoad: true }, () => {
   }
   command('runner', 'add', HOST, '--slots', '1', '--browser', '0');
   command('settings', 'gate.runnersFirst', 'off');
-  command('settings', 'gate.browserByLaunch', 'on');
   command('settings', 'gateSlots', '1');
   const cli = join(SOURCE, 'bin', 'pullboard.js');
   return {
