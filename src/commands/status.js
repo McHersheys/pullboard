@@ -40,7 +40,7 @@ export async function run(io, { values }) {
     const agents = store.listAgents(board);
     const presenceCounts = { live: 0, idle: 0, gone: 0 };
     for (const seat of agents) presenceCounts[seat.presence] += 1;
-    const approvalState = personNeedsSummary(ctx.info.root, { board, config: ctx.config });
+    const approvalState = personNeedsSummary(ctx.info.root, { board, config: ctx.config, agents });
     return { me, mine, agents, presenceCounts, ruleCounts: ruleProofCounts(ctx.info.root, board, approvalState.spec), needs: approvalState.needs, specApprovalBaseline: approvalState.specApprovalBaseline, specApprovalEvidenceErrors: approvalState.specApprovalEvidenceErrors, stats: store.stats(board), reviewQueue: { ...store.reviewQueue(board), ...store.reviewQueueBreakdown(board) }, unread: store.unreadCount(board, me.id), relay: relay ? relay.relayStatus(ctx.info.root) : unlinkedRelayStatus(),
       submitInvariantProposals: submitInvariantProposals(store.submitInvariantEvents(board, ctx.config), ctx.config) };
   });
