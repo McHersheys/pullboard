@@ -3,6 +3,9 @@
  */
 import assert from 'node:assert/strict';
 import * as store from '../src/board.js';
+import { applyEngineMove, prepareEngineMove } from '../src/engine.js';
+import { exportBoard, importBoard } from '../src/exchange.js';
+import { SPEC_VERDICT_ENGINE } from '../src/spec-verdict-engine.js';
 import { runFixtureExecFile as execFileSync, runFixtureChild as spawnSync, runFixtureChild, runFixtureGit } from './fixture-child.js';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1214,4 +1217,46 @@ test('spec verify binds the real caller and preserves a pending person decision 
   assert.match(applied, /G1 \[approved, must\]/u);
   assert.ok(!applied.includes('verify:'), 'the stale draft verdict does not overwrite the person-approved replacement');
   assert.equal(box.run('check').status, 0);
+});
+
+
+test('row verifier reads need an exact receipt and never create a missing board [S1,V4]', t => {
+  const box = specBox(t, { specSource: '# Demo\n\n## G · Goals\n- G1 [draft] A row. | verify: accepted by review-2 | A claimed reason.\n' });
+  const file = join(box.root, '.git', 'pullboard', 'board.sqlite');
+  rmSync(file, { force: true });
+  for (const suffix of ['-shm', '-wal']) rmSync(file + suffix, { force: true });
+  const checked = box.run('check');
+  assert.equal(checked.status, 1);
+  assert.match(checked.stdout, /ROW_VERIFY_RECEIPT/u);
+  assert.equal(existsSync(file), false, 'checking a forged field initializes no board');
+  const shown = box.run('show', 'G1');
+  assert.equal(shown.status, 1);
+  assert.match(shown.stderr, /ROW_VERIFY_RECEIPT/u);
+  assert.equal(existsSync(file), false, 'show refuses the unproved field before opening a writer');
+});
+
+test('an exact row verifier receipt replays once with its engine floor and native snapshot [S1,V4,H16]', t => {
+  const box = specBox(t, { specSource: '# Demo\n\n## G · Goals\n' });
+  const board = store.openBoard(join(box.root, '.git', 'pullboard', 'board.sqlite'));
+  const replica = store.openBoard(join(box.root, 'replica.sqlite'));
+  t.after(() => { store.closeBoard(board); store.closeBoard(replica); });
+  const author = store.register(board, { lane: 'core', path: join(box.root, 'author'), parentDigest: 'a'.repeat(64) });
+  const verifier = store.register(board, { lane: 'review', path: join(box.root, 'verifier'), parentDigest: 'b'.repeat(64) });
+  store.draftSpecRow(board, { agentId: author, row: { id: 'G1', text: 'An exact requirement.',
+    gate: 'review', tier: 'must', section: 'G · Goals' } });
+  const move = prepareEngineMove(board, 'recordRowVerification', [{ agentId: verifier,
+    source: '- G1 [draft, must] An exact requirement. | gate: review', decision: 'accepted', reason: 'Reviewed exactly.' }]);
+  assert.equal(move.engine, SPEC_VERDICT_ENGINE);
+  const options = { sequence: 1, at: new Date().toISOString() };
+  const before = store.events(board).length;
+  assert.throws(() => applyEngineMove(board, { ...move, engine: SPEC_VERDICT_ENGINE - 1 }, options), { code: 'RELAY_MOVE' });
+  assert.equal(store.events(board).length, before, 'an older engine records no verdict');
+  const result = applyEngineMove(board, move, options);
+  assert.equal(result.error, undefined, JSON.stringify(result));
+  assert.equal(store.rowVerifications(board)[0].by, verifier);
+  const count = store.events(board).length;
+  assert.deepEqual(applyEngineMove(board, move, options), result);
+  assert.equal(store.events(board).length, count, 'same-position retry adds no receipt or event');
+  importBoard(replica, exportBoard(board));
+  assert.deepEqual(store.rowVerifications(replica), store.rowVerifications(board), 'native restore retains the verdict and parent-bearing source board');
 });

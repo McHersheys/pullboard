@@ -125,6 +125,13 @@ import {
   withBoard,
 } from '../cli.js';
 
+/** Validate optional verdicts using only existing board state; a check never initializes a board. */
+function verifierFindings(ctx, parsed) {
+  const source = readFileSync(parsed.file, 'utf8');
+  return hookRead(ctx, board => rowVerificationFindings(board, parsed, source))
+    ?? rowVerificationFindings(null, parsed, source);
+}
+
 /**
  * The spec commands: reads, sign-offs and person decisions applied by the coordinator.
  *
@@ -357,7 +364,9 @@ export async function specCommand(io, { first, second, rest, values }) {
       const findings = [
         ...lintSpec(parsed).filter((finding) => !finding.message.startsWith('duplicate id;')),
         ...(name === ctx.config.spec && parsed.rows.some(row => row.verify !== undefined)
-          ? withBoard(ctx, board => rowVerificationFindings(board, parsed, readFileSync(parsed.file, 'utf8'))) : []),
+          ? verifierFindings(ctx, parsed) : []),
+        ...(name !== ctx.config.spec ? parsed.rows.filter(row => row.verify !== undefined).map(row => ({ level: 'error', line: row.line, id: row.id,
+          message: 'ROW_VERIFY_PROVENANCE: verifier annotations currently require an exact board-drafted SPEC row' })) : []),
         ...missingGateFindings(parsed, ctx.info.root),
         ...(collisionFindings.get(name) ?? []),
       ];
@@ -424,6 +433,11 @@ export async function specCommand(io, { first, second, rest, values }) {
     const parsed = doctrineId ? practice : spec;
     const id = doctrineId ? second.slice('doctrine:'.length) : second;
     const source = parsed.rows.find((entry) => entry.id === id);
+    if (source?.verify) {
+      const findings = doctrineId ? [{ message: 'verifier annotations currently require an exact board-drafted SPEC row' }]
+        : verifierFindings(ctx, { ...parsed, rows: [source] });
+      if (findings.length) throw new Refused('ROW_VERIFY_RECEIPT', findings[0].message);
+    }
     const row = source && withBoard(ctx, (board) => decisionProjection(store.rowDecisions(board), source, doctrineId ? 'doctrine' : 'spec', rowDecisionContext(ctx.info.root, ctx.config)));
     if (!row) throw new Refused('NO_ROW', `no row ${second ?? ''} in ${ctx.config.spec}`);
     const standing = standings(parsed.rows, signoffs).get(row.id) ?? { met: [], stale: [] };

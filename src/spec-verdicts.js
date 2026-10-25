@@ -77,7 +77,7 @@ export function recordRowVerification(board, { agentId, source, decision, reason
 /** Reject fabricated, stale or same-parent file annotations against the current exact receipt. */
 export function rowVerificationFindings(board, parsed, source) {
   const lines = source.split(/\r?\n/u);
-  const records = rowVerifications(board);
+  const records = board ? rowVerifications(board) : [];
   return parsed.rows.filter(row => row.verify !== undefined).flatMap(row => {
     const record = records.find(candidate => candidate.id === row.id);
     let message;

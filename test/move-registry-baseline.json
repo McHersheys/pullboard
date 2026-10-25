@@ -62,7 +62,9 @@
     "recordJobRun",
     "takeCoordinator",
     "landingLeaseMove",
-    "recordPublishFinding"
+    "recordPublishFinding",
+    "decideSpecRevisions",
+    "recordRowVerification"
   ],
   "itemIdFirstArgument": [
     "signBar",
@@ -625,6 +627,22 @@
       null
     ],
     "recordPublishFinding": [
+      null,
+      "first",
+      null,
+      null,
+      null,
+      null
+    ],
+    "decideSpecRevisions": [
+      null,
+      "first",
+      null,
+      null,
+      null,
+      null
+    ],
+    "recordRowVerification": [
       null,
       "first",
       null,
@@ -6950,7 +6968,12 @@
     "WRONG_BOARD": "open the repository registered to this board and confirm its identity with pullboard status",
     "WRONG_LANE": "create a worktree in the required lane with pullboard worktree <lane> --model \"<model name>\", or take an item in your lane with pullboard next",
     "EXCLUDED_REPOSITORY": "restore the GitHub origin of each excluded project, then run pullboard relay on --all",
-    "EXCLUDED_INVENTORY": "restore at most 256 excluded boards and their active paired devices, then run pullboard relay on --all"
+    "EXCLUDED_INVENTORY": "restore at most 256 excluded boards and their active paired devices, then run pullboard relay on --all",
+    "SPEC_REVISION": "refresh Needs you and decide the exact pending proposal",
+    "ROW_VERIFY": "pullboard spec show <id>, then pullboard spec verify <id> accepted --reason \"why\"",
+    "ROW_VERIFY_PROVENANCE": "draft the row through pullboard spec draft and join normally before verifying it",
+    "ROW_VERIFY_PENDING": "ask the coordinator to run pullboard spec apply before recording a verifier verdict",
+    "ROW_VERIFY_SELF": "ask an outside-parent verifier to run pullboard spec verify"
   },
   "replay": {
     "initial": {
