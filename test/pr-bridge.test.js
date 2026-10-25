@@ -7,7 +7,10 @@ import {
   writeFileSync,
   rmSync,
 } from 'node:fs';
-import { delimiter, join } from 'node:path';
+import {
+  delimiter,
+  join,
+} from 'node:path';
 import { test } from 'node:test';
 import { bridgeProject, bridgeProvider, landBridgeItems, landBridgeRepair, mergeBridgeAs, runBridgeCLI } from './pr-bridge-fixture.js';
 import { onBoard } from './land-board-fixture.js';

@@ -19,13 +19,17 @@ import {
   repoInfo,
   tryGit,
   cleanGitEnvironment,
+  refuseGrafts,
 } from './git.js';
 import { runGate } from './gate.js';
 import {
   githubPullClient,
   githubRepository,
 } from './pr-github.js';
-import { publishVerificationStatuses } from './pr-verification.js';
+import {
+  publishVerificationStatuses,
+  verificationPulls,
+} from './pr-verification.js';
 import { Refused } from './refused.js';
 
 /** Keep publisher-local transport state distinct from the shared board and legacy push state. */
@@ -180,7 +184,12 @@ export async function publishPullRequests({ root, board, config, branch, remote,
   const repository = githubRepository(root, remote);
   const client = githubPullClient(root, repository);
   const state = readState(root);
-  let verification = publishVerificationStatuses({ root, board, client, state, repository, trustedHead: head });
+  // Validate graft and provider identities before any new publication side effect.
+  refuseGrafts(root);
+  verificationPulls(client, state, repository);
+  const verification = [];
+  let failed = false;
+  try {
   const releases = [];
   const findings = [];
   const unattributed = [];
@@ -228,8 +237,16 @@ export async function publishPullRequests({ root, board, config, branch, remote,
       url: `https://github.com/${repository}/pull/${pull.number}`, entries: group.entries, released: false };
     if (old) state.proposals.splice(state.proposals.indexOf(old), 1, proposal); else state.proposals.push(proposal);
     await saveState(root, state); proposed.push(proposal);
-    verification = publishVerificationStatuses({ root, board, client, state, repository, trustedHead: head });
   }
   say(`proposed ${proposed.length} pull request(s); only a person can merge them`);
   return { head, published: false, waiting: true, proposed: true, pullRequests: proposed.map(p => ({ number: p.number, url: p.url, head: p.head, items: p.entries.map(e => e.id) })), red: [], releases, findings, unattributed, verification };
+  } catch (error) { failed = true; throw error; }
+  finally {
+    // One final pass sees every proposed PR. Returned objects retain this same result array.
+    if (!failed) verification.push(...publishVerificationStatuses({ root, board, client, state, repository, trustedHead: head }));
+    else {
+      try { publishVerificationStatuses({ root, board, client, state, repository, trustedHead: head }); }
+      catch { /* Preserve the publication failure, rather than hide it behind a later provider error. */ }
+    }
+  }
 }
