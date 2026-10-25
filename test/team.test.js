@@ -1,3 +1,5 @@
+import { signedBoard, consent, linkRelay } from './board-link-fixture.js';
+import { submitFixture } from './board-submit-fixture.js';
 /** @pullboard-test-loads src/board.js src/engine.js src/exchange.js */
 /** Two independent Git/SQLite replicas derive verdict freshness without rewriting proof [E8]. */
 import assert from 'node:assert/strict';
@@ -871,4 +873,81 @@ test('a landing lease renewal or waiter poll writes no board event [Q1,Q2,Q3]', 
   const state = store.landingLeaseState(board);
   assert.equal(state.holder, null);
   assert.equal(state.line.length, 1, 'suppressing polling events does not discard the waiting command');
+});
+
+/** Cross-repository prerequisites use real signed E32 disclosure and never a same-number local item [B24,H16]. */
+test('an item waits across repos [B24,H16]', async t => {
+  /** A private board clock makes exact canonical replay comparisons deterministic. */
+  const clock = { now: () => new Date('2026-10-25T00:00:00Z') };
+  const parent = signedBoard(t, 'app', clock);
+  const child = signedBoard(t, 'service', clock);
+  const local = parent.board, foreign = child.board;
+  for (const box of [parent, child]) {
+    store.register(box.board, { lane: 'coordinator', path: box.root });
+    store.register(box.board, { lane: 'web', path: join(box.root, 'synthetic-builder') });
+  }
+  const localId = store.addItem(local, { by: 'coordinator', lane: 'web', title: 'Local same-number item' });
+  const foreignId = store.addItem(foreign, { by: 'coordinator', lane: 'web', title: 'Foreign prerequisite' });
+  assert.equal(localId, foreignId, 'independent real Git/SQLite boards intentionally reuse the same item number');
+  const dependent = store.addItem(local, { by: 'coordinator', lane: 'web', title: 'Wait for service', after: [`service#${foreignId}`] });
+  assert.equal(store.getItem(local, dependent).item_after, `service#${foreignId}`);
+  /** Explicit synthetic frozen bar; native moves below do not claim that this fixture ran a gate. */
+  const freeze = item => ({ text: item.item_title, digest: `fixture:${item.item_title}` });
+  /** Record an actual native verified transition, with a clearly synthetic build receipt. */
+  function accept(board, id, root, title) {
+    store.claim(board, id, { agentId: 'web-1', lane: 'web', leaseMs: 60_000, freeze });
+    submitFixture(board, id, { agentId: 'web-1', commit: 'a'.repeat(40), tree: 'synthetic-tree' });
+    const reviewer = store.register(board, { lane: 'web', path: join(root, 'synthetic-reviewer') });
+    store.verify(board, id, { agentId: reviewer, decision: 'ACCEPT', reason: 'CRITERION_MET',
+      note: 'synthetic board-state fixture; no gate execution', head: 'a'.repeat(40), digest: `fixture:${title}`, policy: 'any' });
+  }
+  accept(local, localId, parent.root, 'Local same-number item');
+  /** Assert the native claim guard and pull queue name the owning repository. */
+  function blocked(id, label) {
+    assert.throws(() => store.claim(local, id, { agentId: 'web-1', lane: 'web', leaseMs: 60_000, freeze }),
+      error => error.code === 'BLOCKED' && error.message.includes(label));
+    assert.ok(store.nextFor(local, { agentId: 'web-1', lane: 'web' }).reasons.some(reason => reason.includes(label)));
+  }
+  blocked(dependent, 'service#1');
+  const missing = store.addItem(local, { by: 'coordinator', lane: 'web', title: 'Missing board', after: ['missing#999'] });
+  blocked(missing, 'missing#999');
+  const api = await import('../src/board-link.js');
+  const transportApi = await import('../src/board-link-relay.js');
+  const { createSshBoardLinkAuthority } = await import('../src/board-link-ssh.js');
+  const { createBoardLinkCapability } = await import('../src/board-link-envelope.js');
+  const { generateBoardKey } = await import('../src/seal.js');
+  const authority = createSshBoardLinkAuthority([parent, child]);
+  const record = await consent(api, authority, parent, child, 'dependency');
+  await api.applyBoardLink(local, record, authority);
+  await api.applyBoardLink(foreign, record, authority);
+  const relay = await linkRelay(t, [parent, child], authority);
+  const sender = transportApi.createBoardLinkRelayTransport(relay.states.get(child.reference.boardId));
+  const receiver = transportApi.createBoardLinkRelayTransport(relay.states.get(parent.reference.boardId));
+  await sender.publish(record);
+  const capability = createBoardLinkCapability(record, await generateBoardKey());
+  /** Send only actual child item states through the established authenticated E32 transport. */
+  async function announce(position) {
+    const context = { linkId: record.linkId, generation: record.generation, sourceBoardId: child.reference.boardId,
+      destinationBoardId: parent.reference.boardId, position, correlationId: `state-${position}`,
+      rows: [{ board: child.reference.boardId, id: foreignId, state: store.getItem(foreign, foreignId).item_status }] };
+    await transportApi.deliverBoardState(foreign, context, { authority, capability, transport: sender });
+    const deliveries = (await receiver.read()).deliveries;
+    await transportApi.receiveBoardState(local, deliveries.at(-1), { authority, capability });
+  }
+  await announce(1);
+  blocked(dependent, 'service#1');
+  accept(foreign, foreignId, child.root, 'Foreign prerequisite');
+  blocked(dependent, 'service#1');
+  await announce(2);
+  const replica = store.openBoard(':memory:', clock);
+  t.after(() => store.closeBoard(replica));
+  importBoard(replica, exportBoard(local));
+  const options = { agentId: 'web-1', lane: 'web', leaseMs: 60_000, freeze };
+  assert.equal(store.nextFor(local, { agentId: 'web-1', lane: 'web' }).item.item_id, dependent);
+  assert.equal(store.nextFor(replica, { agentId: 'web-1', lane: 'web' }).item.item_id, dependent);
+  store.claim(local, dependent, options);
+  store.claim(replica, dependent, options);
+  assert.equal(store.getItem(local, dependent).item_status, 'claimed');
+  assert.equal(store.getItem(replica, dependent).item_status, 'claimed', 'replica uses canonical received state, not a local registry or foreign-board path');
+  assert.deepEqual(exportBoard(replica), exportBoard(local), 'same canonical state and claim produce exact replica rows and event IDs');
 });
