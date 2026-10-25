@@ -47,7 +47,7 @@ stateDiagram-v2
 | open | waiting for a builder; claimable once what it waits on is verified | none |
 | claimed | an agent holds it under a lease, its criterion frozen | item_owner, item_lease_until, item_frozen_digest |
 | submitted | a native build gated green, or an intaken outside commit awaiting sandbox verification, at a pinned commit | item_built_by, item_commit, item_frozen_digest |
-| verified | another agent accepted the frozen work at this commit or its locally proved trunk-only merge | item_verified_by, item_commit |
+| verified | another agent accepted the frozen work at this commit or its canonically recorded trunk-only merge | item_verified_by, item_commit |
 | withdrawn (final) | nobody should build it; the reason stays on it | item_withdrawn_reason |
 
 ## Moves
@@ -95,7 +95,7 @@ Each move checks its guards in this order and refuses with the first one that do
 | CLOSED | refreeze: the item is in open, claimed, submitted | pullboard show <id> |
 | CLOSED | refreeze: the item is in claimed | pullboard show <id> |
 | CLOSED | withdraw: the item is in open, claimed, submitted | pullboard show <id> |
-| MERGE_ONLY_PROOF | real local Git proves the exact gated merge carries the unwithdrawn acceptance and records its conflict resolution; serialized builder facts never authorize it | submit normally for outside review if local Git cannot prove the merge |
+| MERGE_ONLY_PROOF | the sealed submit records the origin’s Git-derived carry, unchanged bar and original verifier; landing re-proves its heads, trees and resolution hash before merging | submit normally for outside review if the origin cannot prove the merge |
 | OUTSIDE_SOURCE | an outside author and exact fetched commit/tree are recorded with a trusted frozen criterion, without pretending a native builder gated it | fetch and intake the exact GitHub pull request again |
 | NOT_JOINED | the caller is the main checkout, or an unreplaced worktree seat that joined a lane; an agent session's claims, submits and verdicts can be checked against its local ledger | pullboard join <lane> --model "<model name>" (see: pullboard lanes) |
 | AGENT_REPLACED | the caller is the main checkout, or an unreplaced worktree seat that joined a lane; an agent session's claims, submits and verdicts can be checked against its local ledger | read the takeover and only shout on its exact hand-off item; continue work from the incoming agent worktree |

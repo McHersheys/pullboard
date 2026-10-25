@@ -36,6 +36,7 @@ import {
   SUBMISSION_PROOF_ENGINE,
   submissionProof,
 } from './submit-invariants.js';
+import { MERGE_ONLY_VERDICT_ENGINE } from './merge-only-verdict-engine.js';
 import { requireCoordinatorHold } from './coordinator-hold.js';
 
 import {
@@ -92,6 +93,10 @@ export function prepareEngineMove(board, operation, args, { id = randomUUID(), a
   if (operation === 'reopen' && values[1] && typeof values[1] === 'object'
     && manualLandingFailureQuoted(values[1].note)) values[1].quotedLandingFailure = true;
   if (operation === 'submit' && ENGINE_VERSION >= SUBMISSION_PROOF_ENGINE) submissionProof(values[1]?.submissionProof);
+  // Derive once before sealing; replicas never re-decide a recorded carry from their local objects.
+  if (operation === 'submit' && ENGINE_VERSION >= MERGE_ONLY_VERDICT_ENGINE && values[1]) {
+    values[1].mergeOnly = store.prepareMergeOnlySubmit(board, values[0], values[1]);
+  }
   if (operation === 'claim' && ['wipPerReviewer', 'takeoverMinutes'].some(key => typeof lineSettings(board)[key] === 'number')) {
     values[1] = { ...values[1], lineCapacity: true };
   }

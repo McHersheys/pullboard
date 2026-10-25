@@ -1122,6 +1122,14 @@ export function release(board, id, agentId, note = '') {
   });
 }
 
+/** Derive the origin’s carry before sealing; caller-supplied carry facts are discarded. */
+export function prepareMergeOnlySubmit(board, id, options) {
+  const item = getItem(board, id);
+  const basis = options?.gateGreen === true ? mergeOnlyBasis(board, item) : null;
+  return basis && !itemAuthorProblem(board, item, basis.by)
+    ? deriveMergeOnly(board.gitRoot, basis, options) : null;
+}
+
 /**
  * Submit your claimed item at a commit (V4, V6). The caller has already checked the tree is clean
  * and run the gate green at that commit.
@@ -1134,7 +1142,7 @@ export function release(board, id, agentId, note = '') {
  * @param {{ agentId: string, commit: string, tree: string, files?: string[], policyCommit?: string, note?: string }} at - `files`: what the
  *   item's own commits changed since its claim; a rework adds to what the first attempt changed.
  */
-export function submit(board, id, { agentId, commit, tree, files = [], policyCommit = null, note, submissionProof: proof, infra = null, gateGreen }) {
+export function submit(board, id, { agentId, commit, tree, files = [], policyCommit = null, note, submissionProof: proof, infra = null, gateGreen, mergeOnly: recordedCarry }) {
   let recordedProof;
   if (note !== undefined && (typeof note !== 'string' || !note.trim() || /[\r\n\u2028\u2029]/u.test(note))) {
     throw new Refused('USAGE', 'a submission note, when present, is one nonempty line');
@@ -1142,8 +1150,9 @@ export function submit(board, id, { agentId, commit, tree, files = [], policyCom
   atomic(board, () => {
     const modern = (board.executionEngineVersion ?? ENGINE_VERSION) >= MERGE_ONLY_VERDICT_ENGINE;
     const basis = modern && gateGreen === true ? mergeOnlyBasis(board, getItem(board, id)) : null;
-    const mergeOnly = basis && !itemAuthorProblem(board, getItem(board, id), basis.by)
-      ? deriveMergeOnly(board.gitRoot, basis, { commit, tree, policyCommit }) : null;
+    const mergeOnly = modern ? board.executionEngineVersion === undefined
+      ? prepareMergeOnlySubmit(board, id, { commit, tree, policyCommit, gateGreen })
+      : recordedCarry ?? null : null;
     const carry = Boolean(mergeOnly);
     const carriedProblem = found => mergeOnlyProblem(board, found, mergeOnly, { commit, tree, policyCommit });
     const notYours = () => new Refused('NOT_YOURS', `item #${id} is not claimed by you; claim it first`);

@@ -84,7 +84,7 @@ export const STATES = [
   { id: 'claimed', means: 'an agent holds it under a lease, its criterion frozen', requires: ['item_owner', 'item_lease_until', 'item_frozen_digest'] },
   { id: 'submitted', means: 'a native build gated green, or an intaken outside commit awaiting sandbox verification, at a pinned commit', requires: ['item_built_by', 'item_commit', 'item_frozen_digest'] },
   {
-    id: 'verified', means: 'another agent accepted the frozen work at this commit or its locally proved trunk-only merge', requires: ['item_verified_by', 'item_commit'],
+    id: 'verified', means: 'another agent accepted the frozen work at this commit or its canonically recorded trunk-only merge', requires: ['item_verified_by', 'item_commit'],
     proof: {
       says: 'an immutable ACCEPT on the frozen criterion by its independent verifier, at this commit or bound by an ordered merge-only receipt',
       sql: "EXISTS (SELECT 1 FROM verdict v WHERE v.item_id = NEW.item_id AND v.verdict_decision = 'ACCEPT' AND v.verdict_digest = NEW.item_frozen_digest AND v.verdict_by = NEW.item_verified_by AND v.verdict_by <> NEW.item_built_by AND (v.verdict_commit = NEW.item_commit OR EXISTS (SELECT 1 FROM event e WHERE e.item_id = NEW.item_id AND e.event_kind = 'merge-only-accept' AND json_extract(e.event_detail,'$.verdict') = v.verdict_id AND json_extract(e.event_detail,'$.commit') = NEW.item_commit AND json_extract(e.event_detail,'$.tree') = NEW.item_tree AND json_extract(e.event_detail,'$.digest') = NEW.item_frozen_digest AND json_extract(e.event_detail,'$.by') = v.verdict_by)))",
@@ -95,7 +95,7 @@ export const STATES = [
 
 /** @type {Guard[]} */
 export const GUARDS = [
-  { id: 'mergeOnlyRecorded', refuse: 'MERGE_ONLY_PROOF', rule: 'real local Git proves the exact gated merge carries the unwithdrawn acceptance and records its conflict resolution; serialized builder facts never authorize it', next: 'submit normally for outside review if local Git cannot prove the merge', source: 'board' },
+  { id: 'mergeOnlyRecorded', refuse: 'MERGE_ONLY_PROOF', rule: 'the sealed submit records the origin’s Git-derived carry, unchanged bar and original verifier; landing re-proves its heads, trees and resolution hash before merging', next: 'submit normally for outside review if the origin cannot prove the merge', source: 'board' },
   { id: 'outsideSubmission', refuse: 'OUTSIDE_SOURCE', rule: 'an outside author and exact fetched commit/tree are recorded with a trusted frozen criterion, without pretending a native builder gated it', next: 'fetch and intake the exact GitHub pull request again', source: 'board' },
   { id: IN_STATE, refuse: '', rule: "the move can start from the item's current state", next: 'pullboard show <id>', source: 'board' },
   { id: 'joined', refuse: 'NOT_JOINED', alsoRefuses: [{ code: 'AGENT_REPLACED', next: 'read the takeover and only shout on its exact hand-off item; continue work from the incoming agent worktree' }, { code: 'SESSION_LEDGER', next: 'make the agent-session ledger named in the message readable and writable by this user, then run the command again' }], rule: 'the caller is the main checkout, or an unreplaced worktree seat that joined a lane; an agent session\'s claims, submits and verdicts can be checked against its local ledger', next: 'pullboard join <lane> --model "<model name>" (see: pullboard lanes)', source: 'cli' },

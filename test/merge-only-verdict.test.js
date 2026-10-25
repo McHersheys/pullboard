@@ -1,6 +1,8 @@
 /** Real public submission, Git conflict resolution and immutable verdict coverage [V1,V4,H16]. */
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { land } from '../src/land.js';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -39,8 +41,12 @@ function content(box, cwd, value, message) {
   return box.git(cwd, 'rev-parse', 'HEAD');
 }
 
-test('a merge-only resubmission keeps its accept and records the resolution diff [V1,V4,H16]', () => {
+test('a merge-only resubmission keeps its accept and records the resolution diff [V1,V4,H16]', async () => {
   const box = e2e.project();
+  const config = JSON.parse(readFileSync(join(box.repo, 'pullboard.json'), 'utf8'));
+  const configured = e2e.commitFile(box, box.repo, 'pullboard.json',
+    JSON.stringify({ ...config, landing: { publish: 'separate' } }, null, 2), 'chore: configure local landing');
+  assert.equal(configured.status, 0, configured.stderr);
   mkdirSync(join(box.repo, 'web'), { recursive: true });
   content(box, box.repo, 'base', 'feat(web): initial choice [G1]');
   box.git(box.web, 'merge', '-q', '--no-edit', 'main');
@@ -79,6 +85,7 @@ test('a merge-only resubmission keeps its accept and records the resolution diff
   assert.equal(detail.verdict, original.verdicts.at(-1).verdict_id);
   assert.match(detail.resolutionDiff, /web\/feature\.js/u);
   assert.match(detail.resolutionDiff, /resolved/u);
+  assert.equal(detail.resolutionHash, createHash('sha256').update(detail.resolutionDiff).digest('hex'));
   const shown = succeeds(box, box.repo, 'show', String(id));
   assert.match(shown.out, /verified/u);
   assert.doesNotMatch(shown.out, /re-review: main merge only/u);
@@ -98,6 +105,13 @@ test('a merge-only resubmission keeps its accept and records the resolution diff
     assert.equal(store.getItem(origin, id).item_status, 'verified');
     assert.deepEqual(withoutObjects, withObjects, 'one canonical move must emit identical events and event IDs without Git objects');
     assert.deepEqual(exportBoard(objectless), exportBoard(origin), 'replicas must retain exactly identical native state');
+    const subsequent = prepareEngineMove(origin, 'reopen', [id, { agentId: 'coordinator', withdrawVerdict: true,
+      note: 'withdraw the original acceptance after canonical carry' }]);
+    const next = applyEngineMove(origin, subsequent, { sequence: 2, at });
+    assert.deepEqual(applyEngineMove(objectless, subsequent, { sequence: 2, at }), next,
+      'a later verdict-ID-bound move must retain the same outcome and event IDs');
+    assert.deepEqual(exportBoard(objectless), exportBoard(origin));
+
   } finally { store.closeBoard(origin); store.closeBoard(objectless); }
   for (const key of ['commit', 'tree', 'policyCommit']) {
     const replica = store.openBoard(':memory:', undefined, { gitRoot: box.web });
@@ -150,9 +164,17 @@ test('a merge-only resubmission keeps its accept and records the resolution diff
     move.args[1] = { ...options, commit: extraHead, tree: extraTree,
       mergeOnly: { ...detail, commit: extraHead, tree: extraTree } };
     applyEngineMove(forged, move, { sequence: 1, at: '2026-01-01T00:00:00.000Z' });
-    assert.equal(store.getItem(forged, id).item_status, 'submitted',
-      'a serialized builder claim cannot lend the original verdict to unrelated same-file behavior');
-    assert.equal(store.events(forged, { itemId: id }).filter(event => event.event_kind === 'merge-only-accept').length, 0);
+    assert.equal(store.getItem(forged, id).item_status, 'verified',
+      'canonical replay records the sealed decision consistently; landing is the authoritative Git backstop');
+    const beforeLanding = box.git(box.repo, 'rev-parse', 'HEAD');
+    await assert.rejects(land({ root: box.repo, board: forged, dryRun: true, say: () => {},
+      config: { landing: { publish: 'separate' } } }), error => error.code === 'STALE_VERDICT'
+        && /recorded merge-only acceptance/u.test(error.message),
+      'forged canonical carry must not reach a physical merge');
+    assert.equal(box.git(box.repo, 'rev-parse', 'HEAD'), beforeLanding);
+    assert.deepEqual(store.verdictsFor(forged, id), original.verdicts);
+    assert.deepEqual(store.landingBatches(forged), []);
+
   } finally { store.closeBoard(forged); }
   const absent = store.openBoard(':memory:');
   try {
@@ -160,7 +182,7 @@ test('a merge-only resubmission keeps its accept and records the resolution diff
     const move = prepareEngineMove(absent, 'submit', [id, { ...options, gitRoot: box.web }]);
     applyEngineMove(absent, move,
       { sequence: 1, at: '2026-01-01T00:00:00.000Z' });
-    assert.equal(store.getItem(absent, id).item_status, 'submitted', 'coordinator28566: replay without local Git needs ordinary review');
+    assert.equal(store.getItem(absent, id).item_status, 'submitted', 'an objectless origin cannot derive carry from caller fields or a serialized gitRoot');
   } finally { store.closeBoard(absent); }
   const historical = store.openBoard(':memory:', undefined, { gitRoot: box.web });
   try {
@@ -185,6 +207,10 @@ test('a merge-only resubmission keeps its accept and records the resolution diff
     assert.equal(store.getItem(replay, id).item_status, 'open');
     assert.equal(store.acceptedVerdict(replay, store.getItem(replay, id)), undefined, 'a carry cannot resurrect a withdrawn original verdict');
   } finally { store.closeBoard(replay); }
+  const landed = succeeds(box, box.repo, 'land', '--json');
+  assert.equal(state(box, id).item.item_status, 'verified');
+  assert.ok(state(box, id).item.item_merged_commit, landed.out);
+  assert.equal(box.tryGit(box.repo, 'merge-base', '--is-ancestor', head, 'HEAD').status, 0);
 });
 
 /** Make a small real Git conflict without pretending these synthetic identities are live reviewers. */

@@ -1,4 +1,5 @@
 /** Bounded Git proof that a resubmission adds only trunk and actual conflict resolutions [V1,V4]. */
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import {
   cleanGitEnvironment,
@@ -81,7 +82,8 @@ export function captureMergeOnly(root, basis, { commit, tree, trunk }) {
       ['diff', '--no-renames', '--name-only', '-z', trunk, commit, '--']).split('\0').filter(Boolean)])].sort();
     return { version: 1, acceptedCommit: basis.acceptedCommit, acceptedHead: basis.acceptedHead,
       acceptedTree, commit, tree, trunk, mergeTree, digest: basis.digest, verdict: basis.verdict,
-      reopen: basis.reopen, paths, resolutionDiff };
+      reopen: basis.reopen, paths, resolutionDiff,
+      resolutionHash: createHash('sha256').update(resolutionDiff).digest('hex') };
   } catch { return null; }
 }
 
