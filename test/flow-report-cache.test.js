@@ -12,15 +12,25 @@ import { ensureProofCounters } from '../src/proof-counters.js';
 import { runFixtureGit } from './fixture-child.js';
 
 /** Construct a native board whose append path maintains current report shards. */
-function fixture(t) {
+function fixture(t, { item = true } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'pullboard-report-cache-'));
   runFixtureGit(['init', '-q', '-b', 'main'], { cwd: root, stdio: 'pipe' });
   const board = store.openBoard(join(root, '.git', 'board.sqlite'));
   store.register(board, { lane: 'coordinator', path: root });
-  store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Known open history' });
+  if (item) store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Known open history' });
   t.after(() => { store.closeBoard(board); rmSync(root, { recursive: true, force: true }); });
   return board;
 }
+
+test('an empty indexed board has a measured empty report rather than a missing capability [R1,R2]', t => {
+  const board = fixture(t, { item: false });
+  const report = proofStats(board).flow.report;
+  assert.deepEqual(report.items, []);
+  assert.deepEqual(report.lanes, []);
+  assert.deepEqual(report.milestones, []);
+  assert.deepEqual(report.overall.firstTry, { accepted: 0, decided: 0, rate: null, unknown: 0 });
+  assert.equal(report.overall.submissionsPerLanded, null);
+});
 
 test('flow report indexed projection matches canonical replay without hot raw history reads [R1,R2]', t => {
   const board = fixture(t);
@@ -55,6 +65,22 @@ test('old v2 counters retain fast metrics and explicitly unavailable reports unt
   ensureProofCounters(board);
   assert.ok(proofStats(board).flow.report.items);
   assert.deepEqual(store.events(board), before, 'writer backfill changes only local derived counters');
+});
+
+test('an older writer cannot make retained report capability look current [R1,R2,H16]', t => {
+  const board = fixture(t);
+  const key = 'local:proof-stats:v2:summary';
+  const row = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get(key);
+  const summary = JSON.parse(row.meta_value);
+  summary.data.reportLast = summary.data.last - 1;
+  board.db.prepare('UPDATE board_meta SET meta_value=? WHERE meta_key=?').run(JSON.stringify(summary), key);
+  const stale = proofStats(board);
+  assert.equal(stale.flow.queues.open.size, 1, 'existing native counters remain usable');
+  assert.deepEqual(stale.flow.report, { available: false }, 'retained version alone cannot certify intervening older-writer events');
+  const before = store.events(board);
+  ensureProofCounters(board);
+  assert.ok(proofStats(board).flow.report.items);
+  assert.deepEqual(store.events(board), before, 'repair changes derived counters only');
 });
 
 test('retained refreezes keep active build time and prototype-like recorded names remain ordinary groups [R1,R2]', () => {

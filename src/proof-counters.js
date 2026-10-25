@@ -67,7 +67,7 @@ export function clearProofCounters(board) {
 /** Start a bounded all-time aggregate; window-specific contributions live in separate event shards. */
 function emptySummary() {
   return { last: 0, submissions: 0, rejections: 0, merged: 0, mergedWithoutAccept: 0,
-    firstEventAt: null, lastEventAt: null, invalid: false, reportVersion: 1 };
+    firstEventAt: null, lastEventAt: null, invalid: false, reportVersion: 1, reportLast: 0 };
 }
 
 /** Advance an item's acceptance audit separately from its flow lifecycle, whose rules differ. */
@@ -165,6 +165,7 @@ export function appendProofCounter(board, event) {
   }
   if (reporting && JSON.stringify(reportPolicy) !== beforePolicy) put(board, 'report-policy', reportPolicy);
   appendRuleProof(board, event, detail, key => proofCounter(board, key), (key, value) => put(board, key, value));
+  summary.reportLast = event.event_id;
   put(board, 'summary', summary);
 }
 
@@ -183,6 +184,7 @@ export function rebuildProofCounters(board) {
   clearProofCounters(board);
   ensureRigorCounters(board);
   put(board, 'summary', emptySummary());
+  put(board, 'report-policy', newReportPolicy());
   replayProofTail(board, 0);
 }
 
@@ -190,7 +192,7 @@ export function rebuildProofCounters(board) {
 export function ensureProofCounters(board) {
   ensureRigorCounters(board);
   const summary = proofCounter(board, 'summary');
-  if (!summary || summary.reportVersion !== 1) { rebuildProofCounters(board); return; }
+  if (!summary || summary.reportVersion !== 1 || summary.reportLast !== summary.last) { rebuildProofCounters(board); return; }
   replayProofTail(board, summary.last);
 }
 
