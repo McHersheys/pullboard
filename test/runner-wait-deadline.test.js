@@ -22,8 +22,9 @@ function fixture({ hold = '', runnerWaitMs = 60, dropFirst = !hold } = {}) {
   for (const path of Object.values(paths)) mkdirSync(path, { recursive: true });
   const requests = join(box.dir, 'requests.jsonl');
   const starts = join(box.dir, 'starts.jsonl');
+  const stderrLog = join(box.dir, 'worker-stderr.log');
   installSshStandIn({ bin: paths.bin, worker: paths.worker, home: paths.remoteHome,
-    machineHome: paths.remoteMachine, requests, starts, hold, dropFirst });
+    machineHome: paths.remoteMachine, requests, starts, hold, dropFirst, stderrLog });
   box.env.PATH = paths.bin + ':' + box.env.PATH;
   const added = cli(box.repo, box.env, 'runner', 'add', HOST + '-drop', '--slots', '1', '--browser', '1');
   assert.equal(added.status, 0, fixtureResultContext(added));
@@ -31,7 +32,7 @@ function fixture({ hold = '', runnerWaitMs = 60, dropFirst = !hold } = {}) {
   const settings = JSON.parse(readFileSync(settingsFile, 'utf8'));
   writeFileSync(settingsFile, JSON.stringify({ ...settings, gateSlots: 1, browserSlots: 1,
     gate: { ...settings.gate, runnerWaitMs, runnersFirst: false } }));
-  return { ...box, requests, starts, settingsFile };
+  return { ...box, requests, starts, stderrLog, settingsFile };
 }
 
 /** Observe a real fixture phase, with cleanup owned by the caller rather than a production timeout override. */
@@ -167,16 +168,28 @@ test('an executing runner command keeps its test budget after the admission dead
   process.env.PULLBOARD_HOME = box.env.PULLBOARD_HOME;
   process.env.PULLBOARD_MACHINE_HOME = box.env.PULLBOARD_MACHINE_HOME;
   let held;
+  let pending;
   try {
     held = await takeResource({ name: 'gate', scope: 'machine', root: box.repo, capacity: 1, agent: 'admitted-run-local-holder' });
-    const result = await runThroughGate(box.repo, box.env,
+    pending = runThroughGate(box.repo, box.env,
       'node -e "setTimeout(()=>console.log(\'ADMITTED_LONG_COMMAND\'),6000)"', { requests: box.requests });
+    await observe(() => existsSync(box.stderrLog) && readFileSync(box.stderrLog, 'utf8').includes('PULLBOARD_RUNNER_READY '), 'the real worker READY frame');
+    const result = await pending; pending = null;
     assert.equal(result.status, 0, fixtureResultContext(result));
     assert.match(result.stdout, /ADMITTED_LONG_COMMAND/u);
     assert.equal(gateResult(result.stdout).runner, HOST + '-drop', 'a ready runner is not canceled or duplicated locally');
     assert.equal(readFileSync(box.requests, 'utf8').trim().split('\n').length, 1);
+  } catch (error) {
+    const lines = existsSync(box.stderrLog) ? readFileSync(box.stderrLog, 'utf8').split('\n') : [];
+    console.error('private worker diagnostics:', lines.filter(line => !line.startsWith('PULLBOARD_RUNNER_RESULT ')).slice(-8).map(line => line.slice(0, 500)).join('\n'));
+    if (existsSync(box.requests)) console.error('private worker outcomes:', readFileSync(box.requests, 'utf8').split('\n').filter(Boolean).map(line => {
+      const { call, workerStarted, code, signal } = JSON.parse(line);
+      return { call, workerStarted, code, signal };
+    }));
+    throw error;
   } finally {
     held?.release();
+    if (pending) await pending.catch(() => {});
     for (const [index, key] of ['PULLBOARD_HOME', 'PULLBOARD_MACHINE_HOME'].entries()) {
       if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index];
     }
