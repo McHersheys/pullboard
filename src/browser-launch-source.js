@@ -101,12 +101,18 @@ function unresolvedMemberCommand(expression) {
 /** End one expression without consuming another argument or a surrounding function body. */
 function expressionEnd(code, start, newlineEnds = true) {
   let end = start;
-  while (end < code.length && !';,)]}'.includes(code[end]) && (!newlineEnds || code[end] !== '\n')) {
+  let conditional = 0;
+  while (end < code.length && !';,)]}'.includes(code[end])) {
+    if (newlineEnds && code[end] === '\n' && !conditional && !code.slice(end + 1).trimStart().startsWith('?')) break;
     if ('([{'.includes(code[end])) {
       const close = closing(code, end);
       if (close === null) return null;
       end = close + 1;
-    } else end += 1;
+    } else {
+      if (code[end] === '?' && !['?', '.'].includes(code[end + 1]) && code[end - 1] !== '?') conditional += 1;
+      else if (code[end] === ':' && conditional) conditional -= 1;
+      end += 1;
+    }
   }
   return end;
 }

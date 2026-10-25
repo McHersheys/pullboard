@@ -574,6 +574,7 @@ test('process member commands retain property assignments and unresolved targets
     'test/namespace-key-command.test.js': "import * as child from 'node:child_process'; export function run(options) { return child['spawnSync'](options.command, []); }",
     'test/conditional-command.test.js': imports + "export function run(options) { return spawnSync(options.enabled ? options.command : 'git', []); }",
     'test/conditional-data.test.js': imports + "const executable = process.platform === 'darwin' ? '/usr/sbin/lsof' : process.platform === 'linux' ? '/usr/bin/lsof' : null; spawnSync(executable, []);",
+    'test/conditional-lines-data.test.js': imports + "const executable = process.platform === 'darwin' ? '/usr/sbin/lsof'\n : process.platform === 'linux' ? '/usr/bin/lsof' : null; spawnSync(executable, []);",
     'test/property-data.test.js': imports + "const options = {}; options.command = 'google-chrome'; spawnSync('git', ['status']);",
   });
   for (const name of ['dot-command', 'spaced-command', 'literal-key-command', 'computed-command', 'unresolved-command',
@@ -585,6 +586,8 @@ test('process member commands retain property assignments and unresolved targets
     'an unused property value does not taint a literal Git command');
   assert.equal(await testsNeedBrowser(root, ['test/conditional-data.test.js'], { byLaunch: true }), false,
     'a platform predicate does not become one of the fixed executable values');
+  assert.equal(await testsNeedBrowser(root, ['test/conditional-lines-data.test.js'], { byLaunch: true }), false,
+    'a multiline platform predicate retains both fixed executable branches');
   assert.equal(await testsNeedBrowser(root, ['test/property-data.test.js'], { byLaunch: false }), true,
     'default admission remains conservative');
 });
