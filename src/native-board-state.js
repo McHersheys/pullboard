@@ -1,4 +1,11 @@
 /** One complete native state builder for local HTTP and sealed relay projections [A2,H5,H16]. */
+import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { CONFIG_FILE } from './config.js';
+import { fitFile } from './blueprint-fit.js';
+import { BLOCKS_FILE } from './blocks.js';
 import * as store from './board.js';
 import { displayAgentName } from './agent-names.js';
 import { COORDINATOR } from './config.js';
@@ -22,7 +29,9 @@ import { projectState } from './serve.js';
 import { personRequestStatuses } from './relay-requests.js';
 
 /** Build the complete local API state, including fields that the shared project snapshot omits. */
-export function buildLocalBoardState(root, boardId, board, codeIsMain, { previous = null, fullItemRebuild = true, afterSequence = 0, changedLeases = new Set(), onItemBuild, projects = listApiProjects, scopeCommonDir = null } = {}) {
+export function buildLocalBoardState(root, boardId, board, codeIsMain, { previous = null, fullItemRebuild = true, afterSequence = 0, changedLeases = new Set(), onItemBuild, projects = listApiProjects, scopeCommonDir = null, observedAt = Date.now() } = {}) {
+  if (!Number.isSafeInteger(observedAt) || observedAt < 0) throw new TypeError('native projection needs an observation timestamp');
+  board = Object.assign(Object.create(board), { clock: { ...board.clock, now: () => new Date(observedAt) } });
   board.db.exec('BEGIN');
   try {
     const sequence = board.db.prepare('SELECT COALESCE(MAX(event_id), 0) AS id FROM event').get().id;
@@ -65,6 +74,7 @@ export function buildLocalBoardState(root, boardId, board, codeIsMain, { previou
     } });
     state.agents = state.agents.map((agent) => ({ ...agent, model: agent.agent_model ?? 'unknown', displayName: displayAgentName(agent, config.agents.names) }));
     state.board = boardId;
+    state.observedAt = new Date(observedAt).toISOString();
     state.decisionQueue = store.openDecisions(board, COORDINATOR);
     const projectData = {
       requests: store.openRequests(board),
@@ -73,7 +83,7 @@ export function buildLocalBoardState(root, boardId, board, codeIsMain, { previou
         ? milestoneRoadmap(root, board)
         : milestoneRoadmap(root, board, { projects, hideOutOfScope: true }),
       rowDecisions: store.rowDecisions(board),
-      proofStats: proofStats(board),
+      proofStats: proofStats(board, { now: observedAt }),
     };
     state.proofStats = projectData.proofStats;
     state.requests = projectData.requests;
@@ -117,5 +127,26 @@ export function buildLocalBoardState(root, boardId, board, codeIsMain, { previou
 /** Parse an item's ordered prerequisite IDs from its persisted row. */
 export function dependencyIds(item) {
   return item.item_after ? item.item_after.split(',').map(Number) : [];
+}
+
+
+/** Name project and built-in files separately, even when their basenames collide. */
+export function stateFileInputs(root, config) {
+  return [
+    { name: `config:${CONFIG_FILE}`, path: join(root, CONFIG_FILE) },
+    { name: `spec:${config.spec}`, path: join(root, config.spec) },
+    { name: `practice:${config.practice}`, path: join(root, config.practice) },
+    { name: 'builtin:standard-doctrine.md', path: new URL('./standard-doctrine.md', import.meta.url) },
+    ...['signoffs.jsonl', 'signers', 'first-commit', 'signers.initial'].map(name => ({ name: `approval:${name}`, path: join(root, '.pullboard', name) })),
+    { name: 'fit:blueprint-fit.json', path: fitFile(repoInfo(root).commonDir) },
+    // A new block changes Needs you without a board move, so the ledger is a state input [C6].
+    { name: 'blocks:blocks.jsonl', path: join(repoInfo(root).commonDir, BLOCKS_FILE) },
+  ];
+}
+
+/** Hash the exact bytes of one named input, preserving a missing-file marker. */
+export function fileRevision(file) {
+  if (!existsSync(file.path)) return [file.name, null];
+  return [file.name, createHash('sha256').update(readFileSync(file.path)).digest('hex')];
 }
 

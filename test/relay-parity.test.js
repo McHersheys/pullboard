@@ -13,3 +13,9 @@ test('a field that differs between native and relay readers is refused, naming t
     && error.message.includes('native=') && error.message.includes('relay=<missing>'), 'the deliberate heartbeat removal names its exact field and both values');
   assertReaderParity(native, relay);
 });
+
+
+test('single-board parity never seals another board title through a milestone reference [H5,H16,A2]', { timeout: 60_000 }, async t => { // budget: the same real transport and cleanup ceiling as the parity guard.
+  const { native, relay } = await parityRoundtrip(t, { foreign: true });
+  assertReaderParity(native, relay);
+});

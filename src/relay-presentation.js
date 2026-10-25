@@ -10,40 +10,43 @@ import {
 } from './git.js';
 import { Refused } from './refused.js';
 import { loadConfig } from './config.js';
-import { projectState } from './serve.js';
-import { personNeeds } from './needs.js';
-import { personBlockWords } from './blocks.js';
-import { personRequestStatuses } from './relay-requests.js';
-import {
-  cachedVerdictStates,
-  verdictProjector,
-} from './verdict-freshness.js';
+import { buildLocalBoardState } from './native-board-state.js';
+import { stateFileInputs } from './native-board-state.js';
+import { fileRevision } from './native-board-state.js';
+import { resolveCommit } from './git.js';
 import { trunkRevisionReader } from './trunk-revision.js';
 
+// A comparison clock is an internal fingerprint input, never a displayed forecast or observation.
+const COMPARISON_CLOCK = Date.UTC(2000, 0, 1);
+
 /** Capture spec, doctrine, config and board presentation without sending plaintext to a relay. */
-export function relayPresentation(root, { board: providedBoard = null } = {}) {
-  return withGitReadFacts(() => readRelayPresentation(root, providedBoard));
+export function relayPresentation(root, { board: providedBoard = null, observedAt = Date.now() } = {}) {
+  return withGitReadFacts(() => readRelayPresentation(root, providedBoard, observedAt));
 }
 
-/** One presentation read, using the supplied staged board without sharing its derived cache. */
-function readRelayPresentation(root, providedBoard) {
+/** Build both clocks through the same pure projection; only the actual observation is emitted as state. */
+function readRelayPresentation(root, providedBoard, observedAt) {
   const info = repoInfo(root);
-  const board = providedBoard ?? store.openBoard(join(info.commonDir, 'pullboard', 'board.sqlite'), undefined, { isMain: codeIsFromMain() });
+  const isMain = codeIsFromMain();
+  const board = providedBoard ?? store.openBoard(join(info.commonDir, 'pullboard', 'board.sqlite'), undefined, { isMain });
   try {
-    const projected = projectState(root, { board });
-    // The sealed page's Needs you carries the person's blocks, in plain words with no local path [C6].
-    const blocks = personBlockWords(info.commonDir, (board.clock ?? store.systemClock).now());
-    const state = { ...projected, blocks, needs: personNeeds({ ...projected, blocks }) };
-    const freshness = providedBoard
-      ? verdictProjector(root, board, { main: trunkRevisionReader(info)() }).state
-      : cachedVerdictStates(root, board, info);
-    const derived = new Map(store.listItems(board, { all: true }).map(item => [item.item_id, freshness(item)]));
-    state.items = state.items.map(item => {
-      const verdictState = derived.get(item.id);
-      return verdictState ? { ...item, verdictState } : item;
-    });
-    return { version: 1, state: { ...store.projectItemThreads(board, state), personRequests: personRequestStatuses(board) }, config: loadConfig(root), shouts: store.allShouts(board) }; }
-  finally { if (!providedBoard) store.closeBoard(board); }
+    const boardId = store.boardId(board);
+    const config = loadConfig(root);
+    const projects = () => [{ root: info.root, name: config.name, project: config.project }];
+    /** Preserve a single authorized board, including existing unavailable external milestone entries. */
+    const project = (clock) => {
+      const built = buildLocalBoardState(root, boardId, board, isMain, { projects, scopeCommonDir: info.commonDir, observedAt: clock });
+      return { ...built.state, sequence: built.sequence };
+    };
+    const state = project(observedAt);
+    const comparison = project(COMPARISON_CLOCK);
+    // exportBoard omits only derived proof counters and machine-local landing lease cache rows.
+    // Exact source bytes also retain expired/hidden business inputs that a fixed-clock view may omit.
+    const inputs = { native: exportBoard(board), files: stateFileInputs(root, config).map(fileRevision),
+      head: resolveCommit(root, 'HEAD'), trunk: trunkRevisionReader(info)(), config };
+    const changeFingerprint = createHash('sha256').update(JSON.stringify({ inputs, comparison })).digest('hex');
+    return { version: 1, state, config, shouts: store.allShouts(board), changeFingerprint };
+  } finally { if (!providedBoard) store.closeBoard(board); }
 }
 /** Resolve one shout from the complete history carried only inside the sealed presentation. */
 export function relayPresentationShout(root, id) {
@@ -61,7 +64,9 @@ export function presentationShout(presentation, id) {
 
 /** Notice presentation-only changes, including a spec or doctrine edit without a board move. */
 export function presentationDigest(presentation) {
-  return createHash('sha256').update(JSON.stringify(presentation)).digest('hex');
+  return /^[a-f0-9]{64}$/u.test(presentation?.changeFingerprint ?? '')
+    ? presentation.changeFingerprint
+    : createHash('sha256').update(JSON.stringify(presentation)).digest('hex');
 }
 
 /** Capture importable native tables beside matching API presentation, retrying a concurrent local move. */
