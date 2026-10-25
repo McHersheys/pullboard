@@ -160,9 +160,10 @@ Work
   Inbox combines direct coordination with item/dependency, file and cited-row activity; other lane activity is summarized.
   pullboard shout [<to>] <text> --decision       ask for a decision; defaults to your coordinator or the person
   pullboard shout <to> <text> --evidence attempt|receipt --outcome <word> --item <id> --commit <rev>
-  pullboard answer <shout-id> <text> [--as person] [--implies <ids>] [--supersedes <answer-id>]
-                    [--origin person-relayed|agent|inherited] [--rationale <why>]
+  pullboard answer <shout-id> <text> [--as person]
                                         answer your decision; person mode is main-checkout only
+                                        Other options: [--implies <ids>] [--supersedes <answer-id>]
+                                                      [--origin person-relayed|agent|inherited] [--rationale <why>]
                                         --supersedes tells the items an earlier answer implied; only the person
                                         supersedes the person's answer
   pullboard pass <shout-id> <note>                coordinator passes a decision to the person
