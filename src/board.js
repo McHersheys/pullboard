@@ -228,7 +228,10 @@ export { decideSpecRevisions } from './spec-revisions.js';
 import * as landingEnvironment from './landing-environment-guards.js';
 import { Refused } from './refused.js';
 import { saveJoinedSession } from './parent-session.js';
-import { itemAuthorProblem } from './item-authors.js';
+import {
+  itemAuthorProblem,
+  retainedVerifierIdentityProblem,
+} from './item-authors.js';
 import { refuseMaskedExit } from './check-mask.js';
 import {
   ROUTES,
@@ -1127,7 +1130,7 @@ export function release(board, id, agentId, note = '') {
 export function prepareMergeOnlySubmit(board, id, options) {
   const item = getItem(board, id);
   const basis = options?.gateGreen === true ? mergeOnlyBasis(board, item) : null;
-  return basis && !itemAuthorProblem(board, item, basis.by)
+  return basis && !retainedVerifierIdentityProblem(board, item, basis.by)
     && mergeOnlySourceValid(board.gitRoot, board, item)
     ? deriveMergeOnly(board.gitRoot, basis, options) : null;
 }
@@ -1182,7 +1185,7 @@ export function submit(board, id, { agentId, commit, tree, files = [], policyCom
         ...(carry ? {
           mergeOnlyRecorded: carriedProblem,
           atSubmittedCommit: null, // The same post-gate HEAD check binds both submission paths.
-          notBuilder: found => itemAuthorProblem(board, found, basis.by),
+          notBuilder: found => retainedVerifierIdentityProblem(board, found, basis.by),
           proofNoted: () => typeof mergeOnly?.resolutionDiff === 'string' ? null : new Refused('PROOF_REQUIRED', 'record the actual merge resolution diff'),
         } : {}),
         submissionProofValid: () => {
