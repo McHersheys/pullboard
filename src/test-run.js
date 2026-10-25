@@ -106,6 +106,7 @@ export async function runTestFiles(root, config, files, { agent, onWait } = {}) 
     const compared = await compareMainFailures(root, run.profile, onWait, run.output);
     result.main = compared.main;
     result.known = compared.files;
+    if (compared.unavailable) result.mainUnavailable = compared.unavailable;
   }
   return result;
 }
