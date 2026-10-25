@@ -114,6 +114,21 @@ export function relayMachineOwner() {
   return owner ? { account: owner.account, url: owner.url } : null;
 }
 
+/** Read a public root pinned through native person setup; relay replies never establish this trust. */
+export function relayPersonRoot(owner) {
+  const roots = readRelayMachine().personRoots ?? [];
+  if (!Array.isArray(roots)) throw new Refused('RELAY_MACHINE_STORAGE', 'Restore the owner-only person-root metadata.');
+  const matching = roots.filter(root => root?.account === owner.account && root.url === owner.url);
+  if (!matching.length) return null;
+  try {
+    const root = matching[0];
+    const origin = new URL(root.origin);
+    if (matching.length !== 1 || origin.origin !== root.origin || !(origin.protocol === 'https:' ||
+        origin.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(origin.hostname))) throw new Error('origin');
+    return { account: root.account, url: root.url, origin: root.origin, publicKey: devicePublicKey(root.publicKey) };
+  } catch { throw new Refused('RELAY_MACHINE_STORAGE', 'Restore one exact account, relay, browser origin and public person root.'); }
+}
+
 /** Serialize cross-process read-modify-write and atomically replace the private machine file. */
 export function updateRelayMachine(mutate) {
   const folder = directory();

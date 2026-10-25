@@ -18,7 +18,22 @@ export function createPersonEnrollmentStore({ database, now }) {
     if (!row.used && row.expires <= now()) throw new Refused('PERSON_ENROLL_EXPIRED', 'Create a fresh person-authenticated enrollment.');
     return row;
   }
+  /** Preserve previously stored single-wrap results while new requests accumulate one result per board. */
+  function results(row) {
+    const value = row.wrapped ? JSON.parse(row.wrapped) : [];
+    return Array.isArray(value) ? value : [value];
+  }
   return {
+    /** Discover only active requests granting this publisher’s board and still missing its result. */
+    pending(account, board) {
+      return db().prepare(`SELECT p.* FROM person_enrollment p
+        WHERE p.account=? AND p.used=0 AND p.expires>?
+        AND NOT EXISTS (SELECT 1 FROM device d WHERE d.account=p.account AND d.id=p.device AND d.revoked=1)
+        AND EXISTS (SELECT 1 FROM json_each(p.payload,'$.grants') WHERE value=?)
+        AND NOT EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(p.wrapped)='array' THEN p.wrapped ELSE '[]' END)
+          WHERE json_extract(value,'$.board')=?) ORDER BY p.nonce LIMIT 50`)
+        .all(account, now(), board, board).map(row => JSON.parse(row.payload));
+    },
     /** Store only a signed public challenge; the native client still verifies its pinned root. */
     begin(account, value) {
       const body = personEnrollmentBody(value);
@@ -49,23 +64,30 @@ export function createPersonEnrollmentStore({ database, now }) {
     /** Return opaque bytes only; successful delivery never changes the signed request. */
     read(account, nonce) {
       const row = entry(account, nonce);
-      return { enrollment: JSON.parse(row.payload), wraps: row.wrapped ? [JSON.parse(row.wrapped)] : [] };
+      return { enrollment: JSON.parse(row.payload), wraps: results(row) };
     },
-    /** Atomically spend the nonce and publish one opaque wrap without reviving a revoked device. */
+    /** Publish each signed grant once; only an identical active completion is an idempotent retry. */
     complete(account, nonce, value) {
       const opened = db();
       opened.exec('BEGIN IMMEDIATE');
       try {
         const row = entry(account, nonce);
-        if (row.used) throw new Refused('PERSON_ENROLL_REPLAY', 'This challenge was already consumed; use its existing opaque result.');
+        if (row.expires <= now()) throw new Refused('PERSON_ENROLL_EXPIRED', 'Create a fresh person-authenticated enrollment.');
         const request = JSON.parse(row.payload);
         if (!request.grants.includes(value.board)) throw new Refused('PERSON_ENROLL_AUTH', 'Wrap only a board named in the authenticated person challenge.');
         const wrapped = { board: value.board, engine: value.engine, wrapped: value.wrapped };
+        const completed = results(row), prior = completed.find(result => result.board === value.board);
+        if (prior) {
+          if (JSON.stringify(prior) !== JSON.stringify(wrapped)) throw new Refused('PERSON_ENROLL_REPLAY', 'Use the exact recorded result for this nonce and board.');
+          opened.exec('COMMIT');
+          return { recorded: true };
+        }
+        if (row.used) throw new Refused('PERSON_ENROLL_REPLAY', 'This challenge was already consumed; use its existing opaque result.');
         opened.prepare('INSERT INTO device(account,id) VALUES(?,?) ON CONFLICT(account,id) DO NOTHING').run(account, row.device);
         opened.prepare('INSERT INTO wrapped_key(account,device,board,engine,wrapped) VALUES(?,?,?,?,?) ON CONFLICT(account,device,board) DO UPDATE SET engine=excluded.engine,wrapped=excluded.wrapped')
           .run(account, row.device, value.board, value.engine, value.wrapped);
-        opened.prepare('UPDATE person_enrollment SET used=1,wrapped=? WHERE account=? AND nonce=?')
-          .run(JSON.stringify(wrapped), account, nonce);
+        opened.prepare('UPDATE person_enrollment SET used=?,wrapped=? WHERE account=? AND nonce=?')
+          .run(completed.length + 1 === request.grants.length ? 1 : 0, JSON.stringify([...completed, wrapped]), account, nonce);
         opened.exec('COMMIT');
         return { recorded: true };
       } catch (error) { opened.exec('ROLLBACK'); throw error; }

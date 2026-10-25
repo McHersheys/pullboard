@@ -401,7 +401,7 @@ async function openPage(view, { width = 1280, later = 0, store = null, hold = fa
       requests.push({ path, method: init?.method ?? 'GET', body: init?.body ? JSON.parse(init.body) : null });
       const answer = held.then(() => fetchLive(`${view.base}${path}`, { ...init, signal: init.signal ?? AbortSignal.timeout(30_000) })).then(async (res) => {
         const body = await res.json();
-        return { ok: res.ok, status: res.status, json: async () => body };
+        return { ok: res.ok, status: res.status, headers: res.headers, json: async () => body };
       });
       inflight.add(answer);
       const done = () => inflight.delete(answer);

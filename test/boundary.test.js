@@ -36,7 +36,7 @@ test('the core names no model, engine or vendor; secret patterns may name the ke
   assert.deepEqual(found, []);
 });
 
-test('only explicit relay commands open outbound connections; the view and API stay on loopback [P5, H15, H17, N26, A2]', () => {
+test('only explicit relay commands open outbound connections; the view defaults to loopback and API stays loopback [P5, H15, H17, H19, N26, A2]', () => {
   const allowed = (file, line) => file === 'src/relay.js' ||
     (file === 'src/relay-pairing-client.js' && line.trim() === 'response = await fetch(new URL(path, url), {') ||
     (['src/serve.js', 'src/api.js'].includes(file) && line.trim() === "import { createServer } from 'node:http';") ||
@@ -129,7 +129,9 @@ assert.deepEqual(globalThis.__localFetchRequests, [
   assert.equal(proof.status, 0, `the isolated loopback proof passed:\n${proof.stderr}\n${proof.stdout}`);
   const serve = readFileSync(join(ROOT, 'src', 'serve.js'), 'utf8');
   assert.match(serve, /export const LOOPBACK = '127\.0\.0\.1';/);
-  assert.match(serve, /server\.listen\(port, LOOPBACK, /);
+  assert.match(serve, /serveView\(\{[^}]*\blan = false\s*\} = \{\}\)/u, 'LAN listening requires an explicit opt-in');
+  assert.match(serve, /const address = lan \? viewLanAddress\(\) : LOOPBACK;/u, 'ordinary view selects only loopback');
+  assert.match(serve, /server\.listen\(port, address, /u, 'the listener uses only the explicitly selected address');
   const viewSession = readFileSync(join(ROOT, 'src', 'view-session.js'), 'utf8');
   assert.match(viewSession, /import\s*\{\s*LOOPBACK\s*,\s*lastPort\s*,?\s*\}\s*from '\.\/serve\.js';/);
   assert.match(viewSession, /redirect: 'manual'/, 'the local reuse probe cannot follow a remote redirect');

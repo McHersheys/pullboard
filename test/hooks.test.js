@@ -4,7 +4,8 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { runFixtureExecFile as execFileSync, runFixtureChildAsync, runFixtureGit } from './fixture-child.js';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { runFixtureChild } from './fixture-child.js';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { after, test } from 'node:test';
@@ -19,6 +20,100 @@ after(e2e.cleanup);
 
 const SPEC = { ...parseSpec('## G\n- G1 [approved, must] One. | gate: t\n- G2 [retired] Gone.\n'), name: 'SPEC.md' };
 const RULES = defaults().commits;
+
+test("a hook nudges and never blocks, fails open on error or timeout, and init merges with the user's hooks [I6]", () => {
+  const box = e2e.project('true');
+  const result = runFixtureChild(process.execPath, [e2e.BIN, 'hook', 'SessionStart'], {
+    cwd: box.web, env: box.env, input: JSON.stringify({ hook_event_name: 'SessionStart', cwd: box.web }),
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, `a native session-start hook must nudge without refusing: ${result.stdout}${result.stderr}`);
+  const response = JSON.parse(result.stdout);
+  assert.equal(response.continue === false || response.decision === 'block', false);
+  assert.equal(response.hookSpecificOutput.hookEventName, 'SessionStart');
+  assert.match(response.hookSpecificOutput.additionalContext, /pullboard|work|claim/i);
+  const claude = join(box.repo, '.claude/settings.json'), codex = join(box.repo, '.codex/hooks.json');
+  const mine = { permissions: { allow: ['Bash(my-check)'] }, hooks: { Stop: [{ hooks: [{ type: 'command', command: 'echo my-stop' }] }] } };
+  const codexMine = { description: 'My existing hooks', hooks: { SessionEnd: 'unrelated vendor metadata', SessionStart: [{ matcher: 'startup', hooks: [{ type: 'command', command: 'echo my-start' }] }] } };
+  writeFileSync(claude, JSON.stringify(mine));
+  writeFileSync(codex, JSON.stringify(codexMine));
+  assert.equal(box.run(box.repo, 'init', '--no-permissions').code, 0,
+    'the actual init entrypoint merges existing agent hooks');
+  const configured = [claude, codex].map(file => JSON.parse(readFileSync(file, 'utf8')));
+  assert.ok(configured[0].hooks.SessionEnd.some(group => group.hooks.some(handler => handler.command.includes('hook SessionEnd'))));
+  assert.equal(configured[1].hooks.SessionEnd, codexMine.hooks.SessionEnd, 'Codex preserves unrelated event data and installs only its existing supported events');
+  assert.deepEqual(configured[0].permissions, mine.permissions);
+  assert.deepEqual(configured[0].hooks.Stop[0], mine.hooks.Stop[0]);
+  assert.deepEqual(configured[1].hooks.SessionStart[0], codexMine.hooks.SessionStart[0]);
+  assert.equal(configured[1].description, codexMine.description);
+  for (const settings of configured) for (const event of ['SessionStart', 'Stop']) {
+    const handlers = settings.hooks[event].flatMap(group => group.hooks);
+    assert.equal(handlers.filter(handler => handler.command.includes(`hook ${event}`)).length, 1);
+    const handler = handlers.find(handler => handler.command.includes(`hook ${event}`));
+    assert.equal(handler.type, 'command');
+    assert.ok(handler.timeout > 0);
+    assert.equal(handler.command.includes('\n'), false, 'the installation is one thin resolver line');
+    const missing = runFixtureChild('/bin/sh', ['-c', handler.command], { cwd: box.dir,
+      env: { ...box.env, PATH: '/usr/bin:/bin' }, encoding: 'utf8' });
+    assert.equal(missing.status, 0, 'missing executable cannot break the vendor session');
+    assert.equal(missing.stdout, '');
+  }
+  const once = [readFileSync(claude, 'utf8'), readFileSync(codex, 'utf8')];
+  assert.equal(box.run(box.repo, 'hooks').code, 0);
+  assert.deepEqual([readFileSync(claude, 'utf8'), readFileSync(codex, 'utf8')], once, 'merging twice is idempotent');
+
+  const added = box.run(box.repo, 'add', 'web', 'Native stop reminder', '--criterion', 'committed work is named', '--json');
+  assert.equal(added.code, 0, added.err);
+  const id = JSON.parse(added.out).item.item_id;
+  assert.equal(box.run(box.web, 'claim', String(id)).code, 0);
+  assert.equal(e2e.commitFile(box, box.web, 'web/nudge.txt', 'committed work\n', 'feat(web): nudge work [G1]').status, 0);
+  // Contract probes use current documented vendor envelopes, never an actual user's transcript.
+  // https://learn.chatgpt.com/docs/hooks and https://code.claude.com/docs/en/hooks
+  for (const vendor of ['codex', 'claude']) {
+    const payload = { session_id: `private-${vendor}-fixture`, cwd: box.web, hook_event_name: 'Stop', stop_hook_active: false,
+      ...(vendor === 'codex' ? { turn_id: 'private-turn', last_assistant_message: null } : { transcript_path: join(box.dir, 'private-unused.jsonl') }) };
+    const stop = runFixtureChild(process.execPath, [e2e.BIN, 'hook', 'Stop'], { cwd: box.web, env: box.env, input: JSON.stringify(payload), encoding: 'utf8' });
+    assert.equal(stop.status, 0, stop.stderr);
+    const notice = JSON.parse(stop.stdout);
+    assert.equal(notice.continue === false || notice.decision === 'block', false);
+    assert.match(notice.systemMessage, new RegExp(`#${id}\\b`));
+  }
+  const broken = runFixtureChild(process.execPath, [e2e.BIN, 'hook', 'SessionStart'], { cwd: box.dir, env: box.env, encoding: 'utf8' });
+  assert.equal(broken.status, 0);
+  assert.match(JSON.parse(broken.stdout).systemMessage, /warning.*continuing/i);
+  const unknown = runFixtureChild(process.execPath, [e2e.BIN, 'hook', 'FutureVendorEvent'], { cwd: box.dir, env: box.env, encoding: 'utf8' });
+  assert.equal(unknown.status, 0);
+  assert.equal(unknown.stdout, '');
+  const slow = join(box.dir, 'slow-git');
+  mkdirSync(slow);
+  writeFileSync(join(slow, 'git'), '#!/bin/sh\nexec /bin/sleep 10\n');
+  chmodSync(join(slow, 'git'), 0o755);
+  const timeout = runFixtureChild(process.execPath, [e2e.BIN, 'hook', 'SessionStart'], {
+    cwd: box.web, env: { ...box.env, PATH: `${slow}:${box.env.PATH}` }, encoding: 'utf8',
+  });
+  assert.equal(timeout.status, 0);
+  assert.match(JSON.parse(timeout.stdout).systemMessage, /timed out.*continuing/i);
+  const doctor = box.run(box.repo, 'doctor', '--json');
+  const status = JSON.parse(doctor.out).agentHooks.find(hook => hook.vendor === 'Codex');
+  assert.deepEqual(status.events, ['SessionStart', 'Stop']);
+  assert.equal(status.trust, 'unverified', 'installation never fabricates vendor trust');
+  const validCodex = readFileSync(codex, 'utf8');
+  writeFileSync(codex, '{ malformed user JSON');
+  const malformed = box.run(box.repo, 'hooks');
+  assert.equal(malformed.code, 0);
+  assert.match(malformed.out, /warning.*kept.*unchanged/i);
+  assert.equal(readFileSync(codex, 'utf8'), '{ malformed user JSON');
+  writeFileSync(codex, validCodex);
+  assert.equal(box.run(box.repo, 'hooks', 'uninstall').code, 0);
+  assert.deepEqual(JSON.parse(readFileSync(claude, 'utf8')), mine);
+  assert.deepEqual(JSON.parse(readFileSync(codex, 'utf8')), codexMine);
+  const disabled = join(box.dir, 'disabled');
+  mkdirSync(disabled);
+  box.git(disabled, 'init', '-q', '-b', 'main');
+  assert.equal(box.run(disabled, 'init', '--no-hooks', '--no-permissions').code, 0);
+  assert.equal(existsSync(join(disabled, '.codex/hooks.json')), false);
+  assert.equal(existsSync(join(disabled, '.claude/settings.json')), false);
+});
 
 /** Make a private real repository for staged-diff hook tests, with cleanup tied to the test. */
 function stagedRepo(t) {
