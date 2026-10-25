@@ -20,7 +20,8 @@ export function personNeeds(state) {
     return [...found.values()].sort((a, b) => b.at.localeCompare(a.at));
   };
   const rows = (state.spec ?? []).filter(row => !row.decision);
-  const rigorDrafts = state.rigorDrafts ?? [];
+  // Coordinator preparation remains in rigorDrafts; only an existing row is a person call.
+  const rigorDrafts = (state.rigorDrafts ?? []).filter(draft => draft.unproved !== true || draft.materialized === true && !draft.collision);
   const drafts = rows.filter(row => (row.status === 'draft' || row.staleDecision) && !rigorDrafts.some(draft => draft.target === `spec:${row.id}`)).length;
   return [
     ...(state.decisions ?? []).map(ask => ({ kind: 'decision', id: ask.shout_id,
