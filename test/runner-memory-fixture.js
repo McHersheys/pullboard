@@ -43,6 +43,7 @@ export async function assertRunnerMemoryAdmission() {
     const source = [
       `import {withGateSlot,runProfiledShellAsync} from ${JSON.stringify(gate)};`,
       "import {execFileSync} from 'node:child_process';",
+      "import {DatabaseSync} from 'node:sqlite';",
       'const root=process.cwd(); const output={};',
       '/** Keep the refusal path bounded: release only the private simulated pressure after observing it. */',
       'async function exercise(remote, agent, releaseOccupied){',
@@ -60,6 +61,10 @@ export async function assertRunnerMemoryAdmission() {
       'const occupied=withGateSlot(root,async lease=>{if(!lease.runner)throw new Error("occupying run did not reserve a runner");markOccupied();await release;},',
       '{agent:"occupied-runner",kind:"focused",readMemory:async()=>({checked:true,pressure:"normal",availableBytes:8*1024**3,totalBytes:16*1024**3,processes:[]})});',
       'await Promise.race([ready,occupied.then(()=>{throw new Error("occupying run ended before the queue control");})]);',
+      '// A past transport hold is retry-eligible under the accepted runner policy, even while its slot is busy.',
+      'const queue=new DatabaseSync(process.env.PULLBOARD_MACHINE_HOME+"/resources.sqlite");',
+      `queue.prepare("INSERT INTO runner_unavailable(host,since,detail) VALUES(?,?,?)").run(${JSON.stringify(HOST)},new Date(Date.now()-300_001).toISOString(),"TRANSPORT_LOST");`,
+      'queue.close();',
       'try{output.remote=await exercise(true,"remote-memory-control",releaseOccupied);}finally{releaseOccupied();await occupied;}',
       'output.local=await exercise(false,"local-memory-control");',
       'console.log(JSON.stringify(output));',
