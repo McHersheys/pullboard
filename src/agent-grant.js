@@ -3,7 +3,8 @@ import { AGENT_GRANT_ENGINE } from './agent-grant-engine.js';
 import { MOVE_REGISTRY } from './move-registry.js';
 import { Refused } from './refused.js';
 
-const ADMINISTRATIVE = new Set(['shout', 'claim', 'release', 'reserveReview']);
+// Attributed append-only findings never confer authority over item state.
+const ADMINISTRATIVE = new Set(['shout', 'claim', 'release', 'reserveReview', 'appendFact']);
 
 /** Bind only item mutations declared by the public operation, including item creation. */
 function target(move) {
@@ -46,14 +47,9 @@ export function requireAgentGrant(board, move, at = board.clock.now()) {
   if (!scope) return;
   const item = existingItem(board, scope.item);
   if (!scope.creating && !item) return; // Preserve the operation's own malformed/missing-item refusal.
-  // The seat's immutable handoff-open event grants only its own channel facts, not other item work.
-  // Replacement fencing runs before this guard, so a taken-over seat keeps only its existing shout path.
-  if (move.operation === 'appendFact' && board.db.prepare(
-    "SELECT event_id FROM event WHERE item_id=? AND event_by=? AND event_kind='handoff-open' LIMIT 1")
-    .get(item.item_id, actor)) return;
   const now = at.toISOString();
   if (item?.item_review_by === actor && item.item_status === 'submitted' && item.item_review_until > now
-    && ['verify', 'appendFact'].includes(move.operation)) return;
+    && move.operation === 'verify') return;
   const claims = board.db.prepare("SELECT item_id,item_lease_until FROM item WHERE item_owner=? AND item_status='claimed'").all(actor);
   const own = claims.find(claim => claim.item_id === item?.item_id);
   const live = claims.filter(claim => claim.item_lease_until > now);
