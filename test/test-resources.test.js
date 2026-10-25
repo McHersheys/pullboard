@@ -537,6 +537,7 @@ test('reviewed executor imports stay browser-free only at their exact call sites
   const root = sourceFixture(t, {});
   cpSync(join(repository, 'src'), join(root, 'src'), { recursive: true });
   cpSync(join(repository, 'test'), join(root, 'test'), { recursive: true });
+  copyFileSync(join(repository, 'package.json'), join(root, 'package.json'));
   for (const [index, [file, name, call]] of entries.entries()) {
     const importer = `test/reviewed-executor-${index}.test.js`;
     const request = file.startsWith('src/') ? `../${file}` : `./${file.slice(5)}`;
