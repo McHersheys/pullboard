@@ -3,7 +3,7 @@ import {
   reportedSnapshotSize,
   snapshotSize,
 } from './relay-snapshot-size.js';
-export { formatSnapshotLimit };
+export { formatSnapshotLimit, originRepository };
 import { beginCommandPhase } from './command-phase.js';
 import { recordedMoveRefusal } from './recorded-move.js';
 import {
@@ -15,7 +15,6 @@ import {
   unlinkedRelayStatus,
 } from './relay-status-fields.js';
 import { originRepository } from './github-origin.js';
-export { originRepository };
 import {
   clearUploadPauseNotices,
   firstUploadPauseNotice,
@@ -142,7 +141,6 @@ import {
 import { Refused } from './refused.js';
 import { landingRelayCallbacks } from './landing-relay.js';
 import { relayOrigin } from './relay-origin.js';
-export { relayOrigin };
 import { refusalFromReceipt } from './recorded-refusal.js';
 import { relayNotices } from './relay-notices.js';
 import {
@@ -172,7 +170,7 @@ import {
   relayStorage,
   relayStorageLine,
 } from './relay-page-client.js';
-export { relayStorageLine };
+export { relayOrigin, relayStorageLine };
 
 export const DEFAULT_RELAY = 'https://app.pullboard.dev';
 const LINK_FILES = new WeakMap();
@@ -485,7 +483,6 @@ async function publishSnapshotSize(state, io) {
 export function pendingSnapshotSize(root) {
   return snapshotSize(loadLink(linkFile(root)));
 }
-
 
 /** Whether the CLI command will make an ordered move whose refusal should be reported at dispatch. */
 function orderedMoveCommand(io) {
@@ -972,7 +969,7 @@ async function catchUp(root, file, state, io) {
     if (localRecords(root, appliedSequence) <= after) throw new Refused('RELAY_RESPONSE', 'the relay checkpoint did not advance the missing prefix; fetch a consistent newer snapshot');
     return catchUp(root, file, state, io);
   }
-  if ([remote.warning, ...(remote.warnings ?? [])].some((warning) => warning?.code === 'KEY_REQUESTS')) KEY_REQUESTS_SEEN.add(io);
+  if ([remote.warning, ...(remote.warnings ?? [])].some((warning) => warning?.code === 'KEY_REQUESTS')) io.keyRequestsWaiting = true;
   if (!Array.isArray(remote.events) || remote.events.some((record, index) => !record || record.event_id !== after + index + 1 || !['move', 'request'].includes(record.kind) || typeof record.sealed !== 'string')) {
     throw new Refused('RELAY_RESPONSE', 'the relay returned an invalid ordered prefix; fetch a consistent relay snapshot');
   }
@@ -1263,7 +1260,7 @@ export async function syncRelay(root, io) {
       if (checkpointInBackground()) { if (state.checkpoint) scheduleCheckpoint(root, file); else requestCheckpointCheck(root, file); }
       else if (state.checkpoint || state.presentationDigest !== presentationDigest(relayPresentation(root))) await publishCheckpoint(root, file, state, io);
       await deliverDeviceWraps(root, io);
-      if (KEY_REQUESTS_SEEN.has(io) && !state.environment) await handOverKeys(state, io); // an agent token never hands over a key
+      if (io.keyRequestsWaiting && !state.environment) await (await import('./relay-handover.js')).handOverKeys(state, readBoardKey(state.board), request, io); // an agent token never hands over a key
       return summary(root, state);
     }
     catch (error) {
@@ -1282,33 +1279,6 @@ export async function syncRelay(root, io) {
         recovery: recoverySummary(state), ...outboxFields(state) };
     }
   }, io);
-}
-
-/** The public SSH keys on a GitHub account, read from GitHub itself so the relay cannot add one. */
-async function githubKeys(login) {
-  const base = new URL(process.env.PULLBOARD_GITHUB_API || 'https://api.github.com');
-  if (base.protocol !== 'https:' && !(base.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname))) {
-    throw new Refused('GITHUB_UNAVAILABLE', 'PULLBOARD_GITHUB_API must be an HTTPS address, or loopback HTTP for tests');
-  }
-  let keys;
-  try {
-    const response = await fetch(new URL('users/' + encodeURIComponent(login) + '/keys', base.href.endsWith('/') ? base : base.href + '/'),
-      { headers: { accept: 'application/vnd.github+json' }, redirect: 'error', signal: AbortSignal.timeout(10_000) }); // budget: one GitHub read, the same ceiling as a relay request.
-    if (!response.ok) throw new Error(String(response.status));
-    keys = await response.json();
-  } catch { throw new Refused('GITHUB_UNAVAILABLE', `could not read ${login}'s SSH keys from GitHub; the key request waits for the next command`); }
-  return (Array.isArray(keys) ? keys : []).map(entry => entry?.key).filter(key => typeof key === 'string' && /^(?:ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(?:256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com) [A-Za-z0-9+/=]+$/u.test(key));
-}
-
-/** Commands whose event read named a new device waiting for this board's key. */
-const KEY_REQUESTS_SEEN = new WeakSet();
-
-/** Hand this board's key to member devices that asked; a failure here never fails the command that noticed [E17]. */
-async function handOverKeys(state, io) {
-  KEY_REQUESTS_SEEN.delete(io);
-  const { handOverBoardKeys } = await import('./relay-handover.js');
-  try { await handOverBoardKeys(state, readBoardKey(state.board), { send: request, githubKeys }, io); }
-  catch (error) { if (!(error instanceof Refused)) throw error; io.err(`pullboard: a new device's key request waits: ${error.message}`); }
 }
 
 /** Return token-management context without opening a board-key pairing link or exposing any credential. */
@@ -1610,14 +1580,9 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
   const repository = originRepository(root);
   const file = linkFile(root);
   // A clone whose pullboard.json names another board joins that board instead of linking a second one [E12].
-  const { namedBoard, writeNamedBoard } = await import('./relay-board-config.js');
-  const named = loadLink(file) ? null : namedBoard(repoInfo(root).root);
-  const relinking = relayRelink(root);
-  if (named && named !== localRecords(root, store.boardId) && relinking?.previous !== named && relinking?.next !== named) {
-    const url = relayOrigin(address || DEFAULT_RELAY);
-    const { joinNamedBoard } = await import('./relay-join.js');
-    return joinNamedBoard(root, file, { board: named, url, repository, signIn: () => deviceSignIn(url, io) }, io);
-  }
+  const joining = await (await import('./relay-join.js')).joinNamedBoardIfAny(root, file, { linked: Boolean(loadLink(file)), url: relayOrigin(address || DEFAULT_RELAY), repository, signIn: (url) => deviceSignIn(url, io) }, io);
+  if (joining) return joining;
+  const { nameBoardInConfig } = await import('./relay-board-config.js');
   return locked(file, async () => {
     let state = loadLink(file);
     if (state) requireUnconflictedBaseline(state);
@@ -1631,11 +1596,8 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
       host: hostname(), boardName: basename(root) } : undefined;
     const signed = remoteShell ? await deviceSignIn(url, io, { intent }) : reusableCredential ?? reusableSession ?? await deviceSignIn(url, io);
     if (reusableSession && reusableSession.url !== url) throw new Refused('RELAY_SESSION', 'Sign in again to this relay with pullboard relay on --all.');
-    // Every clone of the repository finds its board in the committed pullboard.json [E12]; written before the snapshot,
-    // so the sealed presentation already carries it.
-    const configFile = join(repoInfo(root).root, 'pullboard.json');
-    const priorConfig = existsSync(configFile) ? readFileSync(configFile, 'utf8') : null;
-    if (writeNamedBoard(repoInfo(root).root, nextBoard)) io.err(`pullboard: pullboard.json now names board ${nextBoard.slice(0, 8)}; commit it so every clone of this repository joins this board`);
+    // Every clone finds its board in pullboard.json [E12], written before the snapshot so its presentation carries it.
+    const restoreConfig = nameBoardInConfig(repoInfo(root).root, nextBoard, io);
     if (!state) {
       const snapshot = localRecords(root, (board) => {
         startRelayEpoch(board, nextBoard);
@@ -1657,19 +1619,10 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
     if (relink) finishRelink(root);
     if (state.linkPending) {
       if (signed.linkConfirmed && signed.linkedBoard !== state.board) throw new Refused('RELAY_RESPONSE', 'the relay confirmed a different board; sign in again');
-      try {
-        if (!reusableCredential && !signed.linkConfirmed) await request({ ...state, token: signed.token }, '/auth/boards/link', { method: 'POST', body: { board: state.board, repository, ...(state.replaces ? { replaces: state.replaces } : {}) } }, io);
-      } catch (error) {
-        // The repository's board is another one: forget this never-linked intent, so relay on can join that board [E12].
-        if (error.code === 'BOARD_REPO_LINKED') {
-          rmSync(file, { force: true });
-          if (priorConfig !== null) writeFileSync(configFile, priorConfig);
-          try { forgetBoardKey(state.board, state.keyStorage); } catch { /* The refusal names the next step. */ }
-        }
-        throw error;
-      }
-      delete state.linkPending;
-      delete state.replaces;
+      // Another board is the repository's: forget this never-linked intent so relay on can join it [E12].
+      if (!reusableCredential && !signed.linkConfirmed) await request({ ...state, token: signed.token }, '/auth/boards/link', { method: 'POST', body: { board: state.board, repository, ...(state.replaces ? { replaces: state.replaces } : {}) } }, io)
+        .catch((error) => { if (error.code === 'BOARD_REPO_LINKED') restoreConfig(() => { rmSync(file, { force: true }); forgetBoardKey(state.board, state.keyStorage); }); throw error; });
+      delete state.linkPending; delete state.replaces;
       saveLink(file, state);
     }
     const machine = updateRelayMachine(settings => settings.machine);
@@ -1763,7 +1716,6 @@ export async function relayOff(root, io) {
       notice: 'Local link removed. The relay copy stays until you approve deleting it on your phone.' + warning + (requested ? '' : ' Open the phone to manage the relay copy.') };
   });
 }
-
 
 /** Keep the elected native executor stable across processes while other worktrees share its link. */
 export async function relayRequestDevice(root) {

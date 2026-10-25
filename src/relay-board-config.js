@@ -57,3 +57,17 @@ export function onlyNamedBoardChanged(root) {
     return isDeepStrictEqual(withoutBoard(committed), withoutBoard(readFileSync(join(root, CONFIG_FILE), 'utf8')));
   } catch { return false; }
 }
+
+/**
+ * Write the board id into pullboard.json before relay on seals its snapshot, and say so. The returned function undoes
+ * the write after running its cleanup, for a link the relay refused.
+ */
+export function nameBoardInConfig(root, board, io) {
+  const file = join(root, CONFIG_FILE);
+  const prior = existsSync(file) ? readFileSync(file, 'utf8') : null;
+  if (writeNamedBoard(root, board)) io.err(`pullboard: pullboard.json now names board ${board.slice(0, 8)}; commit it so every clone of this repository joins this board`);
+  return (cleanup) => {
+    try { cleanup(); } catch { /* The refusal names the next step. */ }
+    if (prior !== null) writeFileSync(file, prior);
+  };
+}

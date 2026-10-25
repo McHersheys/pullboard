@@ -17,6 +17,8 @@ import {
   storeBoardKey,
 } from './relay-key.js';
 import { requestBoardKey } from './relay-handover.js';
+import { namedBoard } from './relay-board-config.js';
+import { relayRelink } from './relay-relink.js';
 import { updateRelayMachine } from './relay-machine.js';
 import { listApiProjects } from './projects.js';
 import { Refused } from './refused.js';
@@ -80,4 +82,15 @@ export async function joinNamedBoard(root, file, { board, url, repository, signI
   const result = { ...relayStatus(root), notice: `Joined ${name}: this clone works on board ${board.slice(0, 8)}, the one pullboard.json names.` };
   io.err(result.notice);
   return result;
+}
+
+/**
+ * Join the board this clone's pullboard.json names when the clone has no link and its own board is another one, or
+ * return null so relay on links as before. A relink after relay off names its own previous board and is not a join.
+ */
+export async function joinNamedBoardIfAny(root, file, { linked, url, repository, signIn }, io) {
+  const named = linked ? null : namedBoard(repoInfo(root).root);
+  const relinking = relayRelink(root);
+  if (!named || named === localRecords(root, store.boardId) || relinking?.previous === named || relinking?.next === named) return null;
+  return joinNamedBoard(root, file, { board: named, url, repository, signIn: () => signIn(url) }, io);
 }

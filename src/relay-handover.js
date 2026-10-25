@@ -142,3 +142,26 @@ export async function handOverBoardKeys(state, key, { send, githubKeys }, io) {
     io.err(body.wrapped ? `pullboard: handed this board's key to a new device of ${entry.login}` : `pullboard: refused a new device of ${entry.login}: ${body.refused.message}`);
   }
 }
+
+/** The public SSH keys on a GitHub account, read from GitHub itself so the relay cannot add one. */
+async function githubKeys(login) {
+  const base = new URL(process.env.PULLBOARD_GITHUB_API || 'https://api.github.com');
+  if (base.protocol !== 'https:' && !(base.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname))) {
+    throw new Refused('GITHUB_UNAVAILABLE', 'PULLBOARD_GITHUB_API must be an HTTPS address, or loopback HTTP for tests');
+  }
+  let keys;
+  try {
+    const response = await fetch(new URL('users/' + encodeURIComponent(login) + '/keys', base.href.endsWith('/') ? base : base.href + '/'),
+      { headers: { accept: 'application/vnd.github+json' }, redirect: 'error', signal: AbortSignal.timeout(10_000) }); // budget: one GitHub read, the same ceiling as a relay request.
+    if (!response.ok) throw new Error(String(response.status));
+    keys = await response.json();
+  } catch { throw new Refused('GITHUB_UNAVAILABLE', `could not read ${login}'s SSH keys from GitHub; the key request waits for the next command`); }
+  return (Array.isArray(keys) ? keys : []).map(entry => entry?.key).filter(key => typeof key === 'string' && /^(?:ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(?:256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com) [A-Za-z0-9+/=]+$/u.test(key));
+}
+
+/** Hand this board's key to member devices that asked; a failure here never fails the command that noticed [E17]. */
+export async function handOverKeys(state, key, send, io) {
+  delete io.keyRequestsWaiting;
+  try { await handOverBoardKeys(state, key, { send, githubKeys }, io); }
+  catch (error) { if (!(error instanceof Refused)) throw error; io.err(`pullboard: a new device's key request waits: ${error.message}`); }
+}
