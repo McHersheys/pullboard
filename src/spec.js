@@ -27,6 +27,10 @@ import {
 import { cleanGitEnvironment } from './git.js';
 import { Refused } from './refused.js';
 import {
+  parseRowVerification,
+  rowVerificationFormatProblems,
+} from './spec-verdict-format.js';
+import {
   renamedGatePath,
   revisionGateCommand,
 } from './spec-gate-renames.js';
@@ -52,7 +56,7 @@ const SECTION_RE = /^##\s+(.+)$/;
 const SIGNER_RE = /^(?!#)[^\s,]+$/u;
 const LEGACY_SIGNER_RE = /^[A-Z][A-Za-z]{1,11}$/;
 
-const FIELD_NAMES = ['gate', 'serves', 'signers', 'count', 'runs', 'mode', 'files', 'source'];
+const FIELD_NAMES = ['gate', 'serves', 'signers', 'count', 'runs', 'mode', 'files', 'source', 'verify'];
 const CHECK_FIELDS = ['count', 'runs', 'mode', 'files'];
 
 /** Replace the complete gate field, including check pipelines, while preserving other row fields. */
@@ -78,7 +82,13 @@ function splitFields(rest) {
   const [text = '', ...parts] = rest.split(' | ');
   const fields = { text: text.trim(), gate: '', serves: [], signers: [], unknown: [] };
   let inCheck = false;
+  let verdictReason = false;
   for (const part of parts) {
+    if (verdictReason) {
+      fields.verify = parseRowVerification(fields.verify, part.trim());
+      verdictReason = false;
+      continue;
+    }
     const [key = '', ...value] = part.split(':');
     const joined = value.join(':').trim();
     if (inCheck && !FIELD_NAMES.includes(key.trim())) {
@@ -86,7 +96,11 @@ function splitFields(rest) {
       continue;
     }
     inCheck = false;
-    if (key.trim() === 'gate') {
+    if (key.trim() === 'verify') {
+      if (Object.hasOwn(fields, 'verify')) fields.unknown.push('duplicate verify field');
+      fields.verify = joined;
+      verdictReason = true;
+    } else if (key.trim() === 'gate') {
       fields.gate = joined;
       inCheck = /^check(\s|$)/u.test(joined);
     } else if (CHECK_FIELDS.includes(key.trim()) || key.trim() === 'source') fields[key.trim()] = joined;
@@ -96,6 +110,7 @@ function splitFields(rest) {
       fields.signers = joined.split(',').map((signer) => signer.trim()).filter(Boolean);
     } else fields.unknown.push(part.trim());
   }
+  if (verdictReason) fields.verify = parseRowVerification(fields.verify, '');
   return fields;
 }
 
@@ -232,8 +247,9 @@ function rowFindings(row, maxWords) {
   // are not counted: the limit keeps the requirement itself short (blueprint rows carry both).
   const words = row.text.split(/ (?:Why|Choices): /u)[0].split(/\s+/).filter(Boolean).length;
   if (words > maxWords) add('warning', `${words} words; rows stay under ${maxWords}, the why goes elsewhere`);
-  for (const part of row.unknown) add('error', `unknown field "${part}"; fields are gate, serves, signers, count, runs, mode, files and source`);
+  for (const part of row.unknown) add('error', `unknown field "${part}"; fields are gate, serves, signers, count, runs, mode, files, source and verify`);
   if (row.source !== undefined && !row.source.trim()) add('error', 'source names where the row came from; leave it out when the row has none');
+  for (const message of rowVerificationFormatProblems(row.verify)) add('error', message);
   findings.push(...checkFieldFindings(row).map((message) => ({ level: 'error', line: row.line, id: row.id, message })));
   return findings;
 }

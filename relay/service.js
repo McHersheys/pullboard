@@ -17,6 +17,7 @@ import { SEALED_SNAPSHOT_BYTES, SNAPSHOT_BODY_BYTES } from '../src/relay-limits.
 import { createRelayPagesHandler, snapshotPageRoot } from './pages-http.js';
 import { createStorageQuota } from './storage-quota.js';
 import { createUploadStatusHandler } from './upload-status.js';
+import { createRelayBoardLinks } from './board-links.js';
 
 const SNAPSHOT_BODY = SNAPSHOT_BODY_BYTES;
 const STORED_BYTES = SEALED_SNAPSHOT_BYTES;
@@ -120,7 +121,7 @@ function sender(who, personOnly = false) {
 }
 
 /** Create a private relay handler; the caller owns sign-in lifecycle and service shutdown. */
-export function createRelayHandler({ directory, auth, pollMs = 200, publicOrigin, now = Date.now, backupsDirectory, maintenanceMs = 60_000, accountStorageBytes }) {
+export function createRelayHandler({ directory, auth, pollMs = 200, publicOrigin, now = Date.now, backupsDirectory, maintenanceMs = 60_000, accountStorageBytes, boardLinkAuthority }) {
   const origin = trustedOrigin(publicOrigin);
   if (typeof directory !== 'string' || !directory.trim() || !auth) throw new Refused('RELAY_CONFIG', 'configure a private relay directory and sign-in component');
   const root = resolve(directory);
@@ -342,6 +343,14 @@ export function createRelayHandler({ directory, auth, pollMs = 200, publicOrigin
   }, { pollMs });
 
   const uploadStatus = createUploadStatusHandler({ authorize: authorizedRequest, withJournal, sender });
+  let boardLinks = null;
+  try {
+    if (boardLinkAuthority) boardLinks = createRelayBoardLinks({ directory: root, authority: boardLinkAuthority,
+      authorize: authorizedRequest, auth, withJournal, store: storing, now });
+  } catch (error) {
+    clearInterval(timer); common.close(); releaseSessionGuard?.(); deviceStore.close(); quota?.close();
+    throw error;
+  }
 
   /** Add authenticated snapshot replacement and deletion to the common versioned read/move paths. */
   async function handle(req, res) {
@@ -353,6 +362,10 @@ export function createRelayHandler({ directory, auth, pollMs = 200, publicOrigin
       let url;
       try { url = new URL(req.url ?? '/', 'http://127.0.0.1'); }
       catch { throw new Refused('BAD_REQUEST', 'use a valid path under /api/v1/boards'); }
+      if (/^\/api\/v1\/boards\/[^/]+\/(links(?:\/[^/]+)?|link-deliveries)$/u.test(url.pathname)) {
+        if (!boardLinks) throw new Refused('BOARD_LINK_AUTH', 'configure the trusted board signer-authority port before linking boards');
+        if (await boardLinks.handle(req, res, url)) return;
+      }
       if (await uploadStatus(req, res, url)) return;
       const approvers = /^\/api\/v1\/boards\/([^/]+)\/approvers$/.exec(url.pathname);
       if (approvers && req.method === 'GET') {
@@ -423,13 +436,13 @@ export function createRelayHandler({ directory, auth, pollMs = 200, publicOrigin
   handle.maintenance = maintain;
   handle.backup = retention.backup;
   handle.maintenanceStatus = () => ({ error: maintenanceError });
-  handle.close = () => { clearInterval(timer); common.close(); releaseSessionGuard?.(); deviceStore.close(); quota?.close(); };
+  handle.close = () => { clearInterval(timer); common.close(); releaseSessionGuard?.(); deviceStore.close(); quota?.close(); boardLinks?.close(); };
   return handle;
 }
 
 /** Start the opt-in service on a configured address; tests use loopback and an ephemeral port. */
-export function serveRelay({ directory, auth, port = 0, host = '127.0.0.1', pollMs = 200, publicOrigin, now, backupsDirectory, maintenanceMs, accountStorageBytes }) {
-  const handler = createRelayHandler({ directory, auth, pollMs, publicOrigin, now, backupsDirectory, maintenanceMs, accountStorageBytes });
+export function serveRelay({ directory, auth, port = 0, host = '127.0.0.1', pollMs = 200, publicOrigin, now, backupsDirectory, maintenanceMs, accountStorageBytes, boardLinkAuthority }) {
+  const handler = createRelayHandler({ directory, auth, pollMs, publicOrigin, now, backupsDirectory, maintenanceMs, accountStorageBytes, boardLinkAuthority });
   const server = createServer(handler);
   server.requestTimeout = 15_000;
   return new Promise((ready, fail) => {

@@ -203,11 +203,11 @@ function addressTo(to) {
  * its To and its button change. The To the person had comes back when the answer is done. An answer
  * belongs to the project whose question it shows: leaving that project leaves answer mode.
  */
-function answer(id) {
-  const ask = id === null ? null : data.project.decisions.find((d) => d.shout_id === id) || null;
+function answer(id, ordinary = false) {
+  const ask = id === null ? null : (ordinary ? data.project.decisionQueue || [] : data.project.decisions).find((d) => d.shout_id === id) || null;
   if (ask && !view.answering) view.to = $('shout-to').value;
   if (!ask && view.answering) addressTo(view.to);
-  view.answering = ask ? { root: view.root, id: ask.shout_id } : null;
+  view.answering = ask ? { root: view.root, id: ask.shout_id, ordinary } : null;
   $('answering').hidden = !ask;
   $('answering-who').textContent = ask ? agentName(ask.shout_from) : '';
   const question = ask ? linked(ask.shout_text, new Map(data.project.items.map((i) => [String(i.id), i.title]))) : '';
@@ -257,6 +257,7 @@ function go(target, root = view.root) {
   else if (kind === 'doctrine') { tab = 'doctrine'; view.row.doctrine = id; view.rows.doctrine = 'all'; }
   else if (kind === 'shout') { tab = 'shouts'; view.agent = null; view.unread = null; }
   else if (kind === 'tab') tab = id;
+  else if (kind === 'coordinate') { tab = 'shouts'; answer(Number(id), true); }
   else if (kind === 'decide') { tab = 'shouts'; answer(Number(id)); }
   if (kind === 'item') { view.tab = 'items'; view.itemsView = 'list'; pick(Number(id), root); }
   else { openTab(tab, ['spec', 'doctrine', 'shout'].includes(kind) ? id : null); render(); }
@@ -426,6 +427,7 @@ function pageMove(command, args = {}) {
     return { body: { verb: 'add', args: fields }, label: label.join(' ') };
   }
   if (command === 'shout') return { body: { verb: 'shout', args: { to: text(args.to), text: text(args.text) } }, label: ['shout', text(args.to), text(args.text)].join(' ') };
+  if (command === 'coordinator-answer') return { body: { verb: 'answer', item: Number(args.id), args: { text: text(args.text) } }, label: ['answer', text(args.id), text(args.text)].join(' ') };
   if (command === 'answer') return { body: { verb: 'answer', item: Number(args.id), args: { text: text(args.text), as: 'person' } }, label: ['answer', text(args.id), text(args.text), '--as', 'person'].join(' ') };
   if (command === 'hold') return { body: { verb: 'hold', args: { lane: text(args.lane), reason: text(args.reason) } }, label: ['hold', text(args.lane), '--reason', text(args.reason)].join(' ') };
   if (command === 'release') return { body: { verb: 'hold', args: { lane: text(args.lane), off: true } }, label: ['hold', text(args.lane), '--off'].join(' ') };
@@ -1042,7 +1044,7 @@ $('shout-form').addEventListener('submit', async (event) => {
   const answerRoot = ask?.root ?? null;
   const answerId = ask?.id ?? null;
   if (ask && ask.root !== view.root) return answer(null);
-  if (!(await (ask ? act('answer', { id: ask.id, text }, event.currentTarget) : ($('shout-to').value === 'coordinator' ? act('request', { text }, event.currentTarget) : act('shout', { to: $('shout-to').value, text }, event.currentTarget))))) return;
+  if (!(await (ask ? act(ask.ordinary ? 'coordinator-answer' : 'answer', { id: ask.id, text }, event.currentTarget) : ($('shout-to').value === 'coordinator' ? act('request', { text }, event.currentTarget) : act('shout', { to: $('shout-to').value, text }, event.currentTarget))))) return;
   const currentAnswer = view.answering;
   // An older completion must not erase a newer draft or answer selection.
   if (view.root !== root || $('shout-text').value !== text || (currentAnswer?.root ?? null) !== answerRoot
