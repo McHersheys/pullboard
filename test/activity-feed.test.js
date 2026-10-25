@@ -330,7 +330,19 @@ test('old ordinary shout replay does not become newly typed news [H16,N26]', (t)
   const agentMove = prepareEngineMove(board, 'shout', [{ from: 'web-1', to: 'all', lanes: ['web'],
     text: 'Legacy agent metadata cannot hide a direct message.', detail: { news: true, newsFormat: 1 } }]);
   applyEngineMove(board, { ...agentMove, engine: 1 }, { sequence: 2, at: new Date().toISOString() });
+  const exactText = 'Legacy coordinator metadata is not an instruction to hide this message.';
+  const exactTagMove = prepareEngineMove(board, 'shout', [{ from: 'coordinator', to: 'all', lanes: ['web'],
+    text: exactText, detail: { news: true, newsFormat: 1 } }]);
+  const oldOutcome = applyEngineMove(board, { ...exactTagMove, engine: ACTIVITY_NEWS_ENGINE - 1 },
+    { sequence: 3, at: new Date().toISOString() });
+  assert.equal(oldOutcome.error, undefined, 'the last old engine still supports ordinary metadata-bearing shouts');
+  const legacyDetail = JSON.parse(oldOutcome.events[0].event_detail);
+  assert.equal(legacyDetail.news, true);
+  assert.equal(legacyDetail.newsFormat, 1, 'legacy replay preserves the recorded arbitrary detail');
+  const nativeBeforeRead = exportBoard(board);
   const feed = store.agentActivity(board, 'web-1', { sessionStart: true });
+  assert.ok(feed.entries.some(entry => entry.text === exactText),
+    'an old-engine coordinator message stays direct even when its arbitrary metadata matches both new tags');
   assert.ok(feed.entries.some(entry => entry.text === 'Historical metadata is not a new delivery instruction.'));
   assert.deepEqual(feed.digests, [], 'only the new versioned explicit representation is digested');
   assert.equal(feed.entries.some(entry => entry.text === 'Legacy agent metadata cannot hide a direct message.'), false,
@@ -339,4 +351,5 @@ test('old ordinary shout replay does not become newly typed news [H16,N26]', (t)
   const coordinator = store.agentActivity(board, 'coordinator', { sessionStart: true });
   assert.ok(coordinator.entries.some(entry => entry.text === 'Legacy agent metadata cannot hide a direct message.'));
   assert.deepEqual(coordinator.digests, []);
+  assert.deepEqual(exportBoard(board), nativeBeforeRead, 'reading does not rewrite legacy metadata or native receipts');
 });
