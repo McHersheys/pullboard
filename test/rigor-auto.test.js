@@ -81,7 +81,7 @@ function fixture() {
     advance: ms => { now = new Date(now.getTime() + ms); }, close: () => store.closeBoard(board) };
 }
 
-test('a repeated cause becomes a draft row in Needs you with no command run [D1,D3,S1,N19]', () => {
+test('a repeated cause becomes a coordinator proposal with no command run [D1,D3,S1,N19]', () => {
   const box = fixture();
   try {
     const before = ['SPEC.md', 'DOCTRINE.md', 'pullboard.json'].map(file => readFileSync(join(box.root, file), 'utf8'));
@@ -93,8 +93,8 @@ test('a repeated cause becomes a draft row in Needs you with no command run [D1,
     const proposals = store.rowDrafts(box.board);
     assert.ok(proposals.length > 0, 'the second reject itself creates a durable proposal');
     assert.ok(proposals.every(row => !row.written && row.gate === 'review'), 'no automatic approval or file application');
-    const needs = personNeedsState(box.root, { board: box.board }).needs.filter(need => need.kind === 'rigor-draft');
-    assert.ok(needs.length > 0, 'the person sees the board-only draft immediately');
+    const needs = personNeedsState(box.root, { board: box.board }).rigorDrafts.filter(need => need.kind === 'rigor-draft');
+    assert.ok(needs.length > 0, 'the coordinator sees the board-only proposal immediately');
     assert.ok(needs.every(need => need.unproved === true && need.proof == null));
     assert.ok(needs.some(need => need.evidence.items.map(item => item.id).join(',') === `${one},${two}`));
 
@@ -118,8 +118,8 @@ test('a repeated cause becomes a draft row in Needs you with no command run [D1,
       const event = store.events(box.board, { itemId: id }).findLast(entry => entry.event_kind === 'reopen');
       assert.equal(JSON.parse(event.event_detail).cause, 'conflict:src/shared.js');
     }
-    const split = personNeedsState(box.root, { board: box.board }).needs.find(need => need.cause === 'conflict:src/shared.js');
-    assert.ok(split?.unproved, 'the second merge reopen creates architectural advice for the person');
+    const split = personNeedsState(box.root, { board: box.board }).rigorDrafts.find(need => need.cause === 'conflict:src/shared.js');
+    assert.ok(split?.unproved, 'the second merge reopen creates architectural advice for the coordinator');
     assert.match(split.text, /splitting/iu);
     assert.deepEqual(['SPEC.md', 'DOCTRINE.md', 'pullboard.json'].map(file => readFileSync(join(box.root, file), 'utf8')), before);
     assert.equal(box.git('status', '--porcelain').trim(), '', 'the original moves leave the main checkout clean');
@@ -167,18 +167,19 @@ test('materialized Rigor advice uses the existing person decision and a decline 
     const config = loadConfig(box.root);
     assert.throws(() => prepareRowDecisions(box.root, config, { ids: [ref], decision: 'decline', reason: 'not the right remedy' }),
       error => error.code === 'NO_ROW', 'a board-only proposal cannot bypass the existing exact-file person decision');
-    const need = personNeedsState(box.root, { board: box.board }).needs.find(entry => entry.id === ref);
+    const need = personNeedsState(box.root, { board: box.board }).rigorDrafts.find(entry => entry.id === ref);
     assert.equal(need.materialized, false);
+    assert.equal(personNeedsState(box.root, { board: box.board }).needs.some(entry => entry.id === ref), false, 'coordinator preparation is not a person call');
     assert.match(need.what, /materialize/u);
     writeRowApply(box.root, planAutomaticRigorApply(box.root, config, store.rowDrafts(box.board)));
     assert.deepEqual(planAutomaticRigorApply(box.root, config, store.rowDrafts(box.board)).files, [], 'materialization is idempotent');
     assert.equal(personNeedsState(box.root, { board: box.board }).needs.find(entry => entry.id === ref).materialized, true);
     const records = prepareRowDecisions(box.root, config, { ids: [ref], decision: 'decline', reason: 'not the right remedy', on: box.board.clock.now().toISOString() });
     store.recordRowDecisions(box.board, { agentId: store.PERSON, channel: 'terminal', decisions: records });
-    assert.equal(personNeedsState(box.root, { board: box.board }).needs.some(entry => entry.id === ref), false);
+    assert.equal(personNeedsState(box.root, { board: box.board }).rigorDrafts.some(entry => entry.id === ref), false);
     const fourth = box.submit('New item after decline'); box.reject(fourth);
     assert.equal(store.rowDrafts(box.board).length, 2, 'a genuinely new item after the decision can reopen the question');
-    const newNeed = personNeedsState(box.root, { board: box.board }).needs.find(entry => entry.kind === 'rigor-draft');
+    const newNeed = personNeedsState(box.root, { board: box.board }).rigorDrafts.find(entry => entry.kind === 'rigor-draft');
     assert.ok(newNeed.evidence.items.some(item => item.id === fourth));
   } finally { box.close(); }
 });
@@ -194,7 +195,7 @@ test('a cross-file row collision stays visible and refuses before any automatic 
     assert.throws(() => planAutomaticRigorApply(box.root, loadConfig(box.root), store.rowDrafts(box.board)),
       error => error.code === 'ROW_DRAFT' && /collision/u.test(error.message));
     assert.deepEqual(['SPEC.md', 'DOCTRINE.md'].map(file => readFileSync(join(box.root, file), 'utf8')), before);
-    assert.equal(personNeedsState(box.root, { board: box.board }).needs.find(need => need.id === `doctrine:${draft.id}`).collision, true);
+    assert.equal(personNeedsState(box.root, { board: box.board }).rigorDrafts.find(need => need.id === `doctrine:${draft.id}`).collision, true);
   } finally { box.close(); }
 });
 
@@ -213,10 +214,10 @@ test('a person can replace automatic advice without breaking a later spec apply 
     store.applyRowDecisions(box.board, { agentId: 'coordinator', events: plan.records.map(record => record.event) });
     assert.deepEqual(planAutomaticRigorApply(box.root, config, drafts, store.rowDecisions(box.board)).files, []);
     assert.match(readFileSync(join(box.root, 'DOCTRINE.md'), 'utf8'), /\[approved, aim\] The person chooses a different remedy\./u);
-    assert.equal(personNeedsState(box.root, { board: box.board }).needs.some(need => need.kind === 'rigor-draft'), false);
+    assert.equal(personNeedsState(box.root, { board: box.board }).rigorDrafts.some(need => need.kind === 'rigor-draft'), false);
     const doctrine = join(box.root, 'DOCTRINE.md');
     writeFileSync(doctrine, readFileSync(doctrine, 'utf8').replace(' | gate: review', ' | gate: a changed gate'));
-    assert.equal(personNeedsState(box.root, { board: box.board }).needs.find(need => need.id === `doctrine:${drafts[0].id}`).collision, true,
+    assert.equal(personNeedsState(box.root, { board: box.board }).rigorDrafts.find(need => need.id === `doctrine:${drafts[0].id}`).collision, true,
       'a later edit cannot hide behind the old person decision');
     assert.throws(() => planAutomaticRigorApply(box.root, config, drafts, store.rowDecisions(box.board)), error => error.code === 'ROW_DRAFT');
     box.advance(3_600_001);
@@ -252,7 +253,7 @@ test('declining a never-again proposal stays quiet for the same item and records
     mark();
     const drafts = store.rowDrafts(box.board);
     assert.equal(drafts.length, 1);
-    const need = personNeedsState(box.root, { board: box.board }).needs.find(entry => entry.kind === 'rigor-draft');
+    const need = personNeedsState(box.root, { board: box.board }).rigorDrafts.find(entry => entry.kind === 'rigor-draft');
     assert.equal(need.evidence.occurrences, 0);
     assert.equal(need.proof, null);
     const config = loadConfig(box.root);
@@ -262,7 +263,7 @@ test('declining a never-again proposal stays quiet for the same item and records
     store.recordRowDecisions(box.board, { agentId: store.PERSON, channel: 'terminal', decisions: records });
     mark();
     assert.equal(store.rowDrafts(box.board).length, 1);
-    assert.equal(personNeedsState(box.root, { board: box.board }).needs.some(entry => entry.kind === 'rigor-draft'), false);
+    assert.equal(personNeedsState(box.root, { board: box.board }).rigorDrafts.some(entry => entry.kind === 'rigor-draft'), false);
   } finally { box.close(); }
 });
 
@@ -311,7 +312,7 @@ test('canonical conflict holds crossing the hot-file threshold also draft advice
       store.holdItem(box.board, id, { agentId: 'coordinator', reason: conflictNote({ files: ['src/shared.js'], trunk: 'd'.repeat(40) }) });
     }
     assert.equal(store.rowDrafts(box.board).length, 1, 'the third hold does not duplicate pending advice');
-    const need = personNeedsState(box.root, { board: box.board }).needs.find(entry => entry.kind === 'rigor-draft');
+    const need = personNeedsState(box.root, { board: box.board }).rigorDrafts.find(entry => entry.kind === 'rigor-draft');
     assert.equal(need.cause, 'conflict:src/shared.js');
     assert.equal(need.unproved, true);
     assert.equal(box.git('status', '--porcelain').trim(), '', 'the automatic holds do not edit the repository');

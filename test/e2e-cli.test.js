@@ -388,7 +388,7 @@ test('every wait pullboard suggests names its unit and fits one ten-minute tool 
   assert.match(box.run(box.web, 'next').err, /To keep looking: pullboard next --wait 9 \(minutes; give the command a ten-minute timeout\)/);
   assert.match(box.run(box.web, 'resume').out, /next: pullboard next --wait 9 \(minutes\); 1 in your lane waits on other work/);
   box.run(box.repo, 'hold', 'web', '--reason', 'G1 is changing');
-  assert.match(box.run(box.web, 'resume').out, /next: wait for the hold to lift: pullboard next --wait 9 \(minutes\)/);
+  assert.match(box.run(box.web, 'resume').out, /next: pullboard next --wait 9 \(minutes\); the lane hold must lift/);
   const agents = readFileSync(join(box.repo, 'AGENTS.md'), 'utf8');
   assert.match(agents, /`pullboard next --wait 9` keeps looking for up to 9 minutes, which fits one tool call with a ten-minute timeout/);
   assert.doesNotMatch(agents, /--wait 30/);
