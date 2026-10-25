@@ -86,3 +86,23 @@ test('a doubly escaped textual key stays ordinary local-first work [C7]', async 
   assert.equal(local.executor?.liveLease, true);
   assert.equal(local.executor?.runnerExecution, false);
 });
+
+
+test('a constant computed template CPU-load key uses its registered runner [C7]', async () => {
+  const box = cpuLoadFixture(e2e, { declaration: '{ [`cpuLoad`]: true }' });
+  const remote = await box.runGate();
+  assert.equal(remote.result.status, 0, remote.result.context);
+  assert.equal(box.requestsMade().length, 1, 'a constant computed template key declares the same CPU-load option');
+  assert.equal(remote.executor?.runnerExecution, true);
+  assert.notEqual(remote.executor?.cwd, box.repo);
+});
+
+test('CPU-load syntax inside literal template text stays ordinary local-first work [C7]', async () => {
+  const box = cpuLoadFixture(e2e, { declaration: '{ example: `cpuLoad: true` }' });
+  const local = await box.runGate();
+  assert.equal(local.result.status, 0, local.result.context);
+  assert.equal(box.requestsMade().length, 0, 'template text is an example, not an executable CPU-load option');
+  assert.equal(local.executor?.cwd, box.repo);
+  assert.equal(local.executor?.liveLease, true);
+  assert.equal(local.executor?.runnerExecution, false);
+});
