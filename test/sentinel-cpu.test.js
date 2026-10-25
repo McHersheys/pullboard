@@ -9,6 +9,7 @@ import { runFixtureGit } from './fixture-child.js';
 import { scanHealthSentinel } from '../src/health-sentinel.js';
 import { CPU_SENTINEL_ENGINE } from '../src/cpu-sentinel-engine.js';
 import { HEALTH_SHOUT_CAP } from '../src/health-receipts.js';
+import { applyRelayMove, prepareEngineMove } from '../src/engine.js';
 
 // CPU time is observed, not burned: the native utility port supplies an exact ps/lsof transcript.
 test('the sentinel names an agent process past 20 CPU minutes once [A6,H16]', async t => {
@@ -78,6 +79,13 @@ test('the sentinel names an agent process past 20 CPU minutes once [A6,H16]', as
   cappedScan();
   assert.equal(notices().length - beforeCap, 5, 'sixth and later coordinator alerts wait rather than exceed the cap');
   const pendingEvents = store.events(board);
+  const emptyMove = prepareEngineMove(board, 'recordHealthFindings', [{
+    agentId: 'coordinator', observedRevision: pendingEvents.length, findings: [],
+  }], { actor: 'coordinator' });
+  assert.throws(() => applyRelayMove(board, { ...emptyMove, engine: CPU_SENTINEL_ENGINE - 1 }, {
+    sequence: 1, at: new Date().toISOString(), kind: 'move',
+    sender: { kind: 'agent', agent: 'coordinator', userId: 'fixture-user' },
+  }), { code: 'RELAY_MOVE' }, 'ordered old-engine input cannot erase the pending queue');
   board.executionEngineVersion = CPU_SENTINEL_ENGINE - 1;
   assert.throws(() => store.recordHealthFindings(board, {
     agentId: 'coordinator', observedRevision: pendingEvents.length, findings: [],

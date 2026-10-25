@@ -13,6 +13,7 @@ export const HEALTH_SHOUT_CAP = 10;
 
 /** Pending CPU deliveries require an engine that can preserve their durable queue [A6,H16]. */
 export function hasPendingCpuNotices(board) {
+  if (!board) return false;
   const last = board.db.prepare("SELECT event_detail FROM event WHERE event_kind = 'health-scan' ORDER BY event_id DESC LIMIT 1").get();
   return Boolean(last && JSON.parse(last.event_detail).pendingCpu?.length);
 }
