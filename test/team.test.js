@@ -987,11 +987,17 @@ test('an agent grant narrows at claim without changing old receipts or permittin
 test('an agent grant narrows at claim without trapping its own handoff facts [E21,B3]', () => {
   const box = helpers.project();
   for (const title of ['Claimed work', 'Unrelated work']) {
-    run(box, box.repo, 'add', 'web', title, '--specs', 'G1', '--check', 'test -f web/grant-proof');
+    run(box, box.repo, 'add', 'web', title, '--specs', 'G1', '--check', 'test -f web/grant-proof', '--wait');
   }
   run(box, box.web, 'claim', '1');
   const actor = withBoard(box.repo, board => store.listAgents(board).find(agent => agent.agent_path === box.web).agent_id);
   const held = withBoard(box.repo, board => store.getItem(board, 1));
+  // Finish real baseline observations before cloning the prefix; no detached writer may advance only one replica.
+  for (const id of [1, 2]) {
+    const baseline = withBoard(box.repo, board => store.getItem(board, id).item_check_baseline);
+    assert.ok(baseline, 'each setup item retains its baseline observation');
+    assert.notEqual(baseline.result, 'pending', 'setup baselines finish before replica export');
+  }
   const snapshot = withBoard(box.repo, exportBoard);
   const peer = join(box.dir, 'handoff-grant-replica');
   box.git(box.dir, 'clone', '-q', box.repo, peer);
