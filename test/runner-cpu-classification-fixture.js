@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { cpuLoadOptionsIn } from '../src/module-imports.js';
+import { testsNeedCpuRunner } from '../src/cpu-load-admission.js';
 import { runFixtureChild } from './fixture-child.js';
 
 /** Exercise both ordinary executable shapes and explicit positive/negative declarations. */
@@ -13,11 +14,21 @@ export async function fixtureContextCpuCase(t) {
     ['forwarded context', "import test from 'node:test'; function fixture(context) { context.after(() => {}); } test('ordinary', async t => { fixture(t); });"],
     ['regular expression method', "import test from 'node:test'; test('ordinary', () => { const row = { text: 'strong' }; /strong/.test(row.text); });"],
     ['local callback without options', "import test from 'node:test'; const label = 'ordinary'; const body = async context => { context.after(() => {}); }; test(label, body);"],
-    ['imported callback without options', "import { test as register } from 'node:test'; import { body as importedBody } from './ordinary-body.js'; register('ordinary', importedBody);"],
   ];
   for (const [name, source] of sources) await t.test(name, () => {
     assert.equal(cpuLoadOptionsIn([source])[0], false, 'ordinary executable code is not an explicit CPU-load option');
   });
+  await t.test('an actual imported function is a callback without options', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'pullboard-callable-import-'));
+    try {
+      writeFileSync(join(directory, 'body.js'), 'export function body(context) { context.after(() => {}); }\n');
+      writeFileSync(join(directory, 'ordinary.test.js'), "import { test as register } from 'node:test'; import { body } from './body.js'; register('ordinary', body);\n");
+      assert.equal(testsNeedCpuRunner(directory, ['ordinary.test.js']), false,
+        'the bounded real module graph proves an exported function, not opaque options');
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+  assert.equal(cpuLoadOptionsIn(["import test from 'node:test'; import options from './unresolved.js'; test('pending', options);"])[0], true,
+    'an unresolved import may be options and stays conservative');
   assert.equal(cpuLoadOptionsIn(["import test from 'node:test'; test('busy', { cpuLoad: true }, () => {});"])[0], true,
     'an explicit CPU-load declaration remains classified');
   assert.equal(cpuLoadOptionsIn(["import test from 'node:test'; test('ordinary', { cpuLoad: false }, () => {});"])[0], false,
