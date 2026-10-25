@@ -71,3 +71,24 @@ test('pullboard test runs files on the runner pool with a per-file timeout [C7]'
   assert.match(text.err, new RegExp(`red on ${HOST}`, 'u'), 'the text form names where it ran');
   assert.match(text.err, /known main failure: test\/hang\.test\.js fails on main/u, 'and names the failure main already has');
 });
+
+test('pullboard test names why it ran on this machine, and every installed hook points at it [C7]', { timeout: 120_000 }, () => { // budget: hang ceiling for real init, join and one local run; not a speed target.
+  const box = e2e.project('true');
+  const config = JSON.parse(readFileSync(join(box.repo, 'pullboard.json'), 'utf8'));
+  writeFileSync(join(box.repo, 'pullboard.json'), JSON.stringify({ ...config, affectedTests: 'env -u NODE_TEST_CONTEXT node --test' }, null, 2));
+  mkdirSync(join(box.repo, 'test'));
+  writeFileSync(join(box.repo, 'test', 'ok.test.js'), PASSES);
+  box.git(box.repo, 'add', '-A');
+  box.git(box.repo, 'commit', '-q', '-m', 'test: focused runner and one test file');
+  const ran = box.run(box.repo, 'test', 'test/ok.test.js', '--json');
+  assert.equal(ran.code, 0, ran.err);
+  const result = JSON.parse(ran.out);
+  assert.equal(result.runner, 'this machine');
+  assert.match(result.local, /no runners are registered/u, 'the result says why the run stayed here');
+  assert.ok(result.diagnostics.some((line) => /green on this machine in \d+s: no runners are registered.*pullboard runner add/u.test(line)),
+    `the diagnostic names the reason and the command that adds a runner: ${result.diagnostics}`);
+  for (const hook of ['commit-msg', 'pre-commit', 'pre-merge-commit', 'pre-push']) {
+    assert.match(readFileSync(join(box.repo, '.githooks', hook), 'utf8'), /pullboard test <test files>/u, `${hook} names pullboard test`);
+  }
+  assert.match(readFileSync(join(box.repo, 'AGENTS.md'), 'utf8'), /pullboard test <test files>/u, 'the agent guidance names it too');
+});

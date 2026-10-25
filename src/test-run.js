@@ -29,7 +29,11 @@ import {
 } from './main-red.js';
 import { Refused } from './refused.js';
 import { runnerSource } from './runners.js';
-import { browserFreeChecksEnabled } from './settings.js';
+import {
+  browserFreeChecksEnabled,
+  gateRunnersFirstEnabled,
+  loadMachineSettings,
+} from './settings.js';
 
 /** Quote one argument for the configured focused test command. */
 function shellWord(value) {
@@ -82,6 +86,13 @@ async function inCleanCheckout(root, work) {
   return result;
 }
 
+/** Why a run stayed on this machine, so the person sees which setting would send it to the runner pool. */
+function localReason() {
+  if (!(loadMachineSettings().runners ?? []).length) return 'no runners are registered on this machine; add one with pullboard runner add <ssh-host> --slots <n> --browser <n>';
+  if (!gateRunnersFirstEnabled()) return 'gate.runnersFirst is off, so a free local slot came first; turn it on with pullboard settings gate.runnersFirst on';
+  return 'no registered runner had a free slot it could use; pullboard resources shows each runner';
+}
+
 /**
  * Run named test files through a gate slot, which deals them to the registered runners first (#1054); the focused
  * runner (pullboard.json affectedTests) gives each file its timeout. A red file is compared with main's recorded
@@ -101,7 +112,8 @@ export async function runTestFiles(root, config, files, { agent, onWait } = {}) 
     return withGateSlot(checkout, (lease) => runProfiledShellAsync(checkout, command, { gateLease: lease, waitMs: lease.waitMs }),
       { browser, gui: testsNeedGui(checkout, paths), shortEligible: true, agent, kind: 'test', onWait });
   });
-  const result = { green: run.isGreen, output: run.output, runner: run.executionRunner || 'this machine', seconds: Math.round((Date.now() - started) / 1000), files: paths, known: [], main: null };
+  const result = { green: run.isGreen, output: run.output, runner: run.executionRunner || 'this machine', seconds: Math.round((Date.now() - started) / 1000), files: paths, known: [], main: null,
+    ...(run.executionRunner ? {} : { local: localReason() }) };
   if (!run.isGreen) {
     const compared = await compareMainFailures(root, run.profile, onWait, run.output);
     result.main = compared.main;
