@@ -50,6 +50,7 @@ const OPTIONS = {
   project: { type: 'boolean' },
   export: { type: 'string' },
   'no-open': { type: 'boolean' },
+  lan: { type: 'boolean' },
   'no-permissions': { type: 'boolean' },
   note: { type: 'string' },
   infra: { type: 'string' },
