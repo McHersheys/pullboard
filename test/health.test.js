@@ -410,6 +410,8 @@ test('every printed next step runs as pasted through main() [N2,B13]', async (t)
   store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Earlier mid', route: 'mid', ...brief });
   const later = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Later mid', route: 'mid', ...brief });
   const strong = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Strong work' });
+  // Earlier mid shares src/mid.js with the held claim, so next gives the idle seat only this one (#1114).
+  store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Other mid', route: 'mid', ...brief, brief: 'Files:\n- src/other.js\nTest:\n- the other work runs' });
   store.claim(board, later, { agentId: holder, lane: 'core', leaseMs: 2 * HOUR, freeze });
   store.closeBoard(board);
 

@@ -30,6 +30,12 @@ export function personNeeds(state) {
     ...(state.holds ?? []).map(hold => ({ kind: 'hold', id: hold.hold_lane,
       ref: hold.hold_lane, text: hold.hold_reason, what: 'lane held by ' + name(hold.hold_by) })),
     ...rigorDrafts,
+    ...(state.specRevisions ?? []).map(revision => ({ kind: 'spec-revision', id: revision.id,
+      ref: `${revision.id} revises ${revision.revises}`, text: `${revision.reason}\nOld: ${revision.source}\nNew: ${revision.replacement}`,
+      old: revision.old, proposed: revision.proposed, source: revision.source, replacement: revision.replacement,
+      reason: revision.reason, what: revision.decision === 'approve' ? 'approved; pending spec apply' : 'approve or decline revision',
+      target: `spec-revision:${revision.id}`, actions: revision.decision ? [] : [
+        { verb: 'spec-approve', args: { ids: revision.id } }, { verb: 'spec-decline', args: { ids: revision.id } }] })),
     ...(state.sentinelDrafts ?? []),
     ...(state.spec ?? []).filter(row => row.agentApproval && row.agentApproval.mode !== 'allow' && row.decision?.decision !== 'decline').map(row => ({ kind: 'agent-approved', id: row.id,
       ref: row.id, agent: row.agentApproval.agent, commit: row.agentApproval.commit, attribution: row.agentApproval.attribution,
