@@ -30,6 +30,7 @@ import { runnerFirstPolicyCase } from './runner-first-fixture.js';
 import { removingBusyRunnerDrains, runnerRemoveKeepsSettings } from './runner-drain-fixture.js';
 import { awaitRoundTrip, cleanupToolingSnapshots, cli, committedToolingSnapshot, fixtureResultContext, gateResult, git, phaseCounts, ROUND_TRIP_DEADLINES, runThroughGate, startToolingCli, TOOLING_SNAPSHOTS } from './runner-tooling-fixture.js';
 import { runnerStageFixture } from './runner-stage-fixture.js';
+import { privateReviewRunnerCase } from './runner-private-check-fixture.js';
 
 const PAIRED_RERUN_FIXTURE = { createE2eHelpers, cli, observe, startToolingCli, awaitRoundTrip, phaseCounts,
   ROUND_TRIP_DEADLINES, HOST, shellQuote, installSshStandIn, processesUnder, stopGroup };
@@ -117,6 +118,8 @@ function observe(child) {
   const closed = once(child, 'close').then(([status, signal]) => ({ status, signal, stdout, stderr }));
   return { child, closed };
 }
+
+test('a review check runs on a runner at the exact commit with trusted policy and full artifacts [C7,V4]', (t) => privateReviewRunnerCase(t, e2e));
 
 test("the runner's trusted runtime list is closed under its relative imports [C7,O5]", () => {
   const src = resolve(import.meta.dirname, '../src');
