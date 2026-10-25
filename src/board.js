@@ -88,6 +88,7 @@ import {
   unreadCount,
   events,
   itemThread,
+  itemHold,
   laneHold,
   laneHolds,
   rowDecisions,
@@ -2160,14 +2161,7 @@ export function releaseLane(board, lane, { agentId, asPerson = false, channel = 
 
 export { laneHold, laneHolds } from './board-query.js';
 
-/** Read an item's coordinator hold, or null when it is available for claims. */
-export function itemHold(board, id) {
-  const item = getItem(board, id);
-  return item.item_hold_reason ? {
-    item_id: item.item_id, item_hold_reason: item.item_hold_reason,
-    item_hold_by: item.item_hold_by, item_hold_at: item.item_hold_at,
-  } : null;
-}
+export { itemHold } from './board-query.js';
 
 /** Hold an open or already-claimed item without changing its current lifecycle state. */
 export function holdItem(board, id, { agentId, reason }) {

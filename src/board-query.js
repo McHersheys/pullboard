@@ -102,6 +102,15 @@ export function getItem(board, id) {
   return { ...item, ...(baseline ? { item_check_baseline: baseline } : {}), ...(source ? { outside: source } : {}) };
 }
 
+/** Read an item's coordinator hold, or null when it is available for claims. */
+export function itemHold(board, id) {
+  const item = getItem(board, id);
+  return item.item_hold_reason ? {
+    item_id: item.item_id, item_hold_reason: item.item_hold_reason,
+    item_hold_by: item.item_hold_by, item_hold_at: item.item_hold_at,
+  } : null;
+}
+
 /**
  * Items, newest first, as a reader should see them. Closed items (verified, withdrawn) only when
  * asked.
