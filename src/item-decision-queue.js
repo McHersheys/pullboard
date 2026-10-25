@@ -1,7 +1,10 @@
 /** Structured choices on the existing append-only decision/answer stream [B21,B27]. */
 import { DECISION_QUEUE_ENGINE } from './decision-queue-engine.js';
 import { Refused } from './refused.js';
-import { itemShoutReader, shoutItemId } from './shout-audience.js';
+import {
+  itemShoutReader,
+  shoutItemId,
+} from './shout-audience.js';
 
 /** Validate new decision metadata before any message is persisted, without changing legacy shouts. */
 export function itemDecisionDetail(board, message, engine) {

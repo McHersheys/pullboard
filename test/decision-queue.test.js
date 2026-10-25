@@ -1,12 +1,21 @@
 /** Public real-CLI/SQLite decision queue, claim retention and person boundary [B7,B21,B26,B27]. */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import {
+  mkdtempSync,
+  rmSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as store from '../src/board.js';
-import { prepareEngineMove, applyEngineMove } from '../src/engine.js';
-import { exportBoard, importBoard } from '../src/exchange.js';
+import {
+  prepareEngineMove,
+  applyEngineMove,
+} from '../src/engine.js';
+import {
+  exportBoard,
+  importBoard,
+} from '../src/exchange.js';
 import { DECISION_QUEUE_ENGINE } from '../src/decision-queue-engine.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 
