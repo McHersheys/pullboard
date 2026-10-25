@@ -7030,7 +7030,10 @@
     "ROW_VERIFY": "pullboard spec show <id>, then pullboard spec verify <id> accepted --reason \"why\"",
     "ROW_VERIFY_PROVENANCE": "draft the row through pullboard spec draft and join normally before verifying it",
     "ROW_VERIFY_PENDING": "ask the coordinator to run pullboard spec apply before recording a verifier verdict",
-    "ROW_VERIFY_SELF": "ask an outside-parent verifier to run pullboard spec verify"
+    "ROW_VERIFY_SELF": "ask an outside-parent verifier to run pullboard spec verify",
+    "RUNNER_WAIT_DEADLINE": "check the runners the message names, or restore local gate capacity with pullboard settings, then retry",
+    "BAD_DECISION_OPTIONS": "ask an item decision with --decision --item <id> --options '[\"first\",\"second\"]'",
+    "NOT_YOUR_ITEM_DECISION": "ask on an item you build or review, or ask the coordinator for a cross-item decision"
   },
   "replay": {
     "initial": {
