@@ -270,10 +270,10 @@ test('a conflict found on sync is refused at replay with a code naming the winne
   assert.ok(refused.earlier.some(move => move.move === `claim #${contested} by ${winner}`), 'the refusal names the winning claim and its agent');
 
   // The agent whose claim lost is told on its next command, once.
-  const told = await runFixtureChildAsync(process.execPath, [CLI, 'status', '--json'], { cwd: here.path, env: box.env });
+  const told = await runFixtureChildAsync(process.execPath, [CLI, 'status'], { cwd: here.path, env: box.env });
   assert.equal(told.status, 0, told.context);
   assert.match(told.stderr, new RegExp(`\\[RELAY_OUTBOX_REFUSED\\] the queued move claim #${contested} by ${here.id} .*\\[HELD\\].*won by sequence \\d+ claim #${contested} by ${winner}`, 'u'));
-  const again = await runFixtureChildAsync(process.execPath, [CLI, 'status', '--json'], { cwd: here.path, env: box.env });
+  const again = await runFixtureChildAsync(process.execPath, [CLI, 'status'], { cwd: here.path, env: box.env });
   assert.doesNotMatch(again.stderr, /RELAY_OUTBOX_REFUSED/u, 'the notice is said once');
 
   for (const machine of [box, other]) {

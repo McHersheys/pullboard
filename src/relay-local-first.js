@@ -33,13 +33,15 @@ export function senderInBackground(env = process.env) {
 }
 
 /**
- * The machine sender's files: its claim, its short log, and one note per board it serves.
+ * The machine sender's files: its claim, its short log, one note per board it serves, and the marker of a sender
+ * being started.
  *
- * @returns {{ directory: string, pid: string, log: string, boards: string }}
+ * @returns {{ directory: string, pid: string, log: string, boards: string, starting: string }}
  */
 export function senderFiles() {
   const directory = join(pullboardHome(), 'relay-sender');
-  return { directory, pid: join(directory, 'sender.pid'), log: join(directory, 'sender.log'), boards: join(directory, 'boards') };
+  return { directory, pid: join(directory, 'sender.pid'), log: join(directory, 'sender.log'), boards: join(directory, 'boards'),
+    starting: join(directory, 'sender.starting') };
 }
 
 // Budget: a sender refreshes its claim every few seconds while it runs; a claim this old belongs to a process that
@@ -67,6 +69,23 @@ export function senderHolding() {
   } catch { return 0; }
 }
 
+// Budget: a sender starts and claims its place well within this; an older start marker belongs to one that died.
+const STARTING_STALE_MS = 10_000;
+
+/**
+ * Mark that a sender is starting, so the several nudges of one burst of commands start one sender, not one each.
+ * True when this caller should start it.
+ */
+function startingSender() {
+  const marker = senderFiles().starting;
+  mkdirSync(senderFiles().directory, { recursive: true, mode: 0o700 });
+  try { writeFileSync(marker, `${process.pid}\n`, { flag: 'wx', mode: 0o600 }); return true; }
+  catch (error) { if (error.code !== 'EEXIST') throw error; }
+  try { if (Date.now() - statSync(marker).mtimeMs < STARTING_STALE_MS) return false; } catch { /* Gone: start one. */ }
+  rmSync(marker, { force: true });
+  try { writeFileSync(marker, `${process.pid}\n`, { flag: 'wx', mode: 0o600 }); return true; } catch { return false; }
+}
+
 /** The note a board keeps in the sender's folder, named by its link file. */
 export function boardNote(file) {
   return join(senderFiles().boards, createHash('sha256').update(file).digest('hex').slice(0, 32) + '.json');
@@ -89,7 +108,7 @@ export function nudgeRelaySender(root, file) {
       writeFileSync(temporary, JSON.stringify({ root, file, due: Date.now() }) + '\n', { flag: 'wx', mode: 0o600 });
       renameSync(temporary, note);
     } finally { rmSync(temporary, { force: true }); }
-    if (senderHolding()) return;
+    if (senderHolding() || !startingSender()) return;
     const env = { ...process.env };
     delete env.PULLBOARD_RELAY_TOKEN; // The sender works only with this machine's own saved credentials.
     const child = spawn(process.execPath, [WORKER], { cwd: root, detached: true, stdio: 'ignore', env });

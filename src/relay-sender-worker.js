@@ -63,6 +63,7 @@ async function claim() {
     const holder = senderHolding();
     if (holder && holder !== process.pid) return false;
     writeFileSync(files.pid, `${process.pid}\n`, { mode: 0o600 });
+    rmSync(files.starting, { force: true }); // Started: the next nudge sees this claim instead.
     writeFileSync(files.log, '', { mode: 0o600 }); // Each sender keeps only its own short story.
     io.say(`claimed by ${process.pid}`);
     return true;

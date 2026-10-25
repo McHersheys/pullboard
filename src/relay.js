@@ -1445,6 +1445,10 @@ export async function relayRevoke(root, id, io) {
 export async function relayCommandReceipt(root, command) {
   if (!command) return null;
   const file = linkFile(root);
+  // Most commands have no interrupted result to recover: they read that without the relay lock, so an add never
+  // waits on the sender holding it (#1013).
+  const peek = loadLink(file);
+  if (peek && !peek.unlinking && !peek.recovered) return null;
   return locked(file, async () => {
     const state = loadLink(file);
     if (!state) {
@@ -1480,6 +1484,8 @@ export async function relayCommandReceipt(root, command) {
 /** Consume the exact cached result after its original CLI outcome has been formatted. */
 export async function relayCommandReceiptReported(root, moveId) {
   const file = linkFile(root);
+  const peek = loadLink(file);
+  if (peek && peek.recovered?.move?.id !== moveId) return;
   return locked(file, async () => {
     const state = loadLink(file);
     if (state?.recovered?.move?.id === moveId) {
