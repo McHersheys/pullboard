@@ -227,6 +227,8 @@ test('a merge-only resubmission keeps its accept and records the resolution diff
       error => error.code === 'STALE_VERDICT' && /recorded merge-only acceptance/u.test(error.message),
       'adoption must re-prove an already-gated canonical carry before finishing its trunk receipt');
       assert.equal(store.landingBatches(adoption).at(-1).state, 'trunk');
+      assert.equal(store.landingBatches(adoption).at(-1).revision, 2,
+        'adoption saved its owner after selection; the final guard, not all-stale preflight, refused it');
       assert.equal(store.getItem(adoption, id).item_merged_commit, null);
       assert.equal(box.git(box.repo, 'rev-parse', 'HEAD'), beforeLanding);
     } finally { store.closeBoard(adoption); }
