@@ -42,7 +42,14 @@ export async function run(io, { first, values }) {
     if (!Number.isSafeInteger(budget) || budget < 1 || budget > 8000) {
       throw new Refused('USAGE', '--budget for an item slice must be a whole number from 1 to 8000 tokens');
     }
-    io.say(renderItemSlice(map, item, { budget }));
+    try {
+      io.say(renderItemSlice(map, item, { budget }));
+    } catch (error) {
+      if (error instanceof RangeError && error.message.startsWith('item slice budget too small')) {
+        throw new Refused('USAGE', error.message);
+      }
+      throw error;
+    }
     return 0;
   }
   if (first !== undefined) {

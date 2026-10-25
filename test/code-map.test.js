@@ -135,6 +135,9 @@ test('pullboard map prints the overview, a card and an item slice from one scan 
   assert.match(slice.out, /src\/home\.js/u);
   assert.match(slice.out, /renderHome/u);
   assert.match(slice.out, /test\/home\.test\.js/u);
+  const tooSmall = box.run(box.repo, 'map', '--for', String(itemId), '--budget', '1');
+  assert.notEqual(tooSmall.code, 0);
+  assert.match(tooSmall.out + tooSmall.err, /item slice budget too small/u);
   const firstMap = JSON.parse(readFileSync(cache, 'utf8'));
   assert.equal(firstMap.generatedAt, firstGeneration, 'overview, cards and slices reuse one exact source scan');
   assert.equal(firstMap.mainCommit, box.git(box.repo, 'rev-parse', 'main'));

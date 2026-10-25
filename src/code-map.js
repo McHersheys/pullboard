@@ -645,26 +645,42 @@ export function renderItemSlice(map, item, { budget = 4000 } = {}) {
   const seeds = itemPaths(item);
   const modules = new Map(map.modules.map(module => [module.path, module]));
   const selected = new Set([...seeds].filter(path => modules.has(path)));
-  for (const path of [...selected]) {
-    const module = modules.get(path);
-    for (const neighbor of [...module.dependencies, ...module.importedBy]) selected.add(neighbor);
-  }
   const namedFunctions = new Set(map.modules.flatMap(module => module.functions.map(fn => fn.name))
     .filter(name => new RegExp(`(^|[^\\w$])${escapeRegExp(name)}($|[^\\w$])`, 'u').test(text)));
   const selectedFunctions = map.modules.flatMap(module => module.functions.filter(fn => namedFunctions.has(fn.name)));
+  const functionModules = new Set(selectedFunctions.map(fn => fn.id.slice(0, fn.id.lastIndexOf('#'))));
+  for (const path of functionModules) selected.add(path);
+  for (const path of new Set([...seeds, ...functionModules])) {
+    const module = modules.get(path);
+    if (module) for (const neighbor of [...module.dependencies, ...module.importedBy]) selected.add(neighbor);
+  }
   for (const fn of selectedFunctions) for (const edge of [...fn.calls, ...fn.callers]) selected.add(edge.slice(0, edge.lastIndexOf('#')));
   const importingTests = [...new Set([...selected].flatMap(path => modules.get(path)?.tests ?? []))].sort();
   const cards = [...selected].sort().map(path => renderModuleCard(map, path)).filter(Boolean);
-  const header = [`# Slice for #${item.item_id ?? '?'} ${item.item_title ?? ''}`,
-    `main: ${map.mainCommit}`, `named files: ${[...seeds].sort().join(', ') || 'not detected'}`,
+  const base = [`# Slice for #${item.item_id ?? '?'}`, `main: ${map.mainCommit}`, 'Effects the scan cannot see: not detected.'];
+  const optional = [
+    item.item_title ? `title: ${item.item_title}` : null,
+    `named files: ${[...seeds].sort().join(', ') || 'not detected'}`,
     `functions named by the item: ${selectedFunctions.map(fn => fn.id).slice(0, 24).join(', ') || 'not detected'}`,
     `tests with observed imports of selected modules: ${importingTests.join(', ') || 'not detected'}`,
-    'Effects the scan cannot see: not detected.'];
-  const kept = [...header];
-  for (const card of cards) {
-    if ((kept.join('\n\n').length + card.length + 2) / 4 > budget) break;
-    kept.push(card);
+    ...cards,
+  ].filter(Boolean);
+  const format = lines => lines.join('\n\n');
+  const complete = format([...base, ...optional]);
+  const maxChars = budget * 4;
+  if (complete.length <= maxChars) return complete;
+  const omission = 'Omitted context is not evidence of no relationship.';
+  const minimum = format([...base, omission]);
+  const minimumBudget = Math.ceil(minimum.length / 4);
+  if (minimum.length > maxChars) {
+    throw new RangeError(`item slice budget too small for its source stamp and omission note; use at least ${minimumBudget} tokens`);
   }
-  if (kept.length < header.length + cards.length) kept.push(`Slice limited to ${budget} tokens; omitted cards are not evidence of no relationship.`);
-  return kept.join('\n\n');
+  const kept = [...base];
+  let omitted = false;
+  for (const entry of optional) {
+    if (format([...kept, entry, omission]).length <= maxChars) kept.push(entry);
+    else omitted = true;
+  }
+  if (omitted) kept.push(omission);
+  return format(kept);
 }
