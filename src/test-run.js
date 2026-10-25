@@ -25,7 +25,10 @@ import {
   cleanGitEnvironment,
   headCommit,
 } from './git.js';
-import { projectNeedsGui, testsNeedGui } from './gui-admission.js';
+import {
+  projectNeedsGui,
+  testsNeedGui,
+} from './gui-admission.js';
 import {
   compareMainFailures,
   withMainCheckout,
