@@ -12,6 +12,8 @@ export async function fixtureContextCpuCase(t) {
   const sources = [
     ['forwarded context', "import test from 'node:test'; function fixture(context) { context.after(() => {}); } test('ordinary', async t => { fixture(t); });"],
     ['regular expression method', "import test from 'node:test'; test('ordinary', () => { const row = { text: 'strong' }; /strong/.test(row.text); });"],
+    ['local callback without options', "import test from 'node:test'; const label = 'ordinary'; const body = async context => { context.after(() => {}); }; test(label, body);"],
+    ['imported callback without options', "import { test as register } from 'node:test'; import { body as importedBody } from './ordinary-body.js'; register('ordinary', importedBody);"],
   ];
   for (const [name, source] of sources) await t.test(name, () => {
     assert.equal(cpuLoadOptionsIn([source])[0], false, 'ordinary executable code is not an explicit CPU-load option');
@@ -28,6 +30,10 @@ export async function fixtureContextCpuCase(t) {
     'a variable test name does not move the options argument');
   assert.equal(cpuLoadOptionsIn(["import test from 'node:test'; test('busy', { cpuLoad: true /* measured load */ }, () => {});"])[0], true,
     'an inline comment does not hide an explicit true option');
+  assert.equal(cpuLoadOptionsIn(["import test from 'node:test'; function body() {} test('busy', { cpuLoad: true }, body);"])[0], true,
+    'a named callback does not hide a real options argument');
+  assert.equal(cpuLoadOptionsIn(["import test from 'node:test'; function body() {} test({ cpuLoad: true }, body);"])[0], true,
+    'the options-first overload retains its explicit declaration');
 }
 
 /** Observe policy in a private machine home without connecting to or configuring a real runner. */
