@@ -1,3 +1,4 @@
+import { requireFactKind } from './item-notes.js';
 import { activityNewsFlag } from './activity-news.js';
 import { migrateEventLogVersion } from './board-event-log-migrate.js';
 import {
@@ -1831,8 +1832,7 @@ export { unreadCount } from './board-query.js';
 
 export { events } from './board-query.js';
 
-/** Fact labels distinguish observations from judgements reserved to an item's live holder [B29,B30]. */
-export const FACT_KINDS = Object.freeze(['capture', 'measurement', 'note', 'diff', 'decision', 'rejection', 'supersession', 'root-cause', 'bar-check', 'bar-answer']);
+export { FACT_KINDS } from './item-notes.js';
 const FACT_JUDGEMENTS = new Set(['decision', 'rejection', 'supersession', 'root-cause']);
 export { factReference };
 
@@ -1847,7 +1847,7 @@ export function appendFact(board, id, { agentId, kind, text, ref = null, superse
   return atomic(board, () => {
     const item = current(board, itemById(board, id));
     if (!board.db.prepare('SELECT 1 FROM agent WHERE agent_id = ?').get(agentId)) throw new Refused('NO_AGENT', `no registered agent ${agentId}; join a worktree before appending a fact`);
-    if (!FACT_KINDS.includes(kind)) throw new Refused('BAD_FACT_KIND', `unknown fact kind ${String(kind)}; use ${FACT_KINDS.join(', ')}`);
+    requireFactKind(board, kind);
     if (typeof text !== 'string' || !text.trim()) throw new Refused('EMPTY_FACT', 'a fact needs nonempty text; supply the observation or judgement');
     const barFields = barCheckFactFields(board, item, { agentId, kind, text, answers, supersedes });
     if ((FACT_JUDGEMENTS.has(kind) || supersedes !== null) && agentId !== COORDINATOR && (!isHeld(board, item) || item.item_owner !== agentId)) {

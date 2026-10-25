@@ -266,7 +266,7 @@ Starting with engine 50, the second REJECT verdict since an item's latest route 
 
 ## Item threads
 
-`pullboard fact <id> <kind> "<text>"` appends a fact to an existing item. The observation kinds are `capture`, `measurement`, `note` and `diff`; any registered agent may append them. The judgement kinds are `decision`, `rejection`, `supersession` and `root-cause`; only the item's live lease holder or the coordinator may append them. An expired lease gives no judgement permission. Facts do not change the item's status or its claim.
+`pullboard fact <id> <kind> "<text>"` appends a fact to an existing item. The observation kinds are `capture`, `measurement`, `note`, `diff`, `question`, `answer`, `plan` and `risk`; any registered agent may append them. Typed conversation notes stay on the item thread, without creating a shout or an approval decision. Builder and reviewer read them with `show`; the runner also includes that item’s stamped facts in its context pack. Generic `answer` notes are observations; `--answers` remains reserved for the existing `bar-answer` workflow. The judgement kinds are `decision`, `rejection`, `supersession` and `root-cause`; only the item's live lease holder or the coordinator may append them. An expired lease gives no judgement permission. Facts do not change the item's status or its claim.
 
 The result is `{version: 1, item: <item-id>, fact: {...}}`. A fact has `id` (stable string identity), `eventId` (board-local event sequence), `kind`, exact `text`, `by` (registered author), `at` (UTC timestamp), `ref` and `supersedes`. The board supplies identity, author and time. `ref` and `supersedes` are `null` when omitted.
 
