@@ -1,3 +1,4 @@
+import { activityNewsFlag } from './activity-news.js';
 import {
   focusOrder,
   focusReasons,
@@ -1657,10 +1658,10 @@ export { getItem } from './board-query.js';
  * Insert a shout within the caller's transaction.
  *
  * @param {any} board
- * @param {{ from: string, to: string, text: string, lanes: string[], item?: number, decision?: boolean, answers?: number | null, evidence?: any, request?: boolean, channel?: 'terminal' | 'view', detail?: object }} message - detail: extra event fields
+ * @param {{ from: string, to: string, text: string, lanes: string[], item?: number, decision?: boolean, answers?: number | null, evidence?: any, request?: boolean, news?: boolean, channel?: 'terminal' | 'view', detail?: object }} message - detail: extra event fields
  * @returns {number}
  */
-function insertShout(board, { from, to, text, lanes, item, decision = false, answers = null, evidence = null, request = false, channel = 'terminal', detail = {} }) {
+function insertShout(board, { from, to, text, lanes, item, decision = false, answers = null, evidence = null, request = false, news = false, channel = 'terminal', detail = {} }) {
   const engine = board.executionEngineVersion ?? ENGINE_VERSION;
   if (item !== undefined) {
     if (engine < ITEM_SHOUT_ENGINE) throw new Refused('ENGINE_VERSION', 'item messages require engine 93; upgrade every linked device before sending one');
@@ -1703,12 +1704,12 @@ function insertShout(board, { from, to, text, lanes, item, decision = false, ans
   if (personAnswer && !['terminal', 'view'].includes(channel)) {
     throw new Refused('B26_PERSON_CHANNEL', 'record the person answer through the terminal or the view; run pullboard view');
   }
-  return persistShout(board, { from, to, text, decision, answers, evidence, request, channel, detail, outcome, personAnswer });
+  return persistShout(board, { from, to, text, decision, answers, evidence, request, news, channel, detail, outcome, personAnswer });
 }
 
 /** Persist a validated message or a fixed internal notice inside the caller's transaction. */
 function persistShout(board, { from, to, text, decision = false, answers = null, evidence = null, request = false,
-  channel = 'terminal', detail = {}, outcome = '', personAnswer = false }) {
+  channel = 'terminal', detail = {}, outcome = '', personAnswer = false, news = false }) {
   const result = board.db
     .prepare(
       `INSERT INTO shout (shout_from, shout_to, shout_text, shout_at, shout_decision, shout_answers,
@@ -1718,7 +1719,7 @@ function persistShout(board, { from, to, text, decision = false, answers = null,
     )
     .run(from, to, text.trim(), now(board), decision ? 1 : 0, answers, evidence?.kind ?? null, evidence ? evidence.outcome.trim() : null, evidence?.item ?? null, evidence?.commit ?? null, request ? 1 : 0, outcome);
   const id = Number(result.lastInsertRowid);
-  logEvent(board, from, answers === null ? 'shout' : decision ? 'pass' : 'answer', detail.item ?? null, { shout: id, to, decision: Boolean(decision), request: Boolean(request), answers, ...(outcome ? { outcome } : {}), ...(personAnswer ? { channel } : {}), ...detail });
+  logEvent(board, from, answers === null ? (news ? 'shout_news' : 'shout') : decision ? 'pass' : 'answer', detail.item ?? null, { shout: id, to, decision: Boolean(decision), request: Boolean(request), answers, ...(outcome ? { outcome } : {}), ...(personAnswer ? { channel } : {}), ...detail });
   return id;
 }
 
@@ -1726,11 +1727,12 @@ function persistShout(board, { from, to, text, decision = false, answers = null,
  * Shout to a lane, an agent, `all`, or the person (B7, B25, B26). The caller passes declared lanes.
  *
  * @param {any} board
- * @param {{ from: string, to: string, text: string, lanes: string[], item?: number, decision?: boolean, answers?: number | null, evidence?: any, request?: boolean, channel?: 'terminal' | 'view' }} message
+ * @param {{ from: string, to: string, text: string, lanes: string[], item?: number, decision?: boolean, answers?: number | null, evidence?: any, request?: boolean, news?: boolean, channel?: 'terminal' | 'view' }} message
  * @returns {number}
  */
 export function shout(board, message) {
-  return atomic(board, () => insertShout(board, message));
+  return atomic(board, () => insertShout(board, { ...message,
+    news: activityNewsFlag(message, board.executionEngineVersion ?? ENGINE_VERSION) }));
 }
 
 /** Record one current health snapshot atomically, notifying each new or resolved episode once [A6]. */
@@ -1857,28 +1859,7 @@ function checkEvidence(board, { kind, outcome, item, commit }) {
 export { openDecisions } from './board-query.js';
 
 
-/**
- * Unread shouts for an agent, oldest first, then marked read.
- *
- * @param {any} board
- * @param {string} agentId
- * @returns {any[]}
- */
-export function inbox(board, agentId) {
-  return atomic(board, () => {
-    const agent = board.db.prepare('SELECT * FROM agent WHERE agent_id = ?').get(agentId);
-    if (!agent) throw new Refused('NO_AGENT', `no agent ${agentId}`);
-    const shouts = board.db
-      .prepare(`SELECT * ${UNREAD_SQL} ORDER BY shout_id`)
-      .all(...unreadShoutBindings(agent.agent_last_shout_id, agentId, agent.agent_lane));
-    const last = shouts.at(-1)?.shout_id ?? agent.agent_last_shout_id;
-    board.db.prepare('UPDATE agent SET agent_last_shout_id = ? WHERE agent_id = ?').run(last, agentId);
-    if (agentId !== COORDINATOR) return shouts;
-    const requests = openRequests(board);
-    const ids = new Set(requests.map((shout) => shout.shout_id));
-    return [...requests, ...shouts.filter((shout) => !ids.has(shout.shout_id))];
-  });
-}
+export { inbox } from './inbox-store.js';
 
 export { unreadCount } from './board-query.js';
 
@@ -2393,3 +2374,6 @@ export function intakeOutside(board, options) { return applyOutsideIntake(board,
 
 /** Record the person's exact-commit owner approval. */
 export function approveOutside(board, id, options) { return applyOutsideApproval(board, id, options, atomic); }
+
+/** Tailored inbox activity is the same canonical read projection as other board queries. */
+export { agentActivity } from './board-query.js';
