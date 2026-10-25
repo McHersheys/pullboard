@@ -10,12 +10,13 @@ import { proofStats } from '../src/stats.js';
 import { flowStats } from '../src/stats-flow.js';
 import { ensureProofCounters } from '../src/proof-counters.js';
 import { runFixtureGit } from './fixture-child.js';
+import { submitFixture } from './board-submit-fixture.js';
 
 /** Construct a native board whose append path maintains current report shards. */
-function fixture(t, { item = true } = {}) {
+function fixture(t, { item = true, now } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'pullboard-report-cache-'));
   runFixtureGit(['init', '-q', '-b', 'main'], { cwd: root, stdio: 'pipe' });
-  const board = store.openBoard(join(root, '.git', 'board.sqlite'));
+  const board = store.openBoard(join(root, '.git', 'board.sqlite'), { now });
   store.register(board, { lane: 'coordinator', path: root });
   if (item) store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Known open history' });
   t.after(() => { store.closeBoard(board); rmSync(root, { recursive: true, force: true }); });
@@ -128,4 +129,87 @@ test('an item fact after claim expiry cannot reclassify the preceding active bui
   const completed = flowStats(history, null, base + 50 * 60_000, counts).report.items[0];
   assert.deepEqual(completed.stages.build, { minutes: 20, unknown: 0 });
   assert.deepEqual(completed.stages.rework, { minutes: 20, unknown: 0 });
+});
+
+
+test('cached flow retains every native milestone membership through edits removals and shipping [R1,R2]', t => {
+  const base = Date.parse('2026-10-10T00:00:00Z');
+  let minute = 0;
+  const board = fixture(t, { now: () => new Date(base + minute * 60_000) });
+  const who = { agentId: 'coordinator' };
+  store.addMilestone(board, { ...who, name: 'A', items: [1] });
+  store.addMilestone(board, { ...who, name: 'B', items: [1] });
+  store.setLineSetting(board, { ...who, key: 'focusMilestone', value: 'A', reason: 'Private focus control', window: { items: 1 } });
+  /** Compare the hot cached projection with canonical replay after each native policy transition. */
+  const observe = () => {
+    const now = base + minute * 60_000;
+    const history = store.events(board);
+    const stats = proofStats(board, { now });
+    assert.deepEqual(stats.flow.report, flowStats(history, null, now, stats).report);
+    assert.deepEqual(store.events(board), history, 'observation never changes native history');
+    assert.equal(stats.flow.report.overall.firstTry.unknown, 1, 'multiple groups do not duplicate the overall item');
+    return stats.flow.report;
+  };
+  minute = 10;
+  let report = observe();
+  assert.deepEqual(report.items[0].milestones, ['A', 'B']);
+  assert.equal(report.items[0].milestone, 'B', 'the compatibility field keeps the latest recorded membership');
+  assert.deepEqual(report.items[0].stages.ready, { minutes: 10, unknown: 0 });
+  assert.deepEqual(report.items[0].stages.later, { minutes: 0, unknown: 0 }, 'membership in focus A survives later membership in B');
+  assert.deepEqual(report.milestones.map(row => row.milestone), ['A', 'B']);
+  store.editMilestoneItems(board, 'B', { ...who, remove: [1] });
+  minute = 20;
+  assert.deepEqual(observe().items[0].milestones, ['A']);
+  store.editMilestoneItems(board, 'B', { ...who, add: [1] });
+  minute = 30;
+  store.editMilestone(board, 'B', { ...who, newName: 'C' });
+  assert.deepEqual(observe().items[0].milestones, ['A', 'C']);
+  minute = 40;
+  store.shipMilestone(board, 'A', { ...who, commit: 'a'.repeat(40), next: 'C' });
+  report = observe();
+  assert.deepEqual(report.items[0].milestones, ['C'], 'shipping removes only its source membership and deduplicates the target');
+  assert.equal(report.items[0].milestone, 'C');
+  assert.deepEqual(report.milestones.map(row => row.milestone), ['C']);
+  minute = 50;
+  store.removeMilestone(board, 'C', who);
+  assert.deepEqual(observe().items[0].milestones, []);
+  minute = 60;
+  store.addMilestone(board, { ...who, name: 'D', items: [1] });
+  store.setLineSetting(board, { ...who, key: 'focusMilestone', value: 'D', reason: 'Private next focus', window: { items: 1 } });
+  minute = 70;
+  store.editMilestoneItems(board, 'D', { ...who, remove: [1] });
+  minute = 80;
+  report = observe();
+  assert.deepEqual(report.items[0].stages.ready, { minutes: 50, unknown: 0 });
+  assert.deepEqual(report.items[0].stages.later, { minutes: 30, unknown: 0 });
+  assert.equal(report.items[0].milestone, null);
+  assert.deepEqual(report.milestones.map(row => row.milestone), [null]);
+});
+
+test('repeated native landing receipts preserve the first measured landing interval [R1,R2]', t => {
+  const base = Date.parse('2026-10-10T00:00:00Z');
+  let minute = 0;
+  const board = fixture(t, { now: () => new Date(base + minute * 60_000) });
+  store.register(board, { lane: 'core', path: '/fixture/builder' });
+  store.register(board, { lane: 'review', path: '/fixture/reviewer' });
+  const digest = 'f'.repeat(64), commit = 'a'.repeat(40);
+  minute = 1;
+  store.claim(board, 1, { agentId: 'core-1', lane: 'core', leaseMs: 3_600_000,
+    freeze: () => ({ text: '{"rows":[]}', digest }) });
+  minute = 2;
+  submitFixture(board, 1, { agentId: 'core-1', commit, tree: 'b'.repeat(40) });
+  minute = 3;
+  store.reserveReview(board, 1, { agentId: 'review-1', leaseMs: 3_600_000, policy: 'any' });
+  minute = 4;
+  store.verify(board, 1, { agentId: 'review-1', decision: 'ACCEPT', head: commit, digest, policy: 'any',
+    note: 'Private native lifecycle fixture; no gate execution claimed.' });
+  minute = 10;
+  store.merged(board, 1, { agentId: 'coordinator', commit });
+  const first = proofStats(board, { now: base + minute * 60_000 }).flow.report;
+  assert.deepEqual(first.items[0].stages.mergeWait, { minutes: 6, unknown: 0 });
+  minute = 20;
+  store.merged(board, 1, { agentId: 'coordinator', commit });
+  const repeated = proofStats(board, { now: base + minute * 60_000 }).flow.report;
+  assert.deepEqual(repeated, first, 'another valid receipt cannot turn measured history into a gap or double its elapsed time');
+  assert.deepEqual(repeated, flowStats(store.events(board), null, base + minute * 60_000, { submissions: 1, rejections: 0, rejectionShare: 0 }).report);
 });

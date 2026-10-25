@@ -309,6 +309,16 @@ export function flowLines(flow) {
   lines.push(`per day: ${flow.daily.map(row => `${row.date}: ${row.added} added, ${row.merged} merged`).join('; ') || 'none'}`);
   lines.push(`${number(flow.submitsPerMerged)} submissions per merged item`);
   lines.push(`active in the last hour: ${flow.activeAgents.total} agents · roles ${Object.entries(flow.activeAgents.roles).map(([role, count]) => `${role} ${count}`).join(', ')} · lanes ${Object.entries(flow.activeAgents.lanes).map(([lane, count]) => `${lane} ${count}`).join(', ') || 'none'}`);
+  const bottleneck = flow.bottleneck;
+  lines.push(`bottleneck: ${bottleneck.message}${bottleneck.share === null ? '' : ` (${number(bottleneck.share * 100)}%)`}${bottleneck.lowConfidence ? ' · low confidence' : ''}`);
+  if (bottleneck.recommendation) lines.push(`next: ${bottleneck.recommendation}`);
+  return lines;
+}
+
+/** Render the detailed report without changing the existing compact flow-summary contract. */
+export function flowReportLines(flow) {
+  const lines = [];
+  const percent = value => value === null ? 'unmeasured' : `${number(value * 100)}%`;
   if (flow.report?.items) {
     lines.push('flow report (all-time): waiting for an agent; filed for later; building; review; landing; rework');
     const labels = { ready: 'waiting for an agent', later: 'filed for later', build: 'building', reviewWait: 'waiting for review', review: 'reviewing', mergeWait: 'waiting to land', rework: 'rework' };
@@ -316,14 +326,11 @@ export function flowLines(flow) {
       for (const row of rows) {
         const name = kind === 'item' ? `#${row.id}` : row.lane ?? row.milestone ?? 'unknown';
         lines.push(`${kind} ${name}: ${Object.entries(row.stages).map(([key, value]) => `${labels[key]} ${duration(value.minutes)} (${value.unknown} unknown)`).join(' · ')}`);
-        lines.push(`  first try ${number(row.firstTry.rate === null ? null : row.firstTry.rate * 100)}% (${row.firstTry.accepted}/${row.firstTry.decided}; ${row.firstTry.unknown} unknown); submissions per landed ${number(row.submissionsPerLanded)}`);
-        lines.push(`  size buckets: ${Object.entries(row.sizeBuckets).map(([key, value]) => `${key} ${number(value.rate === null ? null : value.rate * 100)}% (${value.accepted}/${value.decided}; ${value.unknown} unknown)`).join(' · ')}`);
+        lines.push(`  first try ${percent(row.firstTry.rate)} (${row.firstTry.accepted}/${row.firstTry.decided}; ${row.firstTry.unknown} unknown); submissions per landed ${number(row.submissionsPerLanded)}`);
+        lines.push(`  size buckets: ${Object.entries(row.sizeBuckets).map(([key, value]) => `${key} ${percent(value.rate)} (${value.accepted}/${value.decided}; ${value.unknown} unknown)`).join(' · ')}`);
       }
     }
   } else lines.push('flow report: unavailable until the next writer rebuilds historical accounting');
-  const bottleneck = flow.bottleneck;
-  lines.push(`bottleneck: ${bottleneck.message}${bottleneck.share === null ? '' : ` (${number(bottleneck.share * 100)}%)`}${bottleneck.lowConfidence ? ' · low confidence' : ''}`);
-  if (bottleneck.recommendation) lines.push(`next: ${bottleneck.recommendation}`);
   return lines;
 }
 

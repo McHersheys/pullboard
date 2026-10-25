@@ -88,11 +88,12 @@ test('submission size replays identically and refuses unsupported or malformed m
   const before = store.events(copies[2]);
   assert.throws(() => applyEngineMove(copies[2], { ...move, engine: FLOW_SIZE_ENGINE - 1 }, receipt), { code: 'RELAY_MOVE' });
   assert.deepEqual(store.events(copies[2]), before, 'unsupported metadata cannot partially change native history');
-  for (const change of [{ lines: -1 }, { lines: 0.5 }, { lines: null }, { lines: Number.MAX_SAFE_INTEGER + 1 },
-    { head: 'd'.repeat(40) }, { base: 'missing' }, { method: 'guess' }]) {
+  for (const [index, change] of [{ lines: -1 }, { lines: 0.5 }, { lines: null }, { lines: Number.MAX_SAFE_INTEGER + 1 },
+    { head: 'd'.repeat(40) }, { base: 'missing' }, { method: 'guess' }].entries()) {
     const forged = structuredClone(move);
+    forged.id = `size-invalid-${index}`;
     Object.assign(forged.args[1].submissionSize, change);
-    assert.equal(applyRelayMove(copies[2], forged, receipt).error?.code, 'SUBMISSION_PROOF');
+    assert.equal(applyRelayMove(copies[2], forged, { ...receipt, sequence: index + 1 }).error?.code, 'SUBMISSION_PROOF');
     assert.deepEqual(store.events(copies[2]), before);
   }
   const legacy = structuredClone(move);

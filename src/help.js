@@ -200,6 +200,11 @@ Receipts
                                         released/expired reservations remain wait, not review;
                                         review: closing reservation to verdict; merge wait: accept to first merge
                                         unfinished stages are omitted; missing legacy reservations are unmeasured
+                                        flow.report is all-time, even with --since or --window; its disjoint stages are
+                                        ready, later, build, reviewWait, review, mergeWait and rework;
+                                        initial focus/dependency/hold delays are later; returned work is rework until claim;
+                                        firstTry measures acceptance of the first submission; size buckets use that submission:
+                                        under 100, 100-299, 300-799, 800+ changed lines; missing history stays unknown
                                         JSON flow.asOf records one observation clock; oldest.since records its origin;
                                         ageMinutes = (asOf - since) / 60000 for every queue age
                                         queues include all current work, even added before --since;

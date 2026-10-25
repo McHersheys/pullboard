@@ -1,6 +1,7 @@
 /** Optional indexed flow-report accounting around the canonical lifecycle reducer [R1,R2]. */
 const STAGES = ['ready', 'later', 'build', 'reviewWait', 'review', 'mergeWait', 'rework'];
 const BUCKETS = ['under100', '100to300', '300to800', '800plus', 'unknown'];
+export const FLOW_REPORT_VERSION = 2;
 
 /** Only lifecycle and recorded policy moves can change report accounting. */
 export function reportEvent(event, detail) {
@@ -12,11 +13,17 @@ export function safeReportPolicy(policy) {
   for (const key of ['memberships', 'dependents', 'lanes', 'members', 'open']) {
     if (Object.getPrototypeOf(policy[key]) !== null) policy[key] = Object.assign(Object.create(null), policy[key]);
   }
+  if (policy.membershipVersion !== 2) {
+    for (const [id, names] of Object.entries(policy.memberships)) {
+      if (!Array.isArray(names)) policy.memberships[id] = [names];
+    }
+    policy.membershipVersion = 2;
+  }
   return policy;
 }
 
 /** Start policy facts reconstructed only from recorded events. */
-export function newReportPolicy() { return safeReportPolicy({ focus: null, memberships: {}, heldLanes: [], verified: [], dependents: {}, lanes: {}, members: {}, open: {} }); }
+export function newReportPolicy() { return safeReportPolicy({ membershipVersion: 2, focus: null, memberships: {}, heldLanes: [], verified: [], dependents: {}, lanes: {}, members: {}, open: {} }); }
 
 /** Allocate accounting without manufacturing an absent historical start. */
 function reportState() { return { totals: Object.fromEntries(STAGES.map(key => [key, 0])), known: false, missing: [], submissions: 0, first: null, deps: [], held: false }; }
@@ -39,9 +46,9 @@ function stage(item, policy, at) {
   if (item.state === 'accepted') return 'mergeWait';
   if (item.state !== 'open') return null;
   if (report.returned) return 'rework';
-  const milestone = policy.memberships[item.id];
+  const milestones = policy.memberships[item.id] ?? [];
   return report.held || policy.heldLanes.includes(item.lane) || report.deps.some(id => !policy.verified.includes(id)) ||
-    policy.focus && milestone !== policy.focus ? 'later' : 'ready';
+    policy.focus && !milestones.includes(policy.focus) ? 'later' : 'ready';
 }
 
 /** Charge elapsed time, splitting recorded reservation and claim expiry boundaries exactly. */
@@ -66,7 +73,7 @@ export function prepareReportMove(item, event, detail) {
   if (['accept', 'reject'].includes(event.event_kind) && detail.commit === item.commit && item.state === 'submitted') {
     if (!item.reserve || Number.isFinite(item.reserve.until) && item.reserve.until < Date.parse(event.event_at)) report.missing.push('review');
   }
-  if (event.event_kind === 'merged' && item.state !== 'accepted') report.missing.push('mergeWait');
+  if (event.event_kind === 'merged' && item.state !== 'accepted' && !Number.isFinite(item.mergeAt)) report.missing.push('mergeWait');
 }
 
 /** Observe metadata alongside, rather than replacing, the existing lifecycle transition. */
@@ -136,19 +143,44 @@ export function recordReportPolicy(policy, event, detail, item) {
   const matching = item?.commit && item.commit === detail.commit;
   if (kind === 'accept' && matching || kind === 'merged') { if (!policy.verified.includes(event.item_id)) policy.verified.push(event.item_id); }
   if (kind === 'reject' && matching || ['reopen', 'refreeze', 'escalate', 'lapse'].includes(kind) && !(kind === 'refreeze' && detail.retainedClaim)) policy.verified = policy.verified.filter(id => id !== event.item_id);
-  if (kind === 'milestone_add') for (const id of detail.items ?? []) policy.memberships[id] = detail.name;
+  if (kind === 'milestone_add') for (const id of detail.items ?? []) addMembership(policy, id, detail.name);
   if (kind === 'milestone_items') {
-    for (const id of detail.add ?? []) policy.memberships[id] = detail.name;
-    for (const id of detail.remove ?? []) if (policy.memberships[id] === detail.name) delete policy.memberships[id];
+    for (const id of detail.add ?? []) addMembership(policy, id, detail.name);
+    for (const id of detail.remove ?? []) removeMembership(policy, id, detail.name);
   }
-  if (kind === 'milestone_moved') policy.memberships[event.item_id] = detail.to;
-  if (kind === 'milestone_edit') for (const id of Object.keys(policy.memberships)) if (policy.memberships[id] === detail.before) policy.memberships[id] = detail.after;
-  if (kind === 'milestone_remove') for (const id of Object.keys(policy.memberships)) if (policy.memberships[id] === detail.name) delete policy.memberships[id];
-  if (kind.startsWith('milestone_')) {
-    policy.members = Object.create(null);
-    for (const [id, name] of Object.entries(policy.memberships)) { policy.members[name] ??= []; policy.members[name].push(Number(id)); }
+  if (kind === 'milestone_moved') {
+    removeMembership(policy, event.item_id, detail.from);
+    addMembership(policy, event.item_id, detail.to);
   }
+  if (kind === 'milestone_edit' && detail.before !== detail.after) {
+    for (const id of [...(policy.members[detail.before] ?? [])]) {
+      const names = policy.memberships[id].map(name => name === detail.before ? detail.after : name);
+      removeMembership(policy, id, detail.before);
+      policy.memberships[id] = names;
+      policy.members[detail.after] ??= [];
+      if (!policy.members[detail.after].includes(id)) policy.members[detail.after].push(id);
+    }
+  }
+  if (kind === 'milestone_remove') for (const id of [...(policy.members[detail.name] ?? [])]) removeMembership(policy, id, detail.name);
+}
 
+/** Append a real membership without losing other milestones or duplicating reverse indexes. */
+function addMembership(policy, id, name) {
+  const names = policy.memberships[id] ??= [];
+  if (!names.includes(name)) names.push(name);
+  policy.members[name] ??= [];
+  if (!policy.members[name].includes(id)) policy.members[name].push(id);
+}
+
+/** Remove only the named membership; shipping one milestone retains all unrelated memberships. */
+function removeMembership(policy, id, name) {
+  const names = (policy.memberships[id] ?? []).filter(value => value !== name);
+  if (names.length) policy.memberships[id] = names;
+  else delete policy.memberships[id];
+  if (policy.members[name]) {
+    policy.members[name] = policy.members[name].filter(value => value !== id);
+    if (!policy.members[name].length) delete policy.members[name];
+  }
 }
 
 /** Summarize known first decisions without assigning unknown history a zero rate. */
@@ -180,10 +212,15 @@ export function projectReport(items, policy, now) {
   if (!policy) return { available: false };
   policy = safeReportPolicy(structuredClone(policy));
   const rows = items.map(item => { const copy = structuredClone(item); advanceReport(copy, policy, now); return copy; });
-  /** Group using latest recorded membership and recorded item lanes, not current mutable rows. */
+  /** Group recorded item lanes without consulting current mutable rows. */
   function groups(key, value) {
     return [...new Set(rows.map(value))].sort().map(name => ({ [key]: name, ...aggregate(rows.filter(row => value(row) === name)) }));
   }
-  return { scope: 'all-time', items: rows.map(row => ({ id: row.id, lane: row.lane, milestone: policy.memberships[row.id] ?? null, ...aggregate([row], true) })),
-    lanes: groups('lane', row => row.lane), milestones: groups('milestone', row => policy.memberships[row.id] ?? null), overall: aggregate(rows) };
+  const milestoneNames = [...new Set(rows.flatMap(row => policy.memberships[row.id] ?? [null]))].sort();
+  return { scope: 'all-time', items: rows.map(row => ({ id: row.id, lane: row.lane,
+    milestone: policy.memberships[row.id]?.at(-1) ?? null, milestones: [...(policy.memberships[row.id] ?? [])], ...aggregate([row], true) })),
+    lanes: groups('lane', row => row.lane),
+    milestones: milestoneNames.map(name => ({ milestone: name, ...aggregate(rows.filter(row => name === null
+      ? !policy.memberships[row.id]?.length : policy.memberships[row.id]?.includes(name))) })),
+    overall: aggregate(rows) };
 }
