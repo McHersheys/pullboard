@@ -74,6 +74,9 @@ pullboard takeover
 pullboard resume --diagnostics
 ```
 
+Use the incoming agent's own session. A person's ordinary terminal cannot take
+over on an agent's behalf.
+
 On a linked board, takeover takes the coordinator hold for this main checkout
 as an ordered board move. A previously holding main checkout is then refused
 coordinator moves until it takes the role again. In an unlinked checkout,

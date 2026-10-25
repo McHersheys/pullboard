@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import * as store from '../src/board.js';
 import { createE2eHelpers } from '../test/e2e-helpers.js';
+import { runFixtureChild } from '../test/fixture-child.js';
 
 /** Require the real fixture CLI to succeed before interpreting its output. */
 function command(box, cwd, ...args) {
@@ -82,7 +83,14 @@ test('the hand-off guide matches the board [B3,N19]', () => {
       'private chat', 'durable']) assert.ok(guide.includes(literal), `guide includes ${literal}`);
     assert.ok(text.includes(batch.logPath), 'the durable batch log is printed with its owner');
     assert.ok(text.includes(box.repo), 'resume names the real checkout rather than a scratchpad');
-    const takeover = JSON.parse(command(box, box.repo, 'takeover', '--json'));
+    const noSession = box.run(box.repo, 'takeover', '--json');
+    assert.equal(JSON.parse(noSession.out).error?.code, 'AGENT_SESSION',
+      'the ordinary person shell cannot take over on an agent session\u2019s behalf');
+    const incoming = runFixtureChild(process.execPath, [e2e.BIN, 'takeover', '--json'], {
+      cwd: box.repo, env: { ...box.env, CODEX_THREAD_ID: 'handoff-guide-private-incoming' }, encoding: 'utf8',
+    });
+    assert.equal(incoming.status, 0, incoming.failure || incoming.stderr || incoming.stdout);
+    const takeover = JSON.parse(incoming.stdout);
     assert.equal(takeover.agent, 'coordinator');
     assert.equal(takeover.path, box.repo);
     const agent = JSON.parse(command(box, box.web, 'resume', '--json'));
