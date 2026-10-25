@@ -1,17 +1,30 @@
+/** @pullboard-test-input source-tree */
 /** Real train merges retain additive registry changes and refuse edits [B3,R3,C7]. */
 import assert from 'node:assert/strict';
 import {
   mkdirSync,
+  cpSync,
+  mkdtempSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { pathToFileURL } from 'node:url';
 import {
   after,
   test,
 } from 'node:test';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { json } from './land-board-fixture.js';
+import { mergeMechanicalSources } from '../src/train-mechanical-merge.js';
+import {
+  discoverFormats,
+  formatTable,
+  writeFormatTable,
+} from '../src/format-registry.js';
+import { discoverMoves } from '../src/move-registry.js';
 
 const e2e = createE2eHelpers();
 after(e2e.cleanup);
@@ -85,4 +98,51 @@ test('a registry edit remains a conflict and reopens instead of being unioned [B
   assert.ok(landed.conflicts.some(entry => entry.id === second));
   assert.equal(json(box, box.repo, 'show', String(second)).item_status, 'open');
   assert.deepEqual(landed.landed, [first]);
+});
+
+test('mechanical resolution refuses changed context, duplicate disagreements and unknown files [B3,R3,C7]', () => {
+  const alpha = BASE.replace('  base:', '  alpha: { item: true },\n  base:');
+  const beta = BASE.replace('  base:', '  beta: { item: true },\n  base:');
+  assert.ok(mergeMechanicalSources(FILE, BASE, alpha, beta));
+  for (const changed of [beta.replace('item: true', 'item: false'), beta + '// changed context\n',
+    BASE.replace('  base:', '  alpha: { item: false },\n  base:'),
+    BASE.replace('  base:', '  beta: { item: true }; steal(); { item: true },\n  base:')]) {
+    assert.equal(mergeMechanicalSources(FILE, BASE, alpha, changed), null);
+  }
+  assert.equal(mergeMechanicalSources('src/unknown.js', BASE, alpha, beta), null);
+  const header = '<!-- format-versions:start -->\n| Format | Version | Version source | Upgrade rule |\n| --- | --- | --- | --- |\n';
+  const table = header + '| `base` | `1` | source | preserve |\n<!-- format-versions:end -->\n';
+  const inserted = name => table.replace('| `base`', `| \`${name}\` | \`1\` | source | preserve |\n| \`base\``);
+  assert.match(mergeMechanicalSources('docs/formats.md', table, inserted('alpha'), inserted('beta')).source, /`alpha`[\s\S]*`beta`[\s\S]*`base`/u);
+  assert.equal(mergeMechanicalSources('docs/formats.md', table, inserted('alpha'), table.replace('`1`', '`2`')), null);
+});
+
+test('new format declarations and move files are discovered without a shared registry edit [A5,C7,V4]', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'pullboard-format-discovery-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, 'src'));
+  cpSync(new URL('../src/formats/', import.meta.url), join(root, 'src', 'formats'), { recursive: true });
+  for (const file of ['json.js', 'spec.js', 'board-schema-source.js'])
+    cpSync(new URL('../src/' + file, import.meta.url), join(root, 'src', file));
+  writeFileSync(join(root, 'src', 'fixture-engine.js'), 'export const FIXTURE_ENGINE = 110;\n');
+  const original = discoverFormats(root);
+  assert.equal(original.length, 5);
+  writeFileSync(join(root, 'src', 'formats', 'fixture.json'), JSON.stringify({ name: 'fixture', order: 60,
+    version: { kind: 'constant', file: 'src/fixture.js', constant: 'FIXTURE_VERSION' }, source: '`FIXTURE_VERSION`', upgrade: 'preserve' }));
+  writeFileSync(join(root, 'src', 'fixture.js'), 'export const FIXTURE_VERSION = 7;\n');
+  assert.equal(discoverFormats(root).find(entry => entry.name === 'fixture').version, 7);
+  mkdirSync(join(root, 'docs'));
+  const guide = 'before\n<!-- format-versions:start -->\nstale\n<!-- format-versions:end -->\nafter\n';
+  writeFileSync(join(root, 'docs', 'formats.md'), guide);
+  assert.equal(writeFormatTable(root), true);
+  assert.equal(readFileSync(join(root, 'docs', 'formats.md'), 'utf8'), guide.replace('stale', formatTable(root)));
+  assert.equal(writeFormatTable(root), false);
+  writeFileSync(join(root, 'src', 'fixture.js'), 'export const FIXTURE_VERSION = 8;\n');
+  assert.equal(writeFormatTable(root), true);
+  assert.match(readFileSync(join(root, 'docs', 'formats.md'), 'utf8'), /`fixture` \| `8`/u);
+  const moves = join(root, 'moves');
+  mkdirSync(moves);
+  for (const operation of ['alpha', 'beta']) writeFileSync(join(moves, operation + '.js'),
+    `export default {operation: '${operation}', engine: 1, itemIdFirstArgument: false, minimumEngine: () => 1, actor: () => null, nextSteps: {}};\n`);
+  assert.deepEqual((await discoverMoves(pathToFileURL(moves + '/'))).operations, ['alpha', 'beta']);
 });
