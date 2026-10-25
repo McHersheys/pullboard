@@ -16,7 +16,7 @@ import { bindRefs, resolveMove, strayItemRefs } from '../src/relay-outbox.js';
 import { recordNativeProof } from '../src/proof-cli.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 
-test('a real failed native check records its actual exit without invented test counters [C7,H16]', (t) => {
+test('a real failed opaque native check records its exit with unknown runtime and counters [C7,H16]', (t) => {
   const helpers = createE2eHelpers();
   t.after(helpers.cleanup);
   const command = `${JSON.stringify(process.execPath)} -e "process.exit(7)"`;
@@ -40,7 +40,8 @@ test('a real failed native check records its actual exit without invented test c
   assert.equal(receipt.commit, null, 'a dirty check cannot attest the committed HEAD');
   assert.equal(receipt.tree, null, 'a dirty check cannot attest the committed tree');
   assert.deepEqual(receipt.counts, { passed: null, failed: null, skipped: null });
-  assert.deepEqual(receipt.environment, { node: process.versions.node, platform: process.platform, arch: process.arch });
+  assert.equal(receipt.testRuntimes, null, 'an opaque node -e command has no closed selected test-worker binding');
+  assert.equal(receipt.environment, null, 'an unbound custom command never borrows its launcher runtime');
 });
 
 test('native receipts carry each child reported runtime instead of borrowing the launcher [C7,H16]', t => {
