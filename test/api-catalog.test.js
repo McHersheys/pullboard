@@ -287,6 +287,10 @@ catalogCase('[A1] command results match the catalog across roots and subcommands
   assert.equal(existsSync(join(box.env.PULLBOARD_HOME, 'config.json')), false, 'machine settings use the separate settings.json file');
   await json(box, repo, 'resume');
   await json(box, repo, 'status');
+  const heartbeat = await json(box, repo, 'heartbeat');
+  assert.equal(heartbeat.seat, 'coordinator');
+  assert.equal(heartbeat.presence, 'live');
+  assert.ok(Number.isFinite(Date.parse(heartbeat.heartbeatAt)), 'an explicit hook returns its real local observation');
   await json(box, repo, 'stats');
   await json(box, repo, 'badge');
   await json(box, repo, 'doctor');
