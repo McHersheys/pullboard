@@ -118,7 +118,7 @@ import { recordVerdict } from './verdict-assurance.js';
 import {
   mergeOnlyBasis,
   mergeOnlyProblem,
-  mergeOnlyLandingProblem,
+  mergeOnlySourceValid,
 } from './merge-only-verdict.js';
 import { MERGE_ONLY_VERDICT_ENGINE } from './merge-only-verdict-engine.js';
 import { deriveMergeOnly } from './merge-only-source.js';
@@ -1128,7 +1128,7 @@ export function prepareMergeOnlySubmit(board, id, options) {
   const item = getItem(board, id);
   const basis = options?.gateGreen === true ? mergeOnlyBasis(board, item) : null;
   return basis && !itemAuthorProblem(board, item, basis.by)
-    && !mergeOnlyLandingProblem(board.gitRoot, board, item)
+    && mergeOnlySourceValid(board.gitRoot, board, item)
     ? deriveMergeOnly(board.gitRoot, basis, options) : null;
 }
 
