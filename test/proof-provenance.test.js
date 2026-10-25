@@ -1,6 +1,6 @@
 /** Native provenance rejects borrowed evidence and keeps unknown facts explicit [C7,H16]. */
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -99,6 +99,23 @@ test('runtime capture binds the admitted file to its closed actual worker [C7,H1
   assert.equal(children[0].file, 'test/runtime-child.test.js');
   assert.deepEqual(children[0].environment, { platform: process.platform, arch: process.arch, node: process.versions.node });
   assert.notEqual(children[0].pid, process.pid);
+});
+
+test('child boot reports remain read only and a writable replacement stays unknown [C7,H16]', t => {
+  const capture = captureTestRuntimes(process.env);
+  t.after(() => capture.finish());
+  const result = runFixtureChild(process.execPath, ['-e', 'void 0'], { env: capture.env, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.failure || result.stderr);
+  const directory = capture.env.PULLBOARD_RUNTIME_CAPTURE_DIR;
+  const name = readdirSync(directory).find(name => /^runtime-/.test(name));
+  assert.ok(name, 'the actual child wrote a boot report');
+  const file = join(directory, name);
+  assert.equal(statSync(file).mode & 0o222, 0, 'ordinary child writes cannot replace the sampled boot report');
+  chmodSync(file, 0o600);
+  const changed = JSON.parse(readFileSync(file, 'utf8'));
+  changed.environment.node = '0.0.0';
+  writeFileSync(file, JSON.stringify(changed));
+  assert.equal(capture.finish(), null, 'a writable report is not accepted as native runtime evidence');
 });
 
 test('proof counters retain explicit totals and do not invent success from missing output [C7,H16]', () => {

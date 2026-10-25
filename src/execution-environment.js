@@ -53,8 +53,7 @@ export function runtimeCaptureSource(directory) {
 import { randomUUID } from 'node:crypto';
 const directory=${JSON.stringify(directory)};
 const file=directory+'/runtime-'+process.pid+'-'+randomUUID()+'.json';
-process.env.PULLBOARD_RUNTIME_CAPTURE_RECORD=file;
-writeFileSync(file,JSON.stringify({pid:process.pid,environment:{platform:process.platform,arch:process.arch,node:process.version.slice(1)},file:null}),{flag:'wx',mode:0o600});
+writeFileSync(file,JSON.stringify({pid:process.pid,environment:{platform:process.platform,arch:process.arch,node:process.version.slice(1)},file:null}),{flag:'wx',mode:0o400});
 `;
 }
 
@@ -66,11 +65,13 @@ export function bindTestRuntime(pid, file) {
     const names = readdirSync(directory).filter(name => name.startsWith('runtime-' + pid + '-') && name.endsWith('.json'));
     if (names.length !== 1) return false;
     const path = join(directory, names[0]);
+    const stat = lstatSync(path);
+    if (!stat.isFile() || stat.mode & 0o222) return false;
     const own = JSON.parse(readFileSync(path, 'utf8'));
-    if (own.pid !== pid || environmentProblem(own.environment)) return false;
+    if (own.pid !== pid || own.file !== null || environmentProblem(own.environment)) return false;
     const bound = { pid, environment: own.environment, file: relative(process.cwd(), file).replaceAll('\\', '/') };
     if (!testRuntimeRows([bound])) return false;
-    writeFileSync(path, JSON.stringify(bound), { mode: 0o600 });
+    writeFileSync(join(directory, 'binding-' + pid + '.json'), JSON.stringify({ pid, file: bound.file }), { flag: 'wx', mode: 0o600 });
     return true;
   } catch { return false; /* A missing child report cannot be replaced by the parent's identity. */ }
 }
@@ -124,8 +125,18 @@ export function captureTestRuntimes(env) {
           const file = join(directory, name);
           const stat = lstatSync(file);
           bytes += stat.size;
-          if (!stat.isFile() || stat.size > 8192 || bytes > 8 * 1024 * 1024) return null;
-          rows.push(JSON.parse(readFileSync(file, 'utf8')));
+          if (!stat.isFile() || stat.mode & 0o222 || stat.size > 8192 || bytes > 8 * 1024 * 1024) return null;
+          const row = JSON.parse(readFileSync(file, 'utf8'));
+          if (row.file !== null) return null;
+          const binding = join(directory, 'binding-' + row.pid + '.json');
+          try {
+            const boundStat = lstatSync(binding);
+            if (!boundStat.isFile() || boundStat.size > 8192) return null;
+            const bound = JSON.parse(readFileSync(binding, 'utf8'));
+            if (Object.keys(bound).sort().join(',') !== 'file,pid' || bound.pid !== row.pid) return null;
+            row.file = bound.file;
+          } catch (error) { if (error.code !== 'ENOENT') return null; }
+          rows.push(row);
         }
         const checked = testRuntimeRows(rows);
         if (!checked) return null;
