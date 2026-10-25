@@ -22,6 +22,7 @@ import { relayRelink } from './relay-relink.js';
 import { updateRelayMachine } from './relay-machine.js';
 import { listApiProjects } from './projects.js';
 import { Refused } from './refused.js';
+import { mainPolicy } from './trusted-policy.js';
 import {
   localRecords,
   relayPersonCoordinator,
@@ -76,7 +77,11 @@ export async function joinNamedBoard(root, file, { board, url, repository, signI
     if (stored) { try { forgetBoardKey(board, stored); } catch { /* The original refusal is the useful next step. */ } }
     throw error;
   }
-  await relayPersonCoordinator(root, signed.token, io);
+  const approvers = mainPolicy(root).config.approvers;
+  // Membership admits an ordinary developer; it does not confer the board person’s coordinator authority.
+  if (!Array.isArray(approvers) || !approvers.length || approvers.some(approver => approver.toLowerCase() === String(login).toLowerCase())) {
+    await relayPersonCoordinator(root, signed.token, io);
+  }
   await syncRelay(root, io);
   const name = listApiProjects().find(project => project.root === repoInfo(root).root)?.name ?? repository;
   const result = { ...relayStatus(root), notice: `Joined ${name}: this clone works on board ${board.slice(0, 8)}, the one pullboard.json names.` };

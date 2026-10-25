@@ -675,6 +675,7 @@ function memberDevice(t, box, name) {
   runFixtureGit(['remote', 'set-url', 'origin', 'git@github.com:fixture/repository.git'], { cwd: root, env: box.env });
   const env = { ...box.env, HOME: home, PULLBOARD_HOME: join(home, '.pullboard'), PULLBOARD_MACHINE_HOME: join(home, 'machine') };
   delete env.PULLBOARD_MODEL;
+  delete env.PULLBOARD_SSH_KEY; // A separate computer cannot inherit Alice’s private signing-key path.
   const device = { root, env, home, cli: (...args) => relayFixtureChild(root, env, [CLI, ...args, '--json']) };
   /** Generate this device's SSH key, as ssh-keygen -t ed25519 does, and return its public line. */
   device.sshKey = () => {
@@ -778,11 +779,18 @@ test('a clone of a linked repo joins its board; a member device hands over the k
   assert.equal(box.auth.linkedBoards().length, 1, 'joining never links another board');
   const listed = await fresh.cli('list', '--all');
   assert.ok(listed.document.items.some((item) => (item.title ?? item.item_title) === 'Health endpoint'), 'the joined clone reads the team board');
-  assert.equal((await fresh.cli('takeover')).code, 0, 'bob’s main checkout takes the one coordinator [E19]');
-  const freshAdd = await fresh.cli('add', box.lane, 'From bob’s new computer');
+  const bobLink = JSON.parse(readFileSync(join(fresh.root, '.git', 'pullboard', 'relay.json'), 'utf8'));
+  assert.equal(bobLink.agentTokens?.coordinator, undefined, 'list membership does not create person coordinator authority');
+  const coordinatorPath = withBoard(box.root, board => store.listAgents(board).find(agent => agent.agent_id === 'coordinator').agent_path);
+  const bobWork = fresh.root + '-lane';
+  runFixtureGit(['worktree', 'add', '--detach', bobWork, 'HEAD'], { cwd: fresh.root, env: fresh.env });
+  const bobCli = (...args) => relayFixtureChild(bobWork, fresh.env, [CLI, ...args, '--json']);
+  const bobJoined = await bobCli('join', box.lane, '--model', 'Fixture Model');
+  assert.equal(bobJoined.code, 0, `the member registers an ordinary lane seat: ${JSON.stringify(bobJoined.document?.error ?? null)}`);
+  const freshAdd = await bobCli('add', box.lane, 'From bob’s new computer');
   assert.equal(freshAdd.code, 0, `the joined clone moves on the team board: ${JSON.stringify(freshAdd.document?.error ?? null)}`);
-  assert.equal((await box.cli('takeover')).code, 0, 'alice’s main checkout takes the coordinator back');
   assert.ok((await box.cli('export')).document.tables.item.some((item) => item.item_title === 'From bob’s new computer'), 'one board, one order: alice reads bob’s move');
+  assert.equal(withBoard(box.root, board => store.listAgents(board).find(agent => agent.agent_id === 'coordinator').agent_path), coordinatorPath, 'the ordinary member leaves Alice’s coordinator holder unchanged');
 });
 
 test('a relink turns the old link off with its receipt, so a repository keeps one active board [E12]', { timeout: 120_000 }, async (t) => { // budget: hang ceiling for real relay calls; not a speed target.
