@@ -1,7 +1,10 @@
 /** Native CPU observations for registered agent worktrees; no process is signalled [A6,H16]. */
 import { execFileSync } from 'node:child_process';
-import { readlinkSync, realpathSync } from 'node:fs';
-import { basename, relative, sep } from 'node:path';
+import { readlinkSync } from 'node:fs';
+import { realpathSync } from 'node:fs';
+import { basename } from 'node:path';
+import { relative } from 'node:path';
+import { sep } from 'node:path';
 
 /** Read bounded native utility output without arguments or environment supplied by a process. */
 function native(command, args) {
