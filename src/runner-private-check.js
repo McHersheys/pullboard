@@ -1,11 +1,24 @@
 /** Controller-side private-check artifact custody; worker framing never comes from command text [C7,V4]. */
 import { createHash } from 'node:crypto';
-import { closeSync, mkdirSync, mkdtempSync, openSync, readSync, writeSync } from 'node:fs';
+import {
+  closeSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readSync,
+  writeSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { runOnRunner } from './runners.js';
 import { privateCheckEnvelope } from './runner-private-mode.js';
-import { policyGit, trunkRef } from './trusted-policy-read.js';
-import { timingFromLog, timingRunner } from './timing.js';
+import {
+  policyGit,
+  trunkRef,
+} from './trusted-policy-read.js';
+import {
+  timingFromLog,
+  timingRunner,
+} from './timing.js';
 
 /** Copy one authenticated phase without buffering the full command output into controller memory. */
 function phaseCopy(raw, phase, path) {

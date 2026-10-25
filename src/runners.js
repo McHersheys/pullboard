@@ -56,7 +56,10 @@ import {
 } from './git.js';
 import { Refused } from './refused.js';
 import { recordRunnerGui } from './resources.js';
-import { privateCheckEnvelope, privateCheckPhases } from './runner-private-mode.js';
+import {
+  privateCheckEnvelope,
+  privateCheckPhases,
+} from './runner-private-mode.js';
 import {
   gateStages,
   readStages,
