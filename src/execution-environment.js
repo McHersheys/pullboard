@@ -57,7 +57,7 @@ writeFileSync(file,JSON.stringify({pid:process.pid,environment:{platform:process
 // Node's --test parent only starts workers; retain capture until the actual test process boots.
 // User code sees its original NODE_OPTIONS, not this recorder's injected option.
 if (!process.execArgv.includes('--test')) {
-  const token='--import='+import.meta.url;
+  const token=${JSON.stringify('--import=' + pathToFileURL(join(directory, 'test-runtime-preload.mjs')).href)};
   const options=process.env.NODE_OPTIONS;
   if (options===token) delete process.env.NODE_OPTIONS;
   else if (options?.endsWith(' '+token)) process.env.NODE_OPTIONS=options.slice(0,-token.length-1);

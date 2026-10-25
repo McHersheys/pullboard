@@ -8,6 +8,7 @@ import * as store from '../src/board.js';
 import { prepareEngineMove, applyEngineMove } from '../src/engine.js';
 import { boardReceiptStore, receiptBody, receiptFields } from '../src/gate-run-receipt.js';
 import { proofCounts } from '../src/proof-provenance.js';
+import { runShell } from '../src/shell-run.js';
 import { captureTestRuntimes } from '../src/execution-environment.js';
 import { runFixtureChild } from './fixture-child.js';
 import { fileURLToPath } from 'node:url';
@@ -107,6 +108,20 @@ test('runtime capture binds the admitted file to its closed actual worker [C7,H1
   assert.equal(children[0].file, 'test/runtime-child.test.js');
   assert.deepEqual(children[0].environment, { platform: process.platform, arch: process.arch, node: process.versions.node });
   assert.notEqual(children[0].pid, process.pid);
+});
+
+test('timed shell proof records the actual command child rather than the timeout worker [C7,H16]', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'pullboard-timed-runtime-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const trace = join(directory, 'actual.json');
+  const program = `require('node:fs').writeFileSync(${JSON.stringify(trace)}, JSON.stringify({pid:process.pid,node:process.versions.node}));`;
+  const result = runShell(directory, `${JSON.stringify(process.execPath)} -e ${JSON.stringify(program)}`,
+    { timeoutMs: 5_000, captureRuntimes: true }); // budget: declared timeout input exercises the real custody worker.
+  assert.equal(result.isGreen, true, result.output);
+  const actual = JSON.parse(readFileSync(trace, 'utf8'));
+  assert.equal(result.testRuntimes.length, 1, 'the timeout launcher never substitutes for the actual command');
+  assert.equal(result.testRuntimes[0].pid, actual.pid);
+  assert.equal(result.testRuntimes[0].environment.node, actual.node);
 });
 
 test('child boot reports remain read only and a writable replacement stays unknown [C7,H16]', t => {
