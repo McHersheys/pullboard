@@ -64,8 +64,9 @@ export function sourceLaunchesBrowser(source) {
   /** A span's literals or executable environment references can name a browser. */
   const browserIn = (start, end) => CHROME.test(code.slice(start, end))
     || strings.some(string => string.start >= start && string.start < end && browserText(string.text));
-  // Record initializer dependencies without assigning authority to a variable name or executing a getter.
-  for (const match of code.matchAll(/\b(?:const|let|var)\s+([$\w]+)\s*=/gu)) {
+  // Union executable identifier assignments, including later writes and conditional branches.
+  // Never let a later non-browser value erase a possible browser value; strings/comments are blank in code.
+  for (const match of code.matchAll(/(?<![\w$.])([$A-Z_a-z][$\w]*)\s*=(?!=|>)/gu)) {
     const start = match.index + match[0].length;
     let end = start;
     while (end < code.length && !';\n'.includes(code[end])) {
