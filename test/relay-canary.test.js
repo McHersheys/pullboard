@@ -73,6 +73,7 @@ function displayText(value) {
 }
 
 test('a failed round trip alerts within two minutes and names the failed step [H2,H15,C7]', { timeout: 60_000 }, async t => { // budget: private relay startup, four real probes, and fixture cleanup; alert timing uses the injected clock.
+  const drillStartedAt = new Date().toISOString();
   const { probeRelayCanary, observeRelayHealth, readRelayHealth } = await canaryApi();
   const box = await relayClientFixture(t);
   commitConfiguration(box);
@@ -132,6 +133,9 @@ test('a failed round trip alerts within two minutes and names the failed step [H
   assert.equal(recovered.health.consecutiveFailures, 0);
   assert.equal(recovered.finding, null);
   assert.equal(readRelayHealth(box.root, { now }).status, 'healthy', 'the cleared state is durable for a later status read');
+  t.diagnostic(JSON.stringify({ drill: 'fixture authenticated event route blocked and restored', startedAt: drillStartedAt,
+    finishedAt: new Date().toISOString(), cadence: 'injected clock; no wall-clock two-minute delivery claim',
+    failedStep: second.step, alert: alerted.transition, recovery: recovered.transition, production: false }));
 });
 
 test('the health history waits for ten minutes of slow successful round-trip samples before p95 alerting [H5,H15,C7]', async t => {

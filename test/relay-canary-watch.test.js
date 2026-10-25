@@ -6,6 +6,7 @@ import { delimiter, dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { repoInfo } from '../src/git.js';
+import { probeRelayCanary } from '../src/relay-canary-probe.js';
 import { pendingRelayCanaryNotices } from '../src/relay-canary-health.js';
 import { startRelayCanaryWatch, RELAY_CANARY_INTERVAL_MS, runRelayCanary } from '../src/relay-canary-watch.js';
 import { relayClientFixture } from './relay-client-fixture.js';
@@ -205,4 +206,22 @@ test('the canary command binds machine opt-in to its linked ordinary seat [H5,H1
   const stopped = await box.cliAt(seat.root, 'relay', 'canary', 'run');
   assert.equal(stopped.code, 1);
   assert.equal(stopped.document.error.code, 'RELAY_CANARY_CONFIG');
+});
+
+
+test('a stalled real board route is bounded by the probe deadline [H5,H17]', { timeout: 60_000 }, async t => { // budget: real linked fixture plus a 250 ms transport deadline, with fixture cleanup.
+  const box = await relayClientFixture(t);
+  commitConfiguration(box);
+  await box.link();
+  const seat = await joinedCanarySeat(box);
+  box.stallApi();
+  const started = performance.now();
+  let result;
+  try { result = await withFixtureEnvironment(box.env, () => probeRelayCanary(seat.root, { agentId: seat.agentId, deadlineMs: 250 })); }
+  finally { box.stallApi(false); }
+  assert.equal(result.ok, false, 'an unanswered board route is never a healthy round trip');
+  assert.ok(['push', 'pull'].includes(result.step), JSON.stringify(result));
+  assert.ok(performance.now() - started < 5000, 'budget: the 250 ms probe deadline must drain below the normal five-second probe ceiling');
+  const healthy = await withFixtureEnvironment(box.env, () => probeRelayCanary(seat.root, { agentId: seat.agentId }));
+  assert.equal(healthy.ok, true, JSON.stringify(healthy));
 });

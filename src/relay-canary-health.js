@@ -34,10 +34,11 @@ function historyAt(file) {
 /** Format only observations this client made, with a real locally queued move count. */
 function projection(history, queued, now) {
   const monitor = history?.samples?.at(-1);
-  const client = history?.client?.sample;
+  const observed = history?.client?.sample;
+  const client = observed && Date.parse(observed.at) <= now ? observed : undefined;
   const last = history?.alertSince ? monitor : (!monitor || client && Date.parse(client.at) > Date.parse(monitor.at) ? client : monitor);
   const degradedSince = history?.alertSince ? history.degradedSince : last && last === client ? history?.client?.degradedSince : history?.degradedSince;
-  const stale = !last || now - Date.parse(last.at) > 120000;
+  const stale = !last || now < Date.parse(last.at) || now - Date.parse(last.at) > 120000;
   const status = !last || stale ? 'unknown' : degradedSince ? 'degraded' : 'healthy';
   const since = degradedSince ?? null;
   const time = since ? since.slice(11, 16) : '';
