@@ -11,6 +11,12 @@ export { HEALTH_CAP_ENGINE };
 /** The most stuck or resolved notices one health run shouts one by one (#940). */
 export const HEALTH_SHOUT_CAP = 10;
 
+/** Pending CPU deliveries require an engine that can preserve their durable queue [A6,H16]. */
+export function hasPendingCpuNotices(board) {
+  const last = board.db.prepare("SELECT event_detail FROM event WHERE event_kind = 'health-scan' ORDER BY event_id DESC LIMIT 1").get();
+  return Boolean(last && JSON.parse(last.event_detail).pendingCpu?.length);
+}
+
 /** Validate and retain only the fields needed to identify and explain a health finding. */
 export function normalizedHealthFindings(findings) {
   if (!Array.isArray(findings) || findings.length > 10_000) {

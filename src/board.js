@@ -244,6 +244,7 @@ import {
 import { RIGOR_NOTICE_ENGINE } from './rigor-source.js';
 import { RIGOR_AUTO_ENGINE } from './rigor-auto-engine.js';
 import { CPU_SENTINEL_ENGINE } from './cpu-sentinel-engine.js';
+import { hasPendingCpuNotices } from './health-receipts.js';
 import {
   deriveRigorCause,
   recordAutomaticRigorDrafts,
@@ -1703,7 +1704,7 @@ export function shout(board, message) {
 /** Record one current health snapshot atomically, notifying each new or resolved episode once [A6]. */
 export function recordHealthFindings(board, { agentId, observedRevision, findings }) {
   return atomic(board, () => {
-    const minimum = (Array.isArray(findings) && findings.some(finding => finding?.cause === 'AGENT_CPU')) ? CPU_SENTINEL_ENGINE : HEALTH_SENTINEL_ENGINE;
+    const minimum = hasPendingCpuNotices(board) || (Array.isArray(findings) && findings.some(finding => finding?.cause === 'AGENT_CPU')) ? CPU_SENTINEL_ENGINE : HEALTH_SENTINEL_ENGINE;
     if ((board.executionEngineVersion ?? ENGINE_VERSION) < minimum) {
       throw new Refused('ENGINE_VERSION', `sentinel receipts require engine ${minimum}; upgrade Pullboard before scanning`);
     }

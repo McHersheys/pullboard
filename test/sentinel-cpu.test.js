@@ -77,6 +77,13 @@ test('the sentinel names an agent process past 20 CPU minutes once [A6,H16]', as
   };
   cappedScan();
   assert.equal(notices().length - beforeCap, 5, 'sixth and later coordinator alerts wait rather than exceed the cap');
+  const pendingEvents = store.events(board);
+  board.executionEngineVersion = CPU_SENTINEL_ENGINE - 1;
+  assert.throws(() => store.recordHealthFindings(board, {
+    agentId: 'coordinator', observedRevision: pendingEvents.length, findings: [],
+  }), { code: 'ENGINE_VERSION' }, 'an older empty scan cannot erase pending CPU delivery');
+  assert.deepEqual(store.events(board), pendingEvents, 'refusal preserves the complete delivery queue and history');
+  delete board.executionEngineVersion;
   store.closeBoard(board); board = store.openBoard(file);
   cappedScan(); cappedScan();
   for (const pid of pids) assert.equal(notices().filter(row => row.shout_text.includes(`pid ${pid} `)).length, 1, `PID ${pid} is named exactly once after restart`);
