@@ -1,6 +1,7 @@
 import { foreignDependencyStates } from './cross-repo-dependencies.js';
 import {
   dependencyValues,
+  hasForeignDependencies,
   localDependencyIds,
 } from './item-dependencies.js';
 /** The local API v1: the CLI's moves, persistent board identities and live events (A2). */
@@ -452,11 +453,12 @@ function buildLocalBoardState(root, boardId, board, codeIsMain, { previous = nul
   try {
     const sequence = board.db.prepare('SELECT COALESCE(MAX(event_id), 0) AS id FROM event').get().id;
     let rebuildAll = fullItemRebuild || (previous && previous.sequence > sequence);
-    const eventRows = rebuildAll || !previous ? [] : board.db.prepare('SELECT event_id, item_id FROM event WHERE event_id > ? ORDER BY event_id').all(afterSequence);
+    const eventRows = rebuildAll || !previous ? [] : board.db.prepare('SELECT event_id, item_id, event_kind FROM event WHERE event_id > ? ORDER BY event_id').all(afterSequence);
     if (!rebuildAll && previous && eventRows.length !== sequence - previous.sequence) rebuildAll = true;
     const dirtyIds = new Set(rebuildAll ? [] : [...changedLeases]);
     for (const event of eventRows) if (event.item_id !== null) dirtyIds.add(event.item_id);
 
+    const foreignChanged = eventRows.some(event => event.event_kind === 'board_link_state' || event.event_kind === 'board_link');
     const currentItems = store.listItems(board, { all: true });
     const currentById = new Map(currentItems.map((item) => [item.item_id, item]));
     const currentDependencies = new Map(currentItems.map((item) => [item.item_id, dependencyIds(item)]));
@@ -466,6 +468,8 @@ function buildLocalBoardState(root, boardId, board, codeIsMain, { previous = nul
     }
     for (const item of currentItems) {
       const prior = previous?.itemMeta.get(item.item_id);
+      // E32 announcements and consent changes carry no local item_id, but change foreign blockers.
+      if (foreignChanged && hasForeignDependencies(item)) dirtyIds.add(item.item_id);
       if (rebuildAll || !previous?.items.has(item.item_id) || !prior || prior.raw !== JSON.stringify(item)) dirtyIds.add(item.item_id);
       if (prior && prior.milestone !== (milestoneNames.get(item.item_id) ?? null)) dirtyIds.add(item.item_id);
     }
