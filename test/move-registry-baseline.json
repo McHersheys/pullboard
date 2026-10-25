@@ -65,7 +65,9 @@
     "recordPublishFinding",
     "decideSpecRevisions",
     "proposePersonMove",
-    "setPersonSigning"
+    "setPersonSigning",
+    "actOnActivity",
+    "recordActivityDelivery"
   ],
   "itemIdFirstArgument": [
     "signBar",
@@ -652,6 +654,22 @@
       null
     ],
     "setPersonSigning": [
+      null,
+      "first",
+      null,
+      null,
+      null,
+      null
+    ],
+    "actOnActivity": [
+      null,
+      "first",
+      null,
+      null,
+      null,
+      null
+    ],
+    "recordActivityDelivery": [
       null,
       "first",
       null,
@@ -6999,7 +7017,13 @@
     "RUNNER_REQUIRED_FOR_ZERO_CAPACITY": "restore positive gateSlots and browserSlots with pullboard settings before removing the last registered runner",
     "BAD_NEWS": "send news from the coordinator or person to all, without item, decision, request or answer",
     "FACT_INDEX_NOT_READY": "have the owning main checkout open this board once, then retry the original fact operation",
-    "SPEC_REVISION": "refresh Needs you and decide the exact pending proposal"
+    "SPEC_REVISION": "refresh Needs you and decide the exact pending proposal",
+    "MILESTONE_PLACE": "pin, sink or lift: pullboard milestone pin <name> <ids> --reason \"<why>\"",
+    "MILESTONE_REASON": "say why the item moves: pullboard milestone sink <name> <ids> --reason \"<why>\"",
+    "SEAT_ADDRESS_BOARD": "open a linked checkout of the addressed board with your own grant, then run pullboard shout <address> <text>",
+    "BAD_ACTIVITY_RECEIPT": "read your own inbox again and use its exact interrupt ids",
+    "ACTIVITY_NOT_DELIVERED": "read your own inbox before marking its interrupt acted on",
+    "STALE_ACTIVITY_RECEIPT": "read inbox again; the claim changed before delivery was recorded"
   },
   "replay": {
     "initial": {
@@ -8155,6 +8179,7 @@
     "SEAL_FORMAT": "fetch the board again: pullboard relay",
     "SEAL_KEY": "pair this device again: pullboard relay on --all",
     "SEAL_VERSION": "upgrade Pullboard on this device: npm install -g pullboard@latest",
+    "SEAT_ADDRESS_BOARD": "open a linked checkout of the addressed board with your own grant, then run pullboard shout <address> <text>",
     "SELF_SHOUT": "name another agent, a lane or all: pullboard shout all \"<text>\"",
     "SELF_VERIFY": "ask a different agent to verify it; from main create its worktree with pullboard worktree <lane> --model \"<model name>\"",
     "SESSION_LEDGER": "make the agent-session ledger named in the message writable by this user, then run the command again",

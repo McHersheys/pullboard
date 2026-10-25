@@ -719,8 +719,8 @@ globalThis.fetch = function tracedFetch(input, init) {
   const keyFile = join(env.PULLBOARD_HOME, 'relay-keys', id + '.key');
 
   /** Start a saved real relay link without exposing the pairing fragment. */
-  async function link() {
-    const result = await cli('relay', 'on', '--url', origin);
+  async function link(name) {
+    const result = await cli('relay', 'on', '--url', origin, ...(name === undefined ? [] : ['--name', name]));
     assert.equal(result.code, 0, 'real device sign-in links the board');
     privateKeys.add(readFileSync(keyFile, 'utf8').trim());
     return result;
@@ -750,7 +750,7 @@ globalThis.fetch = function tracedFetch(input, init) {
     return (await run('relay', 'off')).code;
   }
   /** Clone the same committed project into a separate repository/home, then join through a printed code. */
-  async function otherDeviceJoin(code) {
+  async function otherDeviceJoin(code, name) {
     const bare = join(scratch, 'project.git');
     const otherRoot = join(scratch, 'paired-clone');
     const otherHome = join(scratch, 'paired-home');
@@ -763,7 +763,7 @@ globalThis.fetch = function tracedFetch(input, init) {
     const initEnv = { ...otherEnv };
     delete initEnv.PULLBOARD_MODEL; // Pairing imports the source coordinator's declaration.
     assert.equal((await childResult(otherRoot, initEnv, [CLI, 'init', '--json'])).code, 0, 'the cloned project initializes its private local board');
-    const joined = await run('relay', 'join', code, '--url', origin);
+    const joined = await run('relay', 'join', code, '--url', origin, ...(name === undefined ? [] : ['--name', name]));
     const document = joined.document;
     if (joined.code !== 0) throw new Error('real clone did not join the one-use pairing code');
     const exported = await run('export');
@@ -779,13 +779,15 @@ globalThis.fetch = function tracedFetch(input, init) {
       return childResult(otherRoot, envKey, [CLI, ...args, '--json']);
     }
     return { joined: document, machine: link.machine, exported: exported.document, cli: run, root: otherRoot, env: otherEnv, syncWithEnvironmentKey,
+      /** Run a second-device worktree with that device's own keys and bounded asynchronous child. */
+      cliAt(cwd, ...args) { return childResult(cwd, otherEnv, [CLI, ...args, '--json']); },
       /** Check that the paired clone still has no persisted board-key file. */
       keyFileExists() { return existsSync(otherKeyFile); } };
   }
   /** Link another independently initialized synthetic board through the same real person account. */
-  async function additionalBoard(title) {
+  async function additionalBoard(title, { sharedHome = false } = {}) {
     const nextRoot = mkdtempSync(join(scratch, 'additional-board-'));
-    const nextHome = mkdtempSync(join(scratch, 'additional-home-'));
+    const nextHome = sharedHome ? home : mkdtempSync(join(scratch, 'additional-home-'));
     const nextEnv = { ...env, HOME: nextHome, PULLBOARD_HOME: join(nextHome, '.pullboard') };
     /** Run this separate board without retaining credentials in diagnostic output. */
     const run = (...args) => childResult(nextRoot, nextEnv, [CLI, ...args, '--json']);
@@ -797,7 +799,9 @@ globalThis.fetch = function tracedFetch(input, init) {
     const state = JSON.parse(readFileSync(join(nextRoot, '.git', 'pullboard', 'relay.json'), 'utf8'));
     const encoded = readFileSync(join(nextEnv.PULLBOARD_HOME, 'relay-keys', state.board + '.key'), 'utf8').trim();
     privateKeys.add(encoded);
-    return { id: state.board, encoded, cli: run };
+    /** Run native fixture actions in this board's own home; no caller changes the parent process environment. */
+    async function script(source) { return childResult(nextRoot, nextEnv, ['--input-type=module', '-e', source]); }
+    return { id: state.board, encoded, cli: run, script };
   }
   /** Run multiple production commands in one process, emitting only safe counters. */
   async function script(source) {
