@@ -19,6 +19,7 @@ function actor(move) { return move.args[1]?.agentId ?? null; }
 export default Object.freeze({ operation: "editMilestoneItems", order: 31, engine: 1,
   itemIdFirstArgument: false, minimumEngine, actor,
   nextSteps: Object.freeze({
+  "MILESTONE_LIMIT": "remove or swap an unstarted item, or edit the milestone with --limit <n>|none",
   "MILESTONE_ITEMS": "list item ids once each: pullboard milestone add <name> --items 1,2",
   "NO_MILESTONE": "name a milestone from pullboard roadmap"
 }) });

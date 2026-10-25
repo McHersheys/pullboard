@@ -21,6 +21,7 @@ function actor(move) { return move.args[1]?.agentId ?? null; }
 export default Object.freeze({ operation: "editMilestone", order: 34, engine: 1,
   itemIdFirstArgument: false, minimumEngine, actor,
   nextSteps: Object.freeze({
+  "MILESTONE_LIMIT": "remove or swap an unstarted item, or edit the milestone with --limit <n>|none",
   "ENGINE_VERSION": "upgrade Pullboard: npm install -g pullboard@latest",
   "MILESTONE_EDIT": "pass --name, --note or --target: pullboard milestone edit <name> --note \"<text>\"",
   "MILESTONE_EXISTS": "pick another name, or edit the existing one: pullboard milestone edit <name>",
