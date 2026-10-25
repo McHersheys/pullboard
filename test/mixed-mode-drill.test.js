@@ -126,7 +126,8 @@ test('a local developer, a runner developer and a pull-request developer share o
   assert.notEqual(refused.code, 0);
   assert.equal(JSON.parse(refused.out).error.code, 'OUTSIDE_SANDBOX_REQUIRED');
   const stillUnverified = await cli(box, box.repo, box.env, 'show', String(outside.item_id), '--json');
-  assert.equal(JSON.parse(stillUnverified.out).item.item_status, 'submitted');
+  assert.equal(stillUnverified.code, 0, stillUnverified.out + stillUnverified.err);
+  assert.equal(JSON.parse(stillUnverified.out).item_status, 'submitted');
   for (const root of [box.repo, box.web, box.runner, box.outside]) assert.deepEqual(box.contract(root), box.baseline,
     'every developer sees the same committed spec, doctrine configuration and tracked gate');
   assert.equal(provider.requests.some(request => request.path.endsWith('/merge') && request.method !== 'GET'), false);
