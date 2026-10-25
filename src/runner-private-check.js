@@ -1,7 +1,6 @@
 /** Controller-side private-check artifact custody; worker framing never comes from command text [C7,V4]. */
 import { createHash } from 'node:crypto';
-import { closeSync, mkdtempSync, openSync, readSync, writeSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { closeSync, mkdirSync, mkdtempSync, openSync, readSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { runOnRunner } from './runners.js';
 import { privateCheckEnvelope } from './runner-private-mode.js';
@@ -45,7 +44,10 @@ function phaseCopy(raw, phase, path) {
 
 /** Run only under an actual runner lease, preserving raw evidence even when formatting or transport fails. */
 export function runnerPrivateCheck(root, item, command, policy, lease, guard, waitMs, format) {
-  const directory = mkdtempSync(join(tmpdir(), 'pullboard-private-runner-'));
+  const common = policyGit(root, ['rev-parse', '--path-format=absolute', '--git-common-dir']).trim();
+  const artifactRoot = join(common, 'pullboard', 'check-output');
+  mkdirSync(artifactRoot, { recursive: true, mode: 0o700 });
+  const directory = mkdtempSync(join(artifactRoot, 'private-runner-'));
   const ref = trunkRef(root);
   const mode = privateCheckEnvelope({ kind: 'private-check', version: 1, install: policy.config.check.install,
     check: command, timeoutMs: policy.config.check.timeoutMs, policyCommit: policy.commit,
@@ -75,7 +77,7 @@ export function runnerPrivateCheck(root, item, command, policy, lease, guard, wa
     }
   } catch { captureProblem = true; }
   const profile = checkLogPath ? timingFromLog(checkLogPath, timingRunner(command)) : { files: [], tests: [] };
-  const formatted = format(captureProblem ? 'unverified' : result.privateCheck.state, captureProblem ? 'private-check output could not be authenticated or saved' : result.privateCheck.stage, installCapture, checkCapture,
+  const formatted = format(captureProblem ? 'unverified' : result.privateCheck.state, captureProblem ? `private-check output could not be authenticated or saved; raw output retained at ${result.rawOutputPath} sha256 ${result.rawOutputSha256}` : result.privateCheck.stage, installCapture, checkCapture,
     { root, item, commandRoot: result.executionRoot, installLogPath, checkLogPath, waitMs,
       timingProfile: { ...profile, wallMs: Date.now() - started, environment: result.environment,
         executionRunner: result.executionRunner, executionSource: result.executionSource, executionMain: result.executionMain,

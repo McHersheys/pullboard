@@ -90,10 +90,15 @@ function beginPhaseCleanup() {
 
 /** A fully verified successful intermediate drain is the only boundary allowed to clear its own timer. */
 function clearPhaseCleanup() {
-  if (transportLost || cleanupTimedOut || Number.isFinite(cleanupDeadline) || ownedChildren.size) return;
+  if (Date.now() >= Math.min(cleanupDeadline, phaseCleanupDeadline)) {
+    reportCleanupTimeout();
+    return false;
+  }
+  if (transportLost || cleanupTimedOut || Number.isFinite(cleanupDeadline) || ownedChildren.size) return false;
   clearTimeout(phaseCleanupTimer);
   phaseCleanupTimer = null;
   phaseCleanupDeadline = Infinity;
+  return true;
 }
 
 /** Report an unresolved cleanup once so the controller can fail without retrying the command. */
@@ -780,7 +785,7 @@ async function runCommand(spec, root, env, sink, tracker, { continuation = false
   const code = Number.isInteger(result.code) ? result.code : 1;
   if (continuation && code === 0 && !result.signal && !timedOut && !outputError && !sink.pipeFailed) {
     await tracker.verifyAfterGroups();
-    clearPhaseCleanup();
+    if (!clearPhaseCleanup()) throw new Error('intermediate install cleanup could not be verified within its deadline');
   }
   const denial = code === 0 && !result.signal ? null : denials.end();
   let pipeStatuses = pipes ? readPipes(split, pipes, 8 * 1024 ** 2) : null;
