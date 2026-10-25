@@ -959,7 +959,7 @@ export async function takeResource(options) {
         let runnerDeadline;
         if (runnerDeadlinePassed) {
           const state = snapshot(db, name, order, now);
-          runnerDeadline = { at: runnerDeadlineAt, runners: runnerWaitReasons(db, runners, { ...waiter, timing: Number(timing) }),
+          runnerDeadline = { at: runnerDeadlineAt, runners: runnerWaitReasons(db, runners, { ...waiter, timing: Number(timing) }, unavailable),
             branch: localWaitBranch({ capacity: limit, browserCapacity: options.browserCapacityProvider?.() ?? 1,
               runnerOnly: false, browser, timing, memoryHeld: memory?.held === true, holders: state.holders }) };
           db.prepare('UPDATE waiter SET runner_wait_branch = ?, runner_wait_reasons = ? WHERE token = ?')

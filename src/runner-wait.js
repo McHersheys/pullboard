@@ -16,15 +16,15 @@ export function validateRunnerWaitMs(value) {
 }
 
 /** Explain each registered runner from the same local facts used by admission; no network probe. */
-export function runnerWaitReasons(db, runners, waiter) {
+export function runnerWaitReasons(db, runners, waiter, unavailable) {
   return runners.map(runner => {
     const recorded = db.prepare('SELECT detail FROM runner_unavailable WHERE host = ?').get(runner.host);
     const observed = db.prepare('SELECT gui FROM runner_gui WHERE host = ?').get(runner.host);
     const gui = observed ? observed.gui === 1 : runner.gui === true;
     const holders = db.prepare('SELECT browser, timing FROM holder WHERE name = ?').all(`runner:${runner.host}`);
     let reason = 'available';
-    if (recorded?.detail === 'TRANSPORT_LOST') reason = 'unreachable (transport lost)';
-    else if (recorded || db.prepare('SELECT host FROM runner_draining WHERE host = ?').get(runner.host)) reason = 'unavailable (cleanup or draining)';
+    if (unavailable.has(runner.host) && recorded?.detail === 'TRANSPORT_LOST') reason = 'unreachable (transport lost)';
+    else if (unavailable.has(runner.host)) reason = 'unavailable (cleanup or draining)';
     else if (waiter.gui === 1 && !gui) reason = 'unavailable (GUI session required)';
     else if (waiter.browser === 1 && runner.browser < 1) reason = 'unavailable (browser capacity required)';
     else if (holders.length >= runner.slots || holders.some(holder => holder.timing === 1)

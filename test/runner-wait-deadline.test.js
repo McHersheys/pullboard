@@ -149,10 +149,12 @@ test('the public runner deadline setting has a five-minute default and rejects u
   const box = e2e.project('true');
   const initial = cli(box.repo, box.env, 'settings', '--json');
   assert.equal(initial.status, 0, fixtureResultContext(initial));
-  assert.equal(JSON.parse(initial.stdout).settings.gate.runnerWaitMs, 300_000);
-  const changed = cli(box.repo, box.env, 'settings', 'gate.runnerWaitMs', '1500', '--json');
+  const approvedDefault = 300_000; // budget: the approved five-minute default in milliseconds.
+  assert.equal(JSON.parse(initial.stdout).settings.gate.runnerWaitMs, approvedDefault);
+  const configuredDuration = 1500; // budget: a private configurable duration whose exact value must persist.
+  const changed = cli(box.repo, box.env, 'settings', 'gate.runnerWaitMs', String(configuredDuration), '--json');
   assert.equal(changed.status, 0, fixtureResultContext(changed));
-  assert.equal(JSON.parse(changed.stdout).settings.gate.runnerWaitMs, 1500);
+  assert.equal(JSON.parse(changed.stdout).settings.gate.runnerWaitMs, configuredDuration);
   const file = join(box.env.PULLBOARD_MACHINE_HOME, 'settings.json');
   const before = readFileSync(file, 'utf8');
   for (const value of ['0', '-1', '1.5', '2147483648', 'Infinity']) {
@@ -191,6 +193,44 @@ test('an executing runner command keeps its test budget after the admission dead
     throw error;
   } finally {
     held?.release();
+    if (pending) await pending.catch(() => {});
+    for (const [index, key] of ['PULLBOARD_HOME', 'PULLBOARD_MACHINE_HOME'].entries()) {
+      if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index];
+    }
+  }
+});
+
+test('a busy runner is named at the deadline and fallback waits for a real local slot [C7,Q1,Q2]', async () => {
+  const box = fixture({ dropFirst: false });
+  const previous = [process.env.PULLBOARD_HOME, process.env.PULLBOARD_MACHINE_HOME];
+  process.env.PULLBOARD_HOME = box.env.PULLBOARD_HOME;
+  process.env.PULLBOARD_MACHINE_HOME = box.env.PULLBOARD_MACHINE_HOME;
+  let held;
+  let remote;
+  let pending;
+  try {
+    held = await takeResource({ name: 'gate', scope: 'machine', root: box.repo, capacity: 1, agent: 'busy-local-holder' });
+    const settings = JSON.parse(readFileSync(box.settingsFile, 'utf8'));
+    remote = await takeResource({ name: 'gate', scope: 'machine', root: box.repo, capacity: 1,
+      browser: true, browserCapacityProvider: () => 1, remote: true,
+      runnerProvider: () => settings.runners, agent: 'real-remote-reservation' });
+    assert.equal(remote.runner.host, HOST + '-drop');
+    pending = runThroughGate(box.repo, box.env, 'node -e "console.log(\'BUSY_FALLBACK_LOCAL\')"', { item: 'busy-case', requests: box.requests });
+    const queue = () => listResources({ scope: 'machine' }).find(resource => resource.name === 'gate');
+    await observe(() => queue()?.line.some(row => row.item === 'busy-case' && row.runnerDeadline), 'busy-runner deadline with both real capacities held');
+    const row = queue().line.find(waiter => waiter.item === 'busy-case');
+    assert.match(row.runnerDeadline.branch, /local gate slots busy/u);
+    assert.equal(row.runnerDeadline.runners[0].reason, 'busy');
+    assert.equal(existsSync(box.starts), false, 'a busy reservation is never oversubscribed');
+    held.release(); held = null;
+    const result = await pending; pending = null;
+    assert.equal(result.status, 0, fixtureResultContext(result));
+    assert.match(result.stdout, /BUSY_FALLBACK_LOCAL/u);
+    assert.equal(gateResult(result.stdout).runner, undefined);
+    assert.match(result.stderr, new RegExp(HOST + '-drop: busy', 'u'));
+    assert.equal(existsSync(box.starts), false, 'fallback does not retry the still-held remote reservation');
+  } finally {
+    held?.release(); remote?.release();
     if (pending) await pending.catch(() => {});
     for (const [index, key] of ['PULLBOARD_HOME', 'PULLBOARD_MACHINE_HOME'].entries()) {
       if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index];
