@@ -9,6 +9,7 @@ import { exportBoard, importBoard } from '../src/exchange.js';
 import { landingFailures, landingSubject } from '../src/land.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { startFixtureChild, runFixtureChild } from './fixture-child.js';
+import { waitForFixtureProgress } from './fixture-progress.js';
 import { assertNoRemoteLanding } from './land-no-remote-fixture.js';
 import { MARKER_NOT_YET, readMarker } from './land-marker-fixture.js';
 import { assertLandingStopIdentity } from './land-stop-fixture.js';
@@ -1262,13 +1263,21 @@ test('land bisect adoption retains completed gates, isolated diagnostics and ori
   writeFileSync(box.trace, '');
   writeFileSync(box.hold, '3');
   const child = startFixtureChild(process.execPath, [BIN, 'land', '--json'], { cwd: box.repo, env: box.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
-  child.stdout.resume(); child.stderr.resume();
+  let outputBytes = 0;
+  child.stdout.on('data', part => { outputBytes += Buffer.byteLength(part); });
+  child.stderr.on('data', part => { outputBytes += Buffer.byteLength(part); });
   const closed = new Promise((resolveClose) => child.once('close', (status, signal) => resolveClose({ status, signal })));
   t.after(() => {
     writeFileSync(box.release, 'release');
     if (child.exitCode === null && child.signalCode === null) { try { process.kill(-child.pid, 'SIGKILL'); } catch {} }
   });
-  await waitFor(() => existsSync(box.entered), 'third full gate inside bisection', 20000); // budget: hang ceiling for the third private bisection gate entry handshake; no throughput claim.
+  await waitForFixtureProgress({
+    child,
+    ready: () => existsSync(box.entered),
+    progress: () => outputBytes + [box.calls, box.trace].reduce((bytes, file) =>
+      bytes + (existsSync(file) ? readFileSync(file).length : 0), 0),
+    description: 'third full gate inside bisection',
+  });
   const interrupted = json(box, box.repo, 'resume').landingBatches.at(-1);
   assert.equal(interrupted.items.length, 2, 'the current half differs from the original four candidates');
   assert.equal(interrupted.gateResults.length, 2);
