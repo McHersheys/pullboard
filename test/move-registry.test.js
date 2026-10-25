@@ -21,6 +21,7 @@ import { importsIn } from '../src/module-imports.js';
 import { readdirSync } from 'node:fs';
 import { minimumMoveEngine } from '../src/move-registry.js';
 import { SPEC_REVISION_ENGINE } from '../src/spec-revision-engine.js';
+import { ENGINE_VERSION } from '../src/machine.js';
 
 const SNAPSHOT = JSON.parse(readFileSync(new URL('./move-registry-baseline.json', import.meta.url), 'utf8'));
 const CONSUMERS = ['src/engine.js', 'src/relay-sender.js', 'src/next-step-words.js'];
@@ -64,7 +65,12 @@ test('today\'s move order, actors, recovery text and recorded SQLite prefix are 
     assert.deepEqual(applyEngineMove(board, move, options), outcome, move.operation);
     assert.deepEqual(applyEngineMove(board, move, options), outcome, 'same-position retry returns its immutable receipt');
   }
-  assert.equal(JSON.stringify(exportBoard(board)), JSON.stringify(SNAPSHOT.replay.acceptedExpected), 'items, events, receipts and replay cursor retain accepted-main bytes for the exact historical moves');
+  const expected = structuredClone(SNAPSHOT.replay.acceptedExpected);
+  const writer = expected.tables.board_meta.find(row => row.meta_key === 'relay_engine_version');
+  assert.equal(writer.meta_value, '107', 'the historical golden retains its original writer engine');
+  // Replay always records the current writer version, independently of each historical move's engine.
+  writer.meta_value = String(ENGINE_VERSION);
+  assert.equal(JSON.stringify(exportBoard(board)), JSON.stringify(expected), 'items, events, receipts and replay cursor retain accepted-main bytes, with the current writer engine');
 });
 
 test('two new board moves declared in two files need no edit to engine.js, relay-sender.js or next-step-words.js [C7,V4,H3,H16]', t => {
