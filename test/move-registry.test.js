@@ -62,7 +62,7 @@ test('today\'s move order, actors, recovery text and recorded SQLite prefix are 
   assert.equal(JSON.stringify(exportBoard(board)), JSON.stringify(SNAPSHOT.replay.acceptedExpected), 'items, events, receipts and replay cursor retain accepted-main bytes for the exact historical moves');
 });
 
-test('two new board moves declared in two files need no edit to engine.js, relay-sender.js or next-step-words.js [C7,V4,H3,H16]', t => {
+test('move import closure: two new board moves declared in two files need no edit to engine.js, relay-sender.js or next-step-words.js [C7,V4,H3,H16]', t => {
   const directory = mkdtempSync(join(tmpdir(), 'pullboard-registry-discovery-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const root = join(directory, 'repo');
