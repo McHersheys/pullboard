@@ -30,7 +30,7 @@ export async function deletedCopyRelinks(t) {
   });
   assert.equal(stale.status, 410, 'deleted credentials remain tombstoned and cannot recreate their board');
   const linked = await box.cli('relay', 'on', '--url', box.origin);
-  assert.equal(linked.code, 0, 'the existing genuine sign-in flow grants the replacement link');
+  assert.equal(linked.code, 0, 'the existing genuine sign-in flow grants the replacement link: ' + (linked.document?.error?.code ?? 'no refusal code'));
   const fresh = JSON.parse(readFileSync(box.linkFile, 'utf8'));
   assert.notEqual(fresh.board, old.board, 'the deleted remote epoch is replaced rather than resurrected');
   assert.notEqual(fresh.token, old.token, 'recovery obtains newly authorized machine credentials');

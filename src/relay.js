@@ -1,3 +1,4 @@
+import { relinkReplacement } from './relay-relink.js';
 import { relayExclusion } from './relay-exclusion-state.js';
 import { excludeRelayByPerson } from './relay-exclusion-state.js';
 import { clearRelayExclusion } from './relay-exclusion-state.js';
@@ -1583,7 +1584,8 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
     if (state && (state.url !== url || state.repository !== repository)) throw new Refused('RELAY_LINKED', 'this board is linked to another relay or repository; run relay off before changing its link');
     const key = state ? readBoardKey(state.board) : await generateBoardKey();
     const nextBoard = state?.board ?? plannedRelayBoard(root, localRecords(root, store.boardId));
-    const relink = state ? null : relayRelink(root), replacement = state?.replaces ?? relink?.previous;
+    const relink = state ? null : relayRelink(root);
+    const replacement = relinkReplacement(state, relink, deletedLink(root)?.board);
     const intent = remoteShell ? { board: nextBoard, repository,
       host: hostname(), boardName: basename(root), ...(replacement ? { replaces: replacement } : {}) } : undefined;
     const signed = remoteShell ? await deviceSignIn(url, io, { intent }) : reusableCredential ?? reusableSession ?? await deviceSignIn(url, io);
@@ -1603,7 +1605,7 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
         cursor: snapshot.document.tables.event.at(-1)?.event_id ?? 0, baselineCursor: snapshot.document.tables.event.at(-1)?.event_id ?? 0,
         baselineAccepted: false, linkPending: true };
       state.snapshot = { sequence: 0, sealed: await sealedRecord(key, snapshot.document, state, 'snapshot', 0) };
-      if (relink) { state.previousBoardNotice = relink.previous; state.replaces = relink.previous; }
+      if (relink && replacement) { state.previousBoardNotice = relink.previous; state.replaces = replacement; }
     }
     const account = signed.account ?? signed.user?.id;
     // Persist the exact sealed snapshot and a recoverable link intent before making the remote link.
