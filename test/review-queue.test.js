@@ -410,3 +410,40 @@ test('automatic conflict returns bind native evidence and replay without caller 
     error => error.code === 'NOT_CONFLICTING', 'a clean submitted head cannot acquire computed conflict evidence');
   assert.equal(store.getItem(source, clean).item_status, 'submitted');
 });
+
+
+/** A cached immutable merge is not permission to replay through a locally overridden object graph. */
+test('automatic conflict returns reject local history overrides before replay [V4,H16]', t => {
+  const { box, conflicted, reviewer } = staleHeadFixture(t);
+  const source = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
+  const copies = [source];
+  t.after(() => copies.forEach(board => store.closeBoard(board)));
+  const actor = store.agentAt(source, reviewer).agent_id;
+  const snapshot = exportBoard(source);
+  const move = prepareEngineMove(source, 'reopen', [conflicted, { agentId: actor, automaticConflict: true }]);
+  const evidence = move.args[1].computedConflict;
+  const receipt = { sequence: 1, at: new Date().toISOString() };
+  const results = [];
+  for (const kind of ['grafts', 'replace']) {
+    const board = store.openBoard(join(box.dir, `history-${kind}.sqlite`));
+    copies.push(board); importBoard(board, snapshot);
+    // This positive preparation also warms the normal per-board immutable-object verification cache.
+    assert.ok(prepareEngineMove(board, 'reopen', [conflicted, { agentId: actor, computedConflict: evidence }]));
+    const graft = join(box.repo, '.git', 'info', 'grafts');
+    if (kind === 'grafts') writeFileSync(graft, evidence.head + '\n');
+    else box.git(box.repo, 'replace', evidence.head, evidence.trunk);
+    try {
+      assert.throws(() => applyEngineMove(board, move, receipt),
+        error => error.code === (kind === 'grafts' ? 'GIT_GRAFTS' : 'GIT_REPLACE_REFS'),
+        'local ancestry overrides refuse by name even after a prior clean verification');
+      assert.equal(appliedSequence(board), 0, 'history refusal does not consume the replay cursor');
+      assert.equal(store.getItem(board, conflicted).item_status, 'submitted');
+    } finally {
+      if (kind === 'grafts') rmSync(graft);
+      else box.git(box.repo, 'replace', '-d', evidence.head);
+    }
+    results.push(applyEngineMove(board, move, receipt));
+    assert.equal(results.at(-1).error, undefined, 'the same position succeeds once the private repository is clean');
+  }
+  assert.deepEqual(results[0], results[1], 'cleaned replicas apply the same actual recorded conflict');
+});

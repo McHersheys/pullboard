@@ -1162,3 +1162,59 @@ test('an agent grant narrows at claim but any joined seat can append attributed 
   finding(2, actor, expired, 'An expired build claim cannot block a finding');
   finding(3, actor, expired, 'No review reservation is required for a finding');
 });
+
+
+/** The activation boundary is an ordered engine prefix, not a client opening the database. */
+test('an agent grant narrows at claim after the recorded engine high-water mark [E21,H16]', async t => {
+  const { AGENT_GRANT_ENGINE } = await import('../src/agent-grant-engine.js');
+  const box = helpers.project();
+  const directory = join(box.dir, 'actual-pre-grant-writer');
+  unpackRelease('e4b7c30d674cde73803f8e8cb3f53fb2f9f62621', directory);
+  const oldStore = await import(pathToFileURL(join(directory, 'src/board.js')).href);
+  const oldEngine = await import(pathToFileURL(join(directory, 'src/engine.js')).href);
+  const oldExchange = await import(pathToFileURL(join(directory, 'src/exchange.js')).href);
+  const old = oldStore.openBoard(':memory:');
+  const replicas = [store.openBoard(':memory:'), store.openBoard(':memory:')];
+  t.after(() => { oldStore.closeBoard(old); replicas.forEach(board => store.closeBoard(board)); });
+  let sequence = 0;
+  const at = new Date().toISOString();
+  /** The accepted old writer records actual legacy move bytes and outcomes before activation. */
+  const recordOld = (operation, args) => {
+    const move = oldEngine.prepareEngineMove(old, operation, args);
+    const receipt = { sequence: ++sequence, at };
+    const outcome = oldEngine.applyEngineMove(old, move, receipt);
+    assert.equal(outcome.error, undefined, JSON.stringify(outcome));
+    return { move, receipt, outcome };
+  };
+  recordOld('register', [{ lane: 'coordinator', path: box.repo }]);
+  const actor = recordOld('register', [{ lane: 'web', path: box.web }]).outcome.result;
+  recordOld('addItem', [{ by: 'coordinator', lane: 'web', title: 'Legacy unclaimed work', criterion: 'Keep old history.' }]);
+  const acknowledged = recordOld('appendFact', [1, { agentId: actor, kind: 'note', text: 'Recorded before activation.' }]);
+  const snapshot = oldExchange.exportBoard(old);
+  assert.ok(snapshot.tables.event.filter(event => ['join', 'claim', 'renew'].includes(event.event_kind))
+    .every(event => JSON.parse(event.event_detail).grantEngine === undefined), 'the old writer emits no future marker');
+  const frozen = JSON.stringify({ title: 'Legacy unclaimed work', criterion: 'Keep old history.', check: '', rows: [] });
+  const staleClaim = oldEngine.prepareEngineMove(old, 'claim', [1, { agentId: actor, lane: 'web', leaseMs: 60_000,
+    freeze: () => ({ text: frozen, digest: createHash('sha256').update(frozen).digest('hex') }) }]);
+  const staleAdd = oldEngine.prepareEngineMove(old, 'addItem', [{ by: actor, lane: 'web', title: 'Fresh old-engine item', criterion: 'Must not bypass activation.' }]);
+  assert.ok(staleClaim.engine < AGENT_GRANT_ENGINE);
+  for (const board of replicas) importBoard(board, snapshot);
+  const activation = prepareEngineMove(replicas[0], 'shout', [{ from: 'coordinator', to: actor, text: 'The modern engine is now recorded.', lanes: ['web'] }]);
+  assert.ok(activation.engine >= AGENT_GRANT_ENGINE);
+  const activationReceipt = { sequence: sequence + 1, at };
+  const activated = replicas.map(board => applyEngineMove(board, activation, activationReceipt));
+  assert.deepEqual(activated[0], activated[1]);
+  assert.equal(activated[0].error, undefined);
+  for (const board of replicas) {
+    assert.deepEqual(applyEngineMove(board, acknowledged.move, acknowledged.receipt), acknowledged.outcome,
+      'the acknowledged pre-activation receipt replays byte-for-byte after activation');
+    const before = appliedSequence(board);
+    for (const move of [staleClaim, staleAdd]) {
+      assert.throws(() => applyEngineMove(board, move, { sequence: before + 1, at }),
+        error => error.code === 'RELAY_MOVE' && error.message.includes(String(AGENT_GRANT_ENGINE)),
+        'a newly ordered old-engine move cannot use wholly unmarked legacy seats or targets');
+      assert.equal(appliedSequence(board), before, 'a version refusal leaves the ordered position retryable');
+    }
+    assert.equal(store.getItem(board, 1).item_status, 'open');
+  }
+});
