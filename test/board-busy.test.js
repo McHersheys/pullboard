@@ -4,7 +4,11 @@ import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { join, resolve } from 'node:path';
-import { writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { boardWriteHolderText } from '../src/board-write-lock.js';
 import { exportBoard } from '../src/exchange.js';
 import { createE2eHelpers } from './e2e-helpers.js';
@@ -261,6 +265,18 @@ test('a real CLI writer labels its long transaction without changing JSON or nat
 
 test('opening an older board names and logs its genuine index-building write [C7,P4,B2]', async (t) => {
   const box = e2e.project();
+  // Both the running source and the command need a genuine primary checkout to migrate.
+  for (const name of ['bin', 'src', 'skills', 'package.json', 'CHANGELOG.md']) {
+    cpSync(resolve(import.meta.dirname, '..', name), join(box.repo, name), { recursive: true });
+  }
+  box.git(box.repo, 'add', 'bin', 'src', 'skills', 'package.json', 'CHANGELOG.md');
+  box.git(box.repo, 'commit', '-q', '-m', 'chore: install private primary source [G1]');
+  const privateBin = join(box.repo, 'bin', 'pullboard.js');
+  assert.equal(box.git(box.repo, 'rev-parse', '--path-format=absolute', '--git-dir'),
+    box.git(box.repo, 'rev-parse', '--path-format=absolute', '--git-common-dir'));
+  assert.equal(readFileSync(privateBin, 'utf8'), readFileSync(BIN, 'utf8'));
+  assert.equal(readFileSync(join(box.repo, 'src', 'git.js'), 'utf8'),
+    readFileSync(resolve(import.meta.dirname, '../src/git.js'), 'utf8'));
   const file = join(box.repo, '.git', 'pullboard', 'board.sqlite');
   const added = box.run(box.repo, 'add', 'web', 'private maintenance item', '--specs', 'G1', '--criterion', 'the private page renders', '--json');
   assert.equal(added.code, 0, added.err);
@@ -309,7 +325,7 @@ test('opening an older board names and logs its genuine index-building write [C7
       return originalExec.call(this, sql, ...args);
     };
   `);
-  const child = startFixtureChild(process.execPath, ['--import', preload, BIN, 'shout', 'all', 'private maintenance move', '--json'], {
+  const child = startFixtureChild(process.execPath, ['--import', preload, privateBin, 'shout', 'all', 'private maintenance move', '--json'], {
     cwd: box.repo, env: box.env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   });
   let stdout = '';
