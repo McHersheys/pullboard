@@ -13,8 +13,8 @@ test('an accepted offer makes at most one child and a receipt carries no text [B
   assert.ok(existsSync(module), 'the shared item-offer contract must exist');
   const api = await import(module.href);
   const directory = mkdtempSync(join(tmpdir(), 'pullboard-item-offer-'));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
   const boards = [];
+  t.after(() => { for (const entry of boards) store.closeBoard(entry.board); rmSync(directory, { recursive: true, force: true }); });
   for (const name of ['source', 'destination']) {
     const root = join(directory, name);
     mkdirSync(root);
@@ -25,7 +25,6 @@ test('an accepted offer makes at most one child and a receipt carries no text [B
     store.ensureCoordinator(board, root);
     boards.push({ board, file, id: store.boardId(board) });
   }
-  t.after(() => { for (const entry of boards) store.closeBoard(entry.board); });
   const [source, destination] = boards;
   const parent = store.addItem(source.board, { by: 'coordinator', lane: 'web', title: 'Private parent' });
   const offer = { version: 1, offerId: 'offer-1', sourceBoardId: source.id, parentItem: parent,
@@ -36,6 +35,7 @@ test('an accepted offer makes at most one child and a receipt carries no text [B
   let allowed = true;
   const ports = { boardId: destination.id, resolveBoardRef, authorize: () => allowed,
     createChild: content => store.addItem(destination.board, { by: 'coordinator', ...content }) };
+  assert.throws(() => api.acceptItemOffer(source.board, offer, ports), { code: 'OFFER_AUTHORITY' });
   const accepted = api.acceptItemOffer(destination.board, offer, ports);
   assert.equal(accepted.childRef.boardId, destination.id);
   assert.equal(store.listItems(destination.board, { all: true }).length, 1);
@@ -46,6 +46,9 @@ test('an accepted offer makes at most one child and a receipt carries no text [B
   assert.equal(store.listItems(destination.board, { all: true }).length, 1);
   assert.throws(() => api.acceptItemOffer(destination.board, { ...offer, proposedContent: { ...offer.proposedContent, title: 'Changed' } }, ports), { code: 'OFFER_CONFLICT' });
   assert.throws(() => api.acceptItemOffer(destination.board, { ...offer, offerId: 'bad', title: 'Hidden' }, ports), { code: 'ITEM_OFFER' });
+  const count = store.listItems(destination.board, { all: true }).length;
+  assert.throws(() => api.acceptItemOffer(destination.board, { ...offer, offerId: 'rollback' }, { ...ports, createChild: content => { ports.createChild(content); return -1; } }), { code: 'ITEM_OFFER' });
+  assert.equal(store.listItems(destination.board, { all: true }).length, count, 'invalid child creation rolls back the real insert and retry state');
   allowed = false;
   assert.throws(() => api.acceptItemOffer(destination.board, { ...offer, offerId: 'denied' }, ports), { code: 'OFFER_AUTHORITY' });
   allowed = true;
