@@ -123,10 +123,9 @@ import { recordVerdict } from './verdict-assurance.js';
 import {
   mergeOnlyBasis,
   mergeOnlyProblem,
-  mergeOnlySourceValid,
+  prepareMergeOnlySubmit,
 } from './merge-only-verdict.js';
 import { MERGE_ONLY_VERDICT_ENGINE } from './merge-only-verdict-engine.js';
-import { deriveMergeOnly } from './merge-only-source.js';
 import {
   atomic,
   logEvent,
@@ -1138,14 +1137,7 @@ export function release(board, id, agentId, note = '') {
   });
 }
 
-/** Derive the origin’s carry before sealing; caller-supplied carry facts are discarded. */
-export function prepareMergeOnlySubmit(board, id, options) {
-  const item = getItem(board, id);
-  const basis = options?.gateGreen === true ? mergeOnlyBasis(board, item) : null;
-  return basis && !retainedVerifierIdentityProblem(board, item, basis.by)
-    && mergeOnlySourceValid(board.gitRoot, board, item)
-    ? deriveMergeOnly(board.gitRoot, basis, options) : null;
-}
+export { prepareMergeOnlySubmit };
 
 /**
  * Submit your claimed item at a commit (V4, V6). The caller has already checked the tree is clean
