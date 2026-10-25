@@ -467,6 +467,34 @@ test('launcher starts the stand-in browser inside its slot', async () => {
   assert.deepEqual(off.markers, ['launcher=unset', 'plain=unset'], 'with the setting off the runner sets no marker, as today');
 });
 
+/** Browser admission follows executable calls, not programs written as fixture data. */
+test('generated Chrome programs stay launch-free while executable launcher arguments stay bound [C7,O5]', async t => {
+  const generated = "export function browserLaunch() { return spawnSync('google-chrome', []); }";
+  const root = sourceFixture(t, {
+    'test/quoted-program.test.js': "import { spawnSync } from 'node:child_process';\n"
+      + 'export const fixture = ' + JSON.stringify(generated) + ";\nspawnSync(process.execPath, ['--version']);",
+    'test/template-program.test.js': "import { spawnSync } from 'node:child_process';\n"
+      + 'export const fixture = `' + generated + "`;\nspawnSync(process.execPath, ['--version']);",
+    'test/comment-program.test.js': "import { spawnSync } from 'node:child_process';\n"
+      + '// ' + generated + "\nspawnSync('git', ['status']);",
+    'test/direct-call.test.js': "import { spawnSync } from 'node:child_process';\nspawnSync('google-chrome', ['--version']);",
+    'test/alias-call.test.js': "import { spawnSync as start } from 'node:child_process';\nstart('google-chrome', ['--version']);",
+    'test/shell-call.test.js': "import { execSync } from 'node:child_process';\nexecSync('google-chrome --version');",
+    'test/variable-call.test.js': "import { spawnSync } from 'node:child_process';\nconst executable = '/opt/browser/google-chrome';\nspawnSync(executable, []);",
+    'test/environment-call.test.js': "import { spawnSync } from 'node:child_process';\nspawnSync(process.env.PULLBOARD_CHROME, []);",
+    'test/interpolation-call.test.js': "import { spawnSync } from 'node:child_process';\nexport const output = `${spawnSync('google-chrome', [])}`;",
+    'test/computed-loader.test.js': "const source = process['getBuiltinModule']('child_process');\nsource.spawnSync(process.env.PULLBOARD_CHROME, []);",
+  });
+  for (const name of ['quoted-program', 'template-program', 'comment-program']) {
+    const file = `test/${name}.test.js`;
+    assert.equal(await testsNeedBrowser(root, [file], { byLaunch: true }), false, `${name}: generated source is not a browser launch in this module`);
+    assert.equal(await testsNeedBrowser(root, [file], { byLaunch: false }), true, `${name}: the default classification remains conservative`);
+  }
+  for (const name of ['direct-call', 'alias-call', 'shell-call', 'variable-call', 'environment-call', 'interpolation-call', 'computed-loader']) {
+    assert.equal(await testsNeedBrowser(root, [`test/${name}.test.js`], { byLaunch: true }), true, `${name}: executable or uncertain Chrome launch remains browser-bound`);
+  }
+});
+
 test('a file that launches Chrome unclassified fails by name [C7,O5]', async t => {
   const hidden = `import { test } from 'node:test';
 test('hidden launches through a computed import', async () => {
