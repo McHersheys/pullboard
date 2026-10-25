@@ -267,6 +267,7 @@ Spec
   pullboard spec check                  lint SPEC.md and the doctrine (house rules for agentic development)
   pullboard spec view [--out file]      the spec, open questions, sign-offs and doctrine as one page
   pullboard spec show <id> | unmet [--must] | signoff <ids> [--by <principal>]
+  pullboard spec verify <id> accepted|rejected --reason "why"  record an outside-parent verdict
                                         signoff: --note "what was checked" stays with the receipt
   pullboard spec draft <text> [--section <letter>] [--aim] [--gate "<gate>"]  any agent appends a draft row; never approves it
   pullboard spec draft <text> --revises <id> --reason "why" [--gate "<gate>"] [--status <status>]  propose an approved-row change in Needs you

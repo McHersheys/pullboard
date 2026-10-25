@@ -1,4 +1,8 @@
 /** The pullboard spec command, in its own module so an item adding another command never edits these lines. */
+import {
+  planRowVerificationApply,
+  rowVerificationFindings,
+} from '../spec-verdicts.js';
 import { planAutomaticRigorApply } from '../rigor-auto-apply.js';
 import {
   planSpecRevision,
@@ -96,6 +100,7 @@ import {
 } from '../view.js';
 import {
   mkdirSync,
+  readFileSync,
   writeFileSync,
 } from 'node:fs';
 import {
@@ -120,6 +125,13 @@ import {
   withBoard,
 } from '../cli.js';
 
+/** Validate optional verdicts using only existing board state; a check never initializes a board. */
+function verifierFindings(ctx, parsed) {
+  const source = readFileSync(parsed.file, 'utf8');
+  return hookRead(ctx, board => rowVerificationFindings(board, parsed, source))
+    ?? rowVerificationFindings(null, parsed, source);
+}
+
 /**
  * The spec commands: reads, sign-offs and person decisions applied by the coordinator.
  *
@@ -134,6 +146,7 @@ export async function specCommand(io, { first, second, rest, values }) {
     check: ['json'],
     view: ['out'],
     show: [],
+    verify: ['reason'],
     unmet: ['must'],
     signoff: ['by', 'note', 'note-file'],
     signers: ['key', 'by'],
@@ -144,7 +157,7 @@ export async function specCommand(io, { first, second, rest, values }) {
     apply: [],
     fit: ['text', 'reason'],
   }[first ?? '--json'];
-  if (!commandFlags) throw new Refused('USAGE', 'use pullboard spec --json | check | view | show <id> | unmet [--must] | draft "<text>" | signoff <ids> | approve <ids> | decline <ids> --reason "why" | answer <id> "<choice or text>" | apply');
+  if (!commandFlags) throw new Refused('USAGE', 'use pullboard spec --json | check | view | show <id> | verify <id> accepted|rejected --reason "why" | unmet [--must] | draft "<text>" | signoff <ids> | approve <ids> | decline <ids> --reason "why" | answer <id> "<choice or text>" | apply');
   const allowedFlags = [...new Set([...commandFlags, 'json'])];
   for (const flag of Object.keys(values)) {
     if (!allowedFlags.includes(flag)) {
@@ -159,6 +172,19 @@ export async function specCommand(io, { first, second, rest, values }) {
   if (!spec.exists) throw new Refused('NO_SPEC', `no ${ctx.config.spec}; run: pullboard init`);
   const practice = ctx.doctrine;
   const signoffs = readSignoffs(ctx.info.root);
+  if (first === 'verify') {
+    if (!second || rest.length !== 1 || !['accepted', 'rejected'].includes(rest[0])) throw new Refused('USAGE', 'use pullboard spec verify <id> accepted|rejected --reason "why"');
+    const rows = spec.rows.filter(row => row.id === second);
+    if (rows.length !== 1) throw new Refused('NO_ROW', `no unique row ${second}; read pullboard spec --json`);
+    const source = readFileSync(spec.file, 'utf8').split(/\r?\n/u)[rows[0].line - 1];
+    return withBoard(ctx, async board => {
+      const me = whoAmI(ctx, board);
+      const receipt = await ordered(ctx, board, 'recordRowVerification', [{ agentId: me.id, source, decision: rest[0], reason: values.reason }]);
+      io.result?.({ verification: receipt });
+      io.say(`${receipt.id}: ${receipt.decision} by ${receipt.by}; ask the coordinator to run pullboard spec apply`);
+      return 0;
+    });
+  }
   if (first === 'draft') {
     if (second && /\|\s*gate\s*:/iu.test(second)) {
       throw new Refused('INLINE_GATE', 'move the gate after the requirement as --gate "<check>"');
@@ -278,9 +304,12 @@ export async function specCommand(io, { first, second, rest, values }) {
       let applied;
       try { applied = await ordered(ctx, board, 'applyRowDecisions', [{ agentId: me.id, events: plan.records.map((record) => record.event) }]); }
       catch (error) { restoreRowApply(ctx.info.root, plan); throw error; }
-      io.result?.({ applied, files: plan.files.map((file) => file.file) });
+      const verifications = planRowVerificationApply(ctx.info.root, ctx.config, store.rowVerifications(board), store.rowDecisions(board));
+      writeRowApply(ctx.info.root, verifications);
+      verifications.applied.forEach(id => io.say(`${ctx.config.spec}: ${id} verifier verdict applied`));
+      io.result?.({ applied, verifications: verifications.applied, files: [...plan.files, ...verifications.files].map((file) => file.file) });
       applied.forEach((record) => io.say(`${record.file}: ${record.id} ${record.decision === 'approve' ? 'approved' : 'wont'}${record.reason ? `: ${record.reason}` : ''}`));
-      if (!applied.length && !drafted.length) io.say('no pending row decisions');
+      if (!applied.length && !drafted.length && !verifications.applied.length) io.say('no pending row decisions');
       else io.say('stage and commit the changed row files and any .pullboard/signoffs.jsonl receipts');
       return 0;
     });
@@ -334,6 +363,10 @@ export async function specCommand(io, { first, second, rest, values }) {
     for (const [name, parsed] of files) {
       const findings = [
         ...lintSpec(parsed).filter((finding) => !finding.message.startsWith('duplicate id;')),
+        ...(name === ctx.config.spec && parsed.rows.some(row => row.verify !== undefined)
+          ? verifierFindings(ctx, parsed) : []),
+        ...(name !== ctx.config.spec ? parsed.rows.filter(row => row.verify !== undefined).map(row => ({ level: 'error', line: row.line, id: row.id,
+          message: 'ROW_VERIFY_PROVENANCE: verifier annotations currently require an exact board-drafted SPEC row' })) : []),
         ...missingGateFindings(parsed, ctx.info.root),
         ...(collisionFindings.get(name) ?? []),
       ];
@@ -358,9 +391,9 @@ export async function specCommand(io, { first, second, rest, values }) {
     unnamed.forEach((problem) => messages.push(`${ctx.config.spec}: error: ${problem}`));
     errors += unnamed.length;
     if (values.json && !errors) {
-      const rows = files.flatMap(([file, parsed]) => parsed.rows.map(({ id, status, tier, text, gate, serves, signers = [], section, line, origin, version, reason, file: source, source: from }) => (
+      const rows = files.flatMap(([file, parsed]) => parsed.rows.map(({ id, status, tier, text, gate, serves, signers = [], section, line, origin, version, reason, file: source, source: from, verify }) => (
         { id, status, tier, text, gate, serves, signers, section, line, file: source ?? file,
-          ...(from === undefined ? {} : { source: from }), ...(origin ? { origin, version, reason } : {}) }
+          ...(from === undefined ? {} : { source: from }), ...(verify === undefined ? {} : { verify }), ...(origin ? { origin, version, reason } : {}) }
       )));
       const fit = readFitBatch(ctx.info.commonDir, { isMain: ctx.info.isMain, channel: io.personChannel });
       io.result({ rows, ...(fit.proposals.length ? { fit: fit.proposals, fitBatch: fit.batch } : {}) });
@@ -400,6 +433,11 @@ export async function specCommand(io, { first, second, rest, values }) {
     const parsed = doctrineId ? practice : spec;
     const id = doctrineId ? second.slice('doctrine:'.length) : second;
     const source = parsed.rows.find((entry) => entry.id === id);
+    if (source?.verify) {
+      const findings = doctrineId ? [{ message: 'verifier annotations currently require an exact board-drafted SPEC row' }]
+        : verifierFindings(ctx, { ...parsed, rows: [source] });
+      if (findings.length) throw new Refused('ROW_VERIFY_RECEIPT', findings[0].message);
+    }
     const row = source && withBoard(ctx, (board) => decisionProjection(store.rowDecisions(board), source, doctrineId ? 'doctrine' : 'spec', rowDecisionContext(ctx.info.root, ctx.config)));
     if (!row) throw new Refused('NO_ROW', `no row ${second ?? ''} in ${ctx.config.spec}`);
     const standing = standings(parsed.rows, signoffs).get(row.id) ?? { met: [], stale: [] };
@@ -410,6 +448,7 @@ export async function specCommand(io, { first, second, rest, values }) {
     if (row.gate) io.say(`gate: ${row.gate}`);
     if (row.serves.length) io.say(`serves: ${row.serves.join(', ')}`);
     if (row.source) io.say(`source: ${row.source}`);
+    if (row.verify) io.say(`verify: ${row.verify.decision} by ${row.verify.by} | ${row.verify.reason}`);
     io.say(`signed: ${standing.met.map((entry) => `${entry.by} ${entry.on}`).join(', ') || 'no'}${standing.stale.length ? `; stale: ${standing.stale.length}` : ''}`);
     for (const entry of [...standing.met, ...standing.stale]) if (entry.note) io.say(`note (${entry.by}): ${entry.note}`);
     return 0;

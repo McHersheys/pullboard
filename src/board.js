@@ -2340,6 +2340,7 @@ export function approveOutside(board, id, options) { return applyOutsideApproval
 /** Tailored inbox activity is the same canonical read projection as other board queries. */
 export { agentActivity } from './board-query.js';
 
+export { recordRowVerification, rowVerifications } from './spec-verdicts.js';
 /** Read recipient delivery state without mutating any cursor or receipt. */
 export function activityDeliveryState(board, agentId) {
   return activityDeliveryStore.activityDeliveryState(board, agentId);
