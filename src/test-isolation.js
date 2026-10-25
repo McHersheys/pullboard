@@ -14,6 +14,7 @@ import {
   join,
 } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runtimeCaptureSource } from './execution-environment.js';
 import { childJournalPreloadSource } from './child-journal-preload.js';
 
 /** Stands in for the OS account home when machine state falls back to it (src/machine-home.js). */
@@ -47,6 +48,16 @@ function runnerPreload(declared) {
   }
 }
 
+/** Recognize only the exact child-runtime recorder, without trusting a caller's preload declaration. */
+function runtimePreload(token) {
+  const url = /^--import=(file:\/\/\S+\/test-runtime-preload\.mjs)$/u.exec(token ?? '')?.[1];
+  if (!url) return false;
+  try {
+    const file = fileURLToPath(url);
+    return readFileSync(file, 'utf8') === runtimeCaptureSource(dirname(file));
+  } catch { return false; /* A missing or different recorder remains foreign and retains conservative admission. */ }
+}
+
 /**
  * Point every machine-state fallback of a test run at its sandbox and drop host markers tests model explicitly.
  * A test that wants a hostile machine builds one in its own fixture; it never inherits the real one.
@@ -77,5 +88,5 @@ export function foreignNodeOptions(value, env = process.env) {
   const declared = env[RUNNER_PRELOAD_ENV];
   const known = new Set([SLOT_GUARD_IMPORT]);
   if (runnerPreload(declared)) known.add(declared);
-  return String(value ?? '').split(/\s+/u).filter(Boolean).some(token => !known.has(token));
+  return String(value ?? '').split(/\s+/u).filter(Boolean).some(token => !known.has(token) && !runtimePreload(token));
 }

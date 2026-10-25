@@ -19,6 +19,7 @@ import { testsNeedBrowser } from './browser-admission.js';
 import { takeResource } from './resources.js';
 import { reserveTestFileToken } from './test-file-pool.js';
 import { TEST_FILE_POOL_ENV } from './test-file-pool.js';
+import { bindTestRuntime } from './execution-environment.js';
 
 /** Counter trailers are identified by their structured root-plan boundary, never by parsing test stdout/TAP. */
 function trailer(event, afterPlan) {
@@ -54,7 +55,7 @@ function admissionImport(value, browser, runner) {
 }
 
 /** Observe the actual native ChildProcess without changing spawn; its opaque bootstrap binds one file. */
-function fileExitObserver(bootstrap) {
+function fileExitObserver(bootstrap, file) {
   const records = [];
   const source = channel('child_process');
   const observe = ({ process: child }) => {
@@ -69,6 +70,9 @@ function fileExitObserver(bootstrap) {
       && child.spawnargs?.includes(bootstrap) && Number.isInteger(child.pid) && child.pid > 0);
     if (owned.length > 1) throw new Error('one file admission started more than one actual worker');
     await Promise.all(owned.map(record => record.closed));
+    for (const { child } of owned) {
+      if (bindTestRuntime(child.pid, file) === false) throw new Error('the actual test worker has no self-reported runtime: ' + file);
+    }
     return owned.length;
   })();
 }
@@ -140,7 +144,7 @@ export function dispatchTestFiles(options, env) {
       const preload = execArgv.indexOf('--import');
       if (preload < 0 || !execArgv[preload + 1]) throw new Error('test-file dispatch requires its ordinary runner preload');
       execArgv[preload + 1] = admissionImport(token.value, browser, execArgv[preload + 1]);
-      fileExited = fileExitObserver(execArgv[preload + 1]);
+      fileExited = fileExitObserver(execArgv[preload + 1], file);
       const source = run({ ...options, files: [file], shard: undefined, concurrency: 1, signal,
         setup: undefined, execArgv });
       source.once('error', error => controller.abort(error));

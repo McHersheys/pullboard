@@ -1,4 +1,8 @@
 /** Normalize execution facts without inventing missing runtime identities or test counts [C7,H16]. */
+import {
+  testRuntimeEnvironment,
+  testRuntimeRows,
+} from './execution-environment.js';
 
 /** A bounded identity from the executor, never a command or an agent's narrative. */
 function identity(value, limit = 512) {
@@ -15,13 +19,18 @@ export function proofFields(value) {
   const environment = value.environment;
   if (environment !== null && (!environment || !identity(environment.node, 80)
     || !identity(environment.platform, 80) || !identity(environment.arch, 80))) return null;
+  const hasTestRuntimes = Object.hasOwn(value, 'testRuntimes');
+  const testRuntimes = hasTestRuntimes ? testRuntimeRows(value.testRuntimes) : null;
+  if (hasTestRuntimes && value.testRuntimes !== null && testRuntimes === null) return null;
+  const actualEnvironment = hasTestRuntimes ? testRuntimeEnvironment(testRuntimes) : environment;
   const names = ['passed', 'failed', 'skipped'];
   if (!value.counts || !names.every(name => value.counts[name] === null
     || Number.isSafeInteger(value.counts[name]) && value.counts[name] >= 0)) return null;
   return { item: value.item, frozenDigest: value.frozenDigest,
-    environment: environment === null ? null : { node: environment.node, platform: environment.platform, arch: environment.arch },
+    environment: actualEnvironment === null ? null : { node: actualEnvironment.node, platform: actualEnvironment.platform, arch: actualEnvironment.arch },
     seat: value.seat, runner: value.runner, exitCode: value.exitCode,
-    counts: Object.fromEntries(names.map(name => [name, value.counts[name]])), durationMs: value.durationMs, sourceClean: value.sourceClean };
+    counts: Object.fromEntries(names.map(name => [name, value.counts[name]])), durationMs: value.durationMs, sourceClean: value.sourceClean,
+    ...(hasTestRuntimes ? { testRuntimes } : {}) };
 }
 
 /** Read explicit TAP or Node reporter totals; absent counters stay unknown rather than becoming zero. */

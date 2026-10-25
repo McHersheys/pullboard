@@ -42,7 +42,8 @@ export function proofRunReceipt(board, request) {
   const receipt = { id: run.id, kind: run.kind, item: itemId, commit: run.head, tree: run.tree,
     frozenDigest: run.proof.frozenDigest, environment: run.proof.environment, runner: run.proof.runner,
     seat: agentId, parentSession: seats.agentParent?.(board, agentId) ?? null, exitCode: run.proof.exitCode,
-    counts: run.proof.counts, durationMs: run.proof.durationMs, sourceClean: run.proof.sourceClean, at: run.at };
+    counts: run.proof.counts, durationMs: run.proof.durationMs, sourceClean: run.proof.sourceClean, at: run.at,
+    ...(Object.hasOwn(run.proof, 'testRuntimes') ? { testRuntimes: run.proof.testRuntimes } : {}) };
   const existing = proofReceipts(board, itemId).find(value => value.id === receipt.id);
   if (existing) {
     const { eventId, ...fields } = existing;

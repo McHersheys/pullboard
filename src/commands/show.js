@@ -1,4 +1,8 @@
 import { withBoardRead } from '../cli-board-read.js';
+import {
+  testRuntimeEnvironment,
+  testRuntimeRows,
+} from '../execution-environment.js';
 /** The pullboard show command, in its own module so an item adding another command never edits these lines. */
 import {
   displayAgentName,
@@ -69,13 +73,20 @@ export async function run(io, { first, values }) {
   if (item.item_criterion) io.say(`criterion: ${item.item_criterion}`);
   if (item.item_check) io.say(`check: ${item.item_check}`);
   for (const receipt of proofReceipts) {
-    const runtime = receipt.environment ? `Node ${receipt.environment.node} ${receipt.environment.platform}/${receipt.environment.arch}` : 'runtime unknown';
+    const hasTestRuntimes = Object.hasOwn(receipt, 'testRuntimes');
+    const testRuntimes = hasTestRuntimes ? testRuntimeRows(receipt.testRuntimes) : null;
+    const environment = hasTestRuntimes ? testRuntimeEnvironment(testRuntimes) : receipt.environment;
+    const runtime = environment ? `Node ${environment.node} ${environment.platform}/${environment.arch}` : 'runtime unknown';
     const counts = Object.values(receipt.counts).some(value => value === null) ? 'test counts unknown'
       : `${receipt.counts.passed} pass, ${receipt.counts.failed} fail, ${receipt.counts.skipped} skip`;
     io.say(`receipt ${receipt.id}: ${receipt.kind}, item #${receipt.item}`);
     io.say(`  commit ${receipt.commit ?? 'unknown'}; tree ${receipt.tree ?? 'unknown'}; frozen ${receipt.frozenDigest ?? 'unknown'}`);
     io.say(`  ${runtime}; runner ${receipt.runner ?? 'unknown'}; seat ${receipt.seat}; parent ${receipt.parentSession ?? 'unknown'}`);
     io.say(`  exit ${receipt.exitCode ?? 'unknown'}; ${counts}; ${receipt.durationMs}ms${receipt.sourceClean ? '' : '; source unproven'}`);
+    if (hasTestRuntimes && !testRuntimes) io.say('  test child runtimes unknown');
+    for (const child of testRuntimes ?? []) {
+      io.say(`  child ${child.pid}: Node ${child.environment.node} ${child.environment.platform}/${child.environment.arch}; ${child.file ?? 'test file unknown'}`);
+    }
   }
   sayCheckBaseline(io, item);
   sayBrief(io, item.item_brief);

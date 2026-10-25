@@ -178,3 +178,51 @@ test('an offline proof receipt follows the item its queued add actually creates 
   assert.deepEqual(applyEngineMove(replica, resolved.move, { sequence: 2, at }), replay, 'same-position retry remains idempotent');
   assert.equal(readFileSync(file, 'utf8'), nativeBody, 'wire reference remapping never edits the origin native receipt file');
 });
+
+// Synthetic schema/replay controls; these rows do not claim an actual child was executed.
+test('child runtime fields preserve legacy bytes and replay mixed environments without a common runtime [C7,H16]', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'pullboard-child-runtime-replay-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const board = store.openBoard(join(directory, 'board.sqlite'));
+  const replica = store.openBoard(':memory:');
+  t.after(() => { store.closeBoard(replica); store.closeBoard(board); });
+  let item;
+  for (const target of [board, replica]) {
+    store.register(target, { lane: 'coordinator', path: '/runtime-coordinator' });
+    store.register(target, { lane: 'web', path: '/runtime-builder' });
+    item = store.addItem(target, { by: 'coordinator', lane: 'web', title: 'Synthetic child runtime replay' });
+  }
+  const legacy = { version: 2, id: '00000000-0000-4000-8000-00000000c11d', kind: 'check',
+    tree: 'b'.repeat(40), head: 'a'.repeat(40), main: null, command: 'c'.repeat(64), green: false,
+    failures: [], load: null, at: '2026-10-23T00:00:00.000Z',
+    proof: { item, frozenDigest: null, environment: null, seat: 'web-1', runner: null, exitCode: 7,
+      counts: { passed: null, failed: null, skipped: null }, durationMs: 37, sourceClean: false } };
+  assert.equal(receiptBody(legacy), JSON.stringify(legacy) + '\n', 'absent child fields keep exact historical canonical bytes');
+  assert.equal(Object.hasOwn(receiptFields(legacy).proof, 'testRuntimes'), false);
+  const environment = { platform: 'darwin', arch: 'arm64', node: '22.13.1' };
+  const rows = [{ pid: 101, environment, file: 'test/first.test.js' },
+    { pid: 102, environment: { ...environment, node: '24.21.0' }, file: 'test/second.test.js' }];
+  const supplied = { ...legacy, proof: { ...legacy.proof, environment, testRuntimes: rows } };
+  const checked = receiptFields(supplied);
+  assert.equal(checked.proof.environment, null, 'mixed actual child versions cannot borrow the declared launcher environment');
+  assert.deepEqual(checked.proof.testRuntimes, rows);
+  const unknown = receiptFields({ ...supplied, proof: { ...supplied.proof, testRuntimes: null } });
+  assert.equal(unknown.proof.testRuntimes, null);
+  assert.equal(unknown.proof.environment, null, 'explicit unknown children do not become a known launcher');
+  for (const invalid of [undefined, [], {}, [{}], [{ ...rows[0], pid: 0 }],
+    [{ ...rows[0], environment: { ...environment, node: 'not-a-version' } }],
+    [{ ...rows[0], file: '../escape.test.js' }], [rows[0], rows[0]]]) {
+    assert.equal(receiptFields({ ...supplied, proof: { ...supplied.proof, testRuntimes: invalid } }), null,
+      'malformed supplied child rows are rejected rather than silently omitted');
+  }
+  mkdirSync(boardReceiptStore(board));
+  writeFileSync(join(boardReceiptStore(board), `${supplied.id}.json`), receiptBody(supplied));
+  const args = [{ agentId: 'web-1', itemId: item, receiptId: supplied.id }];
+  const move = prepareEngineMove(board, 'recordProofRun', args, { actor: 'web-1' });
+  const recorded = store.recordProofRun(board, args[0]);
+  assert.equal(recorded.environment, null);
+  assert.deepEqual(recorded.testRuntimes, rows);
+  assert.equal(applyEngineMove(replica, move, { sequence: 1, at: supplied.at }).error, undefined);
+  const [{ eventId, ...replayed }] = store.proofReceipts(replica, item);
+  assert.deepEqual(replayed, recorded, 'sealed native replay preserves every child environment without the origin files');
+});

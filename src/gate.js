@@ -39,7 +39,11 @@ import {
   loadavg,
 } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { executionEnvironment } from './execution-environment.js';
+import {
+  captureTestRuntimes,
+  executionEnvironment,
+  testRuntimeEnvironment,
+} from './execution-environment.js';
 import { constrainedLandingHost } from './landing-host.js';
 import {
   gitChildEnv,
@@ -288,7 +292,8 @@ function leaveProofReceipt(root, command, run, before, context, lease) {
     const sourceClean = before.clean && after.clean && before.head === after.head && before.tree === after.tree
       && run.executionSourceUnchanged !== false && (!source || source.commit === before.head && source.tree === before.tree)
       && (!lease?.runner || Boolean(source));
-    const environment = run.environment ?? run.profile?.environment ?? null;
+    const testRuntimes = run.testRuntimes ?? run.profile?.testRuntimes ?? null;
+    const environment = testRuntimeEnvironment(testRuntimes);
     const remote = run.executionRunner ?? run.profile?.executionRunner;
     const localLoad = { average: loadavg(), cpus: availableParallelism(), freeMB: Math.floor(freemem() / 1048576) };
     let main = null;
@@ -298,7 +303,7 @@ function leaveProofReceipt(root, command, run, before, context, lease) {
       green: run.isGreen ?? run.state === 'pass', failures: [],
       load: run.executionLoad ?? (remote || lease?.runner ? null : localLoad), at: new Date().toISOString(),
       proof: { item: context.item, frozenDigest: context.frozenDigest ?? null, seat: context.seat,
-        environment, runner: remote ?? (lease?.runner ? null
+        environment, testRuntimes, runner: remote ?? (lease?.runner ? null
           : run.profile?.receipt?.runner?.id ?? lease?.receipt?.runner?.id ?? lease?.localDescriptor?.id ?? null), exitCode: run.exitCode,
         counts: run.proofCounts ?? proofCounts(run.outputPath ? logLines(run.outputPath) : run.output ?? ''),
         durationMs: Math.max(0, Math.round(run.remoteWallMs ?? run.profile?.wallMs ?? run.seconds * 1000)), sourceClean } });
@@ -351,7 +356,8 @@ export async function runProfiledShellAsync(root, command, { waitMs = 0, gateSlo
     [LANDING_RUN_ENV]: landing ? '1' : '0',
     PULLBOARD_TEST_STAGE: gateLease?.receiptKind ?? (landing ? 'land' : 'gate'),
   };
-  const env = { ...gitChildEnv(root), ...inherited };
+  const runtimes = captureTestRuntimes({ ...gitChildEnv(root), ...inherited });
+  const env = runtimes.env;
   const environment = executionEnvironment();
   const child = spawn(`(\n${command}\n) 2>&1`, { cwd: root, env, shell: true, stdio: ['ignore', 'pipe', 'pipe'] });
   const chunks = [];
@@ -368,6 +374,7 @@ export async function runProfiledShellAsync(root, command, { waitMs = 0, gateSlo
   child.stderr.setEncoding('utf8').on('data', capture);
   child.once('error', error => { failure = error; });
   const status = await new Promise(resolveClose => child.once('close', resolveClose));
+  const testRuntimes = runtimes.finish();
   gateLease?.tracker?.mark('ranAt');
   if (gateLease) gateLease.environment = environment;
   invalidateGitFacts();
@@ -377,7 +384,7 @@ export async function runProfiledShellAsync(root, command, { waitMs = 0, gateSlo
   const profilePath = join(dirname(gitPath(root, LOG)), `pullboard-gate-${randomUUID()}.profile.json`);
   const profile = writeTimingProfile(profilePath, { ...timingFromOutput(output, timingRunner(command)),
     waitMs: Math.max(0, Math.round(waitMs)), wallMs, receipt: settleReceipt(gateLease) });
-  return { isGreen: status === 0 && !overflow && !failure, environment, sandboxBlocked: status === 0 ? null : sandboxBlockedOperation(root, output), output, seconds: Math.round(wallMs / 1000), profile, profilePath, logPath: null };
+  return { isGreen: status === 0 && !overflow && !failure, environment, testRuntimes, sandboxBlocked: status === 0 ? null : sandboxBlockedOperation(root, output), output, seconds: Math.round(wallMs / 1000), profile, profilePath, logPath: null };
 }
 
 /** Close a gated run's receipt (#836) as its evidence is written; the slot's release records this same receipt. */
