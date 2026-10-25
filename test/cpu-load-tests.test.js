@@ -1,0 +1,30 @@
+/** Declared load is placed by the real runner road, never by a forged host flag [C7]. */
+/** @pullboard-test-input source-tree */
+import assert from 'node:assert/strict';
+import { join, relative, sep } from 'node:path';
+import { after, test } from 'node:test';
+import { createE2eHelpers } from './e2e-helpers.js';
+import { cpuLoadFixture } from './cpu-load-test-fixture.js';
+
+const e2e = createE2eHelpers();
+after(e2e.cleanup);
+
+test('a declared CPU-load test runs only on a runner when one is registered [C7]', async () => {
+  const box = cpuLoadFixture(e2e);
+  const remote = await box.runGate();
+  assert.equal(remote.result.status, 0, remote.result.context);
+  assert.equal(box.requestsMade().length, 1, 'the declared CPU-load test dispatches to the registered runner even when local-first has a free slot');
+  assert.ok(remote.executor?.liveLease, 'the test body reports an actual private resource holder');
+  assert.equal(remote.executor.runnerExecution, true, 'worker execution is bound to the genuine inherited lease');
+  assert.notEqual(remote.executor.cwd, box.repo, 'the declared test body never starts in the coordinator checkout');
+  const withinRunner = relative(join(box.remoteHome, '.pullboard-runner', 'jobs'), remote.executor.cwd);
+  assert.ok(withinRunner && withinRunner !== '..' && !withinRunner.startsWith(`..${sep}`));
+  assert.equal(remote.executor.machineHome, box.remoteMachineHome);
+  box.command('runner', 'remove', 'fixture-host');
+  const local = await box.runGate();
+  assert.equal(local.result.status, 0, local.result.context);
+  assert.equal(box.requestsMade().length, 1, 'no unregistered executor is used for the fallback');
+  assert.equal(local.executor?.cwd, box.repo);
+  assert.match(local.log + local.result.stderr, /CPU.load[\s\S]*no (?:registered )?runners|no runners are registered/iu,
+    'the no-runner local fallback explains why it is local');
+});
