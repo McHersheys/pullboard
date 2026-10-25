@@ -21,6 +21,38 @@ import { activityMainFiles, activityWorkingFiles, readActivityCursor, saveActivi
 const e2e = createE2eHelpers();
 after(e2e.cleanup);
 
+test('a recorded submit stays successful when its later activity delivery fails [N26,H16,V4]', () => {
+  const box = e2e.project('true');
+  const boardPath = join(box.repo, '.git', 'pullboard', 'board.sqlite');
+  const board = store.openBoard(boardPath);
+  const id = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'Submission survives a delivery failure',
+    criterion: 'The private file is committed.' });
+  store.closeBoard(board);
+  const claimed = box.run(box.web, 'claim', String(id), '--json');
+  assert.equal(claimed.code, 0, claimed.out + claimed.err);
+  const committed = e2e.commitFile(box, box.web, 'web/delivery-failure.txt', 'private proof\n', 'feat(web): delivery failure fixture [G1]');
+  assert.equal(committed.status, 0, committed.stderr);
+  const broken = store.openBoard(boardPath);
+  // Corrupt only this private derived read state; the authoritative item and move log remain genuine.
+  broken.db.prepare('INSERT INTO board_meta(meta_key,meta_value) VALUES (?,?)').run('activity:web-1:cursor:', '{');
+  store.closeBoard(broken);
+  const submitted = box.run(box.web, 'submit', String(id), '--json');
+  assert.equal(submitted.code, 0, submitted.out + submitted.err);
+  const document = JSON.parse(submitted.out);
+  assert.equal(document.id, id);
+  assert.equal(document.gate.green, true);
+  assert.equal(document.activity.receipt.recorded, false);
+  assert.equal(document.activity.receipt.code, 'ACTIVITY_DELIVERY_FAILED');
+  assert.match(submitted.err, /submitted .*activity delivery failed.*inbox/u);
+  const after = store.openBoard(boardPath);
+  try {
+    assert.equal(store.getItem(after, id).item_status, 'submitted');
+    assert.equal(store.getItem(after, id).item_commit, document.commit);
+    assert.equal(store.events(after).filter(event => event.event_kind === 'submit').length, 1);
+    assert.equal(store.events(after).filter(event => event.event_kind === 'activity-delivered').length, 0);
+  } finally { store.closeBoard(after); }
+});
+
 /** Freeze a private item's exact requirement without claiming a test gate ran in this board-state fixture. */
 function freeze() {
   return { text: JSON.stringify({ rows: [], policy: { version: 1, verify: { policy: 'any', family: 'off' } } }), digest: 'activity-fixture' };
