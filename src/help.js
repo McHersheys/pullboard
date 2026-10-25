@@ -68,11 +68,12 @@ Set up
   pullboard relay revoke <token-id>     revoke one token from that list; other agents keep working
   pullboard relay recover --skip <sequence>  person-only recovery of one blocked next relay position
   pullboard handoff [--take <id>]        write or take an agent hand-off; keep questions on its item
+  pullboard heartbeat                 record this seat's local session activity; no board move
   pullboard resume [--diagnostics]      where you are: your claim, branch, what came back,
                                         unread shouts, what to do next; run it to start any session
   pullboard badge                       write board-derived Shields endpoint JSON to docs/badges/
   pullboard hooks [uninstall]           install Git hooks and agent nudges; uninstall removes only Pullboard's agent nudges
-  pullboard hook SessionStart|Stop     native agent nudges; errors/timeouts warn and never block
+  pullboard hook SessionStart|Stop|SessionEnd     native agent nudges; errors/timeouts warn and never block
 
 Work
   pullboard map [<module or function>] [--for <item>] [--budget <tokens>]  source map for main, a card, or an item's one-hop slice
@@ -370,7 +371,7 @@ const HELP_ALIASES = {
   lanes: { usage: 'pullboard lanes', source: 'whoami' },
   agents: { usage: 'pullboard agents', source: 'whoami' },
   lane: { usage: 'pullboard lane add <name> --owns <path>[,<path>]', source: 'lane add' },
-  status: { usage: 'pullboard status', source: 'whoami' },
+  status: { usage: 'pullboard status [--all]', source: 'whoami' },
   done: { usage: 'pullboard done <id>', source: 'submit <id>' },
   inbox: { usage: 'pullboard inbox', source: null, extraFlags: ['--acted-on <interrupt-ids>'] },
   'check accept': { usage: 'pullboard check accept <id>', source: 'check accept' },
@@ -392,7 +393,7 @@ const HELP_ALIASES = {
   'spec signers': { usage: 'pullboard spec signers add [--key <path>] [--by <principal>]', source: 'spec signers add' },
   'spec signers add': { usage: 'pullboard spec signers add [--key <path>] [--by <principal>]', source: 'spec signers add' },
   doctrine: { usage: 'pullboard doctrine check', source: 'doctrine check' },
-  hook: { usage: 'pullboard hook SessionStart|Stop|pre-commit|pre-merge-commit|commit-msg|pre-push', source: 'hook' },
+  hook: { usage: 'pullboard hook SessionStart|Stop|SessionEnd|pre-commit|pre-merge-commit|commit-msg|pre-push', source: 'hook' },
   'gate set': { usage: 'pullboard gate set "<command>"', source: 'gate set' },
   'hook pre-commit': { usage: 'pullboard hook pre-commit', source: 'hook' },
   'hook pre-merge-commit': { usage: 'pullboard hook pre-merge-commit', source: 'hook' },
@@ -421,6 +422,10 @@ const HELP_FLAG_EXPLANATIONS = {
 
 /** Lines a command's own help adds after its example. */
 const HELP_NOTES = {
+  status: [
+    'Counts include live, idle and gone identities; plain text lists only live and idle seats.',
+    '--all includes gone seats. JSON retains the full identity history and presence counts.',
+  ],
   resume: [
     'Ordinary resume reads the current work card and recorded health without running diagnostics or watches.',
     'Use --diagnostics explicitly for setup, hooks, dirty files and stale-work checks.',

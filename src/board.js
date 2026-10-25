@@ -1,3 +1,4 @@
+import { heartbeatSeat } from './seat-presence.js';
 import * as activityDeliveryStore from './activity-delivery-store.js';
 import { requireFactKind } from './item-notes.js';
 import { activityNewsFlag } from './activity-news.js';
@@ -590,6 +591,7 @@ export function register(board, who) {
       if (lineage) board.db.prepare('INSERT INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run(`agent_lineage:${id}`, lineage);
     }
     logEvent(board, id, 'join', null, route === 'strong' ? { lane } : { lane, route });
+    if (board.executionEngineVersion === undefined) heartbeatSeat(board, id);
     return id;
   });
 }
