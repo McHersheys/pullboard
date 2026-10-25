@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 
 const memory = new WeakMap();
+const HEARTBEAT_INTERVAL_MS = 60_000;
 
 /** Read the native board identity once; an unidentifiable board supplies no local liveness. */
 function observationIdentity(board) {
@@ -16,7 +17,24 @@ function observationFile(board) {
   return file ? `${file}.presence.sqlite` : null;
 }
 
-/** Update exactly one local seat row; registration and command activity are observations, not moves. */
+/** Keep a persisted observation fresh for one minute; clock rollback must replace a future value. */
+function observationIsFresh(at, now) {
+  const elapsed = now - Date.parse(at);
+  return Number.isFinite(elapsed) && elapsed >= 0 && elapsed < HEARTBEAT_INTERVAL_MS;
+}
+
+/** Read one existing observation without opening a writer or creating any sidecar schema. */
+function persistedObservation(file, key) {
+  if (!existsSync(file)) return null;
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    db.exec('PRAGMA busy_timeout=250');
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='heartbeat'").get()) return null;
+    return db.prepare('SELECT at FROM heartbeat WHERE seat=?').get(key)?.at ?? null;
+  } finally { db.close(); }
+}
+
+/** Observe authenticated activity, persisting at most once per seat/minute, never as a shared move. */
 export function heartbeatSeat(board, id) {
   if (!board.db.prepare('SELECT 1 FROM agent WHERE agent_id=?').get(id)) return false;
   const identity = observationIdentity(board);
@@ -26,14 +44,17 @@ export function heartbeatSeat(board, id) {
   const file = observationFile(board);
   if (!file) {
     const rows = memory.get(board.db) ?? new Map();
-    rows.set(key, at);
+    if (!observationIsFresh(rows.get(key), Date.parse(at))) rows.set(key, at);
     memory.set(board.db, rows);
     return true;
   }
+  if (observationIsFresh(persistedObservation(file, key), Date.parse(at))) return true;
   const db = new DatabaseSync(file);
   try {
     db.exec('PRAGMA busy_timeout=250; CREATE TABLE IF NOT EXISTS heartbeat(seat TEXT PRIMARY KEY, at TEXT NOT NULL)');
-    db.prepare('INSERT INTO heartbeat(seat,at) VALUES (?,?) ON CONFLICT(seat) DO UPDATE SET at=excluded.at').run(key, at);
+    // A peer may have refreshed after the read: recheck under this write transaction.
+    db.prepare('INSERT INTO heartbeat(seat,at) VALUES (?,?) ON CONFLICT(seat) DO UPDATE SET at=excluded.at WHERE heartbeat.at<=? OR heartbeat.at>?')
+      .run(key, at, new Date(Date.parse(at) - HEARTBEAT_INTERVAL_MS).toISOString(), at);
     return true;
   } finally { db.close(); }
 }

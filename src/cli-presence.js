@@ -1,7 +1,6 @@
 /** One authenticated, machine-local heartbeat per command, independent of shared-board write locks [B3]. */
 import { context } from './cli-read-context.js';
 import {
-  agentAt,
   closeBoard,
   openBoardForRead,
 } from './board-query.js';
@@ -17,7 +16,8 @@ export function heartbeatCommand(io) {
     const ctx = context(io);
     board = openBoardForRead(ctx.file, ctx.clock);
     if (!board) return;
-    const seat = agentAt(board, ctx.info.root);
+    // Only the registered id is needed: projecting model/presence would reopen this same sidecar.
+    const seat = board.db.prepare('SELECT agent_id FROM agent WHERE agent_path=?').get(ctx.info.root);
     if (seat && heartbeatSeat(board, seat.agent_id)) recorded.add(io);
   } catch (error) {
     if (!['NO_CONFIG', 'NOT_A_REPO'].includes(error.code)) io.err(`presence heartbeat unavailable: ${error.message}`);
