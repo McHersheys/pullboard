@@ -5,8 +5,10 @@
 import {
   execFileSync,
 } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -329,6 +331,40 @@ function requireSourcePin(root, commit) {
   }
 }
 
+/** Read committed modes and object IDs once; NUL records preserve unusual input path names. */
+function committedInputs(root, commit) {
+  const inputs = new Map();
+  for (const record of gitText(root, ['ls-tree', '-r', '-z', commit, '--', 'src', 'bin', 'test']).split('\0')) {
+    if (!record) continue;
+    const separator = record.indexOf('\t');
+    const path = record.slice(separator + 1);
+    if (!/^(?:src|bin)\/.*\.m?js$/u.test(path) && !/^test\/.*\.test\.m?js$/u.test(path)) continue;
+    const metadata = record.slice(0, separator).split(' ');
+    if (separator < 0 || metadata.length !== 3 || metadata[1] !== 'blob'
+      || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(metadata[2])) {
+      throw new Error(`${path} differs from the committed main source`);
+    }
+    inputs.set(path, { mode: metadata[0], object: metadata[2] });
+  }
+  return inputs;
+}
+
+/** Validate the exact bytes consumed, including index-hidden edits and external symbolic targets. */
+function readPinnedInput(root, path, inputs) {
+  const expected = inputs.get(path);
+  const file = join(root, path);
+  const mode = lstatSync(file);
+  if (!expected || !['100644', '100755'].includes(expected.mode) || !mode.isFile()
+    || Boolean(mode.mode & 0o111) !== (expected.mode === '100755')) {
+    throw new Error(`${path} differs from the committed main source`);
+  }
+  const bytes = readFileSync(file);
+  const object = createHash(expected.object.length === 64 ? 'sha256' : 'sha1')
+    .update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
+  if (object !== expected.object) throw new Error(`${path} differs from the committed main source`);
+  return bytes.toString('utf8');
+}
+
 /** Resolve one relative import to a scanned source module; external packages stay unresolved. */
 function resolveModule(from, specifier, modules) {
   if (!specifier.startsWith('.')) return null;
@@ -363,8 +399,8 @@ function exportedDefiner(modules, modulePath, name, seen = new Set()) {
 }
 
 /** Read only syntactic test imports, ignoring import-shaped text in comments and strings. */
-function testImports(root, testPath, modules) {
-  const source = readFileSync(join(root, testPath), 'utf8');
+function testImports(root, testPath, modules, inputs) {
+  const source = readPinnedInput(root, testPath, inputs);
   const { masked } = mask(source);
   const found = new Set();
   const pattern = /(?:^|\n)\s*import\s+(?:[\s\S]*?\s+from\s+)?(['"])([^'"\r\n]+)\1/gu;
@@ -385,10 +421,15 @@ export function buildCodeMap(root, mainCommit) {
   if (!/^[\da-f]{40,64}$/u.test(commit)) throw new Error('a full main commit is required to stamp the map');
   requireSourcePin(sourceRoot, commit);
   const files = [...listJavaScript(sourceRoot, 'src'), ...listJavaScript(sourceRoot, 'bin')].sort();
+  const testPaths = listJavaScript(sourceRoot, 'test').filter(path => /\.test\.m?js$/u.test(path));
+  const inputs = committedInputs(sourceRoot, commit);
+  if (JSON.stringify([...inputs.keys()].sort()) !== JSON.stringify([...files, ...testPaths].sort())) {
+    throw new Error('the scanned input paths differ from the committed main source');
+  }
   const modules = new Map();
   let sourceChars = 0;
   for (const path of files) {
-    const source = readFileSync(join(sourceRoot, path), 'utf8');
+    const source = readPinnedInput(sourceRoot, path, inputs);
     sourceChars += source.length;
     modules.set(path, scanSource(path, source));
   }
@@ -459,9 +500,8 @@ export function buildCodeMap(root, mainCommit) {
     }
   } catch { /* Missing history leaves churn unknown at zero; source edges remain available. */ }
 
-  const testPaths = listJavaScript(sourceRoot, 'test').filter(path => /\.test\.m?js$/u.test(path));
   const testsByModule = new Map([...modules.keys()].map(path => [path, []]));
-  for (const testPath of testPaths) for (const target of testImports(sourceRoot, testPath, modules)) testsByModule.get(target)?.push(testPath);
+  for (const testPath of testPaths) for (const target of testImports(sourceRoot, testPath, modules, inputs)) testsByModule.get(target)?.push(testPath);
   const serializedModules = [...modules.values()].map(module => ({
     path: module.path,
     job: module.job,
