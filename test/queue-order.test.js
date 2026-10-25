@@ -1,3 +1,4 @@
+import { createE2eHelpers } from './e2e-helpers.js';
 /** Local release completion and deterministic ordering boundaries [C7,V4]. */
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
@@ -165,4 +166,40 @@ test('the queue ranks unblockers and quick wins first and keeps coordinator over
   assert.equal(ids[0], keystone, 'a lifted override returns to the computed order');
   assert.doesNotMatch(rows.get(lateStrong).why, /pinned/u);
   assert.deepEqual(ids, [...ids].sort((a, b) => buildOrder(board)(getItem(board, a), getItem(board, b))), 'the queue is the board\'s own build order');
+});
+
+
+test('ordinary milestone ordering preserves coordinator overrides until an explicit lift [N22,B13,H16]', t => {
+  const helpers = createE2eHelpers();
+  t.after(helpers.cleanup);
+  const box = helpers.project('true');
+  /** Read the outcome of the actual CLI and its reopened persistent board. */
+  function command(cwd, ...args) {
+    const result = box.run(cwd, ...args, '--json');
+    assert.equal(result.code, 0, result.err + result.out);
+    return JSON.parse(result.out);
+  }
+  for (const title of ['Pinned work', 'Sunk work', 'Ordinary work']) {
+    command(box.repo, 'add', 'web', title, '--specs', 'G1');
+  }
+  command(box.repo, 'milestone', 'add', 'Now', '--items', '1,2,3');
+  command(box.repo, 'milestone', 'pin', 'Now', '1', '--reason', 'release blocker');
+  command(box.repo, 'milestone', 'sink', 'Now', '2', '--reason', 'await the design');
+  const reordered = command(box.web, 'milestone', 'order', 'Now', '2,3').milestone;
+  assert.ok(reordered.order.includes(1), 'an ordinary agent cannot erase a coordinator pin by omission');
+  assert.ok(reordered.sunk.includes(2), 'including a sunk item cannot lift it');
+  assert.deepEqual(reordered.reasons, { '1': 'release blocker', '2': 'await the design' });
+  const again = command(box.repo, 'milestone', 'order', 'Now', '3,2').milestone;
+  assert.ok(again.order.includes(1), 'even a coordinator ordinary re-rank is not an explicit lift');
+  assert.ok(again.sunk.includes(2));
+  assert.deepEqual(again.reasons, reordered.reasons);
+  assert.deepEqual(again.items, [1, 2, 3], 'ordering does not remove milestone membership');
+  const refused = box.run(box.web, 'milestone', 'lift', 'Now', '1,2', '--json');
+  assert.notEqual(refused.code, 0);
+  assert.equal(JSON.parse(refused.err).error.code, 'COORDINATOR_ONLY');
+  command(box.repo, 'milestone', 'lift', 'Now', '1,2');
+  const lifted = command(box.web, 'milestone', 'order', 'Now', '2,3').milestone;
+  assert.deepEqual(lifted.order, [2, 3], 'ordinary legacy ordering still works once overrides are explicitly lifted');
+  assert.equal(lifted.sunk, undefined);
+  assert.equal(lifted.reasons, undefined);
 });
