@@ -7,14 +7,19 @@ import { test } from 'node:test';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { runFixtureChild } from './fixture-child.js';
 
-test('a seat with no claim is sent to pullboard next and never told to wait for assignment [N2,I6]', (t) => {
+test('a seat with no claim is sent to pullboard next and never told to wait for assignment [N2,I6]', async (t) => {
   const helpers = createE2eHelpers();
   t.after(helpers.cleanup);
   const box = helpers.project('true');
+  assert.equal(box.run(box.repo, 'add', 'web', 'Completed setup item', '--criterion', 'A setup marker exists', '--check', 'test -f web/setup').code, 0);
+  assert.equal(box.run(box.repo, 'withdraw', '1', 'Setup is complete').code, 0);
+  const view = await helpers.startView(box, box.repo);
+  await view.stop();
   assert.equal(box.run(box.web, 'inbox', '--json').code, 0);
   const resumed = box.run(box.web, 'resume', '--json');
   assert.equal(resumed.code, 0, resumed.err || resumed.out);
   const card = JSON.parse(resumed.out);
+  assert.equal(card.setup, undefined, 'the real board setup has finished before testing an idle seat');
   assert.equal(card.holding.length, 0);
   assert.match(card.next, /^pullboard next(?:\s|$)/u, 'an idle seat pulls the ranked queue instead of waiting to be assigned');
   assert.doesNotMatch(card.next, /wait for (?:an? )?assignment|wait to be assigned/iu);
