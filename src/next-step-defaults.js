@@ -11,6 +11,7 @@ export const DEFAULT_NEXT_STEPS = Object.freeze({
   PERSON_SIGNER_REQUIRED: 'decide the other rows with your passkey; a row that names SSH signers waits until signing is off',
   PERSON_SIGNING_CORRUPT: 'restore the board from a known-good export',
   PERSON_SIGNING_ERASED: 'restore a known-good board that keeps its signing history',
+  PERSON_SIGNING_RELAY: 'link this board to the relay with pullboard relay on --all, then turn signing on',
   "GIT_SYNC_LOG": "restore the append-only refs/pullboard/board history on origin before running pullboard sync",
   "GIT_SYNC_REMOTE": "restore read/write access to origin, then retry the original command or run pullboard sync; keep its pending sealed move",
   "GIT_SYNC_LOCAL_CHANGED": "run pullboard export to preserve local moves, then ask the coordinator to reconcile the local and remote prefixes before syncing",
