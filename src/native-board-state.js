@@ -1,0 +1,121 @@
+/** One complete native state builder for local HTTP and sealed relay projections [A2,H5,H16]. */
+import * as store from './board.js';
+import { displayAgentName } from './agent-names.js';
+import { COORDINATOR } from './config.js';
+import { loadConfig } from './config.js';
+import { repoInfo } from './git.js';
+import { listApiProjects } from './projects.js';
+import { milestoneRoadmap } from './roadmap.js';
+import { proofStats } from './stats.js';
+import { ruleProofCounts } from './rule-proof-counts.js';
+import { milestoneNamesByItem } from './item-list.js';
+import { withListFields } from './item-list.js';
+import { projectRowDecisions } from './row-decisions.js';
+import { projectSpecApprovals } from './spec-approval.js';
+import { specApprovalState } from './spec-approval.js';
+import { pendingFit } from './blueprint-fit.js';
+import { projectFit } from './blueprint-fit.js';
+import { personBlockWords } from './blocks.js';
+import { verdictProjector } from './verdict-freshness.js';
+import { trunkRevisionReader } from './trunk-revision.js';
+import { projectState } from './serve.js';
+import { personRequestStatuses } from './relay-requests.js';
+
+/** Build the complete local API state, including fields that the shared project snapshot omits. */
+export function buildLocalBoardState(root, boardId, board, codeIsMain, { previous = null, fullItemRebuild = true, afterSequence = 0, changedLeases = new Set(), onItemBuild, projects = listApiProjects, scopeCommonDir = null } = {}) {
+  board.db.exec('BEGIN');
+  try {
+    const sequence = board.db.prepare('SELECT COALESCE(MAX(event_id), 0) AS id FROM event').get().id;
+    let rebuildAll = fullItemRebuild || (previous && previous.sequence > sequence);
+    const eventRows = rebuildAll || !previous ? [] : board.db.prepare('SELECT event_id, item_id FROM event WHERE event_id > ? ORDER BY event_id').all(afterSequence);
+    if (!rebuildAll && previous && eventRows.length !== sequence - previous.sequence) rebuildAll = true;
+    const dirtyIds = new Set(rebuildAll ? [] : [...changedLeases]);
+    for (const event of eventRows) if (event.item_id !== null) dirtyIds.add(event.item_id);
+
+    const currentItems = store.listItems(board, { all: true });
+    const currentById = new Map(currentItems.map((item) => [item.item_id, item]));
+    const currentDependencies = new Map(currentItems.map((item) => [item.item_id, dependencyIds(item)]));
+    const milestoneNames = milestoneNamesByItem(store.milestones(board));
+    for (const prior of previous?.itemMeta.values() ?? []) {
+      if (!currentById.has(prior.id)) dirtyIds.add(prior.id);
+    }
+    for (const item of currentItems) {
+      const prior = previous?.itemMeta.get(item.item_id);
+      if (rebuildAll || !previous?.items.has(item.item_id) || !prior || prior.raw !== JSON.stringify(item)) dirtyIds.add(item.item_id);
+      if (prior && prior.milestone !== (milestoneNames.get(item.item_id) ?? null)) dirtyIds.add(item.item_id);
+    }
+    // A dirty item's status affects the blockedBy list of every direct old or new dependent.
+    const changedIds = [...dirtyIds];
+    for (const dependent of previous?.itemMeta.values() ?? []) {
+      if (changedIds.some((id) => dependent.dependencies.includes(id))) dirtyIds.add(dependent.id);
+    }
+    for (const [id, dependencies] of currentDependencies) {
+      if (changedIds.some((changed) => dependencies.includes(changed))) dirtyIds.add(id);
+    }
+
+    const config = loadConfig(root);
+    const freshness = verdictProjector(root, board, { main: trunkRevisionReader(repoInfo(root))() });
+    const state = projectState(root, { seen: null, board, itemProjector: (item, context) => {
+      if (dirtyIds.has(item.item_id)) {
+        const projected = context.project();
+        const verdictState = freshness.state(item);
+        return verdictState ? { ...projected, verdictState } : projected;
+      }
+      return previous.items.get(item.item_id);
+    } });
+    state.agents = state.agents.map((agent) => ({ ...agent, model: agent.agent_model ?? 'unknown', displayName: displayAgentName(agent, config.agents.names) }));
+    state.board = boardId;
+    state.decisionQueue = store.openDecisions(board, COORDINATOR);
+    const projectData = {
+      requests: store.openRequests(board),
+      personRequests: personRequestStatuses(board),
+      milestones: scopeCommonDir === null
+        ? milestoneRoadmap(root, board)
+        : milestoneRoadmap(root, board, { projects, hideOutOfScope: true }),
+      rowDecisions: store.rowDecisions(board),
+      proofStats: proofStats(board),
+    };
+    state.proofStats = projectData.proofStats;
+    state.requests = projectData.requests;
+    state.personRequests = projectData.personRequests;
+    state.milestones = projectData.milestones;
+    state.blocks = personBlockWords(repoInfo(root).commonDir, board.clock.now()); // Needs you below is recomputed with them [C6].
+    const decorated = projectSpecApprovals(projectFit(pendingFit(repoInfo(root).commonDir), projectRowDecisions(projectData.rowDecisions, state)), specApprovalState(root, { board, config }));
+    decorated.ruleCounts = ruleProofCounts(root, board, decorated.spec);
+    const bases = new Map(decorated.items.map((item) => [item.id, item]));
+    for (const id of dirtyIds) {
+      if (!currentById.has(id)) continue;
+      const item = store.getItem(board, id);
+      const base = bases.get(id);
+      const full = {
+        ...base,
+        check: item.item_check,
+        ...(item.item_check_baseline ? { checkBaseline: item.item_check_baseline } : {}),
+        thread: store.itemThread(board, id),
+      };
+      bases.set(id, full);
+      onItemBuild?.({ board: boardId, itemId: id });
+    }
+    decorated.items = decorated.items.map((item) => bases.get(item.id) ?? item);
+    const leases = new Map(currentItems.map((item) => [item.item_id, item.item_lease_until ?? null]));
+    const listFields = withListFields(decorated, leases, { previous, dirtyIds });
+    const itemMeta = new Map(currentItems.map((item) => [item.item_id, {
+      id: item.item_id,
+      raw: JSON.stringify(item),
+      dependencies: currentDependencies.get(item.item_id) ?? [],
+      milestone: milestoneNames.get(item.item_id) ?? null,
+    }]));
+    const history = store.events(board);
+    board.db.exec('COMMIT');
+    return { state: listFields.state, itemMeta, itemMoveCounts: listFields.itemMoveCounts, sequence, history };
+  } catch (error) {
+    try { board.db.exec('ROLLBACK'); } catch { /* Preserve the projection failure. */ }
+    throw error;
+  }
+}
+
+/** Parse an item's ordered prerequisite IDs from its persisted row. */
+export function dependencyIds(item) {
+  return item.item_after ? item.item_after.split(',').map(Number) : [];
+}
+
