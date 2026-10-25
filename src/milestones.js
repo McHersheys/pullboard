@@ -254,11 +254,17 @@ export function orderMilestoneItems(board, name, { agentId, items, place, reason
     const index = entries.findIndex(entry => entry.name === name);
     if (index < 0) throw new Refused('NO_MILESTONE', `no milestone named ${name}; list them with pullboard roadmap`);
     if (order.some(id => !entries[index].items.includes(id))) throw new Refused('MILESTONE_ITEMS', 'rank only items in this milestone; read pullboard roadmap and retry');
-    entries[index] = { ...entries[index], order };
-    if (engineOf(board) >= WORK_ORDER_ENGINE) entries[index] = withOverrides(entries[index], order, (entries[index].sunk ?? []).filter(id => !order.includes(id)));
+    const current = entries[index];
+    // Explicit coordinator overrides survive ordinary order, including a coordinator's re-rank.
+    const pins = engineOf(board) >= WORK_ORDER_ENGINE
+      ? (current.order ?? []).filter(id => Object.hasOwn(current.reasons ?? {}, String(id))) : [];
+    const sunk = engineOf(board) >= WORK_ORDER_ENGINE ? current.sunk ?? [] : [];
+    const ranked = [...pins, ...order.filter(id => !pins.includes(id) && !sunk.includes(id))];
+    entries[index] = { ...current, order: ranked };
+    if (engineOf(board) >= WORK_ORDER_ENGINE) entries[index] = withOverrides(current, ranked, sunk);
     saveMilestones(board, entries);
     logEvent(board, agentId, 'milestone_order', null, { name, items: order });
-    return order;
+    return ranked;
   });
 }
 
