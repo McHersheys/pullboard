@@ -4,6 +4,12 @@ import { hostname } from 'node:os';
 import { test } from 'node:test';
 import { relayClientFixture } from './relay-client-fixture.js';
 import { relayWorkBudgetMs } from './relay-budget.js';
+import { computerLabel } from '../src/coordinator-hold.js';
+import { computerName } from '../src/computer-name.js';
+import { requireCoordinatorHold } from '../src/coordinator-hold.js';
+import { coordinatorHolder } from '../src/coordinator-hold.js';
+import { COMPUTER_NAME_ENGINE } from '../src/computer-name-engine.js';
+import { openBoard, closeBoard } from '../src/board.js';
 
 test('linked computers use person-given names in coordinator holds and devices [E19,H16]', { timeout: relayWorkBudgetMs(12) }, async t => { // budget: real two-device CLI sign-in, pairing, takeover and cleanup; no speed target.
   const box = await relayClientFixture(t);
@@ -30,4 +36,23 @@ test('linked computers use person-given names in coordinator holds and devices [
       assert.equal(first.document.error.message.includes(privateText), false, 'refusal does not disclose host or path');
     }
   }
+});
+
+test('unnamed computers retain ID-tail labels and invalid names are refused [E19,H16]', () => {
+  assert.equal(computerLabel('machine-1234567890'), 'computer 34567890');
+  assert.equal(computerLabel(undefined), 'another main checkout');
+  assert.equal(computerName(undefined), undefined);
+  assert.equal(computerName(' Writing desk '), 'Writing desk');
+  for (const name of ['', '  ', '/Users/private/computer', 'C:\\private', 'two\nlines', 'a'.repeat(81), null]) {
+    assert.throws(() => computerName(name), { code: 'BAD_COMPUTER_NAME' });
+  }
+});
+
+test('older coordinator hold receipts retain their ID-tail display [E19,H16]', () => {
+  const board = openBoard(':memory:');
+  try {
+    requireCoordinatorHold(board, { operation: 'addItem', engine: COMPUTER_NAME_ENGINE - 1,
+      holder: 'machine-1234567890', holderName: 'Unrecognized future field' }, 'person-lineage', '2026-10-25T00:00:00Z');
+    assert.equal(coordinatorHolder(board).label, 'computer 34567890');
+  } finally { closeBoard(board); }
 });

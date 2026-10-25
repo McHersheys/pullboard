@@ -1,5 +1,6 @@
 /** General CLI recovery text; operation-owned codes live in src/moves/ [P4,C7]. */
 export const DEFAULT_NEXT_STEPS = Object.freeze({
+  "BAD_COMPUTER_NAME": "retry relay on or relay join with --name containing 1 to 80 characters and no control characters or path separators",
   "GIT_SYNC_LOG": "restore the append-only refs/pullboard/board history on origin before running pullboard sync",
   "GIT_SYNC_REMOTE": "restore read/write access to origin, then retry the original command or run pullboard sync; keep its pending sealed move",
   "GIT_SYNC_LOCAL_CHANGED": "run pullboard export to preserve local moves, then ask the coordinator to reconcile the local and remote prefixes before syncing",
