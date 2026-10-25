@@ -68,24 +68,8 @@ function sshSign(bytes) {
   });
 }
 
-/** The public SSH keys on a GitHub account, read from GitHub itself so the relay cannot add one. */
-async function githubKeys(login) {
-  const base = new URL(process.env.PULLBOARD_GITHUB_API || 'https://api.github.com');
-  if (base.protocol !== 'https:' && !(base.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname))) {
-    throw new Refused('GITHUB_UNAVAILABLE', 'PULLBOARD_GITHUB_API must be an HTTPS address, or loopback HTTP for tests');
-  }
-  let keys;
-  try {
-    const response = await fetch(new URL('users/' + encodeURIComponent(login) + '/keys', base.href.endsWith('/') ? base : base.href + '/'),
-      { headers: { accept: 'application/vnd.github+json' }, redirect: 'error', signal: AbortSignal.timeout(10_000) }); // budget: one GitHub read, the same ceiling as a relay request.
-    if (!response.ok) throw new Error(String(response.status));
-    keys = await response.json();
-  } catch { throw new Refused('GITHUB_UNAVAILABLE', `could not read ${login}'s SSH keys from GitHub; the key request waits for the next command`); }
-  return (Array.isArray(keys) ? keys : []).map(entry => entry?.key).filter(key => typeof key === 'string' && /^(?:ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(?:256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com) [A-Za-z0-9+/=]+$/u.test(key));
-}
-
 /** Whether one of the login's GitHub SSH keys made this signature over this exact statement. */
-async function vouched(statement, signature, login) {
+async function vouched(statement, signature, login, githubKeys) {
   const keys = await githubKeys(login);
   if (!keys.length) return false;
   return scratch(folder => {
@@ -132,8 +116,9 @@ export async function requestBoardKey(link, login, send, io) {
 /**
  * On a member device, answer every waiting key request for this board: wrap the key to a device key that one of the
  * person's GitHub SSH keys signed, and refuse the rest by name. GitHub being unreachable leaves a request waiting.
+ * `send` is the relay transport and `githubKeys` reads a login's public SSH keys from GitHub.
  */
-export async function handOverBoardKeys(state, key, send, io) {
+export async function handOverBoardKeys(state, key, { send, githubKeys }, io) {
   const path = '/api/v1/boards/' + state.board + '/key-requests';
   const { requests } = await send(state, path, {}, io);
   for (const entry of Array.isArray(requests) ? requests : []) {
@@ -143,7 +128,7 @@ export async function handOverBoardKeys(state, key, send, io) {
       if (statement?.board !== state.board || statement.repository !== state.repository || statement.login !== entry.login || !(statement.expires > Date.now())) {
         throw new Refused('RELAY_KEY_VOUCH', 'the key request names another board, repository or person; run pullboard relay on again in the clone');
       }
-      if (!await vouched(statement, entry.signature, entry.login)) {
+      if (!await vouched(statement, entry.signature, entry.login, githubKeys)) {
         throw new Refused('RELAY_KEY_VOUCH', `no SSH key on ${entry.login}'s GitHub account signed this device key; add the key that signed it to GitHub with gh ssh-key add, then run pullboard relay on again`);
       }
       const wrapped = await wrapDeviceBoardKey(key, statement.publicKey, { board: state.board, device: statement.device, engine: statement.engine });

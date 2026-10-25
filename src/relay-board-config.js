@@ -6,6 +6,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import {
   CONFIG_FILE,
   loadConfig,
@@ -38,4 +39,21 @@ export function writeNamedBoard(root, board) {
   try { parsed = JSON.parse(edited); } catch { parsed = undefined; }
   writeFileSync(file, isDeepStrictEqual(parsed, expected) ? edited : JSON.stringify(expected, null, 2) + '\n');
   return true;
+}
+
+/**
+ * Whether pullboard.json differs from HEAD only by the board id relay on wrote. A new worktree needs no commit for
+ * that: the relay link is shared by every worktree of the clone, and the person commits the id when they choose.
+ */
+export function onlyNamedBoardChanged(root) {
+  /** The config without its relay board id, so only other differences compare. */
+  const withoutBoard = (text) => {
+    const value = JSON.parse(text);
+    if (value.relay) { delete value.relay.board; if (!Object.keys(value.relay).length) delete value.relay; }
+    return value;
+  };
+  try {
+    const committed = execFileSync('git', ['show', 'HEAD:' + CONFIG_FILE], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    return isDeepStrictEqual(withoutBoard(committed), withoutBoard(readFileSync(join(root, CONFIG_FILE), 'utf8')));
+  } catch { return false; }
 }

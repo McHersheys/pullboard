@@ -7,7 +7,7 @@ import { once } from 'node:events';
 /** Start a provider with real signed JWT verification and one-use browser/device grants. */
 export async function githubFixture(t) {
   const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
-  const state = { access: true, permission: 'write', public: false, installed: true, repositoryID: 100, repositories: ['repository'], accountID: 7, permissionAccountID: 7, deviceAuthorized: false, deviceDeclined: false, deviceExpired: false, slow: false, redirect: null, beforeDevicePoll: null, beforeUser: null };
+  const state = { access: true, permission: 'write', public: false, installed: true, repositoryID: 100, repositories: ['repository', 'repository-2', 'repository-3'], accountID: 7, permissionAccountID: 7, deviceAuthorized: false, deviceDeclined: false, deviceExpired: false, slow: false, redirect: null, beforeDevicePoll: null, beforeUser: null };
   const calls = [];
   const codes = new Map();
   // Each user credential remembers who signed in. state.signer picks the next person and state.people gives each
