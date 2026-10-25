@@ -399,20 +399,20 @@ test('pullboard queue lists releases as breakpoints and items in pull order [N2,
   const lines = text.out.trim().split('\n');
   const at = (pattern) => lines.findIndex((line) => pattern.test(line));
   assert.ok(at(/^current: 0\/4 landed$/u) === 0, `the first release is a breakpoint with its landed count:\n${text.out}`);
-  const order = [ranked, oldest, claimed, waiting].map((id) => at(new RegExp(`^  \\d+\\. #${id} `, 'u')));
-  assert.deepEqual([...order].sort((a, b) => a - b), order, `items follow next's order: rank, then route, then age:\n${text.out}`);
+  const order = [claimed, ranked, oldest, waiting].map((id) => at(new RegExp(`^  \\d+\\. #${id} `, 'u')));
+  assert.deepEqual([...order].sort((a, b) => a - b), order, `items follow remaining path, then rank, route and age:\n${text.out}`);
   assert.ok(order[0] > 0 && at(/^later: 0\/1 landed$/u) > order[3], 'the later release is its own breakpoint after the current one');
   assert.ok(at(new RegExp(`^  \\d+\\. #${later} `, 'u')) > at(/^later: /u));
   assert.ok(at(/^in no release$/u) > at(new RegExp(`#${later} `, 'u')) && at(new RegExp(`#${loose} `, 'u')) > at(/^in no release$/u));
-  assert.match(lines[order[0]], new RegExp(`#${ranked} mid api open: Ranked mid API work$`, 'u'), 'each item shows its route, lane and status');
-  assert.match(lines[order[2]], new RegExp(`#${claimed} strong web claimed · ${holder.agent}: `, 'u'), 'a claimed item names its holder');
+  assert.match(lines[order[1]], new RegExp(`#${ranked} mid api open: Ranked mid API work$`, 'u'), 'each item shows its route, lane and status');
+  assert.match(lines[order[0]], new RegExp(`#${claimed} strong web claimed · ${holder.agent}: `, 'u'), 'a claimed item names its holder');
   assert.match(lines[order[3] + 1], new RegExp(`^     waits on #${claimed} \\(claimed\\)$`, 'u'), 'an item names what it waits on');
 
   const document = box.json(box.run(box.repo, 'queue', '--json'));
   assert.deepEqual(document.releases.map((release) => [release.name, release.landed, release.total, release.items.map((item) => item.id)]),
-    [['current', 0, 4, [ranked, oldest, claimed, waiting]], ['later', 0, 1, [later]]]);
+    [['current', 0, 4, [claimed, ranked, oldest, waiting]], ['later', 0, 1, [later]]]);
   assert.deepEqual(document.unreleased.map((item) => item.id), [loose]);
-  assert.deepEqual(document.releases[0].items[2], { id: claimed, title: 'Claimed strong work', route: 'strong', lane: 'web', status: 'claimed', holder: holder.agent, waits: [] });
+  assert.deepEqual(document.releases[0].items[0], { id: claimed, title: 'Claimed strong work', route: 'strong', lane: 'web', status: 'claimed', holder: holder.agent, waits: [] });
 });
 
 test('the queue names the first item each route would pull [N2,B13]', (t) => {
