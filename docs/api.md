@@ -652,6 +652,7 @@ Run `pullboard handoff` from the outgoing agent worktree. It creates or finds on
 
 The incoming agent joins a new worktree and runs `pullboard handoff --take <id>`. It reads the same hand-off and outgoing work card, and records a timed takeover fact. The first incoming seat wins; its repeat is idempotent. Claims are reported rather than silently reassigned. After takeover, the outgoing seat cannot make board moves except `pullboard shout --item <id> "..."` on that exact hand-off. Both seats read and answer that item channel. The command ends with that same sign-off command. The main checkout retains its separate coordinator takeover flow.
 
+## Agent activity inbox
 
 `pullboard inbox --json` retains its `shouts` array for direct coordination and adds optional
 `activity: { entries, digests, cursor }`. Entries carry their original event id, timestamp, kind
@@ -662,3 +663,11 @@ and addressed messages. Other lane activity is summarized. Explicit coordinator/
 `shout all <text> --news` announcements appear in a one-line digest at session start;
 untyped broadcasts are direct. A missing Git object reports unknown overlap, never zero.
 The existing item `show`/`log` paths retain the full evidence behind compact activity entries.
+
+## Pull request proof status
+
+When `publish.pullRequest` is enabled, `pullboard publish` reconciles the GitHub commit status `pullboard/verified-by-second-agent` for its proposals and open outside pull requests. Teams can require that context in their GitHub branch protection. A passing status requires complete commit coverage by recorded independent ACCEPT receipts with green checks; procedural or historical unknown provenance reads `not verified` and names the unproven independence. A local green gate, a PR description, or a trailer alone never substitutes for a receipt.
+
+A board-recorded item merge covers its introduced commits only when its exact submitted commit has that receipt and is an ancestor of the recorded merge. `Pullboard-Companion: #N` is covered only on a board-recorded trunk containing item N's landing. Unreceipted commits, including release bumps and synthetic publication commits, remain unverified. An outside PR is allowed and initially reads `not verified`; the JSON result's `verification[].intake` names the existing `pullboard intake` command that files it for review. Outside intake can cover only its exact accepted head, never its earlier commits by inference.
+
+The JSON result includes `verification` entries with PR number, exact head, state, assurance, receipt identities, and any unverified commit IDs. GitHub statuses are shared by PRs with the same head: if an outside or unproven PR shares a commit with a proven proposal, the shared status stays red rather than lending the proposal's green status to it. Publishing observes and posts statuses; it never merges a PR or requires outside authors to use Pullboard.
