@@ -52,12 +52,13 @@ test('init adds a Claude Code session hook that runs resume, and keeps every oth
   assert.deepEqual(settings.sandbox, { filesystem: { allowWrite: [box.env.PULLBOARD_MACHINE_HOME] } });
   assert.deepEqual(Object.keys(settings).sort(), ['hooks', 'permissions', 'sandbox'], 'init adds no other top-level setting');
   assert.deepEqual(Object.keys(settings.hooks).sort(), ['SessionStart', 'Stop'], 'init adds no other hook event');
-  assert.deepEqual(settings.hooks.Stop, mine.hooks.Stop);
+  assert.deepEqual(settings.hooks.Stop.slice(0, mine.hooks.Stop.length), mine.hooks.Stop);
+  assert.equal(settings.hooks.Stop.length, mine.hooks.Stop.length + 1, 'only the new nonblocking Stop nudge is appended');
   assert.equal(settings.hooks.SessionStart.length, 1);
   const { command } = settings.hooks.SessionStart[0].hooks[0];
   const card = spawnSync('sh', ['-c', command], { cwd: repo, env: box.env, encoding: 'utf8' });
   assert.equal(card.status, 0, card.stderr);
-  assert.match(card.stdout, /^resume: coordinator/);
+  assert.match(JSON.parse(card.stdout).hookSpecificOutput.additionalContext, /^resume: coordinator/);
   const bare = spawnSync('sh', ['-c', command], { cwd: repo, env: { ...box.env, PATH: '/usr/bin:/bin' }, encoding: 'utf8' });
   assert.equal(bare.status, 0, 'without pullboard installed, the session still starts');
   assert.equal(bare.stdout, '');
@@ -212,7 +213,7 @@ test('a fresh worktree with no install of its own runs pullboard from the main c
   chmodSync(join(bin, 'pullboard'), 0o755);
   const committed = commit();
   assert.equal(committed.status, 0, committed.stderr);
-  assert.match(resume().stdout, /^resume: web-1 \(Test Model\), web lane/);
+  assert.match(JSON.parse(resume().stdout).hookSpecificOutput.additionalContext, /^resume: web-1 \(Test Model\), web lane/);
 });
 
 test('the gate reaches the agent as a digest: one line when green, the failure when red; the whole output stays in the git dir [V10]', () => {
@@ -388,7 +389,7 @@ test('every wait pullboard suggests names its unit and fits one ten-minute tool 
   assert.match(box.run(box.web, 'next').err, /To keep looking: pullboard next --wait 9 \(minutes; give the command a ten-minute timeout\)/);
   assert.match(box.run(box.web, 'resume').out, /next: pullboard next --wait 9 \(minutes\); 1 in your lane waits on other work/);
   box.run(box.repo, 'hold', 'web', '--reason', 'G1 is changing');
-  assert.match(box.run(box.web, 'resume').out, /next: wait for the hold to lift: pullboard next --wait 9 \(minutes\)/);
+  assert.match(box.run(box.web, 'resume').out, /next: pullboard next --wait 9 \(minutes\); the lane hold must lift/);
   const agents = readFileSync(join(box.repo, 'AGENTS.md'), 'utf8');
   assert.match(agents, /`pullboard next --wait 9` keeps looking for up to 9 minutes, which fits one tool call with a ten-minute timeout/);
   assert.doesNotMatch(agents, /--wait 30/);

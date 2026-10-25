@@ -50,7 +50,9 @@ const OPTIONS = {
   project: { type: 'boolean' },
   export: { type: 'string' },
   'no-open': { type: 'boolean' },
+  lan: { type: 'boolean' },
   'no-permissions': { type: 'boolean' },
+  'no-hooks': { type: 'boolean' },
   note: { type: 'string' },
   infra: { type: 'string' },
   'note-file': { type: 'string' },
@@ -100,6 +102,7 @@ const OPTIONS = {
   'agent-mid': { type: 'string' },
   'agent-strong': { type: 'string' },
   attempts: { type: 'string' },
+  'acted-on': { type: 'string' },
   minutes: { type: 'string' },
   items: { type: 'string' },
   run: { type: 'string' },
@@ -111,6 +114,8 @@ const OPTIONS = {
   next: { type: 'string' },
   add: { type: 'string' },
   remove: { type: 'string' },
+  swap: { type: 'string' },
+  limit: { type: 'string' },
   name: { type: 'string' },
   title: { type: 'string' },
   url: { type: 'string' },
@@ -125,16 +130,20 @@ const OPTIONS = {
   verbose: { type: 'boolean' },
   since: { type: 'string' },
   window: { type: 'string' },
+  policy: { type: 'string' },
   decision: { type: 'boolean' },
   news: { type: 'boolean' },
   evidence: { type: 'string' },
   outcome: { type: 'string' },
   item: { type: 'string' },
+  for: { type: 'string' },
   kinds: { type: 'string' }, to: { type: 'string' }, work: { type: 'string' }, 'review-wait': { type: 'string' },
   commit: { type: 'string' },
   ref: { type: 'string' },
   supersedes: { type: 'string' },
   answers: { type: 'string' },
+  origin: { type: 'string' },
+  rationale: { type: 'string' },
   conflict: { type: 'string', multiple: true },
   'withdraw-verdict': { type: 'boolean' },
   cause: { type: 'string' },
@@ -158,7 +167,9 @@ function parseCommandArgs(argv) {
     } catch { /* The final parser supplies the existing actionable usage error. */ }
   }
   const options = ['add', 'edit'].includes(command) ? { ...OPTIONS, wait: { type: 'boolean' } } : OPTIONS;
-  return parseArgs({ args: argv, options, allowPositionals: true });
+  // Flow consumes a history file; show retains its existing boolean --history switch.
+  const commandOptions = command === 'flow' ? { ...options, history: { type: 'string' } } : options;
+  return parseArgs({ args: argv, options: commandOptions, allowPositionals: true });
 }
 
 /**
@@ -283,6 +294,11 @@ async function runMain(argv, streams) {
       && !(command === 'join' && parsed.positionals[1] === (await import('./config.js')).COORDINATOR);
     needsRepo = !(parsed.values.help || parsed.values.version || command === 'help' || command === 'version');
   } catch { sync = false; needsRepo = false; }
+  // Agent nudges never enter Git-hook identity, synchronization or refusal machinery.
+  if (parsed?.positionals[0] === 'hook' && !parsed.values.help && !parsed.values.version
+      && !['pre-commit', 'pre-merge-commit', 'commit-msg', 'pre-push'].includes(parsed.positionals[1])) {
+    return (await import('./agent-hook.js')).runAgentHook(io, parsed.positionals[1]);
+  }
   const git = needsRepo ? await import('./git.js') : null;
   git?.setResumeSourceFacts(parsed?.positionals[0] === 'resume');
   if (parsed) {

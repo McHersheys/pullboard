@@ -18,6 +18,9 @@ import { COORDINATOR } from './config.js';
 import { COORDINATOR_HOLD_ENGINE } from './coordinator-hold-engine.js';
 import { Refused } from './refused.js';
 import { credentialActor } from './relay-sender.js';
+import { computerName } from './computer-name.js';
+import { COMPUTER_NAME_ENGINE } from './computer-name-engine.js';
+import { ENGINE_VERSION } from './machine.js';
 
 export { COORDINATOR_HOLD_ENGINE };
 const HOLDER_KEY = 'coordinator_holder';
@@ -33,7 +36,8 @@ const UNHELD_OPERATIONS = new Set(['register', 'ensureCoordinator', 'takeCoordin
  * @param {unknown} machine the link's relay machine id
  * @returns {string}
  */
-export function computerLabel(machine) {
+export function computerLabel(machine, name) {
+  if (name !== undefined) return computerName(name);
   return typeof machine === 'string' && MACHINE.test(machine) ? `computer ${machine.slice(-8)}` : 'another main checkout';
 }
 
@@ -49,8 +53,11 @@ function machineOf(machine) {
  * @param {unknown} machine the sending link's relay machine id
  * @returns {any} the same move
  */
-export function stampCoordinatorHolder(move, machine) {
-  if (credentialActor(move) === COORDINATOR && typeof machine === 'string' && MACHINE.test(machine)) move.holder = machine;
+export function stampCoordinatorHolder(move, machine, name) {
+  if (credentialActor(move) === COORDINATOR && typeof machine === 'string' && MACHINE.test(machine)) {
+    move.holder = machine;
+    if (move.engine >= COMPUTER_NAME_ENGINE && name !== undefined) move.holderName = computerName(name);
+  }
   return move;
 }
 
@@ -66,15 +73,15 @@ export function coordinatorHolder(board) {
   try {
     const value = JSON.parse(row.meta_value);
     return typeof value?.lineage === 'string'
-      ? { machine: machineOf(value.machine), lineage: value.lineage, label: computerLabel(value.machine), at: String(value.at ?? '') } : null;
+      ? { machine: machineOf(value.machine), lineage: value.lineage, label: computerLabel(value.machine, value.name), at: String(value.at ?? '') } : null;
   } catch { return null; }
 }
 
 /** Record a holder in the caller's transaction and return its name. */
-function saveHolder(board, machine, lineage, at) {
+function saveHolder(board, machine, lineage, at, name) {
   board.db.prepare('INSERT INTO board_meta (meta_key, meta_value) VALUES (?, ?) ON CONFLICT(meta_key) DO UPDATE SET meta_value = excluded.meta_value')
-    .run(HOLDER_KEY, JSON.stringify({ machine: machineOf(machine), lineage, at }));
-  return computerLabel(machine);
+    .run(HOLDER_KEY, JSON.stringify({ machine: machineOf(machine), lineage, at, ...(name === undefined ? {} : { name: computerName(name) }) }));
+  return computerLabel(machine, name);
 }
 
 /**
@@ -89,11 +96,12 @@ function saveHolder(board, machine, lineage, at) {
 export function requireCoordinatorHold(board, move, lineage, at) {
   if (!lineage || !(move.engine >= COORDINATOR_HOLD_ENGINE) || UNHELD_OPERATIONS.has(move.operation)) return;
   const holder = coordinatorHolder(board);
-  if (!holder) { saveHolder(board, move.holder, lineage, at); return; }
+  const name = move.engine >= COMPUTER_NAME_ENGINE ? move.holderName : undefined;
+  if (!holder) { saveHolder(board, move.holder, lineage, at, name); return; }
   const machine = machineOf(move.holder);
   if (holder.lineage === lineage && (!machine || !holder.machine || machine === holder.machine)) return;
   // The holding checkout signed in again, so its credential lineage changed: the hold follows the checkout.
-  if (machine && machine === holder.machine) { saveHolder(board, machine, lineage, holder.at); return; }
+  if (machine && machine === holder.machine) { saveHolder(board, machine, lineage, holder.at, name); return; }
   throw new Refused('COORDINATOR_HELD',
     `this board's coordinator is held by ${holder.label}, so this main checkout cannot act as coordinator; to coordinate from here, run pullboard takeover in this main checkout`);
 }
@@ -106,7 +114,7 @@ export function requireCoordinatorHold(board, move, lineage, at) {
  * @param {{ agentId: string, machine?: string }} options
  * @returns {{ holder: string, previous: string | null }}
  */
-export function takeCoordinator(board, { agentId, machine }) {
+export function takeCoordinator(board, { agentId, machine, name }) {
   if (agentId !== COORDINATOR) throw new Refused('COORDINATOR_ONLY', 'only the coordinator takes over the coordinator; run pullboard takeover in the main checkout');
   const lineage = board.verifierStanding?.lineage;
   if (!lineage) {
@@ -115,7 +123,8 @@ export function takeCoordinator(board, { agentId, machine }) {
   return atomic(board, () => {
     const previous = coordinatorHolder(board);
     const at = board.clock?.now?.().toISOString?.() ?? new Date().toISOString();
-    const holder = saveHolder(board, machine, lineage, at);
+    const label = (board.executionEngineVersion ?? ENGINE_VERSION) >= COMPUTER_NAME_ENGINE ? name : undefined;
+    const holder = saveHolder(board, machine, lineage, at, label);
     logEvent(board, COORDINATOR, 'coordinator-takeover', null, { holder, previous: previous?.label ?? null, engine: COORDINATOR_HOLD_ENGINE });
     return { holder, previous: previous?.label ?? null };
   });

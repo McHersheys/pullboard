@@ -43,7 +43,7 @@ export async function run(io) {
   for (const resource of resources) {
     io.say(`${resource.name} (${resource.scope}, capacity ${resource.capacity})${resource.order === 'arrival' ? '; an older pullboard is waiting, so this line is in arrival order, landings first' : ''}`);
     for (const holder of resource.holders) io.say(`  held by ${agentDisplayName(agents, ctx.config, holder.agent)}${holder.repo ? ` in ${holder.repo}` : ''}${resourceRunLabel(holder, shortSlots)} since ${holder.since}`);
-    resource.line.forEach((waiter, index) => io.say(`  ${index + 1}. waiting: ${agentDisplayName(agents, ctx.config, waiter.agent)}${waiter.repo ? ` in ${waiter.repo}` : ''}${resourceRunLabel(waiter, shortSlots)}; class ${waiter.queueClass}${waiter.agedFrom ? `, aged up from ${waiter.agedFrom}` : ''}`));
+    resource.line.forEach((waiter, index) => io.say(`  ${index + 1}. waiting: ${agentDisplayName(agents, ctx.config, waiter.agent)}${waiter.repo ? ` in ${waiter.repo}` : ''}${resourceRunLabel(waiter, shortSlots)}; class ${waiter.queueClass}${waiter.agedFrom ? `, aged up from ${waiter.agedFrom}` : ''}${waiter.memoryHeld ? '; held by local memory' : ''}`));
   }
   for (const runner of runners) io.say(`runner ${runner.host}: ${runner.inUse}/${runner.slots} slots, ${runner.browserInUse}/${runner.browser} browser, GUI ${runner.gui === true ? 'yes' : runner.gui === false ? 'no' : 'unknown'}${runner.unavailable ? ' (unavailable; re-register after checking the host)' : ''}`);
   return 0;
