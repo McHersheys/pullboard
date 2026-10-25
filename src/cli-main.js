@@ -127,6 +127,7 @@ const OPTIONS = {
   window: { type: 'string' },
   decision: { type: 'boolean' },
   kind: { type: 'string' },
+  news: { type: 'boolean' },
   evidence: { type: 'string' },
   outcome: { type: 'string' },
   item: { type: 'string' },
