@@ -1591,8 +1591,7 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
     if (state && (state.url !== url || state.repository !== repository)) throw new Refused('RELAY_LINKED', 'this board is linked to another relay or repository; run relay off before changing its link');
     const key = state ? readBoardKey(state.board) : await generateBoardKey();
     const nextBoard = state?.board ?? plannedRelayBoard(root, localRecords(root, store.boardId));
-    const relink = state ? null : relayRelink(root);
-    const replacement = state?.replaces ?? relink?.previous;
+    const relink = state ? null : relayRelink(root), replacement = state?.replaces ?? relink?.previous;
     const intent = remoteShell ? { board: nextBoard, repository,
       host: hostname(), boardName: basename(root), ...(replacement ? { replaces: replacement } : {}) } : undefined;
     const signed = remoteShell ? await deviceSignIn(url, io, { intent }) : reusableCredential ?? reusableSession ?? await deviceSignIn(url, io);
