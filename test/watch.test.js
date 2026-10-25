@@ -450,3 +450,29 @@ test('a shout about an item reaches only the people on it [B7,A2,N19]', async (t
   }
   assert.equal(box.cli(box.root, 'inbox').shouts.some((shout) => shout.shout_text === 'a seat reports only to coordination'), true);
 });
+
+
+test('watch follows typed news by native kind and canonical addressee [A2,N26,H16]', async (t) => {
+  const box = project();
+  const before = events(box).length;
+  const watch = startWatch(box, ['--json', '--kinds', 'shout_news', '--to', 'app']);
+  t.after(() => watch.stop('SIGKILL'));
+  await watch.note(line => /following the board directly/u.test(line), 10_000, 'typed-news watch startup'); // budget: startup hang ceiling, not a latency claim.
+  box.cli(box.root, 'shout', 'all', 'The first private release is ready', '--news');
+  const first = events(box).at(-1);
+  assert.equal(first.event_kind, 'shout_news');
+  await watch.line(line => JSON.parse(line).sequence === first.event_id, 5_000, 'first typed news'); // budget: stream hang ceiling, not a latency claim.
+  box.cli(box.root, 'shout', 'all', 'An ordinary governing message keeps its original kind');
+  const ordinary = events(box).at(-1);
+  assert.equal(ordinary.event_kind, 'shout');
+  box.cli(box.root, 'shout', 'all', 'The second private release is ready', '--news');
+  const second = events(box).at(-1);
+  await watch.line(line => JSON.parse(line).sequence === second.event_id, 5_000, 'second typed news'); // budget: ordered-stream hang ceiling, not a latency claim.
+  assert.deepEqual(await watch.stop('SIGTERM'), { code: 0, signal: null });
+  const printed = watch.out.lines.map(({ line }) => JSON.parse(line));
+  assert.deepEqual(printed.map(record => record.sequence), [first.event_id, second.event_id], 'kind filtering remains literal');
+  assert.deepEqual(printed.map(record => record.detail),
+    ['to all: The first private release is ready', 'to all: The second private release is ready'], 'news resolves the same canonical recipient and text');
+  assert.ok(printed.every(record => record.kind === 'shout_news' && record.actor === 'coordinator' && record.item === null));
+  assert.equal(events(box).length, before + 3, 'watch creates no native event');
+});

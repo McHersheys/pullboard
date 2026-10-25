@@ -1482,7 +1482,7 @@ function render() {
     const line = firstLine(x.shout_text);
     return '<b>' + esc(agentName(e.event_by)) + '</b> ' + verb + (x.shout_to ? ' <b>' + esc(agentName(x.shout_to)) + '</b>' : '') + (line ? '<span class="said" title="' + esc(line) + '">' + inline(line, titles) + '</span>' : '');
   };
-  $('activity').innerHTML = p.events.length ? byDay(p.events, (e) => e.event_at, (e) => '<div><time>' + clock(e.event_at) + '</time><div class="act">' + (e.event_kind === 'shout' || e.event_kind === 'answer' ? spoke(e) : '<b>' + esc(agentName(e.event_by)) + '</b> ' + esc(e.event_kind) + (e.item_id ? ' <a class="ref" href="' + esc(itemAddress(e.item_id)) + '" data-go="item:' + e.item_id + '">#' + e.item_id + '</a>' + (titles.has(String(e.item_id)) ? ' <span class="what">' + rich(titles.get(String(e.item_id)), titles) + '</span>' : '') : '')) + '</div></div>') : '<div class="empty">No activity yet.</div>';
+  $('activity').innerHTML = p.events.length ? byDay(p.events, (e) => e.event_at, (e) => '<div><time>' + clock(e.event_at) + '</time><div class="act">' + (e.event_kind === 'shout' || e.event_kind === 'shout_news' || e.event_kind === 'answer' ? spoke(e) : '<b>' + esc(agentName(e.event_by)) + '</b> ' + esc(e.event_kind) + (e.item_id ? ' <a class="ref" href="' + esc(itemAddress(e.item_id)) + '" data-go="item:' + e.item_id + '">#' + e.item_id + '</a>' + (titles.has(String(e.item_id)) ? ' <span class="what">' + rich(titles.get(String(e.item_id)), titles) + '</span>' : '') : '')) + '</div></div>') : '<div class="empty">No activity yet.</div>';
   showTab();
   revealPlace();
   updateRoadmapPanel();

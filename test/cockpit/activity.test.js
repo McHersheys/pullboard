@@ -421,6 +421,7 @@ test('activity rows say what each shout and answer said [N26]', { timeout: 120_0
   for (let n = 1; n <= 40; n++) box.run(demo.repo, 'shout', 'web', `Filler ${n}`);
   const long = 'Please take #1 next, run `pullboard next` in your worktree, and keep going until the greeting reads right on every width the view supports';
   box.run(demo.repo, 'shout', 'web', `${long}\nA second line the row leaves out.`);
+  box.run(demo.repo, 'shout', 'all', 'The private news release is ready.', '--news');
   box.run(demo.web, 'shout', 'coordinator', 'Ship the greeting today?', '--decision');
   const view = await startView(box);
   const profile = mkdtempSync(join(tmpdir(), 'pullboard-said-chrome-'));
@@ -468,6 +469,7 @@ test('activity rows say what each shout and answer said [N26]', { timeout: 120_0
       assert.ok(told.lines === 1 && told.ellipsis, `${width}: on one line, set to end in an ellipsis: ${JSON.stringify(told)}`);
       if (width === 375) assert.ok(told.cut, `${width}: cut on a phone, so the ellipsis shows`);
       assert.deepEqual([told.refs, told.code], [1, ['pullboard next']], `${width}: keeping the item link and the inline code`);
+      assert.ok(find('coordinator (unknown) shouted to all' + 'The private news release is ready.'), `${width}: typed news retains its actual text in activity`);
       assert.ok(find(`${asker} (Test Model) asked coordinator (unknown)` + 'Ship the greeting today?'), `${width}: a decision reads asked`);
       assert.ok(find(`coordinator (unknown) answered ${asker} (Test Model)` + 'Yes, ship it once'), `${width}: an answer reads who answered whom, then the answer`);
       const oldest = rows.filter((row) => row.text.startsWith('coordinator (unknown) shouted to web')).at(-1);
