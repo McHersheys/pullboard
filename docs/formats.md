@@ -672,3 +672,5 @@ not a native move, parent identity, configuration or authority record. Missing/d
 replays activity. Reads freeze an event high-water mark before observing Git; subsequent events
 and messages remain pending. News has a separate cursor so an ordinary poll cannot consume a
 future session-start digest.
+
+The machine resource database adds `waiter.runner_only` and `holder.runner_execution`, both integer booleans defaulting to zero. A runner-only gate ticket cannot consume local or short capacity while a runner is registered. The trusted SSH worker sets `runner_execution` on its own actual private gate holder; inherited admission reads that holder rather than accepting an environment-only claim of remote execution. These are local, additive scheduling metadata, not board move or relay formats.

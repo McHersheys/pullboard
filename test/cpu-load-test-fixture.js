@@ -9,7 +9,7 @@ import { HOST, installSshStandIn } from './runner-ssh-fixture.js';
 const SOURCE = resolve(import.meta.dirname, '..');
 
 /** Build an ordinary CLI fixture whose declared test reports its actual checkout and live holder. */
-export function cpuLoadFixture(e2e) {
+export function cpuLoadFixture(e2e, { declaration = '{ cpuLoad: true }' } = {}) {
   const box = e2e.project('node bin/run-tests.js test/cpu-probe.test.js');
   const bin = join(box.dir, 'ssh-bin');
   const remoteHome = join(box.dir, 'runner-home');
@@ -21,7 +21,9 @@ export function cpuLoadFixture(e2e) {
   writeFileSync(join(box.repo, 'package.json'), JSON.stringify({ name: 'cpu-placement-fixture', version: '1.0.0', type: 'module' }) + '\n');
   writeFileSync(join(box.repo, 'test', 'cpu-probe.test.js'), `import { test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
-test('declared load stand-in', { cpuLoad: true }, () => {
+// Example text is not a declaration: { cpuLoad: true }
+const example = '{ cpuLoad: true }';
+test('declared load stand-in', ${declaration}, () => {
   const db = new DatabaseSync(process.env.PULLBOARD_GATE_SLOT_POOL, { readOnly: true });
   const row = db.prepare('SELECT * FROM holder WHERE token=?').get(process.env.PULLBOARD_GATE_SLOT_TOKEN);
   db.close();

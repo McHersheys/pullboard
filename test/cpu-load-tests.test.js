@@ -28,3 +28,14 @@ test('a declared CPU-load test runs only on a runner when one is registered [C7]
   assert.match(local.log + local.result.stderr, /CPU.load[\s\S]*no (?:registered )?runners|no runners are registered/iu,
     'the no-runner local fallback explains why it is local');
 });
+
+
+test('a false CPU-load option and textual examples keep ordinary local-first admission [C7]', async () => {
+  const box = cpuLoadFixture(e2e, { declaration: '{ cpuLoad: false }' });
+  const local = await box.runGate();
+  assert.equal(local.result.status, 0, local.result.context);
+  assert.equal(box.requestsMade().length, 0, 'comments, string examples and a false option do not force runner execution');
+  assert.equal(local.executor?.cwd, box.repo);
+  assert.equal(local.executor?.liveLease, true);
+  assert.equal(local.executor?.runnerExecution, false);
+});

@@ -156,3 +156,23 @@ export function commonJsIn(sources) {
     return found;
   });
 }
+
+/** Find CPU-load option properties in code without evaluating a test module. Unknown values require runner admission. */
+export function cpuLoadOptionsIn(sources) {
+  const occurrences = sources.map(source => [...source.matchAll(/(?:\bcpuLoad\b|["']cpuLoad["'])\s*:/gu), ...source.matchAll(UNICODE_ESCAPE)]);
+  const variants = sources.flatMap((source, index) => occurrences[index].map(match => {
+    const at = match.index + match[0].length;
+    return source.slice(0, at) + '\u0000' + source.slice(at);
+  }));
+  const parsed = look([...sources, ...variants]);
+  let next = sources.length;
+  return sources.map((source, index) => {
+    let found = !parsed[index].compiles;
+    for (const match of occurrences[index]) {
+      const value = pastGap(source, match.index + match[0].length);
+      if (!parsed[next].compiles && !/^false\b/u.test(value)) found = true;
+      next += 1;
+    }
+    return found;
+  });
+}
