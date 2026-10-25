@@ -4,7 +4,7 @@ import { createRelayBrowserHandler } from '../relay/browser-page.js';
 import { startChrome } from './relay-browser-fixture.js';
 
 /** Serve only synthetic authorized metadata and keep the production browser transport and device storage. */
-export async function emptyPhoneFixture(t, { linked = true, savedKey = false, enrolled = false, delayed = false, phone = true, warnings = [] } = {}) {
+export async function emptyPhoneFixture(t, { linked = true, savedKey = false, enrolled = false, delayed = false, phone = true, warnings = [], uploadStatus = 'missing' } = {}) {
   const board = { id: 'a'.repeat(32), repository: 'fixture/empty-project' };
   let releaseListing;
   const listingReady = delayed ? new Promise(resolve => { releaseListing = resolve; }) : Promise.resolve();
@@ -21,6 +21,8 @@ export async function emptyPhoneFixture(t, { linked = true, savedKey = false, en
       else if (path === '/api/v1/devices/session') body.account = 'fixture-account';
       else if (/\/devices\/[^/]+\/boards$/u.test(path)) body.wraps = [];
       else if (/\/devices\/[^/]+\/approvals$/u.test(path)) body.approvals = [];
+      else if (path.endsWith('/upload-status') && uploadStatus === 'pending') return;
+      else if (path.endsWith('/upload-status') && uploadStatus === 'unauthorized') { status = 401; body.error = { code: 'AUTH_REQUIRED', message: 'This optional status is unavailable.' }; }
       else if (path.endsWith('/state')) { status = 404; body.error = { code: 'NO_SNAPSHOT', message: 'The first sealed copy has not arrived.' }; }
       else { status = 404; body.error = { code: 'NO_BOARD', message: 'This synthetic route has no board.' }; }
       res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); return;
