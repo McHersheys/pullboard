@@ -63,8 +63,7 @@ child.once('close', (status, signal) => {
     sent = true;
     const marker = bytes > LIMIT ? '\n[output capped at 8 MiB; middle omitted]\n' : '';
     const output = head.toString('utf8') + marker + tail.toString('utf8');
-    process.stdout.write(JSON.stringify({ status, signal, error: timedOut ? { code: 'ETIMEDOUT' } : error, logError, output,
-      environment: executionEnvironment() }));
+    process.stdout.write(JSON.stringify({ status, signal, executed: Boolean(child.pid), error: timedOut ? { code: 'ETIMEDOUT' } : error, logError, output, environment: executionEnvironment() }));
   };
   log.once('close', finish);
   if (log.closed) finish();
