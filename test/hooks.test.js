@@ -46,10 +46,15 @@ test("a hook nudges and never blocks, fails open on error or timeout, and init m
   assert.equal(configured[1].description, codexMine.description);
   for (const settings of configured) for (const event of ['SessionStart', 'Stop']) {
     const handlers = settings.hooks[event].flatMap(group => group.hooks);
-    assert.equal(handlers.filter(handler => handler.command === `pullboard hook ${event}`).length, 1);
-    const handler = handlers.find(handler => handler.command === `pullboard hook ${event}`);
+    assert.equal(handlers.filter(handler => handler.command.includes(`hook ${event}`)).length, 1);
+    const handler = handlers.find(handler => handler.command.includes(`hook ${event}`));
     assert.equal(handler.type, 'command');
     assert.ok(handler.timeout > 0);
+    assert.equal(handler.command.includes('\n'), false, 'the installation is one thin resolver line');
+    const missing = runFixtureChild('/bin/sh', ['-c', handler.command], { cwd: box.dir,
+      env: { ...box.env, PATH: '/usr/bin:/bin' }, encoding: 'utf8' });
+    assert.equal(missing.status, 0, 'missing executable cannot break the vendor session');
+    assert.equal(missing.stdout, '');
   }
   const once = [readFileSync(claude, 'utf8'), readFileSync(codex, 'utf8')];
   assert.equal(box.run(box.repo, 'hooks').code, 0);

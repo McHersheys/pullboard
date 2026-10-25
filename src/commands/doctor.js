@@ -42,7 +42,7 @@ export function run(io) {
     message: formatSnapshotLimit(oversizedSnapshot),
     next: 'reduce the sealed board snapshot below the relay limit, then run pullboard status' });
   io.result?.({ problems, agentHooks });
-  for (const hook of agentHooks) io.say(`${hook.vendor} agent hooks: ${hook.events.join(', ') || 'not installed'}${hook.trust ? '; trust unverified: the Stop reminder may be off; review /hooks' : ''}`);
+  for (const hook of agentHooks.filter(hook => hook.configured)) io.say(`${hook.vendor} agent hooks: ${hook.events.join(', ') || 'not installed'}${hook.trust ? '; trust unverified: the Stop reminder may be off; review /hooks' : ''}`);
   if (!problems.length) {
     io.say('board is clean');
     return 0;

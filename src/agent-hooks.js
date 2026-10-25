@@ -20,9 +20,18 @@ export const LEGACY_RESUME_HOOK =
   'm=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/..; for p in node_modules/.bin/pullboard "$m/node_modules/.bin/pullboard"; do [ -x "$p" ] && exec "$p" resume; done; command -v pullboard >/dev/null && exec pullboard resume; true';
 const SOURCES = [['Claude Code', '.claude/settings.json'], ['Codex', '.codex/hooks.json']];
 
+/** Resolve the same local/main/PATH installations as I6; a missing executable is a silent no-op. */
+export function agentHookCommand(event) {
+  if (!AGENT_HOOK_EVENTS.includes(event)) throw new Error('unsupported agent hook event');
+  return 'm=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/..; '
+    + `for p in node_modules/.bin/pullboard "$m/node_modules/.bin/pullboard"; do [ -x "$p" ] && exec "$p" hook ${event}; done; `
+    + `command -v pullboard >/dev/null || exit 0; exec pullboard hook ${event}`;
+}
+
 /** Recognize only the exact command this installer owns. */
 function owned(handler) {
-  return handler?.type === 'command' && AGENT_HOOK_EVENTS.some(event => handler.command === `pullboard hook ${event}`);
+  return handler?.type === 'command' && AGENT_HOOK_EVENTS.some(event => handler.command === agentHookCommand(event)
+    || handler.command === `pullboard hook ${event}`);
 }
 
 /** Never follow project configuration through a symlink into a user's home. */
@@ -63,19 +72,23 @@ export function configureAgentHooks(root, { remove = false, legacyResume = LEGAC
             && !(vendor === 'Claude Code' && legacyResume && event === 'SessionStart' && handler?.command === legacyResume));
           return hooks.length || Object.keys(group).some(key => key !== 'hooks') ? [{ ...group, hooks }] : [];
         });
-        if (!remove) kept.push({ hooks: [{ type: 'command', command: `pullboard hook ${event}`, timeout: 5 }] });
+        if (!remove) kept.push({ hooks: [{ type: 'command', command: agentHookCommand(event), timeout: 5 }] });
         if (kept.length) value.hooks[event] = kept;
         else delete value.hooks[event];
       }
       if (!Object.keys(value.hooks).length) delete value.hooks;
-      if (JSON.stringify(value) !== before) {
+      const changed = JSON.stringify(value) !== before;
+      if (changed) {
         mkdirSync(dirname(join(root, name)), { recursive: true });
         const temporary = join(root, name) + `.${process.pid}.tmp`;
         writeFileSync(temporary, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
         renameSync(temporary, join(root, name));
         onWrite(name);
       }
-      return `${remove ? 'removed' : 'installed'} Pullboard's ${vendor} agent nudges in ${name}${vendor === 'Codex' && !remove ? '; review and trust them with /hooks' : ''}`;
+      if (remove) return `removed Pullboard's ${vendor} agent nudges from ${name}`;
+      return vendor === 'Claude Code'
+        ? `${changed ? 'added a' : 'kept the'} Claude Code session hook and Stop reminder in ${name}`
+        : `${changed ? 'installed' : 'kept'} Codex agent nudges in ${name}; review and trust them with /hooks`;
     } catch {
       return `${vendor} agent hook warning: kept ${name} unchanged; repair its project-local JSON and run pullboard hooks`;
     }
@@ -88,8 +101,9 @@ export function agentHookStatus(root) {
     let events = [];
     try {
       const value = settingsAt(root, name);
-      events = AGENT_HOOK_EVENTS.filter(event => value.hooks?.[event]?.some(group => group.hooks.some(handler => owned(handler) && handler.command === `pullboard hook ${event}`)));
+      events = AGENT_HOOK_EVENTS.filter(event => value.hooks?.[event]?.some(group => group.hooks.some(handler => owned(handler)
+        && [agentHookCommand(event), `pullboard hook ${event}`].includes(handler.command))));
     } catch { /* Invalid configuration remains visibly inactive. */ }
-    return { vendor, events, trust: vendor === 'Codex' ? 'unverified' : null };
+    return { vendor, configured: existsSync(join(root, name)), events, trust: vendor === 'Codex' ? 'unverified' : null };
   });
 }
