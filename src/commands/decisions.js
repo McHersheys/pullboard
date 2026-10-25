@@ -42,6 +42,6 @@ export function run(io, { values }) {
   }
   io.result?.({ decisions: asks });
   if (!asks.length) io.say('no open decisions');
-  for (const ask of asks) io.say(`#${ask.shout_id}  ${agentDisplayName(agents, ctx.config, ask.shout_from)} -> ${agentDisplayName(agents, ctx.config, ask.shout_to)}, ${span(ctx, ask.shout_at)} ago: ${firstLine(ask.shout_text)}`);
+  for (const ask of asks) io.say(`#${ask.shout_id}  ${agentDisplayName(agents, ctx.config, ask.shout_from)} -> ${agentDisplayName(agents, ctx.config, ask.shout_to)}, ${span(ctx, ask.shout_at)} ago: ${firstLine(ask.shout_text)}${ask.options ? '\n' + ask.options.map((option, index) => `  ${index + 1}. ${option}`).join('\n') : ''}`);
   return 0;
 }

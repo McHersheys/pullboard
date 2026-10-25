@@ -16,13 +16,13 @@ import {
   sentinels,
 } from './board-query.js';
 
-/** Keep status's complete obligation list without dashboard history, Git ages, or release notes. */
-export function personNeedsSummary(root, { board, config }) {
+/** Keep status obligations; reuse its same-call seat rows, otherwise read them freshly. */
+export function personNeedsSummary(root, { board, config, agents }) {
   const spec = loadSpec(root, config);
   const rows = projectRowDecisions(store.rowDecisions(board), { root, spec: spec.rows, practice: loadDoctrine(root, config).rows });
   const projected = projectSpecApprovals({ ...rows,
     decisions: store.openDecisions(board, store.PERSON), holds: store.laneHolds(board),
-    agents: store.listAgents(board).map(agent => ({ ...agent, displayName: displayAgentName(agent, config.agents.names) })),
+    agents: (agents ?? store.listAgents(board)).map(agent => ({ ...agent, displayName: displayAgentName(agent, config.agents.names) })),
     rigorDrafts: rigorDraftNeeds(rows, store.rowDrafts(board), store.rowDecisions(board)), sentinelDrafts: sentinelDraftNeeds(sentinels(board)), blocks: recentBlocks(repoInfo(root).commonDir, board),
   }, specApprovalState(root, { board, config, spec }));
   return projected;

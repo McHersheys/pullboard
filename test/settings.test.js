@@ -31,17 +31,32 @@ test('[O5,O6] gateSlots defaults to two, reads and sets atomically, and refuses 
     assert.equal(JSON.parse(settings(home).stdout).settings.gateSlots, 3);
 
     const saved = readFileSync(join(home, 'settings.json'), 'utf8');
-    for (const value of ['0', 'abc']) {
+    for (const [value, code] of [['0', 'BAD_GATE_SLOTS'], ['abc', 'USAGE']]) {
       const refusedSet = settings(home, 'gateSlots', value);
       assert.equal(readFileSync(join(home, 'settings.json'), 'utf8'), saved, `${value} leaves settings.json unchanged`);
       assert.equal(refusedSet.status, 1, `${value}: ${refusedSet.stdout}${refusedSet.stderr}`);
-      assert.equal(JSON.parse(refusedSet.stdout).error.code, 'USAGE');
+      const error = JSON.parse(refusedSet.stdout).error;
+      assert.equal(error.code, code);
+      if (value === '0') assert.match(error.message, /registered runner; run pullboard runner add/u);
     }
 
     writeFileSync(join(home, 'settings.json'), JSON.stringify({ gateSlots: 0 }));
     const refused = settings(home);
     assert.equal(refused.status, 1);
     assert.equal(JSON.parse(refused.stdout).error.code, 'BAD_GATE_SLOTS');
+
+    writeFileSync(join(home, 'settings.json'), saved);
+    const runner = runFixtureChild(process.execPath, [BIN, 'runner', 'add', 'settings-fixture.invalid', '--slots', '1', '--browser', '1', '--json'], {
+      encoding: 'utf8', env: { ...process.env, PULLBOARD_HOME: home, PULLBOARD_MACHINE_HOME: home },
+    });
+    assert.equal(runner.status, 0, `${runner.stdout}${runner.stderr}`);
+    const browserZero = settings(home, 'browserSlots', '0');
+    assert.equal(browserZero.status, 0, `${browserZero.stdout}${browserZero.stderr}`);
+    const gateZero = settings(home, 'gateSlots', '0');
+    assert.equal(gateZero.status, 0, `${gateZero.stdout}${gateZero.stderr}`);
+    assert.equal(JSON.parse(gateZero.stdout).settings.gateSlots, 0);
+    assert.equal(JSON.parse(readFileSync(join(home, 'settings.json'), 'utf8')).gateSlots, 0);
+    assert.equal(JSON.parse(settings(home).stdout).settings.gateSlots, 0, 'a registered runner makes zero local slots valid');
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
