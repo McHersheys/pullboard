@@ -15,6 +15,7 @@ import { LANDING_LEASE_ENGINE } from '../src/landing-lease-engine.js';
 import shoutMove from '../src/moves/shout.js';
 import { ACTIVITY_DELIVERY_ENGINE } from '../src/activity-delivery-engine.js';
 import { relaySenderProblem } from '../src/relay-sender.js';
+import { readActivityDelivery } from '../src/activity-delivery-read.js';
 import { activityMainFiles, activityWorkingFiles, readActivityCursor, saveActivityCursor } from '../src/activity-inbox.js';
 
 const e2e = createE2eHelpers();
@@ -458,6 +459,11 @@ test('interrupt receipts replay once and only their recipient can acknowledge de
   for (const board of [left, right]) importBoard(board, initial);
   const interrupt = { id: `event:${event.event_id}`, eventId: event.event_id, reason: 'answered', text: 'An answer is waiting' };
   const payload = { agentId: 'web-1', through: event.event_id, interrupts: [interrupt] };
+  const beforeRead = exportBoard(left);
+  const changes = left.db.prepare('SELECT total_changes() AS count').get().count;
+  assert.equal(readActivityDelivery(left, 'web-1', { sessionStart: true }).interrupts[0]?.reason, 'answered');
+  assert.deepEqual(exportBoard(left), beforeRead, 'the public read projection neither delivers nor acknowledges');
+  assert.equal(left.db.prepare('SELECT total_changes() AS count').get().count, changes);
   const delivery = prepareEngineMove(source, 'recordActivityDelivery', [payload]);
   const at = new Date().toISOString();
   assert.equal(relaySenderProblem(delivery, { kind: 'agent', agent: 'web-2', userId: 'private-user' }, 'move')?.code, 'RELAY_SENDER_MISMATCH');
