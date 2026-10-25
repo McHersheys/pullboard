@@ -1,5 +1,7 @@
 import { companionPlan } from './companion.js';
 import { applyCompanionRequest } from './companion.js';
+import { heartbeatSeat } from './seat-presence.js';
+import * as itemDecisions from './item-decision-queue.js';
 import * as activityDeliveryStore from './activity-delivery-store.js';
 import { requireFactKind } from './item-notes.js';
 import { activityNewsFlag } from './activity-news.js';
@@ -248,6 +250,8 @@ import {
 } from './rigor-notices.js';
 import { RIGOR_NOTICE_ENGINE } from './rigor-source.js';
 import { RIGOR_AUTO_ENGINE } from './rigor-auto-engine.js';
+import { CPU_SENTINEL_ENGINE } from './cpu-sentinel-engine.js';
+import { hasPendingCpuNotices } from './health-receipts.js';
 import {
   milestoneRanks,
   workOrderCompare,
@@ -592,6 +596,7 @@ export function register(board, who) {
       if (lineage) board.db.prepare('INSERT INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run(`agent_lineage:${id}`, lineage);
     }
     logEvent(board, id, 'join', null, route === 'strong' ? { lane } : { lane, route });
+    if (board.executionEngineVersion === undefined) heartbeatSeat(board, id);
     return id;
   });
 }
@@ -1651,8 +1656,10 @@ export { getItem } from './board-query.js';
  * @param {{ from: string, to: string, text: string, lanes: string[], item?: number, decision?: boolean, answers?: number | null, evidence?: any, request?: boolean, news?: boolean, channel?: 'terminal' | 'view', detail?: object }} message - detail: extra event fields
  * @returns {number}
  */
-function insertShout(board, { from, to, text, lanes, item, decision = false, answers = null, evidence = null, request = false, news = false, channel = 'terminal', detail = {} }) {
+function insertShout(board, { from, to, text, lanes, item, decision = false, answers = null, evidence = null, request = false, news = false, channel = 'terminal', detail = {}, options }) {
   const engine = board.executionEngineVersion ?? ENGINE_VERSION;
+  const validatedDecision = itemDecisions.itemDecisionDetail(board, { options, decision, item, from }, engine);
+  detail = { ...detail, ...validatedDecision };
   if (item !== undefined) {
     if (engine < ITEM_SHOUT_ENGINE) throw new Refused('ENGINE_VERSION', 'item messages require engine 93; upgrade every linked device before sending one');
     to = itemShoutTarget(board.db, item);
@@ -1694,12 +1701,12 @@ function insertShout(board, { from, to, text, lanes, item, decision = false, ans
   if (personAnswer && !['terminal', 'view'].includes(channel)) {
     throw new Refused('B26_PERSON_CHANNEL', 'record the person answer through the terminal or the view; run pullboard view');
   }
-  return persistShout(board, { from, to, text, decision, answers, evidence, request, news, channel, detail, outcome, personAnswer });
+  return persistShout(board, { from, to, text, decision, answers, evidence, request, news, channel, detail, outcome, personAnswer, decisionRecord: validatedDecision.decisionOptions ? { item, options: validatedDecision.decisionOptions } : null });
 }
 
 /** Persist a validated message or a fixed internal notice inside the caller's transaction. */
 function persistShout(board, { from, to, text, decision = false, answers = null, evidence = null, request = false,
-  channel = 'terminal', detail = {}, outcome = '', personAnswer = false, news = false }) {
+  channel = 'terminal', detail = {}, outcome = '', personAnswer = false, decisionRecord = null, news = false }) {
   const result = board.db
     .prepare(
       `INSERT INTO shout (shout_from, shout_to, shout_text, shout_at, shout_decision, shout_answers,
@@ -1710,6 +1717,7 @@ function persistShout(board, { from, to, text, decision = false, answers = null,
     .run(from, to, text.trim(), now(board), decision ? 1 : 0, answers, evidence?.kind ?? null, evidence ? evidence.outcome.trim() : null, evidence?.item ?? null, evidence?.commit ?? null, request ? 1 : 0, outcome);
   const id = Number(result.lastInsertRowid);
   logEvent(board, from, answers === null ? (news ? 'shout_news' : 'shout') : decision ? 'pass' : 'answer', detail.item ?? null, { shout: id, to, decision: Boolean(decision), request: Boolean(request), answers, ...(outcome ? { outcome } : {}), ...(personAnswer ? { channel } : {}), ...detail });
+  itemDecisions.recordItemDecision(board, id, { decision, answers, record: decisionRecord });
   return id;
 }
 
@@ -1728,8 +1736,9 @@ export function shout(board, message) {
 /** Record one current health snapshot atomically, notifying each new or resolved episode once [A6]. */
 export function recordHealthFindings(board, { agentId, observedRevision, findings }) {
   return atomic(board, () => {
-    if ((board.executionEngineVersion ?? ENGINE_VERSION) < HEALTH_SENTINEL_ENGINE) {
-      throw new Refused('ENGINE_VERSION', `sentinel receipts require engine ${HEALTH_SENTINEL_ENGINE}; upgrade Pullboard before scanning`);
+    const minimum = hasPendingCpuNotices(board) || (Array.isArray(findings) && findings.some(finding => finding?.cause === 'AGENT_CPU')) ? CPU_SENTINEL_ENGINE : HEALTH_SENTINEL_ENGINE;
+    if ((board.executionEngineVersion ?? ENGINE_VERSION) < minimum) {
+      throw new Refused('ENGINE_VERSION', `sentinel receipts require engine ${minimum}; upgrade Pullboard before scanning`);
     }
     if (!board.db.prepare('SELECT 1 FROM agent WHERE agent_id = ?').get(agentId)) {
       throw new Refused('NOT_JOINED', 'join this board before recording a health scan: pullboard join <lane>');
@@ -1745,7 +1754,8 @@ export function recordHealthFindings(board, { agentId, observedRevision, finding
     const after = new Map(active.map(finding => [healthFindingIdentity(finding), finding]));
     const added = active.filter(finding => !before.has(healthFindingIdentity(finding)));
     const resolved = previous.filter(finding => !after.has(healthFindingIdentity(finding)));
-    if (!added.length && !resolved.length) return { added: [], resolved: [] };
+    const pending = last ? JSON.parse(last.event_detail).pendingCpu ?? [] : [];
+    if (!added.length && !resolved.length && !pending.length) return { added: [], resolved: [] };
     const agents = listAgents(board);
     const lanes = [...new Set(agents.map(agent => agent.agent_lane))];
     const engine = board.executionEngineVersion ?? ENGINE_VERSION;
@@ -1757,9 +1767,9 @@ export function recordHealthFindings(board, { agentId, observedRevision, finding
         owner: finding.owner, commit: item?.item_commit ?? null, engine: HEALTH_SENTINEL_ENGINE,
       });
     };
-    deliverHealthNotices({ resolved, added, engine, log, coordinator: COORDINATOR, shout: (to, text) => insertShout(board, { from: 'sentinel', to, text, lanes }),
+    const deferred = deliverHealthNotices({ resolved, added, pending, engine, log, coordinator: COORDINATOR, shout: (to, text) => insertShout(board, { from: 'sentinel', to, text, lanes }),
       targets: finding => healthTargets(finding, { engine, coordinator: COORDINATOR, person: PERSON, lanes, agents }) });
-    logEvent(board, agentId, 'health-scan', null, { active, engine: HEALTH_SENTINEL_ENGINE });
+    logEvent(board, agentId, 'health-scan', null, { active, ...(deferred === undefined ? {} : { pendingCpu: deferred }), engine: HEALTH_SENTINEL_ENGINE });
     return { added: added.map(finding => finding.key), resolved: resolved.map(finding => finding.key) };
   });
 }
@@ -2356,6 +2366,7 @@ export function approveOutside(board, id, options) { return applyOutsideApproval
 /** Tailored inbox activity is the same canonical read projection as other board queries. */
 export { agentActivity } from './board-query.js';
 
+export { recordRowVerification, rowVerifications } from './spec-verdicts.js';
 /** Read recipient delivery state without mutating any cursor or receipt. */
 export function activityDeliveryState(board, agentId) {
   return activityDeliveryStore.activityDeliveryState(board, agentId);

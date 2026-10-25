@@ -52,6 +52,7 @@ export const JSON_SHAPES = {
     badge: shape({ items: 'number', checked: 'number', percent: 'number|null', changed: 'array' }),
     status: shape({ me: 'object', mine: 'array', ruleCounts: 'object', stats: 'object', reviewQueue: 'object', unread: 'number', relay: 'object' }),
     doctor: shape({ problems: 'array' }),
+    heartbeat: shape({ seat: 'string|null', presence: 'string', heartbeatAt: 'string|null' }),
     health: shape({ asOf: 'string', thresholds: 'object', stuck: 'array', waiting: 'array' }),
     'sentinel propose': shape({ sentinel: 'object' }),
     'sentinel approve': shape({ sentinel: 'object' }),
