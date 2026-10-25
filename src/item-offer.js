@@ -1,8 +1,18 @@
 /** Shared offer contracts; orchestration supplies canonical board resolution and authority [B2,H3,H16]. */
 import { createHash } from 'node:crypto';
-import { atomic, itemById, boardId } from './board.js';
+import {
+  atomic,
+  itemById,
+  boardId,
+} from './board.js';
 import { Refused } from './refused.js';
-import { exactOfferFields, offerReference, offerItemId, offerBytes, resolveOfferBoard } from './item-offer-contract.js';
+import {
+  exactOfferFields,
+  offerReference,
+  offerItemId,
+  offerBytes,
+  resolveOfferBoard,
+} from './item-offer-contract.js';
 export { minimalItemReceipt, verifyItemReceipt } from './item-receipt.js';
 
 const FIELDS = ['version', 'offerId', 'sourceBoardId', 'parentItem', 'destinationBoardId', 'proposedContent', 'disposition', 'childRef', 'reason'];

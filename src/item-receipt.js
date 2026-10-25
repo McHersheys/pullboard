@@ -1,6 +1,12 @@
 /** Minimal private-landing receipts contain integrity-bound references, never item prose [H3,H16]. */
 import { createHash } from 'node:crypto';
-import { exactOfferFields, offerBytes, offerItemId, offerReference, resolveOfferBoard } from './item-offer-contract.js';
+import {
+  exactOfferFields,
+  offerBytes,
+  offerItemId,
+  offerReference,
+  resolveOfferBoard,
+} from './item-offer-contract.js';
 import { Refused } from './refused.js';
 const FIELDS = ['version', 'sourceBoardId', 'item', 'commit', 'verifier', 'verdict'];
 /** Refuse malformed, mismatched or unauthenticated private receipts before a consumer can apply them. */
