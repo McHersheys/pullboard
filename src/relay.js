@@ -1631,6 +1631,11 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
       host: hostname(), boardName: basename(root) } : undefined;
     const signed = remoteShell ? await deviceSignIn(url, io, { intent }) : reusableCredential ?? reusableSession ?? await deviceSignIn(url, io);
     if (reusableSession && reusableSession.url !== url) throw new Refused('RELAY_SESSION', 'Sign in again to this relay with pullboard relay on --all.');
+    // Every clone of the repository finds its board in the committed pullboard.json [E12]; written before the snapshot,
+    // so the sealed presentation already carries it.
+    const configFile = join(repoInfo(root).root, 'pullboard.json');
+    const priorConfig = existsSync(configFile) ? readFileSync(configFile, 'utf8') : null;
+    if (writeNamedBoard(repoInfo(root).root, nextBoard)) io.err(`pullboard: pullboard.json now names board ${nextBoard.slice(0, 8)}; commit it so every clone of this repository joins this board`);
     if (!state) {
       const snapshot = localRecords(root, (board) => {
         startRelayEpoch(board, nextBoard);
@@ -1656,15 +1661,17 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
         if (!reusableCredential && !signed.linkConfirmed) await request({ ...state, token: signed.token }, '/auth/boards/link', { method: 'POST', body: { board: state.board, repository, ...(state.replaces ? { replaces: state.replaces } : {}) } }, io);
       } catch (error) {
         // The repository's board is another one: forget this never-linked intent, so relay on can join that board [E12].
-        if (error.code === 'BOARD_REPO_LINKED') { rmSync(file, { force: true }); try { forgetBoardKey(state.board, state.keyStorage); } catch { /* The refusal names the next step. */ } }
+        if (error.code === 'BOARD_REPO_LINKED') {
+          rmSync(file, { force: true });
+          if (priorConfig !== null) writeFileSync(configFile, priorConfig);
+          try { forgetBoardKey(state.board, state.keyStorage); } catch { /* The refusal names the next step. */ }
+        }
         throw error;
       }
       delete state.linkPending;
       delete state.replaces;
       saveLink(file, state);
     }
-    // Every clone of the repository finds its board in the committed pullboard.json [E12].
-    if (writeNamedBoard(repoInfo(root).root, state.board)) io.err(`pullboard: pullboard.json now names board ${state.board.slice(0, 8)}; commit it so every clone of this repository joins this board`);
     const machine = updateRelayMachine(settings => settings.machine);
     const issued = reusableCredential ?? await request({ ...state, token: signed.token }, '/auth/machines', { method: 'POST', body: { board: state.board, machine } }, io);
     if (!/^pm_[A-Za-z0-9_-]{43}$/u.test(issued.token ?? '') || issued.board !== state.board || issued.machine !== machine) throw new Refused('RELAY_RESPONSE', 'the relay did not issue this board’s machine credential; sign in again');
