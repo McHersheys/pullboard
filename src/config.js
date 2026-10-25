@@ -9,6 +9,7 @@ import {
 import { join } from 'node:path';
 import { Refused } from './refused.js';
 import { environmentProblem } from './execution-environment.js';
+import { registryGuardsProblem } from './registry-guards.js';
 
 export const CONFIG_FILE = 'pullboard.json';
 export const COORDINATOR = 'coordinator';
@@ -48,6 +49,7 @@ export function defaults() {
     submit: { requireInfraNote: false },
     itemSizeBudget: 100,
     submitInvariants: [],
+    registryGuards: [],
     staticChecks: '',
     lease: '2h',
     reviewLease: '30m',
@@ -231,6 +233,9 @@ export function configProblems(config) {
   if (config.affectedTests !== undefined && (typeof config.affectedTests !== 'string' || !config.affectedTests.trim())) {
     problems.push('"affectedTests" is a nonempty command prefix used to run selected test files');
   }
+  const registryProblem = registryGuardsProblem(config.registryGuards);
+  if (registryProblem) problems.push(registryProblem);
+  else if (config.registryGuards.length && (typeof config.affectedTests !== 'string' || !config.affectedTests.trim())) problems.push('"registryGuards" requires the project "affectedTests" runner');
   if (!isStringList(config.submitInvariants) || config.submitInvariants.some(path =>
     !path || path.trim() !== path || /[\u0000-\u001f\u007f-\u009f\\]/u.test(path)
       || path.startsWith('/') || /^[a-z]:/iu.test(path) || path.split('/').some(part => !part || part === '..' || part === '.'))) {
