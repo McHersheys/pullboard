@@ -58,8 +58,8 @@ function processNamespaces(source) {
 }
 
 /** Unknown command members stay bound without tainting unrelated calls in the same source. */
-function unresolvedCommandValue(expression) {
-  const compact = expression.replace(/\s/gu, '');
+function unresolvedCommandValue(expression, links) {
+  const compact = expression.replace(/^\s*await\s+/u, '').replace(/\s/gu, '');
   // A conditional's predicate is not one of the executable values it returns.
   let nested = 0;
   for (let at = 0; at < compact.length; at += 1) {
@@ -76,13 +76,16 @@ function unresolvedCommandValue(expression) {
           at = end;
         } else if (compact[at] === '?' && !['?', '.'].includes(compact[at + 1]) && compact[at - 1] !== '?') nested += 1;
         else if (compact[at] === ':' && nested-- === 0) {
-          return unresolvedCommandValue(compact.slice(start, at))
-            || unresolvedCommandValue(compact.slice(at + 1));
+          return unresolvedCommandValue(compact.slice(start, at), links)
+            || unresolvedCommandValue(compact.slice(at + 1), links);
         }
       }
       return true;
     }
   }
+  // Only returned values and bare aliases feed the command graph, never a conditional's predicate.
+  const linked = /^([$A-Z_a-z][$\w]*)(?=$|(?:\?\.)?\()/u.exec(compact);
+  if (linked && links) links.add(linked[1]);
   // Calls and object/template construction do not return the value of each member they read.
   // In particular, a pid used to build a directory name is not an executable-valued alias.
   let brackets = 0;
@@ -116,6 +119,41 @@ function expressionEnd(code, start, newlineEnds = true) {
     }
   }
   return end;
+}
+
+/** Read callable result spans without evaluating either a function body or its generated source. */
+function callableReturns(code, start, end) {
+  let at = start + code.slice(start, end).search(/\S/u);
+  const declared = /^(?:async\s+)?function(?:\s+[$A-Z_a-z][$\w]*)?\s*\(/u.exec(code.slice(at, end));
+  if (declared) at += declared[0].length - 1;
+  else {
+    const asynchronous = /^async\s+/u.exec(code.slice(at, end));
+    if (asynchronous) at += asynchronous[0].length;
+  }
+  if (code[at] === '(') {
+    const parameters = closing(code, at);
+    if (parameters === null) return [];
+    at = parameters + 1;
+  } else {
+    const parameter = /^[$A-Z_a-z][$\w]*/u.exec(code.slice(at, end));
+    if (!parameter || declared) return [];
+    at += parameter[0].length;
+  }
+  at += code.slice(at, end).search(/\S/u);
+  if (!declared) {
+    if (code.slice(at, at + 2) !== '=>') return [];
+    at += 2;
+    at += code.slice(at, end).search(/\S/u);
+    if (code[at] !== '{') return [[at, end]];
+  }
+  if (code[at] !== '{') return [];
+  const last = closing(code, at);
+  if (last === null) return [];
+  return [...code.slice(at + 1, last).matchAll(/\breturn[ \t]+/gu)].flatMap(match => {
+    const first = at + 1 + match.index + match[0].length;
+    const final = expressionEnd(code, first);
+    return final === null ? [] : [[first, final]];
+  });
 }
 
 /** A reviewed exception matches one complete call inside its named function, never a whole module. */
@@ -164,9 +202,10 @@ export function sourceLaunchesBrowser(source, reviewedExecutors = []) {
     if (end === null) return CHROME.test(source);
     const prior = bindings.get(match[1]) ?? { browser: false, unresolved: false, aliases: new Set(), dependencies: new Set() };
     prior.browser ||= browserIn(start, end);
-    prior.unresolved ||= unresolvedCommandValue(code.slice(start, end));
-    const alias = /^\s*([$A-Z_a-z][$\w]*)\s*$/u.exec(code.slice(start, end));
-    if (alias) prior.aliases.add(alias[1]);
+    prior.unresolved ||= unresolvedCommandValue(code.slice(start, end), prior.aliases);
+    for (const [first, last] of callableReturns(code, start, end)) {
+      prior.unresolved ||= unresolvedCommandValue(code.slice(first, last), prior.aliases);
+    }
     for (const word of code.slice(start, end).matchAll(WORD)) prior.dependencies.add(word[0]);
     bindings.set(match[1], prior);
   }
@@ -185,7 +224,7 @@ export function sourceLaunchesBrowser(source, reviewedExecutors = []) {
       const end = expressionEnd(code, start);
       if (end === null) continue;
       value.browser ||= browserIn(start, end);
-      value.unresolved ||= unresolvedCommandValue(code.slice(start, end));
+      value.unresolved ||= unresolvedCommandValue(code.slice(start, end), value.aliases);
       for (const word of code.slice(start, end).matchAll(WORD)) value.dependencies.add(word[0]);
     }
     bindings.set(match[1], value);
