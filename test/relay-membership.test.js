@@ -9,6 +9,10 @@ import { exportBoard, importBoard } from '../src/exchange.js';
 import { applyEngineMove, prepareEngineMove } from '../src/engine.js';
 import { seal, unseal } from '../src/seal.js';
 import { prepareBoardMembers, authorizeMember } from '../src/relay-membership.js';
+import { createDeviceKeys, unwrapDeviceBoardKey } from '../src/relay-device-keys.js';
+import { handOverBoardKeys, statementBytes } from '../src/relay-handover.js';
+import { signSshVouch } from '../src/relay-ssh-proof.js';
+import { ENGINE_VERSION } from '../src/machine.js';
 import { runFixtureChild } from './fixture-child.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 
@@ -52,6 +56,42 @@ test('an approver signed member list survives sealed native replay and revokes b
   await assert.rejects(authorizeMember(box.repo, { ...state, board: 'f'.repeat(32) }, document, 'bob', { githubKeys }),
     error => error.code === 'RELAY_NOT_MEMBER', 'the same signature authorizes no other board');
   const revoked = await prepareBoardMembers(box.repo, state, [], { githubKeys, revision: 2, signingKey });
+  await t.test('a local revocation during GitHub proof lookup prevents key publication [H15,E17]', async () => {
+    const bobKey = join(box.dir, 'bob');
+    assert.equal(runFixtureChild('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', bobKey], { encoding: 'utf8' }).status, 0);
+    const bobPublic = readFileSync(bobKey + '.pub', 'utf8').trim().split(' ').slice(0, 2).join(' ');
+    const device = await createDeviceKeys();
+    const statement = { v: 1, board: state.board, repository: state.repository, device: device.deviceId,
+      publicKey: device.publicKey, login: 'bob', engine: ENGINE_VERSION, expires: Date.now() + 60_000 };
+    const signature = signSshVouch(statementBytes(statement), 'pullboard-device-key', bobKey);
+    const deliveries = [];
+    let cleared = false;
+    await handOverBoardKeys(state, key, { root: box.repo, document,
+      currentDocument: () => store.readBoardMembers(board),
+      async githubKeys(login) {
+        if (login === 'bob') return [bobPublic];
+        if (login === 'alice') {
+          store.setBoardMembers(board, { agentId: 'coordinator', document: revoked });
+          cleared = true;
+          return [publicKey];
+        }
+        return [];
+      },
+      async send(_state, _path, options) {
+        if (options.method === 'PUT') { deliveries.push(options.body); return {}; }
+        return { requests: [{ id: 'race-bob', login: 'bob', statement, signature }] };
+      },
+    }, { err() {} });
+    assert.equal(cleared, true, 'a real native clear commits while this handover awaits its proof');
+    assert.equal(deliveries.length, 1);
+    const delivered = deliveries[0];
+    const opened = delivered.wrapped ? await unwrapDeviceBoardKey(device.privateKey,
+      JSON.parse(Buffer.from(delivered.wrapped, 'base64url').toString('utf8')),
+      { board: state.board, device: device.deviceId, engine: ENGINE_VERSION }) : null;
+    assert.equal(opened !== null && Buffer.from(opened).equals(key), false, 'the revoked member cannot decrypt the actual board key');
+    assert.equal(delivered.refused?.code, 'RELAY_NOT_MEMBER');
+  });
+
   assert.equal(applyEngineMove(board, prepareEngineMove(board, 'setBoardMembers', [{ agentId: 'coordinator', document: revoked }]), { sequence: 2, at: new Date().toISOString() }).error, undefined);
   await assert.rejects(authorizeMember(box.repo, state, store.readBoardMembers(board), 'bob', { githubKeys }),
     error => error.code === 'RELAY_NOT_MEMBER', 'the current empty revision revokes an additional member');

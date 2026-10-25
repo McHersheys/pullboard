@@ -1,8 +1,14 @@
 /** Membership authority comes from committed policy or exact local SSH proofs, never a relay assertion [E17]. */
 import { mainPolicy } from './trusted-policy.js';
 import { Refused } from './refused.js';
-import { boardMembersBytes, boardMembersDocument } from './board-members.js';
-import { signSshVouch, verifySshVouch } from './relay-ssh-proof.js';
+import {
+  boardMembersBytes,
+  boardMembersDocument,
+} from './board-members.js';
+import {
+  signSshVouch,
+  verifySshVouch,
+} from './relay-ssh-proof.js';
 
 const NAMESPACE = 'pullboard-board-members';
 const sameLogin = (a, b) => typeof a === 'string' && typeof b === 'string' && a.toLowerCase() === b.toLowerCase();

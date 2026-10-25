@@ -6,7 +6,10 @@ import {
 } from './relay-device-keys.js';
 import { ENGINE_VERSION } from './machine.js';
 import { Refused } from './refused.js';
-import { signSshVouch, verifySshVouch } from './relay-ssh-proof.js';
+import {
+  signSshVouch,
+  verifySshVouch,
+} from './relay-ssh-proof.js';
 import { authorizeMember } from './relay-membership.js';
 import { readBoardMembers } from './board-members.js';
 import { localRecords } from './relay.js';

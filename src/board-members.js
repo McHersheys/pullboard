@@ -1,7 +1,10 @@
 /** Signed membership travels inside the native sealed board state [E17,H16]. */
 import { Refused } from './refused.js';
 import { COORDINATOR } from './config.js';
-import { atomic, logEvent } from './board-event-log.js';
+import {
+  atomic,
+  logEvent,
+} from './board-event-log.js';
 import { ENGINE_VERSION } from './machine.js';
 import { BOARD_MEMBERS_ENGINE } from './board-members-engine.js';
 
