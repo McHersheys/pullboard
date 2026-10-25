@@ -45,6 +45,7 @@ export function createRelayAuth({ database, github, now = Date.now, sessionTTL =
       CREATE TABLE IF NOT EXISTS relay_users (id TEXT PRIMARY KEY, login TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS relay_boards (id TEXT PRIMARY KEY, repository TEXT NOT NULL, repository_id TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS relay_cleanup (board TEXT PRIMARY KEY);
+      CREATE TABLE IF NOT EXISTS relay_board_off (board TEXT PRIMARY KEY, repository_id TEXT NOT NULL, replaced_by TEXT NOT NULL, user_id TEXT NOT NULL, at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS relay_deleted_credentials (hash TEXT PRIMARY KEY, board TEXT NOT NULL, expires INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS relay_credentials (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, kind TEXT NOT NULL, user_id TEXT NOT NULL REFERENCES relay_users(id), board TEXT REFERENCES relay_boards(id), agent TEXT, expires INTEGER NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS relay_action_grants (hash TEXT PRIMARY KEY, request TEXT UNIQUE NOT NULL,
@@ -518,13 +519,24 @@ export function createRelayAuth({ database, github, now = Date.now, sessionTTL =
         if (db.prepare('SELECT 1 FROM relay_cleanup WHERE board=?').get(board)) throw new Refused('RELAY_CLEANUP', 'finish pending board cleanup before linking again');
         const existing = db.prepare('SELECT * FROM relay_boards WHERE id=?').get(board);
         if (existing && existing.repository_id !== String(repo.id)) throw new Refused('BOARD_LINK_CONFLICT', 'use a new board identifier for a different repository');
-        const other = db.prepare('SELECT id FROM relay_boards WHERE repository_id=? AND id<>? ORDER BY linked_at DESC, id').all(String(repo.id), board)
-          .find((row) => row.id !== replaces && !db.prepare('SELECT 1 FROM relay_cleanup WHERE board=?').get(row.id));
+        // A repository has one active link: an off board, with its receipt, or one under cleanup no longer counts [E12].
+        const active = db.prepare("SELECT id FROM relay_boards WHERE repository_id=? AND id<>? AND id NOT IN (SELECT board FROM relay_board_off) AND id NOT IN (SELECT board FROM relay_cleanup) ORDER BY linked_at DESC, id").all(String(repo.id), board);
+        if (replaces !== null && replaces !== undefined && !active.some((entry) => entry.id === replaces)) {
+          throw new Refused('BOARD_REPLACE', `board ${replaces} is not this repository's active board, so this link replaces nothing; run pullboard relay on again to join the repository's board`);
+        }
+        const other = active.find((entry) => entry.id !== replaces);
         if (other) throw new Refused('BOARD_REPO_LINKED', `${repo.name} already has board ${other.id}, and a repository has one team board; pull pullboard.json from main, which names that board, then run pullboard relay on again to join it`);
+        // Relinking after relay off turns the old link off in the same transaction, with its receipt [E12].
+        if (replaces) db.prepare('INSERT INTO relay_board_off (board,repository_id,replaced_by,user_id,at) VALUES (?,?,?,?,?)').run(replaces, String(repo.id), board, row.user_id, now());
         db.prepare('INSERT INTO relay_boards (id,repository,repository_id,linked_at,storage_account) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET repository=excluded.repository,storage_account=COALESCE(relay_boards.storage_account,excluded.storage_account)').run(board, repo.name, String(repo.id), now(), row.user_id);
         permissions.delete(row.user_id + ':' + board);
       });
-      return { id: board, repository: repo.name, repositoryID: String(repo.id) };
+      return { id: board, repository: repo.name, repositoryID: String(repo.id), ...(replaces ? { replaced: replaces } : {}) };
+    },
+    /** The receipt that turned a board's link off when a relink replaced it, or null [E12]. */
+    boardOff(board) {
+      open();
+      return db.prepare('SELECT board,replaced_by AS replacedBy,user_id AS userId,at FROM relay_board_off WHERE board=?').get(board) ?? null;
     },
     /** Internal maintenance inventory; HTTP callers must still pass the normal authorization boundary. */
     linkedBoards() {

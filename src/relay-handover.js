@@ -125,7 +125,7 @@ export async function handOverBoardKeys(state, key, { send, githubKeys }, io) {
     const statement = entry.statement;
     let body;
     try {
-      if (statement?.board !== state.board || statement.repository !== state.repository || statement.login !== entry.login || !(statement.expires > Date.now())) {
+      if (statement?.board !== state.board || statement.repository.toLowerCase() !== String(state.repository).toLowerCase() || statement.login !== entry.login || !(statement.expires > Date.now())) {
         throw new Refused('RELAY_KEY_VOUCH', 'the key request names another board, repository or person; run pullboard relay on again in the clone');
       }
       if (!await vouched(statement, entry.signature, entry.login, githubKeys)) {

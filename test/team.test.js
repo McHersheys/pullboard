@@ -773,6 +773,24 @@ test('a clone of a linked repo joins its board; a member device hands over the k
   assert.ok((await box.cli('export')).document.tables.item.some((item) => item.item_title === 'From bob’s new computer'), 'one board, one order: alice reads bob’s move');
 });
 
+test('a relink turns the old link off with its receipt, so a repository keeps one active board [E12]', { timeout: 120_000 }, async (t) => { // budget: hang ceiling for real relay calls; not a speed target.
+  const box = await teamBoard(t, null);
+  const old = JSON.parse(readFileSync(box.linkFile, 'utf8')).board;
+  const alice = await personSession(box, 'alice');
+  const next = randomBytes(16).toString('hex');
+  await assert.rejects(box.auth.linkBoard(alice, next, 'fixture/repository'), { code: 'BOARD_REPO_LINKED' }, 'a second board without replaces is refused');
+  await assert.rejects(box.auth.linkBoard(alice, next, 'fixture/repository', Infinity, 'e'.repeat(32)), { code: 'BOARD_REPLACE' }, 'replaces must name the active board');
+  const linked = await box.auth.linkBoard(alice, next, 'fixture/repository', Infinity, old);
+  assert.equal(linked.replaced, old, 'the link reports the board it turned off');
+  const receipt = box.auth.boardOff(old);
+  assert.equal(receipt?.replacedBy, next, 'the old link is off, with a receipt naming its replacement');
+  assert.equal(box.auth.boardOff(next), null, 'the new link is the active one');
+  await assert.rejects(box.auth.linkBoard(alice, randomBytes(16).toString('hex'), 'fixture/repository', Infinity, old), { code: 'BOARD_REPLACE' },
+    'an off board cannot be replaced again, so no caller can stack links');
+  await assert.rejects(box.auth.linkBoard(alice, randomBytes(16).toString('hex'), 'fixture/repository'), { code: 'BOARD_REPO_LINKED' },
+    'the replacement is the one active board');
+});
+
 /** Every file under a directory, so a test can prove no secret was written anywhere in it. */
 function filesUnder(directory) {
   if (!existsSync(directory)) return [];

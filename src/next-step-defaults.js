@@ -201,6 +201,7 @@ export const DEFAULT_NEXT_STEPS = Object.freeze({
   "BAR_COVERAGE": "record whole-file duration evidence, the named-check duration and any install duration in a coverage JSON file, then run pullboard bar sign <id> --coverage-file <path> --note \"...\"",
   "NOTHING_FREE": "wait for work: pullboard next --wait 9 (minutes)",
   "NOT_COMMITTED": "commit the files the message names, then run the command again",
+  "BOARD_REPLACE": "run pullboard relay on again; a relink replaces only the repository's active board",
   "BOARD_REPO_LINKED": "pull pullboard.json from main, which names the repository's board, then run pullboard relay on again to join it",
   "GITHUB_UNAVAILABLE": "run any pullboard command again once GitHub answers; the new device keeps waiting",
   "RELAY_JOIN_NOT_EMPTY": "keep this board, then run pullboard init and pullboard relay on in a fresh clone to join the team board",
