@@ -75,6 +75,8 @@ Set up
   pullboard hook SessionStart|Stop     native agent nudges; errors/timeouts warn and never block
 
 Work
+  pullboard map [<module or function>] [--for <item>] [--budget <tokens>]  source map for main, a card, or an item's one-hop slice
+                                        slices default to 4k tokens and cap at 8k; effects the scan cannot see say "not detected"
   pullboard add <lane> <title> [--criterion "..."] [--specs G1.2,K3] [--after 3,4] [--parent <id>]
                 [--brief "..." | --brief-file <file>] [--route light|mid]
                                         --after: claiming waits until those items are verified
@@ -342,6 +344,7 @@ const HELP_EXAMPLES = {
   runner: 'pullboard runner add studio --slots 2 --browser 1', 'runner add': 'pullboard runner add studio --slots 2 --browser 1',
   edit: 'pullboard edit 12 --brief "Add the upload page"', release: 'pullboard release 12',
   land: 'pullboard land --max 4',
+  map: 'pullboard map',
   publish: 'pullboard publish',
   handoff: 'pullboard handoff --take 12',
   health: 'pullboard health',
