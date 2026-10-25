@@ -42,6 +42,13 @@ export async function run(io, { first, second, rest, values }) {
     }
     name = second;
     await ordered(ctx, board, 'orderMilestoneItems', [name, { agentId: me.id, items: ids(rest[0]) }]);
+  } else if (['pin', 'sink', 'lift'].includes(first)) {
+    if (!second || rest.length !== 1 || !rest[0].trim() || ['items', 'note', 'before', 'name', 'add', 'remove', 'target'].some((key) => values[key] !== undefined)
+      || (first === 'lift') !== (values.reason === undefined)) {
+      throw new Refused('USAGE', first === 'lift' ? 'pullboard milestone lift <name> <ids>' : `pullboard milestone ${first} <name> <ids> --reason "<why>"`);
+    }
+    name = second;
+    await ordered(ctx, board, 'orderMilestoneItems', [name, { agentId: me.id, items: ids(rest[0]), place: first, ...(first === 'lift' ? {} : { reason: values.reason }) }]);
   } else if (first === 'move') {
     if (!second || rest.length || !values.before || values.items !== undefined || values.note !== undefined || values.name !== undefined || values.add !== undefined || values.remove !== undefined) {
       throw new Refused('USAGE', 'pullboard milestone move <name> --before <other>');
@@ -75,7 +82,7 @@ export async function run(io, { first, second, rest, values }) {
     await ordered(ctx, board, 'removeMilestone', [name, { agentId: me.id }]);
     entry = { name };
   } else {
-    throw new Refused('USAGE', 'use pullboard milestone add, items, order, move, edit, ship or remove');
+    throw new Refused('USAGE', 'use pullboard milestone add, items, order, pin, sink, lift, move, edit, ship or remove');
   }
   entry ??= store.milestones(board).find((value) => value.name === name);
   io.result?.({ milestone: entry });
