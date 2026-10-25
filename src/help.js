@@ -167,6 +167,7 @@ Work
   pullboard shout all <text> --news              coordinator/person release or focus news, digested at session start
   Inbox combines direct coordination with item/dependency, file and cited-row activity; other lane activity is summarized.
   pullboard shout [<to>] <text> --decision       ask for a decision; defaults to your coordinator or the person
+  pullboard shout coordinator <question> --item <id> --decision --options '["first","second"]'
   pullboard shout <to> <text> --evidence attempt|receipt --outcome <word> --item <id> --commit <rev>
   pullboard answer <shout-id> <text> [--as person]
                                         answer your decision; person mode is main-checkout only

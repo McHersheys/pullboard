@@ -692,6 +692,9 @@ A board-recorded item merge covers its introduced commits only when its exact su
 
 The JSON result includes `verification` entries with PR number, exact head, state, assurance, receipt identities, and any unverified commit IDs. GitHub statuses are shared by PRs with the same head: if an outside or unproven PR shares a commit with a proven proposal, the shared status stays red rather than lending the proposal's green status to it. Publishing observes and posts statuses; it never merges a PR or requires outside authors to use Pullboard.
 
+### Item decision queue
+
+The full and summary board state include `decisionQueue`, the coordinator's open decisions, separate from recent `shouts` and the person's `decisions`/Needs you. Structured item questions retain the ordinary shout fields and add `item` and `options`. The state delta carries this small queue whole, so an answer removes its pending entry. Use the normal authenticated `answer` move to append an answer; a decision passed to the person requires the existing person channel.
 `pullboard why <file>[:<line>] --json` uses the `why file` catalog shape; this names the file form, not a literal `file` argument. It traces commits on the repository's actual primary branch, then resolves their item trailers, served row IDs and answered decisions in one board query. The legacy `why <id>` shape is unchanged. Answered decisions carry their recorded origin, statement, rationale, decider and relayer; absent historical provenance remains `unknown`. Row and item origins are also `unknown` unless recorded, rather than inferred from a related decision. An agent may label a relayed or inherited answer but cannot use that label to mint a person-origin record. Unproven original decider identities remain unknown, with the answering relay seat recorded separately.
 
 

@@ -1,4 +1,5 @@
 import { heartbeatSeat } from './seat-presence.js';
+import * as itemDecisions from './item-decision-queue.js';
 import * as activityDeliveryStore from './activity-delivery-store.js';
 import { requireFactKind } from './item-notes.js';
 import { activityNewsFlag } from './activity-news.js';
@@ -1637,8 +1638,10 @@ export { getItem } from './board-query.js';
  * @param {{ from: string, to: string, text: string, lanes: string[], item?: number, decision?: boolean, answers?: number | null, evidence?: any, request?: boolean, news?: boolean, channel?: 'terminal' | 'view', detail?: object }} message - detail: extra event fields
  * @returns {number}
  */
-function insertShout(board, { from, to, text, lanes, item, decision = false, answers = null, evidence = null, request = false, news = false, channel = 'terminal', detail = {} }) {
+function insertShout(board, { from, to, text, lanes, item, decision = false, answers = null, evidence = null, request = false, news = false, channel = 'terminal', detail = {}, options }) {
   const engine = board.executionEngineVersion ?? ENGINE_VERSION;
+  const validatedDecision = itemDecisions.itemDecisionDetail(board, { options, decision, item, from }, engine);
+  detail = { ...detail, ...validatedDecision };
   if (item !== undefined) {
     if (engine < ITEM_SHOUT_ENGINE) throw new Refused('ENGINE_VERSION', 'item messages require engine 93; upgrade every linked device before sending one');
     to = itemShoutTarget(board.db, item);
@@ -1680,12 +1683,12 @@ function insertShout(board, { from, to, text, lanes, item, decision = false, ans
   if (personAnswer && !['terminal', 'view'].includes(channel)) {
     throw new Refused('B26_PERSON_CHANNEL', 'record the person answer through the terminal or the view; run pullboard view');
   }
-  return persistShout(board, { from, to, text, decision, answers, evidence, request, news, channel, detail, outcome, personAnswer });
+  return persistShout(board, { from, to, text, decision, answers, evidence, request, news, channel, detail, outcome, personAnswer, decisionRecord: validatedDecision.decisionOptions ? { item, options: validatedDecision.decisionOptions } : null });
 }
 
 /** Persist a validated message or a fixed internal notice inside the caller's transaction. */
 function persistShout(board, { from, to, text, decision = false, answers = null, evidence = null, request = false,
-  channel = 'terminal', detail = {}, outcome = '', personAnswer = false, news = false }) {
+  channel = 'terminal', detail = {}, outcome = '', personAnswer = false, decisionRecord = null, news = false }) {
   const result = board.db
     .prepare(
       `INSERT INTO shout (shout_from, shout_to, shout_text, shout_at, shout_decision, shout_answers,
@@ -1696,6 +1699,7 @@ function persistShout(board, { from, to, text, decision = false, answers = null,
     .run(from, to, text.trim(), now(board), decision ? 1 : 0, answers, evidence?.kind ?? null, evidence ? evidence.outcome.trim() : null, evidence?.item ?? null, evidence?.commit ?? null, request ? 1 : 0, outcome);
   const id = Number(result.lastInsertRowid);
   logEvent(board, from, answers === null ? (news ? 'shout_news' : 'shout') : decision ? 'pass' : 'answer', detail.item ?? null, { shout: id, to, decision: Boolean(decision), request: Boolean(request), answers, ...(outcome ? { outcome } : {}), ...(personAnswer ? { channel } : {}), ...detail });
+  itemDecisions.recordItemDecision(board, id, { decision, answers, record: decisionRecord });
   return id;
 }
 
