@@ -88,7 +88,7 @@ For example: `flow: review wait average 61 min (1 measured; > 60 min); bottlenec
 | `takeover` | `version:number`, `agent:string`, `path:string` |
 | `worktree` | `version:number`, `agent:string`, `lane:string`, `route:string`, `path:string`, `branch:string`, `prompt:string`, `model:string`, `displayName:string` |
 | `resume` | `version:number`, `me:object`, `all:array`, `requests:array`, `holding:array`, `sentBack:array`, `awaiting:array`, `toVerify:array`, `toMerge:array`, `open:array`, `stale:array`, `doctrineNotes:array`, `holds:array`, `unread:number`, `newest:array`, `root:string`, `newWorktreeLocation:string`, `dirty:number`, `next:string` |
-| `whoami` | `version:number`, `id:string`, `lane:string`, `path:string`, `model:string`, `displayName:string` |
+| `whoami` | `address:string`, `version:number`, `id:string`, `lane:string`, `path:string`, `model:string`, `displayName:string` |
 | `agents` | `version:number`, `agents:array` |
 | `lanes` | `version:number`, `lanes:object`, `shared:array`, `coordinator:string` |
 | `lane add` | `version:number`, `lane:string`, `owns:array` |
@@ -721,3 +721,7 @@ Consumers supply the existing canonical resolver as `resolveBoardRef(id) -> {boa
 `SessionStart` returns the normal resume card as `hookSpecificOutput.additionalContext`. `Stop` returns a `systemMessage` when this seat has committed, unsubmitted work. A local error or two-second worker timeout returns a warning and exit zero, with no blocking decision. Unknown events are silent no-ops. These shapes follow the current [Codex hooks](https://learn.chatgpt.com/docs/hooks) and [Claude Code hooks](https://code.claude.com/docs/en/hooks) contracts.
 
 `doctor --json` adds `agentHooks`, with each vendor's `configured` flag, installed `events`, and `trust`. Codex trust is `unverified`: file installation never grants vendor trust, and the Stop reminder may be off until the person reviews the exact definitions with `/hooks`. Text doctor output reports configured hooks; with no agent-hook files it retains its existing one-line clean-board result.
+
+### Seat addresses
+
+`whoami.address` and each `agents` entry expose `pullboard:<board-id>:<percent-encoded-seat-id>`. The address uses the persistent board identity and registered seat id, not its checkout path. Send with `pullboard shout <address> "<text>"` from a checkout linked to that board with the sender’s own grant; the existing sealed relay authenticates the sender and orders the ordinary shout. Another board’s address is refused with `SEAT_ADDRESS_BOARD`. An address grants no access, and revoked credentials cannot deliver a message.
