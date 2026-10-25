@@ -27,7 +27,7 @@ export function signedBoard(t, name, clock) {
   git('commit', '-q', '-m', 'fixture: establish board signer root');
   addSigner(root, { by: name, key: key + '.pub' });
   board = store.openBoard(join(root, '.git', 'pullboard', 'board.sqlite'), clock);
-  return { root, key, by: name, board, reference: { boardId: store.boardId(board), organization: 'fixture', handle: name } };
+  return { root, key, git, by: name, board, reference: { boardId: store.boardId(board), organization: 'fixture', handle: name } };
 }
 
 /** Obtain genuine independent approval of the exact same link document from both boards. */

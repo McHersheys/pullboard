@@ -882,6 +882,10 @@ test('an item waits across repos [B24,H16]', async t => {
   const parent = signedBoard(t, 'app', clock);
   const child = signedBoard(t, 'service', clock);
   const local = parent.board, foreign = child.board;
+  writeFileSync(join(parent.root, 'pullboard.json'), JSON.stringify({ name: 'app', project: 'fixture', gate: 'true', lanes: { web: { owns: ['web/'] } } }));
+  writeFileSync(join(parent.root, 'SPEC.md'), '# Synthetic fixture\n\n- B24 [approved, must] Cross-repo fixture. | gate: test/team.test.js\n');
+  parent.git('add', 'pullboard.json', 'SPEC.md');
+  parent.git('commit', '-q', '-m', 'fixture: configure the private dependency API');
   for (const box of [parent, child]) {
     store.register(box.board, { lane: 'coordinator', path: box.root });
     store.register(box.board, { lane: 'web', path: join(box.root, 'synthetic-builder') });
@@ -936,9 +940,27 @@ test('an item waits across repos [B24,H16]', async t => {
   }
   await announce(1);
   blocked(dependent, 'service#1');
+  const builds = [];
+  const localApi = await serveApi({ port: 0, runCommand: main, stateDetail: 'full',
+    projects: () => [{ root: parent.root, name: 'app', project: 'fixture', added: '2026-10-25T00:00:00Z' }],
+    onItemBuild: entry => builds.push(entry.itemId) });
+  t.after(() => localApi.close());
+  const address = new URL(localApi.url);
+  /** Observe the real cached API projection without substituting an item builder. */
+  async function readState() {
+    const response = await fetchFresh(`${address.origin}/api/v1/boards/${parent.reference.boardId}/state?detail=full`,
+      { headers: { 'x-pullboard-key': address.searchParams.get('k') } });
+    const document = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(document));
+    return document.state;
+  }
+  await readState();
+  builds.length = 0;
   accept(foreign, foreignId, child.root, 'Foreign prerequisite');
   blocked(dependent, 'service#1');
   await announce(2);
+  await readState();
+  assert.ok(builds.includes(dependent), 'an authenticated global state announcement rebuilds its cached foreign dependents');
   const replica = store.openBoard(':memory:', clock);
   t.after(() => store.closeBoard(replica));
   importBoard(replica, exportBoard(local));
@@ -953,4 +975,10 @@ test('an item waits across repos [B24,H16]', async t => {
   assert.equal(store.getItem(local, dependent).item_status, 'claimed');
   assert.equal(store.getItem(replica, dependent).item_status, 'claimed', 'replica uses canonical received state, not a local registry or foreign-board path');
   assert.deepEqual(exportBoard(replica), exportBoard(local), 'same canonical state and claim produce exact replica rows and event IDs');
+  await readState();
+  builds.length = 0;
+  const revoked = await api.revokeBoardLink(record, parent.reference.boardId, authority, { by: parent.by, key: parent.key });
+  await api.applyBoardLink(local, revoked, authority);
+  await readState();
+  assert.ok(builds.includes(dependent), 'a canonical link revocation invalidates cached foreign dependency status');
 });
