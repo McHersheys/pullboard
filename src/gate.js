@@ -623,7 +623,7 @@ export async function runSubmitGate(root, config, { base, trunk, changed, check,
   for (const path of [...invariants, ...registryGuards]) {
     let file = false;
     try { file = statSync(join(root, path)).isFile(); } catch { /* Missing or unreadable invariants refuse rather than silently disappearing. */ }
-    if (!file) throw new Refused('BAD_CONFIG', `submit proof file ${path} is missing or unreadable; restore it or update the obligations on accepted main`);
+    if (!file) throw new Refused('BAD_CONFIG', `${invariants.includes(path) ? 'submitInvariants' : 'registryGuards'} file ${path} is missing or unreadable; restore it or update the list on accepted main`);
   }
   const proofFiles = [...new Set([...(deferFullFallback || deferSelection ? [] : selection.files), ...invariants, ...registryGuards])].sort();
   const guardCommand = registryGuards.length ? `${config.affectedTests.trimEnd()} ${registryGuards.map(path => commandWord('./' + path)).join(' ')}` : '';
@@ -713,7 +713,8 @@ export function submitGateReport(gate) {
       : gate.deferredFiles
         ? `${invariants}${deferredSelectionNote(gate.deferredFiles)} (over submitDeferAbove ${gate.deferAbove}): ${gate.deferredFiles.join(', ')}`
         : `affected tests: ${gate.files.length ? gate.files.join(', ') : 'none'}; full suite deferred to the landing gate${gate.submitInvariants?.length ? '; submit invariants: ' + gate.submitInvariants.join(', ') : ''}`;
-    const result = invariantsOnly && !gate.submitInvariants?.length && !gate.registryGuards?.length ? '' : `; ${gate.isGreen ? `${invariantsOnly ? 'submit invariants and registry guards' : 'affected tests'} green in ${gate.seconds}s` : gateReport(gate)}`;
+    const label = invariantsOnly ? (gate.registryGuards?.length ? 'submit invariants and registry guards' : 'submit invariants') : 'affected tests';
+    const result = invariantsOnly && !gate.submitInvariants?.length && !gate.registryGuards?.length ? '' : `; ${gate.isGreen ? `${label} green in ${gate.seconds}s` : gateReport(gate)}`;
     return `${check}; ${proof}${result}${detail}`;
   }
   const selection = gate.full ? `full gate: ${gate.reason}` : `affected tests: ${gate.files.length ? gate.files.join(', ') : 'none'}`;
