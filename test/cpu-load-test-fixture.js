@@ -9,7 +9,7 @@ import { HOST, installSshStandIn } from './runner-ssh-fixture.js';
 const SOURCE = resolve(import.meta.dirname, '..');
 
 /** Build an ordinary CLI fixture whose declared test reports its actual checkout and live holder. */
-export function cpuLoadFixture(e2e, { declaration = '{ cpuLoad: true }', binding = 'test', subtest = null, commonjs = false, dynamicImport = false, importBinding = null, moduleSpecifier = 'node:test', importedOptions = false } = {}) {
+export function cpuLoadFixture(e2e, { declaration = '{ cpuLoad: true }', binding = 'test', subtest = null, commonjs = false, dynamicImport = false, importBinding = null, moduleSpecifier = 'node:test', importedOptions = false, registrationHelper = false } = {}) {
   const probeFile = `cpu-probe.test.${commonjs ? 'cjs' : 'js'}`;
   const box = e2e.project(`node bin/run-tests.js test/${probeFile}`);
   const bin = join(box.dir, 'ssh-bin');
@@ -20,6 +20,10 @@ export function cpuLoadFixture(e2e, { declaration = '{ cpuLoad: true }', binding
   cpSync(join(SOURCE, 'src'), join(box.repo, 'src'), { recursive: true });
   cpSync(join(SOURCE, 'bin'), join(box.repo, 'bin'), { recursive: true });
   writeFileSync(join(box.repo, 'package.json'), JSON.stringify({ name: 'pullboard', version: '1.0.0', type: 'module' }) + '\n');
+  if (registrationHelper) {
+    writeFileSync(join(box.repo, 'test', 'registrations.js'), "export { test as launch, after } from 'node:test';\n");
+    writeFileSync(join(box.repo, 'test', 'registration-barrel.js'), "export { launch, after } from './registrations.js';\n");
+  }
   if (importedOptions) writeFileSync(join(box.repo, 'test', 'options.js'), 'export const options = { cpuLoad: true };\n');
   writeFileSync(join(box.repo, 'test', probeFile), `${commonjs
     ? `const { test: ${binding}, after: finish } = require('node:test');\nconst { DatabaseSync } = require('node:sqlite');`
