@@ -509,12 +509,15 @@ test('later executable assignments retain every possible browser launch value [C
     'test/quoted-write.test.js': imports + 'const generated = ' + JSON.stringify("let executable; executable = 'google-chrome'; spawnSync(executable, []);")
       + "; spawnSync('git', ['status']);",
     'test/comment-write.test.js': imports + "// executable = 'google-chrome';\nspawnSync('git', ['status']);",
+    'test/default-body.test.js': imports + "let executable = 'git'; function configure(executable = 'git') { const warning = 'Chrome'; } spawnSync(executable, ['status']);",
+    'test/default-browser.test.js': imports + "function run(executable = 'google-chrome') { return spawnSync(executable, []); }",
+    'test/property-write.test.js': imports + "let executable = 'git'; const options = {}; options . executable = 'google-chrome'; spawnSync(executable, ['status']);",
   });
-  for (const name of ['later-write', 'alias-write', 'replaced-write', 'conditional-write', 'parameter-write']) {
+  for (const name of ['later-write', 'alias-write', 'replaced-write', 'conditional-write', 'parameter-write', 'default-browser']) {
     assert.equal(await testsNeedBrowser(root, [`test/${name}.test.js`], { byLaunch: true }), true,
       `${name}: a later assignment keeps a possible browser value conservatively`);
   }
-  for (const name of ['quoted-write', 'comment-write']) {
+  for (const name of ['quoted-write', 'comment-write', 'default-body', 'property-write']) {
     const file = `test/${name}.test.js`;
     assert.equal(await testsNeedBrowser(root, [file], { byLaunch: true }), false, `${name}: assignment text is not executed`);
     assert.equal(await testsNeedBrowser(root, [file], { byLaunch: false }), true, `${name}: default admission remains conservative`);

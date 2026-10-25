@@ -67,9 +67,11 @@ export function sourceLaunchesBrowser(source) {
   // Union executable identifier assignments, including later writes and conditional branches.
   // Never let a later non-browser value erase a possible browser value; strings/comments are blank in code.
   for (const match of code.matchAll(/(?<![\w$.])([$A-Z_a-z][$\w]*)\s*=(?!=|>)/gu)) {
+    // A property write is not a write to the same-named local identifier, even with whitespace.
+    if (code.slice(0, match.index).trimEnd().endsWith('.')) continue;
     const start = match.index + match[0].length;
     let end = start;
-    while (end < code.length && !';\n'.includes(code[end])) {
+    while (end < code.length && !';,)]}\n'.includes(code[end])) {
       if ('([{'.includes(code[end])) {
         const close = closing(code, end);
         if (close === null) return CHROME.test(source);
