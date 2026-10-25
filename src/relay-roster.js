@@ -1,6 +1,7 @@
 /** Who reads this computer's linked boards: paired phones and joined computers, by name [H17]. */
 import { listApiProjects } from './projects.js';
 import { readRelayMachine } from './relay-machine.js';
+import { computerName } from './computer-name.js';
 import {
   relayMachineContext,
   relayRosterRead,
@@ -34,15 +35,15 @@ export async function joinedComputers(state) {
   if (!Array.isArray(document?.machines)) return [];
   return document.machines.filter(entry => MACHINE.test(entry?.machine ?? '') && entry.machine !== state.machine).map(entry => ({
     machine: entry.machine,
-    host: typeof entry.host === 'string' && entry.host ? entry.host : null,
+    name: typeof entry.name === 'string' ? computerName(entry.name) : null,
     created: Number.isSafeInteger(entry.created) ? entry.created : null,
     seen: Number.isSafeInteger(entry.seen) ? entry.seen : null,
   }));
 }
 
 /** Name a joined computer by its host, or by the end of its id when it joined before hosts were recorded. */
-function computerName(computer) {
-  return computer.host ?? 'computer ' + computer.machine.slice(-8);
+function computerDisplayName(computer) {
+  return computer.name ?? 'computer ' + computer.machine.slice(-8);
 }
 
 /** List the phones that hold one linked board's key, by id, with the relay's last seen and revoked status. */
@@ -85,7 +86,7 @@ export async function relayRoster({ verbose = false } = {}) {
   for (const board of boards) {
     for (const entry of await joinedComputers(board.state)) {
       const known = computers.get(entry.machine) ?? { ...entry, boards: [] };
-      known.host ??= entry.host;
+      known.name ??= entry.name;
       known.created = Math.min(known.created ?? Infinity, entry.created ?? Infinity);
       known.seen = Math.max(known.seen ?? -Infinity, entry.seen ?? -Infinity);
       known.boards.push(board.name);
@@ -116,7 +117,7 @@ export function rosterLines(roster, { verbose = false } = {}) {
     if (verbose) lines.push(`  ${phone.deviceId}${phone.fingerprint ? '  fingerprint ' + phone.fingerprint : ''}`);
   }
   for (const computer of roster.computers) {
-    lines.push(`${computerName(computer)} (computer): joined ${computer.created === null ? 'on an unknown date' : day(computer.created)}, last seen ${moment(computer.seen)}; ${reads(computer.boards)}`);
+    lines.push(`${computerDisplayName(computer)} (computer): joined ${computer.created === null ? 'on an unknown date' : day(computer.created)}, last seen ${moment(computer.seen)}; ${reads(computer.boards)}`);
     if (verbose) lines.push(`  ${computer.machine}`);
   }
   if (!lines.length) lines.push('No phones or computers are paired yet. Pair a phone with pullboard relay on --all, or another computer with pullboard relay pair.');

@@ -1,5 +1,6 @@
 /** Set up a machine once, enroll its phone in the foreground and link later registrations [H5,H17]. */
 import { join } from 'node:path';
+import { computerName } from './computer-name.js';
 import { randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import * as store from './board.js';
@@ -399,7 +400,8 @@ async function pairFirstDevice(session, board, linked, io, { signal, onPairingUR
 }
 
 /** Explicit foreground sign-in repairs links; only board machine credentials survive this command. */
-export async function relayOnAll(address, io, { signal, onPairingURL, onSignIn, onLinking, onBoardOutcome, pairAdditional = false } = {}) {
+export async function relayOnAll(address, io, { signal, onPairingURL, onSignIn, onLinking, onBoardOutcome, pairAdditional = false, name } = {}) {
+  const label = computerName(name);
   requirePersonChannel(io.personChannel);
   // A cancelled or declined sign-in must not migrate machine state or scrub existing board links.
   const owner = relayMachineOwner();
@@ -423,6 +425,7 @@ export async function relayOnAll(address, io, { signal, onPairingURL, onSignIn, 
   // From this synchronous commit point onward the first board-link attempt is underway; later
   // cancellation must not claim that already-started link writes were rolled back.
   onLinking?.();
+  if (label !== undefined) updateRelayMachine(machine => { machine.computerName = label; });
   // The view's sign-in links every board itself; a terminal run waits for cards already on the phone.
   const waiting = onPairingURL ? [] : waitingLinkApprovals(session);
   const waitingIds = new Set(waiting.map(entry => entry.context.id));
@@ -449,13 +452,13 @@ export async function relayOnAll(address, io, { signal, onPairingURL, onSignIn, 
  * @param {{pairAdditional?: boolean}} options - Explicitly enroll one more browser; default setup stays idempotent.
  * @returns {Promise<number>}
  */
-export async function relayOnAllCommand(address, io, { pairAdditional = false } = {}) {
+export async function relayOnAllCommand(address, io, { pairAdditional = false, name } = {}) {
   const controller = new AbortController();
   const cancelSignIn = () => controller.abort();
   process.once('SIGINT', cancelSignIn);
   process.once('SIGTERM', cancelSignIn);
   let result;
-  try { result = await relayOnAll(address, io, { signal: controller.signal, pairAdditional }); }
+  try { result = await relayOnAll(address, io, { signal: controller.signal, pairAdditional, name }); }
   finally { process.off('SIGINT', cancelSignIn); process.off('SIGTERM', cancelSignIn); }
   io.result?.(result);
   if (result.outcome) {
