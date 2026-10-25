@@ -139,6 +139,91 @@ const FAILING_TEST = [
   "test('the inherited behavior remains broken [V1]', () => assert.equal(1, 2));",
 ].join('\n') + '\n';
 
+test('main comparisons use the free CPU slot while browser work keeps its browser slot [V1,C7]', async t => {
+  const box = fixture(t, { spec: RED_SPEC, source: FAILING_TEST });
+  for (const [key, value] of [['gateSlots', '2'], ['browserSlots', '1'], ['gate.memoryFloorMB', '0'], ['gate.browserFreeChecks', 'on']]) {
+    const set = cli(box.root, box.env, 'settings', key, value);
+    assert.equal(set.code, 0, `${key}: ${set.err}`);
+  }
+  put(box.root, 'test/browser.test.js', [
+    "import assert from 'node:assert/strict';",
+    "import { spawnSync } from 'node:child_process';",
+    "import { test } from 'node:test';",
+    '/** A potentially reachable Chrome launch makes this an admission fixture, without launching it here. */',
+    "export function browserLaunch() { return spawnSync('google-chrome', []); }",
+    "test('browser-capable comparison stays red [V1]', () => assert.equal(1, 2));",
+  ].join('\n') + '\n');
+  const main = commit(box.root, box.env);
+  const control = join(box.directory, 'cpu-browser-control');
+  mkdirSync(control);
+  const queue = join(box.env.PULLBOARD_MACHINE_HOME, 'resources.sqlite');
+  const driver = join(box.directory, 'cpu-browser-driver.mjs');
+  writeFileSync(driver, [
+    `import { withGateSlot } from ${JSON.stringify(pathToFileURL(join(import.meta.dirname, '../src/gate.js')).href)};`,
+    `import { compareMainFailures } from ${JSON.stringify(pathToFileURL(join(import.meta.dirname, '../src/main-red.js')).href)};`,
+    "import { existsSync, writeFileSync } from 'node:fs';",
+    "import { join } from 'node:path';",
+    'const [mode, root, control] = process.argv.slice(2);',
+    "if (mode === 'holder') {",
+    '  await withGateSlot(root, async lease => {',
+    "    if (!lease.browser) throw new Error('the fixture requires a real browser lease');",
+    "    writeFileSync(join(control,'browser.ready'),'ready');",
+    "    while (!existsSync(join(control,'browser.release'))) await new Promise(done => setTimeout(done,10));",
+    "  }, {browser:true,remote:false,agent:'fixture-browser-holder'});",
+    '} else {',
+    "  const file = mode === 'cpu' ? 'test/inherited.test.js' : 'test/browser.test.js';",
+    '  const result = await compareMainFailures(root,{tests:[{file,passed:false}]});',
+    "  writeFileSync(join(control,mode + '.result'),JSON.stringify(result));",
+    '}',
+  ].join('\n'));
+  const children = [];
+  /** Observe only the private fixture's real lease rows, without changing any admission state. */
+  const entries = table => {
+    if (!existsSync(queue)) return [];
+    const db = new DatabaseSync(queue, { readOnly: true });
+    try { return db.prepare(`SELECT * FROM ${table} WHERE name='gate'`).all(); }
+    finally { db.close(); }
+  };
+  /** Launch a product comparison or a genuine private browser lease and retain its terminal result. */
+  const launch = mode => {
+    const child = startFixtureChild(process.execPath, [driver, mode, box.root, control], { cwd: box.root, env: box.env, stdio: ['ignore','pipe','pipe'] });
+    let error = '';
+    child.stdout.resume(); child.stderr.setEncoding('utf8').on('data', part => { error += part; });
+    child.done = new Promise(resolve => child.once('close', code => resolve({code,error})));
+    children.push(child);
+    return child;
+  };
+  /** Await actual admission or completion, using a hang ceiling rather than a speed assertion. */
+  const observed = async (predicate, label) => {
+    const deadline = Date.now() + 20_000; // budget: private resource/file handshake hang ceiling, not a speed target.
+    while (!predicate() && Date.now() < deadline) await new Promise(done => setTimeout(done,10));
+    assert.ok(predicate(), label);
+  };
+  try {
+    const holder = launch('holder');
+    await observed(() => existsSync(join(control,'browser.ready')), 'one real browser slot is occupied');
+    const cpu = launch('cpu');
+    await observed(() => existsSync(join(control,'cpu.result')) || [...entries('waiter'),...entries('holder')].some(row => row.pid === cpu.pid), 'the CPU comparison requests real admission');
+    const requested = [...entries('waiter'),...entries('holder')].find(row => row.pid === cpu.pid);
+    if (requested) assert.equal(requested.browser, 0, 'a CPU-only main comparison does not request the occupied browser slot');
+    await observed(() => existsSync(join(control,'cpu.result')), 'the CPU comparison completes while browser work stays admitted');
+    assert.equal(entries('holder').find(row => row.pid === holder.pid)?.browser, 1, 'the original browser job still owns its lease');
+    assert.deepEqual(JSON.parse(readFileSync(join(control,'cpu.result'),'utf8')), {main,files:[{file:'test/inherited.test.js',result:'red'}]});
+    const browser = launch('browser');
+    await observed(() => entries('waiter').some(row => row.pid === browser.pid && row.browser === 1), 'a browser-capable file still queues for the browser lease');
+    assert.equal(existsSync(join(control,'browser.result')), false, 'browser work never uses the spare CPU slot as a browser bypass');
+    writeFileSync(join(control,'browser.release'),'release');
+    await observed(() => existsSync(join(control,'browser.result')), 'browser comparison completes after its real lease becomes available');
+    assert.deepEqual(JSON.parse(readFileSync(join(control,'browser.result'),'utf8')), {main,files:[{file:'test/browser.test.js',result:'red'}]});
+  } finally {
+    writeFileSync(join(control,'browser.release'),'release');
+    for (const child of children) {
+      const result = await child.done;
+      assert.equal(result.code, 0, result.error);
+    }
+  }
+});
+
 test("a red submit's comparisons keep FIFO and release between files [V4,C7]", async t => {
   const box = fixture(t, { spec: RED_SPEC, source: FAILING_TEST });
   const control = join(box.directory, 'control');
