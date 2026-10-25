@@ -2,6 +2,11 @@ import { beginCommandPhase } from './command-phase.js';
 import { LANDING_LOCAL_PREFIX } from './landing-local-lease.js';
 import { PROOF_COUNTER_PREFIX } from './proof-counters.js';
 import { rebuildProofCounters } from './proof-counters.js';
+import {
+  beginBoardWrite,
+  finishBoardWrite,
+  prepareBoardWriteIdentity,
+} from './board-write-lock.js';
 /**
  * Export and import whole board files (A7), including their AUTOINCREMENT counters, so a copy can
  * continue producing the same ids after its rows are restored.
@@ -232,7 +237,11 @@ function restoreDocument(board, document, replace = false, expectedNativeDigest 
   const db = board.db;
   const names = tableNames(db);
   validateDocument(db, document, names);
+  prepareBoardWriteIdentity();
   db.exec('PRAGMA defer_foreign_keys = ON; BEGIN IMMEDIATE');
+  const writeRecord = beginBoardWrite(db, board.writeContext);
+  let released = false;
+  let outcome = 'release-failed';
   try {
     const localLanding = db.prepare('SELECT * FROM board_meta WHERE meta_key GLOB ?').all(LANDING_LOCAL_PREFIX + '*');
     let localAgentCursors = null;
@@ -289,9 +298,15 @@ function restoreDocument(board, document, replace = false, expectedNativeDigest 
     rebuildProofCounters(board);
     for (const { name, sql } of storeTriggers()) db.exec(sql);
     db.exec('COMMIT');
+    released = true;
+    outcome = 'committed';
     return { tables: names };
   } catch (error) {
     db.exec('ROLLBACK');
+    released = true;
+    outcome = 'rolled-back';
     throw error;
+  } finally {
+    finishBoardWrite(writeRecord, released, outcome);
   }
 }

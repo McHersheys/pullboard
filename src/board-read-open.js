@@ -1,3 +1,4 @@
+import { closeBoardWrites } from './board-write-lock.js';
 /** Open existing board data without loading move execution [C7]. */
 import { existsSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
@@ -72,5 +73,6 @@ export function readEventLogVersion(db) {
  */
 export function closeBoard(board) {
   board.db.close();
+  closeBoardWrites(board.db);
 }
 
