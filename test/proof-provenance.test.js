@@ -39,6 +39,35 @@ test('a real failed native check records its actual exit without invented test c
   assert.deepEqual(receipt.environment, { node: process.versions.node, platform: process.platform, arch: process.arch });
 });
 
+test('native receipts carry each child reported runtime instead of borrowing the launcher [C7,H16]', t => {
+  const helpers = createE2eHelpers();
+  t.after(helpers.cleanup);
+  const box = helpers.project('true');
+  const paths = [join(box.dir, 'first-runtime.json'), join(box.dir, 'second-runtime.json')];
+  const programs = paths.map(path => `require('node:fs').writeFileSync(${JSON.stringify(path)},JSON.stringify({pid:process.pid,node:process.versions.node,platform:process.platform,arch:process.arch}));`);
+  // Separate actual processes must remain distinct even when they happen to run the same Node version.
+  const command = programs.map(program => `${JSON.stringify(process.execPath)} -e ${JSON.stringify(program)}`).join(' && ');
+  const board = store.openBoard(join(box.repo, '.git/pullboard/board.sqlite'));
+  t.after(() => store.closeBoard(board));
+  const id = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'Two actual check runtimes',
+    criterion: 'Both child processes report their runtimes.', check: command, specIds: ['G1'] });
+  for (const args of [['claim', String(id), '--json'], ['check', String(id), '--yes', '--json']]) {
+    const result = box.run(box.web, ...args);
+    assert.equal(result.code, 0, result.err + result.out);
+  }
+  const shown = box.run(box.repo, 'show', String(id), '--json');
+  assert.equal(shown.code, 0, shown.err + shown.out);
+  const [receipt] = JSON.parse(shown.out).proofReceipts;
+  assert.ok(Array.isArray(receipt.testRuntimes), 'the receipt lists child reports, not only one worker environment');
+  for (const path of paths) {
+    const actual = JSON.parse(readFileSync(path, 'utf8'));
+    const recorded = receipt.testRuntimes.find(runtime => runtime.pid === actual.pid);
+    assert.ok(recorded, 'every actual command child has a self-reported receipt');
+    assert.deepEqual(recorded.environment, { node: actual.node, platform: actual.platform, arch: actual.arch });
+  }
+  assert.equal(new Set(receipt.testRuntimes.map(runtime => runtime.pid)).size, receipt.testRuntimes.length);
+});
+
 test('proof counters retain explicit totals and do not invent success from missing output [C7,H16]', () => {
   const unknown = { passed: null, failed: null, skipped: null };
   assert.deepEqual(proofCounts('no test reporter\n'), unknown);
