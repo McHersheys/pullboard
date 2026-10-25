@@ -18,7 +18,10 @@ import {
 } from 'node:test';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { json } from './land-board-fixture.js';
-import { mergeMechanicalSources } from '../src/train-mechanical-merge.js';
+import {
+  mergeMechanicalSources,
+  resolveMechanicalMerge,
+} from '../src/train-mechanical-merge.js';
 import {
   discoverFormats,
   formatTable,
@@ -107,6 +110,30 @@ test('the train keeps both added registry entries and lands without a reopen [B3
 
 test('parallel train promotion retains its mechanical resolution receipt [B3,R3,C7]', () => {
   assertAdditions(true);
+});
+
+test('non-UTF8 bytes outside a registry stay untouched when resolution is refused [B3,R3,C7]', () => {
+  const box = e2e.sandbox();
+  const root = join(box.dir, 'raw-registry');
+  mkdirSync(join(root, 'src'), { recursive: true });
+  box.git(root, 'init', '-q', '-b', 'main');
+  const source = text => Buffer.concat([Buffer.from([0xff]), Buffer.from('\n' + text)]);
+  writeFileSync(join(root, FILE), source(BASE));
+  box.git(root, 'add', '-A');
+  box.git(root, 'commit', '-q', '-m', 'chore: preserve raw private registry');
+  const base = box.git(root, 'rev-parse', 'HEAD');
+  for (const name of ['alpha', 'beta']) {
+    box.git(root, 'checkout', '-q', '--detach', base);
+    writeFileSync(join(root, FILE), source(BASE.replace('  base:', `  ${name}: { item: true },\n  base:`)));
+    box.git(root, 'add', '-A');
+    box.git(root, 'commit', '-q', '-m', `chore: add ${name} to raw private registry`);
+    box.git(root, 'tag', name);
+  }
+  box.git(root, 'checkout', '-q', '--detach', 'alpha');
+  assert.notEqual(box.tryGit(root, 'merge', '--no-edit', 'beta').status, 0);
+  const before = readFileSync(join(root, FILE));
+  assert.equal(resolveMechanicalMerge(root, [FILE]), null);
+  assert.deepEqual(readFileSync(join(root, FILE)), before, 'refusal preserves every byte of the unmerged working file');
 });
 
 test('a registry edit remains a conflict and reopens instead of being unioned [B3,R3,C7]', () => {

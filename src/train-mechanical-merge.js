@@ -100,9 +100,10 @@ export function resolveMechanicalMerge(root, files) {
     const modes = records.map(record => /^(100644|100755) [a-f0-9]+ [123]\t/u.exec(record)?.[1]);
     if (index.status !== 0 || records.length !== 3 || modes.some(mode => !mode || mode !== modes[0])) return null;
     const stages = [1, 2, 3].map(stage => spawnSync('git', ['--no-optional-locks', 'show', `:${stage}:${path}`],
-      { cwd: root, env: cleanGitEnvironment(), encoding: 'utf8' }));
-    if (stages.some(stage => stage.status !== 0)) return null;
-    const merged = mergeMechanicalSources(path, ...stages.map(stage => stage.stdout));
+      { cwd: root, env: cleanGitEnvironment() }));
+    if (stages.some(stage => stage.status !== 0 || !Buffer.isBuffer(stage.stdout)
+      || !Buffer.from(stage.stdout.toString('utf8'), 'utf8').equals(stage.stdout))) return null;
+    const merged = mergeMechanicalSources(path, ...stages.map(stage => stage.stdout.toString('utf8')));
     if (!merged) return null;
     resolutions.push({ path, ...merged });
   }
