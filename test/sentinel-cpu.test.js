@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import * as store from '../src/board.js';
+import { runFixtureGit } from './fixture-child.js';
 import { scanHealthSentinel } from '../src/health-sentinel.js';
 
 // CPU time is observed, not burned: the native utility port supplies an exact ps/lsof transcript.
@@ -13,6 +14,7 @@ test('the sentinel names an agent process past 20 CPU minutes once [A6,H16]', as
   const directory = mkdtempSync(join(tmpdir(), 'pullboard-cpu-'));
   const root = join(directory, 'repo'), work = join(directory, 'core');
   mkdirSync(root); mkdirSync(work);
+  runFixtureGit(['init', '-q', '-b', 'main'], { cwd: root });
   const file = join(directory, 'board.sqlite'), board = store.openBoard(file);
   store.register(board, { lane: 'coordinator', path: root });
   const seat = store.register(board, { lane: 'core', path: work });
