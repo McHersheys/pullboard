@@ -416,10 +416,9 @@ test('native import observes committed and rolled-back write ownership without c
         assert.match(boardWriteHolderText(file), /private-import/);
         // budget: exercise the declared over-two-second diagnostic during a genuine native restore write.
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2_100);
-        if (${rollback}) throw new Error('private import rollback');
         return 1;
       });
-      board.db.exec('CREATE TEMP TRIGGER hold_private_import BEFORE INSERT ON main.item BEGIN SELECT hold_private_import(); END');
+      board.db.exec("CREATE TEMP TRIGGER hold_private_import BEFORE INSERT ON main.item BEGIN SELECT hold_private_import(); ${rollback ? "SELECT RAISE(ABORT, 'private import rollback');" : ''} END");
       try {
         if (${rollback}) {
           assert.throws(() => importBoard(board, document), /private import rollback/);
