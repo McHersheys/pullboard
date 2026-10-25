@@ -640,6 +640,28 @@ test('function-returned member commands retain browser admission [C7,O5]', async
   }
 });
 
+test('callable inputs returned as executable commands retain admission [C7,O5]', async t => {
+  const imports = "import { spawnSync } from 'node:child_process';\n";
+  const member = "const options = {}; options.command = 'google-chrome';\n";
+  const root = sourceFixture(t, {
+    'test/identity-command.test.js': imports + member + 'const identity = value => value; const command = identity(options.command); spawnSync(command, []);',
+    'test/identity-direct.test.js': imports + member + 'const identity = value => value; spawnSync(identity(options.command), []);',
+    'test/destructured-command.test.js': imports + member + 'function pick({ command }) { return command; } spawnSync(pick(options), []);',
+    'test/forwarded-command.test.js': imports + member + 'const identity = value => value; const pick = value => identity(value); spawnSync(pick(options.command), []);',
+    'test/unused-identity.test.js': imports + member + "const identity = value => value; spawnSync('git', ['status']);",
+    'test/parameter-predicate.test.js': imports + member + "const pick = enabled => enabled ? 'git' : 'node'; const command = pick(options.enabled); spawnSync(command, ['--version']);",
+  });
+  commitSourceFixture(root);
+  for (const name of ['identity-command', 'identity-direct', 'destructured-command', 'forwarded-command']) {
+    assert.equal(await testsNeedBrowser(root, [`test/${name}.test.js`], { byLaunch: true }), true,
+      `${name}: a returned input may supply the browser executable`);
+  }
+  for (const name of ['unused-identity', 'parameter-predicate']) {
+    assert.equal(await testsNeedBrowser(root, [`test/${name}.test.js`], { byLaunch: true }), false,
+      `${name}: unused inputs and predicates do not supply an executable value`);
+  }
+});
+
 test('a file that launches Chrome unclassified fails by name [C7,O5]', async t => {
   const hidden = `import { test } from 'node:test';
 test('hidden launches through a computed import', async () => {
