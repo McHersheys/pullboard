@@ -16,7 +16,7 @@ Outside contributions
 
 Set up
   pullboard tour                        see it work: a reject and its rework, scripted, in thirty seconds
-  pullboard init [--model <name>] [--blueprint <name or file>]... [--no-permissions] [--yes] [--verbose]  short setup summary; --verbose shows recipes; --yes commits only setup's own files with your Git identity
+  pullboard init [--model <name>] [--blueprint <name or file>]... [--no-permissions] [--no-hooks] [--yes] [--verbose]  --no-hooks skips agent nudges; --yes commits only setup's own files with your Git identity
   pullboard worktree <lane> --model <name> [--route light] [--family <name>]   make and join a worktree for a new agent
                                         pullboard.json worktrees: inside or beside; init defaults to inside
   pullboard join <lane> --model <name> [--route light] [--family <name>] [--parent <session-id>]  register this worktree and its parent session
@@ -54,11 +54,11 @@ Set up
                                         behind the session secret in its printed address
   pullboard mcp                        MCP tools over stdio for this worktree's agent, started by its MCP client:
                                         board status, show, shout and capture an idea; a person's move is refused
-  pullboard relay [status|on|off|pair|join <code>] [--url <address>]  link, inspect or unlink this board's sealed relay
+  pullboard relay [status|on|off|pair|join <code>] [--url <address>] [--name <computer>]  link, inspect or unlink this board's sealed relay
                                         on signs in through GitHub; the address defaults to https://app.pullboard.dev
                                         pair prints a one-use machine code; join stores it in another clone
   pullboard relay pair --new-browser    sign in and pair one more browser; existing browsers stay paired
-  pullboard relay on --all [--url <address>]  link every registered project after one sign-in; pair the phone once
+  pullboard relay on --all [--url <address>] [--name <computer>]  link every registered project after one sign-in; pair the phone once
                                         keep this command open until pairing finishes; later projects link on registration
   pullboard relay devices [--verbose]   paired phones and joined computers by name, with paired date, last seen and boards
                                         --verbose adds each id and phone key fingerprint
@@ -71,7 +71,8 @@ Set up
   pullboard resume [--diagnostics]      where you are: your claim, branch, what came back,
                                         unread shouts, what to do next; run it to start any session
   pullboard badge                       write board-derived Shields endpoint JSON to docs/badges/
-  pullboard hooks                       reinstall the git hooks (e.g. after a fresh clone)
+  pullboard hooks [uninstall]           install Git hooks and agent nudges; uninstall removes only Pullboard's agent nudges
+  pullboard hook SessionStart|Stop     native agent nudges; errors/timeouts warn and never block
 
 Work
   pullboard add <lane> <title> [--criterion "..."] [--specs G1.2,K3] [--after 3,4] [--parent <id>]
@@ -91,12 +92,16 @@ Work
                                         $PULLBOARD_ATTEMPT, $PULLBOARD_TIER); green work is submitted, red escalated
                 [--agent-light "..."] [--agent-mid "..."] [--agent-strong "..."]   a command per tier
   pullboard list [lane] [--all] [--route light|mid|strong]   open and active items; --all adds closed ones
-  pullboard queue                       the work queue in pull order: releases, then route, lane, holder and waits
+  pullboard queue                       the work queue in pull order: releases, then route, lane, holder, waits,
+                                        and each item's unblock count, effort and why it sits there
   pullboard roadmap                     ordered milestones, N/M landed, targets, and each item as landed,
                                         accepted or its status
   pullboard milestone add <name> [--note ...] [--items 1,2,3]   create a milestone and optionally add items
-  pullboard milestone items <name> --add ids [--swap id] | --remove ids
+  pullboard milestone items <name> --add ids [--swap id]   add items; --swap replaces an existing item
+  pullboard milestone items <name> --remove ids            remove items from the milestone
   pullboard milestone order <name> <ids>                       rank these items within their milestone (agents)
+  pullboard milestone pin|sink <name> <ids> --reason "<why>"   hold items above or below the queue's own order
+  pullboard milestone lift <name> <ids>                        return pinned or sunk items to the queue's order
   pullboard milestone move <name> --before <other>             reorder a milestone
   pullboard milestone edit <name> [--name <new>] [--note <text>] [--target <date and time>|none] [--limit <n>|none]
                                         rename, update a note, or set a shipping target or item limit
@@ -153,15 +158,17 @@ Work
                                         a verdict takes --implies <ids>; a later verdict on the item supersedes it
                                         any --note can be --note-file <file>, which keeps quotes, $ and backticks intact
   pullboard shout <lane|agent|person|all> <text>  pullboard inbox
+  pullboard inbox --acted-on <interrupt-ids>     acknowledge comma-separated ids only after acting; reading is not acting
   pullboard shout --item <id> <text>             message the item builder, reviewer and coordinator
   A seat shout to all reaches only coordinator and person; their broadcasts reach everyone.
   pullboard shout all <text> --news              coordinator/person release or focus news, digested at session start
   Inbox combines direct coordination with item/dependency, file and cited-row activity; other lane activity is summarized.
   pullboard shout [<to>] <text> --decision       ask for a decision; defaults to your coordinator or the person
   pullboard shout <to> <text> --evidence attempt|receipt --outcome <word> --item <id> --commit <rev>
-  pullboard answer <shout-id> <text> [--as person] [--implies <ids>] [--supersedes <answer-id>]
-                    [--origin person-relayed|agent|inherited] [--rationale <why>]
+  pullboard answer <shout-id> <text> [--as person]
                                         answer your decision; person mode is main-checkout only
+                                        Other options: [--implies <ids>] [--supersedes <answer-id>]
+                                                      [--origin person-relayed|agent|inherited] [--rationale <why>]
                                         --supersedes tells the items an earlier answer implied; only the person
                                         supersedes the person's answer
   pullboard pass <shout-id> <note>                coordinator passes a decision to the person
@@ -196,6 +203,8 @@ Coordinator
   pullboard hold <lane|id> --off        lift a lane or item hold
 
 Receipts
+  pullboard flow replay [--history <json>] [--policy <json>]  reproduce recorded flow or predict another item order and WIP limits
+                                        --json includes text-free structural history; policy order is recorded or item ids, settings use modelled board line-control names (unsupported names are refused)
   pullboard stats [--since <date> | --window <duration>]  proof numbers from the event log; --json for sites and tools
                                         --window 6h (also 30m or 1d): landed-item stage quartiles, tails and excess over targets;
                                         includes all attempts and sent-back idle; missing intervals stay unmeasured;
@@ -317,11 +326,14 @@ const HELP_EXAMPLES = {
   flakes: 'pullboard flakes', 'flakes rerun': 'pullboard flakes rerun on', 'flakes quarantine': 'pullboard flakes quarantine on',
   verify: 'pullboard verify 12 accept --note "removed the fix; the test failed"',
   watch: 'pullboard watch --to web', answer: 'pullboard answer 12 "done"', pass: 'pullboard pass 12 "please decide"',
-  status: 'pullboard status', view: 'pullboard view', digest: 'pullboard digest --out briefing.md', mcp: 'pullboard mcp', stats: 'pullboard stats --since 2026-10-08', log: 'pullboard log 12', ledger: 'pullboard ledger',
+  status: 'pullboard status', view: 'pullboard view', digest: 'pullboard digest --out briefing.md', mcp: 'pullboard mcp', flow: 'pullboard flow replay --json', stats: 'pullboard stats --since 2026-10-08', log: 'pullboard log 12', ledger: 'pullboard ledger',
   relay: 'pullboard relay on --all', 'relay recover': 'pullboard relay recover --skip 12', sync: 'pullboard sync',
   'lane add': 'pullboard lane add web --owns apps/web/', lane: 'pullboard lane add web --owns apps/web/',
   queue: 'pullboard queue', roadmap: 'pullboard roadmap', rigor: 'pullboard rigor', 'rigor quality': 'pullboard rigor quality --rule silent-catch', 'rigor draft': 'pullboard rigor draft "refusal:MERGE_LOST" "Merges keep every hunk" --check "node bin/checks/merges.js" --red 0123456 --green 89abcde', milestone: 'pullboard milestone add "0.7.0" --items 12,13',
   'milestone order': 'pullboard milestone order "0.7.0" 13,12',
+  'milestone pin': 'pullboard milestone pin "0.7.0" 13 --reason "the release notes need it first"',
+  'milestone sink': 'pullboard milestone sink "0.7.0" 12 --reason "waits on a design answer"',
+  'milestone lift': 'pullboard milestone lift "0.7.0" 12,13',
   runner: 'pullboard runner add studio --slots 2 --browser 1', 'runner add': 'pullboard runner add studio --slots 2 --browser 1',
   edit: 'pullboard edit 12 --brief "Add the upload page"', release: 'pullboard release 12',
   land: 'pullboard land --max 4',
@@ -351,7 +363,7 @@ const HELP_ALIASES = {
   lane: { usage: 'pullboard lane add <name> --owns <path>[,<path>]', source: 'lane add' },
   status: { usage: 'pullboard status', source: 'whoami' },
   done: { usage: 'pullboard done <id>', source: 'submit <id>' },
-  inbox: { usage: 'pullboard inbox', source: null },
+  inbox: { usage: 'pullboard inbox', source: null, extraFlags: ['--acted-on <interrupt-ids>'] },
   'check accept': { usage: 'pullboard check accept <id>', source: 'check accept' },
   relay: { source: 'relay', every: true },
   lifecycle: { usage: 'pullboard lifecycle', source: null },
@@ -371,7 +383,7 @@ const HELP_ALIASES = {
   'spec signers': { usage: 'pullboard spec signers add [--key <path>] [--by <principal>]', source: 'spec signers add' },
   'spec signers add': { usage: 'pullboard spec signers add [--key <path>] [--by <principal>]', source: 'spec signers add' },
   doctrine: { usage: 'pullboard doctrine check', source: 'doctrine check' },
-  hook: { usage: 'pullboard hook pre-commit|pre-merge-commit|commit-msg|pre-push', source: 'hook' },
+  hook: { usage: 'pullboard hook SessionStart|Stop|pre-commit|pre-merge-commit|commit-msg|pre-push', source: 'hook' },
   'gate set': { usage: 'pullboard gate set "<command>"', source: 'gate set' },
   'hook pre-commit': { usage: 'pullboard hook pre-commit', source: 'hook' },
   'hook pre-merge-commit': { usage: 'pullboard hook pre-merge-commit', source: 'hook' },
