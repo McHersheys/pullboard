@@ -6473,6 +6473,7 @@
     "BAD_CONFIG": "fix pullboard.json as the message says, then commit it: git commit -m \"chore: fix pullboard config\" pullboard.json",
     "BAD_CURSOR": "pass a nonnegative integer from the last response you received",
     "BAD_ACTIVITY_CURSOR": "use a nonnegative whole-number cursor from the last response, then read inbox again: pullboard inbox",
+    "BAD_NEWS": "send news from the coordinator or person to all, without item, decision, request or answer",
     "BAD_DECISION": "choose accept or reject with a supported reason: pullboard verify <id> reject --reason TEST_FAILURE --note \"<what failed>\"",
     "BAD_DEPENDENCIES": "use --after with item ids, such as --after 1,2, or --after none",
     "BAD_EVIDENCE": "pass the evidence fields the message names, then retry",
