@@ -115,4 +115,12 @@ test('item decision options replay exactly and never acquire legacy engine autho
     decision: true, lanes: ['coordinator', 'web'] }], { id: 'legacy-decision', actor: 'web-1' });
   applyEngineMove(replica, { ...legacy, engine: 1 }, { sequence: 2, at });
   assert.equal(store.openDecisions(replica).find(row => row.shout_text === 'Old question').options, undefined);
+  const opaque = prepareEngineMove(replica, 'shout', [{ from: 'web-2', to: 'coordinator', text: 'Legacy opaque detail',
+    decision: true, lanes: ['coordinator', 'web'], detail: { item: id, decisionOptions: ['Injected A', 'Injected B'] } }],
+  { id: 'legacy-opaque-detail', actor: 'web-2' });
+  applyEngineMove(replica, { ...opaque, engine: 1 }, { sequence: 3, at });
+  const legacyOpaque = store.openDecisions(replica).find(row => row.shout_text === 'Legacy opaque detail');
+  assert.equal(legacyOpaque.options, undefined, 'old opaque detail must not acquire new option meaning or item authority');
+  assert.equal(replica.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get(`item_decision:${legacyOpaque.shout_id}`),
+    undefined, 'legacy engine data creates no new decision index');
 });
