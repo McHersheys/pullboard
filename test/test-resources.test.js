@@ -525,6 +525,39 @@ test('later executable assignments retain every possible browser launch value [C
 });
 
 /** Member commands retain their own values without tainting an unrelated local identifier. */
+test('reviewed executor imports stay browser-free only at their exact call sites [C7,O5]', async t => {
+  const repository = resolve(import.meta.dirname, '..');
+  const entries = [
+    ['src/cli.js', 'sweepHere', 'spawnSync(item.check,'],
+    ['src/sentinel-runner.js', 'executeSentinel', 'spawn(row.check,'],
+    ['src/rigor-proof.js', 'runOwnedCheck', "spawn(runner?.executable ?? '/bin/sh',"],
+    ['test/cli-startup.test.js', 'fixture', 'runFixtureChild(env.PULLBOARD_REAL_GIT,'],
+    ['test/git-calls.test.js', 'advanceHead', 'execFileSync(box.env.PULLBOARD_REAL_GIT,'],
+  ];
+  const root = sourceFixture(t, {});
+  cpSync(join(repository, 'src'), join(root, 'src'), { recursive: true });
+  cpSync(join(repository, 'test'), join(root, 'test'), { recursive: true });
+  for (const [index, [file, name, call]] of entries.entries()) {
+    const importer = `test/reviewed-executor-${index}.test.js`;
+    const request = file.startsWith('src/') ? `../${file}` : `./${file.slice(5)}`;
+    writeFileSync(join(root, importer), `import '${request}';\n`);
+    const source = readFileSync(join(root, file), 'utf8');
+    assert.ok(source.includes(`function ${name}(`) && source.includes(call), `${file}: the reviewed function and call still exist`);
+    assert.equal(await testsNeedBrowser(root, [importer], { byLaunch: true }), false,
+      `${file}: importing the reviewed executor does not execute its command`);
+    writeFileSync(join(root, file), source.replace(call, call.replace(/\([^,]+,/u, "('google-chrome',")));
+    assert.equal(await testsNeedBrowser(root, [importer], { byLaunch: true }), true,
+      `${file}: a known Chrome call remains bound inside the reviewed function`);
+    writeFileSync(join(root, file), source.replace(call, call.replace(/\([^,]+,/u, '(options.command,')));
+    assert.equal(await testsNeedBrowser(root, [importer], { byLaunch: true }), true,
+      `${file}: another unknown object command in the same function remains bound`);
+    writeFileSync(join(root, file), source + '\nexport function unreviewedCommand(options) { spawnSync(options.command, []); }\n');
+    assert.equal(await testsNeedBrowser(root, [importer], { byLaunch: true }), true,
+      `${file}: an unknown object command outside the reviewed call remains bound`);
+    writeFileSync(join(root, file), source);
+  }
+});
+
 test('process member commands retain property assignments and unresolved targets [C7,O5]', async t => {
   const imports = "import { spawnSync } from 'node:child_process';\n";
   const root = sourceFixture(t, {
@@ -539,15 +572,19 @@ test('process member commands retain property assignments and unresolved targets
     'test/fallback-command.test.js': imports + "const options = {}; options.command = 'google-chrome'; spawnSync(options.command || 'git', []);",
     'test/namespace-command.test.js': "import * as child from 'node:child_process'; export function run(options) { return child.spawnSync(options.command, []); }",
     'test/namespace-key-command.test.js': "import * as child from 'node:child_process'; export function run(options) { return child['spawnSync'](options.command, []); }",
+    'test/conditional-command.test.js': imports + "export function run(options) { return spawnSync(options.enabled ? options.command : 'git', []); }",
+    'test/conditional-data.test.js': imports + "const executable = process.platform === 'darwin' ? '/usr/sbin/lsof' : process.platform === 'linux' ? '/usr/bin/lsof' : null; spawnSync(executable, []);",
     'test/property-data.test.js': imports + "const options = {}; options.command = 'google-chrome'; spawnSync('git', ['status']);",
   });
   for (const name of ['dot-command', 'spaced-command', 'literal-key-command', 'computed-command', 'unresolved-command',
-    'member-alias-command', 'optional-command', 'multiline-command', 'fallback-command', 'namespace-command', 'namespace-key-command']) {
+    'member-alias-command', 'optional-command', 'multiline-command', 'fallback-command', 'namespace-command', 'namespace-key-command', 'conditional-command']) {
     assert.equal(await testsNeedBrowser(root, [`test/${name}.test.js`], { byLaunch: true }), true,
       `${name}: a real member command remains browser-bound`);
   }
   assert.equal(await testsNeedBrowser(root, ['test/property-data.test.js'], { byLaunch: true }), false,
     'an unused property value does not taint a literal Git command');
+  assert.equal(await testsNeedBrowser(root, ['test/conditional-data.test.js'], { byLaunch: true }), false,
+    'a platform predicate does not become one of the fixed executable values');
   assert.equal(await testsNeedBrowser(root, ['test/property-data.test.js'], { byLaunch: false }), true,
     'default admission remains conservative');
 });

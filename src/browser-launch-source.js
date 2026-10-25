@@ -60,6 +60,28 @@ function processNamespaces(source) {
 /** Unknown member-valued executables need admission; Node's own executable identities are known. */
 function unresolvedMemberCommand(expression) {
   const compact = expression.replace(/\s/gu, '');
+  // A conditional's predicate is not one of the executable values it returns.
+  let nested = 0;
+  for (let at = 0; at < compact.length; at += 1) {
+    if ('([{'.includes(compact[at])) {
+      const end = closing(compact, at);
+      if (end === null) return true;
+      at = end;
+    } else if (compact[at] === '?' && !['?', '.'].includes(compact[at + 1]) && compact[at - 1] !== '?') {
+      const start = at + 1;
+      for (at = start; at < compact.length; at += 1) {
+        if ('([{'.includes(compact[at])) {
+          const end = closing(compact, at);
+          if (end === null) return true;
+          at = end;
+        } else if (compact[at] === '?' && !['?', '.'].includes(compact[at + 1]) && compact[at - 1] !== '?') nested += 1;
+        else if (compact[at] === ':' && nested-- === 0) {
+          return unresolvedMemberCommand(compact.slice(start, at)) || unresolvedMemberCommand(compact.slice(at + 1));
+        }
+      }
+      return true;
+    }
+  }
   // Calls and object/template construction do not return the value of each member they read.
   // In particular, a pid used to build a directory name is not an executable-valued alias.
   let brackets = 0;
@@ -89,6 +111,24 @@ function expressionEnd(code, start, newlineEnds = true) {
   return end;
 }
 
+/** A reviewed exception matches one complete call inside its named function, never a whole module. */
+function reviewedCall(source, code, call, end, executors) {
+  const compact = text => text.replace(/\s/gu, '');
+  for (const executor of executors) {
+    if (compact(source.slice(call.at, end + 1)) !== compact(executor.site)) continue;
+    const pattern = new RegExp(`\\bfunction\\s+${executor.function}\\s*\\(`, 'gu');
+    for (const match of code.matchAll(pattern)) {
+      const parameters = closing(code, match.index + match[0].length - 1);
+      if (parameters === null) continue;
+      const body = parameters + 1 + code.slice(parameters + 1).search(/\S/u);
+      if (code[body] !== '{') continue;
+      const last = closing(code, body);
+      if (last !== null && call.at > body && end < last) return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Determine whether executable process calls can reach a Chrome argument. Local literal bindings are
  * followed conservatively, without scope-sensitive elimination. A program supplied to a real process
@@ -96,9 +136,10 @@ function expressionEnd(code, start, newlineEnds = true) {
  * Template interpolations remain executable in lex.code. This is not an arbitrary JavaScript evaluator.
  *
  * @param {string} source
+ * @param {{function:string,site:string,reason:string}[]} [reviewedExecutors]
  * @returns {boolean}
  */
-export function sourceLaunchesBrowser(source) {
+export function sourceLaunchesBrowser(source, reviewedExecutors = []) {
   const { code, strings } = lex(source);
   const names = callNames(source, code);
   const namespaces = processNamespaces(source);
@@ -134,7 +175,7 @@ export function sourceLaunchesBrowser(source) {
     .filter(match => names.has(match[1])).map(match => {
       const before = code.slice(0, match.index).trimEnd();
       const owner = /([$A-Z_a-z][$\w]*)\s*(?:\?\.|\.)$/u.exec(before)?.[1];
-      return { start: match.index + match[0].length - 1,
+      return { at: match.index, start: match.index + match[0].length - 1,
         unknown: !before.endsWith('.') || namespaces.has(owner) };
     });
   for (const namespace of namespaces) {
@@ -142,7 +183,7 @@ export function sourceLaunchesBrowser(source) {
     const pattern = new RegExp(`(?<![\\w$.])${escaped}\\s*(?:\\?\\.)?\\s*\\[\\s*(['"])([$A-Z_a-z][$\\w]*)\\1\\s*\\]\\s*(?:\\?\\.)?\\s*\\(`, 'gu');
     for (const match of source.matchAll(pattern)) {
       if (PROCESS_CALLS.has(match[2]) && code.slice(match.index, match.index + namespace.length) === namespace) {
-        calls.push({ start: match.index + match[0].length - 1, unknown: true });
+        calls.push({ at: match.index, start: match.index + match[0].length - 1, unknown: true });
       }
     }
   }
@@ -154,7 +195,7 @@ export function sourceLaunchesBrowser(source) {
     if ([...code.slice(start + 1, end).matchAll(WORD)].some(word => namedBrowser(word[0]))) return true;
     // A regex's .exec is not the imported process capability. Unknown-value admission
     // applies to bare process bindings and imported process namespaces, not unrelated methods.
-    if (call.unknown) {
+    if (call.unknown && !reviewedCall(source, code, call, end, reviewedExecutors)) {
       const commandEnd = expressionEnd(code, start + 1, false);
       if (commandEnd === null) return true;
       const command = code.slice(start + 1, commandEnd);

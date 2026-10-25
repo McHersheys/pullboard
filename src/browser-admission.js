@@ -64,6 +64,24 @@ const SAFE_CHILD_PROCESS_MODULES = new Map([
   ['src/module-imports.js', 'runs the Node parser in an isolated child'],
   ['src/resources.js', 'reads process identity with /bin/ps'],
 ]);
+/** Reviewed generic executors and fixed Git/Node calls retain prior import behavior; all other calls stay conservative. */
+const REVIEWED_EXECUTORS = new Map([
+  ['src/cli.js', [{ function: 'sweepHere',
+    site: "spawnSync(item.check, { cwd: ctx.info.root, shell: true, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })",
+    reason: 'sweep runs the separately selected checker; importing the CLI does not select or run it' }]],
+  ['src/sentinel-runner.js', [{ function: 'executeSentinel',
+    site: "spawn(row.check, { cwd: directory, env: environment, shell: true, stdio: ['ignore', 'pipe', 'pipe'] })",
+    reason: 'the Windows sentinel executor runs an approved check only when explicitly invoked' }]],
+  ['src/rigor-proof.js', [{ function: 'runOwnedCheck',
+    site: "spawn(runner?.executable ?? '/bin/sh', runner?.args ?? ['-c', check], { cwd: tree, env: environment, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })",
+    reason: 'prepareCauseProof validates the named runner executable against the real process.execPath' }]],
+  ['test/cli-startup.test.js', [{ function: 'fixture',
+    site: "runFixtureChild(env.PULLBOARD_REAL_GIT, args, { cwd, env, encoding: 'utf8' })",
+    reason: 'this private fixture binds PULLBOARD_REAL_GIT to realGitPath before installing its counting shim' }]],
+  ['test/git-calls.test.js', [{ function: 'advanceHead',
+    site: "execFileSync(box.env.PULLBOARD_REAL_GIT, ['commit-tree', tree, '-p', parent], { cwd: box.repo, env: box.env, input: label, encoding: 'utf8' })",
+    reason: 'the private fixture binds this exact plumbing call to its realGit executable' }]],
+]);
 
 export { literalShellWords } from './literal-shell-words.js';
 
@@ -246,8 +264,8 @@ function launchFreeChromeImport(source, request) {
 }
 
 /** Detect direct literal Chrome launchers without treating help text or refusal messages as launches. */
-function namesChromeLauncher(source) {
-  return sourceLaunchesBrowser(source);
+function namesChromeLauncher(source, path) {
+  return sourceLaunchesBrowser(source, REVIEWED_EXECUTORS.get(path));
 }
 
 /** Detect dynamic process builtin access, which can load launch-capable modules.
@@ -541,7 +559,7 @@ async function testsNeedBrowserInTree(root, files, committed = null, onFallback,
         }
       }
       if (!sources.length) break;
-      const browserCalls = sources.map(namesChromeLauncher);
+      const browserCalls = sources.map((source, index) => namesChromeLauncher(source, paths[index]));
       if (paths.some((path, index) => (path.startsWith('test/') || SAFE_CHILD_PROCESS_MODULES.has(path))
         && browserCalls[index])) return true;
       // By launch, a process or module starter launches a browser only beside a Chrome executable reference.
