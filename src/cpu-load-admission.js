@@ -15,7 +15,7 @@ const MAX_FILES = 256;
 const MAX_BYTES = 4 * 1024 * 1024;
 const MAX_DEPTH = 32;
 
-/** Inspect a bounded executable module closure; uncertainty is conservative placement, never code evaluation. */
+/** Inspect bounded readable imports for explicit CPU declarations; uncertainty is not a declaration [C7]. */
 export function testsNeedCpuRunner(root, files) {
   try {
     const boundary = realpathSync(root);
@@ -24,30 +24,32 @@ export function testsNeedCpuRunner(root, files) {
     let bytes = 0;
     while (pending.length) {
       const { path, depth } = pending.pop();
-      const actual = realpathSync(path);
+      let actual;
+      try { actual = realpathSync(path); } catch { continue; }
       const within = relative(boundary, actual);
-      if (within === '..' || within.startsWith(`..${sep}`) || resolve(boundary, within) !== actual) return true;
+      if (within === '..' || within.startsWith(`..${sep}`) || resolve(boundary, within) !== actual) continue;
       if (seen.has(actual)) continue;
-      if (depth > MAX_DEPTH) return true;
+      if (depth > MAX_DEPTH) continue;
       seen.add(actual);
       const info = statSync(actual);
       bytes += info.size;
-      if (!info.isFile() || seen.size > MAX_FILES || bytes > MAX_BYTES) return true;
+      if (seen.size > MAX_FILES || bytes > MAX_BYTES) break;
+      if (!info.isFile()) continue;
       // JSON imports supply data without an executable registration body; still enforce closure containment.
       if (actual.endsWith('.json')) continue;
-      if (!/\.(?:[cm]?js)$/u.test(actual)) return true;
+      if (!/\.(?:[cm]?js)$/u.test(actual)) continue;
       const source = readFileSync(actual, 'utf8');
       if (cpuLoadOptionsIn([source])[0]) return true;
       for (const name of importsIn([source])[0]) {
         if (isBuiltin(name)) continue;
-        if (!name.startsWith('./') && !name.startsWith('../')) return true;
+        if (!name.startsWith('./') && !name.startsWith('../')) continue;
         pending.push({ path: resolve(dirname(actual), name), depth: depth + 1 });
       }
     }
     return false;
   } catch {
-    // Missing, unreadable or unparseable closure metadata cannot prove ordinary local work.
-    return true;
+    // Missing metadata cannot invent an explicit CPU declaration; normal browser/GUI checks remain separate.
+    return false;
   }
 }
 

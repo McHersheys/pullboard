@@ -20,7 +20,8 @@ import { runnerOrphanFixture, unprovenProcessFixture } from './runner-orphan-fix
 import { createDescendantTracker } from '../src/runner-custody.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { refuseSandboxBlocked } from '../src/gate.js';
-import { cpuLoadOptionsIn } from '../src/module-imports.js';
+import { fixtureContextCpuCase } from './runner-cpu-classification-fixture.js';
+import { guiCpuPolicyCase } from './runner-cpu-classification-fixture.js';
 import { SECRET, HOST, shellQuote, installSshStandIn } from './runner-ssh-fixture.js';
 import { sourceSetupFailureFixture } from './runner-source-setup-fixture.js';
 import { runnerSourceRefusalCases } from './runner-source-refusal-fixture.js';
@@ -1476,43 +1477,6 @@ test('the runner round trip deadline holds under a loaded test machine and still
   });
 
 
-test('fixture context forwarding is not a CPU-load declaration [C7]', async t => {
-  const sources = [
-    ['forwarded context', "import test from 'node:test'; function fixture(context) { context.after(() => {}); } test('ordinary', async t => { fixture(t); });"],
-    ['regular expression method', "import test from 'node:test'; test('ordinary', () => { const row = { text: 'strong' }; /strong/.test(row.text); });"],
-  ];
-  for (const [name, source] of sources) await t.test(name, () => {
-    assert.equal(cpuLoadOptionsIn([source])[0], false, 'ordinary executable code is not an explicit CPU-load option');
-  });
-  assert.equal(cpuLoadOptionsIn(["import test from 'node:test'; test('busy', { cpuLoad: true }, () => {});"])[0], true,
-    'an explicit CPU-load declaration remains classified');
-  assert.equal(cpuLoadOptionsIn(["import test from 'node:test'; test('ordinary', { cpuLoad: false }, () => {});"])[0], false,
-    'an explicit false option does not generate CPU load');
-});
+test('fixture context forwarding is not a CPU-load declaration [C7]', fixtureContextCpuCase);
 
-test('a GUI test with no GUI runner stays local [C7]', () => {
-  const directory = mkdtempSync(join(tmpdir(), 'pullboard-cpu-gui-policy-'));
-  try {
-    const machineHome = join(directory, 'machine');
-    mkdirSync(machineHome);
-    writeFileSync(join(machineHome, 'settings.json'), JSON.stringify({ gateSlots: 1, browserSlots: 1,
-      runners: [{ host: 'private-non-gui-fixture', slots: 1, browser: 1, gui: false }] }));
-    writeFileSync(join(directory, 'gui.test.js'), "/** @pullboard-test-gui */\nimport test from 'node:test'; function fixture(context) { context.after(() => {}); } test('GUI', t => { fixture(t); });\n");
-    writeFileSync(join(directory, 'cpu.test.js'), "import test from 'node:test'; test('busy', { cpuLoad: true }, () => {});\n");
-    const classify = pathToFileURL(resolve(import.meta.dirname, '../src/cpu-load-admission.js')).href;
-    const gui = pathToFileURL(resolve(import.meta.dirname, '../src/gui-admission.js')).href;
-    const result = runFixtureChild(process.execPath, ['--input-type=module', '-e', `
-      import { cpuRunnerRequired } from ${JSON.stringify(classify)};
-      import { testsNeedGui } from ${JSON.stringify(gui)};
-      const root = ${JSON.stringify(directory)};
-      console.log(JSON.stringify({ gui: testsNeedGui(root, ['gui.test.js']),
-        guiRunnerOnly: cpuRunnerRequired(root, ['gui.test.js']),
-        explicitCpuRunnerOnly: cpuRunnerRequired(root, ['cpu.test.js']) }));
-    `], { cwd: directory, env: { ...process.env, PULLBOARD_MACHINE_HOME: machineHome }, encoding: 'utf8' });
-    assert.equal(result.status, 0, result.context);
-    const observed = JSON.parse(result.stdout);
-    assert.equal(observed.gui, true, 'the public classifier preserves the GUI requirement');
-    assert.equal(observed.guiRunnerOnly, false, 'ordinary GUI work can use its eligible local slot');
-    assert.equal(observed.explicitCpuRunnerOnly, true, 'explicit CPU work still requires the registered runner');
-  } finally { rmSync(directory, { recursive: true, force: true }); }
-});
+test('a GUI test with no GUI runner stays local [C7]', guiCpuPolicyCase);
