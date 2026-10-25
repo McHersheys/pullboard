@@ -157,6 +157,28 @@ export function commonJsIn(sources) {
   });
 }
 
+/** Decode only a bounded quoted property literal, using the same literal-only grammar as dynamicAt. */
+function quotedCpuOptions(source) {
+  const points = [];
+  // Examine each quote independently: a quote in a regex or comment must not hide a later real key.
+  for (const quote of source.matchAll(/["']/gu)) {
+    const literal = /^(?:"(?:[^"\\]|\\[\s\S])*"|'(?:[^'\\]|\\[\s\S])*')/u.exec(source.slice(quote.index))?.[0];
+    if (!literal) continue;
+    let tail = pastGap(source, quote.index + literal.length);
+    if (tail.startsWith(']')) tail = pastGap(tail, 1);
+    if (!tail.startsWith(':')) continue;
+    let key;
+    try { key = new Function(`return ${literal};`)(); }
+    catch { continue; } // Invalid literals are covered by the whole-module compile failure below.
+    if (key !== 'cpuLoad') continue;
+    const at = source.length - tail.length + 1;
+    const value = pastGap(source, at);
+    const disabled = /^false\b/u.test(value) && /^[,}]/u.test(pastGap(value, 5));
+    points.push({ at, disabled });
+  }
+  return points;
+}
+
 /** Find CPU-load options without evaluating a test module; unknown identifier values require runner admission. */
 export function cpuLoadOptionsIn(sources) {
   const occurrences = sources.map(source => [
@@ -172,7 +194,7 @@ export function cpuLoadOptionsIn(sources) {
     const value = property ? pastGap(source, at) : '';
     const disabled = property && /^false\b/u.test(value) && /^[,}]/u.test(pastGap(value, 5));
     return [{ at, disabled }];
-  }));
+  }).concat(quotedCpuOptions(source)));
   const variants = sources.flatMap((source, index) => occurrences[index].map(({ at }) =>
     source.slice(0, at) + '\u0000' + source.slice(at)));
   const parsed = look([...sources, ...variants]);
