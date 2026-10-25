@@ -23,7 +23,7 @@ export async function run(io, { first, values }) {
   const ctx = context(io);
   const root = primaryCheckoutRoot(ctx.info);
   const trunk = root ? mainCheckout(root) : null;
-  if (!root || trunk?.branch !== 'main' || !trunk.commit) {
+  if (!root || trunk?.branch !== 'refs/heads/main' || !trunk.commit) {
     throw new Refused('NO_TRUNK', 'pullboard map needs a reachable primary main checkout; restore it, then retry');
   }
   const { ensureCodeMap, renderCodeMapOverview, renderMapCard, renderItemSlice } = await import('../code-map.js');
