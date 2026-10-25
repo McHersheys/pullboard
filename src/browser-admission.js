@@ -79,7 +79,7 @@ const REVIEWED_EXECUTORS = new Map([
     site: "runFixtureChild(env.PULLBOARD_REAL_GIT, args, { cwd, env, encoding: 'utf8' })",
     reason: 'this private fixture binds PULLBOARD_REAL_GIT to realGitPath before installing its counting shim' }]],
   ['test/git-calls.test.js', [{ function: 'advanceHead',
-    site: "execFileSync(box.env.PULLBOARD_REAL_GIT, ['commit-tree', tree, '-p', parent], { cwd: box.repo, env: box.env, input: label, encoding: 'utf8' })",
+    site: "execFileSync(box.env.PULLBOARD_REAL_GIT, ['commit-tree', tree, '-p', parent], { cwd: box.repo, env: box.env, input: label, encoding: 'utf8', })",
     reason: 'the private fixture binds this exact plumbing call to its realGit executable' }]],
 ]);
 
