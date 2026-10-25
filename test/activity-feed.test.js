@@ -43,7 +43,7 @@ test('a recorded submit stays successful when its later activity delivery fails 
   assert.equal(document.gate.green, true);
   assert.equal(document.activity.receipt.recorded, false);
   assert.equal(document.activity.receipt.code, 'ACTIVITY_DELIVERY_FAILED');
-  assert.match(submitted.err, /submitted .*activity delivery failed.*inbox/u);
+  assert.match(document.diagnostics.join('\n'), /submitted .*activity delivery failed.*inbox/u);
   const after = store.openBoard(boardPath);
   try {
     assert.equal(store.getItem(after, id).item_status, 'submitted');
