@@ -48,11 +48,31 @@ function callNames(source, code) {
   return names;
 }
 
+/** Namespace imports identify real process methods separately from unrelated methods such as RegExp.exec. */
+function processNamespaces(source) {
+  const namespaces = new Set();
+  for (const match of source.matchAll(/\bimport\s+(?:\*\s+as\s+)?([$A-Z_a-z][$\w]*)\s+from\s*(['"])(?:node:(?:child_process|worker_threads|cluster|vm|module)|[^'"\n]*fixture-child\.js)\2/gu)) {
+    namespaces.add(match[1]);
+  }
+  return namespaces;
+}
+
 /** Unknown member-valued executables need admission; Node's own executable identities are known. */
 function unresolvedMemberCommand(expression) {
   const compact = expression.replace(/\s/gu, '');
+  // Calls and object/template construction do not return the value of each member they read.
+  // In particular, a pid used to build a directory name is not an executable-valued alias.
+  let brackets = 0;
+  for (const char of compact) {
+    if (char === '[') brackets += 1;
+    else if (char === ']') brackets -= 1;
+    else if (!brackets && '({`'.includes(char)) return false;
+  }
   const members = compact.matchAll(/(?<![\w$.])[$A-Z_a-z][$\w]*(?:(?:\?\.|\.)[$A-Z_a-z][$\w]*|(?:\?\.)?\[[\s\S]*\])+/gu);
   return [...members].some(match => !['process.execPath', 'process.argv[0]'].includes(match[0])
+    // Existing arbitrary environment-value holes are exercised by the runtime guard.
+    // Known browser environment names are detected separately by browserIn.
+    && !/^process\.env(?:\.|\[|\?\.)/u.test(match[0])
     && compact[match.index + match[0].length] !== '(');
 }
 
@@ -81,6 +101,7 @@ function expressionEnd(code, start, newlineEnds = true) {
 export function sourceLaunchesBrowser(source) {
   const { code, strings } = lex(source);
   const names = callNames(source, code);
+  const namespaces = processNamespaces(source);
   const bindings = new Map();
   /** A span's literals or executable environment references can name a browser. */
   const browserIn = (start, end) => CHROME.test(code.slice(start, end))
@@ -93,9 +114,11 @@ export function sourceLaunchesBrowser(source) {
     const start = match.index + match[0].length;
     const end = expressionEnd(code, start);
     if (end === null) return CHROME.test(source);
-    const prior = bindings.get(match[1]) ?? { browser: false, unresolved: false, dependencies: new Set() };
+    const prior = bindings.get(match[1]) ?? { browser: false, unresolved: false, aliases: new Set(), dependencies: new Set() };
     prior.browser ||= browserIn(start, end);
     prior.unresolved ||= unresolvedMemberCommand(code.slice(start, end));
+    const alias = /^\s*([$A-Z_a-z][$\w]*)\s*$/u.exec(code.slice(start, end));
+    if (alias) prior.aliases.add(alias[1]);
     for (const word of code.slice(start, end).matchAll(WORD)) prior.dependencies.add(word[0]);
     bindings.set(match[1], prior);
   }
@@ -105,20 +128,39 @@ export function sourceLaunchesBrowser(source) {
     seen.add(name);
     const binding = bindings.get(name);
     return Boolean(binding && (binding.browser || command && binding.unresolved
-      || [...binding.dependencies].some(next => namedBrowser(next, seen, command))));
+      || [...(command ? binding.aliases : binding.dependencies)].some(next => namedBrowser(next, seen, command))));
   }
-  for (const match of code.matchAll(/(?<![\w$])([$A-Z_a-z][$\w]*)\s*(?:\?\.)?\s*\(/gu)) {
-    if (!names.has(match[1])) continue;
-    const start = match.index + match[0].length - 1;
+  const calls = [...code.matchAll(/(?<![\w$])([$A-Z_a-z][$\w]*)\s*(?:\?\.)?\s*\(/gu)]
+    .filter(match => names.has(match[1])).map(match => {
+      const before = code.slice(0, match.index).trimEnd();
+      const owner = /([$A-Z_a-z][$\w]*)\s*(?:\?\.|\.)$/u.exec(before)?.[1];
+      return { start: match.index + match[0].length - 1,
+        unknown: !before.endsWith('.') || namespaces.has(owner) };
+    });
+  for (const namespace of namespaces) {
+    const escaped = namespace.replace(/[$]/gu, '\\$&');
+    const pattern = new RegExp(`(?<![\\w$.])${escaped}\\s*(?:\\?\\.)?\\s*\\[\\s*(['"])([$A-Z_a-z][$\\w]*)\\1\\s*\\]\\s*(?:\\?\\.)?\\s*\\(`, 'gu');
+    for (const match of source.matchAll(pattern)) {
+      if (PROCESS_CALLS.has(match[2]) && code.slice(match.index, match.index + namespace.length) === namespace) {
+        calls.push({ start: match.index + match[0].length - 1, unknown: true });
+      }
+    }
+  }
+  for (const call of calls) {
+    const { start } = call;
     const end = closing(code, start);
     if (end === null) return CHROME.test(source);
     if (browserIn(start + 1, end)) return true;
     if ([...code.slice(start + 1, end).matchAll(WORD)].some(word => namedBrowser(word[0]))) return true;
-    const commandEnd = expressionEnd(code, start + 1, false);
-    if (commandEnd === null) return true;
-    const command = code.slice(start + 1, commandEnd);
-    if (unresolvedMemberCommand(command)
-      || [...command.matchAll(WORD)].some(word => namedBrowser(word[0], new Set(), true))) return true;
+    // A regex's .exec is not the imported process capability. Unknown-value admission
+    // applies to bare process bindings and imported process namespaces, not unrelated methods.
+    if (call.unknown) {
+      const commandEnd = expressionEnd(code, start + 1, false);
+      if (commandEnd === null) return true;
+      const command = code.slice(start + 1, commandEnd);
+      if (unresolvedMemberCommand(command)
+        || [...command.matchAll(WORD)].some(word => namedBrowser(word[0], new Set(), true))) return true;
+    }
   }
   // Computed/dynamic process access has no complete static call binding: keep Chrome-capable sources bound.
   if (/\b(?:getBuiltinModule|eval|Function)\s*\(|\b(?:process|require)\s*\[|\]\s*(?:\?\.)?\s*\(|\.\s*(?:call|apply|bind)\s*\(|\\u(?:[\da-f]{4}|\{[\da-f]+\})/iu.test(code)

@@ -537,10 +537,12 @@ test('process member commands retain property assignments and unresolved targets
     'test/optional-command.test.js': imports + "export function run(options) { return spawnSync(options?.command, []); }",
     'test/multiline-command.test.js': imports + "export function run(options) { return spawnSync(\n options.command, []); }",
     'test/fallback-command.test.js': imports + "const options = {}; options.command = 'google-chrome'; spawnSync(options.command || 'git', []);",
+    'test/namespace-command.test.js': "import * as child from 'node:child_process'; export function run(options) { return child.spawnSync(options.command, []); }",
+    'test/namespace-key-command.test.js': "import * as child from 'node:child_process'; export function run(options) { return child['spawnSync'](options.command, []); }",
     'test/property-data.test.js': imports + "const options = {}; options.command = 'google-chrome'; spawnSync('git', ['status']);",
   });
   for (const name of ['dot-command', 'spaced-command', 'literal-key-command', 'computed-command', 'unresolved-command',
-    'member-alias-command', 'optional-command', 'multiline-command', 'fallback-command']) {
+    'member-alias-command', 'optional-command', 'multiline-command', 'fallback-command', 'namespace-command', 'namespace-key-command']) {
     assert.equal(await testsNeedBrowser(root, [`test/${name}.test.js`], { byLaunch: true }), true,
       `${name}: a real member command remains browser-bound`);
   }
