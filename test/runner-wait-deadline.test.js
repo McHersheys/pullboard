@@ -1,0 +1,110 @@
+/** Runner deadlines retain ordinary local admission and never create disabled capacity [C7,Q1,Q2]. */
+import assert from 'node:assert/strict';
+import { after, test } from 'node:test';
+import { mkdirSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { createE2eHelpers } from './e2e-helpers.js';
+import { cleanupFixtureChildren, runFixtureChild } from './fixture-child.js';
+import { cleanupToolingSnapshots, cli, fixtureResultContext, gateResult, runThroughGate } from './runner-tooling-fixture.js';
+import { HOST, installSshStandIn, shellQuote } from './runner-ssh-fixture.js';
+import { listResources, takeResource } from '../src/resources.js';
+
+const e2e = createE2eHelpers();
+after(e2e.cleanup);
+after(cleanupFixtureChildren);
+after(cleanupToolingSnapshots);
+
+/** Build the real loopback SSH transport in an isolated machine, with a short private deadline. */
+function fixture() {
+  const box = e2e.project('true');
+  const paths = Object.fromEntries(['bin', 'worker', 'remoteHome', 'remoteMachine'].map(name => [name, join(box.dir, name)]));
+  for (const path of Object.values(paths)) mkdirSync(path, { recursive: true });
+  const requests = join(box.dir, 'requests.jsonl');
+  installSshStandIn({ bin: paths.bin, worker: paths.worker, home: paths.remoteHome,
+    machineHome: paths.remoteMachine, requests, dropFirst: true });
+  box.env.PATH = paths.bin + ':' + box.env.PATH;
+  const added = cli(box.repo, box.env, 'runner', 'add', HOST + '-drop', '--slots', '1', '--browser', '1');
+  assert.equal(added.status, 0, fixtureResultContext(added));
+  const settingsFile = join(box.env.PULLBOARD_MACHINE_HOME, 'settings.json');
+  const settings = JSON.parse(readFileSync(settingsFile, 'utf8'));
+  writeFileSync(settingsFile, JSON.stringify({ ...settings, gateSlots: 1, browserSlots: 1,
+    gate: { ...settings.gate, runnerWaitMs: 60, runnersFirst: false } }));
+  return { ...box, requests, settingsFile };
+}
+
+/** Observe a real fixture phase, with cleanup owned by the caller rather than a production timeout override. */
+async function observe(predicate, description) {
+  const until = Date.now() + 10_000; // budget: private Git and SSH startup; no production deadline extension.
+  while (!predicate()) {
+    if (Date.now() >= until) throw new Error('fixture did not reach ' + description);
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+}
+
+test('a gate run waiting for an unreachable runner falls back to a local slot after the deadline and names the runner [C7,Q1,Q2]', async () => {
+  const box = fixture();
+  const previous = [process.env.PULLBOARD_HOME, process.env.PULLBOARD_MACHINE_HOME];
+  process.env.PULLBOARD_HOME = box.env.PULLBOARD_HOME;
+  process.env.PULLBOARD_MACHINE_HOME = box.env.PULLBOARD_MACHINE_HOME;
+  let held;
+  let pending;
+  try {
+    const settings = JSON.parse(readFileSync(box.settingsFile, 'utf8'));
+    const idle = await takeResource({ name: 'gate', scope: 'machine', root: box.repo, capacity: 1,
+      browserCapacityProvider: () => 1, browser: true, gui: true, remote: true,
+      runnerProvider: () => settings.runners, runnersFirstProvider: () => false, agent: 'idle-local-control' });
+    assert.equal(idle.runner, undefined, 'an idle compatible local slot is not hidden by registered non-GUI runners');
+    idle.release();
+    held = await takeResource({ name: 'gate', scope: 'machine', root: box.repo, capacity: 1, agent: 'real-local-holder' });
+    const marker = join(box.dir, 'ran-locally');
+    const command = 'node -e ' + shellQuote(`require('node:fs').writeFileSync(${JSON.stringify(marker)},'actual local command'); console.log('DEADLINE_LOCAL_EXECUTION')`);
+    pending = runThroughGate(box.repo, box.env, command, { item: 'deadline-case', requests: box.requests });
+    await observe(() => existsSync(box.requests) && readFileSync(box.requests, 'utf8').includes('"dropped":true'), 'the actual SSH transport drop');
+    const queue = () => listResources({ scope: 'machine' }).find(resource => resource.name === 'gate');
+    await observe(() => queue()?.line.some(row => row.item === 'deadline-case'), 'the original run requeued after transport loss');
+    const first = queue().line.find(row => row.item === 'deadline-case');
+    await new Promise(resolve => setTimeout(resolve, 100)); // budget: pass the private 60ms deadline while the real local holder stays held.
+    const resources = cli(box.repo, box.env, 'resources');
+    assert.equal(resources.status, 0, fixtureResultContext(resources));
+    assert.match(resources.stdout, /runner wait deadline/iu, 'public resources names the overdue run');
+    assert.match(resources.stdout, new RegExp(HOST + '-drop.*unreachable', 'iu'), 'the actual dropped runner and reason are named');
+    const status = cli(box.repo, box.env, 'status');
+    assert.equal(status.status, 0, fixtureResultContext(status));
+    assert.match(status.stdout, /runner wait deadline/iu, 'ordinary status also names a run past its runner deadline');
+    const current = queue().line.find(row => row.item === 'deadline-case');
+    assert.equal(current.since, first.since, 'fallback preserves the original queue age');
+    assert.equal(existsSync(marker), false, 'the deadline never bypasses a live local holder');
+    held.release(); held = null;
+    const result = await pending; pending = null;
+    assert.equal(result.status, 0, fixtureResultContext(result));
+    assert.match(result.stdout, /DEADLINE_LOCAL_EXECUTION/u);
+    assert.equal(gateResult(result.stdout).runner, undefined, 'the command actually executes locally');
+    assert.match(result.stderr, new RegExp(HOST + '-drop.*unreachable', 'iu'), 'fallback emits the named runner reason');
+    assert.equal(readFileSync(box.requests, 'utf8').trim().split('\n').length, 1, 'a quarantined runner is not retried after the deadline');
+    assert.equal(queue().holders.length + queue().line.length, 0, 'all private leases drain');
+  } finally {
+    held?.release();
+    if (pending) await pending; // Release the held slot even on a missing-deadline assertion, then drain the owned controller.
+    for (const [index, key] of ['PULLBOARD_HOME', 'PULLBOARD_MACHINE_HOME'].entries()) {
+      if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index];
+    }
+  }
+});
+
+test('disabled local capacity and runner-only work refuse by name at the runner deadline [C7,Q1]', () => {
+  for (const runnerOnly of [false, true]) {
+    const box = fixture();
+    const settings = JSON.parse(readFileSync(box.settingsFile, 'utf8'));
+    writeFileSync(box.settingsFile, JSON.stringify({ ...settings, gateSlots: runnerOnly ? 1 : 0, browserSlots: runnerOnly ? 1 : 0 }));
+    const module = pathToFileURL(join(import.meta.dirname, '../src/gate.js')).href;
+    const source = `import {withGateSlot} from ${JSON.stringify(module)};
+try { await withGateSlot(${JSON.stringify(box.repo)},()=>{throw Error('disabled execution ran')},{browser:true,gui:true,runnerOnly:${runnerOnly},agent:'deadline-refusal'}); process.exitCode=9; }
+catch(error) { console.log(JSON.stringify({code:error.code,message:error.message})); process.exitCode=error.code==='RUNNER_WAIT_DEADLINE'?0:8; }`;
+    const result = runFixtureChild(process.execPath, ['--input-type=module', '-e', source], {
+      cwd: box.repo, env: box.env, encoding: 'utf8', timeout: 5_000 }); // budget: a missing 60ms private deadline is a bounded failure, not an immortal test.
+    assert.equal(result.status, 0, result.context);
+    assert.match(result.stdout, runnerOnly ? /runner.only/iu : /no local capacity/iu);
+    assert.match(result.stdout, new RegExp(HOST + '-drop', 'u'));
+  }
+});
