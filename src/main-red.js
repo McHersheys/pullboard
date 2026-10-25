@@ -36,6 +36,9 @@ import { listItems } from './board.js';
 import { takeResource } from './resources.js';
 import { Refused } from './refused.js';
 import { failureSignatures } from './main-failure-matches.js';
+import { testsNeedBrowser } from './browser-admission.js';
+import { testsNeedGui } from './gui-admission.js';
+import { browserFreeChecksEnabled } from './settings.js';
 
 const CACHE_RELATIVE = 'pullboard/main-red.json';
 
@@ -195,6 +198,9 @@ export async function compareMainFailures(root, profile, onWait, output = '', { 
       try {
         // The slot is taken on the clean main checkout, so a runner can take it even when this worktree is dirty.
         const measured = await withMainCheckout(root, main.commit, async checkout => {
+          // Use the same exact-file capability checks as ordinary named tests, on main's source.
+          const browser = !browserFreeChecksEnabled() || await testsNeedBrowser(checkout, [path]);
+          const gui = testsNeedGui(checkout, [path]);
           /** Run main's copy of the file under one gate slot, retaining detailed identity when requested. */
           const measure = remote => withGateSlot(checkout, async lease => {
             const command = `${policy.config.affectedTests.trimEnd()} ${shellWord('./' + path)}`;
@@ -204,7 +210,7 @@ export async function compareMainFailures(root, profile, onWait, output = '', { 
             const failures = detailed ? run.isGreen ? [] : failureSignatures(run, checkout) : null;
             if (detailed && !run.isGreen && !failures) throw new Error('focused main output has no complete named failure account');
             return { result: run.isGreen ? 'green' : 'red', ...(failures ? { failures } : {}) };
-          }, { diagnostic: true, browser: true, remote, agent: process.env.PULLBOARD_AGENT, kind: 'main-red', onWait });
+          }, { diagnostic: true, browser, gui, remote, agent: process.env.PULLBOARD_AGENT, kind: 'main-red', onWait });
           // History a runner may not receive keeps the comparison on this machine, as it ran before runners.
           try { return await measure(true); }
           catch (error) { if (error?.code !== 'RUNNER_SECRET') throw error; return measure(false); }
