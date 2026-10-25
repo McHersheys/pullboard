@@ -593,6 +593,29 @@ test('process member commands retain property assignments and unresolved targets
     'default admission remains conservative');
 });
 
+test('function-returned browser commands retain browser admission [C7,O5]', async t => {
+  const imports = "import { spawnSync } from 'node:child_process';\n";
+  const factory = "function pick() { return 'google-chrome'; }\n";
+  const generated = factory + 'spawnSync(pick(), []);';
+  const root = sourceFixture(t, {
+    'test/function-command.test.js': imports + factory + 'spawnSync(pick(), []);',
+    'test/function-alias.test.js': imports + factory + 'const executable = pick(); spawnSync(executable, []);',
+    'test/function-namespace.test.js': "import * as child from 'node:child_process';\n" + factory + 'child.spawnSync(pick(), []);',
+    'test/unused-function.test.js': imports + factory + "spawnSync('git', ['status']);",
+    'test/quoted-function.test.js': imports + 'const fixture = ' + JSON.stringify(generated) + "; spawnSync(process.execPath, ['--version']);",
+    'test/comment-function.test.js': imports + '// ' + generated.replaceAll('\n', '\n// ') + "\nspawnSync('git', ['status']);",
+  });
+  commitSourceFixture(root);
+  for (const name of ['function-command', 'function-alias', 'function-namespace']) {
+    assert.equal(await testsNeedBrowser(root, [`test/${name}.test.js`], { byLaunch: true }), true,
+      `${name}: a browser command returned by a function remains browser-bound`);
+  }
+  for (const name of ['unused-function', 'quoted-function', 'comment-function']) {
+    assert.equal(await testsNeedBrowser(root, [`test/${name}.test.js`], { byLaunch: true }), false,
+      `${name}: browser text that does not supply the process command remains launch-free`);
+  }
+});
+
 test('a file that launches Chrome unclassified fails by name [C7,O5]', async t => {
   const hidden = `import { test } from 'node:test';
 test('hidden launches through a computed import', async () => {
