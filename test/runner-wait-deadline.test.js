@@ -94,8 +94,9 @@ test('a gate run waiting for an unreachable runner falls back to a local slot af
   }
 });
 
-test('disabled local capacity and runner-only work refuse by name at the runner deadline [C7,Q1]', () => {
-  for (const runnerOnly of [false, true]) {
+test('disabled local capacity refuses by name at the runner deadline [C7,Q1]', () => {
+  // Runner-only work (#1240) composes its own case when it lands; on this trunk every run may fall back locally.
+  for (const runnerOnly of [false]) {
     const box = fixture();
     const settings = JSON.parse(readFileSync(box.settingsFile, 'utf8'));
     writeFileSync(box.settingsFile, JSON.stringify({ ...settings, gateSlots: runnerOnly ? 1 : 0, browserSlots: runnerOnly ? 1 : 0 }));
