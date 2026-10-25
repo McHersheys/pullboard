@@ -3,6 +3,7 @@ import {
   requireHandoffActive,
 } from './handoff-state.js';
 import { manualLandingFailureQuoted } from './manual-landing-failure-quoted.js';
+import { submissionSize } from './submission-size.js';
 import { lineSettings } from './line-settings.js';
 import { requireOutsideReceipt } from './outside-proof.js';
 /** Versioned, deterministic replay through the CLI's existing board engine [H3,H16]. */
@@ -99,6 +100,7 @@ export function prepareEngineMove(board, operation, args, { id = randomUUID(), a
     delete values[1].mergeOnly;
     if (carry) values[1].mergeOnly = carry;
   }
+  if (operation === 'submit') submissionSize(values[1]?.submissionSize, values[1]?.commit);
   if (operation === 'claim' && ['wipPerReviewer', 'takeoverMinutes'].some(key => typeof lineSettings(board)[key] === 'number')) {
     values[1] = { ...values[1], lineCapacity: true };
   }

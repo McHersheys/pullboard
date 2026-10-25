@@ -1,3 +1,12 @@
+import { reportEvent } from './stats-flow-report.js';
+import { affectedReportItems } from './stats-flow-report.js';
+import { indexReportItem } from './stats-flow-report.js';
+import { prepareReportMove } from './stats-flow-report.js';
+import { newReportPolicy } from './stats-flow-report.js';
+import { advanceReport } from './stats-flow-report.js';
+import { recordReport } from './stats-flow-report.js';
+import { recordReportPolicy } from './stats-flow-report.js';
+import { projectReport } from './stats-flow-report.js';
 import { proofEventDetail } from './proof-event-detail.js';
 import {
   newWindowTrace,
@@ -40,6 +49,7 @@ function expireClaim(item, at) {
     observeFlowStage(item, null, item.leaseUntil, 'clock');
     item.state = 'open';
     item.openAt = item.leaseUntil;
+    if (item.report) item.report.returned = true;
   }
 }
 
@@ -91,8 +101,10 @@ export function moveFlowItem(item, event, detail, at) {
       if (item.windowTrace?.cursor?.stage !== 'mergeWait') observeFlowGap(item);
       observeFlowStage(item, null, at, event.event_by);
       item.mergeAt ??= at; item.state = 'merged'; break;
-    case 'reopen':
     case 'refreeze':
+      if (detail.retainedClaim) break;
+      // Ordinary refreezes return work; a retained live claim keeps its original build interval.
+    case 'reopen':
     case 'escalate':
     case 'lapse':
       observeFlowStage(item, 'sendBackIdle', at, event.event_by);
@@ -179,6 +191,7 @@ export function prepareFlowHistory(history, { window = false } = {}) {
   const items = new Map();
   const actors = new Map();
   const dailyEvents = [];
+  const reportPolicy = newReportPolicy();
   for (const event of history) {
     const detail = proofEventDetail(event);
     const at = Date.parse(event.event_at);
@@ -190,21 +203,30 @@ export function prepareFlowHistory(history, { window = false } = {}) {
       actor.role = id === 'coordinator' ? 'coordinator' : roleOf(event.event_kind, detail) ?? actor.role;
       actor.lastAt = at;
     }
+    const reporting = reportEvent(event, detail);
+    for (const id of reporting ? affectedReportItems(reportPolicy, event, detail) : []) {
+      const affected = items.get(id);
+      if (affected) advanceReport(affected, reportPolicy, at);
+    }
+    if (reporting) recordReportPolicy(reportPolicy, event, detail, items.get(event.item_id));
     if (event.item_id === null || event.item_id === undefined) continue;
     if (!items.has(event.item_id)) items.set(event.item_id, { id: event.item_id, lane: 'unknown', ...(window ? { windowTrace: newWindowTrace() } : {}) });
     const item = items.get(event.item_id);
     if (event.event_kind === 'add') dailyEvents.push({ at, kind: 'added' });
     if (event.event_kind === 'merged' && item.mergeAt === undefined) dailyEvents.push({ at, kind: 'merged' });
-    moveFlowItem(item, event, detail, at);
+    if (reporting) { advanceReport(item, reportPolicy, at); prepareReportMove(item, event, detail); }
+    if (reporting) moveFlowItem(item, event, detail, at);
+    if (reporting) { recordReport(item, event, detail); indexReportItem(reportPolicy, item); }
   }
   const frozenItems = [...items.values()].map((item) => Object.freeze({
     ...item,
+    ...(item.report ? { report: frozenReport(item.report) } : {}),
     ...(item.windowTrace ? { windowTrace: frozenWindowTrace(item.windowTrace) } : {}),
     ...(item.reserve ? { reserve: Object.freeze({ ...item.reserve }) } : {}),
   }));
   const frozenActors = [...actors.values()].map((actor) => Object.freeze({ ...actor }));
   const frozenDailyEvents = dailyEvents.map((event) => Object.freeze(event));
-  return Object.freeze({ items: Object.freeze(frozenItems), actors: Object.freeze(frozenActors), dailyEvents: Object.freeze(frozenDailyEvents) });
+  return Object.freeze({ reportPolicy: frozenReport(reportPolicy), items: Object.freeze(frozenItems), actors: Object.freeze(frozenActors), dailyEvents: Object.freeze(frozenDailyEvents) });
 }
 
 /** Project current queues and time windows from compiled facts without mutating the cached snapshot. */
@@ -252,7 +274,8 @@ export function projectFlowStats(prepared, boundary, now, counts, { windowMinute
     ...projectFlowWindow(prepared, windowMinutes, now),
     ...(executionCapacity ? { executionCapacity } : {}),
   };
-  return { ...(window === undefined ? {} : { window }), asOf: new Date(now).toISOString(), stages, queues: queueData.queues, unreviewed: queueData.unreviewed, daily: [...daily.values()].sort((a, b) => a.date.localeCompare(b.date)),
+  const report = projectReport(prepared.reportItems ?? prepared.items, prepared.reportPolicy, now);
+  return { report, ...(window === undefined ? {} : { window }), asOf: new Date(now).toISOString(), stages, queues: queueData.queues, unreviewed: queueData.unreviewed, daily: [...daily.values()].sort((a, b) => a.date.localeCompare(b.date)),
     submitsPerMerged: completedItems ? counts.submissions / completedItems : 0, activeAgents, bottleneck };
 }
 
@@ -292,6 +315,25 @@ export function flowLines(flow) {
   return lines;
 }
 
+/** Render the detailed report without changing the existing compact flow-summary contract. */
+export function flowReportLines(flow) {
+  const lines = [];
+  const percent = value => value === null ? 'unmeasured' : `${number(value * 100)}%`;
+  if (flow.report?.items) {
+    lines.push('flow report (all-time): waiting for an agent; filed for later; building; review; landing; rework');
+    const labels = { ready: 'waiting for an agent', later: 'filed for later', build: 'building', reviewWait: 'waiting for review', review: 'reviewing', mergeWait: 'waiting to land', rework: 'rework' };
+    for (const [kind, rows] of [['item', flow.report.items], ['lane', flow.report.lanes], ['milestone', flow.report.milestones]]) {
+      for (const row of rows) {
+        const name = kind === 'item' ? `#${row.id}` : row.lane ?? row.milestone ?? 'unknown';
+        lines.push(`${kind} ${name}: ${Object.entries(row.stages).map(([key, value]) => `${labels[key]} ${duration(value.minutes)} (${value.unknown} unknown)`).join(' · ')}`);
+        lines.push(`  first try ${percent(row.firstTry.rate)} (${row.firstTry.accepted}/${row.firstTry.decided}; ${row.firstTry.unknown} unknown); submissions per landed ${number(row.submissionsPerLanded)}`);
+        lines.push(`  size buckets: ${Object.entries(row.sizeBuckets).map(([key, value]) => `${key} ${percent(value.rate)} (${value.accepted}/${value.decided}; ${value.unknown} unknown)`).join(' · ')}`);
+      }
+    }
+  } else lines.push('flow report: unavailable until the next writer rebuilds historical accounting');
+  return lines;
+}
+
 /** Name a tripped documented threshold using the same measured flow and action as stats [N32]. */
 export function flowAlertLine(flow) {
   const average = flow.stages.reviewWait.averageMinutes;
@@ -305,3 +347,4 @@ export function flowAlertLine(flow) {
     `bottleneck: ${LABELS[bottleneck.stage]} (${number(bottleneck.share * 100)}% of ${duration(bottleneck.totalCycleMinutes)} measured cycle time); next: ${bottleneck.recommendation}`;
   return `flow: ${thresholds.join('; ')}; ${measured}`;
 }
+import { frozenReport } from './stats-flow-report.js';
