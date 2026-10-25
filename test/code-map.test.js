@@ -35,7 +35,7 @@ test('pullboard map prints the overview, a card and an item slice from one scan 
   writeFileSync(join(box.repo, 'bin/start.js'), "import { displayHome as render } from '../src/public.js';\nexport function start() { return render(); }\n");
   writeFileSync(join(box.repo, 'test/home.test.js'), "import { renderHome } from '../src/home.js';\nvoid renderHome;\n");
   box.git(box.repo, 'add', '-A');
-  box.git(box.repo, 'commit', '-q', '-m', 'fixture: add code map source tree');
+  box.git(box.repo, 'commit', '-q', '-m', 'test(core): add code map source fixture');
   const added = box.run(box.repo, 'add', 'web', 'Map fixture item', '--criterion',
     'src/home.js exports renderHome and test/home.test.js imports it', '--specs', 'G1', '--check', 'true', '--route', 'light');
   assert.equal(added.code, 0, added.out + added.err);
