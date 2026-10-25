@@ -186,11 +186,17 @@ export async function compareMainFailures(root, profile, onWait, output = '') {
     for (const path of missing) {
       try {
         // The slot is taken on the clean main checkout, so a runner can take it even when this worktree is dirty.
-        const measured = await withMainCheckout(root, main.commit, checkout => withGateSlot(checkout, async lease => {
-          const command = `${policy.config.affectedTests.trimEnd()} ${shellWord('./' + path)}`;
-          const run = await runProfiledShellAsync(checkout, command, { gateLease: lease, waitMs: lease.waitMs });
-          return { result: run.isGreen ? 'green' : 'red' };
-        }, { diagnostic: true, browser: true, agent: process.env.PULLBOARD_AGENT, kind: 'main-red', onWait }));
+        const measured = await withMainCheckout(root, main.commit, async checkout => {
+          /** Run main's copy of the file under one gate slot, on a runner unless remote is false. */
+          const measure = remote => withGateSlot(checkout, async lease => {
+            const command = `${policy.config.affectedTests.trimEnd()} ${shellWord('./' + path)}`;
+            const run = await runProfiledShellAsync(checkout, command, { gateLease: lease, waitMs: lease.waitMs });
+            return { result: run.isGreen ? 'green' : 'red' };
+          }, { diagnostic: true, browser: true, remote, agent: process.env.PULLBOARD_AGENT, kind: 'main-red', onWait });
+          // History a runner may not receive keeps the comparison on this machine, as it ran before runners.
+          try { return await measure(true); }
+          catch (error) { if (error?.code !== 'RUNNER_SECRET') throw error; return measure(false); }
+        });
         if (measured.unavailable) throw new Error(measured.unavailable);
         // The cache lease excludes other comparisons; persist each result before yielding again.
         cache = readCache(file);

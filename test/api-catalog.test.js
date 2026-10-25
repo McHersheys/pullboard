@@ -807,6 +807,21 @@ catalogCase('[A1] intake records a real outside pull request through the CLI', a
   assert.equal(document.item.item_commit, box.commit);
 });
 
+catalogCase('[A1,C7] test runs named test files and reports where they ran', async () => {
+  const box = await project();
+  const configFile = join(box.repo, 'pullboard.json');
+  writeFileSync(configFile, JSON.stringify({ ...JSON.parse(readFileSync(configFile, 'utf8')), affectedTests: 'node --test' }, null, 2));
+  mkdirSync(join(box.repo, 'test'));
+  writeFileSync(join(box.repo, 'test', 'catalog.test.js'), "import { test } from 'node:test';\ntest('catalog passes', () => {});\n");
+  await box.git(box.repo, 'add', '-A');
+  await box.git(box.repo, 'commit', '-q', '-m', 'test: a focused runner and one test file');
+  const result = await json(box, box.repo, 'test', ['test/catalog.test.js']);
+  assert.equal(result.green, true);
+  assert.deepEqual(result.files, ['test/catalog.test.js']);
+  assert.equal(result.runner, 'this machine', 'with no runner registered the files run here');
+  assert.match(result.output, /^ok 1 - catalog passes/mu);
+});
+
 catalogCase('[A1,H11] sync shares a board through a real Git remote without an account', async () => {
   const source = await project();
   const remote = join(source.dir, 'shared-board.git');
