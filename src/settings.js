@@ -44,6 +44,9 @@ export function loadMachineSettings() {
   if (value.gate?.browserFreeChecks !== undefined && typeof value.gate.browserFreeChecks !== 'boolean') {
     throw new Refused('BAD_MACHINE_SETTINGS', `gate.browserFreeChecks in ${file} must be true or false`);
   }
+  if (value.gate?.runnersFirst !== undefined && typeof value.gate.runnersFirst !== 'boolean') {
+    throw new Refused('BAD_MACHINE_SETTINGS', `gate.runnersFirst in ${file} must be true or false`);
+  }
   if (value.gate?.browserByLaunch !== undefined && typeof value.gate.browserByLaunch !== 'boolean') {
     throw new Refused('BAD_MACHINE_SETTINGS', `gate.browserByLaunch in ${file} must be true or false`);
   }
@@ -58,18 +61,6 @@ export function loadMachineSettings() {
   if (value.gate?.memoryFloorMB !== undefined && (!Number.isSafeInteger(value.gate.memoryFloorMB) || value.gate.memoryFloorMB < 0)) {
     throw new Refused('BAD_MACHINE_SETTINGS', `gate.memoryFloorMB in ${file} must be a whole number of megabytes, 0 or more; fix it before running Pullboard`);
   }
-  const gateSlots = value.gateSlots ?? DEFAULT_GATE_SLOTS;
-  if (!Number.isSafeInteger(gateSlots) || gateSlots < 1) {
-    throw new Refused('BAD_GATE_SLOTS', `gateSlots in ${file} must be a positive integer; run pullboard settings gateSlots <n>`);
-  }
-  const browserSlots = value.browserSlots ?? DEFAULT_BROWSER_SLOTS;
-  if (!Number.isSafeInteger(browserSlots) || browserSlots < 1 || browserSlots > gateSlots) {
-    throw new Refused('BAD_BROWSER_SLOTS', `browserSlots in ${file} must be a positive integer no greater than gateSlots (${gateSlots}); run pullboard settings browserSlots <n>`);
-  }
-  const shortSlots = value.gate?.shortSlots;
-  if (shortSlots !== undefined && (!Number.isSafeInteger(shortSlots) || shortSlots < 0)) {
-    throw new Refused('BAD_SHORT_SLOTS', `gate.shortSlots in ${file} must be a whole number, 0 or more; run pullboard settings gate.shortSlots <n>`);
-  }
   const runners = value.runners ?? [];
   if (!Array.isArray(runners)) throw new Refused('BAD_MACHINE_SETTINGS', 'runners must be an array; use pullboard runner add <ssh-host> --slots <n> --browser <n>');
   const seen = new Set();
@@ -78,12 +69,29 @@ export function loadMachineSettings() {
     if (seen.has(runner.host)) throw new Refused('BAD_MACHINE_SETTINGS', 'runner hosts must be unique; remove the duplicate machine setting');
     seen.add(runner.host);
   }
+  const gateSlots = value.gateSlots ?? DEFAULT_GATE_SLOTS;
+  if (!Number.isSafeInteger(gateSlots) || gateSlots < 0 || gateSlots === 0 && runners.length === 0) {
+    throw new Refused('BAD_GATE_SLOTS', `gateSlots in ${file} must be positive, or 0 with a registered runner; run pullboard runner add <ssh-host> --slots <n> --browser <n>`);
+  }
+  const browserSlots = value.browserSlots ?? DEFAULT_BROWSER_SLOTS;
+  if (!Number.isSafeInteger(browserSlots) || browserSlots < 0 || browserSlots > gateSlots || browserSlots === 0 && runners.length === 0) {
+    throw new Refused('BAD_BROWSER_SLOTS', `browserSlots in ${file} must be positive and no greater than gateSlots (${gateSlots}), or 0 with a registered runner; run pullboard settings browserSlots <n>`);
+  }
+  const shortSlots = value.gate?.shortSlots;
+  if (shortSlots !== undefined && (!Number.isSafeInteger(shortSlots) || shortSlots < 0)) {
+    throw new Refused('BAD_SHORT_SLOTS', `gate.shortSlots in ${file} must be a whole number, 0 or more; run pullboard settings gate.shortSlots <n>`);
+  }
   return { ...value, gateSlots, browserSlots, ...(runners.length ? { runners } : {}) };
 }
 
 /** Browser-free check admission is deliberately opt-in per machine. */
 export function browserFreeChecksEnabled() {
   return loadMachineSettings().gate?.browserFreeChecks === true;
+}
+
+/** Runner-first admission is machine-wide and remains off unless explicitly enabled. */
+export function gateRunnersFirstEnabled() {
+  return loadMachineSettings().gate?.runnersFirst === true;
 }
 
 /**
@@ -154,10 +162,11 @@ export function setLandingPool(board, enabled) {
 
 /** Raise machine gate capacity immediately; decreases require an empty durable queue. */
 export function setGateSlots(capacity) {
-  if (!Number.isSafeInteger(capacity) || capacity < 1) throw new Refused('BAD_GATE_SLOTS', 'gateSlots must be a positive integer; run pullboard settings gateSlots <n>');
+  if (!Number.isSafeInteger(capacity) || capacity < 0) throw new Refused('BAD_GATE_SLOTS', 'gateSlots must be a whole number, 0 or more; 0 requires a registered runner');
   let next;
-  setResourceCapacity({ name: 'gate', capacity, scope: 'machine', persist: () => {
+  setResourceCapacity({ name: 'gate', capacity, scope: 'machine', allowZero: capacity === 0, persist: () => {
     const current = loadMachineSettings();
+    if (capacity === 0 && !current.runners?.length) throw new Refused('BAD_GATE_SLOTS', 'gateSlots 0 requires a registered runner; run pullboard runner add <ssh-host> --slots <n> --browser <n>');
     if (capacity < current.browserSlots) throw new Refused('BAD_GATE_SLOTS', `gateSlots cannot be lower than browserSlots (${current.browserSlots}); first run pullboard settings browserSlots <n>`);
     next = { ...current, gateSlots: capacity };
     writeMachineSettings(next);
@@ -192,12 +201,26 @@ export function setGateShortSlots(count) {
 
 /** Raise machine browser capacity immediately; decreases require an empty browser queue. */
 export function setBrowserSlots(capacity) {
-  if (!Number.isSafeInteger(capacity) || capacity < 1) throw new Refused('BAD_BROWSER_SLOTS', 'browserSlots must be a positive integer; run pullboard settings browserSlots <n>');
+  if (!Number.isSafeInteger(capacity) || capacity < 0) throw new Refused('BAD_BROWSER_SLOTS', 'browserSlots must be a whole number, 0 or more; 0 requires a registered runner');
   let next;
-  setResourceCapacity({ name: 'browser', capacity, scope: 'machine', persist: () => {
+  setResourceCapacity({ name: 'browser', capacity, scope: 'machine', allowZero: capacity === 0, persist: () => {
     const current = loadMachineSettings();
+    if (capacity === 0 && !current.runners?.length) throw new Refused('BAD_BROWSER_SLOTS', 'browserSlots 0 requires a registered runner; run pullboard runner add <ssh-host> --slots <n> --browser <n>');
     if (capacity > current.gateSlots) throw new Refused('BAD_BROWSER_SLOTS', `browserSlots cannot exceed gateSlots (${current.gateSlots}); run pullboard settings gateSlots <n> first`);
     next = { ...current, browserSlots: capacity };
+    writeMachineSettings(next);
+  } });
+  return next;
+}
+
+/** Set the machine-wide runner-first gate policy while preserving other gate settings. */
+export function setGateRunnersFirst(enabled) {
+  if (typeof enabled !== 'boolean') throw new Refused('BAD_MACHINE_SETTINGS', 'gate.runnersFirst must be true or false; run pullboard settings gate.runnersFirst on|off');
+  let next;
+  const current = loadMachineSettings();
+  setResourceCapacity({ name: 'gate', capacity: current.gateSlots, scope: 'machine', allowZero: current.gateSlots === 0, persist: () => {
+    const latest = loadMachineSettings();
+    next = { ...latest, gate: { ...latest.gate, runnersFirst: enabled } };
     writeMachineSettings(next);
   } });
   return next;
@@ -221,12 +244,16 @@ export function addRunner(value) {
 export function removeRunner(host) {
   return updateRunnerSettings(host, () => {
     const current = readMachineSettingsFile(machineSettingsFile()) ?? {};
-    const runners = loadMachineSettings().runners ?? [];
+    const currentSettings = loadMachineSettings();
+    const runners = currentSettings.runners ?? [];
     const index = runners.findIndex(runner => runner.host === host);
     if (index < 0) {
       const registered = runners.map(runner => runner.host);
       throw new Refused('RUNNER_NOT_REGISTERED', `runner ${host} is not registered`,
         registered.length ? `registered runners: ${registered.join(', ')}` : 'run pullboard runner add <ssh-host> --slots <n> --browser <n> first');
+    }
+    if (runners.length === 1 && (currentSettings.gateSlots === 0 || currentSettings.browserSlots === 0)) {
+      throw new Refused('RUNNER_REQUIRED_FOR_ZERO_CAPACITY', 'this is the last registered runner and a local gate capacity is 0; restore positive gateSlots and browserSlots before removing it');
     }
     const [runner] = runners.splice(index, 1);
     writeMachineSettings({ ...current, runners });

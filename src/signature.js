@@ -149,7 +149,7 @@ function readInitialSignerHash(root) {
 /** Serialize canonical signed content with stable field order. */
 export function canonical(record) {
   if (record.type === 'row-decision') {
-    return JSON.stringify({ version: 1, type: record.type, firstCommit: record.firstCommit, initialHash: record.initialHash, id: record.id, file: record.file, kind: record.kind, source: record.source, replacement: record.replacement, text: record.text, decision: record.decision, reason: record.reason, commit: record.commit, by: record.by, on: record.on, note: record.note ?? '' });
+    return JSON.stringify({ version: 1, type: record.type, firstCommit: record.firstCommit, initialHash: record.initialHash, id: record.id, file: record.file, kind: record.kind, source: record.source, replacement: record.replacement, text: record.text, decision: record.decision, reason: record.reason, commit: record.commit, by: record.by, on: record.on, note: record.note ?? '', ...(record.revision === undefined ? {} : { revision: record.revision }) });
   }
   if (record.type === 'signers') {
     return JSON.stringify({ version: 1, type: record.type, firstCommit: record.firstCommit, initialHash: record.initialHash, previousHash: record.previousHash, previousSigners: record.previousSigners, hash: record.hash, by: record.by, on: record.on });
