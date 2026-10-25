@@ -1448,3 +1448,8 @@ test('every real CLI relay request declares its engine including sign-in, reads,
   assert.equal(box.calls.some(call => call.method === 'DELETE'), false, 'local off does not send remote deletion without phone approval');
   assert.ok(box.calls.every(call => call.engine === String(ENGINE_VERSION)), 'every request from the real CLI carries the current engine version');
 });
+
+// These real-protocol cases live outside the near-cap relay fixture file.
+import { deletedCopyRelinks, relayOnClearsExclusion } from './relay-exclusion-fixture.js';
+test('a deleted relay copy relinks rather than excluding the board [H5,H17]', deletedCopyRelinks);
+test('relay on clears an exclusion and names it [H5,H17,B26]', relayOnClearsExclusion);
