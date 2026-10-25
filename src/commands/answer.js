@@ -33,7 +33,8 @@ export async function run(io, { first, second, rest, values }) {
   const implies = parseImplies(values.implies);
   const supersedes = values.supersedes === undefined ? undefined : idArg(String(values.supersedes).replace(/^#/u, ''));
   const id = await ordered(ctx, board, 'answerDecision', [idArg(first), { agentId: me.id, text: [second, ...rest].filter(Boolean).join(' '), lanes: laneNames(ctx.config), asPerson, channel: ctx.io.personChannel ?? 'terminal',
-    ...(implies ? { implies } : {}), ...(supersedes ? { supersedes } : {}) }]);
+    ...(implies ? { implies } : {}), ...(supersedes ? { supersedes } : {}),
+    ...(values.origin === undefined ? {} : { origin: values.origin }), ...(values.rationale === undefined ? {} : { rationale: values.rationale }) }]);
   const ask = store.getShout(board, idArg(first));
   io.result?.({ id, answers: ask.shout_id });
   if (asPerson) {

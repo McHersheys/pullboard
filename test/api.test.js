@@ -145,6 +145,28 @@ test('[A2] the local API admits only its listed origins', async (t) => {
   assert.equal((await apiError(defaultOrigin, 403)).code, 'API_ORIGIN', 'omitting the option preserves same-origin-only behavior');
 });
 
+test('local API admits only configured literal IPv4 hosts at their own origin [H19]', async (t) => {
+  const box = project();
+  const configured = await startLocalHandler(t, box, { allowedHosts: ['192.168.7.9'] });
+  const port = new URL(configured.origin).port;
+  const host = `192.168.7.9:${port}`;
+  const origin = `http://${host}`;
+  const allowed = await apiFetch(configured, '/api/v1/boards', { headers: { host, origin } });
+  assert.equal(allowed.status, 200, 'the exact configured IPv4 Host and same Origin reach the API');
+  assert.equal((await allowed.json()).boards.length, 1);
+  assert.equal((await apiFetch(configured, '/api/v1/boards')).status, 200, 'loopback remains allowed');
+  const foreignHost = await apiFetch(configured, '/api/v1/boards', { headers: { host: `192.168.7.10:${port}`, origin: `http://192.168.7.10:${port}` } });
+  assert.equal((await apiError(foreignHost, 401)).code, 'AUTH_REQUIRED');
+  const foreignOrigin = await apiFetch(configured, '/api/v1/boards', { headers: { host, origin: 'https://foreign.invalid' } });
+  assert.equal((await apiError(foreignOrigin, 403)).code, 'API_ORIGIN');
+  const defaulted = await startLocalHandler(t, box);
+  const denied = await apiFetch(defaulted, '/api/v1/boards', { headers: { host, origin } });
+  assert.equal((await apiError(denied, 401)).code, 'AUTH_REQUIRED', 'omitting the allowlist preserves loopback-only Host authority');
+  for (const invalid of ['localhost', '0.0.0.0', '2001:db8::1', '192.168.7', '192.168.7.256', '192.168.007.9', '192.168.7.9:80']) assert.throws(() => createLocalApiHandler({
+    secret: randomUUID(), getPort: () => 1, runCommand: main, projects: () => [], allowedHosts: [invalid],
+  }), TypeError, `invalid LAN host ${invalid} is rejected`);
+});
+
 /** Quote a literal executable path for the fixture hook's POSIX shim. */
 function shellWord(value) {
   return "'" + value.replace(/'/g, "'\\''") + "'";
@@ -666,6 +688,7 @@ async function startLocalHandler(t, box, options = {}) {
     runCommand: options.runCommand ?? main,
     projects: () => [{ root: box.repo, name: 'API fixture', project: '', added: '2026-01-01T00:00:00.000Z' }],
     ...(options.allowedOrigins === undefined ? {} : { allowedOrigins: options.allowedOrigins }),
+    ...(options.allowedHosts === undefined ? {} : { allowedHosts: options.allowedHosts }),
     ...(options.onStateBuild === undefined ? {} : { onStateBuild: options.onStateBuild }),
     ...(options.onItemBuild === undefined ? {} : { onItemBuild: options.onItemBuild }),
     ...(options.stateDetail === undefined ? {} : { stateDetail: options.stateDetail }),
