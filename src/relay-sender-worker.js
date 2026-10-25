@@ -114,8 +114,10 @@ async function serveUntilIdle() {
       if (now < board.retryAt || !(nudged || now - board.served >= PULL_MS)) { waiting ||= outboxWaiting(note.file); continue; }
       board.served = Date.now();
       let settled = false;
+      io.say(`serving ${note.root}`);
       try { settled = await serve(note.root, note.file); }
       catch (error) { io.err(`${note.root}: ${error.message}`); }
+      io.say(`served in ${Date.now() - board.served} ms${settled ? '' : '; moves still wait'}`);
       if (settled) { board.failures = 0; board.retryAt = 0; }
       else {
         board.failures += 1;
