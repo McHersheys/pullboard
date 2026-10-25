@@ -5,7 +5,8 @@ import { fileURLToPath } from 'node:url';
 async function work(event) {
   if (event === 'SessionStart') {
     const { main } = await import('./cli.js');
-    process.exitCode = await main(['resume']);
+    process.exitCode = await main(['resume'], { cwd: process.cwd(),
+      stdout: process.stdout, stderr: process.stderr, stdin: process.stdin });
     return;
   }
   const { repoInfo, headCommit, tryGit } = await import('./git.js');
