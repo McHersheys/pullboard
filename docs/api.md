@@ -40,6 +40,8 @@ The board setting `submit.requireInfraNote` in the coordinator's accepted `pullb
 
 `stats.caught` lists what the board caught in the window, read from moves it already records and never pushed: `counts` per kind (`sentBack`, `conflict`, `redHead`, `flake`, `stuck`), `total`, and `entries` of `{kind, item, at, text}`. A `sentBack` entry carries the gap the reviewer named; `conflict` is a reopen naming a trunk conflict; `redHead` is a reopen after the full suite failed at landing; `flake` is a flake proven by a paired rerun; `stuck` is a sentinel health finding. Text `stats` prints a `caught:` count line and one line per entry, and `pullboard digest` carries the same list for the last 30 days under `What the board caught`. It appears only when someone runs one of those commands.
 
+`pullboard test <files>` runs the named test files with the board's focused test runner (`affectedTests` in `pullboard.json`) under one gate slot, so a machine with `gate.runnersFirst` on deals them to its registered runners first; the focused runner's per-file timeout applies there as here. A dirty worktree runs too: its tracked and untracked files, ignored ones left out, become a snapshot commit made with a private index, checked out cleanly for the run, and the worktree's own index and branches stay as they are. `--json` returns the runner's unchanged TAP as `output`, `runner` (the runner host, or `this machine`), `seconds` and `files`. When a file fails, each failed file is compared with main's own run of it, cached per main commit and file beside the board: `known` lists `{file, result}` with `result` `red` when main fails it too (a known main failure), `green` when main passes it, or `absent` when main does not have the file, and `main` names that commit. A runner whose transport dropped rejoins the pool after five minutes.
+
 `gateWaits`, beside `stats`, lists, for each kind of gated run in the last day (`check`, `review`, `doctrine`, `gate`, `landing`), its `runs`, `medianWaitMs`, `slowestWaitMs` and `medianRunMs`, read from the board's gate receipts; text `stats` prints them under `gate waits, last day:`. A gate receipt is written for every run that takes a gate slot. Its fields are `waitMs` (queued for a slot), `admissionMs` (deciding and queueing, then handing over), `setupMs`, `runMs` and `evidenceMs` (reading the result and writing its record), and `slot: {kind, reason}`, where `kind` is `ordinary`, `browser`, `short`, `runner` or `inherited`. A timing profile carries it as `receipt`, `check --json` returns it as `receipt`, and the timing lines print it as `phases: ...; slot: <kind> (<reason>)`. A doctrine hold at submit prints its own `doctrine hold phases:` line.
 
 `stats.bars` counts bar corrections, keyed by agent: `{corrections, barRejects, buildRejects}`. A correction is an `edit --criterion` or `--check` on an item that was ever claimed. It must carry `--reason "what the old bar got wrong"` (HTTP `args.reason`); without one it is refused with `BAR_REASON`. A correction that follows the item's newest, unexplained reject marks that reject as caused by the bar, counted to the correcting agent; every other reject counts to the build, under the agent who added the item. Text `stats` prints one `bars:` line per agent, and text `show` prints each correction with its reason.
@@ -123,6 +125,7 @@ For example: `flow: review wait average 61 min (1 measured; > 60 min); bottlenec
 | `edit` | `version:number`, `item:object` |
 | `fact` | `version:number`, `item:number`, `fact:object` |
 | `why` | `version:number`, `id:number`, `decisions:array` |
+| `why file` | `version:number`, `file:string`, `line:number|null`, `items:array`, `rows:array`, `decisions:array` |
 | `escalate` | `version:number`, `id:number`, `from:string`, `to:string` |
 | `run` | `version:number`, `messages:array` |
 | `sweep` | `version:number`, `messages:array` |
@@ -130,6 +133,7 @@ For example: `flow: review wait average 61 min (1 measured; > 60 min); bottlenec
 | `badge` | `version:number`, `items:number`, `checked:number`, `percent:number\|null`, `changed:array` |
 | `check` | `version:number`, `id:number`, `green:boolean`, `seconds:number`, `check:string`, `receipt:object`, `report:string` |
 | `check accept` | `version:number`, `id:number`, `digest:string`, `check:string` |
+| `test` | `version:number`, `green:boolean`, `output:string`, `runner:string`, `seconds:number`, `files:array`, `known:array`, `main:string\|null` |
 | `claim` | `version:number`, `id:number`, `renewed:boolean`, `leaseUntil:string`, `digest:string` |
 | `hold` | `version:number`, `lane:string`, `held:boolean` |
 | `release` | `version:number`, `id:number` |
@@ -265,7 +269,7 @@ Starting with engine 50, the second REJECT verdict since an item's latest route 
 
 ## Item threads
 
-`pullboard fact <id> <kind> "<text>"` appends a fact to an existing item. The observation kinds are `capture`, `measurement`, `note` and `diff`; any registered agent may append them. The judgement kinds are `decision`, `rejection`, `supersession` and `root-cause`; only the item's live lease holder or the coordinator may append them. An expired lease gives no judgement permission. Facts do not change the item's status or its claim.
+`pullboard fact <id> <kind> "<text>"` appends a fact to an existing item. The observation kinds are `capture`, `measurement`, `note`, `diff`, `question`, `answer`, `plan` and `risk`; any registered agent may append them. Typed conversation notes stay on the item thread, without creating a shout or an approval decision. Builder and reviewer read them with `show`; the runner also includes that item’s stamped facts in its context pack. Generic `answer` notes are observations; `--answers` remains reserved for the existing `bar-answer` workflow. The judgement kinds are `decision`, `rejection`, `supersession` and `root-cause`; only the item's live lease holder or the coordinator may append them. An expired lease gives no judgement permission. Facts do not change the item's status or its claim.
 
 The result is `{version: 1, item: <item-id>, fact: {...}}`. A fact has `id` (stable string identity), `eventId` (board-local event sequence), `kind`, exact `text`, `by` (registered author), `at` (UTC timestamp), `ref` and `supersedes`. The board supplies identity, author and time. `ref` and `supersedes` are `null` when omitted.
 
@@ -673,3 +677,40 @@ When `publish.pullRequest` is enabled, `pullboard publish` reconciles the GitHub
 A board-recorded item merge covers its introduced commits only when its exact submitted commit has that receipt and is an ancestor of the recorded merge. `Pullboard-Companion: #N` is covered only on a board-recorded trunk containing item N's landing. Unreceipted commits, including release bumps and synthetic publication commits, remain unverified. An outside PR is allowed and initially reads `not verified`; the JSON result's `verification[].intake` names the existing `pullboard intake` command that files it for review. Outside intake can cover only its exact accepted head, never its earlier commits by inference.
 
 The JSON result includes `verification` entries with PR number, exact head, state, assurance, receipt identities, and any unverified commit IDs. GitHub statuses are shared by PRs with the same head: if an outside or unproven PR shares a commit with a proven proposal, the shared status stays red rather than lending the proposal's green status to it. Publishing observes and posts statuses; it never merges a PR or requires outside authors to use Pullboard.
+
+`pullboard why <file>[:<line>] --json` uses the `why file` catalog shape; this names the file form, not a literal `file` argument. It traces commits on the repository's actual primary branch, then resolves their item trailers, served row IDs and answered decisions in one board query. The legacy `why <id>` shape is unchanged. Answered decisions carry their recorded origin, statement, rationale, decider and relayer; absent historical provenance remains `unknown`. Row and item origins are also `unknown` unless recorded, rather than inferred from a related decision. An agent may label a relayed or inherited answer but cannot use that label to mint a person-origin record. Unproven original decider identities remain unknown, with the answering relay seat recorded separately.
+
+
+### Cross-board decision handoffs
+
+`decisionHandoffs(db, { boardId, authorize })` in `src/decision-handoff.js` is
+an I-D persistence port, not an aggregation CLI or a board-name resolver.
+Each participant supplies its own SQLite connection, opaque immutable board ID,
+and existing authority adapter. Call mutations inside the caller’s ordered
+write boundary. No transaction or database connection spans boards.
+
+`deliver(handoff, options)` checks the exact version-1 wire shape and original
+option-set digest, then asks `authorize("disclose", handoff)` and, for answers,
+`authorize("answer", handoff)`. The adapter must authenticate the requester,
+source decision, destination, question, option digest and answer; a supplied
+opaque authority value alone grants nothing. Accepted deliveries persist before
+returning. Transport retries the returned wire independently at the other board.
+Changed correlation or a conflicting answer refuses; late questions preserve
+answers. `optionsDigest(options)` hashes a unique option set independent of order.
+
+`query(source, participants, authority)` requires source-board read authority
+for the exact namespaced reference and participant set. It returns
+`{ complete, agreed, answers }`; callers must not act on an incomplete or
+disagreeing result. Each destination contributes at most one answer, and a
+query cannot omit a destination already recorded for that source decision.
+This contract stores and returns answers to the source/requester’s authorized
+query; it does not execute the decision or grant cross-board authority.
+
+
+## Cross-board offer and private receipt contracts
+
+`src/item-offer.js` exposes `acceptItemOffer`, `declineItemOffer`, `itemOfferAnnouncement`, `recordItemOfferResult` and `readItemOffer`. An `ItemOffer` has exactly `{ version: 1, offerId, sourceBoardId, parentItem, destinationBoardId, proposedContent, disposition, childRef, reason }`. Pending offers have null child/reason; accepted results name `{boardId,item}` on the destination; declines carry a reason. Disclosed proposal fields are `lane`, `title`, and optional `criterion`, `specIds`, `brief`, `route`, `check`; a foreign parent never becomes a destination-local parent. State announcements omit `proposedContent` entirely. The destination stores only a request digest and state result, and retries return the same child after reopening SQLite. Different content or dispositions under the same source/offer id conflict.
+
+Consumers supply the existing canonical resolver as `resolveBoardRef(id) -> {boardId}` without alias normalization here, their local `boardId`, and a synchronous authenticated `authorize({action,boardId,document})` port. Actions are `accepted`, `declined`, and `receive-result`. The port must verify the appropriate source/destination authority for the exact document; there is no permissive default. The destination's synchronous `createChild(content)` port must perform its native child move on this same board and return its item id. Invoke these contracts inside the consumer's ordered move: child creation and the destination retry record share one SQLite transaction. Source result delivery is a separately authorized, idempotent transaction. These contracts add no offer orchestration, two-board transaction or landing sequencer.
+
+`minimalItemReceipt(fields,{sign})` accepts only `{version:1,sourceBoardId,item,commit,verifier,verdict}` and appends `integrity:{digest,signature}` over canonical permitted bytes. `verifyItemReceipt(receipt,{resolveBoardRef,verify},expected)` requires all expected references to match, checks the digest, and calls `verify(bytes,signature,sourceBoardId)` against the consumer's established source trust. Signatures are supplied through the existing authority adapter; a digest alone proves no authority. Titles, criteria, notes and unknown fields are refused even on verification. Private landing consumers still establish the real landing and verdict before issuing this reduced envelope.

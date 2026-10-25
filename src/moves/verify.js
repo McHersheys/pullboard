@@ -37,6 +37,7 @@ function actor(move) { return move.args[1]?.agentId ?? null; }
 export default Object.freeze({ operation: "verify", order: 18, engine: 1,
   itemIdFirstArgument: true, minimumEngine, actor,
   nextSteps: Object.freeze({
+  "RUNNER_BROWSER_SLOT_REQUIRED": "nothing to do: the run reruns on a local gate slot; if it repeats, set gate.browserByLaunch the same on this machine and that runner",
   "A5_GRAMMAR_VERSION": "upgrade Pullboard: npm install -g pullboard@latest",
   "ALREADY_MERGED": "file the follow-up as a new item: pullboard add <lane> \"<title>\"",
   "BAD_CAUSE": "name the cause as test:<file>::<title>, refusal:<CODE>, row:<id> or doctrine:<id>, or leave --cause out",

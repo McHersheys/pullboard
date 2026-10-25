@@ -11,8 +11,9 @@ Work only in your own worktree, the one `pullboard worktree review` made. Your s
 
 1. `pullboard next --verify` names the next submitted item you did not build, and its commit. `pullboard show <id>` gives the criterion as frozen at claim.
 2. Check out exactly that commit, in your worktree: `cd <your worktree> && git switch --detach <commit>`.
-3. Run the gate. Then test the criterion itself, with the strongest proof you can get:
+3. Run the gate. Then test the criterion itself, with the strongest proof the board can record:
    - **Break it and watch it fail.** Revert or break the change, show the check fails, restore it, show it passes.
+   - Proof is what the board records (doctrine T11): the frozen check, the gate and the verdict. Keep no evidence folders, packets, manifests or custody rules of your own; cite the board's receipts and facts. When the board's runs cannot decide an item, ask the coordinator to sharpen its bar.
    - **Use the method the criterion names.** If it says "two real processes" or "after a restart", use exactly that; a weaker stand-in is not proof.
    - **Run the behavior** and read the output.
    - **Read the code** only when the criterion is about the code itself. It is the weakest proof.
