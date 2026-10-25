@@ -56,7 +56,9 @@ export async function seedAdministrative(context) {
   const { board, box, store, exercise } = context;
   await exercise('ensureCoordinator', () => store.ensureCoordinator(board, join(box.root, 'moved-coordinator')));
   await exercise('ensureCoordinator', () => store.ensureCoordinator(board, box.root));
-  const item = store.addItem(board, { by: 'coordinator', lane: box.lane, title: 'Escalated projection input', criterion: 'Route changes remain visible', route: 'mid' });
+  const item = store.addItem(board, { by: 'coordinator', lane: box.lane, title: 'Escalated projection input', criterion: 'Route changes remain visible', route: 'mid',
+    brief: 'Files: src/projection.js\nTest: the synthetic escalation retains its route and history in both reader projections.',
+    check: 'node --test test/projection.test.js' });
   await exercise('escalate', () => store.escalate(board, item, { agentId: 'coordinator', note: 'Synthetic projection escalation' }));
 }
 
