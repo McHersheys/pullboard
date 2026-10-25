@@ -1,3 +1,4 @@
+import { projectItemDecisions } from './item-decision-queue.js';
 import { itemById } from './board-item-read.js';
 import { itemActivity } from './activity-feed.js';
 export { itemById };
@@ -175,9 +176,9 @@ export function reviewQueue(board) {
  */
 export function openDecisions(board, recipient = null) {
   if (recipient === null) {
-    return board.db
+    return projectItemDecisions(board, board.db
       .prepare('SELECT * FROM shout ask WHERE ask.shout_decision = 1 AND NOT EXISTS (SELECT 1 FROM shout reply WHERE reply.shout_answers = ask.shout_id) ORDER BY ask.shout_id')
-      .all();
+      .all());
   }
   const recipients = [...new Set(Array.isArray(recipient) ? recipient : [recipient])];
   if (!recipients.length) return [];

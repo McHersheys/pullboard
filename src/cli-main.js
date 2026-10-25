@@ -126,6 +126,7 @@ const OPTIONS = {
   since: { type: 'string' },
   window: { type: 'string' },
   decision: { type: 'boolean' },
+  options: { type: 'string' },
   evidence: { type: 'string' },
   outcome: { type: 'string' },
   item: { type: 'string' },

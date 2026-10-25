@@ -485,6 +485,7 @@ function buildLocalBoardState(root, boardId, board, codeIsMain, { previous = nul
     } });
     state.agents = state.agents.map((agent) => ({ ...agent, model: agent.agent_model ?? 'unknown', displayName: displayAgentName(agent, config.agents.names) }));
     state.board = boardId;
+    state.decisionQueue = store.openDecisions(board, COORDINATOR);
     const projectData = {
       requests: store.openRequests(board),
       personRequests: personRequestStatuses(board),
@@ -556,7 +557,7 @@ function snapshotEntry(revision, state, preparedFlow, { inputs = null, itemMeta 
 }
 
 /** State fields every delta carries whole: this request's unread count and flow, and the small Needs-you lists. */
-const DELTA_WHOLE = new Set(['unseen', 'proofStats', 'decisions', 'holds', 'requests', 'personRequests']);
+const DELTA_WHOLE = new Set(['unseen', 'proofStats', 'decisions', 'decisionQueue', 'holds', 'requests', 'personRequests']);
 /** The state lists a delta merges entry by entry, and the field that names each entry. */
 const DELTA_KEYS = Object.freeze({ items: 'id', shouts: 'shout_id', asked: 'shout_id', events: 'event_id', agents: 'agent_id', spec: 'id', practice: 'id', milestones: 'name' });
 /** How many recent builds of each board a server keeps as possible delta bases. */

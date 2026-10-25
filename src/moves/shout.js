@@ -1,3 +1,4 @@
+import { DECISION_QUEUE_ENGINE } from '../decision-queue-engine.js';
 import { RIGOR_AUTO_ENGINE } from '../rigor-auto-engine.js';
 /** Routing metadata owned by shout, discovered without a shared registry edit [C7,V4,H16]. */
 import { ITEM_SHOUT_ENGINE } from '../item-shout-engine.js';
@@ -6,6 +7,7 @@ import { BOARD_SENTINEL_ENGINE } from '../sentinel-engine.js';
 
 /** Preserve this operation's historical first-matching engine conditions [H16]. */
 function minimumEngine(args, board, at) {
+  if (args[0]?.options !== undefined) return DECISION_QUEUE_ENGINE;
   if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('conflict:')) return RIGOR_AUTO_ENGINE;
   if (args[0]?.item !== undefined) return ITEM_SHOUT_ENGINE;
   if (args[0]?.landingFence !== undefined) return LANDING_LEASE_ENGINE;
@@ -21,6 +23,8 @@ export default Object.freeze({ operation: "shout", order: 23, engine: 1,
   nextSteps: Object.freeze({
   "B26_PERSON_CHANNEL": "record it as the person through pullboard view or the person's own terminal",
   "B26_PERSON_DECISION": "ask your coordinator: pullboard shout coordinator \"<question>\" --decision",
+  "BAD_DECISION_OPTIONS": "ask an item decision with --decision --item <id> --options '[\"first\",\"second\"]'",
+  "NOT_YOUR_ITEM_DECISION": "ask on an item you build or review, or ask the coordinator for a cross-item decision",
   "BAD_EVIDENCE": "pass the evidence fields the message names, then retry",
   "BAD_REQUEST": "send the request body the message names as an application/json object",
   "COORDINATOR_ONLY": "ask the coordinator to do it: pullboard shout coordinator \"<what you need>\"",

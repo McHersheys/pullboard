@@ -1,6 +1,13 @@
 /** Public real-CLI/SQLite decision queue, claim retention and person boundary [B7,B21,B26,B27]. */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import * as store from '../src/board.js';
+import { prepareEngineMove, applyEngineMove } from '../src/engine.js';
+import { exportBoard, importBoard } from '../src/exchange.js';
+import { DECISION_QUEUE_ENGINE } from '../src/decision-queue-engine.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 
 /** Run an authenticated private-board CLI command and decode its public response. */
@@ -67,4 +74,45 @@ test('a decision asked on an item is answered from the queue and recorded on the
   document(box, box.repo, 'answer', String(passed.id), 'Decline', '--as', 'person');
   assert.equal(document(box, box.repo, 'resume').needsYou.some(row => row.id === passed.id), false);
   assert.ok(document(box, box.web, 'inbox').shouts.some(row => /Person answered/.test(row.shout_text)));
+});
+
+
+test('item decision options replay exactly and never acquire legacy engine authority [B21,H3,H16]', (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'pullboard-decision-queue-'));
+  const source = store.openBoard(join(directory, 'source.sqlite'));
+  const replica = store.openBoard(join(directory, 'replica.sqlite'));
+  const restored = store.openBoard(join(directory, 'restored.sqlite'));
+  t.after(() => {
+    for (const board of [source, replica, restored]) store.closeBoard(board);
+    rmSync(directory, { recursive: true, force: true });
+  });
+  store.register(source, { lane: 'coordinator', path: '/decision-root' });
+  store.register(source, { lane: 'web', path: '/decision-root/web-1' });
+  store.register(source, { lane: 'web', path: '/decision-root/web-2' });
+  const id = store.addItem(source, { by: 'coordinator', lane: 'web', title: 'Replica choice' });
+  store.claim(source, id, { agentId: 'web-1', lane: 'web', leaseMs: 7_200_000,
+    freeze: () => ({ text: '{"rows":[]}', digest: 'd'.repeat(64) }) });
+  importBoard(replica, exportBoard(source));
+  const message = { from: 'web-1', to: 'coordinator', item: id, text: 'Which shape?', decision: true,
+    options: ['Small', 'Shared'], lanes: ['coordinator', 'web'] };
+  const move = prepareEngineMove(source, 'shout', [message], { id: 'item-decision', actor: 'web-1' });
+  const at = new Date().toISOString();
+  assert.throws(() => applyEngineMove(replica, { ...move, engine: DECISION_QUEUE_ENGINE - 1 }, { sequence: 1, at }), /RELAY_MOVE/);
+  assert.deepEqual(store.openDecisions(replica), [], 'a legacy engine cannot silently discard the options');
+  const answer = applyEngineMove(replica, move, { sequence: 1, at });
+  assert.ok(answer);
+  assert.deepEqual(store.openDecisions(replica, 'coordinator').map(row => ({ item: row.item, options: row.options })),
+    [{ item: id, options: ['Small', 'Shared'] }]);
+  importBoard(restored, exportBoard(replica));
+  assert.deepEqual(store.openDecisions(restored), store.openDecisions(replica), 'snapshot restores the exact pending choices');
+  const before = store.events(replica).length;
+  for (const options of [[], ['Only'], ['Same', 'Same'], ['A', ' '], 'not an array']) {
+    assert.throws(() => store.shout(replica, { ...message, options }), /BAD_DECISION_OPTIONS/);
+  }
+  assert.throws(() => store.shout(replica, { ...message, from: 'web-2' }), /NOT_YOUR_ITEM_DECISION/);
+  assert.equal(store.events(replica).length, before, 'refused choices append no successful decision');
+  const legacy = prepareEngineMove(replica, 'shout', [{ from: 'web-1', to: 'coordinator', text: 'Old question',
+    decision: true, lanes: ['coordinator', 'web'] }], { id: 'legacy-decision', actor: 'web-1' });
+  applyEngineMove(replica, { ...legacy, engine: 1 }, { sequence: 2, at });
+  assert.equal(store.openDecisions(replica).find(row => row.shout_text === 'Old question').options, undefined);
 });

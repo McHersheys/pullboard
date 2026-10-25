@@ -152,6 +152,7 @@ Work
   pullboard shout --item <id> <text>             message the item builder, reviewer and coordinator
   A seat shout to all reaches only coordinator and person; their broadcasts reach everyone.
   pullboard shout [<to>] <text> --decision       ask for a decision; defaults to your coordinator or the person
+  pullboard shout coordinator <question> --item <id> --decision --options '["first","second"]'
   pullboard shout <to> <text> --evidence attempt|receipt --outcome <word> --item <id> --commit <rev>
   pullboard answer <shout-id> <text> [--as person] [--implies <ids>] [--supersedes <answer-id>]
                                         answer your decision; person mode is main-checkout only
