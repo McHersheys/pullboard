@@ -25,6 +25,12 @@ import {
   writeFormatTable,
 } from '../src/format-registry.js';
 import { discoverMoves } from '../src/move-registry.js';
+import {
+  GATE_SLOT_HELD_ENV,
+  GATE_SLOT_POOL_ENV,
+  GATE_SLOT_TOKEN_ENV,
+  BROWSER_SLOT_HELD_ENV,
+} from '../src/resources.js';
 
 const e2e = createE2eHelpers();
 after(e2e.cleanup);
@@ -32,12 +38,16 @@ const FILE = 'src/api-moves.js';
 const BASE = "const MOVES = {\n  base: { item: true },\n};\nexport { MOVES };\n";
 
 /** Create a real private board and remote whose web builders own the fixture registry. */
-function project() {
+function project(parallel = false) {
   const box = e2e.project('true');
   const path = join(box.repo, 'pullboard.json');
   const config = JSON.parse(readFileSync(path, 'utf8'));
   config.lanes.web.owns.push('src/');
   config.affectedTests = 'true';
+  if (parallel) {
+    config.landing = { parallel: true };
+    for (const key of [GATE_SLOT_HELD_ENV, GATE_SLOT_POOL_ENV, GATE_SLOT_TOKEN_ENV, BROWSER_SLOT_HELD_ENV]) delete box.env[key];
+  }
   writeFileSync(path, JSON.stringify(config, null, 2));
   mkdirSync(join(box.repo, 'src'), { recursive: true });
   writeFileSync(join(box.repo, FILE), BASE);
@@ -71,8 +81,9 @@ function item(box, number, text) {
   return id;
 }
 
-test('the train keeps both added registry entries and lands without a reopen [B3,R3,C7]', () => {
-  const box = project();
+/** Exercise the identical native acceptance assertions under serial and speculative-prefix landing. */
+function assertAdditions(parallel) {
+  const box = project(parallel);
   const first = item(box, 1, BASE.replace('  base:', '  alpha: { item: true },\n  base:'));
   const second = item(box, 2, BASE.replace('  base:', '  beta: { item: true },\n  base:'));
   const landed = json(box, box.repo, 'land', '--max', '2');
@@ -88,6 +99,14 @@ test('the train keeps both added registry entries and lands without a reopen [B3
     assert.ok(state.item_merged_commit);
   }
   assert.equal(box.git(box.remote, 'rev-parse', 'main'), box.git(box.repo, 'rev-parse', 'main'));
+}
+
+test('the train keeps both added registry entries and lands without a reopen [B3,R3,C7]', () => {
+  assertAdditions(false);
+});
+
+test('parallel train promotion retains its mechanical resolution receipt [B3,R3,C7]', () => {
+  assertAdditions(true);
 });
 
 test('a registry edit remains a conflict and reopens instead of being unioned [B3,R3,C7]', () => {

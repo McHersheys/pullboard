@@ -604,7 +604,7 @@ async function promoteCandidate(state, candidate) {
   if (!isClean(state.batch.root) || untracked(state.batch.root).length) throw new Refused('LAND_DIRTY', 'the landing worktree changed; inspect it before adopting');
   git(state.batch.root, ['checkout', '--detach', candidate.batch.tip]);
   await save(state, { tip: candidate.batch.tip, items: candidate.batch.items,
-    conflicts: candidate.batch.conflicts ?? [], doctrineCounts: candidate.batch.doctrineCounts ?? [] });
+    conflicts: candidate.batch.conflicts ?? [], resolutions: candidate.batch.resolutions ?? [], doctrineCounts: candidate.batch.doctrineCounts ?? [] });
 }
 
 /** Exclude a returned candidate and explicit or Git-stacked dependents from later speculation. */
