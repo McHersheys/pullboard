@@ -14,7 +14,7 @@ const MOVES = {
   signing: { prefix: ['settings', 'person.signed'], positions: ['signed'] },
   add: { positions: ['lane', 'title'], flags: ['criterion', 'specs', 'parent', 'after', 'brief', 'route', 'check', 'as'], booleans: ['wait'] },
   edit: { item: true, flags: ['criterion', 'brief', 'route', 'check', 'reason', 'after', 'as'], booleans: ['wait'] },
-  fact: { item: true, positions: ['kind', 'text'], flags: ['supersedes', 'ref', 'implies', 'as', 'cause'], booleans: ['never-again'] },
+  fact: { item: true, positions: ['kind', 'text'], flags: ['answers', 'supersedes', 'ref', 'implies', 'as', 'cause'], booleans: ['never-again'] },
   claim: { item: true },
   release: { item: true, flags: ['note'] },
   submit: { item: true },

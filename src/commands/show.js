@@ -104,7 +104,7 @@ export async function run(io, { first, values }) {
   for (const entry of thread) {
     const stamp = `  ${entry.at}  ${agentDisplayName(agents, ctx.config, entry.by)}  `;
     if (entry.type === 'fact') {
-      io.say(`${stamp}fact ${entry.kind} ${entry.id}${entry.supersedes ? ' (supersedes ' + entry.supersedes + ')' : ''}: ${entry.text}`);
+      io.say(`${stamp}fact ${entry.kind} ${entry.id}${entry.answers ? ' (answers ' + entry.answers + ')' : entry.supersedes ? ' (supersedes ' + entry.supersedes + ')' : ''}: ${entry.text}`);
       if (entry.ref) io.say(`    ref: ${entry.ref.path}:${entry.ref.start}${entry.ref.end === entry.ref.start ? '' : '-' + entry.ref.end}@${entry.ref.commit}`);
     } else {
       const detail = entry.detail;

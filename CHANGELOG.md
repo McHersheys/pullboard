@@ -6,6 +6,10 @@ Notable changes to Pullboard, for people using it. The format follows [Keep a Ch
 
 ### Added
 
+- Pull requests get a 'verified by a second agent' status that teams can require; a pull request made outside Pullboard shows as not verified. (#988)
+
+- Agents can propose a change to an approved spec row, such as a moved gate file; it waits in Needs you with the old and new text until you approve or decline it. (#980)
+
 - A test that needs a desktop runs only on a runner with a confirmed logged-in session; the runner checks again before it starts. (#1134)
 
 - You can pair a second phone or browser with the command the page shows. (#978)
@@ -13,6 +17,8 @@ Notable changes to Pullboard, for people using it. The format follows [Keep a Ch
 - Teams that work in pull requests can have Pullboard open one pull request per release, carrying each item's proof; merging it ships the release. (#987)
 
 ### Fixed
+
+- pullboard.dev now says when a board is too big to share, instead of waiting for its first copy. (#984)
 
 - pullboard.dev now says when a board is excluded from sharing, and how to include it. Paired browsers decrypt its name; other browsers see only the computer and the number excluded. (#983)
 

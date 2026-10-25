@@ -198,7 +198,7 @@ function fulfilsIntent(record, move, board) {
   try { shown = JSON.parse(record.encoded).rows; } catch { return false; }
   if (requiresShown && (!Array.isArray(shown) || shown.length !== ids.length)) return false;
   return value?.agentId === 'person' && value.channel === 'view' && Array.isArray(rows) && rows.length === ids.length
-    && rows.every((row, index) => (row.kind === 'doctrine' ? 'doctrine:' : '') + row.id === ids[index]
+    && rows.every((row, index) => (move.operation === 'decideSpecRevisions' ? row.revision?.proposal : (row.kind === 'doctrine' ? 'doctrine:' : '') + row.id) === ids[index]
       && row.decision === (intent.verb === 'spec-approve' ? 'approve' : 'decline')
       && (intent.verb !== 'spec-decline' || row.reason === args.reason.trim())
       && (args.text === undefined ? !requiresShown || row.text === shown.find(entry => entry.id === ids[index])?.text : row.text === args.text.trim())
@@ -262,7 +262,8 @@ export function requestMoveProblem(board, move, { checkExecutorLease = true } = 
   if (!['coordinator', 'person'].includes(actor)) return new Refused('PERSON_REQUEST_RECEIPT', 'only the coordinator fulfils an authenticated person request');
   if (tag.phase === 'execute') {
     const expected = { add: 'addItem', shout: 'shout', answer: 'answerDecision', hold: record.move.args.off ? 'releaseLane' : 'holdLane', 'spec-approve': 'recordRowDecisions', 'spec-decline': 'recordRowDecisions', 'spec-answer': 'recordRowDecisions', fact: 'appendFact', 'sentinel-approve': 'decideSentinel', 'sentinel-decline': 'decideSentinel', 'land-waive': 'recordLandingWaiver', signing: 'setPersonSigning', edit: 'editItem', 'bar-sign': 'signBar' }[record.move.verb];
-    if (move.operation !== expected || !fulfilsIntent(record, move, board)) return new Refused('PERSON_REQUEST_RECEIPT', 'the ordinary move does not fulfil this request; execute its original CLI intent');
+    const revision = ['spec-approve', 'spec-decline'].includes(record.move.verb) && move.operation === 'decideSpecRevisions';
+    if ((!revision && move.operation !== expected) || !fulfilsIntent(record, move, board)) return new Refused('PERSON_REQUEST_RECEIPT', 'the ordinary move does not fulfil this request; execute its original CLI intent');
   }
   if (move.engine >= 6 && ['claim', 'repo-request', 'refuse'].includes(tag.phase) && !fulfilsStage(record, move, tag)) return new Refused('PERSON_REQUEST_RECEIPT', 'publish only the exact stage for this authenticated phone request');
   if (['claim', 'repo-request', 'refuse'].includes(tag.phase) && !(move.operation === 'shout' && move.args[0]?.from === 'person' && move.args[0]?.to === 'coordinator'

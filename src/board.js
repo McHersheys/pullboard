@@ -49,6 +49,7 @@ import {
 import { FILE_GROWTH_NOTICE_ENGINE } from './file-growth-notice-engine.js';
 import { recordBarRevision } from './bar-readiness.js';
 import { barReadyProblem } from './bar-readiness.js';
+import { barCheckFactFields } from './bar-check.js';
 export { setBarReady, signBar } from './bar-readiness.js';
 import { coordinatorCheck } from './item-check-baseline.js';
 import { normalizeCheckBaseline } from './item-check-baseline.js';
@@ -87,6 +88,7 @@ import {
   unreadCount,
   events,
   itemThread,
+  laneHold,
   laneHolds,
   rowDecisions,
   UNREAD_SQL,
@@ -196,6 +198,12 @@ import {
 } from './machine.js';
 import { LOCAL_LANDING_ENGINE } from './land-engine.js';
 import { SPEC_APPROVAL_ENGINE } from './spec-approval-engine.js';
+import { SPEC_REVISION_ENGINE } from './spec-revision-engine.js';
+import {
+  markAppliedRevisions,
+  validRevisionApproval,
+} from './spec-revisions.js';
+export { decideSpecRevisions } from './spec-revisions.js';
 import * as landingEnvironment from './landing-environment-guards.js';
 import { Refused } from './refused.js';
 import { saveJoinedSession } from './parent-session.js';
@@ -1879,7 +1887,7 @@ export { unreadCount } from './board-query.js';
 export { events } from './board-query.js';
 
 /** Fact labels distinguish observations from judgements reserved to an item's live holder [B29,B30]. */
-export const FACT_KINDS = Object.freeze(['capture', 'measurement', 'note', 'diff', 'decision', 'rejection', 'supersession', 'root-cause']);
+export const FACT_KINDS = Object.freeze(['capture', 'measurement', 'note', 'diff', 'decision', 'rejection', 'supersession', 'root-cause', 'bar-check', 'bar-answer']);
 const FACT_JUDGEMENTS = new Set(['decision', 'rejection', 'supersession', 'root-cause']);
 export { factReference };
 
@@ -1889,13 +1897,14 @@ export { itemThread } from './board-query.js';
 /** Append a typed fact atomically; a correction never edits the original event [B29,B30,B31,B32].
  * The internal factId is set from a sealed move's identity during replay, rather than replica-local sequence ids; a never-again with its cause is the person's alone, and rigor lists it at once (#713) [D1].
  */
-export function appendFact(board, id, { agentId, kind, text, ref = null, supersedes = null, factId = randomUUID(), implies, cause = null, neverAgain = false, asPerson = false, channel = 'terminal' }) {
+export function appendFact(board, id, { agentId, kind, text, ref = null, supersedes = null, answers = null, factId = randomUUID(), implies, cause = null, neverAgain = false, asPerson = false, channel = 'terminal' }) {
   if (board.readOnly) requireFactIdentityIndexes(board.db);
   return atomic(board, () => {
     const item = current(board, itemById(board, id));
     if (!board.db.prepare('SELECT 1 FROM agent WHERE agent_id = ?').get(agentId)) throw new Refused('NO_AGENT', `no registered agent ${agentId}; join a worktree before appending a fact`);
     if (!FACT_KINDS.includes(kind)) throw new Refused('BAD_FACT_KIND', `unknown fact kind ${String(kind)}; use ${FACT_KINDS.join(', ')}`);
     if (typeof text !== 'string' || !text.trim()) throw new Refused('EMPTY_FACT', 'a fact needs nonempty text; supply the observation or judgement');
+    const barFields = barCheckFactFields(board, item, { agentId, kind, text, answers, supersedes });
     if ((FACT_JUDGEMENTS.has(kind) || supersedes !== null) && agentId !== COORDINATOR && (!isHeld(board, item) || item.item_owner !== agentId)) {
       throw new Refused('FACT_JUDGEMENT', `only the item's live holder${isHeld(board, item) ? ' (' + item.item_owner + ')' : ''} or the coordinator may append a judgement or supersede a fact; append an observation or ask the coordinator`);
     }
@@ -1906,7 +1915,7 @@ export function appendFact(board, id, { agentId, kind, text, ref = null, superse
     }
     const binding = factReference(ref);
     if (neverAgain || asPerson || cause !== null) requireNeverAgain(id, { agentId, cause, neverAgain, asPerson, channel });
-    logEvent(board, neverAgain ? PERSON : agentId, 'fact', id, { id: factId, kind, text, ref: binding, supersedes, ...(neverAgain ? { cause, neverAgain: true, channel } : {}), ...(implies?.length ? { implies } : {}) });
+    logEvent(board, neverAgain ? PERSON : agentId, 'fact', id, { id: factId, kind, text, ref: binding, supersedes, ...barFields, ...(neverAgain ? { cause, neverAgain: true, channel } : {}), ...(implies?.length ? { implies } : {}) });
     const trigger = board.lastEvent;
     const result = tellFactImplications(board, (by, itemId, fact) => logEvent(board, by, 'fact', itemId, fact), factFromEvent(trigger), { id, implies, supersedes });
     if (neverAgain) postRigorNotices(board, trigger);
@@ -2145,18 +2154,7 @@ export function releaseLane(board, lane, { agentId, asPerson = false, channel = 
   });
 }
 
-/**
- * The hold on a lane, or null.
- *
- * @param {any} board
- * @param {string} lane
- * @returns {any | null}
- */
-export function laneHold(board, lane) {
-  return board.db.prepare('SELECT * FROM hold WHERE hold_lane = ?').get(lane) ?? null;
-}
-
-export { laneHolds } from './board-query.js';
+export { laneHold, laneHolds } from './board-query.js';
 
 /** Read an item's coordinator hold, or null when it is available for claims. */
 export function itemHold(board, id) {
@@ -2228,9 +2226,10 @@ export function recordRowDecisions(board, { agentId, channel, decisions }) {
     const validDeclineText = record.decision !== 'decline' || (engineVersion >= 12
       ? record.text === original[0]?.text
       : target?.text === record.reason);
-    if (original.length !== 1 || original[0].id !== record.id || replacement.length !== 1 || target.id !== record.id
+    const revision = record.revision !== undefined && engineVersion >= SPEC_REVISION_ENGINE && validRevisionApproval(board, record);
+    if (!revision && (record.revision !== undefined || original.length !== 1 || original[0].id !== record.id || replacement.length !== 1 || target.id !== record.id
       || target.status !== (record.decision === 'approve' ? 'approved' : 'wont') || target.text !== record.text
-      || !validDeclineText) throw new Refused('ROW_DECISION', 'the exact row must match its recorded approval or decline; use pullboard spec approve or decline');
+      || !validDeclineText)) throw new Refused('ROW_DECISION', 'the exact row must match its recorded approval or decline; use pullboard spec approve or decline');
     const key = `${record.kind}:${record.id}`;
     if (keys.has(key)) throw new Refused('ROW_DECISION', `${key} is named twice; use each row once`);
     keys.add(key);
@@ -2260,6 +2259,7 @@ export function applyRowDecisions(board, { agentId, events }) {
     if (!applied.length) return [];
     const at = now(board);
     writeRowDecisions(board, records.map((record) => events.includes(record.event) ? { ...record, applied: true, appliedAt: at } : record));
+    markAppliedRevisions(board, applied, at);
     logEvent(board, agentId, 'row_apply', null, { events: applied.map((record) => record.event) });
     return applied.map((record) => ({ ...record, applied: true, appliedAt: at }));
   });

@@ -228,6 +228,17 @@ export function itemThread(board, id) {
 }
 
 /**
+ * The hold on a lane, or null.
+ *
+ * @param {any} board
+ * @param {string} lane
+ * @returns {any | null}
+ */
+export function laneHold(board, lane) {
+  return board.db.prepare('SELECT * FROM hold WHERE hold_lane = ?').get(lane) ?? null;
+}
+
+/**
  * Every held lane.
  *
  * @param {any} board
@@ -304,6 +315,7 @@ export function factFromEvent(event) {
   const detail = JSON.parse(event.event_detail);
   return { id: detail.id, eventId: event.event_id, kind: detail.kind, text: detail.text,
     by: event.event_by, at: event.event_at, ref: detail.ref ?? null, supersedes: detail.supersedes ?? null, ...decisionFields(detail),
+    ...(detail.claimId === undefined ? {} : { claimId: detail.claimId }), ...(detail.answers === undefined ? {} : { answers: detail.answers }),
     ...(detail.neverAgain ? { cause: detail.cause, neverAgain: true } : {}) };
 }
 
