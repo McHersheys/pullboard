@@ -541,7 +541,9 @@ test('one health run sends at most ten stuck shouts and names how many it held b
   const { seats, scan } = seatedBoard(t, { gone: 0, live: 12 });
   const shouts = scan();
   assert.equal(shouts.length, 11, 'ten notices and one that names the rest');
-  assert.match(shouts.at(-1).shout_text, /^Health: 2 more notices from this run were held back/u);
+  assert.match(shouts.at(-1).shout_text, /^Health: 3 more notices from this run were held back/u);
+  assert.equal(shouts.filter(notice => notice.shout_text.includes('ROUTE_WORK_SHORTAGE')).length, 1,
+    'the coordinator route shortage occupies one of the same ten notice places');
   assert.equal(shouts.at(-1).shout_to, 'coordinator');
   assert.equal(seats.length, 12);
 });

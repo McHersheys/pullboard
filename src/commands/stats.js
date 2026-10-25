@@ -8,6 +8,7 @@ import * as gateReceipt from '../gate-receipt.js';
 import { readRunnerStage } from '../runner-stage-read.js';
 import {
   flowLines,
+  flowReportLines,
   flowStats,
 } from '../stats-flow.js';
 import {
@@ -57,7 +58,7 @@ export function run(io, { values }) {
   io.say(`events: ${stats.firstEventAt ?? 'none'} to ${stats.lastEventAt ?? 'none'}${stats.since ? ` (since ${stats.since})` : ''}`);
   for (const line of barStatsLines(stats.bars)) io.say(line);
   for (const line of caughtLines(stats.caught)) io.say(line);
-  for (const line of window ? flowWindowLines(window) : flowLines(stats.flow)) io.say(line);
+  for (const line of window ? flowWindowLines(window) : [...flowLines(stats.flow), ...flowReportLines(stats.flow)]) io.say(line);
   if (window?.executionCapacity) {
     const waits = window.executionCapacity.slotWait;
     /** Keep absent window timing visibly unmeasured in the human-readable summary. */

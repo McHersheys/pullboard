@@ -18,8 +18,22 @@ import {
   actOn,
   idArg,
   ordered,
+  primaryCheckoutRoot,
   textArg,
 } from '../cli.js';
+
+/** Refresh the derived map after the merged receipt has been recorded. */
+async function refreshMap(ctx, io) {
+  const root = primaryCheckoutRoot(ctx.info);
+  if (!root) return;
+  try {
+    const { refreshLandedCodeMap } = await import('../code-map.js');
+    const map = refreshLandedCodeMap(root);
+    if (map) io.say(`code map refreshed for main ${map.mainCommit.slice(0, 12)}`);
+  } catch (error) {
+    io.say(`code map refresh deferred: ${error.message}`);
+  }
+}
 
 /** Run `pullboard merged` and return its exit code. */
 export async function run(io, { first, second, values }) {
@@ -32,6 +46,7 @@ export async function run(io, { first, second, values }) {
     const commit = recovered.move.args[1].commit;
     io.result?.({ id: idArg(first), commit });
     io.say(`#${first} merged as ${commit.slice(0, 12)}`);
+    await refreshMap(ctx, io);
     await relayCommandReceiptReported(ctx.info.root, recovered.move.id);
     return 0;
   }
@@ -58,6 +73,7 @@ export async function run(io, { first, second, values }) {
   await ordered(ctx, board, 'merged', [id, { agentId: me.id, commit, note }]);
   io.result?.({ id: idArg(first), commit });
   io.say(`#${first} merged as ${commit.slice(0, 12)}`);
+  await refreshMap(ctx, io);
   return 0;
 });
 }

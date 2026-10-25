@@ -739,6 +739,10 @@ catalogCase('[A1] catalog commands keep their real repository exercises', async 
   await json(source, source.repo, 'milestone', ['items', 'Catalog', '--remove', String(catalog.item_id)], 'items');
   await json(source, source.repo, 'milestone', ['items', 'Catalog', '--add', String(catalog.item_id)], 'items');
   await json(source, source.repo, 'milestone', ['order', 'Catalog', String(catalog.item_id)], 'order');
+  await json(source, source.repo, 'milestone', ['pin', 'Catalog', String(catalog.item_id), '--reason', 'Catalog coverage first'], 'pin');
+  const sunk = await json(source, source.repo, 'milestone', ['sink', 'Catalog', String(catalog.item_id), '--reason', 'Catalog coverage last'], 'sink');
+  assert.deepEqual([sunk.milestone.sunk, sunk.milestone.reasons[String(catalog.item_id)]], [[catalog.item_id], 'Catalog coverage last'], 'a sink records the item and its reason');
+  assert.equal((await json(source, source.repo, 'milestone', ['lift', 'Catalog', String(catalog.item_id)], 'lift')).milestone.sunk, undefined, 'a lift returns the item to the computed order');
   await json(source, source.repo, 'milestone', ['add', 'Later'], 'add');
   await json(source, source.repo, 'milestone', ['move', 'Later', '--before', 'Catalog'], 'move');
   await json(source, source.repo, 'milestone', ['edit', 'Catalog', '--name', 'Release', '--note', 'Catalog coverage'], 'edit');
@@ -795,6 +799,40 @@ catalogCase('[A1] catalog commands keep their real repository exercises', async 
   const handoff = await uncataloguedRootJSON(source, handoffPath, 'handoff');
   assert.ok(Number.isSafeInteger(handoff.handoff.item), 'handoff opens a replacement item from the joined worktree');
   assert.equal(handoff.resume.agent, joined.agent);
+});
+
+catalogCase('[A1,R1,R2] flow replay exposes its recorded history and replay through real CLI JSON', async () => {
+  const box = await project();
+  const result = await json(box, box.repo, 'flow', ['replay'], 'replay');
+  assert.equal(result.history.version, 1);
+  assert.ok(Array.isArray(result.history.events));
+  assert.equal(result.replay.mode, 'recorded');
+  assert.ok(Array.isArray(result.replay.items));
+  assert.ok(Array.isArray(result.replay.landingOrder));
+  assert.equal(typeof result.replay.stages, 'object');
+});
+
+catalogCase('[A1,C7] map exposes its main stamp and every rendered view through real CLI JSON', async () => {
+  const box = await project();
+  mkdirSync(join(box.repo, 'src'), { recursive: true });
+  writeFileSync(join(box.repo, 'src/map-fixture.js'), '/** Return a fixture value. */\nexport function mapFixture() { return 1; }\n');
+  await box.git(box.repo, 'add', 'src/map-fixture.js');
+  await box.git(box.repo, 'commit', '-q', '-m', 'test: add the catalog map source');
+  const main = (await box.git(box.repo, 'rev-parse', 'main')).trim();
+  const overview = await json(box, box.repo, 'map');
+  assert.equal(overview.main, main);
+  assert.match(overview.map, /Pullboard code map/u);
+  const card = await json(box, box.repo, 'map', ['mapFixture']);
+  assert.equal(card.main, main);
+  assert.match(card.map, /src\/map-fixture\.js#mapFixture/u);
+  const item = await json(box, box.repo, 'add', ['coordinator', 'Map source', '--specs', 'G1',
+    '--criterion', 'src/map-fixture.js defines mapFixture', '--check', 'true']);
+  const slice = await json(box, box.repo, 'map', ['--for', String(item.item.item_id)]);
+  assert.equal(slice.main, main);
+  assert.match(slice.map, /src\/map-fixture\.js/u);
+  const plain = await box.run(box.repo, 'map', 'mapFixture');
+  assert.equal(plain.status, 0, plain.stderr);
+  assert.equal(plain.stdout, `${card.map}\n`, 'JSON carries exactly the ordinary rendered card');
 });
 
 catalogCase('[A1] intake records a real outside pull request through the CLI', async (t) => {

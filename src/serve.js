@@ -4,7 +4,8 @@
  * refreshing itself. Reads and actions use the shared local API v1 handler (A3); actions run the
  * real CLI in the project, so every rule and refusal applies exactly as at a terminal.
  *
- * It listens on the loopback address only and answers nothing without its own Host, and no board without the
+ * By default it listens on loopback only; explicit LAN mode binds one assigned private IPv4 interface [H19].
+ * It answers nothing without its own Host, and no board without the
  * session's secret, so another site in the browser cannot reach it. Besides its own page, it answers one other origin,
  * the hosted page at https://app.pullboard.dev, which gets the secret by a round trip that only ever returns there.
  * Idle reads open no outbound connection (P5); an explicit person sign-in reuses the existing relay linking flow.
@@ -68,6 +69,7 @@ import { sentinels } from './sentinels.js';
 import { projectRowDecisions } from './row-decisions.js';
 import { projectSpecRevisions } from './spec-revisions.js';
 import { loadSpec } from './spec.js';
+import { viewLanAddress } from './view/lan-address.js';
 
 /** The page's styles (N26), read once: the page links them, so it needs no inline style. */
 const VIEW_CSS = readFileSync(new URL('./view.css', import.meta.url), 'utf8');
@@ -445,10 +447,11 @@ function sandboxListenStep(env = process.env) {
 /**
  * Serve the view until stopped, optionally giving its API access to only one registered project.
  *
- * @param {{ port?: number, secret?: string, projectRoot?: string }} [options]
+ * @param {{ port?: number, secret?: string, projectRoot?: string, lan?: boolean }} [options]
  * @returns {Promise<{ url: string, port: number, close: () => Promise<void> }>}
  */
-export async function serveView({ port = 0, secret = randomBytes(18).toString('base64url'), projectRoot } = {}) {
+export async function serveView({ port = 0, secret = randomBytes(18).toString('base64url'), projectRoot, lan = false } = {}) {
+  const address = lan ? viewLanAddress() : LOOPBACK;
   const key = Buffer.from(secret);
   let bound = 0;
   // The API reads projectState and codeAt from this module. Load its factory after our exports
@@ -459,7 +462,8 @@ export async function serveView({ port = 0, secret = randomBytes(18).toString('b
   const signIns = new Set();
   const signInLifetime = new AbortController();
   const apiHandler = createLocalApiHandler({ secret, getPort: () => bound, runCommand: main, stateDetail: 'summary',
-    allowedOrigins: [HOSTED_ORIGIN], ...(projectRoot === undefined ? {} : { scope: { projectRoot } }) });
+    allowedOrigins: lan ? [] : [HOSTED_ORIGIN], allowedHosts: lan ? [address] : [],
+    ...(projectRoot === undefined ? {} : { scope: { projectRoot } }) });
   const reply = (res, code, type, body) => {
     res.writeHead(code, {
       'content-type': type,
@@ -589,19 +593,24 @@ export async function serveView({ port = 0, secret = randomBytes(18).toString('b
     }
     // Only the view's own address reaches it: a site that points a name of its own at 127.0.0.1 sends that name. The
     // API refuses another Host in its own words.
-    const isOwnHost = req.headers.host === `${LOOPBACK}:${bound}` || req.headers.host === `localhost:${bound}`;
+    const isOwnHost = req.headers.host === `${address}:${bound}` || !lan && req.headers.host === `localhost:${bound}`;
     if (!isOwnHost) {
       if (url.pathname.startsWith('/api/') && url.pathname !== '/api/v1/view-link' && req.method !== 'OPTIONS') return apiHandler(req, res);
-      return json(res, 403, { error: 'this view answers only at 127.0.0.1 or localhost on its own port: open the link pullboard view printed' });
+      return json(res, 403, { error: lan ? 'this view answers only at its own LAN address and port: open the private link pullboard view --lan printed'
+        : 'this view answers only at 127.0.0.1 or localhost on its own port: open the link pullboard view printed' });
     }
     // A browser names the page a request comes from; the view answers its own page and the hosted one, nothing else.
     const origin = req.headers.origin;
-    const hosted = origin === HOSTED_ORIGIN;
-    if (origin !== undefined && !hosted && origin !== `http://${LOOPBACK}:${bound}` && origin !== `http://localhost:${bound}`) {
-      return json(res, 403, { error: 'this view answers its own page and https://app.pullboard.dev only' });
+    const hosted = !lan && origin === HOSTED_ORIGIN;
+    if (origin !== undefined && !hosted && origin !== `http://${address}:${bound}` && (lan || origin !== `http://localhost:${bound}`)) {
+      return json(res, 403, { error: lan ? 'this LAN view answers its own page only'
+        : 'this view answers its own page and https://app.pullboard.dev only' });
     }
     res.setHeader('vary', 'Origin');
-    if (hosted) res.setHeader('access-control-allow-origin', HOSTED_ORIGIN);
+    if (hosted) {
+      res.setHeader('access-control-allow-origin', HOSTED_ORIGIN);
+      res.setHeader('access-control-expose-headers', 'x-pullboard-report-validator');
+    }
     if (req.method === 'OPTIONS') {
       const asked = String(req.headers['access-control-request-headers'] ?? '').toLowerCase().split(',').map((name) => name.trim()).filter(Boolean);
       const route = url.pathname.startsWith('/api/') || url.pathname === '/local/protocol';
@@ -617,6 +626,9 @@ export async function serveView({ port = 0, secret = randomBytes(18).toString('b
     // The round trip (N26): any page may send the browser here, and the secret goes back to the hosted page only, in
     // the address's fragment, which no request carries. /local/view opens this view itself, as its printed link does.
     // Each is a page of its own: a script's read or a frame gets nothing.
+    if (lan && (url.pathname === '/local/connect' || url.pathname === '/local/view')) {
+      return json(res, 403, { error: 'open the private LAN link printed by pullboard view --lan' });
+    }
     if (req.method === 'GET' && (url.pathname === '/local/connect' || url.pathname === '/local/view')) {
       const destination = req.headers['sec-fetch-dest'];
       if (origin !== undefined || (destination !== undefined && destination !== 'document')) return json(res, 403, { error: 'open this address as a page of its own, never from a script or inside a frame' });
@@ -657,25 +669,26 @@ export async function serveView({ port = 0, secret = randomBytes(18).toString('b
   // when that is busy; a port the person names is used as named, and a busy one is refused with the
   // way out rather than a stack trace.
   const asked = port;
-  const last = asked === 0 ? lastPort() : 0;
+  const last = asked === 0 && !lan ? lastPort() : 0;
   return new Promise((ready, fail) => {
     const listen = (port) => {
       const failed = (error) => {
         if (sandboxRefusedListen(error, port)) {
-          return fail(new Refused('SANDBOX_BLOCKED', `the sandbox around this command refused to let pullboard view listen on ${port ? `${LOOPBACK}:${port}` : LOOPBACK} (${error.code})\nnext: ${sandboxListenStep()}`));
+          return fail(new Refused('SANDBOX_BLOCKED', `the sandbox around this command refused to let pullboard view listen on ${port ? `${address}:${port}` : address} (${error.code})\nnext: ${sandboxListenStep()}`));
         }
         if (error.code !== 'EADDRINUSE') return fail(error);
         if (port !== 0 && port === last) return listen(0);
         return fail(asked === 0 ? error : new Refused('PORT_BUSY', `port ${asked} is in use: name another with --port, or leave --port out to take any free one`));
       };
       server.once('error', failed);
-      server.listen(port, LOOPBACK, () => {
+      server.listen(port, address, () => {
         server.off('error', failed);
         bound = /** @type {any} */ (server.address()).port;
-        if (asked === 0 && projectRoot === undefined) rememberPort(bound);
+        if (asked === 0 && projectRoot === undefined && !lan) rememberPort(bound);
         ready({
-          url: `http://${LOOPBACK}:${bound}/?k=${secret}`,
+          url: `http://${address}:${bound}/?k=${secret}`,
           port: bound,
+          ...(lan ? { lan: true } : {}),
           close: async () => {
             signInLifetime.abort();
             await Promise.all([...signIns].map(async intentId => {
