@@ -74,6 +74,7 @@ import {
 } from './resources.js';
 import {
   browserFreeChecksEnabled,
+  gateRunnersFirstEnabled,
   gateQueueSettings,
   gateShortSlots,
   loadMachineSettings,
@@ -438,6 +439,7 @@ async function withOneGateSlot(root, action, { landing = false, itemCheck = fals
     allowIdleCapacityUpdate: true,
     remote: remote && Boolean(source),
     runnerProvider: () => loadMachineSettings().runners ?? [],
+    runnersFirstProvider: gateRunnersFirstEnabled,
     releaseContext,
     memory: floorMB === null ? undefined : memoryAdmission({ floorBytes: () => (memoryFloorMB() ?? floorMB) * 1024 ** 2, read: readMemory }),
     onWait,

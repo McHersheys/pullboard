@@ -15,6 +15,7 @@ import {
   setBrowserSlots,
   setGateShortSlots,
   setGateSlots,
+  setGateRunnersFirst,
   setLandingPool,
 } from '../settings.js';
 import {
@@ -41,7 +42,8 @@ export function settingsCommand(io, { first, second, rest, values }) {
     // The result names the queue order in effect, defaults included; the file keeps only what was set.
     const offerAtInit = relayOfferEnabled();
     const shortSlots = gateShortSlots();
-    io.result?.({ settings: { ...settings, gate: { ...settings.gate, queue: { ...settings.gate?.queue, ...queue }, shortSlots }, relay: { ...settings.relay, offerAtInit } }, memoryFloorMB: memoryFloorMB() });
+    const runnersFirst = settings.gate?.runnersFirst === true;
+    io.result?.({ settings: { ...settings, gate: { ...settings.gate, queue: { ...settings.gate?.queue, ...queue }, shortSlots, runnersFirst }, relay: { ...settings.relay, offerAtInit } }, memoryFloorMB: memoryFloorMB() });
     io.say(`gateSlots: ${settings.gateSlots}`);
     io.say(`browserSlots: ${settings.browserSlots}`);
     io.say(`gate.queue.reviewsFirst: ${queue.reviewsFirst}${queue.reviewsFirst ? '' : ' (landings first, then arrival order)'}`);
@@ -51,10 +53,18 @@ export function settingsCommand(io, { first, second, rest, values }) {
     io.say(`view.background: ${settings.view?.background !== false}${settings.view?.background === false ? ' (init and resume leave the view to you)' : ' (init and resume keep pullboard view running for pullboard.dev)'}`);
     io.say(`relay.offerAtInit: ${offerAtInit}${offerAtInit ? ' (init asks once to share your boards with your phone)' : ' (init stays quiet about sharing)'}`);
     io.say(`gate.shortSlots: ${shortSlots}${shortSlots ? '' : ' (off; runs that name their test files wait for a gate slot)'}`);
+    io.say(`gate.runnersFirst: ${runnersFirst} (registered runners are preferred before local slots when on)`);
     return 0;
   }
   if (!SETTING_FORMS.includes(first) || !second || rest.length) {
-    throw new Refused('USAGE', 'pullboard settings gateSlots <n> | browserSlots <n> | gate.shortSlots <n>');
+    throw new Refused('USAGE', 'pullboard settings gateSlots <n> | browserSlots <n> | gate.shortSlots <n> | gate.runnersFirst on|off');
+  }
+  if (first === 'gate.runnersFirst') {
+    if (!['on', 'off'].includes(second)) throw new Refused('BAD_MACHINE_SETTINGS', 'gate.runnersFirst must be on or off; run pullboard settings gate.runnersFirst on|off');
+    const settings = setGateRunnersFirst(second === 'on');
+    io.result?.({ settings });
+    io.say(`gate.runnersFirst set to ${second}`);
+    return 0;
   }
   if (first === 'gate.shortSlots') {
     if (!/^(?:0|[1-9]\d*)$/u.test(second) || !Number.isSafeInteger(Number(second))) {
@@ -65,9 +75,9 @@ export function settingsCommand(io, { first, second, rest, values }) {
     io.say(`gate.shortSlots set to ${settings.gate.shortSlots}`);
     return 0;
   }
-  if (!/^[1-9]\d*$/u.test(second) || !Number.isSafeInteger(Number(second))) {
-    if (first === 'gateSlots') throw new Refused('USAGE', 'pullboard settings gateSlots <positive integer>');
-    throw new Refused(first === 'browserSlots' ? 'BAD_BROWSER_SLOTS' : 'BAD_GATE_SLOTS', `${first} must be a positive integer; run pullboard settings ${first} <n>`);
+  if (!/^(?:0|[1-9]\d*)$/u.test(second) || !Number.isSafeInteger(Number(second))) {
+    if (first === 'gateSlots') throw new Refused('USAGE', 'pullboard settings gateSlots <n>');
+    throw new Refused('BAD_BROWSER_SLOTS', 'browserSlots must be a whole number, 0 or more; 0 requires a registered runner');
   }
   const settings = first === 'browserSlots' ? setBrowserSlots(Number(second)) : setGateSlots(Number(second));
   io.result?.({ settings });
