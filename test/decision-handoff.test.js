@@ -1,3 +1,4 @@
+/** @pullboard-test-input source-tree */
 /** Durable namespaced decision delivery, with actual SQLite and a signed authority port [B21,H16]. */
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
@@ -9,7 +10,7 @@ import { test } from 'node:test';
 
 /** The fixture capability authenticates the disclosed question, source, destination and option binding. */
 function signature(value) {
-  const { authority, answer, ...body } = value;
+  const { authority, ...body } = value;
   return createHmac('sha256', 'private-fixture-authority').update(JSON.stringify(body)).digest('hex');
 }
 
@@ -35,21 +36,23 @@ test('a decision hand-off returns one matching answer to its source board, once 
       question: 'Ship the reviewed change?', optionsDigest: optionsDigest(options), authority: '', answer: null };
     return { ...value, authority: signature(value) };
   }
+  const signed = value => ({ ...value, authority: signature(value) });
+  const queryToken = participants => signature({ version: 1, source, participants });
   const original = offer('child');
   const home = open('source'), away = open('child');
   await assert.rejects(away.deliver({ ...original, authority: 'forged' }, options), { code: 'DECISION_HANDOFF_AUTH' });
-  assert.deepEqual(await home.query(source, ['child'], original.authority), { complete: false, agreed: false, answers: [] });
+  assert.deepEqual(await home.query(source, ['child'], queryToken(['child'])), { complete: false, agreed: false, answers: [] });
   const disclosed = await away.deliver(original, options);
   assert.deepEqual(disclosed, original);
   await home.deliver(original, options);
-  const answered = { ...original, answer: { boardId: 'child', option: 'ship' } };
+  const answered = signed({ ...original, answer: { boardId: 'child', option: 'ship' } });
   await away.deliver(answered, options);
   assert.deepEqual(await home.deliver(answered, options), answered);
   assert.deepEqual(await home.deliver(answered, options), answered, 'an exact answer retry returns the same result');
   assert.deepEqual(await home.deliver(original, options), answered, 'a late question cannot erase its answer');
-  assert.deepEqual(await open('source').query(source, ['child'], original.authority),
+  assert.deepEqual(await open('source').query(source, ['child'], queryToken(['child'])),
     { complete: true, agreed: true, answers: [{ boardId: 'child', option: 'ship' }] }, 'reopening preserves correlation and one answer');
-  await assert.rejects(home.deliver({ ...answered, answer: { boardId: 'child', option: 'wait' } }, options), { code: 'DECISION_HANDOFF_CONFLICT' });
+  await assert.rejects(home.deliver(signed({ ...answered, answer: { boardId: 'child', option: 'wait' } }), options), { code: 'DECISION_HANDOFF_CONFLICT' });
   await assert.rejects(home.deliver(answered, ['ship', 'cancel']), { code: 'DECISION_HANDOFF_BINDING' });
   await assert.rejects(home.deliver({ ...answered, answer: { boardId: 'child', option: 'unknown' } }, options), { code: 'DECISION_HANDOFF_BINDING' });
   await assert.rejects(home.deliver({ ...answered, source: { ...source, decisionId: 18 } }, options), { code: 'DECISION_HANDOFF_AUTH' });
@@ -57,15 +60,15 @@ test('a decision hand-off returns one matching answer to its source board, once 
   await assert.rejects(open('unrelated').deliver(original, options), { code: 'DECISION_HANDOFF_BINDING' });
   const second = offer('other');
   await home.deliver(second, options);
-  assert.equal((await home.query(source, ['child', 'other'], original.authority)).complete, false);
-  await home.deliver({ ...second, answer: { boardId: 'other', option: 'wait' } }, options);
-  const joint = await home.query(source, ['child', 'other'], original.authority);
+  assert.equal((await home.query(source, ['child', 'other'], queryToken(['child', 'other']))).complete, false);
+  await home.deliver(signed({ ...second, answer: { boardId: 'other', option: 'wait' } }), options);
+  const joint = await home.query(source, ['child', 'other'], queryToken(['child', 'other']));
   assert.equal(joint.complete, true);
   assert.equal(joint.agreed, false, 'different options never become a joint decision');
   assert.equal(joint.answers.length, 2);
   await assert.rejects(home.query(source, ['child'], 'forged'), { code: 'DECISION_HANDOFF_AUTH' });
   const early = offer('late', 'early-answer');
-  const earlyAnswer = { ...early, answer: { boardId: 'late', option: 'ship' } };
+  const earlyAnswer = signed({ ...early, answer: { boardId: 'late', option: 'ship' } });
   assert.deepEqual(await home.deliver(earlyAnswer, options), earlyAnswer, 'answer delivery may arrive before the question');
   assert.deepEqual(await home.deliver(early, options), earlyAnswer);
   const different = { ...original, handoffId: 'duplicate-destination' };
