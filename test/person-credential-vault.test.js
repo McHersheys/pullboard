@@ -10,6 +10,8 @@ import { createDeviceKeys } from '../src/relay-device-keys.js';
 
 /** Open in an independent isolate that has never held the original private root. */
 async function recoveredEnrollment(serialized, material, method, expected, body) {
+  const isolated = JSON.parse(serialized);
+  delete isolated[method === 'credential' ? 'recovery' : 'credential'];
   const source = `
     import { parentPort, workerData } from 'node:worker_threads';
     const { openCredentialVault } = await import(workerData.vaultModule);
@@ -23,7 +25,7 @@ async function recoveredEnrollment(serialized, material, method, expected, body)
     parentPort.close();
   `;
   const worker = new Worker(new URL('data:text/javascript,' + encodeURIComponent(source)), { workerData: {
-    serialized, material, method, expected, body,
+    serialized: JSON.stringify(isolated), material, method, expected, body,
     vaultModule: new URL('../src/person-credential-vault.js', import.meta.url).href,
     enrollmentModule: new URL('../src/person-enrollment.js', import.meta.url).href,
   } });
