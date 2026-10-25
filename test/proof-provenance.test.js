@@ -90,6 +90,33 @@ test('native receipts carry each child reported runtime instead of borrowing the
   if (versions.size > 1) assert.equal(receipt.environment, null, 'a mixed actual run has no invented common Node version');
 });
 
+test('a receipted native node test preserves caller output and records its actual worker [C7,H16]', t => {
+  const helpers = createE2eHelpers();
+  t.after(helpers.cleanup);
+  const box = helpers.project('true');
+  const trace = join(box.dir, 'native-worker.json');
+  const file = join(box.dir, 'native-worker.test.cjs');
+  writeFileSync(file, `require('node:fs').writeFileSync(${JSON.stringify(trace)},JSON.stringify({pid:process.pid,node:process.versions.node,argv:process.argv,execArgv:process.execArgv,nodeOptions:process.env.NODE_OPTIONS??'',hasNodeOptions:Object.hasOwn(process.env,'NODE_OPTIONS')}));require('node:test')('native selected worker [G1]',()=>{});`);
+  const bare = runFixtureChild(process.execPath, ['--test', file], { cwd: box.web, env: box.env, encoding: 'utf8' });
+  assert.equal(bare.status, 0, bare.failure || bare.stderr);
+  const expected = JSON.parse(readFileSync(trace, 'utf8'));
+  const board = store.openBoard(join(box.repo, '.git/pullboard/board.sqlite'));
+  t.after(() => store.closeBoard(board));
+  const item = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'Native selected runtime',
+    criterion: 'Actual native worker retains caller behavior.', check: `${JSON.stringify(process.execPath)} --test ${JSON.stringify(file)}`, specIds: ['G1'] });
+  for (const args of [['claim', String(item), '--json'], ['check', String(item), '--yes', '--json']]) {
+    const result = box.run(box.web, ...args);
+    assert.equal(result.code, 0, result.err + result.out);
+  }
+  const actual = JSON.parse(readFileSync(trace, 'utf8'));
+  for (const field of ['argv', 'execArgv', 'nodeOptions', 'hasNodeOptions']) assert.deepEqual(actual[field], expected[field], field);
+  const shown = box.run(box.repo, 'show', String(item), '--json');
+  assert.equal(shown.code, 0, shown.err + shown.out);
+  const [receipt] = JSON.parse(shown.out).proofReceipts;
+  assert.ok(receipt.testRuntimes?.some(row => row.pid === actual.pid && row.environment.node === actual.node),
+    'the actual native worker self-reports rather than borrowing its node --test launcher');
+});
+
 test('an unobserved custom nested Node child never borrows its launcher runtime [C7,H16]', t => {
   const directory = mkdtempSync(join(tmpdir(), 'pullboard-nested-runtime-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
