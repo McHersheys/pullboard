@@ -217,7 +217,7 @@ test('a busy runner is named at the deadline and fallback waits for a real local
     assert.equal(remote.runner.host, HOST + '-drop');
     pending = runThroughGate(box.repo, box.env, 'node -e "console.log(\'BUSY_FALLBACK_LOCAL\')"', { item: 'busy-case', requests: box.requests });
     const queue = () => listResources({ scope: 'machine' }).find(resource => resource.name === 'gate');
-    await observe(() => queue()?.line.some(row => row.item === 'busy-case' && row.runnerDeadline), 'busy-runner deadline with both real capacities held');
+    await observe(() => queue()?.line.some(row => row.item === 'busy-case' && row.runnerDeadline?.branch), 'busy-runner deadline facts with both real capacities held');
     const row = queue().line.find(waiter => waiter.item === 'busy-case');
     assert.match(row.runnerDeadline.branch, /local gate slots busy/u);
     assert.equal(row.runnerDeadline.runners[0].reason, 'busy');

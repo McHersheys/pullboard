@@ -936,7 +936,7 @@ export async function takeResource(options) {
         const runnersFirst = runnersFirstProvider?.() === true;
         if (!runnerDeadlineAt && remote && runners.length && options.runnerWaitMs) runnerDeadlineAt = requestedAt + options.runnerWaitMs;
         const runnerDeadlinePassed = runnerDeadlineAt > 0 && now >= runnerDeadlineAt;
-        const waiter = db.prepare('SELECT ticket, remote, browser, gui FROM waiter WHERE token = ?').get(token);
+        const waiter = db.prepare('SELECT ticket, remote, browser, gui, runner_wait_branch AS runnerWaitBranch FROM waiter WHERE token = ?').get(token);
         if (!waiter) {
           if (resume && initialTicket) {
             db.prepare('INSERT OR IGNORE INTO waiter(ticket, token, name, pid, started, agent, repo, since, heartbeat, landing, item_check, diagnostic, browser, item, kind, remote, classed, release_aware, board_key, release_rank, queue_ticket, short_eligible, gui, timing, timing_aware) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(initialTicket, token, name, pid, started, agent, repo, queuedAt, Date.now(), Number(landing), Number(itemCheck || diagnostic), Number(diagnostic), Number(browser), item, kind, Number(remote), classedMarker(order), 1, boardKey, releaseRank, resume?.queueTicket ?? null, Number(shortEligible), Number(gui), Number(timing), 1);
@@ -957,7 +957,7 @@ export async function takeResource(options) {
         db.prepare('UPDATE waiter SET memory_held = ? WHERE token = ?').run(Number(memoryHeld), token);
         const limit = db.prepare('SELECT capacity FROM resource WHERE name = ?').get(name).capacity;
         let runnerDeadline;
-        if (runnerDeadlinePassed) {
+        if (runnerDeadlineAt && (runnerDeadlinePassed || !waiter.runnerWaitBranch)) {
           const state = snapshot(db, name, order, now);
           runnerDeadline = { at: runnerDeadlineAt, runners: runnerWaitReasons(db, runners, { ...waiter, timing: Number(timing) }, unavailable),
             branch: localWaitBranch({ capacity: limit, browserCapacity: options.browserCapacityProvider?.() ?? 1,
@@ -965,9 +965,12 @@ export async function takeResource(options) {
           db.prepare('UPDATE waiter SET runner_wait_branch = ?, runner_wait_reasons = ? WHERE token = ?')
             .run(runnerDeadline.branch, JSON.stringify(runnerDeadline.runners), token);
           // Without local capacity the run cannot fall back, so it refuses by name rather than wait forever.
-          if (runnerDeadline.branch === 'no local capacity') {
+          if (runnerDeadlinePassed && runnerDeadline.branch === 'no local capacity') {
             throw new Refused('RUNNER_WAIT_DEADLINE', `${runnerDeadlineLine(runnerDeadline)}; restore safe local capacity or check the named runners, then retry`);
           }
+          // A read-only status may cross the clock boundary between polls. Seed its facts
+          // immediately, while progress and fallback still wait for the actual deadline.
+          if (!runnerDeadlinePassed) runnerDeadline = undefined;
         }
         const spot = snapshot(db, name, order, now);
         const reportPosition = waiterPosition(db, name, waiter.ticket, { order, now, shortCapacity: options.shortCapacityProvider?.() ?? 0 });
