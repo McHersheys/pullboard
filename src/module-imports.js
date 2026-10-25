@@ -75,25 +75,19 @@ function pastGap(source, at) {
 }
 
 /**
- * What an import(...) call at `at` loads: its argument when that is one plain string, decoded, or
- * COMPUTED for anything else, a string whose escapes do not decode included. Only called on words
- * V8 has confirmed are import calls in code.
+ * The bounded string-literal spelling in one confirmed dynamic import, or null for executable expressions.
+ * Decoding is deferred so all literals share one compile-only V8 batch.
  *
  * @param {string} source
  * @param {number} at
- * @returns {string}
+ * @returns {string | null}
  */
-function dynamicAt(source, at) {
+function dynamicLiteralAt(source, at) {
   const argument = pastGap(pastGap(source, at + 'import'.length), 1);
   const literal = /^(['"])(?:\\[\s\S]|(?!\1)[^\\\n\r])*\1/.exec(argument);
-  if (!literal) return COMPUTED;
+  if (!literal) return null;
   const after = pastGap(argument, literal[0].length)[0];
-  if (after !== ')' && after !== ',') return COMPUTED;
-  try {
-    return look([`import ${literal[0]};`])[0].imports[0] ?? COMPUTED;
-  } catch {
-    return COMPUTED;
-  }
+  return after === ')' || after === ',' ? literal[0] : null;
 }
 
 /**
@@ -115,7 +109,7 @@ export function importsIn(sources) {
   );
   const looks = look([...sources, ...variants]);
   let next = sources.length;
-  return sources.map((source, index) => {
+  const edges = sources.map((source, index) => {
     if (!looks[index].compiles) throw new Error('source does not compile as an ES module');
     const dynamic = calls[index].filter(() => {
       const isCode = !looks[next].compiles;
@@ -123,8 +117,12 @@ export function importsIn(sources) {
       next += 2;
       return isCode && isCall;
     });
-    return [...looks[index].imports, ...dynamic.map((at) => dynamicAt(source, at))];
+    return { imports: looks[index].imports, literals: dynamic.map(at => dynamicLiteralAt(source, at)) };
   });
+  const literals = [...new Set(edges.flatMap(edge => edge.literals.filter(Boolean)))];
+  const decoded = literals.length ? look(literals.map(literal => `import ${literal};`)) : [];
+  const values = new Map(literals.map((literal, index) => [literal, decoded[index].imports[0] ?? COMPUTED]));
+  return edges.map(edge => [...edge.imports, ...edge.literals.map(literal => values.get(literal) ?? COMPUTED)]);
 }
 
 /** Detect actual CommonJS loader words without executing source; invalid modules are conservatively unknown.
