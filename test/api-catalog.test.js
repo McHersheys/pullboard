@@ -801,6 +801,17 @@ catalogCase('[A1] catalog commands keep their real repository exercises', async 
   assert.equal(handoff.resume.agent, joined.agent);
 });
 
+catalogCase('[A1,R1,R2] flow replay exposes its recorded history and replay through real CLI JSON', async () => {
+  const box = await project();
+  const result = await json(box, box.repo, 'flow', ['replay'], 'replay');
+  assert.equal(result.history.version, 1);
+  assert.ok(Array.isArray(result.history.events));
+  assert.equal(result.replay.mode, 'recorded');
+  assert.ok(Array.isArray(result.replay.items));
+  assert.ok(Array.isArray(result.replay.landingOrder));
+  assert.equal(typeof result.replay.stages, 'object');
+});
+
 catalogCase('[A1,C7] map exposes its main stamp and every rendered view through real CLI JSON', async () => {
   const box = await project();
   mkdirSync(join(box.repo, 'src'), { recursive: true });
