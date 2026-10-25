@@ -9,7 +9,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { hostname } from 'node:os';
+import { computerName } from './computer-name.js';
 import {
   dirname,
   join,
@@ -222,7 +222,8 @@ function requireMissingKey(board) {
 }
 
 /** Consume a printed one-time code, restore the board and save this device's own link. */
-export async function relayJoin(root, code, address, io) {
+export async function relayJoin(root, code, address, io, { name: labelInput } = {}) {
+  const label = computerName(labelInput);
   requirePersonChannel(io.personChannel);
   const parsed = parsePairingCode(code);
   const url = relayOrigin(address || DEFAULT_RELAY);
@@ -238,8 +239,8 @@ export async function relayJoin(root, code, address, io) {
   const file = linkFile(root);
   if (existsSync(file)) throw new Refused('RELAY_LINKED', 'this clone already has relay link metadata; use a fresh clone to join another device');
   const machine = updateRelayMachine(state => state.machine);
-  // The linked computer lists this one by its host name, in relay devices and before relay off.
-  const issued = await relayRequest(url, signed.token, '/auth/machines', { board: bundle.board, machine, host: hostname() });
+  // Only a person's explicit label travels to other computers; never send this host or path.
+  const issued = await relayRequest(url, signed.token, '/auth/machines', { board: bundle.board, machine, ...(label === undefined ? {} : { name: label }) });
   if (!TOKEN.test(issued.token) || issued.board !== bundle.board || issued.machine !== machine) throw new Refused('RELAY_RESPONSE', 'the relay did not issue this joined board’s machine credential; pair again');
   let keyStorage;
   try {
@@ -252,6 +253,7 @@ export async function relayJoin(root, code, address, io) {
       version: 1, board: bundle.board, url: bundle.url, repository: bundle.repository,
       mode: bundle.mode,
       token: issued.token, tokenId: issued.id, machine, account: signed.user.id, keyStorage,
+      ...(label === undefined ? {} : { computerName: label }),
       sequence: bundle.sequence, cursor: bundle.cursor,
     });
   } catch (error) {

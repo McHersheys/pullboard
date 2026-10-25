@@ -701,8 +701,8 @@ globalThis.fetch = function tracedFetch(input, init) {
   const keyFile = join(env.PULLBOARD_HOME, 'relay-keys', id + '.key');
 
   /** Start a saved real relay link without exposing the pairing fragment. */
-  async function link() {
-    const result = await cli('relay', 'on', '--url', origin);
+  async function link(name) {
+    const result = await cli('relay', 'on', '--url', origin, ...(name === undefined ? [] : ['--name', name]));
     assert.equal(result.code, 0, 'real device sign-in links the board');
     privateKeys.add(readFileSync(keyFile, 'utf8').trim());
     return result;
@@ -732,7 +732,7 @@ globalThis.fetch = function tracedFetch(input, init) {
     return (await run('relay', 'off')).code;
   }
   /** Clone the same committed project into a separate repository/home, then join through a printed code. */
-  async function otherDeviceJoin(code) {
+  async function otherDeviceJoin(code, name) {
     const bare = join(scratch, 'project.git');
     const otherRoot = join(scratch, 'paired-clone');
     const otherHome = join(scratch, 'paired-home');
@@ -745,7 +745,7 @@ globalThis.fetch = function tracedFetch(input, init) {
     const initEnv = { ...otherEnv };
     delete initEnv.PULLBOARD_MODEL; // Pairing imports the source coordinator's declaration.
     assert.equal((await childResult(otherRoot, initEnv, [CLI, 'init', '--json'])).code, 0, 'the cloned project initializes its private local board');
-    const joined = await run('relay', 'join', code, '--url', origin);
+    const joined = await run('relay', 'join', code, '--url', origin, ...(name === undefined ? [] : ['--name', name]));
     const document = joined.document;
     if (joined.code !== 0) throw new Error('real clone did not join the one-use pairing code');
     const exported = await run('export');

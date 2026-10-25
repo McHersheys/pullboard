@@ -54,11 +54,11 @@ Set up
                                         behind the session secret in its printed address
   pullboard mcp                        MCP tools over stdio for this worktree's agent, started by its MCP client:
                                         board status, show, shout and capture an idea; a person's move is refused
-  pullboard relay [status|on|off|pair|join <code>] [--url <address>]  link, inspect or unlink this board's sealed relay
+  pullboard relay [status|on|off|pair|join <code>] [--url <address>] [--name <computer>]  link, inspect or unlink this board's sealed relay
                                         on signs in through GitHub; the address defaults to https://app.pullboard.dev
                                         pair prints a one-use machine code; join stores it in another clone
   pullboard relay pair --new-browser    sign in and pair one more browser; existing browsers stay paired
-  pullboard relay on --all [--url <address>]  link every registered project after one sign-in; pair the phone once
+  pullboard relay on --all [--url <address>] [--name <computer>]  link every registered project after one sign-in; pair the phone once
                                         keep this command open until pairing finishes; later projects link on registration
   pullboard relay devices [--verbose]   paired phones and joined computers by name, with paired date, last seen and boards
                                         --verbose adds each id and phone key fingerprint
