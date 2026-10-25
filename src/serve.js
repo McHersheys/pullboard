@@ -66,6 +66,7 @@ import { rigorDraftNeeds } from './rigor-notices.js';
 import { sentinelDraftNeeds } from './sentinels.js';
 import { sentinels } from './sentinels.js';
 import { projectRowDecisions } from './row-decisions.js';
+import { projectSpecRevisions } from './spec-revisions.js';
 import { loadSpec } from './spec.js';
 
 /** The page's styles (N26), read once: the page links them, so it needs no inline style. */
@@ -372,7 +373,7 @@ export function projectState(root, { seen = null, board: providedBoard = null, i
     });
     // Pending person decisions govern the calls on the API, sealed relay and exported page alike.
     const rigorRows = projectRowDecisions(store.rowDecisions(board), { root: info.root, spec: loadSpec(info.root, config).rows, practice: doctrine.rows });
-    const projected = { ...state, rigorDrafts: rigorDraftNeeds(rigorRows, store.rowDrafts(board), store.rowDecisions(board)), sentinelDrafts: sentinelDraftNeeds(sentinels(board)) };
+    const projected = projectSpecRevisions({ ...state, rigorDrafts: rigorDraftNeeds(rigorRows, store.rowDrafts(board), store.rowDecisions(board)), sentinelDrafts: sentinelDraftNeeds(sentinels(board)) }, store.rowDrafts(board), store.rowDecisions(board));
     return { ...projected, needs: personNeeds(projected) };
   }, providedBoard);
 }

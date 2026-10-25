@@ -125,6 +125,7 @@ function openQueue(file) {
       CREATE INDEX IF NOT EXISTS holder_name ON holder(name);
       CREATE TABLE IF NOT EXISTS waiter (ticket INTEGER PRIMARY KEY AUTOINCREMENT, token TEXT UNIQUE NOT NULL, name TEXT NOT NULL, pid INTEGER NOT NULL, started TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL, repo TEXT NOT NULL, since TEXT NOT NULL, heartbeat INTEGER NOT NULL, landing INTEGER NOT NULL DEFAULT 0, item_check INTEGER NOT NULL DEFAULT 0, browser INTEGER NOT NULL DEFAULT 0, item TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT '', remote INTEGER NOT NULL DEFAULT 0, short_eligible INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS runner_unavailable (host TEXT PRIMARY KEY, since TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '');
+      CREATE TABLE IF NOT EXISTS runner_rotation (pool TEXT PRIMARY KEY, next_host TEXT NOT NULL DEFAULT '');
       CREATE TABLE IF NOT EXISTS runner_gui (host TEXT PRIMARY KEY, gui INTEGER, observed_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS runner_draining (host TEXT PRIMARY KEY, runner TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS waiter_name_ticket ON waiter(name, ticket);`);
@@ -457,7 +458,7 @@ function validatedRunners(value) {
  * @param {number} [now] - The clock reading to age against.
  * @returns {{host:string,slots:number,browser:number}|null}
  */
-function gateAdmission(db, ticket, capacity, shortCapacity, runners, order = ARRIVAL_ORDER, now = Date.now()) {
+function gateAdmission(db, ticket, capacity, shortCapacity, runners, runnersFirst = false, order = ARRIVAL_ORDER, now = Date.now()) {
   const waiters = orderedWaiters(queuedWaiters(db, 'gate'), now, order);
   const holders = db.prepare("SELECT pid, landing, browser, short_slot AS shortSlot, timing FROM holder WHERE name = 'gate'").all();
   const localUsed = holders.filter(holder => holder.shortSlot !== 1).length;
@@ -481,12 +482,13 @@ function gateAdmission(db, ticket, capacity, shortCapacity, runners, order = ARR
   /** Find a currently free compatible slot without reserving it for later queue entries. */
   function available(waiter) {
     if (blockedByLanding(waiter)) return null;
-    if (!holders.some(holder => holder.timing === 1) && (waiter.timing !== 1 || holders.length === 0)
-      && localUsed < capacity && (waiter.browser !== 1 || localBrowsers < browserCapacity)) {
-      return { host: '', slots: capacity, browser: waiter.browser === 1 ? 1 : 0, shortSlot: false };
-    }
-    if (waiter.remote === 1) {
-      const compatible = runners.filter(runner => {
+    /** Pick an eligible runner in durable round-robin order when the machine opts in. */
+    function runnerSlot() {
+      if (waiter.remote !== 1) return null;
+      const cursor = runnersFirst ? db.prepare("SELECT next_host FROM runner_rotation WHERE pool = 'gate'").get()?.next_host : '';
+      const start = Math.max(0, runners.findIndex(runner => runner.host === cursor));
+      const ordered = runnersFirst ? [...runners.slice(start), ...runners.slice(0, start)] : runners;
+      const compatible = ordered.filter(runner => {
         const observed = db.prepare('SELECT gui FROM runner_gui WHERE host = ?').get(runner.host);
         const gui = observed ? observed.gui === 1 : runner.gui === true;
         if (unavailable.has(runner.host) || (waiter.browser === 1 && runner.browser < 1) || (waiter.gui === 1 && !gui)) return false;
@@ -494,13 +496,30 @@ function gateAdmission(db, ticket, capacity, shortCapacity, runners, order = ARR
         return !used.timing && (waiter.timing !== 1 || used.slots === 0)
           && used.slots < runner.slots && (waiter.browser !== 1 || used.browsers < runner.browser);
       });
-      // A landing spreads its active shards before filling another slot on the same runner.
-      // Choose under this transaction's holder snapshot, so concurrent acquisitions cannot tie on stale use.
-      if (waiter.landing === 1) compatible.sort((left, right) => usage.get(left.host).slots - usage.get(right.host).slots);
-      if (compatible.length) {
-        const observed = db.prepare('SELECT gui FROM runner_gui WHERE host = ?').get(compatible[0].host);
-        return { ...compatible[0], ...(observed ? { gui: observed.gui === null ? null : observed.gui === 1 } : {}), shortSlot: false };
+      // Existing landing balancing stays intact when the opt-in rotation is off.
+      if (!runnersFirst && waiter.landing === 1) compatible.sort((left, right) => usage.get(left.host).slots - usage.get(right.host).slots);
+      if (!compatible.length) return null;
+      const selected = compatible[0];
+      const observed = db.prepare('SELECT gui FROM runner_gui WHERE host = ?').get(selected.host);
+      return { ...selected, ...(observed ? { gui: observed.gui === null ? null : observed.gui === 1 } : {}), shortSlot: false };
+    }
+    /** The local slot follows runner admission only while runner-first is enabled. */
+    function localSlot() {
+      if (!holders.some(holder => holder.timing === 1) && (waiter.timing !== 1 || holders.length === 0)
+        && localUsed < capacity && (waiter.browser !== 1 || localBrowsers < browserCapacity)) {
+        return { host: '', slots: capacity, browser: waiter.browser === 1 ? 1 : 0, shortSlot: false };
       }
+      return null;
+    }
+    const remote = runnerSlot();
+    if (runnersFirst) {
+      if (remote) return remote;
+      const local = localSlot();
+      if (local) return local;
+    } else {
+      const local = localSlot();
+      if (local) return local;
+      if (remote) return remote;
     }
     const earlierLanding = waiters.some(other => other.landing === 1 && other.ticket < waiter.ticket);
     if (waiter.timing !== 1 && !holders.some(holder => holder.timing === 1)
@@ -522,7 +541,15 @@ function gateAdmission(db, ticket, capacity, shortCapacity, runners, order = ARR
   }
   for (const waiter of waiters) {
     const executor = available(waiter);
-    if (executor) return waiter.ticket === ticket ? executor : null;
+    if (executor) {
+      if (waiter.ticket !== ticket) return null;
+      if (runnersFirst && executor.host) {
+        const selected = runners.findIndex(runner => runner.host === executor.host);
+        const nextHost = runners[(selected + 1) % runners.length]?.host ?? '';
+        db.prepare("INSERT INTO runner_rotation(pool, next_host) VALUES ('gate', ?) ON CONFLICT(pool) DO UPDATE SET next_host = excluded.next_host").run(nextHost);
+      }
+      return executor;
+    }
   }
   return null;
 }
@@ -743,7 +770,7 @@ export async function takeResource(options) {
   const { name, capacity, scope = 'machine', root = process.cwd(), allowIdleCapacityUpdate = false } = options;
   if (typeof name !== 'string' || !name.trim() || name.trim() !== name) throw new Refused('BAD_RESOURCE_NAME', 'resource name must be nonempty trimmed text');
   if (name.startsWith('runner:')) throw new Refused('RESERVED_RUNNER_RESOURCE', 'runner resource rows are managed by the machine gate; request name "gate"');
-  if (!Number.isSafeInteger(capacity) || capacity < 1) throw new Refused('BAD_RESOURCE_CAPACITY', 'resource capacity must be a positive integer');
+  if (!Number.isSafeInteger(capacity) || capacity < (name === 'gate' && scope === 'machine' ? 0 : 1)) throw new Refused('BAD_RESOURCE_CAPACITY', 'resource capacity must be positive; only the machine gate accepts 0 with a registered runner');
   const landing = options.landing === true;
   const itemCheck = options.itemCheck === true;
   const shortEligible = options.shortEligible === true;
@@ -755,6 +782,8 @@ export async function takeResource(options) {
   // This synchronous provider is used inside the admission transaction; callers must
   // limit it to a bounded local configuration read, never Git, process inspection or network work.
   const runnerProvider = options.runnerProvider;
+  const runnersFirstProvider = options.runnersFirstProvider;
+  if (runnersFirstProvider !== undefined && typeof runnersFirstProvider !== 'function') throw new Refused('BAD_RUNNER_POOL', 'runnersFirstProvider must return the machine runner-first setting');
   const item = options.item ?? '';
   const kind = options.kind ?? '';
   // withGateSlot supplies a once-captured board rank; raw resource clients may leave it unknown.
@@ -817,7 +846,10 @@ export async function takeResource(options) {
     await retryLockedSlotDatabase(file, () => update(db, () => {
       const currentCapacity = options.capacityProvider?.() ?? capacity;
       const currentShortCapacity = options.shortCapacityProvider?.() ?? 0;
-      if (!Number.isSafeInteger(currentCapacity) || currentCapacity < 1) throw new Refused('BAD_RESOURCE_CAPACITY', 'resource capacity must be a positive integer');
+      const configuredRunners = runnerProvider ? validatedRunners(runnerProvider()) : [];
+      if (!Number.isSafeInteger(currentCapacity) || currentCapacity < (name === 'gate' && scope === 'machine' && configuredRunners.length ? 0 : 1)) {
+        throw new Refused('BAD_RESOURCE_CAPACITY', `resource capacity must be positive${name === 'gate' && scope === 'machine' ? ', or 0 with a registered runner' : ''}`);
+      }
       if (!Number.isSafeInteger(currentShortCapacity) || currentShortCapacity < 0) throw new Refused('BAD_SHORT_SLOTS', 'gate.shortSlots must be a whole number, 0 or more; run pullboard settings gate.shortSlots <n>');
       const row = db.prepare('SELECT capacity FROM resource WHERE name = ?').get(name);
       if (row && row.capacity !== currentCapacity) {
@@ -831,7 +863,7 @@ export async function takeResource(options) {
       db.prepare('INSERT INTO resource(name, capacity) VALUES (?, ?) ON CONFLICT(name) DO NOTHING').run(name, currentCapacity);
       if (name === 'gate' && scope === 'machine' && browser) {
         const browserCapacity = options.browserCapacityProvider?.() ?? 1;
-        if (!Number.isSafeInteger(browserCapacity) || browserCapacity < 1 || browserCapacity > currentCapacity) {
+        if (!Number.isSafeInteger(browserCapacity) || browserCapacity < (runnerProvider && validatedRunners(runnerProvider()).length ? 0 : 1) || browserCapacity > currentCapacity) {
           throw new Refused('BAD_BROWSER_SLOTS', `browser capacity must be a positive integer no greater than gate capacity (${currentCapacity}); run pullboard settings browserSlots <n>`);
         }
         const browserResource = db.prepare("SELECT capacity FROM resource WHERE name = 'browser'").get();
@@ -866,6 +898,7 @@ export async function takeResource(options) {
         // after taking the same SQLite write lock used by updateRunnerSettings so an
         // older pre-lock snapshot cannot overwrite a newer configured capacity.
         const runners = runnerProvider ? validatedRunners(runnerProvider()) : [];
+        const runnersFirst = runnersFirstProvider?.() === true;
         const waiter = db.prepare('SELECT ticket FROM waiter WHERE token = ?').get(token);
         if (!waiter) {
           if (resume && initialTicket) {
@@ -885,7 +918,7 @@ export async function takeResource(options) {
         // A machine short of memory holds the whole line in place; recovery admits it in order.
         if (memory?.held) return { acquired: false, state: { ...spot, position: reportPosition, memory } };
         const executor = name === 'gate'
-          ? gateAdmission(db, waiter.ticket, limit, options.shortCapacityProvider?.() ?? 0, runners, order, now)
+          ? gateAdmission(db, waiter.ticket, limit, options.shortCapacityProvider?.() ?? 0, runners, runnersFirst, order, now)
           : (waiterPosition(db, name, waiter.ticket, { eligibleOnly: true, order, now }) === 1 && spot.holders.length < limit ? { host: '' } : null);
         if (executor) {
           const queueTicket = consumeOpportunity(db, name, waiter.ticket, order, now);
@@ -1049,10 +1082,10 @@ export function holdsLease({ name, scope = 'repo', root = process.cwd(), token }
 }
 
 /** Raise live capacity atomically; a decrease waits for an empty queue without evicting holders. */
-export function setResourceCapacity({ name, capacity, scope = 'machine', root = process.cwd(), persist = () => {} }) {
+export function setResourceCapacity({ name, capacity, scope = 'machine', root = process.cwd(), allowZero = false, persist = () => {} }) {
   if (typeof name !== 'string' || !name.trim() || name.trim() !== name) throw new Refused('BAD_RESOURCE_NAME', 'resource name must be nonempty trimmed text');
   if (name.startsWith('runner:')) throw new Refused('RESERVED_RUNNER_RESOURCE', 'runner resource rows are managed by the machine gate; use runner settings');
-  if (!Number.isSafeInteger(capacity) || capacity < 1) throw new Refused('BAD_RESOURCE_CAPACITY', 'resource capacity must be a positive integer');
+  if (!Number.isSafeInteger(capacity) || capacity < (allowZero && scope === 'machine' && ['gate', 'browser'].includes(name) ? 0 : 1)) throw new Refused('BAD_RESOURCE_CAPACITY', 'resource capacity must be a positive integer');
   const db = open(databaseFile(scope, root), scope === 'machine');
   try {
     return update(db, () => {
