@@ -52,3 +52,13 @@ export function clearUploadPauseNotices(state) {
   const cache = createRelayPageCache(state);
   try { cache.clearNotices(); } finally { cache.close(); }
 }
+
+/** Keep a permanent refusal only as a bounded, credential-free diagnostic. */
+export function safePauseMessage(error) {
+  const message = String(error.relayMessage ?? error.message ?? 'the relay refused the baseline upload')
+    .replace(/https?:\/\/[^\s]+/gu, '[relay]')
+    .replace(/\b(?:Bearer\s+)?(?:ps|pa|pm|pg)_[A-Za-z0-9_-]{20,}\b/gu, '[credential]')
+    .replace(/[\r\n\t\x00-\x1f\x7f]+/gu, ' ')
+    .replace(/\s+/gu, ' ').trim();
+  return message.slice(0, 240) || 'the relay refused the baseline upload';
+}

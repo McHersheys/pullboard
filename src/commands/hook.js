@@ -26,6 +26,7 @@ import {
   FIX_NOTE,
   preCommitProblems,
   prePushProblems,
+  gitBoardDataPush,
   pushesTrunk,
 } from '../hooks.js';
 import {
@@ -88,6 +89,10 @@ export async function hookCommand(io, { first, second }) {
     problems = commitMsgProblems(message, { rules: ctx.config.commits, spec, doctrine: ctx.doctrine, claimedItems });
   } else if (first === 'pre-push') {
     const refsText = await readStdin(io.stdin);
+    if (gitBoardDataPush(info.root, refsText)) {
+      io.say('pre-push: validated append-only board data; no code refs are updated');
+      return 0;
+    }
     problems = prePushProblems(info.root, refsText);
     if (!problems.length) {
       const landing = pushesTrunk(refsText, trunkRef(info.root));

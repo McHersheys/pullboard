@@ -1,4 +1,5 @@
 import { itemById } from './board-item-read.js';
+import { itemActivity } from './activity-feed.js';
 export { itemById };
 import { outsideSource } from './outside-source.js';
 import {
@@ -219,7 +220,7 @@ export function events(board, { itemId } = {}) {
 export function itemThread(board, id) {
   itemById(board, id);
   const withdrawals = new Map([...verdictWithdrawals(board, id).values()].map(row => [row.acceptEventId, row]));
-  return events(board, { itemId: id }).map((event) => event.event_kind === 'fact'
+  return itemActivity(board, id).map((event) => event.event_kind === 'fact'
     ? { type: 'fact', ...factFromEvent(event) }
     : { type: 'move', eventId: event.event_id, kind: event.event_kind, by: event.event_by,
       ...(withdrawals.has(event.event_id) ? { withdrawn: true, withdrawal: withdrawals.get(event.event_id) } : {}),
@@ -303,6 +304,7 @@ export function factFromEvent(event) {
   const detail = JSON.parse(event.event_detail);
   return { id: detail.id, eventId: event.event_id, kind: detail.kind, text: detail.text,
     by: event.event_by, at: event.event_at, ref: detail.ref ?? null, supersedes: detail.supersedes ?? null, ...decisionFields(detail),
+    ...(detail.claimId === undefined ? {} : { claimId: detail.claimId }), ...(detail.answers === undefined ? {} : { answers: detail.answers }),
     ...(detail.neverAgain ? { cause: detail.cause, neverAgain: true } : {}) };
 }
 

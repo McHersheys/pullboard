@@ -6,6 +6,8 @@ import { LANDING_LEASE_ENGINE } from '../landing-lease-engine.js';
 import { OUTSIDE_INTAKE_ENGINE } from '../outside-intake-engine.js';
 import { outsideSource } from '../outside-source.js';
 import { BOARD_SENTINEL_ENGINE } from '../sentinel-engine.js';
+import { BAR_CHECK_ENGINE } from '../bar-check-engine.js';
+import { barCheckEnabled } from '../bar-check.js';
 import {
   SUBMISSION_PROOF_ENGINE,
   submissionProof,
@@ -13,12 +15,13 @@ import {
 
 /** Preserve this operation's historical first-matching engine conditions [H16]. */
 function existingEngine(args, board, at) {
-  if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('conflict:')) return RIGOR_AUTO_ENGINE;
-  if (board && barReadySetting(board).enabled) return BAR_READY_ENGINE;
-  if (args[0]?.landingFence !== undefined) return LANDING_LEASE_ENGINE;
-  if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('sentinel:')) return BOARD_SENTINEL_ENGINE;
-  if (args[1]?.submissionProof !== undefined) return SUBMISSION_PROOF_ENGINE;
-  return 1;
+  const barCheck = board && barCheckEnabled(board) ? BAR_CHECK_ENGINE : 1;
+  if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('conflict:')) return Math.max(barCheck, RIGOR_AUTO_ENGINE);
+  if (board && barReadySetting(board).enabled) return Math.max(barCheck, BAR_READY_ENGINE);
+  if (args[0]?.landingFence !== undefined) return Math.max(barCheck, LANDING_LEASE_ENGINE);
+  if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('sentinel:')) return Math.max(barCheck, BOARD_SENTINEL_ENGINE);
+  if (args[1]?.submissionProof !== undefined) return Math.max(barCheck, SUBMISSION_PROOF_ENGINE);
+  return barCheck;
 }
 /** Keep outside-source isolation as the original maximum over the older engine rule. */
 function minimumEngine(args, board, at) {
