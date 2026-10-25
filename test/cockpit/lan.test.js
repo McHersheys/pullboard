@@ -9,6 +9,7 @@ import {
   chromeExecutable, closeSnapshotChrome, fetchLive, machine, openSnapshotChrome, project, startView,
 } from './fixture.js';
 import { assertLanRefusal, lanBoundaryReply, startLanView } from './lan-fixture.js';
+import { viewLanAddress } from '../../src/view/lan-address.js';
 
 test('a phone reaches the board on the local network [H19]', { timeout: 180_000 }, async t => { // budget: one real private board, two owned view listeners and a mobile Chrome session.
   const box = machine();
@@ -67,4 +68,19 @@ test('a phone reaches the board on the local network [H19]', { timeout: 180_000 
   });
   assertLanRefusal(localForeign, local, title);
   t.diagnostic('Real LAN-interface HTTP and 375px Chrome; both clients run on this machine, not a second physical phone.');
+});
+
+test('LAN mode selects one private interface and refuses when none is assigned [H19]', () => {
+  const row = (address, internal = false, family = 'IPv4') => ({ address, internal, family });
+  const interfaces = {
+    lo0: [row('127.0.0.1', true)],
+    en0: [row('2001:db8::1', false, 'IPv6'), row('192.168.7.9')],
+    utun0: [row('10.2.3.4')],
+  };
+  const before = structuredClone(interfaces);
+  assert.equal(viewLanAddress(interfaces), '192.168.7.9', 'an assigned physical private interface wins over the tunnel');
+  assert.deepEqual(interfaces, before, 'address selection does not rewrite OS interface data');
+  assert.throws(() => viewLanAddress({ lo0: [row('127.0.0.1', true)], en0: [row('203.0.113.5')] }),
+    error => error.code === 'LAN_UNAVAILABLE' && error.message.includes('local IPv4'),
+    'no wildcard or public listener is used when a private IPv4 interface is unavailable');
 });
