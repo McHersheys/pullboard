@@ -28,10 +28,11 @@ export function capturePrProof(board) {
     const captured = { ...board, db: {
       /** Supply fresh row lists to the existing receipt and withdrawal semantics. */
       prepare(sql) {
-        if (/FROM board_meta WHERE meta_key\s*=\s*\?/u.test(sql)) return { get: key => metadata.get(key) };
-        if (/FROM verdict WHERE item_id\s*=\s*\?/u.test(sql)) return { all: id => [...(verdicts.get(id) ?? [])] };
-        if (/FROM event(?:_history)? WHERE item_id\s*=\s*\?/u.test(sql)) {
-          const kinds = /event_kind\s*=\s*'reopen'/u.test(sql) ? ['reopen'] : ['accept', 'reject'];
+        const query = sql.replace(/\s+/gu, ' ').trim();
+        if (/^SELECT meta_value FROM board_meta WHERE meta_key\s*=\s*\?$/u.test(query)) return { get: key => metadata.get(key) };
+        if (/^SELECT \* FROM verdict WHERE item_id\s*=\s*\? ORDER BY verdict_id$/u.test(query)) return { all: id => [...(verdicts.get(id) ?? [])] };
+        if (/^SELECT (?:\*|event_kind, event_detail) FROM event(?:_history)? WHERE item_id\s*=\s*\? AND event_kind (?:IN \('accept', 'reject'\)|= 'reopen') ORDER BY event_id$/u.test(query)) {
+          const kinds = /event_kind = 'reopen'/u.test(query) ? ['reopen'] : ['accept', 'reject'];
           return { all: id => (events.get(id) ?? []).filter(row => kinds.includes(row.event_kind)) };
         }
         throw new Refused('PUBLISH_STATE', 'the native receipt reader changed; update Pullboard before publishing');
