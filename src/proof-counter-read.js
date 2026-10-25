@@ -2,6 +2,7 @@
 import { barStats } from './bar-corrections.js';
 import { caughtFrom } from './caught.js';
 import { decodedProofEvent } from './proof-event-detail.js';
+import { proofCounter } from './proof-counters.js';
 import { currentProofCounters } from './proof-counters.js';
 import { proofCounterRows } from './proof-counters.js';
 import { projectFlowStats } from './stats-flow.js';
@@ -60,9 +61,13 @@ export function counterProofStats(board, boundary, now) {
   const creators = items.filter(item => item.creator !== undefined).map(item => ({ event_kind: 'add', item_id: item.id, event_by: item.creator }));
   const corrections = proofCounterRows(board, 'bar').map(row => decodedProofEvent({ ...row, event_kind: 'edit' }, row.detail));
   const verdicts = board.db.prepare('SELECT * FROM verdict ORDER BY verdict_id').all();
-  const flow = { items: items.filter(item => item.id !== null && item.id !== undefined).map(item => item.flow),
+  const report = proofCounter(board, 'report-summary');
+  const reportCurrent = report?.version === FLOW_REPORT_VERSION && !report.invalid && report.last === summary.last;
+  const flow = { reportPolicy: reportCurrent ? proofCounter(board, 'report-policy') : null,
+    ...(reportCurrent ? { reportItems: proofCounterRows(board, 'report-item') } : {}), items: items.filter(item => item.id !== null && item.id !== undefined).map(item => item.flow),
     actors: actors.filter(actor => actor.id !== 'clock').map(actor => actor.flow), dailyEvents: proofCounterRows(board, 'daily') };
   return { ...counts, agentCount: attributed.agents.length, familyCount: attributed.families.length, ...attributed,
     bars: barStats([...creators, ...corrections], verdicts, boundary), caught: counterCaught(board, boundary),
     flow: projectFlowStats(flow, boundary, now, counts) };
 }
+import { FLOW_REPORT_VERSION } from './stats-flow-report.js';
