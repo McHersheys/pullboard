@@ -86,6 +86,19 @@ test('a merge-only resubmission keeps its accept and records the resolution diff
   const options = { agentId: pending.item.item_owner, commit: head, tree: submitted.tree,
     policyCommit: submitted.policyCommit, submissionProof: submitted.submissionProof, gateGreen: submitted.gateGreen,
     mergeOnly: detail };
+  const origin = store.openBoard(':memory:', undefined, { gitRoot: box.web });
+  const objectless = store.openBoard(':memory:');
+  try {
+    importBoard(origin, pending.snapshot);
+    importBoard(objectless, pending.snapshot);
+    const canonical = prepareEngineMove(origin, 'submit', [id, options]);
+    const at = '2026-01-01T00:00:00.000Z';
+    const withObjects = applyEngineMove(origin, canonical, { sequence: 1, at });
+    const withoutObjects = applyEngineMove(objectless, canonical, { sequence: 1, at });
+    assert.equal(store.getItem(origin, id).item_status, 'verified');
+    assert.deepEqual(withoutObjects, withObjects, 'one canonical move must emit identical events and event IDs without Git objects');
+    assert.deepEqual(exportBoard(objectless), exportBoard(origin), 'replicas must retain exactly identical native state');
+  } finally { store.closeBoard(origin); store.closeBoard(objectless); }
   for (const key of ['commit', 'tree', 'policyCommit']) {
     const replica = store.openBoard(':memory:', undefined, { gitRoot: box.web });
     try {
