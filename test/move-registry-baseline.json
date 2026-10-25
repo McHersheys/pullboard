@@ -65,8 +65,8 @@
     "recordPublishFinding",
     "actOnActivity",
     "recordActivityDelivery",
-    "decideSpecRevisions",
-    "setLaneLead"
+    "setLaneLead",
+    "decideSpecRevisions"
   ],
   "itemIdFirstArgument": [
     "signBar",
