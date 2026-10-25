@@ -13,9 +13,13 @@ const SHA = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u;
 
 /** Derive the origin’s carry before sealing; caller-supplied carry facts are discarded. */
 export function prepareMergeOnlySubmit(board, id, options) {
+  if (options?.gateGreen !== true) return null;
+  // An absent item remains a replay-time refusal, not a new pre-transport policy.
+  const held = board.db.prepare('SELECT * FROM item WHERE item_id = ?').get(id);
+  const basis = held ? mergeOnlyBasis(board, held) : null;
+  if (!basis) return null;
   const item = getItem(board, id);
-  const basis = options?.gateGreen === true ? mergeOnlyBasis(board, item) : null;
-  return basis && !retainedVerifierIdentityProblem(board, item, basis.by)
+  return !retainedVerifierIdentityProblem(board, item, basis.by)
     && mergeOnlySourceValid(board.gitRoot, board, item)
     ? deriveMergeOnly(board.gitRoot, basis, options) : null;
 }
