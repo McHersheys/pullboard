@@ -20,6 +20,11 @@ function approvers(root) {
   return Array.isArray(list) ? list : [];
 }
 
+/** Fingerprint the current accepted approvers and native member revision across asynchronous proof lookups. */
+export function memberAuthorityStamp(root, document) {
+  return JSON.stringify([approvers(root).map(login => login.toLowerCase()).sort(), document]);
+}
+
 /** Prepare the exact next revision with the local key, then independently prove its committed approver ownership. */
 export async function prepareBoardMembers(root, state, logins, { githubKeys, revision, signingKey } = {}) {
   const by = state.login;

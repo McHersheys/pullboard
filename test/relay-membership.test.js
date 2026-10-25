@@ -66,8 +66,7 @@ test('an approver signed member list survives sealed native replay and revokes b
     const signature = signSshVouch(statementBytes(statement), 'pullboard-device-key', bobKey);
     const deliveries = [];
     let cleared = false;
-    await handOverBoardKeys(state, key, { root: box.repo, document,
-      currentDocument: () => store.readBoardMembers(board),
+    await handOverBoardKeys(state, key, { root: box.repo,
       async githubKeys(login) {
         if (login === 'bob') return [bobPublic];
         if (login === 'alice') {

@@ -10,7 +10,11 @@ import {
   signSshVouch,
   verifySshVouch,
 } from './relay-ssh-proof.js';
-import { authorizeMember } from './relay-membership.js';
+import {
+  authorizeMember,
+  memberAuthorityStamp,
+} from './relay-membership.js';
+import { boardId } from './board-query.js';
 import { readBoardMembers } from './board-members.js';
 import { localRecords } from './relay.js';
 
@@ -55,12 +59,25 @@ export async function requestBoardKey(link, login, send, io) {
   throw new Refused('RELAY_KEY_WAIT_EXPIRED', 'no member device handed over the board key within ten minutes; run pullboard relay on again while a linked computer of this repository is online');
 }
 
+/** Read membership from this device's native board rather than a transport-supplied snapshot. */
+function currentMembers(root, state) {
+  if (typeof root !== 'string' || !root) {
+    throw new Refused('RELAY_NOT_MEMBER', 'open the linked repository before handing over its board key');
+  }
+  return localRecords(root, board => {
+    if (boardId(board) !== state.board) {
+      throw new Refused('RELAY_NOT_MEMBER', 'the local board does not match this key request; reopen the linked repository');
+    }
+    return readBoardMembers(board);
+  });
+}
+
 /**
  * On a member device, answer every waiting key request for this board: wrap the key to a device key that one of the
  * person's GitHub SSH keys signed, and refuse the rest by name. GitHub being unreachable leaves a request waiting.
  * `send` is the relay transport and `githubKeys` reads a login's public SSH keys from GitHub.
  */
-export async function handOverBoardKeys(state, key, { send, githubKeys, root, document = null, identity = null }, io) {
+export async function handOverBoardKeys(state, key, { send, githubKeys, root, identity = null }, io) {
   const path = '/api/v1/boards/' + state.board + '/key-requests';
   const { requests } = await send(state, path, {}, io);
   for (const entry of Array.isArray(requests) ? requests : []) {
@@ -73,8 +90,14 @@ export async function handOverBoardKeys(state, key, { send, githubKeys, root, do
       if (!await verifySshVouch(statementBytes(statement), entry.signature, entry.login, githubKeys, NAMESPACE)) {
         throw new Refused('RELAY_KEY_VOUCH', `no SSH key on ${entry.login}'s GitHub account signed this device key; add the key that signed it to GitHub with gh ssh-key add, then run pullboard relay on again`);
       }
+      const document = currentMembers(root, state);
+      const authority = memberAuthorityStamp(root, document);
       await authorizeMember(root, state, document, entry.login, { githubKeys, identity });
       const wrapped = await wrapDeviceBoardKey(key, statement.publicKey, { board: state.board, device: statement.device, engine: statement.engine });
+      // GitHub and WebCrypto yield: a local revocation or accepted-policy change must win before publication.
+      if (authority !== memberAuthorityStamp(root, currentMembers(root, state))) {
+        throw new Refused('RELAY_NOT_MEMBER', 'board membership changed during verification; retry with the current signed member list');
+      }
       body = { wrapped: Buffer.from(JSON.stringify(wrapped)).toString('base64url') };
     } catch (error) {
       if (!(error instanceof Refused)) throw error;
@@ -113,7 +136,6 @@ export async function handOverKeys(root, state, key, send, io) {
       try { identity = { body, signature: signSshVouch(JSON.stringify(['pullboard-person-identity', body]), 'pullboard-person-identity') }; }
       catch (error) { if (!(error instanceof Refused)) throw error; }
     }
-    const document = localRecords(root, readBoardMembers);
-    await handOverBoardKeys(state, key, { send, githubKeys, root, document, identity }, io);
+    await handOverBoardKeys(state, key, { send, githubKeys, root, identity }, io);
   } catch (error) { if (!(error instanceof Refused)) throw error; io.err(`pullboard: a new device's key request waits: ${error.message}`); }
 }
