@@ -38,6 +38,10 @@ import {
 import { loadDoctrine } from './doctrine.js';
 import { installHooks } from './hooks.js';
 import {
+  configureAgentHooks,
+  LEGACY_RESUME_HOOK,
+} from './agent-hooks.js';
+import {
   detectGate,
   settingCommand,
 } from './gate-config.js';
@@ -414,8 +418,7 @@ function writeAgentDocs(root, onWrite) {
  * The session hook's command: pullboard from this checkout's install, else the main checkout's,
  * else the PATH, and silence when there is none, so a session never fails to start over it.
  */
-export const RESUME_HOOK =
-  'm=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/..; for p in node_modules/.bin/pullboard "$m/node_modules/.bin/pullboard"; do [ -x "$p" ] && exec "$p" resume; done; command -v pullboard >/dev/null && exec pullboard resume; true';
+export const RESUME_HOOK = LEGACY_RESUME_HOOK;
 
 /**
  * The MCP server command: pullboard from this checkout's install, else the main checkout's, else the PATH (#961).
@@ -690,37 +693,6 @@ function writeMcpConfig(root, onWrite) {
 }
 
 /**
- * Have Claude Code run `pullboard resume` whenever a session starts, resumes or is compacted (I6), so
- * an agent picks its work up from the board rather than from a summary of it. The hook is merged
- * into .claude/settings.json; every other setting stays as it was.
- *
- * @param {string} root
- * @param {(path: string) => void} onWrite
- * @returns {string} What happened.
- */
-function writeSessionHook(root, onWrite) {
-  const file = join(root, '.claude', 'settings.json');
-  let settings = {};
-  if (existsSync(file)) {
-    try {
-      settings = JSON.parse(readFileSync(file, 'utf8'));
-    } catch {
-      settings = null;
-    }
-    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
-      return 'kept .claude/settings.json, which is not a JSON object; add a SessionStart hook that runs pullboard resume';
-    }
-  }
-  const starts = settings.hooks?.SessionStart ?? [];
-  if (JSON.stringify(starts).includes('pullboard resume')) return 'kept the Claude Code session hook';
-  settings.hooks = { ...settings.hooks, SessionStart: [...starts, { hooks: [{ type: 'command', command: RESUME_HOOK, timeout: 30 }] }] };
-  mkdirSync(join(root, '.claude'), { recursive: true });
-  writeFileSync(file, `${JSON.stringify(settings, null, 2)}\n`);
-  onWrite('.claude/settings.json');
-  return 'added a Claude Code session hook: pullboard resume at every start and compaction';
-}
-
-/**
  * Merge Claude project rules and the exact machine-home sandbox write scope, preserving other settings.
  *
  * @param {string} root
@@ -831,7 +803,7 @@ function writeCodexLoopRules(root, gate, onWrite) {
  * @param {{ info: { root: string, isMain: boolean }, openBoardHere: () => any, register: Function, closeBoard: Function, model?: string, permissions?: boolean, onWritten?: (path: string) => void }} context
  * @returns {string[]} What happened, one line each.
  */
-export function initRepo({ info, openBoardHere, register, closeBoard, model, permissions = true, onWritten }) {
+export function initRepo({ info, openBoardHere, register, closeBoard, model, permissions = true, agentHooks = true, onWritten }) {
   if (!info.isMain) {
     throw new Refused('NOT_MAIN', 'run init in the main checkout; worktrees join a lane instead');
   }
@@ -856,7 +828,7 @@ export function initRepo({ info, openBoardHere, register, closeBoard, model, per
     ...writeAgentDocs(root, onWrite),
     ...installHooks(root, onWrite),
     ...installSkills(root, onWrite),
-    writeSessionHook(root, onWrite),
+    ...(agentHooks ? configureAgentHooks(root, { legacyResume: RESUME_HOOK, onWrite }) : ['skipped agent nudges (--no-hooks)']),
     ...writeMcpConfig(root, onWrite),
   ];
   if (gate && (!configured || configured === gate)) {

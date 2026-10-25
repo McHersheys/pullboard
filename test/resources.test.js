@@ -1518,7 +1518,7 @@ test('the pool holds work while the machine is out of memory and names the bigge
   assert.equal(critical.waiting, 1, 'the held run keeps its place at the head of the line');
   assert.equal(critical.memory?.held, true, `the run is held for memory: ${JSON.stringify(critical)}`);
   assert.equal(critical.memory.line,
-    `memory: holding the gate queue because pressure is critical: pressure critical, 8.0 GB free of 36.0 GB (floor 512 MB); ${biggest}`,
+    `memory: holding local gate runs because pressure is critical: pressure critical, 8.0 GB free of 36.0 GB (floor 512 MB); ${biggest}`,
     'one line says why and names the three biggest processes with pid, size and working directory');
   assert.doesNotMatch(critical.memory.line, /\n/u, 'the hold is one line');
   const gate = privateList(box).find(({ name }) => name === 'gate');
@@ -1531,7 +1531,7 @@ test('the pool holds work while the machine is out of memory and names the bigge
   const low = await event(run);
   assert.equal(low.memory?.held, true, `free memory under the settings floor still holds: ${JSON.stringify(low)}`);
   assert.equal(low.memory.line,
-    `memory: holding the gate queue because free memory is under the floor: pressure normal, 400 MB free of 36.0 GB (floor 512 MB); ${biggest}`,
+    `memory: holding local gate runs because free memory is under the floor: pressure normal, 400 MB free of 36.0 GB (floor 512 MB); ${biggest}`,
     'the floor comes from gate.memoryFloorMB in pullboard settings');
 
   writeMemoryReading(reading, { availableMB: 8192 });

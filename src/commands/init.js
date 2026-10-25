@@ -73,6 +73,7 @@ export async function run(io, { values }) {
     onWritten: setupPlan.written,
     model,
     permissions: !values['no-permissions'],
+    agentHooks: !values['no-hooks'],
     openBoardHere: () => store.openBoard(join(info.commonDir, 'pullboard', 'board.sqlite'), io.clock, { isMain: codeIsFromMain() }),
     /** Keep a linked coordinator's canonical identity without writing a clone-local path. */
     register: (board, options) => {

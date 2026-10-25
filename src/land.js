@@ -5,6 +5,8 @@ import {
 } from './land-collisions.js';
 /** Coordinator landing batches retain exact Git and gate receipts across interruptions [B3,R3]. */
 import { assignEngineNumbers } from './engine-numbers.js';
+import { resolveMechanicalMerge } from './train-mechanical-merge.js';
+import { writeFormatTable } from './format-registry.js';
 import {
   createHash,
   randomUUID,
@@ -241,7 +243,9 @@ function candidates(board, root, base, maximum, { firstReady = false } = {}) {
 /** Append a durable snapshot before or after each external side effect. */
 async function save(state, patch) {
   const conflicts = [...new Map([...(state.batch.conflicts ?? []), ...(patch.conflicts ?? [])].map((entry) => [entry.id, entry])).values()];
-  state.batch = await state.write('recordLandingBatch', [{ agentId: 'coordinator', batch: { ...state.batch, ...patch, conflicts }, revision: state.batch.revision ?? 0 }]);
+  const resolutions = [...new Map([...(state.batch.resolutions ?? []), ...(patch.resolutions ?? [])]
+    .map(entry => [JSON.stringify(entry), entry])).values()];
+  state.batch = await state.write('recordLandingBatch', [{ agentId: 'coordinator', batch: { ...state.batch, ...patch, conflicts, resolutions }, revision: state.batch.revision ?? 0 }]);
   return state.batch;
 }
 
@@ -253,6 +257,7 @@ async function mergeGroup(state, items) {
   git(batch.root, ['checkout', '--detach', batch.base]);
   const merged = [];
   const conflicts = [];
+  const resolutions = [];
   for (const entry of items) {
     await state.checkLease();
     const item = store.getItem(state.board, entry.id ?? entry.item_id);
@@ -263,17 +268,28 @@ async function mergeGroup(state, items) {
     if (stale) throw staleVerdictRefusal(item, stale);
     // The body is the item trailer alone: the subject carries the title, and no lane branch is named [B3,R3].
     // merge.log is switched off on this call, so a local Git config cannot append a shortlog to the body.
+    const trunk = headCommit(batch.root);
     const result = tryGit(batch.root, ['-c', 'merge.log=false', 'merge', '--no-ff', '--no-log', checked, '-m', landingSubject(item), '-m', `Pullboard-Item: #${item.item_id}`]);
     if (result.status !== 0) {
       const files = tryGit(batch.root, ['diff', '--name-only', '--diff-filter=U']).stdout.split('\n').filter(Boolean);
       if (!files.length) throw new Refused('LAND_MERGE', `merge of #${item.item_id} failed outside a conflict: ${result.stderr || result.stdout}; inspect ${batch.root} and its hooks before adopting`);
-      git(batch.root, ['merge', '--abort']);
-      conflicts.push({ id: item.item_id, files });
-      state.say(`conflict #${item.item_id}: ${files.join(', ')}`);
-      continue;
+      const resolved = resolveMechanicalMerge(batch.root, files);
+      if (resolved) {
+        git(batch.root, ['add', '--', ...files]);
+        git(batch.root, ['commit', '--no-edit']);
+        resolutions.push({ id: item.item_id, files, entries: resolved });
+        state.say(`mechanical merge #${item.item_id}: ${files.join(', ')}`);
+      } else {
+        git(batch.root, ['merge', '--abort']);
+        conflicts.push({ id: item.item_id, files, trunk, commit: item.item_commit, reviewedCommit: checked });
+        state.say(`conflict #${item.item_id}: ${files.join(', ')}`);
+        continue;
+      }
     }
     // An engine the item added without a number gets the next one now, in landing order, inside its own merge (#1101).
     const engines = assignEngineNumbers(batch.root);
+    if (existsSync(join(batch.root, 'src', 'formats')) && existsSync(join(batch.root, 'docs', 'formats.md'))
+      && writeFormatTable(batch.root) && !engines.files.includes('docs/formats.md')) engines.files.push('docs/formats.md');
     if (engines.files.length) {
       git(batch.root, ['add', '--', ...engines.files]);
       git(batch.root, ['commit', '--amend', '--no-edit']);
@@ -308,7 +324,7 @@ async function mergeGroup(state, items) {
     throw error;
   }
   for (const change of doctrineCounts) state.say(`doctrine ${change.id}: ${change.before} -> ${change.count}`);
-  return { items: merged, conflicts, tip: headCommit(batch.root), doctrineCounts };
+  return { items: merged, conflicts, resolutions, tip: headCommit(batch.root), doctrineCounts };
 }
 
 /** Read positive TAP completion counts while rejecting the canonical runner's incomplete accounts. */
@@ -588,7 +604,7 @@ async function promoteCandidate(state, candidate) {
   if (!isClean(state.batch.root) || untracked(state.batch.root).length) throw new Refused('LAND_DIRTY', 'the landing worktree changed; inspect it before adopting');
   git(state.batch.root, ['checkout', '--detach', candidate.batch.tip]);
   await save(state, { tip: candidate.batch.tip, items: candidate.batch.items,
-    conflicts: candidate.batch.conflicts ?? [], doctrineCounts: candidate.batch.doctrineCounts ?? [] });
+    conflicts: candidate.batch.conflicts ?? [], resolutions: candidate.batch.resolutions ?? [], doctrineCounts: candidate.batch.doctrineCounts ?? [] });
 }
 
 /** Exclude a returned candidate and explicit or Git-stacked dependents from later speculation. */
@@ -897,6 +913,17 @@ async function returnCulprits(state) {
   }
 }
 
+/** Reopen only exact saved conflicting submissions after candidate composition has completed. */
+async function returnMergeConflicts(state) {
+  for (const conflict of state.batch.conflicts ?? []) {
+    const item = store.getItem(state.board, conflict.id);
+    if (item.item_status !== 'verified' || item.item_merged_commit || item.item_commit !== conflict.commit
+      || store.checkedLandingCommit(state.board, item) !== conflict.reviewedCommit) continue;
+    await state.write('reopen', [item.item_id, { agentId: 'coordinator',
+      note: `landing conflict: ${conflict.files.join(', ')}; merge current main and resubmit`, conflict: { files: conflict.files, trunk: conflict.trunk } }]);
+  }
+}
+
 /** File a flake once against its named test and leave the batch stopped. */
 async function fileFlakes(state, gate, files) {
   if (state.config.flakes?.rerun === true) {
@@ -1030,8 +1057,20 @@ async function publish(state) {
   await state.checkLease();
   const main = mainCheckout(state.root);
   if (main?.commit === state.batch.base && isClean(state.root) && !untracked(state.root).length) git(state.root, ['merge', '--ff-only', state.batch.tip]);
+  await refreshLandedCodeMap(state);
   state.say(`landed ${state.batch.items.map((entry) => `#${entry.id}`).join(', ')} at ${state.batch.tip}`);
   return state.batch;
+}
+
+/** Refresh the derived source map after the landing receipt and main fast-forward have completed. */
+async function refreshLandedCodeMap(state) {
+  try {
+    const { refreshLandedCodeMap: refresh } = await import('./code-map.js');
+    const map = refresh(state.root);
+    if (map) state.say('code map refreshed for main ' + map.mainCommit.slice(0, 12));
+  } catch (error) {
+    state.say('code map refresh deferred: ' + error.message);
+  }
 }
 
 /** Whether this project lands in two tiers: on the local trunk at once, and on the remote only through publish (#801). */
@@ -1133,6 +1172,7 @@ async function finishTrunk(state) {
   await state.checkLease();
   const main = mainCheckout(state.root);
   if (main?.commit === state.batch.base && isClean(state.root) && !untracked(state.root).length) git(state.root, ['merge', '--ff-only', state.batch.tip]);
+  await refreshLandedCodeMap(state);
   state.say(`landed ${state.batch.items.map((entry) => `#${entry.id}`).join(', ')} at ${state.batch.tip} on the local trunk; pullboard publish pushes it once the whole suite passes`);
 }
 
@@ -1322,6 +1362,7 @@ export async function runLandingBatch({ root, board, config, write, say, owner, 
       if (!existsSync(state.batch.root)) throw new Refused('LAND_WORKTREE', `the recorded landing worktree is missing at ${state.batch.root}; restore it before adopting`);
       if (state.config.landing?.parallel === true) {
         await parallelLanding(state, initialItems);
+        await returnMergeConflicts(state);
         return { batch: state.batch, landed: state.batch.state === 'landed' ? state.batch.items.map(entry => entry.id) : [],
           conflicts: state.batch.conflicts ?? [], blocked: state.batch.blocked ?? [], culprits: state.culprits, flakes: state.batch.flakes ?? [] };
       }
@@ -1372,6 +1413,7 @@ export async function runLandingBatch({ root, board, config, write, say, owner, 
     if (!(error instanceof Refused) || error.code !== 'LAND_GATE_TIMEOUT') throw error;
     say(error.message);
   }
+  await returnMergeConflicts(state);
   return { batch: state.batch, landed: state.batch.state === 'landed' ? state.batch.items.map((entry) => entry.id) : [],
     conflicts: state.batch.conflicts ?? [], blocked: state.batch.blocked ?? [], culprits: state.culprits, flakes: state.batch.flakes ?? [] };
 }
