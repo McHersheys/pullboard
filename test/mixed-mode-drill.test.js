@@ -107,6 +107,7 @@ test('a local developer, a runner developer and a pull-request developer share o
   assert.equal(box.commitFile(box, box.outside, 'web/pull-request.js', 'PASS\n', 'feat(web): outside contribution [G1]').status, 0);
   const outsideHead = box.git(box.outside, 'rev-parse', 'HEAD');
   box.git(box.outside, 'push', '-q', 'origin', 'HEAD:refs/heads/outside/contribution');
+  box.git(box.outside, 'push', '-q', 'origin', 'HEAD:refs/pull/70/head');
   provider.pulls.push({ number: 70, html_url: 'https://github.com/fixture/repository/pull/70', title: 'outside contribution',
     body: '', state: 'open', merged: false, user: { login: 'outside-author' },
     head: { ref: 'outside/contribution', sha: outsideHead }, base: { ref: 'main', sha: box.published } });
