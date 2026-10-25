@@ -14,7 +14,7 @@ import {
   join,
   relative,
 } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 /** Exact executor identity for gate receipts and landing policy [E27,E28]. */
 
@@ -52,10 +52,10 @@ export function carriesLandingEnvironment(batch) {
 
 /** The exact trusted preload reports from inside each Node process, independently of its launcher. */
 export function runtimeCaptureSource(directory) {
-  return `import { lstatSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join, relative, resolve } from 'node:path';
-import { channel } from 'node:diagnostics_channel';
-import { randomUUID } from 'node:crypto';
+  return `const { lstatSync, readFileSync, readdirSync, realpathSync, writeFileSync } = require('node:fs');
+const { basename, dirname, join, relative, resolve } = require('node:path');
+const { channel } = require('node:diagnostics_channel');
+const { randomUUID } = require('node:crypto');
 const directory=${JSON.stringify(directory)};
 const file=directory+'/runtime-'+process.pid+'-'+randomUUID()+'.json';
 // Observe child identities without replacing spawn or changing any caller arguments/environment.
@@ -96,7 +96,7 @@ process.once('exit',()=>{
 // Node's --test parent only starts workers; retain capture until the actual test process boots.
 // User code sees its original NODE_OPTIONS, not this recorder's injected option.
 if (!process.execArgv.includes('--test')) {
-  const token=${JSON.stringify('--import=' + pathToFileURL(join(directory, 'test-runtime-preload.mjs')).href)};
+  const token=${JSON.stringify('--require=' + JSON.stringify(join(directory, 'test-runtime-preload.cjs')))};
   const options=process.env.NODE_OPTIONS;
   if (options===token) {
     if (process.env.PULLBOARD_RUNTIME_EMPTY_OPTIONS==='1') process.env.NODE_OPTIONS='';
@@ -111,10 +111,16 @@ if (!process.execArgv.includes('--test')) {
 /** Reuse only the exact native recorder for an admitted worker after its parent restores caller options. */
 export function testRuntimeImport(directory = process.env.PULLBOARD_RUNTIME_CAPTURE_DIR) {
   if (!directory) return null;
-  const file = join(directory, 'test-runtime-preload.mjs');
+  const file = join(directory, 'test-runtime-preload.cjs');
   try {
     return readFileSync(file, 'utf8') === runtimeCaptureSource(directory) ? pathToFileURL(file).href : null;
   } catch { return null; /* An absent or foreign recorder never becomes an import. */ }
+}
+
+/** Use the validated recorder before Node's native test parent starts workers, without adding execArgv. */
+export function testRuntimeOption(directory = process.env.PULLBOARD_RUNTIME_CAPTURE_DIR) {
+  const imported = testRuntimeImport(directory);
+  return imported ? '--require=' + JSON.stringify(fileURLToPath(imported)) : null;
 }
 
 /** Bind a closed admitted worker's self-report to the file selected by its parent, never by test stdout. */
@@ -166,11 +172,11 @@ export function testRuntimeEnvironment(rows) {
 /** Capture actual Node children in a private run directory without changing test output or the machine pool. */
 export function captureTestRuntimes(env) {
   const directory = mkdtempSync(join(tmpdir(), 'pullboard-test-runtimes-'));
-  const preload = join(directory, 'test-runtime-preload.mjs');
+  const preload = join(directory, 'test-runtime-preload.cjs');
   writeFileSync(preload, runtimeCaptureSource(directory), { flag: 'wx', mode: 0o600 });
   let finished = false;
   return {
-    env: { ...env, NODE_OPTIONS: [env.NODE_OPTIONS, '--import=' + pathToFileURL(preload).href].filter(Boolean).join(' '),
+    env: { ...env, NODE_OPTIONS: [env.NODE_OPTIONS, '--require=' + JSON.stringify(preload)].filter(Boolean).join(' '),
       PULLBOARD_RUNTIME_CAPTURE_DIR: directory, PULLBOARD_RUNTIME_EMPTY_OPTIONS: env.NODE_OPTIONS === '' ? '1' : '0' },
     /** Read bounded child reports only after command close, then remove the private capture directory. */
     finish() {

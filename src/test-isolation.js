@@ -50,11 +50,12 @@ function runnerPreload(declared) {
 
 /** Recognize only the exact child-runtime recorder, without trusting a caller's preload declaration. */
 function runtimePreload(token) {
-  const url = /^--import=(file:\/\/\S+\/test-runtime-preload\.mjs)$/u.exec(token ?? '')?.[1];
-  if (!url) return false;
+  const declared = /^--require=(.+)$/u.exec(token ?? '')?.[1];
+  if (!declared) return false;
   try {
-    const file = fileURLToPath(url);
-    return readFileSync(file, 'utf8') === runtimeCaptureSource(dirname(file));
+    const file = declared.startsWith('"') ? JSON.parse(declared) : declared;
+    return typeof file === 'string' && file.endsWith('/test-runtime-preload.cjs')
+      && readFileSync(file, 'utf8') === runtimeCaptureSource(dirname(file));
   } catch { return false; /* A missing or different recorder remains foreign and retains conservative admission. */ }
 }
 
