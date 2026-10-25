@@ -383,7 +383,7 @@ test('automatic conflict returns bind native evidence and replay without caller 
     assert.equal(result.error?.code, 'COORDINATOR_ONLY', 'a flag, altered evidence or different actor grants no replay authority');
     assert.equal(store.getItem(board, conflicted).item_status, 'submitted');
   }
-  const left = replica('valid-left'), right = replica('valid-right');
+  const left = replica('missing-object-control');
   const missing = { ...move, args: [conflicted, { agentId: actor, computedConflict: rehash({ trunk: 'f'.repeat(40) }) }] };
   assert.throws(() => {
     const unexpected = applyEngineMove(left, missing, { sequence: 1, at: new Date().toISOString() });
@@ -394,14 +394,24 @@ test('automatic conflict returns bind native evidence and replay without caller 
     error => error.code === 'COORDINATOR_ONLY', 'an imported replica cannot fabricate native origin evidence');
   assert.throws(() => applyEngineMove(left, { ...move, engine: AGENT_GRANT_ENGINE - 1 }, { sequence: 1, at: new Date().toISOString() }),
     error => error.code === 'RELAY_MOVE', 'an older engine cannot interpret the new computed-return record');
+  // Ruling 28066: preparation is not a recorded move. Seal the origin outcome before advancing main.
+  const receipt = { sequence: 1, at: new Date().toISOString() };
+  const origin = applyEngineMove(source, move, receipt);
+  assert.equal(origin.error, undefined, 'the current-trunk origin move is recorded successfully');
+  const sealed = exportBoard(source);
+  const recorded = sealed.tables.board_meta.find(row => row.meta_key === 'relay_receipt_' + move.id);
+  assert.equal(JSON.parse(recorded.meta_value).move, JSON.stringify(move), 'the snapshot retains the exact recorded move');
   // Main now contains the submitted head, while the recorded earlier trunk remains conflicting.
   box.git(box.repo, 'merge', '-q', '--no-edit', '-s', 'ours', evidence.head);
-  const receipt = { sequence: 1, at: new Date().toISOString() };
-  const results = [left, right].map(board => applyEngineMove(board, move, receipt));
+  const recordedCopies = ['sealed-left', 'sealed-right'].map(name => {
+    const board = store.openBoard(join(box.dir, `${name}.sqlite`));
+    copies.push(board); importBoard(board, sealed); return board;
+  });
+  const results = recordedCopies.map(board => applyEngineMove(board, move, receipt));
   assert.deepEqual(results[0], results[1]);
   assert.equal(results[0].error, undefined);
-  assert.deepEqual(store.events(left), store.events(right));
-  assert.equal(store.getItem(left, conflicted).item_status, 'open');
+  assert.deepEqual(store.events(recordedCopies[0]), store.events(recordedCopies[1]));
+  assert.equal(store.getItem(recordedCopies[0], conflicted).item_status, 'open');
   const second = join(box.dir, 'clean-computed-return');
   box.git(box.repo, 'worktree', 'add', '-q', second, '-b', 'web/clean-return', 'main');
   json(box.run(second, 'join', 'web', '--json'));
@@ -409,6 +419,32 @@ test('automatic conflict returns bind native evidence and replay without caller 
   assert.throws(() => prepareEngineMove(source, 'reopen', [clean, { agentId: actor, automaticConflict: true }]),
     error => error.code === 'NOT_CONFLICTING', 'a clean submitted head cannot acquire computed conflict evidence');
   assert.equal(store.getItem(source, clean).item_status, 'submitted');
+});
+
+
+/** Fresh requests cannot borrow an earlier conflict after the native trunk has made the submission clean. */
+test('fresh conflict requests refuse an older trunk after main advances [V4,H16]', t => {
+  const { box, conflicted, reviewer } = staleHeadFixture(t);
+  const board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
+  t.after(() => store.closeBoard(board));
+  const actor = store.agentAt(board, reviewer).agent_id;
+  const prepared = prepareEngineMove(board, 'reopen', [conflicted, { agentId: actor, automaticConflict: true }]);
+  const evidence = prepared.args[1].computedConflict;
+  assert.ok(prepareEngineMove(board, 'reopen', [conflicted, { agentId: actor, computedConflict: evidence }]),
+    'the current conflicting trunk permits normal preparation');
+  box.git(box.repo, 'merge', '-q', '--no-edit', '-s', 'ours', evidence.head);
+  assert.throws(() => prepareEngineMove(board, 'reopen', [conflicted, { agentId: actor, automaticConflict: true }]),
+    error => error.code === 'NOT_CONFLICTING', 'native computation establishes that the current trunk is clean');
+  const original = exportBoard(board);
+  const { digest, ...fields } = evidence;
+  fields.id = '11111111-2222-4333-8444-555555555555';
+  fields.at = new Date(Date.parse(fields.at) + 1).toISOString();
+  const stale = { ...fields, digest: createHash('sha256').update(JSON.stringify(fields)).digest('hex') };
+  assert.throws(() => prepareEngineMove(board, 'reopen', [conflicted, { agentId: actor, computedConflict: stale }]),
+    error => error.code === 'COORDINATOR_ONLY', 'a fresh self-hash does not authorize an earlier trunk');
+  assert.throws(() => store.reopen(board, conflicted, { agentId: actor, computedConflict: stale }),
+    error => error.code === 'COORDINATOR_ONLY', 'the direct mutation independently enforces the current trunk');
+  assert.deepEqual(exportBoard(board), original, 'both fresh refusals leave the submission and event prefix unchanged');
 });
 
 
