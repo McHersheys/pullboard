@@ -1,7 +1,9 @@
 /** One durable request identity creates one normally claimable cross-lane child [B2,B5,B12]. */
 import { createHash } from 'node:crypto';
-import { itemById, listAgents } from './board-query.js';
-import { atomic, logEvent } from './board-event-log.js';
+import { itemById } from './board-query.js';
+import { listAgents } from './board-query.js';
+import { atomic } from './board-event-log.js';
+import { logEvent } from './board-event-log.js';
 import { ENGINE_VERSION } from './machine.js';
 import { COMPANION_ENGINE } from './companion-engine.js';
 import { Refused } from './refused.js';

@@ -2,10 +2,23 @@
 import * as store from '../board.js';
 import { isLane } from '../lanes.js';
 import { Refused } from '../refused.js';
-import { idProblems, loadSpec } from '../spec.js';
-import { checkBaseline, prepareCheckBaseline, refuseCheckSyntax, sayCheckBaseline } from '../check-baseline.js';
-import { relayCommandReceipt, relayCommandReceiptReported } from '../relay.js';
-import { actOn, barActorForCommand, briefArg, briefInLane, idArg, idList, launchBaseline, ordered, buildInFilelessLane } from '../cli.js';
+import { idProblems } from '../spec.js';
+import { loadSpec } from '../spec.js';
+import { checkBaseline } from '../check-baseline.js';
+import { prepareCheckBaseline } from '../check-baseline.js';
+import { refuseCheckSyntax } from '../check-baseline.js';
+import { sayCheckBaseline } from '../check-baseline.js';
+import { relayCommandReceipt } from '../relay.js';
+import { relayCommandReceiptReported } from '../relay.js';
+import { actOn } from '../cli.js';
+import { barActorForCommand } from '../cli.js';
+import { briefArg } from '../cli.js';
+import { briefInLane } from '../cli.js';
+import { idArg } from '../cli.js';
+import { idList } from '../cli.js';
+import { launchBaseline } from '../cli.js';
+import { ordered } from '../cli.js';
+import { buildInFilelessLane } from '../cli.js';
 
 /** Execute the normal authenticated request; only the coordinator may supply a check command. */
 export async function run(io, { first, second, rest, values }) {

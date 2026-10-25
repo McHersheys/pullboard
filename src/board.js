@@ -1,4 +1,5 @@
-import { companionPlan, applyCompanionRequest } from './companion.js';
+import { companionPlan } from './companion.js';
+import { applyCompanionRequest } from './companion.js';
 import { activityNewsFlag } from './activity-news.js';
 import { migrateEventLogVersion } from './board-event-log-migrate.js';
 import {
