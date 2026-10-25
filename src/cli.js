@@ -1265,11 +1265,22 @@ export function refuseUncommittedSetup(mainRoot, config) {
 
 
 /** Report and pin the original submitted commit, including a recovered acknowledged outcome. */
-export function reportSubmission(ctx, id, commit, gate, doctrine = []) {
+export async function reportSubmission(ctx, id, commit, gate, doctrine = []) {
   const { root } = ctx.info;
   const pin = `refs/pullboard/items/${id}/${commit.slice(0, 12)}`;
   git(root, ['update-ref', pin, commit]);
-  ctx.io.result?.({ id, commit, pin, gate, ...(doctrine.length ? { doctrine } : {}) });
+  const submission = { id, commit, pin, gate, ...(doctrine.length ? { doctrine } : {}) };
+  if (ctx.submissionResult) ctx.submissionResult.value = submission;
+  try {
+    const { deliverActivity, activityDeliveryLines } = await import('./activity-delivery-cli.js');
+    const delivery = await deliverActivity(ctx, { afterSubmit: true, directShouts: false });
+    submission.activity = delivery.activity;
+    for (const line of activityDeliveryLines(delivery, ctx.config)) ctx.io.say(line);
+  } catch (error) {
+    submission.activity = { receipt: { recorded: false, code: error.code ?? 'ACTIVITY_DELIVERY_FAILED', message: error.message } };
+    ctx.io.err(`submitted #${id}, but its activity delivery failed: ${error.message}; read pullboard inbox to retry delivery`);
+  }
+  ctx.io.result?.(submission);
   ctx.io.say(`submitted #${id} at ${commit.slice(0, 12)}; ${gate.report}`);
   ctx.io.say(`pinned as ${pin}, so this work can't be lost; keep your worktree until it is merged`);
   ctx.io.say(`next: ${reviewerStartup(primaryCheckoutRoot(ctx.info), ctx.config, id)}`);

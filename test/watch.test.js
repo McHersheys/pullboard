@@ -63,7 +63,7 @@ function project() {
 /** Read the fixture board's events straight from its SQLite file, read-only. */
 function events(box) {
   const db = new DatabaseSync(join(box.root, '.git', 'pullboard', 'board.sqlite'), { readOnly: true });
-  try { return db.prepare('SELECT event_id, event_kind, item_id, event_by FROM event ORDER BY event_id').all(); }
+  try { return db.prepare('SELECT event_id, event_kind, item_id, event_by, event_detail FROM event ORDER BY event_id').all(); }
   finally { db.close(); }
 }
 
@@ -258,7 +258,8 @@ test('watch --work announces a claimable item and a review left waiting [A2,N26]
   writeFileSync(join(builder.path, 'app', 'work.txt'), 'built\n');
   runFixtureGit(['add', '-A'], { cwd: builder.path, env: box.env, stdio: 'pipe' });
   runFixtureGit(['commit', '-q', '-m', 'feat(app): fresh work [G1]'], { cwd: builder.path, env: box.env, stdio: 'pipe' });
-  const firstCommit = box.cli(builder.path, 'submit', String(added.item_id)).commit;
+  const firstSubmission = box.cli(builder.path, 'submit', String(added.item_id));
+  const firstCommit = firstSubmission.commit;
   const submitted = lastSequence(box);
   const review = JSON.parse((await watch.line((line) => JSON.parse(line).kind === 'review-wait', 10_000, 'review-wait notice')).line); // budget: hang ceiling for a 1.2 s review threshold, not a latency claim.
   assert.equal(review.item, added.item_id);
@@ -279,7 +280,8 @@ test('watch --work announces a claimable item and a review left waiting [A2,N26]
   writeFileSync(join(builder.path, 'app', 'waiting.txt'), 'built\n');
   runFixtureGit(['add', '-A'], { cwd: builder.path, env: box.env, stdio: 'pipe' });
   runFixtureGit(['commit', '-q', '-m', 'feat(app): waiting work [G1]'], { cwd: builder.path, env: box.env, stdio: 'pipe' });
-  const secondCommit = box.cli(builder.path, 'submit', String(waiting.item_id)).commit;
+  const secondSubmission = box.cli(builder.path, 'submit', String(waiting.item_id));
+  const secondCommit = secondSubmission.commit;
   runFixtureGit(['switch', '-q', '--detach', secondCommit], { cwd: reviewer, env: box.env, stdio: 'pipe' });
   box.cli(reviewer, 'next', '--verify', String(waiting.item_id));
   // The reserve line follows the submit work check while the item is still submitted, before reject reopens it.
@@ -307,8 +309,15 @@ test('watch --work announces a claimable item and a review left waiting [A2,N26]
     'a waiting review is announced once');
   assert.ok(kinds.includes('accept') && kinds.includes('reject'), 'the verdicts print as events too');
   const moves = events(box).slice(before).map(event => event.event_kind);
-  assert.deepEqual(moves, ['add', 'add', 'claim', 'check_accept', 'release', 'claim', 'submit', 'join', 'reserve', 'accept', 'claim', 'submit', 'reserve', 'reject'],
-    'watch wrote no event: the new ones are exactly the moves this test made');
+  assert.deepEqual(moves, ['add', 'add', 'claim', 'check_accept', 'release', 'claim', 'submit',
+    ...(firstSubmission.activity.digests.length ? ['activity-delivered'] : []),
+    'join', 'reserve', 'accept', 'claim', 'submit',
+    ...(secondSubmission.activity.digests.length ? ['activity-delivered'] : []), 'reserve', 'reject'],
+    'watch wrote no event: only the explicit moves and their recorded submit-time digests were added');
+  for (const event of events(box).slice(before).filter(event => event.event_kind === 'activity-delivered')) {
+    assert.equal(event.event_by, builder.agent, 'the submitting recipient records its digest, not watch');
+    assert.deepEqual(JSON.parse(event.event_detail).interrupts, [], 'these submit receipts delivered a digest, not an invented interrupt');
+  }
 });
 
 test('watch filters by kind, item and addressee, and refuses a flag it cannot follow [A2]', async (t) => {

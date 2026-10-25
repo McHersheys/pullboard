@@ -29,6 +29,7 @@ export function requestedCommandMove(command, operation) {
     next: ['claim', 'reserveReview', 'reserveNextReview'], run: ['claim', 'release', 'submit', 'reserveReview', 'reserveNextReview', 'verify', 'escalate', 'shout'],
     init: ['register'], join: ['register'], worktree: ['register'], takeover: ['takeCoordinator'],
     relay: ['setBoardMembers'],
+    inbox: ['recordActivityDelivery', 'actOnActivity'],
     shout: ['shout'], answer: ['answerDecision'], pass: ['passDecision'], fact: ['appendFact'],
     hold: ['holdLane', 'releaseLane', 'holdItem', 'releaseItemHold'],
     bar: ['setBarReady', 'signBar'], settings: ['setLineSetting', 'setPersonSigning'], check: ['acceptCheck'],
