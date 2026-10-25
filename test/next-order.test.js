@@ -45,6 +45,46 @@ function submitted(board, builder, title, route, number) {
   return id;
 }
 
+test('next offers the item on the longest remaining path first [N2,B13,N20]', t => {
+  const { board, builder } = boardFixture();
+  t.after(() => store.closeBoard(board));
+  const add = (title, after = []) => store.addItem(board, {
+    by: 'coordinator', lane: 'core', title, after, route: 'strong',
+  });
+  const independent = add('Older independent work');
+  const wide = add('A broad but short fan-out');
+  const wideChildren = Array.from({ length: 4 }, (_, index) => add(`Short follower ${index}`, [wide]));
+  const longest = add('A newer root on the critical chain');
+  const middle = add('Middle of the chain', [longest]);
+  const end = add('End of the chain', [middle]);
+  const outside = add('A path outside the focus');
+  const outsideMiddle = add('Outside middle', [outside]);
+  const outsideEnd = add('Outside end', [outsideMiddle]);
+  const outsideLast = add('Outside last', [outsideEnd]);
+  store.addMilestone(board, { agentId: 'coordinator', name: 'later', items: [outside, outsideMiddle, outsideEnd, outsideLast] });
+  store.addMilestone(board, { agentId: 'coordinator', name: 'focus', items: [independent, wide, ...wideChildren, longest, middle, end] });
+  setLineSetting(board, { agentId: 'coordinator', key: 'focusMilestone', value: 'focus',
+    reason: 'Synthetic focused DAG scheduling fixture.' });
+  assert.equal(store.nextFor(board, { agentId: builder, lane: 'core' }).item.item_id, longest,
+    'remaining path length leads age and fan-out count inside the focus');
+  assert.equal(workQueue(board).first.strong, longest, 'queue and next share the same critical-chain preference');
+});
+
+test('a file overlap is a soft preference and never strands ready work [N2,N20]', t => {
+  const { board, builder } = boardFixture();
+  t.after(() => store.closeBoard(board));
+  const busy = store.register(board, { lane: 'api', path: '/soft-overlap', route: 'strong' });
+  const active = store.addItem(board, { by: 'coordinator', lane: 'api', title: 'A live shared file', brief: 'Files: src/shared.js' });
+  store.claim(board, active, { agentId: busy, lane: 'api', leaseMs: HOUR, freeze: FREEZE });
+  const colliding = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Ready overlapping work', brief: 'Files: src/shared.js' });
+  assert.equal(store.nextFor(board, { agentId: builder, lane: 'core' }).item?.item_id, colliding,
+    'the only ready work remains offerable despite overlap');
+  assert.equal(workQueue(board).first.strong, colliding, 'queue does not hard-block the same offer');
+  const free = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Equally short independent work', brief: 'Files: src/free.js' });
+  assert.equal(store.nextFor(board, { agentId: builder, lane: 'core' }).item.item_id, free,
+    'equal remaining paths prefer the item with no live overlap');
+});
+
 test('a reviewer gets the earliest milestone\'s submissions first [B16]', (t) => {
   const { board, builder, reviewer } = boardFixture();
   t.after(() => store.closeBoard(board));
