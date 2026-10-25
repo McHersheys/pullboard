@@ -1,5 +1,6 @@
 import { companionPlan } from './companion.js';
 import { applyCompanionRequest } from './companion.js';
+export { readBoardMembers, setBoardMembers } from './board-members.js';
 import { heartbeatSeat } from './seat-presence.js';
 import * as itemDecisions from './item-decision-queue.js';
 import * as activityDeliveryStore from './activity-delivery-store.js';
