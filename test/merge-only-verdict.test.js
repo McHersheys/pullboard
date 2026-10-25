@@ -190,10 +190,12 @@ test('a merge-only resubmission keeps its accept and records the resolution diff
     chained.args[1].mergeOnly = nextProof;
     applyEngineMove(forged, chained, { sequence: 2, at: '2026-01-01T00:00:01.000Z' });
     assert.equal(store.getItem(forged, id).item_status, 'verified');
+    box.git(box.repo, 'merge', '--ff-only', nextTrunk);
     await assert.rejects(land({ root: box.repo, board: forged, dryRun: true, say: () => {},
       config: { landing: { publish: 'separate' } } }), error => error.code === 'STALE_VERDICT',
       'a later clean carry must not launder a forged earlier carry into a landable acceptance');
-    assert.equal(box.git(box.repo, 'rev-parse', 'HEAD'), beforeLanding);
+    assert.equal(box.git(box.repo, 'rev-parse', 'HEAD'), nextTrunk);
+    box.git(box.repo, 'reset', '--hard', trunk);
 
 
   } finally { store.closeBoard(forged); }
