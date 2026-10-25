@@ -36,8 +36,9 @@ function stateText(state, eventLogVersion) {
  * no-store: the browser never answers a poll from its cache, so a page that wants the newest clock
  * readings still gets them by not asking If-None-Match.
  */
-function sendState(req, res, text, tagged, validator = text) {
+function sendState(req, res, text, tagged, validator = text, reportValidator) {
   const headers = { 'cache-control': 'no-store', 'referrer-policy': 'no-referrer', 'x-content-type-options': 'nosniff' };
+  if (typeof reportValidator === 'string' && /^[a-f0-9]{64}:[0-9]+$/u.test(reportValidator)) headers['x-pullboard-report-validator'] = reportValidator;
   if (tagged) {
     const board = validator.replace(/"(asOf|ageMinutes)":(?:"[^"]*"|[-+.0-9eE]+|null)/gu, '"$1":null');
     Object.assign(headers, { etag: '"' + createHash('sha256').update(board).digest('base64url').slice(0, 32) + '"' });
@@ -321,7 +322,7 @@ export function createApiHandler(adapter, { pollMs = 200, tagState = false } = {
           if (options.detail === 'full') throw new Refused('BAD_REQUEST', 'a delta brings item summaries up to date; use since=N without detail=full');
           if (typeof adapter.delta !== 'function') throw new Refused('DELTA_NOT_AVAILABLE', 'this API adapter does not answer since=N; use its board state');
           const delta = await adapter.delta(board, who, seen, { since, eventLogVersion: url.searchParams.get('eventLogVersion') });
-          return sendState(req, res, JSON.stringify({ version: 1, ...delta }), tagState);
+          return sendState(req, res, JSON.stringify({ version: 1, ...delta }), tagState, undefined, delta.reportValidator);
         }
         if (typeof adapter.stateJson === 'function') {
           const encoded = await adapter.stateJson(board, who, seen, options);
@@ -329,7 +330,7 @@ export function createApiHandler(adapter, { pollMs = 200, tagState = false } = {
           if (typeof state !== 'string' || encoded?.validator !== undefined && typeof encoded.validator !== 'string') throw new TypeError('the local state serializer must return JSON text and optional internal validator text');
           const eventLogVersion = await adapter.eventLogVersion?.(board, who);
           return sendState(req, res, stateText(state, eventLogVersion), tagState,
-            typeof encoded?.validator === 'string' ? stateText(encoded.validator, eventLogVersion) : undefined);
+            typeof encoded?.validator === 'string' ? stateText(encoded.validator, eventLogVersion) : undefined, encoded?.reportValidator);
         }
         const state = await adapter.state(board, who, seen, options);
         const eventLogVersion = await adapter.eventLogVersion?.(board, who);
