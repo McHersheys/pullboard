@@ -228,6 +228,8 @@ globalThis.fetch = function tracedFetch(input, init) {
   let mintFailures = 0;
   let refuseEventReads = false;
   let refuseMoveSends = false;
+  // Moves the relay auth clock alone, so a test can end a cached GitHub grant without expiring board records (#1013).
+  let authOffsetMs = 0;
   let revokeOnNextListing = false;
   const boardsWithoutSnapshots = new Map();
   const injectedSnapshotWriteDelayMs = Number(process.env.PULLBOARD_TEST_SNAPSHOT_WRITE_DELAY_MS ?? 0);
@@ -530,7 +532,7 @@ globalThis.fetch = function tracedFetch(input, init) {
   await once(server, 'listening');
   const relayPort = server.address().port;
   const origin = 'http://127.0.0.1:' + relayPort;
-  auth = createRelayAuth({ database: authDatabase, github: createGitHubClient({ ...provider.config, callbackURL: origin + '/auth/github/callback' }) });
+  auth = createRelayAuth({ database: authDatabase, github: createGitHubClient({ ...provider.config, callbackURL: origin + '/auth/github/callback' }), now: () => Date.now() + authOffsetMs });
   signIn = createAuthHandler({ auth, publicOrigin: origin });
   api = createRelayHandler({ directory: join(scratch, 'relay'), auth, publicOrigin: origin, pollMs, maintenanceMs: 0, accountStorageBytes, now: () => Date.now() + timeOffsetMs });
   /** Sign a separate phone in over actual OAuth HTTP; its person session stays only in fixture RAM. */
@@ -899,6 +901,8 @@ globalThis.fetch = function tracedFetch(input, init) {
     refuseReads(value) { refuseEventReads = value; },
     /** Answer every move send with a temporary outage, as a relay that stops taking moves part way (#1013). */
     refuseMoves(value) { refuseMoveSends = value; },
+    /** Move the relay's auth clock forward by `ms`, past a cached GitHub grant's window (#1013). */
+    advanceAuthorization(ms) { authOffsetMs += ms; },
     /** Return a selected listed-board read's missing-snapshot refusal over real HTTP. */
     noBoardOnReads(id, paths = ['state']) {
       boardsWithoutSnapshots.set(id, new Set(paths));

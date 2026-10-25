@@ -714,7 +714,7 @@ test('unreadable links are refused; agent tokens belong to exactly one board [H8
   await assert.rejects(box.auth.linkBoard(agent.token, 'gamma', 'fixture/repository'), { code: 'HUMAN_REQUIRED' });
 });
 
-test('lost GitHub read access takes effect at ten minutes and before every board write [H8, H1]', async (t) => {
+test('lost GitHub access takes effect at ten minutes for reads and writes alike, and GitHub is asked once per window, never per write [H8, H1, H21]', async (t) => {
   const box = await fixture(t);
   const signed = await login(box);
   await box.auth.linkBoard(signed.token, 'alpha', 'fixture/repository');
@@ -726,9 +726,19 @@ test('lost GitHub read access takes effect at ten minutes and before every board
   assert.deepEqual(await box.auth.boardsFor(signed.token), []);
   box.state.access = true;
   await box.auth.authenticate(signed.token, { board: 'alpha', write: true });
+  const asked = () => box.calls.filter(call => call.path.endsWith('/permission')).length;
+  const before = asked();
+  for (let write = 0; write < 5; write += 1) await box.auth.authenticate(signed.token, { board: 'alpha', write: true });
+  assert.equal(asked(), before, 'writes inside the window reuse the grant instead of asking GitHub each time');
   box.state.access = false;
-  await assert.rejects(box.auth.authenticate(signed.token, { board: 'alpha', write: true }), { code: 'NO_REPO_ACCESS' });
+  box.advance(ACCESS_WINDOW_MS - 1);
+  await box.auth.authenticate(signed.token, { board: 'alpha', write: true });
+  box.advance(1);
+  await assert.rejects(box.auth.authenticate(signed.token, { board: 'alpha', write: true }), { code: 'NO_REPO_ACCESS' }, 'revoked access refuses writes once the window ends');
   assert.deepEqual(await box.auth.boardsFor(signed.token), [], 'a denied write invalidates an earlier allowed read');
+  box.state.access = true;
+  await assert.rejects(box.auth.authenticate(signed.token, { board: 'alpha' }), { code: 'NO_REPO_ACCESS' }, 'a read reuses the denial inside its window');
+  assert.equal((await box.auth.authenticate(signed.token, { board: 'alpha', write: true })).user.id, signed.user.id, 'a write asks GitHub again after a denial, so restored access works at once');
 });
 
 test('person token management lists only owned scoped metadata and preserves independent revocation [H2,H9]', async (t) => {
