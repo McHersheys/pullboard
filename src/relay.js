@@ -1194,7 +1194,8 @@ async function queueLocally(root, file, state, operation, args, io, command, app
     apply: () => typeof applyLocally === 'function' ? applyLocally() : localRecords(root, (board) => store[operation](board, ...args)),
     queue: () => { throw new Refused('RELAY_OUTBOX', 'a local-first move queues itself; it is never queued twice'); },
   });
-  const result = await withOutboxGuard(file, () => queueMove(outboxLink(root, file, state, io),
+  // An unlink that finished while this move waited for the guard leaves an ordinary local board.
+  const result = await withOutboxGuard(file, () => !existsSync(file) ? guarded.apply() : queueMove(outboxLink(root, file, state, io),
     { operation, args, command, applyLocally: guarded.apply, quiet: true }));
   onRecorded?.();
   nudgeRelaySender(root, file);
@@ -1787,7 +1788,8 @@ export async function relayOff(root, io) {
     try { proposal = await phoneProposal(state, 'delete-board', state.board, { root }); }
     catch { /* Missing key or pairing cannot stop local unlinking. */ }
     rememberRelink(root, state.board);
-    archiveRelinkOutbox(root, state);
+    // A local-first move queues under the outbox guard, so the outbox is set aside under it too (#1013).
+    await withOutboxGuard(file, () => archiveRelinkOutbox(root, state));
     rmSync(file, { force: true });
     try { forgetBoardKey(state.board, state.keyStorage); }
     catch { /* The local opt-out is complete even when secure key storage is temporarily locked. */ }

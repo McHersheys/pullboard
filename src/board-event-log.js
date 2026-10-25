@@ -6,6 +6,7 @@ import { appendProofCounter } from './proof-counters.js';
 import { ensureProofCounters } from './proof-counters.js';
 
 import { boardWriteBusyError } from './board-busy.js';
+import { beginCapture } from './board-capture.js';
 import {
   beginBoardWrite,
   finishBoardWrite,
@@ -33,6 +34,8 @@ export function atomic(board, work) {
   catch (error) { throw boardWriteBusyError(board.db, startedAt, error); }
   TRANSACTION_DEPTH.set(board, depth + 1);
   const writeRecord = depth ? null : beginBoardWrite(board.db, board.writeContext);
+  // A local-first move records the rows it changed, so the relay's order can take it back later (#1013).
+  const capture = depth ? null : beginCapture(board.db);
   let released = false;
   let outcome = 'release-failed';
   const lastEvent = board.lastEvent;
@@ -42,6 +45,7 @@ export function atomic(board, work) {
     board.db.exec(depth ? `RELEASE ${savepoint}` : 'COMMIT');
     released = true;
     outcome = 'committed';
+    capture?.commit();
     return result;
   } catch (error) {
     board.db.exec(depth ? `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}` : 'ROLLBACK');
@@ -51,6 +55,7 @@ export function atomic(board, work) {
     board.emittedEvents?.splice(emitted);
     throw error;
   } finally {
+    capture?.close();
     TRANSACTION_DEPTH.set(board, depth);
     finishBoardWrite(writeRecord, released, outcome);
   }
