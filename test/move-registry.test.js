@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import { runFixtureChild } from './fixture-child.js';
 import { unpackRelease } from './release-archive.js';
@@ -15,7 +16,11 @@ import { exportBoard, importBoard } from '../src/exchange.js';
 import { applyEngineMove, ENGINE_OPERATIONS } from '../src/engine.js';
 import { relayMoveActor } from '../src/relay-sender.js';
 import { NEXT_STEPS } from '../src/next-step-words.js';
-import { REGISTRY_AT } from './move-registry-fixture.js';
+import { REGISTRY_AT, registryFixtureBoard } from './move-registry-fixture.js';
+import { importsIn } from '../src/module-imports.js';
+import { readdirSync } from 'node:fs';
+import { minimumMoveEngine } from '../src/move-registry.js';
+import { SPEC_REVISION_ENGINE } from '../src/spec-revision-engine.js';
 
 const SNAPSHOT = JSON.parse(readFileSync(new URL('./move-registry-baseline.json', import.meta.url), 'utf8'));
 const CONSUMERS = ['src/engine.js', 'src/relay-sender.js', 'src/next-step-words.js'];
@@ -62,7 +67,7 @@ test('today\'s move order, actors, recovery text and recorded SQLite prefix are 
   assert.equal(JSON.stringify(exportBoard(board)), JSON.stringify(SNAPSHOT.replay.acceptedExpected), 'items, events, receipts and replay cursor retain accepted-main bytes for the exact historical moves');
 });
 
-test('move import closure: two new board moves declared in two files need no edit to engine.js, relay-sender.js or next-step-words.js [C7,V4,H3,H16]', t => {
+test('two new board moves declared in two files need no edit to engine.js, relay-sender.js or next-step-words.js [C7,V4,H3,H16]', t => {
   const directory = mkdtempSync(join(tmpdir(), 'pullboard-registry-discovery-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const root = join(directory, 'repo');
@@ -149,4 +154,35 @@ process.stdout.write(JSON.stringify(result));`;
   assert.deepEqual(result.refusals, [true, true, true], 'bad names, mismatched identities and invalid floors fail closed');
   assert.equal(result.conflictingStepRefused, true, 'two declarations cannot silently disagree about recovery guidance');
   assert.deepEqual(consumerHashes(root), before, 'the three central consumers were never edited to add either move');
+});
+
+
+test('move import closure stays process-free on a seeded revision board [C7,V4,H16]', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'pullboard-move-closure-'));
+  const board = registryFixtureBoard(directory, 'revision-closure');
+  t.after(() => { store.closeBoard(board); rmSync(directory, { recursive: true, force: true }); });
+  // Private reader input: floor selection must inspect the recorded revision rather than spawn.
+  board.db.prepare('INSERT INTO board_meta(meta_key,meta_value) VALUES (?,?)').run('row_decisions',
+    JSON.stringify([{ event: 7, revision: { source: 'private recorded revision fixture' } }]));
+  assert.equal(minimumMoveEngine('applyRowDecisions', [{ events: [7] }], board), SPEC_REVISION_ENGINE);
+  const root = fileURLToPath(new URL('../', import.meta.url));
+  const forbidden = new Set(['src/board.js', 'src/engine.js', 'src/relay-sender.js', 'src/next-step-words.js', 'src/move-registry.js', 'src/git.js']);
+  const seen = new Set();
+  let pending = readdirSync(join(root, 'src/moves')).filter(file => file.endsWith('.js'))
+    .map(file => pathToFileURL(join(root, 'src/moves', file)).href);
+  while (pending.length) {
+    const level = [...new Set(pending)].filter(file => !seen.has(file));
+    pending = [];
+    for (const file of level) {
+      assert.ok(!forbidden.has(fileURLToPath(file).slice(root.length)), 'move declarations load no writer/consumer');
+      seen.add(file);
+    }
+    const edges = importsIn(level.map(file => readFileSync(fileURLToPath(file), 'utf8')));
+    for (const [index, imports] of edges.entries()) for (const specifier of imports) {
+      assert.notEqual(specifier, 'node:child_process', 'move declarations load no process launcher');
+      if (specifier.startsWith('node:')) continue;
+      assert.ok(specifier.startsWith('.'), 'move imports are native or relative');
+      pending.push(new URL(specifier, level[index]).href);
+    }
+  }
 });
