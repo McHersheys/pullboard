@@ -12,7 +12,48 @@ import { createE2eHelpers } from './e2e-helpers.js';
 import { agentsBlock } from '../src/templates.js';
 
 const e2e = createE2eHelpers();
+const sliceMap = {
+  mainCommit: 'a'.repeat(40),
+  modules: [{
+    path: 'src/leaf.js',
+    loc: 3,
+    job: 'A fixture leaf module.',
+    dependencies: [],
+    importedBy: [],
+    tests: ['test/leaf.test.js'],
+    functions: [{
+      id: 'src/leaf.js#leaf', name: 'leaf', signature: 'leaf()', line: 1,
+      summary: 'A fixture leaf function.', returns: null, transitiveEffects: [], throws: [],
+      callers: [], calls: [], exported: true,
+    }],
+  }],
+};
 after(e2e.cleanup);
+
+test('a function-only item slice includes its module and importer tests [C7]', () => {
+  const slice = renderItemSlice(sliceMap, {
+    item_id: 812, item_title: 'leaf', item_criterion: 'leaf is the named function', item_brief: '', item_files: '',
+  });
+  assert.match(slice, /## src\/leaf\.js/u, 'a named leaf includes its defining module');
+  assert.match(slice, /test\/leaf\.test\.js/u, 'a named leaf includes tests importing its module');
+});
+
+test('an item slice keeps the whole output within its approximate budget [C7]', () => {
+  const slice = renderItemSlice(sliceMap, {
+    item_id: 813,
+    item_title: 'Long title '.repeat(300),
+    item_criterion: 'src/leaf.js is the named file',
+    item_brief: '',
+    item_files: 'src/leaf.js, '.repeat(300),
+  }, { budget: 64 });
+  assert.ok(slice.length <= 64 * 4, 'headers, cards and the omission notice share the output budget');
+  assert.match(slice, /main: [a-f0-9]{40,64}/u, 'a bounded slice keeps its source stamp');
+  assert.match(slice, /not evidence of no relationship/u, 'omitted context is not negative evidence');
+});
+
+test('an item slice refuses a budget too small for its required header [C7]', () => {
+  assert.throws(() => renderItemSlice(sliceMap, { item_id: 814 }, { budget: 1 }), /budget too small/u);
+});
 
 test('pullboard map prints the overview, a card and an item slice from one scan [C7]', t => {
   const box = e2e.project();
@@ -98,29 +139,6 @@ test('pullboard map prints the overview, a card and an item slice from one scan 
   assert.equal(firstMap.mainCommit, box.git(box.repo, 'rev-parse', 'main'));
   assert.equal(firstMap.sourceCommit, firstMap.mainCommit);
   assert.deepEqual(firstMap.modules.find(module => module.path === 'src/home.js').functions.map(fn => fn.name), ['renderHome']);
-
-  const functionOnlySlice = renderItemSlice(firstMap, {
-    item_id: 812,
-    item_title: 'renderHome',
-    item_criterion: 'renderHome is the named leaf function',
-    item_brief: '',
-    item_files: '',
-  });
-  assert.match(functionOnlySlice, /## src\/home\.js/u, 'a named leaf includes its defining module');
-  assert.match(functionOnlySlice, /test\/home\.test\.js/u, 'a named leaf includes tests importing its module');
-
-  const oversizedHeader = renderItemSlice(firstMap, {
-    item_id: 813,
-    item_title: 'Long title '.repeat(300),
-    item_criterion: 'src/home.js is the named file',
-    item_brief: '',
-    item_files: 'src/home.js, '.repeat(300),
-  }, { budget: 64 });
-  assert.ok(oversizedHeader.length <= 64 * 4, 'the approximate budget covers headers, cards and the omission notice');
-  assert.match(oversizedHeader, /main: [a-f0-9]{40,64}/u, 'a bounded slice keeps its source stamp');
-  assert.match(oversizedHeader, /not evidence of no relationship/u, 'truncation explains that omitted context is not negative evidence');
-  assert.throws(() => renderItemSlice(firstMap, { item_id: 814 }, { budget: 1 }), /budget too small/u,
-    'the smallest budget is refused when it cannot contain required slice context');
 
   writeFileSync(join(box.repo, 'src/landed.js'), 'export function landed() { return true; }\n');
   box.git(box.repo, 'add', 'src/landed.js');
