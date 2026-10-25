@@ -1,6 +1,8 @@
 import { AGENT_GRANT_ENGINE } from './agent-grant-engine.js';
 import * as computedConflictEvidence from './computed-conflict-receipt.js';
 import { reopenAuthority } from './reopen-authority.js';
+import { companionPlan } from './companion.js';
+import { applyCompanionRequest } from './companion.js';
 export { readBoardMembers, setBoardMembers } from './board-members.js';
 import { heartbeatSeat } from './seat-presence.js';
 import * as itemDecisions from './item-decision-queue.js';
@@ -109,6 +111,7 @@ import {
   unreadCount,
   events,
   itemThread,
+  itemHold,
   laneHold,
   laneHolds,
   rowDecisions,
@@ -313,6 +316,9 @@ export { declareJob, recordJobRun } from './recurring-jobs.js';
 export { proposeSentinel, decideSentinel, beginSentinelRun, finishSentinelRun } from './sentinels.js';
 export { flakeLedger, recordFlakeObservation } from './flakes.js';
 export { flakeQuarantines, gateRuns, recordGateRun } from './quarantine.js';
+export { proofReceipts, recordProofRun } from './proof-receipts.js';
+import { refuseLongShout } from './proof-receipts.js';
+import { PROOF_RUN_ENGINE } from './proof-run-engine.js';
 export { recordPublishFinding } from './pr-findings.js';
 /** The seat readers live in seats.js; the board re-exports them so `store.*` callers keep one import. */
 export { agentAt, agentById, agentCreator, coordinatorHolder, listAgents, nextSeatId, seatEnrolled, seatLineage, takeCoordinator, withVerifierStanding } from './seats.js';
@@ -670,22 +676,36 @@ function checkRouted({ brief, route, criterion, check }) {
  */
 export function addItem(board, { by, lane, title, criterion = '', specIds = [], parentId = null, after = [], brief = '', route = 'strong', check, checkBaseline, barActor }) {
   return atomic(board, () => {
-    const { command, cleanTitle } = validateItemAddition(board, { by, lane, title, criterion, parentId, after, brief, route, check });
-    const baseline = normalizeCheckBaseline(by, command, checkBaseline);
-    const at = now(board);
-    const result = board.db
-      .prepare(
-        `INSERT INTO item (item_parent_id, item_lane, item_title, item_criterion, item_spec_ids,
-           item_after, item_brief, item_route, item_check, item_created_by, item_created_at, item_updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(parentId, lane, cleanTitle, criterion.trim(), specIds.join(','), after.join(','), brief.trim(), route, command, by, at, at);
-    const id = Number(result.lastInsertRowid);
-    saveCheckBaseline(board, id, baseline);
-    logEvent(board, by, 'add', id, { lane, specIds, after, route, ...(baseline ? { checkBaseline: baseline } : {}) });
-    recordBarRevision(board, itemById(board, id), by, null, barActor);
-    return id;
+    const item = { by, lane, title, criterion, specIds, parentId, after, brief, route, check, checkBaseline, barActor };
+    return insertItem(board, item, validateItemAddition(board, item));
   });
+}
+
+/** Insert an already validated ordinary or companion child without bypassing check or bar recording. */
+function insertItem(board, item, { command, cleanTitle }) {
+  const { by, lane, criterion, specIds, parentId, after, brief, route, checkBaseline, barActor } = item;
+  const baseline = normalizeCheckBaseline(by, command, checkBaseline);
+  const at = now(board);
+  const result = board.db
+    .prepare(
+      `INSERT INTO item (item_parent_id, item_lane, item_title, item_criterion, item_spec_ids,
+         item_after, item_brief, item_route, item_check, item_created_by, item_created_at, item_updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(parentId, lane, cleanTitle, criterion.trim(), specIds.join(','), after.join(','), brief.trim(), route, command, by, at, at);
+  const id = Number(result.lastInsertRowid);
+  saveCheckBaseline(board, id, baseline);
+  logEvent(board, by, 'add', id, { lane, specIds, after, route, ...(baseline ? { checkBaseline: baseline } : {}) });
+  recordBarRevision(board, itemById(board, id), by, null, barActor);
+  return id;
+}
+
+/** Read the canonical request plan before a CLI performs any authorized baseline work. */
+export function planCompanion(board, options) { return companionPlan(board, options, validateItemAddition); }
+
+/** The single ordered operation permitted to create a child in a different lane. */
+export function requestCompanion(board, options) {
+  return applyCompanionRequest(board, options, { validateAddition: validateItemAddition, insertItem });
 }
 
 /** Validate that dependencies exist, remain usable, and cannot lead back to the edited item. */
@@ -1172,6 +1192,7 @@ export function submit(board, id, { agentId, commit, tree, files = [], policyCom
         doctrineHolds: null,
         gateConfigured: null, queuedItemLease: null,
         gateGreen: null,
+        proofRecorded: null, // The CLI records and validates native receipts before sealing submit; replay needs no origin files.
         treeStillDuringGate: null,
         submissionProofValid: () => {
           if ((board.executionEngineVersion ?? ENGINE_VERSION) >= SUBMISSION_PROOF_ENGINE) recordedProof = submissionProof(proof);
@@ -1404,6 +1425,7 @@ export function verify(board, id, { agentId, decision, reason, note = '', cause,
         trunkMergeClean: null,
         noUnverifiedStack: null, queuedItemLease: null,
         itemCheckGreen: found => isAccept ? outsideSandboxProblem(board, found, sandbox) : null,
+        proofRecorded: null, // The native verifier records the gate receipt before this ordered outcome.
         proofNoted: () =>
           note.trim()
             ? null
@@ -1716,6 +1738,7 @@ function persistShout(board, { from, to, text, decision = false, answers = null,
  * @returns {number}
  */
 export function shout(board, message) {
+  if ((board.executionEngineVersion ?? ENGINE_VERSION) >= PROOF_RUN_ENGINE) refuseLongShout(message.text);
   return atomic(board, () => insertShout(board, { ...message,
     news: activityNewsFlag(message, board.executionEngineVersion ?? ENGINE_VERSION) }));
 }
@@ -2110,14 +2133,7 @@ export function releaseLane(board, lane, { agentId, asPerson = false, channel = 
 
 export { laneHold, laneHolds } from './board-query.js';
 
-/** Read an item's coordinator hold, or null when it is available for claims. */
-export function itemHold(board, id) {
-  const item = getItem(board, id);
-  return item.item_hold_reason ? {
-    item_id: item.item_id, item_hold_reason: item.item_hold_reason,
-    item_hold_by: item.item_hold_by, item_hold_at: item.item_hold_at,
-  } : null;
-}
+export { itemHold } from './board-query.js';
 
 /** Hold an open or already-claimed item without changing its current lifecycle state. */
 export function holdItem(board, id, { agentId, reason }) {

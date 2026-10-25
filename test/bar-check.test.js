@@ -8,7 +8,7 @@ import { parentSessionDigest } from '../src/parent-session.js';
 import { saveAgentSession } from '../src/seats.js';
 import { applyRelayMove, prepareEngineMove } from '../src/engine.js';
 import { BAR_CHECK_ENGINE } from '../src/bar-check-engine.js';
-import { ENGINE_VERSION } from '../src/machine.js';
+import { ENGINE_VERSION } from '../src/engine-metadata.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 
 const HOUR = 3_600_000;
