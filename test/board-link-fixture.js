@@ -49,6 +49,8 @@ export async function linkRelay(t, boards, authority) {
   const { exportBoard } = await import('../src/exchange.js');
   const { ENGINE_VERSION } = await import('../src/machine.js');
   const provider = await githubFixture(t);
+  // Each private board belongs to its own repository, as the native one-team-board contract requires.
+  provider.state.repositories = boards.map(box => box.reference.handle);
   const directory = mkdtempSync(join(tmpdir(), 'pullboard-link-relay-'));
   let time = Date.now();
   const auth = createRelayAuth({ database: join(directory, 'auth.sqlite'),
@@ -62,7 +64,7 @@ export async function linkRelay(t, boards, authority) {
   provider.state.deviceAuthorized = true;
   time += grant.interval * 1000;
   const person = await auth.pollDevice(grant.ticket);
-  for (const box of boards) await auth.linkBoard(person.token, box.reference.boardId, 'fixture/repository');
+  for (const box of boards) await auth.linkBoard(person.token, box.reference.boardId, `fixture/${box.reference.handle}`);
   service = await serveRelay({ directory: join(directory, 'relay'), auth, maintenanceMs: 0,
     now: () => time, boardLinkAuthority: authority });
   let origin = 'http://127.0.0.1:' + service.port;
