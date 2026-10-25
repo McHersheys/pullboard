@@ -2,6 +2,7 @@ import { requireFactKind } from './item-notes.js';
 import {
   criticalPathEnabled,
   criticalPathOrder,
+  remainingPaths,
 } from './critical-path-order.js';
 import { activityNewsFlag } from './activity-news.js';
 import { migrateEventLogVersion } from './board-event-log-migrate.js';
@@ -250,6 +251,10 @@ import {
 } from './rigor-notices.js';
 import { RIGOR_NOTICE_ENGINE } from './rigor-source.js';
 import { RIGOR_AUTO_ENGINE } from './rigor-auto-engine.js';
+import {
+  milestoneRanks,
+  workOrderCompare,
+} from './work-order.js';
 import {
   deriveRigorCause,
   recordAutomaticRigorDrafts,
@@ -1888,38 +1893,23 @@ function postRigorNotices(board, trigger) {
 }
 
 
-/** Explicit item ranks belong to the same first unfinished milestone as its priority [N2,B13]. */
-function milestoneRanks(board, priority) {
-  if ((board.executionEngineVersion ?? ENGINE_VERSION) < MILESTONE_RANK_ENGINE) return () => 0;
-  const ranks = new Map();
-  for (const [index, milestone] of milestones(board).entries()) {
-    for (const [rank, id] of (milestone.order ?? []).entries()) {
-      if (milestone.items.includes(id) && priority({ item_id: id }) === index && !ranks.has(id)) ranks.set(id, rank);
-    }
-  }
-  return entry => ranks.get(entry.item_id) ?? Number.MAX_SAFE_INTEGER;
-}
-
-/** Share focus/release, remaining path and soft overlap ordering across build offers and queue display. */
-export function buildOrder(board, { warm = [], agentId, readiness = barReadyForOrder, releasedClaims = [] } = {}) {
-  const milestonePriority = milestonePriorities(board);
+/** Share milestone policy, primary computed order and equal-score path ties across queue and health. */
+export function buildOrder(board, { warm = [], agentId, readiness = barReadyForOrder, releasedClaims = [], tierFirst = false, priority } = {}) {
+  const milestonePriority = priority ?? milestonePriorities(board);
   const items = listItems(board, { all: true });
   const rank = milestoneRanks(board, milestonePriority);
   const recent = new Set(warm);
-  const shared = (entry) => itemFiles(entry).filter((path) => recent.has(path)).length;
-  const fallback = (first, second) => milestonePriority(first) - milestonePriority(second)
-    || rank(first) - rank(second)
-    || ROUTES.indexOf(second.item_route) - ROUTES.indexOf(first.item_route)
-    || shared(second) - shared(first) || first.item_id - second.item_id;
-  const previous = lineOrderEnabled(board) ? lineBuildOrder({ agentId, release: milestonePriority, rank, items, ready: item => readiness(board, item), fallback }) : fallback;
+  const shared = entry => itemFiles(entry).filter(path => recent.has(path)).length;
   const focus = milestoneFocus(board);
   const group = item => focus?.ids.has(item.item_id) ? -1 : milestonePriority(item);
-  if (!criticalPathEnabled(board)) return focusOrder(board, previous);
-  const paths = criticalPathOrder({ items, group, fallback: previous, releasedClaims });
-  const returnHome = lineOrderEnabled(board);
-  const returning = item => returnHome && !focus?.ids.has(item.item_id)
-    && item.item_verdict === 'REJECT' && item.item_built_by === agentId;
-  return focusOrder(board, (first, second) => Number(returning(second)) - Number(returning(first)) || paths(first, second));
+  const paths = criticalPathEnabled(board) ? remainingPaths(items, group) : new Map();
+  const tieBreak = (first, second) => (paths.get(second.item_id) ?? 0) - (paths.get(first.item_id) ?? 0);
+  const fallback = workOrderCompare(board, { priority: milestonePriority, rank, shared, tierFirst, tieBreak }) ?? ((first, second) => milestonePriority(first) - milestonePriority(second)
+    || rank(first) - rank(second)
+    || ROUTES.indexOf(second.item_route) - ROUTES.indexOf(first.item_route)
+    || shared(second) - shared(first) || first.item_id - second.item_id);
+  return focusOrder(board, lineOrderEnabled(board)
+    ? lineBuildOrder({ agentId, release: milestonePriority, rank, items, ready: item => readiness(board, item), fallback }) : fallback);
 }
 
 /**
@@ -1997,7 +1987,7 @@ export function nextFor(board, { agentId, lane, verify = false, policy = 'any', 
     const hold = laneHold(board, name);
     if (hold) { selectedLanes.delete(name); reasons.push(`${hold.hold_by} holds the ${name} lane: ${hold.hold_reason}`); }
   }
-  const compare = buildOrder(board, { warm, agentId });
+  const compare = buildOrder(board, { warm, agentId, tierFirst: true });
   const inFlight = listItems(board, { all: true });
   const recent = new Set(warm);
   const mainRed = new Set(priority);
@@ -2032,7 +2022,7 @@ export function nextFor(board, { agentId, lane, verify = false, policy = 'any', 
     const reserved = firstRefusalReason(board, entry.item_id, agentId);
     if (reserved) { reasons.push(reserved); continue; }
     const collisions = itemFileCollisions(entry, inFlight);
-    if (collisions.length && !criticalPathEnabled(board)) { reasons.push(...collisions); continue; }
+    if (collisions.length) { reasons.push(...collisions); continue; }
     if (!waiting.length) return { item: entry, reasons: focusReasons(board, entry,
       [...reasons, ...collisions.map(reason => reason.replace(' waits for ', ' overlaps with '))]), shared };
     reasons.push(`#${entry.item_id} waits on ${waiting.map(waitingOn).join(', ')}`);
