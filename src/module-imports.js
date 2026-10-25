@@ -286,22 +286,45 @@ function opaqueTestContext(source) {
 }
 
 /** Unknown test option expressions are declarations under the conservative placement contract. */
-function unreadableTestOptions(source, quoted) {
-  const code = lex(source).code;
+function unreadableTestOptions(source, quoted, moduleImports) {
+  const lexical = lex(source);
+  const code = lexical.code;
   const names = new Set(['test', 'it', 'describe']);
-  for (const match of source.matchAll(/\bimport\s+([^;'"]+?)\s+from\s*(['"])node:test\2/gu)) {
-    const defaultBinding = /^\s*([A-Za-z_$][\w$]*)(?:\s*,|\s*$)/u.exec(match[1]);
+  // Preserve literal spelling while removing comments, then let V8 identify every module specifier.
+  const characters = source.split('');
+  for (const { start, end } of lexical.comments) for (let at = start; at < end; at += 1) {
+    if (characters[at] !== '\n' && characters[at] !== '\r') characters[at] = ' ';
+  }
+  const clean = characters.join('');
+  const declarations = [...clean.matchAll(/\bimport\s+([^;]*?)\s+from\s*((?:"(?:[^"\\]|\\[\s\S])*"|'(?:[^'\\]|\\[\s\S])*'))/gu)]
+    .filter(match => code.slice(match.index, match.index + 6) === 'import');
+  const modules = look(declarations.map(match => `import ${match[2]};`));
+  let recognizedTestImport = false;
+  for (const [index, match] of declarations.entries()) {
+    if (!modules[index].imports.includes('node:test')) continue;
+    recognizedTestImport = true;
+    const bindingSource = match[1].trim();
+    const bindingCode = lex(bindingSource).code;
+    const defaultBinding = /^([A-Za-z_$][\w$]*)(?:\s*,|\s*$)/u.exec(bindingCode);
     if (defaultBinding) names.add(defaultBinding[1]);
-    const namespace = /^\s*\*\s+as\s+([A-Za-z_$][\w$]*)/u.exec(match[1]);
-    if (namespace) names.add(namespace[1]);
-    const bindings = match[1].replace(/[{}*]/gu, ' ').split(',');
-    for (const binding of bindings) {
-      const [original, alias] = binding.trim().split(/\s+as\s+/u);
-      const name = (alias ?? original)?.trim();
-      if (['test', 'it', 'describe', 'suite', 'default'].includes(original?.trim())
-        && /^[A-Za-z_$][\w$]*$/u.test(name ?? '')) names.add(name);
+    const namespace = /^(?:[A-Za-z_$][\w$]*\s*,\s*)?\*\s+as\s+([A-Za-z_$][\w$]*)$/u.exec(bindingCode);
+    if (namespace) { names.add(namespace[1]); continue; }
+    const named = /^(?:[A-Za-z_$][\w$]*\s*,\s*)?\{([\s\S]*)\}$/u.exec(bindingSource);
+    if (!named) {
+      if (!/^[A-Za-z_$][\w$]*$/u.test(bindingCode)) return true;
+      continue;
+    }
+    for (const binding of named[1].split(',')) {
+      if (!binding.trim()) continue;
+      const parsed = /^\s*([A-Za-z_$][\w$]*|'(?:test|it|describe|suite|default)'|"(?:test|it|describe|suite|default)")(?:\s+as\s+([A-Za-z_$][\w$]*))?\s*$/u.exec(binding);
+      if (!parsed) return true;
+      const original = parsed[1].replace(/^["']|["']$/gu, '');
+      const name = parsed[2] ?? original;
+      if (['test', 'it', 'describe', 'suite', 'default'].includes(original)) names.add(name);
     }
   }
+  // V8 is authoritative: a valid node:test import that this bounded reader missed stays on runners.
+  if (moduleImports.includes('node:test') && !recognizedTestImport) return true;
   // A direct alias retains the same conservative rule, including renamed imported test functions.
   let changed = true;
   while (changed) {
@@ -310,8 +333,7 @@ function unreadableTestOptions(source, quoted) {
       if (names.has(match[2]) && !names.has(match[1])) { names.add(match[1]); changed = true; }
     }
   }
-  const imports = [...source.matchAll(/\bimport\s+(?:[A-Za-z_$][\w$]*\s*,?\s*)?(?:\{[^}]*\}|\*\s+as\s+[A-Za-z_$][\w$]*)?\s*from\s*(['"])[^'"]+\1/gu)]
-    .map(match => [match.index, match.index + match[0].length]);
+  const imports = declarations.map(match => [match.index, match.index + match[0].length]);
   for (const word of code.matchAll(/\b[A-Za-z_$][\w$]*\b/gu)) {
     if (!names.has(word[0]) || imports.some(([from, to]) => word.index >= from && word.index < to)) continue;
     const tail = pastGap(source, word.index + word[0].length);
@@ -362,7 +384,7 @@ export function cpuLoadOptionsIn(sources) {
   const parsed = look([...sources, ...variants]);
   let next = sources.length;
   return sources.map((source, index) => {
-    let found = !parsed[index].compiles || commonJs[index] || opaqueLoading[index] || unreadableTestOptions(source, quoted[index]);
+    let found = !parsed[index].compiles || commonJs[index] || opaqueLoading[index] || unreadableTestOptions(source, quoted[index], parsed[index].imports);
     for (const { disabled } of occurrences[index]) {
       if (!parsed[next].compiles && !disabled) found = true;
       next += 1;
