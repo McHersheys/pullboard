@@ -16,6 +16,7 @@ import {
 } from './machine.js';
 export { WITHDRAW_MILESTONE_ENGINE };
 import { Refused } from './refused.js';
+import { WORK_ORDER_ENGINE } from './work-order-engine.js';
 import {
   atomic,
   itemById,
@@ -227,15 +228,22 @@ export function editMilestoneItems(board, name, { agentId, add = [], remove = []
     entries[index] = { ...current, items: nextItems,
       ...((board.executionEngineVersion ?? ENGINE_VERSION) >= MILESTONE_RANK_ENGINE && current.order
         ? { order: current.order.filter(id => nextItems.includes(id)) } : {}) };
+    if (engineOf(board) >= WORK_ORDER_ENGINE && (current.sunk || current.reasons)) {
+      entries[index] = withOverrides(entries[index], entries[index].order ?? [], (current.sunk ?? []).filter(id => nextItems.includes(id)));
+    }
     saveMilestones(board, entries);
     logEvent(board, agentId, 'milestone_items', null, { name, add: additions, remove: removals });
     return nextItems;
   });
 }
 
-/** Replace this milestone's explicit ranks; omitted items retain the ordinary queue order [N2,B13]. */
-export function orderMilestoneItems(board, name, { agentId, items }) {
+/**
+ * Replace this milestone's explicit ranks; omitted items retain the ordinary queue order [N2,B13]. With `place`,
+ * the coordinator pins, sinks or lifts items instead (#1017).
+ */
+export function orderMilestoneItems(board, name, { agentId, items, place, reason }) {
   if ((board.executionEngineVersion ?? ENGINE_VERSION) < MILESTONE_RANK_ENGINE) throw new Refused('ENGINE_VERSION', 'milestone order requires engine 34; upgrade Pullboard before ranking work');
+  if (place !== undefined) return overrideMilestoneItems(board, name, { agentId, items, place, reason });
   if (agentId !== COORDINATOR && (agentId === PERSON || !board.db.prepare('SELECT 1 FROM agent WHERE agent_id = ?').get(agentId))) {
     throw new Refused('NO_AGENT', 'milestone order is an agent or coordinator move; join an agent worktree or ask the coordinator');
   }
@@ -247,9 +255,52 @@ export function orderMilestoneItems(board, name, { agentId, items }) {
     if (index < 0) throw new Refused('NO_MILESTONE', `no milestone named ${name}; list them with pullboard roadmap`);
     if (order.some(id => !entries[index].items.includes(id))) throw new Refused('MILESTONE_ITEMS', 'rank only items in this milestone; read pullboard roadmap and retry');
     entries[index] = { ...entries[index], order };
+    if (engineOf(board) >= WORK_ORDER_ENGINE) entries[index] = withOverrides(entries[index], order, (entries[index].sunk ?? []).filter(id => !order.includes(id)));
     saveMilestones(board, entries);
     logEvent(board, agentId, 'milestone_order', null, { name, items: order });
     return order;
+  });
+}
+
+/** A milestone with these pins and sinks, keeping reasons only for items still pinned or sunk. */
+function withOverrides(entry, order, sunk) {
+  const kept = new Set([...order, ...sunk].map(String));
+  const reasons = Object.fromEntries(Object.entries(entry.reasons ?? {}).filter(([id]) => kept.has(id)));
+  const { sunk: _sunk, reasons: _reasons, ...rest } = entry;
+  return { ...rest, order, ...(sunk.length ? { sunk } : {}), ...(Object.keys(reasons).length ? { reasons } : {}) };
+}
+
+/**
+ * The coordinator pins items above the queue's computed order, sinks them below it, or lifts either, each pin
+ * and sink with its reason (#1017) [N22,B13]. An override stays through every re-rank until it is lifted.
+ *
+ * @param {any} board
+ * @param {string} name
+ * @param {{ agentId: string, items: unknown[], place: unknown, reason?: unknown }} change
+ * @returns {{ order: (number | string)[], sunk: (number | string)[] }}
+ */
+function overrideMilestoneItems(board, name, { agentId, items, place, reason }) {
+  if (engineOf(board) < WORK_ORDER_ENGINE) throw new Refused('ENGINE_VERSION', 'pinning and sinking queue items needs a newer engine; upgrade Pullboard before overriding the queue');
+  requireCoordinator(agentId);
+  if (!['pin', 'sink', 'lift'].includes(place)) throw new Refused('MILESTONE_PLACE', 'an override is pin, sink or lift: pullboard milestone pin <name> <ids> --reason "<why>"');
+  const ids = normalizeMilestoneItems(items);
+  if (!ids.length) throw new Refused('MILESTONE_ITEMS', `name the item ids: pullboard milestone ${place} <name> 1,2`);
+  const text = typeof reason === 'string' ? reason.trim() : '';
+  if (place !== 'lift' && !text) throw new Refused('MILESTONE_REASON', `say why: pullboard milestone ${place} ${name} ${ids.join(',')} --reason "<why>"`);
+  return atomic(board, () => {
+    const entries = milestones(board);
+    const index = entries.findIndex(entry => entry.name === name);
+    if (index < 0) throw new Refused('NO_MILESTONE', `no milestone named ${name}; list them with pullboard roadmap`);
+    const current = entries[index];
+    if (ids.some(id => !current.items.includes(id))) throw new Refused('MILESTONE_ITEMS', 'override only items in this milestone; read pullboard roadmap and retry');
+    const order = [...(current.order ?? []).filter(id => !ids.includes(id)), ...(place === 'pin' ? ids : [])];
+    const sunk = [...(current.sunk ?? []).filter(id => !ids.includes(id)), ...(place === 'sink' ? ids : [])];
+    const reasons = { ...Object.fromEntries(Object.entries(current.reasons ?? {}).filter(([id]) => !ids.map(String).includes(id))),
+      ...(place === 'lift' ? {} : Object.fromEntries(ids.map(id => [String(id), text]))) };
+    entries[index] = withOverrides({ ...current, reasons }, order, sunk);
+    saveMilestones(board, entries);
+    logEvent(board, agentId, 'milestone_order', null, { name, items: ids, place, ...(text && place !== 'lift' ? { reason: text } : {}) });
+    return { order, sunk };
   });
 }
 

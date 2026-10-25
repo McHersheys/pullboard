@@ -90,12 +90,15 @@ Work
                                         $PULLBOARD_ATTEMPT, $PULLBOARD_TIER); green work is submitted, red escalated
                 [--agent-light "..."] [--agent-mid "..."] [--agent-strong "..."]   a command per tier
   pullboard list [lane] [--all] [--route light|mid|strong]   open and active items; --all adds closed ones
-  pullboard queue                       the work queue in pull order: releases, then route, lane, holder and waits
+  pullboard queue                       the work queue in pull order: releases, then route, lane, holder, waits,
+                                        and each item's unblock count, effort and why it sits there
   pullboard roadmap                     ordered milestones, N/M landed, targets, and each item as landed,
                                         accepted or its status
   pullboard milestone add <name> [--note ...] [--items 1,2,3]   create a milestone and optionally add items
   pullboard milestone items <name> --add|--remove ids          append or remove item references
   pullboard milestone order <name> <ids>                       rank these items within their milestone (agents)
+  pullboard milestone pin|sink <name> <ids> --reason "<why>"   hold items above or below the queue's own order
+  pullboard milestone lift <name> <ids>                        return pinned or sunk items to the queue's order
   pullboard milestone move <name> --before <other>             reorder a milestone
   pullboard milestone edit <name> [--name <new>] [--note <text>] [--target <date and time>|none]
                                         rename, update a note, or set the target a milestone ships by
@@ -317,6 +320,9 @@ const HELP_EXAMPLES = {
   'lane add': 'pullboard lane add web --owns apps/web/', lane: 'pullboard lane add web --owns apps/web/',
   queue: 'pullboard queue', roadmap: 'pullboard roadmap', rigor: 'pullboard rigor', 'rigor quality': 'pullboard rigor quality --rule silent-catch', 'rigor draft': 'pullboard rigor draft "refusal:MERGE_LOST" "Merges keep every hunk" --check "node bin/checks/merges.js" --red 0123456 --green 89abcde', milestone: 'pullboard milestone add "0.7.0" --items 12,13',
   'milestone order': 'pullboard milestone order "0.7.0" 13,12',
+  'milestone pin': 'pullboard milestone pin "0.7.0" 13 --reason "the release notes need it first"',
+  'milestone sink': 'pullboard milestone sink "0.7.0" 12 --reason "waits on a design answer"',
+  'milestone lift': 'pullboard milestone lift "0.7.0" 12,13',
   runner: 'pullboard runner add studio --slots 2 --browser 1', 'runner add': 'pullboard runner add studio --slots 2 --browser 1',
   edit: 'pullboard edit 12 --brief "Add the upload page"', release: 'pullboard release 12',
   land: 'pullboard land --max 4',
