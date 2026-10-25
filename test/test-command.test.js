@@ -1,3 +1,4 @@
+/** @pullboard-test-loads src/gate.js */
 /** Runner-bound commands bypass only local memory holds [C7]. */
 import { test } from 'node:test';
 import { assertRunnerMemoryAdmission } from './runner-memory-fixture.js';

@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import {
   mkdirSync,
+  readFileSync,
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
@@ -26,10 +27,14 @@ export async function assertRunnerMemoryAdmission() {
     installSshStandIn({ bin, worker, home, machineHome: join(home, '.pullboard'), requests });
     box.env.PATH = `${bin}:${box.env.PATH}`;
     assert.equal(box.run(box.repo, 'runner', 'add', HOST, '--slots', '1', '--browser', '1').code, 0);
-    for (const [key, value] of [['gate.runnersFirst', 'on'], ['browserSlots', '1'], ['gateSlots', '1'], ['gate.memoryFloorMB', '512']]) {
+    for (const [key, value] of [['gate.runnersFirst', 'on'], ['browserSlots', '1'], ['gateSlots', '1']]) {
       const changed = box.run(box.repo, 'settings', key, value);
       assert.equal(changed.code, 0, changed.err);
     }
+    // The existing floor is file-configured; its CLI setter is not part of this item.
+    const settingsPath = join(box.env.PULLBOARD_MACHINE_HOME, 'settings.json');
+    const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
+    writeFileSync(settingsPath, JSON.stringify({ ...settings, gate: { ...settings.gate, memoryFloorMB: 512 } }));
     writeFileSync(join(box.repo, 'memory-probe.cjs'), "console.log('REAL_RUNNER_MEMORY_PROBE');\n");
     box.git(box.repo, 'add', '-A');
     box.git(box.repo, 'commit', '-q', '-m', 'chore: private memory admission probe');
