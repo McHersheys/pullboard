@@ -1,6 +1,7 @@
 import { relayExclusion } from './relay-exclusion-state.js';
 import { excludeRelayByPerson } from './relay-exclusion-state.js';
 import { clearRelayExclusion } from './relay-exclusion-state.js';
+import { reportClearedExclusion } from './relay-exclusion-state.js';
 import {
   cancellationOutcome,
   waitForDevicePoll,
@@ -1666,20 +1667,14 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
       delete state.previousBoardNotice;
       saveLink(file, state);
     }
-    if (clearedExclusion) {
-      result.notice = [result.notice, 'The exclusion was cleared; this board is linked again.'].filter(Boolean).join(' ');
-      io.err('The exclusion was cleared; this board is linked again.');
-    }
+    if (clearedExclusion) reportClearedExclusion(result, io);
     return result;
   });
 }
 
 /** Unlink locally without approval, then request a separate phone-approved remote deletion if possible. */
 export async function relayOff(root, io) {
-  excludeRelayByPerson(root, io, detail => localRecords(root, board => {
-    store.logEvent(board, store.PERSON, 'relay_exclusion', null, detail);
-    return { by: board.lastEvent.event_by, at: board.lastEvent.event_at, eventId: board.lastEvent.event_id };
-  }));
+  excludeRelayByPerson(root, io, { localRecords, store });
   const file = linkFile(root);
   return locked(file, async () => {
     const state = loadLink(file);
