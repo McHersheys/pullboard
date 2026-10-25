@@ -234,6 +234,8 @@ test('activity cursors leave events arriving during an observation pending [N26]
   const intact = exportBoard(board);
   const unknown = store.agentActivity(board, 'web-1', { after: next.cursor });
   assert.equal(unknown.entries.some(entry => entry.item === item && entry.unknown === true), true);
+  assert.equal(readActivityDelivery(board, 'web-1', { sessionStart: false }).entries.some(entry => entry.item === item && entry.unknown), true,
+    'an unreadable historical obligation stays an immediate notice, never a quiet digest count');
   assert.equal(unknown.entries.some(entry => entry.text === 'Governing messages survive unknown old detail'), true);
   assert.deepEqual(exportBoard(board), intact, 'unknown legacy detail is reported without rewriting it');
   assert.throws(() => store.inbox(board, 'web-1', { through: -1 }), error => error.code === 'BAD_ACTIVITY_CURSOR');
@@ -379,16 +381,18 @@ test('interrupts arrive at once and the digest arrives as a short summary at a b
   assert.equal(e2e.commitFile(box, box.web, 'web/interrupt.txt', 'private interrupt fixture\n', 'feat(web): interrupt fixture [G1]').status, 0);
   const commit = box.git(box.web, 'rev-parse', 'HEAD');
   const tree = box.git(box.web, 'rev-parse', 'HEAD^{tree}');
+  // A real sibling commit keeps this rejected fixture out of the later item's ancestry.
+  const rejectedCommit = box.git(box.repo, 'commit-tree', tree, '-p', base, '-m', 'private rejected sibling');
   const board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
   t.after(() => store.closeBoard(board));
   const reviewer = store.register(board, { lane: 'api', path: join(box.dir, 'interrupt-reviewer') });
   const rejected = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'Private rejected work' });
   store.claim(board, rejected, { agentId: 'web-1', lane: 'web', leaseMs: 3_600_000, head: base, freeze });
-  submitFixture(board, rejected, { agentId: 'web-1', commit, tree });
+  submitFixture(board, rejected, { agentId: 'web-1', commit: rejectedCommit, tree });
   store.verify(board, rejected, { agentId: reviewer, decision: 'REJECT', reason: 'TEST_FAILURE',
-    note: 'Synthetic board-state refusal, not an executed gate.', head: commit, digest: freeze().digest,
+    note: 'Synthetic board-state refusal, not an executed gate.', head: rejectedCommit, digest: freeze().digest,
     policy: 'any', familyPolicy: 'off', reopenFirstRefusalMinutes: 30,
-    review: { commit, head: commit, trunk: base, paths: ['web/interrupt.txt'] } });
+    review: { commit: rejectedCommit, head: rejectedCommit, trunk: base, paths: ['web/interrupt.txt'] } });
   const active = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'Private lapsing work',
     criterion: 'The private break file is committed.', brief: 'Files: web/interrupt.txt\nTest: preserve the private fixture\n' });
   const nativeClaim = box.run(box.web, 'claim', String(active), '--json');
