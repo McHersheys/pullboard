@@ -1,6 +1,8 @@
 /** Append-only withdrawal bindings and derived review-history annotations [V2,V6,H16]. */
 import { Refused } from './refused.js';
 import { VERDICT_WITHDRAW_ENGINE } from './verdict-withdraw-engine.js';
+import { ENGINE_VERSION } from './engine-metadata.js';
+import { MERGE_ONLY_VERDICT_ENGINE } from './merge-only-verdict-engine.js';
 
 /** Pair immutable verdict rows with their corresponding immutable acceptance/rejection events. */
 function verdictPairs(board, id) {
@@ -31,8 +33,9 @@ export function verdictWithdrawals(board, id) {
 export function verdictWithdrawalTarget(board, item, agentId) {
   if (item.item_status !== 'verified') throw new Refused('VERDICT_WITHDRAW_STATE', 'withdraw an accepted, unmerged item; use ordinary reopen for a submitted item');
   const withdrawn = verdictWithdrawals(board, item.item_id);
-  const carry = board.db.prepare("SELECT event_detail FROM event WHERE item_id = ? AND event_kind = 'merge-only-accept' AND json_extract(event_detail,'$.commit') = ? ORDER BY event_id DESC LIMIT 1")
-    .get(item.item_id, item.item_commit);
+  const carry = (board.executionEngineVersion ?? ENGINE_VERSION) >= MERGE_ONLY_VERDICT_ENGINE
+    ? board.db.prepare("SELECT event_detail FROM event WHERE item_id = ? AND event_kind = 'merge-only-accept' AND json_extract(event_detail,'$.commit') = ? ORDER BY event_id DESC LIMIT 1")
+      .get(item.item_id, item.item_commit) : null;
   const carriedVerdict = carry ? JSON.parse(carry.event_detail).verdict : null;
   const pair = verdictPairs(board, item.item_id).findLast(({ verdict, event }) => verdict.verdict_decision === 'ACCEPT'
     && (verdict.verdict_commit === item.item_commit || verdict.verdict_id === carriedVerdict)

@@ -8,6 +8,9 @@ import * as store from '../src/board.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { captureMergeOnly } from '../src/merge-only-source.js';
 import { runFixtureGit, runFixtureChild } from './fixture-child.js';
+import { exportBoard, importBoard } from '../src/exchange.js';
+import { prepareEngineMove, applyEngineMove } from '../src/engine.js';
+import { MERGE_ONLY_VERDICT_ENGINE } from '../src/merge-only-verdict-engine.js';
 
 const e2e = createE2eHelpers();
 after(e2e.cleanup);
@@ -24,7 +27,7 @@ function state(box, id) {
   const board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
   try {
     return { item: store.getItem(board, id), verdicts: store.verdictsFor(board, id),
-      events: store.events(board, { itemId: id }) };
+      events: store.events(board, { itemId: id }), snapshot: exportBoard(board) };
   } finally { store.closeBoard(board); }
 }
 
@@ -59,6 +62,7 @@ test('a merge-only resubmission keeps its accept and records the resolution diff
   assert.notEqual(box.tryGit(box.web, 'merge', '-q', '--no-edit', 'main').status, 0);
   const head = content(box, box.web, 'resolved', 'fix(web): resolve the accepted trunk merge [G1]');
   assert.deepEqual(box.git(box.web, 'show', '-s', '--format=%P', head).split(' '), [accepted, trunk]);
+  const pending = state(box, id);
   succeeds(box, box.web, 'submit', String(id));
   const carried = state(box, id);
   assert.equal(carried.item.item_status, 'verified', 'a gated merge-only resubmission keeps its original acceptance');
@@ -78,6 +82,42 @@ test('a merge-only resubmission keeps its accept and records the resolution diff
   const shown = succeeds(box, box.repo, 'show', String(id));
   assert.match(shown.out, /verified/u);
   assert.doesNotMatch(shown.out, /re-review: main merge only/u);
+  const submitted = JSON.parse(carried.events.findLast(event => event.event_kind === 'submit').event_detail);
+  const options = { agentId: pending.item.item_owner, commit: head, tree: submitted.tree,
+    policyCommit: submitted.policyCommit, submissionProof: submitted.submissionProof, mergeOnly: detail };
+  for (const key of ['commit', 'tree', 'trunk', 'acceptedHead', 'digest', 'verdict', 'reopen']) {
+    const replica = store.openBoard(':memory:');
+    try {
+      importBoard(replica, pending.snapshot);
+      const bad = { ...detail, [key]: typeof detail[key] === 'number' ? detail[key] + 100 : '0'.repeat(40) };
+      assert.throws(() => store.submit(replica, id, { ...options, mergeOnly: bad }), error => error.code === 'MERGE_ONLY_PROOF', key);
+      assert.equal(store.getItem(replica, id).item_status, 'claimed', 'invalid proof is atomic');
+      assert.equal(store.events(replica, { itemId: id }).filter(event => event.event_kind === 'merge-only-accept').length, 0);
+    } finally { store.closeBoard(replica); }
+  }
+  const refrozen = store.openBoard(':memory:');
+  try {
+    importBoard(refrozen, pending.snapshot);
+    store.refreeze(refrozen, id, { agentId: 'coordinator', freeze: () => ({ text: pending.item.item_frozen, digest: 'a different frozen bar' }) });
+    store.claim(refrozen, id, { agentId: options.agentId, lane: 'web', leaseMs: 7_200_000,
+      freeze: () => ({ text: pending.item.item_frozen, digest: 'a different frozen bar' }) });
+    assert.throws(() => store.submit(refrozen, id, options), error => error.code === 'MERGE_ONLY_PROOF');
+    assert.equal(store.events(refrozen, { itemId: id }).filter(event => event.event_kind === 'merge-only-accept').length, 0);
+  } finally { store.closeBoard(refrozen); }
+  const replay = store.openBoard(':memory:');
+  try {
+    importBoard(replay, pending.snapshot);
+    const move = prepareEngineMove(replay, 'submit', [id, options]);
+    assert.throws(() => applyEngineMove(replay, { ...move, engine: MERGE_ONLY_VERDICT_ENGINE - 1 },
+      { sequence: 1, at: '2026-01-01T00:00:00.000Z' }), /engine/iu);
+    applyEngineMove(replay, move, { sequence: 1, at: '2026-01-01T00:00:00.000Z' });
+    assert.equal(store.getItem(replay, id).item_status, 'verified');
+    assert.equal(store.acceptedVerdict(replay, store.getItem(replay, id)).verdict_id, detail.verdict);
+    assert.equal(store.checkedLandingCommit(replay, store.getItem(replay, id)), head);
+    store.reopen(replay, id, { agentId: 'coordinator', withdrawVerdict: true, note: 'the original reviewer withdraws the retained acceptance' });
+    assert.equal(store.getItem(replay, id).item_status, 'open');
+    assert.equal(store.acceptedVerdict(replay, store.getItem(replay, id)), undefined, 'a carry cannot resurrect a withdrawn original verdict');
+  } finally { store.closeBoard(replay); }
 });
 
 /** Make a small real Git conflict without pretending these synthetic identities are live reviewers. */
@@ -106,7 +146,9 @@ function sourceFixture(t) {
   /** Capture the exact current commit and tree as the post-gate CLI does. */
   const capture = () => captureMergeOnly(root, basis, { commit: git('rev-parse', 'HEAD'),
     tree: git('rev-parse', 'HEAD^{tree}'), trunk });
-  return { root, git, save, accepted, trunk, commit, basis, capture };
+  /** Start a real conflict with the same isolated Git identity and configuration as every fixture write. */
+  const conflict = () => runFixtureChild('git', ['merge', '-q', '--no-edit', 'main'], { cwd: root, env, encoding: 'utf8', timeout: 5000 });
+  return { root, git, save, accepted, trunk, commit, basis, capture, conflict };
 }
 
 test('extra behavioral edits in the same conflicted file need outside review [V1,V4]', t => {
@@ -124,4 +166,33 @@ test('amended non-merge and stale head or tree proofs cannot retain an accept [V
   box.git('reset', '--hard', box.accepted);
   box.save('resolved', 'unchanged', true);
   assert.equal(box.capture(), null, 'an amended commit without the exact merge parents needs review');
+});
+
+test('unresolved conflict markers cannot masquerade as a resolution [V1,V4]', t => {
+  const box = sourceFixture(t);
+  box.git('reset', '--hard', box.accepted);
+  const merged = box.conflict();
+  assert.notEqual(merged.status, 0);
+  assert.match(merged.stdout, /CONFLICT/u);
+  box.git('add', 'hot.js'); box.git('commit', '-q', '-m', 'unresolved markers');
+  assert.equal(box.capture(), null);
+});
+
+test('a landing-failure return allows only the exact automatic clean merge [V1,V4]', t => {
+  const box = sourceFixture(t);
+  box.git('switch', '-q', 'main'); box.git('reset', '--hard', `${box.accepted}^`);
+  writeFileSync(join(box.root, 'trunk-only.txt'), 'accepted trunk change\n');
+  box.git('add', 'trunk-only.txt'); box.git('commit', '-q', '-m', 'trunk-only change');
+  const trunk = box.git('rev-parse', 'HEAD');
+  box.git('switch', '-q', 'candidate'); box.git('reset', '--hard', box.accepted);
+  box.git('merge', '-q', '--no-edit', 'main');
+  const basis = { ...box.basis, cleanOnly: true, conflict: { trunk: null, files: [] } };
+  const commit = box.git('rev-parse', 'HEAD');
+  const tree = box.git('rev-parse', 'HEAD^{tree}');
+  const proof = captureMergeOnly(box.root, basis, { commit, tree, trunk });
+  assert.ok(proof);
+  assert.equal(proof.resolutionDiff, '', 'no unrecorded conflict resolution is exempt');
+  box.save('accepted', 'extra behavior', true);
+  assert.equal(captureMergeOnly(box.root, basis, { commit: box.git('rev-parse', 'HEAD'),
+    tree: box.git('rev-parse', 'HEAD^{tree}'), trunk }), null);
 });

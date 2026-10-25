@@ -9,7 +9,7 @@ export function mergeOnlyBasis(board, item) {
   const last = board.db.prepare("SELECT event_id, event_kind, event_detail FROM event WHERE item_id = ? AND event_kind IN ('reopen','accept','reject','refreeze','merge-only-accept') ORDER BY event_id DESC LIMIT 1").get(item.item_id);
   if (last?.event_kind !== 'reopen') return null;
   const returned = JSON.parse(last.event_detail);
-  if (!returned.conflict || !Number.isSafeInteger(returned.supersedes)) return null;
+  if ((!returned.conflict && !returned.landingFailure) || !Number.isSafeInteger(returned.supersedes)) return null;
   const accepted = board.db.prepare("SELECT event_detail FROM event WHERE event_id = ? AND item_id = ? AND event_kind IN ('accept','merge-only-accept')").get(returned.supersedes, item.item_id);
   if (!accepted) return null;
   const detail = JSON.parse(accepted.event_detail);
@@ -17,7 +17,8 @@ export function mergeOnlyBasis(board, item) {
   if (!verdict || verdict.verdict_digest !== item.item_frozen_digest || detail.commit !== returned.commit || item.item_commit !== returned.commit) return null;
   return { acceptedCommit: returned.commit, acceptedHead: verdict.review?.head ?? returned.commit,
     digest: item.item_frozen_digest, verdict: verdict.verdict_id, by: verdict.verdict_by,
-    reopen: last.event_id, conflict: returned.conflict, review: verdict.review ?? null };
+    reopen: last.event_id, conflict: returned.conflict ?? { trunk: null, files: [] },
+    cleanOnly: !returned.conflict, review: verdict.review ?? null };
 }
 
 /** Validate sealed source facts against native history without consulting replica-local Git. */

@@ -115,7 +115,10 @@ import {
   unreadShoutBindings,
 } from './shout-audience.js';
 import { recordVerdict } from './verdict-assurance.js';
-import { mergeOnlyBasis, mergeOnlyProblem } from './merge-only-verdict.js';
+import {
+  mergeOnlyBasis,
+  mergeOnlyProblem,
+} from './merge-only-verdict.js';
 import { MERGE_ONLY_VERDICT_ENGINE } from './merge-only-verdict-engine.js';
 import {
   atomic,
