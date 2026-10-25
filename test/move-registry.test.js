@@ -1,4 +1,3 @@
-import { ENGINE_VERSION } from '../src/machine.js';
 /** @pullboard-test-input source-tree */
 /** @pullboard-test-input test-tree */
 /** @pullboard-test-loads src/move-registry.js src/moves/*.js */
