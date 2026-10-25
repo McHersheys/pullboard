@@ -16,7 +16,7 @@ import { frozenCriterion, loadSpec } from '../src/spec.js';
 import { runFixtureGit } from './fixture-child.js';
 
 /** Keep fixture identity, settings, Git and SQLite separate from the invoking agent. */
-function fixture(t, { registrationEngine = ENGINE_VERSION } = {}) {
+function fixture(t, { registrationEngine = ENGINE_VERSION, replayEngine = ENGINE_VERSION } = {}) {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-handoff-'))), root = join(directory, 'repo');
   mkdirSync(root);
   const overrides = { PULLBOARD_HOME: join(directory, 'home'), PULLBOARD_MACHINE_HOME: join(directory, 'machine'), GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
@@ -50,7 +50,7 @@ function fixture(t, { registrationEngine = ENGINE_VERSION } = {}) {
     return { code, output, error, document: json && output ? JSON.parse(output) : null };
   }
   /** Replay only with the relay's independent authenticated seat, retaining refusal outcomes. */
-  function replay(operation, args, sender, engine) {
+  function replay(operation, args, sender, engine = replayEngine) {
     const move = prepareEngineMove(board, operation, args);
     if (engine !== undefined) move.engine = engine;
     return applyRelayMove(board, move, { sequence: appliedSequence(board) + 1, at: clock.now().toISOString(), kind: 'move',
@@ -119,7 +119,8 @@ test('handoff takeover prints real work and retires only the outgoing seat [B3,N
 });
 
 test('handoff takeover is first-wins and cannot be forged by facts or an authenticated old engine [B3,H16]', t => {
-  const box = fixture(t, { registrationEngine: HANDOFF_ENGINE }), [outgoing, incoming, other] = box.agents;
+  // Keep the whole historical prefix at its real engine; a current receipt activates newer grants.
+  const box = fixture(t, { registrationEngine: HANDOFF_ENGINE, replayEngine: HANDOFF_ENGINE }), [outgoing, incoming, other] = box.agents;
   const opened = box.replay('openHandoff', [{ agentId: outgoing }], outgoing);
   assert.equal(opened.error, undefined);
   const id = opened.result.item;
