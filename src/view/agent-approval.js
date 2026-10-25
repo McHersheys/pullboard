@@ -1,3 +1,4 @@
+import { specRevisionScript } from './spec-revision.js';
 /** Render core-projected agent approval calls without inferring who approved a row [S1,B26,P6,N26]. */
 
 /** Embed a Needs-you row renderer that reuses the existing person decision pipeline. */
@@ -15,5 +16,6 @@ function agentApprovalRow(row) {
     + (feedback ? specFeedback(feedback) : '')
     + '<div class="meta"><span class="why"><b>NEEDS YOU</b> confirm or decline this row</span></div></div>' + (controls ? '<div class="actions">' + controls + '</div>' : '') + '</li>';
 }
+${specRevisionScript()}
 `;
 }

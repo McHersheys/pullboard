@@ -337,12 +337,12 @@ export async function resumeHere(io, view, diagnostics = false, { json = false }
     if (!diagnostics && next.startsWith('merge #')) next = 'pullboard land (checks current verdicts before merging)';
   }
   else if (card.holding.length) next = buildNext(card);
-  else if (card.sentBack.length) next = reworkNext(card);
-  else if (card.hold) next = 'wait for the hold to lift: pullboard next --wait 9 (minutes)';
+  else if (card.sentBack.length) next = `pullboard next; ${reworkNext(card)}`;
+  else if (card.hold) next = 'pullboard next --wait 9 (minutes); the lane hold must lift before its work is available';
   else if (ready) next = `pullboard next (${ready} ready in your lane)`;
   else if (inLane.length) next = `pullboard next --wait 9 (minutes); ${inLane.length} in your lane ${inLane.length === 1 ? 'waits' : 'wait'} on other work`;
   else if (card.awaiting.length) next = 'pullboard next --wait 9 (minutes); a rejected item comes back to your lane';
-  else next = 'nothing open in your lane; pullboard next --verify names work you can check';
+  else next = 'pullboard next; take its ranked work, including eligible reviews or work in another lane';
   if (card.setup) next = card.setup.agentNext ?? card.setup.command;
   if (card.commits) next = commitFirst(card.commits, next);
   if (card.inbox) next = inboxFirst(card.inbox, next);

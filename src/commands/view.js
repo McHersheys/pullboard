@@ -62,14 +62,15 @@ import {
  */
 export async function viewHere(io, values) {
   if (values.export !== undefined) {
-    if (values.project) throw new Refused('USAGE', 'choose either --project for a live scoped view or --export for a static snapshot');
+    if (values.project || values.lan) throw new Refused('USAGE', 'choose either a live view with --project or --lan, or --export for a static snapshot');
     const exported = await exportView(io.cwd, resolve(io.cwd, values.export));
     io.result?.(exported);
     io.say(`wrote snapshot ${exported.path}`);
     return 0;
   }
   const projectRequested = Boolean(values.project);
-  const port = values.port === undefined ? (projectRequested ? 0 : defaultViewPort()) : Number(values.port);
+  const lan = Boolean(values.lan);
+  const port = values.port === undefined ? (projectRequested || lan ? 0 : defaultViewPort()) : Number(values.port);
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Refused('USAGE', '--port is a number from 0 to 65535; 0 picks a free one');
   let projectRoot;
   let scopeCommonDir;
@@ -98,7 +99,7 @@ export async function viewHere(io, values) {
   const internalForeground = process.env.PULLBOARD_VIEW_BACKGROUND_CHILD === '1'
     || process.env.PULLBOARD_VIEW_FOREGROUND === '1';
   if (!internalForeground) {
-    const existing = port ? await runningView(port, scopeCommonDir) : null;
+    const existing = !lan && port ? await runningView(port, scopeCommonDir) : null;
     if (existing) {
       if (info && existsSync(join(info.root, CONFIG_FILE))) {
         const ctx = context(io);
@@ -107,23 +108,24 @@ export async function viewHere(io, values) {
       reportView(io, { ...existing, reused: true });
       return 0;
     }
-    if (process.env.AI_AGENT !== undefined || !io.physicalStdoutIsTTY) return await launchBackgroundView(io, port, projectRoot);
+    if (process.env.AI_AGENT !== undefined || !io.physicalStdoutIsTTY) return await launchBackgroundView(io, port, projectRoot, { lan });
   }
   let view;
   try {
     // The adapter override is carried only by the in-process command streams, for private CLI fixtures.
-    view = await (io.serveView ?? serveView)({ port, isMain: codeIsFromMain(), ...(projectRoot ? { projectRoot } : {}) });
+    view = await (io.serveView ?? serveView)({ port, isMain: codeIsFromMain(), ...(lan ? { lan: true } : {}), ...(projectRoot ? { projectRoot } : {}) });
     const sentinel = startServeSentinel({ projectRoot });
     const boundAt = new Date().toISOString();
     const closeServer = view.close;
     view = {
       ...view,
+      ...(lan ? { lan: true } : {}),
       pid: process.pid,
       boundAt,
-      close: async () => { await sentinel.close(); forgetView(view.port); await closeServer(); },
+      close: async () => { await sentinel.close(); if (!lan) forgetView(view.port); await closeServer(); },
     };
     try {
-      rememberView({ port: view.port, secret: new URL(view.url).searchParams.get('k'), pid: process.pid, boundAt,
+      if (!lan) rememberView({ port: view.port, secret: new URL(view.url).searchParams.get('k'), pid: process.pid, boundAt,
         ...(scopeCommonDir ? { scopeCommonDir } : {}) }, { rememberPort: port === 0 && !scopeCommonDir });
     } catch (error) {
       throw new Refused('VIEW_STATE', `could not save the private view session: ${error.message}`);
@@ -152,7 +154,7 @@ export async function viewHere(io, values) {
   }
   reportView(io, { ...view, reused: false });
   if (process.env.PULLBOARD_VIEW_BACKGROUND_CHILD === '1' && process.send) {
-    process.send({ type: 'ready', url: view.url, port: view.port, pid: process.pid, boundAt: view.boundAt });
+    process.send({ type: 'ready', url: view.url, port: view.port, pid: process.pid, boundAt: view.boundAt, ...(lan ? { lan: true } : {}) });
   }
   io.flush?.(0);
   if (!values['no-open'] && process.env.PULLBOARD_VIEW_BACKGROUND_CHILD !== '1') {

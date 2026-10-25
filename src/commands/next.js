@@ -20,6 +20,7 @@ import {
   nextOnce,
   sayBrief,
   span,
+  whoAmI,
   withBoard,
   withBoardRead,
 } from '../cli.js';
@@ -91,7 +92,8 @@ export async function nextHere(io, values) {
     if (!found.retry && (found.laneWork || Date.now() >= deadline)) {
       if (values.verify) refuseWhileBuilding(ctx);
       const agents = withBoardRead(ctx, (board) => store.listAgents(board));
-      return refuseNextIdle(io, found.reasons, found.reasons.map((reason) => displayedWait(reason, agents, ctx.config)), { minutes, verify: values.verify, laneWork: found.laneWork });
+      const seat = withBoardRead(ctx, (board) => whoAmI(ctx, board));
+      return refuseNextIdle(io, found.reasons, found.reasons.map((reason) => displayedWait(reason, agents, ctx.config)), { minutes, verify: values.verify, laneWork: found.laneWork, lane: seat.lane, route: seat.route });
     }
     if (!found.retry) await new Promise((done) => setTimeout(done, 5000));
   }
