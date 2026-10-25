@@ -899,13 +899,17 @@ test('an item waits across repos [B24,H16]', async t => {
   const freeze = item => ({ text: item.item_title, digest: `fixture:${item.item_title}` });
   /** Record an actual native verified transition, with a clearly synthetic build receipt. */
   function accept(board, id, root, title) {
-    store.claim(board, id, { agentId: 'web-1', lane: 'web', leaseMs: 60_000, freeze });
-    submitFixture(board, id, { agentId: 'web-1', commit: 'a'.repeat(40), tree: 'synthetic-tree' });
+    const box = root === parent.root ? parent : child;
+    const commit = box.git('rev-parse', 'HEAD').trim();
+    const tree = box.git('rev-parse', 'HEAD^{tree}').trim();
+    store.claim(board, id, { agentId: 'web-1', lane: 'web', leaseMs: 60_000, head: commit, freeze });
+    submitFixture(board, id, { agentId: 'web-1', commit, tree });
     const reviewer = store.register(board, { lane: 'web', path: join(root, 'synthetic-reviewer') });
     store.verify(board, id, { agentId: reviewer, decision: 'ACCEPT', reason: 'CRITERION_MET',
-      note: 'synthetic board-state fixture; no gate execution', head: 'a'.repeat(40), digest: `fixture:${title}`, policy: 'any' });
+      note: 'synthetic board-state fixture; no gate execution', head: commit, digest: `fixture:${title}`, policy: 'any' });
   }
   accept(local, localId, parent.root, 'Local same-number item');
+  store.merged(local, localId, { agentId: 'coordinator', commit: parent.git('rev-parse', 'HEAD').trim() });
   /** Assert the native claim guard and pull queue name the owning repository. */
   function blocked(id, label) {
     assert.throws(() => store.claim(local, id, { agentId: 'web-1', lane: 'web', leaseMs: 60_000, freeze }),
@@ -956,6 +960,8 @@ test('an item waits across repos [B24,H16]', async t => {
   }
   await readState();
   builds.length = 0;
+  await readState();
+  assert.deepEqual(builds, [], 'unchanged API reads actually reuse the warm item cache');
   accept(foreign, foreignId, child.root, 'Foreign prerequisite');
   blocked(dependent, 'service#1');
   await announce(2);
