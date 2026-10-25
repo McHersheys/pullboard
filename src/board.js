@@ -1,3 +1,14 @@
+import { activityNewsFlag } from './activity-news.js';
+import { migrateEventLogVersion } from './board-event-log-migrate.js';
+import {
+  configureBoardJournal,
+  closeBoardWrites,
+} from './board-write-lock.js';
+import {
+  focusOrder,
+  focusReasons,
+} from './focus-milestone.js';
+import { ensureProofCounters } from './proof-counters.js';
 import { correctedNoVerdictReopen } from './reopen-history.js';
 import {
   getShout,
@@ -11,6 +22,7 @@ export {
   getShout,
   allShouts,
   shoutDetails,
+  decisionAnswers,
   openRequests,
   pendingRefreeze,
   pendingRefreezeProblem,
@@ -47,6 +59,7 @@ import {
   recordBarRevision,
   barReadyProblem,
 } from './bar-readiness.js';
+import { barCheckFactFields } from './bar-check.js';
 export { setBarReady, signBar } from './bar-readiness.js';
 import {
   coordinatorCheck,
@@ -87,6 +100,7 @@ import {
   unreadCount,
   events,
   itemThread,
+  laneHold,
   laneHolds,
   rowDecisions,
   UNREAD_SQL,
@@ -101,8 +115,11 @@ import {
   unreadShoutBindings,
 } from './shout-audience.js';
 import { recordVerdict } from './verdict-assurance.js';
-import { logEvent } from './board-event-log.js';
-export { logEvent };
+import {
+  atomic,
+  logEvent,
+} from './board-event-log.js';
+export { atomic, logEvent };
 /**
  * The board (B1–B7, V1–V8, R1–R3): items, claims, submissions, verdicts and shouts in one SQLite
  * file in the git common dir, so every worktree sees the same board and nothing is committed.
@@ -142,8 +159,13 @@ import {
   boardBusyError,
 } from './board-access.js';
 import { ensureHotIndexes } from './board-hot.js';
+import {
+  ensureFactIdentityIndexes,
+  factIdentityExists,
+  missingFactIdentityIndexes,
+  requireFactIdentityIndexes,
+} from './fact-identity.js';
 import { NEXT_STEPS } from './next-step-words.js';
-import { boardWriteBusyError } from './board-busy.js';
 export { boardBusyError } from './board-access.js';
 import {
   boardStanding,
@@ -190,6 +212,12 @@ import {
 } from './machine.js';
 import { LOCAL_LANDING_ENGINE } from './land-engine.js';
 import { SPEC_APPROVAL_ENGINE } from './spec-approval-engine.js';
+import { SPEC_REVISION_ENGINE } from './spec-revision-engine.js';
+import {
+  markAppliedRevisions,
+  validRevisionApproval,
+} from './spec-revisions.js';
+export { decideSpecRevisions } from './spec-revisions.js';
 import * as landingEnvironment from './landing-environment-guards.js';
 import { Refused } from './refused.js';
 import { saveJoinedSession } from './parent-session.js';
@@ -306,10 +334,10 @@ export { openBoardReadOnly } from './board-read-open.js';
  *
  * @param {string} file
  * @param {{ now: () => Date }} [clock]
- * @param {{ isMain?: boolean, onDiagnostic?: (message: string) => void }} [options] Only the main checkout may upgrade a shared board.
+ * @param {{ isMain?: boolean, onDiagnostic?: (message: string) => void, writeContext?: {command?:string, seat?:string, path?:string} }} [options] Only the main checkout may upgrade a shared board.
  * @returns {{ db: DatabaseSync, clock: { now: () => Date } }}
  */
-export function openBoard(file, clock = systemClock, { isMain, onDiagnostic } = {}) {
+export function openBoard(file, clock = systemClock, { isMain, onDiagnostic, writeContext } = {}) {
   isMain = sharedSchemaOwner(file, isMain);
   if (file !== ':memory:' && isMain === false) {
     let boardVersion = 0;
@@ -343,29 +371,43 @@ export function openBoard(file, clock = systemClock, { isMain, onDiagnostic } = 
   try {
     db = new DatabaseSync(file);
     db.exec(`PRAGMA busy_timeout = ${BOARD_BUSY_TIMEOUT_MS}`);
-    if (file !== ':memory:' && isMain !== false) db.exec('PRAGMA journal_mode = WAL');
-    const board = { db, clock };
+    if (file !== ':memory:' && isMain !== false) configureBoardJournal(db, writeContext);
+    const board = { db, clock, writeContext };
+    let warmCounters = true;
     if (isMain !== false || file === ':memory:') {
       // Migrate and audit only a board whose version is behind; a drifted shape is reported and left alone (#1047).
       const standing = boardStanding(db, SCHEMA_DIGEST, SCHEMA_VERSION, readEventLogVersion(db) < EVENT_LOG_VERSION);
-      if (standing === 'behind') {
-        migrateEventLogVersion(db);
-        migrate(db);
-        ensureHotIndexes(db);
-        db.prepare('INSERT OR IGNORE INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run('board_id', randomBytes(16).toString('hex'));
-        guardStore(board);
-      }
-      if (standing === 'behind' || standing === 'unstamped') recordSchemaStamp(db, SCHEMA_DIGEST);
-      if (standing === 'drifted') reportDrift(file, onDiagnostic);
+      if (standing === 'behind' || standing === 'unstamped') atomic(board, () => {
+        if (standing === 'behind') {
+          migrateEventLogVersion(db);
+          migrate(db);
+          ensureHotIndexes(db);
+          db.prepare('INSERT OR IGNORE INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run('board_id', randomBytes(16).toString('hex'));
+          guardStore(board);
+        }
+        recordSchemaStamp(db, SCHEMA_DIGEST);
+      });
+      // Index-only upgrades keep the data version/digest unchanged. Install and restamp together;
+      // drifted or read-only stores never take this path, and old clients accept the resulting stamp.
+      if (standing !== 'drifted' && missingFactIdentityIndexes(db).length) atomic(board, () => {
+        if (boardStanding(db, SCHEMA_DIGEST, SCHEMA_VERSION) !== 'current') return;
+        ensureFactIdentityIndexes(db);
+        recordSchemaStamp(db, SCHEMA_DIGEST);
+      });
+      if (standing === 'drifted') { warmCounters = false; reportDrift(file, onDiagnostic); }
     } else {
       // Read compatibility before any local effect; persistent schema belongs to trunk alone.
       readEventLogVersion(db);
       reportSharedSchema(file, sharedSchemaDiagnostic(db, expectedBoardSchema(SCHEMA, migrate, storeTriggers)), onDiagnostic);
     }
     guardMoves(board);
+    // Writable commands catch up old writers or missing local projections once. Read-only open
+    // never calls this path; drifted stores remain untouched, and invalid history stays invalid.
+    // Proof warming also preserves the Rigor projection, including after a proof-cache rebuild.
+    if (warmCounters) atomic(board, () => ensureProofCounters(board));
     return board;
   } catch (error) {
-    try { db?.close(); } catch {}
+    try { db?.close(); if (db) closeBoardWrites(db); } catch { /* Preserve the opening failure when SQLite cleanup also fails. */ }
     throw boardNotWritable(file, boardBusyError(file, startedAt, error));
   }
 }
@@ -430,61 +472,10 @@ function guardStore(board) {
 
 export { readEventLogVersion } from './board-read-open.js';
 
-/** Refuse unknown future event records before migrating anything, and mark older boards current. */
-function migrateEventLogVersion(db) {
-  db.exec('BEGIN IMMEDIATE');
-  try {
-    db.exec(SCHEMA);
-    const version = readEventLogVersion(db);
-    if (version < EVENT_LOG_VERSION) {
-      db.prepare('INSERT INTO board_meta (meta_key, meta_value) VALUES (?, ?) ON CONFLICT(meta_key) DO UPDATE SET meta_value = excluded.meta_value')
-        .run('event_log_version', String(EVENT_LOG_VERSION));
-    }
-    db.exec('COMMIT');
-  } catch (error) {
-    db.exec('ROLLBACK');
-    throw error;
-  }
-}
 
 export { boardId } from './board-query.js';
 
 export { closeBoard } from './board-read-open.js';
-
-const TRANSACTION_DEPTH = new WeakMap();
-
-/**
- * Run `work` in one immediate transaction: the write lock is taken before the first read, so two
- * agents can never both see an item as free (B2). Nested moves use savepoints so a replay receipt
- * and its board mutation can commit together, while a refused move rolls back only its work.
- *
- * @template T
- * @param {any} board
- * @param {() => T} work
- * @returns {T}
- */
-export function atomic(board, work) {
-  const depth = TRANSACTION_DEPTH.get(board) ?? 0;
-  const savepoint = `pullboard_atomic_${depth}`;
-  const startedAt = Date.now();
-  try { board.db.exec(depth ? `SAVEPOINT ${savepoint}` : 'BEGIN IMMEDIATE'); }
-  catch (error) { throw boardWriteBusyError(board.db, startedAt, error); }
-  TRANSACTION_DEPTH.set(board, depth + 1);
-  const lastEvent = board.lastEvent;
-  const emitted = board.emittedEvents?.length ?? 0;
-  try {
-    const result = work();
-    board.db.exec(depth ? `RELEASE ${savepoint}` : 'COMMIT');
-    return result;
-  } catch (error) {
-    board.db.exec(depth ? `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}` : 'ROLLBACK');
-    board.lastEvent = lastEvent;
-    board.emittedEvents?.splice(emitted);
-    throw error;
-  } finally {
-    TRANSACTION_DEPTH.set(board, depth);
-  }
-}
 
 /** Log an authenticated relay refusal without making an item, shout or verdict move [H2,H16]. */
 export function recordRelayRefusal(board, { by, sequence, kind, operation, actor, code, itemId = null, person = null }) {
@@ -1310,7 +1301,7 @@ export function reserveReview(board, id, who) {
 export function reserveNextReview(board, { agentId, lane, leaseMs, policy, familyPolicy = 'off', runnable, routes, skipIds = [] }) {
   return atomic(board, () => {
     const { item, reasons } = nextFor(board, { agentId, lane, verify: true, familyPolicy, runnable, routes, skipIds });
-    return item ? { item: reserveWithin(board, item.item_id, { agentId, leaseMs, policy, familyPolicy }), reasons: [] } : { item: null, reasons };
+    return item ? { item: reserveWithin(board, item.item_id, { agentId, leaseMs, policy, familyPolicy }), reasons } : { item: null, reasons };
   });
 }
 
@@ -1631,10 +1622,10 @@ export { getItem } from './board-query.js';
  * Insert a shout within the caller's transaction.
  *
  * @param {any} board
- * @param {{ from: string, to: string, text: string, lanes: string[], item?: number, decision?: boolean, answers?: number | null, evidence?: any, request?: boolean, channel?: 'terminal' | 'view', detail?: object }} message - detail: extra event fields
+ * @param {{ from: string, to: string, text: string, lanes: string[], item?: number, decision?: boolean, answers?: number | null, evidence?: any, request?: boolean, news?: boolean, channel?: 'terminal' | 'view', detail?: object }} message - detail: extra event fields
  * @returns {number}
  */
-function insertShout(board, { from, to, text, lanes, item, decision = false, answers = null, evidence = null, request = false, channel = 'terminal', detail = {} }) {
+function insertShout(board, { from, to, text, lanes, item, decision = false, answers = null, evidence = null, request = false, news = false, channel = 'terminal', detail = {} }) {
   const engine = board.executionEngineVersion ?? ENGINE_VERSION;
   if (item !== undefined) {
     if (engine < ITEM_SHOUT_ENGINE) throw new Refused('ENGINE_VERSION', 'item messages require engine 93; upgrade every linked device before sending one');
@@ -1677,12 +1668,12 @@ function insertShout(board, { from, to, text, lanes, item, decision = false, ans
   if (personAnswer && !['terminal', 'view'].includes(channel)) {
     throw new Refused('B26_PERSON_CHANNEL', 'record the person answer through the terminal or the view; run pullboard view');
   }
-  return persistShout(board, { from, to, text, decision, answers, evidence, request, channel, detail, outcome, personAnswer });
+  return persistShout(board, { from, to, text, decision, answers, evidence, request, news, channel, detail, outcome, personAnswer });
 }
 
 /** Persist a validated message or a fixed internal notice inside the caller's transaction. */
 function persistShout(board, { from, to, text, decision = false, answers = null, evidence = null, request = false,
-  channel = 'terminal', detail = {}, outcome = '', personAnswer = false }) {
+  channel = 'terminal', detail = {}, outcome = '', personAnswer = false, news = false }) {
   const result = board.db
     .prepare(
       `INSERT INTO shout (shout_from, shout_to, shout_text, shout_at, shout_decision, shout_answers,
@@ -1692,7 +1683,7 @@ function persistShout(board, { from, to, text, decision = false, answers = null,
     )
     .run(from, to, text.trim(), now(board), decision ? 1 : 0, answers, evidence?.kind ?? null, evidence ? evidence.outcome.trim() : null, evidence?.item ?? null, evidence?.commit ?? null, request ? 1 : 0, outcome);
   const id = Number(result.lastInsertRowid);
-  logEvent(board, from, answers === null ? 'shout' : decision ? 'pass' : 'answer', detail.item ?? null, { shout: id, to, decision: Boolean(decision), request: Boolean(request), answers, ...(outcome ? { outcome } : {}), ...(personAnswer ? { channel } : {}), ...detail });
+  logEvent(board, from, answers === null ? (news ? 'shout_news' : 'shout') : decision ? 'pass' : 'answer', detail.item ?? null, { shout: id, to, decision: Boolean(decision), request: Boolean(request), answers, ...(outcome ? { outcome } : {}), ...(personAnswer ? { channel } : {}), ...detail });
   return id;
 }
 
@@ -1700,11 +1691,12 @@ function persistShout(board, { from, to, text, decision = false, answers = null,
  * Shout to a lane, an agent, `all`, or the person (B7, B25, B26). The caller passes declared lanes.
  *
  * @param {any} board
- * @param {{ from: string, to: string, text: string, lanes: string[], item?: number, decision?: boolean, answers?: number | null, evidence?: any, request?: boolean, channel?: 'terminal' | 'view' }} message
+ * @param {{ from: string, to: string, text: string, lanes: string[], item?: number, decision?: boolean, answers?: number | null, evidence?: any, request?: boolean, news?: boolean, channel?: 'terminal' | 'view' }} message
  * @returns {number}
  */
 export function shout(board, message) {
-  return atomic(board, () => insertShout(board, message));
+  return atomic(board, () => insertShout(board, { ...message,
+    news: activityNewsFlag(message, board.executionEngineVersion ?? ENGINE_VERSION) }));
 }
 
 /** Record one current health snapshot atomically, notifying each new or resolved episode once [A6]. */
@@ -1831,35 +1823,14 @@ function checkEvidence(board, { kind, outcome, item, commit }) {
 export { openDecisions } from './board-query.js';
 
 
-/**
- * Unread shouts for an agent, oldest first, then marked read.
- *
- * @param {any} board
- * @param {string} agentId
- * @returns {any[]}
- */
-export function inbox(board, agentId) {
-  return atomic(board, () => {
-    const agent = board.db.prepare('SELECT * FROM agent WHERE agent_id = ?').get(agentId);
-    if (!agent) throw new Refused('NO_AGENT', `no agent ${agentId}`);
-    const shouts = board.db
-      .prepare(`SELECT * ${UNREAD_SQL} ORDER BY shout_id`)
-      .all(...unreadShoutBindings(agent.agent_last_shout_id, agentId, agent.agent_lane));
-    const last = shouts.at(-1)?.shout_id ?? agent.agent_last_shout_id;
-    board.db.prepare('UPDATE agent SET agent_last_shout_id = ? WHERE agent_id = ?').run(last, agentId);
-    if (agentId !== COORDINATOR) return shouts;
-    const requests = openRequests(board);
-    const ids = new Set(requests.map((shout) => shout.shout_id));
-    return [...requests, ...shouts.filter((shout) => !ids.has(shout.shout_id))];
-  });
-}
+export { inbox } from './inbox-store.js';
 
 export { unreadCount } from './board-query.js';
 
 export { events } from './board-query.js';
 
 /** Fact labels distinguish observations from judgements reserved to an item's live holder [B29,B30]. */
-export const FACT_KINDS = Object.freeze(['capture', 'measurement', 'note', 'diff', 'decision', 'rejection', 'supersession', 'root-cause']);
+export const FACT_KINDS = Object.freeze(['capture', 'measurement', 'note', 'diff', 'decision', 'rejection', 'supersession', 'root-cause', 'bar-check', 'bar-answer']);
 const FACT_JUDGEMENTS = new Set(['decision', 'rejection', 'supersession', 'root-cause']);
 export { factReference };
 
@@ -1869,23 +1840,25 @@ export { itemThread } from './board-query.js';
 /** Append a typed fact atomically; a correction never edits the original event [B29,B30,B31,B32].
  * The internal factId is set from a sealed move's identity during replay, rather than replica-local sequence ids; a never-again with its cause is the person's alone, and rigor lists it at once (#713) [D1].
  */
-export function appendFact(board, id, { agentId, kind, text, ref = null, supersedes = null, factId = randomUUID(), implies, cause = null, neverAgain = false, asPerson = false, channel = 'terminal' }) {
+export function appendFact(board, id, { agentId, kind, text, ref = null, supersedes = null, answers = null, factId = randomUUID(), implies, cause = null, neverAgain = false, asPerson = false, channel = 'terminal' }) {
+  if (board.readOnly) requireFactIdentityIndexes(board.db);
   return atomic(board, () => {
     const item = current(board, itemById(board, id));
     if (!board.db.prepare('SELECT 1 FROM agent WHERE agent_id = ?').get(agentId)) throw new Refused('NO_AGENT', `no registered agent ${agentId}; join a worktree before appending a fact`);
     if (!FACT_KINDS.includes(kind)) throw new Refused('BAD_FACT_KIND', `unknown fact kind ${String(kind)}; use ${FACT_KINDS.join(', ')}`);
     if (typeof text !== 'string' || !text.trim()) throw new Refused('EMPTY_FACT', 'a fact needs nonempty text; supply the observation or judgement');
+    const barFields = barCheckFactFields(board, item, { agentId, kind, text, answers, supersedes });
     if ((FACT_JUDGEMENTS.has(kind) || supersedes !== null) && agentId !== COORDINATOR && (!isHeld(board, item) || item.item_owner !== agentId)) {
       throw new Refused('FACT_JUDGEMENT', `only the item's live holder${isHeld(board, item) ? ' (' + item.item_owner + ')' : ''} or the coordinator may append a judgement or supersede a fact; append an observation or ask the coordinator`);
     }
     if (typeof factId !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/u.test(factId)) throw new Refused('BAD_FACT_ID', 'a fact identity is invalid; retry with the current Pullboard engine');
-    if (board.db.prepare("SELECT 1 FROM event WHERE event_kind = 'fact' AND json_extract(event_detail, '$.id') = ?").get(factId)) throw new Refused('BAD_FACT_ID', 'this fact identity is already recorded; retry the original sealed move instead of appending it again');
+    if (factIdentityExists(board.db, factId)) throw new Refused('BAD_FACT_ID', 'this fact identity is already recorded; retry the original sealed move instead of appending it again');
     if (supersedes !== null && (typeof supersedes !== 'string' || !itemThread(board, id).some((entry) => entry.type === 'fact' && entry.id === supersedes))) {
       throw new Refused('NO_FACT', `no fact ${String(supersedes)} on item #${id}; use a fact id from pullboard show ${id} --json`);
     }
     const binding = factReference(ref);
     if (neverAgain || asPerson || cause !== null) requireNeverAgain(id, { agentId, cause, neverAgain, asPerson, channel });
-    logEvent(board, neverAgain ? PERSON : agentId, 'fact', id, { id: factId, kind, text, ref: binding, supersedes, ...(neverAgain ? { cause, neverAgain: true, channel } : {}), ...(implies?.length ? { implies } : {}) });
+    logEvent(board, neverAgain ? PERSON : agentId, 'fact', id, { id: factId, kind, text, ref: binding, supersedes, ...barFields, ...(neverAgain ? { cause, neverAgain: true, channel } : {}), ...(implies?.length ? { implies } : {}) });
     const trigger = board.lastEvent;
     const result = tellFactImplications(board, (by, itemId, fact) => logEvent(board, by, 'fact', itemId, fact), factFromEvent(trigger), { id, implies, supersedes });
     if (neverAgain) postRigorNotices(board, trigger);
@@ -1930,7 +1903,7 @@ export function buildOrder(board, { warm = [], agentId, readiness = barReadyForO
     || rank(first) - rank(second)
     || ROUTES.indexOf(second.item_route) - ROUTES.indexOf(first.item_route)
     || shared(second) - shared(first) || first.item_id - second.item_id;
-  return lineOrderEnabled(board) ? lineBuildOrder({ agentId, release: milestonePriority, rank, items: listItems(board, { all: true }), ready: item => readiness(board, item), fallback }) : fallback;
+  return focusOrder(board, lineOrderEnabled(board) ? lineBuildOrder({ agentId, release: milestonePriority, rank, items: listItems(board, { all: true }), ready: item => readiness(board, item), fallback }) : fallback);
 }
 
 /**
@@ -1950,6 +1923,7 @@ export function buildOrder(board, { warm = [], agentId, readiness = barReadyForO
  * @returns {{ item: any | null, reasons: string[], shared?: string[] }}
  */
 export function nextFor(board, { agentId, lane, verify = false, policy = 'any', familyPolicy = 'off', runnable = false, routes = ROUTES, warm = [], priority = [], lanes, skipIds = [] }) {
+  const focusCompare = focusOrder(board, () => 0);
   const route = routeOf(board, agentId);
   const tier = (entry) => ROUTES.indexOf(entry.item_route);
   const allItems = listItems(board).reverse();
@@ -1982,8 +1956,9 @@ export function nextFor(board, { agentId, lane, verify = false, policy = 'any', 
     candidates.sort((first, second) => (scarcity ? scarcity.get(first.entry.item_id) - scarcity.get(second.entry.item_id)
       || lineCompare(first.entry, second.entry) : milestonePriority(first.entry) - milestonePriority(second.entry)
       || rank(first.entry) - rank(second.entry)));
+    candidates.sort((a, b) => focusCompare(a.entry, b.entry));
     const item = candidates.find((candidate) => !candidate.holder && !candidate.cooldown)?.entry;
-    if (item) return { item, reasons: [] };
+    if (item) return { item, reasons: focusReasons(board, item) };
     const held = candidates.filter((candidate) => candidate.holder && candidate.holder !== agentId)
       .map(({ entry, holder: reviewer }) => `${reviewer} holds the review of #${entry.item_id} until ${entry.item_review_until}`);
     const cooling = candidates.filter((candidate) => candidate.cooldown)
@@ -2029,6 +2004,7 @@ export function nextFor(board, { agentId, lane, verify = false, policy = 'any', 
       mine.splice(firstTierItem, 0, rework);
     }
   }
+  mine.sort((a, b) => focusCompare(a.entry, b.entry));
   for (const { entry, shared } of mine) {
     const waiting = (entry.item_after ? entry.item_after.split(',').map(Number) : [])
       .map((id) => current(board, itemById(board, id)))
@@ -2037,7 +2013,7 @@ export function nextFor(board, { agentId, lane, verify = false, policy = 'any', 
     if (reserved) { reasons.push(reserved); continue; }
     const collisions = itemFileCollisions(entry, inFlight);
     if (collisions.length) { reasons.push(...collisions); continue; }
-    if (!waiting.length) return { item: entry, reasons, shared };
+    if (!waiting.length) return { item: entry, reasons: focusReasons(board, entry, reasons), shared };
     reasons.push(`#${entry.item_id} waits on ${waiting.map(waitingOn).join(', ')}`);
   }
   if (!mine.length && !reasons.length) reasons.push(idleReason(items, lane, routed));
@@ -2121,18 +2097,7 @@ export function releaseLane(board, lane, { agentId, asPerson = false, channel = 
   });
 }
 
-/**
- * The hold on a lane, or null.
- *
- * @param {any} board
- * @param {string} lane
- * @returns {any | null}
- */
-export function laneHold(board, lane) {
-  return board.db.prepare('SELECT * FROM hold WHERE hold_lane = ?').get(lane) ?? null;
-}
-
-export { laneHolds } from './board-query.js';
+export { laneHold, laneHolds } from './board-query.js';
 
 /** Read an item's coordinator hold, or null when it is available for claims. */
 export function itemHold(board, id) {
@@ -2204,9 +2169,10 @@ export function recordRowDecisions(board, { agentId, channel, decisions }) {
     const validDeclineText = record.decision !== 'decline' || (engineVersion >= 12
       ? record.text === original[0]?.text
       : target?.text === record.reason);
-    if (original.length !== 1 || original[0].id !== record.id || replacement.length !== 1 || target.id !== record.id
+    const revision = record.revision !== undefined && engineVersion >= SPEC_REVISION_ENGINE && validRevisionApproval(board, record);
+    if (!revision && (record.revision !== undefined || original.length !== 1 || original[0].id !== record.id || replacement.length !== 1 || target.id !== record.id
       || target.status !== (record.decision === 'approve' ? 'approved' : 'wont') || target.text !== record.text
-      || !validDeclineText) throw new Refused('ROW_DECISION', 'the exact row must match its recorded approval or decline; use pullboard spec approve or decline');
+      || !validDeclineText)) throw new Refused('ROW_DECISION', 'the exact row must match its recorded approval or decline; use pullboard spec approve or decline');
     const key = `${record.kind}:${record.id}`;
     if (keys.has(key)) throw new Refused('ROW_DECISION', `${key} is named twice; use each row once`);
     keys.add(key);
@@ -2236,6 +2202,7 @@ export function applyRowDecisions(board, { agentId, events }) {
     if (!applied.length) return [];
     const at = now(board);
     writeRowDecisions(board, records.map((record) => events.includes(record.event) ? { ...record, applied: true, appliedAt: at } : record));
+    markAppliedRevisions(board, applied, at);
     logEvent(board, agentId, 'row_apply', null, { events: applied.map((record) => record.event) });
     return applied.map((record) => ({ ...record, applied: true, appliedAt: at }));
   });
@@ -2371,3 +2338,6 @@ export function intakeOutside(board, options) { return applyOutsideIntake(board,
 
 /** Record the person's exact-commit owner approval. */
 export function approveOutside(board, id, options) { return applyOutsideApproval(board, id, options, atomic); }
+
+/** Tailored inbox activity is the same canonical read projection as other board queries. */
+export { agentActivity } from './board-query.js';

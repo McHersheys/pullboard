@@ -247,7 +247,7 @@ function liveIndexes(db) {
 function documentedIndexes() {
   return block('<!-- board-indexes:start -->', '<!-- board-indexes:end -->').split(/\r?\n/).flatMap((line) => {
     const row = /^\| `([^`]+)` \| `([^`]+)` \| (.+) \| (yes|no) \|$/.exec(line);
-    return row ? [{ name: row[1], table: row[2], columns: [...row[3].matchAll(/`([^`]+)`/g)].map((match) => match[1]), unique: row[4] }] : [];
+    return row ? [{ name: row[1], table: row[2], columns: [...row[3].matchAll(/`([^`]+)`/g)].map((match) => match[1] === '(expression)' ? null : match[1]), unique: row[4] }] : [];
   });
 }
 
@@ -303,6 +303,7 @@ function recordEventContract() {
   register(board, { lane: 'small', path: '/small', route: 'light' });
   ensureCoordinator(board, '/coordinator-moved');
   shout(board, { from: builder, to: 'all', text: 'sample announcement', lanes: ['docs', 'tests'] });
+  shout(board, { from: coordinator, to: 'all', text: 'sample explicit release news', lanes: ['docs', 'tests'], news: true });
   const passed = shout(board, { from: builder, to: coordinator, text: 'sample decision', lanes: ['docs', 'tests'], decision: true });
   assert.throws(
     () => passDecision(board, passed, { agentId: builder, note: 'try to pass it', lanes: ['docs', 'tests'] }),
@@ -726,6 +727,7 @@ test('[A5] schema, versions, event kinds and event detail fields match live beha
     'rigor-notice': 'rigor',
     'rigor-draft': 'rigor',
     shout: 'sender',
+    shout_news: 'sender',
     pass: 'coordinator',
     answer: 'answerer',
     'flake-observation': 'reporting agent',

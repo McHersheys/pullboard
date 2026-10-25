@@ -202,17 +202,47 @@ test('the import scan finds a package however it is imported, and nothing that i
   Object.entries(forms).forEach(([source, expected], index) => assert.deepEqual(set(found[index]), set(expected), source));
 });
 
+/**
+ * The two source-directory loaders import only a discovered file beneath their declared local URL.
+ * Normalize that exact relative discovery expression, not arbitrary computed imports; recursively
+ * scanning their leaves below keeps a package import in any discovered module visible to P3.
+ */
+function packageSource(file, source) {
+  const loaders = {
+    [join(ROOT, 'src', 'move-registry.js')]: ["import(new URL(file, directory).href)", "import('./moves/')"],
+    [join(ROOT, 'src', 'commands', 'index.js')]: ["import(new URL(file, FOLDER).href)", "import('./')"],
+  };
+  const loader = loaders[file];
+  return loader ? source.replace(loader[0], loader[1]) : source;
+}
+
+/** Parse one edited source control using exactly the package discovery policy. */
+function importsForPackageFile(file, source) { return importsIn([packageSource(file, source)])[0]; }
+
 test('every import is a node: built-in or a relative file [P3]', () => {
   const files = [
-    ...readdirSync(join(ROOT, 'src')).filter((name) => /\.m?js$/.test(name)).map((name) => join(ROOT, 'src', name)),
+    ...readdirSync(join(ROOT, 'src'), { recursive: true }).filter((name) => /\.m?js$/.test(name)).map((name) => join(ROOT, 'src', name)),
     join(ROOT, 'bin', 'pullboard.js'),
   ];
-  const found = importsIn(files.map((file) => readFileSync(file, 'utf8')));
+  const moveFiles = readdirSync(join(ROOT, 'src', 'moves')).filter(name => name.endsWith('.js'));
+  assert.ok(moveFiles.length > 0 && moveFiles.every(name => files.includes(join(ROOT, 'src', 'moves', name))), 'all discovered move modules remain inside the no-dependencies scan');
+  const found = importsIn(files.map(file => packageSource(file, readFileSync(file, 'utf8'))));
   files.forEach((file, index) => {
     for (const target of found[index]) assert.ok(target.startsWith('node:') || target.startsWith('.'), `${file} imports ${target}`);
   });
   const seen = found.flat().length;
   assert.ok(seen > 50, `the scan found ${seen} imports in src/ and bin/; expected every file's`);
+});
+
+test('discovery import normalization still exposes package imports and arbitrary computed targets [P3]', () => {
+  const file = join(ROOT, 'src', 'move-registry.js');
+  const source = readFileSync(file, 'utf8');
+  const site = 'import(new URL(file, directory).href)';
+  assert.ok(source.includes(site), 'the constrained discovery site is present');
+  assert.ok(importsForPackageFile(file, source.replace(site, "import('left-pad')")).includes('left-pad'));
+  assert.ok(importsForPackageFile(file, source.replace(site, 'import(otherTarget)')).includes(COMPUTED));
+  assert.ok(importsForPackageFile(file, source + '\nvoid import(otherTarget);').includes(COMPUTED), 'a second computed import has no exemption');
+  assert.ok(importsForPackageFile(join(ROOT, 'src', 'moves', 'seed.js'), 'void import(otherTarget);').includes(COMPUTED), 'move leaves have no computed-import exemption');
 });
 
 test('the installable package includes the single inherited doctrine file [D1]', () => {

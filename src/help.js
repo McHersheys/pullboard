@@ -32,14 +32,15 @@ Set up
   pullboard resources                  local resource holders and their FIFO queues
   pullboard settings line [<name> <value> --reason "why" --window <json>]  read or record board controller inputs; all off by default
       value is on, off, or a number within the setting range
-                                        names: order, reviewsFirst, wipPerReviewer (1.5-3), barReady, takeoverMinutes (15-60), collisionFreeBatch, landingBatchSize (1-8), landingCadenceMinutes (5-30)
-  pullboard settings [gateSlots <n> | browserSlots <n>]  view or set machine capacity (gate default 2; browser default 1)
+                                        names: order, reviewsFirst, wipPerReviewer (1.5-3), barReady, bar.check, takeoverMinutes (15-60), collisionFreeBatch, landingBatchSize (1-8), landingCadenceMinutes (5-30)
+  pullboard settings [gateSlots <n> | browserSlots <n> | gate.runnersFirst on|off]  view or set machine gate policy and capacity (gate default 2; browser default 1)
                                         browser-free check slots are opt-in: gate.browserFreeChecks in ~/.pullboard/settings.json (default false)
                                         a test file takes a browser slot only if it launches Chrome: gate.browserByLaunch (default false)
                                         reviews-first queue order is opt-in: gate.queue.reviewsFirst (default false), gate.queue.agingMinutes (default 30)
                                         release priority is opt-in: gate.queue.currentReleaseFirst (default false), within each board's otherwise-tied positions
                                         memory hold is opt-in: gate.memoryFloorMB in ~/.pullboard/settings.json holds the queue under that many MB free or critical pressure (default off)
                                         short slots for runs that name their test files are opt-in: pullboard settings gate.shortSlots <n> (default 0)
+                                        runner-first dispatch is opt-in: pullboard settings gate.runnersFirst on|off (default off)
   pullboard runner add <ssh-host> --slots <n> --browser <n> [--node <remote-path>] [--root <remote-path>]
                                         register SSH test capacity; no runner sign-in; root defaults to ~/.pullboard-runner
   pullboard runner list                 each runner's registered slots and browsers, which it runs at
@@ -106,7 +107,7 @@ Work
   pullboard sentinel propose <name> --check "<command>" --every 10m|hourly|daily --owner <seat or lane> [--directory <path>] [--timeout <milliseconds>] [--next "<step>"]
                                         propose an exact board watch; only the person may approve it
   pullboard sentinel approve <name>     person: approve this command, directory and schedule
-  pullboard sentinel run                run due approved watches in a prepared trunk checkout
+  pullboard sentinel run [--health-only]  run due approved watches, or only scan board health
   pullboard sentinel decline <name> --reason "<why>"   person: prevent future runs
   pullboard sentinels                   approvals, owners and the last result; does not run checks
   pullboard loop declare <name> --every 10m --owner <seat or lane>   coordinator: declare a recurring job's cadence
@@ -117,8 +118,9 @@ Work
   pullboard skills --update            refresh unchanged Claude Code skills from shipped versions
   pullboard show <id> [--history]       an item, the criterion frozen at claim, its verdicts: the latest in full,
                                         earlier ones as one line; --history prints every note in full
-  pullboard fact <id> <kind> <text> [--supersedes <fact-id>] [--ref path:lines@full-sha] [--implies <ids>]
-                                        append an observation or a holder/coordinator judgement to its thread
+  pullboard fact <id> <kind> <text> [--answers <bar-check-fact-id>] [--supersedes <fact-id>] [--ref path:lines@full-sha] [--implies <ids>]
+                                        append observations, bar-check notes and peer answers, or holder/coordinator judgements
+                                        a bar-answer uses --answers to name the bar-check fact it reviewed
                                         --implies 12,13: each named item gets a fact citing this decision,
                                         and is told again when the decision is superseded
                                         the person adds --cause <key> --never-again --as person: rigor lists it at once
@@ -149,6 +151,8 @@ Work
   pullboard shout <lane|agent|person|all> <text>  pullboard inbox
   pullboard shout --item <id> <text>             message the item builder, reviewer and coordinator
   A seat shout to all reaches only coordinator and person; their broadcasts reach everyone.
+  pullboard shout all <text> --news              coordinator/person release or focus news, digested at session start
+  Inbox combines direct coordination with item/dependency, file and cited-row activity; other lane activity is summarized.
   pullboard shout [<to>] <text> --decision       ask for a decision; defaults to your coordinator or the person
   pullboard shout <to> <text> --evidence attempt|receipt --outcome <word> --item <id> --commit <rev>
   pullboard answer <shout-id> <text> [--as person] [--implies <ids>] [--supersedes <answer-id>]
@@ -166,6 +170,8 @@ Work
   pullboard digest [--out <file>] [--watch]     a short Markdown briefing of this board for a person or a chat assistant;
                                         secrets redacted; --out replaces a file, --watch rewrites it after every move
   pullboard import <file>                       restore a versioned export into an empty board
+  pullboard sync                               opt in to sharing one board through origin without an account
+                                               reads work offline; moves need remote acknowledgement
 
 Coordinator
   pullboard sweep --run "<checker>" --check "<checker on {file}>" [--route light] [--max 20] [--dry-run]
@@ -244,6 +250,7 @@ Spec
   pullboard spec show <id> | unmet [--must] | signoff <ids> [--by <principal>]
                                         signoff: --note "what was checked" stays with the receipt
   pullboard spec draft <text> [--section <letter>] [--aim] [--gate "<gate>"]  any agent appends a draft row; never approves it
+  pullboard spec draft <text> --revises <id> --reason "why" [--gate "<gate>"] [--status <status>]  propose an approved-row change in Needs you
                 [--doctrine --source "<shout id or chat, date>"]  the coordinator proposes a sourced doctrine ruling
                                         --section chooses the section prefix; defaults to G, or DR with --doctrine
                                         Defaults to must and gate review.
@@ -308,7 +315,7 @@ const HELP_EXAMPLES = {
   verify: 'pullboard verify 12 accept --note "removed the fix; the test failed"',
   watch: 'pullboard watch --to web', answer: 'pullboard answer 12 "done"', pass: 'pullboard pass 12 "please decide"',
   status: 'pullboard status', view: 'pullboard view', digest: 'pullboard digest --out briefing.md', mcp: 'pullboard mcp', flow: 'pullboard flow replay --json', stats: 'pullboard stats --since 2026-10-08', log: 'pullboard log 12', ledger: 'pullboard ledger',
-  relay: 'pullboard relay on --all', 'relay recover': 'pullboard relay recover --skip 12',
+  relay: 'pullboard relay on --all', 'relay recover': 'pullboard relay recover --skip 12', sync: 'pullboard sync',
   'lane add': 'pullboard lane add web --owns apps/web/', lane: 'pullboard lane add web --owns apps/web/',
   queue: 'pullboard queue', roadmap: 'pullboard roadmap', rigor: 'pullboard rigor', 'rigor quality': 'pullboard rigor quality --rule silent-catch', 'rigor draft': 'pullboard rigor draft "refusal:MERGE_LOST" "Merges keep every hunk" --check "node bin/checks/merges.js" --red 0123456 --green 89abcde', milestone: 'pullboard milestone add "0.7.0" --items 12,13',
   'milestone order': 'pullboard milestone order "0.7.0" 13,12',
@@ -465,7 +472,7 @@ function overviewHelp(groups, firstRun = false) {
 }
 
 /** The settings forms settingsCommand dispatches with a value; each gets its own help, from this list (N2). */
-export const SETTING_FORMS = Object.freeze(['gateSlots', 'browserSlots', 'gate.shortSlots', 'landing.pool']);
+export const SETTING_FORMS = Object.freeze(['gateSlots', 'browserSlots', 'gate.shortSlots', 'gate.runnersFirst', 'landing.pool']);
 
 /** Help for each settings form the printed usage did not already name, so each form is covered (N2). */
 function settingFormHelp(commands) {

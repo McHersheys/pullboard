@@ -84,7 +84,7 @@ import { frozenCriterion, loadSpec } from '../src/spec.js';
 test('the actual background sentinel scans once, honors off switches and drains its child [A6,H16]', { timeout: 60_000 }, async t => { // budget: private worker startup, explicit callback probes and graceful owned shutdown, not a latency target.
   const { box, repo, port } = await backgroundBox(t, 'sentinel-integration');
   const probe = join(box.dir, 'sentinel-probe.mjs'), log = join(box.dir, 'sentinel-probe.jsonl');
-  const hold = join(box.dir, 'hold-next-resume');
+  const hold = join(box.dir, 'hold-next-sentinel');
   writeFileSync(probe, [
     "import { appendFileSync, existsSync } from 'node:fs';",
     `const log=${JSON.stringify(log)},hold=${JSON.stringify(hold)};`,
@@ -93,7 +93,7 @@ test('the actual background sentinel scans once, honors off switches and drains 
     "globalThis.setInterval=(callback,ms,...args)=>{const timer=every(callback,ms,...args);if(ms===600000){tick=callback;timers.set(timer,ms);record({kind:'sentinel-interval',ms});}return timer;};",
     "globalThis.clearInterval=timer=>{if(timers.has(timer))record({kind:'sentinel-cancel',ms:timers.get(timer)});return cancel(timer);};",
     "if(process.argv.includes('view'))process.on('SIGUSR2',async()=>{record({kind:'explicit-tick-start'});try{if(!tick)throw new Error('No sentinel callback');await tick();record({kind:'explicit-tick-finished'});}catch(error){record({kind:'explicit-tick-failed',error:error.message});}});",
-    "if(process.argv.includes('resume')&&existsSync(hold)){record({kind:'held-resume'});await new Promise(done=>setTimeout(done,60000));}", // budget: a test-only hold before CLI execution, terminated by the observer's owned shutdown.
+    "if(process.argv.includes('sentinel')&&process.argv.includes('run')&&existsSync(hold)){record({kind:'held-sentinel'});await new Promise(done=>setTimeout(done,60000));}", // budget: a test-only hold before CLI execution, terminated by the observer's owned shutdown.
   ].join('\n'));
   box.env.NODE_OPTIONS = `${box.env.NODE_OPTIONS ?? ''} --import=${probe}`.trim();
   const init = box.run(repo, 'init');
@@ -151,8 +151,11 @@ test('the actual background sentinel scans once, honors off switches and drains 
   await tick(); assert.equal(receipts().notices.length, 0, 'the machine off switch prevents a real child scan');
   writeFileSync(settingsFile, JSON.stringify(settings));
   await tick();
+  const scans = observations().filter(row => row.kind === 'loaded' && row.argv.includes('sentinel') && row.argv.includes('run'));
+  assert.equal(scans.length, 1, 'one real CLI child performs the enabled scan');
+  assert.ok(scans[0].argv.includes('--health-only'), 'the observer explicitly excludes approved board watches');
   const first = receipts();
-  assert.equal(first.notices.length, 2, 'the actual worker child resumes the real board and publishes its finding');
+  assert.equal(first.notices.length, 2, 'the actual worker child scans the real board and publishes its finding');
   assert.deepEqual(first.notices.map(row => row.shout_to).sort(), ['coordinator', builder].sort());
   assert.equal(first.scans.length, 1);
   assert.ok(first.notices.every(row => row.shout_text.includes('CLAIM_LAPSED')));
@@ -165,15 +168,15 @@ test('the actual background sentinel scans once, honors off switches and drains 
   assert.equal(receipts().notices.filter(row => row.shout_text.startsWith('Resolved:')).length, 2);
   writeFileSync(hold, 'hold the next owned child before CLI execution');
   process.kill(worker.pid, 'SIGUSR2');
-  await until(() => observations().some(row => row.kind === 'held-resume'), 'the observer has one actual owned child in flight');
-  const child = observations().find(row => row.kind === 'held-resume');
+  await until(() => observations().some(row => row.kind === 'held-sentinel'), 'the observer has one actual owned child in flight');
+  const child = observations().find(row => row.kind === 'held-sentinel');
   assert.equal(child.cwd, repo);
   assert.equal(child.uid, process.getuid?.());
   assert.ok(alive(child.pid));
   await stopView(worker.pid);
-  await until(() => !alive(child.pid), 'view shutdown drains the exact active resume child');
+  await until(() => !alive(child.pid), 'view shutdown drains the exact active sentinel child');
   assert.equal(workerEvents('sentinel-cancel').length, 1, 'view close cancels its one timer');
   console.log('BACKGROUND_SENTINEL_PROOF', JSON.stringify({ workerPid: worker.pid, childPid: child.pid, timers: 1,
     intervalMs: 600_000, explicitCallbackInvocations: workerEvents('explicit-tick-start').length,
-    notices: 4, ownedChildDrained: true, scope: 'actual init/detached worker and child resume; native schedule unchanged; no elapsed ten-minute claim' }));
+    notices: 4, ownedChildDrained: true, scope: 'actual init/detached worker and child sentinel run; native schedule unchanged; no elapsed ten-minute claim' }));
 });

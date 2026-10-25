@@ -14,10 +14,10 @@ function sentinelRunsFor(root) {
   return healthSentinelEnabled(loadConfig(root));
 }
 
-/** Run the ordinary ordered resume path in one owned child and drain it on view shutdown. */
-function resumeBoard(root, signal) {
+/** Run only the ordered health scan in one owned child and drain it on view shutdown. */
+function refreshBoard(root, signal) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [CLI, 'resume', '--json'], {
+    const child = spawn(process.execPath, [CLI, 'sentinel', 'run', '--health-only', '--json'], {
       cwd: root, env: process.env, stdio: 'ignore', signal,
     });
     let timer;
@@ -30,14 +30,14 @@ function resumeBoard(root, signal) {
     child.once('error', error => { if (error.name !== 'AbortError') reject(error); });
     child.once('close', code => {
       clearTimeout(timer); signal.removeEventListener('abort', stopping);
-      if (code && !signal.aborted) reject(new Error(`health sentinel resume exited ${code}`));
+      if (code && !signal.aborted) reject(new Error(`health sentinel refresh exited ${code}`));
       else resolve();
     });
   });
 }
 
-/** Start after the view listens; scans use ordinary resume so each board's off switch and ordering apply. */
-export function startServeSentinel({ projectRoot, run = resumeBoard, projects = listProjects,
+/** Start after the view listens; scans use the ordinary sentinel command so each board's off switch and ordering apply. */
+export function startServeSentinel({ projectRoot, run = refreshBoard, projects = listProjects,
   every = setInterval, cancel = clearInterval, enabled = sentinelRunsFor, onError = () => {} } = {}) {
   const lifetime = new AbortController();
   let pending = null;

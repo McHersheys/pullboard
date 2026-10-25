@@ -46,6 +46,7 @@ export function defaults() {
     practice: DOCTRINE_FILE,
     gate: '',
     submit: { requireInfraNote: false },
+    itemSizeBudget: 100,
     submitInvariants: [],
     staticChecks: '',
     lease: '2h',
@@ -198,6 +199,9 @@ export function configProblems(config) {
   if (config.approvers !== undefined && (!Array.isArray(config.approvers) || config.approvers.length > 50 || new Set(config.approvers).size !== config.approvers.length
       || config.approvers.some((login) => typeof login !== 'string' || !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/u.test(login)))) problems.push('"approvers" lists the GitHub logins who act as the person on a linked board, at most fifty; leave it out for today\'s behaviour');
   if (!['inside', 'beside'].includes(config.worktrees)) problems.push('"worktrees" is "inside" or "beside"');
+  if (!Number.isSafeInteger(config.itemSizeBudget) || config.itemSizeBudget < 1) {
+    problems.push('"itemSizeBudget" is a positive whole number of changed lines; 100 by default');
+  }
   if (config.submitGate !== undefined && config.submitGate !== 'landing') {
     problems.push('"submitGate" is "landing" when the full suite should be deferred until landing');
   }

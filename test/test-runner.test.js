@@ -1,7 +1,7 @@
 /** Test the CI-like test runner against real Git and PATH behavior [C7, S13]. */
 import assert from 'node:assert/strict';
 import { runFixtureExecFile as execFileSync, runFixtureChild as spawnSync } from './fixture-child.js';
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -115,8 +115,67 @@ function copyRunnerImports(sourceRoot, root) {
           `runner fixture import must stay in its source checkout: ${request}`);
         pending.push(target);
       }
+      pending.push(...declaredRunnerModules(sources[index], sourceRoot));
     }
   }
+}
+
+/** Expand leading module-load declarations for runtime-discovered runner modules, while excluding optional reporters. */
+function declaredRunnerModules(source, sourceRoot) {
+  const header = [];
+  let inBlock = false;
+  for (const line of source.split(/\r?\n/u)) {
+    const text = line.trim();
+    if (inBlock) {
+      header.push(line);
+      if (text.includes('*/')) inBlock = false;
+      continue;
+    }
+    if (!text || text.startsWith('//')) { header.push(line); continue; }
+    if (text.startsWith('/*')) {
+      header.push(line);
+      inBlock = !text.slice(2).includes('*/');
+      continue;
+    }
+    break;
+  }
+  const declarations = header.map((line) => /^\/\*\* @pullboard-module-loads (.+?) \*\/$/u.exec(line.trim()))
+    .filter(Boolean).flatMap((match) => match[1].trim().split(/\s+/u));
+  const found = [];
+  for (const declaration of declarations) {
+    // The runner's `**` declaration covers user-selected custom reporters; this fixture supplies none.
+    if (declaration === '**') continue;
+    assert.ok(declaration.endsWith('.js'), `runner fixture module declaration must name JavaScript modules: ${declaration}`);
+    const normalized = resolve(sourceRoot, declaration);
+    const relativePath = relative(sourceRoot, normalized);
+    assert.ok(relativePath && relativePath !== '..' && !relativePath.startsWith('..' + sep) && !isAbsolute(relativePath),
+      `runner fixture module declaration must stay in its source checkout: ${declaration}`);
+    assert.ok(!/[{}\[\]]/u.test(declaration), `runner fixture module declaration has unsupported glob syntax: ${declaration}`);
+    const segments = declaration.split('/');
+    const startCount = found.length;
+    /** Walk one declared path glob without evaluating loaded source. */
+    function walk(directory, index, prefix) {
+      const segment = segments[index];
+      if (segment === '**') {
+        walk(directory, index + 1, prefix);
+        for (const entry of readdirSync(directory, { withFileTypes: true })) {
+          if (entry.isDirectory()) walk(join(directory, entry.name), index, prefix ? `${prefix}/${entry.name}` : entry.name);
+        }
+        return;
+      }
+      const pattern = new RegExp(`^${segment.replace(/[.+^$()|\\]/gu, '\\$&').replace(/\*/gu, '[^/]*').replace(/\?/gu, '[^/]')}$`, 'u');
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        if (!pattern.test(entry.name)) continue;
+        const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+        if (index === segments.length - 1) {
+          if (entry.isFile() && entry.name.endsWith('.js')) found.push(path);
+        } else if (entry.isDirectory()) walk(join(directory, entry.name), index + 1, path);
+      }
+    }
+    walk(sourceRoot, 0, '');
+    assert.ok(found.length > startCount, `runner fixture module declaration must match files: ${declaration}`);
+  }
+  return found;
 }
 
 /** Build the runner-discovery fixture from a source checkout. */

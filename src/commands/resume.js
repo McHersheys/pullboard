@@ -175,14 +175,21 @@ export async function resumeHere(io, view, diagnostics = false, { json = false }
     const decisionSections = isMain ? coordinatorDecisionSections(board, ctx) : null;
     const { shouts = [], ...decisions } = decisionSections ?? {};
     const needsState = resumeNeeds(root, { board, config: ctx.config, includeRigorUndrafted: me.id === COORDINATOR });
+    let proofStatsFallback;
+    const flow = decisionSections ? proofStats(board, { now: ctx.clock.now().getTime(),
+      /** Keep the cold-path notice in text and JSON without changing the statistics object. */
+      onFallback: () => {
+        proofStatsFallback = 'Proof statistics: counters are unavailable; reading the complete event history for this resume. The next writable command will build the counters.';
+      },
+    }).flow : null;
     return {
       me,
       health: recordedHealthFindings(board),
       all,
       needsYou: personNeeds(needsState),
-      ...(me.id === COORDINATOR ? { rigor: { undrafted: needsState.rigorUndrafted } } : {}),
+      ...(me.id === COORDINATOR ? { rigor: { undrafted: needsState.rigorUndrafted, ...(needsState.rigorNotice ? { notice: needsState.rigorNotice } : {}) } } : {}),
       ...(decisionSections ? { ...decisions, ...(diagnostics ? verifiedMergeGroups(root, pendingMerges, shouts, ctx.clock.now().getTime()) : {}),
-        flow: proofStats(board, { now: ctx.clock.now().getTime() }).flow } : {}),
+        flow, ...(proofStatsFallback ? { proofStatsFallback } : {}) } : {}),
       requests: me.id === COORDINATOR ? store.openRequests(board) : [],
       holding: all.filter((item) => item.item_status === 'claimed' && item.item_owner === me.id),
       held: all.filter((item) => item.item_status === 'claimed' && item.item_owner === me.id)
@@ -234,6 +241,8 @@ export async function resumeHere(io, view, diagnostics = false, { json = false }
   for (const problem of card.hookProblems ?? []) say(`${problem.message}; ${problem.next}`);
   const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
   say(`resume: ${me.displayName}${me.family ? ` [family ${me.family}]` : ''}, ${me.lane} lane${isMain ? ', the main checkout' : ''}, at ${root}`);
+  if (card.inbox) for (const line of coordinatorInboxLines(card.inbox, name, (at) => span(ctx, at), firstLine)) say(line);
+  if (card.proofStatsFallback) say(card.proofStatsFallback);
   if (card.health.recordedAt) {
     say(`Health recorded ${card.health.recordedAt}: ${card.health.findings.length} finding${card.health.findings.length === 1 ? '' : 's'}; refresh with pullboard sentinel run.`);
     for (const finding of card.health.findings) say(`  ${finding.subject}: ${finding.why}; next: ${finding.next}`);
@@ -241,7 +250,6 @@ export async function resumeHere(io, view, diagnostics = false, { json = false }
   card.view = view;
   // A view left running needs no line at every session start; a start, a busy port or a failure does.
   if (view.state !== 'running' && backgroundViewLine(view)) say(backgroundViewLine(view));
-  if (card.inbox) for (const line of coordinatorInboxLines(card.inbox, name, (at) => span(ctx, at), firstLine)) say(line);
   if (diagnostics) {
     say(`New agent worktrees: ${card.newWorktreeLocation}`);
     card.setup = withBoardRead(ctx, board => withStarterWork(boardSetup(ctx, card, setupScope, { decisions: setupDecisions }), { board, me, main: isMain, config: ctx.config, root, seat: ctx.io.callerRole() === 'seat' }));
@@ -254,7 +262,7 @@ export async function resumeHere(io, view, diagnostics = false, { json = false }
     if (card.setup.afterAnswer) say(card.setup.afterAnswer);
     if (card.setup.meanwhile) say(card.setup.meanwhile);
   }
-  const dirty = diagnostics ? dirtyFiles(root).length : undefined;
+  const dirty = diagnostics || !json ? dirtyFiles(root).length : undefined;
   if (!isMain && !json) {
     const { branch, mainRef, behind = 0, ahead = 0 } = sources;
     // Fresh command facts compare the actual primary branch, not an unrelated detached review HEAD.
@@ -307,6 +315,7 @@ export async function resumeHere(io, view, diagnostics = false, { json = false }
     section(card.needsYou, (need) => need.kind === 'decision'
       ? `waiting on the person: #${need.id} from ${need.ref} (${span(ctx, need.at)}): ${firstLine(need.text)}`
       : `needs the person: ${need.ref}: ${firstLine(need.text)} (${need.what})`);
+    if (card.rigor?.notice) say(card.rigor.notice);
     section(card.rigor?.undrafted ?? [], (cause) => `Rigor needs a proved draft: ${cause.key}, items ${cause.items.map(item => `#${item.id}`).join(', ')}; pullboard rigor draft "${cause.key.replaceAll('"', '\\"')}" "<rule>" --check "<command>" --red <commit> --green <commit>`);
     if (card.toVerify.length) say('review queue:');
     section(card.toVerify, (item) => `  to verify: #${item.item_id} ${item.item_lane} (${span(ctx, item.item_updated_at)})`);

@@ -1145,7 +1145,10 @@ function render() {
     : entry[3] === 'decide' ? needRow([entry[0], '', entry[2], entry[3], entry[4]], 'a decision, asked by ' + entry[1], 'decide')
       : entry[0].startsWith('spec:') ? needRow(entry, 'an open question in SPEC.md', 'answer') : needRow(entry, entry[3], 'release');
   const needsHtml = needs.map(needKind).join('')
-    + rigorDrafts.map(row => needRow([row.target, row.ref, row.text], 'a proved Rigor draft', 'Approve or Decline')).join('')
+    + rigorDrafts.map(row => needRow([row.unproved && !row.materialized ? null : row.target, row.ref,
+      row.unproved && !row.materialized ? row.text + ' ' + row.what : row.text],
+    row.unproved ? 'an unproved Rigor proposal' + (row.evidence?.occurrences ? ', repeated ' + row.evidence.occurrences + (row.evidence.occurrences === 1 ? ' time' : ' times') : '') : 'a proved Rigor draft',
+    row.unproved && !row.materialized ? 'prepare review' : 'Approve or Decline')).join('')
     + sentinelDrafts.map(row => sentinelDraftRow(row)).join('')
     + agentApprovals.map(row => agentApprovalRow(row)).join('')
     + (drafts ? needRow(['tab:spec', String(drafts), 'draft spec rows to approve or drop'], 'Spec rows waiting on you', 'review') : '');
@@ -1479,7 +1482,7 @@ function render() {
     const line = firstLine(x.shout_text);
     return '<b>' + esc(agentName(e.event_by)) + '</b> ' + verb + (x.shout_to ? ' <b>' + esc(agentName(x.shout_to)) + '</b>' : '') + (line ? '<span class="said" title="' + esc(line) + '">' + inline(line, titles) + '</span>' : '');
   };
-  $('activity').innerHTML = p.events.length ? byDay(p.events, (e) => e.event_at, (e) => '<div><time>' + clock(e.event_at) + '</time><div class="act">' + (e.event_kind === 'shout' || e.event_kind === 'answer' ? spoke(e) : '<b>' + esc(agentName(e.event_by)) + '</b> ' + esc(e.event_kind) + (e.item_id ? ' <a class="ref" href="' + esc(itemAddress(e.item_id)) + '" data-go="item:' + e.item_id + '">#' + e.item_id + '</a>' + (titles.has(String(e.item_id)) ? ' <span class="what">' + rich(titles.get(String(e.item_id)), titles) + '</span>' : '') : '')) + '</div></div>') : '<div class="empty">No activity yet.</div>';
+  $('activity').innerHTML = p.events.length ? byDay(p.events, (e) => e.event_at, (e) => '<div><time>' + clock(e.event_at) + '</time><div class="act">' + (e.event_kind === 'shout' || e.event_kind === 'shout_news' || e.event_kind === 'answer' ? spoke(e) : '<b>' + esc(agentName(e.event_by)) + '</b> ' + esc(e.event_kind) + (e.item_id ? ' <a class="ref" href="' + esc(itemAddress(e.item_id)) + '" data-go="item:' + e.item_id + '">#' + e.item_id + '</a>' + (titles.has(String(e.item_id)) ? ' <span class="what">' + rich(titles.get(String(e.item_id)), titles) + '</span>' : '') : '')) + '</div></div>') : '<div class="empty">No activity yet.</div>';
   showTab();
   revealPlace();
   updateRoadmapPanel();

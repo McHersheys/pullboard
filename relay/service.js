@@ -16,6 +16,7 @@ import { VERIFIER_STANDING_ENGINE } from '../src/machine.js';
 import { SEALED_SNAPSHOT_BYTES, SNAPSHOT_BODY_BYTES } from '../src/relay-limits.js';
 import { createRelayPagesHandler, snapshotPageRoot } from './pages-http.js';
 import { createStorageQuota } from './storage-quota.js';
+import { createUploadStatusHandler } from './upload-status.js';
 
 const SNAPSHOT_BODY = SNAPSHOT_BODY_BYTES;
 const STORED_BYTES = SEALED_SNAPSHOT_BYTES;
@@ -340,6 +341,8 @@ export function createRelayHandler({ directory, auth, pollMs = 200, publicOrigin
     request: async (board, body, who) => (await append(board, body, who, 'request')).body,
   }, { pollMs });
 
+  const uploadStatus = createUploadStatusHandler({ authorize: authorizedRequest, withJournal, sender });
+
   /** Add authenticated snapshot replacement and deletion to the common versioned read/move paths. */
   async function handle(req, res) {
     if (await pagesHandler(req, res)) return;
@@ -350,6 +353,7 @@ export function createRelayHandler({ directory, auth, pollMs = 200, publicOrigin
       let url;
       try { url = new URL(req.url ?? '/', 'http://127.0.0.1'); }
       catch { throw new Refused('BAD_REQUEST', 'use a valid path under /api/v1/boards'); }
+      if (await uploadStatus(req, res, url)) return;
       const approvers = /^\/api\/v1\/boards\/([^/]+)\/approvers$/.exec(url.pathname);
       if (approvers && req.method === 'GET') {
         const id = identity(approvers[1]);
@@ -404,7 +408,15 @@ export function createRelayHandler({ directory, auth, pollMs = 200, publicOrigin
       }
       return await common(req, res);
     } catch (error) {
-      if (!res.headersSent) apiJson(res, apiStatus(error), apiRefusal(error));
+      if (!res.headersSent) {
+        const document = apiRefusal(error);
+        const size = error.snapshotLimit;
+        if (error.code === 'BAD_UPLOAD' && Number.isSafeInteger(size?.sealedBytes) && Number.isSafeInteger(size?.limit)
+            && size.limit > 0 && size.sealedBytes > size.limit) {
+          document.error.snapshotLimit = { sealedBytes: size.sealedBytes, limit: size.limit };
+        }
+        apiJson(res, apiStatus(error), document);
+      }
       else res.end();
     }
   }

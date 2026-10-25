@@ -113,7 +113,7 @@ The board file is in the repository's Git common directory at `.git/pullboard/bo
 | `row grammar` | `1` | `SPEC_GRAMMAR_VERSION` in `src/spec.js`; optional `<!-- pullboard-grammar N -->` line in either file (absence means the current grammar) | Both files share the version. A declared version must match; an incompatible grammar change requires a coordinated version bump and compatible files. No automatic conversion occurs. |
 | `board schema` | `3` | `SCHEMA_VERSION` in `src/board.js`, persisted as `PRAGMA user_version` | On a write open of a board whose version is behind: create missing tables and indexes (version 3 adds the hot-path indexes), add missing columns in place with declared defaults, restore missing or changed triggers, and remove stale machine triggers without replacing rows. Read opens never migrate; a board at the current version whose shape differs is reported once on stderr and left as it is. |
 | `event log` | `1` | `EVENT_LOG_VERSION` in `src/board.js`, persisted in `board_meta` as `event_log_version` | Older event-log versions upgrade in place; newer versions are refused with `EVENT_LOG_VERSION`. Preserve event rows when the board schema changes. |
-| `move engine` | `106` | `ENGINE_VERSION` in `src/machine.js`, carried as `engine` in every sealed executable move | Bump when a move's meaning changes, independently of the event log and sealed envelope. A newer engine is refused with `ENGINE_VERSION`, naming both versions and asking you to upgrade Pullboard. |
+| `move engine` | `110` | `ENGINE_VERSION` in `src/machine.js`, carried as `engine` in every sealed executable move | Bump when a move's meaning changes, independently of the event log and sealed envelope. A newer engine is refused with `ENGINE_VERSION`, naming both versions and asking you to upgrade Pullboard. |
 <!-- format-versions:end -->
 
 A builder never picks an engine number (#1101). An item that adds a board move adds its own `src/<name>-engine.js` leaf as `export const NAME_ENGINE = unassignedEngine();` (importing `unassignedEngine` from `./engine-next.js`); on its branch the leaf reads as one above the highest landed engine. The landing merge writes the next number into the leaf, in landing order, inside that item's merge commit, and sets the `move engine` row above to the highest landed number. A landed number never changes, so recorded moves replay as they were written. Moves are recorded under landed numbers only: code with an unnumbered engine is for its branch's own tests, and a move it records on a real board before landing may later read under another item's number, so the item lands before its moves are used.
@@ -167,6 +167,8 @@ Engine 42 adds ordered `recordHealthFindings` observations. A scan retains its b
 Engine 52 reopens an accepted item that conflicts with the trunk for a main merge. A `reopen` move may carry `conflict: {files, trunk}`: the files that conflict, and the full trunk commit they conflict with. The CLI takes one exact path per `--conflict <file>` flag and splits or trims nothing inside it, so a path with spaces or commas is named as Git reports it in `git merge-tree --write-tree --name-only -z`; `files` holds those exact paths, nonempty and without NUL. The CLI fills `trunk` from Git and refuses `NOT_CONFLICTING` when the accepted commit merges cleanly, or `CONFLICT_FILES` when a named file is not one Git reports as conflicting. The board refuses `NOT_ACCEPTED` unless the item is verified with an accept at its commit, and `BAD_CONFLICT` for a malformed conflict. A conflict needs no note and no landing failure; the event records `supersedes`, the accept it sets aside, `conflict`, and `cause: "refusal:MERGE_CONFLICT"`, never `landingFailure`, so rigor counts it as a merge conflict and never as a failing test. The item reads `needs main merge` until its next verdict, and the re-review checks the frozen check at the new head. A `reopen` move carrying `conflict` requires engine 52, and older engines refuse it with `RELAY_MOVE` before changing their board or cursor; a board replaying an older engine refuses it with `ENGINE_VERSION`. Moves recorded under engines 51 and earlier replay unchanged. The unlanded feature’s previous allocations were 36 and 47; it moved to 52 after the trunk reached engine 50 and milestone withdrawal was allocated engine 51, preserving every landed feature’s engine.
 
 Engine 55 (`ROW_DRAFT_ENGINE`) adds `draftSpecRow`: an agent in a lane worktree records a drafted spec row on the board, since SPEC.md is the coordinator's file and a lane cannot write it. The move carries `row: {id, text, gate, tier, section, target}` and `written`. Every writer of a new row reserves its id with this move, in one write transaction, before any file names the id: a lane's spec draft, the main checkout's spec draft and doctrine rulings, Rigor and blueprints. The sender plans the id from its files; the board takes that id or the next number after it that no draft holds, so writers that planned the same id at the same moment get distinct ids, and the same row again keeps the id it reserved. `written: true` marks a writer that puts the row in its own file now; only unwritten spec drafts, which come from lanes, are written by spec apply. Until spec apply writes it, the commit-msg hook and `spec check` read a board draft as a draft row, so a lane cites the returned id at once and its worktree stays clean. The coordinator's `spec apply` writes each pending board draft into SPEC.md at its own id, and the person approves it there as before; a draft counts as applied once SPEC.md has its id. A move carrying `draftSpecRow` requires engine 55, and older engines refuse it before changing their board or cursor. Engine 54 is the strong-rejection notice above; engine 53 was reserved for unshipped board watches, now allocated engine 56 because engines 54 and 55 shipped first.
+
+Approved-row revision proposals use `row_drafts` entries with `revises`, `file`, exact `source` and `replacement`, proposed `status`, and `reason`; they are never materialized as new SPEC rows. The `decideSpecRevisions` operation accepts only the authenticated person channel and the exact pending proposal. An approval records a normal target-row decision with a canonical signed `revision` reference (proposal id, target, file, source, replacement, reason and proposer). A decline records the disposition without replacing the target's existing approval. Proposal dispositions retain their decision event and person attribution. Revision-bearing drafts and decisions, and the new disposition operation, negotiate the revision engine floor; older readers refuse before changing the board or cursor. Ordinary historical row-decision signatures keep their original canonical bytes.
 
 Engine 56 (`BOARD_SENTINEL_ENGINE`) adds board-owned watch proposals, exact person approve/decline decisions, ordered due-run claims and completed run receipts. Approval binds the entire execution definition; changing it creates a pending proposal. Replay records history without executing commands. Every non-cancelled red run records `sentinel:<name>` for Rigor; feed notices only mark failure and recovery transitions. Older engines refuse these operations and this new cause form before replay. Published engine-55 readers reject these moves by their newer engine number before interpreting an operation.
 
@@ -355,6 +357,9 @@ The following live SQLite declarations include nullability, defaults, primary an
 | Index | Table | Columns | Unique |
 | --- | --- | --- | --- |
 | `event_by_at` | `event` | `event_by`, `event_at` | no |
+| `event_fact_identity_v2` | `event` | `(expression)`, `event_id` | no |
+| `event_fact_malformed_v2` | `event` | `event_id` | no |
+| `event_fact_unknown_v2` | `event` | `event_id` | no |
 | `event_item_id_event_id` | `event` | `item_id`, `event_id` | no |
 | `event_kind_id` | `event` | `event_kind`, `event_id` | no |
 | `item_lane_status` | `item` | `item_lane`, `item_status` | no |
@@ -365,6 +370,9 @@ The following live SQLite declarations include nullability, defaults, primary an
 | `shout_open_request` | `shout` | `shout_request` | no |
 | `verdict_item_id_verdict_id` | `verdict` | `item_id`, `verdict_id` | no |
 <!-- board-indexes:end -->
+
+`(expression)` denotes an unnamed expression column in SQLite's `index_info`. For `event_fact_identity_v2`, it is `json_extract(event_detail, '$.id')`, followed by `event_id`; the partial index includes fact rows readable by `json_valid(event_detail, 10)`. The malformed index covers invalid TEXT fact rows and the unknown index covers invalid non-TEXT fact rows, both ordered by `event_id`. All three are nonunique additive indexes installed once by the owning writable opener; read opens do not install them. A missing-index append refuses with `FACT_INDEX_NOT_READY` and asks the owning checkout to open the board once.
+
 
 `src/machine.js` declares the lifecycle and retained records. `src/board.js` installs these persistent triggers in the board file:
 
@@ -442,6 +450,7 @@ The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its ap
 | `rigor-notice` | rigor | `cause`, `items`, `occurrences`, `neverAgain`, `engine`, automatic-Rigor `drafts` |
 | `rigor-draft` | rigor | `id`, `target`, `cause`, exact typed `source`, `unproved` (always true), `items`, `occurrences`, `engine` |
 | `shout` | sender | `shout`, `to`, `decision`, `request`, `answers` |
+| `shout_news` | sender | `shout`, `to`, `decision`, `request`, `answers` |
 | `flake-observation` | reporting agent | `engine`, `observation` |
 | `flake-repair` | reporting agent | `engine`, `key`, `item` |
 | `health-scan` | observing agent | `active`, `engine` |
@@ -488,6 +497,8 @@ An approval of proposed new wording uses that same record: `source` is the exist
 Migration preserves event rows and adds only schema objects that are missing.
 
 ## Submit test selection
+
+`pullboard.json` may set `"itemSizeBudget"` to a positive whole number of changed lines; it defaults to 100. A successful submit whose diff against current main adds plus deletes more than twice that budget prints one note with the count and suggests splitting into a chain of smaller items. At or below twice the budget it prints no size note. This advice never blocks submission; the budget is read from accepted main.
 
 `pullboard.json` may set `affectedTests` to a command prefix that runs selected test files. When it is absent, `submit` runs the configured `gate` in full. When present and the import graph can safely select a subset, Pullboard appends the selected file paths to this prefix; an uncertain selection still runs the full gate. For example, this repository opts in with `"affectedTests": "node bin/run-tests.js"`. Projects using another test framework can leave the setting out and keep their configured gate, such as `npm test`.
 
@@ -653,3 +664,22 @@ its number at landing; no event-log or envelope format changes.
 With `reviewsFirst` on, ordinary `next` offers an eligible review before a build when outstanding submissions exceed `wipPerReviewer` times the active-reviewer count (or ratio 3 while that numeric control is off). No permanent builder/reviewer seat type or role flag is required. Active reviewers are distinct registered seats with a reservation or verdict inside the flow window; its default is the last hour, and an empty window counts as one reviewer. The window uses the same validated boundaries as `stats --window`; its native duration is the shared `ACTIVE_REVIEWER_WINDOW_MINUTES` constant (60), not the measurement metadata or a new board setting.
 
 With numeric `wipPerReviewer` on, a new claim that would exceed that limit is refused as `LINE_WIP_LIMIT`, naming the oldest eligible pending review when there is one. Live claimed items and outstanding submissions count; expired claims do not. The shared pure `lineWipLimit` function computes the total cap without rounding, using at least one observed reviewer. Renewals remain possible. The native claim carries the configured verifier and family policies so its suggested review never relaxes those guards. With `takeoverMinutes` on, a sent-back item's idle interval can end its original builder's first-refusal window early; a live claim is never stolen, and normal claim appends preserve the old history. Disabled controls retain the previous behavior. New claims under these controls carry a true `lineCapacity` argument and the line-capacity engine floor; marker-absent older recorded claims keep their historical meaning during replay.
+
+
+The explicit top-level `news: true` shout argument emits a native `shout_news` event instead of `shout`, without adding a SQLite column. Its canonical message row remains in `shout`; consumers resolve its recipient and text in the same way as other messages.
+Only coordinator or person messages to `all` may be news; combining news with an item,
+decision, request or answer refuses as `BAD_NEWS`. Its unassigned activity-news engine leaf is
+numbered at landing; news takes the maximum applicable feature engine floor. Old `shout` events
+remain ordinary messages regardless of arbitrary metadata matching any news tags. `watch --kinds`
+continues to select literal kinds: include `shout,shout_news` to follow both. Older ordinary
+shout arguments retain their historical replay conditions. Untyped broadcasts retain their
+existing direct delivery, including governing holds and questions.
+
+The inbox's optional JSON v1 `activity` object contains event references, selected entries,
+one-line lane/news digests and a continuation cursor. Its private checkout delivery file is
+`pullboard-activity.json` in the checkout's Git directory: version 1, board id, agent, current native session
+digest, last delivered event id and last session-start news event id. It is local delivery state,
+not a native move, parent identity, configuration or authority record. Missing/damaged state
+replays activity. Reads freeze an event high-water mark before observing Git; subsequent events
+and messages remain pending. News has a separate cursor so an ordinary poll cannot consume a
+future session-start digest.

@@ -1,3 +1,12 @@
+import { itemById } from './board-item-read.js';
+import {
+  activityEventDetail,
+  activityInterests,
+  isActivityNews,
+  itemActivity,
+  projectAgentActivity,
+} from './activity-feed.js';
+export { itemById };
 import { outsideSource } from './outside-source.js';
 import {
   COORDINATION_SHOUT,
@@ -84,18 +93,6 @@ export function boardId(board) {
   return board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?').get('board_id').meta_value;
 }
 
-/**
- * The item with this id, or a refusal naming the id.
- *
- * @param {any} board
- * @param {number} id
- * @returns {any}
- */
-export function itemById(board, id) {
-  const item = board.db.prepare('SELECT * FROM item WHERE item_id = ?').get(id);
-  if (!item) throw new Refused('NO_ITEM', `no item #${id}; see: pullboard list`);
-  return item;
-}
 
 /**
  * One item as a reader should see it.
@@ -229,11 +226,22 @@ export function events(board, { itemId } = {}) {
 export function itemThread(board, id) {
   itemById(board, id);
   const withdrawals = new Map([...verdictWithdrawals(board, id).values()].map(row => [row.acceptEventId, row]));
-  return events(board, { itemId: id }).map((event) => event.event_kind === 'fact'
+  return itemActivity(board, id).map((event) => event.event_kind === 'fact'
     ? { type: 'fact', ...factFromEvent(event) }
     : { type: 'move', eventId: event.event_id, kind: event.event_kind, by: event.event_by,
       ...(withdrawals.has(event.event_id) ? { withdrawn: true, withdrawal: withdrawals.get(event.event_id) } : {}),
       at: event.event_at, detail: JSON.parse(event.event_detail) });
+}
+
+/**
+ * The hold on a lane, or null.
+ *
+ * @param {any} board
+ * @param {string} lane
+ * @returns {any | null}
+ */
+export function laneHold(board, lane) {
+  return board.db.prepare('SELECT * FROM hold WHERE hold_lane = ?').get(lane) ?? null;
 }
 
 /**
@@ -246,11 +254,7 @@ export function laneHolds(board) {
   return board.db.prepare('SELECT * FROM hold ORDER BY hold_lane').all();
 }
 
-/** Current person decisions, including applied receipts, stored without checkout-dependent state. */
-export function rowDecisions(board) {
-  const row = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get('row_decisions');
-  return row ? JSON.parse(row.meta_value) : [];
-}
+export { rowDecisions } from './row-decisions-query.js';
 
 /** The board's recorded row drafts, oldest first, without loading its mutation engine. */
 export function rowDrafts(board) {
@@ -297,8 +301,9 @@ export function withModel(board, agent) {
  * @returns {any[]}
  */
 export function listAgents(board) {
-  return board.db.prepare(`SELECT agent.*, board_meta.meta_value AS agent_model FROM agent
-    LEFT JOIN board_meta ON board_meta.meta_key='agent_model:' || agent.agent_id ORDER BY agent.rowid`).all().map(agent => ({ ...agent, agent_parent_session: agentParent(board, agent.agent_id) }));
+  return board.db.prepare(`SELECT agent.*, model.meta_value AS agent_model, parent.meta_value AS agent_parent_session FROM agent
+    LEFT JOIN board_meta model ON model.meta_key='agent_model:' || agent.agent_id
+    LEFT JOIN board_meta parent ON parent.meta_key='agent_parent_session:' || agent.agent_id ORDER BY agent.rowid`).all();
 }
 
 /** The optional engine-20 fields of a fact, present only when its event set them. */
@@ -312,6 +317,7 @@ export function factFromEvent(event) {
   const detail = JSON.parse(event.event_detail);
   return { id: detail.id, eventId: event.event_id, kind: detail.kind, text: detail.text,
     by: event.event_by, at: event.event_at, ref: detail.ref ?? null, supersedes: detail.supersedes ?? null, ...decisionFields(detail),
+    ...(detail.claimId === undefined ? {} : { claimId: detail.claimId }), ...(detail.answers === undefined ? {} : { answers: detail.answers }),
     ...(detail.neverAgain ? { cause: detail.cause, neverAgain: true } : {}) };
 }
 
@@ -434,4 +440,82 @@ export function relatedItems(board, item, limit = 3) {
 /** Read a seat's immutable parent session digest; unknown parents remain separate seats. */
 export function agentParent(board, id) {
   return board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?').get(`agent_parent_session:${id}`)?.meta_value ?? null;
+}
+
+
+/** Read the adjacent batch receipt, never a per-item scan of all landing history. */
+function activityBatchBase(board, event) {
+  const detail = activityEventDetail(event);
+  if (!detail) return null;
+  for (const [operator, order] of [['>', 'ASC'], ['<', 'DESC']]) {
+    const batch = board.db.prepare(`SELECT json_extract(CASE WHEN json_valid(event_detail) THEN event_detail ELSE '{}' END,'$.batch.id') AS id,
+      json_extract(CASE WHEN json_valid(event_detail) THEN event_detail ELSE '{}' END,'$.batch.base') AS base,
+      json_extract(CASE WHEN json_valid(event_detail) THEN event_detail ELSE '{}' END,'$.batch.tip') AS tip
+      FROM event WHERE event_kind='landing_batch' AND event_id${operator}? ORDER BY event_id ${order} LIMIT 1`).get(event.event_id);
+    if (batch?.id === detail.batch && batch.tip === detail.sha && /^[a-f0-9]{40}$/u.test(batch.base ?? '')) return batch.base;
+  }
+  return null;
+}
+
+/**
+ * One canonical activity history boundary for inbox readers; batch item queries rather than
+ * re-reading every global landing receipt for each item. Projection never acknowledges messages.
+ */
+export function agentActivity(board, agentId, { after = 0, newsAfter = 0, workingFiles = [], changesForMain, sessionStart = false } = {}) {
+  const agent = board.db.prepare('SELECT * FROM agent WHERE agent_id=?').get(agentId);
+  if (!agent) throw new Refused('NO_AGENT', `no agent ${agentId}; join your own worktree first`);
+  if (![after, newsAfter].every(value => Number.isSafeInteger(value) && value >= 0)) {
+    throw new Refused('BAD_ACTIVITY_CURSOR', 'activity cursors are nonnegative event ids; remove the damaged local inbox cursor and read inbox again');
+  }
+  // Freeze a high-water mark before any Git seam or other query; later events must remain pending.
+  const { cursor, shoutCursor } = board.db.prepare(`SELECT
+    (SELECT COALESCE(MAX(event_id),0) FROM event) AS cursor,
+    (SELECT COALESCE(MAX(shout_id),0) FROM shout) AS shoutCursor`).get();
+  const items = listItems(board, { all: true });
+  const builds = items.filter(item => item.item_status === 'claimed' && item.item_owner === agentId);
+  const observed = typeof workingFiles === 'function' ? workingFiles(builds) : workingFiles;
+  const observedFiles = Array.isArray(observed) ? observed : observed.files;
+  const interests = activityInterests(agent, items, { workingFiles: observedFiles, at: now(board) });
+  interests.unknownWorkingFiles = !Array.isArray(observed) && observed.unknown === true;
+  const wanted = [...new Set([...interests.related, ...[...interests.byId.values()]
+    .filter(item => item.item_lane === agent.agent_lane).map(item => item.item_id)])];
+  const rows = new Map();
+  for (let offset = 0; offset < wanted.length; offset += 500) {
+    const ids = wanted.slice(offset, offset + 500);
+    for (const event of board.db.prepare(`SELECT * FROM event WHERE event_id>? AND event_id<=? AND item_id IN (${ids.map(() => '?').join(',')}) ORDER BY event_id`).all(after, cursor, ...ids)) rows.set(event.event_id, event);
+  }
+  for (const event of board.db.prepare(`SELECT * FROM event WHERE event_id>? AND event_id<=?
+    AND event_kind IN ('main-moved','row_decision','row_apply','row_draft','shout','shout_news','pass','answer') ORDER BY event_id`).all(after, cursor)) rows.set(event.event_id, event);
+  if (sessionStart) for (const event of board.db.prepare(`SELECT * FROM event WHERE event_id>? AND event_id<=? AND event_kind='shout_news'
+    ORDER BY event_id`).all(newsAfter, cursor)) rows.set(event.event_id, event);
+  const messages = board.db.prepare(`SELECT * ${UNREAD_SQL} AND shout_id<=? ORDER BY shout_id`)
+    .all(...unreadShoutBindings(agent.agent_last_shout_id, agentId, agent.agent_lane), shoutCursor);
+  // News delivery uses its own cursor so ordinary inbox reads cannot consume a future session's digest.
+  const possibleNewsIds = [...rows.values()].filter(event => event.event_kind === 'shout_news')
+    .map(event => activityEventDetail(event)?.shout).filter(id => Number.isSafeInteger(id) && id > 0);
+  for (let offset = 0; offset < possibleNewsIds.length; offset += 500) {
+    const ids = possibleNewsIds.slice(offset, offset + 500);
+    messages.push(...board.db.prepare(`SELECT * FROM shout WHERE shout_id IN (${ids.map(() => '?').join(',')})
+      AND shout_to='all' AND shout_from IN ('coordinator','person') AND shout_decision=0
+      AND shout_request=0 AND shout_answers IS NULL`).all(...ids));
+  }
+  const byShout = new Map(messages.map(message => [message.shout_id, message]));
+  const newsIds = [...rows.values()].filter(event => isActivityNews(event, byShout.get(activityEventDetail(event)?.shout)))
+    .map(event => activityEventDetail(event).shout);
+  for (const event of rows.values()) if (event.event_kind === 'main-moved') event.activityBase = activityBatchBase(board, event);
+  for (const event of rows.values()) if (event.event_kind === 'row_apply') {
+    const ids = activityEventDetail(event)?.events;
+    event.activityRows = [];
+    if (!Array.isArray(ids)) continue;
+    for (let offset = 0; offset < ids.length; offset += 500) {
+      const chunk = ids.slice(offset, offset + 500).filter(id => Number.isSafeInteger(id) && id > 0 && id < event.event_id);
+      if (chunk.length) for (const row of board.db.prepare(`SELECT * FROM event WHERE event_kind='row_decision'
+        AND event_id IN (${chunk.map(() => '?').join(',')})`).all(...chunk)) {
+        const id = activityEventDetail(row)?.record?.id;
+        if (typeof id === 'string') event.activityRows.push(id);
+      }
+    }
+  }
+  return { ...projectAgentActivity({ agent, interests, events: [...rows.values()].toSorted((a, b) => a.event_id - b.event_id),
+    shouts: messages, changesForMain, sessionStart, after, newsAfter, cursor }), shoutCursor, newsShouts: newsIds };
 }

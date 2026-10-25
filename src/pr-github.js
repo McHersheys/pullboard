@@ -39,6 +39,10 @@ export function githubPullClient(root, repository) {
     throw new Refused('PUBLISH_GITHUB', 'GitHub evidence exceeds the bounded page limit; narrow this release before publishing.');
   }
   return {
+    open: () => pages('pulls?state=open'),
+    commits: number => pages(`pulls/${number}/commits`),
+    statuses: head => api('GET', `commits/${head}/status`).statuses ?? [],
+    setStatus: (head, body) => api('POST', `statuses/${head}`, body),
     list: head => pages(`pulls?state=open&head=${encodeURIComponent(repository.split('/')[0] + ':' + head)}`),
     read: number => api('GET', `pulls/${number}`),
     readIssue: number => api('GET', `issues/${number}`),

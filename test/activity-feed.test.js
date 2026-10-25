@@ -1,0 +1,367 @@
+/** @pullboard-test-loads src/board.js src/engine.js src/exchange.js src/machine.js */
+/** Lifecycle activity retains its evidence without turning routine status into messages [B3,R2,N26,H16]. */
+import assert from 'node:assert/strict';
+import { join } from 'node:path';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { after, test } from 'node:test';
+import * as store from '../src/board.js';
+import { createE2eHelpers } from './e2e-helpers.js';
+import { submitFixture } from './board-submit-fixture.js';
+import { exportBoard, importBoard } from '../src/exchange.js';
+import { applyEngineMove, prepareEngineMove } from '../src/engine.js';
+import { ACTIVITY_NEWS_ENGINE } from '../src/activity-news-engine.js';
+import { ITEM_SHOUT_ENGINE } from '../src/item-shout-engine.js';
+import { LANDING_LEASE_ENGINE } from '../src/landing-lease-engine.js';
+import shoutMove from '../src/moves/shout.js';
+import { activityMainFiles, activityWorkingFiles, readActivityCursor, saveActivityCursor } from '../src/activity-inbox.js';
+
+const e2e = createE2eHelpers();
+after(e2e.cleanup);
+
+/** Freeze a private item's exact requirement without claiming a test gate ran in this board-state fixture. */
+function freeze() {
+  return { text: JSON.stringify({ rows: [], policy: { version: 1, verify: { policy: 'any', family: 'off' } } }), digest: 'activity-fixture' };
+}
+
+test('status moves are feed events and the board sends no status shout [B3,R2,N26,H16]', t => {
+  const box = e2e.project();
+  const base = box.git(box.repo, 'rev-parse', 'HEAD');
+  const committed = e2e.commitFile(box, box.web, 'web/activity.txt', 'private activity fixture\n', 'feat(web): activity fixture [G1]');
+  assert.equal(committed.status, 0, committed.stderr);
+  const commit = box.git(box.web, 'rev-parse', 'HEAD');
+  const tree = box.git(box.web, 'rev-parse', 'HEAD^{tree}');
+  const board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
+  t.after(() => store.closeBoard(board));
+  const reviewer = store.register(board, { lane: 'api', path: join(box.dir, 'activity-reviewer') });
+  const item = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'Activity fixture' });
+  const other = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'Unrelated item' });
+  const beforeShouts = board.db.prepare('SELECT * FROM shout ORDER BY shout_id').all();
+  store.claim(board, item, { agentId: 'web-1', lane: 'web', leaseMs: 3600000, head: base, freeze });
+  const evidence = { version: 1, files: [], full: false, deferred: true, reason: 'private lifecycle fixture, not gate evidence' };
+  submitFixture(board, item, { agentId: 'web-1', commit, tree, note: 'The exact submit note stays in activity.', submissionProof: evidence });
+  store.verify(board, item, { agentId: reviewer, decision: 'ACCEPT', note: 'Synthetic private lifecycle acceptance, not an execution claim.',
+    head: commit, digest: freeze().digest, policy: 'any', familyPolicy: 'off', check: 'green',
+    review: { commit, head: commit, trunk: base, paths: ['web/activity.txt'] } });
+  const batch = { version: 1, id: 'activity-fixture', state: 'pushed', base, tip: commit,
+    root: box.web, branch: 'refs/heads/main', owner: 'private-fixture', logPath: join(box.dir, 'activity.log'),
+    items: [{ id: item, commit, merge: commit, reviewedCommit: commit }] };
+  store.recordLandingBatch(board, { agentId: 'coordinator', batch });
+  store.finishLandingBatch(board, { agentId: 'coordinator', id: batch.id, tip: commit });
+  const thread = store.itemThread(board, item);
+  assert.deepEqual(thread.filter(entry => ['claim', 'submit', 'accept', 'merged', 'main-moved'].includes(entry.kind)).map(entry => entry.kind),
+    ['claim', 'submit', 'accept', 'merged', 'main-moved'], 'main moving reaches the landed item as activity');
+  const submitted = thread.find(entry => entry.kind === 'submit');
+  assert.equal(submitted.detail.note, 'The exact submit note stays in activity.');
+  assert.deepEqual(submitted.detail.submissionProof, evidence);
+  assert.equal(thread.find(entry => entry.kind === 'main-moved').detail.sha, commit);
+  assert.equal(store.itemThread(board, other).some(entry => entry.kind === 'main-moved'), false, 'an unrelated item gets no landing activity');
+  assert.deepEqual(board.db.prepare('SELECT * FROM shout ORDER BY shout_id').all(), beforeShouts, 'routine lifecycle writes no status shout');
+  const snapshot = exportBoard(board);
+  assert.deepEqual(store.itemThread(board, item), thread, 'reading activity again is stable');
+  assert.deepEqual(exportBoard(board), snapshot, 'projection never writes another receipt');
+  assert.equal(store.events(board).filter(event => event.event_kind === 'main-moved').length, 1, 'one original batch receipt serves all item readers');
+  store.claim(board, other, { agentId: 'web-1', lane: 'web', leaseMs: 3600000, head: base, freeze });
+  submitFixture(board, other, { agentId: 'web-1', commit, tree });
+  store.verify(board, other, { agentId: reviewer, decision: 'REJECT', reason: 'TEST_FAILURE', note: 'Synthetic private refusal fixture.',
+    head: commit, digest: freeze().digest, policy: 'any', familyPolicy: 'off', reopenFirstRefusalMinutes: 30,
+    review: { commit, head: commit, trunk: base, paths: ['web/activity.txt'] } });
+  assert.equal(store.itemThread(board, other).at(-1).kind, 'reject', 'a rejection remains item activity');
+  const notices = board.db.prepare('SELECT * FROM shout WHERE shout_id > ? ORDER BY shout_id').all(beforeShouts.at(-1)?.shout_id ?? 0);
+  assert.equal(notices.length, 1, 'the actionable first-refusal notice survives; no routine reject shout is added');
+  assert.equal(notices[0].shout_to, 'web-1');
+  assert.match(notices[0].shout_text, /waits for you until.*claim it to resume/u);
+  store.shout(board, { from: 'web-1', to: 'coordinator', lanes: ['web', 'api'], text: 'My work was submitted.' });
+  assert.equal(board.db.prepare('SELECT shout_text FROM shout ORDER BY shout_id DESC LIMIT 1').get().shout_text,
+    'My work was submitted.', 'agent-written messages are never suppressed, even when they mention status');
+});
+
+
+test('an agent feed shows only activity that touches its items files rows and lane [R2,N26,H16]', (t) => {
+  assert.equal(typeof store.agentActivity, 'function', 'the inbox needs a tailored activity projection, not the global event log');
+  const git = e2e.project();
+  const base = git.git(git.web, 'rev-parse', 'HEAD');
+  assert.equal(e2e.commitFile(git, git.web, 'web/feed-fixture.txt', 'private fixture\n', 'feat(web): private feed fixture [G1]').status, 0);
+  const commit = git.git(git.web, 'rev-parse', 'HEAD');
+  const tree = git.git(git.web, 'rev-parse', 'HEAD^{tree}');
+  let leaseTime = Date.now();
+  // Only this private board's lease clock advances; admission and elapsed-time clocks stay real.
+  const board = store.openBoard(':memory:', { now: () => new Date(leaseTime) });
+  t.after(() => store.closeBoard(board));
+  for (const [lane, path] of [['coordinator', '/feed-fixture'], ['web', '/feed-fixture/web-1'],
+    ['web', '/feed-fixture/web-2'], ['api', '/feed-fixture/api-1']]) store.register(board, { lane, path });
+  const lanes = ['coordinator', 'web', 'api'];
+  /** Create ordinary private items; public lifecycle moves later establish their projection state. */
+  const add = (title, lane = 'api', options = {}) => store.addItem(board, { by: 'coordinator', lane, title, ...options });
+  const ancestor = add('Upstream ancestor');
+  const dependency = add('Direct dependency', 'api', { after: [ancestor] });
+  const mine = add('My active build', 'web', { after: [dependency], specIds: ['G1'],
+    brief: 'Files: src/edit.js\nTest: preserve the work\n' });
+  const dependent = add('Direct dependent', 'api', { after: [mine] });
+  const downstream = add('Downstream dependent', 'api', { after: [dependent] });
+  const sibling = add('Sibling only shares my prerequisite', 'api', { after: [dependency] });
+  const reviewed = add('My active review');
+  const sharedFile = add('Another lane edits my planned file', 'api', { brief: 'Files: src/edit.js\nTest: private fixture\n' });
+  const changedFile = add('Another lane edits my submitted diff', 'api', { brief: 'Files: src/diff-only.js\nTest: private fixture\n' });
+  const workingFile = add('Another lane edits my current working diff', 'api', { brief: 'Files: src/working.js\nTest: private fixture\n' });
+  const prefixOnly = add('A similar spelling is not the same file', 'api', { brief: 'Files: src/edit.js.backup\nTest: private fixture\n' });
+  const laneOnly = add('Other work in my lane', 'web');
+  const unrelated = add('Unrelated work');
+  const expired = add('My old expired claim', 'web');
+  const expiredReview = add('My old expired review');
+  /** Use normal private lifecycle moves; these synthetic submission receipts do not claim a gate ran. */
+  const submit = id => {
+    store.claim(board, id, { agentId: 'api-1', lane: 'api', leaseMs: 3_600_000, head: base, freeze });
+    submitFixture(board, id, { agentId: 'api-1', commit, tree });
+  };
+  /** Verify prerequisites with the existing private lifecycle fixture contract. */
+  const accept = id => {
+    submit(id);
+    store.verify(board, id, { agentId: 'web-2', decision: 'ACCEPT', head: commit, digest: freeze().digest,
+      note: 'Private projection fixture, not runtime proof.', policy: 'any', familyPolicy: 'off', check: 'green',
+      review: { commit, head: commit, trunk: base, paths: ['web/feed-fixture.txt'] } });
+  };
+  store.claim(board, expired, { agentId: 'web-1', lane: 'web', leaseMs: 1000, head: base, freeze });
+  submit(expiredReview);
+  store.reserveReview(board, expiredReview, { agentId: 'web-1', leaseMs: 1000, policy: 'any' });
+  leaseTime += 2000;
+  accept(ancestor);
+  accept(dependency);
+  store.claim(board, mine, { agentId: 'web-1', lane: 'web', leaseMs: 3_600_000, head: base, freeze });
+  submit(reviewed);
+  store.reserveReview(board, reviewed, { agentId: 'web-1', leaseMs: 3_600_000, policy: 'any' });
+  const question = store.shout(board, { from: 'web-1', to: 'api-1', text: 'Which direction?', lanes, decision: true });
+  const otherQuestion = store.shout(board, { from: 'web-2', to: 'api-1', text: 'Someone else asked', lanes, decision: true });
+  const since = board.db.prepare('SELECT MAX(event_id) AS id FROM event').get().id;
+  const expectedItems = [ancestor, dependency, mine, dependent, downstream, reviewed, sharedFile, changedFile, workingFile];
+  for (const id of [...expectedItems, sibling, prefixOnly, laneOnly, unrelated, expired, expiredReview]) {
+    store.appendFact(board, id, { agentId: 'coordinator', kind: 'note', text: id === laneOnly
+      ? 'Private lane detail must be summarized, not broadcast verbatim.' : `Private observation for #${id}` });
+  }
+  const rowRecords = [];
+  for (const id of ['G1', 'G2']) rowRecords.push(...store.recordRowDecisions(board, { agentId: 'person', channel: 'terminal', decisions: [{
+    kind: 'spec', id, file: 'SPEC.md', decision: 'approve', source: `- ${id} [draft] Private row ${id}.`,
+    replacement: `- ${id} [approved] Private row ${id}.`, text: `Private row ${id}.`,
+  }] }));
+  store.applyRowDecisions(board, { agentId: 'coordinator', events: rowRecords.map(record => record.event) });
+  store.draftSpecRow(board, { agentId: 'web-1', row: { id: 'G1', text: 'Private cited-row draft',
+    gate: 'private fixture gate', tier: 'should', section: 'Goals' } });
+  const answer = store.answerDecision(board, question, { agentId: 'api-1', text: 'Use the narrow path.', lanes });
+  store.answerDecision(board, otherQuestion, { agentId: 'api-1', text: 'Unrelated answer must stay private.', lanes });
+  const sha = 'a'.repeat(40);
+  // This synthetic main receipt supplies only identity; the injected Git seam supplies actual changed paths.
+  board.db.prepare('INSERT INTO event(event_at,event_by,event_kind,item_id,event_detail) VALUES (?,?,?,?,?)')
+    .run(new Date().toISOString(), 'coordinator', 'main-moved', null, JSON.stringify({ sha, batch: 'private-feed-main', items: [] }));
+  const news = store.shout(board, { from: 'coordinator', to: 'all', text: 'Release ready.\nRead its item for details.', lanes, news: true });
+  const governing = store.shout(board, { from: 'coordinator', to: 'all', text: 'Hold new browser launches until the person clears it.', lanes });
+  const snapshot = exportBoard(board);
+  /** This private Git seam declares fixture paths, not a claim about the live repository. */
+  const changesForMain = commit => commit === sha ? ['src/edit.js', 'src/diff-only.js', 'src/working.js', 'src/unrelated.js'] : null;
+  const options = { after: since, workingFiles: ['src/diff-only.js', 'src/working.js'], changesForMain, sessionStart: true, newsAfter: 0 };
+  const feed = store.agentActivity(board, 'web-1', options);
+  assert.deepEqual(feed.entries.filter(entry => entry.kind === 'fact').map(entry => entry.item).sort((a, b) => a - b),
+    expectedItems.sort((a, b) => a - b), 'both dependency directions are transitive, but a prerequisite sibling is not my dependent');
+  const rowChanges = feed.entries.filter(entry => entry.kind === 'row_decision');
+  assert.equal(rowChanges.length, 1);
+  assert.deepEqual(rowChanges[0].rows, ['G1'], 'only rows cited by my active work reach me');
+  assert.deepEqual(feed.entries.find(entry => entry.kind === 'row_apply')?.rows, ['G1'], 'application resolves its original decision ids');
+  assert.deepEqual(feed.entries.find(entry => entry.kind === 'row_draft')?.rows, ['G1'], 'a cited draft change reaches the same feed');
+  const answers = feed.entries.filter(entry => entry.kind === 'answer');
+  assert.deepEqual(answers.map(entry => entry.shout), [answer]);
+  assert.equal(answers[0].text, 'Use the narrow path.');
+  const main = feed.entries.find(entry => entry.kind === 'main-moved');
+  assert.deepEqual(main.files, ['src/diff-only.js', 'src/edit.js', 'src/working.js']);
+  assert.equal(main.text, 'main changed 3 files you are editing');
+  const digest = feed.digests.find(entry => entry.kind === 'lane');
+  assert.equal(digest.lane, 'web');
+  assert.equal(digest.count, 2, 'an expired own-lane claim is summarized rather than treated as active work');
+  assert.deepEqual(digest.items, [laneOnly, expired]);
+  assert.doesNotMatch(JSON.stringify(feed), /Private lane detail|Unrelated answer/, 'digests do not leak the underlying unrelated prose');
+  assert.equal(new Set(feed.entries.map(entry => entry.eventId)).size, feed.entries.length, 'overlapping reasons deliver one event');
+  assert.deepEqual(feed.entries.map(entry => entry.eventId), feed.entries.map(entry => entry.eventId).toSorted((a, b) => a - b));
+  const announcements = feed.digests.find(entry => entry.kind === 'news');
+  assert.deepEqual(announcements.shouts, [news]);
+  assert.doesNotMatch(announcements.text, /[\r\n]/, 'explicit news is a one-line session-start digest');
+  assert.equal(feed.entries.some(entry => entry.shout === news), false, 'explicit news is not repeated as a direct message');
+  assert.equal(feed.entries.find(entry => entry.shout === governing)?.text,
+    'Hold new browser launches until the person clears it.', 'untyped governing broadcasts remain direct');
+  assert.equal(feed.cursor, board.db.prepare('SELECT MAX(event_id) AS id FROM event').get().id);
+  const continued = store.agentActivity(board, 'web-1', { ...options, after: feed.cursor, sessionStart: false });
+  assert.deepEqual(continued.entries, [], 'the caller can continue from the returned cursor');
+  assert.equal(continued.digests.some(entry => entry.kind === 'news'), false, 'news is read at session start, not on every poll');
+  assert.deepEqual(exportBoard(board), snapshot, 'a feed projection does not modify immutable history or native receipts');
+  assert.throws(() => store.agentActivity(board, 'unknown-fixture-agent', options), error => error.code === 'NO_AGENT');
+  for (const invalid of [{ from: 'web-1' }, { to: 'web' }, { decision: true }, { request: true },
+    { answers: question }, { item: mine }, { detail: { news: true }, news: undefined }]) {
+    assert.throws(() => store.shout(board, { from: 'coordinator', to: 'all', text: 'Invalid private announcement',
+      lanes, news: true, ...invalid }), error => error.code === 'BAD_NEWS', 'news never creates a new broadcast or decision authority');
+  }
+  const executable = prepareEngineMove(board, 'shout', [{ from: 'coordinator', to: 'all', text: 'Private replay news', lanes, news: true }]);
+  assert.throws(() => applyEngineMove(board, { ...executable, engine: ACTIVITY_NEWS_ENGINE - 1 },
+    { sequence: 1, at: new Date().toISOString() }), error => error.code === 'RELAY_MOVE', 'old engines cannot silently reinterpret explicitly marked news');
+  assert.equal(shoutMove.minimumEngine([{ item: mine }]), ITEM_SHOUT_ENGINE, 'ordinary historical arguments keep their old engine floor');
+  assert.equal(shoutMove.minimumEngine([{ news: true, item: mine, landingFence: {} }]),
+    Math.max(ACTIVITY_NEWS_ENGINE, ITEM_SHOUT_ENGINE, LANDING_LEASE_ENGINE), 'news combines every applicable feature floor');
+  assert.deepEqual(exportBoard(board), snapshot, 'refused news and old replay leave all native rows and receipts unchanged');
+});
+
+
+test('activity cursors leave events arriving during an observation pending [N26]', (t) => {
+  const board = store.openBoard(':memory:');
+  t.after(() => store.closeBoard(board));
+  store.register(board, { lane: 'coordinator', path: '/feed-cursor-fixture' });
+  store.register(board, { lane: 'web', path: '/feed-cursor-fixture/web-1' });
+  const item = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'Private cursor item' });
+  store.claim(board, item, { agentId: 'web-1', lane: 'web', leaseMs: 3_600_000, freeze });
+  const before = board.db.prepare('SELECT MAX(event_id) AS id FROM event').get().id;
+  const observed = store.agentActivity(board, 'web-1', { after: before, workingFiles: () => {
+    store.appendFact(board, item, { agentId: 'coordinator', kind: 'note', text: 'Arrived after the observed high-water mark' });
+    store.shout(board, { from: 'coordinator', to: 'all', text: 'A later governing message', lanes: ['web'] });
+    return [];
+  } });
+  assert.equal(observed.cursor, before);
+  assert.deepEqual(observed.entries, [], 'later events are not falsely covered by the earlier cursor');
+  assert.deepEqual(store.inbox(board, 'web-1', { through: observed.shoutCursor }), [], 'acknowledging this snapshot does not consume the later message');
+  const next = store.agentActivity(board, 'web-1', { after: observed.cursor });
+  assert.equal(next.entries.some(entry => entry.kind === 'fact' && entry.item === item), true);
+  assert.equal(next.entries.some(entry => entry.text === 'A later governing message'), true);
+  // Legacy corruption is a private fixture, not a native writer or a repair to its stored bytes.
+  board.db.prepare('INSERT INTO event(event_at,event_by,event_kind,item_id,event_detail) VALUES (?,?,?,?,?)')
+    .run(new Date().toISOString(), 'coordinator', 'fact', item, '{broken legacy fact');
+  store.shout(board, { from: 'coordinator', to: 'all', text: 'Governing messages survive unknown old detail', lanes: ['web'] });
+  const intact = exportBoard(board);
+  const unknown = store.agentActivity(board, 'web-1', { after: next.cursor });
+  assert.equal(unknown.entries.some(entry => entry.item === item && entry.unknown === true), true);
+  assert.equal(unknown.entries.some(entry => entry.text === 'Governing messages survive unknown old detail'), true);
+  assert.deepEqual(exportBoard(board), intact, 'unknown legacy detail is reported without rewriting it');
+  assert.throws(() => store.inbox(board, 'web-1', { through: -1 }), error => error.code === 'BAD_ACTIVITY_CURSOR');
+  const oldMessage = store.shout(board, { from: 'coordinator', to: 'all', text: 'A legacy message still has its body', lanes: ['web'] });
+  // Construct an additional legacy-corrupt row without rewriting any append-only event.
+  board.db.prepare('INSERT INTO event(event_at,event_by,event_kind,item_id,event_detail) VALUES (?,?,?,?,?)')
+    .run(new Date().toISOString(), 'coordinator', 'shout', null, '{broken legacy message event');
+  const legacy = store.agentActivity(board, 'web-1', { after: unknown.cursor });
+  assert.ok(store.inbox(board, 'web-1', { through: legacy.shoutCursor }).some(shout => shout.shout_id === oldMessage),
+    'a corrupt old event cannot block delivery from the canonical message table');
+});
+
+test('inbox delivery uses real Git paths and board-bound cursors without consuming later news [R2,N26,H16]', () => {
+  const box = e2e.project();
+  const base = box.git(box.web, 'rev-parse', 'HEAD');
+  const rowFile = 'web/feed-rows.md';
+  const first = '## Goals\n- G1 [draft, should] First row.\n- G2 [draft, should] Other row.\n';
+  assert.equal(e2e.commitFile(box, box.web, rowFile, first, 'feat(web): private row file [G1]').status, 0);
+  const introduced = box.git(box.web, 'rev-parse', 'HEAD');
+  assert.deepEqual(activityMainFiles(box.web, introduced, { base }, { rowFiles: [rowFile] }).rows.toSorted(), ['G1', 'G2']);
+  assert.equal(e2e.commitFile(box, box.web, rowFile, first.replace('First row.', 'Changed row.'), 'feat(web): change one private row [G1]').status, 0);
+  const changed = box.git(box.web, 'rev-parse', 'HEAD');
+  assert.deepEqual(activityMainFiles(box.web, changed, { base: introduced }, { rowFiles: [rowFile] }).rows, ['G1']);
+  assert.equal(activityMainFiles(box.web, changed, { base: 'f'.repeat(40) }), null, 'missing Git ancestry stays unknown');
+  writeFileSync(join(box.web, 'web', 'untracked\nname.js'), 'private current diff\n');
+  const observed = activityWorkingFiles(box.web, [{ item_claim_head: base }]);
+  assert.equal(observed.unknown, false);
+  assert.ok(observed.files.includes(rowFile));
+  assert.ok(observed.files.includes('web/untracked\nname.js'), 'real NUL-delimited Git output preserves newline names');
+  assert.equal(activityWorkingFiles(box.web, [{ item_claim_head: 'missing' }]).unknown, true);
+
+  const board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
+  const id = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'Private CLI feed item',
+    specIds: ['G1'], brief: 'Files: web/feed-rows.md\nTest: private fixture\n' });
+  store.claim(board, id, { agentId: 'web-1', lane: 'web', leaseMs: 3_600_000, head: base, freeze });
+  store.appendFact(board, id, { agentId: 'web-1', kind: 'note', text: 'Private meaningful activity' });
+  // Synthetic native batch receipts exercise the read path, not a claim that a landing gate ran.
+  store.recordLandingBatch(board, { agentId: 'coordinator', batch: { version: 1, id: 'private-feed-git',
+    state: 'pushed', base, tip: changed, root: box.web, branch: 'refs/heads/main', owner: 'private-fixture',
+    logPath: join(box.dir, 'private-feed-git.log'), items: [] } });
+  store.finishLandingBatch(board, { agentId: 'coordinator', id: 'private-feed-git', tip: changed });
+  const lanes = ['web', 'api'];
+  store.shout(board, { from: 'coordinator', to: 'all', text: 'A governing instruction stays direct.', lanes });
+  const firstNews = store.shout(board, { from: 'coordinator', to: 'all', text: 'First private release.', lanes, news: true });
+  const boardId = store.boardId(board);
+  store.closeBoard(board);
+  const one = box.run(box.web, 'inbox', '--json');
+  assert.equal(one.code, 0, one.err);
+  const feed = JSON.parse(one.out);
+  assert.ok(feed.shouts.some(shout => shout.shout_text === 'A governing instruction stays direct.'));
+  assert.equal(feed.shouts.some(shout => shout.shout_id === firstNews), false);
+  assert.ok(feed.activity.entries.some(entry => entry.kind === 'fact' && entry.item === id));
+  assert.deepEqual(feed.activity.entries.find(entry => entry.kind === 'main-moved')?.files, [rowFile],
+    'the real CLI compares the exact recorded Git base and tip against the active file plan');
+  assert.deepEqual(feed.activity.digests.find(digest => digest.kind === 'news')?.shouts, [firstNews]);
+  const continued = box.run(box.web, 'inbox', '--json');
+  assert.equal(continued.code, 0, continued.err);
+  assert.deepEqual(JSON.parse(continued.out).activity.entries, []);
+  assert.deepEqual(JSON.parse(continued.out).activity.digests, []);
+  const again = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
+  const secondNews = store.shout(again, { from: 'coordinator', to: 'all', text: 'Next private release.', lanes, news: true });
+  store.closeBoard(again);
+  const sameSession = box.run(box.web, 'inbox', '--json');
+  assert.equal(sameSession.code, 0, sameSession.err);
+  assert.deepEqual(JSON.parse(sameSession.out).activity.digests, [], 'later news waits for the next session');
+  const delivery = readActivityCursor(box.web, 'web-1', boardId);
+  const saved = JSON.parse(readFileSync(delivery.file, 'utf8'));
+  // Explicit synthetic local delivery state models a restart; no native board identity is changed.
+  writeFileSync(delivery.file, JSON.stringify({ ...saved, session: 'older-private-fixture-session' }));
+  const restarted = box.run(box.web, 'inbox', '--json');
+  assert.equal(restarted.code, 0, restarted.err);
+  assert.deepEqual(JSON.parse(restarted.out).activity.digests.find(digest => digest.kind === 'news')?.shouts, [secondNews]);
+  assert.equal(readActivityCursor(box.web, 'web-1', 'different-private-board').after, 0, 'another board cannot borrow a cursor');
+  writeFileSync(delivery.file, '{damaged cursor');
+  assert.equal(readActivityCursor(box.web, 'web-1', boardId).after, 0, 'damaged local state replays instead of dropping history');
+  rmSync(delivery.file);
+  mkdirSync(delivery.file);
+  assert.equal(saveActivityCursor(delivery, 1), false, 'a refused cursor save reports failure without hiding it');
+  const refusedSave = box.run(box.web, 'inbox', '--json');
+  assert.equal(refusedSave.code, 0, refusedSave.err);
+  const savedFailure = JSON.parse(refusedSave.out);
+  const saveDiagnostic = JSON.stringify({ activityPresent: Boolean(savedFailure.activity), diagnostics: savedFailure.diagnostics });
+  assert.ok(savedFailure.activity, `delivery remains readable when local persistence fails: ${saveDiagnostic}`);
+  assert.ok(savedFailure.diagnostics?.includes('activity cursor could not be saved; activity may repeat when you read inbox again'),
+    `JSON callers receive the complete persistence warning in the standard diagnostics array: ${saveDiagnostic}`);
+  rmSync(delivery.file, { recursive: true });
+});
+
+test('old ordinary shout replay does not become newly typed news [H16,N26]', (t) => {
+  const board = store.openBoard(':memory:');
+  t.after(() => store.closeBoard(board));
+  store.register(board, { lane: 'coordinator', path: '/private-legacy-feed' });
+  store.register(board, { lane: 'web', path: '/private-legacy-feed/web-1' });
+  const move = prepareEngineMove(board, 'shout', [{ from: 'coordinator', to: 'all', lanes: ['web'],
+    text: 'Historical metadata is not a new delivery instruction.', detail: { news: true } }]);
+  applyEngineMove(board, { ...move, engine: 1 }, { sequence: 1, at: new Date().toISOString() });
+  const agentMove = prepareEngineMove(board, 'shout', [{ from: 'web-1', to: 'all', lanes: ['web'],
+    text: 'Legacy agent metadata cannot hide a direct message.', detail: { news: true, newsFormat: 1 } }]);
+  applyEngineMove(board, { ...agentMove, engine: 1 }, { sequence: 2, at: new Date().toISOString() });
+  const exactText = 'Legacy coordinator metadata is not an instruction to hide this message.';
+  const exactTagMove = prepareEngineMove(board, 'shout', [{ from: 'coordinator', to: 'all', lanes: ['web'],
+    text: exactText, detail: { news: true, newsFormat: 1 } }]);
+  const oldOutcome = applyEngineMove(board, { ...exactTagMove, engine: ACTIVITY_NEWS_ENGINE - 1 },
+    { sequence: 3, at: new Date().toISOString() });
+  assert.equal(oldOutcome.error, undefined, 'the last old engine still supports ordinary metadata-bearing shouts');
+  const legacyDetail = JSON.parse(oldOutcome.events[0].event_detail);
+  assert.equal(legacyDetail.news, true);
+  assert.equal(legacyDetail.newsFormat, 1, 'legacy replay preserves the recorded arbitrary detail');
+  const nativeBeforeRead = exportBoard(board);
+  const feed = store.agentActivity(board, 'web-1', { sessionStart: true });
+  assert.ok(feed.entries.some(entry => entry.text === exactText),
+    'an old-engine coordinator message stays direct even when its arbitrary metadata matches both new tags');
+  assert.ok(feed.entries.some(entry => entry.text === 'Historical metadata is not a new delivery instruction.'));
+  assert.deepEqual(feed.digests, [], 'only the new versioned explicit representation is digested');
+  assert.equal(feed.entries.some(entry => entry.text === 'Legacy agent metadata cannot hide a direct message.'), false,
+    'supplemental news reads never reintroduce the sender\'s own ordinary broadcast');
+  // The sender does not read its own broadcast; the coordinator must still receive it directly.
+  const coordinator = store.agentActivity(board, 'coordinator', { sessionStart: true });
+  assert.ok(coordinator.entries.some(entry => entry.text === 'Legacy agent metadata cannot hide a direct message.'));
+  assert.deepEqual(coordinator.digests, []);
+  assert.deepEqual(exportBoard(board), nativeBeforeRead, 'reading does not rewrite legacy metadata or native receipts');
+  const typedMove = prepareEngineMove(board, 'shout', [{ from: 'coordinator', to: 'all', lanes: ['web'],
+    text: 'New typed news survives ordered replay and native export.', news: true }]);
+  const typed = applyEngineMove(board, typedMove, { sequence: 4, at: new Date().toISOString() });
+  assert.equal(typed.error, undefined);
+  assert.equal(typed.events[0].event_kind, 'shout_news', 'only the new-engine typed path emits the new native kind');
+  const replica = store.openBoard(':memory:');
+  t.after(() => store.closeBoard(replica));
+  importBoard(replica, exportBoard(board));
+  assert.deepEqual(store.events(replica), store.events(board), 'native export/import preserves old and new exact event rows');
+  const restored = store.agentActivity(replica, 'web-1', { sessionStart: true });
+  assert.ok(restored.entries.some(entry => entry.text === exactText), 'native restore never upgrades old detail into news');
+  assert.deepEqual(restored.digests.find(digest => digest.kind === 'news')?.shouts, [typed.result]);
+});

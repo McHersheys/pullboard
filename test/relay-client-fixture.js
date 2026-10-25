@@ -1,3 +1,4 @@
+import { commandPhaseSnapshot } from '../src/command-phase.js';
 import { AGENT_SHELL_MARKERS, SSH_SHELL_MARKERS } from '../src/person.js';
 /** Private real CLI, auth and relay fixture; credentials never enter assertion messages [H1,H7,H18]. */
 import assert from 'node:assert/strict';
@@ -5,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { startFixtureChild as spawn, reportFixtureChildFailure, runFixtureChild } from './fixture-child.js';
 import { performance } from 'node:perf_hooks';
 import { createServer } from 'node:http';
-import { Transform } from 'node:stream';
+import { Readable, Transform } from 'node:stream';
 import { once } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { delimiter, join, resolve } from 'node:path';
@@ -17,6 +18,7 @@ import { createRelayHandler } from '../relay/service.js';
 import { createGitHubClient } from '../relay/github.js';
 import { githubFixture } from './relay-fixture.js';
 import { relayWorkBudgetMs, MAX_SNAPSHOT_ATTEMPTS } from './relay-budget.js';
+import { SEALED_SNAPSHOT_BYTES } from '../src/relay-limits.js';
 
 const CLI = resolve(import.meta.dirname, '../bin/pullboard.js');
 const MAX_OBSERVED_SNAPSHOT_UPLOADS = MAX_SNAPSHOT_ATTEMPTS;
@@ -107,7 +109,8 @@ function childResult(root, env, argv, observedSnapshotUploads, initialSnapshotUp
     /** Retain the exact command and work-derived bound without exposing credentials. */
     const reportFailure = (code, signal, detail = '') => reportFixtureChildFailure({
       command: process.execPath, args: argv, status: code, signal,
-      elapsedMs: performance.now() - startedAt, stderr, env, detail,
+      elapsedMs: performance.now() - startedAt, stderr, env, detail: exceededDeadline
+        ? detail + '\nstall phase capture: ' + JSON.stringify(commandPhaseSnapshot(env.PULLBOARD_COMMAND_PHASE_FILE, child.pid)) : detail,
     });
     child.once('error', error => {
       if (settled) return;
@@ -247,6 +250,8 @@ globalThis.fetch = function tracedFetch(input, init) {
   let loseSnapshotReply = null;
   const lostSnapshotReplies = [];
   let rejectSnapshotWrites = null;
+  let snapshotLimitBytes = null;
+  const sizeRefusals = [];
   let rejectedStateReads = null;
   let legacySnapshotApi = false;
   let beforeSnapshotWrite = null;
@@ -495,7 +500,24 @@ globalThis.fetch = function tracedFetch(input, init) {
       const action = beforeMove; beforeMove = null; await action();
     }
     if (await signIn(request, res)) return;
-    await api(request, res);
+    let forwarded = request;
+    if (snapshotWrite && snapshotLimitBytes !== null) {
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      const body = Buffer.concat(chunks);
+      const value = JSON.parse(body.toString('utf8'));
+      const sealedBytes = Buffer.from(value.sealed, 'base64url').byteLength;
+      if (sealedBytes > snapshotLimitBytes) {
+        const snapshotLimit = { sealedBytes, limit: snapshotLimitBytes };
+        sizeRefusals.push({ board: req.url.split('/')[4], ...snapshotLimit });
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ version: 1, error: { code: 'BAD_UPLOAD',
+          message: 'This sealed snapshot exceeds the configured upload limit; use bounded snapshots.', snapshotLimit } }));
+        return;
+      }
+      forwarded = Object.assign(Readable.from([body]), { method: request.method, url: request.url, headers: request.headers });
+    }
+    await api(forwarded, res);
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -546,6 +568,7 @@ globalThis.fetch = function tracedFetch(input, init) {
   }
   /** Invoke the production CLI in this private repository. */
   let cliChildIndex = 0;
+  let phaseSequence = 0;
   /** Verify and consume the next optional test-flow child descriptor. */
   function plannedSnapshotUploads(args) {
     if (!cliChildren) return undefined;
@@ -563,9 +586,10 @@ globalThis.fetch = function tracedFetch(input, init) {
     /** Observe only this child's received work; retries consume the same finite six-unit allowance. */
     const observedWork = () => ({ legacyUploads: snapshotWriteCount - writesBefore,
       ...Object.fromEntries(Object.entries(pageWork).map(([name, count]) => [name, count - pagesBefore[name]])) });
-    const childEnv = traceSnapshotWrites ? { ...env, PULLBOARD_TEST_RELAY_TRACE_FILE: traceFile,
+    const phaseEnv = { ...env, PULLBOARD_COMMAND_PHASE_FILE: join(scratch, `command-phase-${++phaseSequence}.jsonl`) };
+    const childEnv = traceSnapshotWrites ? { ...phaseEnv, PULLBOARD_TEST_RELAY_TRACE_FILE: traceFile,
       PULLBOARD_TEST_RELAY_TRACE_ORIGIN: origin,
-      NODE_OPTIONS: [env.NODE_OPTIONS, '--import=' + pathToFileURL(tracePreload).href].filter(Boolean).join(' ') } : env;
+      NODE_OPTIONS: [env.NODE_OPTIONS, '--import=' + pathToFileURL(tracePreload).href].filter(Boolean).join(' ') } : phaseEnv;
     const traceLinesBefore = traceSnapshotWrites ? readFileSync(traceFile, 'utf8').split('\n').filter(Boolean).length : 0;
     const initialUploads = traceSnapshotWrites ? 0 : snapshotUploads ?? DEFAULT_SNAPSHOT_UPLOADS;
     /** Read only this child’s sanitized fetch records, retaining evidence before fixture cleanup. */
@@ -807,6 +831,13 @@ globalThis.fetch = function tracedFetch(input, init) {
     },
     /** Return a chosen HTTP refusal for snapshot writes, without inspecting the sealed body. */
     rejectSnapshots(value) { rejectSnapshotWrites = value ? { ...value } : null; },
+    /** Enforce a real decoded-byte ceiling and report only sizes measured on the received upload. */
+    limitSnapshots(bytes) {
+      assert.ok(bytes === null || Number.isSafeInteger(bytes) && bytes > 0 && bytes <= SEALED_SNAPSHOT_BYTES);
+      snapshotLimitBytes = bytes;
+    },
+    /** Return the bounded facts of actual rejected uploads, without retaining their sealed contents. */
+    sizeRefusals() { return sizeRefusals.map(value => ({ ...value })); },
     /** Model an older relay's capability response without changing the real API1 request and journal bounds. */
     legacySnapshotApi(value = true) { legacySnapshotApi = value; },
     /** Order a competing real HTTP upload before the next native snapshot reaches the journal. */
