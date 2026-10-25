@@ -476,7 +476,12 @@ function gateAdmission(db, ticket, capacity, shortCapacity, runners, runnersFirs
       browsers: remoteHolders.filter(holder => holder.browser === 1).length,
     }];
   }));
-  const unavailable = new Set(db.prepare('SELECT host FROM runner_unavailable UNION SELECT host FROM runner_draining').all().map(row => row.host));
+  // A runner whose transport dropped rejoins the pool after RUNNER_RETRY_MS, so one network blip cannot send every
+  // later run to this machine; another drop quarantines it again. Unverified cleanup stays out until re-registered.
+  const unavailable = new Set([
+    ...db.prepare("SELECT host, since, detail FROM runner_unavailable").all()
+      .filter(row => row.detail !== 'TRANSPORT_LOST' || !(now - Date.parse(row.since) >= RUNNER_RETRY_MS)).map(row => row.host),
+    ...db.prepare('SELECT host FROM runner_draining').all().map(row => row.host)]);
   /** Keep an already holding process from taking another slot ahead of a different landing. */
   const blockedByLanding = waiter => holders.some(holder => holder.pid === waiter.pid)
     && waiters.some(other => other.landing === 1 && other.pid !== waiter.pid);
@@ -626,6 +631,8 @@ export function updateRunnerSettings(host, persist, { drain = false } = {}) {
 }
 
 const MEMORY_CACHE_MS = 2_000;
+/** How long a runner whose transport dropped sits out before the pool tries it again. */
+const RUNNER_RETRY_MS = 5 * 60_000;
 const MEMORY_COMMAND_TIMEOUT_MS = 2_000;
 const LINUX_CRITICAL_FULL_AVG10 = 10;
 const LINUX_WARN_SOME_AVG10 = 10;
