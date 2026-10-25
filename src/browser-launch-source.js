@@ -57,8 +57,8 @@ function processNamespaces(source) {
   return namespaces;
 }
 
-/** Unknown command members stay bound; call results retain the Chrome-bearing-source fallback. */
-function unresolvedCommandValue(expression, browserSource) {
+/** Unknown command members stay bound without tainting unrelated calls in the same source. */
+function unresolvedCommandValue(expression) {
   const compact = expression.replace(/\s/gu, '');
   // A conditional's predicate is not one of the executable values it returns.
   let nested = 0;
@@ -76,16 +76,13 @@ function unresolvedCommandValue(expression, browserSource) {
           at = end;
         } else if (compact[at] === '?' && !['?', '.'].includes(compact[at + 1]) && compact[at - 1] !== '?') nested += 1;
         else if (compact[at] === ':' && nested-- === 0) {
-          return unresolvedCommandValue(compact.slice(start, at), browserSource)
-            || unresolvedCommandValue(compact.slice(at + 1), browserSource);
+          return unresolvedCommandValue(compact.slice(start, at))
+            || unresolvedCommandValue(compact.slice(at + 1));
         }
       }
       return true;
     }
   }
-  // A call result is not a proven non-browser executable. Retain main's conservative
-  // Chrome-bearing-source rule only when that value actually supplies a command.
-  if (browserSource && /(?:[$\w]|\]|\))\s*(?:\?\.)?\s*\(/u.test(compact)) return true;
   // Calls and object/template construction do not return the value of each member they read.
   // In particular, a pid used to build a directory name is not an executable-valued alias.
   let brackets = 0;
@@ -157,7 +154,6 @@ export function sourceLaunchesBrowser(source, reviewedExecutors = []) {
   /** A span's literals or executable environment references can name a browser. */
   const browserIn = (start, end) => CHROME.test(code.slice(start, end))
     || strings.some(string => string.start >= start && string.start < end && browserText(string.text));
-  const browserSource = browserIn(0, code.length);
   // Union executable identifier assignments, including later writes and conditional branches.
   // Never let a later non-browser value erase a possible browser value; strings/comments are blank in code.
   for (const match of code.matchAll(/(?<![\w$.])([$A-Z_a-z][$\w]*)\s*=(?!=|>)/gu)) {
@@ -168,11 +164,31 @@ export function sourceLaunchesBrowser(source, reviewedExecutors = []) {
     if (end === null) return CHROME.test(source);
     const prior = bindings.get(match[1]) ?? { browser: false, unresolved: false, aliases: new Set(), dependencies: new Set() };
     prior.browser ||= browserIn(start, end);
-    prior.unresolved ||= unresolvedCommandValue(code.slice(start, end), browserSource);
+    prior.unresolved ||= unresolvedCommandValue(code.slice(start, end));
     const alias = /^\s*([$A-Z_a-z][$\w]*)\s*$/u.exec(code.slice(start, end));
     if (alias) prior.aliases.add(alias[1]);
     for (const word of code.slice(start, end).matchAll(WORD)) prior.dependencies.add(word[0]);
     bindings.set(match[1], prior);
+  }
+  // Named function declarations have no assignment RHS. Retain their returned values so a
+  // function-produced executable follows the same local value graph as an assigned literal.
+  for (const match of code.matchAll(/\bfunction\s+([$A-Z_a-z][$\w]*)\s*\(/gu)) {
+    const parameters = closing(code, match.index + match[0].length - 1);
+    if (parameters === null) continue;
+    const body = parameters + 1 + code.slice(parameters + 1).search(/\S/u);
+    if (code[body] !== '{') continue;
+    const last = closing(code, body);
+    if (last === null) continue;
+    const value = bindings.get(match[1]) ?? { browser: false, unresolved: false, aliases: new Set(), dependencies: new Set() };
+    for (const returned of code.slice(body + 1, last).matchAll(/\breturn\s+(?![\r\n])/gu)) {
+      const start = body + 1 + returned.index + returned[0].length;
+      const end = expressionEnd(code, start);
+      if (end === null) continue;
+      value.browser ||= browserIn(start, end);
+      value.unresolved ||= unresolvedCommandValue(code.slice(start, end));
+      for (const word of code.slice(start, end).matchAll(WORD)) value.dependencies.add(word[0]);
+    }
+    bindings.set(match[1], value);
   }
   /** Follow only the finite local binding graph, retaining a possible browser through aliases. */
   function namedBrowser(name, seen = new Set(), command = false) {
@@ -210,7 +226,7 @@ export function sourceLaunchesBrowser(source, reviewedExecutors = []) {
       const commandEnd = expressionEnd(code, start + 1, false);
       if (commandEnd === null) return true;
       const command = code.slice(start + 1, commandEnd);
-      if (unresolvedCommandValue(command, browserSource)
+      if (unresolvedCommandValue(command)
         || [...command.matchAll(WORD)].some(word => namedBrowser(word[0], new Set(), true))) return true;
     }
   }
