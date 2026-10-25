@@ -617,6 +617,29 @@ test('function-returned browser commands retain browser admission [C7,O5]', asyn
   }
 });
 
+test('function-returned member commands retain browser admission [C7,O5]', async t => {
+  const imports = "import { spawnSync } from 'node:child_process';\n";
+  const member = "const options = {}; options.command = 'google-chrome';\n";
+  const root = sourceFixture(t, {
+    'test/arrow-member.test.js': imports + member + 'const pick = () => options.command; spawnSync(pick(), []);',
+    'test/arrow-alias.test.js': imports + member + 'const pick = () => options.command; const executable = pick(); spawnSync(executable, []);',
+    'test/arrow-block.test.js': imports + member + 'const pick = () => { return options.command; }; spawnSync(pick(), []);',
+    'test/function-member.test.js': imports + member + 'function pick() { return options.command; } spawnSync(pick(), []);',
+    'test/function-member-alias.test.js': imports + member + 'function pick() { return options.command; } const executable = pick(); spawnSync(executable, []);',
+    'test/unused-member-factory.test.js': imports + member + "const pick = () => options.command; spawnSync('git', ['status']);",
+    'test/member-factory-data.test.js': imports + member + "const pick = () => options.command; spawnSync(process.execPath, ['--version']);",
+  });
+  commitSourceFixture(root);
+  for (const name of ['arrow-member', 'arrow-alias', 'arrow-block', 'function-member', 'function-member-alias']) {
+    assert.equal(await testsNeedBrowser(root, [`test/${name}.test.js`], { byLaunch: true }), true,
+      `${name}: the returned member supplies the executable command`);
+  }
+  for (const name of ['unused-member-factory', 'member-factory-data']) {
+    assert.equal(await testsNeedBrowser(root, [`test/${name}.test.js`], { byLaunch: true }), false,
+      `${name}: an unused factory does not supply the executable command`);
+  }
+});
+
 test('a file that launches Chrome unclassified fails by name [C7,O5]', async t => {
   const hidden = `import { test } from 'node:test';
 test('hidden launches through a computed import', async () => {
