@@ -16,21 +16,22 @@ after(cleanupFixtureChildren);
 after(cleanupToolingSnapshots);
 
 /** Build the real loopback SSH transport in an isolated machine, with a short private deadline. */
-function fixture() {
+function fixture({ hold = '', runnerWaitMs = 60 } = {}) {
   const box = e2e.project('true');
   const paths = Object.fromEntries(['bin', 'worker', 'remoteHome', 'remoteMachine'].map(name => [name, join(box.dir, name)]));
   for (const path of Object.values(paths)) mkdirSync(path, { recursive: true });
   const requests = join(box.dir, 'requests.jsonl');
+  const starts = join(box.dir, 'starts.jsonl');
   installSshStandIn({ bin: paths.bin, worker: paths.worker, home: paths.remoteHome,
-    machineHome: paths.remoteMachine, requests, dropFirst: true });
+    machineHome: paths.remoteMachine, requests, starts, hold, dropFirst: !hold });
   box.env.PATH = paths.bin + ':' + box.env.PATH;
   const added = cli(box.repo, box.env, 'runner', 'add', HOST + '-drop', '--slots', '1', '--browser', '1');
   assert.equal(added.status, 0, fixtureResultContext(added));
   const settingsFile = join(box.env.PULLBOARD_MACHINE_HOME, 'settings.json');
   const settings = JSON.parse(readFileSync(settingsFile, 'utf8'));
   writeFileSync(settingsFile, JSON.stringify({ ...settings, gateSlots: 1, browserSlots: 1,
-    gate: { ...settings.gate, runnerWaitMs: 60, runnersFirst: false } }));
-  return { ...box, requests, settingsFile };
+    gate: { ...settings.gate, runnerWaitMs, runnersFirst: false } }));
+  return { ...box, requests, starts, settingsFile };
 }
 
 /** Observe a real fixture phase, with cleanup owned by the caller rather than a production timeout override. */
@@ -43,7 +44,7 @@ async function observe(predicate, description) {
 }
 
 test('a gate run waiting for an unreachable runner falls back to a local slot after the deadline and names the runner [C7,Q1,Q2]', async () => {
-  const box = fixture();
+  const box = fixture({ runnerWaitMs: 1_000 });
   const previous = [process.env.PULLBOARD_HOME, process.env.PULLBOARD_MACHINE_HOME];
   process.env.PULLBOARD_HOME = box.env.PULLBOARD_HOME;
   process.env.PULLBOARD_MACHINE_HOME = box.env.PULLBOARD_MACHINE_HOME;
@@ -64,7 +65,7 @@ test('a gate run waiting for an unreachable runner falls back to a local slot af
     const queue = () => listResources({ scope: 'machine' }).find(resource => resource.name === 'gate');
     await observe(() => queue()?.line.some(row => row.item === 'deadline-case'), 'the original run requeued after transport loss');
     const first = queue().line.find(row => row.item === 'deadline-case');
-    await new Promise(resolve => setTimeout(resolve, 100)); // budget: pass the private 60ms deadline while the real local holder stays held.
+    await new Promise(resolve => setTimeout(resolve, 1_100)); // budget: pass the private one-second deadline while the real local holder stays held.
     const resources = cli(box.repo, box.env, 'resources');
     assert.equal(resources.status, 0, fixtureResultContext(resources));
     assert.match(resources.stdout, /runner wait deadline/iu, 'public resources names the overdue run');
@@ -106,5 +107,39 @@ catch(error) { console.log(JSON.stringify({code:error.code,message:error.message
     assert.equal(result.status, 0, result.context);
     assert.match(result.stdout, runnerOnly ? /runner.only/iu : /no local capacity/iu);
     assert.match(result.stdout, new RegExp(HOST + '-drop', 'u'));
+  }
+});
+
+test('a registered runner that never answers is canceled at the deadline and the original run executes locally [C7,Q1,Q2]', async () => {
+  const box = fixture({ hold: 'dispatch', runnerWaitMs: 1_000 });
+  const previous = [process.env.PULLBOARD_HOME, process.env.PULLBOARD_MACHINE_HOME];
+  process.env.PULLBOARD_HOME = box.env.PULLBOARD_HOME;
+  process.env.PULLBOARD_MACHINE_HOME = box.env.PULLBOARD_MACHINE_HOME;
+  let held;
+  let pending;
+  try {
+    held = await takeResource({ name: 'gate', scope: 'machine', root: box.repo, capacity: 1, agent: 'stalled-local-holder' });
+    pending = runThroughGate(box.repo, box.env, 'node -e "console.log(\'STALLED_RUN_LOCAL\')"', { item: 'stalled-case', requests: box.requests });
+    await observe(() => existsSync(box.starts), 'the non-answering SSH stand-in actually starting');
+    const queue = () => listResources({ scope: 'machine' }).find(resource => resource.name === 'gate');
+    await observe(() => queue()?.line.some(row => row.item === 'stalled-case' && row.runnerDeadline), 'deadline cancellation and the original local queue ticket');
+    const waiting = queue().line.find(row => row.item === 'stalled-case');
+    assert.match(waiting.runnerDeadline.branch, /local gate slots busy/u);
+    assert.match(waiting.runnerDeadline.runners[0].reason, /unreachable/u);
+    assert.equal(readFileSync(box.starts, 'utf8').trim().split('\n').length, 1, 'the non-answering host is not retried');
+    held.release(); held = null;
+    const result = await pending; pending = null;
+    assert.equal(result.status, 0, fixtureResultContext(result));
+    assert.match(result.stdout, /STALLED_RUN_LOCAL/u);
+    assert.equal(gateResult(result.stdout).runner, undefined);
+    assert.match(result.stderr, /runner wait deadline/iu);
+    assert.equal(queue().holders.length + queue().line.length, 0);
+  } finally {
+    held?.release();
+    // A deliberately non-answering stand-in is owned by the fixture's existing phase watchdog.
+    if (pending) await pending.catch(() => {});
+    for (const [index, key] of ['PULLBOARD_HOME', 'PULLBOARD_MACHINE_HOME'].entries()) {
+      if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index];
+    }
   }
 });
