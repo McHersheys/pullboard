@@ -497,6 +497,30 @@ test('generated Chrome programs stay launch-free while executable launcher argum
   }
 });
 
+/** Executable writes retain possible browser values even when no declaration initialized the target. */
+test('later executable assignments retain every possible browser launch value [C7,O5]', async t => {
+  const imports = "import { spawnSync } from 'node:child_process';\n";
+  const root = sourceFixture(t, {
+    'test/later-write.test.js': imports + "let executable; executable = '/opt/bin/chromium'; spawnSync(executable, []);",
+    'test/alias-write.test.js': imports + "let executable; executable = 'google-chrome'; let selected; selected = executable; spawnSync(selected, []);",
+    'test/replaced-write.test.js': imports + "let executable; executable = 'google-chrome'; executable = 'git'; spawnSync(executable, []);",
+    'test/conditional-write.test.js': imports + "let executable; if (process.env.BROWSER_CHOICE) executable = 'google-chrome'; else executable = 'git'; spawnSync(executable, []);",
+    'test/parameter-write.test.js': imports + "export function run(executable) { executable = 'google-chrome'; return spawnSync(executable, []); }",
+    'test/quoted-write.test.js': imports + 'const generated = ' + JSON.stringify("let executable; executable = 'google-chrome'; spawnSync(executable, []);")
+      + "; spawnSync('git', ['status']);",
+    'test/comment-write.test.js': imports + "// executable = 'google-chrome';\nspawnSync('git', ['status']);",
+  });
+  for (const name of ['later-write', 'alias-write', 'replaced-write', 'conditional-write', 'parameter-write']) {
+    assert.equal(await testsNeedBrowser(root, [`test/${name}.test.js`], { byLaunch: true }), true,
+      `${name}: a later assignment keeps a possible browser value conservatively`);
+  }
+  for (const name of ['quoted-write', 'comment-write']) {
+    const file = `test/${name}.test.js`;
+    assert.equal(await testsNeedBrowser(root, [file], { byLaunch: true }), false, `${name}: assignment text is not executed`);
+    assert.equal(await testsNeedBrowser(root, [file], { byLaunch: false }), true, `${name}: default admission remains conservative`);
+  }
+});
+
 test('a file that launches Chrome unclassified fails by name [C7,O5]', async t => {
   const hidden = `import { test } from 'node:test';
 test('hidden launches through a computed import', async () => {
