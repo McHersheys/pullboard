@@ -67,3 +67,22 @@ test('a shorthand CPU-load option keeps the test on its registered runner [C7]',
   assert.equal(remote.executor?.runnerExecution, true);
   assert.notEqual(remote.executor?.cwd, box.repo);
 });
+
+test('a quoted CPU-load key with a Unicode escape uses its registered runner [C7]', async () => {
+  const box = cpuLoadFixture(e2e, { declaration: String.raw`{ "cpu\u004coad": true }` });
+  const remote = await box.runGate();
+  assert.equal(remote.result.status, 0, remote.result.context);
+  assert.equal(box.requestsMade().length, 1, 'a valid escaped key declares the same CPU-load option');
+  assert.equal(remote.executor?.runnerExecution, true);
+  assert.notEqual(remote.executor?.cwd, box.repo);
+});
+
+test('a doubly escaped textual key stays ordinary local-first work [C7]', async () => {
+  const box = cpuLoadFixture(e2e, { declaration: String.raw`{ "cpu\\u004coad": true }` });
+  const local = await box.runGate();
+  assert.equal(local.result.status, 0, local.result.context);
+  assert.equal(box.requestsMade().length, 0, 'a literal backslash in a different key is not decoded twice into a CPU declaration');
+  assert.equal(local.executor?.cwd, box.repo);
+  assert.equal(local.executor?.liveLease, true);
+  assert.equal(local.executor?.runnerExecution, false);
+});
