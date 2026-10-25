@@ -11,6 +11,7 @@ import { blueprintRowIds, starterStates } from '../src/blueprint-report.js';
 import { parseSpec } from '../src/spec.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { assertStarterChecks } from './blueprint-starter-fixture.js';
+import { assertArchitectureBlueprintCoverage } from './blueprint-architecture-coverage.js';
 
 const BIN = resolve(import.meta.dirname, '../bin/pullboard.js');
 const PUBLISHED = JSON.parse(readFileSync(resolve(import.meta.dirname, '../src/blueprints/web-app.json'), 'utf8'));
@@ -339,61 +340,12 @@ const SOURCED = {
     { key: '2', title: 'No function exceeds its deadline', cites: ['EA2'], criterion: 'A test fails when a function exceeds its deadline.', check: 'true' },
   ],
 };
-
 test("an architecture blueprint's rows each arrive with a check that runs red before it is built [S1,I1]", () => {
-  const blueprint = {
-    ...SOURCED,
-    items: [
-      { key: '1', title: 'Add an alarm', cites: ['EA1'], criterion: 'The alarm is present.', check: 'test -f app/src/alarm.js' },
-      { key: '2', title: 'Set a deadline', cites: ['EA2'], criterion: 'The deadline is set.', check: 'test -f app/src/deadline.js' },
-    ],
-  };
-  const box = freshBoard({ gate: 'true' });
-  writeFileSync(join(box.repo, 'edge-api.json'), `${JSON.stringify(blueprint)}\n`);
-  const added = json(box, 'blueprint', 'add', 'edge-api.json');
-  const filed = json(box, 'list', '--all').items;
-  assert.equal(filed.length, 2);
-  for (const rule of blueprint.rules) {
-    const row = added.rows.find(entry => entry.key === rule.key);
-    const item = filed.find(entry => entry.item_spec_ids.split(',').includes(row.id));
-    assert.ok(item?.item_check, `${rule.key} has a checked starter item`);
-    assert.equal(item.item_check_baseline ?? null, null, 'adding the blueprint stores but does not run its checks');
-    assert.notEqual(runFixtureChild('/bin/sh', ['-c', item.item_check], { cwd: box.repo, env: box.env }).status, 0,
-      `${rule.key} check is red before its fixture is built`);
-  }
-  mkdirSync(join(box.repo, 'app/src'), { recursive: true });
-  writeFileSync(join(box.repo, 'app/src/alarm.js'), 'export const alarm = true;\n');
-  writeFileSync(join(box.repo, 'app/src/deadline.js'), 'export const deadline = 100;\n');
-  for (const item of filed) {
-    assert.equal(runFixtureChild('/bin/sh', ['-c', item.item_check], { cwd: box.repo, env: box.env }).status, 0,
-      `${item.item_title} check is green after its fixture is built`);
-  }
-  const uncovered = { ...blueprint, name: 'uncovered-edge-api', items: [blueprint.items[0]] };
-  const uncoveredBox = freshBoard({ gate: 'true' });
-  writeFileSync(join(uncoveredBox.repo, 'uncovered-edge-api.json'), `${JSON.stringify(uncovered)}\n`);
-  const before = readFileSync(join(uncoveredBox.repo, 'SPEC.md'), 'utf8');
-  const refused = uncoveredBox.run('blueprint', 'add', 'uncovered-edge-api.json', '--json');
-  assert.equal(refused.status, 1, refused.stdout + refused.stderr);
-  assert.equal(JSON.parse(refused.stdout).error.code, 'BLUEPRINT_RULE_UNCHECKED');
-  assert.equal(readFileSync(join(uncoveredBox.repo, 'SPEC.md'), 'utf8'), before, 'a missing must-row check writes nothing');
+  assertArchitectureBlueprintCoverage({ blueprint: { ...SOURCED, items: [
+    { key: '1', title: 'Add an alarm', cites: ['EA1'], criterion: 'The alarm is present.', check: 'test -f app/src/alarm.js' },
+    { key: '2', title: 'Set a deadline', cites: ['EA2'], criterion: 'The deadline is set.', check: 'test -f app/src/deadline.js' },
+  ] }, freshBoard, json, runFixtureChild });
 });
-
-test('an architecture must-row without a checked starter item is refused at add [S1,I1]', () => {
-  const blueprint = { ...SOURCED, name: 'uncovered-architecture', items: [SOURCED.items[0]] };
-  const box = freshBoard({ gate: 'true' });
-  writeFileSync(join(box.repo, 'uncovered-architecture.json'), `${JSON.stringify(blueprint)}\n`);
-  const before = readFileSync(join(box.repo, 'SPEC.md'), 'utf8');
-  const refused = box.run('blueprint', 'add', 'uncovered-architecture.json', '--json');
-  assert.equal(refused.status, 1, refused.stdout + refused.stderr);
-  assert.equal(JSON.parse(refused.stdout).error.code, 'BLUEPRINT_RULE_UNCHECKED');
-  assert.equal(readFileSync(join(box.repo, 'SPEC.md'), 'utf8'), before, 'the blueprint is refused before writing rows');
-  assert.equal(json(box, 'list', '--all').items.length, 0, 'no starter item is filed');
-
-  const aimOnly = { ...SOURCED, name: 'optional-aim', rules: [SOURCED.rules[0], { ...SOURCED.rules[1], tier: 'aim' }], items: [SOURCED.items[0]] };
-  writeFileSync(join(box.repo, 'optional-aim.json'), `${JSON.stringify(aimOnly)}\n`);
-  assert.equal(json(box, 'blueprint', 'add', 'optional-aim.json').blueprint.name, 'optional-aim', 'an uncovered aim row is optional');
-});
-
 test('a drafted row records its rule source [S1,I1]', () => {
   // blueprint add copies each rule's source onto its drafted row as a source field; the row's text
   // stays the rule and its reason, so the person approves the rule and reads where it came from.
