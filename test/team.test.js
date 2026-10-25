@@ -773,7 +773,7 @@ test('a clone of a linked repo joins its board; a member device hands over the k
   assert.equal((await box.cli('status')).code, 0, 'alice’s computer comes online and hands the key over');
   const joined = await freshOn.closed;
   box.providerState.signer = 'alice';
-  assert.equal(joined.code, 0, `relay on in the clone joins the board: ${joined.stderr}`);
+  assert.equal(joined.code, 0, `relay on in the clone joins the board: ${joined.stderr}; ${JSON.stringify(joined.document?.error ?? null)}`);
   assert.equal(JSON.parse(readFileSync(join(fresh.root, '.git', 'pullboard', 'relay.json'), 'utf8')).board, link.board, 'the clone works on the board pullboard.json names');
   assert.equal(box.auth.linkedBoards().length, 1, 'joining never links another board');
   const listed = await fresh.cli('list', '--all');
