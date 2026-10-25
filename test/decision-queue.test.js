@@ -123,4 +123,6 @@ test('item decision options replay exactly and never acquire legacy engine autho
   assert.equal(legacyOpaque.options, undefined, 'old opaque detail must not acquire new option meaning or item authority');
   assert.equal(replica.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get(`item_decision:${legacyOpaque.shout_id}`),
     undefined, 'legacy engine data creates no new decision index');
+  assert.deepEqual(JSON.parse(store.events(replica).at(-1).event_detail).decisionOptions, ['Injected A', 'Injected B'],
+    'the legacy opaque event data itself is retained without rewriting history');
 });

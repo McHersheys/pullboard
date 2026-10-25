@@ -17,10 +17,9 @@ export function itemDecisionDetail(board, message, engine) {
   return { decisionOptions: options.map(option => option.trim()) };
 }
 
-/** Save a query index alongside its authoritative event; passing up preserves the original options. */
-export function recordItemDecision(board, id, { decision, answers, detail }) {
+/** Index only the validated top-level option record, never opaque legacy detail; passing up retains that index. */
+export function recordItemDecision(board, id, { decision, answers, record }) {
   if (!decision) return;
-  let record = detail.decisionOptions ? { item: detail.item, options: detail.decisionOptions } : null;
   if (!record && answers !== null) {
     const original = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get(`item_decision:${answers}`);
     if (original) record = JSON.parse(original.meta_value);
