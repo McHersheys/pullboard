@@ -37,7 +37,8 @@ test("a hook nudges and never blocks, fails open on error or timeout, and init m
   const codexMine = { description: 'My existing hooks', hooks: { SessionStart: [{ matcher: 'startup', hooks: [{ type: 'command', command: 'echo my-start' }] }] } };
   writeFileSync(claude, JSON.stringify(mine));
   writeFileSync(codex, JSON.stringify(codexMine));
-  assert.equal(box.run(box.repo, 'hooks').code, 0);
+  assert.equal(box.run(box.repo, 'init', '--no-permissions').code, 0,
+    'the actual init entrypoint merges existing agent hooks');
   const configured = [claude, codex].map(file => JSON.parse(readFileSync(file, 'utf8')));
   assert.deepEqual(configured[0].permissions, mine.permissions);
   assert.deepEqual(configured[0].hooks.Stop[0], mine.hooks.Stop[0]);
@@ -89,6 +90,13 @@ test("a hook nudges and never blocks, fails open on error or timeout, and init m
   const status = JSON.parse(doctor.out).agentHooks.find(hook => hook.vendor === 'Codex');
   assert.deepEqual(status.events, ['SessionStart', 'Stop']);
   assert.equal(status.trust, 'unverified', 'installation never fabricates vendor trust');
+  const validCodex = readFileSync(codex, 'utf8');
+  writeFileSync(codex, '{ malformed user JSON');
+  const malformed = box.run(box.repo, 'hooks');
+  assert.equal(malformed.code, 0);
+  assert.match(malformed.out, /warning.*kept.*unchanged/i);
+  assert.equal(readFileSync(codex, 'utf8'), '{ malformed user JSON');
+  writeFileSync(codex, validCodex);
   assert.equal(box.run(box.repo, 'hooks', 'uninstall').code, 0);
   assert.deepEqual(JSON.parse(readFileSync(claude, 'utf8')), mine);
   assert.deepEqual(JSON.parse(readFileSync(codex, 'utf8')), codexMine);
