@@ -97,7 +97,8 @@ Work
   pullboard roadmap                     ordered milestones, N/M landed, targets, and each item as landed,
                                         accepted or its status
   pullboard milestone add <name> [--note ...] [--items 1,2,3]   create a milestone and optionally add items
-  pullboard milestone items <name> --add ids [--swap id] | --remove ids
+  pullboard milestone items <name> --add ids [--swap id]   add items; --swap replaces an existing item
+  pullboard milestone items <name> --remove ids            remove items from the milestone
   pullboard milestone order <name> <ids>                       rank these items within their milestone (agents)
   pullboard milestone pin|sink <name> <ids> --reason "<why>"   hold items above or below the queue's own order
   pullboard milestone lift <name> <ids>                        return pinned or sunk items to the queue's order
@@ -164,9 +165,10 @@ Work
   Inbox combines direct coordination with item/dependency, file and cited-row activity; other lane activity is summarized.
   pullboard shout [<to>] <text> --decision       ask for a decision; defaults to your coordinator or the person
   pullboard shout <to> <text> --evidence attempt|receipt --outcome <word> --item <id> --commit <rev>
-  pullboard answer <shout-id> <text> [--as person] [--implies <ids>] [--supersedes <answer-id>]
-                    [--origin person-relayed|agent|inherited] [--rationale <why>]
+  pullboard answer <shout-id> <text> [--as person]
                                         answer your decision; person mode is main-checkout only
+                                        Other options: [--implies <ids>] [--supersedes <answer-id>]
+                                                      [--origin person-relayed|agent|inherited] [--rationale <why>]
                                         --supersedes tells the items an earlier answer implied; only the person
                                         supersedes the person's answer
   pullboard pass <shout-id> <note>                coordinator passes a decision to the person
