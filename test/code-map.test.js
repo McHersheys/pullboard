@@ -15,7 +15,7 @@ test('pullboard map prints the overview, a card and an item slice from one scan 
   t.after(() => e2e.cleanup());
   const joined = box.run(box.repo, 'join', 'coordinator', '--model', 'fixture');
   assert.equal(joined.code, 0, joined.out + joined.err);
-  assert.match(joined.out, /joined as coordinator/u);
+  assert.match(joined.out, /declared coordinator/u);
   mkdirSync(join(box.repo, 'src'), { recursive: true });
   mkdirSync(join(box.repo, 'bin'), { recursive: true });
   mkdirSync(join(box.repo, 'test'), { recursive: true });
