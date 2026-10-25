@@ -102,3 +102,74 @@ console.log('PRIVATE_CHECK_OBSERVATION ' + JSON.stringify({ head: execFileSync('
     if (index === 1) assert.ok(statSync(join(outputs, files[0])).size > 64 * 1024 ** 2, 'full raw phase artifacts survive beyond the generic transport capture limit');
   }
 }
+
+/** Exercise AFTER-only public install, deadline and guard behavior through real Git/SQLite reviews. */
+export async function privateReviewRunnerEdges(t, e2e) {
+  /** Build a Node command without relying on the controller shell's quoting rules. */
+  const node = source => 'node -e ' + shellQuote(source);
+  const cases = [
+    { name: 'absent install skips implicit npm setup', install: '', check: node("console.log('ABSENT_INSTALL_CHECK')"), marker: 'ABSENT_INSTALL_CHECK' },
+    { name: 'failed install leaves the check unreached', install: node("console.log('INSTALL_FAILED');process.exit(7)"), check: node("console.log('CHECK_MUST_STAY_UNREACHED')"), error: 'CHECK_UNVERIFIED', marker: 'INSTALL_FAILED', absent: 'CHECK_MUST_STAY_UNREACHED' },
+    { name: 'install and check share one deadline', install: node("setTimeout(()=>console.log('INSTALL_COMPLETE'),1000)"), timeout: '3s', check: node("console.log('CHECK_STARTED');setTimeout(()=>console.log('CHECK_FINISHED'),3000)"), error: 'CHECK_UNVERIFIED', marker: 'CHECK_STARTED', absent: 'CHECK_FINISHED', problem: /check timed out/u },
+    { name: 'a red check remains red', install: '', check: node("console.log('REMOTE_CHECK_RED');process.exit(9)"), error: 'CHECK_RED', marker: 'REMOTE_CHECK_RED' },
+    { name: 'a missing guard is unverified rather than an ordinary red', install: '', check: node("console.log('RESTORED_CHECK_GREEN')"), guard: 'web/missing.cjs:1-1', error: 'GUARD_NOT_FOUND', marker: 'RESTORED_CHECK_GREEN' },
+    { name: 'an applied guard must turn the restored green check red', install: '', check: 'node web/guard.cjs', guard: 'web/guard.cjs:1-1', marker: 'GUARD_RESTORED_GREEN', applied: true },
+    { name: 'successful install cleanup does not shorten a long check', install: node("console.log('INSTALL_DRAINED')"), check: node("setTimeout(()=>console.log('LONG_CHECK_FINISHED'),31000)"), marker: 'LONG_CHECK_FINISHED' },
+  ];
+  for (const edge of cases) await t.test(edge.name, async () => {
+    const box = e2e.project('true');
+    const config = JSON.parse(readFileSync(join(box.repo, 'pullboard.json'), 'utf8'));
+    config.check = { install: edge.install, timeout: edge.timeout ?? '2m' };
+    config.lanes.web.owns.push('pullboard.json', 'package.json');
+    writeFileSync(join(box.repo, 'pullboard.json'), JSON.stringify(config, null, 2));
+    box.git(box.repo, 'add', 'pullboard.json');
+    box.git(box.repo, 'commit', '-q', '-m', 'test: trusted edge policy [G1]');
+    box.git(box.web, 'merge', '-q', '--ff-only', 'main');
+    mkdirSync(join(box.web, 'web'), { recursive: true });
+    // Generic npm setup would refuse this dependency without a lock; private mode obeys only check.install.
+    writeFileSync(join(box.web, 'package.json'), JSON.stringify({ private: true, dependencies: { 'fixture-no-network-dependency': '1.0.0' } }));
+    writeFileSync(join(box.web, 'web/guard.cjs'), "const enabled = true;\nif (!enabled) process.exit(9);\nconsole.log('GUARD_RESTORED_GREEN');\n");
+    writeFileSync(join(box.web, 'pullboard.json'), JSON.stringify({ ...config, check: { install: 'exit 83', timeout: '1ms' } }, null, 2));
+    const commit = e2e.attackCommit(box, box.web);
+    const reviewer = join(box.dir, 'reviewer');
+    box.git(box.repo, 'worktree', 'add', '-q', '--detach', reviewer, commit);
+    document(box.run(reviewer, 'join', 'api', '--json'));
+    const bin = join(box.dir, 'ssh-bin');
+    const worker = join(box.dir, 'worker');
+    const home = join(box.dir, 'worker-home');
+    const machineHome = join(home, '.pullboard');
+    const requests = join(box.dir, 'ssh-requests.jsonl');
+    for (const folder of [bin, worker, home, machineHome, box.env.PULLBOARD_MACHINE_HOME]) mkdirSync(folder, { recursive: true });
+    installSshStandIn({ bin, worker, home, machineHome, requests });
+    box.env.PATH = bin + ':' + box.env.PATH;
+    for (const key of ['PULLBOARD_GATE_SLOT_HELD', 'PULLBOARD_GATE_SLOT_POOL', 'PULLBOARD_GATE_SLOT_TOKEN', 'PULLBOARD_BROWSER_SLOT_HELD']) delete box.env[key];
+    document(box.run(box.repo, 'runner', 'add', HOST, '--slots', '1', '--browser', '1', '--json'));
+    document(box.run(box.repo, 'settings', 'gate.runnersFirst', 'on', '--json'));
+    const criterion = 'the private runner preserves trusted phase behavior' + (edge.guard ? '; guard: ' + edge.guard : '');
+    document(box.run(box.repo, 'add', 'web', edge.name, '--criterion', criterion, '--check', edge.check, '--specs', 'G1', '--json'));
+    document(box.run(box.web, 'claim', '1', '--json'));
+    historicalSubmission(box, 1, commit);
+    const before = phaseCounts(requests + '.phases');
+    const child = startToolingCli(reviewer, box.env, ['verify', '1', 'accept', '--note', 'private runner edge fixture', '--json']);
+    let stdout = '', stderr = '';
+    child.stdout.setEncoding('utf8').on('data', part => { stdout += part; });
+    child.stderr.setEncoding('utf8').on('data', part => { stderr += part; });
+    const closed = once(child, 'close').then(([status, signal]) => ({ status, signal, stdout, stderr }));
+    const result = await awaitRoundTrip(child, closed, requests + '.phases', before, { 'remote run': 120_000 });
+    const response = JSON.parse(result.stdout);
+    assert.equal(result.status, edge.error ? 1 : 0, result.stdout + result.stderr);
+    if (edge.error) assert.equal(response.error.code, edge.error, result.stdout);
+    if (edge.problem) assert.match(response.error.message, edge.problem);
+    const dispatched = readFileSync(requests, 'utf8').trim().split('\n').filter(Boolean);
+    assert.equal(dispatched.length, edge.guard ? 2 : 1, 'each restored or guard check actually dispatches to the worker');
+    const outputRoot = join(box.repo, '.git/pullboard/check-output');
+    const output = readdirSync(outputRoot).filter(name => name.startsWith('check-1-') && name.endsWith('.log')).map(name => readFileSync(join(outputRoot, name), 'utf8')).join('\n');
+    assert.ok(output.includes(edge.marker), 'the complete phase artifact preserves the reached behavior');
+    if (edge.absent) assert.ok(!output.includes(edge.absent), 'a later phase or completion remains unreached');
+    if (edge.applied) {
+      const shown = document(box.run(box.repo, 'show', '1', '--json'));
+      assert.match(shown.verdicts.at(-1).verdict_note, /guard web\/guard\.cjs:1-1 reverted: check red; restored: check green/u);
+    }
+    if (edge.error) assert.equal(document(box.run(box.repo, 'show', '1', '--json')).item_status, 'submitted', 'a failed private proof cannot record an accepting verdict');
+  });
+}
