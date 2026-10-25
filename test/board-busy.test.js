@@ -405,15 +405,18 @@ test('native import observes committed and rolled-back write ownership without c
       const board = store.openBoard(file, undefined, { writeContext: { command: 'private-import', seat: 'coordinator' } });
       const before = exportBoard(board);
       let held = false;
+      let contenderCode = null;
+      let holderText = null;
       board.db.function('hold_private_import', () => {
         if (held) return 1;
         held = true;
         const contender = new DatabaseSync(file);
         try {
           contender.exec('PRAGMA busy_timeout=0');
-          assert.throws(() => contender.exec('BEGIN IMMEDIATE'), error => (error.errcode & 255) === 5);
+          try { contender.exec('BEGIN IMMEDIATE'); contender.exec('ROLLBACK'); }
+          catch (error) { contenderCode = error.errcode & 255; }
         } finally { contender.close(); }
-        assert.match(boardWriteHolderText(file), /private-import/);
+        holderText = boardWriteHolderText(file);
         // budget: exercise the declared over-two-second diagnostic during a genuine native restore write.
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2_100);
         return 1;
@@ -428,6 +431,8 @@ test('native import observes committed and rolled-back write ownership without c
           assert.deepEqual(JSON.parse(JSON.stringify(exportBoard(board))), document);
         }
         assert.equal(held, true);
+        assert.equal(contenderCode, 5, 'the native import held a genuine write lock');
+        assert.match(holderText, /private-import/);
         assert.equal(boardWriteHolderText(file), '');
         process.stdout.write(JSON.stringify({ restored: !${rollback}, rolledBack: ${rollback} }));
       } finally { store.closeBoard(board); }
@@ -536,4 +541,76 @@ test('a failed owning migration rolls back schema, index and stamp work together
     assert.equal(unchanged.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='index' AND name LIKE 'event_fact_%_v2'").get().n, 0);
   } finally { unchanged.close(); }
   assert.equal(boardWriteHolderText(file), '');
+});
+
+
+test('a standalone native attempt and nested rollback each observe only their actual outer write [C7,P4]', () => {
+  const box = e2e.project();
+  const added = box.run(box.repo, 'add', 'web', 'private native attempt', '--specs', 'G1', '--criterion', 'the private page renders', '--json');
+  assert.equal(added.code, 0, added.err);
+  const id = JSON.parse(added.out).item.item_id;
+  const file = join(box.repo, '.git', 'pullboard', 'board.sqlite');
+  for (const rollback of [false, true]) {
+    const source = `
+      import assert from 'node:assert/strict';
+      import { DatabaseSync } from 'node:sqlite';
+      import * as store from ${JSON.stringify(new URL('../src/board.js', import.meta.url).href)};
+      import { exportBoard } from ${JSON.stringify(new URL('../src/exchange.js', import.meta.url).href)};
+      import { boardWriteHolderText } from ${JSON.stringify(new URL('../src/board-write-lock.js', import.meta.url).href)};
+      const file = process.argv[1];
+      const board = store.openBoard(file, undefined, { writeContext: { command: 'private-attempt', seat: 'coordinator' } });
+      const before = exportBoard(board);
+      let held = false;
+      let contenderCode = null;
+      let holderText = null;
+      board.db.function('hold_private_attempt', () => {
+        held = true;
+        const contender = new DatabaseSync(file);
+        try {
+          contender.exec('PRAGMA busy_timeout=0');
+          try { contender.exec('BEGIN IMMEDIATE'); contender.exec('ROLLBACK'); }
+          catch (error) { contenderCode = error.errcode & 255; }
+        } finally { contender.close(); }
+        holderText = boardWriteHolderText(file);
+        // budget: pause after actual event INSERT owns the write lock, across the declared diagnostic threshold.
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2_100);
+        return 1;
+      });
+      board.db.exec('CREATE TEMP TRIGGER hold_private_attempt BEFORE INSERT ON main.event BEGIN SELECT hold_private_attempt(); END');
+      try {
+        if (${rollback}) {
+          assert.throws(() => store.atomic(board, () => {
+            store.recordAttempt(board, ${id}, { agentId: 'coordinator', n: 1, seconds: 0, result: 'private attempt' });
+            throw new Error('private outer rollback');
+          }), /private outer rollback/);
+          assert.deepEqual(exportBoard(board), before);
+        } else {
+          store.recordAttempt(board, ${id}, { agentId: 'coordinator', n: 1, seconds: 0, result: 'private attempt' });
+          const after = exportBoard(board);
+          assert.deepEqual(after.tables.event.slice(0, before.tables.event.length), before.tables.event);
+          assert.equal(after.tables.event.length, before.tables.event.length + 1);
+          assert.equal(after.tables.event.at(-1).event_kind, 'attempt');
+        }
+        assert.equal(held, true);
+        assert.equal(contenderCode, 5, 'assert outside the SQLite callback so an assertion cannot be swallowed');
+        assert.equal(boardWriteHolderText(file), '');
+        process.stdout.write(JSON.stringify({ pid: process.pid, holderText, contenderCode }));
+      } finally { store.closeBoard(board); }
+    `;
+    const result = runFixtureChild(process.execPath, ['--input-type=module', '-e', source, file], {
+      cwd: box.repo, env: box.env, encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.context);
+    const observed = JSON.parse(result.stdout);
+    const records = longWrites(result.stderr);
+    assert.equal(records.length, 1, 'standalone and nested event paths each have one actual outer observation');
+    assert.equal(records[0].command, 'private-attempt');
+    assert.equal(records[0].seat, 'coordinator');
+    assert.equal(records[0].pid, observed.pid);
+    assert.equal(records[0].outcome, rollback ? 'rolled-back' : 'committed');
+    assert.ok(records[0].durationMs > 2_000); // budget: declared #1197 diagnostic threshold.
+    assert.match(observed.holderText, /private-attempt/);
+    assert.match(observed.holderText, new RegExp(String.raw`\b${observed.pid}\b`, 'u'));
+    assert.equal(observed.contenderCode, 5);
+  }
 });
