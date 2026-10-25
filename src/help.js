@@ -119,7 +119,7 @@ Work
   pullboard show <id> [--history]       an item, the criterion frozen at claim, its verdicts: the latest in full,
                                         earlier ones as one line; --history prints every note in full
   pullboard fact <id> <kind> <text> [--answers <bar-check-fact-id>] [--supersedes <fact-id>] [--ref path:lines@full-sha] [--implies <ids>]
-                                        append observations, bar-check notes and peer answers, or holder/coordinator judgements
+                                        append item notes (question, answer, plan, risk), evidence or authorised judgements
                                         a bar-answer uses --answers to name the bar-check fact it reviewed
                                         --implies 12,13: each named item gets a fact citing this decision,
                                         and is told again when the decision is superseded
