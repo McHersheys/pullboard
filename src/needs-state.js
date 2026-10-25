@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import * as store from './board.js';
 import { repoInfo } from './git.js';
 import { projectRowDecisions } from './row-decisions.js';
+import { projectSpecRevisions } from './spec-revisions.js';
 import {
   pendingFit,
   projectFit,
@@ -38,8 +39,8 @@ export function personNeedsState(root, { board: providedBoard = null, includeRig
     const drafts = store.rowDrafts(board);
     const rigorDrafts = rigorDraftNeeds(rows, drafts, decisions);
     const rigor = includeRigorUndrafted ? resumeRigorCounters(board, rows, { person: store.PERSON, drafts, decisions }) : null;
-    const projected = { ...state, rigorDrafts, sentinelDrafts: sentinelDraftNeeds(sentinels(board)), blocks: recentBlocks(info.commonDir, board), ...(includeRigorUndrafted
-      ? { rigorUndrafted: rigor.causes, rigorNotice: rigor.notice } : {}) };
+    const projected = projectSpecRevisions({ ...state, rigorDrafts, sentinelDrafts: sentinelDraftNeeds(sentinels(board)), blocks: recentBlocks(info.commonDir, board), ...(includeRigorUndrafted
+      ? { rigorUndrafted: rigor.causes, rigorNotice: rigor.notice } : {}) }, drafts, decisions);
     return { ...projected, needs: personNeeds(projected) };
   } finally {
     if (!providedBoard) store.closeBoard(board);

@@ -14,10 +14,10 @@ function sentinelRunsFor(root) {
   return healthSentinelEnabled(loadConfig(root));
 }
 
-/** Run the ordinary ordered sentinel path in one owned child and drain it on view shutdown. */
+/** Run only the ordered health scan in one owned child and drain it on view shutdown. */
 function refreshBoard(root, signal) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [CLI, 'sentinel', 'run', '--json'], {
+    const child = spawn(process.execPath, [CLI, 'sentinel', 'run', '--health-only', '--json'], {
       cwd: root, env: process.env, stdio: 'ignore', signal,
     });
     let timer;
