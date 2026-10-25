@@ -64,7 +64,7 @@ test('the view shows one sentinel draft with its proof, never as an approved sen
   }
 });
 
-test('an automatic unproved Rigor proposal asks for materialization without claiming executed proof [D1,A6,N26]', async () => {
+test('a Rigor proposal reaches Needs you only after coordinator materialization [D1,A6,N26]', async () => {
   const box = machine();
   project(box, 'automatic proposal board', SPEC);
   const view = await startView(box);
@@ -73,16 +73,18 @@ test('an automatic unproved Rigor proposal asks for materialization without clai
     await page.run(`data.project.rigorDrafts = [{kind:'rigor-draft',id:'doctrine:RG1',ref:'doctrine:RG1',target:'doctrine:RG1',
       text:'Rigor draft (unproved): Review the repeated cause.',unproved:true,materialized:false,
       what:'Coordinator: materialize with pullboard spec apply; then the person approves or declines'}]; render();`);
+    assert.doesNotMatch(page.show('needs'), /Rigor|materialize/u, 'coordinator preparation is not a person call');
+    await page.run('data.project.rigorDrafts[0].materialized = true; render();');
     const html = page.show('needs');
     const text = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
     assert.match(text, /an unproved Rigor proposal/u);
-    assert.match(text, /materialize with pullboard spec apply/u);
+    assert.match(text, /Rigor draft \(unproved\)/u);
     assert.doesNotMatch(text, /a proved Rigor draft|red commit|green commit/u);
-    assert.ok(!html.includes('data-go="doctrine:RG1"'), 'the person cannot open a nonexistent file row');
+    assert.ok(html.includes('data-go="doctrine:RG1"'), 'materialization makes the actual draft row actionable');
   } finally { await view.stop(); }
 });
 
-test('an automatic Rigor draft shows in Needs you, marked unproved, with its evidence [D1,A6,N26]', async (t) => {
+test('a materialized automatic Rigor draft shows in Needs you, marked unproved, with its evidence [D1,A6,N26]', async (t) => {
   const executable = chromeExecutable();
   if (!executable) return t.skip('Install Chrome or set PULLBOARD_CHROME for the Needs you width checks.');
   const box = machine();
@@ -101,6 +103,11 @@ test('an automatic Rigor draft shows in Needs you, marked unproved, with its evi
     const served = state.rigorDrafts.filter((call) => call.unproved);
     assert.ok(served.length > 0, 'serve.js carries the automatic draft');
     assert.ok(served.every((call) => call.proof == null && call.evidence.occurrences >= 2), 'with its repeat evidence and no proof');
+    assert.ok(!state.needs.some((call) => call.kind === 'rigor-draft'), 'board-only proposals stay with the coordinator');
+    const applied = box.run(alpha.repo, 'spec', 'apply', '--json');
+    assert.equal(applied.code, 0, applied.err || applied.out);
+    const materialized = await boardOf(view, alpha.repo);
+    assert.ok(materialized.needs.some((call) => call.kind === 'rigor-draft' && call.materialized), 'the real coordinator write exposes a person-actionable draft');
     chrome = await openSnapshotChrome(executable, view.link.href, profile);
     await chrome.waitFor("typeof data === 'object' && data?.project?.rigorDrafts?.length > 0");
     for (const width of [1280, 375]) {
@@ -124,7 +131,7 @@ test('an automatic Rigor draft shows in Needs you, marked unproved, with its evi
         assert.match(row.kind, /an unproved Rigor proposal, repeated 2 times/u, `${at}: marked unproved, with its repeat count: ${row.kind}`);
         assert.match(row.words, /#1, #2/u, `${at}: it names the repeated items: ${row.words}`);
         assert.doesNotMatch(row.kind + row.words, /a proved Rigor draft|approved/iu, `${at}: never shown as approved or proved`);
-        assert.equal(row.go, null, `${at}: no click into a row that does not exist yet`);
+        assert.match(row.go, /^(doctrine|spec):/u, `${at}: the person opens the materialized row`);
         assert.ok(row.right <= read.page.width, `${at}: the row stays inside the page`);
       }
     }

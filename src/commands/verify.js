@@ -43,6 +43,7 @@ import {
 } from '../relay.js';
 import {
   browserFreeChecksEnabled,
+  gateRunnersFirstEnabled,
 } from '../settings.js';
 import {
   checkAtCommit,
@@ -156,9 +157,9 @@ export async function verifyHere(ctx, id, { second, values }) {
       if (frozenCheck(item)) {
         const browser = !browserFreeChecksEnabled() || await checkNeedsBrowser(root, frozenCheck(item), { commit: checkedCommit, onFallback: browserAdmissionReporter(ctx.io, ctx.io.relayJson) });
         const gui = await checkNeedsGui(root, frozenCheck(item));
-        // A private checked composition needs this machine's live local gate markers [C7,V4].
+        // Exact command classifiers still govern local and remote private-check admission [C7,V4].
         const shortEligible = Boolean(await explicitCheckFiles(root, frozenCheck(item), { commit: checkedCommit }));
-        check = await withGateSlot(root, async (lease) => { if (admitted) ({ trunk, review } = composeNow()); const ran = await nativeFlakes.verify(ctx, checkedItem, frozenCheck(item), { board, main: trunk.commit, commit: checkedCommit }, { ordered, withBoard, resourceAgent })(lease); return ran.state === 'pass' ? { ...ran, guardNote: guardRevertNote(root, checkedItem, lease) } : ran; }, { browser, gui, remote: false, agent: me.id, item: String(id), kind: 'review', itemCheck: true, shortEligible, onWait: queuedItemLease(ctx, item, me.id, 'review') });
+        check = await withGateSlot(root, async (lease) => { if (admitted) ({ trunk, review } = composeNow()); const ran = await nativeFlakes.verify(ctx, checkedItem, frozenCheck(item), { board, main: trunk.commit, commit: checkedCommit }, { ordered, withBoard, resourceAgent })(lease); return ran.state === 'pass' ? { ...ran, guardNote: guardRevertNote(root, checkedItem, lease) } : ran; }, { browser, gui, remote: gateRunnersFirstEnabled(), agent: me.id, item: String(id), kind: 'review', itemCheck: true, shortEligible, onWait: queuedItemLease(ctx, item, me.id, 'review') });
       } else {
         check = checkAtCommit(root, checkedItem);
       }
@@ -193,7 +194,7 @@ export async function verifyHere(ctx, id, { second, values }) {
       agentId: me.id,
       decision,
       reason: values.reason,
-      note: (textArg(ctx.io, values, 'note') ?? '') + unaffectedMove + (check?.guardNote ?? '') + (approvalNote ? `\n${approvalNote}` : ''),
+      note: (textArg(ctx.io, values, 'note') ?? '') + unaffectedMove + (check?.guardNote ?? '') + (check?.executionNote ?? '') + (approvalNote ? `\n${approvalNote}` : ''),
       ...(decision === 'REJECT' && values.cause !== undefined ? { cause: values.cause } : {}),
       head,
       digest,
