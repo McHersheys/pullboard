@@ -1,3 +1,4 @@
+import { itemNotesText } from './item-notes.js';
 /**
  * `pullboard run` (N14, B15): builds routed items with no one at the keyboard. For each item it may
  * take, it writes a context pack (the bar, the cited rows, the brief and the files as they are now),
@@ -159,10 +160,10 @@ function restore(root, start, paths) {
  *
  * @param {string} root
  * @param {any} item
- * @param {{ attempt: number, attempts: number, digest: string, earlier?: string[] }} state
+ * @param {{ attempt: number, attempts: number, digest: string, earlier?: string[], related?: any[], thread?: any[] }} state
  * @returns {string}
  */
-export function packText(root, item, { attempt, attempts, digest, earlier = [], related = [] }) {
+export function packText(root, item, { attempt, attempts, digest, earlier = [], related = [], thread = [] }) {
   const rows = item.item_frozen ? JSON.parse(item.item_frozen).rows : [];
   const config = existsSync(join(root, CONFIG_FILE)) ? loadConfig(root) : {};
   const doctrine = loadDoctrine(root, config);
@@ -193,6 +194,7 @@ export function packText(root, item, { attempt, attempts, digest, earlier = [], 
     '## Brief',
     item.item_brief || '(none)',
     '',
+    ...itemNotesText(thread),
     '## Rules',
     `- Change only the files the brief lists${files.length ? `: ${files.join(', ')}` : ''}. Changes anywhere else are reverted.`,
     '- Never run git commands; the runner commits your work.',
@@ -332,16 +334,16 @@ async function tryItem(ctx, item, { command, attempts, minutes, deps, me, start,
   let digest = '';
   let seconds = 0;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    const { fresh, related } = await deps.withBoard(ctx, async (board) => {
+    const { fresh, related, thread } = await deps.withBoard(ctx, async (board) => {
       const options = { agentId: me.id, lane: me.lane, leaseMs: ctx.config.leaseMs, freeze: deps.freezer(ctx) };
       if (deps.claim) await deps.claim(ctx, board, [id, options]);
       else if (deps.ordered) await deps.ordered(ctx, board, 'claim', [id, options]);
       else store.claim(board, id, options);
       const claimed = store.getItem(board, id);
-      return { fresh: claimed, related: store.relatedItems(board, claimed) };
+      return { fresh: claimed, related: store.relatedItems(board, claimed), thread: store.itemThread(board, id) };
     });
     const pack = join(packs, `${id}-${tag}-${attempt}.md`);
-    writeFileSync(pack, packText(root, fresh, { attempt, attempts, digest, earlier, related }));
+    writeFileSync(pack, packText(root, fresh, { attempt, attempts, digest, earlier, related, thread }));
     ctx.io.say(`#${id} attempt ${attempt}/${attempts}: running the ${item.item_route} agent`);
     const env = { ...process.env, PULLBOARD_PACK: pack, PULLBOARD_CHECK: item.item_check, PULLBOARD_ITEM: String(id), PULLBOARD_ATTEMPT: String(attempt), PULLBOARD_TIER: item.item_route };
     const built = await runCommand(command, { cwd: root, env, timeoutMs: minutes * 60_000, log: join(packs, `${id}-${tag}-${attempt}.log`) });
