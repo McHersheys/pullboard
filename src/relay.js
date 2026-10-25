@@ -1169,7 +1169,8 @@ function outboxLink(root, file, state, io) {
 /**
  * The link a move may queue on and return at once (#1013), or null when it must reach the relay first: the board's
  * relay.outbox is on and the relay accepted its baseline, and the move needs no relay answer to exist (a
- * registration mints its token there, a person's request is the phone's, and landing authority needs real order).
+ * registration mints its token there, a takeover needs the relay's sign-in lineage, a person's request is the
+ * phone's, and landing authority needs real order).
  */
 function localFirstLink(file, operation, args, io) {
   let state;
@@ -1177,7 +1178,8 @@ function localFirstLink(file, operation, args, io) {
   if (!state || state.unlinking || state.recovery || state.mode !== 'ordered' || state.baselineAccepted !== true
     || state.baselineConflict || state.baselinePause || state.baselineStale || state.environment) return null;
   if (process.env.PULLBOARD_RELAY_TOKEN !== undefined || io?.personRequest || io?.personRequestMoveId) return null;
-  if (['register', 'ensureCoordinator', 'landingLeaseMove'].includes(operation) || args?.[0]?.landingFence !== undefined) return null;
+  // A takeover needs the relay's authenticated sign-in lineage, which only the relay's order carries.
+  if (['register', 'ensureCoordinator', 'takeCoordinator', 'landingLeaseMove'].includes(operation) || args?.[0]?.landingFence !== undefined) return null;
   if (credentialActor({ operation, args }) === 'person') return null;
   try { if (io?.relayOutbox?.() !== true) return null; } catch { return null; }
   return state;
