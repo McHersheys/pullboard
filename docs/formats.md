@@ -734,7 +734,7 @@ The client-local file `<git common dir>/pullboard/relay-health.sqlite` is separa
 
 | Table | Rows | Meaning |
 | --- | --- | --- |
-| `relay_health` | One row with `id = 1` and a JSON `value` | Version-one local history: monitoring start; bounded timestamped probe samples (`ok`, failed step, safe code, elapsed milliseconds and relay version); failure count; degraded/alert timestamps; p95; and durable pending alert or recovery notices. |
+| `relay_health` | One row with `id = 1` and a JSON `value` | Version-one local history: monitoring start; bounded timestamped probe samples (`ok`, failed step, safe code, elapsed milliseconds and relay version); failure count; degraded/alert timestamps; p95; and durable pending alert or recovery notices. A separate `client` record holds the latest ordinary request sample and its degraded timestamp; ordinary requests never populate monitor samples or clear its active episode. |
 | `canary_schedule` | One row with `id = 1` and numeric `next_due` | The next eligible minute, claimed atomically so multiple local views of the same repository do not start duplicate probes. |
 
 The containing directory is created with mode 0700 and the SQLite file is created with mode 0600. A status read does not create it or contact the relay. Pending notices are removed only after the ordinary native notification path completes; a failed or interrupted notification leaves the notice available for retry. These records are machine-local display and scheduling state. They add no board table, event, engine field, relay journal record or sealed presentation field.

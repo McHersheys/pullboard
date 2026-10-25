@@ -176,12 +176,10 @@ test('the client shows queued moves while the relay is degraded [H16,H17,C7]', {
     const queued = await box.cli('shout', 'all', text);
     assert.equal(queued.code, 0, queued.failure);
   }
-  let now = Date.now();
   for (let index = 0; index < 2; index += 1) {
-    const failure = await withFixtureEnvironment(box.env, () => probeRelayCanary(root, { agentId: joined.document.agent, io: {}, clock: () => now }));
+    const failure = await withFixtureEnvironment(box.env, () => probeRelayCanary(root, { agentId: joined.document.agent, io: {} }));
     assert.equal(failure.ok, false, 'the real canary observes the stopped relay');
-    observeRelayHealth(box.root, failure, { now });
-    now += 1_000;
+    observeRelayHealth(box.root, failure);
   }
   const status = await box.cli('status');
   assert.equal(status.code, 0, status.failure);
