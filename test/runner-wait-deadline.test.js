@@ -16,14 +16,14 @@ after(cleanupFixtureChildren);
 after(cleanupToolingSnapshots);
 
 /** Build the real loopback SSH transport in an isolated machine, with a short private deadline. */
-function fixture({ hold = '', runnerWaitMs = 60 } = {}) {
+function fixture({ hold = '', runnerWaitMs = 60, dropFirst = !hold } = {}) {
   const box = e2e.project('true');
   const paths = Object.fromEntries(['bin', 'worker', 'remoteHome', 'remoteMachine'].map(name => [name, join(box.dir, name)]));
   for (const path of Object.values(paths)) mkdirSync(path, { recursive: true });
   const requests = join(box.dir, 'requests.jsonl');
   const starts = join(box.dir, 'starts.jsonl');
   installSshStandIn({ bin: paths.bin, worker: paths.worker, home: paths.remoteHome,
-    machineHome: paths.remoteMachine, requests, starts, hold, dropFirst: !hold });
+    machineHome: paths.remoteMachine, requests, starts, hold, dropFirst });
   box.env.PATH = paths.bin + ':' + box.env.PATH;
   const added = cli(box.repo, box.env, 'runner', 'add', HOST + '-drop', '--slots', '1', '--browser', '1');
   assert.equal(added.status, 0, fixtureResultContext(added));
@@ -158,5 +158,27 @@ test('the public runner deadline setting has a five-minute default and rejects u
     const invalid = cli(box.repo, box.env, 'settings', 'gate.runnerWaitMs', value);
     assert.notEqual(invalid.status, 0, fixtureResultContext(invalid));
     assert.equal(readFileSync(file, 'utf8'), before, 'invalid settings never replace the last valid deadline');
+  }
+});
+
+test('an executing runner command keeps its test budget after the admission deadline [C7]', async () => {
+  const box = fixture({ runnerWaitMs: 5_000, dropFirst: false });
+  const previous = [process.env.PULLBOARD_HOME, process.env.PULLBOARD_MACHINE_HOME];
+  process.env.PULLBOARD_HOME = box.env.PULLBOARD_HOME;
+  process.env.PULLBOARD_MACHINE_HOME = box.env.PULLBOARD_MACHINE_HOME;
+  let held;
+  try {
+    held = await takeResource({ name: 'gate', scope: 'machine', root: box.repo, capacity: 1, agent: 'admitted-run-local-holder' });
+    const result = await runThroughGate(box.repo, box.env,
+      'node -e "setTimeout(()=>console.log(\'ADMITTED_LONG_COMMAND\'),6000)"', { requests: box.requests });
+    assert.equal(result.status, 0, fixtureResultContext(result));
+    assert.match(result.stdout, /ADMITTED_LONG_COMMAND/u);
+    assert.equal(gateResult(result.stdout).runner, HOST + '-drop', 'a ready runner is not canceled or duplicated locally');
+    assert.equal(readFileSync(box.requests, 'utf8').trim().split('\n').length, 1);
+  } finally {
+    held?.release();
+    for (const [index, key] of ['PULLBOARD_HOME', 'PULLBOARD_MACHINE_HOME'].entries()) {
+      if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index];
+    }
   }
 });

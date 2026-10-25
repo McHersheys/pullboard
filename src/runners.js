@@ -685,8 +685,8 @@ export async function runOnRunnerAsync(root, command, options) {
     let rawBytes = 0, head = Buffer.alloc(0), tail = Buffer.alloc(0);
     const half = 4 * 1024 ** 2;
     const abort = () => { error ??= new Error('runner transport canceled'); child.stdin.destroy(); child.kill('SIGTERM'); };
-    // Only admission is bounded here. NEED is emitted after the worker owns its gate slot;
-    // an admitted test may run longer than the runner wait without being truncated.
+    // Bound connection, worker admission and checkout, until READY immediately before execution.
+    // An executing test keeps its existing test timeout and may outlive the runner wait.
     if (Number.isSafeInteger(options.runnerWaitDeadline)) runnerWaitTimer = setTimeout(() => {
       abort();
       // Budget: a non-responsive SSH child cannot retain a local reservation forever.
@@ -725,6 +725,7 @@ export async function runOnRunnerAsync(root, command, options) {
       let newline;
       while ((newline = control.indexOf('\n')) >= 0) {
         const line = control.slice(0, newline); control = control.slice(newline + 1);
+        if (line === `PULLBOARD_RUNNER_READY ${request.spec.id}`) clearTimeout(runnerWaitTimer);
         const cleanupPrefix = `PULLBOARD_RUNNER_CLEANUP_UNVERIFIED ${request.spec.id} `;
         if (line.startsWith(cleanupPrefix)) cleanupReason = line.slice(cleanupPrefix.length, cleanupPrefix.length + 240);
         if (line === `PULLBOARD_RUNNER_CLEANUP_TIMEOUT ${request.spec.id}`) {
@@ -735,7 +736,6 @@ export async function runOnRunnerAsync(root, command, options) {
         if (!line.startsWith(prefix)) continue;
         if (requested) { error = new Error('duplicate runner inventory'); child.kill(); return; }
         requested = true;
-        clearTimeout(runnerWaitTimer);
         transfer = (async () => {
           const inventory = JSON.parse(Buffer.from(line.slice(prefix.length), 'base64').toString('utf8'));
           if (!Array.isArray(inventory.tips) || inventory.tips.length > 1024
