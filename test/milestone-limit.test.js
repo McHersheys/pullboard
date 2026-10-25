@@ -94,14 +94,44 @@ test('a milestone with a limit refuses an add past it and accepts a swap', (t) =
   assert.doesNotMatch(refused.stderr, new RegExp(`#${building}(?:\\D|$)`), 'started work is not offered as a swap candidate');
   assert.deepEqual(store.milestones(box.board)[0].items, [first, building], 'refusal leaves the milestone unchanged');
   box.json('milestone', 'items', 'release', '--add', String(incoming), '--swap', String(first));
-  assert.deepEqual(store.milestones(box.board)[0].items, [building, incoming]);
+  assert.deepEqual(store.milestones(box.board)[0].items, [incoming, building]);
   assert.equal(plan().count, 2);
   assert.match(box.run('roadmap').stdout, /release: .*2\/2 items/);
   const invalid = box.run('milestone', 'items', 'release', '--add', String(first), '--swap', '999999');
   assert.notEqual(invalid.status, 0);
-  assert.deepEqual(store.milestones(box.board)[0].items, [building, incoming], 'an invalid swap makes neither half of its change');
+  assert.deepEqual(store.milestones(box.board)[0].items, [incoming, building], 'an invalid swap makes neither half of its change');
   box.json('milestone', 'edit', 'release', '--limit', 'none');
   box.json('milestone', 'items', 'release', '--add', String(first));
   assert.equal(plan().limit, null);
   assert.equal(plan().count, 3);
+});
+
+
+test('[N26,H16] caps validate edits, shipment carry and historical replay without partial changes', (t) => {
+  const box = fixture(t);
+  const first = box.item('First', 'open');
+  const second = box.item('Second', 'open');
+  box.json('milestone', 'add', 'source', '--items', String(first));
+  box.json('milestone', 'add', 'target');
+  box.json('milestone', 'edit', 'target', '--limit', '0');
+  for (const limit of ['-1', '1.5', 'abc', '9007199254740992']) {
+    assert.notEqual(box.run('milestone', 'edit', 'target', '--limit', limit).status, 0, limit);
+    assert.equal(store.milestones(box.board)[1].limit, 0);
+  }
+  const before = store.milestones(box.board);
+  assert.notEqual(box.run('milestone', 'ship', 'source', '--next', 'target').status, 0);
+  assert.deepEqual(store.milestones(box.board), before, 'a capped carry does not ship or move anything');
+  box.json('milestone', 'edit', 'target', '--limit', '1');
+  box.json('milestone', 'ship', 'source', '--next', 'target');
+  assert.deepEqual(store.milestones(box.board)[1].items, [first]);
+  assert.notEqual(box.run('milestone', 'edit', 'target', '--name', 'renamed', '--limit', '0').status, 0);
+  assert.equal(store.milestones(box.board)[1].name, 'target', 'invalid cap also rolls back the rename');
+  const currentEngine = box.board.executionEngineVersion;
+  try {
+    box.board.executionEngineVersion = 1;
+    store.editMilestoneItems(box.board, 'target', { agentId: 'coordinator', add: [second] });
+    assert.deepEqual(store.milestones(box.board)[1].items, [first, second], 'historical uncapped moves replay unchanged');
+    assert.throws(() => store.editMilestone(box.board, 'target', { agentId: 'coordinator', limit: 3 }), { code: 'ENGINE_VERSION' });
+    assert.throws(() => store.editMilestoneItems(box.board, 'target', { agentId: 'coordinator', add: ['other#1'], swap: [first] }), { code: 'ENGINE_VERSION' });
+  } finally { box.board.executionEngineVersion = currentEngine; }
 });

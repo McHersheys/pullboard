@@ -111,6 +111,8 @@ const OPTIONS = {
   next: { type: 'string' },
   add: { type: 'string' },
   remove: { type: 'string' },
+  swap: { type: 'string' },
+  limit: { type: 'string' },
   name: { type: 'string' },
   title: { type: 'string' },
   url: { type: 'string' },

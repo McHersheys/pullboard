@@ -94,11 +94,11 @@ Work
   pullboard roadmap                     ordered milestones, N/M landed, targets, and each item as landed,
                                         accepted or its status
   pullboard milestone add <name> [--note ...] [--items 1,2,3]   create a milestone and optionally add items
-  pullboard milestone items <name> --add|--remove ids          append or remove item references
+  pullboard milestone items <name> --add ids [--swap id] | --remove ids
   pullboard milestone order <name> <ids>                       rank these items within their milestone (agents)
   pullboard milestone move <name> --before <other>             reorder a milestone
-  pullboard milestone edit <name> [--name <new>] [--note <text>] [--target <date and time>|none]
-                                        rename, update a note, or set the target a milestone ships by
+  pullboard milestone edit <name> [--name <new>] [--note <text>] [--target <date and time>|none] [--limit <n>|none]
+                                        rename, update a note, or set a shipping target or item limit
   pullboard milestone ship <name> [--next <name>]              record it shipped at main's commit and move
                                         its unlanded items into the next milestone (or --next)
   pullboard milestone remove <name>                            remove a milestone without changing its items
