@@ -36,10 +36,10 @@ function stateText(state, eventLogVersion) {
  * no-store: the browser never answers a poll from its cache, so a page that wants the newest clock
  * readings still gets them by not asking If-None-Match.
  */
-function sendState(req, res, text, tagged) {
+function sendState(req, res, text, tagged, validator = text) {
   const headers = { 'cache-control': 'no-store', 'referrer-policy': 'no-referrer', 'x-content-type-options': 'nosniff' };
   if (tagged) {
-    const board = text.replace(/"(asOf|ageMinutes)":(?:"[^"]*"|[-+.0-9eE]+|null)/gu, '"$1":null');
+    const board = validator.replace(/"(asOf|ageMinutes)":(?:"[^"]*"|[-+.0-9eE]+|null)/gu, '"$1":null');
     Object.assign(headers, { etag: '"' + createHash('sha256').update(board).digest('base64url').slice(0, 32) + '"' });
     const held = String(req.headers['if-none-match'] ?? '').split(',').map((tag) => tag.trim().replace(/^W\//u, ''));
     if (held.includes(headers.etag)) {
@@ -324,10 +324,12 @@ export function createApiHandler(adapter, { pollMs = 200, tagState = false } = {
           return sendState(req, res, JSON.stringify({ version: 1, ...delta }), tagState);
         }
         if (typeof adapter.stateJson === 'function') {
-          const state = await adapter.stateJson(board, who, seen, options);
-          if (typeof state !== 'string') throw new TypeError('the local state serializer must return JSON text');
+          const encoded = await adapter.stateJson(board, who, seen, options);
+          const state = typeof encoded === 'string' ? encoded : encoded?.json;
+          if (typeof state !== 'string' || encoded?.validator !== undefined && typeof encoded.validator !== 'string') throw new TypeError('the local state serializer must return JSON text and optional internal validator text');
           const eventLogVersion = await adapter.eventLogVersion?.(board, who);
-          return sendState(req, res, stateText(state, eventLogVersion), tagState);
+          return sendState(req, res, stateText(state, eventLogVersion), tagState,
+            typeof encoded?.validator === 'string' ? stateText(encoded.validator, eventLogVersion) : undefined);
         }
         const state = await adapter.state(board, who, seen, options);
         const eventLogVersion = await adapter.eventLogVersion?.(board, who);
