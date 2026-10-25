@@ -66,8 +66,8 @@
     "actOnActivity",
     "recordActivityDelivery",
     "decideSpecRevisions",
-    "recordRowVerification",
     "proposePersonMove",
+    "recordRowVerification",
     "setPersonSigning"
   ],
   "itemIdFirstArgument": [
