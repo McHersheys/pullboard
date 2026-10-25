@@ -1,3 +1,4 @@
+/** @pullboard-test-loads src/item-offer.js */
 /** Durable offers disclose content only to their recipient; private receipts carry references [B2,H3,H16]. */
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
