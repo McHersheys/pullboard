@@ -1,6 +1,7 @@
 import { migrateEventLogVersion } from './board-event-log-migrate.js';
 import {
   beginBoardWrite,
+  configureBoardJournal,
   finishBoardWrite,
   closeBoardWrites,
   prepareBoardWriteIdentity,
@@ -357,20 +358,22 @@ export function openBoard(file, clock = systemClock, { isMain, onDiagnostic, wri
   try {
     db = new DatabaseSync(file);
     db.exec(`PRAGMA busy_timeout = ${BOARD_BUSY_TIMEOUT_MS}`);
-    if (file !== ':memory:' && isMain !== false) db.exec('PRAGMA journal_mode = WAL');
+    if (file !== ':memory:' && isMain !== false) configureBoardJournal(db, writeContext);
     const board = { db, clock, writeContext };
     let warmCounters = true;
     if (isMain !== false || file === ':memory:') {
       // Migrate and audit only a board whose version is behind; a drifted shape is reported and left alone (#1047).
       const standing = boardStanding(db, SCHEMA_DIGEST, SCHEMA_VERSION, readEventLogVersion(db) < EVENT_LOG_VERSION);
-      if (standing === 'behind') {
-        migrateEventLogVersion(db, writeContext);
-        migrate(db);
-        ensureHotIndexes(db);
-        db.prepare('INSERT OR IGNORE INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run('board_id', randomBytes(16).toString('hex'));
-        guardStore(board);
-      }
-      if (standing === 'behind' || standing === 'unstamped') recordSchemaStamp(db, SCHEMA_DIGEST);
+      if (standing === 'behind' || standing === 'unstamped') atomic(board, () => {
+        if (standing === 'behind') {
+          migrateEventLogVersion(db);
+          migrate(db);
+          ensureHotIndexes(db);
+          db.prepare('INSERT OR IGNORE INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run('board_id', randomBytes(16).toString('hex'));
+          guardStore(board);
+        }
+        recordSchemaStamp(db, SCHEMA_DIGEST);
+      });
       // Index-only upgrades keep the data version/digest unchanged. Install and restamp together;
       // drifted or read-only stores never take this path, and old clients accept the resulting stamp.
       if (standing !== 'drifted' && missingFactIdentityIndexes(db).length) atomic(board, () => {

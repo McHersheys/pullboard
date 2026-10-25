@@ -51,6 +51,24 @@ function label(value, fallback) {
   return typeof value === 'string' && /^[A-Za-z0-9_./:-]{1,100}$/u.test(value) ? value : fallback;
 }
 
+/** Report journal conversion's total wait-plus-hold separately: SQLite exposes no acquisition boundary. */
+export function configureBoardJournal(db, context = {}) {
+  const start = performance.now();
+  let outcome = 'failed';
+  try {
+    db.exec('PRAGMA journal_mode = WAL');
+    outcome = 'completed';
+  } finally {
+    const durationMs = Math.max(0, Math.round(performance.now() - start));
+    if (durationMs > LONG_WRITE_MS) {
+      const line = { operation: 'journal_mode', timing: 'wait-plus-hold', command: label(context.command, 'api'),
+        seat: label(context.seat, 'unknown'), pid: process.pid, durationMs, outcome };
+      try { writeSync(2, 'pullboard: long board operation ' + JSON.stringify(line) + '\n'); }
+      catch { /* Optional diagnostics must preserve journal conversion's original result or refusal. */ }
+    }
+  }
+}
+
 /** Resolve a registered seat from the caller's checkout, only after SQLite grants this write transaction. */
 function contextFor(db, context) {
   let seat = context.seat;

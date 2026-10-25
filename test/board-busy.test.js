@@ -375,3 +375,155 @@ test('opening an older board names and logs its genuine index-building write [C7
     assert.deepEqual(upgraded.prepare("SELECT name, sql FROM sqlite_master WHERE type='index' AND name LIKE 'event_fact_%_v2' ORDER BY name").all(), indexes);
   } finally { upgraded.close(); }
 });
+
+
+test('native import observes committed and rolled-back write ownership without changing restored rows [A7,C7,P4]', () => {
+  const box = e2e.project();
+  const document = snapshot(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
+  const input = join(box.dir, 'native-import.json');
+  writeFileSync(input, JSON.stringify(document));
+  for (const rollback of [false, true]) {
+    const file = join(box.dir, `import-${rollback}.sqlite`);
+    const source = `
+      import assert from 'node:assert/strict';
+      import { readFileSync } from 'node:fs';
+      import { DatabaseSync } from 'node:sqlite';
+      import * as store from ${JSON.stringify(new URL('../src/board.js', import.meta.url).href)};
+      import { exportBoard, importBoard } from ${JSON.stringify(new URL('../src/exchange.js', import.meta.url).href)};
+      import { boardWriteHolderText } from ${JSON.stringify(new URL('../src/board-write-lock.js', import.meta.url).href)};
+      const file = process.argv[1];
+      const document = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+      const board = store.openBoard(file, undefined, { writeContext: { command: 'private-import', seat: 'coordinator' } });
+      const before = exportBoard(board);
+      let held = false;
+      board.db.function('hold_private_import', () => {
+        if (held) return 1;
+        held = true;
+        const contender = new DatabaseSync(file);
+        try {
+          contender.exec('PRAGMA busy_timeout=0');
+          assert.throws(() => contender.exec('BEGIN IMMEDIATE'), error => (error.errcode & 255) === 5);
+        } finally { contender.close(); }
+        assert.match(boardWriteHolderText(file), /private-import/);
+        // budget: exercise the declared over-two-second diagnostic during a genuine native restore write.
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2_100);
+        if (${rollback}) throw new Error('private import rollback');
+        return 1;
+      });
+      board.db.exec('CREATE TEMP TRIGGER hold_private_import BEFORE INSERT ON main.item BEGIN SELECT hold_private_import(); END');
+      try {
+        if (${rollback}) {
+          assert.throws(() => importBoard(board, document), /private import rollback/);
+          assert.deepEqual(exportBoard(board), before);
+        } else {
+          importBoard(board, document);
+          assert.deepEqual(exportBoard(board), document);
+        }
+        assert.equal(held, true);
+        assert.equal(boardWriteHolderText(file), '');
+        process.stdout.write(JSON.stringify({ restored: !${rollback}, rolledBack: ${rollback} }));
+      } finally { store.closeBoard(board); }
+    `;
+    const result = runFixtureChild(process.execPath, ['--input-type=module', '-e', source, file, input], {
+      cwd: box.repo, env: box.env, encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.context);
+    assert.deepEqual(JSON.parse(result.stdout), { restored: !rollback, rolledBack: rollback });
+    const records = longWrites(result.stderr);
+    assert.equal(records.length, 1);
+    assert.equal(records[0].command, 'private-import');
+    assert.equal(records[0].seat, 'coordinator');
+    assert.equal(records[0].outcome, rollback ? 'rolled-back' : 'committed');
+    assert.ok(records[0].durationMs > 2_000); // budget: declared #1197 diagnostic threshold.
+  }
+});
+
+test('journal conversion reports total wait-plus-hold separately and preserves its result [C7,P4]', () => {
+  const box = e2e.project();
+  const file = join(box.repo, '.git', 'pullboard', 'board.sqlite');
+  const before = snapshot(file);
+  const source = `
+    import assert from 'node:assert/strict';
+    import { DatabaseSync } from 'node:sqlite';
+    import { configureBoardJournal, boardWriteHolderText } from ${JSON.stringify(new URL('../src/board-write-lock.js', import.meta.url).href)};
+    const db = new DatabaseSync(process.argv[1]);
+    const original = db.exec;
+    const sentinel = new Error('private journal failure');
+    for (const fail of [false, true]) {
+      db.exec = function(sql) {
+        assert.equal(sql, 'PRAGMA journal_mode = WAL');
+        const result = original.call(this, sql);
+        assert.equal(boardWriteHolderText(process.argv[1]), '');
+        // budget: inject elapsed operation time, not a claimed SQLite held-lock duration.
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2_100);
+        if (fail) throw sentinel;
+        return result;
+      };
+      if (fail) assert.throws(() => configureBoardJournal(db, { command: 'private-journal', seat: 'coordinator' }), error => error === sentinel);
+      else assert.equal(configureBoardJournal(db, { command: 'private-journal', seat: 'coordinator' }), undefined);
+    }
+    db.close();
+  `;
+  const result = runFixtureChild(process.execPath, ['--input-type=module', '-e', source, file], {
+    cwd: box.repo, env: box.env, encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, result.context);
+  assert.deepEqual(longWrites(result.stderr), []);
+  const prefix = 'pullboard: long board operation ';
+  const operations = result.stderr.split('\n').filter(line => line.startsWith(prefix))
+    .map(line => JSON.parse(line.slice(prefix.length)));
+  assert.equal(operations.length, 2);
+  assert.deepEqual(operations.map(row => row.outcome), ['completed', 'failed']);
+  for (const row of operations) {
+    assert.equal(row.operation, 'journal_mode');
+    assert.equal(row.timing, 'wait-plus-hold');
+    assert.equal(row.command, 'private-journal');
+    assert.equal(row.seat, 'coordinator');
+    assert.ok(row.durationMs > 2_000); // budget: declared #1197 operation diagnostic threshold.
+  }
+  assert.deepEqual(snapshot(file), before);
+});
+
+
+test('a failed owning migration rolls back schema, index and stamp work together [A5,A6,C7]', () => {
+  const box = e2e.project();
+  for (const name of ['bin', 'src', 'skills', 'package.json', 'CHANGELOG.md']) {
+    cpSync(resolve(import.meta.dirname, '..', name), join(box.repo, name), { recursive: true });
+  }
+  box.git(box.repo, 'add', 'bin', 'src', 'skills', 'package.json', 'CHANGELOG.md');
+  box.git(box.repo, 'commit', '-q', '-m', 'chore: install private rollback source [G1]');
+  const file = join(box.repo, '.git', 'pullboard', 'board.sqlite');
+  const before = snapshot(file);
+  const db = new DatabaseSync(file);
+  const version = db.prepare('PRAGMA user_version').get().user_version;
+  const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'event_fact_%_v2'").all();
+  try {
+    assert.equal(indexes.length, 3);
+    for (const index of indexes) db.exec(`DROP INDEX "${index.name}"`);
+    db.exec(`PRAGMA user_version=${version - 1}; PRAGMA application_id=0`);
+  } finally { db.close(); }
+  const preload = join(box.dir, 'fail-private-index.mjs');
+  writeFileSync(preload, `
+    import { DatabaseSync } from 'node:sqlite';
+    const original = DatabaseSync.prototype.exec;
+    /** Fail only after genuine native index creation, while the outer migration still owns it. */
+    DatabaseSync.prototype.exec = function(sql, ...args) {
+      const result = original.call(this, sql, ...args);
+      if (sql.includes('CREATE INDEX IF NOT EXISTS event_fact_identity_v2')) throw new Error('private migration rollback');
+      return result;
+    };
+  `);
+  const result = runFixtureChild(process.execPath, ['--import', preload, join(box.repo, 'bin/pullboard.js'), 'shout', 'all', 'must roll back', '--json'], {
+    cwd: box.repo, env: box.env, encoding: 'utf8',
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout + result.stderr, /private migration rollback/);
+  assert.deepEqual(snapshot(file), before, 'native rows remain unchanged after failed schema work');
+  const unchanged = new DatabaseSync(file, { readOnly: true });
+  try {
+    assert.equal(unchanged.prepare('PRAGMA user_version').get().user_version, version - 1);
+    assert.equal(unchanged.prepare('PRAGMA application_id').get().application_id, 0);
+    assert.equal(unchanged.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='index' AND name LIKE 'event_fact_%_v2'").get().n, 0);
+  } finally { unchanged.close(); }
+  assert.equal(boardWriteHolderText(file), '');
+});
