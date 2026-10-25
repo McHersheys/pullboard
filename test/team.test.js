@@ -1152,7 +1152,7 @@ test('an agent grant narrows at claim but any joined seat can append attributed 
     assert.equal(outcomes[0].error, undefined, `${text}: ${JSON.stringify(outcomes[0])}`);
     const threads = roots.map(root => withBoard(root, board => store.itemThread(board, item)));
     assert.deepEqual(threads[0], threads[1], 'the attributed finding is the same on both replicas');
-    assert.ok(threads[0].some(entry => entry.type === 'fact' && entry.text === text), 'the finding is actually recorded');
+    assert.ok(threads[0].some(entry => entry.type === 'fact' && entry.text === text && entry.by === by), 'the attributed finding is actually recorded');
   };
   finding(1, actor, during, 'Positive own-item finding');
   finding(2, actor, during, 'A different claim cannot block a finding');
