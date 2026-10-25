@@ -1,5 +1,8 @@
 /** General CLI recovery text; operation-owned codes live in src/moves/ [P4,C7]. */
 export const DEFAULT_NEXT_STEPS = Object.freeze({
+  "DECISIONS_NOT_AVAILABLE": "read each board's state from the local API, which carries its own person decisions",
+  "PROJECT_REPO_AMBIGUOUS": "run pullboard decisions --as person and answer with the repo name it prints before the #",
+  "PROJECT_REPO_UNKNOWN": "run pullboard decisions --as person to see the repos of this project, then answer repo#id",
   "BOARD_REFERENCE": "use an immutable board ID or one exact qualified name from the authorized project inventory",
   "BOARD_LINK_FORMAT": "use the exact bounded version 1 board-link, approval, announcement or sealed envelope contract",
   "BOARD_LINK_AUTH": "configure each board’s established signer authority and the per-link sealing capability; never use an unsigned or full-board-key fallback",
