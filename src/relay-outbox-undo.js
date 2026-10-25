@@ -11,6 +11,8 @@ import { atomic } from './board-event-log.js';
 const CHANGED = 1;
 const REPLACE = 1;
 const ABORT = 2;
+/** What each other conflict type means, for the line that says why an undo fell back. */
+const CONFLICTS = { 2: 'a row it changed is gone', 3: 'a row it removed is back', 4: 'a constraint refused it', 5: 'a foreign key refused it' };
 
 /** SQLite's changeset operation codes. */
 const INSERT = 18;
@@ -96,19 +98,19 @@ export function invertChangeset(changeset) {
 
 /**
  * Take queued moves back on `board`, newest first, in one transaction, and put the row counters back as they were
- * before the oldest. Returns false, changing nothing, when a row they made is gone or a row they removed is back, so
- * the caller rebuilds from a whole image instead.
+ * before the oldest. Returns null, or, changing nothing, why it could not: a row they made is gone or a row they
+ * removed is back, so the caller rebuilds from a whole image instead.
  * Why: the board's lifecycle triggers refuse removing events or moving an item backwards, as any command should;
  * taking back an unordered move is the one exception, so they are lifted inside this transaction only, as a
  * snapshot restore lifts them.
  *
  * @param {any} board
  * @param {{ changes?: string[], sequences?: { name: string, seq: number }[] }[]} entries - Oldest first.
- * @returns {boolean}
+ * @returns {string | null}
  */
 export function undoQueued(board, entries) {
   const db = board.db;
-  let conflict = false;
+  let conflict = null;
   try {
     atomic(board, () => {
       const triggers = db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'machine_%'").all();
@@ -118,8 +120,8 @@ export function undoQueued(board, entries) {
           // A row changed again since, as a seat's read position is, is put back all the same (its newer read
           // position is kept by the caller); a row gone or taken is not this undo's to guess at.
           const applied = db.applyChangeset(invertChangeset(Buffer.from(change, 'base64')), {
-            onConflict: (type) => { if (type === CHANGED) return REPLACE; conflict = true; return ABORT; } });
-          if (conflict || applied === false) throw new Error('a queued move\'s rows changed since it was made');
+            onConflict: (type) => { if (type === CHANGED) return REPLACE; conflict = CONFLICTS[type] ?? `conflict ${type}`; return ABORT; } });
+          if (conflict || applied === false) { conflict ??= 'aborted'; throw new Error(`a queued move's rows changed since it was made: ${conflict}`); }
         }
       }
       const counters = entries.find((entry) => Array.isArray(entry.sequences))?.sequences;
@@ -131,8 +133,8 @@ export function undoQueued(board, entries) {
       for (const { sql } of storeTriggers()) db.exec(sql);
     });
   } catch (error) {
-    if (conflict) return false;
+    if (conflict) return conflict;
     throw error;
   }
-  return true;
+  return null;
 }

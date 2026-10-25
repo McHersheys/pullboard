@@ -474,11 +474,21 @@ async function reapply(link, outbox, entry) {
  */
 function takeBack(link, outbox) {
   const { root, localRecords } = link;
-  if (!outbox.moves.every((entry) => Array.isArray(entry.changes) && Array.isArray(entry.sequences))) return false;
+  if (!outbox.moves.every((entry) => Array.isArray(entry.changes) && Array.isArray(entry.sequences))) {
+    link.io.err('pullboard: a queued move has no recorded rows; the board is rebuilt from the relay checkpoint');
+    return false;
+  }
   return localRecords(root, (board) => {
     const cursors = board.db.prepare('SELECT agent_id, agent_last_shout_id FROM agent').all();
-    if (!undoQueued(board, outbox.moves)) return false;
-    if (appliedSequence(board) !== outbox.baseSequence) return false;
+    const problem = undoQueued(board, outbox.moves);
+    if (problem) {
+      link.io.err(`pullboard: the queued moves cannot be taken back row for row (${problem}); the board is rebuilt from the relay checkpoint`);
+      return false;
+    }
+    if (appliedSequence(board) !== outbox.baseSequence) {
+      link.io.err(`pullboard: taking the queued moves back left the board at relay sequence ${appliedSequence(board)}, not ${outbox.baseSequence}; the board is rebuilt from the relay checkpoint`);
+      return false;
+    }
     keepNewerCursors(board, cursors);
     return true;
   });
