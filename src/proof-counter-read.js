@@ -61,7 +61,10 @@ export function counterProofStats(board, boundary, now) {
   const creators = items.filter(item => item.creator !== undefined).map(item => ({ event_kind: 'add', item_id: item.id, event_by: item.creator }));
   const corrections = proofCounterRows(board, 'bar').map(row => decodedProofEvent({ ...row, event_kind: 'edit' }, row.detail));
   const verdicts = board.db.prepare('SELECT * FROM verdict ORDER BY verdict_id').all();
-  const flow = { reportPolicy: summary.reportVersion === FLOW_REPORT_VERSION && summary.reportLast === summary.last ? proofCounter(board, 'report-policy') : null, items: items.filter(item => item.id !== null && item.id !== undefined).map(item => item.flow),
+  const report = proofCounter(board, 'report-summary');
+  const reportCurrent = report?.version === FLOW_REPORT_VERSION && !report.invalid && report.last === summary.last;
+  const flow = { reportPolicy: reportCurrent ? proofCounter(board, 'report-policy') : null,
+    ...(reportCurrent ? { reportItems: proofCounterRows(board, 'report-item') } : {}), items: items.filter(item => item.id !== null && item.id !== undefined).map(item => item.flow),
     actors: actors.filter(actor => actor.id !== 'clock').map(actor => actor.flow), dailyEvents: proofCounterRows(board, 'daily') };
   return { ...counts, agentCount: attributed.agents.length, familyCount: attributed.families.length, ...attributed,
     bars: barStats([...creators, ...corrections], verdicts, boundary), caught: counterCaught(board, boundary),

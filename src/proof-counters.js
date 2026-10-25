@@ -1,11 +1,7 @@
+import { appendReportCounter } from './flow-report-counter.js';
+import { emptyReportCounter } from './flow-report-counter.js';
 import { reportEvent } from './stats-flow-report.js';
-import { affectedReportItems } from './stats-flow-report.js';
-import { indexReportItem } from './stats-flow-report.js';
-import { prepareReportMove } from './stats-flow-report.js';
 import { newReportPolicy } from './stats-flow-report.js';
-import { advanceReport } from './stats-flow-report.js';
-import { recordReport } from './stats-flow-report.js';
-import { recordReportPolicy } from './stats-flow-report.js';
 import { appendRigorCounter } from './rigor-counters.js';
 import { ensureRigorCounters } from './rigor-counters.js';
 import { NATIVE_FLAKE_ENGINE } from './flake-engine.js';
@@ -67,7 +63,7 @@ export function clearProofCounters(board) {
 /** Start a bounded all-time aggregate; window-specific contributions live in separate event shards. */
 function emptySummary() {
   return { last: 0, submissions: 0, rejections: 0, merged: 0, mergedWithoutAccept: 0,
-    firstEventAt: null, lastEventAt: null, invalid: false, reportVersion: FLOW_REPORT_VERSION, reportLast: 0 };
+    firstEventAt: null, lastEventAt: null, invalid: false };
 }
 
 /** Advance an item's acceptance audit separately from its flow lifecycle, whose rules differ. */
@@ -118,6 +114,7 @@ function keepCatch(event, detail) {
 export function appendProofCounter(board, event) {
   appendRigorCounter(board, event);
   const summary = proofCounter(board, 'summary') ?? emptySummary();
+  ensureReportCounters(board, summary.last);
   board.onProofStatsEvent?.(event);
   let detail;
   try { detail = JSON.parse(event.event_detail); }
@@ -129,16 +126,7 @@ export function appendProofCounter(board, event) {
   if (summary.invalid) { put(board, 'summary', summary); return; }
   if (summary.firstEventAt === null || at < Date.parse(summary.firstEventAt)) summary.firstEventAt = event.event_at;
   if (summary.lastEventAt === null || at >= Date.parse(summary.lastEventAt)) summary.lastEventAt = event.event_at;
-  const reporting = reportEvent(event, detail);
-  const reportPolicy = reporting ? proofCounter(board, 'report-policy') ?? newReportPolicy() : null;
-  const beforePolicy = reporting ? JSON.stringify(reportPolicy) : null;
-  for (const id of reporting ? affectedReportItems(reportPolicy, event, detail) : []) {
-    const row = proofCounter(board, `item:${id}`);
-    if (!row) continue;
-    advanceReport(row.flow, reportPolicy, at);
-    put(board, `item:${id}`, row);
-  }
-  if (reporting) recordReportPolicy(reportPolicy, event, detail, event.item_id == null ? null : proofCounter(board, `item:${event.item_id}`)?.flow);
+  appendReportCounter(event, detail, at, key => proofCounter(board, key), (key, value) => put(board, key, value));
   const key = `item:${event.item_id}`;
   const item = proofCounter(board, key) ?? { id: event.item_id, flow: { id: event.item_id, lane: 'unknown' } };
   const contribution = countItem(summary, item, event, detail);
@@ -148,9 +136,7 @@ export function appendProofCounter(board, event) {
     if (event.event_kind === 'add' || event.event_kind === 'merged' && item.flow.mergeAt === undefined) {
       put(board, `daily:${event.event_id}`, { at, kind: event.event_kind === 'add' ? 'added' : 'merged' });
     }
-    if (reporting) { advanceReport(item.flow, reportPolicy, at); prepareReportMove(item.flow, event, detail); }
-    if (reporting) moveFlowItem(item.flow, event, detail, at);
-    if (reporting) { recordReport(item.flow, event, detail); indexReportItem(reportPolicy, item.flow); }
+    if (reportEvent(event, detail)) moveFlowItem(item.flow, event, detail, at);
     put(board, key, item);
   } else if (['submit', 'accept', 'reject', 'merged'].includes(event.event_kind)) {
     // Legacy counts also audit a null item id, while flow deliberately excludes it.
@@ -163,9 +149,7 @@ export function appendProofCounter(board, event) {
   if (keepCatch(event, detail)) {
     put(board, `catch:${event.event_id}`, { event_id: event.event_id, event_at: event.event_at, event_by: event.event_by, event_kind: event.event_kind, item_id: event.item_id, detail });
   }
-  if (reporting && JSON.stringify(reportPolicy) !== beforePolicy) put(board, 'report-policy', reportPolicy);
   appendRuleProof(board, event, detail, key => proofCounter(board, key), (key, value) => put(board, key, value));
-  summary.reportLast = event.event_id;
   put(board, 'summary', summary);
 }
 
@@ -179,12 +163,47 @@ function replayProofTail(board, cursor) {
   }
 }
 
+/** Reset only the optional report when its representation changes; preserve established proof shards. */
+function resetReportCounters(board) {
+  board.db.prepare('DELETE FROM board_meta WHERE meta_key GLOB ?').run(`${PREFIX}report-*`);
+  put(board, 'report-summary', emptyReportCounter());
+  put(board, 'report-policy', newReportPolicy());
+}
+
+/** Catch up only missed report events after an older writer, without recounting other statistics. */
+function ensureReportCounters(board, until) {
+  let summary = proofCounter(board, 'report-summary');
+  if (!summary || summary.version !== FLOW_REPORT_VERSION) {
+    resetReportCounters(board);
+    summary = proofCounter(board, 'report-summary');
+  }
+  if (summary.last >= until || summary.invalid) return;
+  const read = board.db.prepare('SELECT * FROM event WHERE event_id>? AND event_id<=? ORDER BY event_id LIMIT 256');
+  let cursor = summary.last;
+  while (true) {
+    const batch = read.all(cursor, until);
+    if (!batch.length) return;
+    for (const event of batch) {
+      let detail;
+      try { detail = JSON.parse(event.event_detail); } catch { detail = null; }
+      const at = Date.parse(event.event_at);
+      if (detail === null || !Number.isFinite(at)) {
+        put(board, 'report-summary', { ...summary, invalid: true });
+        return;
+      }
+      board.onFlowReportEvent?.(event);
+      appendReportCounter(event, detail, at, key => proofCounter(board, key), (key, value) => put(board, key, value));
+      cursor = event.event_id;
+    }
+  }
+}
+
 /** Rebuild from authoritative history inside the caller's existing write transaction. */
 export function rebuildProofCounters(board) {
   clearProofCounters(board);
   ensureRigorCounters(board);
   put(board, 'summary', emptySummary());
-  put(board, 'report-policy', newReportPolicy());
+  resetReportCounters(board);
   replayProofTail(board, 0);
 }
 
@@ -192,7 +211,8 @@ export function rebuildProofCounters(board) {
 export function ensureProofCounters(board) {
   ensureRigorCounters(board);
   const summary = proofCounter(board, 'summary');
-  if (!summary || summary.reportVersion !== FLOW_REPORT_VERSION || summary.reportLast !== summary.last) { rebuildProofCounters(board); return; }
+  if (!summary) { rebuildProofCounters(board); return; }
+  ensureReportCounters(board, summary.last);
   replayProofTail(board, summary.last);
 }
 

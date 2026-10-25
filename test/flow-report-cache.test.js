@@ -50,10 +50,7 @@ test('flow report indexed projection matches canonical replay without hot raw hi
 
 test('old v2 counters retain fast metrics and explicitly unavailable reports until a writer rebuilds [R1,R2]', t => {
   const board = fixture(t);
-  const row = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get('local:proof-stats:v2:summary');
-  const summary = JSON.parse(row.meta_value);
-  delete summary.data.reportVersion;
-  board.db.prepare('UPDATE board_meta SET meta_value=? WHERE meta_key=?').run(JSON.stringify(summary), 'local:proof-stats:v2:summary');
+  board.db.prepare('DELETE FROM board_meta WHERE meta_key=?').run('local:proof-stats:v2:report-summary');
   const prepare = board.db.prepare.bind(board.db);
   const reads = [];
   board.db.prepare = sql => { reads.push(sql); return prepare(sql); };
@@ -70,17 +67,23 @@ test('old v2 counters retain fast metrics and explicitly unavailable reports unt
 
 test('an older writer cannot make retained report capability look current [R1,R2,H16]', t => {
   const board = fixture(t);
-  const key = 'local:proof-stats:v2:summary';
-  const row = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get(key);
-  const summary = JSON.parse(row.meta_value);
-  summary.data.reportLast = summary.data.last - 1;
-  board.db.prepare('UPDATE board_meta SET meta_value=? WHERE meta_key=?').run(JSON.stringify(summary), key);
+  const reportKeys = 'local:proof-stats:v2:report-*';
+  const retained = board.db.prepare('SELECT meta_key,meta_value FROM board_meta WHERE meta_key GLOB ?').all(reportKeys);
+  store.addItem(board, { by: 'coordinator', lane: 'api', title: 'An older writer advances native history' });
+  // Emulate an older writer's exact derived-state boundary: ordinary counters advance; report shards do not.
+  board.db.prepare('DELETE FROM board_meta WHERE meta_key GLOB ?').run(reportKeys);
+  for (const row of retained) board.db.prepare('INSERT INTO board_meta(meta_key,meta_value) VALUES (?,?)').run(row.meta_key, row.meta_value);
   const stale = proofStats(board);
-  assert.equal(stale.flow.queues.open.size, 1, 'existing native counters remain usable');
+  assert.equal(stale.flow.queues.open.size, 2, 'existing native counters remain usable');
   assert.deepEqual(stale.flow.report, { available: false }, 'retained version alone cannot certify intervening older-writer events');
   const before = store.events(board);
+  const proofEvents = [], reportEvents = [];
+  board.onProofStatsEvent = event => proofEvents.push(event.event_id);
+  board.onFlowReportEvent = event => reportEvents.push(event.event_id);
   ensureProofCounters(board);
-  assert.ok(proofStats(board).flow.report.items);
+  assert.equal(proofStats(board).flow.report.items.length, 2);
+  assert.deepEqual(proofEvents, [], 'report catch-up never rebuilds or recounts the existing proof statistics');
+  assert.deepEqual(reportEvents, [before.at(-1).event_id], 'only the one missed native event is folded into the report');
   assert.deepEqual(store.events(board), before, 'repair changes derived counters only');
 });
 

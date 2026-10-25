@@ -274,7 +274,7 @@ export function projectFlowStats(prepared, boundary, now, counts, { windowMinute
     ...projectFlowWindow(prepared, windowMinutes, now),
     ...(executionCapacity ? { executionCapacity } : {}),
   };
-  const report = projectReport(prepared.items, prepared.reportPolicy, now);
+  const report = projectReport(prepared.reportItems ?? prepared.items, prepared.reportPolicy, now);
   return { report, ...(window === undefined ? {} : { window }), asOf: new Date(now).toISOString(), stages, queues: queueData.queues, unreviewed: queueData.unreviewed, daily: [...daily.values()].sort((a, b) => a.date.localeCompare(b.date)),
     submitsPerMerged: completedItems ? counts.submissions / completedItems : 0, activeAgents, bottleneck };
 }
