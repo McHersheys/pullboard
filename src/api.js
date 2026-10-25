@@ -91,6 +91,7 @@ function stateRevision(inputs) {
  * nextExpiry is the earliest live claim or review lease, when a lease turns over with no write.
  */
 function localRevisionInputs(board, now) {
+  board = Object.assign(Object.create(board), { clock: { ...board.clock, now: () => new Date(now) } });
   const leases = board.db.prepare('SELECT item_id, item_status, item_owner, item_lease_until, item_review_by, item_review_until FROM item ORDER BY item_id').all()
     .map((item) => [
       item.item_id, item.item_status, item.item_owner, item.item_lease_until, item.item_review_by, item.item_review_until,
@@ -121,12 +122,12 @@ function visibleMilestoneInputs(milestones, scoped) {
 }
 
 /** Capture the inexpensive inputs that can invalidate a complete board-state snapshot. */
-function boardStateRevision(root, id, isMain, { projects = listApiProjects, scopeCommonDir = null } = {}) {
+function boardStateRevision(root, id, isMain, { projects = listApiProjects, scopeCommonDir = null, observedAt = Date.now() } = {}) {
   const info = repoInfo(root);
   const config = loadConfig(info.root);
   const files = stateFileInputs(info.root, config).map(fileRevision);
   const local = withBoard(info.root, (board) => {
-    const inputs = localRevisionInputs(board, board.clock.now().toISOString());
+    const inputs = localRevisionInputs(board, new Date(observedAt).toISOString());
     const hasExternalMilestones = inputs.milestones.some((milestone) => milestone.items.some((item) => typeof item !== 'number'));
     return { ...inputs, externalMilestones: hasExternalMilestones
       ? scopeCommonDir === null
@@ -827,11 +828,11 @@ export function createLocalApiHandler({ secret, getPort, runCommand, projects = 
    * input revision holds before and after the read, and building it again when one moved.
    */
   function withSnapshot(board, read, observedAt = now()) {
-    const before = boardStateRevision(board.root, board.id, codeIsMain, { projects: apiProjects, scopeCommonDir });
+    const before = boardStateRevision(board.root, board.id, codeIsMain, { projects: apiProjects, scopeCommonDir, observedAt });
     const cached = stateCache.get(before.cacheId);
     if (before.cacheable && cached?.revision === before.revision) {
       const result = read(cached, true);
-      const after = boardStateRevision(board.root, board.id, codeIsMain, { projects: apiProjects, scopeCommonDir });
+      const after = boardStateRevision(board.root, board.id, codeIsMain, { projects: apiProjects, scopeCommonDir, observedAt });
       if (after.cacheable && after.revision === before.revision) {
         stateCache.delete(before.cacheId);
         stateCache.set(before.cacheId, cached);
@@ -860,7 +861,7 @@ export function createLocalApiHandler({ secret, getPort, runCommand, projects = 
       itemMoveCounts: built.itemMoveCounts,
     });
     entry.cacheId = before.cacheId;
-    const after = boardStateRevision(board.root, board.id, codeIsMain, { projects: apiProjects, scopeCommonDir });
+    const after = boardStateRevision(board.root, board.id, codeIsMain, { projects: apiProjects, scopeCommonDir, observedAt });
     // Missing Git objects can arrive without a board event or trunk move; retry that uncertainty.
     if (before.cacheable && after.cacheable && before.revision === after.revision &&
         !state.items.some(item => item.verdictState?.reason)) {

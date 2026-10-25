@@ -1,43 +1,16 @@
 /** Real loopback relay and complete native API observations for reader parity [H5,H15,H16,A2]. */
 import assert from 'node:assert/strict';
-import { randomBytes } from 'node:crypto';
-import { readFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as store from '../src/board.js';
-import { serveApi } from '../src/api.js';
-import { main } from '../src/cli.js';
 import { decodeBoardKey } from '../src/seal.js';
-import { ENGINE_VERSION } from '../src/machine.js';
-import { openPagedSnapshot } from '../src/relay-page-layout.js';
-import { snapshotState } from '../relay/browser-model.js';
 import { relayPresentation } from '../src/relay-presentation.js';
 import { presentationDigest } from '../src/relay-presentation.js';
 import { runFixtureChild } from './fixture-child.js';
+export { assertReaderParity } from './relay-parity-reader.js';
+import { createParityReader } from './relay-parity-reader.js';
 import { relayClientFixture } from './relay-client-fixture.js';
-
-/** Only the native filesystem routing identity differs deliberately from the relay board identity. */
-export const LOCAL_PARITY_FIELDS = Object.freeze([
-  { path: 'root', reason: 'Native routing uses a local repository directory; a relay reader routes by persistent board id.' },
-]);
-
-/** Report the first undeclared field difference with both actual values, including missing keys. */
-export function assertReaderParity(native, relay, localFields = LOCAL_PARITY_FIELDS) {
-  const ignored = new Set(localFields.map(entry => entry.path));
-  assert.ok(localFields.every(entry => entry.path && entry.reason?.trim()), 'every local-only field has a reason');
-  /** Compare structure as well as values; a missing field is never equivalent to an explicit null. */
-  function compare(left, right, path) {
-    if (ignored.has(path)) return;
-    const label = value => value === undefined ? '<missing>' : JSON.stringify(value);
-    if (left === null || right === null || typeof left !== 'object' || typeof right !== 'object') {
-      assert.deepEqual(left, right, `reader parity ${path}: native=${label(left)} relay=${label(right)}`);
-      return;
-    }
-    assert.equal(Array.isArray(left), Array.isArray(right), `reader parity ${path}: native=${label(left)} relay=${label(right)}`);
-    for (const key of new Set([...Object.keys(left), ...Object.keys(right)])) compare(left[key], right[key], path ? `${path}.${key}` : key);
-  }
-  compare(native, relay, '');
-}
 
 /** Seed actual native writes, keeping the operation receipts available for the fail-closed coverage inventory. */
 export function seedParityBoard(root, lane) {
@@ -96,32 +69,10 @@ export async function parityRoundtrip(t, { foreign = false } = {}) {
   const link = JSON.parse(readFileSync(box.linkFile, 'utf8'));
   const key = decodeBoardKey(readFileSync(box.keyFile, 'utf8').trim());
   const session = await box.phoneSession();
-  /** Request through a distinct authenticated person session, never a direct journal read. */
-  async function request(path) {
-    const response = await fetch(box.origin + path, { headers: { authorization: `Bearer ${session.token}`, 'x-pullboard-engine': String(ENGINE_VERSION) } });
-    assert.equal(response.status, 200, `relay parity reader GET ${path.split('?')[0]}`);
-    return response.json();
-  }
-  const document = await request(`/api/v2/boards/${link.board}/state`);
-  assert.equal(document.apiVersion, 2, 'current snapshot transport is exercised');
-  const saved = document.state;
-  const page = await openPagedSnapshot(saved.root, { key, boardId: link.board, sequence: saved.sequence,
-    /** Fetch only the pinned, reachable sealed object graph through its actual service boundary. */
-    async get(id, parents) {
-      const object = await request(`/api/v2/boards/${link.board}/objects/${id}?pin=${encodeURIComponent(saved.read.id)}&via=${parents.join(',')}`);
-      return Uint8Array.from(Buffer.from(object.page.sealed, 'base64url'));
-    },
-  }, { maxEngine: ENGINE_VERSION });
-  const restored = await page.native();
-  const relay = snapshotState(restored, link.board);
-  const observedAt = Date.parse(relay.observedAt);
-  assert.ok(Number.isSafeInteger(observedAt), 'the sealed projection carries its explicit observation clock');
-  const secret = randomBytes(24).toString('base64url');
-  const api = await serveApi({ secret, runCommand: main, projects: () => [{ root: box.root, name: 'parity' }, ...(other ? [other] : [])], isMain: true, stateDetail: 'full', scope: { projectRoot: box.root }, now: () => observedAt });
-  t.after(api.close);
-  const nativeResponse = await fetch(`http://127.0.0.1:${api.port}/api/v1/boards/${link.board}/state?detail=full`, { headers: { 'x-pullboard-key': secret } });
-  assert.equal(nativeResponse.status, 200, 'complete native API state is available');
-  const native = (await nativeResponse.json()).state;
+  const reader = await createParityReader({ root: box.root, origin: box.origin, token: session.token, boardId: link.board, key,
+    projects: () => [{ root: box.root, name: 'parity' }, ...(other ? [other] : [])] });
+  t.after(reader.close);
+  const { native, relay, restored } = await reader.read();
   if (other) {
     assert.ok(!JSON.stringify(restored).includes(other.secret), 'the actual sealed native snapshot never carries the foreign title');
     const scoped = relay.milestones.find(milestone => milestone.name === 'Cross-board privacy');
@@ -129,5 +80,19 @@ export async function parityRoundtrip(t, { foreign = false } = {}) {
     assert.ok(JSON.stringify(scoped).includes('unavailable'), 'the external reference is an unavailable obligation');
     assert.ok(!JSON.stringify(scoped).includes('foreign-parity'), 'the external project reference remains redacted');
   }
-  return { native, relay, exercised: seeded.exercised };
+  /** One genuine private-environment process retains native and HTTP clients for the full declared operation inventory. */
+  async function exerciseOperations() {
+    const module = new URL('./relay-parity-operations.js', import.meta.url).href;
+    const parameters = { root: box.root, origin: box.origin, token: session.token, boardId: link.board, lane: box.lane, keyFile: box.keyFile };
+    const file = join(box.root, '.git', 'pullboard', 'parity-reader-session.json');
+    writeFileSync(file, JSON.stringify(parameters), { mode: 0o600 });
+    try {
+      const result = await box.script(`import { readFileSync } from 'node:fs';
+import { exerciseOperationParity } from ${JSON.stringify(module)};
+try { console.log(JSON.stringify(await exerciseOperationParity(JSON.parse(readFileSync(${JSON.stringify(file)}, 'utf8'))))); } catch (error) { console.log(JSON.stringify({ error: error.message })); process.exitCode = 1; }`);
+      assert.equal(result.code, 0, `complete operation inventory: ${result.failure ?? result.document?.error ?? 'no result'}`);
+      return result.document;
+    } finally { rmSync(file, { force: true }); }
+  }
+  return { native, relay, exercised: seeded.exercised, exerciseOperations };
 }
