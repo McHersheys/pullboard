@@ -533,9 +533,14 @@ test('process member commands retain property assignments and unresolved targets
     'test/literal-key-command.test.js': imports + "const options = {}; options['command'] = 'google-chrome'; spawnSync(options['command'], []);",
     'test/computed-command.test.js': imports + "const options = {}; const key = process.env.COMMAND_KEY; options[key] = 'google-chrome'; spawnSync(options[key], []);",
     'test/unresolved-command.test.js': imports + "export function run(options) { return spawnSync(options.command, []); }",
+    'test/member-alias-command.test.js': imports + "const options = {}; options.command = 'google-chrome'; const executable = options.command; spawnSync(executable, []);",
+    'test/optional-command.test.js': imports + "export function run(options) { return spawnSync(options?.command, []); }",
+    'test/multiline-command.test.js': imports + "export function run(options) { return spawnSync(\n options.command, []); }",
+    'test/fallback-command.test.js': imports + "const options = {}; options.command = 'google-chrome'; spawnSync(options.command || 'git', []);",
     'test/property-data.test.js': imports + "const options = {}; options.command = 'google-chrome'; spawnSync('git', ['status']);",
   });
-  for (const name of ['dot-command', 'spaced-command', 'literal-key-command', 'computed-command', 'unresolved-command']) {
+  for (const name of ['dot-command', 'spaced-command', 'literal-key-command', 'computed-command', 'unresolved-command',
+    'member-alias-command', 'optional-command', 'multiline-command', 'fallback-command']) {
     assert.equal(await testsNeedBrowser(root, [`test/${name}.test.js`], { byLaunch: true }), true,
       `${name}: a real member command remains browser-bound`);
   }

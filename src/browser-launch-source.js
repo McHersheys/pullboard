@@ -48,6 +48,27 @@ function callNames(source, code) {
   return names;
 }
 
+/** Unknown member-valued executables need admission; Node's own executable identities are known. */
+function unresolvedMemberCommand(expression) {
+  const compact = expression.replace(/\s/gu, '');
+  const members = compact.matchAll(/(?<![\w$.])[$A-Z_a-z][$\w]*(?:(?:\?\.|\.)[$A-Z_a-z][$\w]*|(?:\?\.)?\[[\s\S]*\])+/gu);
+  return [...members].some(match => !['process.execPath', 'process.argv[0]'].includes(match[0])
+    && compact[match.index + match[0].length] !== '(');
+}
+
+/** End one expression without consuming another argument or a surrounding function body. */
+function expressionEnd(code, start, newlineEnds = true) {
+  let end = start;
+  while (end < code.length && !';,)]}'.includes(code[end]) && (!newlineEnds || code[end] !== '\n')) {
+    if ('([{'.includes(code[end])) {
+      const close = closing(code, end);
+      if (close === null) return null;
+      end = close + 1;
+    } else end += 1;
+  }
+  return end;
+}
+
 /**
  * Determine whether executable process calls can reach a Chrome argument. Local literal bindings are
  * followed conservatively, without scope-sensitive elimination. A program supplied to a real process
@@ -70,25 +91,21 @@ export function sourceLaunchesBrowser(source) {
     // A property write is not a write to the same-named local identifier, even with whitespace.
     if (code.slice(0, match.index).trimEnd().endsWith('.')) continue;
     const start = match.index + match[0].length;
-    let end = start;
-    while (end < code.length && !';,)]}\n'.includes(code[end])) {
-      if ('([{'.includes(code[end])) {
-        const close = closing(code, end);
-        if (close === null) return CHROME.test(source);
-        end = close + 1;
-      } else end += 1;
-    }
-    const prior = bindings.get(match[1]) ?? { browser: false, dependencies: new Set() };
+    const end = expressionEnd(code, start);
+    if (end === null) return CHROME.test(source);
+    const prior = bindings.get(match[1]) ?? { browser: false, unresolved: false, dependencies: new Set() };
     prior.browser ||= browserIn(start, end);
+    prior.unresolved ||= unresolvedMemberCommand(code.slice(start, end));
     for (const word of code.slice(start, end).matchAll(WORD)) prior.dependencies.add(word[0]);
     bindings.set(match[1], prior);
   }
   /** Follow only the finite local binding graph, retaining a possible browser through aliases. */
-  function namedBrowser(name, seen = new Set()) {
+  function namedBrowser(name, seen = new Set(), command = false) {
     if (seen.has(name)) return false;
     seen.add(name);
     const binding = bindings.get(name);
-    return Boolean(binding && (binding.browser || [...binding.dependencies].some(next => namedBrowser(next, seen))));
+    return Boolean(binding && (binding.browser || command && binding.unresolved
+      || [...binding.dependencies].some(next => namedBrowser(next, seen, command))));
   }
   for (const match of code.matchAll(/(?<![\w$])([$A-Z_a-z][$\w]*)\s*(?:\?\.)?\s*\(/gu)) {
     if (!names.has(match[1])) continue;
@@ -97,6 +114,11 @@ export function sourceLaunchesBrowser(source) {
     if (end === null) return CHROME.test(source);
     if (browserIn(start + 1, end)) return true;
     if ([...code.slice(start + 1, end).matchAll(WORD)].some(word => namedBrowser(word[0]))) return true;
+    const commandEnd = expressionEnd(code, start + 1, false);
+    if (commandEnd === null) return true;
+    const command = code.slice(start + 1, commandEnd);
+    if (unresolvedMemberCommand(command)
+      || [...command.matchAll(WORD)].some(word => namedBrowser(word[0], new Set(), true))) return true;
   }
   // Computed/dynamic process access has no complete static call binding: keep Chrome-capable sources bound.
   if (/\b(?:getBuiltinModule|eval|Function)\s*\(|\b(?:process|require)\s*\[|\]\s*(?:\?\.)?\s*\(|\.\s*(?:call|apply|bind)\s*\(|\\u(?:[\da-f]{4}|\{[\da-f]+\})/iu.test(code)
