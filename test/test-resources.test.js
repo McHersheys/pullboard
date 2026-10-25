@@ -524,6 +524,27 @@ test('later executable assignments retain every possible browser launch value [C
   }
 });
 
+/** Member commands retain their own values without tainting an unrelated local identifier. */
+test('process member commands retain property assignments and unresolved targets [C7,O5]', async t => {
+  const imports = "import { spawnSync } from 'node:child_process';\n";
+  const root = sourceFixture(t, {
+    'test/dot-command.test.js': imports + "const options = {}; options.command = 'google-chrome'; spawnSync(options.command, []);",
+    'test/spaced-command.test.js': imports + "const options = {}; options . command = 'chromium'; spawnSync(options . command, []);",
+    'test/literal-key-command.test.js': imports + "const options = {}; options['command'] = 'google-chrome'; spawnSync(options['command'], []);",
+    'test/computed-command.test.js': imports + "const options = {}; const key = process.env.COMMAND_KEY; options[key] = 'google-chrome'; spawnSync(options[key], []);",
+    'test/unresolved-command.test.js': imports + "export function run(options) { return spawnSync(options.command, []); }",
+    'test/property-data.test.js': imports + "const options = {}; options.command = 'google-chrome'; spawnSync('git', ['status']);",
+  });
+  for (const name of ['dot-command', 'spaced-command', 'literal-key-command', 'computed-command', 'unresolved-command']) {
+    assert.equal(await testsNeedBrowser(root, [`test/${name}.test.js`], { byLaunch: true }), true,
+      `${name}: a real member command remains browser-bound`);
+  }
+  assert.equal(await testsNeedBrowser(root, ['test/property-data.test.js'], { byLaunch: true }), false,
+    'an unused property value does not taint a literal Git command');
+  assert.equal(await testsNeedBrowser(root, ['test/property-data.test.js'], { byLaunch: false }), true,
+    'default admission remains conservative');
+});
+
 test('a file that launches Chrome unclassified fails by name [C7,O5]', async t => {
   const hidden = `import { test } from 'node:test';
 test('hidden launches through a computed import', async () => {
