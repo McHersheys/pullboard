@@ -35,6 +35,11 @@ export async function run(io, { first, values }) {
     throw new Refused('NO_TRUNK', 'pullboard map could not read a clean main source at '
       + trunk.commit.slice(0, 12) + ': ' + error.message + '; restore main/src and bin, then retry');
   }
+  /** Keep every map view's JSON envelope explicit while preserving its ordinary text exactly. */
+  function printMap(text) {
+    io.result?.({ main: map.mainCommit, map: text });
+    io.say(text);
+  }
   if (values.for !== undefined) {
     const id = idArg(values.for, 'an item id after --for');
     const item = await withBoardRead(ctx, board => store.getItem(board, id));
@@ -43,7 +48,7 @@ export async function run(io, { first, values }) {
       throw new Refused('USAGE', '--budget for an item slice must be a whole number from 1 to 8000 tokens');
     }
     try {
-      io.say(renderItemSlice(map, item, { budget }));
+      printMap(renderItemSlice(map, item, { budget }));
     } catch (error) {
       if (error instanceof RangeError && error.message.startsWith('item slice budget too small')) {
         throw new Refused('USAGE', error.message);
@@ -56,9 +61,9 @@ export async function run(io, { first, values }) {
     const card = renderMapCard(map, first);
     if (card === null) throw new Refused('USAGE', 'no module or unique function "' + first
       + '" appears in the current map; use pullboard map for the overview');
-    io.say(card);
+    printMap(card);
     return 0;
   }
-  io.say(renderCodeMapOverview(map));
+  printMap(renderCodeMapOverview(map));
   return 0;
 }

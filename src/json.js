@@ -33,6 +33,7 @@ export const JSON_SHAPES = {
     sync: shape({ ref: 'string', sequence: 'number', pending: 'string|null' }),
     list: shape({ items: 'array' }),
     queue: shape({ releases: 'array', unreleased: 'array', first: 'object' }),
+    map: shape({ main: 'string', map: 'string' }),
     roadmap: shape({ milestones: 'array' }),
     'milestone add': shape({ milestone: 'object' }),
     'milestone items': shape({ milestone: 'object' }),
