@@ -551,7 +551,10 @@ function searchText(item) {
 /** One cached board build: the full state, its item summaries, its delta fingerprint and the lookups that serve them. */
 function snapshotEntry(revision, state, preparedFlow, { inputs = null, itemMeta = new Map(), itemMoveCounts = new Map() } = {}) {
   const summary = { ...state, items: state.items.map(itemSummary) };
-  return { revision, sequence: state.sequence, state, summary, preparedFlow, summaryFields: prepareStateJson(summary), stateJsonFields: null,
+  const reportValidator = { json: JSON.stringify(state.proofStats?.flow?.report), expiries: [...new Set(preparedFlow.items.flatMap(item =>
+    item.state === 'claimed' ? [item.leaseUntil] : item.state === 'submitted' ? [item.reserve?.until] : []).filter(Number.isFinite))].sort((a, b) => a - b) };
+  reportValidator.digest = createHash('sha256').update(reportValidator.json ?? 'null').digest('hex');
+  return { revision, sequence: state.sequence, state, summary, preparedFlow, reportValidator, summaryFields: prepareStateJson(summary), stateJsonFields: null,
     print: fingerprint(summary), items: new Map(state.items.map((item) => [item.id, item])), itemMeta, itemMoveCounts, inputs, searchTexts: null };
 }
 
@@ -655,14 +658,25 @@ function jsonField(key, value) {
   return encoded === undefined ? '' : JSON.stringify(key) + ':' + encoded;
 }
 
+/** Reuse recorded report material while retaining genuine native lease-boundary changes. */
+function reportValidation(entry, now = Date.now()) {
+  const expiries = entry.reportValidator.expiries;
+  let low = 0, high = expiries.length;
+  while (low < high) { const middle = (low + high) >>> 1; if (expiries[middle] <= now) low = middle + 1; else high = middle; }
+  return entry.reportValidator.digest + ':' + low;
+}
+
 /** Reuse static state fragments while encoding request-specific unread and flow data. */
-function serializeState(state, fields) {
+function serializeState(state, fields, reportJson) {
   if (!fields) return JSON.stringify(state);
   const encoded = fields.map((field) => {
     if (field.static !== undefined) return field.static;
     if (field.dynamic === 'unseen') return jsonField('unseen', state.unseen);
     if (field.dynamic === 'proofStats') {
-      const flow = jsonField('flow', state.proofStats?.flow);
+      const value = state.proofStats?.flow;
+      const flow = reportJson === undefined || !value ? jsonField('flow', value)
+        : '"flow":{' + Object.entries(value).map(([key, entry]) => key === 'report'
+          ? '"report":' + reportJson : jsonField(key, entry)).filter(Boolean).join(',') + '}';
       return '"proofStats":{' + [...field.stats, flow].filter(Boolean).join(',') + '}';
     }
     return '';
@@ -991,7 +1005,9 @@ export function createLocalApiHandler({ secret, getPort, runCommand, projects = 
       const state = stateForRequest(full ? entry.state : entry.summary, board.root, seen, entry.preparedFlow, cached, codeIsMain);
       // Full fragments wait for the first full request, so a server sending summaries never builds them.
       const fields = full ? (entry.stateJsonFields ??= prepareStateJson(entry.state)) : entry.summaryFields;
-      return { state, json: serializeState(state, fields), entry };
+      const reportValidator = reportValidation(entry);
+      const validator = serializeState(state, fields, entry.reportValidator.json) + '\0report-expiry:' + reportValidator;
+      return { state, json: serializeState(state, fields), validator, reportValidator, entry };
     });
     // Only the build actually returned is sent; a delta extends summaries, never a full state.
     if (!full) keepSentBase(sent.entry);
@@ -1021,7 +1037,7 @@ export function createLocalApiHandler({ secret, getPort, runCommand, projects = 
     };
     const sent = withSnapshot(board, (entry, cached) => ({ entry, answer: answerFor(entry, cached) }));
     if (sent.answer.delta) keepSentBase(sent.entry);
-    return sent.answer;
+    return Object.defineProperty(sent.answer, 'reportValidator', { value: reportValidation(sent.entry) });
   }
   /**
    * The spec-approval view one board's details share, kept while the files, HEAD and board records it
@@ -1138,7 +1154,10 @@ export function createLocalApiHandler({ secret, getPort, runCommand, projects = 
     boards: () => withGitReadFacts(() => apiBoardListing(apiProjects, codeIsMain)),
     board: (id) => withGitReadFacts(() => findBoard(id, apiProjects, codeIsMain)),
     state: (board, who, seen, options) => withGitReadFacts(() => localState(board, seen, options).state),
-    stateJson: (board, who, seen, options) => withGitReadFacts(() => localState(board, seen, options).json),
+    stateJson: (board, who, seen, options) => withGitReadFacts(() => {
+      const sent = localState(board, seen, options);
+      return { json: sent.json, validator: sent.validator, reportValidator: sent.reportValidator };
+    }),
     watchRevision: (board) => {
       const watcher = withGitReadFacts(() => watchLocalStateRevision(board, { scopeCommonDir }));
       return { ...watcher, revision: () => withGitReadFacts(() => watcher.revision()) };

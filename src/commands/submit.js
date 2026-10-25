@@ -231,6 +231,10 @@ export async function submitHere(ctx, id, infra) {
     );
   }
   const currentTrunk = requireTrunkMerge(root, commit); // The trunk may have moved while the gate ran.
+  const measuredLines = changedLines(root, currentTrunk.commit, commit);
+  const size = measuredLines === null ? undefined : {
+    base: currentTrunk.commit, head: commit, lines: measuredLines, method: SUBMISSION_SIZE_METHOD,
+  };
   if (requireComposition) requireSubmitComposition(root, commit, currentTrunk, acceptedMain.commit);
   const waivedLines = waived ? waived.map(waiverLine) : [];
   await withBoard(ctx, async (board) => {
@@ -239,11 +243,12 @@ export async function submitHere(ctx, id, infra) {
     if (waived) await ordered(ctx, board, 'appendFact', [id, { agentId: me.id, kind: 'measurement', text: `submission proof at ${commit.slice(0, 12)} was red and is recorded as waived, not green; every failure is covered by a live person waiver:\n${waivedLines.join('\n')}` }]);
     if (knownMainFailures) await ordered(ctx, board, 'appendFact', [id, { agentId: me.id, kind: 'measurement', text: `submission proof at ${commit.slice(0, 12)} remains red; known main failures at ${knownMainFailures.main}: ${knownMainFailures.failures.map(row => `${row.file} (${row.name})`).join('; ')}. The item check passed; no new or unaccounted failure is accepted.` }]);
     return await ordered(ctx, board, 'submit', [id, { agentId: me.id, commit, tree: headTree(root) ?? '', files: filesSince(root, id, claimHead, commit), policyCommit: acceptedMain.commit, ...(infraRecord ? { infra: infraRecord } : {}),
+      ...(size ? { submissionSize: size } : {}),
       submissionProof: { version: 1, files: gate.files, full: gate.full, deferred: gate.deferred, reason: gate.reason, ...(gate.deferredFiles ? { deferredFiles: gate.deferredFiles } : {}), ...(knownMainFailures ? { knownMainFailures } : {}) },
       ...(gate.deferred ? { note: gate.deferredFiles ? deferredSelectionNote(gate.deferredFiles) : 'full suite deferred to the landing gate' } : {}) }]);
   });
   // A large submit still goes through; the note only suggests a chain of smaller items (#1162).
-  const sizeNote = oversizeNote(changedLines(root, currentTrunk.commit, commit), acceptedMain.config.itemSizeBudget);
+  const sizeNote = oversizeNote(measuredLines, acceptedMain.config.itemSizeBudget);
   if (sizeNote) ctx.io.say(`note: ${sizeNote}`);
   const report = knownMainFailures
     ? `submission proof red with ${knownMainFailures.failures.length} known main failure(s) at ${knownMainFailures.main}; item check green; no new failures accepted. ${submitGateReport(gate)}`
@@ -260,3 +265,4 @@ export async function submitHere(ctx, id, infra) {
 export async function run(io, { first, values }) {
   return submitHere(context(io), idArg(first), values.infra);
 }
+import { SUBMISSION_SIZE_METHOD } from '../submission-size.js';
