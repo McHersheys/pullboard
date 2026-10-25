@@ -97,6 +97,7 @@ export const DEFAULT_NEXT_STEPS = Object.freeze({
   "BAD_SINCE": "pass a date: --since 2026-10-08",
   "BLUEPRINT_EXISTS": "choose a file that does not exist: pullboard blueprint save <new-file>",
   "BLUEPRINT_ITEM_UNCHECKED": "give the starter item named in the message a criterion and a check command, then run pullboard blueprint add <file> again",
+  "BLUEPRINT_RULE_UNCHECKED": "add a checked starter item that cites the must rule named in the message, then run pullboard blueprint add <file> again",
   "BLUEPRINT_KIND_TAKEN": "keep at most one product and one architecture blueprint, then run the same command again",
   "BLUEPRINT_NOT_ADDED": "add the blueprint to this board first: pullboard blueprint add <name or file>",
   "BLUEPRINT_NO_SOURCE": "give the rule named in the message the reference it paraphrases as source { name, id, url }, then run pullboard blueprint add <file> again",

@@ -26,7 +26,9 @@
  * BLUEPRINT_ITEM_UNCHECKED when it is read or saved: a starter that cannot be verified cannot be
  * accepted. Every rule of an architecture blueprint names its source, or the blueprint is refused
  * with BLUEPRINT_NO_SOURCE when it is read or saved: an architecture rule paraphrases a known-good
- * reference, so the row it drafts must say which one. An item's route is light, mid or strong (strong when left out), as pullboard add takes
+ * reference, so the row it drafts must say which one. Every must rule is cited by a checked starter
+ * item, or an architecture blueprint is refused with BLUEPRINT_RULE_UNCHECKED; aim rules are optional.
+ * An item's route is light, mid or strong (strong when left out), as pullboard add takes
  * it. Its brief and criterion pass through unchanged; bundled checks use the chosen lane folder. A light or mid item is filed when it
  * carries what add requires for that route and refused with add's own refusal when it does not.
  * A check is stored on the item and never run during add: no check baseline starts, so nothing a
@@ -233,6 +235,7 @@ export function validateBlueprint(value, source = 'blueprint') {
   }
   refuseUnsourcedRules(value.name, kind, rules);
   refuseUncheckedItems(value.name, items);
+  refuseUncheckedArchitectureRules(value.name, kind, rules, items);
   return {
     ...value,
     ...(kind === undefined ? {} : { kind }),
@@ -285,6 +288,27 @@ function refuseUncheckedItems(name, items) {
     const lacks = [!missing[0] && 'no criterion', !missing[1] && 'no check'].filter(Boolean);
     if (!lacks.length) continue;
     throw new Refused('BLUEPRINT_ITEM_UNCHECKED', `blueprint ${name} starter item ${item.key} (${JSON.stringify(item.title)}) has ${lacks.join(' and ')}; give every starter item a criterion and a check command, then run pullboard blueprint add again`);
+  }
+}
+
+/**
+ * Refuse an architecture blueprint whose must rule has no checked starter item citing it.
+ * Aim rules are optional; other blueprint kinds keep their existing meaning.
+ *
+ * @param {string} name - The blueprint's name, already checked.
+ * @param {string | undefined} kind - The blueprint's kind, with old names already mapped.
+ * @param {{ key: string, text: string, tier?: string }[]} rules
+ * @param {{ key: string, title: string, cites?: string[], check?: string }[]} items
+ * @returns {void}
+ */
+function refuseUncheckedArchitectureRules(name, kind, rules, items) {
+  if (kind !== 'architecture') return;
+  for (const rule of rules) {
+    if ((rule.tier ?? 'must') !== 'must') continue;
+    const covered = items.some((item) => (item.cites ?? []).includes(rule.key)
+      && typeof item.check === 'string' && item.check.trim());
+    if (covered) continue;
+    throw new Refused('BLUEPRINT_RULE_UNCHECKED', `architecture blueprint ${name} must rule ${rule.key} (${JSON.stringify(rule.text)}) has no checked starter item citing it; add a starter item with cites: [${JSON.stringify(rule.key)}] and a criterion and check command, then run pullboard blueprint add again`);
   }
 }
 
