@@ -1,4 +1,4 @@
-/** @pullboard-test-loads relay/browser-passkeys.js relay/browser-client.js relay/passkeys.js src/person-signing.js */
+/** @pullboard-test-loads relay/browser-passkeys.js relay/browser-client.js relay/passkeys.js src/person-signing.js test/person-trusted-cli.js */
 /** A real browser passkey confirms a person move a terminal started, with the person present, once [E22,H16]. */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -11,20 +11,23 @@ import {
   relayWorkBudgetMs,
   startChrome,
 } from './relay-browser-fixture.js';
-import { relayClientFixture } from './relay-client-fixture.js';
+import { relayClientFixture, relayFixtureChild } from './relay-client-fixture.js';
 
 test('a passkey on the paired browser confirms a terminal-started person move once [E22,H16]', {
   skip: !findChromeExecutable() && 'Chrome is not installed', timeout: relayWorkBudgetMs(20),
 }, async (t) => { // budget: hang ceiling for real CLI runs, Chrome and relay calls; not a speed target.
   // WebAuthn needs a domain for its RP id, so this relay is reached as localhost, not 127.0.0.1.
   const box = await relayClientFixture(t, { host: 'localhost' });
-  assert.equal((await box.cli('add', box.lane, 'PASSKEY_BROWSER_READY')).code, 0);
-  const ask = (await box.cli('shout', 'person', 'PASSKEY_BROWSER_DECISION', '--decision')).document.id;
+  const trustedEntry = join(import.meta.dirname, 'person-trusted-cli.js');
+  /** Hand only this private test's relay origin to the explicit test entry, never the shipped binary. */
+  const cli = (...args) => relayFixtureChild(box.root, box.env, [trustedEntry, box.origin, ...args, '--json']);
+  assert.equal((await cli('add', box.lane, 'PASSKEY_BROWSER_READY')).code, 0);
+  const ask = (await cli('shout', 'person', 'PASSKEY_BROWSER_DECISION', '--decision')).document.id;
   await box.link();
-  assert.equal((await box.cli('settings', 'person.signed', 'on')).code, 0);
+  assert.equal((await cli('settings', 'person.signed', 'on')).code, 0);
   const helpers = createE2eHelpers();
   const terminal = helpers.launch({ ...box, env: { ...box.env, SSH_CONNECTION: '127.0.0.1 40000 127.0.0.1 22' } },
-    box.root, process.execPath, [join(import.meta.dirname, '..', 'bin', 'pullboard.js'), 'answer', String(ask), 'Confirmed in the browser', '--as', 'person', '--json']);
+    box.root, process.execPath, [trustedEntry, box.origin, 'answer', String(ask), 'Confirmed in the browser', '--as', 'person', '--json']);
   t.after(async () => { if (terminal.exitCode === null && terminal.signalCode === null) terminal.kill('SIGTERM'); await terminal.closed; });
   await helpers.waitFor(() => { assert.equal(terminal.exitCode, null, terminal.stderrText); return terminal.stderrText.includes('this terminal is waiting'); },
     'the original SSH terminal waits for a passkey', relayWorkBudgetMs(5));
