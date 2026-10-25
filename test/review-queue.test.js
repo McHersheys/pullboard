@@ -445,6 +445,13 @@ test('fresh conflict requests refuse an older trunk after main advances [V4,H16]
   assert.throws(() => store.reopen(board, conflicted, { agentId: actor, computedConflict: stale }),
     error => error.code === 'COORDINATOR_ONLY', 'the direct mutation independently enforces the current trunk');
   assert.deepEqual(exportBoard(board), original, 'both fresh refusals leave the submission and event prefix unchanged');
+  const replica = store.openBoard(join(box.dir, 'fresh-stale-replica.sqlite'));
+  t.after(() => store.closeBoard(replica));
+  importBoard(replica, original);
+  const result = applyEngineMove(replica, { ...prepared, id: 'fresh-stale-request',
+    args: [conflicted, { agentId: actor, computedConflict: stale }] }, { sequence: 1, at: stale.at });
+  assert.equal(result.error?.code, 'COORDINATOR_ONLY', 'an unrecorded wire object is also a fresh request');
+  assert.equal(store.getItem(replica, conflicted).item_status, 'submitted');
 });
 
 

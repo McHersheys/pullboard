@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { repoInfo } from './git.js';
 import { recordedTrunkMerge } from './trunk-merge.js';
+import { trunkMerge } from './trunk-merge.js';
 import { refuseRecordedHistoryOverrides } from './trunk-merge.js';
 import { dirname } from 'node:path';
 import { join } from 'node:path';
@@ -59,6 +60,16 @@ export function requireComputedConflict(board, receipt) {
   return fields;
 }
 
+/** Fresh authoring must use the current trunk; recorded acknowledgments return before this mutation path. */
+function requireCurrentConflict(board, fields) {
+  const root = board.db.prepare("SELECT agent_path FROM agent WHERE agent_id='coordinator'").get()?.agent_path;
+  if (!root) throw new Refused('COORDINATOR_ONLY', 'fresh automatic return needs the registered native trunk');
+  const current = trunkMerge(root, fields.head);
+  if (current.commit !== fields.trunk || JSON.stringify(current.files) !== JSON.stringify(fields.files)) {
+    throw new Refused('COORDINATOR_ONLY', 'fresh automatic return must use the current trunk; compute a new return before sending it');
+  }
+}
+
 /** Bind recorded evidence to this board's current submitted item and actual actor, on every replica. */
 function bindingProblem(board, item, actor, receipt) {
   const fields = computedConflictFields(receipt);
@@ -80,7 +91,7 @@ export function preflightComputedConflict(board, id, actor, receipt) {
 export function computedConflictProblem(board, item, actor, receipt) {
   const problem = bindingProblem(board, item, actor, receipt);
   if (problem) return problem;
-  requireComputedConflict(board, receipt);
+  requireCurrentConflict(board, requireComputedConflict(board, receipt));
   return null;
 }
 
@@ -96,5 +107,7 @@ export function requirePreparedComputedConflict(board, id, actor, receipt) {
   const item = board.db.prepare('SELECT * FROM item WHERE item_id=?').get(id);
   const problem = item ? bindingProblem(board, item, actor, receipt) : new Refused('COORDINATOR_ONLY', 'automatic conflict evidence needs the current submitted item');
   if (problem) throw problem;
-  return requireComputedConflict(board, receipt);
+  const fields = requireComputedConflict(board, receipt);
+  requireCurrentConflict(board, fields);
+  return fields;
 }
