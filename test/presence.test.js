@@ -58,7 +58,11 @@ test('status and session hooks heartbeat the local seat without a shared board w
   const file = join(box.repo, '.git', 'pullboard', 'board.sqlite');
   const local = new DatabaseSync(`${file}.presence.sqlite`);
   t.after(() => local.close());
-  local.prepare('UPDATE heartbeat SET at=? WHERE seat=?').run('2000-01-01T00:00:00.000Z', 'web-1');
+  const boardId = local.prepare("ATTACH DATABASE ? AS native");
+  boardId.run(file);
+  const identity = local.prepare("SELECT meta_value FROM native.board_meta WHERE meta_key='board_id'").get().meta_value;
+  local.exec('DETACH DATABASE native');
+  local.prepare('UPDATE heartbeat SET at=? WHERE seat=?').run('2000-01-01T00:00:00.000Z', JSON.stringify([identity, 'web-1']));
   local.exec('CREATE TABLE writes(n INTEGER NOT NULL); INSERT INTO writes VALUES(0); CREATE TRIGGER count_heartbeat AFTER UPDATE ON heartbeat BEGIN UPDATE writes SET n=n+1; END');
   const board = store.openBoard(file);
   const events = board.db.prepare('SELECT COUNT(*) AS n FROM event').get().n;
@@ -68,7 +72,7 @@ test('status and session hooks heartbeat the local seat without a shared board w
   assert.equal(status.code, 0, status.err + status.out);
   const summary = JSON.parse(status.out);
   assert.equal(summary.agents.find(seat => seat.agent_id === 'web-1').presence, 'live');
-  assert.equal(local.prepare('SELECT n FROM writes').get().n, 1, 'one presence row update per read command');
+  assert.equal(local.prepare('SELECT n FROM writes').get().n, 1, 'one stale observation refresh while the shared board is write-locked');
   assert.equal(board.db.prepare('SELECT COUNT(*) AS n FROM event').get().n, events);
   const state = projectState(box.repo, { board });
   assert.equal(state.agents.find(seat => seat.agent_id === 'web-1').presence, 'live');
@@ -81,6 +85,7 @@ test('status and session hooks heartbeat the local seat without a shared board w
   const heartbeat = box.run(box.web, 'heartbeat', '--json');
   assert.equal(heartbeat.code, 0, heartbeat.err + heartbeat.out);
   assert.equal(JSON.parse(heartbeat.out).presence, 'live');
+  assert.equal(local.prepare('SELECT n FROM writes').get().n, 1, 'a separate CLI process in the same minute performs no additional heartbeat write');
 });
 
 
@@ -137,4 +142,33 @@ test('plain status counts large seat history and hides gone seats behind --all [
   assert.equal(summary.agents.length, 103, 'JSON may retain full history per outside1705');
   assert.equal(JSON_SHAPES.commands.heartbeat.required.seat, 'string|null');
   assert.equal(JSON_SHAPES.commands.heartbeat.required.heartbeatAt, 'string|null');
+});
+
+
+test('a local heartbeat persists once per minute and refreshes after clock rollback [B3,C7]', async (t) => {
+  const { heartbeatSeat } = await import('../src/seat-presence.js');
+  const { DatabaseSync } = await import('node:sqlite');
+  const root = mkdtempSync(join(tmpdir(), 'pullboard-presence-throttle-'));
+  let at = Date.parse('2026-10-24T12:00:00.000Z');
+  const file = join(root, 'board.sqlite');
+  const board = store.openBoard(file, { now: () => new Date(at) });
+  const id = store.register(board, { lane: 'core', path: join(root, 'seat') });
+  const local = new DatabaseSync(`${file}.presence.sqlite`);
+  t.after(() => { local.close(); store.closeBoard(board); rmSync(root, { recursive: true, force: true }); });
+  local.exec('CREATE TABLE writes(n INTEGER NOT NULL); INSERT INTO writes VALUES(0); CREATE TRIGGER count_update AFTER UPDATE ON heartbeat BEGIN UPDATE writes SET n=n+1; END');
+  const first = store.agentById(board, id).heartbeatAt;
+  at += 59_999;
+  assert.equal(heartbeatSeat(board, id), true);
+  assert.equal(store.agentById(board, id).heartbeatAt, first);
+  assert.equal(local.prepare('SELECT n FROM writes').get().n, 0, 'fresh activity needs no SQLite update');
+  at += 1;
+  assert.equal(heartbeatSeat(board, id), true);
+  assert.equal(store.agentById(board, id).heartbeatAt, new Date(at).toISOString());
+  assert.equal(local.prepare('SELECT n FROM writes').get().n, 1, 'the exact one-minute boundary refreshes once');
+  at -= 120_000;
+  assert.equal(heartbeatSeat(board, id), true);
+  assert.equal(store.agentById(board, id).heartbeatAt, new Date(at).toISOString(), 'a future persisted value cannot suppress observations after rollback');
+  assert.equal(local.prepare('SELECT n FROM writes').get().n, 2);
+  assert.equal(heartbeatSeat(board, id), true);
+  assert.equal(local.prepare('SELECT n FROM writes').get().n, 2, 'the rollback replacement is itself throttled');
 });
