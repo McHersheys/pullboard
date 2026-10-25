@@ -183,11 +183,13 @@ test('read commands never refresh presence while committed writes and hooks do [
   const added = box.run(box.repo, 'add', 'web', 'Read-only presence control', '--criterion', 'Keep the same item', '--check', 'true', '--json');
   assert.equal(added.code, 0, added.err + added.out);
   const id = JSON.parse(added.out).item.item_id;
+  const withdrawn = box.run(box.repo, 'withdraw', String(id), 'Private read-only presence control', '--json');
+  assert.equal(withdrawn.code, 0, withdrawn.err + withdrawn.out);
   const file = join(box.repo, '.git', 'pullboard', 'board.sqlite');
   const board = store.openBoard(file);
   const local = new DatabaseSync(`${file}.presence.sqlite`);
   t.after(() => { local.close(); store.closeBoard(board); });
-  board.db.prepare("UPDATE item SET item_status='withdrawn' WHERE item_id=?").run(id);
+  assert.equal(store.getItem(board, id).item_status, 'withdrawn', 'the real native move leaves no claimable item');
   const identity = board.db.prepare("SELECT meta_value FROM board_meta WHERE meta_key='board_id'").get().meta_value;
   const key = JSON.stringify([identity, 'web-1']);
   const stale = '2000-01-01T00:00:00.000Z';
