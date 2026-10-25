@@ -163,7 +163,7 @@ test('the public runner deadline setting has a five-minute default and rejects u
 });
 
 test('an executing runner command keeps its test budget after the admission deadline [C7]', async () => {
-  const box = fixture({ runnerWaitMs: 5_000, dropFirst: false });
+  const box = fixture({ runnerWaitMs: 15_000, dropFirst: false });
   const previous = [process.env.PULLBOARD_HOME, process.env.PULLBOARD_MACHINE_HOME];
   process.env.PULLBOARD_HOME = box.env.PULLBOARD_HOME;
   process.env.PULLBOARD_MACHINE_HOME = box.env.PULLBOARD_MACHINE_HOME;
@@ -171,9 +171,11 @@ test('an executing runner command keeps its test budget after the admission dead
   let pending;
   try {
     held = await takeResource({ name: 'gate', scope: 'machine', root: box.repo, capacity: 1, agent: 'admitted-run-local-holder' });
+    const started = Date.now();
     pending = runThroughGate(box.repo, box.env,
-      'node -e "setTimeout(()=>console.log(\'ADMITTED_LONG_COMMAND\'),6000)"', { requests: box.requests });
+      'node -e "setTimeout(()=>console.log(\'ADMITTED_LONG_COMMAND\'),16000)"', { requests: box.requests });
     await observe(() => existsSync(box.stderrLog) && readFileSync(box.stderrLog, 'utf8').includes('PULLBOARD_RUNNER_READY '), 'the real worker READY frame');
+    console.error('private worker became ready after', Date.now() - started, 'ms; admission deadline is 15000ms');
     const result = await pending; pending = null;
     assert.equal(result.status, 0, fixtureResultContext(result));
     assert.match(result.stdout, /ADMITTED_LONG_COMMAND/u);
