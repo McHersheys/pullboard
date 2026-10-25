@@ -18,7 +18,7 @@ export function cpuLoadFixture(e2e, { declaration = '{ cpuLoad: true }' } = {}) 
   for (const path of [bin, remoteMachineHome, join(box.repo, 'test')]) mkdirSync(path, { recursive: true });
   cpSync(join(SOURCE, 'src'), join(box.repo, 'src'), { recursive: true });
   cpSync(join(SOURCE, 'bin'), join(box.repo, 'bin'), { recursive: true });
-  writeFileSync(join(box.repo, 'package.json'), JSON.stringify({ name: 'cpu-placement-fixture', version: '1.0.0', type: 'module' }) + '\n');
+  writeFileSync(join(box.repo, 'package.json'), JSON.stringify({ name: 'pullboard', version: '1.0.0', type: 'module' }) + '\n');
   writeFileSync(join(box.repo, 'test', 'cpu-probe.test.js'), `import { test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 // Example text is not a declaration: { cpuLoad: true }
