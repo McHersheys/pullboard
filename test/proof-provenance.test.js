@@ -47,12 +47,17 @@ test('native receipts carry each child reported runtime instead of borrowing the
   t.after(helpers.cleanup);
   const box = helpers.project('true');
   const paths = [join(box.dir, 'first-runtime.json'), join(box.dir, 'second-runtime.json')];
-  const programs = paths.map(path => `require('node:fs').writeFileSync(${JSON.stringify(path)},JSON.stringify({pid:process.pid,node:process.versions.node,platform:process.platform,arch:process.arch}));`);
+  const programs = paths.map(path => `require('node:fs').writeFileSync(${JSON.stringify(path)},JSON.stringify({pid:process.pid,node:process.versions.node,platform:process.platform,arch:process.arch,argv:process.argv,execArgv:process.execArgv,nodeOptions:process.env.NODE_OPTIONS??''}));`);
   // Separate actual processes must remain distinct even when they happen to run the same Node version.
   // Approved MIN/current runner images have both versions; a single-runtime install still exercises two real children.
   const alternate = ['24.21.0', '22.13.1'].map(version => join(dirname(process.execPath), '..', '..', 'v' + version, 'bin', 'node'))
     .find(path => path !== process.execPath && existsSync(path)) ?? process.execPath;
   const executables = [process.execPath, alternate];
+  const bare = programs.map((program, index) => {
+    const result = runFixtureChild(executables[index], ['-e', program], { cwd: box.web, env: box.env, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.failure || result.stderr);
+    return JSON.parse(readFileSync(paths[index], 'utf8'));
+  });
   const command = programs.map((program, index) => `${JSON.stringify(executables[index])} -e ${JSON.stringify(program)}`).join(' && ');
   const board = store.openBoard(join(box.repo, '.git/pullboard/board.sqlite'));
   t.after(() => store.closeBoard(board));
@@ -67,8 +72,11 @@ test('native receipts carry each child reported runtime instead of borrowing the
   const [receipt] = JSON.parse(shown.out).proofReceipts;
   assert.ok(Array.isArray(receipt.testRuntimes), 'the receipt lists child reports, not only one worker environment');
   const actualChildren = [];
-  for (const path of paths) {
+  for (const [index, path] of paths.entries()) {
     const actual = JSON.parse(readFileSync(path, 'utf8'));
+    for (const field of ['argv', 'execArgv', 'nodeOptions']) {
+      assert.deepEqual(actual[field], bare[index][field], 'a receipted native child retains its caller ' + field);
+    }
     actualChildren.push(actual);
     const recorded = receipt.testRuntimes.find(runtime => runtime.pid === actual.pid);
     assert.ok(recorded, 'every actual command child has a self-reported receipt');
