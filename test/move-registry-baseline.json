@@ -62,7 +62,8 @@
     "recordJobRun",
     "takeCoordinator",
     "landingLeaseMove",
-    "recordPublishFinding"
+    "recordPublishFinding",
+    "requestCompanion"
   ],
   "itemIdFirstArgument": [
     "signBar",
@@ -137,6 +138,7 @@
     }
   ],
   "actors": {
+    "requestCompanion": [null, "first", null, null, null, null],
     "openHandoff": [
       null,
       "first",
@@ -6391,6 +6393,11 @@
     }
   ],
   "nextSteps": {
+    "COMPANION_PARENT": "name the parent item: pullboard companion <parent> <lane> \"<title>\" --key <key>",
+    "COMPANION_KEY": "supply a stable --key and reuse it for this same parent and target lane",
+    "COMPANION_LANE": "choose a different target lane; ordinary same-lane children use pullboard add --parent",
+    "COMPANION_CONTENT": "supply title, criterion and brief text and existing spec ids for the companion",
+    "COMPANION_RECORD": "restore a consistent board export so the companion request index matches its child",
     "BAD_VERDICT_WITHDRAW": "use --withdraw-verdict with a note, or report a conflict separately",
     "VERDICT_WITHDRAW_FORBIDDEN": "ask the accepting reviewer or coordinator to withdraw this verdict",
     "VERDICT_WITHDRAW_STATE": "refresh the item; withdraw only a current acceptance before landing",
