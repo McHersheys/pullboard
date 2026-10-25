@@ -1,13 +1,17 @@
 /** Local first: a linked board reads and moves locally whether or not the relay answers [H21,H5,H16]. */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { ACCESS_WINDOW_MS } from '../relay/auth.js';
+import * as store from '../src/board.js';
+import { captureBoardChanges } from '../src/board-capture.js';
 import { outboxGuardFile } from '../src/relay-outbox-guard.js';
+import { undoQueued } from '../src/relay-outbox-undo.js';
 import { runFixtureChildAsync, runFixtureGit } from './fixture-child.js';
 import { relayClientFixture, relayFixtureChild } from './relay-client-fixture.js';
 
@@ -295,4 +299,34 @@ test('a conflict found on sync is refused at replay with a code naming the winne
     const item = exported.document.tables.item.find(row => row.item_id === contested);
     assert.equal(item.item_owner, winner, 'both machines agree the first claim the relay ordered won');
   }
+});
+
+test('a queued move is taken back row for row, its item status and row counters included, so the relay\'s order replays onto the board it was made on [H21,H16]', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'pullboard-undo-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const board = store.openBoard(join(directory, 'board.sqlite'));
+  t.after(() => store.closeBoard(board));
+  store.ensureCoordinator(board, directory);
+  store.addItem(board, { by: 'coordinator', lane: 'app', title: 'Made before the outage' });
+  const tables = ['item', 'event', 'shout', 'agent', 'board_meta', 'sqlite_sequence'];
+  const image = () => JSON.stringify(tables.map(table => board.db.prepare(`SELECT * FROM ${table}`).all()));
+  /** Make one move the way a local-first move is made: counters noted, rows captured. */
+  const queue = async (move) => {
+    const sequences = board.db.prepare('SELECT name, seq FROM sqlite_sequence ORDER BY name').all().map(row => ({ ...row }));
+    const { changes } = await captureBoardChanges(move);
+    return { sequences, changes: changes.map(change => Buffer.from(change).toString('base64')) };
+  };
+  const ordered = image();
+  const queued = [
+    await queue(() => store.addItem(board, { by: 'coordinator', lane: 'app', title: 'Added ahead of the relay' })),
+    await queue(() => store.shout(board, { from: 'coordinator', to: 'all', text: 'said ahead of the relay', lanes: ['app'] })),
+    await queue(() => store.withdraw(board, 1, { agentId: 'coordinator', reason: 'withdrawn ahead of the relay' })),
+  ];
+  assert.notEqual(image(), ordered, 'the moves show on the board at once');
+  assert.equal(undoQueued(board, queued), null, 'every queued move is taken back');
+  assert.equal(image(), ordered, 'the board is exactly as the relay last ordered it, counters included');
+  assert.equal(store.addItem(board, { by: 'coordinator', lane: 'app', title: 'Another machine\'s add' }), 2, 'the next number is the one the relay order gives');
+  assert.equal(board.db.prepare("SELECT item_status FROM item WHERE item_id = 1").get().item_status, 'open', 'the withdrawn item is open again until its move replays');
+  assert.ok(board.db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'machine_%'").get().n > 0, 'the board keeps its lifecycle triggers');
+  assert.throws(() => board.db.exec("DELETE FROM event"), /APPEND_ONLY/u, 'events are append-only again after the undo');
 });
