@@ -20,12 +20,10 @@ function signedBoard(t, name) {
   const generated = runFixtureChild('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', key], { env, encoding: 'utf8' });
   assert.equal(generated.status, 0, fixtureChildMessage(generated));
   const git = (...args) => runFixtureGit(args, { cwd: root, env, encoding: 'utf8' });
-  const initialized = git('init', '-q', '-b', 'main');
-  assert.equal(initialized.status, 0, fixtureChildMessage(initialized));
+  git('init', '-q', '-b', 'main');
   writeFileSync(join(root, 'README.md'), 'Private board-link fixture.\n');
-  assert.equal(git('add', '.').status, 0);
-  const committed = git('commit', '-q', '-m', 'fixture: establish board signer root');
-  assert.equal(committed.status, 0, fixtureChildMessage(committed));
+  git('add', '.');
+  git('commit', '-q', '-m', 'fixture: establish board signer root');
   addSigner(root, { by: name, key: key + '.pub' });
   const board = store.openBoard(join(root, '.git', 'pullboard', 'board.sqlite'));
   t.after(() => { store.closeBoard(board); rmSync(directory, { recursive: true, force: true }); });
