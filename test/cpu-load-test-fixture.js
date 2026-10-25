@@ -55,6 +55,7 @@ test('declared load stand-in', ${declaration}, () => {
       const result = await awaitNestedRun(runFixtureChildAsync(process.execPath, [cli, 'gate', '--landing', '--json'],
         { cwd: box.repo, env, encoding: 'utf8' }));
       const log = readFileSync(join(box.repo, '.git', 'pullboard-gate.log'), 'utf8');
+      if (result.status !== 0) console.error('CPU placement gate output:', result.stdout, '\nGate log:', log);
       const match = /^# CPU_LOAD_EXECUTOR (.+)$/mu.exec(log);
       return { result, log, executor: match ? JSON.parse(match[1]) : null };
     },
