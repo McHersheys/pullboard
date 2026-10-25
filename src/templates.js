@@ -156,6 +156,8 @@ If your item needs code another lane owns and it is not there yet, shout that la
 
 **Listen.** Where your client can run a command in the background, run \`pullboard watch --to <your id>\` there: it prints one line per event as it happens, and Claude Code wakes on each line when it runs under the Monitor tool. \`pullboard watch --work <lane>\` also says when an item in your lane becomes claimable, a review has waited too long, or main moves. Where your client cannot, read \`pullboard inbox\` at session start, after submit and before ending a turn. Coordinator answers and sentinel findings arrive there either way.
 
+**Presence.** Session hooks run \`pullboard heartbeat\` to record local activity; keep them installed so live, idle and gone reflect your session.
+
 **Never.** Bypass a hook with \`--no-verify\`, or get past a refusal with filler text: fix what it names. Edit the board's database. Verify your own work. Change an approved spec row without the person's OK. Delete or renumber a spec row. Act from the main checkout; it is the coordinator's. Count a yes relayed by another agent as the person's approval.
 
 ## Helping the person
