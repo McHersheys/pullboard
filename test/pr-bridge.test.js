@@ -4,6 +4,7 @@ import {
   readFileSync,
   chmodSync,
   existsSync,
+  mkdirSync,
   writeFileSync,
   rmSync,
 } from 'node:fs';
@@ -281,7 +282,7 @@ test('publication findings replay deterministically and ordinary closed-parent g
 
 
 test('one publish pass computes pull request coverage once with bounded git calls [B3,R3]', async t => {
-  const box = bridgeProject(t);
+  const box = bridgeProject(t, 'item');
   landBridgeItems(box, { independent: true });
   const head = box.git(box.repo, 'rev-parse', 'main');
   const commits = box.git(box.repo, 'rev-list', `${box.published}..${head}`).split('\n').filter(Boolean);
@@ -293,8 +294,10 @@ test('one publish pass computes pull request coverage once with bounded git call
     setStatus: (sha, value) => statuses.push({ sha, ...value }) };
   const realGit = process.env.PATH.split(delimiter).map(directory => join(directory || '.', 'git')).find(existsSync);
   assert.ok(realGit);
-  const trace = join(box.dir, 'proof-git-calls.log'), shim = join(box.dir, 'bin', 'git');
-  writeFileSync(shim, '#!/bin/sh\nprintf "git\\n" >> "$PB_PROOF_GIT_CALLS"\nexec "$PB_PROOF_REAL_GIT" "$@"\n');
+  const trace = join(box.dir, 'proof-git-calls.log'), traceBin = join(box.dir, 'proof-bin');
+  mkdirSync(traceBin);
+  const shim = join(traceBin, 'git');
+  writeFileSync(shim, `#!/bin/sh\nprintf '%s\\n' "$*" >> "$PB_PROOF_GIT_CALLS"\nexec "$PB_PROOF_REAL_GIT" "$@"\n`);
   chmodSync(shim, 0o755);
   const before = { PATH: process.env.PATH, PB_PROOF_GIT_CALLS: process.env.PB_PROOF_GIT_CALLS,
     PB_PROOF_REAL_GIT: process.env.PB_PROOF_REAL_GIT };
@@ -305,7 +308,7 @@ test('one publish pass computes pull request coverage once with bounded git call
     prepare(sql) { if (/^SELECT \* FROM item WHERE/u.test(sql)) itemReads += 1; return board.db.prepare(sql); },
   } };
   try {
-    process.env.PATH = join(box.dir, 'bin') + delimiter + before.PATH;
+    process.env.PATH = traceBin + delimiter + before.PATH;
     process.env.PB_PROOF_GIT_CALLS = trace; process.env.PB_PROOF_REAL_GIT = realGit;
     const results = await withGitFacts(() => publishVerificationStatuses({ root: box.repo, board: observed,
       client, state, repository: 'fixture/repository', trustedHead: head }));
@@ -314,6 +317,38 @@ test('one publish pass computes pull request coverage once with bounded git call
     const calls = readFileSync(trace, 'utf8').trim().split('\n').filter(Boolean).length;
     assert.equal(itemReads, 1, 'one native item/receipt cohort serves all open pull requests');
     assert.ok(calls <= 6, `coverage uses a bounded graph read, observed ${calls} Git processes`);
+    const added = box.run(box.repo, 'add', 'web', 'larger proof cohort', '--specs', 'G1',
+      '--criterion', 'another accepted native contribution', '--check', 'test ! -f RED', '--json');
+    assert.equal(added.code, 0, added.err);
+    landBridgeRepair(box, JSON.parse(added.out).item.item_id, 'web/three.js', { independent: true });
+    const largerHead = box.git(box.repo, 'rev-parse', 'main');
+    const largerCommits = box.git(box.repo, 'rev-list', `${box.published}..${largerHead}`).split('\n').filter(Boolean);
+    for (const pull of pulls) { pull.head.sha = largerHead; pull.commits = largerCommits.length; }
+    for (const proposal of state.proposals) proposal.head = largerHead;
+    client.commits = () => largerCommits.map(sha => ({ sha }));
+    writeFileSync(trace, ''); itemReads = 0;
+    const larger = await withGitFacts(() => publishVerificationStatuses({ root: box.repo, board: observed,
+      client, state, repository: 'fixture/repository', trustedHead: largerHead }));
+    assert.ok(larger.every(result => result.state === 'success'), JSON.stringify(larger));
+    assert.equal(itemReads, 1);
+    const largerCalls = readFileSync(trace, 'utf8').trim().split('\n').filter(Boolean).length;
+    assert.ok(largerCalls <= calls, 'adding a native accepted item cannot add per-item Git processes');
+
+    const provider = await bridgeProvider(t, box);
+    const priorEnv = box.env;
+    box.env = { ...priorEnv, PATH: traceBin + delimiter + priorEnv.PATH,
+      PB_PROOF_GIT_CALLS: trace, PB_PROOF_REAL_GIT: realGit };
+    writeFileSync(trace, '');
+    try {
+      const published = await runBridgeCLI(box, 'publish', '--json');
+      assert.equal(published.code, 0, published.err + published.out);
+      assert.equal(provider.pulls.length, 3, 'the real publish pass creates three isolated proposals');
+      assert.equal(JSON.parse(published.out).verification.length, 3, 'final statuses include all newly created proposals');
+      const walks = readFileSync(trace, 'utf8').split('\n').filter(line =>
+        line.includes('log --no-decorate') && line.includes('trailers:key=Pullboard-Companion'));
+      assert.equal(walks.length, 1, 'publication performs one shared proof walk after composing all proposals');
+    } finally { box.env = priorEnv; }
+
   } finally {
     store.closeBoard(board);
     for (const [key, value] of Object.entries(before)) {
