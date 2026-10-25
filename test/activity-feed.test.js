@@ -390,7 +390,10 @@ test('interrupts arrive at once and the digest arrives as a short summary at a b
     policy: 'any', familyPolicy: 'off', reopenFirstRefusalMinutes: 30,
     review: { commit, head: commit, trunk: base, paths: ['web/interrupt.txt'] } });
   const active = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'Private lapsing work',
-    brief: 'Files: web/interrupt.txt\nTest: preserve the private fixture\n' });
+    criterion: 'The private break file is committed.', brief: 'Files: web/interrupt.txt\nTest: preserve the private fixture\n' });
+  const nativeClaim = box.run(box.web, 'claim', String(active), '--json');
+  assert.equal(nativeClaim.code, 0, `${nativeClaim.err}\n${nativeClaim.out}`);
+  // Shorten only this real native claim's lease; its actual frozen criterion remains unchanged.
   store.claim(board, active, { agentId: 'web-1', lane: 'web', leaseMs: 4 * 60_000, head: base, freeze });
   const question = store.shout(board, { from: 'web-1', to: 'coordinator', text: 'Which private path?', decision: true, lanes: ['web', 'api'] });
   store.answerDecision(board, question, { agentId: 'coordinator', text: 'Use the private reviewed path.', lanes: ['web', 'api'] });
@@ -437,7 +440,7 @@ test('interrupts arrive at once and the digest arrives as a short summary at a b
   assert.deepEqual(JSON.parse(beforeBreak.out).activity.digests, [], 'new digest activity waits for a natural break');
   assert.equal(e2e.commitFile(box, box.web, 'web/after-break.txt', 'private submit break\n', 'feat(web): submit break [G1]').status, 0);
   const submitted = box.run(box.web, 'submit', String(active), '--json');
-  assert.equal(submitted.code, 0, submitted.err || submitted.out);
+  assert.equal(submitted.code, 0, `${submitted.err}\n${submitted.out}`);
   const summary = JSON.parse(submitted.out).activity;
   assert.ok(summary.digests.length, 'the actual successful submit delivers the pending short digest');
   assert.equal(JSON.stringify(summary.digests).includes('SECOND_PRIVATE_RAW_STATUS_BODY'), false);
