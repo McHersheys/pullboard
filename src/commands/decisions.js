@@ -4,6 +4,7 @@ import * as store from '../board.js';
 import {
   projectPersonDecisions,
   projectSiblings,
+  repoLabels,
 } from '../project-decisions.js';
 import {
   agentDisplayName,
@@ -22,12 +23,15 @@ import {
  */
 export function run(io, { values }) {
   const ctx = context(io);
-  const siblings = projectSiblings(ctx.info.root, ctx.config);
+  const self = { root: ctx.info.root, name: ctx.config.name ?? basename(ctx.info.root) };
+  const found = projectSiblings(ctx.info.root, ctx.config);
+  const labels = repoLabels(self, found);
+  const siblings = found.map((entry) => ({ ...entry, label: labels.get(entry.root) }));
   const { asks, agents, project, asPerson } = withBoardRead(ctx, (board) => {
     const me = whoAmI(ctx, board);
     const asPerson = personMode(ctx, me, values);
     if (asPerson && siblings.length) {
-      return { project: projectPersonDecisions(ctx.info.root, ctx.config.name ?? basename(ctx.info.root), board, siblings), asPerson };
+      return { project: projectPersonDecisions(ctx.info.root, labels.get(self.root), board, siblings), asPerson };
     }
     return { asks: store.openDecisions(board, asPerson ? 'person' : [me.id, me.lane]), agents: store.listAgents(board), asPerson };
   });

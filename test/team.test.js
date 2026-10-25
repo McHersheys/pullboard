@@ -938,3 +938,22 @@ test("one decision list across a project's repos [N34]", { timeout: 180_000 }, a
   assert.notEqual(unknown.code, 0);
   assert.match(unknown.err, /PROJECT_REPO_UNKNOWN/);
 });
+
+test('two repos of a project that share a name are addressed by folder, never guessed [N34]', { timeout: 120_000 }, () => { // budget: hang ceiling for two real repos' CLI runs; not a speed target.
+  const box = helpers.project();
+  const other = siblingRepo(box, 'repo-twin').repo;
+  nameRepo(box, box.repo, 'twin', 'shop');
+  nameRepo(box, other, 'twin', 'shop');
+  const ask = (root, text) => Number(/as #(\d+)/.exec(box.run(root, 'shout', 'person', text, '--decision').out)?.[1]);
+  ask(box.repo, 'Ship first?');
+  const secondId = ask(other, 'Ship second?');
+  const listed = JSON.parse(box.run(box.repo, 'decisions', '--as', 'person', '--json').out).decisions.map(({ repo }) => repo).sort();
+  assert.deepEqual(listed, ['repo', 'repo-twin']);
+  const guessed = box.run(box.repo, 'answer', `twin#${secondId}`, 'yes', '--as', 'person');
+  assert.notEqual(guessed.code, 0);
+  assert.match(guessed.err, /PROJECT_REPO_AMBIGUOUS/);
+  assert.equal(withBoard(other, board => store.openDecisions(board, store.PERSON)).length, 1, 'nothing closed on either board');
+  assert.equal(box.run(box.repo, 'answer', `repo-twin#${secondId}`, 'yes', '--as', 'person').code, 0);
+  assert.deepEqual(withBoard(other, board => store.openDecisions(board, store.PERSON)), []);
+  assert.equal(withBoard(box.repo, board => store.openDecisions(board, store.PERSON)).length, 1, 'the same-numbered question here stays open');
+});

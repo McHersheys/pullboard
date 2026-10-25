@@ -3,7 +3,7 @@ import { basename } from 'node:path';
 import * as store from '../board.js';
 import {
   projectSiblings,
-  resolveSibling,
+  resolveRepo,
 } from '../project-decisions.js';
 import {
   parseImplies,
@@ -29,10 +29,10 @@ export async function run(io, { first, second, rest, values }) {
   if (reference) {
     // repo#id names a decision on another repo of this project; the answer runs on that repo's own board [N34].
     const ctx = context(io);
-    const here = ctx.config.name ?? basename(ctx.info.root);
-    if (reference[1] !== here) {
-      const sibling = resolveSibling(reference[1], projectSiblings(ctx.info.root, ctx.config));
-      const there = Object.create(io, { cwd: { value: sibling.root } });
+    const self = { root: ctx.info.root, name: ctx.config.name ?? basename(ctx.info.root) };
+    const target = resolveRepo(reference[1], self, projectSiblings(ctx.info.root, ctx.config));
+    if (target.root !== self.root) {
+      const there = Object.create(io, { cwd: { value: target.root } });
       return run(there, { first: reference[2], second, rest, values });
     }
     return run(io, { first: reference[2], second, rest, values });
