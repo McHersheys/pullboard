@@ -47,8 +47,9 @@ test('native receipts carry each child reported runtime instead of borrowing the
   const helpers = createE2eHelpers();
   t.after(helpers.cleanup);
   const box = helpers.project('true');
+  box.env.NODE_OPTIONS = '';
   const paths = [join(box.dir, 'first-runtime.json'), join(box.dir, 'second-runtime.json')];
-  const programs = paths.map(path => `require('node:fs').writeFileSync(${JSON.stringify(path)},JSON.stringify({pid:process.pid,node:process.versions.node,platform:process.platform,arch:process.arch,argv:process.argv,execArgv:process.execArgv,nodeOptions:process.env.NODE_OPTIONS??''}));`);
+  const programs = paths.map(path => `require('node:fs').writeFileSync(${JSON.stringify(path)},JSON.stringify({pid:process.pid,node:process.versions.node,platform:process.platform,arch:process.arch,argv:process.argv,execArgv:process.execArgv,nodeOptions:process.env.NODE_OPTIONS??'',hasNodeOptions:Object.hasOwn(process.env,'NODE_OPTIONS')}));`);
   // Separate actual processes must remain distinct even when they happen to run the same Node version.
   // Approved MIN/current runner images have both versions; a single-runtime install still exercises two real children.
   const alternate = ['24.21.0', '22.13.1'].map(version => join(dirname(process.execPath), '..', '..', 'v' + version, 'bin', 'node'))
@@ -75,7 +76,7 @@ test('native receipts carry each child reported runtime instead of borrowing the
   const actualChildren = [];
   for (const [index, path] of paths.entries()) {
     const actual = JSON.parse(readFileSync(path, 'utf8'));
-    for (const field of ['argv', 'execArgv', 'nodeOptions']) {
+    for (const field of ['argv', 'execArgv', 'nodeOptions', 'hasNodeOptions']) {
       assert.deepEqual(actual[field], bare[index][field], 'a receipted native child retains its caller ' + field);
     }
     actualChildren.push(actual);
@@ -87,6 +88,23 @@ test('native receipts carry each child reported runtime instead of borrowing the
   const versions = new Set(actualChildren.map(child => child.node));
   t.diagnostic('actual child Node versions: ' + [...versions].join(', '));
   if (versions.size > 1) assert.equal(receipt.environment, null, 'a mixed actual run has no invented common Node version');
+});
+
+test('an unobserved custom nested Node child never borrows its launcher runtime [C7,H16]', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'pullboard-nested-runtime-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const actualPath = join(directory, 'child.json');
+  const alternate = ['24.21.0', '22.13.1'].map(version => join(dirname(process.execPath), '..', '..', 'v' + version, 'bin', 'node'))
+    .find(path => path !== process.execPath && existsSync(path)) ?? process.execPath;
+  const childProgram = `require('node:fs').writeFileSync(${JSON.stringify(actualPath)},JSON.stringify({pid:process.pid,node:process.versions.node}));`;
+  const launcher = `require('node:child_process').execFileSync(${JSON.stringify(alternate)},['-e',${JSON.stringify(childProgram)}]);`;
+  const capture = captureTestRuntimes(process.env);
+  t.after(() => capture.finish());
+  const result = runFixtureChild(process.execPath, ['-e', launcher], { env: capture.env, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.failure || result.stderr);
+  const actual = JSON.parse(readFileSync(actualPath, 'utf8'));
+  assert.equal(actual.node, alternate === process.execPath ? process.versions.node : alternate.split('/v').at(-1).split('/')[0]);
+  assert.equal(capture.finish(), null, 'unknown custom execution cannot inherit the launcher runtime');
 });
 
 test('runtime capture binds the admitted file to its closed actual worker [C7,H16]', t => {
@@ -108,6 +126,17 @@ test('runtime capture binds the admitted file to its closed actual worker [C7,H1
   assert.equal(children[0].file, 'test/runtime-child.test.js');
   assert.deepEqual(children[0].environment, { platform: process.platform, arch: process.arch, node: process.versions.node });
   assert.notEqual(children[0].pid, process.pid);
+  const outside = join(box.dir, 'external-runtime.test.js');
+  writeFileSync(outside, "require('node:test')('external selected worker [G1]',()=>{});\n");
+  const externalCapture = captureTestRuntimes(box.env);
+  t.after(() => externalCapture.finish());
+  const externalRun = runFixtureChild(process.execPath, [fileURLToPath(new URL('../bin/run-tests.js', import.meta.url)), outside],
+    { cwd: box.repo, env: externalCapture.env, encoding: 'utf8' });
+  assert.equal(externalRun.status, 0, externalRun.failure || externalRun.stderr || externalRun.stdout);
+  const external = externalCapture.finish();
+  assert.equal(external.length, 1, 'one closed admitted external worker excludes its launcher');
+  assert.equal(external[0].file, null, 'a selected external file has no invented relative checkout path');
+  assert.deepEqual(external[0].environment, { platform: process.platform, arch: process.arch, node: process.versions.node });
 });
 
 test('timed shell proof records the actual command child rather than the timeout worker [C7,H16]', t => {

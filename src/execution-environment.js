@@ -50,17 +50,31 @@ export function carriesLandingEnvironment(batch) {
 /** The exact trusted preload reports from inside each Node process, independently of its launcher. */
 export function runtimeCaptureSource(directory) {
   return `import { writeFileSync } from 'node:fs';
+import { channel } from 'node:diagnostics_channel';
 import { randomUUID } from 'node:crypto';
 const directory=${JSON.stringify(directory)};
 const file=directory+'/runtime-'+process.pid+'-'+randomUUID()+'.json';
+// Observe child identities without replacing spawn or changing any caller arguments/environment.
+channel('child_process').subscribe(({process:child})=>{
+  if (!child || typeof child.once!=='function') return;
+  const record=()=>{
+    if (!Number.isSafeInteger(child.pid) || child.pid<1) return;
+    try { writeFileSync(directory+'/child-'+process.pid+'-'+child.pid+'.json',JSON.stringify({parent:process.pid,pid:child.pid}),{flag:'wx',mode:0o400}); } catch {}
+  };
+  if (Number.isSafeInteger(child.pid)) record(); else child.once('spawn',record);
+});
 writeFileSync(file,JSON.stringify({pid:process.pid,environment:{platform:process.platform,arch:process.arch,node:process.version.slice(1)},file:null}),{flag:'wx',mode:0o400});
 // Node's --test parent only starts workers; retain capture until the actual test process boots.
 // User code sees its original NODE_OPTIONS, not this recorder's injected option.
 if (!process.execArgv.includes('--test')) {
   const token=${JSON.stringify('--import=' + pathToFileURL(join(directory, 'test-runtime-preload.mjs')).href)};
   const options=process.env.NODE_OPTIONS;
-  if (options===token) delete process.env.NODE_OPTIONS;
+  if (options===token) {
+    if (process.env.PULLBOARD_RUNTIME_EMPTY_OPTIONS==='1') process.env.NODE_OPTIONS='';
+    else delete process.env.NODE_OPTIONS;
+  }
   else if (options?.endsWith(' '+token)) process.env.NODE_OPTIONS=options.slice(0,-token.length-1);
+  delete process.env.PULLBOARD_RUNTIME_EMPTY_OPTIONS;
 }
 `;
 }
@@ -86,7 +100,9 @@ export function bindTestRuntime(pid, file) {
     if (!stat.isFile() || stat.mode & 0o222) return false;
     const own = JSON.parse(readFileSync(path, 'utf8'));
     if (own.pid !== pid || own.file !== null || environmentProblem(own.environment)) return false;
-    const bound = { pid, environment: own.environment, file: relative(process.cwd(), file).replaceAll('\\', '/') };
+    const selected = relative(process.cwd(), file).replaceAll('\\', '/');
+    // Accepted callers may select a real test outside the checkout; never invent an in-repo path for it.
+    const bound = { pid, environment: own.environment, file: selected.split('/').includes('..') ? null : selected };
     if (!testRuntimeRows([bound])) return false;
     writeFileSync(join(directory, 'binding-' + pid + '.json'), JSON.stringify({ pid, file: bound.file }), { flag: 'wx', mode: 0o600 });
     return true;
@@ -128,15 +144,18 @@ export function captureTestRuntimes(env) {
   let finished = false;
   return {
     env: { ...env, NODE_OPTIONS: [env.NODE_OPTIONS, '--import=' + pathToFileURL(preload).href].filter(Boolean).join(' '),
-      PULLBOARD_RUNTIME_CAPTURE_DIR: directory },
+      PULLBOARD_RUNTIME_CAPTURE_DIR: directory, PULLBOARD_RUNTIME_EMPTY_OPTIONS: env.NODE_OPTIONS === '' ? '1' : '0' },
     /** Read bounded child reports only after command close, then remove the private capture directory. */
     finish() {
       if (finished) return null;
       finished = true;
       try {
-        const names = readdirSync(directory).filter(name => /^runtime-[0-9]+-[a-f0-9-]+\.json$/u.test(name));
+        const entries = readdirSync(directory);
+        if (entries.length > 200_001) return null;
+        const names = entries.filter(name => /^runtime-[0-9]+-[a-f0-9-]+\.json$/u.test(name));
         if (names.length > 100_000) return null;
         const rows = [];
+        const boundPids = new Set();
         let bytes = 0;
         for (const name of names.sort()) {
           const file = join(directory, name);
@@ -152,13 +171,29 @@ export function captureTestRuntimes(env) {
             const bound = JSON.parse(readFileSync(binding, 'utf8'));
             if (Object.keys(bound).sort().join(',') !== 'file,pid' || bound.pid !== row.pid) return null;
             row.file = bound.file;
+            boundPids.add(row.pid);
           } catch (error) { if (error.code !== 'ENOENT') return null; }
           rows.push(row);
         }
         const checked = testRuntimeRows(rows);
         if (!checked) return null;
-        const files = checked.filter(row => row.file !== null);
-        return files.length ? files : checked;
+        const files = checked.filter(row => boundPids.has(row.pid));
+        if (files.length) return files;
+        const reported = new Set(checked.map(row => row.pid));
+        const launchers = new Set();
+        for (const name of entries.filter(name => /^child-[0-9]+-[0-9]+\.json$/u.test(name))) {
+          const path = join(directory, name);
+          const stat = lstatSync(path);
+          bytes += stat.size;
+          if (!stat.isFile() || stat.mode & 0o222 || stat.size > 8192 || bytes > 8 * 1024 * 1024) return null;
+          const child = JSON.parse(readFileSync(path, 'utf8'));
+          if (Object.keys(child).sort().join(',') !== 'parent,pid' || !Number.isSafeInteger(child.parent) || child.parent < 1
+            || !Number.isSafeInteger(child.pid) || child.pid < 1 || name !== 'child-' + child.parent + '-' + child.pid + '.json') return null;
+          // An unbound launcher's own runtime cannot stand in for an unobserved custom descendant.
+          if (reported.has(child.parent) && !reported.has(child.pid)) return null;
+          launchers.add(child.parent);
+        }
+        return testRuntimeRows(checked.filter(row => !launchers.has(row.pid)));
       } catch { return null; /* Missing or incomplete self-reports stay unknown, never become the launcher runtime. */ }
       finally { rmSync(directory, { recursive: true, force: true }); }
     },
