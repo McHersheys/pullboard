@@ -111,6 +111,8 @@ import {
 import { terminalQr } from './qr.js';
 import { environmentLink } from './relay-environment.js';
 import { locked } from './relay-lock.js';
+import { withOutboxGuard } from './relay-outbox-guard.js';
+import { nudgeRelaySender } from './relay-local-first.js';
 import { checkpointPublisher } from './relay-checkpoint-publish.js';
 import {
   checkpointInBackground,
@@ -131,7 +133,10 @@ import {
   flushOutbox,
   outboxAhead,
   outboxFields,
+  outboxFile,
   outboxQueueable,
+  outboxWaiting,
+  readOutboxSummary,
   queueMove,
 } from './relay-outbox.js';
 import { stampCoordinatorHolder } from './coordinator-hold.js';
@@ -327,6 +332,10 @@ function loadLink(file) {
     saveLink(file, state);
   }
   STATE_FILES.set(state, file);
+  // A move queues itself without the relay lock, so the outbox summary lives in its own file (#1013).
+  const waiting = readOutboxSummary(file);
+  if (waiting) state.outbox = waiting;
+  else if (!existsSync(outboxFile(file))) delete state.outbox;
   return state;
 }
 
@@ -336,7 +345,8 @@ export function saveLink(file, state) {
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   const temporary = file + '.' + randomUUID() + '.tmp';
   try {
-    writeFileSync(temporary, JSON.stringify(state) + '\n', { flag: 'wx', mode: 0o600 });
+    // The outbox summary is the outbox's own file; a link saved by the sender never overwrites a move's (#1013).
+    writeFileSync(temporary, JSON.stringify({ ...state, outbox: undefined }) + '\n', { flag: 'wx', mode: 0o600 });
     renameSync(temporary, file);
   } finally { rmSync(temporary, { force: true }); }
 }
@@ -961,29 +971,63 @@ function reportRecoveredReply(record, io) {
   delete record.lostReply;
 }
 
+/** Apply authenticated relay records in order, each in its own board transaction with a durable receipt. */
+async function applyRecords(root, key, state, records) {
+  const outcomes = [];
+  for (const record of records) {
+    const board = store.openBoard(join(repoInfo(root).commonDir, 'pullboard', 'board.sqlite'), undefined, { isMain: codeIsFromMain() });
+    try { outcomes.push(await replayRelayRecord(board, key, state, record)); } finally { store.closeBoard(board); }
+  }
+  return outcomes;
+}
+
+/** Read and authenticate the relay's checkpoint without touching the board; the caller restores it. */
+async function fetchCheckpoint(state, io, key) {
+  const document = await request(state, '/api/v1/boards/' + state.board + '/state', {}, io);
+  const snapshot = document.state;
+  if (!snapshot || !Number.isSafeInteger(snapshot.sequence) || snapshot.sequence < 0) throw new Refused('RELAY_RESPONSE', 'the relay snapshot has no valid coverage sequence; fetch it again');
+  const senderProblem = relaySenderProblem(null, snapshot.sender, 'snapshot');
+  if (senderProblem) throw senderProblem;
+  return { native: await decoded(key, snapshot, state, 'snapshot', snapshot.sequence), sequence: snapshot.sequence };
+}
+
+/** Most catch-up passes one command makes when moves keep queuing on this machine meanwhile. */
+const CATCH_UP_PASSES = 10;
+
 /** Apply a validated relay prefix with durable, transaction-bound receipts on this replica. */
-async function catchUp(root, file, state, io) {
-  // Queued moves sit on top of this board until the outbox replays; another machine's moves must not land under them.
-  if (outboxAhead(state)) throw new Refused('RELAY_OUTBOX_PENDING', 'this machine holds moves the relay has not ordered yet; run pullboard status to send them first');
+async function catchUp(root, file, state, io, pass = 0) {
+  if (pass >= CATCH_UP_PASSES) throw new Refused('RELAY_BUSY', 'moves kept queuing on this machine while it caught up; they stay queued for the next send');
+  // Queued moves sit on top of this board: the outbox rebuilds it from the relay's order with them on top (#1013).
+  if (outboxAhead(state) || outboxWaiting(file)) await flushOutbox(outboxLink(root, file, state, io));
   const key = readBoardKey(state.board);
   const after = localRecords(root, appliedSequence);
   let remote;
   try { remote = await request(state, '/api/v1/boards/' + state.board + '/events?after=' + after, {}, io); }
   catch (error) {
     if (error.code !== 'SNAPSHOT_REQUIRED') throw error;
-    await restoreCheckpoint(root, state, io, key);
+    const checkpoint = await fetchCheckpoint(state, io, key);
+    const restored = await withOutboxGuard(file, () => {
+      if (outboxWaiting(file)) return false;
+      localRecords(root, (board) => restoreRelaySnapshot(board, checkpoint.native, checkpoint.sequence));
+      return true;
+    });
+    if (!restored) return catchUp(root, file, state, io, pass + 1);
     if (localRecords(root, appliedSequence) <= after) throw new Refused('RELAY_RESPONSE', 'the relay checkpoint did not advance the missing prefix; fetch a consistent newer snapshot');
-    return catchUp(root, file, state, io);
+    return catchUp(root, file, state, io, pass);
   }
   if ([remote.warning, ...(remote.warnings ?? [])].some((warning) => warning?.code === 'KEY_REQUESTS')) io.keyRequestsWaiting = true;
   if (!Array.isArray(remote.events) || remote.events.some((record, index) => !record || record.event_id !== after + index + 1 || !['move', 'request'].includes(record.kind) || typeof record.sealed !== 'string')) {
     throw new Refused('RELAY_RESPONSE', 'the relay returned an invalid ordered prefix; fetch a consistent relay snapshot');
   }
+  // Another machine's moves land only on a board with nothing queued on top; a move may have queued meanwhile.
+  const outcomes = await withOutboxGuard(file, async () => {
+    if (outboxWaiting(file) || localRecords(root, appliedSequence) !== after) return null;
+    return applyRecords(root, key, state, remote.events);
+  });
+  if (!outcomes) return catchUp(root, file, state, io, pass + 1);
   let pendingRefusal;
-  for (const record of remote.events) {
-    const board = store.openBoard(join(repoInfo(root).commonDir, 'pullboard', 'board.sqlite'), undefined, { isMain: codeIsFromMain() });
-    let outcome;
-    try { outcome = await replayRelayRecord(board, key, state, record); } finally { store.closeBoard(board); }
+  remote.events.forEach((record, index) => {
+    const outcome = outcomes[index];
     // Exact ciphertext identifies an interrupted send even when its document was refused before replay.
     if (record.kind === 'move' && state.pending?.move && record.event_id === state.pending.sequence
         && record.sealed === state.pending.sealed && outcome?.error
@@ -993,7 +1037,7 @@ async function catchUp(root, file, state, io) {
       delete state.pending;
       delete state.recovered;
     }
-  }
+  });
   state.sequence = localRecords(root, appliedSequence);
   if (state.pending?.move && localRecords(root, (board) => engineReceipt(board, state.pending.move.id))) {
     reportRecoveredReply(state.pending, io);
@@ -1004,11 +1048,14 @@ async function catchUp(root, file, state, io) {
   if (pendingRefusal) throw refusalFromReceipt(pendingRefusal);
 }
 
-/** Finish a durable executable send; a collision reseals its unchanged id after applying the winner. */
-async function sendPending(root, file, state, io) {
+/**
+ * Post one sealed move to the relay as its actor, renewing an expired seat token once and taking the next free seat
+ * name for a registration the relay already gave out. Network only: it applies nothing, so the outbox can send a
+ * move while this machine's board still shows its queued moves on top (#1013).
+ */
+async function postPending(root, file, state, pending, io) {
   let renewedAgentToken = false;
-  for (let tries = 0; state.pending && tries < 100; tries += 1) {
-    const pending = state.pending;
+  for (let tries = 0; tries < 100; tries += 1) {
     const actor = credentialActor(pending.move);
     try {
       const transport = await actorTransport(root, file, state, actor, io);
@@ -1023,6 +1070,7 @@ async function sendPending(root, file, state, io) {
         // A retried registration returns the same issuance without a token; its creator reissues it on first use.
         if (enrollment.token !== undefined) cacheSeatToken(file, state, pending.registration.target, enrollment);
       }
+      return;
     } catch (error) {
       if (error.code === 'AUTH_REQUIRED' && !renewedAgentToken && actor !== 'machine' && actor !== 'person'
           && process.env.PULLBOARD_RELAY_TOKEN === undefined && state.agentTokens?.[actor]?.token) {
@@ -1045,6 +1093,17 @@ async function sendPending(root, file, state, io) {
         saveLink(file, state);
         continue;
       }
+      throw error;
+    }
+  }
+  throw new Refused('RELAY_BUSY', 'the relay kept refusing this seat name; retry this command after other clients finish');
+}
+
+/** Finish a durable executable send; a collision reseals its unchanged id after applying the winner. */
+async function sendPending(root, file, state, io) {
+  for (let tries = 0; state.pending && tries < 100; tries += 1) {
+    try { await postPending(root, file, state, state.pending, io); }
+    catch (error) {
       if (!['SEQUENCE_REPEAT', 'SEQUENCE_GAP'].includes(error.code)) throw error;
       await catchUp(root, file, state, io);
       if (state.pending) {
@@ -1103,12 +1162,48 @@ function keepMoveForLaterBaseline(file, state, error, io) {
 
 /** The relay transport the ordered outbox queues and replays through (#922). */
 function outboxLink(root, file, state, io) {
-  return { root, file, state, io, request, catchUp, sendPending, sealedRecord, localRecords, saveLink, safePauseCode, safePauseMessage };
+  return { root, file, state, io, request, sealedRecord, localRecords, saveLink, safePauseCode, safePauseMessage,
+    applyRecords, fetchCheckpoint: (key) => fetchCheckpoint(state, io, key), postPending };
+}
+
+/**
+ * The link a move may queue on and return at once (#1013), or null when it must reach the relay first: the board's
+ * relay.outbox is on and the relay accepted its baseline, and the move needs no relay answer to exist (a
+ * registration mints its token there, a person's request is the phone's, and landing authority needs real order).
+ */
+function localFirstLink(file, operation, args, io) {
+  let state;
+  try { state = loadLink(file); } catch { return null; }
+  if (!state || state.unlinking || state.recovery || state.mode !== 'ordered' || state.baselineAccepted !== true
+    || state.baselineConflict || state.baselinePause || state.baselineStale || state.environment) return null;
+  if (process.env.PULLBOARD_RELAY_TOKEN !== undefined || io?.personRequest || io?.personRequestMoveId) return null;
+  if (['register', 'ensureCoordinator', 'landingLeaseMove'].includes(operation) || args?.[0]?.landingFence !== undefined) return null;
+  if (credentialActor({ operation, args }) === 'person') return null;
+  try { if (io?.relayOutbox?.() !== true) return null; } catch { return null; }
+  return state;
+}
+
+/**
+ * Make a move on this machine at once and queue it for the relay (#1013): no network call and no relay lock, only
+ * the short outbox guard. The background sender sends it and rebuilds the board once the relay has ordered it.
+ */
+async function queueLocally(root, file, state, operation, args, io, command, applyLocally, onRecorded) {
+  const guarded = landingRelayCallbacks(operation, args, {
+    apply: () => typeof applyLocally === 'function' ? applyLocally() : localRecords(root, (board) => store[operation](board, ...args)),
+    queue: () => { throw new Refused('RELAY_OUTBOX', 'a local-first move queues itself; it is never queued twice'); },
+  });
+  const result = await withOutboxGuard(file, () => queueMove(outboxLink(root, file, state, io),
+    { operation, args, command, applyLocally: guarded.apply, quiet: true }));
+  onRecorded?.();
+  nudgeRelaySender(root, file);
+  return result;
 }
 
 /** Send one board operation before executing it locally, and report its canonical engine result. */
 export async function relayOperation(root, operation, args, io, command, applyLocally, onRecorded) {
   const file = linkFile(root);
+  const local = localFirstLink(file, operation, args, io);
+  if (local) return queueLocally(root, file, local, operation, args, io, command, applyLocally, onRecorded);
   return locked(file, async () => {
     const state = loadLink(file);
     const guarded = landingRelayCallbacks(operation, args, {
