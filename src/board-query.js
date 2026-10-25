@@ -254,11 +254,7 @@ export function laneHolds(board) {
   return board.db.prepare('SELECT * FROM hold ORDER BY hold_lane').all();
 }
 
-/** Current person decisions, including applied receipts, stored without checkout-dependent state. */
-export function rowDecisions(board) {
-  const row = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get('row_decisions');
-  return row ? JSON.parse(row.meta_value) : [];
-}
+export { rowDecisions } from './row-decisions-query.js';
 
 /** The board's recorded row drafts, oldest first, without loading its mutation engine. */
 export function rowDrafts(board) {
