@@ -2341,3 +2341,5 @@ export function approveOutside(board, id, options) { return applyOutsideApproval
 
 /** Tailored inbox activity is the same canonical read projection as other board queries. */
 export { agentActivity } from './board-query.js';
+
+export { recordRowVerification, rowVerifications } from './spec-verdicts.js';
