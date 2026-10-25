@@ -1,14 +1,20 @@
 {
   "name": "pullboard",
   "itemSizeBudget": 150,
-  "maintainers": ["olevicor@icloud.com"],
+  "maintainers": [
+    "olevicor@icloud.com"
+  ],
   "gate": "npm run gate",
   "affectedTests": "node bin/run-tests.js",
   "submitGate": "landing",
   "submitDeferAbove": 20,
   "landingShards": 6,
-  "submit": { "requireInfraNote": true },
-  "claim": { "reopenFirstRefusalMinutes": 30 },
+  "submit": {
+    "requireInfraNote": true
+  },
+  "claim": {
+    "reopenFirstRefusalMinutes": 30
+  },
   "submitInvariants": [
     "test/refusal-next-steps.test.js",
     "test/machine.test.js"
@@ -57,7 +63,11 @@
     }
   ],
   "spec": "SPEC.md",
-  "verify": { "policy": "any", "unrelatedTrunkMoves": true, "composeAtAdmission": true },
+  "verify": {
+    "policy": "any",
+    "unrelatedTrunkMoves": true,
+    "composeAtAdmission": true
+  },
   "lease": "2h",
   "lanes": {
     "core": {
@@ -73,7 +83,9 @@
         "docs/api.test.js",
         "docs/lifecycle.md",
         "docs/formats.md",
-        "docs/formats.test.js"
+        "docs/formats.test.js",
+        "docs/architecture.md",
+        "docs/architecture.test.js"
       ],
       "specs": [
         "B",
@@ -133,7 +145,10 @@
       "starts": "now"
     }
   },
-  "shared": ["test/chrome-fixture.js", "test/cockpit/fixture.js"],
+  "shared": [
+    "test/chrome-fixture.js",
+    "test/cockpit/fixture.js"
+  ],
   "commits": {
     "requireIds": [
       "feat",
@@ -146,5 +161,7 @@
   "flakes": {
     "rerun": true
   },
-  "relay": { "outbox": true }
+  "relay": {
+    "outbox": true
+  }
 }
