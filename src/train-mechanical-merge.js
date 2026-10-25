@@ -94,6 +94,11 @@ export function mergeMechanicalSources(path, ancestor, ours, theirs) {
 export function resolveMechanicalMerge(root, files) {
   const resolutions = [];
   for (const path of files) {
+    const index = spawnSync('git', ['--no-optional-locks', 'ls-files', '--stage', '-z', '--', path],
+      { cwd: root, env: cleanGitEnvironment(), encoding: 'utf8' });
+    const records = (index.stdout ?? '').split('\0').filter(Boolean);
+    const modes = records.map(record => /^(100644|100755) [a-f0-9]+ [123]\t/u.exec(record)?.[1]);
+    if (index.status !== 0 || records.length !== 3 || modes.some(mode => !mode || mode !== modes[0])) return null;
     const stages = [1, 2, 3].map(stage => spawnSync('git', ['--no-optional-locks', 'show', `:${stage}:${path}`],
       { cwd: root, env: cleanGitEnvironment(), encoding: 'utf8' }));
     if (stages.some(stage => stage.status !== 0)) return null;
