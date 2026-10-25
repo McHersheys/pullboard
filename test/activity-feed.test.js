@@ -428,7 +428,7 @@ test('interrupt receipts replay once and only their recipient can acknowledge de
   const payload = { agentId: 'web-1', through: event.event_id, interrupts: [interrupt] };
   const delivery = prepareEngineMove(source, 'recordActivityDelivery', [payload]);
   const at = new Date().toISOString();
-  assert.equal(relaySenderProblem(delivery, { kind: 'agent', agent: 'web-2' }, 'move')?.code, 'RELAY_ACTOR');
+  assert.equal(relaySenderProblem(delivery, { kind: 'agent', agent: 'web-2', userId: 'private-user' }, 'move')?.code, 'RELAY_SENDER_MISMATCH');
   const untouched = exportBoard(left);
   assert.throws(() => applyEngineMove(left, { ...delivery, engine: ACTIVITY_DELIVERY_ENGINE - 1 }, { sequence: 1, at }),
     error => error.code === 'RELAY_MOVE');
