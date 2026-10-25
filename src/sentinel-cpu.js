@@ -5,6 +5,7 @@ import { realpathSync } from 'node:fs';
 import { basename } from 'node:path';
 import { relative } from 'node:path';
 import { sep } from 'node:path';
+import { hostname } from 'node:os';
 
 /** Read bounded native utility output without arguments or environment supplied by a process. */
 function native(command, args) {
@@ -30,17 +31,22 @@ function canonical(path) {
   try { return realpathSync(path); } catch { return null; /* A disappearing process/worktree has no attributable cwd. */ }
 }
 /** Report only native cwd ownership revalidated against the same PID birth after the cwd observation. */
-export function agentCpuFindings(db, { platform = process.platform, run = native, readLink = readlinkSync } = {}) {
+export function agentCpuFindings(db, { platform = process.platform, run = native, readLink = readlinkSync, host = hostname() } = {}) {
   if (!['darwin', 'linux'].includes(platform)) return [];
+  const prefix = `AGENT_CPU:${encodeURIComponent(host)}:`;
+  const last = db.prepare("SELECT event_detail FROM event WHERE event_kind='health-scan' ORDER BY event_id DESC LIMIT 1").get();
+  const previous = last ? JSON.parse(last.event_detail).active : [];
+  const foreign = previous.filter(finding => finding.cause === 'AGENT_CPU' && !finding.key.startsWith(prefix))
+    .map(finding => ({ ...finding, owner: { who: finding.owner } }));
   const agents = db.prepare('SELECT agent_id, agent_path FROM agent WHERE agent_id != ?').all('coordinator')
     .map(agent => ({ ...agent, path: canonical(agent.agent_path) })).filter(agent => agent.path)
     .sort((left, right) => right.path.length - left.path.length);
-  if (!agents.length) return [];
+  if (!agents.length) return foreign;
   const format = ['pid=', 'time=', 'lstart=', 'comm='].flatMap(field => ['-o', field]);
   let candidates, confirmed, directories = new Map();
   try {
     candidates = rows(run('/bin/ps', ['-e', ...format]));
-    if (!candidates.length) return [];
+    if (!candidates.length) return foreign;
     if (platform === 'darwin') {
       const output = run('/usr/sbin/lsof', ['-b', '-a', '-d', 'cwd', '-p', candidates.map(row => row.pid).join(','), '-Fpn']);
       let pid;
@@ -56,17 +62,16 @@ export function agentCpuFindings(db, { platform = process.platform, run = native
     }
     confirmed = new Set(rows(run('/bin/ps', ['-p', candidates.map(row => row.pid).join(','), ...format])).map(row => `${row.pid}:${row.since}`));
   } catch { return null; /* Unavailable observations cannot establish that a previously seen process resolved. */ }
-  return candidates.flatMap(row => {
+  return [...foreign, ...candidates.flatMap(row => {
     const cwd = directories.get(row.pid);
     if (!cwd || !confirmed.has(`${row.pid}:${row.since}`)) return [];
     const agent = agents.find(agent => { const child = relative(agent.path, cwd); return !child || child !== '..' && !child.startsWith('..' + sep) && !child.startsWith(sep); });
     if (!agent) return [];
-    const key = `AGENT_CPU:${row.pid}:${row.since}`;
+    const key = `${prefix}${row.pid}:${row.since}`;
     // Durable prior alerts survive temporary observation gaps and observer restarts; PID birth prevents reuse collisions.
-    const last = db.prepare("SELECT event_detail FROM event WHERE event_kind='health-scan' ORDER BY event_id DESC LIMIT 1").get();
-    const active = last ? JSON.parse(last.event_detail).active.some(finding => finding.key === key) : false;
+    const active = previous.some(finding => finding.key === key);
     if (!active && db.prepare("SELECT 1 FROM event WHERE event_kind='health-failure' AND json_extract(event_detail,'$.key')=? LIMIT 1").get(key)) return [];
     return [{ key, cause: 'AGENT_CPU', item: null, subject: `pid ${row.pid}`, title: row.name, since: row.since,
       why: `${row.cpu.toFixed(2)} CPU minutes used in agent worktree ${agent.path}`, next: 'inspect the owning agent process before deciding whether to stop it', owner: { who: agent.agent_id } }];
-  });
+  })];
 }

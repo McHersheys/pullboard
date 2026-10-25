@@ -19,7 +19,7 @@ test('the sentinel names an agent process past 20 CPU minutes once [A6,H16]', as
   store.register(board, { lane: 'coordinator', path: root });
   const seat = store.register(board, { lane: 'core', path: work });
   t.after(() => { store.closeBoard(board); rmSync(directory, { recursive: true }); });
-  let birth = 'Mon Oct 19 12:00:00 2026', cpu = '21:30.00', cwd = work, present = true, unavailable = false;
+  let birth = 'Mon Oct 19 12:00:00 2026', cpu = '21:30.00', cwd = work, present = true, unavailable = false, host = 'host-a';
   const calls = [];
   const run = (command, args) => {
     calls.push([command, args]);
@@ -28,7 +28,7 @@ test('the sentinel names an agent process past 20 CPU minutes once [A6,H16]', as
     assert.equal(command, '/usr/sbin/lsof');
     return `p4321\nn${cwd}\n`;
   };
-  const observe = () => agentCpuFindings(board.db, { platform: 'darwin', run });
+  const observe = () => agentCpuFindings(board.db, { platform: 'darwin', run, host });
   const scan = () => {
     const observation = scanHealthSentinel(file, { root, config: {}, now: new Date(), cpu: observe });
     if (observation) store.recordHealthFindings(board, { agentId: 'coordinator', ...observation });
@@ -53,6 +53,14 @@ test('the sentinel names an agent process past 20 CPU minutes once [A6,H16]', as
   cpu = '1-00:00:01';
   assert.equal(observe()[0].why.includes('1440.02 CPU minutes'), true, 'day-form CPU time is parsed');
   assert.equal(agentCpuFindings(board.db, { platform: 'linux', run, readLink: path => { assert.equal(path, '/proc/4321/cwd'); return work; } })[0].cause, 'AGENT_CPU');
+  host = 'host-a'; scan();
+  const beforeHost = notices().length;
+  host = 'host-b'; scan();
+  assert.equal(notices().length, beforeHost + 1, 'equal PID and birth on another host is a different process');
+  const resolved = store.allShouts(board).filter(row => row.shout_text.startsWith('Resolved:') && row.shout_text.includes('AGENT_CPU')).length;
+  host = 'host-a'; scan(); host = 'host-b'; scan();
+  assert.equal(notices().length, beforeHost + 1, 'alternating hosts do not repeat each other’s alert');
+  assert.equal(store.allShouts(board).filter(row => row.shout_text.startsWith('Resolved:') && row.shout_text.includes('AGENT_CPU')).length, resolved, 'one host cannot resolve another host’s observation');
   assert.ok(calls.some(([command, args]) => command === '/bin/ps' && args.includes('time=')));
   assert.ok(calls.some(([command]) => command === '/usr/sbin/lsof'));
 });
