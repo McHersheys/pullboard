@@ -1,6 +1,7 @@
 import { AGENT_GRANT_ENGINE } from './agent-grant-engine.js';
 import * as computedConflictEvidence from './computed-conflict-receipt.js';
 import { reopenAuthority } from './reopen-authority.js';
+import * as activityDeliveryStore from './activity-delivery-store.js';
 import { requireFactKind } from './item-notes.js';
 import { activityNewsFlag } from './activity-news.js';
 import { migrateEventLogVersion } from './board-event-log-migrate.js';
@@ -247,6 +248,10 @@ import {
 } from './rigor-notices.js';
 import { RIGOR_NOTICE_ENGINE } from './rigor-source.js';
 import { RIGOR_AUTO_ENGINE } from './rigor-auto-engine.js';
+import {
+  milestoneRanks,
+  workOrderCompare,
+} from './work-order.js';
 import {
   deriveRigorCause,
   recordAutomaticRigorDrafts,
@@ -1134,8 +1139,9 @@ export function release(board, id, agentId, note = '') {
  * @param {{ agentId: string, commit: string, tree: string, files?: string[], policyCommit?: string, note?: string }} at - `files`: what the
  *   item's own commits changed since its claim; a rework adds to what the first attempt changed.
  */
-export function submit(board, id, { agentId, commit, tree, files = [], policyCommit = null, note, submissionProof: proof, infra = null }) {
+export function submit(board, id, { agentId, commit, tree, files = [], policyCommit = null, note, submissionProof: proof, submissionSize: size, infra = null }) {
   let recordedProof;
+  let recordedSize;
   if (note !== undefined && (typeof note !== 'string' || !note.trim() || /[\r\n\u2028\u2029]/u.test(note))) {
     throw new Refused('USAGE', 'a submission note, when present, is one nonempty line');
   }
@@ -1163,6 +1169,7 @@ export function submit(board, id, { agentId, commit, tree, files = [], policyCom
         treeStillDuringGate: null,
         submissionProofValid: () => {
           if ((board.executionEngineVersion ?? ENGINE_VERSION) >= SUBMISSION_PROOF_ENGINE) recordedProof = submissionProof(proof);
+          if ((board.executionEngineVersion ?? ENGINE_VERSION) >= FLOW_SIZE_ENGINE) recordedSize = submissionSize(size, commit);
           return null;
         },
         childrenDone: () => {
@@ -1203,6 +1210,7 @@ export function submit(board, id, { agentId, commit, tree, files = [], policyCom
       ...(criterionDigest ? { criterionDigest } : {}),
       ...(note === undefined ? {} : { note: note.trim() }),
       ...(recordedProof ? { submissionProof: recordedProof } : {}), ...(infra ? { infra } : {}),
+      ...(recordedSize ? { submissionSize: recordedSize } : {}),
     });
   });
 }
@@ -1885,28 +1893,16 @@ function postRigorNotices(board, trigger) {
 }
 
 
-/** Explicit item ranks belong to the same first unfinished milestone as its priority [N2,B13]. */
-function milestoneRanks(board, priority) {
-  if ((board.executionEngineVersion ?? ENGINE_VERSION) < MILESTONE_RANK_ENGINE) return () => 0;
-  const ranks = new Map();
-  for (const [index, milestone] of milestones(board).entries()) {
-    for (const [rank, id] of (milestone.order ?? []).entries()) {
-      if (milestone.items.includes(id) && priority({ item_id: id }) === index && !ranks.has(id)) ranks.set(id, rank);
-    }
-  }
-  return entry => ranks.get(entry.item_id) ?? Number.MAX_SAFE_INTEGER;
-}
-
-/** Make the shared build-queue comparator once: milestone, explicit rank, route, recent files, then oldest. */
-export function buildOrder(board, { warm = [], agentId, readiness = barReadyForOrder } = {}) {
-  const milestonePriority = milestonePriorities(board);
+/** Make the shared build-queue comparator once: milestone, explicit rank, then the self-ordered queue (#1017; older engines: route, recent files, oldest). */
+export function buildOrder(board, { warm = [], agentId, readiness = barReadyForOrder, tierFirst = false, priority } = {}) {
+  const milestonePriority = priority ?? milestonePriorities(board);
   const rank = milestoneRanks(board, milestonePriority);
   const recent = new Set(warm);
   const shared = (entry) => itemFiles(entry).filter((path) => recent.has(path)).length;
-  const fallback = (first, second) => milestonePriority(first) - milestonePriority(second)
+  const fallback = workOrderCompare(board, { priority: milestonePriority, rank, shared, tierFirst }) ?? ((first, second) => milestonePriority(first) - milestonePriority(second)
     || rank(first) - rank(second)
     || ROUTES.indexOf(second.item_route) - ROUTES.indexOf(first.item_route)
-    || shared(second) - shared(first) || first.item_id - second.item_id;
+    || shared(second) - shared(first) || first.item_id - second.item_id);
   return focusOrder(board, lineOrderEnabled(board) ? lineBuildOrder({ agentId, release: milestonePriority, rank, items: listItems(board, { all: true }), ready: item => readiness(board, item), fallback }) : fallback);
 }
 
@@ -1981,7 +1977,7 @@ export function nextFor(board, { agentId, lane, verify = false, policy = 'any', 
     const hold = laneHold(board, name);
     if (hold) { selectedLanes.delete(name); reasons.push(`${hold.hold_by} holds the ${name} lane: ${hold.hold_reason}`); }
   }
-  const compare = buildOrder(board, { warm, agentId });
+  const compare = buildOrder(board, { warm, agentId, tierFirst: true });
   const inFlight = listItems(board, { all: true });
   const recent = new Set(warm);
   const mainRed = new Set(priority);
@@ -2345,3 +2341,20 @@ export function approveOutside(board, id, options) { return applyOutsideApproval
 
 /** Tailored inbox activity is the same canonical read projection as other board queries. */
 export { agentActivity } from './board-query.js';
+
+/** Read recipient delivery state without mutating any cursor or receipt. */
+export function activityDeliveryState(board, agentId) {
+  return activityDeliveryStore.activityDeliveryState(board, agentId);
+}
+
+/** Record the exact interrupts included in an authenticated recipient response. */
+export function recordActivityDelivery(board, options) {
+  return activityDeliveryStore.recordActivityDelivery(board, options, { atomic, logEvent });
+}
+
+/** Record an explicit recipient acknowledgement separately from delivery. */
+export function actOnActivity(board, options) {
+  return activityDeliveryStore.actOnActivity(board, options, { atomic, logEvent });
+}
+import { FLOW_SIZE_ENGINE } from './flow-size-engine.js';
+import { submissionSize } from './submission-size.js';
