@@ -872,10 +872,16 @@ function credentialMatches(candidate, expected) {
   return candidate.length === expected.length && timingSafeEqual(candidate, expected);
 }
 
+/** Accept only canonical dotted-decimal IPv4 literals, without DNS or alternate numeric forms. */
+function isLiteralIPv4(host) {
+  const octets = host.split('.');
+  return octets.length === 4 && octets.every(octet => /^(?:0|[1-9]\d{0,2})$/u.test(octet) && Number(octet) <= 255);
+}
+
 /** Share the local router with the person's view and other local transports; the standalone API explicitly denies person authority.
- * @param {{ secret: string | Buffer, getPort: () => number, runCommand: Function, projects?: () => any[], scope?: { projectRoot: string }, isMain?: boolean, allowedOrigins?: string[], onStateBuild?: Function, onItemBuild?: Function, personChannel?: string, stateDetail?: string, sessionCookie?: {name:string,value:string} }} [options]
+ * @param {{ secret: string | Buffer, getPort: () => number, runCommand: Function, projects?: () => any[], scope?: { projectRoot: string }, isMain?: boolean, allowedOrigins?: string[], allowedHosts?: string[], onStateBuild?: Function, onItemBuild?: Function, personChannel?: string, stateDetail?: string, sessionCookie?: {name:string,value:string} }} [options]
  */
-export function createLocalApiHandler({ secret, getPort, runCommand, projects = listApiProjects, scope, isMain, allowedOrigins = [], onStateBuild, onItemBuild, personChannel = 'view', stateDetail = 'full', sessionCookie } = {}) {
+export function createLocalApiHandler({ secret, getPort, runCommand, projects = listApiProjects, scope, isMain, allowedOrigins = [], allowedHosts = [], onStateBuild, onItemBuild, personChannel = 'view', stateDetail = 'full', sessionCookie } = {}) {
   if (typeof getPort !== 'function') throw new TypeError('createLocalApiHandler needs a bound-port getter');
   if (typeof runCommand !== 'function') throw new TypeError('createLocalApiHandler needs the actual CLI entry point as runCommand');
   // A page that still reads each item's detail from the state keeps full items until it opts in.
@@ -897,6 +903,11 @@ export function createLocalApiHandler({ secret, getPort, runCommand, projects = 
   const cookieName = sessionCookie?.name;
   const cookieKey = sessionCookie === undefined ? null : Buffer.from(sessionCookie.value);
   const permittedOrigins = new Set(allowedOrigins);
+  // A transport may name exact literal interface addresses; DNS names, ports and wildcards are not authority.
+  if (!Array.isArray(allowedHosts) || allowedHosts.some(host => typeof host !== 'string' || !isLiteralIPv4(host) || host === '0.0.0.0')) {
+    throw new TypeError('createLocalApiHandler allowedHosts needs literal IPv4 addresses, without ports or wildcard binds');
+  }
+  const permittedHosts = [...new Set(allowedHosts)];
   const stateCache = new Map();
   // Each board's item details by item id, and each board's spec-approval view (#1040).
   const detailCache = new Map();
@@ -1112,7 +1123,8 @@ export function createLocalApiHandler({ secret, getPort, runCommand, projects = 
       const authorization = String(req.headers.authorization ?? '');
       const given = Buffer.from(String(req.headers['x-pullboard-key'] ?? (authorization.startsWith('Bearer ') ? authorization.slice(7) : url.searchParams.get('k') ?? '')));
       const bound = getPort();
-      const ownHost = req.headers.host === ADDRESS + ':' + bound || req.headers.host === 'localhost:' + bound;
+      const ownHost = req.headers.host === ADDRESS + ':' + bound || req.headers.host === 'localhost:' + bound
+        || permittedHosts.some(host => req.headers.host === host + ':' + bound);
       const validKey = credentialMatches(given, key);
       const cookieValue = cookieKey ? requestCookie(req.headers.cookie, cookieName) : null;
       const givenCookie = Buffer.from(cookieValue ?? '');

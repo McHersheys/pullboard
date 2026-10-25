@@ -24,7 +24,7 @@ const MOVES = {
   escalate: { item: true, flags: ['note'] },
   hold: { positions: ['lane'], flags: ['reason'], booleans: ['off'] },
   shout: { positions: ['to', 'text'], optional: ['to'], booleans: ['decision', 'news'], flags: ['evidence', 'outcome', 'item', 'commit', 'options'] },
-  answer: { item: true, positions: ['text'], flags: ['as', 'implies', 'supersedes'] },
+  answer: { item: true, positions: ['text'], flags: ['as', 'implies', 'supersedes', 'origin', 'rationale'] },
   pass: { item: true, positions: ['note'] },
   next: { flags: ['as'], booleans: ['verify', 'build'] },
 };

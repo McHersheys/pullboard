@@ -45,6 +45,7 @@ Set up
                                         register SSH test capacity; no runner sign-in; root defaults to ~/.pullboard-runner
   pullboard runner list                 each runner's registered slots and browsers, which it runs at
   pullboard view [--project] [--port N] [--no-open]  every project on this machine in your browser; default http://127.0.0.1:${DEFAULT_VIEW_PORT}
+  pullboard view --lan                  a private link for a phone on the local IPv4 network
                                         items, shouts, doctrine, agents and activity; --port 0 chooses a free port
                                         --project limits this view to the registered project for this repository
                                         add items, shout and hold lanes from it
@@ -94,11 +95,11 @@ Work
   pullboard roadmap                     ordered milestones, N/M landed, targets, and each item as landed,
                                         accepted or its status
   pullboard milestone add <name> [--note ...] [--items 1,2,3]   create a milestone and optionally add items
-  pullboard milestone items <name> --add|--remove ids          append or remove item references
+  pullboard milestone items <name> --add ids [--swap id] | --remove ids
   pullboard milestone order <name> <ids>                       rank these items within their milestone (agents)
   pullboard milestone move <name> --before <other>             reorder a milestone
-  pullboard milestone edit <name> [--name <new>] [--note <text>] [--target <date and time>|none]
-                                        rename, update a note, or set the target a milestone ships by
+  pullboard milestone edit <name> [--name <new>] [--note <text>] [--target <date and time>|none] [--limit <n>|none]
+                                        rename, update a note, or set a shipping target or item limit
   pullboard milestone ship <name> [--next <name>]              record it shipped at main's commit and move
                                         its unlanded items into the next milestone (or --next)
   pullboard milestone remove <name>                            remove a milestone without changing its items
@@ -119,12 +120,13 @@ Work
   pullboard show <id> [--history]       an item, the criterion frozen at claim, its verdicts: the latest in full,
                                         earlier ones as one line; --history prints every note in full
   pullboard fact <id> <kind> <text> [--answers <bar-check-fact-id>] [--supersedes <fact-id>] [--ref path:lines@full-sha] [--implies <ids>]
-                                        append observations, bar-check notes and peer answers, or holder/coordinator judgements
+                                        append item notes (question, answer, plan, risk), evidence or authorised judgements
                                         a bar-answer uses --answers to name the bar-check fact it reviewed
                                         --implies 12,13: each named item gets a fact citing this decision,
                                         and is told again when the decision is superseded
                                         the person adds --cause <key> --never-again --as person: rigor lists it at once
   pullboard why <id>                    the decisions that imply an item, newest first, and what superseded them
+  pullboard why <file>[:<line>]         the decisions, rows and items behind a file or line, each with its origin
   pullboard next [--wait <minutes>]     offer an eligible review when reviews pile up, otherwise claim work
   pullboard next --build                claim a build explicitly, recording a skipped review offer
   pullboard next --verify               reserve the next submitted item you can check;
@@ -132,6 +134,8 @@ Work
                                         in the main checkout, verifying needs --as coordinator
   pullboard check [id] [--yes]          show and run your item's check; --yes confirms a check set by someone else
                                         the command and its author print first; the project gate is pullboard gate
+  pullboard test <files>                run named test files on the runner pool with the per-file timeout, uncommitted
+                                        changes included; a red file is compared with main and named known or new
   pullboard check accept <id>           the person accepts an item's check that already passes on main, as it reads now;
                                         with checks.provesNothing "hold", claim and submit refuse that item until then
   pullboard bar ready [on|off]           coordinator: opt in to ready bars; existing frozen work needs no backfill
@@ -157,6 +161,7 @@ Work
   pullboard shout coordinator <question> --item <id> --decision --options '["first","second"]'
   pullboard shout <to> <text> --evidence attempt|receipt --outcome <word> --item <id> --commit <rev>
   pullboard answer <shout-id> <text> [--as person] [--implies <ids>] [--supersedes <answer-id>]
+                    [--origin person-relayed|agent|inherited] [--rationale <why>]
                                         answer your decision; person mode is main-checkout only
                                         --supersedes tells the items an earlier answer implied; only the person
                                         supersedes the person's answer
