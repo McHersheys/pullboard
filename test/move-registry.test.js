@@ -15,6 +15,8 @@ import * as store from '../src/board.js';
 import { exportBoard, importBoard } from '../src/exchange.js';
 import { applyEngineMove, ENGINE_OPERATIONS } from '../src/engine.js';
 import { ENGINE_VERSION } from '../src/machine.js';
+import { MOVE_REGISTRY } from '../src/move-registry.js';
+import { PROOF_RUN_ENGINE } from '../src/proof-run-engine.js';
 import { relayMoveActor } from '../src/relay-sender.js';
 import { NEXT_STEPS } from '../src/next-step-words.js';
 import { REGISTRY_AT, registryFixtureBoard } from './move-registry-fixture.js';
@@ -53,6 +55,11 @@ export default { operation: ${JSON.stringify(name)}, order: ${engine + 1000}, en
 test('today\'s move order, actors, refusal recovery text and recorded SQLite prefix are unchanged [C7,V4,H3,H16]', t => {
   assert.deepEqual(ENGINE_OPERATIONS, SNAPSHOT.operations);
   assert.deepEqual(NEXT_STEPS, SNAPSHOT.nextSteps);
+  assert.equal(minimumMoveEngine('recordProofRun', [{ landingFence: {}, receipt: { environment: {} } }, { cause: 'conflict:new' }]), PROOF_RUN_ENGINE);
+  assert.equal(MOVE_REGISTRY.recordProofRun.engine, PROOF_RUN_ENGINE);
+  assert.equal(MOVE_REGISTRY.recordProofRun.itemIdFirstArgument, false);
+  assert.equal(relayMoveActor({ operation: 'recordProofRun', args: [{ agentId: 'proof-seat' }] }), 'proof-seat');
+  assert.equal(relayMoveActor({ operation: 'recordProofRun', args: [] }), null);
   for (const operation of SNAPSHOT.operations) {
     assert.deepEqual(SNAPSHOT.actorVectors.map(vector => relayMoveActor({ operation, ...vector })), SNAPSHOT.actors[operation], operation);
   }

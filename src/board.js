@@ -106,6 +106,7 @@ import {
   unreadCount,
   events,
   itemThread,
+  itemHold,
   laneHold,
   laneHolds,
   rowDecisions,
@@ -311,6 +312,9 @@ export { declareJob, recordJobRun } from './recurring-jobs.js';
 export { proposeSentinel, decideSentinel, beginSentinelRun, finishSentinelRun } from './sentinels.js';
 export { flakeLedger, recordFlakeObservation } from './flakes.js';
 export { flakeQuarantines, gateRuns, recordGateRun } from './quarantine.js';
+export { proofReceipts, recordProofRun } from './proof-receipts.js';
+import { refuseLongShout } from './proof-receipts.js';
+import { PROOF_RUN_ENGINE } from './proof-run-engine.js';
 export { recordPublishFinding } from './pr-findings.js';
 /** The seat readers live in seats.js; the board re-exports them so `store.*` callers keep one import. */
 export { agentAt, agentById, agentCreator, coordinatorHolder, listAgents, nextSeatId, seatEnrolled, seatLineage, takeCoordinator, withVerifierStanding } from './seats.js';
@@ -1168,6 +1172,7 @@ export function submit(board, id, { agentId, commit, tree, files = [], policyCom
         doctrineHolds: null,
         gateConfigured: null, queuedItemLease: null,
         gateGreen: null,
+        proofRecorded: null, // The CLI records and validates native receipts before sealing submit; replay needs no origin files.
         treeStillDuringGate: null,
         submissionProofValid: () => {
           if ((board.executionEngineVersion ?? ENGINE_VERSION) >= SUBMISSION_PROOF_ENGINE) recordedProof = submissionProof(proof);
@@ -1400,6 +1405,7 @@ export function verify(board, id, { agentId, decision, reason, note = '', cause,
         trunkMergeClean: null,
         noUnverifiedStack: null, queuedItemLease: null,
         itemCheckGreen: found => isAccept ? outsideSandboxProblem(board, found, sandbox) : null,
+        proofRecorded: null, // The native verifier records the gate receipt before this ordered outcome.
         proofNoted: () =>
           note.trim()
             ? null
@@ -1714,6 +1720,7 @@ function persistShout(board, { from, to, text, decision = false, answers = null,
  * @returns {number}
  */
 export function shout(board, message) {
+  if ((board.executionEngineVersion ?? ENGINE_VERSION) >= PROOF_RUN_ENGINE) refuseLongShout(message.text);
   return atomic(board, () => insertShout(board, { ...message,
     news: activityNewsFlag(message, board.executionEngineVersion ?? ENGINE_VERSION) }));
 }
@@ -2108,14 +2115,7 @@ export function releaseLane(board, lane, { agentId, asPerson = false, channel = 
 
 export { laneHold, laneHolds } from './board-query.js';
 
-/** Read an item's coordinator hold, or null when it is available for claims. */
-export function itemHold(board, id) {
-  const item = getItem(board, id);
-  return item.item_hold_reason ? {
-    item_id: item.item_id, item_hold_reason: item.item_hold_reason,
-    item_hold_by: item.item_hold_by, item_hold_at: item.item_hold_at,
-  } : null;
-}
+export { itemHold } from './board-query.js';
 
 /** Hold an open or already-claimed item without changing its current lifecycle state. */
 export function holdItem(board, id, { agentId, reason }) {

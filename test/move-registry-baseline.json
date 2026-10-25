@@ -58,6 +58,7 @@
     "setLineSetting",
     "recordFlakeObservation",
     "recordGateRun",
+    "recordProofRun",
     "declareJob",
     "recordJobRun",
     "takeCoordinator",
@@ -661,6 +662,7 @@
       null,
       null
     ],
+    "recordProofRun": [null, "first", null, null, null, null],
     "recordRowVerification": [
       null,
       "first",
@@ -7043,6 +7045,12 @@
     "MILESTONE_LIMIT": "remove or swap an unstarted item, or edit the milestone with --limit <n>|none",
     "BAD_COMPUTER_NAME": "retry relay on or relay join with --name containing 1 to 80 characters and no control characters or path separators",
     "BLUEPRINT_RULE_UNCHECKED": "add a checked starter item that cites the must rule named in the message, then run pullboard blueprint add <file> again",
+    "SHOUT_TOO_LONG": "shorten the message to 400 characters or fewer; cite native proof receipt ids and read pullboard show <id> for the evidence chain",
+    "PROOF_RUN_UNAVAILABLE": "restore writable native receipt storage, run the item check with current Pullboard, then read pullboard show <id>",
+    "PROOF_RUN_UNBOUND": "run the item check with current Pullboard and use its stored native receipt; read pullboard show <id> for the proof chain",
+    "PROOF_RUN_ACTOR": "run the check from your own joined seat and use the native receipt that belongs to that seat",
+    "PROOF_RUN_STALE": "read pullboard show <id> for the current frozen criterion, then run a fresh item check",
+    "PROOF_RUN_CHANGED": "preserve the original receipt and run a new item check to obtain a new native receipt id",
     "ROW_VERIFY": "pullboard spec show <id>, then pullboard spec verify <id> accepted --reason \"why\"",
     "ROW_VERIFY_PROVENANCE": "draft the row through pullboard spec draft and join normally before verifying it",
     "ROW_VERIFY_PENDING": "ask the coordinator to run pullboard spec apply before recording a verifier verdict",
