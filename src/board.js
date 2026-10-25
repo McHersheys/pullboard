@@ -1,4 +1,9 @@
 import { activityNewsFlag } from './activity-news.js';
+import { migrateEventLogVersion } from './board-event-log-migrate.js';
+import {
+  configureBoardJournal,
+  closeBoardWrites,
+} from './board-write-lock.js';
 import {
   focusOrder,
   focusReasons,
@@ -38,8 +43,10 @@ import {
 } from './line-order.js';
 export { lineSettings, setLineSetting } from './line-settings.js';
 
-import { applyOutsideIntake } from './outside-store.js';
-import { approveOutside as applyOutsideApproval } from './outside-store.js';
+import {
+  applyOutsideIntake,
+  approveOutside as applyOutsideApproval,
+} from './outside-store.js';
 import {
   outsideSandboxProblem,
   outsideBuildProblem,
@@ -48,13 +55,17 @@ import {
   saveOutsideSource,
 } from './outside-source.js';
 import { FILE_GROWTH_NOTICE_ENGINE } from './file-growth-notice-engine.js';
-import { recordBarRevision } from './bar-readiness.js';
-import { barReadyProblem } from './bar-readiness.js';
+import {
+  recordBarRevision,
+  barReadyProblem,
+} from './bar-readiness.js';
 import { barCheckFactFields } from './bar-check.js';
 export { setBarReady, signBar } from './bar-readiness.js';
-import { coordinatorCheck } from './item-check-baseline.js';
-import { normalizeCheckBaseline } from './item-check-baseline.js';
-import { saveCheckBaseline } from './item-check-baseline.js';
+import {
+  coordinatorCheck,
+  normalizeCheckBaseline,
+  saveCheckBaseline,
+} from './item-check-baseline.js';
 export { coordinatorCheck, completeCheckBaseline, itemCheckAuthor } from './item-check-baseline.js';
 import {
   closeBoard,
@@ -104,8 +115,11 @@ import {
   unreadShoutBindings,
 } from './shout-audience.js';
 import { recordVerdict } from './verdict-assurance.js';
-import { logEvent } from './board-event-log.js';
-export { logEvent };
+import {
+  atomic,
+  logEvent,
+} from './board-event-log.js';
+export { atomic, logEvent };
 /**
  * The board (B1–B7, V1–V8, R1–R3): items, claims, submissions, verdicts and shouts in one SQLite
  * file in the git common dir, so every worktree sees the same board and nothing is committed.
@@ -152,7 +166,6 @@ import {
   requireFactIdentityIndexes,
 } from './fact-identity.js';
 import { NEXT_STEPS } from './next-step-words.js';
-import { boardWriteBusyError } from './board-busy.js';
 export { boardBusyError } from './board-access.js';
 import {
   boardStanding,
@@ -321,10 +334,10 @@ export { openBoardReadOnly } from './board-read-open.js';
  *
  * @param {string} file
  * @param {{ now: () => Date }} [clock]
- * @param {{ isMain?: boolean, onDiagnostic?: (message: string) => void }} [options] Only the main checkout may upgrade a shared board.
+ * @param {{ isMain?: boolean, onDiagnostic?: (message: string) => void, writeContext?: {command?:string, seat?:string, path?:string} }} [options] Only the main checkout may upgrade a shared board.
  * @returns {{ db: DatabaseSync, clock: { now: () => Date } }}
  */
-export function openBoard(file, clock = systemClock, { isMain, onDiagnostic } = {}) {
+export function openBoard(file, clock = systemClock, { isMain, onDiagnostic, writeContext } = {}) {
   isMain = sharedSchemaOwner(file, isMain);
   if (file !== ':memory:' && isMain === false) {
     let boardVersion = 0;
@@ -358,20 +371,22 @@ export function openBoard(file, clock = systemClock, { isMain, onDiagnostic } = 
   try {
     db = new DatabaseSync(file);
     db.exec(`PRAGMA busy_timeout = ${BOARD_BUSY_TIMEOUT_MS}`);
-    if (file !== ':memory:' && isMain !== false) db.exec('PRAGMA journal_mode = WAL');
-    const board = { db, clock };
+    if (file !== ':memory:' && isMain !== false) configureBoardJournal(db, writeContext);
+    const board = { db, clock, writeContext };
     let warmCounters = true;
     if (isMain !== false || file === ':memory:') {
       // Migrate and audit only a board whose version is behind; a drifted shape is reported and left alone (#1047).
       const standing = boardStanding(db, SCHEMA_DIGEST, SCHEMA_VERSION, readEventLogVersion(db) < EVENT_LOG_VERSION);
-      if (standing === 'behind') {
-        migrateEventLogVersion(db);
-        migrate(db);
-        ensureHotIndexes(db);
-        db.prepare('INSERT OR IGNORE INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run('board_id', randomBytes(16).toString('hex'));
-        guardStore(board);
-      }
-      if (standing === 'behind' || standing === 'unstamped') recordSchemaStamp(db, SCHEMA_DIGEST);
+      if (standing === 'behind' || standing === 'unstamped') atomic(board, () => {
+        if (standing === 'behind') {
+          migrateEventLogVersion(db);
+          migrate(db);
+          ensureHotIndexes(db);
+          db.prepare('INSERT OR IGNORE INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run('board_id', randomBytes(16).toString('hex'));
+          guardStore(board);
+        }
+        recordSchemaStamp(db, SCHEMA_DIGEST);
+      });
       // Index-only upgrades keep the data version/digest unchanged. Install and restamp together;
       // drifted or read-only stores never take this path, and old clients accept the resulting stamp.
       if (standing !== 'drifted' && missingFactIdentityIndexes(db).length) atomic(board, () => {
@@ -392,7 +407,7 @@ export function openBoard(file, clock = systemClock, { isMain, onDiagnostic } = 
     if (warmCounters) atomic(board, () => ensureProofCounters(board));
     return board;
   } catch (error) {
-    try { db?.close(); } catch {}
+    try { db?.close(); if (db) closeBoardWrites(db); } catch { /* Preserve the opening failure when SQLite cleanup also fails. */ }
     throw boardNotWritable(file, boardBusyError(file, startedAt, error));
   }
 }
@@ -457,61 +472,10 @@ function guardStore(board) {
 
 export { readEventLogVersion } from './board-read-open.js';
 
-/** Refuse unknown future event records before migrating anything, and mark older boards current. */
-function migrateEventLogVersion(db) {
-  db.exec('BEGIN IMMEDIATE');
-  try {
-    db.exec(SCHEMA);
-    const version = readEventLogVersion(db);
-    if (version < EVENT_LOG_VERSION) {
-      db.prepare('INSERT INTO board_meta (meta_key, meta_value) VALUES (?, ?) ON CONFLICT(meta_key) DO UPDATE SET meta_value = excluded.meta_value')
-        .run('event_log_version', String(EVENT_LOG_VERSION));
-    }
-    db.exec('COMMIT');
-  } catch (error) {
-    db.exec('ROLLBACK');
-    throw error;
-  }
-}
 
 export { boardId } from './board-query.js';
 
 export { closeBoard } from './board-read-open.js';
-
-const TRANSACTION_DEPTH = new WeakMap();
-
-/**
- * Run `work` in one immediate transaction: the write lock is taken before the first read, so two
- * agents can never both see an item as free (B2). Nested moves use savepoints so a replay receipt
- * and its board mutation can commit together, while a refused move rolls back only its work.
- *
- * @template T
- * @param {any} board
- * @param {() => T} work
- * @returns {T}
- */
-export function atomic(board, work) {
-  const depth = TRANSACTION_DEPTH.get(board) ?? 0;
-  const savepoint = `pullboard_atomic_${depth}`;
-  const startedAt = Date.now();
-  try { board.db.exec(depth ? `SAVEPOINT ${savepoint}` : 'BEGIN IMMEDIATE'); }
-  catch (error) { throw boardWriteBusyError(board.db, startedAt, error); }
-  TRANSACTION_DEPTH.set(board, depth + 1);
-  const lastEvent = board.lastEvent;
-  const emitted = board.emittedEvents?.length ?? 0;
-  try {
-    const result = work();
-    board.db.exec(depth ? `RELEASE ${savepoint}` : 'COMMIT');
-    return result;
-  } catch (error) {
-    board.db.exec(depth ? `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}` : 'ROLLBACK');
-    board.lastEvent = lastEvent;
-    board.emittedEvents?.splice(emitted);
-    throw error;
-  } finally {
-    TRANSACTION_DEPTH.set(board, depth);
-  }
-}
 
 /** Log an authenticated relay refusal without making an item, shout or verdict move [H2,H16]. */
 export function recordRelayRefusal(board, { by, sequence, kind, operation, actor, code, itemId = null, person = null }) {
