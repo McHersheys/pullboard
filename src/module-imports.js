@@ -170,7 +170,8 @@ export function cpuLoadOptionsIn(sources) {
     let found = !parsed[index].compiles;
     for (const match of occurrences[index]) {
       const value = pastGap(source, match.index + match[0].length);
-      if (!parsed[next].compiles && !/^false\b/u.test(value)) found = true;
+      const disabled = /^false\b/u.test(value) && /^[,}]/u.test(pastGap(value, 5));
+      if (!parsed[next].compiles && !disabled) found = true;
       next += 1;
     }
     return found;

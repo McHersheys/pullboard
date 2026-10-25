@@ -39,3 +39,12 @@ test('a false CPU-load option and textual examples keep ordinary local-first adm
   assert.equal(local.executor?.liveLease, true);
   assert.equal(local.executor?.runnerExecution, false);
 });
+
+test('a computed true CPU-load option is not mistaken for a literal false option [C7]', async () => {
+  const box = cpuLoadFixture(e2e, { declaration: '{ cpuLoad: false || true }' });
+  const remote = await box.runGate();
+  assert.equal(remote.result.status, 0, remote.result.context);
+  assert.equal(box.requestsMade().length, 1);
+  assert.equal(remote.executor?.runnerExecution, true);
+  assert.notEqual(remote.executor?.cwd, box.repo);
+});
