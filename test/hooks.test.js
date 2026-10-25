@@ -4,6 +4,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { runFixtureExecFile as execFileSync, runFixtureChildAsync, runFixtureGit } from './fixture-child.js';
+import { runFixtureChild } from './fixture-child.js';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -19,6 +20,19 @@ after(e2e.cleanup);
 
 const SPEC = { ...parseSpec('## G\n- G1 [approved, must] One. | gate: t\n- G2 [retired] Gone.\n'), name: 'SPEC.md' };
 const RULES = defaults().commits;
+
+test("a hook nudges and never blocks, fails open on error or timeout, and init merges with the user's hooks [I6]", () => {
+  const box = e2e.project('true');
+  const result = runFixtureChild(process.execPath, [e2e.BIN, 'hook', 'SessionStart'], {
+    cwd: box.web, env: box.env, input: JSON.stringify({ hook_event_name: 'SessionStart', cwd: box.web }),
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, `a native session-start hook must nudge without refusing: ${result.stdout}${result.stderr}`);
+  const response = JSON.parse(result.stdout);
+  assert.equal(response.continue === false || response.decision === 'block', false);
+  assert.equal(response.hookSpecificOutput.hookEventName, 'SessionStart');
+  assert.match(response.hookSpecificOutput.additionalContext, /pullboard|work|claim/i);
+});
 
 /** Make a private real repository for staged-diff hook tests, with cleanup tied to the test. */
 function stagedRepo(t) {
