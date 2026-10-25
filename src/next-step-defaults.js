@@ -3,6 +3,7 @@ export const DEFAULT_NEXT_STEPS = Object.freeze({
   "AGENT_GRANT_EXPIRED": "claim the intended item, or shout the coordinator if its claim is unavailable",
   "AGENT_GRANT_ITEM": "finish or release the claim, then claim the intended item; use shout for coordination",
   "AGENT_GRANT_LANE": "join a seat in the intended lane or ask its owner to make the item change",
+  "GIT_REPLACE_REFS": "ask the coordinator to remove this replica's refs/replace entries, then resume the same ordered move",
   "GIT_SYNC_LOG": "restore the append-only refs/pullboard/board history on origin before running pullboard sync",
   "GIT_SYNC_REMOTE": "restore read/write access to origin, then retry the original command or run pullboard sync; keep its pending sealed move",
   "GIT_SYNC_LOCAL_CHANGED": "run pullboard export to preserve local moves, then ask the coordinator to reconcile the local and remote prefixes before syncing",

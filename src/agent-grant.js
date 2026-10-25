@@ -19,8 +19,20 @@ function existingItem(board, id) {
   return board.db.prepare('SELECT * FROM item WHERE item_id=?').get(id) ?? null;
 }
 
+/** A board activates only through a move recorded in its ordered prefix, never by opening a newer client. */
+function recordedGrantActivation(board) {
+  const cursor = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get('relay_applied_sequence');
+  const sequence = cursor ? Number(cursor.meta_value) : 0;
+  if (!Number.isSafeInteger(sequence) || sequence < 1) return false;
+  return Boolean(board.db.prepare(`SELECT 1 FROM board_meta WHERE meta_key GLOB 'relay_receipt_*'
+    AND json_extract(meta_value, '$.sequence') <= ?
+    AND json_extract(json_extract(meta_value, '$.move'), '$.engine') >= ? LIMIT 1`)
+    .get(sequence, AGENT_GRANT_ENGINE));
+}
+
 /** A version marker is not a grant: it only prevents an older engine bypassing a new seat or claim. */
 export function agentGrantMinimum(board, move) {
+  if (recordedGrantActivation(board)) return AGENT_GRANT_ENGINE;
   // Communication and review administration neither widen nor replace a claim. An old claim could erase its version marker.
   if (move.operation !== 'claim' && (ADMINISTRATIVE.has(move.operation) || !target(move))) return 1;
   const actor = MOVE_REGISTRY[move.operation]?.actor(move);

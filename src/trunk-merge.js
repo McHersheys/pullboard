@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 /** In-memory Git conflict computation without loading check execution or resource admission [V4,C7]. */
 import { spawnSync } from 'node:child_process';
 import { cleanGitEnvironment } from './git.js';
@@ -46,4 +48,17 @@ export function recordedTrunkMerge(gitDirectory, head, trunk) {
   const files = records.slice(0, end < 0 ? records.length : end);
   if (!files.length) throw new Refused('MERGE_CHECK_FAILED', 'Git did not provide conflict paths for the recorded commits; fetch their complete objects before resuming');
   return files;
+}
+
+
+/** Refuse local history overrides before trusting either a fresh or cached immutable conflict result. */
+export function refuseRecordedHistoryOverrides(gitDirectory) {
+  if (existsSync(join(gitDirectory, 'info', 'grafts'))) {
+    throw new Refused('GIT_GRAFTS', 'recorded conflict replay cannot trust a repository with info/grafts; ask the coordinator to remove its graft file, then resume the same move');
+  }
+  const refs = spawnSync('git', ['--no-replace-objects', `--git-dir=${gitDirectory}`, 'for-each-ref', '--format=%(refname)', 'refs/replace/'],
+    { env: cleanGitEnvironment(), encoding: 'utf8', maxBuffer: 1024 * 1024 });
+  if (refs.status !== 0) throw new Refused('MERGE_CHECK_FAILED', 'Git could not inspect this replica history; restore its object store, then resume the same move');
+  if (refs.stdout.trim()) throw new Refused('GIT_REPLACE_REFS',
+    'recorded conflict replay cannot trust a repository with replacement refs; ask the coordinator to remove the refs/replace entries, then resume the same move');
 }

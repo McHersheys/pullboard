@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { repoInfo } from './git.js';
 import { recordedTrunkMerge } from './trunk-merge.js';
+import { refuseRecordedHistoryOverrides } from './trunk-merge.js';
 import { dirname } from 'node:path';
 import { join } from 'node:path';
 import { Refused } from './refused.js';
@@ -40,10 +41,12 @@ function objectStore(board) {
 export function requireComputedConflictObjects(board, receipt) {
   const fields = computedConflictFields(receipt);
   if (!fields) return null;
+  const gitDirectory = objectStore(board);
+  refuseRecordedHistoryOverrides(gitDirectory);
   let cache = VERIFIED_OBJECTS.get(board);
   if (!cache) { cache = new Map(); VERIFIED_OBJECTS.set(board, cache); }
   const key = `${fields.head}:${fields.trunk}`;
-  if (!cache.has(key)) cache.set(key, recordedTrunkMerge(objectStore(board), fields.head, fields.trunk));
+  if (!cache.has(key)) cache.set(key, recordedTrunkMerge(gitDirectory, fields.head, fields.trunk));
   return cache.get(key);
 }
 
