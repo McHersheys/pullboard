@@ -18,8 +18,9 @@ export async function startLanView(t, box) {
   t.after(stop);
   return await new Promise((resolve, reject) => {
     let output = '', failure = '';
-    const timer = setTimeout(() => { void stop(); reject(new Error('the LAN view did not print its link before the startup deadline')); },
-      35_000); // budget: the CLI's registry-lock ceiling and normal background startup allowance.
+    const timer = setTimeout(() => { // budget: hang ceiling covers the CLI's 30s registry lock plus 5s for startup.
+      void stop(); reject(new Error('the LAN view did not print its link before the startup deadline'));
+    }, 35_000);
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', part => { failure += part; });
     child.stdout.setEncoding('utf8');
