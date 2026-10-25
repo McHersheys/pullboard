@@ -428,7 +428,7 @@ function runTiming(run, command) {
 }
 
 /** Run work under the machine queue: landings first, then every other eligible waiter in arrival order.
- * The whole queue waits while the machine is out of memory, so a run never starts into swap.
+ * Local executors wait while this machine is out of memory; remote runners keep admitting.
  *
  * @param {string} root - Checkout used to locate the machine resource database.
  * shortEligible marks a run that names its test files: with gate.shortSlots above 0 it may take a

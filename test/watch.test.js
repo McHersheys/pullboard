@@ -258,7 +258,8 @@ test('watch --work announces a claimable item and a review left waiting [A2,N26]
   writeFileSync(join(builder.path, 'app', 'work.txt'), 'built\n');
   runFixtureGit(['add', '-A'], { cwd: builder.path, env: box.env, stdio: 'pipe' });
   runFixtureGit(['commit', '-q', '-m', 'feat(app): fresh work [G1]'], { cwd: builder.path, env: box.env, stdio: 'pipe' });
-  const firstCommit = box.cli(builder.path, 'submit', String(added.item_id)).commit;
+  const firstSubmission = box.cli(builder.path, 'submit', String(added.item_id));
+  const firstCommit = firstSubmission.commit;
   const submitted = lastSequence(box);
   const review = JSON.parse((await watch.line((line) => JSON.parse(line).kind === 'review-wait', 10_000, 'review-wait notice')).line); // budget: hang ceiling for a 1.2 s review threshold, not a latency claim.
   assert.equal(review.item, added.item_id);
@@ -279,7 +280,8 @@ test('watch --work announces a claimable item and a review left waiting [A2,N26]
   writeFileSync(join(builder.path, 'app', 'waiting.txt'), 'built\n');
   runFixtureGit(['add', '-A'], { cwd: builder.path, env: box.env, stdio: 'pipe' });
   runFixtureGit(['commit', '-q', '-m', 'feat(app): waiting work [G1]'], { cwd: builder.path, env: box.env, stdio: 'pipe' });
-  const secondCommit = box.cli(builder.path, 'submit', String(waiting.item_id)).commit;
+  const secondSubmission = box.cli(builder.path, 'submit', String(waiting.item_id));
+  const secondCommit = secondSubmission.commit;
   runFixtureGit(['switch', '-q', '--detach', secondCommit], { cwd: reviewer, env: box.env, stdio: 'pipe' });
   box.cli(reviewer, 'next', '--verify', String(waiting.item_id));
   // The reserve line follows the submit work check while the item is still submitted, before reject reopens it.
@@ -309,8 +311,8 @@ test('watch --work announces a claimable item and a review left waiting [A2,N26]
   const recorded = events(box).slice(before);
   assert.deepEqual(recorded.map(event => event.event_kind), [
     'add', 'add', 'claim', 'check_accept', 'release', 'claim', 'proof-run', 'proof-run',
-    'submit', 'join', 'reserve', 'proof-run', 'accept', 'claim', 'proof-run', 'proof-run',
-    'submit', 'reserve', 'reject',
+    'submit', ...(firstSubmission.activity.digests.length ? ['activity-delivered'] : []), 'join', 'reserve', 'proof-run', 'accept', 'claim', 'proof-run', 'proof-run',
+    'submit', ...(secondSubmission.activity.digests.length ? ['activity-delivered'] : []), 'reserve', 'reject',
   ], 'watch wrote no event: only the explicit moves and their native proof receipts were recorded');
   const proofs = recorded.filter(event => event.event_kind === 'proof-run');
   const receipts = proofs.map(event => JSON.parse(event.event_detail).receipt);
@@ -321,6 +323,11 @@ test('watch --work announces a claimable item and a review left waiting [A2,N26]
   for (let index = 0; index < proofs.length; index++) {
     assert.equal(proofs[index].event_by, receipts[index].seat, 'each proof belongs to its executing seat');
     assert.equal(proofs[index].item_id, receipts[index].item, 'each proof belongs to its checked item');
+  }
+  for (const event of recorded.filter(event => event.event_kind === 'activity-delivered')) {
+    assert.equal(event.event_by, builder.agent, 'the submitting recipient records its digest, not watch');
+    assert.deepEqual(JSON.parse(event.event_detail).interrupts, [], 'these submit receipts delivered a digest, not an invented interrupt');
+
   }
 });
 
