@@ -115,6 +115,8 @@ import {
   unreadShoutBindings,
 } from './shout-audience.js';
 import { recordVerdict } from './verdict-assurance.js';
+import { mergeOnlyBasis, mergeOnlyProblem } from './merge-only-verdict.js';
+import { MERGE_ONLY_VERDICT_ENGINE } from './merge-only-verdict-engine.js';
 import {
   atomic,
   logEvent,
@@ -1128,14 +1130,20 @@ export function release(board, id, agentId, note = '') {
  * @param {{ agentId: string, commit: string, tree: string, files?: string[], policyCommit?: string, note?: string }} at - `files`: what the
  *   item's own commits changed since its claim; a rework adds to what the first attempt changed.
  */
-export function submit(board, id, { agentId, commit, tree, files = [], policyCommit = null, note, submissionProof: proof, infra = null }) {
+export function submit(board, id, { agentId, commit, tree, files = [], policyCommit = null, note, submissionProof: proof, infra = null, mergeOnly }) {
   let recordedProof;
   if (note !== undefined && (typeof note !== 'string' || !note.trim() || /[\r\n\u2028\u2029]/u.test(note))) {
     throw new Refused('USAGE', 'a submission note, when present, is one nonempty line');
   }
   atomic(board, () => {
+    const carry = mergeOnly !== undefined;
+    const basis = carry ? mergeOnlyBasis(board, getItem(board, id)) : null;
+    const carriedProblem = found => (board.executionEngineVersion ?? ENGINE_VERSION) < MERGE_ONLY_VERDICT_ENGINE
+      ? new Refused('MERGE_ONLY_PROOF', 'upgrade Pullboard before carrying an acceptance across a merge')
+      : mergeOnlyProblem(board, found, mergeOnly, { agentId, commit, tree, policyCommit });
     const notYours = () => new Refused('NOT_YOURS', `item #${id} is not claimed by you; claim it first`);
     moveItem(board, id, 'submit', {
+      ...(carry ? { transition: MOVES.find(move => move.verb === 'submit-merge') } : {}),
       checks: {
         joined: null, checkProvesSomething: null,
         barReady: found => barReadyProblem(board, found),
@@ -1155,6 +1163,12 @@ export function submit(board, id, { agentId, commit, tree, files = [], policyCom
         gateConfigured: null, queuedItemLease: null,
         gateGreen: null,
         treeStillDuringGate: null,
+        ...(carry ? {
+          mergeOnlyRecorded: carriedProblem,
+          atSubmittedCommit: null, // The same post-gate HEAD check binds both submission paths.
+          notBuilder: found => itemAuthorProblem(board, found, basis.by),
+          proofNoted: () => typeof mergeOnly?.resolutionDiff === 'string' ? null : new Refused('PROOF_REQUIRED', 'record the actual merge resolution diff'),
+        } : {}),
         submissionProofValid: () => {
           if ((board.executionEngineVersion ?? ENGINE_VERSION) >= SUBMISSION_PROOF_ENGINE) recordedProof = submissionProof(proof);
           return null;
@@ -1177,6 +1191,7 @@ export function submit(board, id, { agentId, commit, tree, files = [], policyCom
             : null;
         },
       },
+      before: () => { if (carry) logEvent(board, agentId, 'merge-only-accept', id, { ...mergeOnly, by: basis.by }); },
       set: (found) => ({
         item_built_by: agentId,
         item_builder_family: board.db.prepare('SELECT agent_family FROM agent WHERE agent_id = ?').get(agentId)?.agent_family ?? null,
@@ -1186,6 +1201,7 @@ export function submit(board, id, { agentId, commit, tree, files = [], policyCom
         item_review_by: null,
         item_review_until: null,
         item_files: [...new Set([...(found.item_files ?? '').split('\n').filter(Boolean), ...files])].join('\n'),
+        ...(carry ? { item_verdict: 'ACCEPT', item_verified_by: basis.by } : {}),
       }),
     });
     const engineVersion = board.executionEngineVersion ?? ENGINE_VERSION;
@@ -1197,6 +1213,7 @@ export function submit(board, id, { agentId, commit, tree, files = [], policyCom
       ...(criterionDigest ? { criterionDigest } : {}),
       ...(note === undefined ? {} : { note: note.trim() }),
       ...(recordedProof ? { submissionProof: recordedProof } : {}), ...(infra ? { infra } : {}),
+      ...(carry ? { mergeOnly } : {}),
     });
   });
 }
@@ -1454,7 +1471,7 @@ export function reopen(board, id, { agentId, note = '', conflict, cause, reopenF
           if (forWithdrawal) { supersedes = withdrawnVerdict.acceptEventId; return null; }
           if (found.item_status !== 'verified' || forMerge) return null;
           const accepted = events(board, { itemId: id }).findLast((event) => {
-            if (event.event_kind !== 'accept') return false;
+            if (!['accept', 'merge-only-accept'].includes(event.event_kind)) return false;
             return JSON.parse(event.event_detail).commit === found.item_commit;
           });
           const recorded = landingBatches(board).flatMap((batch) => (batch.culprits ?? []).map((culprit) => ({ batch, culprit })))

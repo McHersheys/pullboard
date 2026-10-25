@@ -1,10 +1,13 @@
 /** Real public submission, Git conflict resolution and immutable verdict coverage [V1,V4,H16]. */
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import * as store from '../src/board.js';
 import { createE2eHelpers } from './e2e-helpers.js';
+import { captureMergeOnly } from '../src/merge-only-source.js';
+import { runFixtureGit, runFixtureChild } from './fixture-child.js';
 
 const e2e = createE2eHelpers();
 after(e2e.cleanup);
@@ -75,4 +78,50 @@ test('a merge-only resubmission keeps its accept and records the resolution diff
   const shown = succeeds(box, box.repo, 'show', String(id));
   assert.match(shown.out, /verified/u);
   assert.doesNotMatch(shown.out, /re-review: main merge only/u);
+});
+
+/** Make a small real Git conflict without pretending these synthetic identities are live reviewers. */
+function sourceFixture(t) {
+  const root = mkdtempSync(join(tmpdir(), 'pullboard-merge-only-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1',
+    GIT_AUTHOR_NAME: 'Merge fixture', GIT_AUTHOR_EMAIL: 'fixture@example.com',
+    GIT_COMMITTER_NAME: 'Merge fixture', GIT_COMMITTER_EMAIL: 'fixture@example.com' };
+  /** Run only bounded private Git fixture commands. */
+  const git = (...args) => runFixtureGit(args, { cwd: root, env, timeout: 5000 });
+  /** Commit one literal private file and return its content-addressed commit. */
+  const save = (choice, unrelated = 'unchanged', amend = false) => {
+    writeFileSync(join(root, 'hot.js'), `const choice = '${choice}';\n${'// stable context\n'.repeat(12)}const behavior = '${unrelated}';\n`);
+    git('add', 'hot.js'); git('commit', '-q', ...(amend ? ['--amend'] : []), '-m', 'fixture');
+    return git('rev-parse', 'HEAD');
+  };
+  git('init', '-q', '-b', 'main'); save('base'); git('switch', '-q', '-c', 'candidate');
+  const accepted = save('accepted'); git('switch', '-q', 'main'); const trunk = save('trunk');
+  git('switch', '-q', 'candidate');
+  const merge = runFixtureChild('git', ['merge', '-q', '--no-edit', 'main'], { cwd: root, env, encoding: 'utf8', timeout: 5000 });
+  assert.notEqual(merge.status, 0);
+  const commit = save('resolved');
+  const basis = { acceptedCommit: accepted, acceptedHead: accepted, digest: 'synthetic frozen bar',
+    verdict: 1, reopen: 2, conflict: { trunk, files: ['hot.js'] }, review: { paths: ['hot.js'] } };
+  /** Capture the exact current commit and tree as the post-gate CLI does. */
+  const capture = () => captureMergeOnly(root, basis, { commit: git('rev-parse', 'HEAD'),
+    tree: git('rev-parse', 'HEAD^{tree}'), trunk });
+  return { root, git, save, accepted, trunk, commit, basis, capture };
+}
+
+test('extra behavioral edits in the same conflicted file need outside review [V1,V4]', t => {
+  const box = sourceFixture(t);
+  assert.ok(box.capture(), 'the actual resolution is eligible');
+  box.save('resolved', 'changed behavior', true);
+  assert.equal(box.capture(), null, 'a merge commit cannot exempt the whole hot file');
+});
+
+test('amended non-merge and stale head or tree proofs cannot retain an accept [V1,V4]', t => {
+  const box = sourceFixture(t);
+  const proof = box.capture();
+  assert.ok(proof);
+  assert.equal(captureMergeOnly(box.root, box.basis, { commit: box.commit, tree: box.accepted, trunk: box.trunk }), null);
+  box.git('reset', '--hard', box.accepted);
+  box.save('resolved', 'unchanged', true);
+  assert.equal(box.capture(), null, 'an amended commit without the exact merge parents needs review');
 });

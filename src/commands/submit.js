@@ -86,6 +86,9 @@ import {
   withBoard,
 } from '../cli.js';
 import { recordedRecovery } from '../recorded-recovery.js';
+import { mergeOnlyBasis } from '../merge-only-verdict.js';
+import { captureMergeOnly } from '../merge-only-source.js';
+import { itemAuthorProblem } from '../item-authors.js';
 
 /**
  * Submit: a clean tree, nothing untracked, the gate green at HEAD, then the board (V4).
@@ -106,7 +109,7 @@ export async function submitHere(ctx, id, infra) {
       if (recordedRecovery(board, recovered)) return { me, recorded: true };
       const item = store.getItem(board, id);
       const trunk = requireTrunkMerge(root, recovered.args[1].commit);
-      if (barReadySetting(board).enabled && (recovered.args[1].policyCommit !== trunk.commit || !contains(root, trunk.commit, recovered.args[1].commit))) {
+      if ((barReadySetting(board).enabled || recovered.args[1].mergeOnly) && (recovered.args[1].policyCommit !== trunk.commit || !contains(root, trunk.commit, recovered.args[1].commit))) {
         throw new Refused('MAIN_NOT_COMPOSED', 'the unrecorded recovered submission has no proof for current main; run pullboard inbox to synchronize its original receipt, or ask the coordinator to resolve the pending move before a fresh submit; the original request is retained');
       }
       refuseUnverifiedStack(root, board, item, recovered.args[1].commit, trunk);
@@ -219,9 +222,14 @@ export async function submitHere(ctx, id, infra) {
   const waivedLines = waived ? waived.map(waiverLine) : [];
   await withBoard(ctx, async (board) => {
     refuseUnverifiedStack(root, board, store.getItem(board, id), commit, currentTrunk);
+    const basis = mergeOnlyBasis(board, store.getItem(board, id));
+    const mergeOnly = gate.isGreen && !waived && basis && !itemAuthorProblem(board, store.getItem(board, id), basis.by)
+      && currentTrunk.commit === acceptedMain.commit ? captureMergeOnly(root,
+        basis, { commit, tree: headTree(root) ?? '', trunk: currentTrunk.commit }) : null;
     // The waived run is written to the item's thread before the submission, so no waived proof reads as green.
     if (waived) await ordered(ctx, board, 'appendFact', [id, { agentId: me.id, kind: 'measurement', text: `submission proof at ${commit.slice(0, 12)} was red and is recorded as waived, not green; every failure is covered by a live person waiver:\n${waivedLines.join('\n')}` }]);
     return await ordered(ctx, board, 'submit', [id, { agentId: me.id, commit, tree: headTree(root) ?? '', files: filesSince(root, id, claimHead, commit), policyCommit: acceptedMain.commit, ...(infraRecord ? { infra: infraRecord } : {}),
+      ...(mergeOnly ? { mergeOnly } : {}),
       submissionProof: { version: 1, files: gate.files, full: gate.full, deferred: gate.deferred, reason: gate.reason, ...(gate.deferredFiles ? { deferredFiles: gate.deferredFiles } : {}) },
       ...(gate.deferred ? { note: gate.deferredFiles ? deferredSelectionNote(gate.deferredFiles) : 'full suite deferred to the landing gate' } : {}) }]);
   });

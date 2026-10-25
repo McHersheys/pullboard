@@ -37,9 +37,19 @@ export function verdictsFor(board, id) {
 
 /** The latest matching acceptance; the submission stays immutable through later re-reviews. */
 export function acceptedVerdict(board, item) {
-  const latest = verdictsFor(board, item.item_id).findLast(verdict =>
+  const verdicts = verdictsFor(board, item.item_id);
+  const latest = verdicts.findLast(verdict =>
     verdict.verdict_decision === 'ACCEPT' && verdict.verdict_commit === item.item_commit);
-  return latest?.withdrawn ? undefined : latest;
+  if (latest) return latest.withdrawn ? undefined : latest;
+  const event = board.db.prepare("SELECT event_detail FROM event WHERE item_id = ? AND event_kind = 'merge-only-accept' AND json_extract(event_detail,'$.commit') = ? ORDER BY event_id DESC LIMIT 1")
+    .get(item.item_id, item.item_commit);
+  if (!event) return undefined;
+  const carry = JSON.parse(event.event_detail);
+  const original = verdicts.find(verdict => verdict.verdict_id === carry.verdict && verdict.verdict_decision === 'ACCEPT'
+    && verdict.verdict_digest === item.item_frozen_digest && verdict.verdict_by === carry.by);
+  if (!original || original.withdrawn) return undefined;
+  return { ...original, carried: carry, review: { commit: carry.commit, head: carry.commit,
+    trunk: carry.trunk, paths: carry.paths } };
 }
 
 /** The exact checked composition for a new acceptance, or the historical submitted candidate. */

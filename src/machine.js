@@ -86,8 +86,8 @@ export const STATES = [
   {
     id: 'verified', means: 'another agent accepted it at the submitted commit', requires: ['item_verified_by', 'item_commit'],
     proof: {
-      says: 'an ACCEPT at the submitted commit, on the frozen criterion, by the agent it names as verifier, who did not build it',
-      sql: "EXISTS (SELECT 1 FROM verdict v WHERE v.item_id = NEW.item_id AND v.verdict_decision = 'ACCEPT' AND v.verdict_commit = NEW.item_commit AND v.verdict_digest = NEW.item_frozen_digest AND v.verdict_by = NEW.item_verified_by AND v.verdict_by <> NEW.item_built_by)",
+      says: 'an immutable ACCEPT on the frozen criterion by its independent verifier, at this commit or bound by an ordered merge-only receipt',
+      sql: "EXISTS (SELECT 1 FROM verdict v WHERE v.item_id = NEW.item_id AND v.verdict_decision = 'ACCEPT' AND v.verdict_digest = NEW.item_frozen_digest AND v.verdict_by = NEW.item_verified_by AND v.verdict_by <> NEW.item_built_by AND (v.verdict_commit = NEW.item_commit OR EXISTS (SELECT 1 FROM event e WHERE e.item_id = NEW.item_id AND e.event_kind = 'merge-only-accept' AND json_extract(e.event_detail,'$.verdict') = v.verdict_id AND json_extract(e.event_detail,'$.commit') = NEW.item_commit AND json_extract(e.event_detail,'$.tree') = NEW.item_tree AND json_extract(e.event_detail,'$.digest') = NEW.item_frozen_digest AND json_extract(e.event_detail,'$.by') = v.verdict_by)))",
     },
   },
   { id: 'withdrawn', final: true, means: 'nobody should build it; the reason stays on it', requires: ['item_withdrawn_reason'] },
@@ -95,6 +95,7 @@ export const STATES = [
 
 /** @type {Guard[]} */
 export const GUARDS = [
+  { id: 'mergeOnlyRecorded', refuse: 'MERGE_ONLY_PROOF', rule: 'the exact gated merge carries the unwithdrawn acceptance of the unchanged bar and its recorded conflict resolution', next: 'submit normally for outside review if the merge cannot be proved', source: 'board' },
   { id: 'outsideSubmission', refuse: 'OUTSIDE_SOURCE', rule: 'an outside author and exact fetched commit/tree are recorded with a trusted frozen criterion, without pretending a native builder gated it', next: 'fetch and intake the exact GitHub pull request again', source: 'board' },
   { id: IN_STATE, refuse: '', rule: "the move can start from the item's current state", next: 'pullboard show <id>', source: 'board' },
   { id: 'joined', refuse: 'NOT_JOINED', alsoRefuses: [{ code: 'AGENT_REPLACED', next: 'read the takeover and only shout on its exact hand-off item; continue work from the incoming agent worktree' }, { code: 'SESSION_LEDGER', next: 'make the agent-session ledger named in the message readable and writable by this user, then run the command again' }], rule: 'the caller is the main checkout, or an unreplaced worktree seat that joined a lane; an agent session\'s claims, submits and verdicts can be checked against its local ledger', next: 'pullboard join <lane> --model "<model name>" (see: pullboard lanes)', source: 'cli' },
@@ -174,9 +175,20 @@ export const MOVES = [
   { verb: 'lapse', from: ['claimed'], to: 'open', by: ['clock'], guards: [], when: 'its lease runs out' },
   {
     verb: 'submit', from: ['claimed'], to: 'submitted', by: ['agent', 'coordinator'], refuse: 'NOT_YOURS',
-    alsoRefuses: [{ code: 'LINE_SETTING_RANGE', rule: 'the recorded board line setting has a valid registry value', next: 'restore the recorded board line setting from its ordered event history, then retry submit' }],
+    alsoRefuses: [{ code: 'LINE_SETTING_RANGE', rule: 'the recorded board line setting has a valid registry value', next: 'restore the recorded board line setting from its ordered event history, then retry submit' },
+      { code: 'MERGE_ONLY_PROOF', rule: 'a requested carry matches the recorded conflict return, acceptance and exact gated source', next: 'submit normally for outside review' },
+      { code: 'SELF_VERIFY', rule: 'the retained original verifier did not author the merge resubmission', next: 'submit the changed source for outside review' },
+      { code: 'SELF_SESSION_VERIFY', rule: 'the retained verifier shares no author parent with the resubmitting builder', next: 'submit for another parent session to review' },
+      { code: 'VERIFIER_STANDING', rule: 'the retained verifier still has independent native standing', next: 'ask an enrolled outside verifier to review the resubmission' },
+      { code: 'PROOF_REQUIRED', rule: 'a carried acceptance records the actual resolution diff', next: 'submit with the current CLI or get an outside review' }],
     guards: ['joined', 'itemExists', IN_STATE, 'isHolder', 'correctionRefrozen', 'checkProvesSomething', 'barReady', 'criterionUnchanged', 'treeClean', 'nothingUntracked', 'hasCommit', 'withinLane', 'trunkMergeClean', 'trunkInCandidate', 'noUnverifiedStack', 'infraExplained', 'doctrineHolds', 'gateConfigured', 'queuedItemLease', 'gateGreen', 'treeStillDuringGate', 'submissionProofValid', 'childrenDone', 'headIsNew'],
     sets: ['item_built_by', 'item_commit'], command: 'pullboard submit <id>',
+  },
+  {
+    verb: 'submit-merge', from: ['claimed'], to: 'verified', by: ['agent', 'coordinator'], refuse: 'NOT_YOURS',
+    guards: ['joined', 'itemExists', IN_STATE, 'isHolder', 'correctionRefrozen', 'checkProvesSomething', 'barReady', 'criterionUnchanged', 'treeClean', 'nothingUntracked', 'hasCommit', 'withinLane', 'trunkMergeClean', 'trunkInCandidate', 'noUnverifiedStack', 'infraExplained', 'doctrineHolds', 'gateConfigured', 'queuedItemLease', 'gateGreen', 'treeStillDuringGate', 'submissionProofValid', 'childrenDone', 'headIsNew', 'mergeOnlyRecorded', 'atSubmittedCommit', 'notBuilder', 'proofNoted'],
+    sets: ['item_built_by', 'item_commit', 'item_verified_by'], command: 'pullboard submit <id>',
+    when: 'only an unchanged accepted bar and a proved trunk-only merge; no new reviewer verdict is created',
   },
   {
     verb: 'reserve', from: ['submitted'], to: 'submitted', by: ['agent', 'coordinator'], refuse: 'NOT_SUBMITTED',

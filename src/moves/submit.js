@@ -1,4 +1,5 @@
 import { RIGOR_AUTO_ENGINE } from '../rigor-auto-engine.js';
+import { MERGE_ONLY_VERDICT_ENGINE } from '../merge-only-verdict-engine.js';
 /** Routing metadata owned by submit, discovered without a shared registry edit [C7,V4,H16]. */
 import { BAR_READY_ENGINE } from '../bar-ready-engine.js';
 import { barReadySetting } from '../bar-ready-setting.js';
@@ -26,7 +27,8 @@ function existingEngine(args, board, at) {
 /** Keep outside-source isolation as the original maximum over the older engine rule. */
 function minimumEngine(args, board, at) {
   const outside = board && Boolean(outsideSource(board, args[0]));
-  return Math.max(outside ? OUTSIDE_INTAKE_ENGINE : 1, existingEngine(args, board, at));
+  return Math.max(args[1]?.mergeOnly !== undefined ? MERGE_ONLY_VERDICT_ENGINE : 1,
+    outside ? OUTSIDE_INTAKE_ENGINE : 1, existingEngine(args, board, at));
 }
 
 /** Read precisely the actor argument used by this operation [H2,H16]. */
@@ -51,6 +53,7 @@ export default Object.freeze({ operation: "submit", order: 15, engine: 1,
   "LAND_GATE_OUTPUT": "inspect the retained timed gate output directory and free disk space, then start another landing",
   "LAND_TIMEOUT_CUSTODY": "inspect the saved timed gate cleanup state and stop only its proven owned processes before starting another landing",
   "MAIN_NOT_COMPOSED": "merge current main into the candidate, commit the composition and submit again; for an unrecorded recovered move, run pullboard inbox first or ask the coordinator to resolve the pending receipt",
+  "MERGE_ONLY_PROOF": "submit the exact gated merge with the unchanged frozen criterion, or leave the new head for outside review",
   "MERGE_CHECK_FAILED": "use Git 2.38 or newer (git --version), then retry",
   "MERGE_CONFLICT": "merge main into your branch, resolve the conflicts, commit, and run the command again",
   "MOVED_DURING_GATE": "leave the worktree alone until the gate finishes, then submit again",
