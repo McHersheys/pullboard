@@ -1,0 +1,68 @@
+/** Real private runner dispatch and public status under controlled memory readings [C7]. */
+import assert from 'node:assert/strict';
+import {
+  mkdirSync,
+  writeFileSync,
+} from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { createE2eHelpers } from './e2e-helpers.js';
+import { runFixtureChild } from './fixture-child.js';
+import {
+  HOST,
+  installSshStandIn,
+} from './runner-ssh-fixture.js';
+
+/** Run the actual gate and worker with the existing memory-reader seam in a private machine home. */
+export async function assertRunnerMemoryAdmission() {
+  const e2e = createE2eHelpers();
+  try {
+    const box = e2e.project('true');
+    const bin = join(box.dir, 'runner-bin');
+    const worker = join(box.dir, 'runner-worker');
+    const home = join(box.dir, 'runner-home');
+    const requests = join(box.dir, 'runner-requests.jsonl');
+    for (const folder of [bin, worker, home, join(home, '.pullboard')]) mkdirSync(folder, { recursive: true });
+    installSshStandIn({ bin, worker, home, machineHome: join(home, '.pullboard'), requests });
+    box.env.PATH = `${bin}:${box.env.PATH}`;
+    assert.equal(box.run(box.repo, 'runner', 'add', HOST, '--slots', '1', '--browser', '1').code, 0);
+    for (const [key, value] of [['gate.runnersFirst', 'on'], ['browserSlots', '1'], ['gateSlots', '1'], ['gate.memoryFloorMB', '512']]) {
+      const changed = box.run(box.repo, 'settings', key, value);
+      assert.equal(changed.code, 0, changed.err);
+    }
+    writeFileSync(join(box.repo, 'memory-probe.cjs'), "console.log('REAL_RUNNER_MEMORY_PROBE');\n");
+    box.git(box.repo, 'add', '-A');
+    box.git(box.repo, 'commit', '-q', '-m', 'chore: private memory admission probe');
+    const gate = pathToFileURL(join(import.meta.dirname, '../src/gate.js')).href;
+    const cli = join(import.meta.dirname, '../bin/pullboard.js');
+    const source = [
+      `import {withGateSlot,runProfiledShellAsync} from ${JSON.stringify(gate)};`,
+      "import {execFileSync} from 'node:child_process';",
+      'const root=process.cwd(); const output={};',
+      '/** Keep the refusal path bounded: release only the private simulated pressure after observing it. */',
+      'async function exercise(remote, agent){',
+      'let recovered=false; const held=[]; let status=null;',
+      'const readMemory=async()=>({checked:true,platform:process.platform,pressure:recovered?"normal":"critical",',
+      'availableBytes:(recovered?8192:64)*1024**2,totalBytes:16*1024**3,processes:[]});',
+      'const result=await withGateSlot(root,lease=>runProfiledShellAsync(root,"node memory-probe.cjs",{gateLease:lease,waitMs:lease.waitMs}),',
+      '{remote,agent,kind:"focused",readMemory,onWait(state){if(state.memory?.held){held.push(state.memory);',
+      `status=JSON.parse(execFileSync(process.execPath,[${JSON.stringify(cli)},"status","--json"],{cwd:root,encoding:"utf8"}));`,
+      'recovered=true;}}});',
+      'return {green:result.isGreen,runner:result.executionRunner,output:result.output,held,status};}',
+      'output.remote=await exercise(true,"remote-memory-control");',
+      'output.local=await exercise(false,"local-memory-control");',
+      'console.log(JSON.stringify(output));',
+    ].join('\n');
+    const run = runFixtureChild(process.execPath, ['--input-type=module', '-e', source], { cwd: box.repo, env: box.env, encoding: 'utf8', timeout: 90_000 });
+    assert.equal(run.status, 0, run.failure || run.stderr || run.stdout);
+    const result = JSON.parse(run.stdout);
+    assert.equal(result.remote.green, true, result.remote.output);
+    assert.equal(result.remote.runner, HOST, 'the actual stand-in worker executed this run');
+    assert.match(result.remote.output, /REAL_RUNNER_MEMORY_PROBE/u);
+    assert.deepEqual(result.remote.held, [], 'a runner-bound run is never held for local memory');
+    assert.equal(result.local.green, true, result.local.output);
+    assert.ok(result.local.held.length > 0, 'local-only work still waits for recovery');
+    assert.ok(result.local.status.memoryHeld.some(entry => entry.agent === 'local-memory-control'), 'public status names the actual locally held run');
+    assert.ok(!result.local.status.memoryHeld.some(entry => entry.agent === 'remote-memory-control'), 'status does not falsely label the finished runner-bound run');
+  } finally { e2e.cleanup(); }
+}
