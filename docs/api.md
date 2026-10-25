@@ -116,6 +116,7 @@ For example: `flow: review wait average 61 min (1 measured; > 60 min); bottlenec
 | `milestone edit` | `version:number`, `milestone:object` |
 | `milestone remove` | `version:number`, `milestone:object` |
 | `milestone ship` | `version:number`, `milestone:object`, `into:string|null`, `moved:array`, `notMoved:array` |
+| `companion` | `version:number`, `item:object`, `created:boolean` |
 | `show` | `version:number`, `item_id:number`, `item_title:string`, `item_lane:string`, `item_status:string`, `verdicts:array`, `thread:array` |
 | `stats` | `version:number`, `stats:object`, `gateWaits:array` |
 | `status` | `version:number`, `me:object`, `mine:array`, `ruleCounts:object`, `stats:object`, `reviewQueue:object`, `unread:number`, `relay:object` |
@@ -741,6 +742,13 @@ query; it does not execute the decision or grant cross-board authority.
 Consumers supply the existing canonical resolver as `resolveBoardRef(id) -> {boardId}` without alias normalization here, their local `boardId`, and a synchronous authenticated `authorize({action,boardId,document})` port. Actions are `accepted`, `declined`, and `receive-result`. The port must verify the appropriate source/destination authority for the exact document; there is no permissive default. The destination's synchronous `createChild(content)` port must perform its native child move on this same board and return its item id. Invoke these contracts inside the consumer's ordered move: child creation and the destination retry record share one SQLite transaction. Source result delivery is a separately authorized, idempotent transaction. These contracts add no offer orchestration, two-board transaction or landing sequencer.
 
 `minimalItemReceipt(fields,{sign})` accepts only `{version:1,sourceBoardId,item,commit,verifier,verdict}` and appends `integrity:{digest,signature}` over canonical permitted bytes. `verifyItemReceipt(receipt,{resolveBoardRef,verify},expected)` requires all expected references to match, checks the digest, and calls `verify(bytes,signature,sourceBoardId)` against the consumer's established source trust. Signatures are supplied through the existing authority adapter; a digest alone proves no authority. Titles, criteria, notes and unknown fields are refused even on verification. Private landing consumers still establish the real landing and verdict before issuing this reduced envelope.
+
+
+## Companion requests
+
+`pullboard companion <parent> <lane> "<title>" --key <stable-key>` creates a normally claimable child in another lane. Its durable identity is the parent item, target lane and explicit key (1–80 letters, digits, dots, underscores or hyphens). Concurrent requests with that identity return the same child and `created: false` after the first creation. A retry returns the original child without changing its title, criterion, brief or claim, including after the parent closes; different keys name different work. Only open or claimed parents accept a new companion. Ordinary `add --parent` retains its same-lane rule.
+
+The request accepts ordinary `--criterion`, `--brief`, `--specs` and `--route` content. Only the coordinator may supply `--check`; other builders use the existing coordinator check-setting workflow. The child is built and independently verified by its own lane, using normal exclusive leases. Requesting or finding it never claims it. Parent completion still waits for unfinished child items. The authenticated `requestCompanion` move binds the lookup and child insertion in one transaction; its feature engine is assigned at landing, and older engines refuse it. Relay outbox bindings preserve both the parent input identity and the created child result when final item numbers differ.
 ## Agent lifecycle nudges
 
 `init` merges project-local Claude Code `.claude/settings.json` and Codex `.codex/hooks.json` handlers for `SessionStart` and `Stop`, preserving other handlers and settings. Each installed line resolves the local, main-checkout or PATH executable and calls `pullboard hook <event>`; a missing executable exits successfully without output. `init --no-hooks` skips these agent nudges. Existing Git gate hooks are independent. `hooks uninstall` removes only Pullboard's exact agent-handler lines.

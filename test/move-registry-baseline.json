@@ -68,6 +68,7 @@
     "recordActivityDelivery",
     "decideSpecRevisions",
     "recordRowVerification",
+    "requestCompanion",
     "setBoardMembers"
   ],
   "itemIdFirstArgument": [
@@ -672,6 +673,14 @@
       null
     ],
     "setBoardMembers": [
+      null,
+      "first",
+      null,
+      null,
+      null,
+      null
+    ],
+    "requestCompanion": [
       null,
       "first",
       null,
@@ -7067,8 +7076,11 @@
     "RELAY_SSH_KEY": "make an SSH key with ssh-keygen -t ed25519, add it to GitHub with gh ssh-key add, then run pullboard relay on again",
     "RELAY_SSH_KEYGEN": "install OpenSSH, then run pullboard relay on again",
     "RELAY_SSH_SIGN": "load the key with ssh-add, or set PULLBOARD_SSH_KEY to a key on your GitHub account, then run pullboard relay on again",
-    "BAD_DECISION_OPTIONS": "ask an item decision with --decision --item <id> --options '[\"first\",\"second\"]'",
-    "NOT_YOUR_ITEM_DECISION": "ask on an item you build or review, or ask the coordinator for a cross-item decision"
+    "COMPANION_PARENT": "name the parent item: pullboard companion <parent> <lane> \"<title>\" --key <key>",
+    "COMPANION_KEY": "supply a stable --key and reuse it for this same parent and target lane",
+    "COMPANION_LANE": "choose a different target lane; ordinary same-lane children use pullboard add --parent",
+    "COMPANION_CONTENT": "supply title, criterion and brief text and existing spec ids for the companion",
+    "COMPANION_RECORD": "restore a consistent board export so the companion request index matches its child"
   },
   "replay": {
     "initial": {

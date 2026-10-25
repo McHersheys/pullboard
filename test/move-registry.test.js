@@ -76,6 +76,7 @@ test('today\'s move order, actors, refusal recovery text and recorded SQLite pre
   const acceptedExpected = SNAPSHOT.replay.acceptedExpected;
   const engineRows = acceptedExpected.tables.board_meta.filter(row => row.meta_key === 'relay_engine_version');
   assert.equal(engineRows.length, 1, 'the accepted snapshot has one receiver engine-version field');
+  assert.equal(engineRows[0].meta_value, '107', 'the historical golden retains its original writer engine');
   for (const { move } of SNAPSHOT.replay.records) {
     const key = `relay_receipt_${move.id}`;
     const expected = acceptedExpected.tables.board_meta.find(row => row.meta_key === key);
