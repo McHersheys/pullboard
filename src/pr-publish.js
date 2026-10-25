@@ -19,13 +19,17 @@ import {
   repoInfo,
   tryGit,
   cleanGitEnvironment,
+  refuseGrafts,
 } from './git.js';
 import { runGate } from './gate.js';
 import {
   githubPullClient,
   githubRepository,
 } from './pr-github.js';
-import { publishVerificationStatuses } from './pr-verification.js';
+import {
+  publishVerificationStatuses,
+  verificationPulls,
+} from './pr-verification.js';
 import { Refused } from './refused.js';
 
 /** Keep publisher-local transport state distinct from the shared board and legacy push state. */
@@ -180,56 +184,69 @@ export async function publishPullRequests({ root, board, config, branch, remote,
   const repository = githubRepository(root, remote);
   const client = githubPullClient(root, repository);
   const state = readState(root);
-  let verification = publishVerificationStatuses({ root, board, client, state, repository, trustedHead: head });
-  const releases = [];
-  const findings = [];
-  const unattributed = [];
-  for (const proposal of state.proposals.filter(p => p.repository === repository)) {
-    const pull = client.read(proposal.number);
-    if (pull.head?.sha !== proposal.head) throw new Refused('PUBLISH_STATE', 'a proposal branch changed outside its recorded publication; inspect the PR before publishing');
-    if (pull.state === 'closed' && !pull.merged) throw new Refused('PUBLISH_STATE', 'the proposal was closed without merging; ask the coordinator whether to reopen it before publishing');
-    const ci = await observeCI(client, proposal, repository, write);
-    findings.push(...ci.findings); unattributed.push(...ci.unattributed);
-    const released = proposal.released ? null : await observeMerge(root, board, proposal, pull, config, repository, write);
-    if (released) {
-      proposal.released = true; releases.push(released);
-      say(`recorded PR #${proposal.number} merge by ${released.actor} (${released.recognizedPerson ? 'recognized person' : 'not a recognized person'}); no native person approval recorded`);
+  // Validate graft and provider identities before any new publication side effect.
+  refuseGrafts(root);
+  verificationPulls(client, state, repository);
+  const verification = [];
+  let failed = false;
+  try {
+    const releases = [];
+    const findings = [];
+    const unattributed = [];
+    for (const proposal of state.proposals.filter(p => p.repository === repository)) {
+      const pull = client.read(proposal.number);
+      if (pull.head?.sha !== proposal.head) throw new Refused('PUBLISH_STATE', 'a proposal branch changed outside its recorded publication; inspect the PR before publishing');
+      if (pull.state === 'closed' && !pull.merged) throw new Refused('PUBLISH_STATE', 'the proposal was closed without merging; ask the coordinator whether to reopen it before publishing');
+      const ci = await observeCI(client, proposal, repository, write);
+      findings.push(...ci.findings); unattributed.push(...ci.unattributed);
+      const released = proposal.released ? null : await observeMerge(root, board, proposal, pull, config, repository, write);
+      if (released) {
+        proposal.released = true; releases.push(released);
+        say(`recorded PR #${proposal.number} merge by ${released.actor} (${released.recognizedPerson ? 'recognized person' : 'not a recognized person'}); no native person approval recorded`);
+      }
+    }
+    await saveState(root, state);
+    const releasedItems = new Set(state.proposals.filter(p => p.released).flatMap(p => p.entries.map(e => `${e.id}:${e.commit}`)));
+    const entries = releaseEntries(root, board, published, head).filter(e => !releasedItems.has(`${e.id}:${e.commit}`));
+    if (tryGit(root, ['merge-base', '--is-ancestor', head, published]).status === 0) return { head, published: true, red: [], releases, findings, unattributed, verification };
+    const digest = createHash('sha256').update(branch).digest('hex').slice(0, 12);
+    const repairRoots = new Map(store.events(board).filter(e => e.event_kind === 'pr-ci-finding').map(e => {
+      const detail = JSON.parse(e.event_detail); return [detail.repair, detail.item];
+    }));
+    const groups = config.publish.pullRequest === 'item' ? [...new Set(entries.map(e => repairRoots.get(e.id) ?? e.id))]
+      .map(id => ({ key: `item-${id}`, entries: entries.filter(e => (repairRoots.get(e.id) ?? e.id) === id) })) : [{ key: 'release', entries }];
+    const proposed = [];
+    if (!groups.length) return { head, published: false, waiting: true, red: [], releases, findings, unattributed, verification,
+      reason: 'No unpublished accepted item remains; per-item mode does not certify unrelated local commits.' };
+    for (const group of groups) {
+      const name = `pullboard/${group.key}-${digest}`;
+      const old = state.proposals.findLast(p => p.repository === repository && p.branch === name && !p.released);
+      if (old?.source === head) { proposed.push(old); continue; }
+      const added = group.entries.filter(entry => !old?.entries.some(e => e.merge === entry.merge));
+      if (old && config.publish.pullRequest === 'item' && !added.length) { proposed.push(old); continue; }
+      const candidate = config.publish.pullRequest === 'item'
+        ? itemComposition(root, old?.head ?? published, added) : releaseComposition(root, published, head);
+      const gate = await proveProposal({ root, config, remote, candidate, branch: name, onWait, onFailure });
+      if (!gate.isGreen) return { head, published: false, red: [{ file: null, name: 'publication whole gate failed', items: group.entries.map(e => e.id) }], findings, unattributed };
+      const body = receiptBody(candidate, group.entries);
+      const title = `Pullboard ${group.key === 'release' ? 'release' : group.key}`;
+      const existing = old ?? client.list(name)[0];
+      const pull = existing ? client.update(existing.number, { title, body }) : client.create({ title, body, head: name, base: branch });
+      if (!Number.isSafeInteger(pull.number) || pull.number < 1 || pull.head?.sha !== candidate) throw new Refused('PUBLISH_GITHUB', 'the PR response does not name the exact proven publication head; inspect it before continuing');
+      const proposal = { repository, branch: name, source: head, head: candidate, number: pull.number,
+        url: `https://github.com/${repository}/pull/${pull.number}`, entries: group.entries, released: false };
+      if (old) state.proposals.splice(state.proposals.indexOf(old), 1, proposal); else state.proposals.push(proposal);
+      await saveState(root, state); proposed.push(proposal);
+    }
+    say(`proposed ${proposed.length} pull request(s); only a person can merge them`);
+    return { head, published: false, waiting: true, proposed: true, pullRequests: proposed.map(p => ({ number: p.number, url: p.url, head: p.head, items: p.entries.map(e => e.id) })), red: [], releases, findings, unattributed, verification };
+  } catch (error) { failed = true; throw error; }
+  finally {
+    // One final pass sees every proposed PR. Returned objects retain this same result array.
+    if (!failed) verification.push(...publishVerificationStatuses({ root, board, client, state, repository, trustedHead: head }));
+    else {
+      try { publishVerificationStatuses({ root, board, client, state, repository, trustedHead: head }); }
+      catch { /* Preserve the publication failure, rather than hide it behind a later provider error. */ }
     }
   }
-  await saveState(root, state);
-  const releasedItems = new Set(state.proposals.filter(p => p.released).flatMap(p => p.entries.map(e => `${e.id}:${e.commit}`)));
-  const entries = releaseEntries(root, board, published, head).filter(e => !releasedItems.has(`${e.id}:${e.commit}`));
-  if (tryGit(root, ['merge-base', '--is-ancestor', head, published]).status === 0) return { head, published: true, red: [], releases, findings, unattributed, verification };
-  const digest = createHash('sha256').update(branch).digest('hex').slice(0, 12);
-  const repairRoots = new Map(store.events(board).filter(e => e.event_kind === 'pr-ci-finding').map(e => {
-    const detail = JSON.parse(e.event_detail); return [detail.repair, detail.item];
-  }));
-  const groups = config.publish.pullRequest === 'item' ? [...new Set(entries.map(e => repairRoots.get(e.id) ?? e.id))]
-    .map(id => ({ key: `item-${id}`, entries: entries.filter(e => (repairRoots.get(e.id) ?? e.id) === id) })) : [{ key: 'release', entries }];
-  const proposed = [];
-  if (!groups.length) return { head, published: false, waiting: true, red: [], releases, findings, unattributed, verification,
-    reason: 'No unpublished accepted item remains; per-item mode does not certify unrelated local commits.' };
-  for (const group of groups) {
-    const name = `pullboard/${group.key}-${digest}`;
-    const old = state.proposals.findLast(p => p.repository === repository && p.branch === name && !p.released);
-    if (old?.source === head) { proposed.push(old); continue; }
-    const added = group.entries.filter(entry => !old?.entries.some(e => e.merge === entry.merge));
-    if (old && config.publish.pullRequest === 'item' && !added.length) { proposed.push(old); continue; }
-    const candidate = config.publish.pullRequest === 'item'
-      ? itemComposition(root, old?.head ?? published, added) : releaseComposition(root, published, head);
-    const gate = await proveProposal({ root, config, remote, candidate, branch: name, onWait, onFailure });
-    if (!gate.isGreen) return { head, published: false, red: [{ file: null, name: 'publication whole gate failed', items: group.entries.map(e => e.id) }], findings, unattributed };
-    const body = receiptBody(candidate, group.entries);
-    const title = `Pullboard ${group.key === 'release' ? 'release' : group.key}`;
-    const existing = old ?? client.list(name)[0];
-    const pull = existing ? client.update(existing.number, { title, body }) : client.create({ title, body, head: name, base: branch });
-    if (!Number.isSafeInteger(pull.number) || pull.number < 1 || pull.head?.sha !== candidate) throw new Refused('PUBLISH_GITHUB', 'the PR response does not name the exact proven publication head; inspect it before continuing');
-    const proposal = { repository, branch: name, source: head, head: candidate, number: pull.number,
-      url: `https://github.com/${repository}/pull/${pull.number}`, entries: group.entries, released: false };
-    if (old) state.proposals.splice(state.proposals.indexOf(old), 1, proposal); else state.proposals.push(proposal);
-    await saveState(root, state); proposed.push(proposal);
-    verification = publishVerificationStatuses({ root, board, client, state, repository, trustedHead: head });
-  }
-  say(`proposed ${proposed.length} pull request(s); only a person can merge them`);
-  return { head, published: false, waiting: true, proposed: true, pullRequests: proposed.map(p => ({ number: p.number, url: p.url, head: p.head, items: p.entries.map(e => e.id) })), red: [], releases, findings, unattributed, verification };
 }
