@@ -36,6 +36,7 @@ import * as resourceApi from './resources.js';
 import { createDescendantTracker } from './runner-custody.js';
 import { Refused } from './refused.js';
 import { guiSession } from './gui-session.js';
+import { privateCheckEnvelope } from './runner-private-mode.js';
 import {
   gateStages,
   stagedScript,
@@ -62,6 +63,8 @@ let activeDescendantTracker = null;
 // Budget: report a named failure within 30 seconds after command exit or transport cancellation.
 const CLEANUP_BUDGET_MS = 30_000;
 let cleanupDeadline = Infinity;
+let phaseCleanupDeadline = Infinity;
+let phaseCleanupTimer = null;
 let cleanupTimedOut = false;
 let cleanupTimer = null;
 let cleanupStage = 'command exit';
@@ -77,9 +80,30 @@ function beginCleanup() {
   cleanupTimer.unref();
 }
 
+/** Bound an intermediate install drain without starting or extending the final/disconnect budget. */
+function beginPhaseCleanup() {
+  if (Number.isFinite(phaseCleanupDeadline)) return;
+  phaseCleanupDeadline = Date.now() + CLEANUP_BUDGET_MS;
+  phaseCleanupTimer = setTimeout(reportCleanupTimeout, CLEANUP_BUDGET_MS);
+  phaseCleanupTimer.unref();
+}
+
+/** A fully verified successful intermediate drain is the only boundary allowed to clear its own timer. */
+function clearPhaseCleanup() {
+  if (Date.now() >= Math.min(cleanupDeadline, phaseCleanupDeadline)) {
+    reportCleanupTimeout();
+    return false;
+  }
+  if (transportLost || cleanupTimedOut || Number.isFinite(cleanupDeadline) || ownedChildren.size) return false;
+  clearTimeout(phaseCleanupTimer);
+  phaseCleanupTimer = null;
+  phaseCleanupDeadline = Infinity;
+  return true;
+}
+
 /** Report an unresolved cleanup once so the controller can fail without retrying the command. */
 function reportCleanupTimeout() {
-  if (cleanupTimedOut || Date.now() < cleanupDeadline) return;
+  if (cleanupTimedOut || Date.now() < Math.min(cleanupDeadline, phaseCleanupDeadline)) return;
   cleanupTimedOut = true;
   const details = { id: workerId, stage: cleanupStage, ...(cleanupDetails?.() ?? {}) };
   // A timeout may arrive after ordinary job deletion while output is still flushing.
@@ -176,6 +200,11 @@ async function readSpec() {
     || (value.browserByLaunch !== undefined && typeof value.browserByLaunch !== 'boolean')
     || !value.runtime || typeof value.runtime !== 'object' || !value.runtime.files || typeof value.runtime.files !== 'object'
     || typeof value.runtime.sha256 !== 'string') throw new Error('invalid work specification');
+  if (value.trustedMode !== undefined) {
+    const mode = privateCheckEnvelope(value.trustedMode);
+    if (mode.policyCommit.length !== value.commit.length || value.command !== mode.check || value.landing === true || value.stageMarker !== undefined) throw new Error('invalid trusted private-check source');
+    value.trustedMode = mode;
+  }
   if (value.timeoutMs !== undefined && (value.landing !== true || !Number.isSafeInteger(value.timeoutMs) || value.timeoutMs < 1 || value.timeoutMs > 2_147_483_647)) throw new Error('invalid landing timeout');
   if (value.stageMarker !== undefined && !/^PULLBOARD_STAGE_[a-f0-9]{32}$/u.test(value.stageMarker)) throw new Error('invalid stage marker');
   if (value.waivers !== undefined && (!Array.isArray(value.waivers) || value.waivers.some(entry => !entry || !['file', 'name'].includes(entry.kind) || typeof entry.test !== 'string' || !entry.test || Object.keys(entry).some(key => !['kind', 'test'].includes(key))))) throw new Error('invalid continuation projection');
@@ -204,7 +233,7 @@ async function readSpec() {
     tagNames.add(tag.name);
     if (tag.chain.length ? tag.chain[0] !== tag.object : tag.object !== tag.peeledCommit) throw new Error('invalid tag manifest');
   }
-  const runtimeNames = ['runner-custody.js', 'resources.js', 'git.js', 'machine-home.js', 'refused.js', 'process-census.js', 'queue-settings.js', 'queue-order.js', 'sandbox-denial.js', 'gate-stages.js', 'child-journal-preload.js', 'execution-environment.js', 'runner-load.js', 'gui-session.js'];
+  const runtimeNames = ['runner-custody.js', 'resources.js', 'git.js', 'machine-home.js', 'refused.js', 'process-census.js', 'queue-settings.js', 'queue-order.js', 'sandbox-denial.js', 'gate-stages.js', 'child-journal-preload.js', 'execution-environment.js', 'runner-load.js', 'gui-session.js', 'runner-private-mode.js'];
   if (Object.keys(value.runtime.files).length !== runtimeNames.length
     || runtimeNames.some(name => typeof value.runtime.files[name] !== 'string')) throw new Error('invalid work specification');
   if (createHash('sha256').update(JSON.stringify(value.runtime.files)).digest('hex') !== value.runtime.sha256) throw new Error('invalid trusted runtime');
@@ -532,7 +561,11 @@ async function checkoutHistory(api, runnerRoot, root, packFile, spec, env) {
     const historyCount = Number(await git(cache, ['rev-list', '--count', spec.commit], env));
     if (!Number.isSafeInteger(historyCount) || historyCount < 1) throw new Error('source history is incomplete');
     if (spec.originBase) await git(cache, ['merge-base', '--is-ancestor', spec.originBase, spec.commit], env);
-    const closure = new Set((await git(cache, ['rev-list', '--objects', spec.commit], env)).split(/\r?\n/u)
+    const roots = [...new Set([spec.commit, ...(spec.trustedMode ? [spec.trustedMode.policyCommit, spec.trustedMode.trunk.commit] : [])])];
+    for (const commit of roots) {
+      if (await git(cache, ['cat-file', '-t', commit], env) !== 'commit') throw new Error('trusted policy history is incomplete');
+    }
+    const closure = new Set((await git(cache, ['rev-list', '--objects', ...roots], env)).split(/\r?\n/u)
       .map(line => line.match(/^([a-f0-9]{40,64})(?:\s|$)/u)?.[1]).filter(Boolean));
     closure.add(spec.commit);
     const tagObjects = new Set(spec.tags.flatMap(tag => tag.chain));
@@ -575,10 +608,18 @@ async function checkoutHistory(api, runnerRoot, root, packFile, spec, env) {
       }
       await git(cache, ['merge-base', '--is-ancestor', tag.peeledCommit, spec.commit], env);
     }
-    await git(cache, ['update-ref', `refs/pullboard/candidates/${spec.commit}`, spec.commit], env);
+    for (const commit of roots) await git(cache, ['update-ref', `refs/pullboard/candidates/${commit}`, commit], env);
     await git(root, ['init', '-q', `--object-format=${spec.commit.length === 64 ? 'sha256' : 'sha1'}`], env);
     await git(root, ['-c', 'protocol.file.allow=always', 'fetch', '--no-tags', cache, `refs/pullboard/candidates/${spec.commit}`], env);
     await git(root, ['checkout', '--detach', 'FETCH_HEAD'], env);
+    if (spec.trustedMode) {
+      const mode = spec.trustedMode;
+      await git(root, ['check-ref-format', mode.trunk.ref], env);
+      await git(root, ['-c', 'protocol.file.allow=always', 'fetch', '--no-tags', cache,
+        `refs/pullboard/candidates/${mode.policyCommit}:refs/pullboard/trusted-policy`,
+        `refs/pullboard/candidates/${mode.trunk.commit}:${mode.trunk.ref}`], env);
+      await git(root, ['config', '--local', '--replace-all', 'pullboard.trunk', mode.trunk.ref], env);
+    }
     for (let index = 0; index < spec.tags.length; index++) {
       const tag = spec.tags[index];
       const deliveryRef = `refs/pullboard/tag-delivery/${spec.id}/${index}`;
@@ -647,16 +688,18 @@ function outputSink() {
   const hash = createHash('sha256');
   const wallStart = Date.now();
   let pipeFailed = false;
+  let length = 0;
   const write = part => {
     const bytes = Buffer.isBuffer(part) ? part : Buffer.from(part);
     hash.update(bytes);
+    length += bytes.length;
     // A lost transport never drains. Discard instead of waiting: a paused command pipe never closes, its group never
     // finishes draining, and with only unref'd timers left the worker exits before releasing its lease (#888).
     if (transportLost || process.stdout.destroyed) return Promise.resolve();
     if (!process.stdout.write(bytes)) return Promise.race([once(process.stdout, 'drain'), transportGone]);
     return Promise.resolve();
   };
-  return { hash, write, get pipeFailed() { return pipeFailed; }, set pipeFailed(value) { pipeFailed = value; }, wallStart };
+  return { hash, write, get length() { return length; }, get pipeFailed() { return pipeFailed; }, set pipeFailed(value) { pipeFailed = value; }, wallStart };
 }
 
 /** Stop only the detached command process group owned by this worker, then await its close event. */
@@ -690,7 +733,8 @@ async function stopOwnedGroup(pid, closed, tracker) {
  * Run the exact requested command in its isolated checkout, retaining raw output and real test exit status.
  * A failed command also carries any file denial's evidence, classified here against this checkout (#706).
  */
-async function runCommand(spec, root, env, sink, tracker) {
+async function runCommand(spec, root, env, sink, tracker, { continuation = false } = {}) {
+  const commandCleanup = continuation ? beginPhaseCleanup : beginCleanup;
   const split = spec.stageMarker ? gateStages(spec.command) : null;
   const pipes = split?.some(stage => stage.pipeline.length > 1) ? mkdtempSync(join(dirname(root), 'gate-pipes-')) : null;
   const command = split ? `(\n${stagedScript(split, spec.stageMarker, pipes)}\n) 2>&1` : spec.command;
@@ -706,7 +750,7 @@ async function runCommand(spec, root, env, sink, tracker) {
   const child = owned.child;
   // A surviving descendant can keep stdio open after the command leader exits.
   // Start the budget at exit rather than waiting for those pipes to close.
-  child.once('exit', beginCleanup);
+  child.once('exit', commandCleanup);
   let outputError = null;
   let writes = Promise.resolve();
   const closed = owned.closed;
@@ -727,7 +771,7 @@ async function runCommand(spec, root, env, sink, tracker) {
   const result = await closed;
   clearTimeout(timeout);
   if (timeoutDrain) await timeoutDrain;
-  beginCleanup();
+  commandCleanup();
   cleanupStage = 'command output';
   await writes;
   cleanupStage = 'command descendants';
@@ -739,11 +783,75 @@ async function runCommand(spec, root, env, sink, tracker) {
   if (sink.pipeFailed) return { code: 1, signal: result.signal ?? 'SIGHUP' };
   if (result.error) throw result.error;
   const code = Number.isInteger(result.code) ? result.code : 1;
+  if (continuation && code === 0 && !result.signal && !timedOut && !outputError && !sink.pipeFailed) {
+    await tracker.verifyAfterGroups();
+    if (!clearPhaseCleanup()) throw new Error('intermediate install cleanup could not be verified within its deadline');
+  }
   const denial = code === 0 && !result.signal ? null : denials.end();
   let pipeStatuses = pipes ? readPipes(split, pipes, 8 * 1024 ** 2) : null;
   // Accounting beyond this bound fails closed; it never turns an unaccounted failure green.
   if (Buffer.byteLength(JSON.stringify(pipeStatuses)) > 8 * 1024 ** 2) pipeStatuses = null;
   return { code: timedOut ? 1 : code, signal: result.signal ?? null, ...(timedOut ? { timedOut: true } : {}), ...(spec.stageMarker ? { pipeStatuses } : {}), ...(denial ? { denial } : {}) };
+}
+
+/** Apply only the frozen declarative guard inside this exact private checkout, never a controller callback. */
+async function applyPrivateGuard(root, guard, env) {
+  if (!guard) return null;
+  try {
+    const path = join(root, guard.patch ?? guard.path);
+    const canonical = realpathSync(path);
+    if (!canonical.startsWith(realpathSync(root) + '/')) throw new Error('guard escapes its private checkout');
+    if (guard.patch) await git(root, ['apply', '-R', '--whitespace=nowarn', '--', guard.patch], env);
+    else {
+      const lines = readFileSync(path, 'utf8').split('\n');
+      if (guard.to > lines.length) throw new Error('guard lines are absent');
+      lines.splice(guard.from - 1, guard.to - guard.from + 1);
+      writeFileSync(path, lines.join('\n'));
+    }
+    return { applied: true, problem: '' };
+  } catch { return { applied: false, problem: `guard ${guard.text} cannot be reverted inside the submitted checkout`.slice(0, 4096) }; }
+}
+
+/** Execute the trusted phases against one absolute policy deadline, with worker-owned byte boundaries. */
+async function runPrivateCheck(spec, root, env, sink, tracker) {
+  const mode = spec.trustedMode;
+  const phases = { install: null, check: null };
+  const guard = await applyPrivateGuard(root, mode.guard, env);
+  let problem = guard && !guard.applied ? { stage: 'guard', message: guard.problem } : null;
+  const deadline = Date.now() + mode.timeoutMs;
+  let denial = null;
+  /** Capture phase framing outside command output, so candidate text cannot forge a phase receipt. */
+  const phase = async (name, command, continuation) => {
+    const offset = sink.length;
+    const hash = createHash('sha256');
+    const phaseSink = Object.create(sink);
+    phaseSink.write = part => { const bytes = Buffer.isBuffer(part) ? part : Buffer.from(part); hash.update(bytes); return sink.write(bytes); };
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) { problem = { stage: name, message: `${name} timed out` }; return null; }
+    let result;
+    try { result = await runCommand({ ...spec, command, stageMarker: undefined, timeoutMs: remaining, pipefail: false }, root, env, phaseSink, tracker, { continuation }); }
+    catch {
+      problem = { stage: name, message: `${name} could not start or its output could not be saved` };
+      result = { code: 1, signal: null };
+    }
+    denial = result.denial ?? denial;
+    const value = { offset, length: sink.length - offset, sha256: hash.digest('hex'), code: result.code, signal: result.signal ?? null, timedOut: result.timedOut === true };
+    phases[name] = value;
+    return value;
+  };
+  if (!problem && mode.install) await phase('install', mode.install, true);
+  const installed = !mode.install || phases.install?.code === 0 && !phases.install.signal && !phases.install.timedOut;
+  if (!problem && installed) await phase('check', mode.check, false);
+  const last = phases.check ?? phases.install;
+  let sourceUnchanged = false;
+  if (!mode.guard) {
+    try {
+      const state = (await git(root, ['status', '--porcelain=v2', '--branch', '--untracked-files=normal'], env)).split('\n').filter(Boolean);
+      sourceUnchanged = state.includes('# branch.oid ' + spec.commit) && state.every(line => line.startsWith('# '));
+    } catch { sourceUnchanged = false; }
+  }
+  return { code: problem ? 1 : last?.code ?? 1, signal: last?.signal ?? null, ...(denial ? { denial } : {}),
+    trustedMode: { kind: 'private-check', version: 1, requestSha256: mode.sha256, phases, guard, sourceUnchanged, ...(problem ? { problem } : {}) } };
 }
 
 /** Send the single nonce-bound result line after the complete merged output has drained. */
@@ -754,6 +862,7 @@ async function receipt(spec, fields, sink) {
     runtimeSha256: spec.runtime.sha256, toolingSha256: spec.tooling.sha256, root: fields.root ?? '', outputSha256: sink.hash.digest('hex'), wallMs: Math.max(0, Date.now() - sink.wallStart),
     // The execution host's load and the pinned main this run used, so a paired rerun here can be judged (#925).
     main: typeof spec.main === 'string' ? spec.main : null, load: { average: loadavg(), cpus: availableParallelism(), freeMB: Math.floor(freemem() / 1048576) },
+    ...(fields.trustedMode ? { trustedMode: fields.trustedMode } : {}),
     ...(spec.stageMarker ? { pipeStatuses: fields.pipeStatuses ?? null } : {}), ...(fields.timedOut ? { timedOut: true } : {}), ...(fields.refused ? { refused: fields.refused } : {}), ...(fields.browserRefused ? { browserRefused: true } : {}), ...(fields.denial ? { denial: fields.denial } : {}) };
   const encoded = Buffer.from(JSON.stringify(body)).toString('base64');
   await new Promise((resolveWrite, rejectWrite) => process.stderr.write(`${RECEIPT} ${spec.id} ${encoded}\n`, error => error ? rejectWrite(error) : resolveWrite()));
@@ -856,17 +965,23 @@ async function main() {
     const env = scopedEnvironment(privateHome, temporary, canonicalMachineHome, lease, api, tracker.nodeOptions);
     setupStep = 'source history checkout';
     await checkoutHistory(api, runnerRoot, root, packFile, spec, env);
-    setupStep = 'committed dependencies';
-    await installDependencies(root, runnerRoot, env, tracker);
+    if (!spec.trustedMode) {
+      setupStep = 'committed dependencies';
+      await installDependencies(root, runnerRoot, env, tracker);
+    }
     setupStep = 'command start';
     const browserRefusal = join(runDirectory, 'browser-refusal.json');
-    final = { ...(await runCommand(spec, root, { ...env, PULLBOARD_LANDING_RUN: spec.landing === true ? '1' : '0', [api.BROWSER_REFUSAL_FILE_ENV]: browserRefusal, ...(typeof spec.browserByLaunch === 'boolean' ? { PULLBOARD_TEST_BROWSER_BY_LAUNCH: spec.browserByLaunch ? '1' : '0' } : {}), PULLBOARD_LANDING_WAIVERS: JSON.stringify(spec.landing === true ? spec.waivers ?? [] : []) }, sink, tracker)), root };
+    const commandEnv = { ...env, PULLBOARD_LANDING_RUN: spec.landing === true ? '1' : '0', [api.BROWSER_REFUSAL_FILE_ENV]: browserRefusal, ...(typeof spec.browserByLaunch === 'boolean' ? { PULLBOARD_TEST_BROWSER_BY_LAUNCH: spec.browserByLaunch ? '1' : '0' } : {}), PULLBOARD_LANDING_WAIVERS: JSON.stringify(spec.landing === true ? spec.waivers ?? [] : []) };
+    final = { ...(spec.trustedMode ? await runPrivateCheck(spec, root, commandEnv, sink, tracker) : await runCommand(spec, root, commandEnv, sink, tracker)), root };
     if (final.code !== 0 && existsSync(browserRefusal)) final.browserRefused = true;
   } catch (error) {
     const refused = setupRefusalCode(error);
     const message = refused ? `${safeSetupMessage(error, setupStep)} [${refused}]` : safeSetupMessage(error, setupStep);
-    if (!transportLost) await sink.write(`${message}\n`);
-    final = { code: 1, signal: transportLost ? 'SIGHUP' : null, error: message, root: '', ...(refused ? { refused } : {}) };
+    if (!transportLost && !spec?.trustedMode) await sink.write(`${message}\n`);
+    final = { code: 1, signal: transportLost ? 'SIGHUP' : null, error: message, root: '', ...(refused ? { refused } : {}),
+      ...(spec?.trustedMode ? { trustedMode: { kind: 'private-check', version: 1, requestSha256: spec.trustedMode.sha256,
+        phases: { install: null, check: null }, guard: spec.trustedMode.guard ? { applied: false, problem: message } : null,
+        sourceUnchanged: false, problem: { stage: 'check', message } } } : {}) };
   } finally {
     beginCleanup();
     cleanupStage = 'final descendants';
@@ -891,10 +1006,11 @@ async function main() {
     cleanupStage = 'job files';
     if (runDirectory && !cleanupTimedOut) { try { rmSync(runDirectory, { recursive: true, force: true }); } catch {} }
   }
-  if (transportLost || cleanupTimedOut) { clearTimeout(cleanupTimer); process.exitCode = 1; stopReading(); return; }
+  if (transportLost || cleanupTimedOut) { clearTimeout(cleanupTimer); clearTimeout(phaseCleanupTimer); process.exitCode = 1; stopReading(); return; }
   cleanupStage = 'result receipt';
   await receipt(spec, { ...final, gui }, sink);
   clearTimeout(cleanupTimer);
+  clearTimeout(phaseCleanupTimer);
   process.exitCode = 0;
   stopReading();
 }

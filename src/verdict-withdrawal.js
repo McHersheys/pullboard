@@ -11,9 +11,9 @@ function verdictPairs(board, id) {
   return verdicts.map((verdict, index) => ({ verdict, event: events[index] }));
 }
 
-/** Only a later reopen naming both exact immutable identities marks an acceptance withdrawn. */
-export function verdictWithdrawals(board, id) {
-  const pairs = verdictPairs(board, id), result = new Map();
+/** Reuse an existing ordered read when supplied; standalone callers still load their own immutable pairs. */
+export function verdictWithdrawals(board, id, pairs = verdictPairs(board, id)) {
+  const result = new Map();
   for (const row of board.db.prepare("SELECT * FROM event WHERE item_id = ? AND event_kind = 'reopen' ORDER BY event_id").all(id)) {
     const detail = JSON.parse(row.event_detail), binding = detail.withdrawnVerdict;
     if (!binding) continue;

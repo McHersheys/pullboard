@@ -132,8 +132,8 @@ function gitCall(cwd, args, env) {
   });
 }
 
-/** Build one clean temporary checkout at the exact main commit and always remove it. */
-async function withMainCheckout(root, commit, run) {
+/** Build one clean temporary checkout at an exact commit (main's, or a pullboard test snapshot) and always remove it. */
+export async function withMainCheckout(root, commit, run) {
   const directory = join(tmpdir(), `pullboard-main-red-${randomUUID()}`);
   mkdirSync(directory, { mode: 0o700 });
   const checkout = join(directory, 'checkout');
@@ -185,19 +185,24 @@ export async function compareMainFailures(root, profile, onWait, output = '') {
     let failed = null;
     for (const path of missing) {
       try {
-        await withGateSlot(root, async lease => {
-          const measured = await withMainCheckout(root, main.commit, async checkout => {
+        // The slot is taken on the clean main checkout, so a runner can take it even when this worktree is dirty.
+        const measured = await withMainCheckout(root, main.commit, async checkout => {
+          /** Run main's copy of the file under one gate slot, on a runner unless remote is false. */
+          const measure = remote => withGateSlot(checkout, async lease => {
             const command = `${policy.config.affectedTests.trimEnd()} ${shellWord('./' + path)}`;
             const run = await runProfiledShellAsync(checkout, command, { gateLease: lease, waitMs: lease.waitMs });
             return { result: run.isGreen ? 'green' : 'red' };
-          });
-          if (measured.unavailable) throw new Error(measured.unavailable);
-          // The cache lease excludes other comparisons; persist each result before yielding again.
-          cache = readCache(file);
-          cache.entries[main.commit] ??= {};
-          cache.entries[main.commit][path] = measured;
-          writeCache(file, cache);
-        }, { diagnostic: true, browser: true, agent: process.env.PULLBOARD_AGENT, kind: 'main-red', onWait });
+          }, { diagnostic: true, browser: true, remote, agent: process.env.PULLBOARD_AGENT, kind: 'main-red', onWait });
+          // History a runner may not receive keeps the comparison on this machine, as it ran before runners.
+          try { return await measure(true); }
+          catch (error) { if (error?.code !== 'RUNNER_SECRET') throw error; return measure(false); }
+        });
+        if (measured.unavailable) throw new Error(measured.unavailable);
+        // The cache lease excludes other comparisons; persist each result before yielding again.
+        cache = readCache(file);
+        cache.entries[main.commit] ??= {};
+        cache.entries[main.commit][path] = measured;
+        writeCache(file, cache);
       }
       catch (error) { failed ??= error; }
     }

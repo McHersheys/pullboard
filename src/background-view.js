@@ -47,9 +47,11 @@ export function stopCommand(pid) {
 
 /** Print a live or reused view link and the exact stop action for its owning process. */
 export function reportView(io, view) {
-  io.result?.({ url: view.url, port: view.port, pid: view.pid, boundAt: view.boundAt, reused: view.reused });
+  io.result?.({ url: view.url, port: view.port, pid: view.pid, boundAt: view.boundAt, reused: view.reused, ...(view.lan ? { lan: true } : {}) });
   io.say(`Pullboard view: ${view.url}`);
-  io.say(`Only this machine can reach it, and only with that link. To stop it: ${stopCommand(view.pid)}`);
+  io.say(view.lan
+    ? `Devices on the local network can reach it using this private link. To stop it: ${stopCommand(view.pid)}`
+    : `Only this machine can reach it, and only with that link. To stop it: ${stopCommand(view.pid)}`);
 }
 
 /**
@@ -108,11 +110,12 @@ function release(child) {
  * @param {any} io
  * @param {number} port
  * @param {string} [projectRoot]
+ * @param {{lan?: boolean}} [options] Explicit LAN mode is never inherited by automatic init/resume startup.
  * @returns {Promise<number>}
  */
-export async function launchBackgroundView(io, port, projectRoot) {
+export async function launchBackgroundView(io, port, projectRoot, { lan = false } = {}) {
   const { child, view } = await startDetachedView({
-    args: [...(projectRoot ? ['--project'] : []), '--port', String(port)],
+    args: [...(projectRoot ? ['--project'] : []), ...(lan ? ['--lan'] : []), '--port', String(port)],
     cwd: projectRoot ?? io.cwd,
     stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
   });
