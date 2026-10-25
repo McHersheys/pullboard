@@ -447,7 +447,8 @@ The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its ap
 | `guards` | board | `missing`, `changed`, `stale` |
 | `rigor-notice` | rigor | `cause`, `items`, `occurrences`, `neverAgain`, `engine`, automatic-Rigor `drafts` |
 | `rigor-draft` | rigor | `id`, `target`, `cause`, exact typed `source`, `unproved` (always true), `items`, `occurrences`, `engine` |
-| `shout` | sender | `shout`, `to`, `decision`, `request`, `answers`, `news`, `newsFormat` |
+| `shout` | sender | `shout`, `to`, `decision`, `request`, `answers` |
+| `shout_news` | sender | `shout`, `to`, `decision`, `request`, `answers` |
 | `flake-observation` | reporting agent | `engine`, `observation` |
 | `flake-repair` | reporting agent | `engine`, `key`, `item` |
 | `health-scan` | observing agent | `active`, `engine` |
@@ -652,11 +653,12 @@ With `reviewsFirst` on, ordinary `next` offers an eligible review before a build
 With numeric `wipPerReviewer` on, a new claim that would exceed that limit is refused as `LINE_WIP_LIMIT`, naming the oldest eligible pending review when there is one. Live claimed items and outstanding submissions count; expired claims do not. The shared pure `lineWipLimit` function computes the total cap without rounding, using at least one observed reviewer. Renewals remain possible. The native claim carries the configured verifier and family policies so its suggested review never relaxes those guards. With `takeoverMinutes` on, a sent-back item's idle interval can end its original builder's first-refusal window early; a live claim is never stolen, and normal claim appends preserve the old history. Disabled controls retain the previous behavior. New claims under these controls carry a true `lineCapacity` argument and the line-capacity engine floor; marker-absent older recorded claims keep their historical meaning during replay.
 
 
-Explicit announcement news adds `news: true, newsFormat: 1` to a shout event without adding a SQLite column.
+The explicit top-level `news: true` shout argument emits a native `shout_news` event instead of `shout`, without adding a SQLite column. Its canonical message row remains in `shout`; consumers resolve its recipient and text in the same way as other messages.
 Only coordinator or person messages to `all` may be news; combining news with an item,
 decision, request or answer refuses as `BAD_NEWS`. Its unassigned activity-news engine leaf is
-numbered at landing; news takes the maximum applicable feature engine floor. Unversioned old
-metadata remains an ordinary message. Older ordinary
+numbered at landing; news takes the maximum applicable feature engine floor. Old `shout` events
+remain ordinary messages regardless of arbitrary metadata matching any news tags. `watch --kinds`
+continues to select literal kinds: include `shout,shout_news` to follow both. Older ordinary
 shout arguments retain their historical replay conditions. Untyped broadcasts retain their
 existing direct delivery, including governing holds and questions.
 

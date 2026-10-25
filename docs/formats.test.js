@@ -727,6 +727,7 @@ test('[A5] schema, versions, event kinds and event detail fields match live beha
     'rigor-notice': 'rigor',
     'rigor-draft': 'rigor',
     shout: 'sender',
+    shout_news: 'sender',
     pass: 'coordinator',
     answer: 'answerer',
     'flake-observation': 'reporting agent',

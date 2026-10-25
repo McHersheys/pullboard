@@ -49,6 +49,8 @@ test('explicit news follows normal CLI and API argument authority [R2,N26,H16,A2
   assert.deepEqual(delivered.activity.digests.find(digest => digest.kind === 'news')?.shouts, [id]);
   const board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
   try {
+    assert.ok(store.events(board).some(event => event.event_kind === 'shout_news'
+      && JSON.parse(event.event_detail).shout === id), 'the real CLI records news with its distinct native kind');
     const before = store.events(board);
     for (const [root, args] of [[box.web, ['shout', 'all', 'An agent cannot hide a broadcast', '--news', '--json']],
       [box.repo, ['shout', 'all', 'A decision is not expendable news', '--news', '--decision', '--json']]]) {

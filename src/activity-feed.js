@@ -69,10 +69,9 @@ function activityEntry(event, text, extra = {}) {
     ...(event.item_id === null ? {} : { item: event.item_id }), text, ...extra };
 }
 
-/** Treat only a versioned authorized announcement as news; old arbitrary metadata stays direct. */
+/** Only the new native kind expresses news intent; arbitrary old shout metadata stays direct. */
 export function isActivityNews(event, message) {
-  const detail = activityEventDetail(event);
-  return event.event_kind === 'shout' && detail?.news === true && detail.newsFormat === 1
+  return event.event_kind === 'shout_news'
     && event.item_id === null && ['coordinator', 'person'].includes(message?.shout_from)
     && event.event_by === message.shout_from && message.shout_to === 'all'
     && !message.shout_decision && !message.shout_request && message.shout_answers === null;
@@ -97,7 +96,7 @@ export function projectAgentActivity({ agent, interests, events, shouts, changes
       continue;
     }
     if (event.event_id <= after) continue;
-    if (['shout', 'pass', 'answer'].includes(event.event_kind)) {
+    if (['shout', 'shout_news', 'pass', 'answer'].includes(event.event_kind)) {
       const shout = messages.get(detail.shout);
       if (shout) {
         entries.push(activityEntry(event, shout.shout_text, { shout: shout.shout_id }));

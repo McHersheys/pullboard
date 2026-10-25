@@ -478,17 +478,14 @@ export function agentActivity(board, agentId, { after = 0, newsAfter = 0, workin
     for (const event of board.db.prepare(`SELECT * FROM event WHERE event_id>? AND event_id<=? AND item_id IN (${ids.map(() => '?').join(',')}) ORDER BY event_id`).all(after, cursor, ...ids)) rows.set(event.event_id, event);
   }
   for (const event of board.db.prepare(`SELECT * FROM event WHERE event_id>? AND event_id<=?
-    AND event_kind IN ('main-moved','row_decision','row_apply','row_draft','shout','pass','answer') ORDER BY event_id`).all(after, cursor)) rows.set(event.event_id, event);
-  if (sessionStart) for (const event of board.db.prepare(`SELECT * FROM event WHERE event_id>? AND event_id<=? AND event_kind='shout'
-    AND json_extract(CASE WHEN json_valid(event_detail) THEN event_detail ELSE '{}' END,'$.news')=1
-    AND json_extract(CASE WHEN json_valid(event_detail) THEN event_detail ELSE '{}' END,'$.newsFormat')=1
+    AND event_kind IN ('main-moved','row_decision','row_apply','row_draft','shout','shout_news','pass','answer') ORDER BY event_id`).all(after, cursor)) rows.set(event.event_id, event);
+  if (sessionStart) for (const event of board.db.prepare(`SELECT * FROM event WHERE event_id>? AND event_id<=? AND event_kind='shout_news'
     ORDER BY event_id`).all(newsAfter, cursor)) rows.set(event.event_id, event);
   const messages = board.db.prepare(`SELECT * ${UNREAD_SQL} AND shout_id<=? ORDER BY shout_id`)
     .all(...unreadShoutBindings(agent.agent_last_shout_id, agentId, agent.agent_lane), shoutCursor);
   // News delivery uses its own cursor so ordinary inbox reads cannot consume a future session's digest.
-  const possibleNewsIds = [...rows.values()].filter(event => event.event_kind === 'shout'
-    && activityEventDetail(event)?.news === true && activityEventDetail(event)?.newsFormat === 1)
-    .map(event => activityEventDetail(event).shout).filter(id => Number.isSafeInteger(id) && id > 0);
+  const possibleNewsIds = [...rows.values()].filter(event => event.event_kind === 'shout_news')
+    .map(event => activityEventDetail(event)?.shout).filter(id => Number.isSafeInteger(id) && id > 0);
   for (let offset = 0; offset < possibleNewsIds.length; offset += 500) {
     const ids = possibleNewsIds.slice(offset, offset + 500);
     messages.push(...board.db.prepare(`SELECT * FROM shout WHERE shout_id IN (${ids.map(() => '?').join(',')})

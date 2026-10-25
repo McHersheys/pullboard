@@ -7,7 +7,7 @@ import { after, test } from 'node:test';
 import * as store from '../src/board.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { submitFixture } from './board-submit-fixture.js';
-import { exportBoard } from '../src/exchange.js';
+import { exportBoard, importBoard } from '../src/exchange.js';
 import { applyEngineMove, prepareEngineMove } from '../src/engine.js';
 import { ACTIVITY_NEWS_ENGINE } from '../src/activity-news-engine.js';
 import { ITEM_SHOUT_ENGINE } from '../src/item-shout-engine.js';
@@ -352,4 +352,16 @@ test('old ordinary shout replay does not become newly typed news [H16,N26]', (t)
   assert.ok(coordinator.entries.some(entry => entry.text === 'Legacy agent metadata cannot hide a direct message.'));
   assert.deepEqual(coordinator.digests, []);
   assert.deepEqual(exportBoard(board), nativeBeforeRead, 'reading does not rewrite legacy metadata or native receipts');
+  const typedMove = prepareEngineMove(board, 'shout', [{ from: 'coordinator', to: 'all', lanes: ['web'],
+    text: 'New typed news survives ordered replay and native export.', news: true }]);
+  const typed = applyEngineMove(board, typedMove, { sequence: 4, at: new Date().toISOString() });
+  assert.equal(typed.error, undefined);
+  assert.equal(typed.events[0].event_kind, 'shout_news', 'only the new-engine typed path emits the new native kind');
+  const replica = store.openBoard(':memory:');
+  t.after(() => store.closeBoard(replica));
+  importBoard(replica, exportBoard(board));
+  assert.deepEqual(store.events(replica), store.events(board), 'native export/import preserves old and new exact event rows');
+  const restored = store.agentActivity(replica, 'web-1', { sessionStart: true });
+  assert.ok(restored.entries.some(entry => entry.text === exactText), 'native restore never upgrades old detail into news');
+  assert.deepEqual(restored.digests.find(digest => digest.kind === 'news')?.shouts, [typed.result]);
 });

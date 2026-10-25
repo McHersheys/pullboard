@@ -1,4 +1,4 @@
-import { activityNewsDetail } from './activity-news.js';
+import { activityNewsFlag } from './activity-news.js';
 import {
   focusOrder,
   focusReasons,
@@ -1654,7 +1654,7 @@ export { getItem } from './board-query.js';
  * @param {{ from: string, to: string, text: string, lanes: string[], item?: number, decision?: boolean, answers?: number | null, evidence?: any, request?: boolean, news?: boolean, channel?: 'terminal' | 'view', detail?: object }} message - detail: extra event fields
  * @returns {number}
  */
-function insertShout(board, { from, to, text, lanes, item, decision = false, answers = null, evidence = null, request = false, channel = 'terminal', detail = {} }) {
+function insertShout(board, { from, to, text, lanes, item, decision = false, answers = null, evidence = null, request = false, news = false, channel = 'terminal', detail = {} }) {
   const engine = board.executionEngineVersion ?? ENGINE_VERSION;
   if (item !== undefined) {
     if (engine < ITEM_SHOUT_ENGINE) throw new Refused('ENGINE_VERSION', 'item messages require engine 93; upgrade every linked device before sending one');
@@ -1697,12 +1697,12 @@ function insertShout(board, { from, to, text, lanes, item, decision = false, ans
   if (personAnswer && !['terminal', 'view'].includes(channel)) {
     throw new Refused('B26_PERSON_CHANNEL', 'record the person answer through the terminal or the view; run pullboard view');
   }
-  return persistShout(board, { from, to, text, decision, answers, evidence, request, channel, detail, outcome, personAnswer });
+  return persistShout(board, { from, to, text, decision, answers, evidence, request, news, channel, detail, outcome, personAnswer });
 }
 
 /** Persist a validated message or a fixed internal notice inside the caller's transaction. */
 function persistShout(board, { from, to, text, decision = false, answers = null, evidence = null, request = false,
-  channel = 'terminal', detail = {}, outcome = '', personAnswer = false }) {
+  channel = 'terminal', detail = {}, outcome = '', personAnswer = false, news = false }) {
   const result = board.db
     .prepare(
       `INSERT INTO shout (shout_from, shout_to, shout_text, shout_at, shout_decision, shout_answers,
@@ -1712,7 +1712,7 @@ function persistShout(board, { from, to, text, decision = false, answers = null,
     )
     .run(from, to, text.trim(), now(board), decision ? 1 : 0, answers, evidence?.kind ?? null, evidence ? evidence.outcome.trim() : null, evidence?.item ?? null, evidence?.commit ?? null, request ? 1 : 0, outcome);
   const id = Number(result.lastInsertRowid);
-  logEvent(board, from, answers === null ? 'shout' : decision ? 'pass' : 'answer', detail.item ?? null, { shout: id, to, decision: Boolean(decision), request: Boolean(request), answers, ...(outcome ? { outcome } : {}), ...(personAnswer ? { channel } : {}), ...detail });
+  logEvent(board, from, answers === null ? (news ? 'shout_news' : 'shout') : decision ? 'pass' : 'answer', detail.item ?? null, { shout: id, to, decision: Boolean(decision), request: Boolean(request), answers, ...(outcome ? { outcome } : {}), ...(personAnswer ? { channel } : {}), ...detail });
   return id;
 }
 
@@ -1724,8 +1724,8 @@ function persistShout(board, { from, to, text, decision = false, answers = null,
  * @returns {number}
  */
 export function shout(board, message) {
-  return atomic(board, () => insertShout(board, { ...message, detail: { ...message.detail,
-    ...activityNewsDetail(message, board.executionEngineVersion ?? ENGINE_VERSION) } }));
+  return atomic(board, () => insertShout(board, { ...message,
+    news: activityNewsFlag(message, board.executionEngineVersion ?? ENGINE_VERSION) }));
 }
 
 /** Record one current health snapshot atomically, notifying each new or resolved episode once [A6]. */
