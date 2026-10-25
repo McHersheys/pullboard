@@ -5,6 +5,57 @@ import { agentModel } from './seats.js';
 import { appendProofCounter } from './proof-counters.js';
 import { ensureProofCounters } from './proof-counters.js';
 
+import { boardWriteBusyError } from './board-busy.js';
+import {
+  beginBoardWrite,
+  finishBoardWrite,
+  prepareBoardWriteIdentity,
+} from './board-write-lock.js';
+
+const TRANSACTION_DEPTH = new WeakMap();
+
+/**
+ * Run `work` in one immediate transaction: the write lock is taken before the first read, so two
+ * agents can never both see an item as free (B2). Nested moves use savepoints so a replay receipt
+ * and its board mutation can commit together, while a refused move rolls back only its work.
+ *
+ * @template T
+ * @param {any} board
+ * @param {() => T} work
+ * @returns {T}
+ */
+export function atomic(board, work) {
+  const depth = TRANSACTION_DEPTH.get(board) ?? 0;
+  const savepoint = `pullboard_atomic_${depth}`;
+  if (!depth) prepareBoardWriteIdentity();
+  const startedAt = Date.now();
+  try { board.db.exec(depth ? `SAVEPOINT ${savepoint}` : 'BEGIN IMMEDIATE'); }
+  catch (error) { throw boardWriteBusyError(board.db, startedAt, error); }
+  TRANSACTION_DEPTH.set(board, depth + 1);
+  const writeRecord = depth ? null : beginBoardWrite(board.db, board.writeContext);
+  let released = false;
+  let outcome = 'release-failed';
+  const lastEvent = board.lastEvent;
+  const emitted = board.emittedEvents?.length ?? 0;
+  try {
+    const result = work();
+    board.db.exec(depth ? `RELEASE ${savepoint}` : 'COMMIT');
+    released = true;
+    outcome = 'committed';
+    return result;
+  } catch (error) {
+    board.db.exec(depth ? `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}` : 'ROLLBACK');
+    released = true;
+    outcome = 'rolled-back';
+    board.lastEvent = lastEvent;
+    board.emittedEvents?.splice(emitted);
+    throw error;
+  } finally {
+    TRANSACTION_DEPTH.set(board, depth);
+    finishBoardWrite(writeRecord, released, outcome);
+  }
+}
+
 /**
  * Append one move to the event log (R2), retaining its exact row for an API response (A2).
  * Exported for the board's own split modules, such as milestones.js, which record moves the same way.
@@ -17,6 +68,8 @@ import { ensureProofCounters } from './proof-counters.js';
  * @param {Date} [at] An enabled move may share one instant with its deadline.
  */
 export function logEvent(board, by, kind, itemId, detail = {}, at) {
+  // Standalone native writers take the same actual lock; nested moves retain their existing savepoints.
+  if (!(TRANSACTION_DEPTH.get(board) ?? 0)) return atomic(board, () => logEvent(board, by, kind, itemId, detail, at));
   // A refused authenticated request remains auditable; it is not an outgoing board move.
   if (kind !== 'relay_refused') requireHandoffActive(board, by, kind, [{ item: kind === 'shout' ? detail.item : undefined }]);
   board.db.exec('SAVEPOINT proof_event_append');
