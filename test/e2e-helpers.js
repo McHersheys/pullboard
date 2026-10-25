@@ -267,6 +267,8 @@ function privateCheckSubmission({ install = '', timeout = '5m', check }) {
   const review = join(box.dir, 'private-check-review');
   box.git(box.repo, 'worktree', 'add', '-q', '--detach', review, commit);
   assert.equal(box.run(review, 'join', 'api').code, 0);
+  const reserved = box.run(review, 'next', '--verify', '1', '--json');
+  assert.equal(reserved.code, 0, reserved.out || reserved.err);
   return { ...box, review, commit };
 }
 
