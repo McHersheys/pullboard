@@ -1,3 +1,5 @@
+import { foreignDependencyStates } from './cross-repo-dependencies.js';
+import { dependencyValues, localDependencyIds } from './item-dependencies.js';
 /** The local API v1: the CLI's moves, persistent board identities and live events (A2). */
 import {
   createHash,
@@ -536,7 +538,7 @@ function buildLocalBoardState(root, boardId, board, codeIsMain, { previous = nul
 
 /** Parse an item's ordered prerequisite IDs from its persisted row. */
 function dependencyIds(item) {
-  return item.item_after ? item.item_after.split(',').map(Number) : [];
+  return dependencyValues(item);
 }
 
 /** Everything a summary leaves out, with the latest verdict whole: laid over its summary, it is the full item. */
@@ -1083,10 +1085,11 @@ export function createLocalApiHandler({ secret, getPort, runCommand, projects = 
     if (!row) return null;
     const now = currentBoard.clock.now().toISOString();
     const status = new Map();
-    for (const dependency of dependencyIds(row)) {
+    for (const dependency of localDependencyIds(row)) {
       const dependent = db.prepare('SELECT item_status FROM item WHERE item_id = ?').get(dependency);
       if (dependent) status.set(dependency, dependent.item_status);
     }
+    for (const ref of foreignDependencyStates(currentBoard, row)) status.set(`${ref.repo}#${ref.id}`, ref.status);
     // Detail reads need no new Git process while the trunk holds.
     const tip = trunkRevisionReader(info)();
     const approval = approvalFor(board.root, currentBoard, info);

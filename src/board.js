@@ -1,3 +1,5 @@
+import { foreignBlockers } from './cross-repo-dependencies.js';
+import { dependencyValues, localDependencyIds, dependencyLabel } from './item-dependencies.js';
 import { heartbeatSeat } from './seat-presence.js';
 import * as itemDecisions from './item-decision-queue.js';
 import * as activityDeliveryStore from './activity-delivery-store.js';
@@ -661,7 +663,7 @@ function checkRouted({ brief, route, criterion, check }) {
  * ids (B6).
  *
  * @param {any} board
- * @param {{ by: string, lane: string, title: string, criterion?: string, specIds?: string[], parentId?: number | null, after?: number[], brief?: string, route?: string, check?: string }} item
+ * @param {{ by: string, lane: string, title: string, criterion?: string, specIds?: string[], parentId?: number | null, after?: (number | string)[], brief?: string, route?: string, check?: string }} item
  * @returns {number} The new item's id.
  */
 export function addItem(board, { by, lane, title, criterion = '', specIds = [], parentId = null, after = [], brief = '', route = 'strong', check, checkBaseline, barActor }) {
@@ -686,7 +688,8 @@ export function addItem(board, { by, lane, title, criterion = '', specIds = [], 
 
 /** Validate that dependencies exist, remain usable, and cannot lead back to the edited item. */
 function validateItemDependencies(board, itemId, after) {
-  const direct = after.map((dependency) => itemById(board, dependency));
+  dependencyValues(after);
+  const direct = localDependencyIds(after).map((dependency) => itemById(board, dependency));
   const withdrawn = direct.find((dependency) => dependency.item_status === 'withdrawn');
   if (withdrawn) {
     throw new Refused('WITHDRAWN', `item #${withdrawn.item_id} is withdrawn; nothing can wait on it`);
@@ -694,7 +697,7 @@ function validateItemDependencies(board, itemId, after) {
   if (itemId === null) return;
 
   const visited = new Set();
-  const pending = [...after];
+  const pending = localDependencyIds(after);
   while (pending.length) {
     const dependency = pending.pop();
     if (dependency === itemId) {
@@ -703,7 +706,7 @@ function validateItemDependencies(board, itemId, after) {
     if (visited.has(dependency)) continue;
     const item = itemById(board, dependency);
     visited.add(dependency);
-    pending.push(...(item.item_after ? item.item_after.split(',').map(Number) : []));
+    pending.push(...localDependencyIds(item));
   }
 }
 
@@ -734,7 +737,7 @@ export function validateItemAddition(board, { by, lane, title, criterion = '', p
  *
  * @param {any} board
  * @param {number} id
- * @param {{ agentId: string, brief?: string, route?: string, criterion?: string, check?: string, after?: number[] }} change
+ * @param {{ agentId: string, brief?: string, route?: string, criterion?: string, check?: string, after?: (number | string)[] }} change
  */
 export function editItem(board, id, { agentId, brief, route, criterion, check, after, checkBaseline, reason, barActor }) {
   atomic(board, () => {
@@ -760,7 +763,7 @@ export function editItem(board, id, { agentId, brief, route, criterion, check, a
       ...(next.item_route !== item.item_route ? { route: next.item_route } : {}),
       ...(next.item_criterion !== item.item_criterion ? { criterion: next.item_criterion } : {}),
       ...(command !== undefined ? { check: next.item_check } : {}),
-      ...(next.item_after !== item.item_after ? { after: next.item_after ? next.item_after.split(',').map(Number) : [] } : {}),
+      ...(next.item_after !== item.item_after ? { after: dependencyValues(next) } : {}),
       ...(baseline ? { checkBaseline: baseline } : {}),
       ...(pendingRefreeze ? { pendingRefreeze: pendingFields } : {}),
       ...(clearFrozen && item.item_frozen_digest ? { unfrozen: item.item_frozen_digest } : {}),
@@ -823,9 +826,10 @@ export function validateItemEdit(board, id, { agentId, brief, route, criterion, 
     throw new Refused('CLOSED', `item #${id} is ${item.item_status}`);
   }
   if (after !== undefined) {
-    if (!Array.isArray(after) || !after.every((dependency) => Number.isSafeInteger(dependency) && dependency > 0)) {
+    if (!Array.isArray(after)) {
       throw new Refused('BAD_DEPENDENCIES', 'item dependencies must be an array of positive integer item ids; use --after 1,2 or --after none');
     }
+    dependencyValues(after);
     validateItemDependencies(board, id, after);
   }
   const next = {
@@ -1017,7 +1021,9 @@ export function claim(board, id, { agentId, lane, leaseMs, freeze, head = null, 
           return canTake(route, found.item_route) ? null : new Refused('ROUTE', `item #${id} needs a ${found.item_route} model; you joined on the ${route} route. Take your next item: pullboard next`);
         },
         dependenciesVerified: (found) => {
-          for (const dependency of found.item_after ? found.item_after.split(',').map(Number) : []) {
+          const foreign = foreignBlockers(board, found)[0];
+          if (foreign) return new Refused('BLOCKED', `#${id} waits on ${dependencyLabel(foreign)} (${foreign.status} on its own board); refresh that board before claiming`);
+          for (const dependency of localDependencyIds(found)) {
             const before = itemById(board, dependency);
             if (before.item_status !== 'verified') {
               return new Refused(
@@ -2014,13 +2020,18 @@ export function nextFor(board, { agentId, lane, verify = false, policy = 'any', 
   }
   mine.sort((a, b) => focusCompare(a.entry, b.entry));
   for (const { entry, shared } of mine) {
-    const waiting = (entry.item_after ? entry.item_after.split(',').map(Number) : [])
+    const waiting = localDependencyIds(entry)
       .map((id) => current(board, itemById(board, id)))
       .filter((before) => before.item_status !== 'verified');
     const reserved = firstRefusalReason(board, entry.item_id, agentId);
     if (reserved) { reasons.push(reserved); continue; }
     const collisions = itemFileCollisions(entry, inFlight);
     if (collisions.length) { reasons.push(...collisions); continue; }
+    const foreign = foreignBlockers(board, entry);
+    if (foreign.length) {
+      reasons.push(`#${entry.item_id} waits on ${foreign.map(ref => `${dependencyLabel(ref)} (${ref.status} on its own board)`).join(', ')}`);
+      continue;
+    }
     if (!waiting.length) return { item: entry, reasons: focusReasons(board, entry, reasons), shared };
     reasons.push(`#${entry.item_id} waits on ${waiting.map(waitingOn).join(', ')}`);
   }

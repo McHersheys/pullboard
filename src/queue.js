@@ -1,3 +1,5 @@
+import { foreignBlockers } from './cross-repo-dependencies.js';
+import { localDependencyIds, dependencyLabel } from './item-dependencies.js';
 /**
  * pullboard queue (#797): the work queue agents pull from, top to bottom. Each unshipped release is a
  * breakpoint with its landed count, then its pullable items in the order next serves them, each with
@@ -46,12 +48,12 @@ function holderOf(item, now) {
  * @returns {string[]}
  */
 function waitsOf(board, item, inFlight) {
-  const after = (item.item_after ? item.item_after.split(',').map(Number) : [])
+  const after = localDependencyIds(item)
     .map((id) => itemById(board, id))
     .filter((before) => before && before.item_status !== 'verified')
     .map((before) => `#${before.item_id} (${before.item_status})`);
   const lane = laneHold(board, item.item_lane);
-  return [...after, ...itemFileCollisions(item, inFlight), ...(item.item_hold_reason ? [`held: ${item.item_hold_reason}`] : []), ...(lane ? [`${item.item_lane} lane held: ${lane.hold_reason}`] : [])];
+  return [...after, ...foreignBlockers(board, item).map(ref => `${dependencyLabel(ref)} (${ref.status} on its own board)`), ...itemFileCollisions(item, inFlight), ...(item.item_hold_reason ? [`held: ${item.item_hold_reason}`] : []), ...(lane ? [`${item.item_lane} lane held: ${lane.hold_reason}`] : [])];
 }
 
 /**

@@ -946,6 +946,8 @@ test('an item waits across repos [B24,H16]', async t => {
   assert.equal(store.nextFor(local, { agentId: 'web-1', lane: 'web' }).item.item_id, dependent);
   assert.equal(store.nextFor(replica, { agentId: 'web-1', lane: 'web' }).item.item_id, dependent);
   const move = prepareEngineMove(local, 'claim', [dependent, options]);
+  const { CROSS_REPO_DEPENDENCY_ENGINE } = await import('../src/cross-repo-dependency-engine.js');
+  assert.ok(move.engine >= CROSS_REPO_DEPENDENCY_ENGINE, 'older replicas cannot flatten a foreign-dependent claim');
   assert.deepEqual(applyEngineMove(local, move), applyEngineMove(replica, move), 'one ordered claim returns the same receipt on both replicas');
   assert.equal(store.getItem(local, dependent).item_status, 'claimed');
   assert.equal(store.getItem(replica, dependent).item_status, 'claimed', 'replica uses canonical received state, not a local registry or foreign-board path');

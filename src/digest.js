@@ -1,3 +1,5 @@
+import { foreignBlockers } from './cross-repo-dependencies.js';
+import { localDependencyIds, dependencyLabel } from './item-dependencies.js';
 import { counterCaught } from './proof-counter-read.js';
 /**
  * `pullboard digest`: a short Markdown briefing of one board, for a person or a chat assistant
@@ -164,7 +166,8 @@ function render(db, { name, now, root, config }) {
   for (const item of [...items.values()].sort((a, b) => b.item_updated_at.localeCompare(a.item_updated_at) || b.item_id - a.item_id)) {
     if (item.state === 'submitted') { review.push(item); continue; }
     if (!['open', 'claimed'].includes(item.state)) continue;
-    const waits = String(item.item_after ?? '').split(',').filter(Boolean).map(Number).filter((id) => items.get(id)?.state !== 'verified');
+    const waits = [...localDependencyIds(item).filter((id) => items.get(id)?.state !== 'verified'),
+      ...foreignBlockers({ db }, item).map(dependencyLabel)];
     const hold = item.item_hold_reason || laneHolds.get(item.item_lane);
     (hold || waits.length ? blocked : open).push({ ...item, waits, hold });
   }
@@ -174,7 +177,7 @@ function render(db, { name, now, root, config }) {
     const lines = [`- ${label(item.item_id)}, in the ${text(item.item_lane, 60)} lane: ${who}.`,
       `  Done when: ${text(item.item_criterion || 'no bar is written yet.', 500)}`];
     if (item.hold) lines.push(`  Held: ${text(item.hold, 400)}`);
-    if (item.waits.length) lines.push(`  Waits for: ${item.waits.slice(0, 6).map(label).join('; ')}${item.waits.length > 6 ? `; and ${item.waits.length - 6} more` : ''}.`);
+    if (item.waits.length) lines.push(`  Waits for: ${item.waits.slice(0, 6).map(id => typeof id === 'number' ? label(id) : text(id, 150)).join('; ')}${item.waits.length > 6 ? `; and ${item.waits.length - 6} more` : ''}.`);
     return lines.join('\n');
   };
   const landed = all.filter((item) => item.item_status === 'verified' && item.item_merged_commit).length;
