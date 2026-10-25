@@ -213,66 +213,163 @@ function sourceParts(code, start, closing) {
   return null;
 }
 
-/** Only an explicit true cpuLoad option in a test registration declares CPU work [C7]. */
-function explicitCpuLoad(source) {
+/** Decode import/key spelling through the same V8 reader, without evaluating code. */
+function cpuLiteral(text) {
+  try { return look([`import ${text};`])[0].imports[0] ?? null; } catch { return null; }
+}
+
+/** Read one module's registration bindings; ordinary imported helpers acquire no test authority. */
+function cpuBindings(source, moduleExports) {
   const lexical = lex(source);
   const code = lexical.code;
-  const quoted = quotedProperties(source);
-  const names = new Set(['test', 'it', 'describe']);
   const clean = source.split('');
   for (const { start, end } of lexical.comments) for (let at = start; at < end; at++) {
     if (!'\n\r'.includes(clean[at])) clean[at] = ' ';
   }
-  const declarations = [...clean.join('').matchAll(/\bimport\s+([^;]*?)\s+from\s*((?:"(?:[^"\\]|\\[\s\S])*"|'(?:[^'\\]|\\[\s\S])*'))/gu)]
-    .filter(match => code.slice(match.index, match.index + 6) === 'import');
-  const modules = look(declarations.map(match => `import ${match[2]};`));
-  for (const [index, match] of declarations.entries()) {
-    if (!modules[index].imports.includes('node:test')) continue;
-    const binding = match[1].trim();
-    const defaultName = /^([A-Za-z_$][\w$]*)(?:\s*,|\s*$)/u.exec(lex(binding).code)?.[1];
-    if (defaultName) names.add(defaultName);
-    const named = /\{([\s\S]*)\}/u.exec(binding);
-    for (const entry of named?.[1].split(',') ?? []) {
-      const part = /^\s*(test|it|describe|suite|default)(?:\s+as\s+([A-Za-z_$][\w$]*))?\s*$/u.exec(entry);
-      if (part) names.add(part[2] ?? part[1]);
+  const text = clean.join('');
+  const names = new Set();
+  const namespaces = new Set();
+  const exports = new Set();
+  const known = name => name === 'node:test' ? new Set(['default', 'test', 'it', 'describe', 'suite']) : moduleExports(name);
+  const word = value => /^["']/u.test(value) ? cpuLiteral(value) : value;
+  const pieces = value => value.split(',').map(entry => entry.trim()).filter(Boolean);
+  /** Add only bindings whose imported/exported source is a proven registration function. */
+  function namedBindings(value, available, add, separator) {
+    for (const entry of pieces(value)) {
+      const match = separator === ':'
+        ? /^([^:]+?)(?:\s*:\s*([A-Za-z_$][\w$]*))?$/u.exec(entry)
+        : /^(.+?)(?:\s+as\s+([A-Za-z_$][\w$]*))?$/u.exec(entry);
+      if (!match) continue;
+      const original = word(match[1].trim());
+      const local = match[2] ?? original;
+      if (available.has(original) && /^[A-Za-z_$][\w$]*$/u.test(local ?? '')) add(local);
     }
+  }
+  const literal = `(?:"(?:[^"\\\\]|\\\\[\\s\\S])*"|'(?:[^'\\\\]|\\\\[\\s\\S])*')`;
+  const declarations = [...text.matchAll(new RegExp(`\\b(import|export)\\s+([^;]*?)\\s+from\\s*(${literal})`, 'gu'))]
+    .filter(match => code.slice(match.index, match.index + match[1].length) === match[1]);
+  for (const match of declarations) {
+    const available = known(cpuLiteral(match[3]));
+    const binding = match[2].trim();
+    const named = /\{([\s\S]*)\}/u.exec(binding);
+    if (match[1] === 'export') {
+      if (binding === '*') for (const name of available) if (name !== 'default') exports.add(name);
+      if (named) namedBindings(named[1], available, name => exports.add(name), 'as');
+      continue;
+    }
+    if (available.has('default')) {
+      const name = /^([A-Za-z_$][\w$]*)(?:\s*,|\s*$)/u.exec(binding)?.[1];
+      if (name) { names.add(name); namespaces.add(name); }
+    }
+    if (named) namedBindings(named[1], available, name => names.add(name), 'as');
+    const namespace = /\*\s+as\s+([A-Za-z_$][\w$]*)/u.exec(binding)?.[1];
+    if (namespace && available.size) namespaces.add(namespace);
+  }
+  // Literal require/dynamic-import destructuring has the same node:test provenance as a static import.
+  for (const match of text.matchAll(new RegExp(`\\b(?:const|let|var)\\s*\\{([^}]+)\\}\\s*=\\s*(?:await\\s+)?(?:require|import)\\s*\\(\\s*(${literal})\\s*\\)`, 'gu'))) {
+    if (!/^(?:const|let|var)\b/u.test(code.slice(match.index))) continue;
+    namedBindings(match[1], known(cpuLiteral(match[2])), name => names.add(name), ':');
   }
   let changed = true;
   while (changed) {
     changed = false;
-    for (const match of code.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\b/gu)) {
-      if (names.has(match[2]) && !names.has(match[1])) { names.add(match[1]); changed = true; }
+    for (const match of code.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([^;\n]+)/gu)) {
+      if (names.has(match[1])) continue;
+      const rhs = match[2].trim();
+      const alias = /^([A-Za-z_$][\w$]*)\s*$/u.exec(rhs)?.[1];
+      const wrapper = /^(?:async\s+)?(?:function\b|(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>)/u.test(rhs)
+        && [...names].some(name => new RegExp(`\\b${name}\\s*\\(`, 'u').test(rhs));
+      if (names.has(alias) || wrapper) { names.add(match[1]); changed = true; }
     }
   }
-  for (const match of code.matchAll(/\b([A-Za-z_$][\w$]*)\s*(?:\.\s*(?:only|skip|todo)\s*)?\(/gu)) {
-    if (!names.has(match[1])) continue;
-    const open = match.index + match[0].lastIndexOf('(');
-    const call = sourceParts(code, open + 1, ')');
-    if (!call) continue;
-    const args = call.parts.filter(([from, to]) => source.slice(from, to).trim());
-    const named = /^(?:['"`])/u.test(source.slice(...(args[0] ?? [0, 0])).trim());
-    const option = args[named ? 1 : 0];
-    if (!option) continue;
-    let [from, to] = option;
-    while (/\s/u.test(code[from] ?? '') && from < to) from++;
-    while (/\s/u.test(code[to - 1] ?? '') && to > from) to--;
-    if (code[from] !== '{') continue;
-    const object = sourceParts(code, from + 1, '}');
-    if (!object || object.end !== to - 1) continue;
-    for (const [start, end] of object.parts) {
-      const property = pastGap(source.slice(start, end), 0);
-      const key = /^(?:[A-Za-z_$][\w$]*|"(?:[^"\\]|\\[\s\S])*"|'(?:[^'\\]|\\[\s\S])*')/u.exec(property)?.[0];
-      if (!key) continue;
-      const decoded = /^["']/u.test(key) ? quoted.get(end - property.length)?.key : key;
-      if (decoded !== 'cpuLoad') continue;
-      const tail = pastGap(property, key.length);
-      if (tail.startsWith(':') && /^true\s*$/u.test(pastGap(tail, 1))) return true;
+  for (const match of code.matchAll(/\bexport\s+(?:const|let|var|function)\s+([A-Za-z_$][\w$]*)/gu)) if (names.has(match[1])) exports.add(match[1]);
+  for (const match of text.matchAll(/\bexport\s*\{([^}]+)\}(?!\s*from)/gu)) {
+    if (code.slice(match.index, match.index + 6) === 'export') namedBindings(match[1], names, name => exports.add(name), 'as');
+  }
+  return { code, names, namespaces, exports };
+}
+
+/** Extract registration calls, including subtests only from a real callback's own context. */
+function cpuCalls(source, bindings) {
+  const { code, names } = bindings;
+  const contexts = new Set(bindings.namespaces);
+  const calls = new Map();
+  for (let pass = 0; pass < 32; pass++) {
+    const before = contexts.size;
+    for (const match of code.matchAll(/\b([A-Za-z_$][\w$]*)\b/gu)) {
+      const name = match[1];
+      if (!names.has(name) && !contexts.has(name)) continue;
+      if (code.slice(0, match.index).trimEnd().endsWith('.')) continue;
+      let at = match.index + name.length;
+      while (/\s/u.test(code[at] ?? '') && at < code.length) at++;
+      if (code[at] === '.') {
+        const member = /^\.\s*([A-Za-z_$][\w$]*)\s*/u.exec(code.slice(at));
+        if (!member || !(names.has(name) && ['only', 'skip', 'todo'].includes(member[1])
+          || contexts.has(name) && ['test', 'it', 'describe', 'suite', 'default'].includes(member[1]))) continue;
+        at += member[0].length;
+      } else if (code[at] === '[' && contexts.has(name)) {
+        const member = sourceParts(code, at + 1, ']');
+        if (!member) continue;
+        at = member.end + 1;
+        while (/\s/u.test(code[at] ?? '') && at < code.length) at++;
+      } else if (!names.has(name)) continue;
+      if (code[at] !== '(') continue;
+      const parsed = sourceParts(code, at + 1, ')');
+      if (!parsed) continue;
+      const args = parsed.parts.filter(([from, to]) => source.slice(from, to).trim());
+      calls.set(at, args);
+      const callback = source.slice(...(args.at(-1) ?? [0, 0]));
+      const parameters = /^\s*(?:async\s+)?(?:function(?:\s+[\w$]+)?\s*)?\(?\s*([A-Za-z_$][\w$]*)\s*\)?\s*(?:=>|\{)/u.exec(callback)?.[1];
+      if (parameters && parameters !== 'function') contexts.add(parameters);
     }
+    if (contexts.size === before) break;
+  }
+  return [...calls.values()];
+}
+
+/** Unknown options at a proven registration stay conservative; unknown ordinary code does not. */
+function cpuOption(source, code, quoted, option) {
+  if (!option) return false;
+  let [from, to] = option;
+  while (/\s/u.test(code[from] ?? '') && from < to) from++;
+  while (/\s/u.test(code[to - 1] ?? '') && to > from) to--;
+  if (code[from] !== '{') return true;
+  const object = sourceParts(code, from + 1, '}');
+  if (!object || object.end !== to - 1) return true;
+  for (const [start, end] of object.parts) {
+    const property = pastGap(source.slice(start, end), 0);
+    if (!property) continue;
+    const key = /^(?:[A-Za-z_$][\w$]*|"(?:[^"\\]|\\[\s\S])*"|'(?:[^'\\]|\\[\s\S])*')/u.exec(property)?.[0];
+    if (!key) return true; // spread/computed/accessor: a real options object may supply cpuLoad.
+    const decoded = /^["']/u.test(key) ? quoted.get(end - property.length)?.key : key;
+    const tail = pastGap(property, key.length);
+    if (decoded === undefined || decoded === '__proto__' || tail && !tail.startsWith(':')) return true;
+    if (decoded === 'cpuLoad' && (!tail.startsWith(':') || lex(pastGap(tail, 1)).code.trim() !== 'false')) return true;
   }
   return false;
 }
 
-/** CPU work needs an explicit declaration; opaque ordinary test code grants no CPU authority [C7]. */
-export function cpuLoadOptionsIn(sources) {
-  return sources.map(source => explicitCpuLoad(source));
+/** Return registration exports for bounded static module-graph propagation, not execution. */
+export function cpuRegistrationExportsIn(sources, moduleExports = () => new Set()) {
+  return sources.map((source, index) => cpuBindings(source, name => moduleExports(index, name)).exports);
+}
+
+/** Infer CPU load only from options of provenance-recognized test registrations [C7]. */
+export function cpuLoadOptionsIn(sources, moduleExports = () => new Set()) {
+  return sources.map((source, index) => {
+    const bindings = cpuBindings(source, name => moduleExports(index, name));
+    const quoted = quotedProperties(source);
+    return cpuCalls(source, bindings).some(args => {
+      if (!args.length) return false;
+      const last = lex(source.slice(...args.at(-1))).code.trim();
+      const callback = /^(?:async\s+)?(?:function\b|(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>)/u.test(last);
+      if (args.length >= 3) return cpuOption(source, bindings.code, quoted, args[1]);
+      if (args.length === 2 && callback) {
+        const first = source.slice(...args[0]).trim();
+        return first.startsWith('{') ? cpuOption(source, bindings.code, quoted, args[0]) : false;
+      }
+      if (args.length === 2) return cpuOption(source, bindings.code, quoted, args[1]);
+      return false;
+    });
+  });
 }

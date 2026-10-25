@@ -24,6 +24,10 @@ export async function fixtureContextCpuCase(t) {
     'an unrelated data object is not a test registration option');
   assert.equal(cpuLoadOptionsIn(["import { test as check } from 'node:test'; check('busy', { 'cpuLoad': true }, () => {});"])[0], true,
     'a renamed test and quoted explicit option still declare CPU load');
+  assert.equal(cpuLoadOptionsIn(["import test from 'node:test'; const name = 'busy'; test(name, { cpuLoad: true }, () => {});"])[0], true,
+    'a variable test name does not move the options argument');
+  assert.equal(cpuLoadOptionsIn(["import test from 'node:test'; test('busy', { cpuLoad: true /* measured load */ }, () => {});"])[0], true,
+    'an inline comment does not hide an explicit true option');
 }
 
 /** Observe policy in a private machine home without connecting to or configuring a real runner. */
