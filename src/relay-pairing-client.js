@@ -222,8 +222,8 @@ function requireMissingKey(board) {
 }
 
 /** Consume a printed one-time code, restore the board and save this device's own link. */
-export async function relayJoin(root, code, address, io, { name } = {}) {
-  const label = computerName(name);
+export async function relayJoin(root, code, address, io, { name: labelInput } = {}) {
+  const label = computerName(labelInput);
   requirePersonChannel(io.personChannel);
   const parsed = parsePairingCode(code);
   const url = relayOrigin(address || DEFAULT_RELAY);
