@@ -1,3 +1,4 @@
+import { BOARD_PROOF_GUIDANCE } from './agent-proof-guidance.js';
 /**
  * What `pullboard init` writes into a repo: the config, a starter spec, and the agent instructions
  * every coding agent reads (AGENTS.md, which CLAUDE.md points at).
@@ -105,6 +106,8 @@ On a board that is not set up, run \`pullboard resume\` first. The coordinator w
 ## Working here: pullboard
 
 This repo runs on pullboard: a work board, lanes and a spec that live in git. Nothing ships until a second agent verifies it.
+
+**Proof.** ${BOARD_PROOF_GUIDANCE}
 
 **Source of truth.** \`SPEC.md\` holds every requirement as a row with an id, like \`G1.2\`. Code follows the spec. Commits cite the ids they serve: \`feat(scope): subject [G1.2]\`. Only a person approves or changes an approved row. Ids are permanent: a row the person cuts stays, marked \`wont\` (won't build), so every commit that cites it keeps its meaning. Propose each requirement with \`pullboard spec draft "<text>"\`; it returns the draft row id for the person to approve. To start from a blueprint's rules, questions and starter items, run \`pullboard blueprint add <name or file>\` (bundled: web-app); it files them all as drafts for the person to approve. Its questions file as pending rows, each with a default answer and its choices: the person answers one with \`pullboard spec answer <id> "<choice or text>"\` from the main checkout or the view, and the coordinator writes it with \`pullboard spec apply\`. Never answer a question by editing SPEC.md; spec check flags it. To share this board's approved rules and answered questions as a blueprint, run \`pullboard blueprint save [file]\`; it never writes items, notes, paths, emails or names.
 

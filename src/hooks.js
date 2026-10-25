@@ -1,3 +1,4 @@
+import { BOARD_PROOF_GUIDANCE } from './agent-proof-guidance.js';
 /**
  * The checks git runs (C1–C3, L3, L4): the commit message cites the spec, a lane's worktree stays in
  * its folders, no secret or env file is committed, and a push sends exactly what the gate checked.
@@ -794,6 +795,7 @@ export function hookScript(hook, version = installerVersion()) {
     '#!/bin/sh',
     `# ${HOOK_MARK}: runs the pullboard ${hook} checks. Edit pullboard.json, not this file.`,
     '# Run tests with pullboard test <test files>: the runner pool first, the per-file timeout, and known main failures named.',
+    `# ${BOARD_PROOF_GUIDANCE}`,
     `want='${version}'`,
     ...(hook === 'commit-msg' ? ['message="$1"'] : []),
     'root=$(git rev-parse --show-toplevel)',
