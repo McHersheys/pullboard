@@ -605,7 +605,10 @@ export async function serveView({ port = 0, secret = randomBytes(18).toString('b
         : 'this view answers its own page and https://app.pullboard.dev only' });
     }
     res.setHeader('vary', 'Origin');
-    if (hosted) res.setHeader('access-control-allow-origin', HOSTED_ORIGIN);
+    if (hosted) {
+      res.setHeader('access-control-allow-origin', HOSTED_ORIGIN);
+      res.setHeader('access-control-expose-headers', 'x-pullboard-report-validator');
+    }
     if (req.method === 'OPTIONS') {
       const asked = String(req.headers['access-control-request-headers'] ?? '').toLowerCase().split(',').map((name) => name.trim()).filter(Boolean);
       const route = url.pathname.startsWith('/api/') || url.pathname === '/local/protocol';
