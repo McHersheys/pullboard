@@ -16,6 +16,10 @@ test('pullboard map prints the overview, a card and an item slice from one scan 
   const joined = box.run(box.repo, 'join', 'coordinator', '--model', 'fixture');
   assert.equal(joined.code, 0, joined.out + joined.err);
   assert.match(joined.out, /declared coordinator/u);
+  const configPath = join(box.repo, 'pullboard.json');
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  config.lanes.web.owns.push('src/', 'bin/', 'test/');
+  writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
   mkdirSync(join(box.repo, 'src'), { recursive: true });
   mkdirSync(join(box.repo, 'bin'), { recursive: true });
   mkdirSync(join(box.repo, 'test'), { recursive: true });
