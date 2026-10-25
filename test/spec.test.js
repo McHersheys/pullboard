@@ -2,6 +2,7 @@
  * The spec (S1–S5): parsing SPEC.md rows, the lint, the frozen criterion and sign-offs.
  */
 import assert from 'node:assert/strict';
+import * as store from '../src/board.js';
 import { runFixtureExecFile as execFileSync, runFixtureChild as spawnSync, runFixtureChild, runFixtureGit } from './fixture-child.js';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1113,4 +1114,43 @@ test('a gate path written another way still guards its test [S4]', (t) => {
     const refused = preCommitProblems({ root: box.root, isMain: true, config, agent: null });
     assert.ok(refused.some((problem) => problem.includes('G9 names test/proof.test.js, which this commit deletes')), `${gate}: ${refused.join('\n')}`);
   }
+});
+
+
+test('a verdict on a spec row is recorded by an outside verifier [S1,V4,H16]', t => {
+  const line = '- G1 [draft, must] Keep the original row. | gate: review';
+  const reason = 'The stated behavior is supported by the cited proof.';
+  const formatted = `${line} | verify: accepted by review-2 | ${reason}`;
+  const parsed = parseSpec(`## G · Goals\n${formatted}\n`);
+  assert.deepEqual(parsed.rows[0].verify, { decision: 'accepted', by: 'review-2', reason },
+    'the row grammar preserves a structured verifier verdict');
+  assert.deepEqual(lintSpec(parsed), []);
+  const box = specBox(t, { specSource: '# Demo\n\n## G · Goals\n' });
+  const board = store.openBoard(join(box.root, '.git', 'pullboard', 'board.sqlite'));
+  t.after(() => store.closeBoard(board));
+  const author = store.register(board, { lane: 'core', path: join(box.root, 'author'), parentDigest: 'a'.repeat(64) });
+  const sibling = store.register(board, { lane: 'review', path: join(box.root, 'sibling'), parentDigest: 'a'.repeat(64) });
+  const verifier = store.register(board, { lane: 'review', path: join(box.root, 'outside'), parentDigest: 'b'.repeat(64) });
+  store.draftSpecRow(board, { agentId: author, row: { id: 'G1', text: 'Keep the original row.',
+    gate: 'review', tier: 'must', section: 'G · Goals', target: 'spec' } });
+  assert.equal(box.run('apply').status, 0);
+  const source = readFileSync(join(box.root, box.specName), 'utf8').split('\n').find(value => value.startsWith('- G1 '));
+  const before = store.events(board).length;
+  for (const agentId of [author, sibling]) assert.throws(() => store.recordRowVerification(board,
+    { agentId, source, decision: 'accepted', reason }), { code: 'ROW_VERIFY_SELF' });
+  assert.equal(store.events(board).length, before, 'refused self and sibling verdicts leave the board unchanged');
+  store.recordRowVerification(board, { agentId: verifier, source, decision: 'accepted', reason });
+  assert.equal(box.run('apply').status, 0);
+  const check = box.run('check');
+  assert.equal(check.status, 0, check.stdout + check.stderr);
+  const shown = box.run('show', 'G1');
+  assert.equal(shown.status, 0, shown.stderr);
+  assert.match(shown.stdout, new RegExp(`verify: accepted by ${verifier}`));
+  assert.ok(shown.stdout.includes(reason));
+  const json = JSON.parse(box.run('show', 'G1', '--json').stdout);
+  assert.deepEqual(json.row.verify, { decision: 'accepted', by: verifier, reason });
+  assert.equal(json.row.status, 'draft', 'a verifier verdict does not approve normative text');
+  store.recordRowVerification(board, { agentId: verifier, source, decision: 'rejected', reason: 'A counterexample remains.' });
+  assert.equal(box.run('apply').status, 0);
+  assert.match(box.run('show', 'G1').stdout, /verify: rejected by/u);
 });
