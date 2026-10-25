@@ -54,11 +54,11 @@ Set up
                                         behind the session secret in its printed address
   pullboard mcp                        MCP tools over stdio for this worktree's agent, started by its MCP client:
                                         board status, show, shout and capture an idea; a person's move is refused
-  pullboard relay [status|on|off|pair|join <code>] [--url <address>]  link, inspect or unlink this board's sealed relay
+  pullboard relay [status|on|off|pair|join <code>] [--url <address>] [--name <computer>]  link, inspect or unlink this board's sealed relay
                                         on signs in through GitHub; the address defaults to https://app.pullboard.dev
                                         pair prints a one-use machine code; join stores it in another clone
   pullboard relay pair --new-browser    sign in and pair one more browser; existing browsers stay paired
-  pullboard relay on --all [--url <address>]  link every registered project after one sign-in; pair the phone once
+  pullboard relay on --all [--url <address>] [--name <computer>]  link every registered project after one sign-in; pair the phone once
                                         keep this command open until pairing finishes; later projects link on registration
   pullboard relay devices [--verbose]   paired phones and joined computers by name, with paired date, last seen and boards
                                         --verbose adds each id and phone key fingerprint
@@ -75,6 +75,8 @@ Set up
   pullboard hook SessionStart|Stop     native agent nudges; errors/timeouts warn and never block
 
 Work
+  pullboard map [<module or function>] [--for <item>] [--budget <tokens>]  source map for main, a card, or an item's one-hop slice
+                                        slices default to 4k tokens and cap at 8k; effects the scan cannot see say "not detected"
   pullboard add <lane> <title> [--criterion "..."] [--specs G1.2,K3] [--after 3,4] [--parent <id>]
                 [--brief "..." | --brief-file <file>] [--route light|mid]
                                         --after: claiming waits until those items are verified
@@ -214,6 +216,11 @@ Receipts
                                         released/expired reservations remain wait, not review;
                                         review: closing reservation to verdict; merge wait: accept to first merge
                                         unfinished stages are omitted; missing legacy reservations are unmeasured
+                                        flow.report is all-time, even with --since or --window; its disjoint stages are
+                                        ready, later, build, reviewWait, review, mergeWait and rework;
+                                        initial focus/dependency/hold delays are later; returned work is rework until claim;
+                                        firstTry measures acceptance of the first submission; size buckets use that submission:
+                                        under 100, 100-299, 300-799, 800+ changed lines; missing history stays unknown
                                         JSON flow.asOf records one observation clock; oldest.since records its origin;
                                         ageMinutes = (asOf - since) / 60000 for every queue age
                                         queues include all current work, even added before --since;
@@ -337,6 +344,7 @@ const HELP_EXAMPLES = {
   runner: 'pullboard runner add studio --slots 2 --browser 1', 'runner add': 'pullboard runner add studio --slots 2 --browser 1',
   edit: 'pullboard edit 12 --brief "Add the upload page"', release: 'pullboard release 12',
   land: 'pullboard land --max 4',
+  map: 'pullboard map',
   publish: 'pullboard publish',
   handoff: 'pullboard handoff --take 12',
   health: 'pullboard health',

@@ -1139,8 +1139,9 @@ export function release(board, id, agentId, note = '') {
  * @param {{ agentId: string, commit: string, tree: string, files?: string[], policyCommit?: string, note?: string }} at - `files`: what the
  *   item's own commits changed since its claim; a rework adds to what the first attempt changed.
  */
-export function submit(board, id, { agentId, commit, tree, files = [], policyCommit = null, note, submissionProof: proof, infra = null }) {
+export function submit(board, id, { agentId, commit, tree, files = [], policyCommit = null, note, submissionProof: proof, submissionSize: size, infra = null }) {
   let recordedProof;
+  let recordedSize;
   if (note !== undefined && (typeof note !== 'string' || !note.trim() || /[\r\n\u2028\u2029]/u.test(note))) {
     throw new Refused('USAGE', 'a submission note, when present, is one nonempty line');
   }
@@ -1169,6 +1170,7 @@ export function submit(board, id, { agentId, commit, tree, files = [], policyCom
         treeStillDuringGate: null,
         submissionProofValid: () => {
           if ((board.executionEngineVersion ?? ENGINE_VERSION) >= SUBMISSION_PROOF_ENGINE) recordedProof = submissionProof(proof);
+          if ((board.executionEngineVersion ?? ENGINE_VERSION) >= FLOW_SIZE_ENGINE) recordedSize = submissionSize(size, commit);
           return null;
         },
         childrenDone: () => {
@@ -1209,6 +1211,7 @@ export function submit(board, id, { agentId, commit, tree, files = [], policyCom
       ...(criterionDigest ? { criterionDigest } : {}),
       ...(note === undefined ? {} : { note: note.trim() }),
       ...(recordedProof ? { submissionProof: recordedProof } : {}), ...(infra ? { infra } : {}),
+      ...(recordedSize ? { submissionSize: recordedSize } : {}),
     });
   });
 }
@@ -2351,3 +2354,5 @@ export function recordActivityDelivery(board, options) {
 export function actOnActivity(board, options) {
   return activityDeliveryStore.actOnActivity(board, options, { atomic, logEvent });
 }
+import { FLOW_SIZE_ENGINE } from './flow-size-engine.js';
+import { submissionSize } from './submission-size.js';

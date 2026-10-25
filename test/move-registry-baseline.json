@@ -58,13 +58,15 @@
     "setLineSetting",
     "recordFlakeObservation",
     "recordGateRun",
+    "recordProofRun",
     "declareJob",
     "recordJobRun",
     "takeCoordinator",
     "landingLeaseMove",
     "recordPublishFinding",
     "actOnActivity",
-    "recordActivityDelivery"
+    "recordActivityDelivery",
+    "decideSpecRevisions"
   ],
   "itemIdFirstArgument": [
     "signBar",
@@ -649,7 +651,16 @@
       null,
       null,
       null
-    ]
+    ],
+    "decideSpecRevisions": [
+      null,
+      "first",
+      null,
+      null,
+      null,
+      null
+    ],
+    "recordProofRun": [null, "first", null, null, null, null]
   },
   "floorCases": [
     {
@@ -6976,7 +6987,36 @@
     "EXCLUDED_INVENTORY": "restore at most 256 excluded boards and their active paired devices, then run pullboard relay on --all",
     "BAD_ACTIVITY_RECEIPT": "read your own inbox again and use its exact interrupt ids",
     "ACTIVITY_NOT_DELIVERED": "read your own inbox before marking its interrupt acted on",
-    "STALE_ACTIVITY_RECEIPT": "read inbox again; the claim changed before delivery was recorded"
+    "STALE_ACTIVITY_RECEIPT": "read inbox again; the claim changed before delivery was recorded",
+    "BAD_NEWS": "send news from the coordinator or person to all, without item, decision, request or answer",
+    "FACT_INDEX_NOT_READY": "have the owning main checkout open this board once, then retry the original fact operation",
+    "GIT_SYNC_LINKED": "use pullboard sync for a Git-shared board, or keep the existing relay linked; do not enable a second move order",
+    "GIT_SYNC_LOCAL_CHANGED": "run pullboard export to preserve local moves, then ask the coordinator to reconcile the local and remote prefixes before syncing",
+    "GIT_SYNC_LOG": "restore the append-only refs/pullboard/board history on origin before running pullboard sync",
+    "GIT_SYNC_REMOTE": "restore read/write access to origin, then retry the original command or run pullboard sync; keep its pending sealed move",
+    "RUNNER_REQUIRED_FOR_ZERO_CAPACITY": "restore positive gateSlots and browserSlots with pullboard settings before removing the last registered runner",
+    "SPEC_REVISION": "refresh Needs you and decide the exact pending proposal",
+    "SHOUT_SPACES": "rewrite the shout with spaces between words, then send it again",
+    "DECISION_HANDOFF_BINDING": "use the exact versioned handoff, namespaced source decision and original option set",
+    "DECISION_HANDOFF_AUTH": "obtain authority for this exact question, answer or source query",
+    "DECISION_HANDOFF_CONFLICT": "use the recorded answer or create a new source decision",
+    "ITEM_OFFER": "refresh the offer using its exact permitted fields and canonical source and destination references",
+    "OFFER_AUTHORITY": "obtain the source or destination authority for this exact offer action on its actual board",
+    "OFFER_CONFLICT": "use the original offer and recorded disposition, or create a new offer id for different content",
+    "ITEM_RECEIPT": "obtain the exact minimal source receipt and verify its item, commit and verifier/verdict through the established trust port",
+    "PERSON_VAULT_AUTH": "use the original credential or saved recovery key with the pinned public root, account and revision; restore an unaltered vault copy if its ciphertext changed",
+    "NO_TEST_FILE": "name each test file by its path from the checkout root, then run pullboard test again",
+    "NO_TEST_RUNNER": "set affectedTests in pullboard.json to the command that runs named test files, then run pullboard test again",
+    "TEST_SNAPSHOT": "commit the work, then run pullboard test again",
+    "MILESTONE_LIMIT": "remove or swap an unstarted item, or edit the milestone with --limit <n>|none",
+    "BAD_COMPUTER_NAME": "retry relay on or relay join with --name containing 1 to 80 characters and no control characters or path separators",
+    "BLUEPRINT_RULE_UNCHECKED": "add a checked starter item that cites the must rule named in the message, then run pullboard blueprint add <file> again",
+    "SHOUT_TOO_LONG": "shorten the message to 400 characters or fewer; cite native proof receipt ids and read pullboard show <id> for the evidence chain",
+    "PROOF_RUN_UNAVAILABLE": "restore writable native receipt storage, run the item check with current Pullboard, then read pullboard show <id>",
+    "PROOF_RUN_UNBOUND": "run the item check with current Pullboard and use its stored native receipt; read pullboard show <id> for the proof chain",
+    "PROOF_RUN_ACTOR": "run the check from your own joined seat and use the native receipt that belongs to that seat",
+    "PROOF_RUN_STALE": "read pullboard show <id> for the current frozen criterion, then run a fresh item check",
+    "PROOF_RUN_CHANGED": "preserve the original receipt and run a new item check to obtain a new native receipt id"
   },
   "replay": {
     "initial": {

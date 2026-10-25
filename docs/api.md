@@ -75,6 +75,8 @@ For example: `flow: review wait average 61 min (1 measured; > 60 min); bottlenec
 
 `merged <id> <commit>` records only a commit reachable from the primary checkout's branch that contains the item's submitted commit or has the same stable patch id as the item's change from its claim base. Other commits are refused with `NOT_MERGED`; `--note "why"` records an exceptional receipt and keeps the note in that item's `merged` event.
 
+`map --json`, `map <module or function> --json`, and `map --for <item> --json` return the same envelope: `main` is the scanned primary-main commit and `map` is the rendered overview, card, or bounded item slice. Ordinary text output is that same map text. Fresh scans require `src/`, `bin/`, and `test/` to match committed main: changed, untracked, and ignored entries in those directories refuse the scan. Ignore rules alone do not refuse it. Every scanned path, regular-file mode and consumed byte is checked against the committed Git object, including edits hidden by index flags; symbolic input files refuse instead of reading their external targets. A cached committed map does not incorporate later working-tree changes. The scanner reports unobserved effects as `not detected`; the map is source context, not proof that an effect cannot occur.
+
 <!-- api-command-shapes:start -->
 `status --json` and local API state carry `ruleCounts`: `approved`, `gated` (approved rows naming a gate), `ungated`, `proven`, `unproven`, and `contradicted`. Proof requires a green configured full-gate receipt on the current trunk whose supported test selection includes the row's test files. Opaque or unsupported coverage remains unproven. Contradicted counts approved rows whose gate files failed on the trunk in the last seven days; it is independent of proven, so a row can count in both after a later green. The API refreshes this window when evidence ages out, even without a board move.
 
@@ -99,6 +101,8 @@ For example: `flow: review wait average 61 min (1 measured; > 60 min); bottlenec
 | `sync` | `version:number`, `ref:string`, `sequence:number`, `pending:string|null` |
 | `list` | `version:number`, `items:array` |
 | `queue` | `version:number`, `releases:array`, `unreleased:array`, `first:object` |
+| `map` | `version:number`, `main:string`, `map:string` |
+| `flow replay` | `version:number`, `history:object`, `replay:object` |
 | `roadmap` | `version:number`, `milestones:array` |
 | `milestone add` | `version:number`, `milestone:object` |
 | `milestone items` | `version:number`, `milestone:object` |
@@ -330,6 +334,8 @@ Only the coordinator sets or edits an item's `--check`. `pullboard check [id]` p
 | `envelope` | `version:number`, `error:object` |
 | `error` | `code:string`, `message:string`, `next:string` |
 <!-- api-refusal-shapes:end -->
+
+`relay on`, `relay on --all`, and `relay join <code>` accept `--name "<computer>"` for a person-given display name. Coordinator holds, refusals and device lists use that name; unnamed computers keep `computer <last 8 of machine id>`. Labels never come from a hostname or path.
 
 `relay on`, `relay`, and `relay off` share the relay result shape. Successful `pullboard relay recover --skip N` returns that same shape with optional `skipped: N` naming the explicitly refused sequence and `adopted: true` when it adopts a different authenticated person checkpoint that proves the same blocked refusal. Every relay result includes `recovery: { pending, skip, next }`; when a saved recovery is pending, `next` is the exact retry command. The `behind` count remains the number of pending uploads and does not include recovery. `status` includes this relay object alongside the local board summary. Human status and relay output show the recovery sequence and retry command when one is saved. The local `agent_last_shout_id` inbox read cursor is metadata: recovery ignores only that field in its guarded digest and preserves the greater valid cursor for matching agents. Other native changes remain protected; if a semantic local write changes while recovery is pending, the CLI preserves it and refuses automatic restoration. Exporting alone does not unblock that conflict; this prototype has no merge or discard command, so the person must reconcile the export and remote checkpoint before continuing. Successful results may include `diagnostics` for a relay refusal or inactivity notice; a local move still succeeds when its upload must wait. Device sign-in instructions are written immediately to stderr, including with `--json`, so the person can sign in before the command returns.
 

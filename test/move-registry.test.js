@@ -14,14 +14,15 @@ import { unpackRelease } from './release-archive.js';
 import * as store from '../src/board.js';
 import { exportBoard, importBoard } from '../src/exchange.js';
 import { applyEngineMove, ENGINE_OPERATIONS } from '../src/engine.js';
-import { relayMoveActor } from '../src/relay-sender.js';
-import { NEXT_STEPS } from '../src/next-step-words.js';
+import { ENGINE_VERSION } from '../src/machine.js';
 import { MOVE_REGISTRY, minimumMoveEngine } from '../src/move-registry.js';
 import { PROOF_RUN_ENGINE } from '../src/proof-run-engine.js';
-import { ENGINE_VERSION } from '../src/machine.js';
+import { relayMoveActor } from '../src/relay-sender.js';
+import { NEXT_STEPS } from '../src/next-step-words.js';
 import { REGISTRY_AT, registryFixtureBoard } from './move-registry-fixture.js';
 import { importsIn } from '../src/module-imports.js';
 import { readdirSync } from 'node:fs';
+import { minimumMoveEngine } from '../src/move-registry.js';
 import { SPEC_REVISION_ENGINE } from '../src/spec-revision-engine.js';
 
 const SNAPSHOT = JSON.parse(readFileSync(new URL('./move-registry-baseline.json', import.meta.url), 'utf8'));
@@ -51,17 +52,14 @@ export default { operation: ${JSON.stringify(name)}, order: ${engine + 1000}, en
 `;
 }
 
-test('today\'s move order, actors, recovery text and recorded SQLite prefix are unchanged [C7,V4,H3,H16]', t => {
-  assert.deepEqual(ENGINE_OPERATIONS.filter(name => name !== 'recordProofRun'), SNAPSHOT.operations);
-  assert.equal(ENGINE_OPERATIONS.filter(name => name === 'recordProofRun').length, 1);
-  assert.deepEqual(Object.fromEntries(Object.entries(NEXT_STEPS).filter(([key]) => !['SHOUT_TOO_LONG', 'PROOF_RUN_UNAVAILABLE', 'PROOF_RUN_UNBOUND', 'PROOF_RUN_ACTOR', 'PROOF_RUN_STALE', 'PROOF_RUN_CHANGED'].includes(key))), SNAPSHOT.nextSteps);
+test('today\'s move order, actors, refusal recovery text and recorded SQLite prefix are unchanged [C7,V4,H3,H16]', t => {
+  assert.deepEqual(ENGINE_OPERATIONS, SNAPSHOT.operations);
+  assert.deepEqual(NEXT_STEPS, SNAPSHOT.nextSteps);
   assert.equal(minimumMoveEngine('recordProofRun', [{ landingFence: {}, receipt: { environment: {} } }, { cause: 'conflict:new' }]), PROOF_RUN_ENGINE);
   assert.equal(MOVE_REGISTRY.recordProofRun.engine, PROOF_RUN_ENGINE);
   assert.equal(MOVE_REGISTRY.recordProofRun.itemIdFirstArgument, false);
   assert.equal(relayMoveActor({ operation: 'recordProofRun', args: [{ agentId: 'proof-seat' }] }), 'proof-seat');
   assert.equal(relayMoveActor({ operation: 'recordProofRun', args: [] }), null);
-  assert.ok(NEXT_STEPS.SHOUT_TOO_LONG);
-  for (const code of ['UNAVAILABLE', 'UNBOUND', 'ACTOR', 'STALE', 'CHANGED']) assert.ok(NEXT_STEPS['PROOF_RUN_' + code]);
   for (const operation of SNAPSHOT.operations) {
     assert.deepEqual(SNAPSHOT.actorVectors.map(vector => relayMoveActor({ operation, ...vector })), SNAPSHOT.actors[operation], operation);
   }
@@ -74,12 +72,28 @@ test('today\'s move order, actors, recovery text and recorded SQLite prefix are 
     assert.deepEqual(applyEngineMove(board, move, options), outcome, move.operation);
     assert.deepEqual(applyEngineMove(board, move, options), outcome, 'same-position retry returns its immutable receipt');
   }
-  const expected = structuredClone(SNAPSHOT.replay.acceptedExpected);
-  // Replay records the executor's current version, while historical moves and every other byte stay pinned.
-  const executorVersion = expected.tables.board_meta.find(row => row.meta_key === 'relay_engine_version');
-  assert.ok(executorVersion, 'the pinned prefix explicitly records its executor version');
-  executorVersion.meta_value = String(ENGINE_VERSION);
-  assert.equal(JSON.stringify(exportBoard(board)), JSON.stringify(expected), 'items, events, receipts and replay cursor retain accepted-main bytes; only the declared executor version advances');
+  const replay = exportBoard(board);
+  const acceptedExpected = SNAPSHOT.replay.acceptedExpected;
+  const engineRows = acceptedExpected.tables.board_meta.filter(row => row.meta_key === 'relay_engine_version');
+  assert.equal(engineRows.length, 1, 'the accepted snapshot has one receiver engine-version field');
+  for (const { move } of SNAPSHOT.replay.records) {
+    const key = `relay_receipt_${move.id}`;
+    const expected = acceptedExpected.tables.board_meta.find(row => row.meta_key === key);
+    const actual = replay.tables.board_meta.find(row => row.meta_key === key);
+    assert.ok(expected, `${key} is part of the immutable accepted snapshot`);
+    assert.equal(actual?.meta_value, expected.meta_value, `${key} retains its exact historical bytes`);
+  }
+  // Receiver capability advances with this engine; the historical move receipts stay pinned above.
+  const replayExpected = {
+    ...acceptedExpected,
+    tables: {
+      ...acceptedExpected.tables,
+      board_meta: acceptedExpected.tables.board_meta.map(row => row.meta_key === 'relay_engine_version'
+        ? { ...row, meta_value: String(ENGINE_VERSION) }
+        : row),
+    },
+  };
+  assert.equal(JSON.stringify(replay), JSON.stringify(replayExpected), 'items, events, receipts and replay cursor retain accepted-main bytes for the exact historical moves');
 });
 
 test('two new board moves declared in two files need no edit to engine.js, relay-sender.js or next-step-words.js [C7,V4,H3,H16]', t => {
@@ -156,7 +170,7 @@ process.stdout.write(JSON.stringify(result));`;
   const result = JSON.parse(run(root, process.execPath, ['--input-type=module', '-e', child]));
   assert.ok(result.operations.includes('seedAlpha'), 'the first independent operation file is discovered');
   assert.ok(result.operations.includes('seedBeta'), 'the second independent operation file is discovered');
-  assert.deepEqual(result.operations.filter(name => !name.startsWith('seed') && name !== 'recordProofRun'), SNAPSHOT.operations, 'existing order does not move');
+  assert.deepEqual(result.operations.filter(name => !name.startsWith('seed')), SNAPSHOT.operations, 'existing order does not move');
   assert.deepEqual(result.seedFloors, [9, 11]);
   assert.equal(result.pureImportClosure, true, 'routing metadata never imports its consumers, board writers or Git/process launchers');
   assert.equal(result.alphaActor, 'seed-agent');
