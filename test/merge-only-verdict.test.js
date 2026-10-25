@@ -12,7 +12,7 @@ import { captureMergeOnly } from '../src/merge-only-source.js';
 import { mergeOnlyBasis } from '../src/merge-only-verdict.js';
 import { runFixtureGit, runFixtureChild } from './fixture-child.js';
 import { exportBoard, importBoard } from '../src/exchange.js';
-import { prepareEngineMove, applyEngineMove } from '../src/engine.js';
+import { prepareEngineMove, applyEngineMove, applyRelayMove } from '../src/engine.js';
 import { MERGE_ONLY_VERDICT_ENGINE } from '../src/merge-only-verdict-engine.js';
 
 const e2e = createE2eHelpers();
@@ -101,8 +101,12 @@ test('a merge-only resubmission keeps its accept and records the resolution diff
     importBoard(objectless, pending.snapshot);
     const canonical = prepareEngineMove(origin, 'submit', [id, options]);
     const at = '2026-01-01T00:00:00.000Z';
-    const withObjects = applyEngineMove(origin, canonical, { sequence: 1, at });
-    const withoutObjects = applyEngineMove(objectless, canonical, { sequence: 1, at });
+    const sender = { kind: 'agent', agent: options.agentId, userId: 'private-builder',
+      policy: MERGE_ONLY_VERDICT_ENGINE };
+    const withObjects = applyRelayMove(origin, canonical, { sequence: 1, at, sender, kind: 'move' });
+    const withoutObjects = applyRelayMove(objectless, canonical, { sequence: 1, at, sender, kind: 'move' });
+    assert.equal(withObjects.error, undefined,
+      `the authenticated builder retains the original reviewer authority: ${JSON.stringify(withObjects.error)}`);
     assert.equal(store.getItem(origin, id).item_status, 'verified');
     assert.deepEqual(withoutObjects, withObjects, 'one canonical move must emit identical events and event IDs without Git objects');
     assert.deepEqual(exportBoard(objectless), exportBoard(origin), 'replicas must retain exactly identical native state');
