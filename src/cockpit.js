@@ -43,10 +43,8 @@ import { settingsMarkup } from './view/settings-page.js';
 import { settingsPageScript } from './view/settings-page.js';
 import { agentApprovalScript } from './view/agent-approval.js';
 import { historyLoadingScript } from './view/history-loading.js';
-
 /** The CLI's default phrases, ordered by depth for the existing prose inventory guard. */
 export const PULLBOARD_COMMANDS = Object.freeze(commandPhrases().sort((left, right) => right.split(' ').length - left.split(' ').length));
-
 /**
  * The item lifecycle as the page draws it (M1): each state with what it means and, for a final
  * state, what every way in checks; each move with who makes it, its command or the clock's
@@ -64,7 +62,6 @@ function lifecycle() {
     moves: MACHINE.moves.map((move) => ({ verb: move.verb, from: move.from, to: move.to, by: move.by, how: move.command ?? `when ${move.when}`, checks: effectiveGuards(move).map((id) => rule(move, id)) })),
   };
 }
-
 /**
  * The page `pullboard view` serves (N26): one self-contained file, no assets from anywhere, that
  * reads the board through the server's JSON and follows its events. The layout is the one the person
@@ -955,6 +952,9 @@ function roadmapCards(p, titles) {
   const mobileHistory = '<section class="roadmap-shipping roadmap-mobile-shipping" aria-label="Last shipped release">' + lastShipped + '</section>';
   /** Keep supplied landed progress beside an upcoming release without a modern summary. */
   const count = (m) => m.total ? '<span class="milestone-count" aria-label="' + m.done + '/' + m.total + ' landed">' + m.done + '/' + m.total + ' landed</span>' : '';
+  /** Show the backend's capacity independently of remaining-work headers, including empty and shipped plans [N26]. */
+  const capacity = (m) => Number.isSafeInteger(m.milestone.limit) && m.milestone.limit >= 0 && Number.isSafeInteger(m.milestone.count) && m.milestone.count >= 0
+    ? '<span class="milestone-limit">' + m.milestone.count + '/' + m.milestone.limit + ' items</span>' : '';
   /** Render the existing milestone items, progress and complete note when opened. */
   const body = (read) => {
     const { milestone, rows, done, total } = read;
@@ -972,10 +972,10 @@ function roadmapCards(p, titles) {
     const header = headerFor(m);
     const legacyTarget = m.milestone.target ? '<div class="milestone-targetline">Target <time datetime="' + esc(m.milestone.target) + '">' + when(m.milestone.target) + '</time>' + (m.milestone.pastTarget ? ' <span class="chip warn">past target</span>' : '') + '</div>' : '';
     return wrap('section', 'card-panel milestone' + (header ? ' roadmap-has-summary' : ''), 'm:' + m.milestone.name, true,
-      '<h2>' + linked(m.milestone.name, titles) + '</h2>' + (header ? header.count : count(m)), body(m), header ? header.detail + (m === next ? mobileHistory : '') : legacyTarget + (m === next ? mobileShipping : ''));
+      '<h2>' + linked(m.milestone.name, titles) + '</h2>' + (header ? header.count : count(m)) + capacity(m), body(m), header ? header.detail + (m === next ? mobileHistory : '') : legacyTarget + (m === next ? mobileShipping : ''));
   };
   /** Summarize one shipped milestone with its first note line and total count. */
-  const line = (m) => wrap('div', 'milestone shipped-one', 'm:' + m.milestone.name, false, '<h2>' + esc(m.milestone.name) + '</h2><small>' + esc(firstLine(m.milestone.note)) + '</small>' + (m.milestone.shipped?.commit ? '<code class="roadmap-shipped-commit" title="' + esc(m.milestone.shipped.commit) + '">' + esc(m.milestone.shipped.commit.slice(0, 12)) + '</code>' : '') + '<span class="milestone-count">' + m.total + (m.total === 1 ? ' item' : ' items') + '</span>', body(m));
+  const line = (m) => wrap('div', 'milestone shipped-one', 'm:' + m.milestone.name, false, '<h2>' + esc(m.milestone.name) + '</h2><small>' + esc(firstLine(m.milestone.note)) + '</small>' + (m.milestone.shipped?.commit ? '<code class="roadmap-shipped-commit" title="' + esc(m.milestone.shipped.commit) + '">' + esc(m.milestone.shipped.commit.slice(0, 12)) + '</code>' : '') + '<span class="milestone-count">' + m.total + (m.total === 1 ? ' item' : ' items') + '</span>' + capacity(m), body(m));
   const releaseButtons = coming.map((m) => {
     const key = 'm:' + m.milestone.name;
     return '<button class="roadmap-release" data-roadmap-jump="' + esc(key) + '" type="button"><span>' + esc(m.milestone.name) + '</span><b>' + m.done + '/' + m.total + '</b></button>';
