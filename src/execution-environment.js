@@ -3,11 +3,14 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import {
+  basename,
+  dirname,
   join,
   relative,
 } from 'node:path';
@@ -106,7 +109,7 @@ export function bindTestRuntime(pid, file) {
     if (!stat.isFile() || stat.mode & 0o222) return false;
     const own = JSON.parse(readFileSync(path, 'utf8'));
     if (own.pid !== pid || own.file !== null || environmentProblem(own.environment)) return false;
-    const selected = relative(process.cwd(), file).replaceAll('\\', '/');
+    const selected = relative(realpathSync(process.cwd()), join(realpathSync(dirname(file)), basename(file))).replaceAll('\\', '/');
     // Accepted callers may select a real test outside the checkout; never invent an in-repo path for it.
     const bound = { pid, environment: own.environment, file: selected.split('/').includes('..') ? null : selected };
     if (!testRuntimeRows([bound])) return false;
