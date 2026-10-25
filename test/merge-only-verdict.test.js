@@ -1,7 +1,7 @@
 /** Real public submission, Git conflict resolution and immutable verdict coverage [V1,V4,H16]. */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { land } from '../src/land.js';
+import { land, runLandingBatch } from '../src/land.js';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,6 +14,7 @@ import { runFixtureGit, runFixtureChild } from './fixture-child.js';
 import { exportBoard, importBoard } from '../src/exchange.js';
 import { prepareEngineMove, applyEngineMove, applyRelayMove } from '../src/engine.js';
 import { MERGE_ONLY_VERDICT_ENGINE } from '../src/merge-only-verdict-engine.js';
+import { operationIntent } from '../src/relay-sender.js';
 
 const e2e = createE2eHelpers();
 after(e2e.cleanup);
@@ -100,6 +101,15 @@ test('a merge-only resubmission keeps its accept and records the resolution diff
     importBoard(origin, pending.snapshot);
     importBoard(objectless, pending.snapshot);
     const canonical = prepareEngineMove(origin, 'submit', [id, options]);
+    const { mergeOnly: suppliedCarry, ...callerOptions } = options;
+    assert.ok(suppliedCarry);
+    assert.equal(operationIntent('submit', canonical.args), operationIntent('submit', [id, callerOptions]),
+      'the derived canonical carry preserves the interrupted caller intent');
+    for (const key of ['commit', 'tree', 'policyCommit', 'gateGreen']) {
+      const changed = { ...callerOptions, [key]: key === 'gateGreen' ? false : '0'.repeat(40) };
+      assert.notEqual(operationIntent('submit', canonical.args), operationIntent('submit', [id, changed]),
+        `${key}: an actual changed submission is not an exact retry`);
+    }
     const at = '2026-01-01T00:00:00.000Z';
     const sender = { kind: 'agent', agent: options.agentId, userId: 'private-builder',
       policy: MERGE_ONLY_VERDICT_ENGINE };
@@ -190,6 +200,36 @@ test('a merge-only resubmission keeps its accept and records the resolution diff
     assert.equal(box.git(box.repo, 'rev-parse', 'HEAD'), beforeLanding);
     assert.deepEqual(store.verdictsFor(forged, id), original.verdicts);
     assert.deepEqual(store.landingBatches(forged), []);
+    // Adopt an already-gated trunk batch while an independent valid item remains ready.
+    // That bypasses the earlier all-stale selection refusal and reaches the final publication guard.
+    const adoption = store.openBoard(':memory:', undefined, { gitRoot: box.web });
+    try {
+      importBoard(adoption, exportBoard(forged));
+      const readyCommit = box.git(box.repo, 'commit-tree', box.git(box.repo, 'rev-parse', `${trunk}^{tree}`),
+        '-p', trunk, '-m', 'private independent ready candidate');
+      const ready = store.addItem(adoption, { by: 'coordinator', lane: 'web', title: 'Independent ready candidate' });
+      store.claim(adoption, ready, { agentId: options.agentId, lane: 'web', leaseMs: 7_200_000,
+        freeze: () => ({ text: pending.item.item_frozen, digest: pending.item.item_frozen_digest }) });
+      store.submit(adoption, ready, { agentId: options.agentId, commit: readyCommit,
+        tree: box.git(box.repo, 'rev-parse', `${readyCommit}^{tree}`), policyCommit: trunk,
+        submissionProof: options.submissionProof });
+      store.verify(adoption, ready, { agentId: original.verdicts.at(-1).verdict_by, decision: 'ACCEPT',
+        note: 'Private independent candidate keeps adoption selection nonempty', head: readyCommit,
+        digest: pending.item.item_frozen_digest, check: 'green',
+        review: { commit: readyCommit, head: readyCommit, trunk, paths: [] } });
+      const batch = { version: 1, id: 'private-gated-forged-carry', state: 'trunk', base: trunk, tip: extraHead,
+        root: box.web, branch: 'refs/heads/main', owner: 'private-adopter', logPath: join(box.repo, '.git', 'private-adoption.log'),
+        items: [{ id, commit: extraHead, merge: extraHead }] };
+      store.recordLandingBatch(adoption, { agentId: 'coordinator', batch });
+      await assert.rejects(runLandingBatch({ root: box.repo, board: adoption, adopt: true,
+        config: { landing: { publish: 'separate' } }, owner: 'private-adopter', say: () => {},
+        write: async (operation, args) => store[operation](adoption, ...args), checkLease: async () => {} }),
+      error => error.code === 'STALE_VERDICT' && /recorded merge-only acceptance/u.test(error.message),
+      'adoption must re-prove an already-gated canonical carry before finishing its trunk receipt');
+      assert.equal(store.landingBatches(adoption).at(-1).state, 'trunk');
+      assert.equal(store.getItem(adoption, id).item_merged_commit, null);
+      assert.equal(box.git(box.repo, 'rev-parse', 'HEAD'), beforeLanding);
+    } finally { store.closeBoard(adoption); }
     store.reopen(forged, id, { agentId: 'coordinator',
       note: `test/example.test.js: recorded failure; merge commit ${extraHead}` });
     store.claim(forged, id, { agentId: options.agentId, lane: 'web', leaseMs: 7_200_000,
@@ -218,6 +258,8 @@ test('a merge-only resubmission keeps its accept and records the resolution diff
   try {
     importBoard(absent, pending.snapshot);
     const move = prepareEngineMove(absent, 'submit', [id, { ...options, gitRoot: box.web }]);
+    assert.equal(Object.hasOwn(move.args[1], 'mergeOnly'), false,
+      'ordinary submit omits a derived null field and discards caller-provided carry');
     applyEngineMove(absent, move,
       { sequence: 1, at: '2026-01-01T00:00:00.000Z' });
     assert.equal(store.getItem(absent, id).item_status, 'submitted', 'an objectless origin cannot derive carry from caller fields or a serialized gitRoot');

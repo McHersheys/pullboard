@@ -95,7 +95,9 @@ export function prepareEngineMove(board, operation, args, { id = randomUUID(), a
   if (operation === 'submit' && ENGINE_VERSION >= SUBMISSION_PROOF_ENGINE) submissionProof(values[1]?.submissionProof);
   // Derive once before sealing; replicas never re-decide a recorded carry from their local objects.
   if (operation === 'submit' && ENGINE_VERSION >= MERGE_ONLY_VERDICT_ENGINE && values[1]) {
-    values[1].mergeOnly = store.prepareMergeOnlySubmit(board, values[0], values[1]);
+    const carry = store.prepareMergeOnlySubmit(board, values[0], values[1]);
+    delete values[1].mergeOnly;
+    if (carry) values[1].mergeOnly = carry;
   }
   if (operation === 'claim' && ['wipPerReviewer', 'takeoverMinutes'].some(key => typeof lineSettings(board)[key] === 'number')) {
     values[1] = { ...values[1], lineCapacity: true };
