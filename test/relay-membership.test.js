@@ -35,7 +35,8 @@ test('an approver signed member list survives sealed native replay and revokes b
   const document = await prepareBoardMembers(box.repo, state, ['bob'], { githubKeys, revision: 1, signingKey });
   const before = exportBoard(board);
   const move = prepareEngineMove(board, 'setBoardMembers', [{ agentId: 'coordinator', document }]);
-  applyEngineMove(board, move);
+  const options = { sequence: 1, at: new Date().toISOString() };
+  assert.equal(applyEngineMove(board, move, options).error, undefined);
   const eventCount = board.db.prepare('SELECT COUNT(*) AS n FROM event').get().n;
   store.setBoardMembers(board, { agentId: 'coordinator', document });
   assert.equal(board.db.prepare('SELECT COUNT(*) AS n FROM event').get().n, eventCount, 'an identical retry emits no second event');
@@ -43,7 +44,7 @@ test('an approver signed member list survives sealed native replay and revokes b
   const binding = { boardId: state.board, sequence: 1, kind: 'move' };
   const sealed = await seal(key, Buffer.from(JSON.stringify(move)), binding);
   importBoard(replica, before);
-  applyEngineMove(replica, JSON.parse(Buffer.from(await unseal(key, sealed, binding)).toString('utf8')));
+  assert.equal(applyEngineMove(replica, JSON.parse(Buffer.from(await unseal(key, sealed, binding)).toString('utf8')), options).error, undefined);
   assert.deepEqual(store.readBoardMembers(replica), document, 'native encrypted transport preserves the exact signed list');
   assert.equal(await authorizeMember(box.repo, state, store.readBoardMembers(replica), 'bob', { githubKeys }), true);
   await assert.rejects(authorizeMember(box.repo, state, { ...document, body: { ...document.body, members: ['mallory'] } }, 'mallory', { githubKeys }),
@@ -51,7 +52,7 @@ test('an approver signed member list survives sealed native replay and revokes b
   await assert.rejects(authorizeMember(box.repo, { ...state, board: 'f'.repeat(32) }, document, 'bob', { githubKeys }),
     error => error.code === 'RELAY_NOT_MEMBER', 'the same signature authorizes no other board');
   const revoked = await prepareBoardMembers(box.repo, state, [], { githubKeys, revision: 2, signingKey });
-  applyEngineMove(board, prepareEngineMove(board, 'setBoardMembers', [{ agentId: 'coordinator', document: revoked }]));
+  assert.equal(applyEngineMove(board, prepareEngineMove(board, 'setBoardMembers', [{ agentId: 'coordinator', document: revoked }]), { sequence: 2, at: new Date().toISOString() }).error, undefined);
   await assert.rejects(authorizeMember(box.repo, state, store.readBoardMembers(board), 'bob', { githubKeys }),
     error => error.code === 'RELAY_NOT_MEMBER', 'the current empty revision revokes an additional member');
   assert.throws(() => store.setBoardMembers(board, { agentId: 'coordinator', document }), error => error.code === 'BOARD_MEMBERS_REVISION');
