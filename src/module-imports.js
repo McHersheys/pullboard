@@ -216,9 +216,13 @@ function opaqueOptions(source, code, from, to) {
 
 /** Recognize callback syntax only; an opaque function-producing expression can instead be options. */
 function callbackSource(source) {
-  const value = pastGap(source, 0);
-  return /^(?:async\s+)?function\b/u.test(value)
-    || /^(?:async\s+)?(?:[A-Za-z_$][\w$]*|\([^]*?\))\s*=>/u.test(value);
+  let code = lex(source).code.trim();
+  code = code.replace(/^async\s+/u, '');
+  if (/^function\b/u.test(code)) return code.endsWith('}');
+  if (/^[A-Za-z_$][\w$]*\s*=>/u.test(code)) return true;
+  if (!code.startsWith('(')) return false;
+  const parameters = sourceParts(code, 1, ')');
+  return Boolean(parameters && code.slice(parameters.end + 1).trimStart().startsWith('=>'));
 }
 
 /** Unknown test option expressions are declarations under the conservative placement contract. */
