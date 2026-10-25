@@ -115,7 +115,7 @@ The version table is generated from the source-owned declarations in `src/format
 | `row grammar` | `1` | `SPEC_GRAMMAR_VERSION` in `src/spec.js`; optional `<!-- pullboard-grammar N -->` line in either file (absence means the current grammar) | Both files share the version. A declared version must match; an incompatible grammar change requires a coordinated version bump and compatible files. No automatic conversion occurs. |
 | `board schema` | `3` | `SCHEMA_VERSION` in `src/board.js`, persisted as `PRAGMA user_version` | On a write open of a board whose version is behind: create missing tables and indexes (version 3 adds the hot-path indexes), add missing columns in place with declared defaults, restore missing or changed triggers, and remove stale machine triggers without replacing rows. Read opens never migrate; a board at the current version whose shape differs is reported once on stderr and left as it is. |
 | `event log` | `1` | `EVENT_LOG_VERSION` in `src/board.js`, persisted in `board_meta` as `event_log_version` | Older event-log versions upgrade in place; newer versions are refused with `EVENT_LOG_VERSION`. Preserve event rows when the board schema changes. |
-| `move engine` | `116` | `ENGINE_VERSION` in `src/machine.js`, carried as `engine` in every sealed executable move | Bump when a move's meaning changes, independently of the event log and sealed envelope. A newer engine is refused with `ENGINE_VERSION`, naming both versions and asking you to upgrade Pullboard. |
+| `move engine` | `117` | `ENGINE_VERSION` in `src/machine.js`, carried as `engine` in every sealed executable move | Bump when a move's meaning changes, independently of the event log and sealed envelope. A newer engine is refused with `ENGINE_VERSION`, naming both versions and asking you to upgrade Pullboard. |
 <!-- format-versions:end -->
 
 A signed board uses event-log format 2; older tools refuse it.
@@ -434,7 +434,7 @@ The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its ap
 | `claim` | builder | `leaseUntil`, `digest` |
 | `renew` | builder | `leaseUntil`, `digest` |
 | `release` | builder | — |
-| `submit` | builder | `commit`, `tree`, `policyCommit`, engine-9 `criterionDigest`, engine-38 `submissionProof` |
+| `submit` | builder | `commit`, `tree`, `policyCommit`, engine-9 `criterionDigest`, engine-38 `submissionProof`, optional `submissionSize` |
 | `reserve` | reviewer | `until` |
 | `accept` | reviewer | `reason`, `commit`, engine-20 `implies`, engine-33 `review`, engine-68 `note` |
 | `reject` | reviewer | `reason`, `commit`, engine-20 `implies`, engine-30 `cause`, engine-33 `review`, automatic-Rigor `causeDerivation` |
@@ -504,6 +504,14 @@ Person row decisions use one `row_decision` event per row. Its `record` holds `k
 An approval of proposed new wording uses that same record: `source` is the existing exact line and `replacement` carries the approved target text. Pre-commit compares the staged target against the person decision or a verified staged signed receipt. No second approval format or event kind is needed.
 
 Migration preserves event rows and adds only schema objects that are missing.
+
+## Flow report and captured submission size
+
+`stats` JSON exposes `flow.report` with `scope: "all-time"`, including when the older statistics are filtered with `--since` or `--window`. It reconstructs recorded lifecycle intervals rather than inferring old history from current item rows. Its seven disjoint stage keys are `ready`, `later`, `build`, `reviewWait`, `review`, `mergeWait` and `rework`. Initial open time outside the recorded focus milestone, behind an unverified dependency, or under an item/lane hold is `later`; otherwise it is `ready`. A claim starts `build`, submission starts `reviewWait`, a live reservation starts `review`, and acceptance starts `mergeWait`. Reservation expiry/release returns to `reviewWait`. Rejection, reopen, non-retained refreeze, escalation, build release or claim lapse starts `rework` until the next claim. A retained refreeze preserves the active build. Missing lifecycle boundaries remain explicitly unknown rather than becoming measured zeroes.
+
+The report supplies per-item, per-lane, per-milestone and overall aggregates. An item can belong to several recorded milestones: `item.milestones` lists all active memberships, while `item.milestone` retains the latest active membership for compatibility. Membership in any focused milestone qualifies as focused. Each milestone aggregate includes its members once, and the overall aggregate counts the item once regardless of overlapping groups. `firstTry` counts known first-submission accept/reject decisions; later successful attempts cannot turn an initial rejection into first-try acceptance. `submissionsPerLanded` is unknown when its required history is missing. First-submission size buckets are `under100` (0–99), `100to300` (100–299), `300to800` (300–799), `800plus` (800 or more), and `unknown`.
+
+A `submit` may carry `submissionSize: {base, head, lines, method}`. `base` is the exact accepted main commit used for comparison, `head` is the submitted commit (and must equal `commit`), `lines` is a nonnegative safe integer, and `method` is exactly `"added-plus-deleted-no-renames"`. The comparison is `git diff --numstat --no-renames <base> <head>`: added plus deleted lines across all changed files; binary `-` columns contribute zero. This is captured once at submission, not recomputed later against a moving trunk. Missing or invalid historical metadata belongs in the unknown size bucket. This optional move-envelope field is gated by the `FLOW_SIZE_ENGINE` leaf, whose numeric engine assignment is made at landing; older recorded moves retain their original envelope and replay semantics.
 
 ## Submit test selection
 
