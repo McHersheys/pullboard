@@ -145,6 +145,7 @@ Work
                                         the command and its author print first; the project gate is pullboard gate
   pullboard test <files>                run named test files on the runner pool with the per-file timeout, uncommitted
                                         changes included; a red file is compared with main and named known or new
+                                        --affected selects the change and its accepted registry guards; no files needed
   pullboard check accept <id>           the person accepts an item's check that already passes on main, as it reads now;
                                         with checks.provesNothing "hold", claim and submit refuse that item until then
   pullboard bar ready [on|off]           coordinator: opt in to ready bars; existing frozen work needs no backfill
