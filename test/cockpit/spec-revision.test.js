@@ -27,7 +27,7 @@ test('a spec revision shows old and proposed rows side by side with proposal-id 
     assert.equal(await chrome.stable('document.querySelectorAll("#needs [data-spec-revision]").length'), 4,
       'Needs you renders each core-projected revision as its own actionable comparison');
     await chrome.stable(`window.revisionMoves = []; window.revisionFetch = window.fetch; window.fetch = function(input, init) {
-      if (init?.body) { try { const move = JSON.parse(init.body); if (move.verb) window.revisionMoves.push(move); } catch {} }
+      if (init?.body && String(input).includes('/moves')) { const move = JSON.parse(init.body); if (move.verb) window.revisionMoves.push(move); }
       return window.revisionFetch.apply(this, arguments);
     }; true`);
     for (const [index, width] of [375, 1280].entries()) {
