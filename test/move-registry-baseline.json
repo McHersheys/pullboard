@@ -63,11 +63,11 @@
     "takeCoordinator",
     "landingLeaseMove",
     "recordPublishFinding",
+    "actOnActivity",
+    "recordActivityDelivery",
     "decideSpecRevisions",
     "proposePersonMove",
-    "setPersonSigning",
-    "actOnActivity",
-    "recordActivityDelivery"
+    "setPersonSigning"
   ],
   "itemIdFirstArgument": [
     "signBar",
