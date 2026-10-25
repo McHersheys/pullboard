@@ -54,7 +54,24 @@ import { randomUUID } from 'node:crypto';
 const directory=${JSON.stringify(directory)};
 const file=directory+'/runtime-'+process.pid+'-'+randomUUID()+'.json';
 writeFileSync(file,JSON.stringify({pid:process.pid,environment:{platform:process.platform,arch:process.arch,node:process.version.slice(1)},file:null}),{flag:'wx',mode:0o400});
+// Node's --test parent only starts workers; retain capture until the actual test process boots.
+// User code sees its original NODE_OPTIONS, not this recorder's injected option.
+if (!process.execArgv.includes('--test')) {
+  const token='--import='+import.meta.url;
+  const options=process.env.NODE_OPTIONS;
+  if (options===token) delete process.env.NODE_OPTIONS;
+  else if (options?.endsWith(' '+token)) process.env.NODE_OPTIONS=options.slice(0,-token.length-1);
+}
 `;
+}
+
+/** Reuse only the exact native recorder for an admitted worker after its parent restores caller options. */
+export function testRuntimeImport(directory = process.env.PULLBOARD_RUNTIME_CAPTURE_DIR) {
+  if (!directory) return null;
+  const file = join(directory, 'test-runtime-preload.mjs');
+  try {
+    return readFileSync(file, 'utf8') === runtimeCaptureSource(directory) ? pathToFileURL(file).href : null;
+  } catch { return null; /* An absent or foreign recorder never becomes an import. */ }
 }
 
 /** Bind a closed admitted worker's self-report to the file selected by its parent, never by test stdout. */

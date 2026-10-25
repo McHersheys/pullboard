@@ -250,7 +250,7 @@ export function runProfiledShell(root, command, { waitMs = 0, artifactDirectory,
   gateLease?.tracker?.mark('runAt');
   const run = gateLease?.runner ? { ...runOnRunner(root, command, { runner: gateLease.runner, source: gateLease.source,
     browser: gateLease.browser, pipefail, stages, waivers: landing ? waivers : [], metadata: { ...(gateLease.runMetadata ?? {}), landing, ...(timeoutMs ? { timeoutMs } : {}) } }) }
-    : runShell(root, command, { pipefail, env: inherited, stages, timeoutMs, captureRuntimes: Boolean(gateLease?.proof) });
+    : runShell(root, command, { pipefail, env: inherited, stages, timeoutMs, captureRuntimes: Boolean(gateLease) });
   gateLease?.tracker?.mark('ranAt');
   if (gateLease) {
     gateLease.environment = run.environment ?? null;

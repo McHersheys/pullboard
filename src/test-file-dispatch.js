@@ -19,7 +19,7 @@ import { testsNeedBrowser } from './browser-admission.js';
 import { takeResource } from './resources.js';
 import { reserveTestFileToken } from './test-file-pool.js';
 import { TEST_FILE_POOL_ENV } from './test-file-pool.js';
-import { bindTestRuntime } from './execution-environment.js';
+import { bindTestRuntime, testRuntimeImport } from './execution-environment.js';
 
 /** Counter trailers are identified by their structured root-plan boundary, never by parsing test stdout/TAP. */
 function trailer(event, afterPlan) {
@@ -46,7 +46,8 @@ function notify(stream, event) {
 
 /** Set only this actual worker's legitimately reserved admission before its ordinary runner preload. */
 function admissionImport(value, browser, runner) {
-  const source = `process.env[${JSON.stringify(TEST_FILE_POOL_ENV)}]=${JSON.stringify(value)};`
+  const recorder = testRuntimeImport();
+  const source = (recorder ? `await import(${JSON.stringify(recorder)});` : '') + `process.env[${JSON.stringify(TEST_FILE_POOL_ENV)}]=${JSON.stringify(value)};`
     + (browser ? `process.env.PULLBOARD_TEST_BROWSER_OWNER_PID=${JSON.stringify(String(process.pid))};`
       + "if(process.env.PULLBOARD_TEST_BROWSER_BY_LAUNCH==='1')process.env.PULLBOARD_TEST_BROWSER_SLOT='held';"
       + 'delete process.env.PULLBOARD_TEST_BROWSER_BY_LAUNCH;' : '')
