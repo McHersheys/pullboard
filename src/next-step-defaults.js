@@ -57,6 +57,7 @@ export const DEFAULT_NEXT_STEPS = Object.freeze({
   "CHECK_MASKS_EXIT": "set the check to run its proof alone, or capture the output first and test it, then retry: pullboard edit <id> --check \"<command>\"",
   "BAD_SETTINGS": "restore the named setting to its documented type in its source file, then retry GET /api/v1/settings",
   "BAD_CURSOR": "pass a nonnegative integer from the last response you received",
+  "BAD_ACTIVITY_CURSOR": "use a nonnegative whole-number cursor from the last response, then read inbox again: pullboard inbox",
   "BAD_DEPENDENCIES": "use --after with item ids, such as --after 1,2, or --after none",
   "BAD_FACT_REF": "cite code as path:line[-line]@<full 40-character commit>, from git rev-parse HEAD",
   "BAD_FIRST_COMMIT": "commit the repository first, then run pullboard spec signers add",

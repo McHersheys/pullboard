@@ -1,3 +1,4 @@
+import { boardWriteHolderText } from './board-write-lock.js';
 /** Name a board this process cannot write, such as one inside a read-only agent sandbox [I1,P4]. */
 import { dirname } from 'node:path';
 import { AGENT_SHELL_MARKERS } from './person.js';
@@ -41,5 +42,5 @@ export function boardNotWritable(file, error, environment = process.env) {
 export function boardBusyError(file, startedAt, error) {
   const sqliteCode = Number.isInteger(error.errcode) ? error.errcode & 0xff : null;
   if (sqliteCode !== 5 && error.code !== 'SQLITE_BUSY' && !/database is locked/iu.test(error.message ?? '')) return error;
-  return new Refused('BOARD_BUSY', `board file ${file} remained held by another process after ${Date.now() - startedAt}ms; wait for it to finish and retry`);
+  return new Refused('BOARD_BUSY', `board file ${file} remained held by another process after ${Date.now() - startedAt}ms; wait for it to finish and retry${boardWriteHolderText(file)}`);
 }
