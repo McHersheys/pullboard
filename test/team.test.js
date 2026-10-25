@@ -1024,11 +1024,18 @@ test('an agent grant narrows at claim without trapping its own handoff facts [E2
 test('an agent grant narrows at claim for accepted numeric-text item ids [E21,H16]', () => {
   const box = helpers.project();
   for (const title of ['Claimed work', 'Other work']) {
-    run(box, box.repo, 'add', 'web', title, '--specs', 'G1', '--check', 'test -f web/grant-proof');
+    run(box, box.repo, 'add', 'web', title, '--specs', 'G1', '--check', 'test -f web/grant-proof', '--wait');
   }
   run(box, box.web, 'claim', '1');
   const actor = withBoard(box.repo, board => store.listAgents(board).find(agent => agent.agent_path === box.web).agent_id);
   const held = withBoard(box.repo, board => store.getItem(board, 1));
+  // Detached baseline completion would write only the source after this replica is copied.
+  // The public synchronous path finishes both setup observations before capturing the prefix.
+  for (const id of [1, 2]) {
+    const baseline = withBoard(box.repo, board => store.getItem(board, id).item_check_baseline);
+    assert.ok(baseline, 'each setup item retains its baseline observation');
+    assert.notEqual(baseline.result, 'pending', 'no setup baseline can append after replica export');
+  }
   const snapshot = withBoard(box.repo, exportBoard);
   const peer = join(box.dir, 'text-id-grant-replica');
   box.git(box.dir, 'clone', '-q', box.repo, peer);
