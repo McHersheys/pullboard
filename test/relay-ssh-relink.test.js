@@ -37,6 +37,8 @@ test('SSH relay off then on confirms replacement and retains the old-board off r
       if (!ready.value.ready) await new Promise(done => setTimeout(done, 20));
     } while (!ready.value.ready && Date.now() < deadline);
     assert.equal(ready.value.ready, true, 'real GitHub device grant reaches browser confirmation');
+    assert.equal(ready.value.intent.replaces, previous, 'the person confirms the immutable previous board, not an unbound request field');
+    assert.equal(box.auth.boardOff(previous), null, 'opening and reading confirmation never retires the old link');
     const result = await confirmation(box, '', { ticket, decision: 'confirm' }, opened.cookie);
     assert.equal(result.status, 200, JSON.stringify(result.value));
     assert.equal(result.value.confirmed, true);
@@ -54,4 +56,57 @@ test('SSH relay off then on confirms replacement and retains the old-board off r
       await running.closed;
     }
   }
+});
+
+
+/** Complete only the existing public device-grant protocol, without minting authority outside it. */
+async function publicIntent(box, intent) {
+  const start = await fetch(box.origin + '/auth/device/start', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ intent }) });
+  assert.equal(start.status, 200);
+  const grant = await start.json();
+  const ticket = decodeURIComponent(new URL(grant.confirmationURL).hash.slice(1));
+  const opened = await confirmation(box, '/open', { ticket });
+  assert.equal(opened.status, 200);
+  let status;
+  const deadline = Date.now() + 30_000; // budget: real private OAuth polling hang ceiling, not a speed assertion.
+  do {
+    const poll = await fetch(box.origin + '/auth/device/poll', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ticket: grant.ticket }) });
+    assert.equal(poll.status, 200);
+    status = await confirmation(box, '/status', { ticket }, opened.cookie);
+    if (!status.value.ready) await new Promise(done => setTimeout(done, 20));
+  } while (!status.value.ready && Date.now() < deadline);
+  assert.equal(status.value.ready, true);
+  return { ticket, cookie: opened.cookie, status: status.value };
+}
+
+test('SSH replacement requires the active board and an exact authenticated confirmation [E12,H5,H16]', async t => {
+  const box = await relayClientFixture(t);
+  await box.link();
+  const previous = JSON.parse(readFileSync(box.linkFile, 'utf8')).board;
+  const next = 'b'.repeat(32);
+  const intent = { board: next, repository: 'fixture/repository', host: 'private-host', boardName: 'private-board' };
+  const missing = await publicIntent(box, intent);
+  const denied = await confirmation(box, '', { ticket: missing.ticket, decision: 'confirm' }, missing.cookie);
+  assert.equal(denied.value.error.code, 'BOARD_REPO_LINKED', 'omitting a replacement never creates a second active link');
+  const stale = await publicIntent(box, { ...intent, replaces: 'a'.repeat(32) });
+  const invalid = await confirmation(box, '', { ticket: stale.ticket, decision: 'confirm' }, stale.cookie);
+  assert.equal(invalid.value.error.code, 'BOARD_REPLACE', 'a merely well-formed unrelated id grants no replacement authority');
+  assert.equal(box.auth.boardOff(previous), null);
+  assert.deepEqual(box.auth.linkedBoards().map(row => row.id), [previous]);
+  for (const replaces of [null, {}, '../old-board']) {
+    const response = await fetch(box.origin + '/auth/device/start', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ intent: { ...intent, replaces } }) });
+    assert.equal(response.status, 400, 'malformed replacement intent is refused before device sign-in');
+  }
+  const valid = await publicIntent(box, { ...intent, replaces: previous });
+  const foreign = await fetch(box.origin + '/auth/device/confirmation', { method: 'POST', headers: { origin: 'https://foreign.invalid', 'content-type': 'application/json', cookie: valid.cookie }, body: JSON.stringify({ ticket: valid.ticket, decision: 'confirm' }) });
+  assert.equal(foreign.status, 403, 'replacement keeps the existing same-origin person confirmation boundary');
+  assert.equal(box.auth.boardOff(previous), null);
+  const granted = await confirmation(box, '', { ticket: valid.ticket, decision: 'confirm' }, valid.cookie);
+  assert.equal(granted.status, 200);
+  const receipt = box.auth.boardOff(previous);
+  assert.equal(receipt.replacedBy, next);
+  assert.equal(receipt.userId, '7');
+  const repeated = await confirmation(box, '', { ticket: valid.ticket, decision: 'confirm' }, valid.cookie);
+  assert.equal(repeated.status, 200, 'same confirmed flow is idempotent');
+  assert.deepEqual(box.auth.boardOff(previous), receipt, 'a repeated confirmation never replaces its durable off receipt');
 });

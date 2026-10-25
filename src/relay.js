@@ -1592,8 +1592,9 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
     const key = state ? readBoardKey(state.board) : await generateBoardKey();
     const nextBoard = state?.board ?? plannedRelayBoard(root, localRecords(root, store.boardId));
     const relink = state ? null : relayRelink(root);
+    const replacement = state?.replaces ?? relink?.previous;
     const intent = remoteShell ? { board: nextBoard, repository,
-      host: hostname(), boardName: basename(root) } : undefined;
+      host: hostname(), boardName: basename(root), ...(replacement ? { replaces: replacement } : {}) } : undefined;
     const signed = remoteShell ? await deviceSignIn(url, io, { intent }) : reusableCredential ?? reusableSession ?? await deviceSignIn(url, io);
     if (reusableSession && reusableSession.url !== url) throw new Refused('RELAY_SESSION', 'Sign in again to this relay with pullboard relay on --all.');
     // Every clone finds its board in pullboard.json [E12], written before the snapshot so its presentation carries it.

@@ -293,16 +293,19 @@ export function createRelayAuth({ database, github, now = Date.now, sessionTTL =
       }
       let pendingIntent;
       if (intent !== undefined) {
-        if (Object.keys(intent).sort().join(',') !== 'board,boardName,host,repository') {
+        const expected = Object.hasOwn(intent, 'replaces') ? 'board,boardName,host,replaces,repository' : 'board,boardName,host,repository';
+        if (Object.keys(intent).sort().join(',') !== expected) {
           throw new Refused('BAD_REQUEST', 'start a relay sign-in with exactly one board confirmation');
         }
         identifier(intent.board, 'BAD_BOARD');
+        if (Object.hasOwn(intent, 'replaces')) identifier(intent.replaces, 'BAD_BOARD');
         const repository = repositoryName(intent.repository);
         if (typeof intent.host !== 'string' || !intent.host || intent.host.length > 255 || /[\u0000-\u001f\u007f]/u.test(intent.host) ||
             typeof intent.boardName !== 'string' || !intent.boardName.trim() || intent.boardName.length > 200 || /[\u0000-\u001f\u007f]/u.test(intent.boardName)) {
           throw new Refused('BAD_REQUEST', 'start a relay sign-in with a valid board name and machine host');
         }
-        pendingIntent = Object.freeze({ board: intent.board, repository, host: intent.host, boardName: intent.boardName });
+        pendingIntent = Object.freeze({ board: intent.board, repository, host: intent.host, boardName: intent.boardName,
+          ...(Object.hasOwn(intent, 'replaces') ? { replaces: intent.replaces } : {}) });
       }
       const grant = await github.startDevice();
       pruneFlows();
@@ -479,7 +482,7 @@ export function createRelayAuth({ database, github, now = Date.now, sessionTTL =
         if (flow.confirming) throw new Refused('OAUTH_PENDING', 'the board link is being confirmed; wait for the relay page');
         flow.confirming = true;
         try {
-          await auth.linkBoard(flow.session.token, flow.intent.board, flow.intent.repository, flow.expires);
+          await auth.linkBoard(flow.session.token, flow.intent.board, flow.intent.repository, flow.expires, flow.intent.replaces ?? null);
           flow.confirmed = true;
           flow.deliveryExpires = now() + 10 * 60_000;
         } finally { flow.confirming = false; }
