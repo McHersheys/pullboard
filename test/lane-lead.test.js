@@ -16,6 +16,7 @@ import {
   importBoard,
 } from '../src/exchange.js';
 import { LANE_LEAD_ENGINE } from '../src/lane-lead-engine.js';
+import { DECISION_ORIGIN_ENGINE } from '../src/decision-origin-engine.js';
 import { minimumMoveEngine } from '../src/move-registry.js';
 import { test } from 'node:test';
 import { createE2eHelpers } from './e2e-helpers.js';
@@ -104,6 +105,23 @@ test('lane policy replays identically and an older engine cannot reroute a new q
   const results = boards.map(board => applyEngineMove(board, question, { sequence: 2, at }));
   assert.deepEqual(results[1], results[2]);
   assert.equal(store.getShout(left, results[1].result).shout_to, 'web-2');
+  assert.deepEqual(exportBoard(left), exportBoard(right));
+  const answer = prepareEngineMove(source, 'answerDecision', [results[0].result, {
+    agentId: 'web-2', text: 'Use the reviewed path', lanes: ['web'], origin: 'agent', rationale: 'The lead reviewed this interface.',
+  }]);
+  const floor = Math.max(LANE_LEAD_ENGINE, DECISION_ORIGIN_ENGINE);
+  assert.equal(minimumMoveEngine('answerDecision', answer.args, left, new Date(at)), floor);
+  assert.throws(() => applyEngineMove(left, { ...answer, engine: floor - 1 }, { sequence: 3, at }),
+    error => error.code === 'RELAY_MOVE', 'a provenance-bearing lane answer retains both engine requirements');
+  const answers = boards.map(board => applyEngineMove(board, answer, { sequence: 3, at }));
+  assert.equal(answers[1].error, undefined);
+  assert.deepEqual(answers[1], answers[2]);
+  const provenance = answers[1].events.filter(event => event.event_kind === 'answer')
+    .map(event => JSON.parse(event.event_detail)).find(detail => detail.provenance)?.provenance;
+  assert.deepEqual(provenance, { statement: 'Use the reviewed path', rationale: 'The lead reviewed this interface.',
+    decidedBy: 'web-2', relayedBy: null, origin: 'agent' });
+  assert.ok(answers[1].events.some(event => event.event_kind === 'shout'
+    && JSON.parse(event.event_detail).messageKind === 'decision'), 'the same answer also notifies the coordinator');
   assert.deepEqual(exportBoard(left), exportBoard(right));
   assert.equal(minimumMoveEngine('answerDecision', [{}, {}], left, new Date(at)), 1,
     'malformed historical arguments retain their ordinary validator instead of failing in routing lookup');
