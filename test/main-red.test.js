@@ -185,7 +185,7 @@ test('main comparisons use the free CPU slot while browser work keeps its browse
   const entries = table => {
     if (!existsSync(queue)) return [];
     const db = new DatabaseSync(queue, { readOnly: true });
-    try { return db.prepare(`SELECT * FROM ${table} WHERE name='gate'`).all(); }
+    try { db.exec('PRAGMA query_only=ON; PRAGMA busy_timeout=10000'); return db.prepare(`SELECT * FROM ${table} WHERE name='gate'`).all(); }
     finally { db.close(); }
   };
   /** Launch a product comparison or a genuine private browser lease and retain its terminal result. */
