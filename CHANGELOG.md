@@ -6,6 +6,8 @@ Notable changes to Pullboard, for people using it. The format follows [Keep a Ch
 
 ### Added
 
+- Pull requests get a 'verified by a second agent' status that teams can require; a pull request made outside Pullboard shows as not verified. (#988)
+
 - A test that needs a desktop runs only on a runner with a confirmed logged-in session; the runner checks again before it starts. (#1134)
 
 - You can pair a second phone or browser with the command the page shows. (#978)
