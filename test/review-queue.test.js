@@ -523,6 +523,21 @@ test('a recorded automatic conflict return first replays after the replica trunk
   box.git(replica, 'fetch', box.repo, 'main');
   box.git(replica, 'merge', '-q', '--ff-only', 'FETCH_HEAD');
   assert.notEqual(box.git(replica, 'rev-parse', 'HEAD'), JSON.parse(record.move).args[1].computedConflict.trunk);
+  const fresh = store.openBoard(join(box.dir, 'fresh-stale-return.sqlite'));
+  try {
+    importBoard(fresh, before);
+    const wire = JSON.parse(record.move);
+    const options = wire.args[1];
+    assert.throws(() => prepareEngineMove(fresh, 'reopen', wire.args), error => error.code === 'COORDINATOR_ONLY',
+      'preparing the same now-stale evidence remains a fresh author request');
+    assert.throws(() => store.reopen(fresh, conflicted, options), error => error.code === 'COORDINATOR_ONLY',
+      'the direct board API cannot borrow recorded transport authority');
+    const forged = applyEngineMove(fresh, { ...wire, args: [conflicted, { ...options,
+      recorded: true, recordedConflictContext: { sequence: record.sequence, move: record.move } }] },
+    { sequence: record.sequence, at: new Date().toISOString(), recorded: true });
+    assert.equal(forged.error?.code, 'COORDINATOR_ONLY', 'caller-shaped context and generic engine replay grant no authority');
+    assert.equal(store.getItem(fresh, conflicted).item_status, 'submitted');
+  } finally { store.closeBoard(fresh); }
   json(box.run(replica, 'sync', '--json'));
   const replayed = json(box.run(replica, 'export'));
   assert.equal(replayed.tables.item.find(item => item.item_id === conflicted).item_status, 'open',

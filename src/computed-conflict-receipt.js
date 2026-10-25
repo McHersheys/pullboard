@@ -1,3 +1,4 @@
+import { isRecordedConflictContext } from './recorded-conflict-context.js';
 /** Board-bound computed conflict evidence is verified against immutable Git commits before sealing and on replay [V4,H16]. */
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
@@ -91,7 +92,8 @@ export function preflightComputedConflict(board, id, actor, receipt) {
 export function computedConflictProblem(board, item, actor, receipt) {
   const problem = bindingProblem(board, item, actor, receipt);
   if (problem) return problem;
-  requireCurrentConflict(board, requireComputedConflict(board, receipt));
+  const fields = requireComputedConflict(board, receipt);
+  if (!isRecordedConflictContext(board, item, actor, receipt)) requireCurrentConflict(board, fields);
   return null;
 }
 

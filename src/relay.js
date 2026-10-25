@@ -1,3 +1,5 @@
+import { requirePreparedComputedConflict } from './computed-conflict-receipt.js';
+import { withRecordedConflictContext } from './recorded-conflict-context.js';
 import {
   formatSnapshotLimit,
   reportedSnapshotSize,
@@ -846,8 +848,9 @@ async function replayRelayRecord(board, key, state, record) {
     move = await decoded(key, record, state, record.kind, record.event_id);
     requireSupportedEngine(move);
     if (record.kind === 'request') return receivePersonRequest(board, move, { sequence: record.event_id, at: record.event_at, sender: record.sender });
-    return applyRelayMove(board, move, { sequence: record.event_id, at: record.event_at, sender: record.sender, kind: record.kind,
-      digest: createHash('sha256').update(record.sealed).digest('hex'), registration: record.registration });
+    const position = { sequence: record.event_id, at: record.event_at, sender: record.sender, kind: record.kind,
+      digest: createHash('sha256').update(record.sealed).digest('hex'), registration: record.registration };
+    return withRecordedConflictContext(board, move, position, () => applyRelayMove(board, move, position));
   } catch (error) { // A seal no key opens, from an engine no newer than this one, is junk: set aside, never a stop [E20].
     if (!(error instanceof Refused) || !(['RELAY_MOVE', 'RELAY_RESPONSE', 'SEAL_FORMAT', 'SEAL_AUTH_FAILED'].includes(error.code) || error.code === 'SEAL_VERSION' && record.sender?.engine <= ENGINE_VERSION)) throw error;
     return refuseRelayMove(board, move, { sequence: record.event_id, at: record.event_at, sender: record.sender, kind: record.kind, code: ['SEAL_AUTH_FAILED', 'SEAL_VERSION'].includes(error.code) ? 'RELAY_SEAL' : error.code,
@@ -1007,6 +1010,9 @@ async function sendPending(root, file, state, io) {
     const pending = state.pending;
     const actor = credentialActor(pending.move);
     try {
+      if (pending.move.operation === 'reopen' && pending.move.args[1]?.computedConflict !== undefined) {
+        localRecords(root, board => requirePreparedComputedConflict(board, pending.move.args[0], pending.move.args[1].agentId, pending.move.args[1].computedConflict));
+      }
       const transport = await actorTransport(root, file, state, actor, io);
       const reply = await request(transport, '/api/v1/boards/' + state.board + '/moves', { method: 'POST',
         body: { sequence: pending.sequence, sealed: pending.sealed, ...(pending.registration ? { registration: pending.registration } : {}) } }, io);
