@@ -143,36 +143,24 @@ test('[A2] the local API admits only its listed origins', async (t) => {
 
 test('local API admits only configured literal IPv4 hosts at their own origin [H19]', async (t) => {
   const box = project();
-  const assigned = '192.168.7.9';
-  const configured = await startLocalHandler(t, box, { allowedHosts: [assigned] });
+  const configured = await startLocalHandler(t, box, { allowedHosts: ['192.168.7.9'] });
   const port = new URL(configured.origin).port;
-  const ownHost = `${assigned}:${port}`;
-  const ownOrigin = `http://${ownHost}`;
-  const allowed = await apiFetch(configured, '/api/v1/boards', { headers: { host: ownHost, origin: ownOrigin } });
-  assert.equal(allowed.status, 200, 'the exact configured IPv4 Host and same Origin reach the regular API');
-  assert.equal((await allowed.json()).boards.length, 1, 'the allowed host receives the fixture board');
-
-  const loopback = await apiFetch(configured, '/api/v1/boards');
-  assert.equal(loopback.status, 200, 'enabling one LAN host preserves the existing loopback host');
-
-  const foreignHost = await apiFetch(configured, '/api/v1/boards', {
-    headers: { host: `192.168.7.10:${port}`, origin: `http://192.168.7.10:${port}` },
-  });
-  assert.equal((await apiError(foreignHost, 401)).code, 'AUTH_REQUIRED', 'a different literal IPv4 Host is refused');
-
-  const foreignOrigin = await apiFetch(configured, '/api/v1/boards', {
-    headers: { host: ownHost, origin: 'https://foreign.invalid' },
-  });
-  assert.equal((await apiError(foreignOrigin, 403)).code, 'API_ORIGIN', 'a foreign Origin is refused even for the allowed Host');
-
+  const host = `192.168.7.9:${port}`;
+  const origin = `http://${host}`;
+  const allowed = await apiFetch(configured, '/api/v1/boards', { headers: { host, origin } });
+  assert.equal(allowed.status, 200, 'the exact configured IPv4 Host and same Origin reach the API');
+  assert.equal((await allowed.json()).boards.length, 1);
+  assert.equal((await apiFetch(configured, '/api/v1/boards')).status, 200, 'loopback remains allowed');
+  const foreignHost = await apiFetch(configured, '/api/v1/boards', { headers: { host: `192.168.7.10:${port}`, origin: `http://192.168.7.10:${port}` } });
+  assert.equal((await apiError(foreignHost, 401)).code, 'AUTH_REQUIRED');
+  const foreignOrigin = await apiFetch(configured, '/api/v1/boards', { headers: { host, origin: 'https://foreign.invalid' } });
+  assert.equal((await apiError(foreignOrigin, 403)).code, 'API_ORIGIN');
   const defaulted = await startLocalHandler(t, box);
-  const notImplicitlyAllowed = await apiFetch(defaulted, '/api/v1/boards', { headers: { host: ownHost, origin: ownOrigin } });
-  assert.equal((await apiError(notImplicitlyAllowed, 401)).code, 'AUTH_REQUIRED', 'omitting the allowlist preserves loopback-only Host authority');
-
-  for (const host of ['localhost', '0.0.0.0', '2001:db8::1']) {
-    assert.throws(() => createLocalApiHandler({ secret: randomUUID(), getPort: () => 1, runCommand: main,
-      projects: () => [], allowedHosts: [host] }), TypeError, `non-IPv4 or wildcard host ${host} is rejected at construction`);
-  }
+  const denied = await apiFetch(defaulted, '/api/v1/boards', { headers: { host, origin } });
+  assert.equal((await apiError(denied, 401)).code, 'AUTH_REQUIRED', 'omitting the allowlist preserves loopback-only Host authority');
+  for (const invalid of ['localhost', '0.0.0.0', '2001:db8::1']) assert.throws(() => createLocalApiHandler({
+    secret: randomUUID(), getPort: () => 1, runCommand: main, projects: () => [], allowedHosts: [invalid],
+  }), TypeError, `invalid LAN host ${invalid} is rejected`);
 });
 
 /** Quote a literal executable path for the fixture hook's POSIX shim. */
