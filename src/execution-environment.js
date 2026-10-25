@@ -136,10 +136,8 @@ export function testRuntimeRows(value) {
 export function testRuntimeEnvironment(rows) {
   const checked = testRuntimeRows(rows);
   if (!checked) return null;
-  const files = checked.filter(row => row.file !== null);
-  const selected = files.length ? files : checked;
-  const first = selected[0].environment;
-  return selected.every(row => sameEnvironment(first, row.environment)) ? { ...first } : null;
+  const first = checked[0].environment;
+  return checked.every(row => sameEnvironment(first, row.environment)) ? { ...first } : null;
 }
 
 /** Capture actual Node children in a private run directory without changing test output or the machine pool. */

@@ -9,7 +9,7 @@ import { prepareEngineMove, applyEngineMove } from '../src/engine.js';
 import { boardReceiptStore, receiptBody, receiptFields } from '../src/gate-run-receipt.js';
 import { proofCounts } from '../src/proof-provenance.js';
 import { runShell } from '../src/shell-run.js';
-import { captureTestRuntimes } from '../src/execution-environment.js';
+import { captureTestRuntimes, testRuntimeEnvironment } from '../src/execution-environment.js';
 import { runFixtureChild } from './fixture-child.js';
 import { fileURLToPath } from 'node:url';
 import { bindRefs, resolveMove, strayItemRefs } from '../src/relay-outbox.js';
@@ -147,10 +147,19 @@ test('timed shell proof records the actual command child rather than the timeout
   const result = runShell(directory, `${JSON.stringify(process.execPath)} -e ${JSON.stringify(program)}`,
     { timeoutMs: 5_000, captureRuntimes: true }); // budget: declared timeout input exercises the real custody worker.
   assert.equal(result.isGreen, true, result.output);
+  assert.ok(JSON.parse(readFileSync(trace, 'utf8')).pid > 0, 'the opaque command really executed');
+  assert.equal(result.testRuntimes, null, 'custody preloads cannot prove an opaque custom command has no synchronous descendants');
+  const selected = join(directory, 'selected-runtime.test.cjs');
+  writeFileSync(selected, program + "require('node:test')('selected actual timed worker [G1]',()=>{});\n");
+  const runner = fileURLToPath(new URL('../bin/run-tests.js', import.meta.url));
+  const admitted = runShell(directory, `${JSON.stringify(process.execPath)} ${JSON.stringify(runner)} ${JSON.stringify(selected)}`,
+    { timeoutMs: 5_000, captureRuntimes: true }); // budget: the same bounded real custody path now runs an admitted selected worker.
+  assert.equal(admitted.isGreen, true, admitted.output);
   const actual = JSON.parse(readFileSync(trace, 'utf8'));
-  assert.equal(result.testRuntimes.length, 1, 'the timeout launcher never substitutes for the actual command');
-  assert.equal(result.testRuntimes[0].pid, actual.pid);
-  assert.equal(result.testRuntimes[0].environment.node, actual.node);
+  assert.equal(admitted.testRuntimes.length, 1, 'the timeout launcher never substitutes for the actual selected worker');
+  assert.equal(admitted.testRuntimes[0].pid, actual.pid);
+  assert.equal(admitted.testRuntimes[0].file, 'selected-runtime.test.cjs');
+  assert.equal(admitted.testRuntimes[0].environment.node, actual.node);
 });
 
 test('child boot reports remain read only and a writable replacement stays unknown [C7,H16]', t => {
@@ -304,6 +313,8 @@ test('child runtime fields preserve legacy bytes and replay mixed environments w
   const environment = { platform: 'darwin', arch: 'arm64', node: '22.13.1' };
   const rows = [{ pid: 101, environment, file: 'test/first.test.js' },
     { pid: 102, environment: { ...environment, node: '24.21.0' }, file: 'test/second.test.js' }];
+  assert.equal(testRuntimeEnvironment([rows[0], { ...rows[1], file: null }]), null,
+    'an authenticated external worker still participates in mixed runtime accounting');
   const supplied = { ...legacy, proof: { ...legacy.proof, environment, testRuntimes: rows } };
   const checked = receiptFields(supplied);
   assert.equal(checked.proof.environment, null, 'mixed actual child versions cannot borrow the declared launcher environment');
