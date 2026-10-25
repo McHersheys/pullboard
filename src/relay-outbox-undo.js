@@ -113,6 +113,8 @@ export function undoQueued(board, entries) {
   let conflict = null;
   try {
     atomic(board, () => {
+      // A move's rows come back table by table; references between them are checked once all are back.
+      db.exec('PRAGMA defer_foreign_keys = ON');
       const triggers = db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'machine_%'").all();
       for (const { name } of triggers) db.exec(`DROP TRIGGER "${name.replaceAll('"', '""')}"`);
       for (const entry of [...entries].reverse()) {
