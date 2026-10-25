@@ -7,6 +7,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { lex } from './js-lex.js';
 
 /**
  * A child Node that compiles each source in its private input file as an ES module and reports, for each, whether
@@ -179,6 +180,91 @@ function quotedCpuOptions(source) {
   return points;
 }
 
+/** Split an executable argument/property list using balanced delimiters, never executing expressions. */
+function sourceParts(code, start, closing) {
+  const parts = [];
+  let begin = start;
+  const stack = [];
+  for (let at = start; at < code.length; at++) {
+    const char = code[at];
+    if (!stack.length && char === closing) { parts.push([begin, at]); return { parts, end: at }; }
+    if (!stack.length && char === ',') { parts.push([begin, at]); begin = at + 1; }
+    else if ('([{'.includes(char)) stack.push({ '(': ')', '[': ']', '{': '}' }[char]);
+    else if (')]}'.includes(char)) {
+      if (stack.pop() !== char) return null;
+    }
+  }
+  return null;
+}
+
+/** Only a directly written object with readable property names proves that no opaque option hides load. */
+function opaqueOptions(source, code, from, to) {
+  while (/\s/u.test(code[from] ?? '') && from < to) from++;
+  while (/\s/u.test(code[to - 1] ?? '') && to > from) to--;
+  if (code[from] !== '{') return true;
+  const object = sourceParts(code, from + 1, '}');
+  if (!object || object.end !== to - 1) return true;
+  for (const [start, end] of object.parts) {
+    const property = pastGap(source.slice(start, end), 0);
+    if (!property) continue;
+    // Computed keys, spreads and prototype inputs cannot be resolved without running code.
+    if (property.startsWith('[') || property.startsWith('...') || /^(?:__proto__\b|"__proto__"|'__proto__')/u.test(property)) return true;
+    if (!/^(?:[A-Za-z_$][\w$]*|"(?:[^"\\]|\\[\s\S])*"|'(?:[^'\\]|\\[\s\S])*')/u.test(property)) return true;
+  }
+  return false;
+}
+
+/** Recognize callback syntax only; an opaque function-producing expression can instead be options. */
+function callbackSource(source) {
+  const value = pastGap(source, 0);
+  return /^(?:async\s+)?function\b/u.test(value)
+    || /^(?:async\s+)?(?:[A-Za-z_$][\w$]*|\([^]*?\))\s*=>/u.test(value);
+}
+
+/** Unknown test option expressions are declarations under the conservative placement contract. */
+function unreadableTestOptions(source) {
+  const code = lex(source).code;
+  const names = new Set(['test', 'it', 'describe']);
+  for (const match of source.matchAll(/\bimport\s+([^;'"]+?)\s+from\s*(['"])node:test\2/gu)) {
+    const bindings = match[1].replace(/[{}*]/gu, ' ').split(',');
+    for (const binding of bindings) {
+      const name = binding.trim().split(/\s+as\s+/u).at(-1)?.trim();
+      if (/^[A-Za-z_$][\w$]*$/u.test(name ?? '')) names.add(name);
+    }
+  }
+  // A direct alias retains the same conservative rule, including renamed imported test functions.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const match of code.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\b/gu)) {
+      if (names.has(match[2]) && !names.has(match[1])) { names.add(match[1]); changed = true; }
+    }
+  }
+  const imports = [...source.matchAll(/\bimport\s+(?:[A-Za-z_$][\w$]*\s*,?\s*)?(?:\{[^}]*\}|\*\s+as\s+[A-Za-z_$][\w$]*)?\s*from\s*(['"])[^'"]+\1/gu)]
+    .map(match => [match.index, match.index + match[0].length]);
+  for (const word of code.matchAll(/\b[A-Za-z_$][\w$]*\b/gu)) {
+    if (!names.has(word[0]) || imports.some(([from, to]) => word.index >= from && word.index < to)) continue;
+    const tail = pastGap(source, word.index + word[0].length);
+    if (!/^(?:\(|\.\s*(?:only|skip|todo)\s*\()/u.test(tail)) return true;
+  }
+  for (const match of code.matchAll(/\b([A-Za-z_$][\w$]*)\s*(?:\.\s*(?:only|skip|todo)\s*)?\(/gu)) {
+    if (!names.has(match[1])) continue;
+    const open = match.index + match[0].lastIndexOf('(');
+    const call = sourceParts(code, open + 1, ')');
+    if (!call) return true;
+    const args = call.parts.filter(([from, to]) => code.slice(from, to).trim());
+    if (!args.length) continue;
+    const [first, second] = args;
+    const firstText = source.slice(...first).trim();
+    const named = /^(?:['"`])/u.test(firstText);
+    if (named && args.length === 1 || !named && args.length === 1 && callbackSource(firstText)) continue;
+    if (named && args.length === 2 && callbackSource(source.slice(...second))) continue;
+    const options = named ? second : first;
+    if (!options || opaqueOptions(source, code, ...options)) return true;
+  }
+  return false;
+}
+
 /** Find CPU-load options without evaluating a test module; unknown identifier values require runner admission. */
 export function cpuLoadOptionsIn(sources) {
   const occurrences = sources.map(source => [
@@ -200,7 +286,7 @@ export function cpuLoadOptionsIn(sources) {
   const parsed = look([...sources, ...variants]);
   let next = sources.length;
   return sources.map((source, index) => {
-    let found = !parsed[index].compiles;
+    let found = !parsed[index].compiles || unreadableTestOptions(source);
     for (const { disabled } of occurrences[index]) {
       if (!parsed[next].compiles && !disabled) found = true;
       next += 1;
