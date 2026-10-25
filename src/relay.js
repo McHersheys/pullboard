@@ -1,3 +1,6 @@
+import { relayExclusion } from './relay-exclusion-state.js';
+import { excludeRelayByPerson } from './relay-exclusion-state.js';
+import { clearRelayExclusion } from './relay-exclusion-state.js';
 import {
   cancellationOutcome,
   waitForDevicePoll,
@@ -299,12 +302,13 @@ function deletedMoveResult(root, operation, args, command, io, applyLocally) {
 function forgetDeletedCopy(root, file, state, io) {
   const recovered = retainDeletedMove(root, state);
   saveDeletedLink(root, { version: 1, board: state.board, url: state.url, ...(recovered ? { recovered } : {}) });
-  updateRelayMachine(machine => { const project = repoInfo(root).root; if (!machine.excluded.includes(project)) machine.excluded.push(project); });
+  rememberRelink(root, state.board);
+  archiveRelinkOutbox(root, state);
   rmSync(file, { force: true });
   try { forgetBoardKey(state.board, state.keyStorage); } catch { /* An unavailable key store cannot block completed local opt-out. */ }
   if (!DELETION_NOTICES.has(io)) {
     DELETION_NOTICES.add(io);
-    io.err(`pullboard: [RELAY_BOARD_DELETED] relay copy ${state.board} was deleted; local work continues; run pullboard relay on only to link it again`);
+    io.err(`pullboard: [RELAY_BOARD_DELETED] relay copy ${state.board} was deleted; local work continues; run pullboard relay on for fresh person approval to link it again`);
   }
 }
 
@@ -452,7 +456,8 @@ function behind(root, state) {
 function summary(root, state, { pairing = false } = {}) {
   if (!state) {
     const deleted = deletedLink(root);
-    return unlinkedRelayStatus(deleted);
+    const exclusion = relayExclusion(root);
+    return { ...unlinkedRelayStatus(deleted), ...(exclusion ? { excluded: true, exclusion } : {}) };
   }
   if (state.unlinking) return { linked: false, board: state.board, url: state.url, link: '', sequence: state.sequence, behind: 0, cleanup: true, recovery: recoverySummary(state) };
   const fragment = pairing ? '&key=' + encodeBoardKey(readBoardKey(state.board)) : '';
@@ -1630,6 +1635,7 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
     // The person's own sign-in sets up the coordinator's token, so no agent can mint it (#579).
     if (/^ps_[A-Za-z0-9_-]{43}$/u.test(signed.token ?? '')) { await ensurePersonCoordinator(file, state, signed.token, io); await syncApprovers(root, state, signed.token, io); }
     let result;
+    let clearedExclusion = false;
     try {
       let ready = true;
       if (state.mode === 'ordered' && state.snapshot) {
@@ -1647,7 +1653,7 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
         await flushOutbox(outboxLink(root, file, state, io));
         await catchUp(root, file, state, io);
         await deliverDeviceWraps(root, io);
-        updateRelayMachine(machine => { machine.excluded = machine.excluded.filter(entry => entry !== repoInfo(root).root); });
+        clearedExclusion = clearRelayExclusion(root);
         if (reusableSession === undefined) await publishExcludedBoards({ ...signed, account, url }, io, request);
       }
       result = summary(root, state, { pairing: !quiet });
@@ -1660,13 +1666,20 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
       delete state.previousBoardNotice;
       saveLink(file, state);
     }
+    if (clearedExclusion) {
+      result.notice = [result.notice, 'The exclusion was cleared; this board is linked again.'].filter(Boolean).join(' ');
+      io.err('The exclusion was cleared; this board is linked again.');
+    }
     return result;
   });
 }
 
 /** Unlink locally without approval, then request a separate phone-approved remote deletion if possible. */
 export async function relayOff(root, io) {
-  updateRelayMachine(machine => { const project = repoInfo(root).root; if (!machine.excluded.includes(project)) machine.excluded.push(project); });
+  excludeRelayByPerson(root, io, detail => localRecords(root, board => {
+    store.logEvent(board, store.PERSON, 'relay_exclusion', null, detail);
+    return { by: board.lastEvent.event_by, at: board.lastEvent.event_at, eventId: board.lastEvent.event_id };
+  }));
   const file = linkFile(root);
   return locked(file, async () => {
     const state = loadLink(file);

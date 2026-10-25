@@ -1044,7 +1044,7 @@ test('relay off forgets expired and remotely deleted boards while preserving loc
     assert.match(off.document.notice, /Local link removed/u);
     assert.equal(existsSync(box.linkFile), false, 'local link metadata is forgotten');
     assert.equal(existsSync(box.keyFile), false, 'device-only fallback key is forgotten');
-    assert.deepEqual((await box.cli('export')).document.tables, localBeforeOff, 'local rows and event history survive remote deletion or expiry');
+    assertPersonUnlinkHistory((await box.cli('export')).document.tables, localBeforeOff);
     assert.ok(JSON.parse(readFileSync(join(box.env.PULLBOARD_HOME, 'relay-machine/state.json'), 'utf8')).excluded.includes(box.root),
       'the local opt-out remains durable after unlink');
     assert.equal(box.calls.slice(callsBeforeOff).some(call => call.method === 'DELETE'), false,
@@ -1069,7 +1069,7 @@ test('relay off completes local unlink when the relay is offline [H1,H7,H18]', a
   assert.equal(existsSync(box.keyFile), false);
   assert.ok(JSON.parse(readFileSync(join(box.env.PULLBOARD_HOME, 'relay-machine/state.json'), 'utf8')).excluded.includes(box.root),
     'the local opt-out remains durable');
-  assert.deepEqual((await box.cli('export')).document.tables, localBeforeOff, 'offline unlink preserves all local rows');
+  assertPersonUnlinkHistory((await box.cli('export')).document.tables, localBeforeOff);
   assert.equal(box.calls.length, callsBeforeOff, 'offline local unlink makes no relay request');
   assert.equal(box.calls.some(call => call.method === 'DELETE'), false, 'offline local unlink cannot delete the remote copy');
 });
@@ -1450,6 +1450,6 @@ test('every real CLI relay request declares its engine including sign-in, reads,
 });
 
 // These real-protocol cases live outside the near-cap relay fixture file.
-import { deletedCopyRelinks, relayOnClearsExclusion } from './relay-exclusion-fixture.js';
+import { deletedCopyRelinks, relayOnClearsExclusion, assertPersonUnlinkHistory } from './relay-exclusion-fixture.js';
 test('a deleted relay copy relinks rather than excluding the board [H5,H17]', deletedCopyRelinks);
 test('relay on clears an exclusion and names it [H5,H17,B26]', relayOnClearsExclusion);

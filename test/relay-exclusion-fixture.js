@@ -51,6 +51,9 @@ export async function relayOnClearsExclusion(t) {
   await box.link();
   assert.equal((await box.cli('relay', 'off')).code, 0);
   assert.equal(machine(box).excluded.includes(box.root), true, 'the person may persist an opt-out');
+  const audit = (await box.cli('export')).document.tables.event.filter(row => row.event_kind === 'relay_exclusion').at(-1);
+  assert.equal(audit.event_by, 'person');
+  assert.equal(JSON.parse(audit.event_detail).path, 'relayOff');
   const status = await box.cli('status');
   assert.equal(status.code, 0);
   assert.equal(status.document.relay.excluded, true, 'normal status makes the durable opt-out visible');
@@ -62,4 +65,27 @@ export async function relayOnClearsExclusion(t) {
   assert.match(linked.document.notice, /exclusion.*clear|clear.*exclusion/iu, 'successful explicit on names the cleared exclusion');
   assert.equal(machine(box).excluded.includes(box.root), false);
   assert.equal((await box.cli('status')).document.relay.excluded, undefined, 'a cleared exclusion is no longer reported');
+  const count = (await box.cli('export')).document.tables.event.filter(row => row.event_kind === 'relay_exclusion').length;
+  box.env.AI_AGENT = '1'; box.env.SSH_CONNECTION = 'fixture remote agent';
+  const agentOff = await box.cli('relay', 'off');
+  delete box.env.AI_AGENT; delete box.env.SSH_CONNECTION;
+  assert.equal(agentOff.code, 0, 'an agent can still stop local syncing');
+  assert.equal(machine(box).excluded.includes(box.root), false, 'an agent cannot persist a person opt-out');
+  assert.equal((await box.cli('export')).document.tables.event.filter(row => row.event_kind === 'relay_exclusion').length, count, 'an agent cannot create person exclusion provenance');
+}
+
+/** Person opt-out appends exactly one attributed native intent and preserves every prior row. */
+export function assertPersonUnlinkHistory(after, before) {
+  assert.deepEqual({ ...after, event: before.event }, before, 'unlink preserves all non-event native tables');
+  assert.deepEqual(after.event.slice(0, before.event.length), before.event, 'unlink preserves the exact previous event prefix');
+  assert.equal(after.event.length, before.event.length + 1, 'person unlink adds exactly its audit intent');
+  const receipt = after.event.at(-1);
+  assert.equal(receipt.event_by, 'person');
+  assert.equal(receipt.event_kind, 'relay_exclusion');
+  const detail = JSON.parse(receipt.event_detail);
+  assert.equal(detail.path, 'relayOff');
+  assert.equal(detail.reason, 'person relay off');
+  assert.equal(detail.action, 'exclude');
+  assert.equal(detail.channel, 'terminal');
+  assert.ok(Number.isFinite(Date.parse(receipt.event_at)));
 }
