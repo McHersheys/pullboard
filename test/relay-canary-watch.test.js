@@ -175,8 +175,9 @@ test('a pending alert notice retries after delivery failure and is removed only 
   assert.equal(attemptIds.length, 1, 'the first failed probe did not create a notification');
 
   now += 60_000;
-  await withFixtureEnvironment(box.env, () => runRelayCanary(config, { now: () => now,
+  const delivered = await withFixtureEnvironment(box.env, () => runRelayCanary(config, { now: () => now,
     notify: async notice => { attemptIds.push(notice.id); } }));
+  assert.equal(delivered.health.pendingNotifications, 0, 'returned status reflects completed notice recording');
   assert.deepEqual(attemptIds, [pending[0].id, pending[0].id], 'retry uses the same durable notice identity');
   assert.deepEqual(pendingRelayCanaryNotices(box.root), [], 'successful ordinary notice recording clears the pending delivery');
 

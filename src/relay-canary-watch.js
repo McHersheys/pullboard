@@ -3,6 +3,7 @@ import { probeRelayCanary } from './relay-canary-probe.js';
 import {
   claimRelayCanaryTick,
   observeRelayHealth,
+  readRelayHealth,
   pendingRelayCanaryNotices,
   markCanaryNoticeRecorded,
 } from './relay-canary-health.js';
@@ -23,7 +24,7 @@ export async function runRelayCanary(value, { io = {}, now = Date.now, notify } 
     await notify(notice, observation);
     markCanaryNoticeRecorded(config.root, notice.id);
   }
-  return { observation, ...update };
+  return { observation, ...update, health: readRelayHealth(config.root, { now: now() }) };
 }
 
 /** Start one due local tick; shutdown aborts and awaits the active probe instead of abandoning a write. */

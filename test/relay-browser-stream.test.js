@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { enqueueStream, followStream } from '../relay/browser-stream.js';
-import { noticeLines, reconcileOwnedRequests, rememberOwnedRequestId, storedOwnedRequestState } from '../relay/browser-notice.js';
+import { recordBrowserReadFailure, clearBrowserReadFailure, noticeLines, reconcileOwnedRequests, rememberOwnedRequestId, storedOwnedRequestState } from '../relay/browser-notice.js';
 
 /** Build a finite standards-shaped stream response for a deterministic transport probe. */
 function eventResponse(id) {
@@ -209,4 +209,26 @@ test('checkpoint timeout notices survive activity and recovery on another paired
   assert.deepEqual(lines(), ['fixture/one: ' + text], 'covering board two cannot clear board one');
   paired.get(a).checkpointTimedOut = false;
   assert.deepEqual(lines(), [], 'every covering checkpoint clears only its own timeout');
+});
+
+
+test('phone degradation and durable queued notices remain local to each board [H5,H17]', () => {
+  const degradedBoards = new Map();
+  recordBrowserReadFailure(degradedBoards, 'a', Date.parse('2026-01-01T10:00:00Z'));
+  recordBrowserReadFailure(degradedBoards, 'a', Date.parse('2026-01-01T10:01:00Z'));
+  recordBrowserReadFailure(degradedBoards, 'b', Date.parse('2026-01-01T10:02:00Z'));
+  clearBrowserReadFailure(degradedBoards, 'b');
+  assert.equal(degradedBoards.get('a'), '2026-01-01T10:00:00.000Z', 'repeated failure keeps the first timestamp and other-board recovery does not clear it');
+  const paired = new Map([['a', { repository: 'repo/a', state: { personRequests: [] } }], ['b', { repository: 'repo/b' }]]);
+  const queuedRequests = new Map([['a', 2], ['b', 0]]);
+  const lines = noticeLines({ available: [{ id: 'a', repository: 'repo/a' }, { id: 'b', repository: 'repo/b' }], paired, degradedBoards, queuedRequests });
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /repo\/a: relay degraded since 10:00; 2 sealed requests queued locally/u);
+  assert.match(lines[0], /has not received an acknowledgement/u, 'queued ciphertext is not an acknowledged waiting request');
+  clearBrowserReadFailure(degradedBoards, 'a');
+  assert.match(noticeLines({ available: [{ id: 'a' }], paired: new Map([['a', paired.get('a')]]), degradedBoards, queuedRequests })[0], /2 sealed requests queued locally/u, 'a successful read does not discard unsent ciphertext');
+  queuedRequests.set('a', 0);
+  assert.deepEqual(noticeLines({ available: [{ id: 'a' }], paired: new Map([['a', paired.get('a')]]), degradedBoards, queuedRequests }), []);
+  queuedRequests.set('a', null);
+  assert.match(noticeLines({ available: [{ id: 'a' }], paired: new Map([['a', paired.get('a')]]), degradedBoards, queuedRequests })[0], /count unavailable/u, 'unreadable device storage cannot claim zero pending requests');
 });

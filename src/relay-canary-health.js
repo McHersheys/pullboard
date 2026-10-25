@@ -33,10 +33,13 @@ function historyAt(file) {
 
 /** Format only observations this client made, with a real locally queued move count. */
 function projection(history, queued, now) {
-  const last = history?.samples?.at(-1);
+  const monitor = history?.samples?.at(-1);
+  const client = history?.client?.sample;
+  const last = history?.alertSince ? monitor : (!monitor || client && Date.parse(client.at) > Date.parse(monitor.at) ? client : monitor);
+  const degradedSince = history?.alertSince ? history.degradedSince : last && last === client ? history?.client?.degradedSince : history?.degradedSince;
   const stale = !last || now - Date.parse(last.at) > 120000;
-  const status = !last || stale ? 'unknown' : history.degradedSince ? 'degraded' : 'healthy';
-  const since = history?.degradedSince ?? null;
+  const status = !last || stale ? 'unknown' : degradedSince ? 'degraded' : 'healthy';
+  const since = degradedSince ?? null;
   const time = since ? since.slice(11, 16) : '';
   const text = status === 'degraded'
     ? `relay degraded since ${time}; your moves are queued locally (${queued})`
@@ -78,6 +81,7 @@ function sampleOf(result, now) {
 function advance(previous, sample, now) {
   const history = previous ?? { version: 1, monitoringSince: sample.at, samples: [], consecutiveFailures: 0,
     degradedSince: null, alertSince: null, p95Ms: null };
+  history.monitoringSince ??= sample.at;
   history.samples = history.samples.filter(entry => Date.parse(entry.at) >= now - WINDOW_MS && Date.parse(entry.at) <= now);
   history.samples.push(sample);
   history.samples = history.samples.slice(-128);
@@ -120,16 +124,14 @@ export function observeRelayHealthFile(file, result, { now = Date.now(), alerts 
     db.exec('PRAGMA busy_timeout=1000; CREATE TABLE IF NOT EXISTS relay_health(id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL); BEGIN IMMEDIATE');
     const saved = db.prepare('SELECT value FROM relay_health WHERE id=1').get();
     const previous = saved ? JSON.parse(saved.value) : null;
-    const priorAlert = previous?.alertSince ?? null;
-    const priorFailures = previous?.consecutiveFailures ?? 0;
-    const priorNotices = structuredClone(previous?.pendingNotices ?? []);
-    const updated = advance(previous, sample, now);
-    // Ordinary client transport failures update status; only the configured canary raises monitor alerts.
-    if (!alerts) {
-      updated.transition = null; updated.finding = null;
-      updated.history.alertSince = priorAlert;
-      updated.history.consecutiveFailures = priorFailures;
-      updated.history.pendingNotices = priorNotices;
+    let updated;
+    if (alerts) updated = advance(previous, sample, now);
+    else {
+      // User traffic reports its own recent health without becoming a minute monitor sample.
+      const history = previous ?? { version: 1, monitoringSince: null, samples: [], consecutiveFailures: 0,
+        degradedSince: null, alertSince: null, p95Ms: null };
+      history.client = { sample, degradedSince: sample.ok ? null : history.client?.degradedSince ?? sample.at };
+      updated = { history, transition: null, finding: null };
     }
     db.prepare('INSERT INTO relay_health(id,value) VALUES (1,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value')
       .run(JSON.stringify(updated.history));
