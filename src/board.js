@@ -1,3 +1,4 @@
+import * as activityDeliveryStore from './activity-delivery-store.js';
 import { requireFactKind } from './item-notes.js';
 import { activityNewsFlag } from './activity-news.js';
 import { migrateEventLogVersion } from './board-event-log-migrate.js';
@@ -2343,3 +2344,18 @@ export function approveOutside(board, id, options) { return applyOutsideApproval
 
 /** Tailored inbox activity is the same canonical read projection as other board queries. */
 export { agentActivity } from './board-query.js';
+
+/** Read recipient delivery state without mutating any cursor or receipt. */
+export function activityDeliveryState(board, agentId) {
+  return activityDeliveryStore.activityDeliveryState(board, agentId);
+}
+
+/** Record the exact interrupts included in an authenticated recipient response. */
+export function recordActivityDelivery(board, options) {
+  return activityDeliveryStore.recordActivityDelivery(board, options, { atomic, logEvent });
+}
+
+/** Record an explicit recipient acknowledgement separately from delivery. */
+export function actOnActivity(board, options) {
+  return activityDeliveryStore.actOnActivity(board, options, { atomic, logEvent });
+}

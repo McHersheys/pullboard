@@ -13,6 +13,8 @@ import { ACTIVITY_NEWS_ENGINE } from '../src/activity-news-engine.js';
 import { ITEM_SHOUT_ENGINE } from '../src/item-shout-engine.js';
 import { LANDING_LEASE_ENGINE } from '../src/landing-lease-engine.js';
 import shoutMove from '../src/moves/shout.js';
+import { ACTIVITY_DELIVERY_ENGINE } from '../src/activity-delivery-engine.js';
+import { relaySenderProblem } from '../src/relay-sender.js';
 import { activityMainFiles, activityWorkingFiles, readActivityCursor, saveActivityCursor } from '../src/activity-inbox.js';
 
 const e2e = createE2eHelpers();
@@ -407,4 +409,48 @@ test('interrupts arrive at once and the digest arrives as a short summary at a b
   const delivered = store.events(board).filter(event => event.event_kind === 'activity-delivered');
   assert.ok(delivered.length, 'delivery is recorded on the canonical board, not just a checkout cursor');
   assert.ok(delivered.every(event => event.event_by === 'web-1'), 'the recipient owns its delivery receipts');
+});
+
+
+test('interrupt receipts replay once and only their recipient can acknowledge delivered work [N26,H2,H16]', t => {
+  const boards = ['origin', 'left', 'right'].map(() => store.openBoard(':memory:'));
+  t.after(() => { for (const board of boards) store.closeBoard(board); });
+  const [source, left, right] = boards;
+  store.register(source, { lane: 'coordinator', path: '/interrupt-replay' });
+  store.register(source, { lane: 'web', path: '/interrupt-replay/web-1' });
+  store.register(source, { lane: 'web', path: '/interrupt-replay/web-2' });
+  const question = store.shout(source, { from: 'web-1', to: 'coordinator', text: 'Choose a private path', decision: true, lanes: ['web'] });
+  store.answerDecision(source, question, { agentId: 'coordinator', text: 'Use the reviewed path', lanes: ['web'] });
+  const event = store.events(source).findLast(row => row.event_kind === 'answer');
+  const initial = exportBoard(source);
+  for (const board of [left, right]) importBoard(board, initial);
+  const interrupt = { id: `event:${event.event_id}`, eventId: event.event_id, reason: 'answered', text: 'An answer is waiting' };
+  const payload = { agentId: 'web-1', through: event.event_id, interrupts: [interrupt] };
+  const delivery = prepareEngineMove(source, 'recordActivityDelivery', [payload]);
+  const at = new Date().toISOString();
+  assert.equal(relaySenderProblem(delivery, { kind: 'agent', agent: 'web-2' }, 'move')?.code, 'RELAY_ACTOR');
+  const untouched = exportBoard(left);
+  assert.throws(() => applyEngineMove(left, { ...delivery, engine: ACTIVITY_DELIVERY_ENGINE - 1 }, { sequence: 1, at }),
+    error => error.code === 'RELAY_MOVE');
+  assert.deepEqual(exportBoard(left), untouched, 'an older engine changes neither native history nor the replay prefix');
+  const outcomes = boards.map(board => applyEngineMove(board, delivery, { sequence: 1, at }));
+  assert.equal(outcomes[0].error, undefined);
+  assert.deepEqual(outcomes[1], outcomes[2]);
+  assert.equal(store.activityDeliveryState(left, 'web-1').pending.length, 1);
+  assert.deepEqual(applyEngineMove(left, delivery, { sequence: 1, at }), outcomes[1]);
+  assert.equal(store.events(left).filter(row => row.event_kind === 'activity-delivered').length, 1);
+  const beforeBad = exportBoard(left);
+  assert.throws(() => store.actOnActivity(left, { agentId: 'web-2', ids: [interrupt.id] }), error => error.code === 'ACTIVITY_NOT_DELIVERED');
+  assert.throws(() => store.actOnActivity(left, { agentId: 'web-1', ids: [interrupt.id, 'event:999999'] }), error => error.code === 'ACTIVITY_NOT_DELIVERED');
+  assert.deepEqual(exportBoard(left), beforeBad, 'a forged or partly invalid acknowledgement is atomic');
+  const ack = prepareEngineMove(source, 'actOnActivity', [{ agentId: 'web-1', ids: [interrupt.id] }]);
+  const acknowledged = boards.map(board => applyEngineMove(board, ack, { sequence: 2, at }));
+  assert.deepEqual(acknowledged[1], acknowledged[2]);
+  assert.equal(store.activityDeliveryState(left, 'web-1').pending.length, 0);
+  assert.equal(store.events(left).filter(row => row.event_kind === 'activity-acted').length, 1);
+  assert.deepEqual(exportBoard(left), exportBoard(right));
+  const beforeRetry = exportBoard(left);
+  store.recordActivityDelivery(left, payload);
+  store.actOnActivity(left, { agentId: 'web-1', ids: [interrupt.id] });
+  assert.deepEqual(exportBoard(left), beforeRetry, 'a new local retry cannot redeliver or re-acknowledge the same source event');
 });

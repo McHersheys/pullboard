@@ -451,6 +451,8 @@ The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its ap
 | `guards` | board | `missing`, `changed`, `stale` |
 | `rigor-notice` | rigor | `cause`, `items`, `occurrences`, `neverAgain`, `engine`, automatic-Rigor `drafts` |
 | `rigor-draft` | rigor | `id`, `target`, `cause`, exact typed `source`, `unproved` (always true), `items`, `occurrences`, `engine` |
+| `activity-delivered` | recipient | `interrupts`, `through`, `observedThrough`, `digestThrough` |
+| `activity-acted` | recipient | `interrupts` |
 | `shout` | sender | `shout`, `to`, `decision`, `request`, `answers` |
 | `shout_news` | sender | `shout`, `to`, `decision`, `request`, `answers` |
 | `flake-observation` | reporting agent | `engine`, `observation` |
@@ -676,3 +678,5 @@ not a native move, parent identity, configuration or authority record. Missing/d
 replays activity. Reads freeze an event high-water mark before observing Git; subsequent events
 and messages remain pending. News has a separate cursor so an ordinary poll cannot consume a
 future session-start digest.
+
+The activity-delivery engine, numbered at landing, adds recipient-owned `recordActivityDelivery` and `actOnActivity` moves. Interrupt ids bind a native event (`event:<id>`) or an exact claim lease (`claim:<item>:<lease-until>`). A delivery event lists only interrupts actually included in that recipient's response; an acted event records a separate explicit acknowledgement. An inbox cursor or reading a response never means acted-on. Both moves use the joined recipient as their authenticated actor, preserve earlier event history, and refuse on an older replay engine before changing its prefix. Delivery state in indexed `board_meta` keys is part of the native board and its exports, not a checkout-only cursor. `through` is the safely covered interrupt prefix, `observedThrough` is the read snapshot's high-water mark, and optional `digestThrough` is the separately delivered digest prefix; an elided interrupt must remain available after a later small interrupt is delivered.
