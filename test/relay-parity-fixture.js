@@ -8,6 +8,7 @@ import { decodeBoardKey } from '../src/seal.js';
 import { relayPresentation } from '../src/relay-presentation.js';
 import { presentationDigest } from '../src/relay-presentation.js';
 import { runFixtureChild } from './fixture-child.js';
+import { runFixtureChildAsync } from './fixture-child.js';
 export { assertReaderParity } from './relay-parity-reader.js';
 import { createParityReader } from './relay-parity-reader.js';
 import { relayClientFixture } from './relay-client-fixture.js';
@@ -87,11 +88,16 @@ export async function parityRoundtrip(t, { foreign = false } = {}) {
     const file = join(box.root, '.git', 'pullboard', 'parity-reader-session.json');
     writeFileSync(file, JSON.stringify(parameters), { mode: 0o600 });
     try {
-      const result = await box.script(`import { readFileSync } from 'node:fs';
+      const running = runFixtureChildAsync(process.execPath, ['--input-type=module', '-e', `import { readFileSync } from 'node:fs';
 import { exerciseOperationParity } from ${JSON.stringify(module)};
-try { console.log(JSON.stringify(await exerciseOperationParity(JSON.parse(readFileSync(${JSON.stringify(file)}, 'utf8'))))); } catch (error) { console.log(JSON.stringify({ error: error.message })); process.exitCode = 1; }`);
-      assert.equal(result.code, 0, `complete operation inventory: ${result.failure ?? result.document?.error ?? 'no result'}`);
-      return result.document;
+try { console.log(JSON.stringify(await exerciseOperationParity(JSON.parse(readFileSync(${JSON.stringify(file)}, 'utf8'))))); } catch (error) { console.log(JSON.stringify({ error: error.message })); process.exitCode = 1; }`], { cwd: box.root, env: box.env, signal: t.signal });
+      t.after(async () => {
+        if (running.child.exitCode === null && running.child.signalCode === null) running.child.kill('SIGTERM');
+        await running;
+      });
+      const result = await running;
+      assert.equal(result.status, 0, result.failure ?? result.context);
+      return JSON.parse(result.stdout.trim());
     } finally { rmSync(file, { force: true }); }
   }
   return { native, relay, exercised: seeded.exercised, exerciseOperations };

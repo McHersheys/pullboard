@@ -47,7 +47,7 @@ export async function seedLandingObservations(context) {
 export async function seedMembership(context) {
   const { board, store, exercise } = context;
   await exercise('setBoardMembers', () => store.setBoardMembers(board, { agentId: 'coordinator', document: {
-    body: { v: 1, board: store.boardId(board), repository: 'fixture/repository', revision: 1, members: ['parity-member'] },
+    body: { v: 1, board: store.boardId(board), repository: 'fixture/repository', revision: (store.readBoardMembers(board)?.body.revision ?? 0) + 1, members: ['parity-member'] },
     by: 'parity-owner', signature: '-----BEGIN SSH SIGNATURE-----\nSynthetic projection fixture; not a verified signature\n-----END SSH SIGNATURE-----' } }));
 }
 
@@ -127,4 +127,25 @@ export async function seedBarSignature(context) {
     note: 'Synthetic readiness signature for state projection only.', coverage: { version: 1, sourceMain: head, policyKey: 'd'.repeat(64),
       sourceCheck: check, timeoutMs: 300000, runner: 'node --test', required: [], files: [] } }));
   store.setBarReady(board, { agentId: 'coordinator', enabled: false });
+}
+
+/** New declared operations retain unknown proof facts and real cross-lane child state, without fabricated execution claims. */
+export async function seedCurrentOperations(context) {
+  const { board, box, store, exercise, agent } = context;
+  const item = store.addItem(board, { by: 'coordinator', lane: box.lane, title: 'Synthetic provenance projection', criterion: 'Readers retain unknown receipt facts' });
+  const head = resolveCommit(box.root, 'HEAD');
+  const tree = tryGit(box.root, ['rev-parse', `${head}^{tree}`]).stdout.trim();
+  const receipt = { version: 2, id: randomUUID(), kind: 'check', head, tree, main: null,
+    command: 'c'.repeat(64), green: false, failures: [], load: null, at: board.clock.now().toISOString(),
+    proof: { item, frozenDigest: null, seat: agent, environment: null, runner: null, exitCode: null,
+      counts: { passed: null, failed: null, skipped: null }, durationMs: 0, sourceClean: false } };
+  // Exactly as the accepted native storage-boundary fixture, this models a historical record,
+  // never evidence that this test ran a gate or observed any executor/counts.
+  const folder = join(box.root, '.git', 'pullboard', 'gate-receipts');
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, `${receipt.id}.json`), receiptBody(receipt));
+  await exercise('recordProofRun', () => store.recordProofRun(board, { agentId: agent, itemId: item, receiptId: receipt.id }));
+  await exercise('requestCompanion', () => store.requestCompanion(board, { agentId: agent, parentId: item,
+    lane: box.lane === 'tests' ? 'core' : 'tests', key: 'reader-parity', title: 'Projection companion',
+    criterion: 'A real cross-lane child remains visible in both readers', brief: 'Synthetic private board child; no real work requested.' }));
 }
