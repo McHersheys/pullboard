@@ -7032,7 +7032,11 @@
     "ROW_VERIFY": "pullboard spec show <id>, then pullboard spec verify <id> accepted --reason \"why\"",
     "ROW_VERIFY_PROVENANCE": "draft the row through pullboard spec draft and join normally before verifying it",
     "ROW_VERIFY_PENDING": "ask the coordinator to run pullboard spec apply before recording a verifier verdict",
-    "ROW_VERIFY_SELF": "ask an outside-parent verifier to run pullboard spec verify"
+    "ROW_VERIFY_SELF": "ask an outside-parent verifier to run pullboard spec verify",
+    "AGENT_GRANT_EXPIRED": "claim the intended item, or shout the coordinator if its claim is unavailable",
+    "AGENT_GRANT_ITEM": "finish or release the claim, then claim the intended item; use shout for coordination",
+    "AGENT_GRANT_LANE": "join a seat in the intended lane or ask its owner to make the item change",
+    "GIT_REPLACE_REFS": "ask the coordinator to remove this replica's refs/replace entries, then resume the same ordered move"
   },
   "replay": {
     "initial": {
