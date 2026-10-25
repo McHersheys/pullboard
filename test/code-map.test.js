@@ -86,6 +86,28 @@ test('a main-stamped map refuses dirty, untracked and deleted test import edges 
     ['test/pinned.test.js'], 'restoring the exact committed test bytes restores the map');
 });
 
+test('a fresh main-stamped map refuses ignored source, executable and test inputs [C7]', () => {
+  const box = e2e.project();
+  for (const directory of ['src', 'bin', 'test']) mkdirSync(join(box.repo, directory), { recursive: true });
+  writeFileSync(join(box.repo, 'src/pinned.js'), 'export function pinned() { return true; }\n');
+  const ignored = ['src/ignored.js', 'bin/ignored.mjs', 'test/ignored.test.js'];
+  writeFileSync(join(box.repo, '.gitignore'), `${ignored.join('\n')}\n`);
+  box.git(box.repo, 'add', 'src/pinned.js', '.gitignore');
+  box.git(box.repo, 'commit', '-q', '-m', 'test: record ignored map input patterns');
+  const main = box.git(box.repo, 'rev-parse', 'main');
+  assert.deepEqual(buildCodeMap(box.repo, main).modules.map(module => module.path), ['src/pinned.js']);
+  for (const path of ignored) {
+    writeFileSync(join(box.repo, path), "import { pinned } from '../src/pinned.js';\nvoid pinned;\n");
+    assert.equal(box.git(box.repo, 'status', '--porcelain', '--untracked-files=all', '--', path), '',
+      'the committed ignore rule really hides this input from ordinary status');
+    assert.throws(() => buildCodeMap(box.repo, main), /differs from the committed main source/u,
+      `${path} cannot acquire the committed main stamp on a fresh scan`);
+    rmSync(join(box.repo, path));
+  }
+  assert.deepEqual(buildCodeMap(box.repo, main).modules.map(module => module.path), ['src/pinned.js'],
+    'a clean tree with unused ignore rules remains valid');
+});
+
 test('pullboard map prints the overview, a card and an item slice from one scan [C7]', t => {
   const box = e2e.project();
   t.after(() => e2e.cleanup());
