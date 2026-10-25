@@ -38,6 +38,8 @@ const OPTIONS = {
   specs: { type: 'string' },
   parent: { type: 'string' },
   reason: { type: 'string' },
+  revises: { type: 'string' },
+  status: { type: 'string' },
   off: { type: 'boolean' },
   port: { type: 'string' },
   slots: { type: 'string' },

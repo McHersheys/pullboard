@@ -245,6 +245,7 @@ Spec
   pullboard spec show <id> | unmet [--must] | signoff <ids> [--by <principal>]
                                         signoff: --note "what was checked" stays with the receipt
   pullboard spec draft <text> [--section <letter>] [--aim] [--gate "<gate>"]  any agent appends a draft row; never approves it
+  pullboard spec draft <text> --revises <id> --reason "why" [--gate "<gate>"] [--status <status>]  propose an approved-row change in Needs you
                 [--doctrine --source "<shout id or chat, date>"]  the coordinator proposes a sourced doctrine ruling
                                         --section chooses the section prefix; defaults to G, or DR with --doctrine
                                         Defaults to must and gate review.
