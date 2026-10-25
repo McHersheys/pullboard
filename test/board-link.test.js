@@ -202,7 +202,7 @@ test('sealed board-link delivery authenticates both boards and retains exact ret
   assert.equal(parent.board.db.prepare('SELECT COUNT(*) AS n FROM event').get().n, eventCount, 'consumer retry makes no second event');
   await assert.rejects(capability.open({ ...delivered.envelope, position: 11 }), error => error.code === 'SEAL_AUTH_FAILED');
   await assert.rejects(capability.open({ ...delivered.envelope, correlationId: 'other' }), error => error.code === 'BOARD_LINK_FORMAT');
-  await assert.rejects(sender.send({ ...delivered.envelope, sourceBoardId: parent.reference.boardId }), error => error.code === 'BOARD_LINK_AUTH');
+  await assert.rejects(sender.send({ ...delivered.envelope, sourceBoardId: '0'.repeat(32) }), error => error.code === 'BOARD_LINK_AUTH');
   await assert.rejects(sender.send(await capability.seal('stale-9', { ...plain, position: 9 })),
     error => error.code === 'BOARD_LINK_REPLAY', 'fresh correlation IDs cannot replay an older source position');
   await assert.rejects(sender.send(await capability.seal('state-10', plain)), error => error.code === 'BOARD_LINK_CONFLICT',
