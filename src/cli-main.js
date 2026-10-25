@@ -132,10 +132,12 @@ const OPTIONS = {
   window: { type: 'string' },
   policy: { type: 'string' },
   decision: { type: 'boolean' },
+  options: { type: 'string' },
   news: { type: 'boolean' },
   evidence: { type: 'string' },
   outcome: { type: 'string' },
   item: { type: 'string' },
+  for: { type: 'string' },
   kinds: { type: 'string' }, to: { type: 'string' }, work: { type: 'string' }, 'review-wait': { type: 'string' },
   commit: { type: 'string' },
   ref: { type: 'string' },
@@ -323,7 +325,9 @@ async function runMain(argv, streams) {
     }
   }
   try {
-    if (needsRepo) await rememberTrunk(io, git);
+    if (needsRepo) {
+      await rememberTrunk(io, git);
+    }
     traceServeStartup('cli-command-preamble-start');
     // The relay and baseline work loads only where a relay token, relay state, a link or a pending result exists.
     /** Load the work around the command when any of it could act here, or null. */
@@ -331,7 +335,9 @@ async function runMain(argv, streams) {
     await (await syncWork())?.syncBefore(io, main);
     traceServeStartup('cli-command-preamble-ready');
     const code = await runCommand(argv, io);
-    if (code === 0) await checkoutSession?.finish?.();
+    if (code === 0) {
+      await checkoutSession?.finish?.();
+    }
     if (code === 0) await (await syncWork())?.retrySync(io);
     const status = io.exitCode(code);
     if (status === 0 && needsRepo && !parsed?.values['dry-run']) (await import('./blocks.js')).clearCompletedBlocks(io);

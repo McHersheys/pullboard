@@ -115,7 +115,7 @@ The version table is generated from the source-owned declarations in `src/format
 | `row grammar` | `1` | `SPEC_GRAMMAR_VERSION` in `src/spec.js`; optional `<!-- pullboard-grammar N -->` line in either file (absence means the current grammar) | Both files share the version. A declared version must match; an incompatible grammar change requires a coordinated version bump and compatible files. No automatic conversion occurs. |
 | `board schema` | `3` | `SCHEMA_VERSION` in `src/board.js`, persisted as `PRAGMA user_version` | On a write open of a board whose version is behind: create missing tables and indexes (version 3 adds the hot-path indexes), add missing columns in place with declared defaults, restore missing or changed triggers, and remove stale machine triggers without replacing rows. Read opens never migrate; a board at the current version whose shape differs is reported once on stderr and left as it is. |
 | `event log` | `1` | `EVENT_LOG_VERSION` in `src/board.js`, persisted in `board_meta` as `event_log_version` | Older event-log versions upgrade in place; newer versions are refused with `EVENT_LOG_VERSION`. Preserve event rows when the board schema changes. |
-| `move engine` | `115` | `ENGINE_VERSION` in `src/machine.js`, carried as `engine` in every sealed executable move | Bump when a move's meaning changes, independently of the event log and sealed envelope. A newer engine is refused with `ENGINE_VERSION`, naming both versions and asking you to upgrade Pullboard. |
+| `move engine` | `120` | `ENGINE_VERSION` in `src/machine.js`, carried as `engine` in every sealed executable move | Bump when a move's meaning changes, independently of the event log and sealed envelope. A newer engine is refused with `ENGINE_VERSION`, naming both versions and asking you to upgrade Pullboard. |
 <!-- format-versions:end -->
 
 A builder never picks an engine number (#1101). An item that adds a board move adds its own `src/<name>-engine.js` leaf as `export const NAME_ENGINE = unassignedEngine();` (importing `unassignedEngine` from `./engine-next.js`); on its branch the leaf reads as one above the highest landed engine. The landing merge writes the next number into the leaf, in landing order, inside that item's merge commit, and sets the `move engine` row above to the highest landed number. A landed number never changes, so recorded moves replay as they were written. Moves are recorded under landed numbers only: code with an unnumbered engine is for its branch's own tests, and a move it records on a real board before landing may later read under another item's number, so the item lands before its moves are used.
@@ -432,7 +432,7 @@ The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its ap
 | `claim` | builder | `leaseUntil`, `digest` |
 | `renew` | builder | `leaseUntil`, `digest` |
 | `release` | builder | — |
-| `submit` | builder | `commit`, `tree`, `policyCommit`, engine-9 `criterionDigest`, engine-38 `submissionProof` |
+| `submit` | builder | `commit`, `tree`, `policyCommit`, engine-9 `criterionDigest`, engine-38 `submissionProof`, optional `submissionSize` |
 | `reserve` | reviewer | `until` |
 | `accept` | reviewer | `reason`, `commit`, engine-20 `implies`, engine-33 `review`, engine-68 `note` |
 | `reject` | reviewer | `reason`, `commit`, engine-20 `implies`, engine-30 `cause`, engine-33 `review`, automatic-Rigor `causeDerivation` |
@@ -458,7 +458,7 @@ The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its ap
 | `shout_news` | sender | `shout`, `to`, `decision`, `request`, `answers` |
 | `flake-observation` | reporting agent | `engine`, `observation` |
 | `flake-repair` | reporting agent | `engine`, `key`, `item` |
-| `health-scan` | observing agent | `active`, `engine` |
+| `health-scan` | observing agent | `active`, optional `pendingCpu`, `engine` |
 | `health-failure` | sentinel | `key`, `cause`, `since`, `subject`, `owner`, `commit`, `engine` |
 | `health-resolved` | sentinel | `key`, `cause`, `since`, `subject`, `owner`, `commit`, `engine` |
 | `sentinel-proposal` | proposing agent | `row`, `digest`, `engine` |
@@ -500,6 +500,14 @@ Person row decisions use one `row_decision` event per row. Its `record` holds `k
 An approval of proposed new wording uses that same record: `source` is the existing exact line and `replacement` carries the approved target text. Pre-commit compares the staged target against the person decision or a verified staged signed receipt. No second approval format or event kind is needed.
 
 Migration preserves event rows and adds only schema objects that are missing.
+
+## Flow report and captured submission size
+
+`stats` JSON exposes `flow.report` with `scope: "all-time"`, including when the older statistics are filtered with `--since` or `--window`. It reconstructs recorded lifecycle intervals rather than inferring old history from current item rows. Its seven disjoint stage keys are `ready`, `later`, `build`, `reviewWait`, `review`, `mergeWait` and `rework`. Initial open time outside the recorded focus milestone, behind an unverified dependency, or under an item/lane hold is `later`; otherwise it is `ready`. A claim starts `build`, submission starts `reviewWait`, a live reservation starts `review`, and acceptance starts `mergeWait`. Reservation expiry/release returns to `reviewWait`. Rejection, reopen, non-retained refreeze, escalation, build release or claim lapse starts `rework` until the next claim. A retained refreeze preserves the active build. Missing lifecycle boundaries remain explicitly unknown rather than becoming measured zeroes.
+
+The report supplies per-item, per-lane, per-milestone and overall aggregates. An item can belong to several recorded milestones: `item.milestones` lists all active memberships, while `item.milestone` retains the latest active membership for compatibility. Membership in any focused milestone qualifies as focused. Each milestone aggregate includes its members once, and the overall aggregate counts the item once regardless of overlapping groups. `firstTry` counts known first-submission accept/reject decisions; later successful attempts cannot turn an initial rejection into first-try acceptance. `submissionsPerLanded` is unknown when its required history is missing. First-submission size buckets are `under100` (0–99), `100to300` (100–299), `300to800` (300–799), `800plus` (800 or more), and `unknown`.
+
+A `submit` may carry `submissionSize: {base, head, lines, method}`. `base` is the exact accepted main commit used for comparison, `head` is the submitted commit (and must equal `commit`), `lines` is a nonnegative safe integer, and `method` is exactly `"added-plus-deleted-no-renames"`. The comparison is `git diff --numstat --no-renames <base> <head>`: added plus deleted lines across all changed files; binary `-` columns contribute zero. This is captured once at submission, not recomputed later against a moving trunk. Missing or invalid historical metadata belongs in the unknown size bucket. This optional move-envelope field is gated by the `FLOW_SIZE_ENGINE` leaf, whose numeric engine assignment is made at landing; older recorded moves retain their original envelope and replay semantics.
 
 ## Submit test selection
 
@@ -674,6 +682,10 @@ With `reviewsFirst` on, ordinary `next` offers an eligible review before a build
 
 With numeric `wipPerReviewer` on, a new claim that would exceed that limit is refused as `LINE_WIP_LIMIT`, naming the oldest eligible pending review when there is one. Live claimed items and outstanding submissions count; expired claims do not. The shared pure `lineWipLimit` function computes the total cap without rounding, using at least one observed reviewer. Renewals remain possible. The native claim carries the configured verifier and family policies so its suggested review never relaxes those guards. With `takeoverMinutes` on, a sent-back item's idle interval can end its original builder's first-refusal window early; a live claim is never stolen, and normal claim appends preserve the old history. Disabled controls retain the previous behavior. New claims under these controls carry a true `lineCapacity` argument and the line-capacity engine floor; marker-absent older recorded claims keep their historical meaning during replay.
 
+### Item decision options
+
+A `shout` ordered move may carry `options`, an array of at least two distinct nonempty strings, only with `decision: true` and an item. The move requires the decision-queue engine leaf; older shouts retain their original meaning. Only the validated top-level `options` argument creates structured choices; legacy opaque `detail` is never reinterpreted. The item event carries `decisionOptions` and `item`; `board_meta` keys `item_decision:<shout-id>` index those options for the open queue. Passing a question to the person copies its original options and item into the new decision index. Answers append ordinary answer events on the item; neither asking nor answering changes the claim or lease.
+
 
 The explicit top-level `news: true` shout argument emits a native `shout_news` event instead of `shout`, without adding a SQLite column. Its canonical message row remains in `shout`; consumers resolve its recipient and text in the same way as other messages.
 Only coordinator or person messages to `all` may be news; combining news with an item,
@@ -701,3 +713,5 @@ future session-start digest.
 A seat address is `pullboard:<board-id>:<percent-encoded-seat-id>`, where `board-id` is the board’s existing 32-character hexadecimal `board_id` and the seat component is the canonical JavaScript `encodeURIComponent` encoding of its registered agent id. It is independent of machine and checkout path. `whoami` and `agents` expose it; `shout` resolves it only within the current board and records the existing shout event with the exact recipient agent id. It is a destination, never a grant. Existing relay board credentials and authenticated sender attribution remain required on linked boards. No new stored event or file format is introduced.
 
 The activity-delivery engine, numbered at landing, adds recipient-owned `recordActivityDelivery` and `actOnActivity` moves. Interrupt ids bind a native event (`event:<id>`) or an exact claim lease (`claim:<item>:<lease-until>`). A delivery event lists only interrupts actually included in that recipient's response; an acted event records a separate explicit acknowledgement. An inbox cursor or reading a response never means acted-on. Both moves use the joined recipient as their authenticated actor, preserve earlier event history, and refuse on an older replay engine before changing its prefix. Delivery state in indexed `board_meta` keys is part of the native board and its exports, not a checkout-only cursor. `through` is the safely covered interrupt prefix, `observedThrough` is the read snapshot's high-water mark, and optional `digestThrough` is the separately delivered digest prefix; an elided interrupt must remain available after a later small interrupt is delivered.
+
+The CPU-sentinel engine, numbered at landing, names an agent-worktree process after more than twenty CPU minutes, once per host, PID and start time. Current `health-scan` receipts carry `pendingCpu`, the findings whose coordinator notice was held by the existing ten-notice cap. Later scans drain that durable queue without inventing another health-failure episode. An older engine refuses while this queue is pending, preserving its history; older receipts retain their original fields. Observation never signals a process.

@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { hostname, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
@@ -242,7 +242,7 @@ const CLI = resolve(import.meta.dirname, '../bin/pullboard.js');
 
 /** Pair a stand-in phone through the real relay: Node signs the same enrollment the phone page sends. */
 async function pairPhone(box, t) {
-  const child = startFixtureChild(process.execPath, [CLI, 'relay', 'on', '--all', '--url', box.origin, '--json'], { cwd: box.root, env: box.env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = startFixtureChild(process.execPath, [CLI, 'relay', 'on', '--all', '--url', box.origin, '--name', 'Kitchen computer', '--json'], { cwd: box.root, env: box.env, stdio: ['ignore', 'pipe', 'pipe'] });
   t.after(() => { if (child.exitCode === null) child.kill('SIGTERM'); });
   const exited = new Promise(done => child.once('close', done));
   const machineFile = join(box.env.PULLBOARD_HOME, 'relay-machine/state.json');
@@ -273,7 +273,7 @@ async function phoneAndJoinedComputer(t) {
   const phone = await pairPhone(box, t);
   const printed = await box.cli('relay', 'pair');
   assert.equal(printed.code, 0, 'the linked computer prints a one-time code');
-  const joined = await box.otherDeviceJoin(printed.document.code);
+  const joined = await box.otherDeviceJoin(printed.document.code, 'Study computer');
   return { box, phone, joined };
 }
 
@@ -305,8 +305,8 @@ test('relay devices names phones and joined computers with paired date and board
     'the phone line has its paired date, a last seen time and the board it reads');
   const computerLine = lines.find(line => line.includes('(computer): '));
   assert.ok(computerLine, 'the joined computer is listed on the linked computer');
-  assert.match(computerLine, new RegExp(`^${hostname().replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')} \\(computer\\): joined ${day(Date.now())}, last seen (?!unknown)[^;]+; reads ${board}$`, 'u'),
-    'the joined computer is named by its host name, with its joined date, last seen and board');
+  assert.match(computerLine, new RegExp(`^Study computer \\(computer\\): joined ${day(Date.now())}, last seen (?!unknown)[^;]+; reads ${board}$`, 'u'),
+    'the joined computer is named by the person, with its joined date, last seen and board');
   assert.equal(lines.length, 2, 'one line each, with no ids');
   assert.ok(!/[0-9a-f]{64}/u.test(lines.join('\n')) && !lines.join('\n').includes(phone.deviceId), 'ids and fingerprints stay out of the default view');
   const verbose = await devicesText(box, ['--verbose']);
@@ -324,6 +324,7 @@ test('relay devices names phones and joined computers with paired date and board
   // The joined computer never paired the phone: it lists it by short id from the relay, with its status and board.
   const there = await joined.cli('relay', 'devices');
   assert.equal(there.code, 0, 'relay devices succeeds on the joined computer');
+  assert.equal(there.document.computers[0].name, 'Kitchen computer', 'on --all retains the explicit computer name');
   assert.equal(there.document.devices.length, 1, "the joined computer lists the linked computer's phone");
   const [phoneThere] = there.document.devices;
   assert.deepEqual([phoneThere.deviceId, phoneThere.pairedHere, phoneThere.label, phoneThere.revoked, phoneThere.boards],
@@ -357,14 +358,14 @@ test('relay devices names phones and joined computers with paired date and board
   assert.deepEqual(afterRevokeThere.document.devices, [], 'the other computer does not restore the revoked phone from local history');
 });
 
-test('relay off names joined computers by host name [H17]', async (t) => {
+test('relay off names joined computers by the person-given name [H17]', async (t) => {
   const { box, joined } = await phoneAndJoinedComputer(t);
   const off = await box.cli('relay', 'off');
   assert.equal(off.code, 0, 'relay off unlinks this computer');
-  assert.deepEqual(off.document.joined, [hostname()], 'the joined computer is named by its host name');
+  assert.deepEqual(off.document.joined, ['Study computer'], 'the joined computer is named by the person');
   assert.deepEqual(off.document.affectedMachines, [joined.machine], 'the stable machine id stays beside the name');
-  assert.ok(off.document.notice.includes('If you approve deletion, joined computers ' + hostname() + ' lose the shared copy'),
-    'the warning names the joined computer by host before the phone approves the delete');
+  assert.ok(off.document.notice.includes('If you approve deletion, joined computers Study computer lose the shared copy'),
+    'the warning names the joined computer by its explicit name before the phone approves the delete');
 });
 
 test('relay join names the board it joined [H17]', async (t) => {

@@ -359,6 +359,7 @@ export function projectState(root, { seen = null, board: providedBoard = null, i
       // Every ask still waiting for an answer, however far back the forty shouts reach (B21): the
       // person's to answer here, and the rest with who holds them (B26).
       decisions: store.openDecisions(board, store.PERSON),
+      decisionQueue: store.openDecisions(board, COORDINATOR),
       asked: store.openDecisions(board).filter((ask) => ask.shout_to !== store.PERSON),
       events: log,
       agents: store.listAgents(board).map((agent) => ({ ...agent, model: agent.agent_model ?? 'unknown', displayName: displayAgentName(agent, config.agents.names), lastMoveAt: lastMove.get(agent.agent_id) ?? null })),
@@ -605,7 +606,10 @@ export async function serveView({ port = 0, secret = randomBytes(18).toString('b
         : 'this view answers its own page and https://app.pullboard.dev only' });
     }
     res.setHeader('vary', 'Origin');
-    if (hosted) res.setHeader('access-control-allow-origin', HOSTED_ORIGIN);
+    if (hosted) {
+      res.setHeader('access-control-allow-origin', HOSTED_ORIGIN);
+      res.setHeader('access-control-expose-headers', 'x-pullboard-report-validator');
+    }
     if (req.method === 'OPTIONS') {
       const asked = String(req.headers['access-control-request-headers'] ?? '').toLowerCase().split(',').map((name) => name.trim()).filter(Boolean);
       const route = url.pathname.startsWith('/api/') || url.pathname === '/local/protocol';

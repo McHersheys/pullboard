@@ -615,6 +615,7 @@ export async function ordered(ctx, board, operation, args) {
         ? relayOperation(ctx.info.root, operation, args, ctx.io, command, applyRequested,
           requested ? () => { ctx.io.recordedMove = true; } : undefined) : applyRequested());
     if (requested && gitSyncLinked(ctx.info.root)) ctx.io.recordedMove = true;
+    if (requested && ctx.io.recordedMove) (await import('./cli-presence.js')).heartbeatCommand(ctx.io, { ctx, board });
     return result;
   };
   const digest = agentSessionDigest();
@@ -1037,7 +1038,7 @@ export function verifiedMergeGroups(root, items, shouts, now) {
 export function coordinatorDecisionSections(board, ctx) {
   const shouts = store.decisionAndEvidenceShouts(board);
   const openDecisions = store.openDecisions(board, COORDINATOR).map((ask) => ({
-    id: ask.shout_id, asker: ask.shout_from, question: ask.shout_text, at: ask.shout_at, age: span(ctx, ask.shout_at),
+    id: ask.shout_id, asker: ask.shout_from, question: ask.shout_text, ...(ask.options ? { options: ask.options, item: ask.item } : {}), at: ask.shout_at, age: span(ctx, ask.shout_at),
   }));
   const answers = new Map(store.decisionAnswers(board).map(answer => [answer.shout_answers, answer]));
   const recentAnswers = shouts.filter((ask) => ask.shout_decision).flatMap((ask) => {

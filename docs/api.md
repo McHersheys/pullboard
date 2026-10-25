@@ -75,6 +75,8 @@ For example: `flow: review wait average 61 min (1 measured; > 60 min); bottlenec
 
 `merged <id> <commit>` records only a commit reachable from the primary checkout's branch that contains the item's submitted commit or has the same stable patch id as the item's change from its claim base. Other commits are refused with `NOT_MERGED`; `--note "why"` records an exceptional receipt and keeps the note in that item's `merged` event.
 
+`map --json`, `map <module or function> --json`, and `map --for <item> --json` return the same envelope: `main` is the scanned primary-main commit and `map` is the rendered overview, card, or bounded item slice. Ordinary text output is that same map text. Fresh scans require `src/`, `bin/`, and `test/` to match committed main: changed, untracked, and ignored entries in those directories refuse the scan. Ignore rules alone do not refuse it. Every scanned path, regular-file mode and consumed byte is checked against the committed Git object, including edits hidden by index flags; symbolic input files refuse instead of reading their external targets. A cached committed map does not incorporate later working-tree changes. The scanner reports unobserved effects as `not detected`; the map is source context, not proof that an effect cannot occur.
+
 <!-- api-command-shapes:start -->
 `status --json` and local API state carry `ruleCounts`: `approved`, `gated` (approved rows naming a gate), `ungated`, `proven`, `unproven`, and `contradicted`. Proof requires a green configured full-gate receipt on the current trunk whose supported test selection includes the row's test files. Opaque or unsupported coverage remains unproven. Contradicted counts approved rows whose gate files failed on the trunk in the last seven days; it is independent of proven, so a row can count in both after a later green. The API refreshes this window when evidence ages out, even without a board move.
 
@@ -99,6 +101,8 @@ For example: `flow: review wait average 61 min (1 measured; > 60 min); bottlenec
 | `sync` | `version:number`, `ref:string`, `sequence:number`, `pending:string|null` |
 | `list` | `version:number`, `items:array` |
 | `queue` | `version:number`, `releases:array`, `unreleased:array`, `first:object` |
+| `map` | `version:number`, `main:string`, `map:string` |
+| `flow replay` | `version:number`, `history:object`, `replay:object` |
 | `roadmap` | `version:number`, `milestones:array` |
 | `milestone add` | `version:number`, `milestone:object` |
 | `milestone items` | `version:number`, `milestone:object` |
@@ -113,6 +117,7 @@ For example: `flow: review wait average 61 min (1 measured; > 60 min); bottlenec
 | `show` | `version:number`, `item_id:number`, `item_title:string`, `item_lane:string`, `item_status:string`, `verdicts:array`, `thread:array` |
 | `stats` | `version:number`, `stats:object`, `gateWaits:array` |
 | `status` | `version:number`, `me:object`, `mine:array`, `ruleCounts:object`, `stats:object`, `reviewQueue:object`, `unread:number`, `relay:object` |
+| `heartbeat` | `version:number`, `seat:string|null`, `presence:string`, `heartbeatAt:string|null` |
 | `doctor` | `version:number`, `problems:array` |
 | `health` | `version:number`, `asOf:string`, `thresholds:object`, `stuck:array`, `waiting:array` |
 | `skills` | `version:number`, `updated:array`, `current:array`, `customized:array` |
@@ -203,6 +208,8 @@ For example: `flow: review wait average 61 min (1 measured; > 60 min); bottlenec
 `join` and `worktree` require a free-text `--model` label or `PULLBOARD_MODEL` environment value; labels are not inferred from a provider or family. Rejoining the same worktree preserves its agent id; the model label is required on every join, and omitting the optional `--family` preserves its prior declaration. `pullboard.json` may set `agents.names` to `suffix` (the default, `web-1 (Claude)`) or `prefix` (`claude-web-1`). CLI `agent` fields remain stable ids; `displayName` shows the chosen style. `resume.me` and API state `agents[]` carry `model` and `displayName`; older agents with no model display `unknown`. Each event records the actor model in `event_detail.model` for a registered agent, with `unknown` for legacy agents without a declaration. `show` includes `item_builder_family` and each verdict's `verdict_verifier_family`. These family fields are `null` when the agent did not declare a family, and later declarations do not rewrite prior submissions or verdicts.
 
 Each checkout is bound to the first agent session that writes there. The local Git directory holds only its session digest, agent id and timestamp; bindings are absent from board exports and relay snapshots. Another agent session gets `NOT_YOUR_CHECKOUT` and the command to make its own worktree. The same agent starting a new session runs `pullboard takeover`; the existing ordered shout records the takeover, addressed to the person for the main checkout or the coordinator for a lane checkout. On a linked board one main checkout holds the coordinator at a time: another linked main checkout acting as coordinator gets `COORDINATOR_HELD`, naming the holder as `computer` and the end of its relay machine id, and `pullboard takeover` there, from an agent session or a person's terminal, takes the coordinator; its result adds `coordinator` (the new holder) and `previous`. Markerless terminals, reads, the view and person requests keep their existing behavior. A shout or decision addressed to its sender is refused with `SELF_SHOUT`.
+
+`heartbeat` records the registered seat’s machine-local session activity without adding a shared board move. It returns `{seat, presence, heartbeatAt}`; an unknown seat returns `null` for its identity and timestamp. Native SessionStart and Stop hooks observe activity before reading context; Claude Code also installs a SessionEnd observation. A seat is live for ten minutes after its last observation, idle until thirty minutes, then gone; its permanent identity remains. Ordinary reads do not refresh presence. `status` shows live and idle seats, while `status --all` also lists gone seats. Observations are private to the machine and board identity and do not travel through export or relay.
 
 `status.reviewQueue` contains `pending`, `reviewing` (distinct agents with live review leases), `reserved`, `oldestSubmittedAt` and `ageMs`. Age starts at each outstanding item's latest submit event; reserving or renewing its review does not reset it. An empty queue has `oldestSubmittedAt: null` and `ageMs: 0`. Among unreserved submissions, `awaitingFirstReview` counts items with no release since their latest submission; `releasedWithoutVerdict` counts those released without a verdict. `releasedItems` lists `{item, releases, reason}` with the cumulative release count and latest reason for that submission. Historical releases without a reason show `reason not recorded`.
 
@@ -330,6 +337,8 @@ Only the coordinator sets or edits an item's `--check`. `pullboard check [id]` p
 | `envelope` | `version:number`, `error:object` |
 | `error` | `code:string`, `message:string`, `next:string` |
 <!-- api-refusal-shapes:end -->
+
+`relay on`, `relay on --all`, and `relay join <code>` accept `--name "<computer>"` for a person-given display name. Coordinator holds, refusals and device lists use that name; unnamed computers keep `computer <last 8 of machine id>`. Labels never come from a hostname or path.
 
 `relay on`, `relay`, and `relay off` share the relay result shape. Successful `pullboard relay recover --skip N` returns that same shape with optional `skipped: N` naming the explicitly refused sequence and `adopted: true` when it adopts a different authenticated person checkpoint that proves the same blocked refusal. Every relay result includes `recovery: { pending, skip, next }`; when a saved recovery is pending, `next` is the exact retry command. The `behind` count remains the number of pending uploads and does not include recovery. `status` includes this relay object alongside the local board summary. Human status and relay output show the recovery sequence and retry command when one is saved. The local `agent_last_shout_id` inbox read cursor is metadata: recovery ignores only that field in its guarded digest and preserves the greater valid cursor for matching agents. Other native changes remain protected; if a semantic local write changes while recovery is pending, the CLI preserves it and refuses automatic restoration. Exporting alone does not unblock that conflict; this prototype has no merge or discard command, so the person must reconcile the export and remote checkpoint before continuing. Successful results may include `diagnostics` for a relay refusal or inactivity notice; a local move still succeeds when its upload must wait. Device sign-in instructions are written immediately to stderr, including with `--json`, so the person can sign in before the command returns.
 
@@ -689,6 +698,9 @@ A board-recorded item merge covers its introduced commits only when its exact su
 
 The JSON result includes `verification` entries with PR number, exact head, state, assurance, receipt identities, and any unverified commit IDs. GitHub statuses are shared by PRs with the same head: if an outside or unproven PR shares a commit with a proven proposal, the shared status stays red rather than lending the proposal's green status to it. Publishing observes and posts statuses; it never merges a PR or requires outside authors to use Pullboard.
 
+### Item decision queue
+
+The full and summary board state include `decisionQueue`, the coordinator's open decisions, separate from recent `shouts` and the person's `decisions`/Needs you. Structured item questions retain the ordinary shout fields and add `item` and `options`. The state delta carries this small queue whole, so an answer removes its pending entry. Use the normal authenticated `answer` move to append an answer; a decision passed to the person requires the existing person channel.
 `pullboard why <file>[:<line>] --json` uses the `why file` catalog shape; this names the file form, not a literal `file` argument. It traces commits on the repository's actual primary branch, then resolves their item trailers, served row IDs and answered decisions in one board query. The legacy `why <id>` shape is unchanged. Answered decisions carry their recorded origin, statement, rationale, decider and relayer; absent historical provenance remains `unknown`. Row and item origins are also `unknown` unless recorded, rather than inferred from a related decision. An agent may label a relayed or inherited answer but cannot use that label to mint a person-origin record. Unproven original decider identities remain unknown, with the answering relay seat recorded separately.
 
 

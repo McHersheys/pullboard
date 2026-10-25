@@ -54,12 +54,12 @@ Set up
                                         behind the session secret in its printed address
   pullboard mcp                        MCP tools over stdio for this worktree's agent, started by its MCP client:
                                         board status, show, shout and capture an idea; a person's move is refused
-  pullboard relay [status|on|off|pair|join <code>] [--url <address>]  link, inspect or unlink this board's sealed relay
+  pullboard relay [status|on|off|pair|join <code>] [--url <address>] [--name <computer>]  link, inspect or unlink this board's sealed relay
                                         on signs in through GitHub; the address defaults to https://app.pullboard.dev
                                         pair prints a one-use machine code; join stores it in another clone
   pullboard relay members set <login> [<login> ...] | clear  publish an approver-signed membership list
   pullboard relay pair --new-browser    sign in and pair one more browser; existing browsers stay paired
-  pullboard relay on --all [--url <address>]  link every registered project after one sign-in; pair the phone once
+  pullboard relay on --all [--url <address>] [--name <computer>]  link every registered project after one sign-in; pair the phone once
                                         keep this command open until pairing finishes; later projects link on registration
   pullboard relay devices [--verbose]   paired phones and joined computers by name, with paired date, last seen and boards
                                         --verbose adds each id and phone key fingerprint
@@ -69,13 +69,16 @@ Set up
   pullboard relay revoke <token-id>     revoke one token from that list; other agents keep working
   pullboard relay recover --skip <sequence>  person-only recovery of one blocked next relay position
   pullboard handoff [--take <id>]        write or take an agent hand-off; keep questions on its item
+  pullboard heartbeat                 record this seat's local session activity; no board move
   pullboard resume [--diagnostics]      where you are: your claim, branch, what came back,
                                         unread shouts, what to do next; run it to start any session
   pullboard badge                       write board-derived Shields endpoint JSON to docs/badges/
   pullboard hooks [uninstall]           install Git hooks and agent nudges; uninstall removes only Pullboard's agent nudges
-  pullboard hook SessionStart|Stop     native agent nudges; errors/timeouts warn and never block
+  pullboard hook SessionStart|Stop|SessionEnd     native agent nudges; errors/timeouts warn and never block
 
 Work
+  pullboard map [<module or function>] [--for <item>] [--budget <tokens>]  source map for main, a card, or an item's one-hop slice
+                                        slices default to 4k tokens and cap at 8k; effects the scan cannot see say "not detected"
   pullboard add <lane> <title> [--criterion "..."] [--specs G1.2,K3] [--after 3,4] [--parent <id>]
                 [--brief "..." | --brief-file <file>] [--route light|mid]
                                         --after: claiming waits until those items are verified
@@ -165,6 +168,7 @@ Work
   pullboard shout all <text> --news              coordinator/person release or focus news, digested at session start
   Inbox combines direct coordination with item/dependency, file and cited-row activity; other lane activity is summarized.
   pullboard shout [<to>] <text> --decision       ask for a decision; defaults to your coordinator or the person
+  pullboard shout coordinator <question> --item <id> --decision --options '["first","second"]'
   pullboard shout <to> <text> --evidence attempt|receipt --outcome <word> --item <id> --commit <rev>
   pullboard answer <shout-id> <text> [--as person]
                                         answer your decision; person mode is main-checkout only
@@ -215,6 +219,11 @@ Receipts
                                         released/expired reservations remain wait, not review;
                                         review: closing reservation to verdict; merge wait: accept to first merge
                                         unfinished stages are omitted; missing legacy reservations are unmeasured
+                                        flow.report is all-time, even with --since or --window; its disjoint stages are
+                                        ready, later, build, reviewWait, review, mergeWait and rework;
+                                        initial focus/dependency/hold delays are later; returned work is rework until claim;
+                                        firstTry measures acceptance of the first submission; size buckets use that submission:
+                                        under 100, 100-299, 300-799, 800+ changed lines; missing history stays unknown
                                         JSON flow.asOf records one observation clock; oldest.since records its origin;
                                         ageMinutes = (asOf - since) / 60000 for every queue age
                                         queues include all current work, even added before --since;
@@ -261,6 +270,7 @@ Spec
   pullboard spec check                  lint SPEC.md and the doctrine (house rules for agentic development)
   pullboard spec view [--out file]      the spec, open questions, sign-offs and doctrine as one page
   pullboard spec show <id> | unmet [--must] | signoff <ids> [--by <principal>]
+  pullboard spec verify <id> accepted|rejected --reason "why"  record an outside-parent verdict
                                         signoff: --note "what was checked" stays with the receipt
   pullboard spec draft <text> [--section <letter>] [--aim] [--gate "<gate>"]  any agent appends a draft row; never approves it
   pullboard spec draft <text> --revises <id> --reason "why" [--gate "<gate>"] [--status <status>]  propose an approved-row change in Needs you
@@ -338,6 +348,7 @@ const HELP_EXAMPLES = {
   runner: 'pullboard runner add studio --slots 2 --browser 1', 'runner add': 'pullboard runner add studio --slots 2 --browser 1',
   edit: 'pullboard edit 12 --brief "Add the upload page"', release: 'pullboard release 12',
   land: 'pullboard land --max 4',
+  map: 'pullboard map',
   publish: 'pullboard publish',
   handoff: 'pullboard handoff --take 12',
   health: 'pullboard health',
@@ -362,7 +373,7 @@ const HELP_ALIASES = {
   lanes: { usage: 'pullboard lanes', source: 'whoami' },
   agents: { usage: 'pullboard agents', source: 'whoami' },
   lane: { usage: 'pullboard lane add <name> --owns <path>[,<path>]', source: 'lane add' },
-  status: { usage: 'pullboard status', source: 'whoami' },
+  status: { usage: 'pullboard status [--all]', source: 'whoami' },
   done: { usage: 'pullboard done <id>', source: 'submit <id>' },
   inbox: { usage: 'pullboard inbox', source: null, extraFlags: ['--acted-on <interrupt-ids>'] },
   'check accept': { usage: 'pullboard check accept <id>', source: 'check accept' },
@@ -384,7 +395,7 @@ const HELP_ALIASES = {
   'spec signers': { usage: 'pullboard spec signers add [--key <path>] [--by <principal>]', source: 'spec signers add' },
   'spec signers add': { usage: 'pullboard spec signers add [--key <path>] [--by <principal>]', source: 'spec signers add' },
   doctrine: { usage: 'pullboard doctrine check', source: 'doctrine check' },
-  hook: { usage: 'pullboard hook SessionStart|Stop|pre-commit|pre-merge-commit|commit-msg|pre-push', source: 'hook' },
+  hook: { usage: 'pullboard hook SessionStart|Stop|SessionEnd|pre-commit|pre-merge-commit|commit-msg|pre-push', source: 'hook' },
   'gate set': { usage: 'pullboard gate set "<command>"', source: 'gate set' },
   'hook pre-commit': { usage: 'pullboard hook pre-commit', source: 'hook' },
   'hook pre-merge-commit': { usage: 'pullboard hook pre-merge-commit', source: 'hook' },
@@ -413,6 +424,10 @@ const HELP_FLAG_EXPLANATIONS = {
 
 /** Lines a command's own help adds after its example. */
 const HELP_NOTES = {
+  status: [
+    'Counts include live, idle and gone identities; plain text lists only live and idle seats.',
+    '--all includes gone seats. JSON retains the full identity history and presence counts.',
+  ],
   resume: [
     'Ordinary resume reads the current work card and recorded health without running diagnostics or watches.',
     'Use --diagnostics explicitly for setup, hooks, dirty files and stale-work checks.',
