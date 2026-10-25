@@ -2,7 +2,7 @@
 /** @pullboard-test-loads src/board.js src/code-map.js src/commands/map.js src/commands/merged.js src/commands/index.js src/cli-main.js src/cli-help.js src/help.js src/land.js src/templates.js test/board-submit-fixture.js */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import * as store from '../src/board.js';
@@ -106,6 +106,44 @@ test('a fresh main-stamped map refuses ignored source, executable and test input
   }
   assert.deepEqual(buildCodeMap(box.repo, main).modules.map(module => module.path), ['src/pinned.js'],
     'a clean tree with unused ignore rules remains valid');
+});
+
+test('a main-stamped map validates actual inputs despite index flags and symbolic links [C7]', () => {
+  const box = e2e.project();
+  const paths = ['src/pinned.js', 'bin/pinned.mjs', 'test/pinned.test.js'];
+  const original = 'export function pinned() { return true; }\n';
+  for (const directory of ['src', 'bin', 'test']) mkdirSync(join(box.repo, directory), { recursive: true });
+  for (const path of paths) writeFileSync(join(box.repo, path), original);
+  box.git(box.repo, 'add', ...paths);
+  box.git(box.repo, 'commit', '-q', '-m', 'test: commit all scanned input kinds');
+  const main = box.git(box.repo, 'rev-parse', 'main');
+  assert.ok(buildCodeMap(box.repo, main).modules.length);
+  for (const flag of ['assume-unchanged', 'skip-worktree']) for (const path of paths) {
+    box.git(box.repo, 'update-index', `--${flag}`, path);
+    writeFileSync(join(box.repo, path), 'export function altered() { return false; }\n');
+    assert.equal(box.git(box.repo, 'status', '--porcelain', '--untracked-files=all', '--ignored=matching', '--', path), '',
+      `${flag} really hides changed ${path} from status`);
+    assert.throws(() => buildCodeMap(box.repo, main), /committed main source/u,
+      `actual ${path} bytes must match main despite ${flag}`);
+    writeFileSync(join(box.repo, path), original);
+    box.git(box.repo, 'update-index', `--no-${flag}`, path);
+  }
+  const target = join(box.dir, 'outside-source.js');
+  writeFileSync(target, 'export function outside() { return 1; }\n');
+  for (const path of paths) {
+    rmSync(join(box.repo, path));
+    symlinkSync(target, join(box.repo, path));
+    box.git(box.repo, 'add', path);
+    box.git(box.repo, 'commit', '-q', '-m', 'test: commit a symbolic input path');
+    assert.throws(() => buildCodeMap(box.repo, box.git(box.repo, 'rev-parse', 'main')), /committed main source/u,
+      'a committed link never authorizes reading its external target bytes as main');
+    rmSync(join(box.repo, path));
+    writeFileSync(join(box.repo, path), original);
+    box.git(box.repo, 'add', path);
+    box.git(box.repo, 'commit', '-q', '-m', 'test: restore the regular input');
+  }
+  assert.ok(buildCodeMap(box.repo, box.git(box.repo, 'rev-parse', 'main')).modules.length,
+    'exact regular committed inputs still scan after all negative controls');
 });
 
 test('pullboard map prints the overview, a card and an item slice from one scan [C7]', t => {
