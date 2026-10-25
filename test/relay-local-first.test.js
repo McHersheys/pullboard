@@ -59,14 +59,14 @@ function runningSenders() {
     .filter(line => line.includes(WORKER)).length;
 }
 
-/** Wait until `ready()` holds, or fail naming what never happened. */
-async function eventually(what, ready) {
+/** Wait until `ready()` holds, or fail naming what never happened and what `detail()` says. */
+async function eventually(what, ready, detail = () => '') {
   const deadline = Date.now() + SENDER_WAIT_MS;
   while (Date.now() < deadline) {
     if (await ready()) return;
     await new Promise(next => setTimeout(next, 50));
   }
-  assert.fail(`${what} did not happen within ${SENDER_WAIT_MS} ms`);
+  assert.fail(`${what} did not happen within ${SENDER_WAIT_MS} ms${String(await detail()) ? `\n${await detail()}` : ''}`);
 }
 
 /**
@@ -105,13 +105,20 @@ function shoutTexts(exported) {
 
 /** A local-first board linked to the real relay, with the machine sender on for its commands. */
 async function linkedBoard(t) {
+  // Registered before the fixture's own cleanup, so the sender stops before the board's folder is removed.
+  const sender = {};
+  t.after(() => sender.env && stopSender(sender.env));
   const box = await relayClientFixture(t);
   enableOutbox(box);
   assert.equal((await box.link()).code, 0, 'the real relay accepts the board first');
   assert.equal(JSON.parse(readFileSync(box.linkFile, 'utf8')).baselineAccepted, true);
-  const env = senderEnv(box.env);
-  t.after(() => stopSender(env));
-  return { box, env };
+  sender.env = senderEnv(box.env);
+  return { box, env: sender.env };
+}
+
+/** The machine sender's short log, for a failure message. */
+function senderLog(env) {
+  try { return readFileSync(join(env.PULLBOARD_HOME, 'relay-sender', 'sender.log'), 'utf8'); } catch { return '(no sender log)'; }
 }
 
 /** Whether the relay holds a move whose sealed record the relay acknowledged for this shout's send. */
@@ -144,7 +151,7 @@ test('a move and a read return within a second with no network call while the se
   rmSync(lock, { recursive: true, force: true });
   const acks = box.moveAcks.length;
   await local(box, t, box.root, env, 'released-status', ['status']);
-  await eventually('the sender sends the queued move once the relay lock is free', () => outboxEmpty(box) && box.moveAcks.length > acks);
+  await eventually('the sender sends the queued move once the relay lock is free', () => outboxEmpty(box) && box.moveAcks.length > acks, () => senderLog(env));
 });
 
 test('a stalled relay never delays a move: it is recorded and queued, not refused [H21,H5]', async t => {
@@ -181,7 +188,7 @@ test('a GitHub 403 never refuses or delays a move: it is recorded and queued, th
   box.providerState.access = true;
   box.advanceAuthorization(ACCESS_WINDOW_MS + 1);
   await local(box, t, box.root, env, 'restored-status', ['status']);
-  await eventually('the sender sends the move once GitHub answers again', () => outboxEmpty(box));
+  await eventually('the sender sends the move once GitHub answers again', () => outboxEmpty(box), () => senderLog(env));
 });
 
 test('one background sender per machine sends each new move once, asks GitHub once per window, pulls other machines\' moves, and the relay reads none [H21,H5,H15]', async t => {
@@ -197,7 +204,7 @@ test('one background sender per machine sends each new move once, asks GitHub on
   const sampling = setInterval(() => { senders = Math.max(senders, runningSenders()); }, 20);
   try {
     await Promise.all(texts.map((text, index) => local(box, t, box.root, env, `burst-${index}`, ['shout', 'all', text])));
-    await eventually('the sender sends the burst', () => outboxEmpty(box));
+    await eventually('the sender sends the burst', () => outboxEmpty(box), () => senderLog(env));
   } finally { clearInterval(sampling); }
   assert.equal(senders, 1, 'one sender ran for the machine, however many commands nudged it');
   const sent = box.moveAcks.slice(acks);
@@ -211,10 +218,12 @@ test('one background sender per machine sends each new move once, asks GitHub on
   const reply = 'a move from the other machine';
   const shouted = await other.cli('shout', 'all', reply);
   assert.equal(shouted.code, 0, shouted.failure);
+  const otherStatus = await other.cli('status');
+  assert.equal(otherStatus.document.relay.outbox, undefined, 'the other machine sent its move');
   await eventually('the sender pulls the other machine\'s move with no sync here', async () => {
     const here = await local(box, t, box.root, env, 'pulled-export', ['export']);
     return shoutTexts(here.document).includes(reply);
-  });
+  }, () => senderLog(env));
 
   const relayFiles = [];
   const walk = (path) => {
