@@ -167,14 +167,16 @@ Work
   Inbox combines direct coordination with item/dependency, file and cited-row activity; other lane activity is summarized.
   pullboard shout [<to>] <text> --decision       ask for a decision; defaults to your coordinator or the person
   pullboard shout <to> <text> --evidence attempt|receipt --outcome <word> --item <id> --commit <rev>
-  pullboard answer <shout-id> <text> [--as person]
+  pullboard answer <shout-id|repo#id> <text> [--as person]
                                         answer your decision; person mode is main-checkout only
+                                        repo#id answers a sibling repo's decision on its own board
                                         Other options: [--implies <ids>] [--supersedes <answer-id>]
                                                       [--origin person-relayed|agent|inherited] [--rationale <why>]
                                         --supersedes tells the items an earlier answer implied; only the person
                                         supersedes the person's answer
   pullboard pass <shout-id> <note>                coordinator passes a decision to the person
   pullboard decisions [--as person]               shouts waiting for you; main checkout defaults to coordinator
+                                        as the person, a project's repos list together as repo#id
   pullboard watch [--to <agent|lane|all>] [--kinds <kinds>] [--item <id>] [--since <sequence>] [--json]
                 [--work <lane>] [--review-wait <minutes>]
                                         follow the board's live events, one line each as it happens, with or without the view

@@ -872,3 +872,69 @@ test('a landing lease renewal or waiter poll writes no board event [Q1,Q2,Q3]', 
   assert.equal(state.holder, null);
   assert.equal(state.line.length, 1, 'suppressing polling events does not discard the waiting command');
 });
+
+/** Initialise a second repo in the first one's sandbox, so both register in the same machine home. */
+function siblingRepo(box, name, project) {
+  const repo = join(box.dir, name);
+  mkdirSync(repo);
+  box.git(repo, 'init', '-q', '-b', 'main');
+  assert.equal(box.run(repo, 'init').code, 0);
+  return { repo, project };
+}
+
+/** Put a repo into a named project under its own name, committed so the board reads it. */
+function nameRepo(box, repo, name, project) {
+  const file = join(repo, 'pullboard.json');
+  const config = JSON.parse(readFileSync(file, 'utf8'));
+  writeFileSync(file, JSON.stringify({ ...config, name, project }, null, 2));
+  box.git(repo, 'add', '-A');
+  box.git(repo, 'commit', '-q', '-m', 'chore: name the repo');
+}
+
+test("one decision list across a project's repos [N34]", { timeout: 180_000 }, async t => { // budget: hang ceiling for three real repos' CLI runs and one view process; not a speed target.
+  const box = helpers.project();
+  const other = siblingRepo(box, 'repo-b').repo;
+  const lone = siblingRepo(box, 'repo-c').repo;
+  nameRepo(box, box.repo, 'alpha', 'shop');
+  nameRepo(box, other, 'beta', 'shop');
+  nameRepo(box, lone, 'gamma', 'elsewhere');
+  const ask = (root, text) => {
+    const asked = box.run(root, 'shout', 'person', text, '--decision');
+    assert.equal(asked.code, 0, asked.err);
+    return Number(/as #(\d+)/.exec(asked.out)?.[1]);
+  };
+  const alphaId = ask(box.repo, 'Ship alpha?');
+  const betaId = ask(other, 'Ship beta?');
+  ask(lone, 'Ship gamma?');
+  const listed = () => JSON.parse(box.run(box.repo, 'decisions', '--as', 'person', '--json').out);
+
+  // The person sees both repos of the project, each with its repo, and not another project's.
+  const text = box.run(box.repo, 'decisions', '--as', 'person');
+  assert.equal(text.code, 0, text.err);
+  assert.match(text.out, new RegExp(`alpha#${alphaId} .*Ship alpha\\?`));
+  assert.match(text.out, new RegExp(`beta#${betaId} .*Ship beta\\?`));
+  assert.doesNotMatch(text.out, /gamma|Ship gamma/);
+  const both = listed();
+  assert.deepEqual(both.decisions.map(({ repo, shout_id: id }) => `${repo}#${id}`).sort(), [`alpha#${alphaId}`, `beta#${betaId}`].sort());
+
+  // The local API lists the same decisions, each with its board and repo.
+  const view = await helpers.startView(box, box.repo);
+  t.after(view.stop);
+  const headers = { 'x-pullboard-key': view.key };
+  const boards = (await (await fetchFresh(`${view.base}/api/v1/boards`, { headers })).json()).boards;
+  const alphaBoard = boards.find(entry => entry.root === box.repo);
+  const betaBoard = boards.find(entry => entry.root === other);
+  const api = await (await fetchFresh(`${view.base}/api/v1/decisions?board=${alphaBoard.id}`, { headers })).json();
+  assert.equal(api.project, 'shop');
+  assert.deepEqual(api.decisions.map(({ board, repo }) => `${repo}:${board}`).sort(), [`alpha:${alphaBoard.id}`, `beta:${betaBoard.id}`].sort());
+
+  // Answering from the first repo closes the decision on the second repo's own board, and nowhere else.
+  const answered = box.run(box.repo, 'answer', `beta#${betaId}`, 'Yes, ship it.', '--as', 'person');
+  assert.equal(answered.code, 0, answered.err);
+  assert.deepEqual(withBoard(other, board => store.openDecisions(board, store.PERSON)), []);
+  assert.equal(withBoard(box.repo, board => store.openDecisions(board, store.PERSON)).length, 1);
+  assert.deepEqual(listed().decisions.map(({ repo }) => repo), ['alpha']);
+  const unknown = box.run(box.repo, 'answer', 'nowhere#1', 'x', '--as', 'person');
+  assert.notEqual(unknown.code, 0);
+  assert.match(unknown.err, /NO_REPO/);
+});
