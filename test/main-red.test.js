@@ -141,10 +141,14 @@ const FAILING_TEST = [
 
 test('main comparisons use the free CPU slot while browser work keeps its browser slot [V1,C7]', async t => {
   const box = fixture(t, { spec: RED_SPEC, source: FAILING_TEST });
-  for (const [key, value] of [['gateSlots', '2'], ['browserSlots', '1'], ['gate.memoryFloorMB', '0'], ['gate.browserFreeChecks', 'on']]) {
+  for (const [key, value] of [['gateSlots', '2'], ['browserSlots', '1']]) {
     const set = cli(box.root, box.env, 'settings', key, value);
     assert.equal(set.code, 0, `${key}: ${set.err}`);
   }
+  const settingsFile = join(box.env.PULLBOARD_MACHINE_HOME, 'settings.json');
+  const settings = JSON.parse(readFileSync(settingsFile, 'utf8'));
+  settings.gate = { ...settings.gate, browserFreeChecks: true };
+  writeFileSync(settingsFile, JSON.stringify(settings) + '\n', { mode: 0o600 });
   put(box.root, 'test/browser.test.js', [
     "import assert from 'node:assert/strict';",
     "import { spawnSync } from 'node:child_process';",
