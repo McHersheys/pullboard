@@ -46,6 +46,8 @@ import {
 } from './init.js';
 import { relayOfferEnabled } from './settings.js';
 import { Refused } from './refused.js';
+import { publishExcludedBoards } from './relay-excluded.js';
+import { plannedRelayBoard } from './relay-relink.js';
 
 /** Say which paired phone must approve a new board's link, and when the request ends in this computer's time. */
 function approvalWait(name, pending, devices) {
@@ -68,7 +70,7 @@ export function unlinkedRelayProjects() {
 /** Read the registered local board identity without executing any person action. */
 function projectBoard(root) {
   const board = store.openBoard(join(repoInfo(root).commonDir, 'pullboard', 'board.sqlite'), undefined, { isMain: codeIsFromMain() });
-  try { return store.boardId(board); } finally { store.closeBoard(board); }
+  try { return plannedRelayBoard(root, store.boardId(board)); } finally { store.closeBoard(board); }
 }
 
 /**
@@ -83,6 +85,18 @@ async function finishApprovedLink(project, pending, source, approval, io) {
   const linked = await relayOn(project, source.url, io, { credential, quiet: true, strict: true });
   updateRelayMachine(state => { state.approvals = state.approvals.filter(entry => entry.context.id !== pending.context.id); });
   return linked;
+}
+
+/**
+ * Read one registered board's link as a possible publisher. Another entry's refusal, such as a
+ * scratch folder that is no longer a git work tree, rules out only that entry: it never speaks
+ * for the board this command runs in.
+ */
+function publisherState(root) {
+  try { return relayMachineContext(root); } catch (error) {
+    if (!(error instanceof Refused)) throw error;
+    return null;
+  }
 }
 
 /** Link a new project only after the paired phone explicitly approves its one durable proposal. */
@@ -102,9 +116,11 @@ export async function autoLinkProject(root, io) {
     let source;
     if (pending) source = relayMachineContext(pending.publisherRoot);
     else {
-      const candidate = listApiProjects().map(entry => ({ ...entry, state: relayMachineContext(entry.root) }))
+      const candidate = listApiProjects().map(entry => ({ ...entry, state: publisherState(entry.root) }))
         .find(entry => entry.state?.token?.startsWith('pm_') && entry.state.account === machine.owner?.account && entry.state.url === machine.owner?.url);
-      if (!candidate) throw new Refused('RELAY_SESSION', 'Run pullboard relay on --all to link this project and pair the phone.');
+      // With the relay off no board here can publish the request, so a move prints only its result;
+      // doctor and resume still name each unlinked board.
+      if (!candidate) return;
       source = candidate.state;
       const proposal = await phoneProposal(source, 'link', repository,
         { board: projectBoard(project), command: 'Link ' + name + '? (pullboard init)', link: true, root: project });
@@ -419,6 +435,7 @@ export async function relayOnAll(address, io, { signal, onPairingURL, onSignIn, 
   const approved = await waitForLinkApprovals(waiting, io, { signal });
   result.linked.push(...approved.linked);
   result.failed.push(...approved.failed);
+  await publishExcludedBoards(session, io, relayDeviceRequest);
   return { ...result, ...pairing, autoLink: true };
 }
 

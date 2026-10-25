@@ -6,7 +6,7 @@
  * @returns {string} The script text of this part.
  */
 export function pageScriptPart2(scope) {
-  const { STAR_KEY, closePageDialog, connection, drawHosted, hostedBrowser, hostedReleaseDistance, hostedReleaseNote, hostedState, lifecycle, openPageDialog, personNeeds, releaseHosted, releaseInfo, roadmapBlock, roadmapHeaders, roadmapSummary, sharingPresentation, staleChip, transportModule } = scope;
+  const { STAR_KEY, closePageDialog, connection, drawHosted, homeRules, hostedBrowser, hostedReleaseDistance, hostedReleaseNote, hostedState, lifecycle, openPageDialog, personNeeds, releaseHosted, releaseInfo, roadmapBlock, roadmapHeaders, roadmapSummary, sharingPresentation, staleChip, transportModule } = scope;
 return `let detailRead = null;
 const addressedShouts = new Map();
 const $ = (id) => document.getElementById(id);
@@ -310,6 +310,7 @@ function shoutAgentName(id) {
 }
 /** Render a review note with escaped text and references bound to the selected board. */
 const verdictHtml = (v, titles) => '<div class="verdict ' + (v.decision === 'ACCEPT' ? 'yes' : 'no') + '"><b>' + esc(v.decision) + ' ' + esc(v.reason) + '</b><span class="by">' + esc(agentName(v.by)) + ' · ' + when(v.at) + ' · at ' + esc(String(v.commit || '').slice(0, 12)) + '</span><div class="note">' + inline(visibleVerdictNote(v.reason, v.note), titles) + '</div></div>';
+const homeRules = (${homeRules.toString()});
 const roadmapSummary = (${roadmapSummary.toString()}), roadmapHeaders = (${roadmapHeaders.toString()});
 const stateOf = (i) => i.status === 'claimed' ? 'building' : i.status === 'submitted' ? 'verify' : i.status === 'verified' ? 'verified' : i.status === 'withdrawn' ? 'withdrawn' : i.verdict && i.verdict.decision === 'REJECT' ? 'back' : 'open';
 const STATES = { building: ['building', 'busy'], verify: ['to verify', 'warn'], back: ['sent back', 'no'], verified: ['verified', 'ok'], open: ['unclaimed', 'free'], withdrawn: ['withdrawn', ''] };
@@ -600,7 +601,8 @@ function timeline(item) {
  * The lifecycle drawn as SVG with this board's counts, the way the README's figure draws it. The
  * longest way from the start to a final state runs along a row, the first-declared final winning a
  * tie, its states joined by straight arrows. A pair of states a move leads back along takes a dashed
- * square route above the row, the further back the higher. The moves that keep a state are written
+ * square route above the row, the further back the higher. Forward shortcuts use separate lanes
+ * below the row, leaving return labels above it. The moves that keep a state are written
  * in its box after a ↻. A state off the row sits below the last state on the row that leads to it,
  * and routes into it from the row join into one, labelled once. Moves out of those states take
  * separate routes below the boxes, with their words above each route. Final states have a double border. Boxes
@@ -666,7 +668,7 @@ function flowSvg(p) {
   const BH = 44 + 15 * Math.max(1, ...[...inside.values()].map((box) => box.kept.length + (box.back ? 1 : 0)));
 
   // Routes back along the row, each at a level by how far back it goes; their words above them.
-  const ups = pairs.filter((pair) => pair.from !== pair.to && col(pair.from) >= 0 && col(pair.to) >= 0 && col(pair.to) !== col(pair.from) + 1)
+  const ups = pairs.filter((pair) => col(pair.to) >= 0 && col(pair.from) > col(pair.to))
     .map((pair) => ({ pair, span: Math.abs(col(pair.from) - col(pair.to)) })).sort((a, b) => a.span - b.span);
   const spans = [...new Set(ups.map((up) => up.span))];
   for (const up of ups) {
@@ -697,14 +699,39 @@ function flowSvg(p) {
   const top = 12 + highest, Y = top + BH / 2, bottom = top + BH;
   const pos = new Map(row.map((s, i) => [s, { x: L + BW / 2 + i * step, y: Y }]));
 
+  // A forward shortcut gets its own lower lane. Keep its words between the vertical stems of
+  // deeper shortcuts and routes into off-row states, rather than at a fixed diagram coordinate.
+  const shortcuts = pairs.filter((pair) => col(pair.from) >= 0 && col(pair.to) > col(pair.from) + 1)
+    .map((pair) => ({ pair, span: col(pair.to) - col(pair.from),
+      start: pos.get(pair.from).x + BW / 2 - 40, end: pos.get(pair.to).x - BW / 2 + 40 }))
+    .sort((a, b) => a.span - b.span);
+  const downwardStems = pairs.filter((pair) => col(pair.from) >= 0 && col(pair.to) < 0)
+    .map((pair) => pos.get(pair.from).x);
+  shortcuts.forEach((shortcut, index) => {
+    const cuts = [shortcut.start, ...downwardStems,
+      ...shortcuts.slice(index + 1).flatMap((other) => [other.start, other.end]), shortcut.end]
+      .filter((x) => x >= shortcut.start && x <= shortcut.end).sort((a, b) => a - b);
+    const rooms = cuts.slice(1).map((right, i) => ({ left: cuts[i], right }))
+      .sort((a, b) => (b.right - b.left) - (a.right - a.left));
+    const room = rooms[0];
+    shortcut.said = told([shortcut.pair]);
+    shortcut.lines = wrap(shortcut.said.words, room.right - room.left - 20, 12);
+    shortcut.labelX = (room.left + room.right) / 2;
+    shortcut.depth = (index ? shortcuts[index - 1].depth + 24 : 30) + 15 * (shortcut.lines.length - 1);
+  });
+  const shortcutDepth = shortcuts.length ? shortcuts[shortcuts.length - 1].depth : 0;
+  // A straight incoming route labels the midpoint of this gap: its words must also sit below
+  // every shortcut, not just place the off-row boxes below them.
+  const lowerGap = Math.max(80, 2 * shortcutDepth + 32);
+
   // A state off the row sits below the last state on it that leads there.
   const below = FLOW.states.filter((s) => !pos.has(s.id));
   for (const s of below) {
     const from = row.filter((r) => leads(r).includes(s.id));
-    pos.set(s.id, { x: from.length ? pos.get(from[from.length - 1]).x : W / 2, y: bottom + 80 + BH / 2 });
+    pos.set(s.id, { x: from.length ? pos.get(from[from.length - 1]).x : W / 2, y: bottom + lowerGap + BH / 2 });
   }
   const outgoing = pairs.filter((pair) => pair.from !== pair.to && below.some((state) => state.id === pair.from));
-  const H = (below.length ? bottom + 80 + BH : bottom) + 14 + (outgoing.length ? 44 + 40 * (outgoing.length - 1) : 0);
+  const H = (below.length ? bottom + lowerGap + BH : bottom + shortcutDepth) + 14 + (outgoing.length ? 44 + 40 * (outgoing.length - 1) : 0);
 
   const group = (pairList, route, label) => pairList.map((pair, n) => '<g><title>' + esc(says(pair)) + '</title><path class="edge' + (route.back ? ' back' : '') + '" d="' + route.d + '" marker-end="url(#pb-head' + (route.back ? '-back' : '') + ')"/>' + (n === 0 ? label : '') + '</g>').join('');
   const tone = (said, extra = '') => 'tag' + (said.idle ? ' idle' : '') + extra;
@@ -721,6 +748,12 @@ function flowSvg(p) {
   for (const up of ups) {
     const isBack = col(up.pair.to) < col(up.pair.from), y = top - rise[up.level];
     routes.push(group([up.pair], { back: isBack, d: path([[up.start, top], [up.start, y], [up.end, y], [up.end, top - 1]]) }, lines(up.labelX, y - 7, up.lines, tone(up.said, isBack ? ' back' : ''))));
+  }
+  // Square, below the row, for moves that skip forward past another state.
+  for (const shortcut of shortcuts) {
+    const y = bottom + shortcut.depth;
+    routes.push(group([shortcut.pair], { d: path([[shortcut.start, bottom], [shortcut.start, y], [shortcut.end, y], [shortcut.end, bottom + 1]]) },
+      lines(shortcut.labelX, y - 7, shortcut.lines, tone(shortcut.said))));
   }
   // Down from the row, joining into one route per state below, labelled once on the way in.
   for (const s of below) {
@@ -744,7 +777,7 @@ function flowSvg(p) {
   // A below-row state can move back into the row or on to another below-row state.
   outgoing.forEach((pair, index) => {
     const from = pos.get(pair.from), to = pos.get(pair.to);
-    const lane = bottom + 80 + BH + 26 + index * 40;
+    const lane = bottom + lowerGap + BH + 26 + index * 40;
     const side = to.x < from.x ? to.x + BW / 2 + 1 : to.x - BW / 2 - 1;
     const said = told([pair]);
     const room = Math.max(40, Math.abs(side - from.x) - 24);
@@ -810,6 +843,26 @@ async function jsonRequest(path, body, base, headers, cache, format = 'json') {
   }
   return json;
 }
+
+// The list is only a preview: the local view checks the registry again after this one confirmation.
+document.addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-forget-unreadable]');
+  if (!button || snapshot || pageReadOnly) return;
+  if (!confirm('Forget the boards that are unreadable now? Boards recovered since this list was shown will be kept.')) return;
+  button.disabled = true;
+  try {
+    const base = hosted.local ? localReadBase : connection.base;
+    const headers = hosted.local ? localReadHeaders : connection.headers;
+    const result = await jsonRequest('/api/v1/projects/forget-unreadable', { confirm: true }, base, headers);
+    await refresh();
+    $('live').textContent = result.forgotten
+      ? 'Forgot ' + result.forgotten + ' unreadable ' + (result.forgotten === 1 ? 'board.' : 'boards.')
+      : 'No unreadable boards needed forgetting.';
+  } catch (error) {
+    $('live').textContent = String(error.message || error);
+    button.disabled = false;
+  }
+});
 
 /** Read only this machine's authenticated view, including when its page is hosted elsewhere. */
 function sharingApi(body) {

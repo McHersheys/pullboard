@@ -16,200 +16,29 @@ import { readRemoteGateHolders, waitForCondition } from './runner-fixture-state.
 import { assertAttemptDeadlineReset, assertRedispatchDeadlineAccounting, runPairedRerun, startRunnerCpuStandIn } from './runner-paired-rerun-fixture.js';
 import { assertFixtureGroupEpermControls, stopGroup } from './runner-process-group.js';
 import { parentDeathDrainFixture } from './runner-parent-death-fixture.js';
+import { runnerOrphanFixture, unprovenProcessFixture } from './runner-orphan-fixture.js';
+import { createDescendantTracker } from '../src/runner-custody.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { refuseSandboxBlocked } from '../src/gate.js';
 import { SECRET, HOST, shellQuote, installSshStandIn } from './runner-ssh-fixture.js';
 import { sourceSetupFailureFixture } from './runner-source-setup-fixture.js';
 import { runnerSourceRefusalCases } from './runner-source-refusal-fixture.js';
 import { writeCacheProbe, writeProbe } from './runner-probe-fixture.js';
+import { browserFreeRunnerCheck, browserRefusalTextStaysRed } from './runner-browser-free-fixture.js';
+import { runnerTimingReceipt, runnerUsesRegisteredCapacity } from './runner-capacity-fixture.js';
+import { removingBusyRunnerDrains, runnerRemoveKeepsSettings } from './runner-drain-fixture.js';
+import { awaitRoundTrip, cleanupToolingSnapshots, cli, committedToolingSnapshot, fixtureResultContext, gateResult, git, phaseCounts, ROUND_TRIP_DEADLINES, runThroughGate, startToolingCli, TOOLING_SNAPSHOTS } from './runner-tooling-fixture.js';
+import { runnerStageFixture } from './runner-stage-fixture.js';
 
-/** Per-phase deadlines for one runner round trip; together they stay near the 60-second hang ceiling. */
-const ROUND_TRIP_DEADLINES = { dispatch: 20_000, 'remote run': 30_000, 'result return': 10_000 }; // budget: a stuck runner fails by name in about a minute, far under the 660-second per-test limit.
 const PAIRED_RERUN_FIXTURE = { createE2eHelpers, cli, observe, startToolingCli, awaitRoundTrip, phaseCounts,
   ROUND_TRIP_DEADLINES, HOST, shellQuote, installSshStandIn, processesUnder, stopGroup };
 
 const BIN = resolve(import.meta.dirname, '../bin/pullboard.js');
 const TEMP = [];
-const TOOLING_SNAPSHOTS = new Map();
 const e2e = createE2eHelpers();
 after(e2e.cleanup);
 after(cleanupFixtureChildren);
-
-/** Run Git in the private source repository and preserve useful failure context. */
-function git(repo, env, ...args) {
-  const result = runFixtureChild('git', args, { cwd: repo, env, encoding: 'utf8' });
-  assert.equal(result.status, 0, result.context);
-  return result.stdout.trim();
-}
-
-/** Copy current tooling bytes into a private committed checkout for runner source validation. */
-function committedToolingSnapshot(sourceRoot, env) {
-  const key = realpathSync(sourceRoot);
-  const cached = TOOLING_SNAPSHOTS.get(key);
-  if (cached) return cached.root;
-  const directory = mkdtempSync(join(tmpdir(), 'pullboard-runner-tooling-'));
-  const root = join(directory, 'tooling');
-  const home = join(directory, 'home');
-  mkdirSync(root, { recursive: true });
-  mkdirSync(home, { recursive: true });
-  try {
-    copyFileSync(join(key, 'package.json'), join(root, 'package.json'));
-    cpSync(join(key, 'src'), join(root, 'src'), { recursive: true });
-    cpSync(join(key, 'bin'), join(root, 'bin'), { recursive: true });
-    const gitEnv = { ...env, HOME: home, PULLBOARD_HOME: join(home, '.pullboard'),
-      PULLBOARD_MACHINE_HOME: join(home, '.pullboard'), GIT_CONFIG_GLOBAL: '/dev/null',
-      GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_COUNT: '0',
-      GIT_AUTHOR_NAME: 'Runner Tooling Fixture', GIT_AUTHOR_EMAIL: 'runner-tooling@example.invalid',
-      GIT_COMMITTER_NAME: 'Runner Tooling Fixture', GIT_COMMITTER_EMAIL: 'runner-tooling@example.invalid' };
-    for (const key of ['GIT_CONFIG_PARAMETERS', 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR']) delete gitEnv[key];
-    git(root, gitEnv, 'init', '-q', '-b', 'main');
-    git(root, gitEnv, 'add', 'package.json', 'src', 'bin');
-    git(root, gitEnv, 'commit', '-q', '-m', 'test: snapshot current runner tooling');
-  } catch (error) {
-    process.stderr.write(`retained incomplete runner tooling snapshot at ${directory}: ${error.message}\n`);
-    throw error;
-  }
-  TOOLING_SNAPSHOTS.set(key, { root, directory, active: 0, retained: false });
-  return root;
-}
-
-after(() => {
-  for (const record of TOOLING_SNAPSHOTS.values()) {
-    if (record.active || record.retained) {
-      process.stderr.write(`retained runner tooling snapshot at ${record.directory}\n`);
-      continue;
-    }
-    rmSync(record.directory, { recursive: true, force: true });
-  }
-  TOOLING_SNAPSHOTS.clear();
-});
-
-/** Spawn the exact checked-in CLI from a fixture checkout. */
-function cli(repo, env, ...args) {
-  return runFixtureChild(process.execPath, [BIN, ...args], { cwd: repo, env, encoding: 'utf8' });
-}
-
-
-/** Start the current CLI from the same clean committed tooling snapshot used by API fixtures. */
-function startToolingCli(repo, env, args, { toolingRoot = resolve(import.meta.dirname, '..'), ...options } = {}) {
-  const sourceRoot = realpathSync(toolingRoot);
-  const bin = join(committedToolingSnapshot(sourceRoot, env), 'bin', 'pullboard.js');
-  const snapshot = TOOLING_SNAPSHOTS.get(sourceRoot);
-  snapshot.active++;
-  try {
-    const child = startFixtureChild(process.execPath, [bin, ...args], {
-      cwd: repo, env, stdio: ['ignore', 'pipe', 'pipe'], ...options,
-    });
-    let settled = false;
-    const finish = (status, signal, failed) => {
-      if (settled) return;
-      settled = true;
-      snapshot.active--;
-      if (failed || status !== 0 || signal) snapshot.retained = true;
-    };
-    child.once('close', (status, signal) => finish(status, signal, false));
-    child.once('error', () => finish(null, null, true));
-    return child;
-  } catch (error) {
-    snapshot.active--;
-    snapshot.retained = true;
-    throw error;
-  }
-}
-
-/** Count the stand-in's phase markers; a missing file means nothing was dispatched yet. */
-function phaseCounts(file) {
-  const lines = existsSync(file) ? readFileSync(file, 'utf8').split('\n') : [];
-  return { dispatched: lines.filter(line => line === 'dispatched').length, returned: lines.filter(line => line === 'returned').length };
-}
-
-/**
- * Wait for a runner round trip phase by phase: dispatch (until the stand-in is reached), remote run
- * (until the worker returns) and result return (until the controller exits). A phase past its
- * deadline stops the whole controller group and throws an error naming that phase, so a stuck
- * runner fails the test in about a minute instead of holding it to the per-test limit. The caller
- * passes the marker counts it read before spawning the child: a fast child can dispatch before this
- * function first runs, and a baseline read here would swallow that dispatch.
- */
-async function awaitRoundTrip(child, closed, phasesFile, before, deadlines = ROUND_TRIP_DEADLINES, firstReceiptAccepted = null) {
-  const limits = { ...ROUND_TRIP_DEADLINES, ...deadlines };
-  let done = null;
-  closed.then(result => { done = result; });
-  const timings = [];
-  // The marker file may already hold earlier round trips of the same fixture; count only this one.
-  assert.ok(!phasesFile || before, 'awaitRoundTrip needs the phase baseline read before the child was spawned');
-  let phase = 'dispatch';
-  let phaseStarted = Date.now();
-  let observed = { dispatched: 0, returned: 0 };
-  while (!done) {
-    const total = phasesFile ? phaseCounts(phasesFile) : { dispatched: 0, returned: 0 };
-    const counts = phasesFile ? { dispatched: total.dispatched - before.dispatched, returned: total.returned - before.returned } : total;
-    // The observer saves the accepted first receipt before preparing its paired dispatch. That real
-    // controller-side witness ends result delivery; a worker's "returned" marker alone cannot do so.
-    const redispatch = counts.dispatched === 1 && counts.returned === 1 && firstReceiptAccepted?.();
-    const next = redispatch ? 'dispatch' : counts.dispatched > counts.returned ? 'remote run' : counts.dispatched > 0 ? 'result return' : 'dispatch';
-    // A returned attempt and its paired dispatch can arrive in one poll without changing the phase's name.
-    // Each real marker advance starts a fresh clock, while a phase with no new marker remains bounded.
-    if (next !== phase || counts.dispatched > observed.dispatched || counts.returned > observed.returned) {
-      timings.push(`${phase} ${Date.now() - phaseStarted}ms (attempt ${observed.dispatched})`);
-      phase = next;
-      phaseStarted = Date.now();
-      observed = counts;
-    }
-    const spent = Date.now() - phaseStarted;
-    if (spent > limits[phase]) {
-      await stopGroup(child, closed);
-      throw new Error(`runner round trip stuck in phase "${phase}": no progress after ${spent} ms (deadline ${limits[phase]} ms); earlier phases: ${timings.join(', ') || 'none'}\n${fixtureResultContext(done ?? {})}`);
-    }
-    await Promise.race([closed, new Promise(resolve => setTimeout(resolve, 50))]); // budget: polling interval for the stand-in's phase markers.
-  }
-  timings.push(`${phase} ${Date.now() - phaseStarted}ms`);
-  process.stderr.write(`runner round trip phases: ${timings.join(', ')}\n`);
-  return done;
-}
-
-/**
- * Run a gate command through its real lease and return the profile/result emitted by the API child.
- * `requests` names the stand-in's request log, whose .phases file times the round trip by phase.
- */
-async function runThroughGate(repo, env, command, { browser = true, item = '663', kind = 'check', landing = false, toolingRoot = resolve(import.meta.dirname, '..'), requests, deadlines } = {}) {
-  const sourceRoot = realpathSync(toolingRoot);
-  const gateUrl = pathToFileURL(join(committedToolingSnapshot(sourceRoot, env), 'src', 'gate.js')).href;
-  const snapshot = TOOLING_SNAPSHOTS.get(sourceRoot);
-  snapshot.active++;
-  const script = `const { runProfiledShell, withGateSlot } = await import(${JSON.stringify(gateUrl)});
-const result = await withGateSlot(${JSON.stringify(repo)}, lease => runProfiledShell(${JSON.stringify(repo)}, ${JSON.stringify(command)}, { gateLease: lease, landing: ${landing} }),
-  { browser: ${browser}, item: ${JSON.stringify(item)}, kind: ${JSON.stringify(kind)}, landing: ${landing}, agent: 'runner-fixture' });
-process.stdout.write(result.output);
-process.stdout.write('PULLBOARD_RUN_RESULT ' + JSON.stringify({ isGreen: result.isGreen, runner: result.profile.executionRunner, sandboxBlocked: result.sandboxBlocked, profile: result.profile }) + '\\n');
-process.exitCode = result.isGreen ? 0 : 1;
-`;
-  try {
-    // Read the phase baseline before spawning, so a dispatch that beats the first poll still counts.
-    const phases = requests ? `${requests}.phases` : '';
-    const before = phases ? phaseCounts(phases) : null;
-    // Its own process group, so a stuck phase can stop the controller, the stand-in and the worker together.
-    const closed = runFixtureChildAsync(process.execPath, ['--input-type=module', '-e', script], { cwd: repo, env, detached: true });
-    const result = await awaitRoundTrip(closed.child, closed, phases, before, deadlines);
-    if (result.status !== 0) snapshot.retained = true;
-    return result;
-  } catch (error) {
-    snapshot.retained = true;
-    throw error;
-  } finally { snapshot.active--; }
-}
-
-/** Parse the bounded final API line without rewriting the command's raw TAP output. */
-function gateResult(stdout) {
-  const line = stdout.split(/\r?\n/u).findLast(value => value.startsWith('PULLBOARD_RUN_RESULT '));
-  assert.ok(line, stdout);
-  return JSON.parse(line.slice('PULLBOARD_RUN_RESULT '.length));
-}
-
-/** Include bounded command output when a remote fixture assertion fails. */
-function fixtureResultContext(result) {
-  return `${result.context}\nstdout tail:\n${String(result.stdout ?? '').slice(-4_000)}\nstderr tail:\n${String(result.stderr ?? '').slice(-4_000)}`;
-}
+after(cleanupToolingSnapshots);
 
 /** Wait for the marker itself: a missed file notification must not hide observable readiness. */
 async function waitForMarker(path) {
@@ -231,7 +60,7 @@ function processIsAlive(pid) {
 }
 
 /** Start an API child that requeues only an incomplete runner transport on its original ticket. */
-function startQueueController(repo, env, command, { item, queueMarker, firstItem = 'retry-first', remote = true, toolingRoot = resolve(import.meta.dirname, '..') } = {}) {
+function startQueueController(repo, env, command, { item, queueMarker, firstItem = 'retry-first', remote = true, browser = true, toolingRoot = resolve(import.meta.dirname, '..') } = {}) {
   const sourceRoot = realpathSync(toolingRoot);
   const gateUrl = pathToFileURL(join(committedToolingSnapshot(sourceRoot, env), 'src', 'gate.js')).href;
   const snapshot = TOOLING_SNAPSHOTS.get(sourceRoot);
@@ -248,7 +77,7 @@ const result = await withGateSlot(root, async lease => {
   process.stdout.write('PULLBOARD_RUN_RESULT ' + JSON.stringify({ isGreen: run.isGreen, runner: run.profile.executionRunner }) + '\\n');
   return run;
 },
-  { browser: true, remote: ${remote}, item: ${JSON.stringify(item)}, kind: 'runner-retry-test', agent: ${JSON.stringify(item)},
+  { browser: ${browser}, remote: ${remote}, item: ${JSON.stringify(item)}, kind: 'runner-retry-test', agent: ${JSON.stringify(item)},
   onWait(state) {
     const rows = state.line ?? [];
     if (queueMarker && rows.some(row => row.item === ${JSON.stringify(item)}) && (firstItem === null || rows.some(row => row.item === firstItem))) {
@@ -309,36 +138,9 @@ test("the runner's trusted runtime list is closed under its relative imports [C7
   }
 });
 
-test('runner remove deletes one runner and keeps the rest [C7]', (t) => {
-  const box = e2e.project();
-  const settingsFile = join(box.env.PULLBOARD_MACHINE_HOME, 'settings.json');
-  const removed = { host: 'runner-one.example.invalid', slots: 2, browser: 1, node: 'node', root: '/srv/runner-one' };
-  const remaining = { host: 'runner-two.example.invalid', slots: 1, browser: 0 };
-  const original = { gateSlots: 3, browserSlots: 2, gate: { shortSlots: 1, queue: { reviewsFirst: true } },
-    relay: { offerAtInit: true }, custom: { keep: 'unchanged' } };
-  mkdirSync(box.env.PULLBOARD_MACHINE_HOME, { recursive: true });
-  writeFileSync(settingsFile, JSON.stringify(original, null, 2));
-  const firstAdded = box.run(box.repo, 'runner', 'add', removed.host, '--slots', String(removed.slots), '--browser', String(removed.browser),
-    '--node', removed.node, '--root', removed.root);
-  assert.equal(firstAdded.code, 0, firstAdded.err);
-  const secondAdded = box.run(box.repo, 'runner', 'add', remaining.host, '--slots', String(remaining.slots), '--browser', String(remaining.browser));
-  assert.equal(secondAdded.code, 0, secondAdded.err);
-  const registered = { ...original, runners: [removed, remaining] };
-  assert.deepEqual(JSON.parse(readFileSync(settingsFile, 'utf8')), registered);
+test('runner remove deletes one runner and keeps the rest [C7]', (t) => runnerRemoveKeepsSettings(t, e2e));
 
-  const result = box.run(box.repo, 'runner', 'remove', removed.host);
-  assert.equal(result.code, 0, result.err);
-  assert.ok(result.out.includes(`removed runner ${removed.host}`), result.out);
-  assert.deepEqual(JSON.parse(readFileSync(settingsFile, 'utf8')), { ...original, runners: [remaining] });
-
-  const missing = box.run(box.repo, 'runner', 'remove', removed.host, '--json');
-  assert.equal(missing.code, 1, missing.err);
-  const refusal = JSON.parse(missing.out).error;
-  assert.equal(refusal.code, 'RUNNER_NOT_REGISTERED');
-  assert.ok(refusal.next.includes(remaining.host), refusal.next);
-  assert.ok(!refusal.next.includes(removed.host), refusal.next);
-  assert.deepEqual(JSON.parse(readFileSync(settingsFile, 'utf8')), { ...original, runners: [remaining] });
-});
+test('removing a busy runner drains it [C7]', (t) => removingBusyRunnerDrains(t, { cli, git, observe, startQueueController, gateResult }));
 
 test('a queued run executes on a registered runner and its result comes back (host checkout isolation) [C7]', async (t) => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-runner-tooling-isolation-')));
@@ -407,6 +209,8 @@ test('a queued run executes on a registered runner and its result comes back (ho
     const result = gateResult(run.stdout);
     assert.equal(result.isGreen, true);
     assert.equal(result.runner, HOST);
+    assert.deepEqual(result.profile.receipt.environment, { platform: process.platform, arch: process.arch, node: process.versions.node },
+      'the real SSH stand-in worker reports its own executor, without inferring a second physical host');
     assert.equal(result.profile.executionRunner, HOST);
     assert.equal(result.profile.executionSource.tooling.name, 'pullboard');
     assert.equal(result.profile.executionSource.tooling.kind, 'git-checkout');
@@ -731,7 +535,7 @@ console.log('RUNNER_JOURNAL_FILES ' + readdirSync(journal).filter(name => /^chil
 
 /** List live processes whose command line mentions a fixture directory. */
 function processesUnder(dir) {
-  const listed = runFixtureChild('/bin/ps', ['-axo', 'pid=,command='], { encoding: 'utf8' });
+  const listed = runFixtureChild('/bin/ps', ['-axo', 'pid=,command='], { encoding: 'utf8', maxBuffer: 64 << 20 });
   assert.equal(listed.status, 0, listed.context);
   return listed.stdout.split('\n').filter(line => line.includes(dir) && !line.includes('/bin/ps'));
 }
@@ -1360,11 +1164,9 @@ test('a refused remote setup fails the run by name [C7]', async (t) => {
   installSshStandIn({ bin, worker, home: remoteHome, machineHome: remoteMachineHome, requests, stderrLog: remoteStderr });
   const added = cli(repo, env, 'runner', 'add', HOST, '--slots', '1', '--browser', '1', '--json');
   assert.equal(added.status, 0, added.context);
-  // The runner's own pool holds rows no browser gate lease can match, so the worker's request is refused.
-  onMachine(remoteMachineHome, () => {
-    setResourceCapacity({ name: 'gate', capacity: 1, scope: 'machine', root: repo });
-    setResourceCapacity({ name: 'browser', capacity: 2, scope: 'machine', root: repo });
-  });
+  // The runner's own pool is busy at more slots than its registration, so the worker's request is refused.
+  let remoteHolder = await onMachine(remoteMachineHome, () => takeResource({ name: 'gate', capacity: 2, scope: 'machine', root: repo,
+    agent: 'fixture-remote-holder', item: 'remote-holder', kind: 'force-busy-runner' }));
 
   const previousHome = process.env.PULLBOARD_HOME;
   const previousMachineHome = process.env.PULLBOARD_MACHINE_HOME;
@@ -1385,8 +1187,8 @@ test('a refused remote setup fails the run by name [C7]', async (t) => {
     assert.ok(Date.now() - startedAt < 30_000); // budget: declared 30-second completion ceiling in the frozen #690 criterion.
     assert.notEqual(result.status, 0, 'a refused remote setup is a failed run');
     const said = `${result.stdout}${result.stderr}`;
-    // Before #684 the worker's own request is refused as a capacity mismatch; after it, as a browser capacity above the gate.
-    assert.match(result.stderr, new RegExp(`\\[RUNNER_SETUP_REFUSED\\] runner ${HOST} refused this run before it started: \\[(?:RESOURCE_CAPACITY_MISMATCH|BAD_BROWSER_SLOTS)\\]`, 'u'),
+    // Since #1066 the registration sizes the runner's pool, and a busy pool cannot shrink to it.
+    assert.match(result.stderr, new RegExp(`\\[RUNNER_SETUP_REFUSED\\] runner ${HOST} refused this run before it started: \\[RUNNER_CAPACITY_BUSY\\]`, 'u'),
       `the failure names the runner host and the refusal code\n${said}`);
     assert.equal(result.stdout.includes('PULLBOARD_RUN_RESULT'), false, 'the refused run reports no test result');
     assert.equal(existsSync(ran), false, 'the command never ran');
@@ -1398,6 +1200,8 @@ test('a refused remote setup fails the run by name [C7]', async (t) => {
     assert.equal(ended[0].workerStarted, true);
     assert.equal(ended[0].code, 0, 'the worker exits after its receipt');
 
+    remoteHolder.release();
+    remoteHolder = null;
     const remote = onMachine(remoteMachineHome, () => listResources({ scope: 'machine', root: repo }));
     for (const resource of remote) {
       assert.deepEqual([resource.holders.length, resource.line.length], [0, 0], `runner pool ${resource.name} keeps no holder or waiter`);
@@ -1407,6 +1211,7 @@ test('a refused remote setup fails the run by name [C7]', async (t) => {
     assert.deepEqual(local.find(resource => resource.name === 'gate').line, [], 'the run is not left waiting in the controller queue');
   } finally {
     held?.release();
+    remoteHolder?.release();
     if (run) {
       const ceiling = new Promise(resolve => { const timer = setTimeout(resolve, 20_000); timer.unref(); }); // budget: a hung controller must not hold the test file open.
       if (!(await Promise.race([run.closed.then(() => true), ceiling]))) run.child.kill('SIGTERM');
@@ -1503,247 +1308,18 @@ test('a queued run executes on a registered runner and its result comes back [C7
 test('a queued run executes on a registered runner and its result comes back [C7] (parent death drains a child that leaves its group after the first census)',
   { timeout: 90_000 }, t => parentDeathDrainFixture(t, parentDeathTools, { lateGroup: true })); // budget: same fixture ceiling as the ordinary parent-death case.
 
-test('a queued run executes on a registered runner and its result comes back [C7] (unverified cleanup times out as a named red result)', { timeout: 90_000 }, async (t) => { // budget: bounded 30-second remote cleanup timeout plus startup, transport and fixture cleanup ceiling.
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-runner-cleanup-timeout-')));
-  const home = join(dir, 'home');
-  const machineHome = join(home, '.pullboard');
-  const remoteHome = join(dir, 'worker-home');
-  const remoteStateRoot = join(remoteHome, '.pullboard-runner');
-  const remoteMachineHome = join(remoteHome, '.pullboard');
-  const remoteDatabase = join(remoteMachineHome, 'resources.sqlite');
-  const repo = join(dir, 'repo');
-  const worker = join(dir, 'second-machine');
-  const bin = join(dir, 'bin');
-  const requests = join(dir, 'ssh-requests.jsonl');
-  const bodyRan = join(remoteStateRoot, 'cleanup-timeout-body-ran');
-  const starts = join(dir, 'ssh-starts.jsonl');
-  let commandChild;
-  t.after(async () => {
-    if (commandChild && commandChild.exitCode === null && commandChild.signalCode === null) {
-      try { process.kill(-commandChild.pid, 'SIGTERM'); }
-      catch (error) { if (error.code !== 'ESRCH') t.diagnostic(`fixture process-group cleanup: ${error.message}`); }
-      await once(commandChild, 'close').catch(error => t.diagnostic(`fixture child close: ${error.message}`));
-    }
-    if (existsSync(remoteDatabase)) {
-      try { await waitForCondition(() => readRemoteGateHolders(remoteDatabase).length === 0,
-        'fixture remote physical gate holder cleanup'); }
-      catch (error) { t.diagnostic(error.message); }
-    }
-    rmSync(dir, { recursive: true, force: true });
-  });
-  for (const folder of [repo, worker, bin, home, machineHome, remoteHome, remoteStateRoot, remoteMachineHome]) {
-    mkdirSync(folder, { recursive: true });
-  }
-  writeFileSync(join(machineHome, 'settings.json'), JSON.stringify({ gateSlots: 1 }));
-  const env = {
-    ...process.env, HOME: home, PULLBOARD_HOME: home, PULLBOARD_MACHINE_HOME: machineHome,
-    PATH: `${bin}:${process.env.PATH}`, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1',
-    GIT_AUTHOR_NAME: 'Runner Cleanup Fixture', GIT_AUTHOR_EMAIL: 'runner-cleanup@example.invalid',
-    GIT_COMMITTER_NAME: 'Runner Cleanup Fixture', GIT_COMMITTER_EMAIL: 'runner-cleanup@example.invalid',
-  };
-  const initialized = runFixtureChild('git', ['init', '-q', '-b', 'main'], { cwd: repo, env, encoding: 'utf8' });
-  assert.equal(initialized.status, 0, initialized.context);
-  writeFileSync(join(repo, 'pullboard.json'), JSON.stringify({ gate: 'node runner-cleanup-timeout.js' }));
-  writeFileSync(join(repo, 'tracked.txt'), 'cleanup timeout fixture\n');
-  writeFileSync(join(repo, 'runner-cleanup-timeout.js'), `import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-const option = /(?:^|\\s)--import=(?:"([^"]+)"|'([^']+)'|(\\S+))/u.exec(process.env.NODE_OPTIONS || '');
-if (!option) throw new Error('runner preload path was not passed to the committed job');
-const preload = fileURLToPath(option[1] || option[2] || option[3]);
-const runDirectory = dirname(preload);
-const journalDirectory = join(runDirectory, 'child-journal');
-const runnerRoot = dirname(dirname(runDirectory));
-if (!existsSync(journalDirectory)) throw new Error('private child journal is missing');
-mkdirSync(runnerRoot, { recursive: true });
-writeFileSync(join(journalDirectory, 'overflow'), 'fixture journal overflow\\n');
-writeFileSync(join(runnerRoot, 'cleanup-timeout-body-ran'), 'ran\\n');
-console.log('RUNNER_CLEANUP_TIMEOUT_BODY_RAN');
-`);
-  git(repo, env, 'add', 'pullboard.json', 'tracked.txt', 'runner-cleanup-timeout.js');
-  git(repo, env, 'commit', '-q', '-m', 'test: prepare runner cleanup timeout fixture');
-  installSshStandIn({ bin, worker, home: remoteHome, machineHome: remoteMachineHome, requests, starts });
-  const added = cli(repo, env, 'runner', 'add', HOST, '--slots', '1', '--browser', '1', '--json');
-  assert.equal(added.status, 0, added.context);
+const orphanTools = { cli, git, installSshStandIn, observe, startToolingCli, processIsAlive, HOST };
+test('a runner job leaves no process behind, detached ones included [C7]',
+  { timeout: 150_000 }, t => runnerOrphanFixture(t, orphanTools)); // budget: one plain runner round trip, then the declared 30-second remote cleanup timeout and a local rerun.
+test('a runner job leaves no process behind, and never signals a process it cannot prove is the job\'s [C7]',
+  { timeout: 30_000 }, t => unprovenProcessFixture(t, { createDescendantTracker, parseProcessCensus })); // budget: scripted census, no real processes.
 
-  const previousHome = process.env.PULLBOARD_HOME;
-  const previousMachineHome = process.env.PULLBOARD_MACHINE_HOME;
-  process.env.PULLBOARD_HOME = home;
-  process.env.PULLBOARD_MACHINE_HOME = machineHome;
-  let held;
-  try {
-    held = await takeResource({ name: 'gate', capacity: 1, scope: 'machine', root: repo,
-      agent: 'cleanup-timeout-local-holder', item: 'cleanup-timeout-local-holder', kind: 'fixture-hold', browser: true });
-    // The real CLI must refuse this one response as RUNNER_CLEANUP_TIMEOUT; a missing or
-    // incomplete transport result would take the retry path and could incorrectly run locally.
-    commandChild = startToolingCli(repo, env, ['gate', '--json'], { detached: true });
-    const command = observe(commandChild);
-    const completed = await command.closed;
-    assert.equal(completed.status, 1, `${completed.stderr}\n${completed.stdout}`);
-    const response = JSON.parse(completed.stdout.trim());
-    assert.equal(response.error?.code, 'RUNNER_CLEANUP_TIMEOUT', JSON.stringify(response));
-    assert.match(response.error.message, /child spawn journal overflow or write failure/u,
-      'the named refusal retains the worker reason instead of losing it at the controller');
-    const jobId = /inspect job ([A-Za-z0-9_-]+)/u.exec(response.error.message)?.[1];
-    assert.ok(jobId, 'the refusal identifies the exact failed job for inspection');
-    const retained = readdirSync(join(remoteStateRoot, 'jobs')).find(name => name.startsWith(jobId + '-'));
-    assert.ok(retained, 'a cleanup timeout retains its private job diagnostics');
-    const diagnosis = JSON.parse(readFileSync(join(remoteStateRoot, 'jobs', retained, 'cleanup-timeout.json'), 'utf8'));
-    assert.equal(diagnosis.id, jobId);
-    assert.match(diagnosis.reason, /child spawn journal overflow or write failure/u);
-    assert.ok(diagnosis.stage, 'the timeout records which cleanup step was running');
-    assert.ok(existsSync(bodyRan), 'the committed command ran to completion and wrote its own overflow marker');
-    assert.equal(readFileSync(starts, 'utf8').trim().split('\n').length, 1, 'the refused cleanup result is not retried or sent to a local runner');
-    await waitForCondition(() => readRemoteGateHolders(remoteDatabase).length === 0,
-      'remote physical gate holder releases after the named cleanup timeout');
-    assert.equal(readRemoteGateHolders(join(machineHome, 'resources.sqlite')).length, 1,
-      'the separate local fixture holder remains intact until explicitly released');
-  } finally {
-    if (commandChild && commandChild.exitCode === null && commandChild.signalCode === null) {
-      try { process.kill(-commandChild.pid, 'SIGTERM'); }
-      catch (error) { if (error.code !== 'ESRCH') throw error; }
-      await once(commandChild, 'close').catch(() => {});
-    }
-    if (held) held.release();
-    if (previousHome === undefined) delete process.env.PULLBOARD_HOME;
-    else process.env.PULLBOARD_HOME = previousHome;
-    if (previousMachineHome === undefined) delete process.env.PULLBOARD_MACHINE_HOME;
-    else process.env.PULLBOARD_MACHINE_HOME = previousMachineHome;
-  }
-});
+test('machines report busy share and a new run goes to the idle one [C7,O5]', { timeout: 30_000 }, t => runnerStageFixture(t, e2e));
 
-/** Read one machine pool's browser row through the public resource API, selecting that machine's home. */
-function browserPoolAt(machineHome, root) {
-  const previous = process.env.PULLBOARD_MACHINE_HOME;
-  process.env.PULLBOARD_MACHINE_HOME = machineHome;
-  try { return listResources({ scope: 'machine', root }).find(resource => resource.name === 'browser') ?? null; }
-  finally {
-    if (previous === undefined) delete process.env.PULLBOARD_MACHINE_HOME;
-    else process.env.PULLBOARD_MACHINE_HOME = previous;
-  }
-}
+test('registered timing receipt names the physical worker and actual load [C7,Q1]', { timeout: 90_000 },
+  t => runnerTimingReceipt(t, { cli, git, runThroughGate, gateResult }));
 
-/**
- * Poll an observable fixture state, failing at once with the controller's output if a run exits first.
- * Without the early exit a refused remote setup would only show up as an unexplained timeout.
- */
-async function waitForRunState(runs, check, label) {
-  const deadline = Date.now() + 30_000; // budget: bound remote checkout plus admission for two real workers.
-  while (true) {
-    const state = check();
-    if (state) return state;
-    for (const run of runs) {
-      if (run.result) throw new Error(`${label}: run ${run.item} exited first\n${run.result.stdout.slice(-4_000)}\n${run.result.stderr.slice(-4_000)}`);
-    }
-    if (Date.now() >= deadline) throw new Error(`${label}: state did not arrive`);
-    await new Promise(resolve => setTimeout(resolve, 20)); // budget: polling interval for a public pool state.
-  }
-}
-
-test('a runner admits as many browser runs as its machine allows [C7,O5]', async (t) => {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-runner-browser-slots-')));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const home = join(dir, 'home');
-  const machineHome = join(home, '.pullboard');
-  const remoteHome = join(dir, 'worker-home');
-  const remoteMachineHome = join(remoteHome, '.pullboard');
-  const repo = join(dir, 'repo');
-  const worker = join(dir, 'second-machine');
-  const bin = join(dir, 'bin');
-  const markers = join(dir, 'markers');
-  const requests = join(dir, 'ssh-requests.jsonl');
-  for (const folder of [repo, worker, bin, home, machineHome, remoteHome, remoteMachineHome, markers]) mkdirSync(folder, { recursive: true });
-  writeFileSync(join(machineHome, 'settings.json'), JSON.stringify({ gateSlots: 1 }));
-  const env = {
-    ...process.env, HOME: home, PULLBOARD_HOME: home, PULLBOARD_MACHINE_HOME: machineHome,
-    PATH: `${bin}:${process.env.PATH}`, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1',
-    GIT_AUTHOR_NAME: 'Runner Fixture', GIT_AUTHOR_EMAIL: 'runner-fixture@example.invalid',
-    GIT_COMMITTER_NAME: 'Runner Fixture', GIT_COMMITTER_EMAIL: 'runner-fixture@example.invalid',
-  };
-  const remoteEnv = { ...env, HOME: remoteHome, PULLBOARD_HOME: remoteHome, PULLBOARD_MACHINE_HOME: remoteMachineHome };
-  const initialized = runFixtureChild('git', ['init', '-q', '-b', 'main'], { cwd: repo, env, encoding: 'utf8' });
-  assert.equal(initialized.status, 0, initialized.context);
-  writeFileSync(join(repo, 'pullboard.json'), JSON.stringify({ gate: 'true' }));
-  writeFileSync(join(repo, 'tracked.txt'), 'committed runner source\n');
-  git(repo, env, 'add', 'pullboard.json', 'tracked.txt');
-  git(repo, env, 'commit', '-q', '-m', 'test: prepare runner browser capacity fixture');
-  installSshStandIn({ bin, worker, home: remoteHome, machineHome: remoteMachineHome, requests });
-  // The controller may send two browser runs at once, so only the runner's own pool can hold one back.
-  const added = cli(repo, env, 'runner', 'add', HOST, '--slots', '2', '--browser', '2', '--json');
-  assert.equal(added.status, 0, added.context);
-
-  const previousHome = process.env.PULLBOARD_HOME;
-  const previousMachineHome = process.env.PULLBOARD_MACHINE_HOME;
-  process.env.PULLBOARD_HOME = home;
-  process.env.PULLBOARD_MACHINE_HOME = machineHome;
-  const runs = [];
-  /** Start one browser run that holds its runner slot until the test writes its release marker. */
-  const startHeld = (item) => {
-    const started = join(markers, `${item}.started`);
-    const release = join(markers, `${item}.release`);
-    const code = `const fs=require('node:fs'); fs.writeFileSync(${JSON.stringify(started)}, 'started\\n');
-const timer=setInterval(()=>{ if (fs.existsSync(${JSON.stringify(release)})) clearInterval(timer); }, 5);`;
-    const observed = observe(startQueueController(repo, env, `node -e ${shellQuote(code)}`, { item, queueMarker: null, firstItem: null }));
-    const run = { item, started, release, ...observed, result: null };
-    observed.closed.then(result => { run.result = result; });
-    runs.push(run);
-    return run;
-  };
-  /** Release runs and check that each one came back green from the runner. */
-  const finish = async (pair) => {
-    for (const run of pair) writeFileSync(run.release, 'release\n');
-    for (const result of await Promise.all(pair.map(run => run.closed))) {
-      assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
-      assert.equal(gateResult(result.stdout).runner, HOST, 'the run executed on the runner');
-    }
-  };
-  let held;
-  try {
-    // Fill the controller's own gate so every run below goes to the runner.
-    held = await takeResource({ name: 'gate', capacity: 1, scope: 'machine', root: repo,
-      agent: 'fixture-local-holder', item: 'local-holder', kind: 'force-registered-runner' });
-
-    // A runner machine that set nothing admits one browser run; the second waits in its pool.
-    const unset = [startHeld('unset-a'), startHeld('unset-b')];
-    const queued = await waitForRunState(unset, () => {
-      const browser = browserPoolAt(remoteMachineHome, repo);
-      return browser?.holders.length === 1 && browser.line.length === 1 ? browser : null;
-    }, 'unset runner: one browser holder and one browser waiter');
-    assert.equal(queued.capacity, 1, 'a runner with no browserSlots setting keeps one browser slot');
-    const [first, second] = queued.holders[0].item === 'unset-a' ? unset : [...unset].reverse();
-    assert.equal(queued.line[0].item, second.item);
-    await waitForRunState(unset, () => existsSync(first.started), 'unset runner: the admitted run starts');
-    assert.equal(existsSync(second.started), false, 'the second browser run has not started while the first holds the only slot');
-    writeFileSync(first.release, 'release\n');
-    await waitForRunState([second], () => existsSync(second.started), 'unset runner: the waiting run starts after the first ends');
-    await finish(unset);
-
-    // The runner machine sets browserSlots 2: both browser runs hold its slots at the same time.
-    const setting = cli(repo, remoteEnv, 'settings', 'browserSlots', '2', '--json');
-    assert.equal(setting.status, 0, setting.context);
-    const configured = [startHeld('two-a'), startHeld('two-b')];
-    await waitForRunState(configured, () => configured.every(run => existsSync(run.started)), 'runner set to 2: both browser runs start');
-    const both = browserPoolAt(remoteMachineHome, repo);
-    assert.equal(both.capacity, 2, 'the runner pool uses its machine browserSlots setting');
-    assert.deepEqual(both.holders.map(holder => holder.item).sort(), ['two-a', 'two-b']);
-    assert.equal(both.line.length, 0, 'no browser run waits on a runner set to 2');
-    await finish(configured);
-  } finally {
-    held?.release();
-    for (const run of runs) writeFileSync(run.release, 'cleanup-release\n');
-    // A remote setup that never answers must not hold the test file open: stop its controller.
-    const settled = Promise.all(runs.map(run => run.closed));
-    const ceiling = new Promise(resolve => { const timer = setTimeout(resolve, 20_000); timer.unref(); }); // budget: released runs finish well inside this.
-    await Promise.race([settled, ceiling]);
-    for (const run of runs) if (!run.result) run.child.kill('SIGTERM');
-    await settled;
-    if (previousHome === undefined) delete process.env.PULLBOARD_HOME;
-    else process.env.PULLBOARD_HOME = previousHome;
-    if (previousMachineHome === undefined) delete process.env.PULLBOARD_MACHINE_HOME;
-    else process.env.PULLBOARD_MACHINE_HOME = previousMachineHome;
-  }
-});
-
+test('a runner uses the capacity it was registered with [C7,O5]', { timeout: 180_000 }, t => runnerUsesRegisteredCapacity(t, { cli, git, observe, startQueueController, gateResult })); // budget: two rounds of four concurrent runner round trips.
 
 test('review655 a registered runner honors the same live person waiver at landing [B3,R3,C7]', { timeout: 120_000 }, async (t) => {
   const { createE2eHelpers } = await import('./e2e-helpers.js');
@@ -1847,6 +1423,9 @@ test('review655 a registered runner honors the same live person waiver at landin
     if (priorMachine === undefined) delete process.env.PULLBOARD_MACHINE_HOME; else process.env.PULLBOARD_MACHINE_HOME = priorMachine;
   }
 });
+test('a browser-free check on a runner with no browser slots passes [C7]', { timeout: 180_000 }, t => browserFreeRunnerCheck(t, { cli, git })); // budget: two runner round trips and two local runs.
+test('a test that prints the browser refusal text on a runner stays red and is not rerun [C7]', { timeout: 120_000 }, t => browserRefusalTextStaysRed(t, { cli, git })); // budget: one runner round trip.
+
 test('a refused runner checkout names its failed Git step and stderr [C6,C7]', async t => {
   for (const mode of ['lock', 'missing', 'large', 'filesystem', 'index', 'custom-filesystem']) {
     await t.test(mode, child => sourceSetupFailureFixture(child, { cli, git, runThroughGate, gateResult }, mode));

@@ -23,12 +23,26 @@ import {
   cleanGitEnvironment,
   git,
 } from './git.js';
+import { literalShellWords } from './literal-shell-words.js';
+import { foreignNodeOptions } from './test-isolation.js';
 
 const MODULE_SUFFIXES = ['.js', '.mjs', '.cjs', '.cts', '.json'];
 const CHROME_FIXTURE = 'test/chrome-fixture.js';
 const FIXTURE_CHILD = 'test/fixture-child.js';
 const JOURNEYS_TEST = 'test/journeys.test.js';
 const TEST_RUNNER = 'bin/run-tests.js';
+/** Fixed source-only entry points belong to this tool's repository, never to a project's labels. */
+const SOURCE_CHECKS = [
+  { args: ['bin/static-style-checks.js'], file: 'bin/static-style-checks.js', doctrine: true },
+  { args: ['--experimental-vm-modules', '--disable-warning=ExperimentalWarning', 'bin/static-style-checks.js'], file: 'bin/static-style-checks.js', doctrine: true },
+  { args: ['bin/pullboard.js', 'doctrine', 'check'], file: 'bin/pullboard.js', doctrine: true },
+  { args: ['bin/pullboard.js', 'spec', 'check'], file: 'bin/pullboard.js' },
+  { args: ['bin/checks/file-size.js'], file: 'bin/checks/file-size.js' },
+  { args: ['bin/checks/empty-catch.js'], file: 'bin/checks/empty-catch.js' },
+  { args: ['bin/checks/test-names.js'], file: 'bin/checks/test-names.js' },
+  { args: ['bin/checks/test-inputs.js'], file: 'bin/checks/test-inputs.js' },
+];
+const DOCTRINE_CHECKS = new Set(['bin/checks/file-size.js', 'bin/checks/empty-catch.js', 'bin/checks/test-names.js', 'bin/checks/test-inputs.js']);
 /**
  * Chrome fixture exports that neither start a browser nor yield a browser path or launch arguments; any
  * other binding, findChromeExecutable and a new export included, counts as a launch. These six only work
@@ -52,41 +66,7 @@ const SAFE_CHILD_PROCESS_MODULES = new Map([
   ['src/resources.js', 'reads process identity with /bin/ps'],
 ]);
 
-/** Split a literal shell command into words, refusing expansion, operators, and incomplete quoting. */
-export function literalShellWords(command) {
-  if (typeof command !== 'string' || !command.trim()) return null;
-  const words = [];
-  let word = '';
-  let started = false;
-  let quote = '';
-  for (const character of command) {
-    if (character === '\n' || character === '\r') return null;
-    if (quote === "'") {
-      if (character === "'") quote = '';
-      else word += character;
-      started = true;
-      continue;
-    }
-    if (quote === '"') {
-      if (character === '"') quote = '';
-      else if ('$`\\'.includes(character)) return null;
-      else word += character;
-      started = true;
-      continue;
-    }
-    if (character === '"' || character === "'") { quote = character; started = true; continue; }
-    if (/\s/u.test(character)) {
-      if (started) { words.push(word); word = ''; started = false; }
-      continue;
-    }
-    if (';&|<>$`(){}*?[]\\'.includes(character)) return null;
-    word += character;
-    started = true;
-  }
-  if (quote) return null;
-  if (started) words.push(word);
-  return words;
-}
+export { literalShellWords } from './literal-shell-words.js';
 
 /** Parse only explicit Node test-runner files and the small, literal option set used by frozen checks. */
 function explicitRunnerFiles(args) {
@@ -126,8 +106,30 @@ export function resolveExecutable(command, pathValue = process.env.PATH) {
   return null;
 }
 
-/** Recognize the exact output-capture and grep shape used by frozen named-test checks. */
-function capturedRunner(command) {
+/** Recognize output-only status wrappers without treating arbitrary shell suffixes as classified work. */
+function statusCaptureSuffix(suffix, variable) {
+  if (variable === 'rc' || variable === 'bad') return false;
+  const quotes = ['"', "'"];
+  const prints = [1, 2].flatMap(slashes => quotes.map(quote => `printf ${quote}%s${'\\'.repeat(slashes)}n${quote} "$${variable}"`));
+  for (const print of prints) {
+    const saved = `; rc=$?; ${print}; `;
+    if (suffix === `${saved}[ "$rc" -eq 0 ]`) return true;
+    for (const badPrint of prints) for (const quote of quotes) {
+      const checked = `${saved}bad=$(${badPrint} | grep -E ${quote}^# (fail|skipped) [1-9]${quote}); [ "$rc" -eq 0 ] && [ -z "$bad" ]`;
+      if (suffix === checked) return true;
+      for (const finalPrint of prints) for (const namedQuote of quotes) {
+        const prefix = `${checked} && ${finalPrint} | grep -Eq ${namedQuote}`;
+        if (!suffix.startsWith(prefix) || !suffix.endsWith(namedQuote)) continue;
+        const pattern = suffix.slice(prefix.length, -1);
+        if (pattern.startsWith('^[[:space:]]*ok [0-9]+ - ') && !/["'$`\\]/u.test(pattern)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** Recognize fixed frozen-check wrappers; new status wrappers do not widen short-slot eligibility. */
+function capturedRunner(command, { status = false } = {}) {
   const opening = /^([A-Za-z_][A-Za-z0-9_]*)=\$\(/u.exec(command);
   if (!opening) return null;
   const variable = opening[1];
@@ -136,6 +138,7 @@ function capturedRunner(command) {
   if (bodyEnd < 0) return null;
   const inner = command.slice(opening[0].length, bodyEnd);
   const suffix = command.slice(bodyEnd + ending.length);
+  if (status && statusCaptureSuffix(suffix, variable)) return inner;
   const quotes = ['"', "'"];
   // Only the literal one-backslash newline form is part of the frozen capture shape.
   const prints = quotes.map(quote => `printf ${quote}%s\\n${quote} "$${variable}"`);
@@ -286,26 +289,81 @@ function browserFallback(onFallback, file, reason) {
   return true;
 }
 
-/** The runner's launch guard preload for browser-free test files (gate.browserByLaunch): it loads only src/browser-slot-guard.js. */
-const SLOT_GUARD_IMPORT = `--import=${new URL('./browser-slot-guard.js', import.meta.url).href}`;
+/** Identify a real repository root and its shared Git directory without inherited Git selectors. */
+async function sourceRepository(root) {
+  const fields = git(root, ['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-common-dir'], {
+    env: cleanGitEnvironment(),
+  }).split('\n');
+  if (fields.length !== 2 || await realpath(fields[0]) !== await realpath(root)) return null;
+  return realpath(fields[1]);
+}
 
-/**
- * Whether NODE_OPTIONS may load a module the classifier has not seen. The one exception is this checkout's
- * own launch guard, which a browser-free test file passes to its children; anything else is unclassified.
- *
- * @param {string | undefined} value
- * @returns {boolean}
- */
-function unclassifiedNodeOptions(value) {
-  return String(value ?? '').split(/\s+/u).filter(Boolean).some(token => token !== SLOT_GUARD_IMPORT);
+/** Require a regular committed entry or a non-symlink working entry contained in its repository. */
+async function regularCheckSource(root, file, committed) {
+  if (committed) return committedSource(root, committed, file) !== null;
+  const absolute = resolve(root, file);
+  const info = await lstat(absolute);
+  return info.isFile() && !info.isSymbolicLink() && await staysInside(root, absolute);
+}
+
+/** Read the exact executable doctrine rules without running them; only the fixed readers qualify. */
+async function sourceOnlyDoctrine(root, committed, commit, env) {
+  const [{ configFromSource, loadConfig }, { parseSpec }, { checkRule }] = await Promise.all([
+    import('./config.js'), import('./spec.js'), import('./doctrine-checks.js'),
+  ]);
+  const config = commit ? configFromSource(committedSource(root, committed, 'pullboard.json')) : loadConfig(root);
+  let file = config.practice;
+  if (['DOCTRINE.md', 'PRACTICE.md'].includes(file)) {
+    const names = ['DOCTRINE.md', 'PRACTICE.md'].filter(name => committed.has(name));
+    if (names.length !== 1) return false;
+    [file] = names;
+  }
+  if (repositoryPath(root, file) !== file) return false;
+  const source = committedSource(root, committed, file);
+  if (source === null) return false;
+  const parsed = parseSpec(source, { strictGrammarVersion: false });
+  if (parsed.problems.length) return false;
+  for (const row of parsed.rows.filter(row => row.status === 'approved')) {
+    const rule = checkRule(row);
+    if (!rule) {
+      if (/^check(?:\s|$)/u.test(row.gate)) return false;
+      continue;
+    }
+    const words = literalShellWords(rule.command);
+    if (words?.length !== 2 || !DOCTRINE_CHECKS.has(words[1])) return false;
+    const node = resolveExecutable(words[0], env.PATH);
+    if (!node || await realpath(node) !== await realpath(process.execPath)) return false;
+    if (!await regularCheckSource(root, words[1], commit ? committed : null)) return false;
+  }
+  return true;
+}
+
+/** Recognize only this tool's own fixed source commands; every uncertain identity keeps browser admission. */
+async function ownSourceCheck(root, words, { commit, env }) {
+  const known = SOURCE_CHECKS.find(entry => entry.args.length === words.length - 1
+    && entry.args.every((word, index) => word === words[index + 1]));
+  if (!known) return false;
+  try {
+    const node = resolveExecutable(words[0], env.PATH);
+    if (!node || await realpath(node) !== await realpath(process.execPath)) return false;
+    const own = await sourceRepository(resolve(import.meta.dirname, '..'));
+    if (!own || own !== await sourceRepository(root)) return false;
+    const revision = commit ?? git(root, ['rev-parse', '--verify', 'HEAD'], { env: cleanGitEnvironment() });
+    const committed = committedFiles(root, revision);
+    if (!committed || !await regularCheckSource(root, known.file, commit ? committed : null)) return false;
+    return !known.doctrine || await sourceOnlyDoctrine(root, committed, commit, env);
+  } catch {
+    return false; // Missing, foreign or unreadable source must keep the existing browser-required fallback.
+  }
 }
 
 /** Parse the frozen check and classify its explicit test files, failing closed on unknown shell. */
 export async function checkNeedsBrowser(root, command, { commit, env = process.env, onFallback } = {}) {
-  if (unclassifiedNodeOptions(env.NODE_OPTIONS)) return browserFallback(onFallback, '<frozen check>', 'NODE_OPTIONS may load an unclassified module');
+  if (foreignNodeOptions(env.NODE_OPTIONS, env)) return browserFallback(onFallback, '<frozen check>', 'NODE_OPTIONS may load an unclassified module');
   let words = literalShellWords(command);
+  if (words && await ownSourceCheck(root, words, { commit, env })) return false;
   if (!words) {
-    const inner = capturedRunner(command);
+    const inner = capturedRunner(command, { status: true });
     if (!inner) return browserFallback(onFallback, '<frozen check>', 'shell syntax is outside the supported literal capture form');
     const grep = resolveExecutable('grep', env.PATH);
     if (!grep || !['/usr/bin/grep', '/bin/grep'].includes(await realpath(grep).catch(() => ''))) return browserFallback(onFallback, '<frozen check>', 'capture wrapper does not resolve the system grep');
@@ -345,7 +403,7 @@ export async function checkNeedsBrowser(root, command, { commit, env = process.e
  * @returns {Promise<string[] | null>}
  */
 export async function explicitCheckFiles(root, command, { commit, env = process.env } = {}) {
-  if (unclassifiedNodeOptions(env.NODE_OPTIONS)) return null;
+  if (foreignNodeOptions(env.NODE_OPTIONS, env)) return null;
   let words = literalShellWords(command);
   if (!words) {
     const inner = capturedRunner(command);

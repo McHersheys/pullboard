@@ -8,6 +8,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { Refused } from './refused.js';
+import { environmentProblem } from './execution-environment.js';
 
 export const CONFIG_FILE = 'pullboard.json';
 export const COORDINATOR = 'coordinator';
@@ -45,6 +46,7 @@ export function defaults() {
     practice: DOCTRINE_FILE,
     gate: '',
     submit: { requireInfraNote: false },
+    itemSizeBudget: 100,
     submitInvariants: [],
     staticChecks: '',
     lease: '2h',
@@ -53,7 +55,7 @@ export function defaults() {
     verify: { policy: 'any', family: 'off', reviewRatio: 3 },
     agents: { names: 'suffix' },
     check: { install: '', timeout: '5m' },
-    claim: { reopenFirstRefusalMinutes: 0 },
+    claim: { reopenFirstRefusalMinutes: 0, barTestFiles: ['**/*.test.js', '**/*.test.mjs', '**/*.test.cjs', '**/*.spec.js', '**/*.spec.mjs', '**/*.spec.cjs'] },
     lanes: {},
     products: {},
     shared: [],
@@ -168,6 +170,10 @@ function laneProblems(name, lane) {
  */
 export function configProblems(config) {
   const problems = [];
+  if (config.publish !== undefined && (!config.publish || typeof config.publish !== 'object' || Array.isArray(config.publish)
+    || Object.keys(config.publish).some(key => key !== 'pullRequest') || ![undefined, false, 'release', 'item'].includes(config.publish.pullRequest))) {
+    problems.push('"publish.pullRequest" is false (default), "release" for one PR per release, or "item" for one PR per item');
+  }
   for (const field of ['project', 'name']) {
     if (config[field] === undefined) continue;
     const value = config[field];
@@ -193,15 +199,31 @@ export function configProblems(config) {
   if (config.approvers !== undefined && (!Array.isArray(config.approvers) || config.approvers.length > 50 || new Set(config.approvers).size !== config.approvers.length
       || config.approvers.some((login) => typeof login !== 'string' || !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/u.test(login)))) problems.push('"approvers" lists the GitHub logins who act as the person on a linked board, at most fifty; leave it out for today\'s behaviour');
   if (!['inside', 'beside'].includes(config.worktrees)) problems.push('"worktrees" is "inside" or "beside"');
+  if (!Number.isSafeInteger(config.itemSizeBudget) || config.itemSizeBudget < 1) {
+    problems.push('"itemSizeBudget" is a positive whole number of changed lines; 100 by default');
+  }
   if (config.submitGate !== undefined && config.submitGate !== 'landing') {
     problems.push('"submitGate" is "landing" when the full suite should be deferred until landing');
+  }
+  if (config.submitDeferAbove !== undefined && (!Number.isSafeInteger(config.submitDeferAbove) || config.submitDeferAbove < 1 || config.submitGate !== 'landing')) {
+    problems.push('"submitDeferAbove" is a whole number, 1 or more, with "submitGate": "landing": a submit whose affected selection names more test files runs only its check, static checks and submitInvariants, and the landing gate runs the selection; leave it out to run every selected file at submit');
   }
   if (config.landingShards !== undefined && (!Number.isSafeInteger(config.landingShards) || config.landingShards < 1 || config.landingShards > 64)) {
     problems.push('"landingShards" is a whole number from 1 to 64: how many shards the landing gate splits its test files into');
   }
   if (typeof config.staticChecks !== 'string') problems.push('"staticChecks" is an optional project static-check command');
-  if (config.landing !== undefined && (typeof config.landing !== 'object' || config.landing === null || Object.keys(config.landing).some(key => key !== 'publish') || ![undefined, 'separate'].includes(config.landing.publish))) {
-    problems.push('"landing" is optional; { "publish": "separate" } lands on the local trunk and pushes only through pullboard publish');
+  if (config.landing !== undefined && (typeof config.landing !== 'object' || config.landing === null || Array.isArray(config.landing)
+    || Object.keys(config.landing).some(key => !['publish', 'environment', 'timeout', 'cadence', 'parallel'].includes(key)) || ![undefined, 'separate'].includes(config.landing.publish))) {
+    problems.push('"landing" has optional environment: { platform, arch, node }, "timeout" and "cadence" durations, "parallel": true for concurrent candidate gates, and "publish": "separate" to land locally and push through pullboard publish');
+  } else if (config.landing?.environment !== undefined && environmentProblem(config.landing.environment)) {
+    problems.push(`"landing.environment" ${environmentProblem(config.landing.environment)}`);
+  }
+  if (config.landing?.parallel !== undefined && typeof config.landing.parallel !== 'boolean') problems.push('"landing.parallel" is a boolean; omit it or use false to keep serial landing');
+  for (const key of ['timeout', 'cadence']) {
+    const value = config.landing?.[key];
+    const match = typeof value === 'string' ? CHECK_TIMEOUT_RE.exec(value) : null;
+    const ms = match ? Number(match[1]) * CHECK_TIMEOUT_MS[match[2]] : NaN;
+    if (value !== undefined && (!Number.isFinite(ms) || ms <= 0 || ms > MAX_CHECK_TIMEOUT_MS)) problems.push(`"landing.${key}" is a positive duration no longer than 2,147,483,647ms, like "2s"`);
   }
   if (config.positiveControl !== undefined && (typeof config.positiveControl !== 'string' || !config.positiveControl.trim())) {
     problems.push('"positiveControl" is a nonempty command for a known-good case the gate must pass, like "node --test test/known-good.test.js"');
@@ -239,6 +261,7 @@ export function configProblems(config) {
     || config.claim.reopenFirstRefusalMinutes > Math.floor(8_640_000_000_000_000 / 60_000)) {
     problems.push('"claim.reopenFirstRefusalMinutes" is a non-negative whole number of minutes within the supported date range; 0 disables it');
   }
+  if (!Array.isArray(config.claim?.barTestFiles) || !config.claim.barTestFiles.length || config.claim.barTestFiles.some(pattern => typeof pattern !== 'string' || !pattern || /[\[\]{}\\:\p{Cc}]/u.test(pattern) || pattern.startsWith('/') || pattern.split('/').includes('..'))) problems.push('claim.barTestFiles is a nonempty list of project test-path globs using *, ** or ?');
   if (typeof config.check?.install !== 'string') problems.push('"check.install" is an install command string');
   const timeout = typeof config.check?.timeout === 'string' ? CHECK_TIMEOUT_RE.exec(config.check.timeout) : null;
   const timeoutMs = timeout ? Number(timeout[1]) * CHECK_TIMEOUT_MS[timeout[2]] : NaN;
@@ -322,6 +345,7 @@ export function configFromSource(source) {
   return {
     ...config,
     check: { ...config.check, timeoutMs: Number(timeout[1]) * CHECK_TIMEOUT_MS[timeout[2]] },
+    ...(config.landing ? { landing: { ...config.landing, ...Object.fromEntries(['timeout', 'cadence'].filter(key => config.landing[key] !== undefined).map(key => { const value = CHECK_TIMEOUT_RE.exec(config.landing[key]); return [`${key}Ms`, Number(value[1]) * CHECK_TIMEOUT_MS[value[2]]]; })) } } : {}),
     leaseMs: durationMs(config.lease),
     reviewLeaseMs: durationMs(config.reviewLease, 'reviewLease'),
   };

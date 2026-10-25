@@ -81,7 +81,10 @@ Everything durable lives on one volume at `/data`: `auth.sqlite`, then `devices.
 | `device_session` | `boards/devices.sqlite` | Per signed-in browser session: account, session id, the paired device it belongs to, and its expiry, so a revoked device's sessions are refused. | Its expiry; expired rows are deleted whenever a session is recorded. |
 | `wrapped_key` | `boards/devices.sqlite` | Per phone and board: the board key, encrypted to that phone's public key, and the engine version. | The device is revoked or the board deleted. A board that expires idle leaves its wraps behind. |
 | `enrollment` | `boards/devices.sqlite` | A pending phone pairing: account, locator, expiry, and the phone's signed public enrollment (device id, public key, label, created time, MAC). | Deleted once the machine accepts it, or after it expires at 10 minutes. |
+| `person_enrollment` | `boards/devices.sqlite` | Per new-device challenge: account, nonce, device, expiry, the person-signed challenge payload, whether it was used, and the opaque board-key wrap once a trusted machine released it. The relay cannot open the wrap. | No deletion path yet; a used or expired challenge stays as a row. |
 | `phone_approval` | `boards/devices.sqlite` | Per request: id, account, publishing board, board, device, action, machine, expiry, the context in clear, the sealed intent, its state and the phone's sealed reply. | No deletion path; expired requests are marked expired. |
+| `excluded_inventory` | `boards/devices.sqlite` | Per account and machine: the machine label, excluded-board count, engine version and encrypted repository-name list. The relay cannot open the list. | The machine replaces its publication, or publishes an empty list when no boards remain excluded. No time-based deletion path. |
+| `excluded_inventory_wrap` | `boards/devices.sqlite` | Per account, machine and enrolled device: the excluded-list key encrypted to that device. Reads recheck the device is active. | The machine replaces or clears its publication. Revocation blocks reads but does not delete this row. |
 | `journal_meta` | `boards/<board>.journal.sqlite` | The board id and the journal format. | The board is deleted or expires. |
 | `journal_head` | `boards/<board>.journal.sqlite` | The latest sequence number and the time of the last move or request. | The board is deleted or expires. |
 | `journal_record` | `boards/<board>.journal.sqlite` | Per record: sequence, arrival time, kind (move or request), sealed payload, sender kind, sender account, agent or machine name. | The next snapshot covers it. |
@@ -92,6 +95,7 @@ Everything durable lives on one volume at `/data`: `auth.sqlite`, then `devices.
 | `page_upload` | `boards/<board>.journal.sqlite` | Per staged page upload: id, the sender's account id, kind and agent or machine name, the sequence it covers and its expiry. | It is published, or it expires. |
 | `page_upload_object` | `boards/<board>.journal.sqlite` | Which sealed pages a staged upload holds: the upload id and the page id. | Its upload is deleted. |
 | `page_pin` | `boards/<board>.journal.sqlite` | Per read in flight: id, the reader's account id, kind and agent or machine name, the root page it reads and its expiry. | It expires. |
+| `journal_upload_status` | `boards/<board>.journal.sqlite` | One opaque, board-key-sealed notice of a refused snapshot upload. The relay cannot read its repository name, measured size or reported limit. | The next accepted snapshot clears it atomically, or the board is deleted or expires. A later notice is ignored once a snapshot exists. |
 | `storage_warning` | `boards/storage-quota.sqlite` | Per board refused for account storage: the board, the account id and login in clear, the bytes used and allowed, and the bytes the refused write needed. | The board's next stored checkpoint, or the board is unlinked. |
 
 Once a day the relay copies each journal into `backups/` and keeps each copy for 14 days; deleting a board deletes its copies at once (`relay/retention.js`). After 60 days without activity the relay warns on the next contact, and at 90 days it deletes the board.
@@ -142,6 +146,6 @@ Agents on a machine share what is on disk. Every agent runs as the same operatin
 
 Revoking a phone stops new wraps and deletes its stored ones, and the board keys it already received stay usable to whoever holds them. Board key rotation is a separate step.
 
-Some rows have no deletion path: `relay_users`, `relay_action_grants`, `phone_approval` and the `device` tombstones. A board that expires for inactivity leaves its `wrapped_key` rows behind.
+Some rows have no deletion path: `relay_users`, `relay_action_grants`, `phone_approval`, `person_enrollment` and the `device` tombstones. A board that expires for inactivity leaves its `wrapped_key` rows behind.
 
 RFC 0004 describes keeping the board key in the operating system's keychain. The code keeps it in a mode-600 file and moves any older keychain copy into that file (`src/relay-key.js`).

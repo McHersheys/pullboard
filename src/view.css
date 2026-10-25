@@ -77,6 +77,13 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .group-view { display: grid; gap: 14px; max-width: 1000px; }
 .group-panel { padding: 14px 16px; }
 .group-panel h2 { margin: 0 0 10px; font-size: 17px; }
+.home { display: grid; gap: 14px; max-width: 760px; }
+.home-card { padding: 14px 16px; }
+.home-card h2 { margin: 0 0 10px; font-size: 17px; }
+.home-counts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 0 0 10px; }
+.home-counts dt { color: var(--ink-muted); font-size: 13px; }
+.home-counts dd { margin: 2px 0 0; font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.home-needs { margin: 0; padding: 0; border-bottom: 0; }
 .group-need { display: grid; grid-template-columns: minmax(90px, auto) auto minmax(0, 1fr) auto; align-items: baseline; gap: 5px 10px; width: 100%; padding: 9px 0; text-align: left; border: 0; border-top: 1px solid var(--line); background: none; }
 .group-need:hover { background: var(--surface-2); }
 .group-need > b { color: var(--ink-muted); }
@@ -324,9 +331,8 @@ a.ghost { color: var(--ink); }
   .group-need > code { grid-column: 2; }
   .group-need > span, .group-need > button { grid-column: 1 / -1; }
   .tabs { flex: 1; display: grid; grid-auto-flow: column; grid-auto-columns: auto; gap: 0; }
-  /* Six labels share the bar, so they scale with the screen: 13.5px at 375, 11px at the narrowest, where a
-   * classic scrollbar and wide fonts leave about 290px of bar. */
-  .tab { display: grid; justify-items: center; align-content: center; padding: 7px 2px; font-size: clamp(11px, 3.6vw, 13.5px); }
+  /* Six labels share the bar; narrower horizontal padding keeps the full row in a narrow viewport. */
+  .tab { display: grid; justify-items: center; align-content: center; padding: 7px 1px; font-size: clamp(11px, 3.6vw, 13.5px); }
 }
 .primary { display: grid; gap: 12px; min-width: 0; }
 .items-view-switch { flex: none; flex-wrap: nowrap; max-width: none; }
@@ -567,6 +573,8 @@ form.inline { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; paddin
 .shout-main { min-width: 0; }
 .shout header { display: flex; flex-wrap: nowrap; align-items: baseline; gap: 2px 7px; }
 .shout .who, .shout .to { display: flex; flex: 0 1 auto; min-width: min-content; white-space: nowrap; }
+/* A recipient with no model to shorten, such as coordinator and you, gives way with an ellipsis before the age is pushed out. */
+.shout .to:not(:has(.agent-label)) { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .shout .agent-label { display: inline-grid; grid-template-columns: max-content minmax(0, 1fr); min-width: 0; }
 .shout .agent-label.prefix { grid-template-columns: minmax(0, 1fr) max-content; }
 .shout .agent-model { overflow: hidden; text-overflow: ellipsis; white-space: pre; }
@@ -579,6 +587,7 @@ form.inline { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; paddin
 /* A waiting ask keeps its address and age whole; a wider fallback font shortens its kind instead. */
 #decisions .shout header { flex-wrap: nowrap; }
 #decisions .shout .who, #decisions .shout .to { flex: 0 1 auto; min-width: min-content; white-space: nowrap; }
+#decisions .shout .to:not(:has(.agent-label)) { min-width: 0; }
 #decisions .shout header .mark { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #decisions .shout header time { flex: none; }
 .shout .text { margin-top: 3px; overflow-wrap: break-word; }

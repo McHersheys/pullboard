@@ -23,13 +23,21 @@ import { join, dirname, resolve, basename, delimiter } from 'node:path';
 import { after, test } from 'node:test';
 import { main, resultCommands } from '../src/cli.js';
 import { createLocalApiHandler } from '../src/api.js';
+import { serveApi } from '../src/api.js';
+import * as apiExports from '../src/api.js';
 import { addItem as addBoardItem, allShouts, EVENT_LOG_VERSION, closeBoard, events as boardEvents, openBoard, verdictsFor } from '../src/board.js';
 import { presentationShout, relayPresentation } from '../src/relay-presentation.js';
 import { JSON_SHAPES } from '../src/json.js';
 import { projectState, serveView } from '../src/serve.js';
 import { registerProject } from '../src/projects.js';
 import { SSH_SHELL_MARKERS } from '../src/person.js';
-import { fetchFresh } from './http-fixture.js';
+import {
+  apiError,
+  apiFetch,
+  assertRequiredShape,
+  nextSseEvent,
+  timedMs,
+} from './api-fixture.js';
 
 const BIN = resolve(import.meta.dirname, '../bin/pullboard.js');
 const TEMP_DIRS = [];
@@ -45,6 +53,27 @@ const SPEC = `# API fixture
 ## G · Goals
 - G1 [approved, must] The fixture keeps its board. | gate: true
 `;
+
+test('apiBoardListing is exported and matches the board list [A2]', async (t) => {
+  const apiBoardListing = apiExports.apiBoardListing;
+  assert.equal(typeof apiBoardListing, 'function', 'the existing API listing classifier is exported');
+  const box = project();
+  const unreadableRoot = join(box.dir, 'unreadable');
+  mkdirSync(unreadableRoot);
+  const projects = () => [
+    { root: box.repo, name: 'Readable fixture', project: 'API parity', added: '2026-10-23T00:00:00.000Z' },
+    { root: unreadableRoot, name: 'Unreadable fixture', project: 'API parity', added: '2026-10-23T00:00:00.000Z' },
+  ];
+  const api = await serveApi({ runCommand: main, projects });
+  t.after(() => api.close());
+  const address = new URL(api.url);
+  const response = await apiFetch({ origin: address.origin, secret: address.searchParams.get('k') }, '/api/v1/boards');
+  assert.equal(response.status, 200);
+  const listed = await response.json();
+  assert.deepEqual({ version: 1, ...apiBoardListing(projects) }, listed);
+  assert.deepEqual(listed.boards.map(({ root }) => root), [box.repo]);
+  assert.deepEqual(listed.warnings.map(({ root, error }) => [root, error.error.code]), [[unreadableRoot, 'BOARD_UNAVAILABLE']]);
+});
 
 test('[A5] append-only event records expose format version one', () => {
   assert.equal(EVENT_LOG_VERSION, 1);
@@ -229,8 +258,8 @@ test('[A5] board opens upgrade older event logs and refuse future event logs bef
   const release = join(box.dir, 'installed-release');
   mkdirSync(release);
   for (const name of ['bin', 'src', 'package.json']) cpSync(resolve(import.meta.dirname, '..', name), join(release, name), { recursive: true });
-  const older = spawnSync(process.execPath, [join(release, 'bin/pullboard.js'), 'status', '--json'], { cwd: box.repo, env: box.env, encoding: 'utf8' });
-  assert.equal(older.status, 0, older.stderr);
+  const older = spawnSync(process.execPath, [join(release, 'bin/pullboard.js'), 'shout', 'all', 'board upgrade', '--json'], { cwd: box.repo, env: box.env, encoding: 'utf8' });
+  assert.equal(older.status, 0, older.stderr + older.stdout);
   assert.equal(readEventLogVersion(file), String(EVENT_LOG_VERSION), 'an installed release opens an older event log and upgrades its marker in place');
 });
 
@@ -245,23 +274,6 @@ function shapeFor(command, subcommand) {
   covered.add(key);
   coveredRoots.add(command);
   return JSON_SHAPES.commands[key];
-}
-
-/** Match one catalog field to its declared JSON value type. */
-function hasType(value, type) {
-  if (type.includes('|')) return type.split('|').some((part) => hasType(value, part));
-  if (type === 'array') return Array.isArray(value);
-  if (type === 'object') return value !== null && typeof value === 'object' && !Array.isArray(value);
-  if (type === 'null') return value === null;
-  return typeof value === type;
-}
-
-/** Check one required-field map from JSON_SHAPES. */
-function assertRequiredShape(value, required, label) {
-  for (const [field, type] of Object.entries(required ?? {})) {
-    assert.ok(Object.hasOwn(value, field), `${label} must include ${field}`);
-    assert.ok(hasType(value[field], type), `${label}.${field} must be ${type}`);
-  }
 }
 
 /** Parse a command's sole JSON document and check its public command shape. */
@@ -367,7 +379,7 @@ test('[A5, A6] a future-schema worktree cannot migrate the shared board; main ca
   assert.equal(initialized.status, 0, initialized.stderr + initialized.stdout);
   const dbFile = join(repo, '.git', 'pullboard', 'board.sqlite');
   const prior = new DatabaseSync(dbFile, { readOnly: true });
-  assert.equal(prior.prepare('PRAGMA user_version').get().user_version, 2);
+  assert.equal(prior.prepare('PRAGMA user_version').get().user_version, 3);
   prior.close();
 
   const installed = join(box.dir, 'installed-pullboard');
@@ -377,23 +389,22 @@ test('[A5, A6] a future-schema worktree cannot migrate the shared board; main ca
   const olderInstalled = new DatabaseSync(dbFile);
   olderInstalled.exec('ALTER TABLE item DROP COLUMN item_files; PRAGMA user_version = 1');
   olderInstalled.close();
-  const installedRun = spawnSync(process.execPath, [join(installed, 'bin/pullboard.js'), 'status', '--json'], {
+  const installedRun = spawnSync(process.execPath, [join(installed, 'bin/pullboard.js'), 'shout', 'app', 'board upgrade', '--json'], {
     cwd: repo, env: box.env, encoding: 'utf8',
   });
   assert.equal(installedRun.status, 0, installedRun.stderr + installedRun.stdout);
   const migratedInstalled = new DatabaseSync(dbFile, { readOnly: true });
-  assert.equal(migratedInstalled.prepare('PRAGMA user_version').get().user_version, 2,
-    'a copied installed release without Git metadata can upgrade an older board');
+  assert.equal(migratedInstalled.prepare('PRAGMA user_version').get().user_version, 3, 'a copied installed release without Git metadata can upgrade an older board');
   assert.ok(migratedInstalled.prepare('PRAGMA table_info(item)').all().some((column) => column.name === 'item_files'));
   migratedInstalled.close();
 
   const older = new DatabaseSync(dbFile);
   older.exec('ALTER TABLE item DROP COLUMN item_files; PRAGMA user_version = 1');
   older.close();
-  const upgraded = runFixture(repo, 'status', '--json');
+  const upgraded = runFixture(repo, 'shout', 'app', 'board upgrade', '--json');
   assert.equal(upgraded.status, 0, upgraded.stderr + upgraded.stdout);
   const migrated = new DatabaseSync(dbFile, { readOnly: true });
-  assert.equal(migrated.prepare('PRAGMA user_version').get().user_version, 2);
+  assert.equal(migrated.prepare('PRAGMA user_version').get().user_version, 3);
   assert.ok(migrated.prepare('PRAGMA table_info(item)').all().some((column) => column.name === 'item_files'));
   migrated.close();
 
@@ -410,22 +421,23 @@ test('[A5, A6] a future-schema worktree cannot migrate the shared board; main ca
   });
   assert.equal(mainCodeFromWorktree.status, 0, mainCodeFromWorktree.stderr + mainCodeFromWorktree.stdout);
   const migratedFromWorktree = new DatabaseSync(dbFile, { readOnly: true });
-  assert.equal(migratedFromWorktree.prepare('PRAGMA user_version').get().user_version, 2,
-    'the main checkout code may upgrade its shared board even when cwd is a linked worktree');
+  assert.equal(migratedFromWorktree.prepare('PRAGMA user_version').get().user_version, 3, 'the main checkout code may upgrade its shared board even when cwd is a linked worktree');
   assert.ok(migratedFromWorktree.prepare('PRAGMA table_info(item)').all().some((column) => column.name === 'item_files'));
   migratedFromWorktree.close();
 
-  const boardSource = join(linked, 'src/board.js');
-  const oldSource = readFileSync(boardSource, 'utf8');
-  const migration = "    ['shout', 'shout_request_outcome', \"TEXT NOT NULL DEFAULT ''\"],\n  ];";
-  assert.ok(oldSource.includes('export const SCHEMA_VERSION = 2;'));
-  assert.ok(oldSource.includes(migration));
-  const newSource = oldSource
-    .replace('export const SCHEMA_VERSION = 2;', 'export const SCHEMA_VERSION = 3;')
-    .replace(migration, migration.replace('\n  ];', "\n    ['item', 'item_unmerged_probe', 'INTEGER NOT NULL DEFAULT 0'],\n  ];"));
-  assert.notEqual(newSource, oldSource, 'the unmerged worktree carries a real schema-3 migration');
-  writeFileSync(boardSource, newSource);
-  box.git(linked, 'add', 'src/board.js');
+  const schemaSource = join(linked, 'src/board-schema-source.js');
+  const migrateSource = join(linked, 'src/board-migrate.js');
+  const oldSource = readFileSync(schemaSource, 'utf8');
+  const oldMigrations = readFileSync(migrateSource, 'utf8');
+  const migration = "  ['shout', 'shout_request_outcome', \"TEXT NOT NULL DEFAULT ''\"],\n];";
+  assert.ok(oldSource.includes('export const SCHEMA_VERSION = 3;'));
+  assert.ok(oldMigrations.includes(migration));
+  const newSource = oldSource.replace('export const SCHEMA_VERSION = 3;', 'export const SCHEMA_VERSION = 4;');
+  const newMigrations = oldMigrations.replace(migration, migration.replace('\n];', "\n  ['item', 'item_unmerged_probe', 'INTEGER NOT NULL DEFAULT 0'],\n];"));
+  assert.notEqual(newMigrations, oldMigrations, 'the unmerged worktree carries a real schema-4 migration');
+  writeFileSync(schemaSource, newSource);
+  writeFileSync(migrateSource, newMigrations);
+  box.git(linked, 'add', 'src/board-schema-source.js', 'src/board-migrate.js');
   box.git(linked, 'commit', '-q', '-m', 'feat: simulate an unmerged schema bump');
 
   let before = readFileSync(dbFile);
@@ -449,13 +461,12 @@ test('[A5, A6] a future-schema worktree cannot migrate the shared board; main ca
   const olderForHook = new DatabaseSync(dbFile);
   olderForHook.exec('ALTER TABLE item DROP COLUMN item_files; PRAGMA user_version = 1');
   olderForHook.close();
-  const mainFromHook = spawnSync(process.execPath, [join(repo, 'bin/pullboard.js'), 'status', '--json'], {
+  const mainFromHook = spawnSync(process.execPath, [join(repo, 'bin/pullboard.js'), 'shout', 'app', 'board upgrade', '--json'], {
     cwd: linked, env: inheritedLinked, encoding: 'utf8',
   });
   assert.equal(mainFromHook.status, 0, mainFromHook.stderr + mainFromHook.stdout);
   const upgradedFromHook = new DatabaseSync(dbFile, { readOnly: true });
-  assert.equal(upgradedFromHook.prepare('PRAGMA user_version').get().user_version, 2,
-    'main source upgrades even when a linked-worktree hook exports its Git directory');
+  assert.equal(upgradedFromHook.prepare('PRAGMA user_version').get().user_version, 3, 'main source upgrades even when a linked-worktree hook exports its Git directory');
   upgradedFromHook.close();
   before = readFileSync(dbFile);
 
@@ -499,7 +510,7 @@ test('[A5, A6] a future-schema worktree cannot migrate the shared board; main ca
   assert.equal(relayRecords.status, 0, relayRecords.stderr + relayRecords.stdout);
   const relayRefusal = JSON.parse(relayRecords.stdout);
   assert.equal(relayRefusal.code, 'UNMERGED_SCHEMA', 'relay localRecords uses its source worktree identity even from main cwd');
-  assert.match(relayRefusal.message, /worktree expects board schema 3, newer than the shared board's version 2/);
+  assert.match(relayRefusal.message, /worktree expects board schema 4, newer than the shared board's version 3/);
   assert.deepEqual(readFileSync(dbFile), before, 'relay localRecords refuses before it can migrate the shared board');
 
   const specCheck = runFixture(linked, 'spec', 'check', '--json');
@@ -538,11 +549,11 @@ test('[A5, A6] a future-schema worktree cannot migrate the shared board; main ca
   assert.equal(refused.stderr, '');
   const document = JSON.parse(refused.stdout);
   assert.equal(document.error.code, 'UNMERGED_SCHEMA');
-  assert.match(document.error.message, /worktree expects board schema 3, newer than the shared board's version 2/);
+  assert.match(document.error.message, /worktree expects board schema 4, newer than the shared board's version 3/);
   assert.match(document.error.next, /merge this code into the main checkout first, or test it against a throwaway board/);
   assert.deepEqual(readFileSync(dbFile), before, 'the newer branch must leave every shared-board byte alone');
   const unchanged = new DatabaseSync(dbFile, { readOnly: true });
-  assert.equal(unchanged.prepare('PRAGMA user_version').get().user_version, 2);
+  assert.equal(unchanged.prepare('PRAGMA user_version').get().user_version, 3);
   assert.equal(unchanged.prepare('PRAGMA table_info(item)').all().some((column) => column.name === 'item_unmerged_probe'), false,
     'the branch migration would have installed this column without the refusal');
   unchanged.close();
@@ -570,10 +581,10 @@ test('[A5, A6] a future-schema worktree cannot migrate the shared board; main ca
   });
   assert.equal(mutation.status, 0, mutation.stderr + mutation.stdout);
   const mutated = new DatabaseSync(dbFile, { readOnly: true });
-  assert.equal(mutated.prepare('PRAGMA user_version').get().user_version, 3,
+  assert.equal(mutated.prepare('PRAGMA user_version').get().user_version, 4,
     'removing the guard makes the linked worktree silently migrate the shared board');
   assert.ok(mutated.prepare('PRAGMA table_info(item)').all().some((column) => column.name === 'item_unmerged_probe'),
-    'the guard-removal mutation installs its real schema-3 probe column');
+    'the guard-removal mutation installs its real schema-4 probe column');
   mutated.close();
 });
 
@@ -812,41 +823,6 @@ async function startApi(t, box, { traceStartup = false, traceFile: requestedTrac
   const secret = parsed.searchParams.get('k');
   assert.ok(secret, 'serve startup exposes its per-session secret in its private URL');
   return { child, document, origin: parsed.origin, secret, stderr: () => stderr };
-}
-
-/** Send one bounded HTTP request to the fixture API on its own connection, authenticating by header unless overridden. */
-function apiFetch(api, path, options = {}) {
-  const { noSecret = false, ...requestOptions } = options;
-  const headers = { ...(noSecret ? {} : { 'x-pullboard-key': api.secret }), ...requestOptions.headers };
-  return fetchFresh(new URL(path, api.origin), { ...requestOptions, headers, signal: requestOptions.signal ?? AbortSignal.timeout(10_000) });
-}
-
-/** Parse and validate a versioned API refusal. */
-async function apiError(response, status) {
-  assert.equal(response.status, status);
-  const document = await response.json();
-  assertRequiredShape(document, JSON_SHAPES.error.required, 'HTTP error envelope');
-  assertRequiredShape(document.error, JSON_SHAPES.errorFields, 'HTTP error');
-  return document.error;
-}
-
-/** Read exactly the next non-comment server-sent event, preserving partial frames across chunks. */
-async function nextSseEvent(reader, pending = { text: '' }) {
-  const decoder = new TextDecoder();
-  while (true) {
-    const boundary = pending.text.indexOf('\n\n');
-    if (boundary >= 0) {
-      const frame = pending.text.slice(0, boundary);
-      pending.text = pending.text.slice(boundary + 2);
-      const id = /^id: (.+)$/m.exec(frame)?.[1];
-      const data = [...frame.matchAll(/^data: (.+)$/gm)].map((match) => match[1]).join('\n');
-      if (id !== undefined && data) return { id, document: JSON.parse(data) };
-      continue;
-    }
-    const { done, value } = await reader.read();
-    assert.equal(done, false, 'the live event stream remains open');
-    pending.text += decoder.decode(value, { stream: true });
-  }
 }
 
 test('[N38] local API and sealed presentation resolve shouts beyond recent state, with complete export history', async (t) => {
@@ -1530,7 +1506,8 @@ test('one move recomputes only the items it touched [A2,N26]', async (t) => {
 
     await api.close();
     const legacy = new DatabaseSync(boardFile);
-    try { legacy.exec('DROP INDEX event_item_id_event_id; DROP INDEX verdict_item_id_verdict_id;'); }
+    // A board from before these indexes carries an older user_version; only that makes an open migrate (#1047).
+    try { legacy.exec('DROP INDEX event_item_id_event_id; DROP INDEX verdict_item_id_verdict_id; PRAGMA user_version = 1;'); }
     finally { legacy.close(); }
     // This positive migration control uses a private database; branch code cannot repair
     // persistent indexes on the repository-shared board by supplying isMain: true.
@@ -1547,4 +1524,51 @@ test('one move recomputes only the items it touched [A2,N26]', async (t) => {
   } finally {
     await api.close();
   }
+});
+
+/** An agent writing to the board from its own process until the stop file appears, then printing its write count. */
+const WRITER = `import { DatabaseSync } from 'node:sqlite'; import { existsSync } from 'node:fs';
+const [file, stop] = process.argv.slice(1); const db = new DatabaseSync(file); db.exec('PRAGMA busy_timeout = 5000');
+const insert = db.prepare("INSERT INTO event (event_at, event_by, event_kind, item_id, event_detail) VALUES (?, 'coordinator', 'edit', ?, '{}')");
+let n = 0; process.stdout.write('ready\\n');
+while (!existsSync(stop)) { db.exec('BEGIN IMMEDIATE'); insert.run(new Date().toISOString(), 1 + (n++ % 1000)); db.exec('COMMIT'); await new Promise((done) => setTimeout(done, 2)); }
+db.close(); process.stdout.write(n + '\\n');`;
+
+test('[N26,A2] an item detail answers under 20 ms on a large board', async (t) => {
+  const box = project();
+  const boardFile = join(box.repo, '.git', 'pullboard', 'board.sqlite');
+  const board = openBoard(boardFile, undefined, { isMain: true });
+  const ids = [];
+  try {
+    for (let index = 0; index < 1000; index += 1) ids.push(addBoardItem(board, { by: 'coordinator', lane: 'app', title: `Large item ${index + 1}`,
+      criterion: `Detail ${index + 1}`, specIds: ['G1'], route: 'light', brief: 'Files:\n- app/large.js\nChange:\n- Keep it.\nTest:\n- It reads fast.', check: 'true' }));
+    const insert = board.db.prepare("INSERT INTO event (event_at, event_by, event_kind, item_id, event_detail) VALUES (?, 'coordinator', 'edit', ?, '{}')");
+    board.db.exec('BEGIN'); // One transaction seeds the remaining events up to 40,000.
+    for (let event = board.db.prepare('SELECT COUNT(*) AS n FROM event').get().n; event < 40_000; event += 1) insert.run(new Date(Date.UTC(2026, 0, 1, 0, 0, event)).toISOString(), ids[event % 1000]);
+    board.db.exec('COMMIT');
+  } finally { closeBoard(board); }
+  const builds = [];
+  const api = await startLocalHandler(t, box, { personChannel: 'api', stateDetail: 'summary', onItemBuild: (entry) => builds.push(entry.itemId) });
+  const path = `/api/v1/boards/${(await (await apiFetch(api, '/api/v1/boards')).json()).boards[0].id}`;
+  const polled = await apiFetch(api, `${path}/state`);
+  assert.equal((await polled.json()).state.items.length, 1000);
+  const unchanged = await apiFetch(api, `${path}/state`, { headers: { 'if-none-match': polled.headers.get('etag') } });
+  assert.equal(unchanged.status, 304, 'an unchanged state poll gets a not-modified reply');
+  assert.equal(await unchanged.text(), '');
+  const stop = join(box.dir, 'stop-writer');
+  const writer = spawn(process.execPath, ['--input-type=module', '-e', WRITER, boardFile, stop], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let written = ''; writer.stdout.on('data', (part) => { written += part; });
+  while (!written.includes('ready')) await new Promise((done) => setTimeout(done, 5));
+  const times = [];
+  try {
+    for (const id of ids.slice(0, 20)) times.push(await timedMs(async () => assert.equal((await (await apiFetch(api, `${path}/items/${id}`)).json()).item.id, id)));
+  } finally { writeFileSync(stop, ''); await once(writer, 'close'); }
+  assert.ok(Number(written.split('\n')[1]) > 0, 'an agent wrote to the board while the details were read');
+  const sorted = [...times].sort((left, right) => left - right), median = (sorted[9] + sorted[10]) / 2;
+  const report = `item detail ms, median ${median.toFixed(1)}: ${times.map((ms) => ms.toFixed(1)).join(' ')}`; t.diagnostic(report);
+  assert.ok(median < 20 && sorted[19] < 50, report); // budget: declared by approved row N26 item #1040: median under 20 ms, none over 50 ms
+  await (await apiFetch(api, `${path}/items/${ids[19]}`)).json();
+  builds.length = 0;
+  assert.equal((await (await apiFetch(api, `${path}/items/${ids[19]}`)).json()).item.id, ids[19]);
+  assert.deepEqual(builds, [], 'an item whose last event has not moved is served from its cached detail');
 });

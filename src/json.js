@@ -1,8 +1,9 @@
 /** Versioned command results and refusals for tools that drive the CLI (A1). */
+import { nextStepFor } from './next-step-words.js';
 import {
-  nextStepFor,
+  commandOutput as collectCommandOutput,
   personRequestGuidance,
-} from './next-steps.js';
+} from './json-output.js';
 
 /** A shape's required top-level fields; optional fields may be added within this version. */
 function shape(fields) {
@@ -15,7 +16,7 @@ export const JSON_SHAPES = {
   commands: {
     help: shape({ help: 'string' }),
     version: shape({ release: 'string' }),
-    init: shape({ root: 'string', notes: 'array', proposedLanes: 'array' }),
+    init: shape({ root: 'string', notes: 'array', proposedLanes: 'array', mcp: 'object' }),
     hooks: shape({ notes: 'array' }),
     join: shape({ agent: 'string', lane: 'string', route: 'string', path: 'string', model: 'string', displayName: 'string' }),
     takeover: shape({ agent: 'string', path: 'string' }),
@@ -29,6 +30,7 @@ export const JSON_SHAPES = {
     settings: shape({ settings: 'object' }),
     runner: shape({ runner: 'object' }),
     relay: shape({ linked: 'boolean', board: 'string', url: 'string', link: 'string', sequence: 'number', behind: 'number', recovery: 'object' }),
+    sync: shape({ ref: 'string', sequence: 'number', pending: 'string|null' }),
     list: shape({ items: 'array' }),
     queue: shape({ releases: 'array', unreleased: 'array', first: 'object' }),
     roadmap: shape({ milestones: 'array' }),
@@ -41,7 +43,8 @@ export const JSON_SHAPES = {
     'milestone ship': shape({ milestone: 'object', into: 'string|null', moved: 'array', notMoved: 'array' }),
     show: shape({ item_id: 'number', item_title: 'string', item_lane: 'string', item_status: 'string', verdicts: 'array', thread: 'array' }),
     stats: shape({ stats: 'object', gateWaits: 'array' }),
-    status: shape({ me: 'object', mine: 'array', stats: 'object', reviewQueue: 'object', unread: 'number', relay: 'object' }),
+    badge: shape({ items: 'number', checked: 'number', percent: 'number|null', changed: 'array' }),
+    status: shape({ me: 'object', mine: 'array', ruleCounts: 'object', stats: 'object', reviewQueue: 'object', unread: 'number', relay: 'object' }),
     doctor: shape({ problems: 'array' }),
     health: shape({ asOf: 'string', thresholds: 'object', stuck: 'array', waiting: 'array' }),
     'sentinel propose': shape({ sentinel: 'object' }),
@@ -143,64 +146,7 @@ export function refusalDocument(error, options = {}) {
   return { version: JSON_SHAPES.version, error: { code, message: personRequestGuidance(message, options), next: nextStepFor({ code, next: error.next }, message, options) } };
 }
 
-/**
- * Collect one command's output; text mode writes immediately and JSON mode writes one document.
- * Long-running view explicitly flushes its address before waiting for a shutdown signal.
- */
+/** Collect output with the already-loaded synchronous public refusal renderer [A1]. */
 export function commandOutput(argv, streams) {
-  let enabled = argv.slice(0, argv.indexOf('--') < 0 ? argv.length : argv.indexOf('--')).includes('--json');
-  let result;
-  let refusal;
-  let remote;
-  let caller = 'unknown';
-  let callerRoot;
-  let written = false;
-  const messages = [];
-  const diagnostics = [];
-  const emit = (target, lines, line) => {
-    if (enabled) lines.push(String(line));
-    else target.write(`${line}\n`);
-  };
-  const flush = (code) => {
-    if (!enabled || written) return;
-    written = true;
-    let document;
-    if (refusal || (code && result === undefined)) {
-      const text = refusal?.message ?? [...diagnostics, ...messages].join('\n');
-      const match = /\[([A-Z][A-Z0-9_]*)\]\s*([\s\S]*)/.exec(text);
-      const message = refusal ? text.replace(/^\[[A-Z][A-Z0-9_]*\] /, '') : match?.[2] ?? text;
-      document = refusalDocument({ code: refusal?.code ?? match?.[1] ?? (code === 2 ? 'USAGE' : 'COMMAND_FAILED'), message, next: refusal?.next }, { caller });
-    } else if (result !== undefined) {
-      document = { version: JSON_SHAPES.version, ...result, ...(diagnostics.length ? { diagnostics } : {}) };
-    } else {
-      // A native versioned document, such as export, already owns its public shape.
-      let native;
-      if (messages.length === 1) {
-        try { native = JSON.parse(messages[0]); } catch { /* Ordinary command prose is kept as messages. */ }
-      }
-      document = native && !Array.isArray(native) && typeof native.version === 'number'
-        ? { ...native, ...(diagnostics.length ? { diagnostics } : {}) } : { version: JSON_SHAPES.version, messages, ...(diagnostics.length ? { diagnostics } : {}) };
-    }
-    if (remote) document.remote = remote;
-    streams.stdout.write(`${JSON.stringify(document, null, 2)}\n`);
-  };
-  return {
-    ...streams,
-    physicalStdoutIsTTY: Boolean(streams.stdout.isTTY),
-    stdout: { get isTTY() { return enabled ? false : streams.stdout.isTTY; }, write: (text) => streams.stdout.write(text) },
-    say: (line) => emit(streams.stdout, messages, line),
-    err: (line) => emit(streams.stderr, diagnostics, line),
-    result: (value) => { result = value; },
-    refusal: (error) => { refusal = error; },
-    // A successfully checked person channel stays the display caller for this command.
-    caller: (value, root) => { if (caller !== 'person') { caller = value; callerRoot = root; } },
-    callerKnown: (root) => caller === 'person' || caller !== 'unknown' && callerRoot === root,
-    callerRole: () => caller,
-    guidance: (message, options = {}) => personRequestGuidance(message, { ...options, caller }),
-    refusalDocument: (error) => refusalDocument(error, { caller }),
-    remote: (value) => { remote = value; },
-    exitCode: (code) => code || (remote ? 1 : 0),
-    jsonMode: (value) => { enabled = Boolean(value); },
-    flush,
-  };
+  return collectCommandOutput(argv, streams, { version: JSON_SHAPES.version, refusalDocument });
 }

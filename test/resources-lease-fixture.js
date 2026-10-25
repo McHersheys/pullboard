@@ -6,7 +6,98 @@ import { pathToFileURL } from 'node:url';
 import { createInterface } from 'node:readline';
 import { DatabaseSync } from 'node:sqlite';
 import * as store from '../src/board.js';
+import { registerProject } from '../src/projects.js';
+import { serveView } from '../src/serve.js';
 import { runFixtureChild } from './fixture-child.js';
+
+/** Build the resource test's child programs with the importing test's absolute module URLs. */
+export function resourceWorkerSources({ resourcesModule: MODULE, gateModule: GATE_MODULE, settingsModule: SETTINGS_MODULE }) {
+  const POOL_MODULE_WORKER = `
+import { takeResource } from ${JSON.stringify(MODULE)};
+import { loadMachineSettings } from ${JSON.stringify(SETTINGS_MODULE)};
+let announced = false;
+const [root, agent, browserText, item, kind, landingText] = process.argv.slice(1);
+const lease = await takeResource({
+  name: 'gate', capacity: 2, scope: 'machine', root, agent,
+  browserCapacityProvider: () => loadMachineSettings().browserSlots,
+  browser: browserText === 'true', item, kind, itemCheck: kind === 'review',
+  diagnostic: kind === 'diagnostic', landing: landingText === 'true',
+  onWait: (state) => {
+    if (!announced) { announced = true; console.log(JSON.stringify({ queued: state })); }
+  },
+});
+try {
+  console.log(JSON.stringify({ acquired: agent }));
+  for await (const line of process.stdin) {
+    if (String(line).trim() === 'release') break;
+  }
+} finally { lease.release(); }
+`;
+  const SUBMIT_CHECK = `
+import { runSubmitGate } from ${JSON.stringify(GATE_MODULE)};
+const [root, base, check] = process.argv.slice(1);
+const result = await runSubmitGate(root, { gate: 'true', affectedTests: 'node bin/run-tests.js test/cpu-check.test.js' }, {
+  base, changed: ['test/cpu-check.test.js'], check, agent: 'submit-check', item: '636',
+});
+process.stdout.write(JSON.stringify({ green: result.isGreen, full: result.full, reason: result.reason, files: result.files, checkGreen: result.check.green }) + '\\n');
+`;
+  const WORKER = `
+import { takeResource } from ${JSON.stringify(MODULE)};
+const [name, capacity, scope, root, agent, stallMs, landingText] = process.argv.slice(1);
+let lastWait = '';
+const lease = await takeResource({ name, capacity: Number(capacity), scope, root, agent, landing: landingText === 'true', onWait: ({position, holders, line, rejoined}) => {
+  const state = JSON.stringify({waiting:position, holders, line, rejoined:rejoined ?? false});
+  if (!lastWait || rejoined) { lastWait = state; console.log(state); }
+} });
+console.log(JSON.stringify({acquired:agent}));
+let secondLease;
+if (Number(stallMs) > 0) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(stallMs));
+  console.log(JSON.stringify({resumed:true}));
+}
+process.stdin.setEncoding('utf8');
+for await (const line of process.stdin) {
+  if (line.trim() === 'second') {
+    takeResource({ name, capacity: Number(capacity), scope, root, agent, landing: true }).then((nextLease) => {
+      secondLease = nextLease;
+      console.log(JSON.stringify({secondAcquired: agent}));
+    });
+  }
+  if (line.trim() === 'renew') {
+    try { lease.renew(); console.log(JSON.stringify({renewed:true})); }
+    catch (error) { console.log(JSON.stringify({renewError:error.code})); }
+  }
+  if (line.trim() === 'release') { lease.release(); secondLease?.release(); break; }
+}
+`;
+  return { POOL_MODULE_WORKER, SUBMIT_CHECK, WORKER };
+}
+
+/** Read private resource names without changing the database used by the caller. */
+export function resourceNames(home) {
+  const db = new DatabaseSync(join(home, 'resources.sqlite'));
+  try { return db.prepare('SELECT name FROM resource ORDER BY name').all().map(({ name }) => name); }
+  finally { db.close(); }
+}
+
+/** Run a scoped view against a private registry and machine home, restoring both on close. */
+export async function openPrivateScopedView(box) {
+  const previousHome = process.env.PULLBOARD_HOME;
+  const previousMachineHome = process.env.PULLBOARD_MACHINE_HOME;
+  const restore = () => {
+    if (previousHome === undefined) delete process.env.PULLBOARD_HOME;
+    else process.env.PULLBOARD_HOME = previousHome;
+    if (previousMachineHome === undefined) delete process.env.PULLBOARD_MACHINE_HOME;
+    else process.env.PULLBOARD_MACHINE_HOME = previousMachineHome;
+  };
+  process.env.PULLBOARD_HOME = box.home;
+  process.env.PULLBOARD_MACHINE_HOME = box.home;
+  try {
+    registerProject(box.first);
+    const view = await serveView({ port: 0, projectRoot: box.first });
+    return { ...view, close: async () => { try { await view.close(); } finally { restore(); } } };
+  } catch (error) { restore(); throw error; }
+}
 
 const CLOCKED_CLI = `
 import { readFileSync } from 'node:fs';

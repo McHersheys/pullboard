@@ -110,7 +110,7 @@ test('authenticated relay senders bind every move and refusals preserve replica 
   assert.deepEqual(claimOne, claimTwo);
   assert.equal(store.getItem(one, item).item_owner, 'web-1');
 
-  const shout = prepareEngineMove(one, 'shout', [{ from: 'web-1', to: 'all', text: 'authenticated fixture', lanes: ['web'] }], { id: 'valid-shout-after-refusals' });
+  const shout = prepareEngineMove(one, 'shout', [{ from: 'web-1', to: 'coordinator', text: 'authenticated fixture', lanes: ['web'] }], { id: 'valid-shout-after-refusals' });
   const shoutOne = applyRelayMove(one, shout, { sequence: cases.length + 2, at: CLAIM_AT, kind: 'move', sender: agent });
   const shoutTwo = applyRelayMove(two, shout, { sequence: cases.length + 2, at: CLAIM_AT, kind: 'move', sender: agent });
   assert.deepEqual(shoutOne, shoutTwo);
@@ -664,7 +664,17 @@ test('the engine version is the highest feature engine [C7,V4]', () => {
   const source = new URL('../src/', import.meta.url);
   const files = readdirSync(source).filter((file) => /-engine\.js$/u.test(file));
   assert.deepEqual(Object.keys(ENGINE_REGISTRY), files.map((file) => file.slice(0, -'-engine.js'.length)).sort(), 'every src/*-engine.js leaf is a feature engine, discovered by its file name');
-  for (const file of files) assert.match(readFileSync(new URL(file, source), 'utf8'), /^export const [A-Z][A-Z0-9_]*_ENGINE = \d+;$/mu, `${file} declares its one engine constant`);
+  const declarations = files.map(file => {
+    const text=readFileSync(new URL(file, source),'utf8');
+    const lines=text.split('\n').filter(line=>/^export const /u.test(line));
+    assert.equal(lines.length,1,`${file} has exactly one exported engine declaration`);
+    const match=/^export const [A-Z][A-Z0-9_]*_ENGINE = (?:(\d+)|unassignedEngine\(\));$/u.exec(lines[0]);
+    assert.ok(match,`${file} declares its landed number or the accepted unassigned placeholder`);
+    if (match[1]===undefined) assert.ok(text.split('\n').includes("import { unassignedEngine } from './engine-next.js';"),`${file} imports its real placeholder`);
+    return {file,number:match[1]===undefined ? null : Number(match[1])};
+  });
+  const next=Math.max(0,...declarations.map(row=>row.number??0))+1;
+  for (const row of declarations) assert.equal(ENGINE_REGISTRY[row.file.slice(0,-'-engine.js'.length)],row.number??next,'unlanded branches read one above the highest assigned engine');
   assert.doesNotMatch(readFileSync(new URL('machine.js', source), 'utf8'), /Math\.max\([A-Z_]+ENGINE,/u, 'src/machine.js lists no engine by name');
 });
 
@@ -678,4 +688,69 @@ test('a feature engine or command file name outside letters, digits, underscore 
   } finally { rmSync(directory, { recursive: true, force: true }); }
   assert.deepEqual(discovered(['index.js', 'add.js', 'two-words.js'], COMMAND_CANDIDATE, COMMAND_FILE, 'command'), ['add.js', 'two-words.js']);
   assert.throws(() => discovered(['index.js', 'add.js', 'a.b.js'], COMMAND_CANDIDATE, COMMAND_FILE, 'command'), /a\.b\.js cannot be a command/u, 'a dotted command file is refused by name');
+});
+
+
+test('engine 93 item messages replay and older broadcasts keep their recorded meaning [B7,H3,H16]', (t) => {
+  const { copies, item } = engineCopies(t);
+  const [one, two] = copies;
+  const legacy = { ...prepareEngineMove(one, 'shout', [{ from: 'web-1', to: 'all', text: 'old broadcast', lanes: ['web'] }]), engine: 92 };
+  for (const board of copies) applyEngineMove(board, legacy, { sequence: 1, at: CLAIM_AT });
+  assert.equal(store.inbox(one, 'web-2')[0].shout_text, 'old broadcast');
+  const message = prepareEngineMove(one, 'shout', [{ from: 'web-1', to: 'web', item, text: 'item message', lanes: ['web'] }]);
+  assert.throws(() => applyEngineMove(two, { ...message, engine: 92 }, { sequence: 2, at: CLAIM_AT }), /RELAY_MOVE/);
+  const first = applyEngineMove(one, message, { sequence: 2, at: CLAIM_AT });
+  const second = applyEngineMove(two, message, { sequence: 2, at: CLAIM_AT });
+  assert.deepEqual(first, second);
+  assert.equal(store.getShout(one, first.result).shout_to, `item:${item}`);
+  assert.equal(store.getShout(two, second.result).shout_to, `item:${item}`);
+  const report = prepareEngineMove(one, 'shout', [{ from: 'web-1', to: 'all', text: 'new private report', lanes: ['web'] }]);
+  const reports = copies.map(board => applyEngineMove(board, report, { sequence: 3, at: CLAIM_AT }));
+  assert.deepEqual(reports[0], reports[1]);
+  for (const [index, board] of copies.entries()) {
+    assert.equal(store.getShout(board, reports[index].result).shout_to, 'coordinator+person');
+    assert.equal(store.inbox(board, 'web-2').some(shout => shout.shout_text === 'new private report'), false);
+    assert.equal(store.inbox(board, 'coordinator').some(shout => shout.shout_text === 'new private report'), true);
+    assert.equal(store.recentShouts(board).find(shout => shout.shout_text === 'old broadcast').shout_to, 'all',
+      'recorded old broadcast remains global, rather than being reinterpreted by its sender');
+  }
+});
+
+test('outside author facts and exact owner approval replay without manufacturing a native builder [H3,H16,B26]', async t => {
+  const { createHash } = await import('node:crypto');
+  const { OUTSIDE_INTAKE_ENGINE } = await import('../src/outside-intake-engine.js');
+  const { copies: [one, two], directory } = engineCopies(t);
+  // These object IDs exercise deterministic storage only; no outside program or sandbox execution is claimed.
+  const text = JSON.stringify({ title: 'Outside replay fixture', criterion: 'record the source', rows: [], check: 'true' });
+  const frozen = { text, digest: createHash('sha256').update(text).digest('hex') };
+  const source = { kind: 'pull-request', repository: 'fixture/project', number: 7, author: 'outside-contributor', state: 'open', maintainerReplied: true,
+    commit: 'a'.repeat(40), tree: 'b'.repeat(40), base: 'c'.repeat(40), files: ['relay/outside.js'], sensitive: true };
+  const move = prepareEngineMove(one, 'intakeOutside', [{ agentId: 'coordinator', source, frozen,
+    item: { lane: 'web', title: 'Outside replay fixture', criterion: 'record the source', check: 'true' } }], { id: 'outside-replay-intake' });
+  for (const board of [one, two]) {
+    const before = exportBoard(board);
+    assert.throws(() => applyEngineMove(board, { ...move, engine: OUTSIDE_INTAKE_ENGINE - 1 }, { sequence: 1, at: CLAIM_AT }), /RELAY_MOVE/);
+    assert.deepEqual(exportBoard(board), before, 'an older engine cannot partially introduce outside semantics');
+  }
+  const ids = [one, two].map(board => applyEngineMove(board, move, { sequence: 1, at: CLAIM_AT }).result);
+  assert.equal(ids[0], ids[1]);
+  const id = ids[0];
+  const item = store.getItem(one, id);
+  assert.equal(item.item_status, 'submitted');
+  assert.equal(item.item_built_by, 'outside:github:outside-contributor');
+  assert.equal(store.listAgents(one).some(agent => agent.agent_id === item.item_built_by), false);
+  const approval = prepareEngineMove(one, 'approveOutside', [id, { agentId: 'person' }], { id: 'outside-replay-approval' });
+  for (const board of [one, two]) {
+    const before = exportBoard(board);
+    assert.throws(() => store.approveOutside(board, id, { agentId: 'web-1' }), /B26_PERSON_CHANNEL/);
+    assert.deepEqual(exportBoard(board), before, 'an agent cannot acquire person approval by naming its own native seat');
+    applyRelayMove(board, approval, { sequence: 2, at: CLAIM_AT, kind: 'move', sender: { kind: 'person', userId: 'fixture-owner', policy: ENGINE_VERSION } });
+    assert.deepEqual(store.getItem(board, id).outside.ownerApproval, { by: 'person', commit: source.commit, at: CLAIM_AT });
+  }
+  assert.deepEqual(exportBoard(one).tables, exportBoard(two).tables);
+  const imported = store.openBoard(join(directory, 'outside-import.sqlite'));
+  try {
+    importBoard(imported, exportBoard(one));
+    assert.deepEqual(store.getItem(imported, id).outside, store.getItem(one, id).outside, 'public facts and approval survive the native export boundary');
+  } finally { store.closeBoard(imported); }
 });

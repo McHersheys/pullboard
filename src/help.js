@@ -8,12 +8,18 @@ export const VERSION = packageData.version;
 const ALL_HELP = `pullboard ${VERSION}: the local-first work board for teams of coding agents.
 Nothing ships until a second agent verifies it.
 
+Outside contributions
+  pullboard intake <GitHub PR URL> --criterion "behavior" --check "command" [--lane <lane>]  record exact outside author/commit, already submitted; never execute it here
+  pullboard intake <GitHub issue URL>  record author, source state and maintainer reply; repeating intake refreshes metadata
+  pullboard verify <id> accept [--sandbox] --note "proof"  configured Docker only, no network/credentials, Node22.13 and24; required for outside items; missing provider refuses
+  pullboard intake approve <id>        owner/person approval for the exact sensitive outside commit; every PR result post still needs separate person OK
+
 Set up
   pullboard tour                        see it work: a reject and its rework, scripted, in thirty seconds
   pullboard init [--model <name>] [--blueprint <name or file>]... [--no-permissions] [--yes] [--verbose]  short setup summary; --verbose shows recipes; --yes commits only setup's own files with your Git identity
   pullboard worktree <lane> --model <name> [--route light] [--family <name>]   make and join a worktree for a new agent
                                         pullboard.json worktrees: inside or beside; init defaults to inside
-  pullboard join <lane> --model <name> [--route light] [--family <name>]       register this worktree as an agent
+  pullboard join <lane> --model <name> [--route light] [--family <name>] [--parent <session-id>]  register this worktree and its parent session
                                         A model is required (or set PULLBOARD_MODEL); family is a separate declaration
   pullboard join coordinator --model <name>                                 declare the main checkout's coordinator model
                                         pullboard.json agents.names: suffix (default) or prefix
@@ -24,6 +30,9 @@ Set up
   pullboard takeover                   rebind this checkout when the same agent starts a new session
                                         in a linked main checkout it also takes the board's coordinator here
   pullboard resources                  local resource holders and their FIFO queues
+  pullboard settings line [<name> <value> --reason "why" --window <json>]  read or record board controller inputs; all off by default
+      value is on, off, or a number within the setting range
+                                        names: order, reviewsFirst, wipPerReviewer (1.5-3), barReady, bar.check, takeoverMinutes (15-60), collisionFreeBatch, landingBatchSize (1-8), landingCadenceMinutes (5-30)
   pullboard settings [gateSlots <n> | browserSlots <n>]  view or set machine capacity (gate default 2; browser default 1)
                                         browser-free check slots are opt-in: gate.browserFreeChecks in ~/.pullboard/settings.json (default false)
                                         a test file takes a browser slot only if it launches Chrome: gate.browserByLaunch (default false)
@@ -33,6 +42,7 @@ Set up
                                         short slots for runs that name their test files are opt-in: pullboard settings gate.shortSlots <n> (default 0)
   pullboard runner add <ssh-host> --slots <n> --browser <n> [--node <remote-path>] [--root <remote-path>]
                                         register SSH test capacity; no runner sign-in; root defaults to ~/.pullboard-runner
+  pullboard runner list                 each runner's registered slots and browsers, which it runs at
   pullboard view [--project] [--port N] [--no-open]  every project on this machine in your browser; default http://127.0.0.1:${DEFAULT_VIEW_PORT}
                                         items, shouts, doctrine, agents and activity; --port 0 chooses a free port
                                         --project limits this view to the registered project for this repository
@@ -55,8 +65,10 @@ Set up
   pullboard relay tokens                list this board's agent token ids, agents and expiry, never credentials
   pullboard relay revoke <token-id>     revoke one token from that list; other agents keep working
   pullboard relay recover --skip <sequence>  person-only recovery of one blocked next relay position
-  pullboard resume                      where you are: your claim, branch, uncommitted work, what came back,
+  pullboard handoff [--take <id>]        write or take an agent hand-off; keep questions on its item
+  pullboard resume [--diagnostics]      where you are: your claim, branch, what came back,
                                         unread shouts, what to do next; run it to start any session
+  pullboard badge                       write board-derived Shields endpoint JSON to docs/badges/
   pullboard hooks                       reinstall the git hooks (e.g. after a fresh clone)
 
 Work
@@ -94,6 +106,7 @@ Work
   pullboard sentinel propose <name> --check "<command>" --every 10m|hourly|daily --owner <seat or lane> [--directory <path>] [--timeout <milliseconds>] [--next "<step>"]
                                         propose an exact board watch; only the person may approve it
   pullboard sentinel approve <name>     person: approve this command, directory and schedule
+  pullboard sentinel run                run due approved watches in a prepared trunk checkout
   pullboard sentinel decline <name> --reason "<why>"   person: prevent future runs
   pullboard sentinels                   approvals, owners and the last result; does not run checks
   pullboard loop declare <name> --every 10m --owner <seat or lane>   coordinator: declare a recurring job's cadence
@@ -104,8 +117,9 @@ Work
   pullboard skills --update            refresh unchanged Claude Code skills from shipped versions
   pullboard show <id> [--history]       an item, the criterion frozen at claim, its verdicts: the latest in full,
                                         earlier ones as one line; --history prints every note in full
-  pullboard fact <id> <kind> <text> [--supersedes <fact-id>] [--ref path:lines@full-sha] [--implies <ids>]
-                                        append an observation or a holder/coordinator judgement to its thread
+  pullboard fact <id> <kind> <text> [--answers <bar-check-fact-id>] [--supersedes <fact-id>] [--ref path:lines@full-sha] [--implies <ids>]
+                                        append observations, bar-check notes and peer answers, or holder/coordinator judgements
+                                        a bar-answer uses --answers to name the bar-check fact it reviewed
                                         --implies 12,13: each named item gets a fact citing this decision,
                                         and is told again when the decision is superseded
                                         the person adds --cause <key> --never-again --as person: rigor lists it at once
@@ -119,6 +133,11 @@ Work
                                         the command and its author print first; the project gate is pullboard gate
   pullboard check accept <id>           the person accepts an item's check that already passes on main, as it reads now;
                                         with checks.provesNothing "hold", claim and submit refuse that item until then
+  pullboard bar ready [on|off]           coordinator: opt in to ready bars; existing frozen work needs no backfill
+  pullboard bar sign <id> --note "..." [--coverage-file <json>]  another parent judges buildability and repeatable grading; edits clear the signature
+                                        claim.barTestFiles configures project test-path globs (Node test/spec files by default)
+                                        coverage rows retain whole-file observations; slow files require named checks and explicit landing coverage
+  pullboard bar <id>                    show missing prerequisites and the current revision
   pullboard claim <id>                  take or renew a lease; the first claim freezes the criterion
   pullboard release <id> [--note "why"]  hand it back; a review release needs a one-line reason
   pullboard submit <id>                 needs a clean tree, item check and affected tests green at HEAD (alias: done)
@@ -129,6 +148,8 @@ Work
                                         a verdict takes --implies <ids>; a later verdict on the item supersedes it
                                         any --note can be --note-file <file>, which keeps quotes, $ and backticks intact
   pullboard shout <lane|agent|person|all> <text>  pullboard inbox
+  pullboard shout --item <id> <text>             message the item builder, reviewer and coordinator
+  A seat shout to all reaches only coordinator and person; their broadcasts reach everyone.
   pullboard shout [<to>] <text> --decision       ask for a decision; defaults to your coordinator or the person
   pullboard shout <to> <text> --evidence attempt|receipt --outcome <word> --item <id> --commit <rev>
   pullboard answer <shout-id> <text> [--as person] [--implies <ids>] [--supersedes <answer-id>]
@@ -146,6 +167,8 @@ Work
   pullboard digest [--out <file>] [--watch]     a short Markdown briefing of this board for a person or a chat assistant;
                                         secrets redacted; --out replaces a file, --watch rewrites it after every move
   pullboard import <file>                       restore a versioned export into an empty board
+  pullboard sync                               opt in to sharing one board through origin without an account
+                                               reads work offline; moves need remote acknowledgement
 
 Coordinator
   pullboard sweep --run "<checker>" --check "<checker on {file}>" [--route light] [--max 20] [--dry-run]
@@ -156,7 +179,8 @@ Coordinator
   pullboard merged <id> <commit>        record where verified work landed
   pullboard withdraw <id> <reason>      drop an item nobody should build
   pullboard refreeze <id>               adopt a corrected criterion or changed spec rows
-  pullboard reopen <id> --note "why" [--cause <key>]   return a submission for criterion correction without a verdict
+  pullboard reopen <id> [--withdraw-verdict] --note "why" [--cause <key>]
+                                        withdraw your own accept before landing, or coordinator-return a submission
   pullboard reopen <id> --conflict <file> [--conflict <file>]
                                         return accepted work that conflicts with the trunk for a main merge
   pullboard hold <lane> --reason "..."   pause a lane: next there claims nothing and names the reason
@@ -164,7 +188,9 @@ Coordinator
   pullboard hold <lane|id> --off        lift a lane or item hold
 
 Receipts
-  pullboard stats [--since <date>]      proof numbers from the event log; --json for sites and tools
+  pullboard stats [--since <date> | --window <duration>]  proof numbers from the event log; --json for sites and tools
+                                        --window 6h (also 30m or 1d): landed-item stage quartiles, tails and excess over targets;
+                                        includes all attempts and sent-back idle; missing intervals stay unmeasured;
                                         stage averages/medians count ends inside the inclusive UTC window;
                                         build: first claim to final submit (including rework);
                                         review wait: final submit to the closing review reservation;
@@ -268,11 +294,13 @@ const ADD_EXAMPLE = ['pullboard lane add web --owns src/web', 'pullboard spec dr
   'pullboard add web "Upload page" --specs G1'].join('\n');
 
 const HELP_EXAMPLES = {
+  'settings line': `pullboard settings line reviewsFirst on --reason "reviews are waiting" --window '{"windowMinutes":60}'`,
   'spec approve': 'pullboard spec approve G1',
   'spec decline': 'pullboard spec decline G1 --reason "The requirement needs revision"',
   'sentinel propose': 'pullboard sentinel propose "Run the checks" --check "npm test" --every hourly --owner web',
   tour: 'pullboard tour', init: 'pullboard init --blueprint web-app', worktree: 'pullboard worktree web --model "my-model"',
   join: 'pullboard join web --model "my-model"', resume: 'pullboard resume',
+  intake: 'pullboard intake https://github.com/owner/repo/pull/7 --criterion "behavior" --check "npm test"',
   add: ADD_EXAMPLE, list: 'pullboard list web', show: 'pullboard show 12',
   claim: 'pullboard claim 12', submit: 'pullboard submit 12', 'next --verify': 'pullboard next --verify',
   fact: 'pullboard fact 12 measurement "The check passes in 8 seconds"',
@@ -281,7 +309,7 @@ const HELP_EXAMPLES = {
   verify: 'pullboard verify 12 accept --note "removed the fix; the test failed"',
   watch: 'pullboard watch --to web', answer: 'pullboard answer 12 "done"', pass: 'pullboard pass 12 "please decide"',
   status: 'pullboard status', view: 'pullboard view', digest: 'pullboard digest --out briefing.md', mcp: 'pullboard mcp', stats: 'pullboard stats --since 2026-10-08', log: 'pullboard log 12', ledger: 'pullboard ledger',
-  relay: 'pullboard relay on --all', 'relay recover': 'pullboard relay recover --skip 12',
+  relay: 'pullboard relay on --all', 'relay recover': 'pullboard relay recover --skip 12', sync: 'pullboard sync',
   'lane add': 'pullboard lane add web --owns apps/web/', lane: 'pullboard lane add web --owns apps/web/',
   queue: 'pullboard queue', roadmap: 'pullboard roadmap', rigor: 'pullboard rigor', 'rigor quality': 'pullboard rigor quality --rule silent-catch', 'rigor draft': 'pullboard rigor draft "refusal:MERGE_LOST" "Merges keep every hunk" --check "node bin/checks/merges.js" --red 0123456 --green 89abcde', milestone: 'pullboard milestone add "0.7.0" --items 12,13',
   'milestone order': 'pullboard milestone order "0.7.0" 13,12',
@@ -289,6 +317,7 @@ const HELP_EXAMPLES = {
   edit: 'pullboard edit 12 --brief "Add the upload page"', release: 'pullboard release 12',
   land: 'pullboard land --max 4',
   publish: 'pullboard publish',
+  handoff: 'pullboard handoff --take 12',
   health: 'pullboard health',
   reopen: 'pullboard reopen 12 --note "correct the frozen criterion"',
   escalate: 'pullboard escalate 12 --note "needs a manual step"', next: 'pullboard next',
@@ -342,6 +371,7 @@ const HELP_ALIASES = {
 };
 
 const HELP_FLAG_EXPLANATIONS = {
+  '--take': 'take the existing hand-off from a newly joined agent worktree',
   '--after': 'claiming waits until those items are verified',
   '--blueprint': 'start from a bundled blueprint or a JSON file; repeat it for one product, one architecture and any practice blueprints',
   '--brief': 'what a cold agent needs',
@@ -361,6 +391,16 @@ const HELP_FLAG_EXPLANATIONS = {
 
 /** Lines a command's own help adds after its example. */
 const HELP_NOTES = {
+  resume: [
+    'Ordinary resume reads the current work card and recorded health without running diagnostics or watches.',
+    'Use --diagnostics explicitly for setup, hooks, dirty files and stale-work checks.',
+  ],
+  'sentinel run': [
+    'Schedule this command with cron on a server or a scheduled CI job that already has ordinary board access.',
+    'For example: 0 * * * * cd /path/to/project && pullboard sentinel run',
+    'Each run prepares committed local trunk; resume and the background view never execute watch commands.',
+    'It also refreshes work-health findings; resume shows only the indexed findings and their recorded time.',
+  ],
   watch: [
     'Claude Code: run pullboard watch --to <your id> under the Monitor tool, and each event line wakes the seat.',
     'Any other harness: run it as a long-running command and treat each stdout line as an event.',
@@ -426,12 +466,13 @@ function overviewHelp(groups, firstRun = false) {
 }
 
 /** The settings forms settingsCommand dispatches with a value; each gets its own help, from this list (N2). */
-export const SETTING_FORMS = Object.freeze(['gateSlots', 'browserSlots', 'gate.shortSlots']);
+export const SETTING_FORMS = Object.freeze(['gateSlots', 'browserSlots', 'gate.shortSlots', 'landing.pool']);
 
 /** Help for each settings form the printed usage did not already name, so each form is covered (N2). */
 function settingFormHelp(commands) {
   return Object.fromEntries(SETTING_FORMS.filter((form) => !commands[`settings ${form}`]).map((form) => [`settings ${form}`, Object.freeze({
-    usages: [`pullboard settings ${form} <n>`], flags: [], example: `pullboard settings ${form} 2`, notes: [],
+    usages: [`pullboard settings ${form} ${form === 'landing.pool' ? 'on|off' : '<n>'}`], flags: [],
+    example: `pullboard settings ${form} ${form === 'landing.pool' ? 'on' : '2'}`, notes: [],
   })]));
 }
 

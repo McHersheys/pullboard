@@ -30,6 +30,7 @@ import { execFileSync } from 'node:child_process';
 import { basename, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { pathToFileURL } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
 
 const require = createRequire(import.meta.url);
 const childProcess = require('node:child_process');
@@ -170,6 +171,11 @@ try {
     const { apiBoards } = await import(new URL('./api.js', pathToFileURL(serveFile)));
     const { withGitReadFacts } = await import(new URL('./git.js', pathToFileURL(serveFile)));
     for (const status of [undefined, true]) {
+      // A current board opens read-only with no authority to decide; a cleared stamp makes each need a write open (#1047).
+      for (const { root } of projects) {
+        const db = new DatabaseSync(resolve(execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: root, encoding: 'utf8' }).trim(), 'pullboard', 'board.sqlite'));
+        try { db.exec('PRAGMA application_id = 0'); } finally { db.close(); }
+      }
       counters.git = 0;
       counters.node = 0;
       counters.other = 0;
@@ -456,7 +462,7 @@ test('a detail read after a cache miss on a linked board spawns no git process [
     const controls = JSON.parse(lines[0]).provenanceChecks;
     assert.deepEqual(controls.map(control => control.status), ['unknown main status', 'true main status']);
     for (const control of controls) {
-      assert.equal(control.processes.git, 2, JSON.stringify(control));
+      assert.equal(control.processes.git, 1, JSON.stringify(control));
       assert.ok(control.processes.gitCalls.some(call => call.stack.some(line => line.includes('readCodeIsFromMain'))),
         'unknown and true main status still check actual code provenance');
       assert.equal(control.processes.node + control.processes.other, 0, JSON.stringify(control));

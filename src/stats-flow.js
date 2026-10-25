@@ -1,3 +1,12 @@
+import { proofEventDetail } from './proof-event-detail.js';
+import {
+  newWindowTrace,
+  observeFlowStage,
+  observeFlowVerdict,
+  observeFlowGap,
+  frozenWindowTrace,
+  projectFlowWindow,
+} from './stats-flow-window.js';
 /** Flow times, queues and recommendations from recorded lifecycle evidence [R1,R2]. */
 const MINUTE = 60_000;
 const STAGES = ['build', 'reviewWait', 'review', 'mergeWait'];
@@ -19,7 +28,7 @@ function interval(start, end) {
 }
 
 /** Identify role-bearing moves without guessing a role from an agent's lane. */
-function roleOf(kind, detail) {
+export function roleOf(kind, detail) {
   if (['reserve', 'accept', 'reject', 'verify'].includes(kind) || kind === 'release' && detail.review) return 'verifier';
   if (['claim', 'submit'].includes(kind) || kind === 'release' && !detail.review) return 'builder';
   return null;
@@ -28,32 +37,48 @@ function roleOf(kind, detail) {
 /** Return an expired claim to its open queue at the recorded lease boundary. */
 function expireClaim(item, at) {
   if (item.state === 'claimed' && Number.isFinite(item.leaseUntil) && item.leaseUntil <= at) {
+    observeFlowStage(item, null, item.leaseUntil, 'clock');
     item.state = 'open';
     item.openAt = item.leaseUntil;
   }
 }
 
 /** Replay one lifecycle move; its first claim and first merge survive rework and repeated receipts. */
-function move(item, event, detail, at) {
+export function moveFlowItem(item, event, detail, at) {
   expireClaim(item, at);
+  if (item.windowTrace?.cursor?.stage === 'review' && Number.isFinite(item.reserve?.until) && (item.reserve.until < at || item.reserve.until === at && !['accept', 'reject'].includes(event.event_kind))) {
+    observeFlowStage(item, 'reviewWait', item.reserve.until, 'clock');
+  }
   switch (event.event_kind) {
     case 'add':
       item.lane = detail.lane ?? 'unknown'; item.state = 'open'; item.openAt = at; break;
     case 'claim':
+      observeFlowStage(item, 'build', at, event.event_by);
       item.firstClaim ??= at; item.claimAt = at; item.state = 'claimed';
       item.leaseUntil = Date.parse(detail.leaseUntil); break;
     case 'renew': item.leaseUntil = Date.parse(detail.leaseUntil); break;
     case 'submit':
+      if (item.windowTrace && item.mergeAt === undefined) {
+        item.windowTrace.submissions += 1;
+        if (item.windowTrace.cursor?.stage !== 'build' && !item.windowTrace.missing.includes('build')) item.windowTrace.missing.push('build');
+      }
+      observeFlowStage(item, 'reviewWait', at, event.event_by);
       item.submitAt = at; item.commit = detail.commit; item.verdictAt = null; item.acceptAt = null;
       item.reserve = null; item.finalReserveAt = null; item.state = 'submitted'; break;
-    case 'reserve': item.reserve = { at, by: event.event_by, until: Date.parse(detail.until) }; break;
+    case 'reserve':
+      observeFlowStage(item, 'review', at, event.event_by);
+      item.reserve = { at, by: event.event_by, until: Date.parse(detail.until) }; break;
     case 'release':
+      observeFlowStage(item, detail.review || item.state === 'submitted' ? 'reviewWait' : 'sendBackIdle', at, event.event_by);
       if (detail.review || item.state === 'submitted') item.reserve = null;
       else { item.state = 'open'; item.openAt = at; }
       break;
     case 'accept':
     case 'reject': {
       if (!item.commit || detail.commit !== item.commit) break;
+      if (item.state === 'submitted') observeFlowVerdict(item, event.event_by);
+      observeFlowStage(item, event.event_kind === 'accept' ? 'mergeWait' : 'sendBackIdle', at, event.event_by);
+      if (event.event_kind === 'reject' && item.windowTrace && item.mergeAt === undefined) item.windowTrace.rejections += 1;
       item.verdictAt = at;
       item.finalReserveAt = item.reserve?.by === event.event_by &&
         (!Number.isFinite(item.reserve.until) || item.reserve.until >= at) ? item.reserve.at : null;
@@ -62,12 +87,17 @@ function move(item, event, detail, at) {
       else { item.state = 'open'; item.openAt = at; }
       break;
     }
-    case 'merged': item.mergeAt ??= at; item.state = 'merged'; break;
+    case 'merged':
+      if (item.windowTrace?.cursor?.stage !== 'mergeWait') observeFlowGap(item);
+      observeFlowStage(item, null, at, event.event_by);
+      item.mergeAt ??= at; item.state = 'merged'; break;
     case 'reopen':
     case 'refreeze':
     case 'escalate':
-    case 'lapse': item.state = 'open'; item.openAt = at; item.reserve = null; break;
-    case 'withdraw': item.state = 'withdrawn'; break;
+    case 'lapse':
+      observeFlowStage(item, 'sendBackIdle', at, event.event_by);
+      item.state = 'open'; item.openAt = at; item.reserve = null; break;
+    case 'withdraw': observeFlowStage(item, null, at, event.event_by); item.state = 'withdrawn'; break;
   }
 }
 
@@ -145,12 +175,12 @@ function recommendation(stage, { activeAgents, queues, openByLane, accepted, cou
 }
 
 /** Compile immutable lifecycle facts once so API cache hits only need a time-specific projection. */
-export function prepareFlowHistory(history) {
+export function prepareFlowHistory(history, { window = false } = {}) {
   const items = new Map();
   const actors = new Map();
   const dailyEvents = [];
   for (const event of history) {
-    const detail = JSON.parse(event.event_detail);
+    const detail = proofEventDetail(event);
     const at = Date.parse(event.event_at);
     const id = event.event_by;
     if (!['board', 'person', 'clock'].includes(id)) {
@@ -161,14 +191,15 @@ export function prepareFlowHistory(history) {
       actor.lastAt = at;
     }
     if (event.item_id === null || event.item_id === undefined) continue;
-    if (!items.has(event.item_id)) items.set(event.item_id, { id: event.item_id, lane: 'unknown' });
+    if (!items.has(event.item_id)) items.set(event.item_id, { id: event.item_id, lane: 'unknown', ...(window ? { windowTrace: newWindowTrace() } : {}) });
     const item = items.get(event.item_id);
     if (event.event_kind === 'add') dailyEvents.push({ at, kind: 'added' });
     if (event.event_kind === 'merged' && item.mergeAt === undefined) dailyEvents.push({ at, kind: 'merged' });
-    move(item, event, detail, at);
+    moveFlowItem(item, event, detail, at);
   }
   const frozenItems = [...items.values()].map((item) => Object.freeze({
     ...item,
+    ...(item.windowTrace ? { windowTrace: frozenWindowTrace(item.windowTrace) } : {}),
     ...(item.reserve ? { reserve: Object.freeze({ ...item.reserve }) } : {}),
   }));
   const frozenActors = [...actors.values()].map((actor) => Object.freeze({ ...actor }));
@@ -177,7 +208,7 @@ export function prepareFlowHistory(history) {
 }
 
 /** Project current queues and time windows from compiled facts without mutating the cached snapshot. */
-export function projectFlowStats(prepared, boundary, now, counts) {
+export function projectFlowStats(prepared, boundary, now, counts, { windowMinutes, executionCapacity } = {}) {
   const selected = at => !boundary || at >= Date.parse(boundary);
   const daily = new Map();
   for (const event of prepared.dailyEvents) {
@@ -217,13 +248,17 @@ export function projectFlowStats(prepared, boundary, now, counts) {
   } : { stage: null, share: null, completedItems, fullyMeasuredCycles: 0, totalCycleMinutes: 0, lowConfidence: completedItems > 0,
     message: completedItems ? `not enough measured flow to name a bottleneck (${completedItems} items completed since ${boundary ?? 'the beginning'}, none with every stage measured)` :
       `not enough flow to name a bottleneck (0 items completed since ${boundary ?? 'the beginning'})`, recommendation: null };
-  return { asOf: new Date(now).toISOString(), stages, queues: queueData.queues, unreviewed: queueData.unreviewed, daily: [...daily.values()].sort((a, b) => a.date.localeCompare(b.date)),
+  const window = windowMinutes === undefined ? undefined : {
+    ...projectFlowWindow(prepared, windowMinutes, now),
+    ...(executionCapacity ? { executionCapacity } : {}),
+  };
+  return { ...(window === undefined ? {} : { window }), asOf: new Date(now).toISOString(), stages, queues: queueData.queues, unreviewed: queueData.unreviewed, daily: [...daily.values()].sort((a, b) => a.date.localeCompare(b.date)),
     submitsPerMerged: completedItems ? counts.submissions / completedItems : 0, activeAgents, bottleneck };
 }
 
 /** Derive flow from an immutable history with an injectable observation time for fixtures. */
-export function flowStats(history, boundary, now, counts) {
-  return projectFlowStats(prepareFlowHistory(history), boundary, now, counts);
+export function flowStats(history, boundary, now, counts, options = {}) {
+  return projectFlowStats(prepareFlowHistory(history, { window: options.windowMinutes !== undefined }), boundary, now, counts, options);
 }
 
 /** Format elapsed minutes in rounded human units while JSON retains its original numeric precision. */

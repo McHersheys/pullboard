@@ -1,3 +1,10 @@
+import {
+  handoffMoveProblem,
+  requireHandoffActive,
+} from './handoff-state.js';
+import { manualLandingFailureQuoted } from './manual-landing-failure-quoted.js';
+import { lineSettings } from './line-settings.js';
+import { requireOutsideReceipt } from './outside-proof.js';
 /** Versioned, deterministic replay through the CLI's existing board engine [H3,H16]. */
 import {
   createHash,
@@ -6,42 +13,14 @@ import {
 import * as store from './board.js';
 import { COORDINATOR } from './config.js';
 import { recordedRefusal } from './recorded-refusal.js';
-import {
-  BAR_ENGINE,
-  carriesBarReason,
-} from './bar-corrections.js';
-import {
-  carriesImplies,
-  IMPLIES_ENGINE,
-} from './implies.js';
-import {
-  carriesConflict,
-  CONFLICT_ENGINE,
-} from './trunk-conflict.js';
-import { CHECK_ACCEPT_ENGINE } from './check-accept.js';
-import { HEALTH_SENTINEL_ENGINE } from './health-receipts.js';
-import { BOARD_SENTINEL_ENGINE } from './sentinels.js';
-import { RECURRING_JOB_ENGINE } from './job-engine.js';
 import { PEOPLE_ENGINE } from './people-engine.js';
-import { SPEC_APPROVAL_ENGINE } from './spec-approval-engine.js';
-import { GATE_RUN_ENGINE } from './gate-run-engine.js';
 import { requireBound } from './quarantine.js';
 import {
-  REOPEN_FIRST_REFUSAL_ENGINE,
-  CAUSE_ENGINE,
   ENGINE_VERSION,
   VERIFIER_STANDING_ENGINE,
-  VERDICT_REVIEW_ENGINE,
-  MILESTONE_RANK_ENGINE,
-  ROW_DRAFT_ENGINE,
-  SUBMITTED_CONFLICT_ENGINE,
 } from './machine.js';
-import {
-  MILESTONE_SHIP_ENGINE,
-  canonicalMilestoneTarget,
-} from './milestones.js';
+import { canonicalMilestoneTarget } from './milestones.js';
 import { Refused } from './refused.js';
-import { firstRefusal } from './claims.js';
 import {
   requestMoveProblem,
   recordRequestMove,
@@ -57,69 +36,17 @@ import {
   SUBMISSION_PROOF_ENGINE,
   submissionProof,
 } from './submit-invariants.js';
-import {
-  CI_FLAKE_ENGINE,
-  NATIVE_FLAKE_ENGINE,
-  carriesFlakeDiagnostics,
-} from './flake-engine.js';
-import { LOCAL_LANDING_ENGINE } from './land-engine.js';
-import { REVIEW_SKIP_ENGINE } from './review-skip-engine.js';
-import { COORDINATOR_HOLD_ENGINE } from './coordinator-hold-engine.js';
 import { requireCoordinatorHold } from './coordinator-hold.js';
 
-const ITEM_ID_FIRST_ARGUMENT = new Set(['acceptCheck', 'editItem', 'escalate', 'recordAttempt', 'claim', 'release', 'submit', 'reserveReview', 'verify', 'merged', 'withdraw', 'refreeze', 'reopen', 'appendFact']);
+import {
+  MOVE_REGISTRY,
+  MOVE_OPERATIONS as ENGINE_OPERATIONS,
+  minimumMoveEngine as minimumOperationEngine,
+} from './move-registry.js';
+export { ENGINE_OPERATIONS };
 
-/** Only these public board operations may be requested by an encrypted move. */
-export const ENGINE_OPERATIONS = Object.freeze([
-  'register', 'ensureCoordinator', 'addItem', 'editItem', 'completeCheckBaseline', 'escalate', 'recordAttempt',
-  'claim', 'release', 'submit', 'reserveReview', 'reserveNextReview', 'verify', 'merged',
-  'withdraw', 'refreeze', 'reopen', 'shout', 'passDecision', 'answerDecision', 'holdLane', 'releaseLane', 'holdItem', 'releaseItemHold',
-  'addMilestone', 'editMilestoneItems', 'orderMilestoneItems', 'moveMilestone', 'editMilestone', 'removeMilestone', 'shipMilestone',
-  'recordRowDecisions', 'applyRowDecisions', 'draftSpecRow', 'appendFact', 'recordSpecApprovalBaseline',
-  'recordLandingBatch', 'recordLandingWaiver', 'recordLandingFlake', 'finishLandingBatch', 'acceptCheck',
-  'recordHealthFindings', 'proposeSentinel', 'decideSentinel', 'beginSentinelRun', 'finishSentinelRun',
-  'recordFlakeObservation', 'recordGateRun', 'declareJob', 'recordJobRun', 'takeCoordinator',
-]);
-
-/** Engine version at which each ordered operation first has stable replay semantics. */
-const OPERATION_ENGINE = Object.freeze({ draftSpecRow: ROW_DRAFT_ENGINE, orderMilestoneItems: MILESTONE_RANK_ENGINE, reopen: 8, recordLandingBatch: 8, recordLandingWaiver: 8, recordLandingFlake: 8, finishLandingBatch: 8, acceptCheck: CHECK_ACCEPT_ENGINE,
-  shipMilestone: MILESTONE_SHIP_ENGINE, recordSpecApprovalBaseline: SPEC_APPROVAL_ENGINE, takeCoordinator: COORDINATOR_HOLD_ENGINE });
-
-/** Dependency edits, causes, sealed reviews, submission proofs, trunk conflicts, health observations and milestone targets retain distinct recorded engine meanings. */
-function minimumOperationEngine(operation, args, board, at) {
-  if (['verify', 'reopen'].includes(operation) && args[1]?.reopenFirstRefusalMinutes !== undefined
-    || ['claim', 'release'].includes(operation) && board && firstRefusal(board, args[0], at)) return REOPEN_FIRST_REFUSAL_ENGINE;
-  // A batch landed on the local trunk before it is published (#801).
-  if (operation === 'recordLandingBatch' && args[0]?.batch?.state === 'trunk'
-    || operation === 'finishLandingBatch' && board && store.landingBatches(board).find(batch => batch.id === args[0]?.id)?.state === 'trunk') return LOCAL_LANDING_ENGINE;
-  if (operation === 'recordFlakeObservation') return args[0]?.observation?.kind === 'ci' ? CI_FLAKE_ENGINE : NATIVE_FLAKE_ENGINE;
-  if (operation === 'recordLandingBatch' && carriesFlakeDiagnostics(args[0]?.batch)) return NATIVE_FLAKE_ENGINE;
-  if (['proposeSentinel', 'decideSentinel', 'beginSentinelRun', 'finishSentinelRun'].includes(operation) || typeof args[1]?.cause === 'string' && args[1].cause.startsWith('sentinel:')) return BOARD_SENTINEL_ENGINE;
-  if (['declareJob', 'recordJobRun'].includes(operation)) return RECURRING_JOB_ENGINE;
-  if (operation === 'recordGateRun') return GATE_RUN_ENGINE;
-  if (operation === 'recordHealthFindings') return HEALTH_SENTINEL_ENGINE;
-  if (operation === 'reserveNextReview' && Array.isArray(args[0]?.skipIds) && args[0].skipIds.length) return REVIEW_SKIP_ENGINE;
-  const options = args[1];
-  if (carriesConflict(operation, args)) return board && store.itemById(board, args[0])?.item_status === 'submitted' ? SUBMITTED_CONFLICT_ENGINE : CONFLICT_ENGINE;
-  if (operation === 'submit' && options?.submissionProof !== undefined
-    || operation === 'recordLandingBatch' && args[0]?.batch?.invariantEvidence !== undefined) return SUBMISSION_PROOF_ENGINE;
-  const given = (name) => Boolean(options && typeof options === 'object' && Object.hasOwn(options, name) && options[name] !== undefined && options[name] !== null && options[name] !== false);
-  if (board && ['recordLandingBatch', 'finishLandingBatch'].includes(operation)) {
-    const id = operation === 'recordLandingBatch' ? args[0]?.batch?.id : args[0]?.id;
-    const prior = id && store.landingBatches(board).find(batch => batch.id === id);
-    if (prior?.invariantEvidence) return SUBMISSION_PROOF_ENGINE;
-    if (prior && ['items', 'candidates'].some(key => Array.isArray(prior[key]) && prior[key].some(entry => entry && Object.hasOwn(entry, 'reviewedCommit')))) return VERDICT_REVIEW_ENGINE;
-  }
-  if (operation === 'verify' && options && Object.hasOwn(options, 'review')) return VERDICT_REVIEW_ENGINE;
-  if (operation === 'recordLandingBatch' && args[0]?.batch
-    && ['items', 'candidates'].some(key => Array.isArray(args[0].batch[key]) && args[0].batch[key].some(entry => entry && typeof entry === 'object' && Object.hasOwn(entry, 'reviewedCommit')))) return VERDICT_REVIEW_ENGINE;
-  if (['verify', 'reopen', 'appendFact'].includes(operation) && (given('cause') || given('neverAgain') || given('asPerson'))) return CAUSE_ENGINE;
-  if (carriesImplies(operation, args)) return IMPLIES_ENGINE;
-  if (carriesBarReason(operation, args)) return BAR_ENGINE;
-  if (operation === 'editMilestone' && options && Object.hasOwn(options, 'target') && options.target !== undefined) return MILESTONE_SHIP_ENGINE;
-  return operation === 'editItem' && options && Object.hasOwn(options, 'after') && options.after !== undefined
-    ? 10 : OPERATION_ENGINE[operation] ?? 1;
-}
+/** Each operation owns its item-id flag; no parallel hand-kept list remains [C7,V4]. */
+const ITEM_ID_FIRST_ARGUMENT = new Set(ENGINE_OPERATIONS.filter(operation => MOVE_REGISTRY[operation].itemIdFirstArgument));
 
 /** Read a replica's committed prefix without trusting an independently saved transport cursor. */
 export function appliedSequence(board) {
@@ -145,8 +72,12 @@ export function checkpointSequence(board, sequence) {
 }
 
 /** Start an explicitly relinked remote epoch while keeping all local board rows and history. */
-export function startRelayEpoch(board) {
+export function startRelayEpoch(board, boardId) {
   store.atomic(board, () => {
+    if (boardId !== undefined) {
+      if (!/^[0-9a-f]{32}$/u.test(boardId)) throw new Refused('RELAY_STORAGE', 'restore a valid native board identity before starting its relay epoch');
+      metadata(board, 'board_id', boardId);
+    }
     board.db.prepare("DELETE FROM board_meta WHERE meta_key LIKE 'relay_receipt_%'").run();
     board.db.prepare("DELETE FROM board_meta WHERE meta_key LIKE 'relay_refusal_%'").run();
     metadata(board, 'relay_applied_sequence', '0');
@@ -157,12 +88,18 @@ export function startRelayEpoch(board) {
 /** Turn caller-only callbacks into deterministic values before sealing an executable operation. */
 export function prepareEngineMove(board, operation, args, { id = randomUUID(), actor } = {}) {
   if (!ENGINE_OPERATIONS.includes(operation) || !Array.isArray(args)) throw new Refused('RELAY_MOVE', 'use a supported board-engine operation with its argument array');
-  if (operation === 'submit' && ENGINE_VERSION >= SUBMISSION_PROOF_ENGINE) submissionProof(args[1]?.submissionProof);
-  const minimumEngine = minimumOperationEngine(operation, args, board);
+  const values = args.map((value) => value && typeof value === 'object' ? { ...value } : value);
+  if (operation === 'reopen' && values[1] && typeof values[1] === 'object'
+    && manualLandingFailureQuoted(values[1].note)) values[1].quotedLandingFailure = true;
+  if (operation === 'submit' && ENGINE_VERSION >= SUBMISSION_PROOF_ENGINE) submissionProof(values[1]?.submissionProof);
+  if (operation === 'claim' && ['wipPerReviewer', 'takeoverMinutes'].some(key => typeof lineSettings(board)[key] === 'number')) {
+    values[1] = { ...values[1], lineCapacity: true };
+  }
+  const minimumEngine = minimumOperationEngine(operation, values, board);
   if (ENGINE_VERSION < minimumEngine) throw new Refused('ENGINE_VERSION', `${operation} requires engine version ${minimumEngine}; this pullboard uses engine ${ENGINE_VERSION}; upgrade before sending it`);
   // A gate run is sealed only as its gate's own receipt; a run made up by hand is refused before it reaches any replica.
-  if (operation === 'recordGateRun') requireBound(board, args[0]?.receipt);
-  const values = args.map((value) => value && typeof value === 'object' ? { ...value } : value);
+  if (operation === 'recordGateRun') requireBound(board, values[0]?.receipt);
+  if (operation === 'verify' && values[1]?.sandbox !== undefined) requireOutsideReceipt(board, values[1].sandbox);
   if (operation === 'release') {
     const problem = store.reviewReleaseNoteProblem(board, values[0], values[1], values[2]);
     if (problem) throw problem;
@@ -314,7 +251,9 @@ function registrationProblem(board, move, { sender, registration, sequence, dige
 export function applyRelayMove(board, move, { sequence, at, sender, kind, digest = null, registration }) {
   requireSupportedEngine(move);
   const phoneReceipt = sender?.kind === 'machine' && move?.engine >= 6 && Boolean(move.personRequest) && !requestMoveProblem(board, move, { checkExecutorLease: false });
-  const problem = relaySenderProblem(move, sender, kind, { phoneReceipt }) ?? (kind === 'move' ? registrationProblem(board, move, { sender, registration, sequence, digest }) : null);
+  const problem = relaySenderProblem(move, sender, kind, { phoneReceipt })
+    ?? (kind === 'move' ? handoffMoveProblem(board, relayMoveActor(move), move.operation, move.args) : null)
+    ?? (kind === 'move' ? registrationProblem(board, move, { sender, registration, sequence, digest }) : null);
   if (!problem) {
     // Engine-48 relay moves run under linked verifier standing; older recorded moves replay as they did.
     // The person is above every seat; their own moves act with the coordinator's standing.
@@ -364,6 +303,7 @@ export function applyEngineMove(board, move, { sequence, at, standing = null, en
           if (problem) throw problem;
           // One main checkout coordinates a linked board at a time; another is refused by name (#347).
           requireCoordinatorHold(board, move, standing?.lineage, at);
+          requireHandoffActive(board, relayMoveActor(move), move.operation, move.args);
           return store[move.operation](board, ...executableArgs(move, board));
         });
         const result = standing ? store.withVerifierStanding(board, standing, execute) : execute();

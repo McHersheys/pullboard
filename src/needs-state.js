@@ -1,3 +1,4 @@
+import { resumeRigorCounters } from './rigor-counters.js';
 /** Read the existing shared board projection with current unapplied person decisions [N26,A9]. */
 import { join } from 'node:path';
 import * as store from './board.js';
@@ -11,12 +12,10 @@ import { projectState } from './serve.js';
 import { loadConfig } from './config.js';
 import { loadSpec } from './spec.js';
 import { loadDoctrine } from './doctrine.js';
-import {
-  rigorDraftNeeds,
-  undraftedRigor,
-} from './rigor-notices.js';
+import { rigorDraftNeeds } from './rigor-notices.js';
 import { personNeeds } from './needs.js';
-import { displayAgentName } from './agent-names.js';
+import { recentBlocks } from './needs-summary.js';
+export { personNeedsSummary, recentBlocks } from './needs-summary.js';
 import {
   projectSpecApprovals,
   specApprovalState,
@@ -36,23 +35,13 @@ export function personNeedsState(root, { board: providedBoard = null, includeRig
     const config = loadConfig(root);
     const state = projectSpecApprovals(projectFit(pendingFit(info.commonDir), projectRowDecisions(decisions, projectState(root, { board }))), specApprovalState(root, { board, config }));
     const rows = projectRowDecisions(decisions, { root, spec: loadSpec(root, config).rows, practice: loadDoctrine(root, config).rows });
-    const rigorDrafts = rigorDraftNeeds(rows);
-    const projected = { ...state, rigorDrafts, sentinelDrafts: sentinelDraftNeeds(sentinels(board)), ...(includeRigorUndrafted
-      ? { rigorUndrafted: undraftedRigor(store.events(board), rows, { person: store.PERSON }) } : {}) };
+    const drafts = store.rowDrafts(board);
+    const rigorDrafts = rigorDraftNeeds(rows, drafts, decisions);
+    const rigor = includeRigorUndrafted ? resumeRigorCounters(board, rows, { person: store.PERSON, drafts, decisions }) : null;
+    const projected = { ...state, rigorDrafts, sentinelDrafts: sentinelDraftNeeds(sentinels(board)), blocks: recentBlocks(info.commonDir, board), ...(includeRigorUndrafted
+      ? { rigorUndrafted: rigor.causes, rigorNotice: rigor.notice } : {}) };
     return { ...projected, needs: personNeeds(projected) };
   } finally {
     if (!providedBoard) store.closeBoard(board);
   }
-}
-
-/** Keep status's complete obligation list without dashboard history, Git ages, or release notes. */
-export function personNeedsSummary(root, { board, config }) {
-  const spec = loadSpec(root, config);
-  const rows = projectRowDecisions(store.rowDecisions(board), { root, spec: spec.rows, practice: loadDoctrine(root, config).rows });
-  const projected = projectSpecApprovals({ ...rows,
-    decisions: store.openDecisions(board, store.PERSON), holds: store.laneHolds(board),
-    agents: store.listAgents(board).map(agent => ({ ...agent, displayName: displayAgentName(agent, config.agents.names) })),
-    rigorDrafts: rigorDraftNeeds(rows), sentinelDrafts: sentinelDraftNeeds(sentinels(board)),
-  }, specApprovalState(root, { board, config, spec }));
-  return projected;
 }

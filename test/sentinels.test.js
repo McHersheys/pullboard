@@ -29,6 +29,12 @@ import { BOARD_SENTINEL_ENGINE } from '../src/sentinels.js';
 import { sentinelDefinition } from '../src/sentinels.js';
 import { sentinelDigest } from '../src/sentinels.js';
 import { sentinels } from '../src/sentinels.js';
+import { executeMove } from '../src/api.js';
+import { moveArgs } from '../src/api-moves.js';
+import { personRequestMove, preparePersonRequest } from '../src/person-request.js';
+import { personRequestRecords, receivePersonRequest, requestIntentDigest, requestMoveProblem, requestStageText } from '../src/relay-requests.js';
+import { PEOPLE_ENGINE } from '../src/people-engine.js';
+import { sentinelDraftNeeds } from '../src/sentinels.js';
 import { machineSettingsFile } from '../src/settings.js';
 import { runFixtureChild } from './fixture-child.js';
 import { runFixtureGit } from './fixture-child.js';
@@ -41,7 +47,7 @@ import { parseProcessCensus } from '../src/process-census.js';
 import { requireSupportedEngine as requirePublished55Engine } from './fixtures/engine-55-reader.js';
 
 /** Isolate actual SQLite, Git, settings and subprocess files; due time is explicitly injected. */
-function fixture(t) {
+function fixture(t, { agentRoute } = {}) {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-board-watch-')));
   const root = join(directory, 'repo'); mkdirSync(root);
   const overrides = { PULLBOARD_HOME: join(directory, 'home'), PULLBOARD_MACHINE_HOME: join(directory, 'machine'),
@@ -61,7 +67,7 @@ function fixture(t) {
   const clock = { time: Date.parse('2026-10-18T03:00:00Z'), now() { return new Date(this.time); } };
   const board = store.openBoard(join(root, '.git/pullboard/board.sqlite'), clock);
   store.register(board, { lane: 'coordinator', path: root });
-  const agent = store.register(board, { lane: 'core', path: join(directory, 'agent') });
+  const agent = store.register(board, { lane: 'core', path: join(directory, 'agent'), route: agentRoute });
   /** Apply the actual ordered board engine with deterministic injected receipt time. */
   const ordered = async (operation, args) => {
     const move = prepareEngineMove(board, operation, args);
@@ -69,9 +75,9 @@ function fixture(t) {
     assert.equal(receipt.error, undefined, JSON.stringify(receipt)); return receipt.result;
   };
   /** Run the actual CLI against this real board; view means the explicit test person adapter. */
-  const cli = async (args, personChannel) => {
+  const cli = async (args, personChannel, cwd = root) => {
     let output = ''; let error = '';
-    const code = await main([...args, '--json'], { cwd: root, clock, personChannel,
+    const code = await main([...args, '--json'], { cwd, clock, personChannel,
       stdout: { isTTY: false, write: text => { output += text; } }, stderr: { write: text => { error += text; } } });
     return { code, document: output ? JSON.parse(output) : null, error };
   };
@@ -119,6 +125,57 @@ function repeatedCause(box) {
   return { red, green, items, check: 'test -f up.txt' };
 }
 
+test('resume never runs a sentinel and sentinel run runs the due ones [N26,A6,D3]', async t => {
+  const box = fixture(t, { agentRoute: 'mid' });
+  const marker = join(box.directory, 'explicit-run.json');
+  writeFileSync(join(box.root, 'value.txt'), 'committed trunk input');
+  writeFileSync(join(box.root, 'slow-check.mjs'), `import {readFileSync,writeFileSync} from 'node:fs';
+import {setTimeout} from 'node:timers/promises';
+const value=readFileSync('value.txt','utf8');
+writeFileSync(${JSON.stringify(marker)},JSON.stringify({cwd:process.cwd(),value}));
+await setTimeout(30_000);
+console.log('explicit trunk receipt: '+value);
+`);
+  runFixtureGit(['add', 'slow-check.mjs', 'value.txt'], { cwd: box.root, env: box.env });
+  runFixtureGit(['commit', '-q', '-m', 'test: committed sentinel input [N26,A6]'], { cwd: box.root, env: box.env });
+  const agentRoot = join(box.directory, 'agent');
+  runFixtureGit(['worktree', 'add', '--quiet', '--detach', agentRoot, 'main'], { cwd: box.root, env: box.env });
+  const joined = await box.cli(['join', 'core', '--model', 'gpt-6.1-sol', '--route', 'mid'], undefined, agentRoot);
+  assert.equal(joined.code, 0, joined.error || JSON.stringify(joined.document));
+  writeFileSync(join(agentRoot, 'value.txt'), 'uncommitted agent input');
+  const command = `${quote(process.execPath)} slow-check.mjs`;
+  const proposed = await box.cli(['sentinel', 'propose', 'slow-trunk', '--check', command, '--every', 'hourly', '--owner', box.agent, '--timeout', '35000']);
+  assert.equal(proposed.code, 0, proposed.error || JSON.stringify(proposed.document));
+  const approved = await box.cli(['sentinel', 'approve', 'slow-trunk'], 'view');
+  assert.equal(approved.code, 0, approved.error || JSON.stringify(approved.document));
+
+  // The frozen bar measures ordinary in-process handling after setup, not module loading or cold CLI startup.
+  const began = performance.now();
+  const resumed = await box.cli(['resume'], undefined, agentRoot);
+  const elapsed = performance.now() - began;
+  assert.equal(resumed.code, 0, resumed.error || JSON.stringify(resumed.document));
+  assert.ok(elapsed < 100, `resume took ${elapsed.toFixed(3)} ms with a due 30 s sentinel`); // budget: declared by item #1042 and coordinator24324: in-process resume under100ms after setup.
+  assert.equal(existsSync(marker), false, 'resume neither runs the watch nor detaches a checker into the agent session');
+  assert.equal(sentinels(box.board)[0].lastRun, null);
+  assert.equal(store.events(box.board).some(row => row.event_kind === 'sentinel-start'), false);
+
+  const run = await box.cli(['sentinel', 'run'], undefined, agentRoot);
+  assert.equal(run.code, 0, run.error || JSON.stringify(run.document));
+  const executed = JSON.parse(readFileSync(marker, 'utf8'));
+  assert.notEqual(executed.cwd, agentRoot, 'the explicit runner never uses the agent checkout');
+  assert.notEqual(executed.cwd, box.root, 'the runner prepares a separate checkout rather than using live trunk');
+  assert.equal(executed.value, 'committed trunk input', 'the run reads trunk, not the dirty agent file');
+  assert.equal(existsSync(executed.cwd), false, 'the prepared checkout is cleaned after its owned check finishes');
+  const watched = sentinels(box.board)[0];
+  assert.equal(watched.lastRun.green, true);
+  assert.match(watched.lastRun.output, /explicit trunk receipt: committed trunk input/u);
+  assert.equal(watched.check, command, 'the approved command is not rewritten for the new execution directory');
+  assert.equal(readFileSync(join(agentRoot, 'value.txt'), 'utf8'), 'uncommitted agent input');
+  const help = await box.cli(['sentinel', 'run', '--help']);
+  assert.equal(help.code, 0, help.error);
+  assert.match(JSON.stringify(help.document), /cron|scheduled CI/iu);
+});
+
 test('a repeated cause can be drafted as a sentinel [A6,D1,D3]', async t => {
   const box = fixture(t);
   const cause = repeatedCause(box);
@@ -161,10 +218,13 @@ test('a sentinel draft waits in Needs-you with its evidence [A6,D1,D3]', async t
   assert.deepEqual(after, ['staging-site'], 'the person’s approval closes the call');
   const watched = sentinels(box.board).find(row => row.name === 'rigor-row-a6');
   assert.equal(watched.status, 'approved');
-  assert.equal(watched.lastRun?.green, true, 'approving it starts it: the next resume runs the watch, now green');
+  assert.equal(watched.lastRun, null, 'approval and resume leave execution to the scheduled command');
+  const explicit = await box.cli(['sentinel', 'run']);
+  assert.equal(explicit.code, 0, explicit.error || JSON.stringify(explicit.document));
+  assert.equal(sentinels(box.board).find(row => row.name === 'rigor-row-a6').lastRun?.green, true);
 });
 
-test('an approved sentinel runs by itself and reports to its owner once [A6,D1,D3]', async t => {
+test('an approved sentinel execution reports to its owner once [A6,D1,D3]', async t => {
   const box = fixture(t);
   mkdirSync(join(box.root, 'watch'));
   const check = checker(box, "import {existsSync,appendFileSync} from 'node:fs'; appendFileSync('runs','run\\n'); console.log('check receipt'); process.exit(existsSync('green')?0:1);");
@@ -176,7 +236,7 @@ test('an approved sentinel runs by itself and reports to its owner once [A6,D1,D
   const approved = await box.cli(['sentinel', 'approve', 'staging'], 'view');
   assert.equal(approved.code, 0, approved.error);
   assert.equal(approved.document.sentinel.status, 'approved');
-  assert.equal((await box.cli(['resume'])).code, 0, 'the real automatic resume caller executes the due approved watch');
+  await box.run();
   let notices = store.allShouts(box.board).filter(row => row.shout_from === 'sentinel');
   assert.equal(notices.length, 1); assert.equal(notices[0].shout_to, box.agent);
   assert.match(notices[0].shout_text, /staging[\s\S]*check receipt[\s\S]*Next: repair the staging check/u);
@@ -414,7 +474,7 @@ test('a successful watch drains a descendant that ignores TERM before publishing
   assert.ok(!remaining || remaining.state.startsWith('Z'), 'no receipt precedes the stubborn descendant shutdown');
 });
 
-test('the background observer runs an approved board watch through its real resume child [A6,D3]', async t => {
+test('the background observer leaves approved board watches for explicit runs [A6,D3]', async t => {
   const box = fixture(t);
   const check = checker(box, "import {appendFileSync} from 'node:fs'; appendFileSync('background-runs','run\\n'); console.log('background receipt'); process.exit(1);");
   const row = store.proposeSentinel(box.board, { agentId: box.agent, row: { name: 'background', check, every: '10m', owner: box.agent } });
@@ -446,13 +506,117 @@ test('the background observer runs an approved board watch through its real resu
   writeFileSync(settingsFile, settings);
   await tick();
   assert.deepEqual(errors, []);
-  assert.equal(readFileSync(runs, 'utf8'), 'run\n', 'the default background callback launches the real resume child');
+  assert.equal(existsSync(runs), false, 'the real background resume child never executes an approved watch');
   const notices = store.allShouts(box.board).filter(shout => shout.shout_text.startsWith('Sentinel failed: background'));
-  assert.equal(notices.length, 1);
-  assert.equal(notices[0].shout_to, box.agent);
-  assert.match(notices[0].shout_text, /background receipt/u);
+  assert.equal(notices.length, 0, 'resume cannot invent a result or owner alert');
+  assert.equal(sentinels(box.board)[0].lastRun, null);
+  assert.equal(store.events(box.board).some(row => row.event_kind === 'sentinel-start'), false);
   await tick();
-  assert.equal(readFileSync(runs, 'utf8'), 'run\n', 'the next callback honors the recorded due time');
+  assert.equal(existsSync(runs), false, 'a second health callback still leaves the watch to its scheduled command');
   await observer.close();
   assert.equal(cancelled, true);
+});
+
+
+test('a person approves or declines a sentinel by its exact proposal [N26,P6]', async t => {
+  const box = fixture(t);
+  const proposal = store.proposeSentinel(box.board, { agentId: box.agent,
+    row: { name: 'view-watch', check: 'true', directory: '.', every: 'hourly', owner: 'core' } });
+  const draft = sentinelDraftNeeds(sentinels(box.board))[0];
+  assert.deepEqual([draft.check, draft.directory, draft.every, draft.owner, draft.digest],
+    [proposal.check, proposal.directory, proposal.every, proposal.owner, proposal.digest],
+    'the person sees the exact command, directory, schedule, owner and proposal digest');
+  /** Exercise the existing API-to-CLI adapter on this actual private person-view board. */
+  const act = (intent, channel = 'view') => executeMove(box.root, intent,
+    (argv, streams) => main(argv, { ...streams, clock: box.clock }), undefined, channel);
+  const approval = personRequestMove({ verb: 'sentinel-approve', args: { name: proposal.name, digest: proposal.digest } });
+  assert.deepEqual(moveArgs(approval), ['sentinel', 'approve', `--digest=${proposal.digest}`, '--json', '--', proposal.name]);
+  for (const args of [{ name: proposal.name }, { ...approval.args, digest: 'not-a-digest' }, { ...approval.args, as: 'person' }]) {
+    assert.throws(() => personRequestMove({ verb: 'sentinel-approve', args }), error => error.code === 'BAD_REQUEST');
+  }
+  const approved = await act(approval);
+  assert.equal(approved.status, 200, JSON.stringify(approved));
+  assert.equal(sentinels(box.board)[0].status, 'approved');
+  const replacement = store.proposeSentinel(box.board, { agentId: box.agent, row: { ...proposal, check: 'false' } });
+  const beforeStale = exportBoard(box.board);
+  const stale = await act(approval);
+  assert.equal(stale.body.error?.code, 'STALE_SENTINEL');
+  assert.deepEqual(exportBoard(box.board), beforeStale, 'an old tap neither approves the replacement nor writes a decision');
+  const decline = personRequestMove({ verb: 'sentinel-decline', args: { name: replacement.name,
+    digest: replacement.digest, reason: '  Not this command  ' } });
+  assert.deepEqual(moveArgs(decline), ['sentinel', 'decline', `--digest=${replacement.digest}`,
+    '--reason=  Not this command  ', '--json', '--', replacement.name]);
+  const declined = await act(decline);
+  assert.equal(declined.status, 200, JSON.stringify(declined));
+  assert.equal(sentinels(box.board)[0].status, 'declined');
+  assert.equal(sentinels(box.board)[0].reason, 'Not this command');
+  for (const intent of [approval, decline]) {
+    const beforeAgent = exportBoard(box.board);
+    const refused = await act(intent, 'agent');
+    assert.equal(refused.body.error?.code, 'B26_PERSON_CHANNEL');
+    assert.deepEqual(exportBoard(box.board), beforeAgent, 'an agent API channel never makes a person decision');
+  }
+  const relayed = store.proposeSentinel(box.board, { agentId: box.agent,
+    row: { name: 'relay-watch', check: 'true', every: 'daily', owner: 'core' } });
+  const intent = { verb: 'sentinel-approve', args: { name: relayed.name, digest: relayed.digest } };
+  /** Receive only through the ordinary durable authenticated request intake. */
+  const receive = (id, sender, requested = intent) => receivePersonRequest(box.board, preparePersonRequest(requested, id),
+    { sequence: appliedSequence(box.board) + 1, at: box.clock.now().toISOString(), sender });
+  assert.equal(receive('agent-sentinel', { kind: 'agent', agent: box.agent, userId: 'fixture-person' }).error?.code, 'RELAY_PERSON_ONLY');
+  assert.equal(receive('member-sentinel', { kind: 'person', userId: 'fixture-person', approver: false }).error?.code, 'NOT_APPROVER');
+  const person = { kind: 'person', userId: 'fixture-person', approver: true, login: 'phone-person', engine: PEOPLE_ENGINE };
+  const record = receive('person-sentinel', person);
+  assert.equal(record.status, 'waiting');
+  /** Bind each ordinary effect to the exact authenticated document under the existing receipt verifier. */
+  const tagged = (operation, args, phase, id, requested = record) => {
+    const move = prepareEngineMove(box.board, operation, args, { id });
+    move.personRequest = { id: requested.id, executor: 'fixture-device', phase, digest: requestIntentDigest(requested) };
+    return move;
+  };
+  /** The elected machine may carry the person's exact request, never mint another person action. */
+  const replay = move => applyRelayMove(box.board, move, { sequence: appliedSequence(box.board) + 1,
+    at: box.clock.now().toISOString(), kind: 'move', sender: { kind: 'machine', machine: 'fixture-device',
+      userId: 'fixture-person', login: 'executor-person', engine: PEOPLE_ENGINE } });
+  const claim = tagged('shout', [{ from: 'person', to: 'coordinator', text: requestStageText(record, 'claim'), lanes: ['core'] }], 'claim', 'sentinel-claim');
+  assert.equal(replay(claim).error, undefined);
+  const decision = { agentId: store.PERSON, channel: 'view', name: relayed.name,
+    digest: relayed.digest, decision: 'approve', reason: '' };
+  for (const [index, change] of [{ name: 'view-watch' }, { digest: proposal.digest }, { decision: 'decline', reason: 'not requested' },
+    { reason: 'not requested' }, { agentId: box.agent }, { channel: 'terminal' }].entries()) {
+    const badMove = tagged('decideSentinel', [{ ...decision, ...change }], 'execute', `sentinel-bad-${index}`);
+    assert.equal(requestMoveProblem(box.board, badMove)?.code, 'PERSON_REQUEST_RECEIPT');
+    assert.equal(replay(badMove).error?.code, 'RELAY_PERSON_ONLY', 'an invalid receipt never grants the machine person authority');
+    assert.equal(sentinels(box.board).find(row => row.name === relayed.name).status, 'pending');
+    assert.equal(personRequestRecords(box.board).find(row => row.id === record.id).status, 'waiting');
+  }
+  const applied = replay(tagged('decideSentinel', [decision], 'execute', 'sentinel-exact'));
+  assert.equal(applied.error, undefined, JSON.stringify(applied));
+  assert.equal(sentinels(box.board).find(row => row.name === relayed.name).status, 'approved');
+  assert.equal(personRequestRecords(box.board).find(row => row.id === record.id).status, 'done');
+  assert.equal(JSON.parse(box.board.db.prepare("SELECT event_detail FROM event WHERE event_kind='sentinel-decision' ORDER BY event_id DESC LIMIT 1").get().event_detail).person,
+    person.login, 'the decision belongs to the initiating phone person, not its executor');
+  const nextProposal = store.proposeSentinel(box.board, { agentId: box.agent, row: { ...relayed, check: 'false' } });
+  const declineIntent = { verb: 'sentinel-decline', args: { name: nextProposal.name,
+    digest: nextProposal.digest, reason: '  Requested decline  ' } };
+  const declineRecord = receive('person-sentinel-decline', person, declineIntent);
+  assert.equal(declineRecord.status, 'waiting');
+  const declineClaim = tagged('shout', [{ from: 'person', to: 'coordinator',
+    text: requestStageText(declineRecord, 'claim'), lanes: ['core'] }], 'claim', 'sentinel-decline-claim', declineRecord);
+  assert.equal(replay(declineClaim).error, undefined);
+  const declineDecision = { agentId: store.PERSON, channel: 'view', name: nextProposal.name,
+    digest: nextProposal.digest, decision: 'decline', reason: declineIntent.args.reason.trim() };
+  const wrongReason = tagged('decideSentinel', [{ ...declineDecision, reason: 'A different reason' }],
+    'execute', 'sentinel-decline-wrong-reason', declineRecord);
+  assert.equal(requestMoveProblem(box.board, wrongReason)?.code, 'PERSON_REQUEST_RECEIPT');
+  assert.equal(replay(wrongReason).error?.code, 'RELAY_PERSON_ONLY');
+  assert.equal(sentinels(box.board).find(row => row.name === nextProposal.name).status, 'pending');
+  assert.equal(personRequestRecords(box.board).find(row => row.id === declineRecord.id).status, 'waiting');
+  const exactDecline = replay(tagged('decideSentinel', [declineDecision], 'execute', 'sentinel-decline-exact', declineRecord));
+  assert.equal(exactDecline.error, undefined, JSON.stringify(exactDecline));
+  const declinedRelay = sentinels(box.board).find(row => row.name === nextProposal.name);
+  assert.equal(declinedRelay.status, 'declined');
+  assert.equal(declinedRelay.reason, 'Requested decline');
+  assert.equal(personRequestRecords(box.board).find(row => row.id === declineRecord.id).status, 'done');
+  assert.equal(JSON.parse(box.board.db.prepare("SELECT event_detail FROM event WHERE event_kind='sentinel-decision' ORDER BY event_id DESC LIMIT 1").get().event_detail).person,
+    person.login, 'the authenticated decline preserves its initiating person');
 });

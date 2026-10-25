@@ -139,7 +139,7 @@ async function assertLinkedRefusalAndPrimaryRecovery(box) {
 
 test('linked view source refuses a schema-only upgrade of the primary board [A5,A6,A2]', async t => {
   const box = fixture(t);
-  box.bump('SCHEMA_VERSION', 2, 3);
+  box.bump('SCHEMA_VERSION', 3, 4);
   await assertLinkedRefusalAndPrimaryRecovery(box);
 });
 

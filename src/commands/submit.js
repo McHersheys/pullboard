@@ -1,3 +1,9 @@
+import {
+  barReadySetting,
+  barReadyProblem,
+} from '../bar-readiness.js';
+import { barCheckWarning } from '../bar-check.js';
+import { requireSubmitComposition } from '../submit-composition.js';
 /** The pullboard submit command, in its own module so an item adding another command never edits these lines. */
 import * as store from '../board.js';
 import {
@@ -16,11 +22,13 @@ import {
   gateWaitReporter,
 } from '../gate-wait.js';
 import {
+  deferredSelectionNote,
   runSubmitGate,
   submitGateReport,
   withGateSlot,
 } from '../gate.js';
 import {
+  contains,
   headCommit,
   headTree,
   isClean,
@@ -50,6 +58,10 @@ import * as seatCheckout from '../seat-checkout.js';
 import {
   submitPreflight,
 } from '../submit-preflight.js';
+import {
+  changedLines,
+  oversizeNote,
+} from '../submit-size.js';
 import {
   dependencySnapshots,
   frozenCheck,
@@ -94,6 +106,9 @@ export async function submitHere(ctx, id, infra) {
       if (recordedRecovery(board, recovered)) return { me, recorded: true };
       const item = store.getItem(board, id);
       const trunk = requireTrunkMerge(root, recovered.args[1].commit);
+      if (barReadySetting(board).enabled && (recovered.args[1].policyCommit !== trunk.commit || !contains(root, trunk.commit, recovered.args[1].commit))) {
+        throw new Refused('MAIN_NOT_COMPOSED', 'the unrecorded recovered submission has no proof for current main; run pullboard inbox to synchronize its original receipt, or ask the coordinator to resolve the pending move before a fresh submit; the original request is retained');
+      }
       refuseUnverifiedStack(root, board, item, recovered.args[1].commit, trunk);
       return { me, recorded: false };
     });
@@ -108,12 +123,24 @@ export async function submitHere(ctx, id, infra) {
     const item = store.getItem(board, id);
     seatCheckout.refuseHeldElsewhere(ctx.info, store.listAgents(board), item, 'submit');
     if (item.item_status !== 'claimed' || item.item_owner !== me.id) throw new Refused('NOT_YOURS', 'claim this item before submitting it');
+    const readiness = barReadyProblem(board, item);
+    if (readiness) throw readiness;
     const correction = store.pendingRefreezeProblem(board, id);
     if (correction) throw correction;
     return item;
   });
+  const barWarning = await withBoard(ctx, async board => {
+    const warning = barCheckWarning(board, held);
+    if (!warning) return null;
+    await ordered(ctx, board, 'appendFact', [id, { agentId: held.item_owner, kind: 'note', text: `bar.check warning: ${warning}` }]);
+    return warning;
+  });
+  if (barWarning) {
+    ctx.io.say(`bar.check warning: ${barWarning}`);
+  }
   const policy = itemPolicy(root, held);
   const acceptedMain = mainPolicy(root);
+  const requireComposition = withBoard(ctx, board => barReadySetting(board).enabled);
   ctx = { ...ctx, config: policy.config };
   withBoard(ctx, (board) => refuseProvesNothing(() => acceptedMain.config, board, store.getItem(board, id)));
   const dependencies = withBoard(ctx, board => dependencySnapshots(board.db, held));
@@ -151,6 +178,7 @@ export async function submitHere(ctx, id, infra) {
   if (!commit) throw new Refused('NO_COMMIT', 'nothing committed yet');
   withBoard(ctx, (board) => submitPreflight(board, id, { agentId: me.id, commit, tree: headTree(root) ?? '' }));
   const trunk = requireTrunkMerge(root, commit);
+  if (requireComposition) requireSubmitComposition(root, commit, trunk, acceptedMain.commit);
   withBoard(ctx, (board) => refuseUnverifiedStack(root, board, held, commit, trunk));
   machineNameProblems(root, `${acceptedMain.commit}..${commit}`, { refuse: acceptedMain.config.commits.noHostName === true, say: (line) => ctx.io.say(line) });
   const infraRecord = infraNotes.infraNote({ root, claimHead, files: filesSince(root, id, claimHead, commit), gates: [ctx.config.gate, acceptedMain.config.gate], infra, requireInfraNote: acceptedMain.config.submit.requireInfraNote });
@@ -163,7 +191,7 @@ export async function submitHere(ctx, id, infra) {
   // Every submit proves its frozen check and reachable tests anew on this exact commit (V4,V16).
   // Empty frozen gates adopt accepted main setup; only a full fallback may stamp its tree.
   const submitConfig = { ...ctx.config, gate: ctx.config.gate.trim() ? ctx.config.gate : acceptedMain.config.gate, submitGate: acceptedMain.config.submitGate, staticChecks: acceptedMain.config.staticChecks,
-    submitInvariants: acceptedMain.config.submitInvariants,
+    submitInvariants: acceptedMain.config.submitInvariants, submitDeferAbove: acceptedMain.config.submitDeferAbove,
     // The accepted project runner interprets its current invariant files; candidate config cannot replace it.
     ...(acceptedMain.config.submitInvariants.length ? { affectedTests: acceptedMain.config.affectedTests } : {}) };
   const gate = await runSubmitGate(root, submitConfig, { base: claimHead, trunk: acceptedMain.commit, check: frozenCheck(held), agent: me.id, item: String(id), onWait: queuedItemLease(ctx, held, me.id, 'build'), onBrowserFallback: browserAdmissionReporter(ctx.io, ctx.io.relayJson),
@@ -187,19 +215,23 @@ export async function submitHere(ctx, id, infra) {
     );
   }
   const currentTrunk = requireTrunkMerge(root, commit); // The trunk may have moved while the gate ran.
+  if (requireComposition) requireSubmitComposition(root, commit, currentTrunk, acceptedMain.commit);
   const waivedLines = waived ? waived.map(waiverLine) : [];
   await withBoard(ctx, async (board) => {
     refuseUnverifiedStack(root, board, store.getItem(board, id), commit, currentTrunk);
     // The waived run is written to the item's thread before the submission, so no waived proof reads as green.
     if (waived) await ordered(ctx, board, 'appendFact', [id, { agentId: me.id, kind: 'measurement', text: `submission proof at ${commit.slice(0, 12)} was red and is recorded as waived, not green; every failure is covered by a live person waiver:\n${waivedLines.join('\n')}` }]);
     return await ordered(ctx, board, 'submit', [id, { agentId: me.id, commit, tree: headTree(root) ?? '', files: filesSince(root, id, claimHead, commit), policyCommit: acceptedMain.commit, ...(infraRecord ? { infra: infraRecord } : {}),
-      submissionProof: { version: 1, files: gate.files, full: gate.full, deferred: gate.deferred, reason: gate.reason },
-      ...(gate.deferred ? { note: 'full suite deferred to the landing gate' } : {}) }]);
+      submissionProof: { version: 1, files: gate.files, full: gate.full, deferred: gate.deferred, reason: gate.reason, ...(gate.deferredFiles ? { deferredFiles: gate.deferredFiles } : {}) },
+      ...(gate.deferred ? { note: gate.deferredFiles ? deferredSelectionNote(gate.deferredFiles) : 'full suite deferred to the landing gate' } : {}) }]);
   });
+  // A large submit still goes through; the note only suggests a chain of smaller items (#1162).
+  const sizeNote = oversizeNote(changedLines(root, currentTrunk.commit, commit), acceptedMain.config.itemSizeBudget);
+  if (sizeNote) ctx.io.say(`note: ${sizeNote}`);
   const report = waived
     ? `submission proof waived, not green: ${waived.length} failure(s), each covered by a live person waiver; the whole output is in ${gate.log}\n${waivedLines.join('\n')}`
     : submitGateReport(gate);
-  return reportSubmission(ctx, id, commit, { green: gate.isGreen, report, files: gate.files, full: gate.full, deferred: gate.deferred, deferFullFallback: gate.deferFullFallback, reason: gate.reason, check: gate.check,
+  return reportSubmission(ctx, id, commit, { green: gate.isGreen, report, files: gate.files, full: gate.full, deferred: gate.deferred, deferFullFallback: gate.deferFullFallback, ...(gate.deferredFiles ? { deferredFiles: gate.deferredFiles } : {}), reason: gate.reason, check: gate.check,
     log: gate.log, profile: gate.profile, profilePath: gate.profilePath, proofLog: gate.proofLog, proofProfilePath: gate.proofProfilePath,
     ...(waived ? { waived: waived.map(({ file, name, waiver }) => ({ file, name, waiver: waiver.id, reason: waiver.reason, until: waiver.until })) } : {}) }, doctrine);
 }

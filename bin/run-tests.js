@@ -8,12 +8,24 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, lstatSyn
 import { basename, delimiter, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile, execFileSync, spawnSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
+import {
+  devNull,
+  tmpdir,
+} from 'node:os';
 import { after, afterEach, beforeEach } from 'node:test';
 import { Worker } from 'node:worker_threads';
 import { randomUUID } from 'node:crypto';
 import { channel } from 'node:diagnostics_channel';
+import {
+  selectedTestResult,
+  testSelectionPatterns,
+} from '../src/test-selection.js';
 import { AGENT_SHELL_MARKERS, SSH_SHELL_MARKERS } from '../src/person.js';
+import { isLandingWorkerIdentityTimeout, landingWorkerIdentityQuery, parseLandingWorkerIdentity } from '../src/landing-worker-identity.js';
+import { foreignNodeOptions, isolateTestMachine } from '../src/test-isolation.js';
+import { TEST_FILE_POOL_ENV, longestFirst, takeTestFileToken, testFilePoolValue } from '../src/test-file-pool.js';
+import { optionTakesValue } from '../src/test-file-dispatch.js';
+import { knownNodeOption } from '../src/test-file-dispatch.js';
 const runner = fileURLToPath(import.meta.url);
 const LANDING_RUN_ENV = 'PULLBOARD_LANDING_RUN';
 const LANDING_WORKER_STARTS_ENV = 'PULLBOARD_LANDING_WORKER_STARTS';
@@ -221,8 +233,15 @@ function testEnvironment(sandbox, gateMarkers = {}) {
   env.PULLBOARD_HOME = home;
   env.PULLBOARD_MODEL = 'Test Model';
   env.PULLBOARD_MACHINE_HOME = join(sandbox, 'machine');
+  // A test finds its runner by this pid, never by parsing ps text; a nested runner sets its own (#1073).
+  env.PULLBOARD_TEST_RUNNER_PID = String(process.pid);
+  // #1046: every file of every run takes a token from one machine pool; a nested run keeps its parent's loan.
+  env[TEST_FILE_POOL_ENV] = testFilePoolValue(process.env);
+  isolateTestMachine(env, sandbox); // #1068: no settings, resources, runners or host markers of the real machine.
   // init and resume start a background view by default; a test opts back in by deleting this.
   env.PULLBOARD_VIEW_BACKGROUND = '0';
+  // Likewise the relay checkpoint publishes inside the command; a test of the background publisher opts in (#1014).
+  env.PULLBOARD_RELAY_CHECKPOINT_BACKGROUND = '0';
   env.TMPDIR = sandbox;
   env.TMP = sandbox;
   env.TEMP = sandbox;
@@ -250,198 +269,26 @@ function testEnvironment(sandbox, gateMarkers = {}) {
 }
 
 /**
- * Start the Node test runner and return its result to the caller for faithful exit handling.
+ * Run ordinary mode through admitted files and return its result for faithful exit handling.
  *
  * @param {string[]} args
  * @param {NodeJS.ProcessEnv} env
- * @returns {import('node:child_process').SpawnSyncReturns<string>}
+ * @returns {Promise<{status:number,signal:null}>}
  */
-function runTests(args, env, concurrency) {
-  let files = concurrency.files;
-  // Node reads an option only before the files, so every option is placed ahead of them, wherever it was written (#931).
-  const placed = [];
-  const selectors = [];
-  for (let at = 0; at < args.length; at += 1) {
-    const argument = args[at];
-    if (argument === '--') { selectors.push(...args.slice(at)); break; }
-    if (/^--test[-_]name[-_]pattern(?:=|$)/u.test(argument)) {
-      const value = argument.includes('=') ? argument.slice(argument.indexOf('=') + 1) : args[++at];
-      if (value === undefined) throw new Error('--test-name-pattern requires a value');
-      placed.push(`--test-name-pattern=${value}`);
-    } else if (/^--test[-_]skip[-_]pattern(?:=|$)/u.test(argument)) {
-      const value = argument.includes('=') ? argument.slice(argument.indexOf('=') + 1) : args[++at];
-      if (value === undefined) throw new Error('--test-skip-pattern requires a value');
-      placed.push(`--test-skip-pattern=${value}`);
-    } else if (/^--test[-_]concurrency(?:=|$)/u.test(argument)) {
-      const value = argument.includes('=') ? argument.slice(argument.indexOf('=') + 1) : args[++at];
-      if (!/^[1-9][0-9]*$/u.test(value ?? '') || !Number.isSafeInteger(Number(value))) {
-        throw new Error('--test-concurrency must be a positive integer');
-      }
-      files = Math.min(files, Number(value));
-    } else if (/^--(?:experimental[-_])?test[-_]isolation(?:=none|$)/u.test(argument) &&
-      (argument.endsWith('=none') || args[at + 1] === 'none')) {
-      throw new Error('bounded browser test files require process isolation; remove --test-isolation=none');
-    } else if (argument === '--test-only') {
-      // Node would apply it only to cases marked only, so a run would silently skip the rest of the file (#931).
-      throw new Error('unknown option --test-only; run-tests does not apply it, so select cases with --test-name-pattern');
-    } else if (argument.startsWith('-')) {
-      // An option Node does not know would be ignored; name it instead of running without it (#931).
-      if (!knownNodeOption(argument)) throw new Error(`unknown option ${argument.split('=', 1)[0]}; check its spelling, or drop it`);
-      placed.push(argument);
-      if (!argument.includes('=') && optionTakesValue(argument)) {
-        if (args[at + 1] === undefined) throw new Error(`${argument} requires a value`);
-        placed.push(args[++at]);
-      }
-    } else selectors.push(argument);
-  }
-  const reporter = args.some((argument) => argument === '--test-reporter' || argument.startsWith('--test-reporter='));
-  const nodeArgs = [
-    '--disable-warning=ExperimentalWarning',
-    '--test',
-    `--test-concurrency=${files}`,
-    ...(!reporter ? ['--test-reporter=tap'] : []),
-    '--import',
-    runner,
-    ...placed,
-    ...selectors,
-  ];
-  return spawnSync(process.execPath, nodeArgs, { env, stdio: 'inherit' });
+async function runTests(args, env, concurrency) {
+  const { nativeFileArguments, reportDispatchedTests, legacyFileMode, legacyNativeFileRun } = await import('../src/test-file-dispatch.js');
+  if (legacyFileMode(args)) return legacyNativeFileRun(args, env, concurrency, { runner, knownNodeOption, optionTakesValue });
+  const normalized = nativeFileArguments(args, concurrency, knownNodeOption, optionTakesValue);
+  const { options } = await landingTestOptions(normalized.args, env, normalized.concurrency);
+  if (env.PULLBOARD_TEST_ACTIONS) options.reporters.push({ reporter: fileURLToPath(new URL('../src/test-action-reporter.js', import.meta.url)), destination: devNull });
+  if (env.PULLBOARD_TEST_SELECTION) options.reporters.push({ reporter: fileURLToPath(new URL('../src/test-selection.js', import.meta.url)), destination: devNull });
+  return reportDispatchedTests(options, env);
 }
 
 /** Convert the Node test CLI subset to the supported node:test run() options. */
 async function landingTestOptions(args, env, concurrency) {
-  const options = { concurrency: true, isolation: 'process', execArgv: ['--disable-warning=ExperimentalWarning', '--import', runner] };
-  const reporters = [];
-  const selectors = [];
-  const patterns = [];
-  const skipPatterns = [];
-  const coverageExcludeGlobs = [];
-  const coverageIncludeGlobs = [];
-  const execArgv = [];
-  let expectValue = null;
-  for (let index = 0; index < args.length; index += 1) {
-    let argument = args[index];
-    if (expectValue) {
-      expectValue(argument);
-      expectValue = null;
-      continue;
-    }
-    if (argument === '--') { selectors.push(...args.slice(index + 1)); break; }
-    const valueOption = (name, take) => {
-      if (argument === name) { expectValue = take; return true; }
-      if (argument.startsWith(`${name}=`)) { take(argument.slice(name.length + 1)); return true; }
-      return false;
-    };
-    if (valueOption('--test-concurrency', value => {
-      if (value === 'true') options.concurrency = true;
-      else if (value === 'false') options.concurrency = false;
-      else if (/^[1-9][0-9]*$/u.test(value)) {
-        const requested = Number(value);
-        // Validate before clamping: Node's run() accepts a positive uint32, not Infinity or larger integers.
-        if (!Number.isSafeInteger(requested) || requested > 4_294_967_295) {
-          throw new Error(`invalid --test-concurrency value: ${value}`);
-        }
-        options.concurrency = requested;
-      } else throw new Error(`invalid --test-concurrency value: ${value}`);
-    })) continue;
-    if (valueOption('--test-name-pattern', value => patterns.push(value))) continue;
-    if (valueOption('--test-skip-pattern', value => skipPatterns.push(value))) continue;
-    if (valueOption('--test-timeout', value => { options.timeout = Number(value); })) continue;
-    if (valueOption('--test-reporter', value => reporters.push(value))) continue;
-    if (valueOption('--test-reporter-destination', value => { (options.reporterDestinations ??= []).push(value); })) continue;
-    if (valueOption('--test-coverage-include', value => coverageIncludeGlobs.push(value))) continue;
-    if (valueOption('--test-coverage-exclude', value => coverageExcludeGlobs.push(value))) continue;
-    if (valueOption('--test-coverage-lines', value => { options.lineCoverage = Number(value); })) continue;
-    if (valueOption('--test-coverage-branches', value => { options.branchCoverage = Number(value); })) continue;
-    if (valueOption('--test-coverage-functions', value => { options.functionCoverage = Number(value); })) continue;
-    // Parsed but never applied, so a run would pass silently without the cases it claims: refuse it by name (#931).
-    if (argument === '--test-only') throw new Error('unknown option --test-only; run-tests does not apply it, so select cases with --test-name-pattern');
-    if (argument === '--experimental-test-coverage') { options.coverage = true; continue; }
-    if (argument.startsWith('--experimental-test-isolation=')) {
-      options.isolation = argument.slice(argument.indexOf('=') + 1);
-      continue;
-    }
-    if (argument.startsWith('--test-isolation=')) {
-      options.isolation = argument.slice(argument.indexOf('=') + 1);
-      continue;
-    }
-    if (argument === '--test-isolation') {
-      expectValue = value => { options.isolation = value; };
-      continue;
-    }
-    if (argument === '--experimental-test-isolation') {
-      expectValue = value => { options.isolation = value; };
-      continue;
-    }
-    if (argument === '--test-shard') { index += 1; continue; }
-    if (argument.startsWith('--test-shard=')) continue;
-    if (argument.startsWith('-')) {
-      // An option Node does not know would be forwarded and ignored after the files; refuse it by name wherever it appears (#931).
-      const name = argument.split('=', 1)[0].replaceAll('_', '-');
-      optionTakesValue(name);
-      if (!knownNodeOptions.has(name)) throw new Error(`unknown option ${name}; check its spelling, or drop it`);
-      execArgv.push(argument);
-      if (!argument.includes('=') && optionTakesValue(argument)) {
-        if (args[index + 1] === undefined) throw new Error(`${argument} requires a value`);
-        execArgv.push(args[++index]);
-      }
-      continue;
-    }
-    selectors.push(argument);
-  }
-  if (expectValue) throw new Error('missing value for a Node test runner option');
-  options.execArgv = [...options.execArgv, ...execArgv];
-  // Keep native run() from treating true/default or a larger explicit value as unbounded.
-  if (options.concurrency !== false) {
-    const requested = options.concurrency === true ? concurrency.files : options.concurrency;
-    options.concurrency = Math.min(concurrency.files, requested);
-  }
-  if (selectors.length) {
-    const { glob } = await import('node:fs/promises');
-    const files = [];
-    for (const selector of selectors) {
-      if (!/[?*[{]/u.test(selector)) {
-        files.push(resolve(selector));
-        continue;
-      }
-      const matches = [];
-      for await (const match of glob(selector, { cwd: process.cwd() })) matches.push(resolve(match));
-      if (!matches.length) throw new Error(`test file pattern matched no files: ${selector}`);
-      files.push(...matches.sort());
-    }
-    options.files = [...new Set(files)];
-  }
-  if (patterns.length) options.testNamePatterns = patterns;
-  if (skipPatterns.length) options.testSkipPatterns = skipPatterns;
-  if (coverageExcludeGlobs.length) options.coverageExcludeGlobs = coverageExcludeGlobs;
-  if (coverageIncludeGlobs.length) options.coverageIncludeGlobs = coverageIncludeGlobs;
-  if (args.includes('--test-shard') || args.some(argument => argument.startsWith('--test-shard='))) {
-    const shardArgument = args.find(argument => argument === '--test-shard' || argument.startsWith('--test-shard='));
-    const shard = shardArgument === '--test-shard' ? args[args.indexOf(shardArgument) + 1] : shardArgument.slice('--test-shard='.length);
-    const match = shard?.match(/^([1-9][0-9]*)\/([1-9][0-9]*)$/u);
-    if (!match) throw new Error(`invalid --test-shard value: ${shard ?? '(missing)'}`);
-    options.shard = { index: Number(match[1]), total: Number(match[2]) };
-  }
-  let selectedCandidates = options.files;
-  if (!selectedCandidates) {
-    const { glob } = await import('node:fs/promises');
-    const defaults = ['**/*.test.{cjs,mjs,js}', '**/*-test.{cjs,mjs,js}', '**/*_test.{cjs,mjs,js}',
-      '**/test-*.{cjs,mjs,js}', '**/test.{cjs,mjs,js}', '**/test/**/*.{cjs,mjs,js}'];
-    const matches = new Set();
-    for (const pattern of defaults) {
-      for await (const file of glob(pattern, { cwd: process.cwd() })) {
-        if (!file.split(/[\\/]/u).includes('node_modules')) matches.add(resolve(file));
-      }
-    }
-    selectedCandidates = [...matches].sort();
-  }
-  options.selectedFiles = selectedCandidates.filter((_file, index) => !options.shard || index % options.shard.total === options.shard.index - 1);
-  if (!reporters.length) reporters.push('tap');
-  const destinations = options.reporterDestinations ?? (reporters.length === 1 ? ['stdout'] : []);
-  if (destinations.length !== reporters.length) throw new Error('each --test-reporter requires a matching --test-reporter-destination');
-  options.reporters = reporters.map((reporter, index) => ({ reporter, destination: destinations[index] }));
-  delete options.reporterDestinations;
-  return { options, env };
+  const { testFileOptions } = await import('../src/test-file-dispatch.js');
+  return testFileOptions(args, env, concurrency, { runner, optionTakesValue, knownNodeOption });
 }
 
 /** Parse a POSIX process census into PID, group, and start identities used for safe cleanup. */
@@ -463,7 +310,7 @@ function parseLandingProcessTable(output) {
 /** Snapshot process identities on POSIX hosts, where the runner can verify process ancestry. */
 function landingProcessTable() {
   if (process.platform === 'win32') return [];
-  const output = execFileSync('ps', ['-axo', 'pid=,ppid=,pgid=,stat=,lstart=,command='], { encoding: 'utf8', timeout: 2000 });
+  const output = execFileSync('ps', ['-axo', 'pid=,ppid=,pgid=,stat=,lstart=,command='], { encoding: 'utf8', timeout: 2000, maxBuffer: 64 << 20 });
   return parseLandingProcessTable(output);
 }
 
@@ -477,6 +324,7 @@ function landingWorkerCancellationError(cause) {
 /** Retry a worker's initial process-identity receipt without blocking its event loop or exceeding the file-start ceiling. */
 async function landingWorkerIdentity(pid, timeoutMs = LANDING_WORKER_IDENTITY_TIMEOUT_MS) {
   if (process.platform === 'win32') return null;
+  const { args: snapshotArgs } = landingWorkerIdentityQuery(pid);
   const deadline = Date.now() + timeoutMs;
   let lastError = null;
   let retryNoticeReported = false;
@@ -494,7 +342,7 @@ async function landingWorkerIdentity(pid, timeoutMs = LANDING_WORKER_IDENTITY_TI
       if (remaining <= 0) break;
       try {
         const output = await new Promise((resolveOutput, rejectOutput) => {
-          const child = execFile('ps', ['-axo', 'pid=,ppid=,pgid=,stat=,lstart=,command='], {
+          const child = execFile('ps', snapshotArgs, {
             encoding: 'utf8', timeout: Math.min(2000, Math.max(1, remaining)),
           }, (error, stdout) => {
             if (snapshotChild === child) snapshotChild = null;
@@ -504,8 +352,8 @@ async function landingWorkerIdentity(pid, timeoutMs = LANDING_WORKER_IDENTITY_TI
           if (stopping) child.kill('SIGTERM');
         });
         if (stopping) throw landingWorkerCancellationError();
-        const identity = parseLandingProcessTable(output).find(processInfo => processInfo.pid === pid);
-        if (identity) {
+        const identity = parseLandingWorkerIdentity(output);
+        if (identity?.pid === pid) {
           if (stopping) throw landingWorkerCancellationError();
           return identity;
         }
@@ -514,8 +362,7 @@ async function landingWorkerIdentity(pid, timeoutMs = LANDING_WORKER_IDENTITY_TI
         lastError = error;
         if (!retryNoticeReported) {
           retryNoticeReported = true;
-          const timedOut = error.code === 'ETIMEDOUT' || (error.killed === true && error.signal === 'SIGTERM'
-            && error.cmd === 'ps -axo pid=,ppid=,pgid=,stat=,lstart=,command=');
+          const timedOut = isLandingWorkerIdentityTimeout(error, pid);
           process.stderr.write(timedOut
             ? 'run-tests: worker identity snapshot timed out; retrying before file execution\n'
             : `run-tests: worker identity snapshot failed (${error.code ?? 'unknown'}); retrying before file execution\n`);
@@ -567,7 +414,9 @@ function landingWorkerCommandMatchesFile(processInfo, file) {
   const executable = command.match(/^(?:"([^"]+)"|'([^']+)'|(\S+))/u);
   if (!executable) return false;
   const executablePath = executable[1] ?? executable[2] ?? executable[3];
-  if (basename(executablePath) !== basename(process.execPath)) return false;
+  // ps prints an executable containing spaces without shell quotes; match its complete known path first.
+  const exactExecutable = command.startsWith(process.execPath) && /^(?:\s|$)/u.test(command.slice(process.execPath.length));
+  if (!exactExecutable && basename(executablePath) !== basename(process.execPath)) return false;
   let offset = command.indexOf(file);
   while (offset !== -1) {
     const before = offset === 0 || /[\s"']/u.test(command[offset - 1]);
@@ -583,7 +432,10 @@ function landingWorkerCommandMatchesFile(processInfo, file) {
 function landingChildCommandMatchesSpawn(processInfo, receipt) {
   const command = processInfo.command.trimEnd();
   const executable = command.match(/^(?:"([^"]+)"|'([^']+)'|(\S+))/u);
-  if (!executable || basename(executable[1] ?? executable[2] ?? executable[3]) !== basename(receipt.spawnFile ?? '')) return false;
+  const spawnFile = receipt.spawnFile;
+  const exactExecutable = typeof spawnFile === 'string' && spawnFile.length > 0
+    && command.startsWith(spawnFile) && /^(?:\s|$)/u.test(command.slice(spawnFile.length));
+  if (!exactExecutable && (!executable || basename(executable[1] ?? executable[2] ?? executable[3]) !== basename(spawnFile ?? ''))) return false;
   return receipt.spawnArgs.slice(1).every(argument => {
     if (typeof argument !== 'string' || !argument) return false;
     let offset = command.indexOf(argument);
@@ -864,7 +716,9 @@ async function runLandingTests(args, env, concurrency) {
   const retainedFailure = landingFailureReport();
   const waivers = landingWaiverProjection(process.env[LANDING_WAIVERS_ENV]);
   const waivedFiles = new Map();
+  const { dispatchTestFiles, legacyFileMode } = await import('../src/test-file-dispatch.js');
   const { run } = await import('node:test');
+  const legacy = legacyFileMode(args);
   const { PassThrough } = await import('node:stream');
   const { createWriteStream } = await import('node:fs');
   const { pathToFileURL } = await import('node:url');
@@ -883,8 +737,11 @@ async function runLandingTests(args, env, concurrency) {
   testEnv[LANDING_ATTEMPT_ENV] = attempt;
   watchLandingChildSpawns(workerStartsPath, attempt);
   const selectedFiles = options.selectedFiles;
+  if (!legacy) { options.files = selectedFiles; delete options.shard; }
   delete options.selectedFiles;
   const reporterEntries = options.reporters;
+  if (process.env.PULLBOARD_TEST_ACTIONS) reporterEntries.push({ reporter: fileURLToPath(new URL('../src/test-action-reporter.js', import.meta.url)), destination: devNull });
+  if (testEnv.PULLBOARD_TEST_SELECTION) reporterEntries.push({ reporter: fileURLToPath(new URL('../src/test-selection.js', import.meta.url)), destination: devNull });
   delete options.reporters;
   const loadedReporters = [];
   for (const entry of reporterEntries) {
@@ -1118,7 +975,8 @@ async function runLandingTests(args, env, concurrency) {
   for (const key of Object.keys(process.env)) delete process.env[key];
   Object.assign(process.env, testEnv, { [LANDING_RUN_ENV]: '0' });
   try {
-    const stream = run({ ...options, signal: controller.signal,
+    const execute = legacy ? run : input => dispatchTestFiles(input, testEnv);
+    const stream = execute({ ...options, signal: controller.signal,
       setup(tests) {
         tests.on('test:complete', data => {
           const { file, name, details } = data;
@@ -1228,41 +1086,6 @@ async function runLandingTests(args, env, concurrency) {
   return { status: successful ? 0 : 1, signal: null };
 }
 
-let nodeOptionsWithValues;
-let knownNodeOptions;
-
-/** Read Node option arity from this runtime so supported option values cannot bypass the machine pool. */
-function optionTakesValue(argument) {
-  if (!nodeOptionsWithValues) {
-    nodeOptionsWithValues = new Set();
-    knownNodeOptions = new Set();
-    const help = execFileSync(process.execPath, ['--help'], { encoding: 'utf8' });
-    for (const line of help.split(/\r?\n/u)) {
-      const signature = line.match(/^  (-\S.*?)(?: {2,}|$)/u)?.[1];
-      if (!signature) continue;
-      for (const option of signature.matchAll(/--?[A-Za-z][A-Za-z0-9-]*/gu)) {
-        knownNodeOptions.add(option[0]);
-        if (signature.includes('=') && !signature.includes('[=')) nodeOptionsWithValues.add(option[0]);
-      }
-    }
-
-  }
-  return nodeOptionsWithValues.has(argument.replaceAll('_', '-'));
-}
-
-/**
- * Whether Node's own CLI knows an option, so run-tests can forward it; any other dash option is a typo or a flag
- * this runner cannot apply.
- *
- * @param {string} argument the option as written, with its value after an equals sign if any
- * @returns {boolean}
- */
-function knownNodeOption(argument) {
-  const name = argument.split('=', 1)[0].replaceAll('_', '-');
-  optionTakesValue(name);
-  return knownNodeOptions.has(name);
-}
-
 /** Distinguish file selection from option values so filtered discovery still takes a full-suite slot. */
 function hasTestFiles(args) {
   let takesValue = false;
@@ -1296,6 +1119,36 @@ function explicitTestFiles(args) {
   return files;
 }
 
+/**
+ * Start the longest test files first, by the last landing's recorded wall times (#1046), so the slowest file
+ * never starts last and holds the run open alone. Options and their values keep their places.
+ *
+ * @param {string[]} args
+ * @returns {Promise<string[]>}
+ */
+async function longestFilesFirst(args) {
+  const at = [];
+  let takesValue = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (takesValue) { takesValue = false; continue; }
+    if (argument === '--') { for (let rest = index + 1; rest < args.length; rest += 1) at.push(rest); break; }
+    if (argument.startsWith('-')) {
+      if (!argument.includes('=')) takesValue = optionTakesValue(argument);
+      continue;
+    }
+    at.push(index);
+  }
+  if (at.length < 2) return args;
+  const { readFileTimes } = await import('../src/landing-shards.js');
+  const times = readFileTimes(process.cwd());
+  if (!Object.keys(times).length) return args;
+  const ordered = longestFirst(at.map(index => args[index]), times, file => relative(process.cwd(), resolve(file)));
+  const result = [...args];
+  at.forEach((index, position) => { result[index] = ordered[position]; });
+  return result;
+}
+
 /** Admit only explicit regular in-root files; directories and uncertain options remain ordinary. */
 function namesOnlyTestFiles(args) {
   let takesValue = false;
@@ -1305,10 +1158,10 @@ function namesOnlyTestFiles(args) {
     if (!argument.startsWith('-')) continue;
     const option = argument.split('=', 1)[0].replaceAll('_', '-');
     const requiresValue = optionTakesValue(option);
-    if (!knownNodeOptions.has(option)) return false;
+    if (!knownNodeOption(option)) return false;
     if (!argument.includes('=')) takesValue = requiresValue;
   }
-  if (takesValue || process.env.NODE_OPTIONS) return false;
+  if (takesValue || foreignNodeOptions(process.env.NODE_OPTIONS)) return false;
   const files = explicitTestFiles(args);
   if (!files.length) return false;
   try {
@@ -1376,6 +1229,9 @@ function shardArguments(args) {
 /** Run tests in the disposable environment, preserving a marker only when a parent holds the slot. */
 async function executeTests(args, sandbox, gateMarkers, fullSuite, concurrency) {
   const env = testEnvironment(sandbox, gateMarkers);
+  const patterns = testSelectionPatterns(args, optionTakesValue);
+  if (patterns.length) env.PULLBOARD_TEST_SELECTION = join(sandbox, 'selected-tests.json');
+  else delete env.PULLBOARD_TEST_SELECTION;
   // This is an inner file limit; the real machine gate/browser lease remains unchanged.
   env.PULLBOARD_TEST_BROWSER_RESOURCE = 'test-browser-files:' + randomUUID();
   env.PULLBOARD_TEST_BROWSER_CAPACITY = String(concurrency.browser);
@@ -1403,11 +1259,12 @@ async function executeTests(args, sandbox, gateMarkers, fullSuite, concurrency) 
     }
     if (files) selectedArgs = [...args, ...files];
   }
+  selectedArgs = await longestFilesFirst(selectedArgs);
   const result = process.env[LANDING_RUN_ENV] === '1'
     ? await runLandingTests(selectedArgs, env, concurrency)
-    : runTests(selectedArgs, env, concurrency);
+    : await runTests(selectedArgs, env, concurrency);
   if (result.error) throw result.error;
-  return result;
+  return selectedTestResult(result, env.PULLBOARD_TEST_SELECTION, patterns, explicitTestFiles(selectedArgs));
 }
 
 /**
@@ -1442,6 +1299,20 @@ async function main(args) {
     const { testsNeedBrowser } = await import('../src/browser-admission.js');
     browser = await testsNeedBrowser(process.cwd(), explicitTestFiles(args));
   }
+  const actions = await (await import('../src/test-action-cache.js')).planTestActions(process.cwd(), args, { fullSuite, landing: process.env[LANDING_RUN_ENV] === '1', listFiles: () => fullSuite ? trackedDefaultTestFiles(process.cwd(), process.env) : explicitTestFiles(args) });
+  if (actions.done) return;
+  const { testsNeedGui } = await import('../src/gui-admission.js');
+  let guiFiles;
+  try {
+    guiFiles = actions.files ?? (fullSuite
+      ? (isGitWorkTree(process.cwd(), process.env) ? trackedDefaultTestFiles(process.cwd(), process.env) : [])
+      : explicitTestFiles(args));
+  } catch (error) {
+    process.stderr.write(`run-tests: could not list tracked test files: ${error.message}\n`);
+    process.exitCode = 1;
+    return;
+  }
+  const gui = testsNeedGui(process.cwd(), guiFiles);
   let signal = null;
   /** Keep sandbox lifetime inside the held lease, including the complete child process. */
   const shardLabel = process.env[LANDING_SHARD_ENV];
@@ -1449,24 +1320,40 @@ async function main(args) {
     const sandbox = mkdtempSync(join(tmpdir(), 'pullboard-test-run-'));
     // A shard of a sharded landing reports each file's wall time back to its orchestrator.
     const fileTimes = shardLabel ? join(sandbox, 'landing-file-times.jsonl') : '';
+    // Observe leftovers around the whole execution, including failed cases; never remove clones.
+    const cloneCheck = browser && process.platform === 'darwin'
+      ? await import('../src/chrome-clone-check.js') : null;
+    let clonesBefore;
     if (fileTimes) process.env[LANDING_FILE_TIMES_ENV] = fileTimes;
     try {
-      const result = await executeTests(args, sandbox, gateMarkers, fullSuite, concurrency);
+      clonesBefore = cloneCheck?.chromeCloneSnapshot();
+      const result = await executeTests(actions.args, sandbox, gateMarkers, fullSuite && !actions.files, concurrency);
       signal = result.signal;
       process.exitCode = result.status ?? 1;
       if (fileTimes) (await import('../src/landing-shards.js')).printShardFileTimes(fileTimes);
-    } finally { rmSync(sandbox, { recursive: true, force: true }); }
+    } finally {
+      try {
+        if (clonesBefore) {
+          const growth = cloneCheck.newChromeClones(clonesBefore);
+          if (growth.length) {
+            process.stderr.write(`run-tests: CHROME_CLONE_GROWTH: ${growth.length} new native clone directories remain; stop browser work and notify the coordinator\n`);
+            process.exitCode = 1;
+          }
+        }
+      } finally { rmSync(sandbox, { recursive: true, force: true }); }
+    }
   };
   try {
     const { GATE_SLOT_HELD_ENV, GATE_SLOT_POOL_ENV, GATE_SLOT_TOKEN_ENV, gateSlotEnvironment, inheritedGateSlot } = await import('../src/resources.js');
     const scopedMarker = process.env[GATE_SLOT_POOL_ENV] || process.env[GATE_SLOT_TOKEN_ENV];
     const legacyHeld = process.env[GATE_SLOT_HELD_ENV] === '1';
-    // A full landing run with landingShards above 1 fans its files out instead of running them here.
-    if (fullSuite && process.env[LANDING_RUN_ENV] === '1' && !shardLabel) {
+    // Shard payloads carry files only; filtered discovery keeps the existing admitted run and its name filter.
+    const filteredByName = testSelectionPatterns(actions.args, optionTakesValue).length > 0;
+    if (fullSuite && process.env[LANDING_RUN_ENV] === '1' && !shardLabel && !filteredByName) {
       const { landingShardCount } = await import('../src/gate.js');
       const count = landingShardCount(process.cwd());
       if (count > 1) {
-        const files = isGitWorkTree(process.cwd(), process.env) ? trackedDefaultTestFiles(process.cwd(), process.env) : [];
+        const files = actions.files ?? (isGitWorkTree(process.cwd(), process.env) ? trackedDefaultTestFiles(process.cwd(), process.env) : []);
         if (!files.length) throw new Error('a sharded landing gate needs tracked Node test files; commit them or set landingShards to 1');
         const inherited = scopedMarker ? inheritedGateSlot({ root: process.cwd(), browser }) : null;
         const { runLandingShards } = await import('../src/landing-shards.js');
@@ -1500,13 +1387,13 @@ async function main(args) {
         const { runOnRunner } = await import('../src/runners.js');
         /** Quote the unchanged runner arguments for the remote command shell. */
         const word = value => `'${String(value).replaceAll("'", "'\\''")}'`;
-        const command = ['node', `./${runnerPath}`, ...args].map(word).join(' ');
+        const command = ['node', `./${runnerPath}`, ...actions.args].map(word).join(' ');
         const result = runOnRunner(process.cwd(), command, { runner: lease.runner, source: lease.source,
           browser, metadata: lease.runMetadata });
         process.stdout.write(result.output);
         process.exitCode = result.exitCode;
       }, {
-        browser, kind: fullSuite ? 'gate' : 'focused', shortEligible,
+        browser, gui, kind: fullSuite ? 'gate' : 'focused', shortEligible,
         remote: Boolean(canShipRunner),
         onWait: ({ holders, runnerUnavailable }) => {
           if (runnerUnavailable) {
@@ -1521,7 +1408,7 @@ async function main(args) {
     }
   } catch (error) {
     process.stderr.write(`run-tests: ${error.message}\n`);
-    process.exitCode = 1;
+    process.exitCode = error.neverRanExitCode ?? 1; // A run stopped before it started exits distinctly, never as a red.
     return;
   }
   if (signal) process.kill(process.pid, signal);
@@ -1531,14 +1418,17 @@ if (process.argv[1] && resolve(process.argv[1]) === runner) {
   await main(process.argv.slice(2));
 } else if (process.argv[1]) {
   process.env.PULLBOARD_TEST_FILE = process.argv[1];
+  (await import('../src/test-action-cache.js')).recordTestAction(process.argv[1]); // #1045: reuse off below; record this file.
   const fileTimes = process.env[LANDING_FILE_TIMES_ENV];
+  let tokenWaitMs = 0;
   // Only this test file reports; anything it starts is not one of the shard's files.
   delete process.env[LANDING_FILE_TIMES_ENV];
   if (fileTimes && process.env.NODE_TEST_CONTEXT === 'child-v8') {
     // One line per test file process: its wall time from start to exit, for the next shard plan.
     const timedFile = relative(process.cwd(), resolve(process.argv[1]));
     process.once('exit', () => {
-      try { appendFileSync(fileTimes, `${JSON.stringify({ file: timedFile, ms: Math.round(process.uptime() * 1000) })}\n`); }
+      // The file's own time, not its wait for a token: the next shard plan weighs work, not this run's queue (#1046).
+      try { appendFileSync(fileTimes, `${JSON.stringify({ file: timedFile, ms: Math.round(process.uptime() * 1000 - tokenWaitMs) })}\n`); }
       catch { /* A missing time only weakens the next shard plan. */ }
     });
   }
@@ -1592,5 +1482,7 @@ if (process.argv[1] && resolve(process.argv[1]) === runner) {
       process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, `--import=${guard.href}`].filter(Boolean).join(' ');
     }
   }
+  // After any browser wait, so a file never holds a core while it queues for a browser (#1046).
+  if (process.env.NODE_TEST_CONTEXT === 'child-v8') tokenWaitMs = await takeTestFileToken();
   if (!landingWorker) installTestWatchdog();
 }

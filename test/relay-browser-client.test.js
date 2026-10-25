@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** The relay browser client's sealed snapshot decode, in Chrome and in WebKit [H5,H16]. */
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -10,6 +11,14 @@ import { findChromeExecutable, startChrome } from './relay-browser-fixture.js';
 
 /** The hosted page's real secure origin, answered from memory: no network is used. */
 const ORIGIN = 'https://app.pullboard.dev/';
+import { closeBoard, openBoard } from '../src/board.js';
+import { prepareEngineMove, applyRelayMove } from '../src/engine.js';
+import { relaySnapshot } from '../src/relay-presentation.js';
+import { ENGINE_VERSION } from '../src/machine.js';
+import { decodeBoardKey, seal } from '../src/seal.js';
+import { relayClientFixture } from './relay-client-fixture.js';
+
+
 const CLIENT = new URL('../relay/browser-client.js', import.meta.url);
 
 /** Two real sealed-snapshot payloads, gzipped as src/relay.js does: a tiny document and a board of 3000 items. */
@@ -201,4 +210,142 @@ test('the sealed gzip snapshot decodes through a Response body, the way WebKit a
   assert.deepEqual(await runPageInWebkit(webkit, `<script>${pageScript(snapshotDocumentSource(), inputs)}</script>`), decoded,
     'real WebKit opens both sealed gzip snapshots through the shipped decode');
   t.diagnostic('WebKit ran: ' + webkit);
+});
+
+/** Publish the later checkpoint with the real API2 CLI writer inside the private fixture. */
+async function publishApi2Checkpoint(box, boardId, sequence) {
+  const before = relaySnapshot(box.root);
+  assert.equal(before.presentation.state.items.filter(item => item.title.startsWith('PHONE_PENDING_')).length, 3,
+    'the local native projection contains all three acknowledged moves before publishing');
+
+  // The actual CLI runs inside relayClientFixture's isolated HOME/PULLBOARD_HOME and publishes through
+  // the configured production page writer; it never touches the user's page-cache directory.
+  const published = await box.cli('status');
+  assert.equal(published.code, 0, published.document?.error?.message);
+
+  const link = JSON.parse(readFileSync(box.linkFile, 'utf8'));
+  assert.equal(link.snapshotApiVersion, 2, 'the private board used the API2 paged snapshot writer');
+  const pageWrites = box.calls.filter(call => call.method === 'PUT'
+    && /^\/api\/v2\/boards\/[0-9a-f]{32}\/uploads\/[A-Za-z0-9-]+\/objects\/[0-9a-f]{64}$/u.test(call.path));
+  const publishes = box.calls.filter(call => call.method === 'POST'
+    && /^\/api\/v2\/boards\/[0-9a-f]{32}\/uploads\/[A-Za-z0-9-]+\/publish$/u.test(call.path));
+  assert.ok(pageWrites.length > 0 && publishes.length > 0,
+    'actual API2 page objects and the root publish reached the private relay');
+
+  const state = await fetch(box.origin + '/api/v2/boards/' + boardId + '/state', {
+    headers: { authorization: 'Bearer ' + link.token, 'x-pullboard-engine': String(ENGINE_VERSION) },
+  });
+  assert.equal(state.status, 200, 'the private relay serves its API2 published head');
+  const head = await state.json();
+  assert.equal(head.state.apiVersion, 2);
+  assert.equal(head.state.sequence, sequence, 'the API2 root covers the exact final move position');
+  return head.state;
+}
+
+/** Add one genuine sealed move to the private loopback relay and replay its acknowledged receipt locally. */
+async function postAndApplyMove(box, link, key, sequence, move) {
+  const sealed = Buffer.from(await seal(key, new TextEncoder().encode(JSON.stringify(move)), {
+    boardId: link.board, kind: 'move', sequence,
+  })).toString('base64url');
+  const response = await fetch(box.origin + '/api/v1/boards/' + link.board + '/moves', {
+    method: 'POST', headers: {
+      authorization: 'Bearer ' + link.agentTokens.coordinator.token,
+      'x-pullboard-engine': String(ENGINE_VERSION), 'content-type': 'application/json',
+    }, body: JSON.stringify({ sequence, sealed }),
+  });
+  assert.equal(response.status, 200, 'the private relay accepts the sealed move at its next position');
+  const { event } = await response.json();
+  assert.equal(event.event_id, sequence);
+  const board = openBoard(join(box.root, '.git', 'pullboard', 'board.sqlite'));
+  try {
+    const outcome = applyRelayMove(board, move, {
+      sequence, at: event.event_at, sender: event.sender, kind: 'move',
+    });
+    assert.equal(outcome.error, undefined, 'the acknowledged operation applies through the native engine');
+  } finally { closeBoard(board); }
+  return event;
+}
+
+for (const apiVersion of [1, 2]) test('the phone shows moves past its checkpoint as pending [H5,H16] (API' + apiVersion + ')', {
+  skip: !findChromeExecutable() && 'Chrome is not installed',
+}, async t => {
+  const box = await relayClientFixture(t);
+  if (apiVersion === 1) box.legacySnapshotApi(); // Keep explicit historical and current paged wire coverage.
+  const initialTitle = 'PHONE_CHECKPOINT_INITIAL_1113';
+  const pendingTitles = ['PHONE_PENDING_ONE_1113', 'PHONE_PENDING_TWO_1113', 'PHONE_PENDING_THREE_1113'];
+  assert.equal((await box.cli('add', box.lane, initialTitle)).code, 0);
+  await box.link();
+  const link = JSON.parse(readFileSync(box.linkFile, 'utf8'));
+  const key = decodeBoardKey(readFileSync(box.keyFile, 'utf8').trim());
+  const credential = link.agentTokens.coordinator.token;
+  const stateResponse = await fetch(box.origin + '/api/v' + apiVersion + '/boards/' + link.board + '/state', {
+    headers: { authorization: 'Bearer ' + credential, 'x-pullboard-engine': String(ENGINE_VERSION) },
+  });
+  assert.equal(stateResponse.status, 200, 'the checkpoint at N is present before phone startup');
+  const checkpointN = (await stateResponse.json()).state.sequence;
+
+  const chrome = await startChrome();
+  t.after(() => chrome.close());
+  const cookie = await chrome.send('Network.setCookie', {
+    name: 'pb_session', value: (await box.phoneSession()).token, url: box.origin, httpOnly: true, sameSite: 'Lax',
+  });
+  assert.equal(cookie.success, true);
+  await chrome.navigate(box.origin + '/#board=' + link.board + '&key=' + readFileSync(box.keyFile, 'utf8').trim());
+  await chrome.waitFor('document.querySelector("#chain")?.textContent.includes(' + JSON.stringify(initialTitle) + ')');
+  const checkpointItems = await chrome.evaluate(`Array.from(document.querySelectorAll('#chain [data-item]'), row => ({ id: row.dataset.item, title: row.getAttribute('title') }))`);
+  assert.ok(checkpointItems.some(item => item.title === initialTitle), 'the initial checkpoint exposes the added item alongside fixture seeds');
+  const loadsBefore = box.calls.filter(call => call.method === 'GET' && call.path === '/').length;
+
+  // No native checkpoint is published during this interval. The browser must keep the N projection,
+  // while the real stream delivers three sealed events at N+1 through N+3 without a manual state read.
+  for (let index = 0; index < pendingTitles.length; index += 1) {
+    const board = openBoard(join(box.root, '.git', 'pullboard', 'board.sqlite'));
+    let move;
+    try {
+      // Prepare each operation after replaying its predecessor so the native engine assigns distinct item IDs.
+      move = prepareEngineMove(board, 'addItem', [{ by: 'coordinator', lane: box.lane, title: pendingTitles[index] }]);
+    } finally { closeBoard(board); }
+    await postAndApplyMove(box, link, key, checkpointN + index + 1, move);
+  }
+  await chrome.waitFor(pendingTitles.map(title => 'document.querySelector("#relay-notice")?.textContent.includes(' + JSON.stringify(title) + ')').join(' && '));
+  const pendingView = await chrome.evaluate(`(() => ({
+    items: Array.from(document.querySelectorAll('#chain [data-item]'), row => ({ id: row.dataset.item, title: row.getAttribute('title') })),
+    activity: document.querySelector('#relay-notice')?.textContent ?? '',
+    pending: Array.from(document.querySelectorAll('#relay-notice p')).filter(row => row.textContent.startsWith('Pending event #')).length,
+    body: document.body.innerText,
+  }))()`);
+  assert.equal(pendingView.pending, 3, 'each received move has its own pending mark');
+  assert.doesNotMatch(pendingView.body, /snapshot has not caught up|event prefix is incomplete/iu, 'pending moves are not displayed as a failed board read');
+  assert.deepEqual(pendingView.items, checkpointItems, 'the phone keeps checkpoint N authoritative while later events are pending');
+  for (const title of pendingTitles) assert.ok(pendingView.activity.includes(title), 'the pending-event notice shows pending event ' + title);
+  assert.match(pendingView.body, /pending event/iu, 'the UI identifies the received events as pending rather than checkpoint-derived state');
+  assert.equal(box.calls.filter(call => call.method === 'GET' && call.path === '/').length, loadsBefore,
+    'the phone catches up without reloading the page');
+
+  const checkpointN3 = relaySnapshot(box.root);
+  assert.equal(checkpointN3.presentation.state.items.filter(item => pendingTitles.includes(item.title)).length, 3,
+    'the later native checkpoint includes all three acknowledged operations');
+  if (apiVersion === 1) {
+    const sealedCheckpoint = Buffer.from(await seal(key, new TextEncoder().encode(JSON.stringify(checkpointN3)), {
+      boardId: link.board, kind: 'snapshot', sequence: checkpointN + 3,
+    })).toString('base64url');
+    const published = await fetch(box.origin + '/api/v1/boards/' + link.board + '/state', {
+      method: 'PUT', headers: {
+        authorization: 'Bearer ' + link.token,
+        'x-pullboard-engine': String(ENGINE_VERSION), 'content-type': 'application/json',
+      }, body: JSON.stringify({ sequence: checkpointN + 3, sealed: sealedCheckpoint }),
+    });
+    assert.equal(published.status, 200, 'the private relay accepts checkpoint N+3');
+  } else await publishApi2Checkpoint(box, link.board, checkpointN + 3);
+  await chrome.waitFor(pendingTitles.map(title => 'document.querySelector("#chain")?.textContent.includes(' + JSON.stringify(title) + ')').join(' && '));
+  const settledView = await chrome.evaluate(`(() => ({
+    items: Array.from(document.querySelectorAll('#chain [data-item]'), row => ({ id: row.dataset.item, title: row.getAttribute('title') })),
+    activity: document.querySelector('#relay-notice')?.textContent ?? '',
+    pending: Array.from(document.querySelectorAll('#relay-notice p')).filter(row => row.textContent.startsWith('Pending event #')).length,
+    body: document.body.innerText,
+  }))()`);
+  for (const title of pendingTitles) assert.ok(settledView.items.some(row => row.title === title), 'checkpoint N+3 makes ' + title + ' authoritative');
+  assert.doesNotMatch(settledView.body, /pending event/iu, 'the pending marks clear once checkpoint N+3 covers the events');
+  assert.equal(box.calls.filter(call => call.method === 'GET' && call.path === '/').length, loadsBefore,
+    'checkpoint installation keeps the same phone page');
 });

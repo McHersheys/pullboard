@@ -1,11 +1,13 @@
 /** @pullboard-test-input test-tree */
 /** @pullboard-test-input source-tree */
+/** @pullboard-test-loads src/browser-admission.js */
 /** Browser admission follows current test dependencies without executing them [C7]. */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import { browserBoundFiles, checkNeedsBrowser, testsNeedBrowser } from '../src/browser-admission.js';
 import { browserInCall } from '../src/browser-slot-guard.js';
@@ -33,6 +35,98 @@ function commitSourceFixture(root) {
   assert.equal(head.status, 0, head.stderr);
   return head.stdout.trim();
 }
+
+test("the repo's own static checks never take a browser slot [C7]", async t => {
+  const root = resolve(import.meta.dirname, '..');
+  const env = { ...process.env, NODE_OPTIONS: '', PATH: [dirname(process.execPath), '/usr/bin', '/bin'].join(delimiter) };
+  const configured = JSON.parse(readFileSync(join(root, 'pullboard.json'), 'utf8')).staticChecks;
+  assert.equal(await checkNeedsBrowser(root, configured, { env }), false, 'the declared static command is browser-free');
+  const commands = [
+    'node bin/static-style-checks.js',
+    'node bin/pullboard.js doctrine check',
+    'node bin/pullboard.js spec check',
+    'node bin/checks/file-size.js',
+    'node bin/checks/empty-catch.js',
+  ];
+  for (const command of commands) assert.equal(await checkNeedsBrowser(root, command, { env }), false, command);
+  assert.equal(await checkNeedsBrowser(root, configured, { env: { ...env, NODE_OPTIONS: '--import=unknown.mjs' } }), true);
+  const guard = `--import=${new URL('../src/browser-slot-guard.js', import.meta.url).href}`;
+  assert.equal(await checkNeedsBrowser(root, configured, { env: { ...env, NODE_OPTIONS: `${guard} --require=unknown.cjs` } }), true);
+  for (const command of [
+    'node bin/unknown.js', 'node bin/pullboard.js view', 'node bin/pullboard.js doctrine check extra',
+    'node bin/static-style-checks.js extra', 'node bin/checks/file-size.js --browser',
+    'env node bin/static-style-checks.js', 'nice node bin/static-style-checks.js',
+    'sh -c "node bin/static-style-checks.js"', 'npm run static',
+    'node --require=unknown.cjs bin/static-style-checks.js',
+    'node --import=unknown.mjs bin/static-style-checks.js',
+    'node --eval="import(\'./browser.mjs\')"',
+    'node bin/static-style-checks.js; node browser.js',
+    'node bin/static-style-checks.js && node browser.js',
+    'node bin/static-style-checks.js | node browser.js',
+    'node bin/static-style-checks.js > result',
+    'node bin/static-style-checks.js &',
+    'node $(printf bin/static-style-checks.js)',
+    'node bin/static-style-checks.js\nnode browser.js',
+  ]) assert.equal(await checkNeedsBrowser(root, command, { env }), true, command);
+
+  const doctrine = '# Doctrine\n\n## Checks\n'
+    + '- C9 [approved, must] Source files stay bounded. | gate: check node bin/checks/file-size.js | count: 0\n'
+    + '- C8 [approved, must] Empty catches explain their handling. | gate: check node bin/checks/empty-catch.js | count: 0\n';
+  const foreign = sourceFixture(t, {
+    'package.json': '{"name":"pullboard","type":"module"}\n',
+    'pullboard.json': readFileSync(join(root, 'pullboard.json'), 'utf8'),
+    'DOCTRINE.md': doctrine,
+    'bin/browser-rule.js': "import { writeFileSync } from 'node:fs'; writeFileSync(new URL('../rule-executed', import.meta.url), 'bad');\n",
+  });
+  cpSync(join(root, 'src'), join(foreign, 'src'), { recursive: true });
+  cpSync(join(root, 'bin'), join(foreign, 'bin'), { recursive: true });
+  const good = commitSourceFixture(foreign);
+  for (const command of [configured, ...commands]) {
+    assert.equal(await checkNeedsBrowser(foreign, command, { env }), true, `a foreign project cannot borrow the command name: ${command}`);
+  }
+
+  // A private copy of the production classifier models its own trusted source repository.
+  const { checkNeedsBrowser: classifyPrivate } = await import(pathToFileURL(join(foreign, 'src/browser-admission.js')).href);
+  const aggregates = [configured, 'node bin/pullboard.js doctrine check'];
+  for (const command of aggregates) assert.equal(await classifyPrivate(foreign, command, { env, commit: good }), false, 'the trusted branch accepts only known rules');
+  const unknown = doctrine + '- C10 [approved, must] Run another check. | gate: check node bin/browser-rule.js | count: 0\n';
+  writeFileSync(join(foreign, 'DOCTRINE.md'), unknown);
+  const bad = commitSourceFixture(foreign);
+  writeFileSync(join(foreign, 'DOCTRINE.md'), doctrine);
+  for (const command of aggregates) {
+    assert.equal(await classifyPrivate(foreign, command, { env, commit: bad }), true, 'an unknown committed rule needs a browser even when working doctrine is safe');
+    assert.equal(await classifyPrivate(foreign, command, { env }), true, 'HEAD doctrine, not its uncommitted replacement, controls execution');
+    assert.equal(await classifyPrivate(foreign, command, { env, commit: good }), false, 'an explicit clean revision does not borrow rules from the current HEAD');
+  }
+  const customConfig = JSON.parse(readFileSync(join(foreign, 'pullboard.json'), 'utf8'));
+  customConfig.practice = 'CUSTOM.md';
+  writeFileSync(join(foreign, 'pullboard.json'), `${JSON.stringify(customConfig)}\n`);
+  writeFileSync(join(foreign, 'CUSTOM.md'), unknown);
+  const custom = commitSourceFixture(foreign);
+  for (const command of aggregates) assert.equal(await classifyPrivate(foreign, command, { env, commit: custom }), true, 'a configured doctrine path cannot hide its arbitrary rule');
+  assert.equal(existsSync(join(foreign, 'rule-executed')), false, 'classification never executes a rule or its script');
+  customConfig.practice = 'DOCTRINE.md';
+  writeFileSync(join(foreign, 'pullboard.json'), `${JSON.stringify(customConfig)}\n`);
+  writeFileSync(join(foreign, 'DOCTRINE.md'), doctrine);
+  commitSourceFixture(foreign);
+  assert.equal(await classifyPrivate(foreign, configured, { env }), false, 'the later path controls begin with a known browser-free aggregate');
+  assert.equal(await classifyPrivate(foreign, configured, { env, commit: '0'.repeat(40) }), true, 'missing committed sources fail closed');
+
+  const shadow = join(foreign, 'shadow');
+  mkdirSync(shadow);
+  writeFileSync(join(shadow, 'node'), '#!/bin/sh\nexit 0\n');
+  chmodSync(join(shadow, 'node'), 0o755);
+  assert.equal(await checkNeedsBrowser(root, configured, { env: { ...env, PATH: [shadow, env.PATH].join(delimiter) } }), true, 'a shadow Node is not the current runtime');
+  const entry = join(foreign, 'bin/static-style-checks.js');
+  rmSync(entry);
+  symlinkSync(join(root, 'bin/static-style-checks.js'), entry);
+  assert.equal(await classifyPrivate(foreign, 'node bin/static-style-checks.js', { env }), true, 'a symlinked static entry point is uncertain');
+  rmSync(entry);
+  mkdirSync(entry);
+  assert.equal(await classifyPrivate(foreign, 'node bin/static-style-checks.js', { env }), true, 'a directory is not the static script');
+  rmSync(entry, { recursive: true });
+  assert.equal(await classifyPrivate(foreign, 'node bin/static-style-checks.js', { env }), true, 'a missing static script is uncertain');
+});
 
 test('ordinary focused tests need no browser and admission never executes their modules [C7]', async t => {
   const root = sourceFixture(t, {
@@ -273,7 +367,7 @@ function runnerFixture(t, tests) {
   writeFileSync(join(root, 'package.json'), '{"type":"module"}\n');
   copyFileSync(TEST_RUNNER, join(root, 'bin/run-tests.js'));
   cpSync(resolve(import.meta.dirname, '../src'), join(root, 'src'), { recursive: true });
-  for (const helper of ['chrome-fixture.js', 'fixture-child.js']) copyFileSync(resolve(import.meta.dirname, helper), join(root, 'test', helper));
+  for (const helper of ['chrome-fixture.js', 'chrome-launch-args.js', 'fixture-child.js']) copyFileSync(resolve(import.meta.dirname, helper), join(root, 'test', helper));
   for (const [path, source] of Object.entries(tests)) writeFileSync(join(root, path), source);
   const chrome = join(root, 'stand-in-browser');
   writeFileSync(chrome, '#!/bin/sh\nprintf "%s\\n" "$1" >> "$PULLBOARD_FIXTURE_LAUNCHES"\n');
@@ -343,6 +437,7 @@ test('only a file that reaches a browser launch takes a browser slot [C7,O5]', a
   assert.equal(listed.status, 0, listed.stderr);
   const tracked = listed.stdout.split('\0').filter(path => /\.test\.(?:js|mjs)$/u.test(path)).sort();
   const bound = await browserBoundFiles(repository, tracked, { byLaunch: true });
+  assert.ok(!bound.includes('test/runners.test.js'), 'runner subprocess fixture source data does not launch a browser in the runner test process');
   const missed = CENSUS_LAUNCHED.filter(file => tracked.includes(file) && !bound.includes(file));
   assert.deepEqual(missed, [], 'every file that launched Chrome in the census is classified browser-bound');
   // Cockpit and journey files stay bound by rule until #741 guards the view fixture; the rest must reach a launch.

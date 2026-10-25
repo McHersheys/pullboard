@@ -45,6 +45,10 @@ import {
 import { milestoneRoadmap } from './roadmap.js';
 import { proofStats } from './stats.js';
 import {
+  ruleProofCounts,
+  ruleProofWindow,
+} from './rule-proof-counts.js';
+import {
   SUMMARY_KEYS,
   itemSummary,
   milestoneNamesByItem,
@@ -66,6 +70,10 @@ import {
   projectFit,
 } from './blueprint-fit.js';
 import { Refused } from './refused.js';
+import {
+  BLOCKS_FILE,
+  personBlockWords,
+} from './blocks.js';
 import { verdictProjector } from './verdict-freshness.js';
 import { trunkRevisionReader } from './trunk-revision.js';
 import {
@@ -82,7 +90,7 @@ export { moveArgs } from './api-moves.js';
 
 /** Inputs shared by the complete state cache and the lightweight live-change watcher. */
 const STATE_REVISION_INPUTS = Object.freeze([
-  'identity', 'head', 'trunk', 'files', 'event', 'agents', 'leases', 'requestReceipts', 'milestones', 'externalRoadmap', 'eventLogVersion',
+  'identity', 'head', 'trunk', 'files', 'event', 'agents', 'leases', 'requestReceipts', 'milestones', 'externalRoadmap', 'eventLogVersion', 'ruleProofWindow',
 ]);
 
 /** Serialize named state inputs in one stable order for cache and stream comparisons. */
@@ -99,6 +107,8 @@ function stateFileInputs(root, config) {
     { name: 'builtin:standard-doctrine.md', path: new URL('./standard-doctrine.md', import.meta.url) },
     ...['signoffs.jsonl', 'signers', 'first-commit', 'signers.initial'].map(name => ({ name: `approval:${name}`, path: join(root, '.pullboard', name) })),
     { name: 'fit:blueprint-fit.json', path: fitFile(repoInfo(root).commonDir) },
+    // A new block changes Needs you without a board move, so the ledger is a state input [C6].
+    { name: 'blocks:blocks.jsonl', path: join(repoInfo(root).commonDir, BLOCKS_FILE) },
   ];
 }
 
@@ -120,13 +130,15 @@ function localRevisionInputs(board, now) {
       item.item_status === 'submitted' && Boolean(item.item_review_by) && (item.item_review_until ?? '') > now,
     ]);
   const expiries = leases.flatMap(([, , , leaseUntil, , reviewUntil, claimLive, reviewLive]) => [claimLive ? leaseUntil : null, reviewLive ? reviewUntil : null]);
+  const proofWindow = ruleProofWindow(board, now);
   return {
     event: board.db.prepare('SELECT COALESCE(MAX(event_id), 0) AS id FROM event').get().id,
     agents: store.listAgents(board),
     leases,
     requestReceipts: board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?').get('relay_person_requests')?.meta_value ?? null,
     milestones: store.milestones(board),
-    nextExpiry: expiries.filter(Boolean).sort()[0] ?? null,
+    ruleProofWindow: proofWindow.events,
+    nextExpiry: [...expiries, proofWindow.nextExpiry].filter(Boolean).sort()[0] ?? null,
   };
 }
 
@@ -166,6 +178,7 @@ function boardStateRevision(root, id, isMain, { projects = listApiProjects, scop
     milestones: visibleMilestoneInputs(local.milestones, scopeCommonDir !== null),
     externalRoadmap: local.externalMilestones,
     eventLogVersion: store.EVENT_LOG_VERSION,
+    ruleProofWindow: local.ruleProofWindow,
   };
   const revision = stateRevision(inputs);
   return { cacheId: info.commonDir + '\0' + id, revision, event: local.event, milestones: local.externalMilestones,
@@ -414,6 +427,7 @@ function watchLocalStateRevision(board, { scopeCommonDir = null } = {}) {
       milestones: visibleMilestoneInputs(local.milestones, scopeCommonDir !== null),
       externalRoadmap,
       eventLogVersion: store.EVENT_LOG_VERSION,
+      ruleProofWindow: local.ruleProofWindow,
     });
   }
 
@@ -484,7 +498,9 @@ function buildLocalBoardState(root, boardId, board, codeIsMain, { previous = nul
     state.requests = projectData.requests;
     state.personRequests = projectData.personRequests;
     state.milestones = projectData.milestones;
+    state.blocks = personBlockWords(repoInfo(root).commonDir, board.clock.now()); // Needs you below is recomputed with them [C6].
     const decorated = projectSpecApprovals(projectFit(pendingFit(repoInfo(root).commonDir), projectRowDecisions(projectData.rowDecisions, state)), specApprovalState(root, { board, config }));
+    decorated.ruleCounts = ruleProofCounts(root, board, decorated.spec);
     const bases = new Map(decorated.items.map((item) => [item.id, item]));
     for (const id of dirtyIds) {
       if (!currentById.has(id)) continue;
@@ -545,6 +561,8 @@ const DELTA_WHOLE = new Set(['unseen', 'proofStats', 'decisions', 'holds', 'requ
 const DELTA_KEYS = Object.freeze({ items: 'id', shouts: 'shout_id', asked: 'shout_id', events: 'event_id', agents: 'agent_id', spec: 'id', practice: 'id', milestones: 'name' });
 /** How many recent builds of each board a server keeps as possible delta bases. */
 const DELTA_BASES = 24;
+/** How many item details a server keeps for each board: past a board our size, the least recently read go first. */
+const DETAIL_CACHE_ITEMS = 4096;
 
 /** A digest of one value's JSON, which is what a client holds of it. */
 function jsonDigest(value) {
@@ -664,8 +682,38 @@ const VERSION = 1;
 function withBoard(root, read, isMain) {
   const info = repoInfo(root);
   loadConfig(info.root);
-  const board = store.openBoard(join(info.commonDir, 'pullboard', 'board.sqlite'), undefined, { isMain: isMain !== false && codeIsFromMain() });
+  const file = join(info.commonDir, 'pullboard', 'board.sqlite');
+  // A read takes no write lock and never migrates (#1047): main code reads an older board as it is,
+  // branch code keeps the schema guard, and a read that writes after all runs again on a write open.
+  const opened = store.openBoardForRead(file);
+  const main = () => isMain !== false && codeIsFromMain();
+  if (opened && (opened.current || main())) try { return read(opened, info); } catch (error) { if (!store.writeRefused(error)) throw error; } finally { store.closeBoard(opened); }
+  else if (opened) store.closeBoard(opened);
+  const board = store.openBoard(file, undefined, { isMain: main() });
   try { return read(board, info); } finally { store.closeBoard(board); }
+}
+
+/**
+ * Read a board on a read-only connection when it is at this code's schema and event-log version.
+ * Why: openBoard migrates, writes the board id and checkpoints the log on close, so every read
+ * waited behind agents' writes (#1040). Any other board goes through withBoard, which upgrades or refuses it.
+ */
+function withReadBoard(root, read, isMain) {
+  const info = repoInfo(root);
+  loadConfig(info.root);
+  let db = null;
+  let current = false;
+  try {
+    db = store.openBoardReadOnly(join(info.commonDir, 'pullboard', 'board.sqlite'));
+    current = db.prepare('PRAGMA user_version').get().user_version === store.SCHEMA_VERSION && store.readEventLogVersion(db) === store.EVENT_LOG_VERSION;
+  } catch {
+    current = false; // A missing, older or newer board: withBoard creates, upgrades or refuses it by name.
+  }
+  if (!current) {
+    db?.close();
+    return withBoard(root, read, isMain);
+  }
+  try { return read({ db, clock: store.systemClock }, info); } finally { db.close(); }
 }
 
 /** Registered boards carry one persistent identity across local and relay addresses. */
@@ -682,7 +730,7 @@ export function apiBoards(projects = listApiProjects, isMain) {
  * @param {() => { root: string, name: string, project: string, added: string }[]} projects
  * @returns {{ boards: object[], warnings: object[] }}
  */
-function apiBoardListing(projects = listApiProjects, isMain) {
+export function apiBoardListing(projects = listApiProjects, isMain) {
   const boards = [];
   const warnings = [];
   for (const project of projects()) {
@@ -698,9 +746,13 @@ function apiBoardListing(projects = listApiProjects, isMain) {
 
 /** Resolve only registered boards, so a request cannot open an arbitrary path on the machine. */
 function findBoard(id, projects, isMain) {
-  const board = apiBoards(projects, isMain).find((entry) => entry.id === id);
+  // Each request resolves its board, so this opens boards read-only and stops at the match (#1040).
+  const board = projects().find((project) => {
+    try { return withReadBoard(project.root, (current) => store.boardId(current), isMain) === id; }
+    catch { return false; } // An unreadable board is left out, as the board listing leaves it out.
+  });
   if (!board) throw new Refused('NO_BOARD', `no registered board ${id}; run pullboard serve in its repo and use GET /api/v1/boards`);
-  return board;
+  return { ...board, id };
 }
 
 /** Restrict a local API to exactly one registered repository by its canonical Git common directory.
@@ -845,7 +897,9 @@ export function createLocalApiHandler({ secret, getPort, runCommand, projects = 
   const cookieKey = sessionCookie === undefined ? null : Buffer.from(sessionCookie.value);
   const permittedOrigins = new Set(allowedOrigins);
   const stateCache = new Map();
-  const verdictCache = new Map();
+  // Each board's item details by item id, and each board's spec-approval view (#1040).
+  const detailCache = new Map();
+  const approvalCache = new Map();
   // The fingerprints of the summary states each board's clients were sent, least recently sent
   // first, and the latest sequence a forgotten one had. A build only read for an item, a search or
   // a reset was never sent, so no client holds it and it is never a base.
@@ -958,53 +1012,34 @@ export function createLocalApiHandler({ secret, getPort, runCommand, projects = 
     if (sent.answer.delta) keepSentBase(sent.entry);
     return sent.answer;
   }
-  /** One item's detail from the current build, or null when the board has no such item. */
+  /**
+   * The spec-approval view one board's details share, kept while the files, HEAD and board records it
+   * reads hold: it reads every row decision and sign-off, so building it per detail cost most of one.
+   */
+  function approvalFor(root, currentBoard, info) {
+    const config = loadConfig(root);
+    const meta = currentBoard.db.prepare("SELECT meta_key, meta_value FROM board_meta WHERE meta_key IN ('row_decisions', 'spec_approval_baseline') ORDER BY meta_key").all();
+    const key = JSON.stringify([stateFileInputs(info.root, config).map(fileMarker), fileMarkerForPath(join(info.root, '.mailmap')), resolveCommit(info.root, 'HEAD'), meta]);
+    const cacheId = JSON.stringify([info.commonDir, root]);
+    const cached = approvalCache.get(cacheId);
+    if (cached?.key === key) return cached.approval;
+    const approval = specApprovalState(root, { board: currentBoard, config });
+    approvalCache.delete(cacheId);
+    approvalCache.set(cacheId, { key, approval });
+    while (approvalCache.size > 32) approvalCache.delete(approvalCache.keys().next().value);
+    return approval;
+  }
+  /**
+   * One item's detail, or null when the board has no such item. It reads only that item's rows by
+   * index, and its detail is kept by the item's last event id with the few facts beyond its own
+   * events that a detail shows: its row and live leases, its prerequisites' statuses, the trunk and
+   * the spec-approval inputs (#1040).
+   */
   function localItem(board, id) {
-    return withBoard(board.root, (currentBoard) => {
+    return withReadBoard(board.root, (currentBoard, info) => {
       currentBoard.db.exec('BEGIN');
       try {
-        let source;
-        try { source = store.getItem(currentBoard, id); }
-        catch (error) {
-          if (error instanceof Refused && error.code === 'NO_ITEM') {
-            currentBoard.db.exec('COMMIT');
-            return null;
-          }
-          throw error;
-        }
-        const status = new Map();
-        for (const dependency of dependencyIds(source)) {
-          const row = currentBoard.db.prepare('SELECT item_status FROM item WHERE item_id = ?').get(dependency);
-          if (row) status.set(dependency, row.item_status);
-        }
-        const base = projectItemSpecApprovals(projectItemState(currentBoard, source, status),
-          specApprovalState(board.root, { board: currentBoard, config: loadConfig(board.root) }));
-        // Detail reads need no new Git process while the trunk and immutable receipt log hold.
-        const info = repoInfo(board.root);
-        const tip = trunkRevisionReader(info)();
-        const verdictCacheId = JSON.stringify([info.commonDir, board.id]);
-        const event = currentBoard.db.prepare('SELECT COALESCE(MAX(event_id), 0) AS id FROM event').get().id;
-        const revision = JSON.stringify([tip, event]);
-        let cachedVerdicts = verdictCache.get(verdictCacheId);
-        if (cachedVerdicts?.revision !== revision) {
-          cachedVerdicts = { revision, states: new Map() };
-          verdictCache.delete(verdictCacheId);
-          verdictCache.set(verdictCacheId, cachedVerdicts);
-          while (verdictCache.size > 32) verdictCache.delete(verdictCache.keys().next().value);
-        }
-        // The projector owns this transaction's connection; only derived values cross requests.
-        const verdictState = cachedVerdicts.states.has(id) ? cachedVerdicts.states.get(id)
-          : verdictProjector(board.root, currentBoard, { main: tip }).state(source);
-        if (!verdictState?.reason) cachedVerdicts.states.set(id, verdictState);
-        const projected = {
-          ...base,
-          ...(verdictState ? { verdictState } : {}),
-          check: source.item_check,
-          ...(source.item_check_baseline ? { checkBaseline: source.item_check_baseline } : {}),
-          thread: store.itemThread(currentBoard, id),
-        };
-        onItemBuild?.({ board: board.id, itemId: id });
-        const detail = itemDetail(projected);
+        const detail = itemDetailIn(board, currentBoard, info, id);
         currentBoard.db.exec('COMMIT');
         return detail;
       } catch (error) {
@@ -1012,6 +1047,55 @@ export function createLocalApiHandler({ secret, getPort, runCommand, projects = 
         throw error;
       }
     }, codeIsMain);
+  }
+  /** Serve an item's cached detail while its key holds, building and keeping it when the key moved. */
+  function itemDetailIn(board, currentBoard, info, id) {
+    const { db } = currentBoard;
+    const row = db.prepare('SELECT * FROM item WHERE item_id = ?').get(id);
+    if (!row) return null;
+    const now = currentBoard.clock.now().toISOString();
+    const status = new Map();
+    for (const dependency of dependencyIds(row)) {
+      const dependent = db.prepare('SELECT item_status FROM item WHERE item_id = ?').get(dependency);
+      if (dependent) status.set(dependency, dependent.item_status);
+    }
+    // Detail reads need no new Git process while the trunk holds.
+    const tip = trunkRevisionReader(info)();
+    const approval = approvalFor(board.root, currentBoard, info);
+    const key = JSON.stringify([row, row.item_status === 'claimed' && (row.item_lease_until ?? '') > now,
+      row.item_status === 'submitted' && Boolean(row.item_review_by) && (row.item_review_until ?? '') > now,
+      db.prepare('SELECT MAX(event_id) AS id FROM event WHERE item_id = ?').get(id).id,
+      db.prepare('SELECT MAX(verdict_id) AS id FROM verdict WHERE item_id = ?').get(id).id,
+      [...status], db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?').get(`item_check_baseline_${id}`)?.meta_value ?? null, tip]);
+    const cacheId = JSON.stringify([info.commonDir, board.id]);
+    let details = detailCache.get(cacheId);
+    const cached = details?.get(id);
+    if (cached?.key === key && cached.approval === approval) return cached.detail;
+    const source = store.getItem(currentBoard, id);
+    const base = projectItemSpecApprovals(projectItemState(currentBoard, source, status), approval);
+    // The projector owns this transaction's connection; only derived values cross requests.
+    const verdictState = verdictProjector(board.root, currentBoard, { main: tip }).state(source);
+    const projected = {
+      ...base,
+      ...(verdictState ? { verdictState } : {}),
+      check: source.item_check,
+      ...(source.item_check_baseline ? { checkBaseline: source.item_check_baseline } : {}),
+      thread: store.itemThread(currentBoard, id),
+    };
+    onItemBuild?.({ board: board.id, itemId: id });
+    const detail = itemDetail(projected);
+    // Missing Git objects can arrive with no event or trunk move, so an uncertain verdict is read again.
+    if (!verdictState?.reason) {
+      if (!details) {
+        details = new Map();
+        detailCache.set(cacheId, details);
+        while (detailCache.size > 32) detailCache.delete(detailCache.keys().next().value);
+      }
+      details.delete(id);
+      details.set(id, { key, approval, detail });
+      while (details.size > DETAIL_CACHE_ITEMS) details.delete(details.keys().next().value);
+    }
+    return detail;
   }
   /** The ids of the items the view's search would show for this text, in board-state order. */
   function localSearch(board, text) {
@@ -1060,7 +1144,7 @@ export function createLocalApiHandler({ secret, getPort, runCommand, projects = 
     request: (board, body) => createRequest(board.root, body, codeIsMain, personChannel),
     tokens: async (board) => (await relayTokens(board.root, { err() {} })).tokens,
     revokeToken: (board, id) => relayRevoke(board.root, id, { personChannel, say() {}, err() {} }),
-  });
+  }, { tagState: true });
 }
 
 /**

@@ -112,7 +112,7 @@ test('doctor names an unwired hook and resume gives the repair line [L3]', () =>
   assert.equal(doctor.status, 1);
   assert.equal(doctor.stdout.split('\n').filter((line) => line.includes(expected)).length, 1, doctor.stdout);
   assert.ok(doctor.stdout.includes(`${expected}; repair: add this line: pullboard hook pre-commit "$@"`), doctor.stdout);
-  const resume = box.run('resume');
+  const resume = box.run('resume', '--diagnostics');
   assert.equal(resume.status, 0, resume.stderr);
   assert.equal(resume.stdout.split('\n').filter((line) => line.includes(expected)).length, 1, resume.stdout);
   assert.ok(resume.stdout.includes(`${expected}; add this line: pullboard hook pre-commit "$@"`), resume.stdout);
@@ -120,7 +120,7 @@ test('doctor names an unwired hook and resume gives the repair line [L3]', () =>
   assert.equal(doctorJson.status, 1);
   const finding = { code: 'HOOK_UNWIRED', message: expected, next: 'add this line: pullboard hook pre-commit "$@"' };
   assert.deepEqual(JSON.parse(doctorJson.stdout).problems, [finding]);
-  const resumeJson = box.run('resume', '--json');
+  const resumeJson = box.run('resume', '--diagnostics', '--json');
   assert.equal(resumeJson.status, 0, resumeJson.stderr);
   assert.deepEqual(JSON.parse(resumeJson.stdout).hookProblems, [finding]);
 
@@ -128,7 +128,7 @@ test('doctor names an unwired hook and resume gives the repair line [L3]', () =>
   chmodSync(join(hooks, 'pre-commit'), 0o755);
   box.git('config', 'core.hooksPath', hooks);
   assert.doesNotMatch(box.run('doctor').stdout, /HOOK_UNWIRED|active Git hook/u);
-  assert.doesNotMatch(box.run('resume').stdout, /HOOK_UNWIRED|active Git hook/u);
+  assert.doesNotMatch(box.run('resume', '--diagnostics').stdout, /HOOK_UNWIRED|active Git hook/u);
 });
 
 
@@ -166,11 +166,11 @@ test('doctor and resume accept env delegation that real Git executes [L3]', () =
     const doctor = box.run('doctor');
     assert.equal(doctor.status, 0, 'an executed env delegation is wired');
     assert.equal(doctor.stdout, 'board is clean\n');
-    const resume = box.run('resume');
+    const resume = box.run('resume', '--diagnostics');
     assert.equal(resume.status, 0);
     assert.doesNotMatch(resume.stdout, /active Git hook|HOOK_UNWIRED/u);
     assert.deepEqual(JSON.parse(box.run('doctor', '--json').stdout).problems, []);
-    assert.deepEqual(JSON.parse(box.run('resume', '--json').stdout).hookProblems, []);
+    assert.deepEqual(JSON.parse(box.run('resume', '--diagnostics', '--json').stdout).hookProblems, []);
     assert.equal(readFileSync(box.marker, 'utf8'), '', 'diagnosis never executes the hook');
     assert.equal(readFileSync(box.hook, 'utf8'), source, 'diagnosis never edits the hook');
   }
@@ -192,11 +192,11 @@ test('doctor and resume accept env assignments that real Git executes [L3]', () 
     const doctor = box.run('doctor');
     assert.equal(doctor.status, 0, 'an executed env delegation is wired');
     assert.equal(doctor.stdout, 'board is clean\n');
-    const resume = box.run('resume');
+    const resume = box.run('resume', '--diagnostics');
     assert.equal(resume.status, 0);
     assert.doesNotMatch(resume.stdout, /active Git hook|HOOK_UNWIRED/u);
     assert.deepEqual(JSON.parse(box.run('doctor', '--json').stdout).problems, []);
-    assert.deepEqual(JSON.parse(box.run('resume', '--json').stdout).hookProblems, []);
+    assert.deepEqual(JSON.parse(box.run('resume', '--diagnostics', '--json').stdout).hookProblems, []);
     assert.equal(readFileSync(box.marker, 'utf8'), '', 'diagnosis never executes the hook');
     assert.equal(readFileSync(box.hook, 'utf8'), source, 'diagnosis never edits the hook');
   }
@@ -220,18 +220,18 @@ test('doctor and resume reject printed heredocs that real Git never executes [L3
     const doctor = box.run('doctor');
     assert.equal(doctor.status, 1, 'printed heredoc text cannot wire the active hook');
     assert.ok(doctor.stdout.includes(message + '; repair: ' + finding.next));
-    const resume = box.run('resume');
+    const resume = box.run('resume', '--diagnostics');
     assert.equal(resume.status, 0);
     assert.ok(resume.stdout.includes(message + '; ' + finding.next));
     assert.deepEqual(JSON.parse(box.run('doctor', '--json').stdout).problems, [finding]);
-    assert.deepEqual(JSON.parse(box.run('resume', '--json').stdout).hookProblems, [finding]);
+    assert.deepEqual(JSON.parse(box.run('resume', '--diagnostics', '--json').stdout).hookProblems, [finding]);
     assert.equal(readFileSync(box.marker, 'utf8'), '', 'diagnosis never executes the printed example');
     assert.equal(readFileSync(box.hook, 'utf8'), source, 'diagnosis leaves documentation untouched');
     writeFileSync(box.hook, source + delegation + '\n');
     box.git('commit', '--allow-empty', '-q', '-m', 'chore: exact repair control');
     assert.match(readFileSync(box.marker, 'utf8'), /^hook pre-commit\n$/u, 'the exact repair line really invokes the CLI');
     assert.equal(box.run('doctor').stdout, 'board is clean\n');
-    assert.doesNotMatch(box.run('resume').stdout, /active Git hook|HOOK_UNWIRED/u);
+    assert.doesNotMatch(box.run('resume', '--diagnostics').stdout, /active Git hook|HOOK_UNWIRED/u);
   }
 });
 

@@ -1,4 +1,6 @@
+import { chromeLaunchArgs } from './chrome-launch-args.js';
 /** Shared isolated Chrome launcher with bounded startup and complete process-group cleanup [C7]. */
+import { execFileSync, spawn as spawnGuardian } from 'node:child_process';
 import { startFixtureChild as spawn } from './fixture-child.js';
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { loadavg, tmpdir } from 'node:os';
@@ -149,12 +151,85 @@ export function requireBrowserSlot() {
   if (process.env.PULLBOARD_TEST_BROWSER_SLOT === 'none') throw browserSlotRefusal('through test/chrome-fixture.js');
 }
 
+/**
+ * The guardian program: poll the watched pids and, once any is gone, take down the Chrome process group.
+ * It runs in its own session so the owner's death, by any signal, cannot take it along, and it ends by itself
+ * once the group is empty. Escalating to SIGKILL after two seconds covers Chrome helpers that ignore SIGTERM.
+ */
+const GUARDIAN_SOURCE = `
+const [group, ...watched] = process.argv.slice(1).map(Number);
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } };
+let signalledAt = 0;
+setInterval(() => {
+  if (!alive(-group)) process.exit(0);
+  if (watched.every(alive)) return;
+  if (!signalledAt) { signalledAt = Date.now(); try { process.kill(-group, 'SIGTERM'); } catch {} }
+  else if (Date.now() - signalledAt >= 2000) { try { process.kill(-group, 'SIGKILL'); } catch {} }
+}, 250);
+`;
+
+let runnerAncestor;
+
+/** The environment variable bin/run-tests.js sets to its own pid for every test it runs (#896). */
+export const RUNNER_PID_ENV = 'PULLBOARD_TEST_RUNNER_PID';
+
+/**
+ * Find the test runner above this process: the pid bin/run-tests.js left in this process's environment, kept
+ * only while it is a real ancestor of this process. Why not read command lines: ps prints argv without quoting,
+ * so no parser tells a runner started with `--import data:…` or a path with spaces from one of its workers (#896).
+ * The walk reads parent pids only, which macOS and Linux both print; no runner, or a stale pid from another tree,
+ * answers null, and only the owner is guarded.
+ *
+ * @param {{ env?: NodeJS.ProcessEnv, parentOf?: (pid: number) => number | null }} [options]
+ * @returns {number | null}
+ */
+export function findRunnerAncestor({ env = process.env, parentOf = parentPid } = {}) {
+  if (env === process.env && runnerAncestor !== undefined) return runnerAncestor;
+  let found = null;
+  const runner = Number(env[RUNNER_PID_ENV]);
+  if (Number.isSafeInteger(runner) && runner > 1) {
+    let pid = process.pid;
+    for (let depth = 0; depth < 64 && pid > 1; depth += 1) {
+      pid = parentOf(pid);
+      if (pid === null) break;
+      if (pid === runner) { found = runner; break; }
+    }
+  }
+  if (env === process.env) runnerAncestor = found;
+  return found;
+}
+
+/** A process's parent pid from ps, or null when it cannot be read. */
+function parentPid(pid) {
+  try {
+    const value = Number(execFileSync('ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim());
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
+  } catch { return null; /* An ended process has no parent to read. */ }
+}
+
+/**
+ * Tie a detached Chrome process group to the processes that own it [C7].
+ * A SIGKILLed owner runs no cleanup, so the group would outlive it for days; this starts a tiny detached
+ * guardian that kills the group within about a second of the owner, or the runner above it, disappearing.
+ * The group leader's pid is the group id.
+ */
+export function guardChromeGroup(groupId, { ownerPid = process.pid } = {}) {
+  if (process.platform === 'win32' || !Number.isSafeInteger(groupId) || groupId <= 1) return null;
+  const watched = [ownerPid, findRunnerAncestor()].filter((pid) => Number.isSafeInteger(pid) && pid > 1);
+  const guardian = spawnGuardian(process.execPath, ['-e', GUARDIAN_SOURCE, String(groupId), ...watched.map(String)],
+    { detached: true, stdio: 'ignore' });
+  guardian.on('error', () => {});
+  guardian.unref();
+  return guardian.pid ?? null;
+}
+
 /** Launch an executable as a detached process group and retain its stderr and launch timing. */
 export function launchChromeProcess({ executable, args = [], env = process.env, cleanupTimeoutMs = CLEANUP_TIMEOUT_MS } = {}) {
   requireBrowserSlot();
   if (!executable) throw new Error('Chrome was not found; install Chrome or set PULLBOARD_CHROME.');
   const launchedAt = Date.now();
   const child = spawn(executable, args, { detached: true, env, stdio: ['ignore', 'ignore', 'pipe'] });
+  if (child.pid) guardChromeGroup(child.pid);
   let stderr = '';
   let launchError = null;
   child.stderr.setEncoding('utf8');
@@ -196,9 +271,7 @@ export async function startChrome({
   const profile = resolve(profileDirectory ?? mkdtempSync(join(tmpdir(), 'pullboard-chrome-')));
   mkdirSync(profile, { recursive: true, mode: 0o700 });
   chmodSync(profile, 0o700);
-  const args = ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
-    '--disable-background-networking', '--disable-sync', '--disable-extensions', '--no-proxy-server',
-    '--use-mock-keychain', '--password-store=basic', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'];
+  const args = chromeLaunchArgs(profile);
   let launched;
   let socket;
   let loopDelay;

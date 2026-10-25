@@ -15,6 +15,8 @@ import { machineHome } from './machine-home.js';
 import {
   machineSettingsFile,
   gateQueueSettings,
+  LINE_SETTING_DEFINITIONS,
+  validateLineSetting,
 } from './queue-settings.js';
 import { loadMachineSettings } from './settings.js';
 import { performanceCores } from './gate.js';
@@ -23,17 +25,18 @@ import {
   DEFAULT_VIEW_PORT,
 } from './view-port.js';
 import { Refused } from './refused.js';
+import { environmentProblem } from './execution-environment.js';
 
 const MACHINE_DEFAULTS = {
   gateSlots: 2, browserSlots: 1, 'gate.shortSlots': 0,
   'gate.queue.reviewsFirst': false, 'gate.queue.currentReleaseFirst': false, 'gate.queue.agingMinutes': 30,
   'gate.memoryFloorMB': null, 'gate.browserFreeChecks': false, 'gate.browserByLaunch': false,
-  'health.sentinel': true, 'view.background': true, 'relay.offerAtInit': true, runners: [],
+  'health.sentinel': true, 'view.background': true, 'relay.offerAtInit': true, runners: [], 'landing.pools': [],
 };
 const OPTIONAL_REPO_DEFAULTS = {
   project: null, name: null, 'checks.provesNothing': 'warn', 'verify.unrelatedTrunkMoves': false, 'verify.composeAtAdmission': false,
   'flakes.rerun': false, 'flakes.quarantine': false, 'rigor.budget': 400, 'relay.outbox': false,
-  submitGate: null, landingShards: 1, 'landing.publish': null, positiveControl: null, affectedTests: null,
+  submitGate: null, submitDeferAbove: null, landingShards: 1, 'landing.publish': null, 'landing.environment': null, positiveControl: null, affectedTests: null,
   'health.sentinel': true, 'testConcurrency.browser': 2, approvers: null,
 };
 
@@ -59,6 +62,8 @@ function fields(value, names) {
 
 /** Project structured settings without returning unknown nested metadata or credential fields. */
 function safeValue(key, value) {
+  if (key === 'landing.environment' && value !== null && environmentProblem(value)) throw new Refused('BAD_SETTINGS', 'landing.environment needs exact platform, arch and Node version');
+  if (key === 'landing.pools' && (!Array.isArray(value) || value.some(id => typeof id !== 'string' || !/^[a-f0-9]{32}$/u.test(id)))) throw new Refused('BAD_SETTINGS', 'landing.pools lists board identifiers');
   const strings = entries => Array.isArray(entries) && entries.every(entry => typeof entry === 'string');
   if (key === 'products' && !Object.values(value).every(strings)) throw new Refused('BAD_SETTINGS', 'products must map names to spec-id lists');
   if (key === 'runners') return value.map(runner => fields(runner, ['host', 'slots', 'browser', 'node', 'root']));
@@ -78,7 +83,7 @@ function leaves(value, prefix = '') {
 
 /** Refuse malformed supported scalar settings without echoing credential-bearing input. */
 function checkedValue(key, value, fallback) {
-  const expected = fallback === null ? (key === 'gate.memoryFloorMB' || key.startsWith('resources.') ? 'number' : 'string') : typeof fallback;
+  const expected = key === 'landing.environment' ? 'object' : fallback === null ? (key === 'gate.memoryFloorMB' || key.startsWith('resources.') ? 'number' : 'string') : typeof fallback;
   if (value !== null && expected !== 'object' && typeof value !== expected) {
     throw new Refused('BAD_SETTINGS', `setting ${key} has an unsupported type; restore its documented value`);
   }
@@ -166,6 +171,26 @@ function repositorySettings(rows, board) {
     source: existsSync(keyFile) ? keyFile : keyEnvironment !== undefined ? 'environment:PULLBOARD_RELAY_KEY' : relay.keyStorage === 'keychain' ? 'system keychain' : keyFile });
 }
 
+/** Include board-owned line inputs in the existing read-only inventory, without exposing reasons or window evidence. */
+function boardLineSettings(rows, board) {
+  const file = join(repoInfo(board.root).commonDir, 'pullboard', 'board.sqlite');
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    const read = db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?');
+    for (const key of Object.keys(LINE_SETTING_DEFINITIONS)) {
+      const stored = read.get('line_setting:' + key);
+      let value = false;
+      if (stored) {
+        try { value = JSON.parse(stored.meta_value); }
+        catch { throw new Refused('BAD_SETTINGS', 'a stored board line setting is malformed; restore its recorded value'); }
+      }
+      validateLineSetting(key, value);
+      rows.push({ key: 'line.' + key, scope: 'board', board: board.id, root: board.root,
+        value, default: false, source: file, origin: stored ? 'configured' : 'default' });
+    }
+  } finally { db.close(); }
+}
+
 /** Read a registered board identity without creating, migrating, or repairing its database. */
 function registeredBoard(project) {
   const info = repoInfo(project.root);
@@ -196,6 +221,6 @@ export function settingsInventory(projects, selected = null) {
   const authorized = selected === null ? boards : boards.filter(board => board.id === selected);
   if (selected !== null && !authorized.length) throw new Refused('NO_BOARD', 'no registered board with this identity; use GET /api/v1/boards');
   machineSettings(rows);
-  for (const board of authorized) repositorySettings(rows, board);
+  for (const board of authorized) { repositorySettings(rows, board); boardLineSettings(rows, board); }
   return { settings: rows, ...(warnings.length ? { warnings } : {}) };
 }

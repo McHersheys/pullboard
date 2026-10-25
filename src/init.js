@@ -418,6 +418,278 @@ export const RESUME_HOOK =
   'm=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/..; for p in node_modules/.bin/pullboard "$m/node_modules/.bin/pullboard"; do [ -x "$p" ] && exec "$p" resume; done; command -v pullboard >/dev/null && exec pullboard resume; true';
 
 /**
+ * The MCP server command: pullboard from this checkout's install, else the main checkout's, else the PATH (#961).
+ * It runs through sh -c, as the session hook does, so one entry works however pullboard was installed.
+ */
+export const MCP_COMMAND =
+  'm=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/..; for p in node_modules/.bin/pullboard "$m/node_modules/.bin/pullboard"; do [ -x "$p" ] && exec "$p" mcp; done; command -v pullboard >/dev/null && exec pullboard mcp; echo "pullboard is not installed; npm i -D pullboard" >&2; exit 1';
+
+/**
+ * Decode the body of a TOML basic string: \\b \\t \\n \\f \\r \\e \\" \\\\, \\uXXXX and \\UXXXXXXXX. Null for an escape
+ * TOML does not define, so a key that cannot be read names nothing rather than crashing init (#961).
+ *
+ * @param {string} body
+ * @returns {string | null}
+ */
+function tomlBasicString(body) {
+  const simple = { b: '\b', t: '\t', n: '\n', f: '\f', r: '\r', e: '\u001b', '"': '"', '\\': '\\' };
+  let out = '';
+  for (let at = 0; at < body.length; at += 1) {
+    if (body[at] !== '\\') { out += body[at]; continue; }
+    const kind = body[at + 1];
+    if (kind in simple) { out += simple[kind]; at += 1; continue; }
+    const width = kind === 'u' ? 4 : kind === 'U' ? 8 : 0;
+    const hex = body.slice(at + 2, at + 2 + width);
+    if (!width || !/^[0-9A-Fa-f]+$/u.test(hex) || hex.length !== width) return null;
+    const code = Number.parseInt(hex, 16);
+    if (code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return null;
+    out += String.fromCodePoint(code);
+    at += 1 + width;
+  }
+  return out;
+}
+
+/**
+ * A Codex config.toml's lines, each with whether it begins inside a multi-line string ("""…""" or \'\'\'…\'\'\'). Such a
+ * line is text, never a table header or a key, however it looks (#961).
+ *
+ * @param {string} contents
+ * @returns {{ text: string, inString: boolean }[]}
+ */
+function tomlLines(contents) {
+  const lines = String(contents).split(/\r?\n/u);
+  const result = [];
+  let multi = '';
+  for (const text of lines) {
+    result.push({ text, inString: Boolean(multi) });
+    let quote = '';
+    for (let at = 0; at < text.length; at += 1) {
+      if (multi) {
+        if (multi === '"""' && text[at] === '\\') { at += 1; continue; }
+        if (text.startsWith(multi, at)) { at += multi.length - 1; multi = ''; }
+        continue;
+      }
+      const char = text[at];
+      if (quote === '"' && char === '\\') { at += 1; continue; }
+      if (quote) { if (char === quote) quote = ''; continue; }
+      if (text.startsWith('"""', at) || text.startsWith("\'\'\'", at)) { multi = text.slice(at, at + 3); at += 2; continue; }
+      if (char === '"' || char === "'") quote = char;
+      else if (char === '#') break;
+    }
+  }
+  return result;
+}
+
+/**
+ * Split a TOML key such as `mcp_servers.'pullboard'` into its parts: bare, "basic" or 'literal', dots between.
+ *
+ * @param {string} text
+ * @returns {string[]|null} null when the text is not a plain dotted key.
+ */
+function tomlKeyParts(text) {
+  const parts = [];
+  const pattern = /\s*(?:([A-Za-z0-9_-]+)|"((?:[^"\\]|\\.)*)"|'([^']*)')\s*(\.|$)/uy;
+  let match;
+  while (pattern.lastIndex < text.length && (match = pattern.exec(text))) {
+    const part = match[1] ?? (match[2] !== undefined ? tomlBasicString(match[2]) : match[3]);
+    if (part === null) return null;
+    parts.push(part);
+    if (!match[4]) return pattern.lastIndex === text.length ? parts : null;
+  }
+  return null;
+}
+
+/**
+ * Drop a TOML line's comment: a # outside any quoted string.
+ *
+ * @param {string} line
+ * @returns {string}
+ */
+function withoutTomlComment(line) {
+  let quote = '';
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (quote === '"' && char === '\\') index += 1;
+    else if (quote && char === quote) quote = '';
+    else if (!quote && (char === '"' || char === "'")) quote = char;
+    else if (!quote && char === '#') return line.slice(0, index);
+  }
+  return line;
+}
+
+/**
+ * Whether a Codex config.toml already defines an MCP server by this name, in any form TOML allows: a
+ * `[mcp_servers.name]` table with quoted keys or a trailing comment, its subtables, dotted keys under
+ * `[mcp_servers]` or the top level, or an inline table. Init must keep such a server and add no second
+ * one, since a duplicate makes the whole file invalid TOML (#961).
+ *
+ * @param {string} contents
+ * @param {string} name
+ * @returns {boolean}
+ */
+export function codexHasMcpServer(contents, name) {
+  const names = (path) => path.length >= 2 && path[0] === 'mcp_servers' && path[1] === name;
+  let table = [];
+  for (const { text: raw, inString } of tomlLines(contents)) {
+    if (inString) continue;
+    const line = withoutTomlComment(raw).trim();
+    const header = /^\[\[?(.+?)\]\]?$/u.exec(line);
+    if (header) {
+      table = tomlKeyParts(header[1]) ?? [];
+      if (names(table)) return true;
+      continue;
+    }
+    const equals = line.indexOf('=');
+    if (equals < 1) continue;
+    const key = tomlKeyParts(line.slice(0, equals));
+    if (!key) continue;
+    const path = [...table, ...key];
+    if (names(path)) return true;
+    // An inline table: mcp_servers = { name = { ... } } names the server among its keys.
+    const value = line.slice(equals + 1);
+    if (path.length === 1 && path[0] === 'mcp_servers' && new RegExp(`[{,]\\s*(?:${name}|"${name}"|'${name}')\\s*[.=]`, 'u').test(value)) return true;
+  }
+  return false;
+}
+
+/**
+ * The end of one simple TOML value starting at `at`: a basic or literal string, a number, a boolean, or a single-line
+ * array of those. -1 for anything else, such as an inline table, a date or a multi-line string (#961).
+ *
+ * @param {string} text
+ * @param {number} at
+ * @returns {number}
+ */
+function simpleTomlValueEnd(text, at) {
+  if (text.startsWith('"""', at) || text.startsWith("\'\'\'", at)) return -1;
+  if (text[at] === '"') {
+    const match = /"((?:[^"\\]|\\.)*)"/uy;
+    match.lastIndex = at;
+    const found = match.exec(text);
+    return found && tomlBasicString(found[1]) !== null ? match.lastIndex : -1;
+  }
+  if (text[at] === "\'") {
+    const close = text.indexOf("\'", at + 1);
+    return close === -1 ? -1 : close + 1;
+  }
+  if (text[at] === '[') {
+    let index = at + 1;
+    for (;;) {
+      while (text[index] === ' ' || text[index] === '\t') index += 1;
+      if (text[index] === ']') return index + 1;
+      const end = text[index] === '[' ? -1 : simpleTomlValueEnd(text, index);
+      if (end === -1) return -1;
+      index = end;
+      while (text[index] === ' ' || text[index] === '\t') index += 1;
+      if (text[index] === ',') index += 1;
+      else if (text[index] !== ']') return -1;
+    }
+  }
+  const scalar = /(?:true|false|[+-]?(?:inf|nan)|0x[0-9A-Fa-f_]+|0o[0-7_]+|0b[01_]+|[+-]?\d[\d_]*(?:\.\d[\d_]*)?(?:[eE][+-]?\d[\d_]*)?)(?=[\s,\]#]|$)/uy;
+  scalar.lastIndex = at;
+  return scalar.exec(text) ? scalar.lastIndex : -1;
+}
+
+/**
+ * Whether init may edit this Codex config.toml: every line is blank, a comment, a [table] or [a.b] header, or a
+ * single-line key = value whose value is a string, number, boolean or single-line array, and nothing assigns
+ * mcp_servers a value of its own. Outside that subset init writes nothing and prints the block for the person: a
+ * reviewer grades this subset and the fallback, not every TOML form (#961).
+ *
+ * @param {string} contents
+ * @returns {boolean}
+ */
+export function codexConfigEditable(contents) {
+  let table = [];
+  for (const raw of String(contents).split(/\r?\n/u)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const header = /^\[([^[\]]+)\]\s*(?:#.*)?$/u.exec(line);
+    if (header) {
+      table = tomlKeyParts(header[1]);
+      if (!table) return false;
+      continue;
+    }
+    const equals = line.indexOf('=');
+    const key = equals > 0 ? tomlKeyParts(line.slice(0, equals)) : null;
+    if (!key) return false;
+    const path = [...table, ...key];
+    if (path.length === 1 && path[0] === 'mcp_servers') return false;
+    let at = equals + 1;
+    while (line[at] === ' ' || line[at] === '\t') at += 1;
+    const end = simpleTomlValueEnd(line, at);
+    if (end === -1 || !/^\s*(?:#.*)?$/u.test(line.slice(end))) return false;
+  }
+  return true;
+}
+
+/** The one [mcp_servers.pullboard] block init writes, or prints for the person when it cannot write it (#961). */
+export const CODEX_MCP_BLOCK = `[mcp_servers.pullboard]\ncommand = "sh"\nargs = ["-c", ${JSON.stringify(MCP_COMMAND)}]`;
+
+/** How a note begins when Codex needs the person: an inline mcp_servers table that init leaves byte-identical. */
+export const CODEX_MANUAL_NOTE = 'kept .codex/config.toml as written: it uses TOML beyond the simple lines init edits (such as an inline table or a multi-line string).';
+
+/**
+ * How init left each client's MCP server, read from its notes: added, kept (already there), or manual (the person adds
+ * it). --json reports this so a script can tell a Codex setup that needs the person (#961).
+ *
+ * @param {string[]} notes
+ * @returns {{ claude: 'added'|'kept'|'manual', codex: 'added'|'kept'|'manual' }}
+ */
+export function mcpSetup(notes) {
+  const has = (start) => notes.some((note) => note.startsWith(start));
+  return {
+    claude: has('added pullboard mcp to .mcp.json') ? 'added' : has('kept the Claude Code MCP server') ? 'kept' : 'manual',
+    codex: has(CODEX_MANUAL_NOTE) ? 'manual' : has('added pullboard mcp to .codex/config.toml') ? 'added' : 'kept',
+  };
+}
+
+/**
+ * Register pullboard mcp for Claude Code (.mcp.json) and Codex (.codex/config.toml), merging with any servers already
+ * there and never replacing a pullboard entry or a file it cannot read, so an agent can work the loop through MCP (#961).
+ *
+ * @param {string} root
+ * @param {(path: string) => void} onWrite
+ * @returns {string[]} What happened, one note per client.
+ */
+function writeMcpConfig(root, onWrite) {
+  const notes = [];
+  const claude = join(root, '.mcp.json');
+  let config = {};
+  if (existsSync(claude)) {
+    try { config = JSON.parse(readFileSync(claude, 'utf8')); } catch { config = null; }
+  }
+  const servers = config?.mcpServers;
+  if (!config || typeof config !== 'object' || Array.isArray(config) || (servers !== undefined && (!servers || typeof servers !== 'object' || Array.isArray(servers)))) {
+    notes.push('kept .mcp.json, which is not a JSON object with an mcpServers object; add a pullboard server that runs pullboard mcp');
+  } else if (servers && Object.hasOwn(servers, 'pullboard')) {
+    notes.push('kept the Claude Code MCP server in .mcp.json');
+  } else {
+    config.mcpServers = { ...servers, pullboard: { command: 'sh', args: ['-c', MCP_COMMAND] } };
+    writeFileSync(claude, `${JSON.stringify(config, null, 2)}\n`);
+    onWrite('.mcp.json');
+    notes.push('added pullboard mcp to .mcp.json for Claude Code');
+  }
+  const codex = join(root, '.codex', 'config.toml');
+  const contents = existsSync(codex) ? readFileSync(codex, 'utf8') : '';
+  if (!codexConfigEditable(contents)) {
+    // Outside the simple subset init never rewrites what the person wrote: it prints the block for them to add (#961).
+    notes.push(`${CODEX_MANUAL_NOTE} To run pullboard mcp in Codex, add this server yourself, as this table or as a pullboard entry in your mcp_servers table:\n${CODEX_MCP_BLOCK}`);
+  } else if (codexHasMcpServer(contents, 'pullboard')) {
+    notes.push('kept the Codex MCP server in .codex/config.toml');
+  } else {
+    // A new table at the end is valid TOML after any simple content, so nothing already there is rewritten.
+    const prefix = contents && !contents.endsWith('\n') ? `${contents}\n` : contents;
+    const table = `${prefix ? `${prefix}\n` : ''}${CODEX_MCP_BLOCK}\n`;
+    mkdirSync(join(root, '.codex'), { recursive: true });
+    writeFileSync(codex, table);
+    onWrite('.codex/config.toml');
+    notes.push('added pullboard mcp to .codex/config.toml for Codex; trust this project so Codex loads it');
+  }
+  return notes;
+}
+
+/**
  * Have Claude Code run `pullboard resume` whenever a session starts, resumes or is compacted (I6), so
  * an agent picks its work up from the board rather than from a summary of it. The hook is merged
  * into .claude/settings.json; every other setting stays as it was.
@@ -585,6 +857,7 @@ export function initRepo({ info, openBoardHere, register, closeBoard, model, per
     ...installHooks(root, onWrite),
     ...installSkills(root, onWrite),
     writeSessionHook(root, onWrite),
+    ...writeMcpConfig(root, onWrite),
   ];
   if (gate && (!configured || configured === gate)) {
     const gateNote = missingGateNote(root, gate);

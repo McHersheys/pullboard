@@ -7,7 +7,7 @@ import {
 import {
   closeBoard,
   getItem,
-  events,
+  eventsOfKinds,
   laneHolds,
   listItems,
   milestones,
@@ -126,8 +126,7 @@ export function milestoneRoadmap(root, board, options = {}) {
 /** Count distinct currently landed local items at their first recording of the current merge. */
 function landingPace(board, items, now) {
   const first = new Map();
-  for (const event of events(board)) {
-    if (event.event_kind !== 'merged') continue;
+  for (const event of eventsOfKinds(board, ['merged'])) {
     const item = items.get(event.item_id);
     if (item?.item_status !== 'verified' || !item.item_merged_commit || first.has(event.item_id)) continue;
     if (JSON.parse(event.event_detail).commit !== item.item_merged_commit) continue;

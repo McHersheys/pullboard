@@ -8,7 +8,7 @@ import { submitFixture } from './board-submit-fixture.js';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
@@ -27,6 +27,8 @@ const NOT_MOVES = {
   USAGE: 'how a command was typed',
   NO_FILE: 'how a command was typed: a --note-file that does not exist',
   ALREADY_JOINED: 'registering who is asking, before any move',
+  BAD_PARENT: 'validating optional parent/session declarations at join, before any move',
+  PARENT_SESSION_CHANGED: 'preserving the joined seat’s immutable parent/session identity, before any move',
   BAD_ROUTE: 'registering who is asking, before any move',
   ONE_COORDINATOR: 'registering who is asking, before any move',
   BAD_SEAT_ID: 'registering who is asking, before any move; only a creator naming a new worktree seat raises it',
@@ -106,7 +108,14 @@ const NON_MOVE_ENTRY_POINTS = [
 ];
 
 /** Board functions handed a function to call, and the one the CLI and the runner hand them. */
-const CALLBACKS = { 'board.js': { freeze: 'cli.js#freezer' } };
+const CALLBACKS = {
+  'board.js': { freeze: 'cli.js#freezer' },
+  'line-capacity-board.js': {
+    nextFor: 'board.js#nextFor',
+    reviewerChecks: 'board.js#reviewerChecks',
+    reviewReleaseCooldown: 'board.js#reviewReleaseCooldown',
+  },
+};
 
 /**
  * Calls whose refusals an entry point catches and reports as another: submit and verify read a
@@ -115,14 +124,28 @@ const CALLBACKS = { 'board.js': { freeze: 'cli.js#freezer' } };
  * reads committed doctrine rules leniently: a doctrine it cannot parse carries no check [D1].
  */
 const CAUGHT = {
+  // Review eligibility returns Refused values as data, and this helper also catches thrown eligibility refusals.
+  'line-capacity-board.js#oldestCapacityReview': ['board.js#reviewerChecks'],
   'commands/submit.js#submitHere': ['native-flakes.js#observeFailure', 'cli.js#freezer', 'main-red.js#compareMainFailures', 'main-red.js#matchingReworks', 'doctrine-checks.js#checkRulesAt'],
   // observeNativeFailure catches its optional pair/recording errors; they cannot become lifecycle refusals.
   'commands/verify.js#verifyHere': ['cli.js#freezer', 'native-flakes.js#observeFailure'],
   // Invalid approval evidence is data, not a lifecycle refusal; runtime controls keep it unconfirmed.
   'spec-approval.js#approvalEvidence': ['spec.js#readSignoffs'],
   'spec-approval.js#confirmedDecision': ['signature.js#verifyRowDecision'],
+  // specApprovalState turns a Refused from the canonical baseline reader into invalid evidence.
+  'spec-approval.js#specApprovalState': ['board-query.js#specApprovalBaseline'],
   // Historical decline metadata is parsed inside a non-throwing boundary, covered by the Rigor history control.
   'board.js#reopen': ['rigor-notices.js#declinedRigorSource'],
+  // Rigor projection folds inspect invalid cause results as data, never lifecycle refusals.
+  'rigor.js#eventCauses': ['rigor.js#causeProblem'],
+  'rigor-counter-state.js#neverKey': ['rigor.js#causeProblem'],
+  // Historical decline grammar is caught locally; typed readers return invalid evidence as null.
+  'rigor-counter-state.js#declineKey': ['spec.js#parseSpec'],
+  'rigor-source.js#readRigorSource': ['rigor.js#causeProblem'],
+  'rigor-auto-source.js#readAutomaticRigorSource': ['rigor.js#causeProblem'],
+  // Only an unsupported historical grammar is ignored; new caller refusals remain audited below.
+  'rigor-auto-source.js#automaticDecisionSource': ['spec.js#parseSpec'],
+  'rigor-auto-source.js#rigorDecisionKey': ['spec.js#parseSpec'],
 };
 
 /**
@@ -199,6 +222,8 @@ function codeWalk(read, { caught = false } = {}) {
     seen.add(key);
     const [file, name] = key.split('#');
     const { bodies, named, spaces } = load(file);
+    // A facade may import and re-export the helper; follow its real definition after extraction.
+    if (!bodies.has(name) && named.has(name)) return refusalsOf(named.get(name), skip, seen);
     const body = bodies.get(name) ?? '';
     const codes = new Set([...body.matchAll(/new Refused\(\s*(['"])([A-Z][A-Z0-9_]*)\1/g)].map((match) => match[2]));
     const callees = [
@@ -440,7 +465,7 @@ test('the declared lifecycle is sound: reachable, no traps, no second door, ever
   assert.deepEqual(machineProblems(), []);
   assert.deepEqual(MACHINE.states.map((state) => state.id), ['open', 'claimed', 'submitted', 'verified', 'withdrawn']);
   assert.deepEqual(MACHINE.states.filter((state) => state.final).map((state) => state.id), ['withdrawn']);
-  assert.deepEqual(MACHINE.moves.map((move) => move.verb), ['claim', 'release', 'lapse', 'submit', 'reserve', 'accept', 'reject', 'reopen', 'escalate', 'refreeze', 'refreeze', 'withdraw']);
+  assert.deepEqual(MACHINE.moves.map((move) => move.verb), ['intake', 'claim', 'release', 'lapse', 'submit', 'reserve', 'accept', 'reject', 'reopen', 'escalate', 'refreeze', 'refreeze', 'withdraw']);
 });
 
 for (const broken of BROKEN) {
@@ -534,6 +559,27 @@ test('a broken copy of the declaration fails the check against the code, both wa
 });
 
 test('a broken copy of the code fails the check: a refusal added wherever a move reaches [M1, M4]', () => {
+  const inCaughtBaseline = editedSource('board-query.js', /^export function specApprovalBaseline\(board\) \{$/m,
+    "$&\n  if (!board) throw new Refused('MOON_PHASE', 'wait for the full moon');");
+  assert.deepEqual(codeProblems(MACHINE, inCaughtBaseline), [], 'the real caller catches a Refused from the baseline reader');
+  const inBaselineCaller = editedSource('spec-approval.js', /^export function specApprovalState\(root, .*$/m,
+    "$&\n  if (!root) throw new Refused('MOON_PHASE', 'wait for the full moon');");
+  assert.deepEqual(codeProblems(MACHINE, inBaselineCaller).sort(), [
+    'MOON_PHASE is raised by accept and reject but not declared there',
+    'MOON_PHASE is raised by claim but not declared there',
+    'MOON_PHASE is raised by refreeze but not declared there',
+  ], 'the caller is not exempt: only the exact reader call is inside its catch');
+
+  for (const helper of ['automaticDecisionSource', 'rigorDecisionKey']) {
+    const inHistoricalCaller = editedSource('rigor-auto-source.js',
+      new RegExp(`^export function ${helper}\\(record\\) \\{$`, 'm'),
+      "$&\n  throw new Refused('MOON_PHASE', 'wait for the full moon');");
+    assert.deepEqual(codeProblems(MACHINE, inHistoricalCaller).sort(), [
+      'MOON_PHASE is raised by accept and reject but not declared there',
+      'MOON_PHASE is raised by reopen but not declared there',
+    ], 'a new refusal outside the historical parser catch still reaches lifecycle moves');
+  }
+
   const inFreeze = editedSource('spec.js', /^export function frozenCriterion\(spec, item, doctrine = null\) \{$/m, "$&\n  if (item.item_title === 'moon') throw new Refused('MOON_PHASE', 'wait for the full moon');");
   assert.deepEqual(codeProblems(MACHINE, inFreeze).sort(), [
     'MOON_PHASE is raised by claim but not declared there',
@@ -554,7 +600,7 @@ test('a broken copy of the code fails the check: a refusal added wherever a move
     'NO_ROUTE is raised by reserve but not declared there',
   ], 'reserve reaches the route check through the reviewer checks it shares with a verdict');
 
-  const doubleQuoted = editedSource('cli.js', /^(?:export )?const cdTo = .*$/m, "const cdTo = (root) => { if (!root) throw new Refused(\"NO_ROOT\", 'no root'); return 'cd ' + root + ' &&'; };");
+  const doubleQuoted = editedSource('cli-read-context.js', /^(?:export )?const cdTo = .*$/m, "const cdTo = (root) => { if (!root) throw new Refused(\"NO_ROOT\", 'no root'); return 'cd ' + root + ' &&'; };");
   assert.deepEqual(codeProblems(MACHINE, doubleQuoted), [
     'NO_ROOT is raised by submit but not declared there',
     'NO_ROOT is raised by accept and reject but not declared there',
@@ -738,6 +784,8 @@ test('an older board gets the triggers quietly on its next open; one dropped by 
     tampered.exec('DROP TRIGGER machine_proof_verified');
     tampered.exec('DROP TRIGGER machine_item_move');
     tampered.exec('CREATE TRIGGER machine_item_move BEFORE UPDATE OF item_status ON item WHEN 0 BEGIN SELECT 1; END');
+    // Only a board whose user_version is behind is audited on open (#1047); a guarded older board still reports.
+    tampered.exec('PRAGMA user_version = 1');
     tampered.close();
 
     const restored = store.openBoard(lab.file);
@@ -758,10 +806,11 @@ test('the triggers come from the declaration, so a changed declaration changes t
   const moveSql = (machine) => storeTriggers(machine).find(({ name }) => name === 'machine_item_move').sql;
   const pairs = MACHINE.moves.flatMap((move) => move.from.filter((from) => from !== move.to).map((from) => `'${from}>${move.to}'`));
   for (const pair of pairs) assert.ok(moveSql(MACHINE).includes(pair), `the move trigger allows ${pair}`);
-  assert.ok(!moveSql(MACHINE).includes("'open>submitted'"));
+  // Outside intake now legitimately declares open>submitted; claimed>verified still cannot bypass a submitted review.
+  assert.ok(!moveSql(MACHINE).includes("'claimed>verified'"));
   const machine = copy();
-  machine.moves.push({ verb: 'land', from: ['open'], to: 'submitted', by: ['coordinator'], refuse: 'CLOSED', guards: ['joined', 'coordinatorOnly', 'itemExists', IN_STATE], sets: ['item_built_by', 'item_commit', 'item_frozen_digest'] });
-  assert.ok(moveSql(machine).includes("'open>submitted'"));
+  machine.moves.push({ verb: 'testDirectVerdict', from: ['claimed'], to: 'verified', by: ['coordinator'], refuse: 'CLOSED', guards: ['joined', 'coordinatorOnly', 'itemExists', IN_STATE], sets: ['item_built_by', 'item_commit', 'item_frozen_digest'] });
+  assert.ok(moveSql(machine).includes("'claimed>verified'"));
   const names = storeTriggers().map(({ name }) => name);
   for (const state of MACHINE.states.filter((entry) => entry.requires.length)) assert.ok(names.includes(`machine_fields_${state.id}`), `${state.id} has a fields trigger`);
   assert.ok(names.includes('machine_proof_verified'));
@@ -874,7 +923,7 @@ test('pullboard help lists each role\'s moves from the declaration, and pullboar
 /** Guards checked before the explicit transition: CLI facts and optional roadmap selection. */
 const PRECHECKED = {
   claim: ['joined', 'checkProvesSomething'],
-  submit: ['joined', 'checkProvesSomething', 'criterionUnchanged', 'treeClean', 'nothingUntracked', 'hasCommit', 'withinLane', 'trunkMergeClean', 'infraExplained', 'doctrineHolds', 'gateConfigured', 'queuedItemLease', 'gateGreen', 'treeStillDuringGate', 'noUnverifiedStack'],
+  submit: ['joined', 'checkProvesSomething', 'criterionUnchanged', 'treeClean', 'nothingUntracked', 'hasCommit', 'withinLane', 'trunkMergeClean', 'trunkInCandidate', 'infraExplained', 'doctrineHolds', 'gateConfigured', 'queuedItemLease', 'gateGreen', 'treeStillDuringGate', 'noUnverifiedStack'],
   reserve: ['coordinatorSaysAs', 'joined', 'roadmapReadable'],
   accept: ['coordinatorSaysAs', 'joined', 'atSubmittedCommit', 'reviewTreeCurrent', 'trunkMergeClean', 'queuedItemLease', 'itemCheckGreen', 'noUnverifiedStack'],
   reject: ['coordinatorSaysAs', 'joined', 'atSubmittedCommit', 'reviewTreeCurrent'],
@@ -947,7 +996,12 @@ test('claim refuses in the declared order, one failure peeled at a time, on a re
     submitFixture(board, dependency, { agentId: 'web-1', commit: SHA_A, tree: 'tree' });
     store.holdLane(board, 'web', { agentId: 'coordinator', reason: 'pause' });
     store.holdItem(board, target, { agentId: 'coordinator', reason: 'item pause' });
-    const fired = [claimAs(999, light, 'api'), claimAs(done, light, 'api'), claimAs(target, light, 'api')];
+    const fired = [claimAs(999, light, 'api'), claimAs(done, light, 'api')];
+    store.setBarReady(board, { agentId: 'coordinator', enabled: true });
+    store.editItem(board, target, { agentId: 'coordinator', brief: 'Unsigned bar edge' });
+    fired.push(claimAs(target, light, 'api'));
+    store.setBarReady(board, { agentId: 'coordinator', enabled: false });
+    fired.push(claimAs(target, light, 'api'));
     store.releaseItemHold(board, target, { agentId: 'coordinator' });
     fired.push(claimAs(target, light, 'api'), claimAs(target, light, 'web'), claimAs(target, strong, 'web'));
     verdictOn(board, dependency, 'web-2', 'ACCEPT');
@@ -959,11 +1013,14 @@ test('claim refuses in the declared order, one failure peeled at a time, on a re
     store.editItem(board, target, { agentId: 'coordinator', criterion: 'A new bar, so the next claim freezes it.' });
     fired.push(claimAs(target, strong, 'web'));
     store.releaseLane(board, 'web', { agentId: 'coordinator' });
+    store.setLineSetting(board, { agentId: 'coordinator', key: 'wipPerReviewer', value: 1.5, reason: 'peel the actual capacity guard', window: { activeReviewers: 1 } });
+    fired.push(claimAs(target, strong, 'web'));
+    store.setLineSetting(board, { agentId: 'coordinator', key: 'wipPerReviewer', value: false, reason: 'peel the remaining existing guards', window: { activeReviewers: 1 } });
     fired.push(claimAs(target, strong, 'web'));
     store.release(board, spare, strong);
     fired.push(claimAs(target, strong, 'web'), claimAs(target, strong, 'web', freeze));
     assert.deepEqual(fired, [...declaredBoardOrder('claim'), 'ok']);
-    assert.deepEqual(fired, ['NO_ITEM', 'NOT_CLAIMABLE', 'ITEM_HELD', 'WRONG_LANE', 'ROUTE', 'BLOCKED', 'HELD', 'REOPEN_HELD_FOR_BUILDER', 'PENDING_REFREEZE', 'LANE_HELD', 'ONE_CLAIM', 'UNKNOWN_SPEC', 'ok']);
+    assert.deepEqual(fired, ['NO_ITEM', 'NOT_CLAIMABLE', 'BAR_NOT_READY', 'ITEM_HELD', 'WRONG_LANE', 'ROUTE', 'BLOCKED', 'HELD', 'REOPEN_HELD_FOR_BUILDER', 'PENDING_REFREEZE', 'LANE_HELD', 'LINE_WIP_LIMIT', 'ONE_CLAIM', 'UNKNOWN_SPEC', 'ok']);
   } finally {
     lab.done();
   }
@@ -983,6 +1040,10 @@ test('submit, accept and reject refuse in the declared order, one failure peeled
     submits.push(submitAs(piece, 'web-1', SHA_A));
     assert.equal(submits.at(-1), 'PENDING_REFREEZE', 'a pending correction stops the board submission before later guards');
     store.refreeze(board, piece, { agentId: 'web-1', freeze });
+    store.setBarReady(board, { agentId: 'coordinator', enabled: true });
+    store.editItem(board, piece, { agentId: 'coordinator', brief: 'Unsigned corrected bar' });
+    submits.push(submitAs(piece, 'web-1', SHA_A));
+    store.setBarReady(board, { agentId: 'coordinator', enabled: false });
     submits.push(outcome(() => submitFixture(board, piece, { agentId: 'web-1', commit: SHA_A, tree: 'tree',
       submissionProof: { version: 99, files: [], full: false, deferred: true, reason: '' } })));
     submitFixture(board, piece, { agentId: 'web-1', commit: SHA_A, tree: 'tree' });
@@ -1172,7 +1233,7 @@ test('next --verify reserves the review for the reviewLease and says until when;
     assert.equal(git(holder, 'rev-parse', '--path-format=absolute', '--git-common-dir'), commonDir,
       'the verifier worktree reads the builder repo common dir');
     const sharedBoard = new DatabaseSync(join(commonDir, 'pullboard', 'board.sqlite'), { readOnly: true });
-    assert.equal(sharedBoard.prepare('PRAGMA user_version').get().user_version, 2,
+    assert.equal(sharedBoard.prepare('PRAGMA user_version').get().user_version, 3,
       'the main repo creates the shared board before the verifier opens it');
     sharedBoard.close();
 
@@ -1230,7 +1291,7 @@ test('next --verify looks and reserves in one transaction, so no other verifier 
             store.reserveReview(rival, id, { agentId: third, leaseMs: 60_000, policy: 'any' });
             rivalSaw = 'reserved';
           } catch (error) {
-            rivalSaw = error.message;
+            rivalSaw = error;
           }
         }
         return new Date(Date.now() + 60_000);
@@ -1241,7 +1302,7 @@ test('next --verify looks and reserves in one transaction, so no other verifier 
     const found = store.reserveNextReview(looking, { agentId: 'web-2', lane: 'web', leaseMs: 60_000, policy: 'any' });
     assert.equal(found.item?.item_review_by, 'web-2');
     assert.ok(rivalSaw !== null, 'the look read the clock, so the rival had its chance mid-look');
-    assert.match(rivalSaw, /locked/, 'the rival could not write while the look held the board');
+    assert.equal(rivalSaw.code, 'BOARD_BUSY', 'the rival could not write while the look held the board');
   } finally {
     for (const board of others) store.closeBoard(board);
     lab.done();
@@ -1268,7 +1329,7 @@ test('the lifecycle page and the help show the reservation: reserve, and reviewF
   assert.match(page, /^\| reserve \| submitted \| submitted \| agent, coordinator \| .*reviewFree \(REVIEW_HELD\) \|$/m);
   for (const verb of ['accept', 'reject']) assert.match(page, new RegExp(`^\\| ${verb} \\| submitted, verified \\| .*policyAllows \\(COORDINATOR_VERIFIES\\), familyAllows \\(O2_FAMILY_MATCH\\), reviewFree \\(REVIEW_HELD\\), criterionUnchanged`, 'm'));
   assert.match(page, /^\| REVIEW_HELD \| no other agent holds its review under a live lease \| pullboard next --verify/m);
-  assert.match(HELP.all, /^ {2}agent +claim, release, submit, reserve, accept, reject, escalate, refreeze \(when a live claim has a pending coordinator correction\)$/m);
+  assert.match(HELP.all, /^ {2}agent +intake, claim, release, submit, reserve, accept, reject, reopen, escalate, refreeze \(when a live claim has a pending coordinator correction\)$/m);
   assert.match(HELP.all, /pullboard next --verify +reserve the next submitted item you can check/);
 });
 
@@ -1316,7 +1377,8 @@ function statusWriters(read) {
   const writers = [];
   for (const file of readdirSync(new URL('../src/', import.meta.url)).filter((name) => name.endsWith('.js'))) {
     const source = read(file);
-    const allowed = file === 'board.js' ? ['moveItem', 'setItem', 'current'].map((name) => functionsIn(source).get(name)) : [];
+    const allowedNames = file === 'board.js' ? ['moveItem', 'setItem'] : file === 'board-query.js' ? ['current'] : [];
+    const allowed = allowedNames.map((name) => functionsIn(source).get(name));
     const spans = allowed.filter(Boolean).map((body) => [source.indexOf(body), source.indexOf(body) + body.length]);
     if (file === 'json.js') {
       const catalog = /^export const JSON_SHAPES = \{[\s\S]*?^\};/m.exec(source);
@@ -1335,6 +1397,9 @@ function statusWriters(read) {
 
 test('only moveItem writes an item\'s status, and a write anywhere else fails the check [M1]', () => {
   assert.deepEqual(statusWriters(fromDisk), []);
+  const besideReader = editedSource('board-query.js', /^export function current/m,
+    "export function reopenByHand(board, id) {\n  board.db.prepare(\"update item set item_status = 'open' where item_id = ?\").run(id);\n}\n\nexport function current");
+  assert.deepEqual(statusWriters(besideReader), ['board-query.js#reopenByHand'], 'the projection exemption never covers a writer beside it');
   assert.match(functionsIn(fromDisk('board.js')).get('moveItem'), /item_status: move\.to/, 'moveItem is the writer');
   const planted = editedSource('board.js', /set: \(found\) => \(\{ item_route: nextRoute\(found\.item_route\), item_owner: null, item_lease_until: null \}\),/, "set: (found) => ({ item_route: nextRoute(found.item_route), item_status: 'open', item_owner: null, item_lease_until: null }),");
   assert.deepEqual(statusWriters(planted), ['board.js#escalate']);
@@ -1372,8 +1437,9 @@ test('the board refuses a status written outside moveItem at run time, however i
 test('a helper added to the board that changes a status outside moveItem is refused when it runs [M1]', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'pullboard-planted-'));
   try {
-    for (const file of readdirSync(new URL('../src/', import.meta.url)).filter((name) => name.endsWith('.js'))) {
+    for (const file of readdirSync(new URL('../src/', import.meta.url), { recursive: true }).filter((name) => name.endsWith('.js'))) {
       const source = fromDisk(file);
+      mkdirSync(dirname(join(dir, file)), { recursive: true });
       writeFileSync(join(dir, file), file === 'board.js' ? `${source}\nexport function reopenByHand(board, id) {\n  board.db.prepare("update item set item_status = 'open', item_owner = null, item_lease_until = null where item_id = ?").run(id);\n}\n` : source);
     }
     const copy = await import(pathToFileURL(join(dir, 'board.js')).href);
@@ -1398,4 +1464,10 @@ test('transport boundaries keep a new item refusal in ordered dispatch visible [
     'MOON_PHASE is raised by accept and reject but not declared there',
     'MOON_PHASE is raised by submit but not declared there',
   ], 'transport authentication is separate but a dispatcher item guard still belongs to the lifecycle');
+});
+
+
+test('Rigor historical data boundaries do not hide a new projection refusal [M1,M4]', () => {
+  const broken = editedSource('rigor-counter-state.js', /export function rigorCounterKeys\(event, person\) \{/, "export function rigorCounterKeys(event, person) { if (event.event_kind === 'probe') throw new Refused('RIGOR_PROBE', 'new item eligibility rule');");
+  assert.ok(codeProblems(MACHINE, broken).includes('RIGOR_PROBE is raised by claim but not declared there'));
 });

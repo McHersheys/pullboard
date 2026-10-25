@@ -101,7 +101,7 @@ export function healthReport({ db, root, config, now }) {
   }
   const items = db.prepare('SELECT * FROM item ORDER BY item_id').all();
   const byId = new Map(items.map((item) => [item.item_id, item]));
-  const history = itemHistory(db);
+  const history = itemHistory(db, items.map((item) => item.item_id));
   const trunk = trunkTip(root);
   const releases = roadmap(board);
   const found = (list, finding) => list.push(finding);
@@ -339,11 +339,15 @@ function queueFaults(board, { items, at, retired = [], gone = new Set() }) {
   }
 
   const compare = buildOrder(board);
+  const open = [...queue.releases.flatMap((release) => release.items), ...queue.unreleased].filter((entry) => entry.status === 'open');
   // A lapsed claim is CLAIM_LAPSED's to report; only a live claim can rank behind free work.
   for (const claim of items.filter((item) => item.item_status === 'claimed' && Date.parse(item.item_lease_until ?? '') > at)) {
     const holder = agents.find((agent) => agent.id === claim.item_owner);
     if (!holder) continue;
-    const ahead = waiting.filter((entry) => entry.lane === holder.lane && canTake(holder.route, entry.route))
+    // Free work that waits only on files the holder's own claims touch is free to the holder once it releases (#1114).
+    const own = items.filter((item) => item.item_status === 'claimed' && item.item_owner === holder.id).map((item) => item.item_id);
+    const freeToHolder = (entry) => entry.waits.every((wait) => own.some((id) => wait.startsWith(`#${entry.id} waits for #${id} (claimed) on `)));
+    const ahead = open.filter((entry) => freeToHolder(entry) && entry.lane === holder.lane && canTake(holder.route, entry.route))
       .map((entry) => raw.get(entry.id))
       .filter((item) => item && compare(item, claim) < 0)
       .sort(compare);
@@ -481,10 +485,12 @@ function releaseOverdue(db, root, now, deadlineMs, history) {
  * finalizes an unreferenced statement when garbage collection runs mid-iterate, which crashed
  * resume with "statement has been finalized" on a large board. Exported for that regression test.
  */
-export function itemHistory(db) {
+export function itemHistory(db, itemIds) {
   const history = new Map();
-  const statement = db.prepare('SELECT event_id, event_at, event_by, event_kind, item_id, event_detail FROM event WHERE item_id IS NOT NULL ORDER BY event_id');
-  try { readItemHistory(statement.iterate(), history); }
+  const statement = db.prepare('SELECT event_id, event_at, event_by, event_kind, item_id, event_detail FROM event WHERE item_id = ? ORDER BY event_id');
+  try {
+    for (const itemId of itemIds) readItemHistory(statement.iterate(itemId), history);
+  }
   finally { keepAlive(statement); }
   return history;
 }

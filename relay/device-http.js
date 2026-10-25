@@ -3,6 +3,7 @@ import { apiJson, apiRefusal, apiStatus, readApiBody } from '../src/api-http.js'
 import { Refused } from '../src/refused.js';
 import { devicePublicKey } from '../src/relay-device-keys.js';
 import { approvalContext } from '../src/relay-approval.js';
+import { handlePersonEnrollment } from './person-enrollment-http.js';
 
 /** Require exact bounded action fields, excluding secrets and unrecognized relay metadata. */
 function exact(value, fields) {
@@ -22,6 +23,26 @@ export function createDeviceHandler({ authenticate, authorizeBoard, boardsFor, d
       if (url.search) throw new Refused('BAD_REQUEST', 'Keep device action fields out of URL queries.');
       const who = await authenticate(req, !['GET', 'HEAD'].includes(req.method));
       const account = who.user.id;
+      if (url.pathname === '/api/v1/devices/exclusions') {
+        if (who.kind === 'machine' && req.method === 'POST') {
+          await authorizeBoard(req, who.board);
+          const body = await readApiBody(req, { maxBytes: 800000 });
+          if (body?.machine !== who.machine) throw new Refused('EXCLUDED_INVENTORY', 'Publish only this authenticated machine’s sealed exclusion list.');
+          apiJson(res, 200, devices.exclusions.publish(account, body)); return true;
+        }
+        if (who.kind !== 'session') throw new Refused('HUMAN_REQUIRED', 'Sign in as the person to publish or read excluded-board metadata.');
+        if (req.method === 'GET') { apiJson(res, 200, { exclusions: devices.exclusions.metadata(account) }); return true; }
+        if (req.method === 'POST') { apiJson(res, 200, devices.exclusions.publish(account, await readApiBody(req, { maxBytes: 800000 }))); return true; }
+        throw new Refused('NO_ENDPOINT', 'Read or replace this machine’s sealed excluded-board list.');
+      }
+      const excluded = /^\/api\/v1\/devices\/(device-[0-9a-f]{32})\/exclusions$/u.exec(url.pathname);
+      if (excluded && req.method === 'GET') {
+        if (who.kind !== 'session') throw new Refused('HUMAN_REQUIRED', 'Sign in on the enrolled device to read its excluded-board wrap.');
+        const exclusions = devices.exclusions.forDevice(account, excluded[1]);
+        devices.bindSession(who, excluded[1]);
+        apiJson(res, 200, { exclusions }); return true;
+      }
+      if (await handlePersonEnrollment(req, res, { pathname: url.pathname, who, devices, authorizeBoard })) return true;
       if (url.pathname === '/api/v1/devices/approvals' && req.method === 'POST') {
         if (who.kind !== 'machine') throw new Refused('HUMAN_REQUIRED', 'request this approval with the linked board’s machine credential');
         await authorizeBoard(req, who.board);

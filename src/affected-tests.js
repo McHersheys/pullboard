@@ -125,7 +125,7 @@ function selectionGit(root, args) {
   return result.stdout;
 }
 
-/** Read all committed module blobs in one Git batch, preserving exact names and source bytes. */
+/** Read all committed module blobs in one Git batch, preserving exact names and source bytes; `blobs` maps every tracked path to its object id. */
 function modulesAt(root, commit) {
   const tracked = selectionGit(root, ['ls-tree', '-r', '-z', commit]).split('\0').filter(Boolean).map(record => {
     const tab = record.indexOf('\t');
@@ -143,7 +143,8 @@ function modulesAt(root, commit) {
   if (entries.some(entry => entry.type !== 'blob' || entry.mode === '120000' || entry.path.endsWith('.cjs'))) {
     throw new Error('a tracked module uses an unsupported file mode or CommonJS');
   }
-  if (!entries.length) return new Map();
+  const blobs = new Map(tracked.map(entry => [entry.path, entry.hash]));
+  if (!entries.length) return { modules: new Map(), blobs };
   const hashes = [...new Set(entries.map(entry => entry.hash))];
   const result = spawnSync('git', ['--no-replace-objects', 'cat-file', '--batch'], {
     cwd: root, env: cleanGitEnvironment(), input: hashes.join('\n') + '\n', maxBuffer: 128 * 1024 * 1024,
@@ -160,7 +161,7 @@ function modulesAt(root, commit) {
     sources.set(hash, result.stdout.subarray(at, at + size).toString('utf8'));
     at += size + 1;
   }
-  return new Map(entries.map(entry => [entry.path, sources.get(entry.hash)]));
+  return { modules: new Map(entries.map(entry => [entry.path, sources.get(entry.hash)])), blobs };
 }
 
 /**
@@ -259,7 +260,7 @@ function knownBuiltinSynchronizers(sources, imports) {
 
 /** Compile this tree's import edges, plus the literal child-CLI dependency used by fixture modules. */
 function graphAt(root, commit, changedDocs = []) {
-  const modules = modulesAt(root, commit);
+  const { modules, blobs } = modulesAt(root, commit);
   const paths = [...modules.keys()];
   const sources = [...modules.values()];
   const imports = importsIn(sources);
@@ -334,7 +335,48 @@ function graphAt(root, commit, changedDocs = []) {
     if (!reverse.has(module)) reverse.set(module, new Set());
     reverse.get(module).add(reader);
   }
-  return { paths, reverse, unknown, undeclared, testTreeReaders, sourceTreeReaders, docInputs };
+  return { paths, reverse, unknown, undeclared, testTreeReaders, sourceTreeReaders, docInputs, modules, blobs };
+}
+
+/**
+ * Each committed test file's transitive import closure: the test, every module it reaches through the same edges
+ * selection uses (imports, declared loads, the CLI entry, command and engine discovery), sorted. A closure that reaches
+ * an import the graph cannot resolve, or a test whose computed import declares nothing, has `files: null` and a reason,
+ * so a caller that keys results on it runs that file rather than trust an incomplete closure [C7].
+ *
+ * @param {string} root
+ * @param {string} [commit]
+ * @returns {{ closures: Map<string, { files: string[] | null, helpers?: string[], reason: string }>, modules: Map<string, string>, blobs: Map<string, string> }}
+ */
+export function testClosures(root, commit = 'HEAD') {
+  const graph = graphAt(root, commit);
+  const forward = new Map();
+  for (const [dependency, importers] of graph.reverse) {
+    for (const importer of importers) {
+      if (!forward.has(importer)) forward.set(importer, new Set());
+      forward.get(importer).add(dependency);
+    }
+  }
+  const closures = new Map();
+  for (const test of graph.paths.filter(path => TEST.test(path))) {
+    let reason = graph.undeclared.get(test) ?? '';
+    const reached = new Set([test]);
+    const queue = [test];
+    for (let at = 0; at < queue.length && !reason; at += 1) {
+      const path = queue[at];
+      if (graph.unknown.has(path)) { reason = `${graph.unknown.get(path)} in reached file ${path}`; break; }
+      for (const dependency of forward.get(path) ?? []) {
+        if (!reached.has(dependency)) { reached.add(dependency); queue.push(dependency); }
+      }
+    }
+    // The test and the test/ helpers it reaches without passing through product code: its own test-side reads.
+    const helpers = new Set([test]);
+    for (const path of helpers) {
+      for (const dependency of forward.get(path) ?? []) if (dependency.startsWith('test/')) helpers.add(dependency);
+    }
+    closures.set(test, reason ? { files: null, reason } : { files: [...reached].sort(), helpers: [...helpers].sort(), reason: '' });
+  }
+  return { closures, modules: graph.modules, blobs: graph.blobs };
 }
 
 /**

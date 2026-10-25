@@ -1,7 +1,13 @@
 /** Count real Git child processes and prove command-scoped facts refresh after a commit [C7]. */
 import assert from 'node:assert/strict';
+import {
+  createHash,
+  randomUUID,
+} from 'node:crypto';
+import * as store from '../src/board.js';
+import { receiptBody } from '../src/gate-run-receipt.js';
 import { runFixtureExecFile as execFileSync, runFixtureChild as spawnSync, runFixtureChild } from './fixture-child.js';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { delimiter, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
@@ -25,7 +31,7 @@ function realGitPath() {
 }
 
 /** Build a private real repo and linked agent worktree with an instrumented Git executable. */
-function fixture(t) {
+function fixture(t, { ruleProof = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'pullboard-git-calls-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const repo = join(dir, 'repo');
@@ -59,10 +65,19 @@ function fixture(t) {
     GIT_COMMITTER_EMAIL: 'agent@example.com',
   };
   writeFileSync(join(repo, 'pullboard.json'), JSON.stringify({
-    spec: 'SPEC.md', practice: 'DOCTRINE.md', gate: 'true',
+    spec: 'SPEC.md', practice: 'DOCTRINE.md', gate: ruleProof ? 'node --test test/proven.test.js' : 'true',
     lanes: { core: { owns: ['src/'], specs: ['C7'] } },
   }));
   writeFileSync(join(repo, 'SPEC.md'), '# Test spec\n\n## C · Core\n- C7 [approved, must] A command reads each Git fact once. | gate: test/git-calls.test.js\n');
+  if (ruleProof) {
+    // Establish this private board's approved rows before init records their original approval baseline.
+    writeFileSync(join(repo, 'SPEC.md'), '# Rule budget fixture\n\n## C · Core\n' +
+      '- C7 [approved, must] Current trunk proof stays cheap to read. | gate: test/proven.test.js\n' +
+      '- C8 [approved, must] Recent red remains visible. | gate: test/red.test.js\n');
+    mkdirSync(join(repo, 'test'));
+    for (const name of ['proven', 'red']) writeFileSync(join(repo, 'test', `${name}.test.js`),
+      `import { test } from 'node:test';\ntest('${name}', () => {});\n`);
+  }
   const git = (cwd, ...args) => {
     const result = runFixtureChild(realGit, args, { cwd, env, encoding: 'utf8', stdio: 'pipe' });
     if (result.status !== 0) throw new Error(result.failure);
@@ -116,6 +131,138 @@ test('help starts no Git and linked-worktree status spawns at most four Git proc
   const status = resetAndCount(box, box.worker, 'status', '--json');
   assert.ok(status.count <= 4, `linked-worktree status started ${status.count} Git processes`);
   assert.equal(JSON.parse(status.result.stdout).me.id, 'core-1');
+
+});
+
+/** Keep the ordinary work card on indexed reads and four fresh Git children, with diagnostics explicit. */
+test('ordinary resume reads its indexed work card with at most four Git processes [N19,N26,C7]', t => {
+  const box = fixture(t);
+  const resumed = resetAndCount(box, box.worker, 'resume', '--json');
+  assert.ok(resumed.count <= 4, `linked-worktree resume started ${resumed.count} Git processes`);
+  const card = JSON.parse(resumed.result.stdout);
+  assert.equal(card.me.id, 'core-1');
+  assert.equal(realpathSync(card.root), realpathSync(box.worker));
+  assert.equal(card.dirty, 0, 'JSON v1 measures the clean private checkout');
+  assert.deepEqual(card.toMerge, []);
+  assert.deepEqual(card.stale, []);
+  assert.equal(typeof card.newWorktreeLocation, 'string');
+  assert.equal(typeof card.next, 'string');
+  const leading = resetAndCount(box, box.worker, '--json', 'resume');
+  assert.ok(leading.count <= 4, `flag-leading resume started ${leading.count} Git processes`);
+  assert.equal(JSON.parse(leading.result.stdout).me.id, card.me.id, 'global flags before the parsed command retain the same resume card');
+  mkdirSync(join(box.worker, 'src'), { recursive: true });
+  writeFileSync(join(box.worker, 'src/ahead.txt'), 'real branch divergence\n');
+  box.git(box.worker, 'add', 'src/ahead.txt');
+  box.git(box.worker, 'commit', '-q', '-m', 'test(core): retain real branch divergence [C7]');
+  writeFileSync(join(box.worker, 'dirty.txt'), 'real untracked diagnostic\n');
+  const diverged = resetAndCount(box, box.worker, 'resume', '--json');
+  assert.ok(diverged.count <= 4, `diverged JSON v1 resume started ${diverged.count} Git processes`);
+  assert.equal(JSON.parse(diverged.result.stdout).dirty, 1, 'v1 retains a real nonzero dirty value');
+  box.git(box.repo, 'branch', 'unrelated-upstream', 'core/worker');
+  box.git(box.worker, 'config', 'branch.core/worker.remote', '.');
+  box.git(box.worker, 'config', 'branch.core/worker.merge', 'refs/heads/unrelated-upstream');
+  const text = resetAndCount(box, box.worker, 'resume');
+  assert.ok(text.count <= 4, `diverged text resume started ${text.count} Git processes`);
+  assert.match(text.result.stdout, /1 ahead of main, 0 behind/u, 'text compares real differing HEAD and main');
+  assert.match(text.result.stdout, /1 file uncommitted/u, 'an untracked file is counted within the same Git budget');
+  assert.equal(box.git(box.worker, 'config', 'branch.core/worker.merge'), 'refs/heads/unrelated-upstream', 'comparison leaves the real upstream unchanged');
+  box.git(box.worker, 'mv', 'src/ahead.txt', 'src/renamed \nfile.txt');
+  const renamed = resetAndCount(box, box.worker, 'resume');
+  assert.ok(renamed.count <= 4, `renamed-path resume started ${renamed.count} Git processes`);
+  assert.match(renamed.result.stdout, /2 files uncommitted/u, 'a renamed path with whitespace counts once alongside the new file');
+});
+
+/** Unrelated reads retain the original one-process repository miss and never request resume-only blobs. */
+test('ordinary Git scopes skip resume blobs and empty repository failures do not retry [C7,N19]', t => {
+  const box = fixture(t);
+  const standard = readFactScenario(box, box.worker, `const { repoInfo, mainSourceBlobs } = await import(${JSON.stringify(GIT_MODULE)});
+    console.log(JSON.stringify(await withGitFacts(() => { const info = repoInfo(process.argv[1]);
+      return { head: headCommit(info.root), blobs: mainSourceBlobs(info.root) }; })));`);
+  assert.equal(standard.head, box.git(box.worker, 'rev-parse', 'HEAD'));
+  assert.equal(standard.blobs, null, 'only explicit resume scopes request committed source identities');
+  writeFileSync(box.calls, '');
+  const outside = readFactScenario(box, box.dir, `const { repoInfo } = await import(${JSON.stringify(GIT_MODULE)});
+    console.log(JSON.stringify(await withGitFacts(() => { try { repoInfo(process.argv[1]); return null; }
+      catch (error) { return error.code; } })));`);
+  assert.equal(outside, 'NOT_A_REPO');
+  assert.equal(readFileSync(box.calls, 'utf8').trim().split('\n').filter(Boolean).length, 1,
+    'an empty failed rev-parse goes directly to the filesystem bare-check rather than retrying Git');
+});
+
+/** Optional committed-source facts never replace Git's repository or detached-HEAD semantics. */
+test('combined Git source facts retain repository identity when optional doctrine is missing [C7,N19]', t => {
+  const box = fixture(t);
+  const script = `const { repoInfo, mainSourceBlobs, mainCheckout } = await import(${JSON.stringify(GIT_MODULE)});
+    console.log(JSON.stringify(await withGitFacts(() => { const info = repoInfo(process.argv[1]);
+      return { info, head: headCommit(info.root), main: mainCheckout(info.root), blobs: mainSourceBlobs(info.root) }; }, { resumeSources: true })));`;
+  const present = readFactScenario(box, box.worker, script);
+  assert.equal(present.head, box.git(box.worker, 'rev-parse', 'HEAD'));
+  assert.equal(present.blobs.config, box.git(box.repo, 'rev-parse', 'HEAD:pullboard.json'));
+  assert.equal(present.blobs.doctrine, box.git(box.repo, 'rev-parse', 'HEAD:DOCTRINE.md'));
+  const missingRepo = join(box.dir, 'missing-doctrine');
+  const missingWorker = join(box.dir, 'missing-worker');
+  mkdirSync(missingRepo);
+  box.git(missingRepo, 'init', '-q', '-b', 'main');
+  writeFileSync(join(missingRepo, 'pullboard.json'), '{}\n');
+  box.git(missingRepo, 'add', 'pullboard.json');
+  box.git(missingRepo, 'commit', '-q', '-m', 'test(core): create optional-source fixture [C7]');
+  box.git(missingRepo, 'worktree', 'add', '-q', '-b', 'worker', missingWorker);
+  const missing = readFactScenario(box, missingWorker, script);
+  const missingHead = box.git(missingRepo, 'rev-parse', 'HEAD');
+  assert.equal(missing.blobs, null);
+  assert.equal(missing.main.commit, missingHead);
+  assert.equal(missing.head, missingHead, 'missing primary doctrine does not discard the linked HEAD');
+  box.git(missingRepo, 'config', 'core.hooksPath', `hooks\n${'a'.repeat(40)}\n${'b'.repeat(40)}`);
+  const unusual = readFactScenario(box, missingWorker, script);
+  assert.equal(unusual.blobs, null, 'hook path lines never become trusted source object IDs');
+  assert.equal(unusual.main.commit, missingHead, 'opaque hook paths preserve the validated Git fallback');
+  assert.equal(unusual.head, missingHead);
+  box.git(missingRepo, 'config', '--unset', 'core.hooksPath');
+  box.git(missingRepo, 'switch', '-q', '--detach');
+  const detached = readFactScenario(box, missingWorker, script);
+  assert.equal(detached.main, null, 'a detached primary never acquires an invented main branch');
+  assert.equal(detached.head, missingHead);
+});
+
+/** Record schema-valid private fixture history, never represented as a real gate execution. */
+function seedRuleBudgetRun(box, { green = true, days = 0, tree, command, failures = [] } = {}) {
+  const head = box.git(box.repo, 'rev-parse', 'HEAD');
+  const gate = JSON.parse(readFileSync(join(box.repo, 'pullboard.json'), 'utf8')).gate;
+  const receipt = { version: 1, id: randomUUID(), kind: 'gate', head, main: head,
+    tree: tree ?? box.git(box.repo, 'rev-parse', 'HEAD^{tree}'),
+    command: createHash('sha256').update(command ?? gate).digest('hex'), green, failures,
+    at: new Date(Date.now() - days * 86_400_000).toISOString(), load: { average: [0, 0, 0], cpus: 1, freeMB: 100 } };
+  const folder = join(box.repo, '.git', 'pullboard', 'gate-receipts');
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, `${receipt.id}.json`), receiptBody(receipt));
+  const board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'), undefined, { isMain: true });
+  try { store.recordGateRun(board, { agentId: 'coordinator', receipt, lane: 'core' }); }
+  finally { store.closeBoard(board); }
+}
+
+test('populated rule receipt history preserves the linked status Git budget and current proof [C7,S1,A1]', (t) => {
+  const box = fixture(t, { ruleProof: true });
+  seedRuleBudgetRun(box, { green: false, days: 8, failures: [{ file: 'test/proven.test.js', name: 'expired red' }] });
+  seedRuleBudgetRun(box, { green: false, days: 2, failures: [{ file: 'test/red.test.js', name: 'recent red' }] });
+  seedRuleBudgetRun(box, { tree: 'f'.repeat(40) });
+  seedRuleBudgetRun(box, { command: 'true' });
+  seedRuleBudgetRun(box);
+  const current = resetAndCount(box, box.worker, 'status', '--json');
+  assert.ok(current.count <= 4, `populated linked-worktree status started ${current.count} Git processes`);
+  assert.deepEqual(JSON.parse(current.result.stdout).ruleCounts,
+    { approved: 2, gated: 2, ungated: 0, proven: 1, unproven: 1, contradicted: 1 });
+  box.git(box.repo, 'pack-refs', '--all', '--prune');
+  const packed = resetAndCount(box, box.worker, 'status', '--json');
+  assert.ok(packed.count <= 4, `packed-ref status started ${packed.count} Git processes`);
+  assert.deepEqual(JSON.parse(packed.result.stdout).ruleCounts, JSON.parse(current.result.stdout).ruleCounts);
+  advanceHead(box, 'advance trunk after recorded proof');
+  seedRuleBudgetRun(box, { tree: 'e'.repeat(40) });
+  seedRuleBudgetRun(box, { command: 'true' });
+  const advanced = resetAndCount(box, box.worker, 'status', '--json');
+  assert.ok(advanced.count <= 4, `advanced-trunk status started ${advanced.count} Git processes`);
+  assert.deepEqual(JSON.parse(advanced.result.stdout).ruleCounts,
+    { approved: 2, gated: 2, ungated: 0, proven: 0, unproven: 2, contradicted: 1 },
+    'old green, wrong tree and wrong command prove nothing on the new tip; recent red is independent');
 });
 
 test('a runner sees the new HEAD after it commits its item [C7]', (t) => {
@@ -326,4 +473,41 @@ console.log(JSON.stringify(facts));
   assert.equal(result.refusal, null, 'an API read outside a Git repository returns normally');
   assert.deepEqual({ head: result.head, tree: result.tree }, { head: null, tree: null },
     'missing HEAD facts stay null rather than turning into a NOT_A_REPO refusal');
+});
+
+/** Exercise real Git batch framing, pinned bytes and refusal cleanup rather than mocking the stream. */
+test('committed resume files use one framed Git child and retain pinned Unicode bytes [N19,D1,C7]', t => {
+  const box = fixture(t);
+  const file = 'rules with spaces.md';
+  const source = '# Rules\n\nλ 🙂 café\n';
+  writeFileSync(join(box.repo, file), source);
+  writeFileSync(join(box.repo, 'empty.md'), '');
+  mkdirSync(join(box.repo, 'nested'));
+  writeFileSync(join(box.repo, 'nested/item.md'), 'nested\n');
+  box.git(box.repo, 'add', file, 'empty.md', 'nested/item.md');
+  box.git(box.repo, 'commit', '-q', '-m', 'test: commit framed doctrine sources');
+  const commit = box.git(box.repo, 'rev-parse', 'HEAD');
+  writeFileSync(join(box.repo, file), 'uncommitted replacement');
+  const moduleUrl = pathToFileURL(resolve(import.meta.dirname, '../src/committed-file-reader.js')).href;
+  const result = readFactScenario(box, box.worker, `
+import assert from 'node:assert/strict';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { withCommittedFiles } from ${JSON.stringify(moduleUrl)};
+const root = process.argv[1];
+const commit = ${JSON.stringify(commit)};
+writeFileSync(process.env.PULLBOARD_GIT_CALLS, '');
+const values = await withCommittedFiles(root, async read => Promise.all([
+  read(commit, ${JSON.stringify(file)}), read(commit, 'missing.md'),
+  read(commit, 'empty.md'), read(commit, 'nested/item.md'), read(commit, ${JSON.stringify(file)}),
+]));
+assert.deepEqual(values, [${JSON.stringify(source)}, null, '', 'nested\\n', ${JSON.stringify(source)}]);
+const count = readFileSync(process.env.PULLBOARD_GIT_CALLS, 'utf8').trim().split('\\n').filter(Boolean).length;
+assert.equal(count, 1, 'dependent and concurrent reads share exactly one Git child');
+await assert.rejects(withCommittedFiles(root, read => read('a'.repeat(41), 'file')), error => error.code === 'NO_POLICY');
+await assert.rejects(withCommittedFiles(root, read => read(commit, 'line\\nprotocol')), error => error.code === 'NO_POLICY');
+await assert.rejects(withCommittedFiles(root, read => read(commit, 'nested')), error => error.code === 'NO_POLICY');
+console.log(JSON.stringify({ count, values }));
+`);
+  assert.equal(result.count, 1);
+  assert.deepEqual(result.values, [source, null, '', 'nested\n', source]);
 });

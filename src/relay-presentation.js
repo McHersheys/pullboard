@@ -11,6 +11,8 @@ import {
 import { Refused } from './refused.js';
 import { loadConfig } from './config.js';
 import { projectState } from './serve.js';
+import { personNeeds } from './needs.js';
+import { personBlockWords } from './blocks.js';
 import { personRequestStatuses } from './relay-requests.js';
 import {
   cachedVerdictStates,
@@ -28,7 +30,10 @@ function readRelayPresentation(root, providedBoard) {
   const info = repoInfo(root);
   const board = providedBoard ?? store.openBoard(join(info.commonDir, 'pullboard', 'board.sqlite'), undefined, { isMain: codeIsFromMain() });
   try {
-    const state = projectState(root, { board });
+    const projected = projectState(root, { board });
+    // The sealed page's Needs you carries the person's blocks, in plain words with no local path [C6].
+    const blocks = personBlockWords(info.commonDir, (board.clock ?? store.systemClock).now());
+    const state = { ...projected, blocks, needs: personNeeds({ ...projected, blocks }) };
     const freshness = providedBoard
       ? verdictProjector(root, board, { main: trunkRevisionReader(info)() }).state
       : cachedVerdictStates(root, board, info);

@@ -1,4 +1,5 @@
 /** Attribute waiting requests to this device while keeping relay intent private [H17,H5]. */
+import { excludedNoticeLines } from './excluded-notice.js';
 /** Match requests to device-owned ids, retaining only waiting receipts and observed final statuses. */
 export function reconcileOwnedRequests(requests, ownedIds) {
   const records = new Map((Array.isArray(requests) ? requests : []).filter(value => value && typeof value.id === 'string').map(value => [value.id, value]));
@@ -32,7 +33,7 @@ export function storedOwnedRequestState(storage, key, requests) {
 }
 
 /** Build truthful device notices from authorized boards and their decrypted pending requests. */
-export function noticeLines({ available, paired, ownedRequestIds = new Map(), waitingBoards = new Map(), approvedBoards = new Set(), pendingLinks = [], warnings = [], failure = '' }) {
+export function noticeLines({ available, paired, ownedRequestIds = new Map(), waitingBoards = new Map(), sizeProblems = new Map(), approvedBoards = new Set(), pendingLinks = [], warnings = [], failure = '', exclusions = [] }) {
   const lines = [];
   const waiting = [...paired.entries()].reduce((count, [id, entry]) => {
     const owned = ownedRequestIds.get(id) ?? new Set();
@@ -40,8 +41,13 @@ export function noticeLines({ available, paired, ownedRequestIds = new Map(), wa
   }, 0);
   if (waiting) lines.push(`${waiting} request${waiting === 1 ? '' : 's'} from this device ${waiting === 1 ? 'is' : 'are'} waiting for a linked machine to run Pullboard.`);
   for (const link of pendingLinks) if (typeof link?.name === 'string') lines.push(`${link.name}: waiting for approval on your phone.`);
+  // One board's successful event or checkpoint cannot clear another board's recorded lag.
+  for (const [id, entry] of paired) if (entry.checkpointTimedOut) {
+    lines.push((entry.repository ?? id) + ': The relay snapshot has not caught up to this move. Retry this board.');
+  }
   const pairedRepositories = new Set(available.filter(board => paired.has(board.id)).map(board => board.repository));
   for (const board of available.filter(value => !paired.has(value.id))) {
+    if (sizeProblems.has(board.id)) { lines.push(uploadSizeLine(sizeProblems.get(board.id))); continue; }
     // This phone just approved the link: its key is on the way, so asking to pair would be wrong.
     if (approvedBoards.has(board.id)) {
       lines.push(`${board.repository} · board ${board.id.slice(0, 8)}: approved; waiting for the computer to send this phone its key.`);
@@ -74,8 +80,14 @@ export function noticeLines({ available, paired, ownedRequestIds = new Map(), wa
     lines.push(warning.message);
   }
   if (failure) lines.push(failure);
-  if (!available.length) lines.push('No linked boards are available for this account.');
+  lines.push(...excludedNoticeLines(exclusions));
+  if (!available.length && !exclusions.length) lines.push('No linked boards are available for this account.');
   return lines;
+}
+
+/** Describe only authenticated publisher measurements, without guessing from an absent snapshot. */
+export function uploadSizeLine(value) {
+  return `${value.repository}: too big to share (${value.sealedBytes} bytes; relay limit ${value.limit} bytes). Upgrade the configured relay for bounded snapshots.`;
 }
 
 /** The approved words of the two first screens another device can show (#757); the view may draw them from these. */
@@ -88,10 +100,15 @@ export const RELAY_SCREEN_WORDS = Object.freeze({
 });
 
 /** Select guidance from observed inventory and key delivery, never infer why a computer has not uploaded. */
-export function emptyBoardStep({ available = [], waitingBoards = new Map(), approvedBoards = new Set(), loaded = false, browserPaired = false, failure = '' } = {}) {
+export function emptyBoardStep({ available = [], waitingBoards = new Map(), sizeProblems = new Map(), approvedBoards = new Set(), loaded = false, browserPaired = false, failure = '', exclusions = [] } = {}) {
   const pair = { command: 'pullboard relay pair --new-browser', ask: 'Help me pair this browser with my boards.',
     small: 'On the computer with the boards, run this, then open the link it prints here or scan its QR.' };
   if (!loaded) return { title: 'Checking your linked boards', say: failure || 'Waiting for this account’s board list.', command: '', ask: '', small: '', waiting: failure || 'Checking your boards' };
+  if (sizeProblems.size) return { title: 'Board too big to share', say: [...sizeProblems.values()].map(uploadSizeLine).join(' '),
+    command: '', ask: 'Help me upgrade my relay for bounded snapshots.', small: 'Local work remains available on the computer.', waiting: 'Board exceeds the relay limit' };
+  if (!available.length && exclusions.length) return { title: 'Boards excluded from sharing',
+    say: excludedNoticeLines(exclusions).join(' '), command: 'pullboard relay on', ask: 'Help me include my excluded boards.',
+    small: 'On the named computer, open a terminal in each excluded board and run this command.', waiting: 'Waiting for you to include a board' };
   if (approvedBoards.size) return { title: 'Finishing this pairing', say: 'Approved; waiting for the computer to send this browser its board keys.',
     command: '', ask: '', small: 'Keep the setup command open on the computer with the boards.', waiting: failure || 'Waiting for this browser’s keys' };
   if (waitingBoards.size) return { title: 'Waiting for the first board copy',

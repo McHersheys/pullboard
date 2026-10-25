@@ -53,6 +53,7 @@ import {
 import { committedIds } from './history.js';
 import { productSummaries } from './products.js';
 import {
+  forgetProject,
   listApiProjects,
   registryFile,
 } from './projects.js';
@@ -338,9 +339,8 @@ export function projectState(root, { seen = null, board: providedBoard = null, i
     // A decline's text is its reason. Keep the inherited rule available so the page strikes the
     // rule itself, while showing the repo's reason beside it.
     const inherited = new Map(standardDoctrine().rows.map((row) => [row.id, row.text]));
-    const log = store.events(board);
-    // When each agent last moved on the board: the log is in order, so the last write wins.
-    const lastMove = new Map(log.map((event) => [event.event_by, event.event_at]));
+    const log = store.recentEvents(board, 80);
+    const lastMove = store.lastMoves(board);
     const state = projectRowDecisions(store.rowDecisions(board), {
       root: info.root,
       releaseNotes: viewReleaseNotes(),
@@ -357,7 +357,7 @@ export function projectState(root, { seen = null, board: providedBoard = null, i
       // person's to answer here, and the rest with who holds them (B26).
       decisions: store.openDecisions(board, store.PERSON),
       asked: store.openDecisions(board).filter((ask) => ask.shout_to !== store.PERSON),
-      events: log.slice(-80).reverse(),
+      events: log,
       agents: store.listAgents(board).map((agent) => ({ ...agent, model: agent.agent_model ?? 'unknown', displayName: displayAgentName(agent, config.agents.names), lastMoveAt: lastMove.get(agent.agent_id) ?? null })),
       holds: store.laneHolds(board),
       spec: rows(config.spec),
@@ -372,7 +372,7 @@ export function projectState(root, { seen = null, board: providedBoard = null, i
     });
     // Pending person decisions govern the calls on the API, sealed relay and exported page alike.
     const rigorRows = projectRowDecisions(store.rowDecisions(board), { root: info.root, spec: loadSpec(info.root, config).rows, practice: doctrine.rows });
-    const projected = { ...state, rigorDrafts: rigorDraftNeeds(rigorRows), sentinelDrafts: sentinelDraftNeeds(sentinels(board)) };
+    const projected = { ...state, rigorDrafts: rigorDraftNeeds(rigorRows, store.rowDrafts(board), store.rowDecisions(board)), sentinelDrafts: sentinelDraftNeeds(sentinels(board)) };
     return { ...projected, needs: personNeeds(projected) };
   }, providedBoard);
 }
@@ -450,7 +450,7 @@ export async function serveView({ port = 0, secret = randomBytes(18).toString('b
   let bound = 0;
   // The API reads projectState and codeAt from this module. Load its factory after our exports
   // initialize, and use the real CLI entry point without adding a second move implementation.
-  const { createLocalApiHandler } = await import('./api.js');
+  const { apiBoardListing, createLocalApiHandler } = await import('./api.js');
   const { main } = await import('./cli.js');
   const { startViewSignIn, viewSignInStatus, viewSignInPairingNavigation, cancelViewSignIn } = await import('./relay-setup.js');
   const signIns = new Set();
@@ -499,6 +499,48 @@ export async function serveView({ port = 0, secret = randomBytes(18).toString('b
     try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { /* Refuse below. */ }
     if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Refused('VIEW_SIGN_IN_JSON', 'send a JSON object to this view');
     return body;
+  }
+
+  /** Read the single explicit confirmation for the machine-local unreadable-project action. */
+  async function forgetUnreadableBody(req) {
+    if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/iu.test(String(req.headers['content-type'] ?? ''))) {
+      throw new Refused('BAD_REQUEST', 'send the confirmation as a JSON object');
+    }
+    let length = 0;
+    const chunks = [];
+    for await (const chunk of req) {
+      length += chunk.length;
+      if (length <= 4096) chunks.push(chunk);
+    }
+    if (length > 4096) throw new Refused('BAD_REQUEST', 'send only the confirmation');
+    let body;
+    try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { /* Refuse below. */ }
+    if (!body || typeof body !== 'object' || Array.isArray(body)
+      || body.confirm !== true || Object.keys(body).length !== 1) {
+      throw new Refused('BAD_REQUEST', 'confirm forgetting the boards that are unreadable now');
+    }
+    return body;
+  }
+
+  /** Forget only roots that the same current registry snapshot cannot open as boards. */
+  async function forgetUnreadableRequest(req, res, url) {
+    const given = Buffer.from(String(req.headers['x-pullboard-key'] ?? ''));
+    if (given.length !== key.length || !timingSafeEqual(given, key) || url.search || req.headers.authorization !== undefined) {
+      return json(res, 403, refusalDocument(new Refused('VIEW_SIGN_IN_AUTH', 'open this view and send its session key in the x-pullboard-key header only')));
+    }
+    if (req.method !== 'POST') return json(res, 405, refusalDocument(new Refused('BAD_REQUEST', 'use a confirmed JSON POST to forget unreadable boards')));
+    try {
+      await forgetUnreadableBody(req);
+      const registered = listApiProjects();
+      const listing = apiBoardListing(() => registered);
+      const unreadable = listing.warnings
+        .filter((warning) => warning.error?.error?.code === 'BOARD_UNAVAILABLE');
+      const forgotten = unreadable.filter((project) => forgetProject(project.root)).length;
+      return json(res, 200, { version: 1, forgotten });
+    } catch (error) {
+      const refusal = error instanceof Refused ? error : new Refused('SERVICE_ERROR', 'the unreadable boards could not be forgotten; refresh this view and try again');
+      return json(res, 400, refusalDocument(refusal));
+    }
   }
 
   /** Run only the existing person-channel adapter, with per-view intent ownership and header authentication. */
@@ -586,13 +628,21 @@ export async function serveView({ port = 0, secret = randomBytes(18).toString('b
         return json(res, 403, { error: 'from https://app.pullboard.dev, send the session secret in the x-pullboard-key header only' });
       }
       if (url.pathname === '/api/v1/view-link') return sharingRequest(req, res, url);
+      if (projectRoot === undefined && url.pathname === '/api/v1/projects/forget-unreadable') return forgetUnreadableRequest(req, res, url);
       return apiHandler(req, res);
     }
     const given = Buffer.from(String(req.headers['x-pullboard-key'] ?? url.searchParams.get('k') ?? ''));
-    if (given.length !== key.length || !timingSafeEqual(given, key)) return json(res, 403, { error: 'this view needs its own address and secret: open the link pullboard view printed' });
+    if (given.length !== key.length || !timingSafeEqual(given, key)) {
+      const destination = req.headers['sec-fetch-dest'];
+      const browserPage = req.method === 'GET' && url.pathname === '/' && !url.searchParams.has('k') && req.headers['x-pullboard-key'] === undefined
+        && /(?:^|,)\s*text\/html(?:\s*;|\s*,|\s*$)/iu.test(String(req.headers.accept ?? ''))
+        && (destination === undefined || destination === 'document');
+      if (browserPage) return reply(res, 401, 'text/html; charset=utf-8', '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Open your board</title><h1>Open your board</h1><p>The board opens at <a href="' + HOSTED_ORIGIN + '">app.pullboard.dev</a>.</p></html>');
+      return json(res, 403, { error: 'this view needs its own address and secret: open the link pullboard view printed' });
+    }
     try {
       // The board, and the Roadmap at its own address (N38), are the one page.
-      if (req.method === 'GET' && (url.pathname === '/' || /^\/(?:[^/]+\/)?(?:items|shouts|spec|doctrine|activity|roadmap|settings)(?:\/[^/]+)?$/.test(url.pathname))) return reply(res, 200, 'text/html; charset=utf-8', cockpitPage(secret, { paths: true }));
+      if (req.method === 'GET' && (url.pathname === '/' || /^\/(?:[^/]+\/)?(?:home|items|shouts|spec|doctrine|activity|roadmap|settings)(?:\/[^/]+)?$/.test(url.pathname))) return reply(res, 200, 'text/html; charset=utf-8', cockpitPage(secret, { paths: true }));
       if (req.method === 'GET' && url.pathname === '/view.css') return reply(res, 200, 'text/css; charset=utf-8', VIEW_CSS);
       return json(res, 404, { error: 'no such page' });
     } catch (error) {

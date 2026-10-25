@@ -1,7 +1,11 @@
+import {
+  sentinelDraftNeeds,
+  sentinels,
+} from './board-query.js';
 /** Person-approved board watches and their append-only run history [A6,D1,D3]. */
 import { createHash } from 'node:crypto';
 import { atomic } from './board.js';
-import { listAgents } from './board.js';
+import { listAgents } from './board-query.js';
 import { logEvent } from './board.js';
 import { PERSON } from './board.js';
 import { shout } from './board.js';
@@ -63,47 +67,14 @@ export function rigorSentinelName(key) {
   return ('rigor-' + slug).slice(0, 64).replace(/[-._]+$/u, '');
 }
 
-/** Pending watches are the person's calls: one Needs-you entry each, with the evidence that proposed it. */
-export function sentinelDraftNeeds(rows) {
-  return rows.filter(row => row.status === 'pending').map(row => ({
-    kind: 'sentinel-draft', id: `sentinel:${row.name}`, ref: row.name,
-    text: `Sentinel draft: ${row.name} runs ${row.check} ${row.every === 'daily' || row.every === 'hourly' ? row.every : 'every ' + row.every}, reporting to ${row.owner}`,
-    what: `pullboard sentinel approve ${row.name}, or decline it with --reason`, target: `sentinel:${row.name}`,
-    ...(row.evidence ? { cause: row.evidence.key, evidence: row.evidence } : {}),
-  }));
-}
+export { sentinelDraftNeeds } from './board-query.js';
 
 /** Bind approval to every execution and notification field, including schedule and timeout. */
 export function sentinelDigest(value) {
   return createHash('sha256').update(JSON.stringify(sentinelDefinition(value))).digest('hex');
 }
 
-/** Read only allocated receipts; legacy events with similar names never enable command execution. */
-export function sentinels(board) {
-  const rows = new Map();
-  const events = board.db.prepare("SELECT * FROM event WHERE event_kind IN ('sentinel-proposal','sentinel-decision','sentinel-start','sentinel-run') ORDER BY event_id").all();
-  for (const event of events) {
-    const detail = JSON.parse(event.event_detail);
-    if (detail.engine !== BOARD_SENTINEL_ENGINE) continue;
-    if (event.event_kind === 'sentinel-proposal') {
-      rows.set(detail.row.name, { ...detail.row, digest: detail.digest, status: 'pending', proposedBy: event.event_by,
-        proposedAt: event.event_at, evidence: detail.evidence ?? null, lastRun: null, activeRun: null, history: [] });
-      continue;
-    }
-    const row = rows.get(detail.name);
-    if (!row || row.digest !== detail.digest) continue;
-    if (event.event_kind === 'sentinel-decision' && event.event_by === PERSON) {
-      row.status = detail.decision === 'approve' ? 'approved' : 'declined';
-      row.reason = detail.reason; row.decidedAt = event.event_at; row.activeRun = null;
-    } else if (event.event_kind === 'sentinel-start') {
-      row.activeRun = { id: detail.run, by: event.event_by, startedAt: event.event_at, until: detail.until };
-    } else if (event.event_kind === 'sentinel-run' && row.activeRun?.id === detail.run) {
-      row.lastRun = { ...detail.result, id: detail.run, at: event.event_at };
-      row.history.push(row.lastRun); row.activeRun = null;
-    }
-  }
-  return [...rows.values()];
-}
+export { sentinels } from './board-query.js';
 
 /** All mutations retain their allocated replay minimum and require a registered actor. */
 function requireSentinelActor(board, agentId, person = false) {
@@ -156,15 +127,26 @@ export function decideSentinel(board, { agentId, channel, name, digest, decision
   });
 }
 
-/** Atomically claim a due approved check, so simultaneous resume/view workers cannot run it twice. */
+/** Apply the same cadence and live-run rules to a notice and an atomic run claim. */
+function isDue(row, now) {
+  return row.status === 'approved' && !(row.activeRun && Date.parse(row.activeRun.until) > now)
+    && !(row.lastRun && !row.lastRun.aborted && Date.parse(row.lastRun.at) + INTERVALS[row.every] > now);
+}
+
+/** List due watches without starting a command or consuming a run lease. */
+export function dueSentinels(board) {
+  const now = board.clock.now().getTime();
+  return sentinels(board).filter(row => isDue(row, now));
+}
+
+/** Atomically claim a due approved check, so simultaneous scheduled workers cannot run it twice. */
 export function beginSentinelRun(board, { agentId, name, digest, run }) {
   return atomic(board, () => {
     requireSentinelActor(board, agentId);
     const row = currentSentinel(board, name, digest);
     const now = board.clock.now().getTime();
     if (typeof run !== 'string' || !/^[a-zA-Z0-9-]{1,80}$/u.test(run)) throw new Refused('BAD_SENTINEL', 'start a sentinel with a unique run id');
-    if (row.status !== 'approved' || row.activeRun && Date.parse(row.activeRun.until) > now
-        || row.lastRun && !row.lastRun.aborted && Date.parse(row.lastRun.at) + INTERVALS[row.every] > now) return null;
+    if (!isDue(row, now)) return null;
     const until = new Date(now + row.timeoutMs + 10_000).toISOString(); // budget: command hang ceiling plus exact-child shutdown grace.
     logEvent(board, agentId, 'sentinel-start', null, { name, digest, run, until, engine: BOARD_SENTINEL_ENGINE });
     return { ...row, run, until };

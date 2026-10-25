@@ -569,12 +569,15 @@ test('shouts reach a lane, an agent or all; inbox marks them read [B7]', () => {
   const lanes = ['coordinator', 'web', 'api'];
   store.shout(board, { from: 'coordinator', to: 'web', text: 'web: rebase', lanes });
   store.shout(board, { from: 'api-1', to: 'web-2', text: 'web-2: schema changed', lanes });
-  store.shout(board, { from: 'web-1', to: 'all', text: 'all: gate is slow', lanes });
+  const report = store.shout(board, { from: 'web-1', to: 'all', text: 'all: gate is slow', lanes });
+  assert.equal(store.getShout(board, report).shout_to, 'coordinator+person');
+  assert.ok(store.inbox(board, 'coordinator').some(shout => shout.shout_id === report));
+  store.shout(board, { from: 'coordinator', to: 'all', text: 'all: gate is slow', lanes });
   assert.throws(() => store.shout(board, { from: 'web-1', to: 'nobody', text: 'x', lanes }), /NO_READER/);
   assert.equal(store.unreadCount(board, 'web-2'), 3);
   assert.deepEqual(store.inbox(board, 'web-2').map((shout) => shout.shout_text), ['web: rebase', 'web-2: schema changed', 'all: gate is slow']);
   assert.equal(store.unreadCount(board, 'web-2'), 0);
-  assert.deepEqual(store.inbox(board, 'web-1').map((shout) => shout.shout_text), ['web: rebase']);
+  assert.deepEqual(store.inbox(board, 'web-1').map((shout) => shout.shout_text), ['web: rebase', 'all: gate is slow']);
 });
 
 test('a shout can ask for a decision; it stays open until someone answers it [B21]', () => {
@@ -684,6 +687,21 @@ test('every move lands in the event log; stats count items and verdicts [R1, R2]
   assert.equal(stats.rejected, 1);
 });
 
+test('summary reads expire a held claim at its deadline without changing its stored owner [B4,R1]', () => {
+  const id = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'A short claim' });
+  claimAs(id, 'web-1', 'web');
+  assert.equal(store.stats(board).items.claimed, 1);
+  assert.equal(store.itemsInStatus(board, 'claimed', 'web-1')[0].item_id, id);
+  assert.equal(store.itemsInStatus(board, 'claimed', 'web-2').length, 0);
+  clock.advance(2 * HOUR);
+  assert.deepEqual(store.stats(board).items, { open: 1, claimed: 0, submitted: 0, verified: 0, withdrawn: 0 });
+  assert.deepEqual(store.itemsInStatus(board, 'claimed', 'web-1'), []);
+  assert.equal(store.getItem(board, id).item_status, 'open');
+  const stored = board.db.prepare('SELECT item_status, item_owner FROM item WHERE item_id=?').get(id);
+  assert.equal(stored.item_status, 'claimed');
+  assert.equal(stored.item_owner, 'web-1');
+});
+
 test('an item can wait on others: claiming it is refused until they are verified [B8]', () => {
   const contract = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'Store module' });
   const user = store.addItem(board, { by: 'coordinator', lane: 'api', title: 'Uses the store', after: [contract] });
@@ -707,6 +725,8 @@ test('a board made by an older version is migrated on open [O3]', () => {
     for (const column of ['agent_route', 'agent_family']) old.db.exec(`ALTER TABLE agent DROP COLUMN ${column}`);
     old.db.exec('ALTER TABLE verdict DROP COLUMN verdict_verifier_family');
     old.db.exec('DROP TABLE hold');
+    // An older version's board carries an older user_version; only that makes an open migrate (#1047).
+    old.db.exec('PRAGMA user_version = 1');
     store.closeBoard(old);
     const reopened = store.openBoard(file, clock);
     const columns = (table) => reopened.db.prepare(`PRAGMA table_info(${table})`).all().map((column) => column.name);
@@ -944,13 +964,20 @@ test('two send-backs at the strongest route record no escalation [B15,B13,H16]',
   assert.equal(notices.length, 1, 'one coordinator notice for this rejection pair');
   assert.match(notices[0].shout_text, /web-1 built it/u);
   for (const rejection of rejections) assert.ok(notices[0].shout_text.includes(`#${rejection.verdict_id}`), 'the notice names both rejection receipts');
+  const rigorNotices = store.allShouts(board).filter(entry => entry.shout_from === 'rigor' && entry.shout_to === 'coordinator' && entry.shout_text.includes('Rigor recorded unproved doctrine draft'));
+  assert.equal(rigorNotices.length, 1, 'the repeated refusal cause keeps its independent Rigor notice');
+  assert.match(rigorNotices[0].shout_text, new RegExp(`for refusal:TEST_FAILURE, from #${id}\\.`));
+  const rigorDraft = store.events(board).find(event => event.event_kind === 'rigor-draft' && event.event_by === 'rigor');
+  const rigorDraftDetail = JSON.parse(rigorDraft?.event_detail ?? '{}');
+  assert.deepEqual([rigorDraftDetail.target, rigorDraftDetail.cause, rigorDraftDetail.unproved], ['doctrine', 'refusal:TEST_FAILURE', true], 'the independent notice retains its durable Rigor draft event');
   rejectRevision(id, SHA_C, 'third strong send-back');
-  assert.equal(store.allShouts(board).length, 1, 'one further rejection cannot repeat the pair notice');
+  const pairNoticesAfterThird = store.allShouts(board).filter(entry => entry.shout_to === 'coordinator' && entry.shout_text.includes(`#${id} has two send-backs at the strongest route`));
+  assert.equal(pairNoticesAfterThird.length, 1, 'one further rejection cannot repeat the pair notice');
   rejectRevision(id, SHA_D, 'fourth strong send-back');
-  const nextNotices = store.allShouts(board);
-  assert.equal(nextNotices.length, 2, 'a new pair gets its own single notice');
+  const pairNoticesAfterFourth = store.allShouts(board).filter(entry => entry.shout_to === 'coordinator' && entry.shout_text.includes(`#${id} has two send-backs at the strongest route`));
+  assert.equal(pairNoticesAfterFourth.length, 2, 'a new pair gets its own single notice');
   const nextRejections = store.verdictsFor(board, id).filter(entry => entry.verdict_decision === 'REJECT').slice(-2);
-  for (const rejection of nextRejections) assert.ok(nextNotices[1].shout_text.includes(`#${rejection.verdict_id}`));
+  for (const rejection of nextRejections) assert.ok(pairNoticesAfterFourth[1].shout_text.includes(`#${rejection.verdict_id}`));
   assert.equal(store.events(board, { itemId: id }).filter(event => event.event_kind === 'escalate').length, 0);
 });
 

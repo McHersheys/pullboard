@@ -332,17 +332,20 @@ test('item history survives garbage collection mid-read [A6]', () => {
     import { DatabaseSync } from 'node:sqlite';
     import { itemHistory } from ${JSON.stringify(health)};
     const real = new DatabaseSync(':memory:');
-    real.exec('CREATE TABLE event (event_id INTEGER PRIMARY KEY, event_at TEXT, event_by TEXT, event_kind TEXT, item_id INTEGER, event_detail TEXT)');
+    real.exec('CREATE TABLE event (event_id INTEGER PRIMARY KEY, event_at TEXT, event_by TEXT, event_kind TEXT, item_id INTEGER, event_detail TEXT); CREATE INDEX event_item_id_event_id ON event (item_id, event_id)');
     const insert = real.prepare('INSERT INTO event (event_at, event_by, event_kind, item_id, event_detail) VALUES (?, ?, ?, ?, ?)');
     for (let i = 0; i < 20000; i += 1) insert.run('2026-10-18T00:00:00.000Z', 'agent', i % 3 ? 'claim' : 'submit', i % 50, '{}');
     // Defined outside any scope that holds the statement, so only the code under test can keep it alive.
-    const collecting = (rows) => { let read = 0; return { [Symbol.iterator]() { return this; }, next() { read += 1; if (read % 500 === 0) globalThis.gc(); return rows.next(); } }; };
-    const db = { prepare: (sql) => { const statement = real.prepare(sql); return { iterate: () => collecting(statement.iterate()) }; } };
-    process.stdout.write(String(itemHistory(db).size));
+    let reads = 0;
+    let collections = 0;
+    const collecting = (rows) => ({ [Symbol.iterator]() { return this; }, next() { reads += 1; if (reads % 500 === 0) { globalThis.gc(); collections += 1; } return rows.next(); } });
+    const db = { prepare: (sql) => { const statement = real.prepare(sql); return { iterate: (...values) => collecting(statement.iterate(...values)) }; } };
+    const history = itemHistory(db, Array.from({ length: 50 }, (_, id) => id));
+    process.stdout.write(String(history.size) + ':' + String(collections));
   `;
   const child = runFixtureChild(process.execPath, ['--expose-gc', '--no-warnings', '--input-type=module', '-e', script], { encoding: 'utf8' });
   assert.equal(child.status, 0, `reading item history must not lose its statement to garbage collection: ${child.stderr}`);
-  assert.equal(child.stdout, '50', 'every item with events has a history entry');
+  assert.match(child.stdout, /^50:[1-9]\d*$/u, 'every item is read and garbage collection runs across item cursors');
 });
 
 test('health names a route with open work and no agent [N2,B13]', async (t) => {
@@ -407,6 +410,8 @@ test('every printed next step runs as pasted through main() [N2,B13]', async (t)
   store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Earlier mid', route: 'mid', ...brief });
   const later = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Later mid', route: 'mid', ...brief });
   const strong = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Strong work' });
+  // Earlier mid shares src/mid.js with the held claim, so next gives the idle seat only this one (#1114).
+  store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Other mid', route: 'mid', ...brief, brief: 'Files:\n- src/other.js\nTest:\n- the other work runs' });
   store.claim(board, later, { agentId: holder, lane: 'core', leaseMs: 2 * HOUR, freeze });
   store.closeBoard(board);
 

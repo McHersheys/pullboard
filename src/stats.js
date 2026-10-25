@@ -1,3 +1,5 @@
+import { counterProofStats } from './proof-counter-read.js';
+import { proofEventDetail } from './proof-event-detail.js';
 /** Public proof numbers derived from the append-only event log [R1,R2]. */
 import { events } from './board.js';
 import { Refused } from './refused.js';
@@ -28,7 +30,7 @@ function countsFrom(history, boundary) {
   const submitted = new Map();
   const accepted = new Map();
   for (const event of history) {
-    const detail = JSON.parse(event.event_detail);
+    const detail = proofEventDetail(event);
     if (event.event_kind === 'submit') {
       submitted.set(event.item_id, detail.commit);
       accepted.delete(event.item_id);
@@ -69,7 +71,7 @@ function actorsFrom(history, boundary) {
   for (const event of history) {
     const id = event.event_by;
     if (id === 'board' || id === 'person') continue;
-    const detail = JSON.parse(event.event_detail);
+    const detail = proofEventDetail(event);
     if (Object.hasOwn(detail, 'family')) {
       declared.set(id, typeof detail.family === 'string' && detail.family.trim() ? detail.family : 'unknown');
     }
@@ -96,8 +98,20 @@ function actorsFrom(history, boundary) {
 }
 
 /** Assemble the public statistics shared by the CLI and local board state from one event snapshot. */
-export function proofStats(board, { since, now = Date.now() } = {}) {
+export function proofStats(board, { since, now = Date.now(), onFallback } = {}) {
   const boundary = sinceDate(since);
+  // A SAVEPOINT is read-only until a write occurs, and nests inside callers' transactions.
+  // Hold one snapshot across the cursor, projection shards, and verdicts while other seats append.
+  board.db.exec('SAVEPOINT proof_stats_read');
+  try { return proofStatsSnapshot(board, boundary, now, onFallback); }
+  finally { board.db.exec('RELEASE proof_stats_read'); }
+}
+
+/** Assemble cached or legacy statistics within the caller's already established read snapshot. */
+function proofStatsSnapshot(board, boundary, now, onFallback) {
+  const counted = counterProofStats(board, boundary, now);
+  if (counted) return counted;
+  onFallback?.();
   const history = events(board);
   const counts = countsFrom(history, boundary);
   const verdicts = board.db.prepare('SELECT * FROM verdict ORDER BY verdict_id').all();

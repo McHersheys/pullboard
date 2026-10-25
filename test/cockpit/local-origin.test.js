@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** The hosted page reads this machine's view straight, and the view answers only its own page and that one [N26,A2]. */
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -1347,4 +1348,45 @@ test('a browser paired here before says it was signed out above this computer\'s
       finally { rmSync(profile, { recursive: true, force: true }); }
     }
   }
+});
+
+
+test('a browser without the key gets a page that sends it to app.pullboard.dev [N26,A2]', { timeout: 60_000 }, async () => { // budget: hang ceiling for one native view and local HTTP requests.
+  const box = machine();
+  project(box, 'bare-view-guidance');
+  const view = await startView(box);
+  try {
+    const refusal = 'this view needs its own address and secret: open the link pullboard view printed';
+    const page = await call(view, '/', { headers: { accept: 'text/html', 'sec-fetch-dest': 'document' } });
+    assert.ok([200, 401].includes(page.status), 'a browser receives a usable guidance page');
+    assert.match(page.headers['content-type'], /^text\/html\b/);
+    assert.match(page.body, /href=["']https:\/\/app\.pullboard\.dev\/?["']/);
+    assert.match(page.body, /board.*app\.pullboard\.dev/iu);
+    assert.ok(!page.body.includes(view.key), 'the public guidance contains no view key');
+    const ordinary = await call(view, '/', { headers: { accept: 'text/html' } });
+    assert.ok([200, 401].includes(ordinary.status));
+    assert.match(ordinary.headers['content-type'], /^text\/html\b/, 'ordinary HTML clients need not send Fetch Metadata');
+    for (const headers of [{ accept: 'application/json' }, { accept: '*/*', 'sec-fetch-dest': 'empty' }, { accept: 'text/javascript' }, { accept: 'text/html', 'sec-fetch-dest': 'empty' }, { accept: 'text/html', 'sec-fetch-dest': 'script' }, { accept: 'text/html', 'sec-fetch-dest': 'iframe' }]) {
+      const script = await call(view, '/', { headers });
+      assert.equal(script.status, 403);
+      assert.match(script.headers['content-type'], /^application\/json\b/);
+      assert.deepEqual(JSON.parse(script.body), { error: refusal });
+    }
+    const wrong = await call(view, '/?k=wrong', { headers: { accept: 'application/json' } });
+    assert.equal(wrong.status, 403);
+    assert.deepEqual(JSON.parse(wrong.body), { error: refusal });
+    for (const [path, headers] of [['/?k=wrong', {}], ['/', { 'x-pullboard-key': 'wrong' }], ['/', { 'x-pullboard-key': '' }]]) {
+      const explicit = await call(view, path, { headers: { accept: 'text/html', 'sec-fetch-dest': 'document', ...headers } });
+      assert.equal(explicit.status, 403, 'an explicitly supplied invalid key keeps its refusal');
+      assert.match(explicit.headers['content-type'], /^application\/json\b/);
+      assert.deepEqual(JSON.parse(explicit.body), { error: refusal });
+    }
+    const api = await call(view, '/api/v1/boards', { headers: { accept: 'text/html' } });
+    assert.equal(api.status, 401, 'HTML negotiation preserves the API authentication refusal');
+    assert.equal(JSON.parse(api.body).error.code, 'AUTH_REQUIRED');
+    assert.match(api.headers['content-type'], /^application\/json\b/);
+    const authenticated = await call(view, '/?k=' + encodeURIComponent(view.key), { headers: { accept: 'text/html' } });
+    assert.equal(authenticated.status, 200, 'the printed private link still opens its board');
+    assert.ok(!authenticated.body.includes('The board opens at app.pullboard.dev'), 'authenticated board is not replaced by public guidance');
+  } finally { await view.stop(); }
 });

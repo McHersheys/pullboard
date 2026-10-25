@@ -55,6 +55,8 @@ Close each finding with its next step in the same cycle. When the step belongs t
 
 A recurring job that runs on a cadence, such as a listener loop or a sentinel, records each run with `pullboard loop ran <name>`, and `pullboard health` flags one that stays silent for 1.5 cadences. The coordinator declares the cadence with `pullboard loop declare <name> --every 10m --owner <seat or lane>`; `pullboard loop` lists the jobs and their last runs.
 
+Approved sentinels never run inside an agent's session. A timer (cron on a server, or a scheduled CI job) runs `pullboard sentinel run`, which runs the due sentinels in a trunk checkout it prepares and records each result; `pullboard resume` only says when sentinels are due and where they run.
+
 ## Route by roadmap order
 
 `pullboard digest --out briefing.md` writes a short Markdown briefing of this board for a person or a chat assistant; hand it over when someone needs the board's state at a glance.
@@ -73,6 +75,14 @@ pullboard edit 12 --criterion "..." --reason "the person ruled the page shows bo
 
 Without `--reason` it refuses with `BAR_REASON`. A submitted item refuses the edit with `HELD`, `item #12 is submitted; change its route, criterion or check only while it is open`, so return it first with `pullboard reopen 12 --note "the bar must name both totals"`, then edit. A builder holding a claim on a corrected item is refused at submit with `PENDING_REFREEZE` and runs `pullboard refreeze 12`.
 
+## Take in outside work
+
+An outside pull request or issue enters the board with `pullboard intake <URL>`: for a pull request, give `--criterion` and `--check`; the item is filed already submitted at the exact outside commit and can be verified only in the sandbox. Never run an outside commit outside the sandbox. If it touches a sensitive path, only the owner approves it, and each result posted back to the pull request waits for the person's OK. Repeating intake on an issue refreshes its author, state and reply.
+
+## Hand off before you are replaced
+
+When you are told your session is ending or another agent will replace you, write a hand-off with `pullboard handoff` before you stop: it records where your claim stands so the next agent does not start over. The agent taking over runs `pullboard handoff --take <id>`. Keep any question about the item on the item, not in a private note.
+
 ## Keep reviews independent
 
 Start every reviewer outside the builder's root: a fresh session, or a subagent of a different session from the one that started the builder. A reviewer that shares the builder's context shares its blind spots. Pullboard itself refuses only the builder (`SELF_VERIFY`), so the rest is yours to keep.
@@ -80,6 +90,10 @@ Start every reviewer outside the builder's root: a fresh session, or a subagent 
 ## Close every decision
 
 A decision stays open until someone answers it. Answer each one addressed to you with `pullboard answer <id> "<the decision>"`, and add `--implies <ids>` when it settles items. Pass one that belongs to the person with `pullboard pass <id> "<note>"`. `pullboard decisions` lists what is still open, and `pullboard health` reports one left over an hour as `unanswered`.
+
+## Sign a bar before anyone claims
+
+When the board requires ready bars (the coordinator turns this on with `pullboard bar ready on` and off with `pullboard bar ready off`; `pullboard bar ready` shows the setting), an item cannot be claimed until its bar is signed. Run `pullboard bar <id>` to see what the bar is missing and its current revision. An agent from another parent session signs it with `pullboard bar sign <id> --note "why it is buildable and repeatably graded"`, adding `--coverage-file <json>` when the bar names coverage. An edit to the item clears the signature; sign the new revision. Never sign a bar your own session wrote. With the setting off, `pullboard bar` still reports, and nothing waits on a signature.
 
 ## Turn a Rigor notice into a draft
 
@@ -119,6 +133,7 @@ When the board lands in two tiers (`landing.publish` set to `"separate"` in pull
 | A site or relay down | `pullboard relay` prints the relay link's state; open the site's front page | you, at the start of each cycle |
 | npm and the site disagreeing | `npm view <package> version` beside `pullboard version` and the version the site shows | you, after each release |
 | Main CI red | the CI's latest run on the trunk (on GitHub, `gh run list --branch main --limit 3`); `pullboard submit` names a test that fails on main too | you, at the start of each cycle, and the builder's shout |
+| The Pullboard-verified badge out of date | `pullboard badge` rewrites the board-derived badge files offline (landing also refreshes them) and lists what changed | you, after a merge that skipped landing |
 | A release past its day | `pullboard health`: `release <tag> overdue` | the listener's loop |
 
 A row you check by hand is a check waiting to be built. When one catches something twice, add it to the board as an item, the way #772 grew out of a coordinator's private board monitor.
@@ -137,6 +152,7 @@ At the start of every coordinator cycle, check the flow from the `flow:` line in
 - When you need to see who works for whom, run `pullboard agents`: each agent with its seats and the helpers it opened, and what each holds.
 - When you need current syntax, run `pullboard help` or `pullboard help <command>`; check the installed release with `pullboard version`. Use `pullboard tour` to walk a person through the scripted example in a throwaway repo.
 - When checking machine gate capacity, run `pullboard resources`; change the configured slot count with `pullboard settings gateSlots <n>`, `pullboard settings browserSlots <n>` or `pullboard settings gate.shortSlots <n>` only when the team has agreed to that machine-wide setting.
+- Read the board's line settings with `pullboard settings line`. The coordinator changes one with `pullboard settings line <name> <value> --reason "why" --window <json>`, where the value is on, off or a number in that setting's range; each change is a recorded move with its reason and window numbers, all are off by default, and a value outside the range is refused.
 - When an item needs its frozen check, run `pullboard check <id>`; use `pullboard claim <id>` to take or renew a specific lease and `pullboard release <id>` when you cannot continue. `pullboard done <id>` is the submit alias.
 - When coordinating a pause or correction, use `pullboard hold` for a lane or item, `pullboard reopen` to return a submission for criterion correction, and `pullboard withdraw` only when nobody should build the item.
 - When answering a decision addressed to the coordinator, run `pullboard answer <id>`; when it belongs to the person, use `pullboard pass <id>` to forward it rather than answering for them.
@@ -146,6 +162,7 @@ At the start of every coordinator cycle, check the flow from the `flow:` line in
 - When validating a project before planning, run `pullboard doctor`; when a published Claude Code skill changed, run `pullboard skills --update` to refresh only unchanged installed copies.
 - When hooks are missing after a clone, run `pullboard hooks` to reinstall them; when diagnosing one hook directly, run `pullboard hook pre-commit`, `pullboard hook pre-merge-commit`, `pullboard hook commit-msg`, or `pullboard hook pre-push` for the hook in question.
 - When linking this board to the relay, run `pullboard relay on`; use `pullboard relay off` to unlink it, `pullboard relay pair` to print a one-use code, and `pullboard relay join <code>` in the clone that receives that code. Run `pullboard relay` to inspect link state.
+- When two machines should share one board without a pullboard.dev account, run `pullboard sync` to opt in to sharing it through the repo's git remote; reads work offline, and moves wait for the remote to acknowledge them.
 - When checking paired-device or agent-token metadata, run `pullboard relay devices` or `pullboard relay tokens`; use `pullboard relay revoke <id>` only when authorized to revoke that device or token. When a blocked relay position needs recovery, hand it to the person because recovery is reserved for their action.
 - For an additional phone or browser, the person runs `pullboard relay pair --new-browser` on the linked computer and opens its fresh one-use link in that browser. Bare `pullboard relay pair` still creates the computer-clone code; `pullboard relay on --all` keeps its first-phone-only behavior.
 - When opening the local board in a browser, run `pullboard view`; use `pullboard view --export <dir>` for a static snapshot and `pullboard serve` when a local script needs the authenticated API.

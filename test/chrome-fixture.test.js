@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** The shared Chrome fixture bounds startup and removes profiles only after the owned process group exits [C7]. */
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
@@ -8,6 +9,11 @@ import { join } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { test } from 'node:test';
 import { createEvaluator, createSender, createWaiter, findChromeExecutable, launchChromeProcess, startChrome, waitForTargetAbsent } from './chrome-fixture.js';
+import { assertNoKilledChromeClone } from './chrome-clone-proof.js';
+
+test('a killed test Chrome leaves no code-sign clone [C7]', { skip: process.platform !== 'darwin' || !findChromeExecutable() }, async t => {
+  await assertNoKilledChromeClone(t);
+});
 
 /** Pause between checks while waiting for a fixture helper's readiness marker. */
 function pause(ms) {

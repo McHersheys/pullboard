@@ -11,7 +11,7 @@
 import {
   ENGINE_VERSION,
   SUBMITTED_CONFLICT_ENGINE,
-} from './machine.js';
+} from './engine-metadata.js';
 import { Refused } from './refused.js';
 
 import { CONFLICT_ENGINE } from './trunk-conflict-engine.js';
@@ -199,6 +199,7 @@ export function mainMergesFor(board, items) {
  * @returns {string}
  */
 export function reopenedLine(id, result) {
+  if (result.withdrawnVerdict) return `reopened #${id} after verdict withdrawal; the earlier accept stays in history marked withdrawn`;
   if (result.conflict) return `reopened #${id} for a main merge: conflicts with the trunk at ${result.conflict.trunk.slice(0, 12)} in ${shownPaths(result.conflict.files)}; the accept at ${result.commit.slice(0, 12)} stays recorded`;
   return result.landingFailure
     ? `reopened #${id} after landing failure; previous accept remains recorded at ${result.commit.slice(0, 12)}`

@@ -49,9 +49,12 @@ test('[Q4] the machine pool ignores board and HOME overrides unless explicitly s
   const script = `import { machineHome } from ${JSON.stringify(MACHINE_HOME_MODULE)}; process.stdout.write(machineHome());`;
   const env = { ...process.env, HOME: '/private/home', PULLBOARD_HOME: '/private/board' };
   delete env.PULLBOARD_MACHINE_HOME;
+  delete env.PULLBOARD_ACCOUNT_HOME;
   const defaultHome = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', env });
   assert.equal(defaultHome.status, 0, defaultHome.stderr);
   assert.equal(defaultHome.stdout, join(userInfo().homedir, '.pullboard'));
+  const account = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', env: { ...env, PULLBOARD_ACCOUNT_HOME: '/private/account' } });
+  assert.equal(account.stdout, join('/private/account', '.pullboard'), 'a test run substitutes its own account home [C7]');
 
   const override = join(tmpdir(), 'pullboard-private-machine-home');
   const privateHome = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
@@ -64,4 +67,58 @@ test('[Q4] the machine pool ignores board and HOME overrides unless explicitly s
 test('the settings API reports every setting with its scope, value, default and source and never a secret [O5,O6]', async () => {
   const { proveSettingsApi } = await import('./settings-api-fixture.js');
   await proveSettingsApi();
+});
+
+/** Board-owned settings keep native move evidence, independent of machine-wide admission settings [R1,R2,H16]. */
+test('a line setting change is a recorded move with its reason and its range [R1,R2,H16]', async t => {
+  const { createE2eHelpers } = await import('./e2e-helpers.js');
+  const store = await import('../src/board.js');
+  const { exportBoard, importBoard } = await import('../src/exchange.js');
+  const { prepareEngineMove, applyRelayMove, appliedSequence } = await import('../src/engine.js');
+  const fixtures = createE2eHelpers();
+  let board, replica;
+  t.after(() => { if (replica) store.closeBoard(replica); if (board) store.closeBoard(board); fixtures.cleanup(); });
+  const box = fixtures.project('true');
+  const initial = box.run(box.repo, 'settings', 'line', '--json');
+  const numbers = { windowMinutes: 60, activeReviewers: 2, reviewWaitMedianMinutes: 40 };
+  const changed = box.run(box.repo, 'settings', 'line', 'reviewsFirst', 'on', '--reason', 'Review waiting exceeds the target',
+    '--window', JSON.stringify(numbers), '--json');
+  assert.equal(changed.code, 0, `a board setting change succeeds: ${changed.err}${changed.out}`);
+  assert.equal(initial.code, 0, initial.err);
+  const defaults = { order: false, focusMilestone: false, collisionFreeBatch: false, reviewsFirst: false, wipPerReviewer: false, barReady: false,
+    'bar.check': false, takeoverMinutes: false,
+    landingBatchSize: false, landingCadenceMinutes: false };
+  assert.deepEqual(JSON.parse(initial.out).lineSettings, defaults, 'all line controls start off, not silently enabled by a machine file');
+  assert.equal(JSON.parse(changed.out).lineSettings.reviewsFirst, true);
+  board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
+  replica = store.openBoard(join(box.dir, 'line-replay.sqlite'));
+  importBoard(replica, exportBoard(board));
+  const first = store.events(board).findLast(event => event.event_kind === 'line_setting');
+  assert.ok(first, 'the actual CLI records a native board event, not only a local settings file');
+  assert.deepEqual(JSON.parse(first.event_detail), { key: 'reviewsFirst', value: true,
+    reason: 'Review waiting exceeds the target', window: numbers, model: 'unknown' });
+  assert.equal(first.event_by, 'coordinator');
+  const values = [['focusMilestone', '0.9.3'], ['focusMilestone', false], ['order', true], ['order', false], ['reviewsFirst', false], ['wipPerReviewer', 1.5], ['wipPerReviewer', 3],
+    ['barReady', true], ['bar.check', true], ['collisionFreeBatch', true], ['collisionFreeBatch', false],
+    ['takeoverMinutes', 15], ['takeoverMinutes', 60], ['landingBatchSize', 1], ['landingBatchSize', 8],
+    ['landingCadenceMinutes', 5], ['landingCadenceMinutes', 30]];
+  let sequence = appliedSequence(board);
+  for (const [key, value] of values) {
+    const move = prepareEngineMove(board, 'setLineSetting', [{ agentId: 'coordinator', key, value,
+      reason: 'Measured fixture policy change', window: numbers }], { id: `line-setting-${++sequence}`, actor: 'coordinator' });
+    const options = { sequence, at: `2026-10-24T01:${String(sequence).padStart(2, '0')}:00.000Z`, kind: 'move',
+      sender: { kind: 'agent', userId: 'line-fixture', agent: 'coordinator' } };
+    const outcomes = [board, replica].map(copy => applyRelayMove(copy, move, options));
+    assert.deepEqual(outcomes[0], outcomes[1]);
+    assert.ok(!outcomes[0].error, JSON.stringify(outcomes[0]));
+    assert.equal(store.lineSettings(board)[key], value);
+    assert.deepEqual(store.lineSettings(replica), store.lineSettings(board));
+  }
+  for (const [key, value] of [['wipPerReviewer', 1.49], ['wipPerReviewer', 3.01], ['takeoverMinutes', 14],
+    ['takeoverMinutes', 61], ['landingBatchSize', 0], ['landingBatchSize', 9], ['landingBatchSize', 1.5],
+    ['focusMilestone', ''], ['focusMilestone', 'two\nlines'], ['focusMilestone', true], ['landingCadenceMinutes', 4], ['landingCadenceMinutes', 31], ['reviewsFirst', 1], ['order', 1]]) {
+    const before = store.events(board).length;
+    assert.throws(() => store.setLineSetting(board, { agentId: 'coordinator', key, value, reason: 'Invalid limit', window: numbers }), /LINE_SETTING_RANGE/u);
+    assert.equal(store.events(board).length, before, 'a refused value appends no successful setting event');
+  }
 });

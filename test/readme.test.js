@@ -507,6 +507,7 @@ test('every command in help is taught to agents [I11]', () => {
   }
   const personOnly = new Map([
     ['spec approve', 'Only the person approves a SPEC row.'],
+    ['intake approve', 'Only the owner approves an outside commit that touches a sensitive path.'],
     ['spec decline', 'Only the person declines a SPEC row.'],
     ['relay recover', 'The command is explicitly reserved for person-only recovery.'],
   ]);

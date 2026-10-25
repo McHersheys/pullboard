@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** @pullboard-test-loads src/serve.js src/api.js src/cli.js */
 /** Cockpit projects checks, using the shared real-board fixtures [N26]. */
 import assert from 'node:assert/strict';
@@ -94,6 +95,72 @@ test('a project switch never shows the old project\'s numbers [N26,A2]', { timeo
   }
 });
 
+test('the page never tells a person with boards to run init while the list loads [N26,H5]', { timeout: 120_000 }, async (t) => {
+  const executable = chromeExecutable();
+  if (!executable) return t.skip('Install Chrome or set PULLBOARD_CHROME for loading-state checks.');
+  const box = machine();
+  const alpha = project(box, 'alpha');
+  box.run(alpha.repo, 'add', 'web', 'Alpha waiting item', '--specs', 'G1', '--criterion', 'shown');
+  const empty = machine();
+  let view, bare, profile, chrome;
+  // What a person reads now: the page's visible text, as laid out, so a hidden card never counts.
+  const told = async () => chrome.stable("(document.body.innerText.match(/No boards yet|pullboard init/g) || []).join(' | ')");
+  try {
+    view = await startView(box);
+    bare = await startView(empty);
+    profile = mkdtempSync(join(tmpdir(), 'pullboard-list-loading-chrome-'));
+    chrome = await openSnapshotChrome(executable, 'about:blank', profile);
+    // Hold the board list and each board's state before real HTTP, so the page waits as on a loaded machine.
+    await chrome.send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
+      const nativeFetch = window.fetch.bind(window);
+      const gate = window.__listGate = { list: true, state: true, blocked: [] };
+      gate.release = (kind) => { gate[kind] = false; gate.blocked.filter((entry) => entry.kind === kind).forEach((entry) => entry.resolve()); };
+      window.fetch = async (input, init) => {
+        const path = new URL(typeof input === 'string' ? input : input.url, location.href).pathname;
+        const kind = path === '/api/v1/boards' ? 'list' : /^\\/api\\/v1\\/boards\\/[^/]+\\/state$/.test(path) ? 'state' : null;
+        if (kind && gate[kind]) await new Promise((resolve) => gate.blocked.push({ kind, resolve }));
+        return nativeFetch(input, init);
+      };
+    })()` });
+    await chrome.send('Page.navigate', { url: view.link.href });
+    await chrome.waitFor("window.__listGate?.blocked.some((entry) => entry.kind === 'list')");
+    const polls = [];
+    for (let poll = 0; poll < 5; poll += 1) polls.push(await told());
+    // The list answers, but no board has: the names are known and the page is still loading. A Back press redraws it.
+    await chrome.stable("window.__listGate.release('list')");
+    await chrome.waitFor("window.__listGate.blocked.some((entry) => entry.kind === 'state') && document.querySelector('#proj-list .pname')?.textContent === 'alpha'");
+    for (let poll = 0; poll < 5; poll += 1) polls.push(await told());
+    await chrome.stable("dispatchEvent(new PopStateEvent('popstate', { state: null })), true");
+    for (let poll = 0; poll < 5; poll += 1) polls.push(await told());
+    await chrome.stable("window.__listGate.release('state')");
+    await chrome.waitFor(`data?.root === ${JSON.stringify(alpha.repo)} && !document.body.classList.contains('loading') && document.body.innerText.includes('Alpha waiting item')`);
+    polls.push(await told());
+    assert.deepEqual(polls.filter(Boolean), [], 'a person with a board never reads No boards yet or pullboard init while the list loads');
+
+    // A machine truly without a board says both, once its list is known to be empty.
+    await chrome.send('Page.navigate', { url: bare.link.href });
+    await chrome.waitFor("window.__listGate?.blocked.some((entry) => entry.kind === 'list')");
+    assert.equal(await told(), '', 'nothing about init shows before the empty list answers');
+    await chrome.stable("window.__listGate.release('list')");
+    await chrome.waitFor("document.body.classList.contains('boardless')");
+    assert.equal(await told(), 'No boards yet | pullboard init', 'a truly empty list says No boards yet and the init step');
+    assert.deepEqual(chrome.exceptions, [], 'the held list raises no uncaught exception');
+  } finally {
+    try {
+      if (chrome) {
+        await chrome.stable("window.__listGate?.release('list'), window.__listGate?.release('state')").catch(() => {});
+        await closeSnapshotChrome(chrome);
+      }
+    } finally {
+      try { if (profile) rmSync(profile, { recursive: true, force: true }); }
+      finally {
+        try { if (bare) await bare.stop(); }
+        finally { if (view) await view.stop(); }
+      }
+    }
+  }
+});
+
 test('the sidebar lists every project and what needs the person [N26]', async () => {
   const box = machine();
   const alpha = project(box, 'alpha');
@@ -140,7 +207,7 @@ test('the sidebar lists every project and what needs the person [N26]', async ()
   }
 });
 
-test('projects group repos with combined needs and activity, while ungrouped and unreadable repos stay clear [N33, N34, N36]', async () => {
+test('unreadable boards collapse to one line with Forget all while projects group readable repos with combined needs and activity [N33, N34, N36]', async () => {
   const box = machine();
   const core = project(box, 'core', `${SPEC}- G3 [pending] Should #1 greet in French?\n`, { name: 'Core API', project: 'Atlas' });
   box.run(core.repo, 'add', 'web', 'Core target #1', '--specs', 'G1', '--criterion', 'greets');
@@ -152,16 +219,22 @@ test('projects group repos with combined needs and activity, while ungrouped and
   box.run(web.repo, 'shout', 'person', 'Ship #1 today?', '--decision');
   const standalone = project(box, 'standalone', SPEC, { name: 'Scratchpad' });
   const broken = project(box, 'broken', SPEC, { name: 'Broken repo', project: 'Atlas' });
+  const brokenTwo = project(box, 'broken-two', SPEC, { name: 'Broken repo two', project: 'Atlas' });
+  const brokenThree = project(box, 'broken-three', SPEC, { name: 'Broken repo three', project: 'Elsewhere' });
+  const recoveredConfig = readFileSync(join(brokenThree.repo, 'pullboard.json'));
   const view = await startView(box);
   try {
     const headers = { 'x-pullboard-key': view.key };
     let response = await fetchLive(`${view.base}/api/v1/boards`, { headers });
     let state = await response.json();
-    assert.deepEqual(state.boards.filter((repo) => repo.project === 'Atlas').map((repo) => repo.name), ['Core API', 'Web UI', 'Broken repo']);
+    assert.deepEqual(state.boards.filter((repo) => repo.project === 'Atlas').map((repo) => repo.name), ['Core API', 'Web UI', 'Broken repo', 'Broken repo two']);
     writeFileSync(join(broken.repo, 'pullboard.json'), '{not valid json');
+    writeFileSync(join(brokenTwo.repo, 'pullboard.json'), '{not valid json');
+    writeFileSync(join(brokenThree.repo, 'pullboard.json'), '{not valid json');
     response = await fetchLive(`${view.base}/api/v1/boards`, { headers });
     state = await response.json();
     const unreadable = state.warnings.find((repo) => repo.root === broken.repo);
+    assert.equal(state.warnings.length, 3);
     assert.equal(unreadable.error.version, 1);
     assert.equal(unreadable.error.error.code, 'BOARD_UNAVAILABLE');
     assert.match(unreadable.error.error.message, /cannot be read/);
@@ -175,8 +248,45 @@ test('projects group repos with combined needs and activity, while ungrouped and
     assert.match(side, /Core API/);
     assert.match(side, /Web UI/);
     assert.match(side, /Scratchpad/);
-    assert.match(side, /class="repo-error" role="status"><b>Broken repo:<\/b> registered project [^<]+ cannot be read; restore the repo or run pullboard forget/);
+    assert.match(side, /<summary>3 boards can no longer be found<\/summary>/);
+    const disclosure = side.indexOf('<details class="unreadable-projects">');
+    assert.ok(disclosure >= 0, 'the path list stays collapsed until opened');
+    for (const root of [broken.repo, brokenTwo.repo, brokenThree.repo]) assert.ok(!side.slice(0, disclosure).includes(root), 'paths are disclosed only in the expanded list');
+    assert.match(side, /<b>Broken repo<\/b> <code>[^<]+<\/code>/);
+    assert.match(side, /<b>Broken repo two<\/b> <code>[^<]+<\/code>/);
+    assert.match(side, /<b>Broken repo three<\/b> <code>[^<]+<\/code>/);
+    assert.doesNotMatch(side, /registered project [^<]+ cannot be read/);
+    assert.match(side, /data-forget-unreadable>Forget all<\/button>/);
     assert.doesNotMatch(side, /class="small bad"|class="bad"/);
+
+    response = await fetchLive(`${view.base}/api/v1/projects/forget-unreadable`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ confirm: true }),
+    });
+    assert.equal(response.status, 403, 'the mutation requires this view session key');
+    response = await fetchLive(`${view.base}/api/v1/projects/forget-unreadable`, {
+      method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ confirm: true, roots: [broken.repo] }),
+    });
+    assert.equal(response.status, 400, 'the browser cannot choose project roots');
+
+    page.run('globalThis.__forgetConfirmCalls = 0; globalThis.confirm = () => { globalThis.__forgetConfirmCalls++; return false; }');
+    await page.click({ forgetUnreadable: '' });
+    assert.equal(page.run('globalThis.__forgetConfirmCalls'), 1);
+    assert.equal(page.requests.filter((request) => request.path === '/api/v1/projects/forget-unreadable').length, 0, 'cancel leaves the registry unchanged');
+
+    // A stale disclosure cannot forget a board that became readable after the page listed it.
+    writeFileSync(join(brokenThree.repo, 'pullboard.json'), recoveredConfig);
+    page.run('globalThis.confirm = () => { globalThis.__forgetConfirmCalls++; return true; }');
+    await page.click({ forgetUnreadable: '' });
+    assert.equal(page.run('globalThis.__forgetConfirmCalls'), 2);
+    assert.ok(page.requests.some((request) => request.path === '/api/v1/projects/forget-unreadable' && request.method === 'POST' && request.body?.confirm === true));
+    assert.ok(page.requests.filter((request) => request.path === '/api/v1/projects/forget-unreadable').every((request) => Object.keys(request.body).length === 1), 'the browser sends confirmation, never project paths');
+    assert.doesNotMatch(page.show('proj-list'), /unreadable-projects|<b>Broken repo<\/b>|<b>Broken repo two<\/b>/);
+    assert.match(page.show('proj-list'), /Broken repo three/);
+    response = await fetchLive(`${view.base}/api/v1/boards`, { headers });
+    state = await response.json();
+    assert.equal(state.warnings.length, 0);
+    assert.ok(state.boards.some((repo) => repo.root === brokenThree.repo && repo.name === 'Broken repo three'));
+    assert.ok(state.boards.some((repo) => repo.root === core.repo), 'healthy registered boards are preserved');
 
     await page.click({ root: 'group:Atlas' });
     assert.equal(page.element('group-view').hidden, false);
@@ -429,7 +539,9 @@ test('a machine with no board says how to start one [N26]', async () => {
     const page = await openPage(view);
     const style = await styleOf(view);
     // Agents start boards, so the view offers no form for it.
-    assert.doesNotMatch(page.html, /init-form|init-path|Start a board|<details/, 'no form to start a board');
+    const renderedMarkup = page.html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/giu, '');
+    assert.doesNotMatch(renderedMarkup, /init-form|init-path|Start a board|<details/,
+      'the rendered page has no form or disclosure for starting a board');
     assert.doesNotMatch(style, /\.start\b/);
 
     const classes = (on) => ['loading', 'boardless'].filter((name) => on.run(`document.body.classList.contains('${name}')`));
@@ -594,6 +706,8 @@ test('a migration-refused project stays quiet beside a normal board [A5,A6,N26]'
   const box = machine();
   const refused = project(box, 'refused-board', SPEC, { name: 'Refused board' });
   const normal = project(box, 'normal-board', SPEC, { name: 'Normal board' });
+  const missing = project(box, 'missing-board', SPEC, { name: 'Missing board' });
+  writeFileSync(join(missing.repo, 'pullboard.json'), '{not valid json');
   box.run(normal.repo, 'add', 'web', 'Readable beside the refused board', '--specs', 'G1');
   const primary = join(box.dir, 'migration-cli');
   const linked = join(box.dir, 'migration-cli-linked');
@@ -605,19 +719,19 @@ test('a migration-refused project stays quiet beside a normal board [A5,A6,N26]'
   box.git(primary, 'add', '-A');
   box.git(primary, 'commit', '-q', '-m', 'chore: retain migration fixture source');
   box.git(primary, 'worktree', 'add', '-q', '-b', 'view/future', linked, 'main');
-  const boardSource = join(linked, 'src/board.js');
+  const boardSource = join(linked, 'src/board-schema-source.js');
   const original = readFileSync(boardSource, 'utf8');
-  const future = original.replace('export const SCHEMA_VERSION = 2;', 'export const SCHEMA_VERSION = 3;');
+  const future = original.replace('export const SCHEMA_VERSION = 3;', 'export const SCHEMA_VERSION = 4;');
   assert.notEqual(future, original, 'only the linked running code expects the future schema');
   writeFileSync(boardSource, future);
   const file = join(refused.repo, '.git/pullboard/board.sqlite');
   const before = createHash('sha256').update(readFileSync(file)).digest('hex');
   const ordinary = new DatabaseSync(join(normal.repo, '.git/pullboard/board.sqlite'));
-  try { ordinary.exec('PRAGMA user_version = 3'); } finally { ordinary.close(); }
+  try { ordinary.exec('PRAGMA user_version = 4'); } finally { ordinary.close(); }
   /** Check the persistent shared board through a read-only connection and its exact bytes. */
   const unchanged = () => {
     const db = new DatabaseSync(file, { readOnly: true });
-    try { assert.equal(db.prepare('PRAGMA user_version').get().user_version, 2, 'refused board schema is not migrated'); }
+    try { assert.equal(db.prepare('PRAGMA user_version').get().user_version, 3, 'refused board schema is not migrated'); }
     finally { db.close(); }
     assert.equal(createHash('sha256').update(readFileSync(file)).digest('hex'), before, 'refused board file is byte-identical');
   };
@@ -627,7 +741,8 @@ test('a migration-refused project stays quiet beside a normal board [A5,A6,N26]'
   unchanged();
   assert.ok(projection.projectState(normal.repo).items.some(item => item.title === 'Readable beside the refused board'));
   const projects = [{ root: refused.repo, name: 'Refused board', project: '', added: '2026-01-01' },
-    { root: normal.repo, name: 'Normal board', project: '', added: '2026-01-01' }];
+    { root: normal.repo, name: 'Normal board', project: '', added: '2026-01-01' },
+    { root: missing.repo, name: 'Missing board', project: '', added: '2026-01-01' }];
   const { serveApi } = await import(pathToFileURL(join(linked, 'src/api.js')).href);
   const { main } = await import(pathToFileURL(join(linked, 'src/cli.js')).href);
   const api = await serveApi({ port: 0, projects: () => projects, runCommand: main });
@@ -637,10 +752,12 @@ test('a migration-refused project stays quiet beside a normal board [A5,A6,N26]'
     assert.equal(reply.status, 200, 'one refused board does not crash the listing');
     const document = await reply.json();
     assert.deepEqual(document.boards.map(board => board.root), [normal.repo], 'the readable board remains listed');
-    assert.equal(document.warnings.length, 1, 'the migration refusal remains visible in the listing');
-    assert.equal(document.warnings[0].root, refused.repo);
-    assert.equal(document.warnings[0].error.error.code, 'UNMERGED_SCHEMA');
-    assert.match(document.warnings[0].error.error.message, /schema 3.*version 2.*merge.*main checkout.*throwaway board/);
+    assert.equal(document.warnings.length, 2, 'both refusals remain visible in the listing');
+    const schemaWarning = document.warnings.find(warning => warning.root === refused.repo);
+    const missingWarning = document.warnings.find(warning => warning.root === missing.repo);
+    assert.equal(schemaWarning.error.error.code, 'UNMERGED_SCHEMA');
+    assert.match(schemaWarning.error.error.message, /schema 4.*version 3.*merge.*main checkout.*throwaway board/);
+    assert.equal(missingWarning.error.error.code, 'BOARD_UNAVAILABLE');
     unchanged();
   };
   try {
@@ -652,13 +769,33 @@ test('a migration-refused project stays quiet beside a normal board [A5,A6,N26]'
     await listing(view.base, view.key);
     const page = await openPage(view);
     const sidebar = page.show('proj-list');
-    assert.match(sidebar, /class="repo-error" role="status"><b>Refused board:<\/b> this worktree expects board schema 3/,
+    assert.match(sidebar, /class="repo-error" role="status"><b>Refused board:<\/b> this worktree expects board schema 4/,
       'the refused project has a quiet status card naming the schema refusal');
     assert.match(sidebar, /merge this code into the main checkout first, or test it against a throwaway board/,
       'the quiet card tells the person the next step');
     assert.doesNotMatch(sidebar, /class="small bad"|class="bad"|stack trace/);
+    assert.match(sidebar, /<summary>1 board can no longer be found<\/summary>/,
+      'only the missing board is grouped as unreadable');
+    const disclosureStart = sidebar.indexOf('<details class="unreadable-projects">');
+    const disclosureEnd = sidebar.indexOf('</details>', disclosureStart);
+    const disclosure = sidebar.slice(disclosureStart, disclosureEnd);
+    assert.match(disclosure, /<b>missing-board<\/b>/);
+    assert.doesNotMatch(disclosure, /Refused board|schema 4/,
+      'a schema refusal is excluded from the forget list');
+    assert.match(sidebar, /data-forget-unreadable>Forget all<\/button>/);
     assert.ok(projectRows(sidebar).some(row => row.name === 'Normal board'), 'a healthy project stays beside the refusal');
     assert.match(page.show('chain'), /Readable beside the refused board/, 'the healthy project still renders its actual item');
+    const forgotten = await fetchLive(`${view.base}/api/v1/projects/forget-unreadable`, {
+      method: 'POST', headers: { 'x-pullboard-key': view.key, 'content-type': 'application/json' }, body: JSON.stringify({ confirm: true }),
+    });
+    assert.equal(forgotten.status, 200);
+    assert.deepEqual(await forgotten.json(), { version: 1, forgotten: 1 },
+      'the confirmed action removes only the currently unavailable registration');
+    const after = await fetchLive(`${view.base}/api/v1/boards`, { headers: { 'x-pullboard-key': view.key } });
+    const afterListing = await after.json();
+    assert.deepEqual(afterListing.boards.map(board => board.root), [normal.repo]);
+    assert.deepEqual(afterListing.warnings.map(warning => [warning.root, warning.error.error.code]), [[refused.repo, 'UNMERGED_SCHEMA']],
+      'the schema-blocked registration remains after forgetting the unavailable one');
     unchanged();
   } finally { await view.stop(); }
 });

@@ -12,7 +12,7 @@ import {
   prepareEngineMove,
 } from '../src/engine.js';
 import { exportBoard, importBoard } from '../src/exchange.js';
-import { SUBMISSION_PROOF_ENGINE, landingFileTimes } from '../src/submit-invariants.js';
+import { SUBMISSION_PROOF_ENGINE, landingFileTimes, submitInvariantProposals } from '../src/submit-invariants.js';
 import { ENGINE_VERSION } from '../src/machine.js';
 import { landingFailures } from '../src/land.js';
 import { createE2eHelpers } from './e2e-helpers.js';
@@ -138,6 +138,9 @@ test('a landing escape is proposed as a submit invariant [C7,V4]', async () => {
   });
   const untouchedConfig = readFileSync(configPath, 'utf8');
   const proposals = json(box, box.repo, 'status').submitInvariantProposals;
+  onBoard(box, board => assert.deepEqual(submitInvariantProposals(store.submitInvariantEvents(board, config), config),
+    submitInvariantProposals(store.eventsOfKinds(board, ['submit', 'landing_batch']), config),
+    'targeted reads preserve repeated snapshots, exact-commit recovery, budgets and latest proof semantics'));
   assert.equal(proposals[0].file, 'test/repeated.test.js', 'a repeated escape below budget is first');
   const byFile = new Map(proposals.map(proposal => [proposal.file, proposal]));
   assert.equal(byFile.get('test/repeated.test.js').escapes, 2);
@@ -175,6 +178,9 @@ test('a landing escape is proposed as a submit invariant [C7,V4]', async () => {
   landing(box, 'legacy-unknown', { id: submit.legacy, commit: 'd'.repeat(40), policyCommit: submit.policyCommit }, third,
     [{ path: 'test/legacy.test.js', durationMs: 1 }]);
   assert.equal(json(box, box.repo, 'status').submitInvariantProposals.some(row => row.file === 'test/legacy.test.js'), false);
+  onBoard(box, board => assert.deepEqual(submitInvariantProposals(store.submitInvariantEvents(board, config), config),
+    submitInvariantProposals(store.eventsOfKinds(board, ['submit', 'landing_batch']), config),
+    'proofless legacy submissions stay unknown in targeted history reads'));
 
   const fallbackItem = json(box, box.repo, 'add', 'web', 'change a non-module input', '--specs', 'G1',
     '--criterion', 'Non-module selection is recorded.', '--check', 'node --test web/page.test.js', '--wait').item.item_id;

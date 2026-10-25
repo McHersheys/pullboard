@@ -7,11 +7,7 @@
  * A draft counts as applied once SPEC.md has its id, so applying needs no second move. Every other
  * writer reserves its new id here too, so no two proposals share an id.
  */
-import {
-  atomic,
-  logEvent,
-  PERSON,
-} from './board.js';
+import { PERSON } from './board.js';
 import { Refused } from './refused.js';
 import { spawnSync } from 'node:child_process';
 import { loadDoctrine } from './doctrine.js';
@@ -20,13 +16,9 @@ import {
   parseSpec,
 } from './spec.js';
 import { cleanGitEnvironment } from './git.js';
-import { trunkRef } from './trusted-policy.js';
-
-/** The board's recorded row drafts, oldest first. */
-export function rowDrafts(board) {
-  const row = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get('row_drafts');
-  return row ? JSON.parse(row.meta_value) : [];
-}
+import { trunkRef } from './trusted-policy-read.js';
+import { recordRowDraft } from './row-draft-store.js';
+export { rowDrafts } from './board-query.js';
 
 /**
  * Reserve one new row's id on the board, and for a lane, record the drafted row itself. Every writer
@@ -46,23 +38,7 @@ export function draftSpecRow(board, { agentId, row, written = false }) {
     || needed.some((key) => typeof row[key] !== 'string' || !row[key].trim() || /[\r\n|]/u.test(row[key]))) {
     throw new Refused('ROW_DRAFT', 'a drafted row needs its id and a one-line text, gate, tier and section; run pullboard spec draft "<text>"');
   }
-  return atomic(board, () => {
-    const current = rowDrafts(board);
-    // The same writer asking again for the same definition, as a resumed blueprint add does, keeps the id
-    // it reserved; a different gate, tier, section, target or writer is another proposal and gets its own id.
-    const same = current.find((draft) => draft.id === row.id && draft.by === agentId && draft.written === Boolean(written)
-      && ['text', 'gate', 'tier', 'section'].every((key) => (draft[key] ?? '') === (row[key] ?? '')) && draft.target === (row.target ?? 'spec'));
-    if (same) return same;
-    const [, prefix, number] = /^(.*?)(\d+)$/u.exec(row.id);
-    let next = Number(number);
-    while (current.some((draft) => draft.id === `${prefix}${next}`)) next += 1;
-    logEvent(board, agentId, 'row_draft', null, { row, written: Boolean(written) });
-    const entry = { id: `${prefix}${next}`, text: row.text, gate: row.gate ?? '', tier: row.tier ?? '', section: row.section ?? '', target: row.target ?? 'spec',
-      written: Boolean(written), by: agentId, event: board.lastEvent.event_id, at: board.lastEvent.event_at };
-    board.db.prepare('INSERT INTO board_meta(meta_key,meta_value) VALUES (?,?) ON CONFLICT(meta_key) DO UPDATE SET meta_value=excluded.meta_value')
-      .run('row_drafts', JSON.stringify([...current, entry]));
-    return entry;
-  });
+  return recordRowDraft(board, { agentId, row, written });
 }
 
 /**

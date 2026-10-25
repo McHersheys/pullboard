@@ -228,7 +228,7 @@ test('[S19,V3] doctor and resume list stale frozen items in every lifecycle stat
   requireExit(doctorText, 1);
   for (const id of expected) assert.match(doctorText.stdout, new RegExp(`item #${id}\\b`));
   const afterResumeBaseline = receiptSnapshot(box);
-  const resumeJson = succeeds(box, box.root, 'resume', '--json');
+  const resumeJson = succeeds(box, box.root, 'resume', '--diagnostics', '--json');
   const resumeDocument = jsonOf(resumeJson);
   assert.deepEqual(resumeDocument.stale.map((item) => item.id).sort((a, b) => a - b), expected);
   for (const item of resumeDocument.stale) {
@@ -238,18 +238,18 @@ test('[S19,V3] doctor and resume list stale frozen items in every lifecycle stat
       assert.match(item.next, /pullboard add web .*--specs G1/u);
     }
   }
-  const resumeText = succeeds(box, box.root, 'resume');
-  assert.match(resumeText.stdout, new RegExp(`${expected.length} stale follow-ups; list them with pullboard resume --json`));
+  const resumeText = succeeds(box, box.root, 'resume', '--diagnostics');
+  assert.match(resumeText.stdout, new RegExp(`${expected.length} stale follow-ups; list them with pullboard resume --diagnostics --json`));
   assert.equal((resumeText.stdout.match(/^stale:/gmu) ?? []).length, 0, 'the coordinator sees one counted line, with details in JSON');
   assert.equal(resumeDocument.staleFollowUps.count, expected.length);
-  assert.equal(resumeDocument.staleFollowUps.list, 'pullboard resume --json');
+  assert.equal(resumeDocument.staleFollowUps.list, 'pullboard resume --diagnostics --json');
   assert.deepEqual(resumeDocument.staleFollowUps.items.map((item) => item.id).sort((a, b) => a - b), expected,
     'the named listing retains every stale item across every lifecycle state');
   assert.deepEqual(receiptSnapshot(box), afterResumeBaseline, 'resume leaves frozen fields, merge receipts and accepted verdicts unchanged');
   assert.deepEqual(receiptSnapshot(box), before, 'diagnostics do not alter accepted receipts or frozen bars');
   assert.ok(!findings.some((finding) => finding.message.includes(`item #${ids.unaffected} `)), 'the item frozen on G3 remains unaffected');
   succeeds(box, box.root, 'refreeze', String(ids.open));
-  const afterRefreeze = jsonOf(succeeds(box, box.root, 'resume', '--json'));
+  const afterRefreeze = jsonOf(succeeds(box, box.root, 'resume', '--diagnostics', '--json'));
   assert.deepEqual(afterRefreeze.stale.map((item) => item.id).sort((a, b) => a - b), expected.filter((id) => id !== ids.open), 'explicit refreeze clears only the active item repaired against new text');
   const historical = (snapshot) => snapshot.items.filter((item) => item.item_status === 'verified');
   assert.deepEqual(historical(receiptSnapshot(box)), historical(before), 'refreezing active work preserves every accepted historical receipt');
@@ -265,13 +265,13 @@ test('[A5,S19,V3] doctor and resume distinguish unchanged doctrine citations fro
   claim(box, specItem);
   succeeds(box, box.web, 'release', String(specItem));
   const baseline = receiptSnapshot(box);
-  const before = jsonOf(succeeds(box, box.root, 'resume', '--json'));
+  const before = jsonOf(succeeds(box, box.root, 'resume', '--diagnostics', '--json'));
   assert.deepEqual(before.stale, [], 'a namespaced citation with unchanged inherited text is current');
   const doctorBefore = jsonOf(box.pullboard(box.root, 'doctor', '--json'));
   assert.deepEqual(doctorBefore.problems.filter(problem => problem.code === 'STALE_ITEM'), []);
   const path = join(box.root, 'DOCTRINE.md');
   writeFileSync(path, readFileSync(path, 'utf8') + '\n## Local override\n- PB1 [approved, must] Updated inherited rule. | gate: true\n');
-  const after = jsonOf(succeeds(box, box.root, 'resume', '--json'));
+  const after = jsonOf(succeeds(box, box.root, 'resume', '--diagnostics', '--json'));
   assert.deepEqual(after.stale.map(item => [item.id, item.rows]), [[doctrineItem, ['doctrine:PB1']]]);
   const doctorAfter = jsonOf(box.pullboard(box.root, 'doctor', '--json'));
   const findings = doctorAfter.problems.filter(problem => problem.code === 'STALE_ITEM');

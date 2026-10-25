@@ -1,3 +1,4 @@
+import { barReadySetting } from '../bar-readiness.js';
 /** The pullboard edit command, in its own module so an item adding another command never edits these lines. */
 import * as store from '../board.js';
 import {
@@ -12,12 +13,14 @@ import {
 } from '../relay.js';
 import {
   actOn,
+  barActorForCommand,
   briefArg,
   briefInLane,
   editAfter,
   idArg,
   launchBaseline,
   ordered,
+  personMode,
 } from '../cli.js';
 
 /** Run `pullboard edit` and return its exit code. */
@@ -29,6 +32,7 @@ export async function run(io, args) {
   const id = idArg(first);
   const recovered = await relayCommandReceipt(ctx.info.root, io.relayCommand);
   if (recovered) {
+    io.recordedMove = true;
     for (const event of recovered.events) io.onEvent?.(event);
     io.result?.({ item: store.getItem(board, id) });
     io.say(`edited #${id}`);
@@ -48,7 +52,8 @@ export async function run(io, args) {
   };
   const { item, command } = store.validateItemEdit(board, id, change);
   if (command && command !== item.item_check) refuseCheckSyntax(command);
-  if (command && command !== item.item_check) change.checkBaseline = values.wait ? checkBaseline(ctx.info.root, command) : prepareCheckBaseline(ctx.info.root, command);
+  if (command && (command !== item.item_check || barReadySetting(board).enabled)) change.checkBaseline = values.wait ? checkBaseline(ctx.info.root, command) : prepareCheckBaseline(ctx.info.root, command);
+  change.barActor = barActorForCommand(ctx, board, { asPerson: personMode(ctx, me, values) });
   await ordered(ctx, board, 'editItem', [id, change]);
   if (change.checkBaseline?.result === 'pending') await launchBaseline(ctx, board, id, change.checkBaseline);
   io.result?.({ item: store.getItem(board, id) });

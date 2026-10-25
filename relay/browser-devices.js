@@ -7,6 +7,7 @@ import { approvalContext, openApproval, sealApproval, verifyApprovalIntent } fro
 import { devicePublicKey } from './device-keys.js';
 import { approvalCardText, approvalNames, deletedText, phoneApprovalStatus, forgetPhoneApprovals } from './browser-approval-card.js';
 import { withBrowserDeadline } from './browser-deadline.js';
+import { readExcludedInventories } from './browser-excluded.js';
 
 const PENDING = 'pullboard.relay.device-pair.v1';
 
@@ -141,6 +142,14 @@ export async function deviceBoardKeyState(documentAt) {
 /** Preserve the key-only adapter for callers that do not display the browser's pairing state. */
 export async function deviceBoardKeys(documentAt) {
   return (await deviceBoardKeyState(documentAt)).keys;
+}
+
+/** Keep the private device key inside the device module while opening the optional excluded-board list. */
+export async function deviceExcludedBoards(documentAt) {
+  let device;
+  try { device = await deviceStorage(); }
+  catch (error) { if (error.code !== 'DEVICE_STORAGE') throw error; }
+  return readExcludedInventories(documentAt, device);
 }
 
 /** Decode only bounded approval transport; keys and plaintext grants never enter device storage. */

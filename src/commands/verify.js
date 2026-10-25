@@ -1,3 +1,4 @@
+import { outsideVerdict } from '../outside-verify.js';
 /** The pullboard verify command, in its own module so an item adding another command never edits these lines. */
 import * as store from '../board.js';
 import {
@@ -31,6 +32,7 @@ import {
   parseImplies,
 } from '../implies.js';
 import * as itemSessions from '../item-sessions.js';
+import { itemAuthors } from '../item-authors.js';
 import * as nativeFlakes from '../native-flake-cli.js';
 import {
   Refused,
@@ -116,12 +118,13 @@ export async function verifyHere(ctx, id, { second, values }) {
       return await ordered(ctx, board, 'verify', recovered.args);
     }
     const item = store.getItem(board, id);
-    itemSessions.refuseSelfSession(ctx.info, item);
+    itemSessions.refuseSelfSession(ctx.info, item, undefined, itemAuthors(board, item));
     const reReview = item.item_status === 'verified' && !item.item_merged_commit;
     const stale = reReview ? verdictProjector(root, board).state(item) : null;
     if (item.item_status !== 'submitted' && !stale) {
       throw new Refused('NOT_SUBMITTED', `item #${id} is ${item.item_status}, not submitted`);
     }
+    if (item.outside) return outsideVerdict(ctx, board, item, me, decision, values);
     // Name an unknown implied item before the frozen check runs, not after it.
     if (implies) checkImplies(board, implies);
     const policy = itemPolicy(root, item);
@@ -195,6 +198,7 @@ export async function verifyHere(ctx, id, { second, values }) {
       policy: ctx.config.verify.policy,
       familyPolicy: ctx.config.verify.family,
       review,
+      environment: check?.environment ?? null,
       ...(decision === 'ACCEPT' ? { check: check.checked ? 'green' : 'none' } : {}),
       ...(implies ? { implies } : {}),
     }]);

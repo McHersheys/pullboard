@@ -9,63 +9,7 @@
  * broken copy, and checks the declaration against the refusals board.js and cli.js raise today.
  */
 
-import {
-  ENGINE_CANDIDATE,
-  ENGINE_FILE,
-  discovered,
-} from './discovery.js';
-import {
-  readdirSync,
-  readFileSync,
-} from 'node:fs';
-
-export { AUTO_ESCALATE_ENGINE } from './auto-escalate-engine.js';
-export { ROW_DRAFT_ENGINE } from './row-draft-engine.js';
-export { STRONG_REJECTION_NOTICE_ENGINE } from './strong-rejection-notice-engine.js';
-export { SUBMITTED_CONFLICT_ENGINE } from './submitted-conflict-engine.js';
-export { WITHDRAW_MILESTONE_ENGINE } from './withdraw-milestone-engine.js';
-
-/**
- * Find every feature engine: each src/*-engine.js leaf declares exactly one `export const NAME_ENGINE = n;` line.
- * A feature that raises the engine adds its own new file and no line of any shared one, so two items adding
- * different engines never conflict [C7,V4]. The value is read as text because machine.js needs it synchronously.
- *
- * @param {URL} directory the folder holding the *-engine.js leaves
- * @returns {Record<string, number>} engine number by file name, in name order
- */
-export function discoverEngines(directory = new URL('./', import.meta.url)) {
-  const found = {};
-  for (const file of discovered(readdirSync(directory), ENGINE_CANDIDATE, ENGINE_FILE, 'feature engine')) {
-    const lines = readFileSync(new URL(file, directory), 'utf8').split('\n').filter((line) => /^export const /u.test(line));
-    const match = lines.length === 1 ? /^export const [A-Z][A-Z0-9_]*_ENGINE = (\d+);$/u.exec(lines[0]) : null;
-    if (!match) throw new Error(`${file} must declare exactly one line \`export const NAME_ENGINE = <number>;\` so ENGINE_VERSION can read it`);
-    found[file.slice(0, -'-engine.js'.length)] = Number(match[1]);
-  }
-  return found;
-}
-
-export { REOPEN_FIRST_REFUSAL_ENGINE } from './reopen-first-refusal-engine.js';
-
-/** Every feature engine by name, discovered from the *-engine.js files beside this one. */
-export const ENGINE_REGISTRY = discoverEngines();
-
-/** The highest engine number any feature declares. */
-export const ENGINE_VERSION = Math.max(...Object.values(ENGINE_REGISTRY));
-
-/**
- * The engine whose relay moves carry seat provenance and verifier standing (#579). It is its own
- * constant because engine slots are allotted per item: whoever lands second renumbers this line.
- */
-export const VERIFIER_STANDING_ENGINE = 48;
-
-/** The engine at which reject, reopen and person facts may carry cause keys [D1,H16]. */
-export const CAUSE_ENGINE = 30;
-
-/** First released engine binding the checked composition, review trunk and paths [E8,H16]. */
-export const VERDICT_REVIEW_ENGINE = 33;
-
-/** First engine carrying explicit milestone ranks in build and review selection [N2,B13,H16]. */
-export const MILESTONE_RANK_ENGINE = 34;
+export * from './engine-metadata.js';
 
 /** @typedef {'agent' | 'coordinator' | 'clock'} Role */
 
@@ -138,7 +82,7 @@ export const RECORDS = { event: 'append', verdict: 'append', item: 'keep' };
 export const STATES = [
   { id: 'open', means: 'waiting for a builder; claimable once what it waits on is verified', requires: [] },
   { id: 'claimed', means: 'an agent holds it under a lease, its criterion frozen', requires: ['item_owner', 'item_lease_until', 'item_frozen_digest'] },
-  { id: 'submitted', means: 'built and gated green at a pinned commit, waiting for another agent', requires: ['item_built_by', 'item_commit', 'item_frozen_digest'] },
+  { id: 'submitted', means: 'a native build gated green, or an intaken outside commit awaiting sandbox verification, at a pinned commit', requires: ['item_built_by', 'item_commit', 'item_frozen_digest'] },
   {
     id: 'verified', means: 'another agent accepted it at the submitted commit', requires: ['item_verified_by', 'item_commit'],
     proof: {
@@ -151,16 +95,18 @@ export const STATES = [
 
 /** @type {Guard[]} */
 export const GUARDS = [
+  { id: 'outsideSubmission', refuse: 'OUTSIDE_SOURCE', rule: 'an outside author and exact fetched commit/tree are recorded with a trusted frozen criterion, without pretending a native builder gated it', next: 'fetch and intake the exact GitHub pull request again', source: 'board' },
   { id: IN_STATE, refuse: '', rule: "the move can start from the item's current state", next: 'pullboard show <id>', source: 'board' },
-  { id: 'joined', refuse: 'NOT_JOINED', alsoRefuses: [{ code: 'SESSION_LEDGER', next: 'make the agent-session ledger named in the message readable and writable by this user, then run the command again' }], rule: 'the caller is the main checkout, or a worktree that joined a lane; an agent session\'s claims, submits and verdicts can be checked against its local ledger', next: 'pullboard join <lane> --model "<model name>" (see: pullboard lanes)', source: 'cli' },
+  { id: 'joined', refuse: 'NOT_JOINED', alsoRefuses: [{ code: 'AGENT_REPLACED', next: 'read the takeover and only shout on its exact hand-off item; continue work from the incoming agent worktree' }, { code: 'SESSION_LEDGER', next: 'make the agent-session ledger named in the message readable and writable by this user, then run the command again' }], rule: 'the caller is the main checkout, or an unreplaced worktree seat that joined a lane; an agent session\'s claims, submits and verdicts can be checked against its local ledger', next: 'pullboard join <lane> --model "<model name>" (see: pullboard lanes)', source: 'cli' },
   { id: 'itemExists', refuse: 'NO_ITEM', rule: 'the item exists', next: 'pullboard list --all', source: 'board' },
+  { id: 'reopenAuthority', refuse: 'COORDINATOR_ONLY', rule: 'the coordinator reopens, a joined seat reports a submitted trunk conflict, or the exact accepting reviewer withdraws its verdict', next: 'ask the coordinator or the reviewer who recorded the accept', source: 'board', alsoRefuses: [{ code: 'VERDICT_WITHDRAW_FORBIDDEN', next: 'ask the accepting reviewer or coordinator to withdraw the verdict' }, { code: 'VERDICT_WITHDRAW_STATE', next: 'refresh the item; only a current acceptance before landing can be withdrawn' }] },
   { id: 'coordinatorOnly', refuse: 'COORDINATOR_ONLY', rule: 'the caller is the coordinator', next: 'run it from the main checkout', source: 'board' },
-  { id: 'roadmapReadable', refuse: 'MILESTONES_CORRUPT', rule: 'the roadmap is readable when selecting the next review', next: 'restore board metadata from a known-good board export', source: 'board', when: 'only next --verify selection; a review reserved by id does not consult the roadmap' },
+  { id: 'roadmapReadable', refuse: 'MILESTONES_CORRUPT', alsoRefuses: [{ code: 'LINE_SETTING_RANGE', rule: 'the recorded board line-order setting has a valid registry value', next: 'restore the recorded board line setting from its ordered event history, then retry next --verify' }], rule: 'the recorded queue policy and roadmap are readable when selecting the next review', next: 'restore board metadata from a known-good board export', source: 'board', when: 'only next --verify selection; a review reserved by id does not consult the roadmap' },
   { id: 'coordinatorSaysAs', refuse: 'MAIN_IS_COORDINATOR', rule: 'in the main checkout, the caller says it is the coordinator', next: 'verify from your own worktree; the coordinator adds --as coordinator', source: 'cli' },
   { id: 'holderOrCoordinator', refuse: 'NOT_YOURS', rule: 'the caller holds the item, or is the coordinator', next: 'shout its holder, or the coordinator', source: 'board' },
   { id: 'releaseOwnsWork', refuse: 'NOT_YOURS', rule: 'the caller holds the claim or is the builder yielding its active first-refusal window', next: 'release your own claim or reservation, or ask the current builder', source: 'board' },
-  { id: 'isHolder', refuse: 'NOT_YOURS', rule: 'the caller holds the claim', next: 'pullboard claim <id>', source: 'board' },
-  { id: 'inLane', refuse: 'WRONG_LANE', rule: "the item is in the caller's lane; the main checkout builds coordinator-lane items only", next: "cd <the lane's worktree> && pullboard claim <id>", source: 'board' },
+  { id: 'isHolder', alsoRefuses: [{ code: 'OUTSIDE_NATIVE_BUILD', next: 'the outside author revises the PR; ask the coordinator to return it, then intake the new exact head' }], refuse: 'NOT_YOURS', rule: 'the caller holds the claim', next: 'pullboard claim <id>', source: 'board' },
+  { id: 'inLane', alsoRefuses: [{ code: 'OUTSIDE_NATIVE_BUILD', next: 'the outside author revises the PR; ask the coordinator to return it, then intake the new exact head' }], refuse: 'WRONG_LANE', rule: "the item is in the caller's lane; the main checkout builds coordinator-lane items only", next: "cd <the lane's worktree> && pullboard claim <id>", source: 'board' },
   { id: 'routeAllows', refuse: 'ROUTE', rule: "the caller's route covers the item's: light, then mid, then strong", next: 'pullboard next, which offers only items your route covers', source: 'board' },
   { id: 'dependenciesVerified', refuse: 'BLOCKED', rule: 'every item it waits on is verified', next: 'claim another item, or shout the lane it waits on', source: 'board' },
   { id: 'builderFirstRefusal', refuse: 'REOPEN_HELD_FOR_BUILDER', rule: 'a returned item waits for its original builder until its recorded deadline or builder release', next: 'wait until the named deadline, or ask its builder to run pullboard release <id>', source: 'board' },
@@ -168,8 +114,9 @@ export const GUARDS = [
   { id: 'laneOpen', refuse: 'LANE_HELD', rule: 'nobody holds its lane', next: 'pullboard next --wait 9 (minutes)', source: 'board', when: 'unless the caller is renewing its own live claim' },
   { id: 'itemNotHeld', refuse: 'ITEM_HELD', rule: 'the coordinator has not put this item on hold', next: 'the coordinator lifts it with pullboard hold <id> --off', source: 'board', when: 'unless the caller is renewing its own live claim' },
   { id: 'correctionRefrozen', refuse: 'PENDING_REFREEZE', rule: 'no coordinator correction to a claimed criterion or check is waiting to be frozen', next: 'pullboard refreeze <id>', source: 'board' },
+  { id: 'lineCapacity', refuse: 'LINE_WIP_LIMIT', alsoRefuses: [{ code: 'LINE_SETTING_RANGE', next: 'restore the malformed recorded line setting before claiming' }], rule: 'a new claim stays within recorded WIP per active reviewer', next: 'review the oldest eligible waiting submission: pullboard next --verify', source: 'board', when: 'only for new claims while wipPerReviewer is on' },
   { id: 'oneLiveClaim', refuse: 'ONE_CLAIM', rule: 'the caller holds no other live top-level claim, reworks of its own rejected items aside', next: 'submit or release the other item first; child items are free', source: 'board' },
-  { id: 'rowsInForce', refuse: 'UNKNOWN_SPEC', alsoRefuses: [{ code: 'A5_GRAMMAR_VERSION', next: 'upgrade Pullboard or use a file written for grammar 1' }, { code: 'NO_POLICY', next: 'restore the committed coordinator policy' }, { code: 'BAD_CONFIG', next: 'repair and commit the coordinator configuration' }, { code: 'SPEC_BEHIND_MAIN', next: 'merge main from this worktree, then retry the claim' }, { code: 'AGENT_APPROVAL_REQUIRED', next: 'ask the coordinator to arrange the person’s confirmation or decline, or change the explicit refuse setting' }], rule: 'every row the item cites exists and is in force', next: 'fix the spec, or the coordinator withdraws the item', source: 'board', when: 'only where the criterion freezes: claiming an item with no frozen criterion, and refreeze' },
+  { id: 'rowsInForce', refuse: 'UNKNOWN_SPEC', alsoRefuses: [{ code: 'A5_GRAMMAR_VERSION', next: 'upgrade Pullboard or use a file written for grammar 1' }, { code: 'NO_POLICY', next: 'restore the committed coordinator policy' }, { code: 'BAD_CONFIG', next: 'repair and commit the coordinator configuration' }, { code: 'SPEC_BEHIND_MAIN', next: 'merge main from this worktree, then retry the claim' }, { code: 'AGENT_APPROVAL_REQUIRED', next: 'ask the coordinator to arrange the person’s confirmation or decline, or change the explicit refuse setting' }, { code: 'BAR_NOT_READY', next: 'another parent session signs coverage for the current accepted test inventory and runner' }], rule: 'every row the item cites exists and is in force', next: 'fix the spec, or the coordinator withdraws the item', source: 'board', when: 'only where the criterion freezes: claiming an item with no frozen criterion, and refreeze' },
   { id: 'criterionUnchanged', refuse: 'CRITERIA_CHANGED', rule: 'the criterion and the rows it cites read as they did at claim', next: 'the coordinator runs pullboard refreeze <id>', source: 'cli' },
   { id: 'treeClean', refuse: 'DIRTY', rule: 'the worktree has no uncommitted changes', next: 'commit your changes, then submit', source: 'cli' },
   { id: 'nothingUntracked', refuse: 'UNTRACKED', rule: 'the worktree has no untracked files', next: 'commit or ignore them, then submit', source: 'cli' },
@@ -177,13 +124,15 @@ export const GUARDS = [
   { id: 'gateConfigured', refuse: 'NO_GATE', rule: 'the repo names a gate command', next: 'in the main checkout, run pullboard gate set "<project test command>", then commit pullboard.json', source: 'cli' },
   { id: 'withinLane', refuse: 'OUTSIDE_LANE', alsoRefuses: [{ code: 'NO_POLICY', next: 'restore the claim base or ask the coordinator to refreeze' }, { code: 'BAD_CONFIG', next: 'restore the committed coordinator configuration' }, { code: 'GIT_GRAFTS', next: 'ask the coordinator to remove the Git graft file before retrying' }], rule: 'the full claimed diff respects committed coordinator ownership', next: 'restore foreign paths or shout their owner', source: 'cli' },
   { id: 'trunkMergeClean', refuse: 'MERGE_CONFLICT', alsoRefuses: [{ code: 'MERGE_CHECK_FAILED', next: 'use Git 2.38 or newer, restore its objects and retry' }, { code: 'NO_POLICY', next: 'restore the primary repository metadata' }, { code: 'NO_TRUNK', next: 'check out the trunk branch in the main checkout once and run pullboard inbox' }], rule: 'the candidate merges cleanly into the current primary branch without changing an index or worktree', next: 'merge the trunk into your branch, resolve conflicts, commit and resubmit', source: 'cli' },
+  { id: 'trunkInCandidate', refuse: 'MAIN_NOT_COMPOSED', rule: 'the candidate contains the current main used for its submission proof, and that main stays fixed through execution', next: 'merge main, commit the composition, then submit again', source: 'cli', when: 'bar ready is enabled for this board' },
   { id: 'noUnverifiedStack', refuse: 'STACKED_ON_UNVERIFIED', rule: "the candidate range contains no other item's unverified submitted commit", next: 'wait for that item to be accepted, or rebuild without its commits', source: 'cli' },
   { id: 'infraExplained', refuse: 'INFRA_NOTE_REQUIRED', rule: 'edits to tests or gate files that existed at claim carry an explanation', next: 'pullboard submit <id> --infra "<why>"', source: 'cli' },
   { id: 'doctrineHolds', refuse: 'RATCHET_ROSE', alsoRefuses: [{ code: 'RATCHET_UNCOUNTED', next: 'fix the check so it exits 0 or 1 within its timeout, then submit again' }], rule: "every touched doctrine check counts (exit 0 or 1), none rises above its committed count and no changed file gains a problem; watch-mode rules only count", next: "fix the new problems, commit, submit again; only the person's signature raises count:", source: 'cli', when: 'only when accepted main has an approved doctrine rule with gate: check' },
-  { id: 'itemCheckGreen', refuse: 'CHECK_RED', alsoRefuses: [{ code: 'CHECK_UNVERIFIED', next: 'restore the frozen install or check environment and retry' }, { code: 'GUARD_CANNOT_FAIL', next: 'reject: the check stays green with the named guard reverted' }, { code: 'GUARD_NOT_FOUND', next: 'the named guard is not in the submitted commit; ask the coordinator to fix it' }], rule: 'the frozen item check passes at the submitted commit, or its clean reviewed composition for a stale acceptance', next: 'reject the failing behavior; the builder fixes and resubmits', source: 'cli' },
+  { id: 'itemCheckGreen', refuse: 'CHECK_RED', alsoRefuses: [{ code: 'RUNNER_GUI_SESSION_REQUIRED', next: 'nothing to do: the run reruns locally; log in to a GUI session on the runner before sending GUI-marked files there' }, { code: 'SANDBOX_PROVIDER_REQUIRED', next: 'configure the committed main Docker provider and pinned minimum/current images' }, { code: 'SANDBOX_IMAGE_REQUIRED', next: 'preload the exact pinned official image into the configured daemon' }, { code: 'SANDBOX_RUNTIME', next: 'correct the pinned image so its actual Node version matches its role' }, { code: 'SANDBOX_EXPORT', next: 'restore access to the exact private Git export and recorded tree' }, { code: 'SANDBOX_EXECUTION', next: 'restore the Docker runtime and inspect the owned container before another verification' }, { code: 'SANDBOX_CLEANUP_REQUIRED', next: 'remove the exact named owned container after restoring Docker' }, { code: 'SANDBOX_CHECK_REQUIRED', next: 'set a trusted full gate and frozen criterion before intake' }, { code: 'CHECK_NO_PROOF', next: 'strengthen the criterion so it fails before the outside change' }, { code: 'OUTSIDE_SANDBOX_REQUIRED', next: 'verify the outside item with --sandbox using the configured container provider' }, { code: 'SLOT_DB_LOCKED', next: 'the run never started, so it is not a red; rerun the same command once the named process releases the slot database' }, { code: 'TIMING_SLOT_REQUIRED', next: 'start the timing check outside its inherited ordinary lease and acquire the machine gate with timing true' }, { code: 'CHECK_UNVERIFIED', next: 'restore the frozen install or check environment and retry' }, { code: 'GUARD_CANNOT_FAIL', next: 'reject: the check stays green with the named guard reverted' }, { code: 'GUARD_NOT_FOUND', next: 'the named guard is not in the submitted commit; ask the coordinator to fix it' }], rule: 'the frozen item check passes at the submitted commit, or its clean reviewed composition for a stale acceptance', next: 'reject the failing behavior; the builder fixes and resubmits', source: 'cli' },
 
+  { id: 'barReady', refuse: 'BAR_NOT_READY', rule: 'an opted-in new bar has a named red baseline, measurement notes, reviewer edges and a revision-bound signature from another parent session', next: 'the author completes the brief, then another parent runs pullboard bar sign <id>', source: 'board', when: 'bar ready is on and this bar was frozen or edited after activation' },
   { id: 'checkProvesSomething', refuse: 'CRITERION_PROVES_NOTHING', rule: "the item's check does not already pass on main, or the person accepted that exact check", next: 'set a check that fails before the work, or the person runs pullboard check accept <id>', source: 'cli', when: 'only when accepted main sets checks.provesNothing to "hold"' },
-  { id: 'gateGreen', refuse: 'GATE_RED', alsoRefuses: [{ code: 'PIPEFAIL_UNAVAILABLE', next: 'rewrite the gate without a pipe' }], rule: 'the gate, which submit runs itself every time, is green at HEAD', next: 'fix what the digest names, commit, submit again', source: 'cli' },
+  { id: 'gateGreen', refuse: 'GATE_RED', alsoRefuses: [{ code: 'RUNNER_GUI_SESSION_REQUIRED', next: 'nothing to do: the run reruns locally; log in to a GUI session on the runner before sending GUI-marked files there' }, { code: 'LAND_TIMEOUT_CUSTODY', next: 'inspect the saved timed gate cleanup state and stop only its proven owned processes before starting another landing' }, { code: 'LAND_GATE_OUTPUT', next: 'inspect the retained timed gate output directory and free disk space, then start another landing' }, { code: 'SLOT_DB_LOCKED', next: 'the run never started, so it is not a red; rerun the same command once the named process releases the slot database' }, { code: 'TIMING_SLOT_REQUIRED', next: 'start the timing check outside its inherited ordinary lease and acquire the machine gate with timing true' }, { code: 'RUNNER_BROWSER_SLOT_REQUIRED', next: 'nothing to do: the run reruns on a local gate slot; if it repeats, set gate.browserByLaunch the same on this machine and that runner' }, { code: 'PIPEFAIL_UNAVAILABLE', next: 'rewrite the gate without a pipe' }], rule: 'the gate, which submit runs itself every time, is green at HEAD', next: 'fix what the digest names, commit, submit again', source: 'cli' },
   { id: 'queuedItemLease', refuse: 'ITEM_LEASE_LOST', alsoRefuses: [{ code: 'A5_GRAMMAR_VERSION', next: 'upgrade Pullboard or restore a spec written for grammar 1, then retry' }, { code: 'SPEC_BEHIND_MAIN', next: 'merge main into this worktree, then renew the claim and retry' }, { code: 'NOT_A_REPO', next: 'restore the worktree Git metadata, then retry the command' }, { code: 'NO_CONFIG', next: 'restore pullboard.json in this worktree, then retry the command' }], rule: 'the caller still owns the same live item claim or review and can renew it against the frozen criterion', next: 'claim or reserve the item again before retrying the command', source: 'cli', when: 'while submit or an accept waits for a machine slot, and once immediately before admission' },
   { id: 'treeStillDuringGate', refuse: 'MOVED_DURING_GATE', rule: 'when the gate ends, HEAD and every tracked file are as they were when it started', next: 'leave the worktree alone until the gate finishes, then submit again', source: 'cli' },
   { id: 'childrenDone', refuse: 'CHILDREN_OPEN', rule: 'every child item is verified or withdrawn', next: 'finish the child items, or the coordinator withdraws them', source: 'board' },
@@ -211,9 +160,11 @@ export const GUARDS = [
 
 /** @type {Move[]} */
 export const MOVES = [
+  { verb: 'intake', from: ['open'], to: 'submitted', by: ['agent', 'coordinator'], refuse: 'NOT_CLAIMABLE',
+    guards: ['joined', 'itemExists', IN_STATE, 'outsideSubmission'], sets: ['item_built_by', 'item_commit', 'item_frozen_digest'], command: 'pullboard intake <PR> --criterion \"...\" --check \"...\"' },
   {
     verb: 'claim', from: ['open', 'claimed'], to: 'claimed', by: ['agent', 'coordinator'], refuse: 'NOT_CLAIMABLE',
-    guards: ['joined', 'itemExists', IN_STATE, 'checkProvesSomething', 'itemNotHeld', 'inLane', 'routeAllows', 'dependenciesVerified', 'notHeldByAnother', 'builderFirstRefusal', 'correctionRefrozen', 'laneOpen', 'oneLiveClaim', 'rowsInForce'],
+    guards: ['joined', 'itemExists', IN_STATE, 'checkProvesSomething', 'barReady', 'itemNotHeld', 'inLane', 'routeAllows', 'dependenciesVerified', 'notHeldByAnother', 'builderFirstRefusal', 'correctionRefrozen', 'laneOpen', 'lineCapacity', 'oneLiveClaim', 'rowsInForce'],
     sets: ['item_owner', 'item_lease_until', 'item_frozen_digest'], command: 'pullboard claim <id>',
   },
   {
@@ -223,7 +174,8 @@ export const MOVES = [
   { verb: 'lapse', from: ['claimed'], to: 'open', by: ['clock'], guards: [], when: 'its lease runs out' },
   {
     verb: 'submit', from: ['claimed'], to: 'submitted', by: ['agent', 'coordinator'], refuse: 'NOT_YOURS',
-    guards: ['joined', 'itemExists', IN_STATE, 'isHolder', 'correctionRefrozen', 'checkProvesSomething', 'criterionUnchanged', 'treeClean', 'nothingUntracked', 'hasCommit', 'withinLane', 'trunkMergeClean', 'noUnverifiedStack', 'infraExplained', 'doctrineHolds', 'gateConfigured', 'queuedItemLease', 'gateGreen', 'treeStillDuringGate', 'submissionProofValid', 'childrenDone', 'headIsNew'],
+    alsoRefuses: [{ code: 'LINE_SETTING_RANGE', rule: 'the recorded board line setting has a valid registry value', next: 'restore the recorded board line setting from its ordered event history, then retry submit' }],
+    guards: ['joined', 'itemExists', IN_STATE, 'isHolder', 'correctionRefrozen', 'checkProvesSomething', 'barReady', 'criterionUnchanged', 'treeClean', 'nothingUntracked', 'hasCommit', 'withinLane', 'trunkMergeClean', 'trunkInCandidate', 'noUnverifiedStack', 'infraExplained', 'doctrineHolds', 'gateConfigured', 'queuedItemLease', 'gateGreen', 'treeStillDuringGate', 'submissionProofValid', 'childrenDone', 'headIsNew'],
     sets: ['item_built_by', 'item_commit'], command: 'pullboard submit <id>',
   },
   {
@@ -234,21 +186,21 @@ export const MOVES = [
   {
     verb: 'accept', from: ['submitted', 'verified'], to: 'verified', by: ['agent', 'coordinator'], refuse: 'NOT_SUBMITTED',
     guards: ['coordinatorSaysAs', 'joined', 'itemExists', IN_STATE, 'atSubmittedCommit', 'notMerged', 'verdictReviewRecorded', 'reviewTreeCurrent', 'notBuilder', 'routeAllows', 'policyAllows', 'familyAllows', 'reviewFree', 'criterionUnchanged', 'reasonIsMet', 'trunkMergeClean', 'noUnverifiedStack', 'queuedItemLease', 'itemCheckGreen', 'proofNoted'],
-    alsoRefuses: [{ code: 'LAND_HEADER', rule: 'a displayed merge command fits the commit-header limit', next: 'shorten the item title or cited rows so the merge header fits' }, { code: 'ENGINE_VERSION', rule: 'a verdict that implies items replays only under engine 20 or later', next: 'upgrade Pullboard on every linked device before using --implies' }],
+    alsoRefuses: [{ code: 'VERDICT_ENVIRONMENT', rule: 'optional recorded verdict environment contains exact platform, architecture and Node version', next: 'run the frozen check with current Pullboard, then have an independent reviewer record a fresh verdict with its actual executor environment' }, { code: 'LAND_HEADER', rule: 'a displayed merge command fits the commit-header limit', next: 'shorten the item title or cited rows so the merge header fits' }, { code: 'ENGINE_VERSION', rule: 'a verdict that implies items replays only under engine 20 or later', next: 'upgrade Pullboard on every linked device before using --implies' }],
     sets: ['item_verified_by'], command: 'pullboard verify <id> accept --note "..."',
   },
   {
     verb: 'reject', from: ['submitted', 'verified'], to: 'open', by: ['agent', 'coordinator'], refuse: 'NOT_SUBMITTED',
     guards: ['coordinatorSaysAs', 'joined', 'itemExists', IN_STATE, 'atSubmittedCommit', 'notMerged', 'verdictReviewRecorded', 'reviewTreeCurrent', 'notBuilder', 'routeAllows', 'policyAllows', 'familyAllows', 'reviewFree', 'criterionUnchanged', 'reasonCoded', 'noteGiven', 'causeWellFormed'],
-    alsoRefuses: [{ code: 'LAND_HEADER', rule: 'a displayed merge command fits the commit-header limit', next: 'shorten the item title or cited rows so the merge header fits' }, { code: 'ENGINE_VERSION', rule: 'a verdict that implies items replays only under engine 20 or later', next: 'upgrade Pullboard on every linked device before using --implies' }, { code: 'NOT_YOURS', rule: 'the automatic escalation is authorized as the coordinator or item holder', next: 'ask the coordinator to inspect the item and its route' }, { code: 'CLOSED', rule: 'the rejected item remains open or claimed when automatic escalation starts', next: 'pullboard show <id>, then ask the coordinator to inspect its current state' }],
+    alsoRefuses: [{ code: 'VERDICT_ENVIRONMENT', rule: 'optional recorded verdict environment contains exact platform, architecture and Node version', next: 'run the frozen check with current Pullboard, then have an independent reviewer record a fresh verdict with its actual executor environment' }, { code: 'LAND_HEADER', rule: 'a displayed merge command fits the commit-header limit', next: 'shorten the item title or cited rows so the merge header fits' }, { code: 'ENGINE_VERSION', rule: 'a verdict that implies items replays only under engine 20 or later', next: 'upgrade Pullboard on every linked device before using --implies' }, { code: 'NOT_YOURS', rule: 'the automatic escalation is authorized as the coordinator or item holder', next: 'ask the coordinator to inspect the item and its route' }, { code: 'CLOSED', rule: 'the rejected item remains open or claimed when automatic escalation starts', next: 'pullboard show <id>, then ask the coordinator to inspect its current state' }],
     command: 'pullboard verify <id> reject --reason CODE --note "..."',
   },
   {
-    verb: 'reopen', from: ['submitted', 'verified'], to: 'open', by: ['coordinator'], refuse: 'NOT_SUBMITTED',
-    guards: ['joined', 'itemExists', IN_STATE, 'coordinatorOnly', 'noteGiven', 'causeWellFormed', 'notMerged', 'landingFailureRecorded', 'trunkConflicts', 'conflictAccepted'],
-    alsoRefuses: [{ code: 'BAD_CONFIG', rule: 'the configured first-refusal duration fits a valid UTC deadline', next: 'set claim.reopenFirstRefusalMinutes to a non-negative whole number within the supported date range, or 0 to disable' }],
+    verb: 'reopen', from: ['submitted', 'verified'], to: 'open', by: ['agent', 'coordinator'], refuse: 'NOT_SUBMITTED',
+    guards: ['joined', 'itemExists', IN_STATE, 'reopenAuthority', 'noteGiven', 'causeWellFormed', 'notMerged', 'landingFailureRecorded', 'trunkConflicts', 'conflictAccepted'],
+    alsoRefuses: [{ code: 'BAD_VERDICT_WITHDRAW', rule: 'the explicit withdrawal flag is boolean and is not combined with a conflict', next: 'use --withdraw-verdict with --note only, or report a conflict separately' }, { code: 'ENGINE_VERSION', rule: 'the withdrawal move is replayed by an engine defining its meaning', next: 'update Pullboard before withdrawing a verdict' }, { code: 'BAD_CONFIG', rule: 'the configured first-refusal duration fits a valid UTC deadline', next: 'set claim.reopenFirstRefusalMinutes to a non-negative whole number within the supported date range, or 0 to disable' }],
     sets: ['item_verdict', 'item_verified_by', 'item_owner', 'item_lease_until', 'item_review_by', 'item_review_until'],
-    command: 'pullboard reopen <id> --note "why" | --conflict <file> [--conflict <file>]',
+    command: 'pullboard reopen <id> [--withdraw-verdict] --note "why" | --conflict <file> [--conflict <file>]',
   },
   {
     verb: 'escalate', from: ['open', 'claimed'], to: 'open', by: ['agent', 'coordinator'], refuse: 'CLOSED',
@@ -256,13 +208,13 @@ export const MOVES = [
   },
   {
     verb: 'refreeze', from: ['open', 'claimed', 'submitted'], to: 'open', by: ['coordinator'], refuse: 'CLOSED',
-    guards: ['joined', 'coordinatorOnly', 'itemExists', IN_STATE, 'rowsInForce'],
+    guards: ['joined', 'coordinatorOnly', 'itemExists', IN_STATE, 'barReady', 'rowsInForce'],
     when: 'there is no live claim awaiting a coordinator correction',
     sets: ['item_frozen_digest'], command: 'pullboard refreeze <id>',
   },
   {
     verb: 'refreeze', from: ['claimed'], to: 'claimed', by: ['agent', 'coordinator'], refuse: 'CLOSED',
-    guards: ['joined', 'itemExists', 'holderOrCoordinator', IN_STATE, 'rowsInForce'],
+    guards: ['joined', 'itemExists', 'holderOrCoordinator', IN_STATE, 'barReady', 'rowsInForce'],
     when: 'a live claim has a pending coordinator correction',
     sets: ['item_frozen', 'item_frozen_digest'], command: 'pullboard refreeze <id>',
   },

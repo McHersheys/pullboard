@@ -73,7 +73,7 @@ function tokenResult(data) {
  * Use GitHub's App web/device flows, without requesting OAuth scopes or following credentials to
  * another origin. The injected loopback provider exercises the real HTTP protocol in tests.
  */
-export function createGitHubClient({ clientId, clientSecret, callbackURL, oauthBase = 'https://github.com', apiBase = 'https://api.github.com', timeoutMs = 10_000, privateKey, now = Date.now }) {
+export function createGitHubClient({ clientId, clientSecret, callbackURL, oauthBase = 'https://github.com', apiBase = 'https://api.github.com', timeoutMs = 10_000, privateKey, now = Date.now, log = line => process.stderr.write(line + '\n') }) {
   if (typeof clientId !== 'string' || !clientId || typeof clientSecret !== 'string' || !clientSecret) {
     throw new Refused('GITHUB_CONFIG', 'configure the GitHub App client id and secret before starting sign-in');
   }
@@ -99,7 +99,10 @@ export function createGitHubClient({ clientId, clientSecret, callbackURL, oauthB
     return unsigned + '.' + sign('RSA-SHA256', Buffer.from(unsigned), key).toString('base64url');
   }
 
-  /** Bound requests and same-origin redirects; never surface provider bodies in errors. */
+  /**
+   * Bound requests and same-origin redirects; never surface provider bodies in errors.
+   * A spent rate limit is named as one, so a 403 for quota never reads as lost repository access.
+   */
   async function request(base, path, { form, token, json } = {}) {
     let url = new URL(path, base);
     const headers = { 'User-Agent': 'pullboard-relay', Accept: form ? 'application/json' : 'application/vnd.github+json', 'X-GitHub-Api-Version': GITHUB_API_VERSION };
@@ -122,6 +125,16 @@ export function createGitHubClient({ clientId, clientSecret, callbackURL, oauthB
         }
         url = next;
         continue;
+      }
+      if (!response.ok) {
+        const rate = ['x-ratelimit-limit', 'x-ratelimit-remaining', 'x-ratelimit-reset', 'x-ratelimit-resource'].map(name => name + '=' + (response.headers.get(name) ?? '-'));
+        log(`github refused ${url.pathname} status=${response.status} ${rate.join(' ')}`);
+      }
+      if ([403, 429].includes(response.status) && response.headers.get('x-ratelimit-remaining') === '0') {
+        await response.body?.cancel();
+        const reset = Number(response.headers.get('x-ratelimit-reset'));
+        const when = Number.isSafeInteger(reset) && reset > 0 ? new Date(reset * 1000).toISOString() : 'the rate limit resets';
+        throw new Refused('GITHUB_RATE_LIMITED', `GitHub rate limited the relay; wait until ${when}, then retry`);
       }
       if ([401, 403, 404].includes(response.status)) {
         await response.body?.cancel();

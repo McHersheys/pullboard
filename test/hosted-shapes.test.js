@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /**
  * Every shape of opening a board through pullboard.dev, in real Chromium and real WebKit [H5,H17,N26].
  *
@@ -454,6 +455,7 @@ import { enrollProtocolPhone } from './relay-device-enrollment-fixture.js';
 import { hostedEngines } from './hosted-browsers.js';
 import { openEngine } from './hosted-browsers.js';
 import {
+  BOARD_ITEM,
   BOARDS,
   HOSTED,
   READ_SCREEN,
@@ -880,17 +882,20 @@ async function runCells(engine, built, boardCells, report, ineffective) {
     let seen;
     try { seen = await visit(context, { route, phone: cell.where === 'phone', bootstrap,
       localView: cell.where === 'board-view' ? built.view.base + '/local/view' : null }, want.board); }
-    catch (error) { seen = { board: false, approval: false, words: 'visit failed: ' + error.message, commands: [], signIn: false, ms: null }; }
+    catch (error) { seen = { board: false, approval: false, words: 'visit failed: ' + error.message, commands: [], signIn: false, ms: null,
+      capture: error.pageState ?? { unavailable: true, error: error.message } }; }
     let problem = judge(cell, seen, ineffective);
     // A board that arrived but over the bar is measured once more: one slow sample on a loaded machine is noise, two
     // are a finding. Both timings are reported.
     // A board still loading at the ceiling (a blank or 'Finding your boards' screen) is likewise measured once more.
     if (problem?.startsWith('the board took') || problem?.startsWith('the board did not show') && (!seen.words || /finding your boards|checking your/iu.test(seen.words))) {
       const again = await visit(context, { route, phone: cell.where === 'phone', bootstrap }, want.board).catch(() => null);
-      if (again) { seen = { ...again, words: again.words, firstMs: seen.ms }; problem = judge(cell, seen, ineffective); }
+      if (again) { seen = { ...again, words: again.words, firstMs: seen.ms, firstCapture: seen.capture }; problem = judge(cell, seen, ineffective); }
     }
-    report.push({ engine: engine.name, cell: cell.id, ok: !problem, problem, ms: seen.ms, firstMs: seen.firstMs ?? null, words: seen.words.slice(0, 300), commands: seen.commands });
-    if (problem) failures[cell.id] = problem;
+    const failure = problem ? problem + '\nPAGE_STATE=' + JSON.stringify(seen.capture ?? { unavailable: true }) : null;
+    report.push({ engine: engine.name, cell: cell.id, ok: !problem, problem: failure, ms: seen.ms, firstMs: seen.firstMs ?? null,
+      words: seen.words.slice(0, 300), commands: seen.commands, pageState: seen.capture ?? null, firstPageState: seen.firstCapture ?? null });
+    if (problem) failures[cell.id] = failure;
   };
   const unpaired = boardCells.filter((cell) => (impossibility(cell)?.runsAs.browser ?? cell.browser) === 'unpaired');
   for (let at = 0; at < unpaired.length; at += PARALLEL) {
@@ -915,6 +920,186 @@ async function runCells(engine, built, boardCells, report, ineffective) {
   await revokedRun;
   return failures;
 }
+
+test('a forced hosted cell failure captures its final page state without raising its budget [H5,H17,N26]', async t => {
+  assert.ok(hostedEngines().find(engine => engine.name === 'chromium')?.available, 'real Chrome is required');
+  const engine = await openEngine('chromium');
+  t.after(() => engine.close());
+  const built = await buildBoards(t, 'approval', [engine]);
+  t.after(async () => {
+    for (const identity of Object.values(built.revoked)) await identity.context.close();
+  });
+  const cell = cells().find(entry => entry.id === 'board-view/signed-in/paired/approval/fresh');
+  assert.ok(cell, 'the control selects one actual committed matrix cell');
+  const beforeFault = [];
+  // Only this control's fresh contexts remove the chain, after witnessing the genuine seeded board.
+  const forced = {
+    name: engine.name,
+    /** Open a real fresh context; only this control's page navigation adds a display fault. */
+    async newContext() {
+      const context = await engine.newContext();
+      const open = context.newPage.bind(context);
+      return {
+        ...context,
+        /** Keep the actual browser page, witness the board, then remove its owned display node. */
+        async newPage(options) {
+          const page = await open(options);
+          return {
+            ...page,
+            /** Navigate normally and remove only the already witnessed item-chain node. */
+            async navigate(url) {
+              await page.navigate(url);
+              const shown = await page.poll(`(${READ_SCREEN}).board`, 8_000); // budget: existing blocker-settle fixture ceiling, not a speed assertion.
+              assert.ok(shown, 'the real seeded board appears before this control injects its fault');
+              beforeFault.push(await page.evaluate(READ_SCREEN));
+              await page.evaluate(`document.querySelector('#chain').remove()`);
+            },
+          };
+        },
+      };
+    },
+  };
+  const report = [];
+  const failures = await runCells(forced, built, [cell], report, []);
+  assert.deepEqual(Object.keys(failures), [cell.id], 'exactly the selected cell genuinely fails');
+  assert.match(failures[cell.id], /the board did not show within 3000 ms/u, 'the original cell judge still owns the failure');
+  assert.equal(report.length, 1, 'the control does not run another matrix cell');
+  assert.ok(beforeFault.length > 0 && beforeFault.every(seen => seen.board), 'every injected fault follows the actual seeded-board positive witness');
+  assert.match(failures[cell.id], /PAGE_STATE=/u, 'the actual matrix failure message carries the final page capture');
+  const state = JSON.parse(failures[cell.id].split('PAGE_STATE=')[1]);
+  assert.equal(state.budgetMs, 3000, 'capture never raises the board budget');
+  assert.ok(state.elapsedMs >= state.budgetMs, 'the real forced visit reached the unchanged budget');
+  assert.equal(typeof state.screen, 'string');
+  assert.equal(typeof state.busy, 'boolean');
+  assert.equal(state.chain.present, false, 'capture observes the owned control removing the chain');
+  assert.equal(state.chain.visible, false, 'the removed chain cannot count as visible');
+  assert.equal(state.chain.hasExpectedItem, false, 'the positive witness was removed rather than replaced with another board');
+  assert.equal(typeof state.noBoardsYet.visible, 'boolean');
+  assert.match(state.noBoardsYet.text, /No boards yet/u, 'capture records the empty-state text even when hidden');
+});
+
+test('a board over the size limit is named with its size and the limit, beside a healthy board too [H5,H17]', {
+  timeout: 180_000, // budget: real enrollment, refused upload, healthy sibling and bounded-snapshot recovery.
+}, async t => {
+  assert.ok(hostedEngines().find(engine => engine.name === 'chromium')?.available, 'real Chrome is required');
+  const engine = await openEngine('chromium');
+  const contexts = [];
+  t.after(async () => {
+    for (const context of contexts) await context.close();
+    await engine.close();
+  });
+  const box = await relayClientFixture(t);
+  box.env.PULLBOARD_MACHINE_HOME = box.env.PULLBOARD_HOME;
+  box.legacySnapshotApi(true);
+  box.limitSnapshots(128);
+  const front = await hostedFront(box.origin);
+  t.after(() => front.close());
+  const paired = await engine.newContext();
+  contexts.push(paired);
+  const session = await freshSession(box);
+  let page;
+  await relayOnAll(box, async link => {
+    page = await paired.newPage({ route: front.route(session, null) });
+    await page.navigate(link);
+  });
+  await page.close();
+  const link = linkOf(box, box.root);
+  const refusal = box.sizeRefusals().find(value => value.board === link.id);
+  assert.ok(refusal && refusal.sealedBytes > refusal.limit, 'the configured relay refused an actually oversized upload');
+  const local = JSON.parse(readFileSync(join(box.root, '.git', 'pullboard', 'relay.json'), 'utf8'));
+  assert.equal(local.baselinePause.status, 400, 'the native command received the permanent upload refusal');
+  assert.equal(Buffer.from(local.snapshot.sealed, 'base64url').byteLength, refusal.sealedBytes,
+    'the retained snapshot is exactly the upload measured by the relay');
+  const alone = await visit(paired, { route: front.route(session, null), phone: true }, false);
+  assert.match(alone.words, /fixture\/repository[^.]*too (?:big|large)/iu, 'name the size blocker rather than a missing first copy');
+  assert.ok(alone.words.includes(refusal.sealedBytes + ' bytes'), 'show the measured sealed size');
+  assert.ok(alone.words.includes(refusal.limit + ' bytes'), 'show the limit reported by this relay');
+  assert.match(alone.words, /upgrade[^.]*relay[^.]*bounded snapshots/iu, 'offer the step that removes the actual limit');
+
+  box.limitSnapshots(null);
+  const healthy = await siblingProject(box, 'healthy-sibling', 'fixture/healthy-sibling');
+  const healthyLane = Object.keys(JSON.parse(readFileSync(join(healthy, 'pullboard.json'), 'utf8')).lanes)[0];
+  assert.equal((await box.cliAt(healthy, 'add', healthyLane, BOARD_ITEM)).code, 0,
+    'the healthy board has the real item required by the unchanged visibility probe');
+  assert.equal((await box.cliAt(healthy, 'relay', 'on', '--url', box.origin)).code, 0);
+  const mixed = await visit(paired, { route: front.route(session, null), phone: true }, true);
+  assert.equal(mixed.board, true, 'the healthy sibling remains readable');
+  assert.match(mixed.words, /fixture\/repository[^.]*too (?:big|large)/iu, 'keep the size blocker beside the healthy board');
+  assert.ok(mixed.words.includes(refusal.sealedBytes + ' bytes') && mixed.words.includes(refusal.limit + ' bytes'));
+  box.legacySnapshotApi(false);
+  assert.equal((await box.cli('status')).code, 0, 'the offered bounded-snapshot upgrade actually resumes publication');
+  const recovered = await visit(paired, { route: front.route(session, null), phone: true }, true);
+  assert.equal(recovered.board, true);
+  assert.doesNotMatch(recovered.words, /too (?:big|large)|128 bytes/iu, 'a successful snapshot clears its stale size notice');
+});
+
+test('an excluded board is named as excluded with the step that includes it [H5,H17]', {
+  timeout: 180_000, // budget: two real relay setups, one native enrollment and fresh browser visits.
+}, async t => {
+  assert.ok(hostedEngines().find(engine => engine.name === 'chromium')?.available, 'real Chrome is required');
+  const engine = await openEngine('chromium');
+  const contexts = [];
+  t.after(async () => {
+    // Dispose targets while CDP is live, before shutting down the shared browser.
+    for (const context of contexts) await context.close();
+    await engine.close();
+  });
+  const built = await buildBoards(t, 'excluded', [engine]);
+  const fresh = await engine.newContext();
+  contexts.push(fresh);
+  const unpaired = await visit(fresh, {
+    route: built.front.route(built.unpairedSession, null), phone: true,
+    bootstrap: storedScript('fresh', { boards: [] }),
+  }, false);
+  assert.equal(unpaired.board, false, 'exclusion never links or discloses the board');
+  assert.match(unpaired.words, /1 board excluded/iu, 'a fresh browser sees the actual exclusion count');
+  assert.doesNotMatch(unpaired.words, /fixture\/repository/u, 'a browser without a device wrap sees no excluded name');
+  assert.ok(unpaired.commands.some(command => /pullboard relay on(?:\s|$)/u.test(command)
+    && !/--all/u.test(command)), 'the command includes a board that the completed --all skipped');
+  assert.equal(unpaired.commands.some(command => /pullboard relay on --all/u.test(command)), false);
+
+  const box = await relayClientFixture(t);
+  box.env.PULLBOARD_MACHINE_HOME = box.env.PULLBOARD_HOME;
+  const front = await hostedFront(box.origin);
+  t.after(() => front.close());
+  const paired = await engine.newContext();
+  contexts.push(paired);
+  const session = await freshSession(box);
+  let pairingPage;
+  await relayOnAll(box, async link => {
+    pairingPage = await paired.newPage({ route: front.route(session, null) });
+    await pairingPage.navigate(link);
+  });
+  assert.ok(await pairingPage.poll(`(${READ_SCREEN}).board`, 8_000), 'the genuine enrolled browser opens the healthy board');
+  await pairingPage.close();
+  const excluded = await siblingProject(box, 'excluded-project', 'fixture/excluded-board');
+  assert.equal((await box.cliAt(excluded, 'relay', 'off')).code, 0);
+  const metadata = await fetch(box.origin + '/api/v1/devices/exclusions', { headers: { cookie: 'pb_session=' + session } });
+  assert.equal(metadata.status, 200);
+  const publicInventory = await metadata.json();
+  assert.equal(publicInventory.exclusions.length, 1);
+  assert.equal(publicInventory.exclusions[0].count, 1);
+  assert.ok(publicInventory.exclusions[0].label.trim(), 'only a bounded machine label is public');
+  assert.doesNotMatch(JSON.stringify(publicInventory), /fixture\/excluded-board|excluded-project/u,
+    'the relay public inventory contains neither repository names nor local paths');
+  const unwrapped = await visit(fresh, { route: front.route(session, null), phone: true }, false);
+  assert.doesNotMatch(unwrapped.words, /fixture\/excluded-board/u,
+    'an existing phone-approval notice cannot disclose an excluded name to an unwrapped browser');
+  const named = await visit(paired, { route: front.route(session, null), phone: true }, true);
+  assert.equal(named.board, true, 'the healthy board remains readable beside the exclusion');
+  assert.match(named.words, /fixture\/excluded-board[^.]*excluded/iu, 'only the device-wrapped browser decrypts the excluded name');
+  assert.match(named.words, /pullboard relay on/u, 'the named exclusion carries its include command');
+  assert.equal((await box.cliAt(excluded, 'relay', 'on', '--url', box.origin)).code, 0,
+    'the offered ordinary command actually includes the excluded board');
+  const cleared = await fetch(box.origin + '/api/v1/devices/exclusions', { headers: { cookie: 'pb_session=' + session } });
+  assert.equal(cleared.status, 200);
+  assert.deepEqual((await cleared.json()).exclusions, [], 'including the board clears its published exclusion');
+  assert.equal((await box.cliAt(excluded, 'relay', 'off')).code, 0,
+    'off also publishes from the removed board’s own machine credential');
+  const removed = await fetch(box.origin + '/api/v1/devices/exclusions', { headers: { cookie: 'pb_session=' + session } });
+  assert.equal(removed.status, 200);
+  assert.equal((await removed.json()).exclusions[0]?.count, 1, 'a linked board’s removal publishes without setup or its forgotten board key');
+});
 
 test('a board awaiting a phone approval is mentioned on a non-phone paired browser [H5]', {
   timeout: 180_000,
@@ -1122,10 +1307,14 @@ test('an expired saved pairing preserves a valid identity when its session probe
   } finally { if (first) await first.close(); }
   for (const unavailable of [false, true]) await t.test(unavailable ? 'unavailable probe' : 'valid session', async () => {
     let probes = 0;
+    let listings = 0;
+    let unmatchedProbes = 0;
     const route = front.route(session, null);
     const page = await context.newPage({ phone: true, bootstrap: storedScript('stale-pairing'), route: async request => {
+      if (new URL(request.url).pathname === '/api/v1/boards') listings += 1;
       if (new URL(request.url).pathname === '/api/v1/devices/session') {
         probes += 1;
+        if (probes > listings) unmatchedProbes += 1;
         if (unavailable) return { kind: 'fulfill', status: 503, headers: { 'content-type': 'application/json' },
           body: Buffer.from(JSON.stringify({ version: 1, error: { code: 'RELAY_UNAVAILABLE', message: 'fixture session probe unavailable' } })) };
       }
@@ -1133,12 +1322,22 @@ test('an expired saved pairing preserves a valid identity when its session probe
     } });
     try {
       await page.navigate(HOSTED + '/');
-      const failure = await page.poll(`(() => { const node = document.querySelector('#relay-screen .relay-live span');
-        return node?.textContent.includes('fresh phone pairing link') && node.textContent; })()`, 8_000); // budget: existing hosted blocker-settle ceiling.
-      assert.ok(failure, 'the original expired pairing guidance remains observable on the phone');
-      assert.match(failure, /pullboard relay on --all/u);
-      assert.doesNotMatch(failure, /fixture session probe unavailable/u, 'probe errors do not replace the original pairing refusal');
-      assert.equal(probes, 1, 'only the cause-specific session probe ran');
+      if (unavailable) {
+        const failure = await page.poll(`(() => { const node = document.querySelector('#relay-screen .relay-live span');
+          return node?.textContent.includes('fresh phone pairing link') && node.textContent; })()`, 8_000); // budget: existing hosted blocker-settle ceiling.
+        assert.ok(failure, 'unavailable authorization retains the original expired pairing guidance');
+        assert.match(failure, /pullboard relay on --all/u);
+        assert.doesNotMatch(failure, /fixture session probe unavailable/u, 'probe errors do not replace the original pairing refusal');
+      } else {
+        // #982 intentionally replaces the former expired-link blocker for an authorized paired browser.
+        assert.ok(await page.poll(`(${READ_SCREEN}).board`, 8_000), 'valid paired identity opens its board despite the expired link'); // budget: fixture settle ceiling.
+        assert.doesNotMatch((await page.evaluate(READ_SCREEN)).words, /fresh phone pairing link/u);
+      }
+      if (unavailable) assert.equal(probes, 1, 'only the cause-specific session probe ran');
+      else {
+        assert.ok(probes > 0, 'the opened board performs normal session authorization');
+        assert.equal(unmatchedProbes, 0, 'no expiry-only session probe runs before or beyond the observed board listings');
+      }
       const screen = await page.evaluate(READ_SCREEN);
       assert.doesNotMatch(screen.words, /browser was removed/iu, 'a valid or unavailable session is not a revocation');
       assert.equal(await page.evaluate("document.getElementById('relay-removed') !== null"), false);
@@ -1149,5 +1348,58 @@ test('an expired saved pairing preserves a valid identity when its session probe
       assert.ok(retained.keys === enrolled.keys, 'unrelated valid board keys are retained');
       assert.ok(enrolledDevices(box).includes(enrolled.id), 'the real enrolled device remains active');
     } finally { await page.close(); }
+  });
+});
+
+/** Exercise stale enrollment through real saved keys, a real local view, and an unpaired control. */
+test('an expired pairing link left in sessionStorage never blocks a paired browser or the board computer\'s view [H5,H17,N26]', async t => {
+  assert.ok(hostedEngines().find(engine => engine.name === 'chromium')?.available, 'real Chromium is required');
+  const box = await relayClientFixture(t);
+  box.env.PULLBOARD_MACHINE_HOME = box.env.PULLBOARD_HOME;
+  const front = await hostedFront(box.origin);
+  const engine = await openEngine('chromium');
+  const paired = await engine.newContext();
+  t.after(async () => {
+    const outcomes = await Promise.allSettled([paired.close(), engine.close(), front.close()]);
+    for (const outcome of outcomes) if (outcome.status === 'rejected') throw outcome.reason;
+  });
+  const session = await freshSession(box);
+  let first;
+  try {
+    await relayOnAll(box, async link => {
+      first = await paired.newPage({ route: front.route(session, null), phone: true });
+      await first.navigate(link);
+    });
+    assert.ok(await first.poll(`(${READ_SCREEN}).board`, 8_000), 'real enrollment opens the seeded board'); // budget: fixture settle ceiling, not a speed bar.
+  } finally { if (first) await first.close(); }
+  await t.test('already paired phone retains access', async () => {
+    const page = await paired.newPage({ route: front.route(session, null), phone: true, bootstrap: storedScript('stale-pairing') });
+    try {
+      await page.navigate(HOSTED + '/');
+      assert.ok(await page.poll(`(${READ_SCREEN}).board`, 8_000), 'saved enrollment opens its board despite expired pending pairing'); // budget: fixture settle ceiling.
+      assert.equal(await page.evaluate("sessionStorage.getItem('pullboard.relay.device-pair.v1')"), null);
+      assert.doesNotMatch((await page.evaluate(READ_SCREEN)).words, /fresh phone pairing link|DEVICE_PAIR_EXPIRED/u);
+    } finally { await page.close(); }
+  });
+  const view = await boardView(box);
+  t.after(() => view.stop());
+  await t.test('board computer uses its own view', async () => {
+    const context = await engine.newContext();
+    try {
+      const seen = await visit(context, { route: front.route(session, view.base), phone: false,
+        bootstrap: storedScript('stale-pairing'), localView: view.base + '/local/view' }, true);
+      assert.ok(seen.board, 'the actual running local view remains readable');
+      assert.doesNotMatch(seen.words, /fresh phone pairing link|DEVICE_PAIR_EXPIRED/u);
+    } finally { await context.close(); }
+  });
+  await t.test('unpaired phone still needs a fresh link', async () => {
+    const context = await engine.newContext();
+    const page = await context.newPage({ route: front.route(session, null), phone: true, bootstrap: storedScript('stale-pairing') });
+    try {
+      await page.navigate(HOSTED + '/');
+      assert.ok(await page.poll(`(${READ_SCREEN}).words.includes('fresh phone pairing link')`, 8_000), 'unpaired browser gets actionable expiry guidance'); // budget: fixture settle ceiling.
+      assert.equal((await page.evaluate(READ_SCREEN)).board, false);
+      assert.equal(await page.evaluate("sessionStorage.getItem('pullboard.relay.device-pair.v1')"), null);
+    } finally { await context.close(); }
   });
 });

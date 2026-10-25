@@ -10,6 +10,8 @@ import { submitFixture } from './board-submit-fixture.js';
 import { configFromSource, defaults } from '../src/config.js';
 import { prepareEngineMove, applyEngineMove } from '../src/engine.js';
 import { exportBoard, importBoard } from '../src/exchange.js';
+import { barReadiness, barReadySetting, setBarReady, signBar } from '../src/bar-readiness.js';
+import { saveAgentSession, saveAgentParent } from '../src/seats.js';
 
 const COMMIT = 'a'.repeat(40);
 const TRUNK = 'b'.repeat(40);
@@ -128,7 +130,7 @@ test('[B13,B5] releasing another review cannot cancel the builder reservation', 
   const f = fixture(t);
   const id = returned(f, 'reject', 30);
   const another = store.addItem(f.board, { by: 'coordinator', lane: 'core', title: 'review another', route: 'mid',
-    criterion: 'prove', check: 'true', brief: 'Files: src/a.js\nTest: proves another fix' });
+    criterion: 'prove', check: 'true', brief: 'Files: src/unrelated.js\nTest: proves another fix' });
   claim(f, another, f.other);
   submitFixture(f.board, another, { agentId: f.other, commit: COMMIT, tree: COMMIT });
   store.reserveReview(f.board, another, { agentId: f.builder, leaseMs: 1_800_000, policy: 'any' });
@@ -182,4 +184,137 @@ test('[B13,B5,D1] a builder notice preserves the reopen cause that triggers rigo
   assert.equal(notices.filter(row => row.shout_from === 'rigor' && row.shout_to === 'coordinator' && row.shout_text.includes('CHECK_RED')).length, 1);
   assert.equal(store.events(f.board).filter(row => row.event_kind === 'rigor-notice' && JSON.parse(row.event_detail).cause === 'refusal:CHECK_RED').length, 1);
   assert.equal(notices.filter(row => row.shout_to === f.builder && row.shout_text.includes('waits for you')).length, 2);
+});
+
+/** Synthetic private fixture identities model real root/child registration, never a live board. */
+function readyAuthors(f) {
+  saveAgentSession(f.board, 'coordinator', 'a'.repeat(64));
+  saveAgentParent(f.board, f.builder, 'a'.repeat(64));
+  saveAgentSession(f.board, f.builder, 'b'.repeat(64));
+  saveAgentSession(f.board, f.other, 'c'.repeat(64));
+  f.actors = { coordinator: { session: 'a'.repeat(64), parent: 'a'.repeat(64) },
+    [f.builder]: { session: 'b'.repeat(64), parent: 'a'.repeat(64) }, [f.other]: { session: 'c'.repeat(64), parent: 'c'.repeat(64) } };
+}
+/** Add an authored bar with its exact recorded baseline, as the ordered add operation receives it. */
+function readyItem(f, result = 'red') {
+  return store.addItem(f.board, { by: 'coordinator', lane: 'core', title: 'ready bar', route: 'mid', barActor: f.actors?.coordinator,
+    criterion: 'the named behavior works', check: 'node --test --test-name-pattern "named witness" test/a.test.js',
+    checkBaseline: { command: 'node --test --test-name-pattern "named witness" test/a.test.js', main: COMMIT, result, testEvidence: { failed: ['named witness'], passed: [], noTestsMatched: false } },
+    brief: 'Files: src/a.js\nTest: named witness asserts the behavior\nNamed test: named witness\nMeasurements: no quantitative acceptance bounds\nReviewer edges: empty input and concurrent edit' });
+}
+/** Sign the currently read revision, keeping stale requests independently testable. */
+function signReady(f, id, agentId = f.other) {
+  const { revision } = barReadiness(f.board, store.getItem(f.board, id));
+  return signBar(f.board, id, { agentId, barActor: f.actors?.[agentId], revision: revision.revision, digest: revision.digest,
+    note: 'The builder can meet this bar; two reviewers can use the named witness and listed edges to grade it alike.',
+    coverage: { version: 1, sourceMain: COMMIT, policyKey: 'd'.repeat(64), sourceCheck: store.getItem(f.board,id).item_check, timeoutMs: 300000, runner: 'node --test', required: [], files: [] } });
+}
+
+test('[B4,V2,V1,H16] a claim waits for a bar signed by another session', (t) => {
+  const f = fixture(t);
+  readyAuthors(f);
+  setBarReady(f.board, { agentId: 'coordinator', enabled: true });
+  const id = readyItem(f);
+  assert.throws(() => claim(f, id, f.builder), error => error.code === 'BAR_NOT_READY' && error.message.includes('sign-off'));
+  assert.throws(() => signReady(f, id, 'coordinator'), error => error.code === 'BAR_SELF_SIGN');
+  assert.throws(() => signReady(f, id, f.builder), error => error.code === 'BAR_SELF_SIGN', 'a helper cannot sign its parent bar');
+  signReady(f, id);
+  claim(f, id, f.builder);
+  assert.equal(store.getItem(f.board, id).item_owner, f.builder);
+  const before = barReadiness(f.board, store.getItem(f.board, id)).revision;
+  store.editItem(f.board, id, { agentId: 'coordinator', brief: store.getItem(f.board, id).item_brief+'\nAlso try a restarted session.', barActor: f.actors.coordinator });
+  assert.throws(() => claim(f, id, f.builder), error => error.code === 'BAR_NOT_READY');
+  assert.throws(() => signBar(f.board, id, { agentId: f.other, revision: before.revision, digest: before.digest, note: 'stale' }), error => error.code === 'BAR_SIGN_STALE');
+  signReady(f, id);
+  claim(f, id, f.builder);
+  const replica = store.openBoard(join(f.directory, 'ready-replica.sqlite'));
+  t.after(() => store.closeBoard(replica));
+  importBoard(replica, exportBoard(f.board));
+  assert.equal(barReadiness(replica, store.getItem(replica, id)).missing.length, 0);
+});
+
+test('[B4,V2,H16] readiness is default off and activation preserves old frozen work', (t) => {
+  const f = fixture(t);
+  assert.equal(barReadySetting(f.board).enabled, false);
+  const old = readyItem(f, 'green');
+  claim(f, old, f.builder);
+  store.release(f.board, old, f.builder);
+  const activation = setBarReady(f.board, { agentId: 'coordinator', enabled: true });
+  assert.deepEqual(setBarReady(f.board, { agentId: 'coordinator', enabled: true }), activation, 'repeating on cannot grandfather new obligations');
+  claim(f, old, f.builder);
+  claim(f, old, f.builder);
+  submitFixture(f.board, old, { agentId: f.builder, commit: COMMIT, tree: COMMIT });
+  const fresh = readyItem(f, 'green');
+  assert.throws(() => claim(f, fresh, f.builder), error => error.code === 'BAR_NOT_READY' && error.message.includes('red check baseline'));
+  setBarReady(f.board, { agentId: 'coordinator', enabled: false });
+  claim(f, fresh, f.builder);
+  store.release(f.board, fresh, f.builder);
+  setBarReady(f.board, { agentId: 'coordinator', enabled: true });
+  claim(f, fresh, f.builder);
+  assert.throws(() => setBarReady(f.board, { agentId: f.other, enabled: false }), error => error.code === 'COORDINATOR_ONLY');
+});
+
+test('[B4,V2] all missing bar parts are named and content reversal cannot revive a signature', (t) => {
+  const f = fixture(t);
+  readyAuthors(f);
+  setBarReady(f.board, { agentId: 'coordinator', enabled: true });
+  const incomplete = store.addItem(f.board, { by: 'coordinator', lane: 'core', title: 'incomplete' });
+  assert.throws(() => claim(f, incomplete, f.builder), error => error.code === 'BAR_NOT_READY'
+    && ['Named test', 'red check baseline', 'Measurements', 'Reviewer edges', 'sign-off'].every(part => error.message.includes(part)));
+  const id = readyItem(f);
+  signReady(f, id);
+  const original = store.getItem(f.board, id).item_brief;
+  store.editItem(f.board, id, { agentId: 'coordinator', brief: original+'\nChanged edge.', barActor: f.actors.coordinator });
+  store.editItem(f.board, id, { agentId: 'coordinator', brief: original, barActor: f.actors.coordinator });
+  assert.throws(() => claim(f, id, f.builder), error => error.code === 'BAR_NOT_READY' && error.message.includes('sign-off'));
+  signReady(f, id);
+  claim(f, id, f.builder);
+});
+
+test('[B4,V1] unknown lineage and a changed baseline cannot masquerade as peer approval', (t) => {
+  const f = fixture(t);
+  setBarReady(f.board, { agentId: 'coordinator', enabled: true });
+  const id = readyItem(f);
+  assert.throws(() => signReady(f, id), error => error.code === 'BAR_PARENT_UNKNOWN');
+  readyAuthors(f);
+  // Re-authoring creates new known snapshots; it does not relabel the older unknown receipt.
+  const fresh = readyItem(f);
+  signReady(f, fresh);
+  const command = store.getItem(f.board, fresh).item_check;
+  const request = '12345678-1234-1234-1234-123456789abc';
+  store.editItem(f.board, fresh, { agentId: 'coordinator', check: command, checkBaseline: { command, main: COMMIT, result: 'pending', request } });
+  assert.ok(barReadiness(f.board, store.getItem(f.board, fresh)).missing.some(part => part.includes('red check baseline')));
+  store.completeCheckBaseline(f.board, fresh, { agentId: 'coordinator', expected: { command, main: COMMIT, request }, baseline: { command, main: COMMIT, result: 'red', request, testEvidence: { failed: ['named witness'], passed: [], noTestsMatched: false } } });
+  assert.ok(barReadiness(f.board, store.getItem(f.board, fresh)).missing.some(part => part.includes('sign-off')), 'new baseline observation needs a new sign-off');
+});
+
+
+test('[B4,V1] enabling readiness cannot relabel a retained criterion as the later brief editor', (t) => {
+  const f = fixture(t);
+  readyAuthors(f);
+  const brief = 'Files: src/old.js\nTest: old witness\nNamed test: old witness\nMeasurements: no quantitative bounds\nReviewer edges: empty input';
+  const id = store.addItem(f.board, { by: f.other, lane: 'core', title: 'original author', criterion: 'original judgement', brief });
+  setBarReady(f.board, { agentId: 'coordinator', enabled: true });
+  const check = 'node --test --test-name-pattern "old witness" test/old.test.js';
+  store.editItem(f.board, id, { agentId: 'coordinator', brief: brief+'\nAn additional edge.', check, barActor: f.actors.coordinator,
+    checkBaseline: { command: check, main: COMMIT, result: 'red', testEvidence: { failed: ['old witness'], passed: [], noTestsMatched: false } } });
+  const status = barReadiness(f.board, store.getItem(f.board, id));
+  assert.equal(status.revision.authors.item_criterion.agent, f.other);
+  assert.equal(status.revision.authors.item_brief.agent, 'coordinator');
+  assert.throws(() => signReady(f, id, f.other), error => error.code === 'BAR_SELF_SIGN');
+});
+
+
+test('[B4,V1,H16] takeover authorship uses the captured current runtime, preserving historical seat identity', t => {
+  const f=fixture(t);readyAuthors(f);
+  const old = f.board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get('agent_session:coordinator').meta_value;
+  // This private move models the normal CLI's new runtime after takeover, not an identity rewrite.
+  const current = { session: 'e'.repeat(64), parent: 'e'.repeat(64) };
+  f.actors.coordinator=current;
+  const child=store.register(f.board,{lane:'core',path:'/new-coordinator-helper',parentDigest:'e'.repeat(64),sessionDigest:'f'.repeat(64)});
+  f.actors[child]={session:'f'.repeat(64),parent:'e'.repeat(64)};
+  setBarReady(f.board,{agentId:'coordinator',enabled:true});const id=readyItem(f);
+  assert.equal(f.board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get('agent_session:coordinator').meta_value,old);
+  assert.equal(barReadiness(f.board,store.getItem(f.board,id)).revision.authors.item_criterion.parent,current.parent);
+  assert.throws(()=>signReady(f,id,child),error=>error.code==='BAR_SELF_SIGN');
 });

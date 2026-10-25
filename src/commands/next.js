@@ -18,12 +18,15 @@ import {
   displayedWait,
   idArg,
   nextOnce,
-  refuseWhileBuilding,
   sayBrief,
-  sayReviewOffer,
   span,
   withBoard,
+  withBoardRead,
 } from '../cli.js';
+import {
+  refuseWhileBuilding,
+  sayReviewOffer,
+} from '../next-say.js';
 
 /**
  * `pullboard next` (N2): the whole start of an agent's loop in one command. With --wait, it keeps
@@ -55,9 +58,12 @@ export async function nextHere(io, values) {
       continue;
     }
     if (found.item) {
-      if (found.offer) { sayReviewOffer(ctx, found); return 0; }
+      if (found.offer) {
+        for (const reason of found.reasons ?? []) io.say(reason);
+        sayReviewOffer(ctx, found); return 0;
+      }
       const item = found.item;
-      const agents = withBoard(ctx, (board) => store.listAgents(board));
+      const agents = withBoardRead(ctx, (board) => store.listAgents(board));
       io.result?.({ item, review: Boolean(values.verify), held: Boolean(found.held), shared: found.shared ?? [], reasons: found.reasons ?? [], ...(found.seat ? { seat: found.seat } : {}) });
       for (const reason of found.reasons ?? []) io.say(displayedWait(reason, agents, ctx.config));
       const here = cdTo(ctx.info.root);
@@ -84,7 +90,7 @@ export async function nextHere(io, values) {
     }
     if (!found.retry && (found.laneWork || Date.now() >= deadline)) {
       if (values.verify) refuseWhileBuilding(ctx);
-      const agents = withBoard(ctx, (board) => store.listAgents(board));
+      const agents = withBoardRead(ctx, (board) => store.listAgents(board));
       return refuseNextIdle(io, found.reasons, found.reasons.map((reason) => displayedWait(reason, agents, ctx.config)), { minutes, verify: values.verify, laneWork: found.laneWork });
     }
     if (!found.retry) await new Promise((done) => setTimeout(done, 5000));

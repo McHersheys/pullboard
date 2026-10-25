@@ -6,10 +6,14 @@ import {
 } from 'node:path';
 import { Refused } from './refused.js';
 
-/** Use the OS account home unless a caller explicitly selects a private machine pool. */
+/**
+ * Use the OS account home unless a caller explicitly selects a private machine pool. A test run substitutes its own
+ * account home (PULLBOARD_ACCOUNT_HOME, src/test-isolation.js) so a test never reads the machine it runs on.
+ */
 export function machineHome() {
   const override = process.env.PULLBOARD_MACHINE_HOME;
-  return override ? resolve(override) : join(userInfo().homedir, '.pullboard');
+  if (override) return resolve(override);
+  return join(resolve(process.env.PULLBOARD_ACCOUNT_HOME || userInfo().homedir), '.pullboard');
 }
 
 /** Name inaccessible machine storage without disguising corruption or other database failures. */

@@ -1,12 +1,14 @@
 /** @pullboard-test-input source-tree */
+/** @pullboard-test-gui */
 /** Cockpit needs checks, using the shared real-board fixtures [N26]. */
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { SPEC, machine, project, build, sendBack, startView, styleOf, element, openPage, projectRows, agentEntries, needEntries, itemRow, shoutNameText, chromeExecutable, openSnapshotChrome, closeSnapshotChrome, chooseFilter, boardId, boardOf, fetchLive, serveFolder } from './fixture.js';
+import { BIN, SPEC, machine, project, build, sendBack, startView, styleOf, element, openPage, projectRows, agentEntries, needEntries, itemRow, shoutNameText, chromeExecutable, openSnapshotChrome, closeSnapshotChrome, chooseFilter, boardId, boardOf, fetchLive, serveFolder } from './fixture.js';
 import { cockpitPage } from '../../src/cockpit.js';
 import { runFixtureChild } from '../fixture-child.js';
 import { approvalAgentApi, approvalReadGate } from './agent-approval-fixture.js';
@@ -141,6 +143,50 @@ test("the page's Needs-you comes from the shared builder [N26]", { timeout: 180_
     if (relayServer) await new Promise(resolve => relayServer.close(resolve));
     if (snapshotHost) await snapshotHost.close();
     for (const profile of profiles) rmSync(profile, { recursive: true, force: true });
+    await view.stop();
+  }
+});
+
+test('a person-only block shows in Needs you with its one step [N26]', async () => {
+  const box = machine();
+  const alpha = project(box, 'person block');
+  box.env.CLAUDECODE = '1';
+  const refused = spawnSync(process.execPath, [BIN, 'answer', '1', 'yes', '--as', 'person'], {
+    cwd: alpha.repo, env: box.env, encoding: 'utf8',
+  });
+  delete box.env.CLAUDECODE;
+  assert.equal(refused.status, 1, refused.stderr);
+  assert.match(refused.stderr, /only the person can clear this/u);
+
+  const view = await startView(box);
+  try {
+    const page = await openPage(view);
+    const state = await boardOf(view, alpha.repo);
+    assert.equal(state.blocks.length, 1, 'the live API supplies the person-only block list');
+    assert.equal(state.blocks[0].audience, 'person');
+    const entries = needEntries(page.show('needs'));
+    assert.deepEqual(entries, [[null, 'blocked', 'Pullboard stopped a request that only you can clear: this terminal belongs to an agent',
+      state.blocks[0].step, 'next step']], 'the view shows the plain reason and the exact API step without a bogus release action');
+    assert.doesNotMatch(page.show('needs'), /B26_PERSON_CHANNEL|--as|pullboard answer/u,
+      'the view does not expose the rule code or refused command');
+
+    // Model #1077's API result after a successful matching move: the view follows the returned list instead of
+    // maintaining its own clear rule or editing the ledger.
+    page.run(`globalThis.realFetch = fetch;
+globalThis.hidePersonBlocks = false;
+globalThis.fetch = async function controlledStateFetch(path, init) {
+  const reply = await globalThis.realFetch(path, init);
+  if (!globalThis.hidePersonBlocks || !String(path).includes('/state')) return reply;
+  const body = await reply.json();
+  if (!body.state) throw new Error('the test expected a fresh board-state response');
+  body.state.blocks = [];
+  return { ok: reply.ok, status: reply.status, json: async () => body };
+};`);
+    page.run('globalThis.hidePersonBlocks = true; sentStates.clear();');
+    await page.run('refresh()');
+    assert.equal(needEntries(page.show('needs')).some(entry => entry[2].includes('Pullboard stopped a request')), false,
+      'the row disappears when the next API state no longer lists the block');
+  } finally {
     await view.stop();
   }
 });
@@ -536,5 +582,91 @@ test('an agent-approved row shows in Needs you with its agent and commit and a c
       try { await cleanup(); } catch (error) { cleanupErrors.push(error); }
     }
     if (cleanupErrors.length) throw new AggregateError(cleanupErrors, 'owned approval fixtures failed cleanup');
+  }
+});
+
+test('a sentinel draft in Needs you is approved and declined from the view [N26,B26]', { timeout: 120_000 }, async () => { // budget: isolated real Git/API setup and one owned browser profile, not a performance claim.
+  const executable = chromeExecutable();
+  assert.ok(executable, 'Chrome is required to prove real person approval and decline controls');
+  const box = machine();
+  const alpha = project(box, 'sentinel decisions');
+  const command = 'node bin/checks/file-size.js';
+  const directory = 'checks';
+  for (const name of ['approve-watch', 'decline-watch']) {
+    box.run(alpha.repo, 'sentinel', 'propose', name, '--check', command, '--directory', directory, '--every', 'hourly', '--owner', 'coordinator');
+  }
+  const view = await startView(box);
+  let chrome, agentApi;
+  try {
+    const initial = await boardOf(view, alpha.repo);
+    const drafts = new Map(initial.sentinelDrafts.map((row) => [row.ref, row]));
+    assert.deepEqual([...drafts.keys()].sort(), ['approve-watch', 'decline-watch'], 'both proposals are pending person decisions');
+    agentApi = await approvalAgentApi(box, alpha.repo);
+    const board = await boardId(view, alpha.repo);
+    const refused = await agentApi.call('/api/v1/boards/' + board + '/moves', {
+      verb: 'sentinel-approve', args: { name: 'approve-watch', digest: drafts.get('approve-watch').digest },
+    });
+    assert.equal(refused.status, 409, 'an API-key caller cannot approve a sentinel as the person');
+    assert.equal(refused.document.error.code, 'B26_PERSON_CHANNEL');
+    assert.ok((await boardOf(view, alpha.repo)).sentinelDrafts.some((row) => row.ref === 'approve-watch'), 'the refused agent move leaves the proposal pending');
+
+    chrome = await openSnapshotChrome(executable, 'about:blank', join(box.dir, 'sentinel-person-chrome'));
+    await chrome.send('Page.navigate', { url: view.link.href });
+    await chrome.waitFor('document.querySelectorAll("#needs [data-sentinel-draft]").length === 2');
+    const rows = JSON.parse(await chrome.stable(`JSON.stringify([...document.querySelectorAll('#needs [data-sentinel-draft]')].map(row => ({
+      name: row.dataset.sentinelDraft, text: row.textContent,
+      actions: [...row.querySelectorAll('button')].map(button => [button.dataset.sentinelDecision, button.textContent.trim()]),
+    })))`));
+    for (const row of rows) {
+      assert.deepEqual(row.actions, [['approve', 'Approve'], ['decline', 'Decline']], 'each pending proposal has explicit person controls');
+      assert.match(row.text, /node bin\/checks\/file-size\.js/u, 'the person sees the proposed command');
+      assert.match(row.text, /Directory:\s*checks/u, 'the person sees the working folder');
+      assert.match(row.text, /hourly/u, 'the person sees the schedule');
+      assert.match(row.text, /coordinator/u, 'the person sees the owner');
+    }
+
+    await chrome.click(`document.querySelector('[data-sentinel-draft="approve-watch"] [data-sentinel-decision="approve"]')`);
+    await chrome.waitFor('document.querySelector(\'[data-sentinel-draft="approve-watch"]\') === null');
+    let recorded = JSON.parse(box.run(alpha.repo, 'sentinels', '--json')).sentinels;
+    assert.equal(recorded.find((row) => row.name === 'approve-watch').status, 'approved', 'the view approval is recorded on the board');
+
+    await chrome.click(`document.querySelector('[data-sentinel-draft="decline-watch"] [data-sentinel-decision="decline"]')`);
+    await chrome.waitFor('document.querySelector("#spec-decline-dialog").hidden === false');
+    assert.equal(await chrome.stable('document.querySelector("#spec-decline-reason").required'), true, 'decline requires a reason');
+    await chrome.click('document.querySelector("#spec-decline-submit")');
+    assert.ok((await boardOf(view, alpha.repo)).sentinelDrafts.some((row) => row.ref === 'decline-watch'), 'an empty decline leaves the proposal pending');
+    await chrome.click('document.querySelector("#spec-decline-reason")');
+    await chrome.send('Input.insertText', { text: 'This watch should not run.' });
+    await chrome.click('document.querySelector("#spec-decline-submit")');
+    try {
+      await chrome.waitFor('document.querySelector(\'[data-sentinel-draft="decline-watch"]\') === null');
+    } catch (error) {
+      const diagnostic = {};
+      try {
+        diagnostic.ui = JSON.parse(await chrome.stable(`JSON.stringify({
+          console: { text: document.querySelector('#console')?.textContent, className: document.querySelector('#console')?.className, hidden: document.querySelector('#console')?.hidden },
+          reason: document.querySelector('#spec-decline-reason')?.value,
+          request: view.request,
+          decline: { id: view.declining, kind: view.declineKind, digest: view.declineDigest, root: view.declineRoot, anchorConnected: Boolean(view.declineAnchor?.isConnected) },
+          active: { tag: document.activeElement?.tagName, id: document.activeElement?.id, decision: document.activeElement?.dataset?.sentinelDecision },
+          row: document.querySelector('[data-sentinel-draft="decline-watch"]')?.textContent,
+        })`));
+      } catch (diagnosticError) { diagnostic.uiError = String(diagnosticError.message || diagnosticError); }
+      try {
+        diagnostic.backend = JSON.parse(box.run(alpha.repo, 'sentinels', '--json')).sentinels.find((row) => row.name === 'decline-watch');
+      } catch (diagnosticError) { diagnostic.backendError = String(diagnosticError.message || diagnosticError); }
+      error.message += '; decline diagnostic ' + JSON.stringify(diagnostic);
+      throw error;
+    }
+    recorded = JSON.parse(box.run(alpha.repo, 'sentinels', '--json')).sentinels;
+    const declined = recorded.find((row) => row.name === 'decline-watch');
+    assert.equal(declined.status, 'declined', 'the view decline is recorded on the board');
+    assert.equal(declined.reason, 'This watch should not run.');
+  } finally {
+    const cleanupErrors = [];
+    for (const cleanup of [() => chrome && closeSnapshotChrome(chrome), () => agentApi?.stop(), () => view.stop()]) {
+      try { await cleanup(); } catch (error) { cleanupErrors.push(error); }
+    }
+    if (cleanupErrors.length) throw new AggregateError(cleanupErrors, 'owned sentinel approval fixture failed cleanup');
   }
 });

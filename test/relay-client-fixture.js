@@ -1,3 +1,4 @@
+import { commandPhaseSnapshot } from '../src/command-phase.js';
 import { AGENT_SHELL_MARKERS, SSH_SHELL_MARKERS } from '../src/person.js';
 /** Private real CLI, auth and relay fixture; credentials never enter assertion messages [H1,H7,H18]. */
 import assert from 'node:assert/strict';
@@ -5,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { startFixtureChild as spawn, reportFixtureChildFailure, runFixtureChild } from './fixture-child.js';
 import { performance } from 'node:perf_hooks';
 import { createServer } from 'node:http';
-import { Transform } from 'node:stream';
+import { Readable, Transform } from 'node:stream';
 import { once } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { delimiter, join, resolve } from 'node:path';
@@ -17,6 +18,7 @@ import { createRelayHandler } from '../relay/service.js';
 import { createGitHubClient } from '../relay/github.js';
 import { githubFixture } from './relay-fixture.js';
 import { relayWorkBudgetMs, MAX_SNAPSHOT_ATTEMPTS } from './relay-budget.js';
+import { SEALED_SNAPSHOT_BYTES } from '../src/relay-limits.js';
 
 const CLI = resolve(import.meta.dirname, '../bin/pullboard.js');
 const MAX_OBSERVED_SNAPSHOT_UPLOADS = MAX_SNAPSHOT_ATTEMPTS;
@@ -58,7 +60,9 @@ export function assertSnapshotCheckpoints(trace, expected) {
       if (previous) {
         assert.equal(write.ciphertext, previous.ciphertext, 'a retried sequence preserves its exact ciphertext');
         assert.equal(previous.abort?.name, 'TimeoutError', 'only a timed-out PUT can add a transport attempt');
-        assert.ok(write.callers.some(caller => caller.includes('async retry@cli.js:')), 'syncRelay retries the persisted checkpoint');
+        // Bind the exported retry function, independent of its source module or namespace.
+        assert.ok(write.callers.some(caller => caller.split('@', 1)[0].replace(/^async /u, '').split('.').at(-1) === 'retrySync'),
+          'syncRelay retries the persisted checkpoint');
       }
       checkpoints.set(write.sequence, write);
     }
@@ -105,7 +109,8 @@ function childResult(root, env, argv, observedSnapshotUploads, initialSnapshotUp
     /** Retain the exact command and work-derived bound without exposing credentials. */
     const reportFailure = (code, signal, detail = '') => reportFixtureChildFailure({
       command: process.execPath, args: argv, status: code, signal,
-      elapsedMs: performance.now() - startedAt, stderr, env, detail,
+      elapsedMs: performance.now() - startedAt, stderr, env, detail: exceededDeadline
+        ? detail + '\nstall phase capture: ' + JSON.stringify(commandPhaseSnapshot(env.PULLBOARD_COMMAND_PHASE_FILE, child.pid)) : detail,
     });
     child.once('error', error => {
       if (settled) return;
@@ -238,9 +243,15 @@ globalThis.fetch = function tracedFetch(input, init) {
   let stateReadStarted = 0;
   let refuseSnapshotWrites = false;
   let stallApi = false;
+  let holdPublishes = false;
+  const heldPublishes = [];
+  let holdProbes = false;
+  const heldProbes = [];
   let loseSnapshotReply = null;
   const lostSnapshotReplies = [];
   let rejectSnapshotWrites = null;
+  let snapshotLimitBytes = null;
+  const sizeRefusals = [];
   let rejectedStateReads = null;
   let legacySnapshotApi = false;
   let beforeSnapshotWrite = null;
@@ -375,11 +386,22 @@ globalThis.fetch = function tracedFetch(input, init) {
       }
       return end(chunk, ...args);
     };
-    res.once('finish', () => recordResponse({ method: req.method, path: req.url,
-      request: Buffer.concat(requestChunks), response: Buffer.concat(responseChunks) }));
-    calls.push({ method: req.method, path: req.url, accept: req.headers.accept ?? '', engine: req.headers['x-pullboard-engine'],
-      browser: String(req.headers.cookie ?? '').includes('pb_session=') });
+    const call = { method: req.method, path: req.url, accept: req.headers.accept ?? '', engine: req.headers['x-pullboard-engine'],
+      browser: String(req.headers.cookie ?? '').includes('pb_session=') };
+    res.once('finish', () => {
+      call.requestBytes = Buffer.concat(requestChunks).length; // What the client sent, for size bounds (#1014).
+      recordResponse({ method: req.method, path: req.url, request: Buffer.concat(requestChunks), response: Buffer.concat(responseChunks) });
+    });
+    calls.push(call);
     if (stallApi && (req.url ?? '').startsWith('/api/')) { request.resume(); await new Promise(() => {}); }
+    // A held API2 checkpoint publish waits until released, so a test can act while an upload is in flight (#1014).
+    if (holdPublishes && req.method === 'POST' && /^\/api\/v2\/boards\/[0-9a-f]{32}\/uploads\/[^/]+\/publish$/u.test(req.url ?? '')) {
+      await new Promise(release => heldPublishes.push(release));
+    }
+    // A held upload-pause probe waits too, so a test can move while the publisher asks whether a pause is over (#1014).
+    if (holdProbes && req.method === 'GET' && /^\/api\/v2(?:\/boards\/[0-9a-f]{32}\/storage)?$/u.test(req.url ?? '')) {
+      await new Promise(release => heldProbes.push(release));
+    }
     if (legacySnapshotApi && req.method === 'GET' && req.url === '/api/v2') {
       res.writeHead(legacySnapshotApi === 'bad-route' ? 400 : 200, { 'content-type': 'application/json' });
       res.end(JSON.stringify(legacySnapshotApi === 'bad-route'
@@ -478,7 +500,24 @@ globalThis.fetch = function tracedFetch(input, init) {
       const action = beforeMove; beforeMove = null; await action();
     }
     if (await signIn(request, res)) return;
-    await api(request, res);
+    let forwarded = request;
+    if (snapshotWrite && snapshotLimitBytes !== null) {
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      const body = Buffer.concat(chunks);
+      const value = JSON.parse(body.toString('utf8'));
+      const sealedBytes = Buffer.from(value.sealed, 'base64url').byteLength;
+      if (sealedBytes > snapshotLimitBytes) {
+        const snapshotLimit = { sealedBytes, limit: snapshotLimitBytes };
+        sizeRefusals.push({ board: req.url.split('/')[4], ...snapshotLimit });
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ version: 1, error: { code: 'BAD_UPLOAD',
+          message: 'This sealed snapshot exceeds the configured upload limit; use bounded snapshots.', snapshotLimit } }));
+        return;
+      }
+      forwarded = Object.assign(Readable.from([body]), { method: request.method, url: request.url, headers: request.headers });
+    }
+    await api(forwarded, res);
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -529,6 +568,7 @@ globalThis.fetch = function tracedFetch(input, init) {
   }
   /** Invoke the production CLI in this private repository. */
   let cliChildIndex = 0;
+  let phaseSequence = 0;
   /** Verify and consume the next optional test-flow child descriptor. */
   function plannedSnapshotUploads(args) {
     if (!cliChildren) return undefined;
@@ -546,9 +586,10 @@ globalThis.fetch = function tracedFetch(input, init) {
     /** Observe only this child's received work; retries consume the same finite six-unit allowance. */
     const observedWork = () => ({ legacyUploads: snapshotWriteCount - writesBefore,
       ...Object.fromEntries(Object.entries(pageWork).map(([name, count]) => [name, count - pagesBefore[name]])) });
-    const childEnv = traceSnapshotWrites ? { ...env, PULLBOARD_TEST_RELAY_TRACE_FILE: traceFile,
+    const phaseEnv = { ...env, PULLBOARD_COMMAND_PHASE_FILE: join(scratch, `command-phase-${++phaseSequence}.jsonl`) };
+    const childEnv = traceSnapshotWrites ? { ...phaseEnv, PULLBOARD_TEST_RELAY_TRACE_FILE: traceFile,
       PULLBOARD_TEST_RELAY_TRACE_ORIGIN: origin,
-      NODE_OPTIONS: [env.NODE_OPTIONS, '--import=' + pathToFileURL(tracePreload).href].filter(Boolean).join(' ') } : env;
+      NODE_OPTIONS: [env.NODE_OPTIONS, '--import=' + pathToFileURL(tracePreload).href].filter(Boolean).join(' ') } : phaseEnv;
     const traceLinesBefore = traceSnapshotWrites ? readFileSync(traceFile, 'utf8').split('\n').filter(Boolean).length : 0;
     const initialUploads = traceSnapshotWrites ? 0 : snapshotUploads ?? DEFAULT_SNAPSHOT_UPLOADS;
     /** Read only this child’s sanitized fetch records, retaining evidence before fixture cleanup. */
@@ -760,6 +801,20 @@ globalThis.fetch = function tracedFetch(input, init) {
     refuseSnapshotWrites(value) { refuseSnapshotWrites = value; },
     /** Leave every board API request unanswered until its client times out, like an overloaded relay. */
     stallApi(value = true) { stallApi = value; },
+    /** Hold every API2 checkpoint publish until called with false, which releases the held ones. */
+    holdPublishes(value = true) {
+      holdPublishes = value;
+      if (!value) for (const release of heldPublishes.splice(0)) release();
+    },
+    /** How many API2 checkpoint publishes are being held. */
+    heldPublishes() { return heldPublishes.length; },
+    /** Hold every upload-pause probe (the API version and storage reads) until called with false. */
+    holdProbes(value = true) {
+      holdProbes = value;
+      if (!value) for (const release of heldProbes.splice(0)) release();
+    },
+    /** How many upload-pause probes are being held. */
+    heldProbes() { return heldProbes.length; },
     /**
      * Let the real relay accept the next API1 snapshot PUT, then drop its reply by closing the socket,
      * optionally answering later state reads with a chosen refusal, as the #919 lost-ACK review did.
@@ -776,6 +831,13 @@ globalThis.fetch = function tracedFetch(input, init) {
     },
     /** Return a chosen HTTP refusal for snapshot writes, without inspecting the sealed body. */
     rejectSnapshots(value) { rejectSnapshotWrites = value ? { ...value } : null; },
+    /** Enforce a real decoded-byte ceiling and report only sizes measured on the received upload. */
+    limitSnapshots(bytes) {
+      assert.ok(bytes === null || Number.isSafeInteger(bytes) && bytes > 0 && bytes <= SEALED_SNAPSHOT_BYTES);
+      snapshotLimitBytes = bytes;
+    },
+    /** Return the bounded facts of actual rejected uploads, without retaining their sealed contents. */
+    sizeRefusals() { return sizeRefusals.map(value => ({ ...value })); },
     /** Model an older relay's capability response without changing the real API1 request and journal bounds. */
     legacySnapshotApi(value = true) { legacySnapshotApi = value; },
     /** Order a competing real HTTP upload before the next native snapshot reaches the journal. */

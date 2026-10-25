@@ -41,7 +41,7 @@ function fixture(t) {
   /** Read persistent formats without invoking a writable opener. */
   const versions = () => { const db = new DatabaseSync(file, { readOnly: true }); try { return { schema: db.prepare('PRAGMA user_version').get().user_version, log: db.prepare("SELECT meta_value FROM board_meta WHERE meta_key='event_log_version'").get().meta_value }; } finally { db.close(); } };
   /** Change only one version constant in the uncommitted linked source. */
-  const bump = (name, from, to) => { const path = join(lane, 'src/board.js'); const text = readFileSync(path, 'utf8'); const updated = text.replace(`export const ${name} = ${from};`, `export const ${name} = ${to};`); assert.notEqual(updated, text); writeFileSync(path, updated); };
+  const bump = (name, from, to) => { const path = join(lane, 'src/board-schema-source.js'); const text = readFileSync(path, 'utf8'); const updated = text.replace(`export const ${name} = ${from};`, `export const ${name} = ${to};`); assert.notEqual(updated, text); writeFileSync(path, updated); return 'src/board-schema-source.js'; };
   return { dir, root, lane, env, file, run, cli, git, probe, versions, bump };
 }
 
@@ -61,7 +61,7 @@ test('an event-log-only worktree refuses upgrades and primary source still opens
 });
 
 test('a broken Git link cannot impersonate an installed release and upgrade a board [A5,A6]', t => {
-  const box = fixture(t); const before = box.versions(); box.bump('SCHEMA_VERSION', 2, 3);
+  const box = fixture(t); const before = box.versions(); box.bump('SCHEMA_VERSION', 3, 4);
   const broken = join(box.dir, 'broken'); mkdirSync(broken);
   for (const name of ['bin', 'src', 'package.json']) cpSync(join(box.lane, name), join(broken, name), { recursive: true });
   writeFileSync(join(broken, '.git'), 'gitdir: /nonexistent/pullboard-pruned-link\n');
@@ -71,9 +71,9 @@ test('a broken Git link cannot impersonate an installed release and upgrade a bo
 });
 
 test('a newer lane can make a real checked commit and doctor gives a working main-checkout step [A5,A6]', t => {
-  const box = fixture(t); const before = box.versions(); box.bump('SCHEMA_VERSION', 2, 3);
+  const box = fixture(t); const before = box.versions(); const versionSource = box.bump('SCHEMA_VERSION', 3, 4);
   writeFileSync(join(box.lane, '.githooks/pre-commit'), `#!/bin/sh\nexec "${process.execPath}" "$(git rev-parse --show-toplevel)/bin/pullboard.js" hook pre-commit\n`);
-  box.git(box.lane, 'add', 'src/board.js'); box.git(box.lane, 'commit', '-q', '-m', 'feat: propose a future schema [G1]');
+  box.git(box.lane, 'add', versionSource); box.git(box.lane, 'commit', '-q', '-m', 'feat: propose a future schema [G1]');
   assert.deepEqual(box.versions(), before, 'the actual checkout hook must not migrate the shared board');
   const r = box.cli(box.lane, box.lane, 'doctor', '--json'); assert.equal(r.status, 1, r.stderr + r.stdout);
   const finding = JSON.parse(r.stdout).problems.find(p => p.code === 'SCHEMA_VERSION');
@@ -121,7 +121,7 @@ test('a held item remains readable by newer-source read-only spec citations [A5,
   const claimed = box.cli(box.root, box.lane, 'claim', '1');
   assert.equal(claimed.status, 0, claimed.stderr + claimed.stdout);
   const before = readFileSync(box.file);
-  box.bump('SCHEMA_VERSION', 2, 3);
+  box.bump('SCHEMA_VERSION', 3, 4);
   const checked = box.cli(box.lane, box.lane, 'spec', 'check', '--json');
   assert.equal(checked.status, 0, checked.stderr + checked.stdout);
   assert.deepEqual(readFileSync(box.file), before, 'spec citations read a live claim without migrating or writing its board');

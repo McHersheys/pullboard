@@ -7,13 +7,13 @@ import {
   personMode,
   span,
   whoAmI,
-  withBoard,
+  withBoardRead,
 } from '../cli.js';
 
 /** Run `pullboard decisions` and return its exit code. */
 export function run(io, { values }) {
   const ctx = context(io);
-  const { asks, agents } = withBoard(ctx, (board) => {
+  const { asks, agents } = withBoardRead(ctx, (board) => {
     const me = whoAmI(ctx, board);
     const asPerson = personMode(ctx, me, values);
     return { asks: store.openDecisions(board, asPerson ? 'person' : [me.id, me.lane]), agents: store.listAgents(board) };

@@ -1,0 +1,54 @@
+import { withMoveNextSteps } from './move-registry.js';
+import { DEFAULT_NEXT_STEPS } from './next-step-defaults.js';
+/** Pure refusal guidance shared by JSON and CLI output without loading ledger or Git [P4,W4,C7]. */
+import { RECORDED_GENERIC_NEXT } from './recorded-refusal.js';
+
+import {
+  COORDINATOR_PERSON_REQUEST,
+  personRequestStep,
+  personRequestGuidance,
+} from './json-output.js';
+export {
+  COORDINATOR_PERSON_REQUEST,
+  personRequestStep,
+  personRequestGuidance,
+} from './json-output.js';
+
+/** @type {Readonly<Record<string, string>>} */
+export const NEXT_STEPS = withMoveNextSteps(DEFAULT_NEXT_STEPS);
+
+/**
+ * Take the step a message already spells out: the clause from its first repair word to the end of
+ * that line. One line only, so a multi-line report (a gate digest) is never repeated as the step.
+ *
+ * @param {string} message
+ * @returns {string | undefined}
+ */
+function stepInMessage(message) {
+  const line = String(message).split('\n')[0];
+  const match = /(?:^|; |\. |: )((?:run|install|upgrade|fix|restore|commit|merge|test|check out|set|give|use|reject|ask your coordinator|answer from the main checkout|the coordinator(?= (?:runs?|sets?|restores?|either|must)\b)|to keep looking|never work around)\b.*)/i.exec(line);
+  const step = match?.[1];
+  // UNKNOWN_MOVE contains a documentation placeholder, not a supported reason value.
+  return step && !/--reason\s+CODE\b/u.test(step) ? step : undefined;
+}
+
+/**
+ * The next step for one refusal: its existing final next line, else the step its raise site passed,
+ * else prose guidance or this code's row. Unknown remote codes name the service owner and rule.
+ *
+ * @param {{ code?: string, next?: string } | null | undefined} error
+ * @param {string} message
+ * @param {{ caller?: 'seat'|'coordinator'|'person'|'unknown' }} [options]
+ * @returns {string}
+ */
+export function nextStepFor(error, message, options = {}) {
+  if (personRequestGuidance(String(message), options) !== String(message)) return COORDINATOR_PERSON_REQUEST;
+  const code = typeof error?.code === 'string' ? error.code : '';
+  const finalStep = /(?:^|\r?\n)next:[ \t]*([^\r\n]*\S)[ \t]*(?:\r?\n)*$/u.exec(String(message))?.[1];
+  if (finalStep) return personRequestStep(finalStep.trim(), options);
+  if (typeof error?.next === 'string' && error.next.trim() && error.next.trim() !== RECORDED_GENERIC_NEXT) return personRequestStep(error.next.trim(), options);
+  if (code === 'SPEC_BEHIND_MAIN') return NEXT_STEPS.SPEC_BEHIND_MAIN;
+  return personRequestStep(stepInMessage(message) ?? NEXT_STEPS[code]
+    ?? `ask the service owner about refusal code ${code || '(unknown)'}, including the displayed refusal`, options);
+}
+

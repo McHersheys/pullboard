@@ -1,6 +1,6 @@
 /** Exercise landing against real private Git worktrees, hooks, SQLite and bare remotes [B3,R3]. */
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { after, test } from 'node:test';
 import * as store from '../src/board.js';
@@ -10,40 +10,40 @@ import { landingFailures, landingSubject } from '../src/land.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { startFixtureChild, runFixtureChild } from './fixture-child.js';
 import { assertNoRemoteLanding } from './land-no-remote-fixture.js';
-
+import { MARKER_NOT_YET, readMarker } from './land-marker-fixture.js';
+import { assertLandingStopIdentity } from './land-stop-fixture.js';
+import { assertLandingDoctrineCounts } from './land-doctrine-fixture.js';
+import {
+  onBoard,
+  events,
+  calls,
+  json,
+  mergeSubjects,
+  childOutcome,
+} from './land-board-fixture.js';
+import { landingTimeoutFixture } from './landing-timeout-fixture.js';
+import { assertParallelLanding, assertParallelCliLease, assertParallelNestedGate } from './land-parallel-fixture.js';
+import { landEnginesInOrder } from './land-engine-fixture.js';
+import {
+  assertCollisionFreeLanding,
+  assertDeferredLandingPriority,
+} from './land-collision-fixture.js';
 const e2e = createE2eHelpers();
 after(e2e.cleanup);
 const { sandbox, project, commitFile, waitFor, BIN } = e2e;
 const FILES = [1, 2, 3, 4].map((n) => `web/land-${n}.test.js`);
-const MARKER_NOT_YET = Symbol('marker not yet written');
+
+test('a landing stop never signals a reused process group [Q1,Q3,C7]', async () => {
+  await assertLandingStopIdentity();
+});
+
+test('a landing records a falling doctrine count and holds a rising count [B3,R3,D1,D3]', () => {
+  assertLandingDoctrineCounts({ landProject, itemWorktree, submitItem, acceptItem });
+});
 
 test('a repo with no remote lands into the local trunk and status reads as normal [I1,B3,R3,H5]', () => {
   assertNoRemoteLanding(sandbox, commitFile);
 });
-
-/** Read a complete marker, treating a missing or mid-write file as unpublished. */
-function readMarker(file) {
-  try { return JSON.parse(readFileSync(file, 'utf8')); }
-  catch (error) {
-    if (error.code === 'ENOENT' || error instanceof SyntaxError) return MARKER_NOT_YET;
-    throw error;
-  }
-}
-
-/** Read a private board through public functions, never by mutating its database. */
-function onBoard(box, action, clock) {
-  const board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'), clock);
-  try { return action(board); } finally { store.closeBoard(board); }
-}
-
-/** Return append-only public events for receipt and replay assertions. */
-function events(box) { return onBoard(box, (board) => store.events(board)); }
-
-/** Parse the gate's actual command arguments to distinguish full runs from single-file diagnoses. */
-function calls(box) {
-  return existsSync(box.calls) ? readFileSync(box.calls, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [];
-}
-
 /** Start a separate process holding an exclusive write transaction on the fixture board. */
 function startExclusiveBoardWriter(box, boardFile, name) {
   const ready = join(box.dir, `${name}-ready`);
@@ -68,16 +68,6 @@ function startExclusiveBoardWriter(box, boardFile, name) {
   });
   return { child, closed: childOutcome(child), ready, release, released };
 }
-
-/** Resolve when an owned fixture child closes or fails to spawn. */
-function childOutcome(child) {
-  return new Promise((resolveOutcome) => {
-    let spawnError = null;
-    child.once('error', (error) => { spawnError = error; });
-    child.once('close', (code, signal) => resolveOutcome({ code, signal, error: spawnError }));
-  });
-}
-
 /** Run the real pre-commit hook with a preload observing its agentAt SQLite read. */
 function startHookRead(box, probe, marker) {
   const env = { ...box.env, HOOK_READ_ATTEMPT: marker };
@@ -458,18 +448,6 @@ function launchHookProbe(box, probe, marker) {
   return child;
 }
 
-/** Run a successful JSON command, retaining child context if any actual hook or check refuses. */
-function json(box, cwd, ...args) {
-  const result = box.run(cwd, ...args, '--json');
-  assert.equal(result.code, 0, `${result.err}\n${result.out}`);
-  return JSON.parse(result.out);
-}
-
-/** Read the actual first-parent merge sequence at the published tip. */
-function mergeSubjects(box, base, tip) {
-  return box.git(box.repo, 'log', '--reverse', '--first-parent', '--format=%s', `${base}..${tip}`).split('\n').filter(Boolean);
-}
-
 test('land pushes one exact batch in verdict order and records each first-containing merge once [B3,R3]', () => {
   const box = landProject();
   const entries = verifiedFour(box, { order: [3, 1, 0, 2] });
@@ -558,15 +536,20 @@ test('land bisects a real red, blocks stale proof and refuses an unverified stac
   assert.equal(result.culprits[0].tests[0].file, FILES[2]);
   assert.match(result.culprits[0].tests[0].name, /keeps the landed behavior/u);
   assert.ok(json(box, box.repo, 'show', String(entries[2].item)).thread.some((entry) => entry.type === 'fact' && entry.text.includes(FILES[2])));
-  assert.deepEqual(calls(box).slice(beforeCalls), [[], ['--alone', FILES[2]], [], []], 'one red batch, one isolated diagnostic and two bisection gates; cached green tree is not retested');
+  assert.deepEqual(calls(box).slice(beforeCalls), [[], ['--alone', FILES[2]], [], [], []],
+    'one red batch, one diagnostic, two bisection gates, then the final tree: returning its culprit changes badge counts, so that different tree needs its own gate');
   assert.equal(json(box, box.repo, 'show', String(entries[0].item)).item_merged_commit, result.batch.tip);
   for (const entry of entries.slice(1)) assert.equal(json(box, box.repo, 'show', String(entry.item)).item_merged_commit, null);
   assert.equal(box.git(box.remote, 'rev-parse', 'main'), result.batch.tip);
   assert.notEqual(result.batch.tip, base);
   const afterCalls = calls(box).length;
+  const beforeEmptyEvents = events(box);
+  const beforeEmptyLease = onBoard(box, board => store.landingLeaseState(board));
   const again = box.run(box.repo, 'land', '--json');
   assert.equal(again.code, 1, again.out + again.err);
   assert.equal(JSON.parse(again.out).error.code, 'STALE_VERDICT', 'an all-blocked queue refuses instead of suggesting an empty successful land');
+  assert.deepEqual(events(box), beforeEmptyEvents, 'an idle all-blocked selection adds no lease events');
+  assert.deepEqual(onBoard(box, board => store.landingLeaseState(board)), beforeEmptyLease, 'a stale refusal takes no lease');
   assert.equal(json(box, box.repo, 'show', String(entries[2].item)).item_status, 'open', 'the known red is returned to its builder and is no longer a verified landing candidate');
   assert.equal(calls(box).length, afterCalls, 'known unchanged red is not retried');
 });
@@ -585,6 +568,13 @@ test('land names sibling conflicts whose reviews share the unchanged main [B3,R3
   assert.deepEqual(result.landed, [entries[0].item]);
   assert.deepEqual(result.conflicts, [{ id: entries[1].item, files: [FILES[0]] }], 'the actual batch names the collision between the two fresh siblings');
 });
+
+/** Keep the complete private diagnostic refusal in a failing assertion before fixture cleanup deletes its logs. */
+function diagnosticOutput(batch) {
+  const directory = dirname(batch.logPath);
+  return readdirSync(directory).filter(file => file.startsWith('diagnostic-') && file.endsWith('.log'))
+    .map(file => readFileSync(join(directory, file), 'utf8')).join('\n');
+}
 
 test('land diagnostics inherit their browser gate lease [C7]', () => {
   const box = landProject();
@@ -618,7 +608,7 @@ test('land diagnostics inherit their browser gate lease [C7]', () => {
     delete box.env.LAND_SUPPRESS_RED;
   }
   const result = json(box, box.repo, 'land');
-  assert.equal(result.batch.state, 'flaky', 'the full gate is red while its isolated diagnosis passes');
+  assert.equal(result.batch.state, 'flaky', `the full gate is red while its isolated diagnosis passes: ${diagnosticOutput(result.batch)}`);
   assert.deepEqual(result.flakes.map(({ test: file }) => file), [FILES[0]]);
   const inherited = JSON.parse(readFileSync(marker, 'utf8'));
   assert.equal(inherited.file, FILES[0]);
@@ -1268,6 +1258,9 @@ test('landing diagnostics retain unknown failures and merge subjects obey typed 
   const root = '/private/landing';
   const failures = landingFailures(`not ok 1 - located failure\n  location: ${root}/test/one.test.js:3:4\nnot ok 2 - unknown failure\n`, root);
   assert.deepEqual(failures, [{ name: 'located failure', file: 'test/one.test.js' }, { name: 'unknown failure', file: null }]);
+  // Node 24 node --test reports with spec by default: its failing-tests summary names each file and test (#1071).
+  const spec = landingFailures(`\u2716 red one (1.2ms)\n\u2716 failing tests:\n\ntest at web/red.test.js:6:1\n\u2716 red one (1.2ms)\n  AssertionError\n\ntest at /elsewhere/x.test.js:1:1\n\u2716 outside (3ms)\n`, root);
+  assert.deepEqual(spec, [{ name: 'red one', file: 'web/red.test.js' }, { name: 'outside', file: null }], 'spec failures keep their file, and an outside path is unknown');
   const subject = landingSubject({ item_id: 91, item_title: 'A VERY LONG TITLE '.repeat(10), item_spec_ids: 'B3,R3' });
   assert.equal(subject, 'chore(merge): a very long title a very long title a very long [B3,R3]');
   assert.ok(subject.length <= 72);
@@ -1483,3 +1476,22 @@ test('a publish gate run is recorded and a red and green pair it sees files the 
   assert.equal(flakes().length, 1, 'another publish receipt creates no duplicate flake item');
   assert.equal(calls(box).length - before, 3, 'each receipt represents one actual full publish gate');
 });
+test('a landing gate past its timeout stops cleanly [E27,E29]', () => landingTimeoutFixture({ landProject, itemWorktree, submitItem, acceptItem, onBoard, json }));
+
+test('landing tests candidate batches in parallel and lands the longest green prefix [B3,V4]', { timeout: 180_000 }, // budget: two real three-item private landings and bounded overlap barriers; no speed threshold.
+() => assertParallelLanding({ landProject, itemWorktree, submitItem, acceptItem, json }));
+
+test('parallel CLI landing retains its lease and fences lost authority [B3,V4,Q1,Q3]', { timeout: 180_000 }, // budget: two private CLI landings with cooperative gate barriers; hang ceiling only, no speed threshold.
+async () => assertParallelCliLease({ landProject, itemWorktree, submitItem, acceptItem, onBoard, waitFor, BIN }));
+
+test('parallel landing refuses a live inherited gate before scheduling [B3,V4,Q1,Q3]', { timeout: 90_000 }, // budget: private verified item plus two immediate guarded entries; hang ceiling only.
+() => assertParallelNestedGate({ landProject, itemWorktree, submitItem, acceptItem, onBoard, BIN }));
+test('the landing merge assigns engine numbers in landing order, either order, and the board replays [B3,R3,H16]', () => {
+  for (const order of [[0, 1], [1, 0]]) landEnginesInOrder({ landProject, itemWorktree, submitItem, acceptItem, json, onBoard }, order);
+});
+
+test('a landing batch leaves out an item that touches a file already in the batch [B3,R3,R1,H16]',
+() => assertCollisionFreeLanding({ landProject, itemWorktree, submitItem, acceptItem, json, onBoard }));
+
+test('a deferred landing item keeps its place ahead of newer acceptances after merge-only reaccept [B3,R3,R1,H16]',
+() => assertDeferredLandingPriority({ landProject, itemWorktree, submitItem, acceptItem, json, onBoard }));

@@ -5,11 +5,13 @@ import { Refused } from './refused.js';
 const MOVES = {
   'spec-approve': { prefix: ['spec', 'approve'], positions: ['ids'], flags: ['by', 'text'] },
   'spec-decline': { prefix: ['spec', 'decline'], positions: ['ids'], flags: ['reason'] },
+  'sentinel-approve': { prefix: ['sentinel', 'approve'], positions: ['name'], flags: ['digest'] },
+  'sentinel-decline': { prefix: ['sentinel', 'decline'], positions: ['name'], flags: ['digest', 'reason'] },
   'spec-answer': { prefix: ['spec', 'answer'], positions: ['row', 'answer'] },
   'check-accept': { prefix: ['check', 'accept'], item: true },
   add: { positions: ['lane', 'title'], flags: ['criterion', 'specs', 'parent', 'after', 'brief', 'route', 'check'], booleans: ['wait'], booleans: ['wait'] },
   edit: { item: true, flags: ['criterion', 'brief', 'route', 'check', 'reason'], booleans: ['wait'], booleans: ['wait'] },
-  fact: { item: true, positions: ['kind', 'text'], flags: ['supersedes', 'ref', 'implies'] },
+  fact: { item: true, positions: ['kind', 'text'], flags: ['answers', 'supersedes', 'ref', 'implies'] },
   claim: { item: true },
   release: { item: true, flags: ['note'] },
   submit: { item: true },
@@ -18,7 +20,7 @@ const MOVES = {
   merged: { item: true, positions: ['commit'] },
   withdraw: { item: true, positions: ['reason'] },
   refreeze: { item: true },
-  reopen: { item: true, flags: ['note', 'cause'], lists: ['conflict'] },
+  reopen: { item: true, flags: ['note', 'cause'], lists: ['conflict'], booleans: ['withdraw-verdict'] },
   escalate: { item: true, flags: ['note'] },
   hold: { positions: ['lane'], flags: ['reason'], booleans: ['off'] },
   shout: { positions: ['to', 'text'], optional: ['to'], booleans: ['decision'], flags: ['evidence', 'outcome', 'item', 'commit'] },
@@ -33,6 +35,14 @@ export function moveArgs({ verb, item, args = {} }) {
   const form = Object.hasOwn(MOVES, verb) ? MOVES[verb] : null;
   if (!form) throw new Refused('BAD_REQUEST', `no API move ${String(verb)}; use a board move such as add, claim, submit, verify, shout or answer`);
   if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Refused('BAD_REQUEST', 'args needs a JSON object containing this move\'s arguments');
+  if (['sentinel-approve', 'sentinel-decline'].includes(verb)) {
+    if (typeof args.digest !== 'string' || !/^[a-f0-9]{64}$/u.test(args.digest)) {
+      throw new Refused('BAD_REQUEST', 'a sentinel decision needs the exact proposal digest; refresh the pending watch before deciding');
+    }
+    if (verb === 'sentinel-decline' && (typeof args.reason !== 'string' || !args.reason.trim())) {
+      throw new Refused('BAD_REQUEST', 'declining a sentinel needs a reason; say why this proposal should not run');
+    }
+  }
   const allowed = [...(form.positions ?? []), ...(form.flags ?? []), ...(form.lists ?? []), ...(form.booleans ?? [])];
   for (const key of Object.keys(args)) if (!allowed.includes(key)) throw new Refused('BAD_REQUEST', `${verb} does not take args.${key}; use only this CLI move's arguments`);
   const argv = form.prefix ? [...form.prefix] : [verb];

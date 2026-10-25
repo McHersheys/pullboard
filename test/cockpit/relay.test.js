@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** Cockpit relay checks, using the shared real-board fixtures [N26]. */
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';

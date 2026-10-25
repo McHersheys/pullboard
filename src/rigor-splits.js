@@ -3,6 +3,12 @@ import { loadDoctrine } from './doctrine.js';
 import { proposeDoctrine } from './doctrine-rulings.js';
 import { Refused } from './refused.js';
 import {
+  automaticSourceFromText,
+  readAutomaticRigorSource,
+} from './rigor-auto-source.js';
+import { planAutomaticRigorApply } from './rigor-auto-apply.js';
+import { writeRowApply } from './row-decisions.js';
+import {
   splitAlreadyProposed,
   splitProposal,
 } from './rigor-conflicts.js';
@@ -24,6 +30,18 @@ export async function draftConflictSplits(ctx, report, { read, reserve }) {
   const splitDrafts = [];
   for (const file of report.hotFiles) {
     const doctrine = loadDoctrine(ctx.info.root, ctx.config);
+    const automatic = state.rows.findLast(row => row.target === 'doctrine'
+      && readAutomaticRigorSource(automaticSourceFromText(row.text))?.key === `conflict:${encodeURI(file.file)}`);
+    if (automatic) {
+      // The old explicit command prepares the already recorded advice, rather than asking twice.
+      const plan = planAutomaticRigorApply(ctx.info.root, ctx.config, [automatic], state.decisions ?? []);
+      if (plan.files.length) {
+        writeRowApply(ctx.info.root, plan);
+        const row = loadDoctrine(ctx.info.root, ctx.config).repo.rows.find(row => row.id === automatic.id);
+        splitDrafts.push({ id: `doctrine:${row.id}`, row });
+      }
+      continue;
+    }
     if (splitAlreadyProposed(doctrine.repo.rows, file)) continue;
     // A reservation is not a materialized draft: a crash between these two writes must be recoverable.
     const interrupted = state.rows.find(row => row.written && row.target === 'doctrine'

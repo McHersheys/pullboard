@@ -1,5 +1,7 @@
 /** The pullboard hook command, in its own module so an item adding another command never edits these lines. */
 import * as store from '../board.js';
+import { pendingCommitSignoffProblem } from '../commit-signoff.js';
+import { landingBatchOwnsRoot } from '../landing-candidates.js';
 import {
   hookRead,
   readStdin,
@@ -24,6 +26,7 @@ import {
   FIX_NOTE,
   preCommitProblems,
   prePushProblems,
+  gitBoardDataPush,
   pushesTrunk,
 } from '../hooks.js';
 import {
@@ -67,12 +70,14 @@ export async function hookCommand(io, { first, second }) {
   if (first === 'pre-commit' || first === 'pre-merge-commit') {
     applyFixers(info.root, ctx.config.fix).forEach((note) => io.err(`pullboard pre-commit: ${note}`));
     const agent = info.isMain ? null : hookRead(ctx, (board) => store.agentAt(board, info.root));
-    const landing = hookRead(ctx, (board) => store.landingBatches(board).some((batch) => batch.root === info.root && !['landed', 'blocked'].includes(batch.state)));
+    const landing = hookRead(ctx, (board) => store.landingBatches(board).some((batch) => landingBatchOwnsRoot(batch, info.root)));
     if (landing) io.caller('coordinator', info.root);
     else if (agent) io.caller('seat', info.root);
     problems = preCommitProblems({ root: info.root, isMain: info.isMain || landing, config: ctx.config, agent, boardFile: ctx.file, preMergeHook: first === 'pre-merge-commit', onNotice: (message) => io.err(`pullboard pre-commit: warning: ${message}`) });
   } else if (first === 'commit-msg') {
     const message = readFileSync(second ?? '', 'utf8');
+    const signoff = pendingCommitSignoffProblem(info.root, message);
+    if (signoff) { io.err(signoff); return 1; }
     const spec = withRowDrafts(loadSpec(info.root, ctx.config), hookRead(ctx, (board) => store.rowDrafts(board)));
     commitCitationWarnings(message, { spec, doctrine: ctx.doctrine })
       .forEach((warning) => io.say(`pullboard commit-msg: warning: ${warning}`));
@@ -84,6 +89,10 @@ export async function hookCommand(io, { first, second }) {
     problems = commitMsgProblems(message, { rules: ctx.config.commits, spec, doctrine: ctx.doctrine, claimedItems });
   } else if (first === 'pre-push') {
     const refsText = await readStdin(io.stdin);
+    if (gitBoardDataPush(info.root, refsText)) {
+      io.say('pre-push: validated append-only board data; no code refs are updated');
+      return 0;
+    }
     problems = prePushProblems(info.root, refsText);
     if (!problems.length) {
       const landing = pushesTrunk(refsText, trunkRef(info.root));

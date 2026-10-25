@@ -15,6 +15,7 @@ import {
 } from './view/star.js';
 import { commandPhrases } from './help.js';
 import { personNeeds } from './needs.js';
+import { homeRules } from './view/home.js';
 import {
   drawHosted,
   hostedBrowser,
@@ -101,7 +102,7 @@ export function cockpitPage(key = '', { snapshot = false, readOnly = false, requ
   const releaseInfo = hostedReleaseInfo(hostedReleaseVersion, hostedReleaseVersions, releaseHosted);
   const css = stylesheet ?? (snapshot ? 'view.css' : transportModule ? '/view.css' : '/view.css?k=' + encodeURIComponent(key));
   const cssAttribute = css.replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
-  const pageScope = { STAR_KEY, applyStateDelta, closePageDialog, connection, drawHosted, hostedBrowser, hostedOptions, hostedReleaseDistance, hostedReleaseNote, hostedState, lifecycle, moduleOption, openPageDialog, pageStartup, paths, personNeeds, readOnly, releaseHosted, releaseInfo, requestMode, roadmapBlock, roadmapHeaders, roadmapSummary, sharingPresentation, snapshot, staleChip, tabValue, transportModule };
+  const pageScope = { STAR_KEY, applyStateDelta, closePageDialog, connection, drawHosted, hostedBrowser, hostedOptions, hostedReleaseDistance, hostedReleaseNote, homeRules, hostedState, lifecycle, moduleOption, openPageDialog, pageStartup, paths, personNeeds, readOnly, releaseHosted, releaseInfo, requestMode, roadmapBlock, roadmapHeaders, roadmapSummary, sharingPresentation, snapshot, staleChip, tabValue, transportModule };
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -131,6 +132,7 @@ ${hostedLocal && !snapshot ? '<div class="hosted-mark" aria-hidden="true"><svg v
 <div class="body">
 <header class="top">
   <nav class="tabs" id="tabs" aria-label="Board">
+    <button class="tab" data-tab="home" type="button">Home</button>
     <button class="tab" data-tab="items" type="button">Items</button>
     <button class="tab" data-tab="shouts" type="button">Shouts</button>
     <button class="tab" data-tab="spec" type="button">Spec</button>
@@ -166,6 +168,7 @@ ${hostedLocal && !snapshot ? '<div class="hosted-mark" aria-hidden="true"><svg v
     <section class="card-panel group-panel"><h2>Activity</h2><div class="feed" id="group-activity"></div></section>
   </section>
   <section class="card-panel person-requests" id="person-requests" aria-label="Your requests" aria-live="polite" hidden></section>
+  <section data-pane="home" class="home" aria-label="Home"><section class="card-panel home-card" id="home-rules" aria-label="Your rules"></section><section class="card-panel home-card" aria-label="Needs you"><h2>Needs you</h2><ol class="needs home-needs" id="home-needs"></ol><p class="empty" id="home-calm" hidden>Nothing needs you.</p></section></section>
   <section data-pane="items" class="two">
     <div class="primary">
       <section class="card-panel proof-stats" id="proof-stats" aria-label="Board proof stats" hidden></section>
@@ -636,7 +639,7 @@ function playReplay() {
  * this until the new board arrives, so the main column never mixes the old board with the new pick.
  */
 function renderSide() {
-  /** Render a repo button or one muted recovery line when its board cannot be read. */
+  /** Render a repo button or a transient board-read error line. Registered unreadable boards are disclosed below. */
   const repoButton = (x) => {
     if (!x.ok) return '<p class="repo-error" role="status"><b>' + esc(x.name) + ':</b> ' + esc(x.error) + '</p>';
     const on = x.root === view.root;
@@ -644,15 +647,20 @@ function renderSide() {
     const line = x.loading ? 'Loading…' : (asks ? '<span class="asks">' + esc(parts.slice(0, asks).join(' · ')) + '</span>' + (parts.length > asks ? ' · ' : '') : '') + esc(parts.slice(asks).join(' · '));
     return '<button class="proj repo' + (on ? ' on' : '') + '"' + (on ? ' aria-current="true"' : '') + ' data-root="' + esc(x.root) + '" title="' + esc(x.root) + '" type="button"><span class="pname">' + (x.owner ? '<span class="owner">' + esc(x.owner) + '/</span>' : '') + esc(x.name) + '</span><small>' + (hosted.local && x.source ? '<span class="src">' + (x.source === 'relay' ? 'shared' : 'this computer') + '</span> · ' : '') + line + '</small></button>';
   };
-  const groupedRoots = new Set(data.groups.flatMap((group) => group.repos.map((repo) => repo.root)));
-  const grouped = data.groups.map((group) => {
+  const readableProjects = data.projects.filter((repo) => repo.ok);
+  const unreadableProjects = data.projects.filter((repo) => !repo.ok && repo.warningCode === 'BOARD_UNAVAILABLE');
+  const otherErrors = data.projects.filter((repo) => !repo.ok && repo.warningCode !== 'BOARD_UNAVAILABLE').map(repoButton).join('');
+  const groups = projectGroups(readableProjects);
+  const groupedRoots = new Set(groups.flatMap((group) => group.repos.map((repo) => repo.root)));
+  const grouped = groups.map((group) => {
     const on = group.key === view.root;
     const needs = group.repos.reduce((total, repo) => total + needCount(repo), 0);
     const count = group.repos.length;
     return '<section class="repo-group"><button class="proj project-pick' + (on ? ' on' : '') + '"' + (on ? ' aria-current="true"' : '') + ' data-root="' + esc(group.key) + '" type="button"><span class="pname">' + esc(group.name) + '</span><small>' + (needs ? '<span class="asks">' + needs + ' need you</span> · ' : '') + count + ' ' + (count === 1 ? 'repo' : 'repos') + '</small></button><div class="repos">' + group.repos.map(repoButton).join('') + '</div></section>';
   }).join('');
-  const loose = data.projects.filter((repo) => !groupedRoots.has(repo.root)).map(repoButton).join('');
-  $('proj-list').innerHTML = grouped || loose ? grouped + loose : '<div class="empty">None yet.</div>';
+  const loose = readableProjects.filter((repo) => !groupedRoots.has(repo.root)).map(repoButton).join('');
+  const unreadable = unreadableProjects.length ? '<details class="unreadable-projects"><summary>' + unreadableProjects.length + ' ' + (unreadableProjects.length === 1 ? 'board can' : 'boards can') + ' no longer be found</summary><ul>' + unreadableProjects.map((repo) => '<li><b>' + esc(repo.name) + '</b> <code>' + esc(repo.root) + '</code></li>').join('') + '</ul>' + (snapshot || readOnly ? '' : '<button type="button" data-forget-unreadable>Forget all</button>') + '</details>' : '';
+  $('proj-list').innerHTML = grouped || loose || otherErrors || unreadable ? grouped + loose + otherErrors + unreadable : '<div class="empty">None yet.</div>';
   const p = data.project;
   const selectedGroup = data.groups.find((group) => group.key === view.root);
   const selectedRepo = data.projects.find((x) => x.root === view.root);
@@ -801,7 +809,9 @@ function milestoneItem(entry, p) {
   const source = root === view.root ? p : root ? named[0] : null;
   const label = local ? '#' + entry.id : String(entry.id);
   const expanded = view.tab === 'roadmap' && view.roadmapOpen.get(JSON.stringify([view.root, 'i:' + label])) === true;
-  const detail = item && expanded ? detailOf(source, item, true, root) : null;
+  // A folded row holds whatever detail is already kept, so it opens in place whole (#1039).
+  const detail = item ? detailOf(source, item, expanded, root) : null;
+  if (item && !expanded) roadmapAhead.set('i:' + label, () => detailOf(source, item, 'ahead', root));
   // A status the lifecycle declares; the roadmap says unavailable or missing for an item it could not read.
   const read = item || (FLOW.states.some((state) => state.id === entry.status) ? { status: entry.status, verdict: null } : null);
   return {
@@ -815,8 +825,10 @@ function milestoneItem(entry, p) {
       holds: root === view.root ? source.holds : source.laneHolds, items: source.items, agents: source.agents, state: stateOf,
       address: (id) => itemAddress(id, root), board: root === view.root ? null : root,
       releases: (p.milestones || []).filter((milestone) => milestone.items.some((ref) => ref.id === entry.id)).map((milestone) => milestone.name),
-      loading: detail?.loading, error: detail?.error,
+      error: expanded ? detail?.error : undefined,
     }) : null,
+    // Until its omitted fields arrive, an expanded row paints what its summary holds and fills the rest in place (#1039).
+    pending: expanded && Boolean(detail?.loading),
     stage: entry.state === 'landed' ? 'merged' : entry.state === 'accepted' ? 'accepted' : item ? pipelineStage(item) : entry.status,
     word: entry.status,
     open: item ? { root, id } : null,
@@ -830,6 +842,7 @@ function milestoneItem(entry, p) {
 function updateRoadmapPanel() {
   const panel = $('roadmap-panel');
   if (!panel || view.tab !== 'roadmap') return;
+  aheadRoadmapRows();
   const entries = [...panel.querySelectorAll('[data-roadmap-jump]')].map((button) => ({
     key: button.dataset.roadmapJump,
     target: $('roadmap-list').querySelector('[data-key="' + CSS.escape(button.dataset.roadmapJump) + '"]'),
@@ -884,7 +897,7 @@ function milestoneRow(row, titles) {
   const detail = row.block ? row.block.detail : '<p>' + esc(row.why || row.word) + '</p>';
   // Every row stays on the Roadmap; only its explicit Open in Items link navigates (#605).
   return '<li><div ' + toggle + ' role="button" tabindex="0">' + inner + '</div>'
-    + '<div class="milestone-why"' + (open ? '' : ' hidden') + '>' + detail + '</div></li>';
+    + '<div class="milestone-why"' + (open ? '' : ' hidden') + (row.pending ? ' aria-busy="true"' : '') + '>' + detail + '</div></li>';
 }
 
 /** Read supplied landed counts and explicit shipments; keep old exports readable and omit withdrawn rows. */
@@ -1055,8 +1068,10 @@ function render() {
   const p = data.project;
   const group = data.group;
   renderSide();
-  $('project-loading').hidden = data.root === view.root;
-  if (data.root !== view.root) {
+  // A list that names a board no read has answered yet is still loading, never a machine without boards (#1035).
+  const listing = !p && !group && data.projects.some((entry) => entry.ok);
+  $('project-loading').hidden = data.root === view.root && !listing;
+  if (data.root !== view.root || listing) {
     // Keep the cached picker available, but never label the last board's counts as the new one.
     document.querySelectorAll('[data-pane]').forEach((pane) => { pane.hidden = true; });
     for (const id of ['products', 'group-view', 'proof-stats', 'upgrade-note', 'person-requests', 'credentials', 'find-results']) $(id).hidden = true;
@@ -1098,6 +1113,7 @@ function render() {
   // Every refresh redraws the Roadmap. Left alone, that would send the phone's release chips back to their start
   // and the panel back to its top under a person mid-scroll, so both keep where they were.
   const chipsAt = $('roadmap-releases')?.scrollLeft ?? 0, panelAt = $('roadmap-panel')?.scrollTop ?? 0;
+  roadmapAhead.clear();
   $('roadmap').innerHTML = roadmapCards(p, titles);
   // The mark sets its chip in bold, which widens it, and the fresh row has no mark yet. Restored first, the scroll
   // would clamp to a row narrower by that bold and leave the chips short of where they were (#452).
@@ -1113,7 +1129,8 @@ function render() {
   const needs = personalNeeds.filter((row) => !['draft', 'rigor-draft', 'sentinel-draft', 'agent-approved'].includes(row.kind)).map((row) => row.kind === 'decision'
     ? ['decide:' + row.id, row.ref, row.text, 'decide', row.at]
     : row.kind === 'pending' ? ['spec:' + row.id, row.ref, row.text, 'answer ' + row.ref] // the person's words; agents get the command (#875)
-      : ['tab:shouts', row.ref, row.text, row.what, p.holds.find((hold) => hold.hold_lane === row.id)?.hold_at]);
+      : row.kind === 'block' ? [null, row.ref, row.text, row.what, row.at, 'block']
+        : ['tab:shouts', row.ref, row.text, row.what, p.holds.find((hold) => hold.hold_lane === row.id)?.hold_at]);
   const drafts = personalNeeds.find((row) => row.kind === 'draft')?.count ?? 0;
   const rigorDrafts = personalNeeds.filter((row) => row.kind === 'rigor-draft');
   const sentinelDrafts = personalNeeds.filter((row) => row.kind === 'sentinel-draft');
@@ -1122,15 +1139,24 @@ function render() {
   // its kind where an item has its lane, and what to do at the right. Every call is a row; the draft rows are one row
   // with their count. Read-only, a row is its words, opening nothing.
   $('needs').hidden = (!needs.length && !drafts && !rigorDrafts.length && !sentinelDrafts.length && !agentApprovals.length) || view.state !== 'active' || Boolean(view.lane);
-  const needRow = ([target, ref, text, what, at], kind, action) => '<li class="row ask"' + (readOnly ? '' : ' data-go="' + esc(target) + '"') + '><span class="dot ask"></span><div><div class="t">' + (ref ? '<span>' + esc(ref) + '</span>' : '') + rich(text, titles, !readOnly) + '</div>'
+  const needRow = ([target, ref, text, what, at], kind, action) => '<li class="row ask"' + (readOnly || !target ? '' : ' data-go="' + esc(target) + '"') + '><span class="dot ask"></span><div><div class="t">' + (ref ? '<span>' + esc(ref) + '</span>' : '') + rich(text, titles, !readOnly) + '</div>'
     + (at ? '<span class="row-age">' + age(at) + '</span>' : '') + '<div class="meta"><span class="why"><b>NEEDS YOU</b> ' + esc(kind) + '</span></div></div><span class="chip warn">' + esc(action) + '</span></li>';
-  const needKind = (entry) => entry[3] === 'decide' ? needRow([entry[0], '', entry[2], entry[3], entry[4]], 'a decision, asked by ' + entry[1], 'decide')
-    : entry[0].startsWith('spec:') ? needRow(entry, 'an open question in SPEC.md', 'answer') : needRow(entry, entry[3], 'release');
-  $('needs').innerHTML = needs.map(needKind).join('')
-    + rigorDrafts.map(row => needRow([row.target, row.ref, row.text], 'a proved Rigor draft', 'Approve or Decline')).join('')
+  const needKind = (entry) => entry[5] === 'block' ? needRow(entry, entry[3], 'next step')
+    : entry[3] === 'decide' ? needRow([entry[0], '', entry[2], entry[3], entry[4]], 'a decision, asked by ' + entry[1], 'decide')
+      : entry[0].startsWith('spec:') ? needRow(entry, 'an open question in SPEC.md', 'answer') : needRow(entry, entry[3], 'release');
+  const needsHtml = needs.map(needKind).join('')
+    + rigorDrafts.map(row => needRow([row.unproved && !row.materialized ? null : row.target, row.ref,
+      row.unproved && !row.materialized ? row.text + ' ' + row.what : row.text],
+    row.unproved ? 'an unproved Rigor proposal' + (row.evidence?.occurrences ? ', repeated ' + row.evidence.occurrences + (row.evidence.occurrences === 1 ? ' time' : ' times') : '') : 'a proved Rigor draft',
+    row.unproved && !row.materialized ? 'prepare review' : 'Approve or Decline')).join('')
     + sentinelDrafts.map(row => sentinelDraftRow(row)).join('')
     + agentApprovals.map(row => agentApprovalRow(row)).join('')
     + (drafts ? needRow(['tab:spec', String(drafts), 'draft spec rows to approve or drop'], 'Spec rows waiting on you', 'review') : '');
+  $('needs').innerHTML = needsHtml;
+  // Home reads the rules first, then the same calls (#967).
+  $('home-rules').innerHTML = homeRules(p.spec);
+  $('home-needs').innerHTML = needsHtml;
+  $('home-calm').hidden = Boolean(needsHtml);
 
   const lanes = p.lanes;
   const working = lanes.filter((l) => l !== 'coordinator');
@@ -1230,8 +1256,11 @@ function render() {
   $('detail').hidden = adding;
   if (!selected) $('detail').innerHTML = '<div class="empty">' + (view.tab === 'items' && view.addressDetail !== null && view.addressDetail !== 'pipeline' ? 'No item #' + esc(view.addressDetail) + ' exists here.' : 'Pick an item to see its criterion, verdicts and history.') + '</div>';
   const opened = selected && !view.adding ? detailOf(p, selected, view.tab === 'items' && data.root === view.root) : null;
-  if (opened && !opened.item) $('detail').innerHTML = '<div class="stack"><p class="detail-wait muted" role="status">'
-    + (opened.error ? 'Could not load #' + selected.id + ': ' + esc(opened.error) : 'Loading #' + selected.id + '…') + '</p></div>';
+  /** An item's heading: its id, title, state, lane and route, all of which its summary holds. */
+  const head = (item, s = stateOf(item)) => '<div><h2><span>#' + item.id + '</span>' + rich(item.title, titles) + '</h2><div class="meta spaced">' + (s === 'open' ? openChip(item) : chip(s)) + staleChip(item) + '<span class="chip">' + esc(item.lane) + '</span><span class="chip">' + esc(item.route) + '</span></div></div>';
+  if (opened?.error) $('detail').innerHTML = '<div class="stack"><p class="detail-wait muted" role="status">Could not load #' + selected.id + ': ' + esc(opened.error) + '</p></div>';
+  // Until its omitted fields arrive, an opened item paints its heading from its summary and fills the rest in place (#1039).
+  else if (opened?.loading) $('detail').innerHTML = '<div class="stack" aria-busy="true">' + head(selected) + '</div>';
   const item = opened?.item;
   if (item) {
     const s = stateOf(item);
@@ -1258,7 +1287,7 @@ function render() {
     // Why it came back is the first thing the person reads; the verdicts before it stay below.
     const back = rejected(item);
     const earlier = back ? item.verdicts.slice(0, -1) : item.verdicts;
-    $('detail').innerHTML = '<div class="stack"><div><h2><span>#' + item.id + '</span>' + rich(item.title, titles) + '</h2><div class="meta spaced">' + (s === 'open' ? openChip(item) : chip(s)) + staleChip(item) + '<span class="chip">' + esc(item.lane) + '</span><span class="chip">' + esc(item.route) + '</span></div></div>'
+    $('detail').innerHTML = '<div class="stack">' + head(item, s)
       + (back ? '<div class="sentback"><h3>Sent back' + (s === 'building' ? ', being reworked' : s === 'verify' ? ', resubmitted' : s === 'withdrawn' ? ', then withdrawn' : '') + '</h3>' + verdictHtml(item.verdict, titles) + '</div>' : '')
       + (item.criterion ? '<div><h3>Criterion</h3><div class="text">' + rich(item.criterion, titles) + '</div></div>' : '')
       + (item.check ? '<div><h3>Check</h3><dl class="kv"><dt>command</dt><dd><code>' + esc(item.check) + '</code></dd><dt>baseline</dt><dd><span class="chip ' + baselineClass + '">' + esc(baseline?.result ?? 'not recorded') + '</span></dd></dl>'
@@ -1295,6 +1324,12 @@ function render() {
   // The coordinator's mark is the board's own: a square with the Pullboard logo, so it stands out from the agents.
   const LEAD = '<svg viewBox="0 0 64 64" aria-hidden="true"><path fill="currentColor" d="M8 7h35a6 6 0 0 1 6 6v7H8a5 5 0 0 1-5-5v-3a5 5 0 0 1 5-5Z"/><rect width="56" height="14" x="3" y="25" fill="var(--accent)" rx="5"/><path fill="currentColor" d="M8 43h35a6 6 0 0 1 6 6v8H8a5 5 0 0 1-5-5v-4a5 5 0 0 1 5-5Z"/></svg>';
   const lead = (from) => from === 'coordinator';
+  // A shout's recipient in product words: the reserved coordinator+person address and item:<id> are internal.
+  const shoutTo = (to) => {
+    if (to === 'coordinator+person') return 'coordinator and you';
+    const item = /^item:([1-9]\\d*)$/.exec(String(to));
+    return item ? '<a class="ref" href="' + esc(itemAddress(item[1], view.root)) + '" data-go="item:' + item[1] + '">#' + item[1] + '</a>' : shoutAgentName(to);
+  };
   // Opened from the status bar's unread, the feed is exactly those shouts, the ones after the mark the person had.
   const unread = view.unread?.root === view.root ? view.unread : null;
   const addressed = addressedShouts.get(JSON.stringify([view.root, view.shout]));
@@ -1320,7 +1355,7 @@ function render() {
   // feed's copy carries the band and the id an answer's link lands on, so an ask shown twice never repeats an id.
   // The person's own shout is signed "you", plainly, never as the coordinator that ran it.
   const card = (x, tail = '', inFeed = true) => '<article class="shout h' + hue(x.shout_from) + (lead(x.shout_from) ? ' lead' : '') + (openShouts.has(x.shout_id) ? ' open' : '') + (inFeed && x.shout_id === view.shout ? ' found' : '') + '"' + (inFeed ? ' id="shout-' + x.shout_id + '"' : '') + ' data-shout-id="' + x.shout_id + '">'
-    + (lead(x.shout_from) ? '<span class="avatar">' + LEAD + '</span>' : '<span class="avatar' + (initials(x.shout_from).length > 3 ? ' wide' : '') + '" aria-hidden="true">' + esc(initials(x.shout_from)) + '</span>') + '<div class="shout-main">' + (inFeed && x.shout_id === view.shout ? '<h2 class="visually-hidden">Shout #' + x.shout_id + '</h2>' : '') + '<header><b class="who">' + (x.shout_from === 'person' ? 'you' : shoutAgentName(x.shout_from)) + '</b><span class="to">→ ' + shoutAgentName(x.shout_to) + '</span>'
+    + (lead(x.shout_from) ? '<span class="avatar">' + LEAD + '</span>' : '<span class="avatar' + (initials(x.shout_from).length > 3 ? ' wide' : '') + '" aria-hidden="true">' + esc(initials(x.shout_from)) + '</span>') + '<div class="shout-main">' + (inFeed && x.shout_id === view.shout ? '<h2 class="visually-hidden">Shout #' + x.shout_id + '</h2>' : '') + '<header><b class="who">' + (x.shout_from === 'person' ? 'you' : shoutAgentName(x.shout_from)) + '</b><span class="to">→ ' + shoutTo(x.shout_to) + '</span>'
     + (itemOf(x) ? '<span class="item">#' + esc(itemOf(x)) + '</span>' : '') + mark(x) + '<time class="long" data-ago="' + esc(x.shout_at) + '" title="' + esc(when(x.shout_at)) + '">' + agoLong(x.shout_at) + '</time></header>'
     + '<div class="text">' + rich(x.shout_text, titles) + '</div><button class="more" data-more type="button">' + (openShouts.has(x.shout_id) ? 'less' : 'more') + '</button>' + (inFeed ? band(x) + heardBy(x) : '') + evidence(x) + tail + '</div></article>';
   $('feed').innerHTML = (view.shout !== null && !feedShouts.some((entry) => entry.shout_id === view.shout) ? '<p class="empty" id="shout-address-status" role="status">' + esc(addressed?.error || 'Loading shout #' + view.shout + '…') + '</p>' : '') + bar + (heard.length ? dayRules(heard, (x) => x.shout_at, card) : '<div class="empty">' + (unread ? 'No unread shouts.' : view.agent ? 'No shouts with ' + esc(agentName(view.agent)) + ' among the last forty.' : 'No shouts yet.') + '</div>');

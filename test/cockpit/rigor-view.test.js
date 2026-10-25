@@ -1,7 +1,11 @@
+/** @pullboard-test-gui */
 /** The view shows sentinel drafts for the person to approve, with their proof [A6,D1,N26]. */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { SPEC, machine, project, startView, openPage, boardOf } from './fixture.js';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { SPEC, machine, project, build, sendBack, startView, openPage, boardOf, chromeExecutable, openSnapshotChrome, closeSnapshotChrome } from './fixture.js';
 
 /**
  * A sentinel-draft call as sentinelDraftNeeds shapes it, citing one repeated cause and the commits that prove its check.
@@ -56,6 +60,76 @@ test('the view shows one sentinel draft with its proof, never as an approved sen
     await page.run('data.project.sentinelDrafts = []; render();');
     assert.equal(page.show('needs').includes('data-sentinel-draft'), false, 'an approved or declined draft leaves Needs-you');
   } finally {
+    await view.stop();
+  }
+});
+
+test('an automatic unproved Rigor proposal asks for materialization without claiming executed proof [D1,A6,N26]', async () => {
+  const box = machine();
+  project(box, 'automatic proposal board', SPEC);
+  const view = await startView(box);
+  try {
+    const page = await openPage(view);
+    await page.run(`data.project.rigorDrafts = [{kind:'rigor-draft',id:'doctrine:RG1',ref:'doctrine:RG1',target:'doctrine:RG1',
+      text:'Rigor draft (unproved): Review the repeated cause.',unproved:true,materialized:false,
+      what:'Coordinator: materialize with pullboard spec apply; then the person approves or declines'}]; render();`);
+    const html = page.show('needs');
+    const text = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+    assert.match(text, /an unproved Rigor proposal/u);
+    assert.match(text, /materialize with pullboard spec apply/u);
+    assert.doesNotMatch(text, /a proved Rigor draft|red commit|green commit/u);
+    assert.ok(!html.includes('data-go="doctrine:RG1"'), 'the person cannot open a nonexistent file row');
+  } finally { await view.stop(); }
+});
+
+test('an automatic Rigor draft shows in Needs you, marked unproved, with its evidence [D1,A6,N26]', async (t) => {
+  const executable = chromeExecutable();
+  if (!executable) return t.skip('Install Chrome or set PULLBOARD_CHROME for the Needs you width checks.');
+  const box = machine();
+  const alpha = project(box, 'auto rigor', SPEC);
+  for (const title of ['Greeting', 'Farewell']) box.run(alpha.repo, 'add', 'web', title, '--specs', 'G1', '--criterion', 'renders');
+  // Two sent-back items with the same cause: the board drafts the Rigor proposal itself, with no rigor command run.
+  build(box, alpha, 1, 'greeting.html');
+  sendBack(box, alpha, 1, 'no greeting on the page');
+  build(box, alpha, 2, 'farewell.html');
+  sendBack(box, alpha, 2, 'no farewell on the page');
+  const view = await startView(box);
+  const profile = mkdtempSync(join(tmpdir(), 'pullboard-rigor-view-chrome-'));
+  let chrome;
+  try {
+    const state = await boardOf(view, alpha.repo);
+    const served = state.rigorDrafts.filter((call) => call.unproved);
+    assert.ok(served.length > 0, 'serve.js carries the automatic draft');
+    assert.ok(served.every((call) => call.proof == null && call.evidence.occurrences >= 2), 'with its repeat evidence and no proof');
+    chrome = await openSnapshotChrome(executable, view.link.href, profile);
+    await chrome.waitFor("typeof data === 'object' && data?.project?.rigorDrafts?.length > 0");
+    for (const width of [1280, 375]) {
+      await chrome.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
+      await chrome.waitFor(`innerWidth === ${width}`);
+      await chrome.click(`document.querySelector('[data-tab=items]')`);
+      const read = JSON.parse(await chrome.stable(`JSON.stringify((() => {
+        const needs = document.querySelector('#needs');
+        const rows = [...needs.querySelectorAll(':scope > .row')].map((row) => ({ words: row.querySelector('.t').textContent,
+          kind: row.querySelector('.meta .why').textContent, chip: row.querySelector(':scope > .chip').textContent, go: row.dataset.go ?? null,
+          right: row.getBoundingClientRect().right }));
+        return { shown: !needs.hidden && needs.getBoundingClientRect().height > 0, rows,
+          page: { width: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth } };
+      })())`));
+      const at = `${width}px`;
+      assert.ok(read.shown, `${at}: Needs you is showing`);
+      assert.ok(read.page.scroll <= read.page.width, `${at}: no sideways scroll`);
+      const rigor = read.rows.filter((row) => /Rigor/u.test(row.kind));
+      assert.ok(rigor.length > 0, `${at}: the automatic draft is a row: ${JSON.stringify(read.rows)}`);
+      for (const row of rigor) {
+        assert.match(row.kind, /an unproved Rigor proposal, repeated 2 times/u, `${at}: marked unproved, with its repeat count: ${row.kind}`);
+        assert.match(row.words, /#1, #2/u, `${at}: it names the repeated items: ${row.words}`);
+        assert.doesNotMatch(row.kind + row.words, /a proved Rigor draft|approved/iu, `${at}: never shown as approved or proved`);
+        assert.equal(row.go, null, `${at}: no click into a row that does not exist yet`);
+        assert.ok(row.right <= read.page.width, `${at}: the row stays inside the page`);
+      }
+    }
+  } finally {
+    if (chrome) await closeSnapshotChrome(chrome);
     await view.stop();
   }
 });

@@ -1,3 +1,14 @@
+import {
+  IMPLYING_OPERATIONS,
+  carriesImplies,
+} from './move-implies.js';
+export { IMPLYING_OPERATIONS, carriesImplies };
+import { IMPLIES_ENGINE } from './move-engine-constants.js';
+export { IMPLIES_ENGINE };
+import {
+  decisionFields,
+  factFromEvent,
+} from './board-query.js';
 /**
  * A decision names the items it changes, and each named item carries it [B29,B30,B31,N29,P6].
  *
@@ -25,14 +36,10 @@ import {
   join,
 } from 'node:path';
 import { COORDINATOR } from './config.js';
-import { ENGINE_VERSION } from './machine.js';
+import { ENGINE_VERSION } from './engine-metadata.js';
 import { Refused } from './refused.js';
 
-/** The engine whose moves may carry `implies`, or supersede an answer; older replays never do. */
-export const IMPLIES_ENGINE = 20;
 
-/** The operations whose sealed options may carry `implies`. */
-export const IMPLYING_OPERATIONS = Object.freeze(['appendFact', 'answerDecision', 'verify']);
 
 /**
  * Parse an `--implies` value into item ids, accepting `12,13` or `#12, #13`.
@@ -49,20 +56,6 @@ export function parseImplies(text) {
   return [...new Set(parts.map((part) => Number(part.replace('#', ''))))];
 }
 
-/**
- * True when a sealed move carries this engine's meaning: items it implies, or an answer it supersedes.
- * The relay refuses such a move from an older engine before it changes any board.
- *
- * @param {string} operation
- * @param {any[]} args
- * @returns {boolean}
- */
-export function carriesImplies(operation, args) {
-  const options = args?.[1];
-  if (!IMPLYING_OPERATIONS.includes(operation) || !options || typeof options !== 'object') return false;
-  return (Array.isArray(options.implies) && options.implies.length > 0)
-    || (operation === 'answerDecision' && options.supersedes !== undefined && options.supersedes !== null);
-}
 
 /**
  * Validate the implied ids before any part of the decision is written, naming the first unknown one.
@@ -304,11 +297,7 @@ export function requestAnswerRefusal(id, { asPerson }) {
     : new Refused('NOT_A_DECISION', `request #${id} is not a decision, so it implies and supersedes nothing; answer it with pullboard answer ${id} done or declined <reason>`);
 }
 
-/** The optional engine-20 fields of a fact, present only when its event set them. */
-export function decisionFields(detail) {
-  return { ...(detail.implies ? { implies: detail.implies } : {}), ...(detail.decision ? { decision: detail.decision } : {}),
-    ...(detail.supersededBy ? { supersededBy: detail.supersededBy } : {}) };
-}
+export { decisionFields } from './board-query.js';
 
 /** The most fact ids one checkout remembers as shown; older ones age out first. */
 const SEEN_LIMIT = 2000;
@@ -340,10 +329,4 @@ export function takeDecisionNotices(gitDir, held) {
   return notices;
 }
 
-/** Give facts the same stamped identity on CLI, API, export and replica reads; a never-again keeps its cause [B29,B31,D1]. */
-export function factFromEvent(event) {
-  const detail = JSON.parse(event.event_detail);
-  return { id: detail.id, eventId: event.event_id, kind: detail.kind, text: detail.text,
-    by: event.event_by, at: event.event_at, ref: detail.ref ?? null, supersedes: detail.supersedes ?? null, ...decisionFields(detail),
-    ...(detail.neverAgain ? { cause: detail.cause, neverAgain: true } : {}) };
-}
+export { factFromEvent } from './board-query.js';

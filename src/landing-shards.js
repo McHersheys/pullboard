@@ -28,6 +28,7 @@ import {
   gitChildEnv,
   repoInfo,
 } from './git.js';
+import { testsNeedGui } from './gui-admission.js';
 import { parseProcessCensus } from './process-census.js';
 import {
   BROWSER_SLOT_HELD_ENV,
@@ -282,7 +283,7 @@ export function landingSource(root) {
 }
 
 /** Runner refusals that mean the host could not run the shard right now, so a local rerun is sound. */
-const RERUN_REFUSALS = new Set(['RUNNER_SETUP_REFUSED', 'RESOURCE_LEASE_LOST']);
+const RERUN_REFUSALS = new Set(['RUNNER_SETUP_REFUSED', 'RESOURCE_LEASE_LOST', 'RUNNER_BROWSER_SLOT_REQUIRED', 'RUNNER_GUI_SESSION_REQUIRED']);
 
 /**
  * How a sharded landing answers a runner that gave no test result. A lost host or transport, or a
@@ -323,8 +324,8 @@ class NotNeeded extends Error {}
  *   holds; `write` receives the merged log.
  * @returns {Promise<{ isGreen: boolean, balance: string, shards: object[], files: object[] }>}
  */
-export async function runLandingShards({ root, runner, files, count, inherited = null, needsBrowser = async () => true, write = text => process.stdout.write(text), remoteRun }) {
-  const { withGateSlot } = await import('./gate.js');
+export async function runLandingShards({ root, runner, files, count, inherited = null, needsBrowser = async () => true, needsGui = shardFiles => testsNeedGui(root, shardFiles), write = text => process.stdout.write(text), remoteRun }) {
+  const { withLandingGateSlot } = await import('./gate.js');
   const runners = await import('./runners.js');
   const { RunnerDropped } = runners;
   // A test may stand in for the SSH round trip to make a runner answer with a given refusal.
@@ -353,7 +354,10 @@ export async function runLandingShards({ root, runner, files, count, inherited =
   /** Tell the parent's lane that a shard became free to take or finished. */
   const signalChange = () => { const resolveChange = wake; changed = new Promise(next => { wake = next; }); resolveChange(); };
   const entries = await Promise.all(plan.map(async (shard, index) => ({ shard, label: `${index + 1}/${total}`,
-    browser: await needsBrowser(shard.files), claimed: false, localOnly: false, done: false, attempts: [], status: null })));
+    browser: await needsBrowser(shard.files), gui: await needsGui(shard.files), claimed: false, localOnly: false, done: false, attempts: [], status: null })));
+
+  /** A remote parent's slot cannot take a GUI file unless its own advertised capability permits it. */
+  const inheritedCanRun = entry => !entry.gui || !inherited?.runner || inherited.runner.gui === true;
 
   /** Run one attempt of a shard on a lease: a local child, or the runner it names. */
   const attempt = async (entry, lease) => {
@@ -378,7 +382,7 @@ export async function runLandingShards({ root, runner, files, count, inherited =
     const command = `${LANDING_SHARD_ENV}=${word(entry.label)} ${['node', './bin/run-tests.js', ...entry.shard.files].map(word).join(' ')}`;
     try {
       const run = await runOnRunnerAsync(root, command, { runner: lease.runner, source: lease.source, browser: lease.browser,
-        metadata: { ...(lease.runMetadata ?? {}), landing: true }, signal: stop });
+        metadata: { ...(lease.runMetadata ?? {}), landing: true, gui: entry.gui }, signal: stop });
       return { attempt: number, host: lease.runner.host, outcome: run.isGreen ? 'green' : 'red', output: run.output, wallMs: Date.now() - started };
     } catch (error) {
       // A stop ends the runner's transport on purpose; that shard was stopped, not dropped.
@@ -394,7 +398,7 @@ export async function runLandingShards({ root, runner, files, count, inherited =
       }
       // Infrastructure, not a test result: the runner could not give this shard a complete answer.
       return { attempt: number, host, outcome: failure.action === 'fail' ? 'refused' : 'infrastructure', reason: failure.reason,
-        output: '', wallMs: Date.now() - started };
+        output: error.runnerAttempt?.output ?? '', wallMs: Date.now() - started };
     }
   };
 
@@ -441,13 +445,13 @@ export async function runLandingShards({ root, runner, files, count, inherited =
   /** Queue this shard for a slot of its own; the parent's lane may take it first. */
   const acquire = (entry) => {
     const localOnly = entry.localOnly;
-    const running = withGateSlot(root, async lease => {
+    const running = withLandingGateSlot(root, async lease => {
       if (entry.claimed || entry.done) return;
       // A host quarantined in this landing gets no more shards; queue again for a local slot.
       if (lease.runner && quarantined.has(lease.runner.host)) return 'divert';
       entry.claimed = true;
       await runOnLease(entry, lease);
-    }, { landing: true, browser: entry.browser, remote: !localOnly, kind: 'landing', item: `shard ${entry.label}`,
+    }, { landing: true, browser: entry.browser, gui: entry.gui, remote: !localOnly, kind: 'landing', item: `shard ${entry.label}`,
       onWait: () => { if (entry.claimed || entry.done || stop.aborted) throw new NotNeeded(); } });
     running.then(result => {
       if (result !== 'divert' || entry.claimed || entry.done) return;
@@ -469,7 +473,7 @@ export async function runLandingShards({ root, runner, files, count, inherited =
   /** The parent's own slot: run free shards one after another until every shard is done. */
   const lane = async () => {
     while (!entries.every(entry => entry.done) && !failures.length) {
-      const next = entries.find(entry => !entry.claimed && !entry.done);
+      const next = entries.find(entry => !entry.claimed && !entry.done && inheritedCanRun(entry));
       if (!next) { await changed; continue; }
       next.claimed = true;
       await runOnLease(next, inherited);
@@ -478,7 +482,7 @@ export async function runLandingShards({ root, runner, files, count, inherited =
 
   let shards;
   try {
-    for (const entry of entries) if (!inherited || entry !== entries[0]) acquire(entry);
+    for (const entry of entries) if (!inherited || entry !== entries[0] || !inheritedCanRun(entry)) acquire(entry);
     if (inherited) await lane();
     while (!entries.every(entry => entry.done) && !failures.length) await changed;
     if (failures.length) throw failures[0];

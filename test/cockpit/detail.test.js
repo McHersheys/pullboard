@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /** Cockpit item detail checks: lists from summaries, detail on demand, using the shared real-board fixtures [N26,A2]. */
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
@@ -33,6 +34,7 @@ const DETAIL = `(() => {
   return {
     title: detail.querySelector('h2')?.innerText ?? null,
     waiting: detail.querySelector('.detail-wait')?.textContent ?? null,
+    busy: !!detail.querySelector('[aria-busy]'),
     criterion: part('Criterion')?.querySelector('.text').innerText ?? null,
     check: part('Check') ? [part('Check').querySelector('code').textContent, part('Check').querySelector('.chip').textContent] : null,
     brief: part('Brief')?.querySelector('.text').innerText ?? null,
@@ -88,12 +90,13 @@ test('opening an item loads its detail on demand [N26,A2]', { timeout: 150_000 }
       await chrome.waitFor("!!document.querySelector('#find-results [data-find=\"item:2\"]')");
       assert.deepEqual(itemReads(await chrome.stable('window.__pbReads')), ['items?q=zeppelin'], 'the search sends its words to the API once');
       await press(chrome, "document.querySelector('#find-results [data-find=\"item:2\"]')");
-      await chrome.waitFor("view.tab === 'items' && view.item === 2 && !!document.querySelector('#detail .detail-wait')");
+      await chrome.waitFor("view.tab === 'items' && view.item === 2 && !!document.querySelector('#detail [aria-busy] h2')");
       const waiting = await chrome.stable(DETAIL);
-      assert.equal(waiting.waiting, 'Loading #2…', 'a short loading line shows while the detail is on its way');
-      assert.deepEqual([waiting.title, waiting.criterion], [null, null], 'and no part of the item until it arrives');
+      assert.equal(waiting.waiting, null, 'no loading line shows while the detail is on its way');
+      assert.match(waiting.title, /#2\s*Farewell page/u, 'the item paints its heading from its summary at once');
+      assert.equal(waiting.criterion, null, 'the omitted fields wait for the detail');
       await chrome.stable('window.__pbRelease()');
-      await chrome.waitFor("view.item === 2 && !document.querySelector('#detail .detail-wait') && !!document.querySelector('#detail .tl')");
+      await chrome.waitFor("view.item === 2 && !document.querySelector('#detail [aria-busy]') && !!document.querySelector('#detail .tl')");
       const farewell = await chrome.stable(DETAIL);
       assert.equal(farewell.criterion, 'The farewell mentions the zeppelin.');
       assert.deepEqual(farewell.moves, ['add', 'claim', 'submit']);
@@ -103,10 +106,10 @@ test('opening an item loads its detail on demand [N26,A2]', { timeout: 150_000 }
       await chrome.stable("(() => { const q = document.querySelector('#q'); q.value = ''; q.dispatchEvent(new Event('input', { bubbles: true })); q.blur(); })()");
       await chooseFilter(chrome, 'state:all');
       await press(chrome, "document.querySelector('#chain .row[data-item=\"1\"]')");
-      await chrome.waitFor("view.item === 1 && !document.querySelector('#detail .detail-wait') && !!document.querySelector('#detail .tl')");
+      await chrome.waitFor("view.item === 1 && !document.querySelector('#detail [aria-busy]') && !!document.querySelector('#detail .tl')");
       const greeting = await chrome.stable(DETAIL);
       assert.equal(greeting.waiting, null, 'the detail has arrived');
-      delete greeting.waiting;
+      delete greeting.waiting; delete greeting.busy;
       assert.deepEqual(greeting, {
         title: '#1Offline greeting',
         criterion: 'The greeting renders from the snapshot alone.',

@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /**
  * The README's screenshots and timed tour recording (I11, I13) are reproducible demo artifacts,
  * and fit the size budgets so they stay useful in the README and the site.
@@ -88,7 +89,7 @@ test('the demo board declares every agent\'s model [I11,I13]', () => {
     const root = join(fixture, 'repo');
     mkdirSync(root);
     for (const directory of ['src', 'bin', 'docs/shots', 'docs/img', 'skills']) cpSync(join(source, directory), join(root, directory), { recursive: true });
-    for (const file of ['test/chrome-fixture.js', 'test/fixture-child.js', 'package.json', 'CHANGELOG.md']) cpSync(join(source, file), join(root, file));
+    for (const file of ['test/chrome-fixture.js', 'test/chrome-launch-args.js', 'test/fixture-child.js', 'package.json', 'CHANGELOG.md']) cpSync(join(source, file), join(root, file));
     const shims = join(fixture, 'bin');
     mkdirSync(shims);
     const pullboard = join(shims, 'pullboard');
@@ -157,7 +158,7 @@ test('the README capture leaves no view running [I11,I13]', { timeout: 240_000 }
       cpSync(join(source, directory), join(root, directory), { recursive: true });
     }
     mkdirSync(join(root, 'test'));
-    for (const file of ['package.json', 'CHANGELOG.md', 'test/chrome-fixture.js', 'test/fixture-child.js']) {
+    for (const file of ['package.json', 'CHANGELOG.md', 'test/chrome-fixture.js', 'test/chrome-launch-args.js', 'test/fixture-child.js']) {
       cpSync(join(source, file), join(root, file));
     }
     const shims = join(fixture, 'bin');
