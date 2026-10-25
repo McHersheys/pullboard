@@ -24,6 +24,8 @@ import { readEngineLeaves } from '../src/engine-numbers.js';
 import { applyEngineMove, prepareEngineMove } from '../src/engine.js';
 import {
   ACCEPT_REASON,
+  actOnActivity,
+  recordActivityDelivery,
   answerDecision,
   addItem,
   appendFact,
@@ -321,6 +323,12 @@ function recordEventContract() {
   answerDecision(board, personQuestion, { agentId: coordinator, text: 'approved', lanes: ['docs', 'tests'], asPerson: true });
   const request = shout(board, { from: PERSON, to: coordinator, text: 'sample request', lanes: ['docs', 'tests'], request: true });
   answerDecision(board, request, { agentId: coordinator, text: 'done', lanes: ['docs', 'tests'] });
+  const deliveryQuestion = shout(board, { from: builder, to: coordinator, text: 'sample delivery question', decision: true, lanes: ['docs', 'tests'] });
+  answerDecision(board, deliveryQuestion, { agentId: coordinator, text: 'sample delivery answer', lanes: ['docs', 'tests'] });
+  const deliveryEvent = events(board).findLast(event => event.event_kind === 'answer');
+  recordActivityDelivery(board, { agentId: builder, through: deliveryEvent.event_id, digestThrough: deliveryEvent.event_id,
+    interrupts: [{ id: `event:${deliveryEvent.event_id}`, eventId: deliveryEvent.event_id, reason: 'answered' }] });
+  actOnActivity(board, { agentId: builder, ids: [`event:${deliveryEvent.event_id}`] });
   const decisions = recordRowDecisions(board, { agentId: PERSON, channel: 'terminal', decisions: [{ kind: 'spec', file: 'SPEC.md', id: 'A1', source: '- A1 [draft] Exact row.', replacement: '- A1 [approved] Exact row.', text: 'Exact row.', decision: 'approve', reason: '' }] });
   applyRowDecisions(board, { agentId: coordinator, events: decisions.map((record) => record.event) });
   draftSpecRow(board, { agentId: builder, row: { id: 'A2', text: 'A lane drafted row.', gate: 'review', tier: 'must', section: 'A · Fixture' } });
@@ -734,6 +742,8 @@ test('[A5] schema, versions, event kinds and event detail fields match live beha
     'rigor-notice': 'rigor',
     'rigor-draft': 'rigor',
     shout: 'sender',
+    'activity-delivered': 'recipient',
+    'activity-acted': 'recipient',
     shout_news: 'sender',
     pass: 'coordinator',
     answer: 'answerer',
