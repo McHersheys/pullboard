@@ -467,7 +467,7 @@ test('the declared lifecycle is sound: reachable, no traps, no second door, ever
   assert.deepEqual(machineProblems(), []);
   assert.deepEqual(MACHINE.states.map((state) => state.id), ['open', 'claimed', 'submitted', 'verified', 'withdrawn']);
   assert.deepEqual(MACHINE.states.filter((state) => state.final).map((state) => state.id), ['withdrawn']);
-  assert.deepEqual(MACHINE.moves.map((move) => move.verb), ['intake', 'claim', 'release', 'lapse', 'submit', 'reserve', 'accept', 'reject', 'reopen', 'escalate', 'refreeze', 'refreeze', 'withdraw']);
+  assert.deepEqual(MACHINE.moves.map((move) => move.verb), ['intake', 'claim', 'release', 'lapse', 'submit', 'submit-merge', 'reserve', 'accept', 'reject', 'reopen', 'escalate', 'refreeze', 'refreeze', 'withdraw']);
 });
 
 for (const broken of BROKEN) {
@@ -822,11 +822,11 @@ test('the triggers come from the declaration, so a changed declaration changes t
   const moveSql = (machine) => storeTriggers(machine).find(({ name }) => name === 'machine_item_move').sql;
   const pairs = MACHINE.moves.flatMap((move) => move.from.filter((from) => from !== move.to).map((from) => `'${from}>${move.to}'`));
   for (const pair of pairs) assert.ok(moveSql(MACHINE).includes(pair), `the move trigger allows ${pair}`);
-  // Outside intake now legitimately declares open>submitted; claimed>verified still cannot bypass a submitted review.
-  assert.ok(!moveSql(MACHINE).includes("'claimed>verified'"));
+  // Intake and a locally proved merge carry are declared; open>verified still has no direct door.
+  assert.ok(!moveSql(MACHINE).includes("'open>verified'"));
   const machine = copy();
-  machine.moves.push({ verb: 'testDirectVerdict', from: ['claimed'], to: 'verified', by: ['coordinator'], refuse: 'CLOSED', guards: ['joined', 'coordinatorOnly', 'itemExists', IN_STATE], sets: ['item_built_by', 'item_commit', 'item_frozen_digest'] });
-  assert.ok(moveSql(machine).includes("'claimed>verified'"));
+  machine.moves.push({ verb: 'testDirectVerdict', from: ['open'], to: 'verified', by: ['coordinator'], refuse: 'CLOSED', guards: ['joined', 'coordinatorOnly', 'itemExists', IN_STATE], sets: ['item_built_by', 'item_commit', 'item_frozen_digest'] });
+  assert.ok(moveSql(machine).includes("'open>verified'"));
   const names = storeTriggers().map(({ name }) => name);
   for (const state of MACHINE.states.filter((entry) => entry.requires.length)) assert.ok(names.includes(`machine_fields_${state.id}`), `${state.id} has a fields trigger`);
   assert.ok(names.includes('machine_proof_verified'));
@@ -1345,7 +1345,7 @@ test('the lifecycle page and the help show the reservation: reserve, and reviewF
   assert.match(page, /^\| reserve \| submitted \| submitted \| agent, coordinator \| .*reviewFree \(REVIEW_HELD\), result \(BAD_DEPENDENCIES\) \|$/m);
   for (const verb of ['accept', 'reject']) assert.match(page, new RegExp(`^\\| ${verb} \\| submitted, verified \\| .*policyAllows \\(COORDINATOR_VERIFIES\\), familyAllows \\(O2_FAMILY_MATCH\\), reviewFree \\(REVIEW_HELD\\), criterionUnchanged`, 'm'));
   assert.match(page, /^\| REVIEW_HELD \| no other agent holds its review under a live lease \| pullboard next --verify/m);
-  assert.match(HELP.all, /^ {2}agent +intake, claim, release, submit, reserve, accept, reject, reopen, escalate, refreeze \(when a live claim has a pending coordinator correction\)$/m);
+  assert.match(HELP.all, /^ {2}agent +intake, claim, release, submit, reserve, accept, reject, reopen, escalate, submit-merge \(when only an unchanged accepted bar and a proved trunk-only merge; no new reviewer verdict is created\), refreeze \(when a live claim has a pending coordinator correction\)$/m);
   assert.match(HELP.all, /pullboard next --verify +reserve the next submitted item you can check/);
 });
 

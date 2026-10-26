@@ -1,12 +1,11 @@
-import { foreignBlockers } from './cross-repo-dependencies.js';
 import { REFERENCE_ENGINE } from './reference-engine.js';
 import { validateReferences } from './reference-authors.js';
 import {
-  dependencyValues,
-  validateNativeDependencies,
-  localDependencyIds,
-  dependencyLabel,
-} from './item-dependencies.js';
+  submissionItemValues,
+  recordSubmissionEvent,
+} from './submission-record.js';
+import { foreignBlockers } from './cross-repo-dependencies.js';
+import * as itemDependencies from './item-dependencies.js';
 import { AGENT_GRANT_ENGINE } from './agent-grant-engine.js';
 import * as computedConflictEvidence from './computed-conflict-receipt.js';
 import { reopenAuthority } from './reopen-authority.js';
@@ -153,6 +152,12 @@ import {
 } from './shout-audience.js';
 import { recordVerdict } from './verdict-assurance.js';
 import {
+  mergeOnlyBasis,
+  mergeOnlyProblem,
+  prepareMergeOnlySubmit,
+} from './merge-only-verdict.js';
+import { MERGE_ONLY_VERDICT_ENGINE } from './merge-only-verdict-engine.js';
+import {
   atomic,
   logEvent,
 } from './board-event-log.js';
@@ -211,10 +216,7 @@ import {
   reportDrift,
 } from './board-migrate.js';
 export { schemaMissing, writeRefused } from './board-migrate.js';
-import {
-  briefFiles,
-  briefSections,
-} from './brief.js';
+import { checkRouted } from './item-routing.js';
 import {
   itemFiles,
   itemFileCollisions,
@@ -257,8 +259,10 @@ export { decideSpecRevisions } from './spec-revisions.js';
 import * as landingEnvironment from './landing-environment-guards.js';
 import { Refused } from './refused.js';
 import { saveJoinedSession } from './parent-session.js';
-import { itemAuthorProblem } from './item-authors.js';
-import { refuseMaskedExit } from './check-mask.js';
+import {
+  itemAuthorProblem,
+  retainedVerifierIdentityProblem,
+} from './item-authors.js';
 import {
   ROUTES,
   canTake,
@@ -346,7 +350,6 @@ export { EVENT_LOG_VERSION } from './board-schema-source.js';
 
 export { BOARD_BUSY_TIMEOUT_MS } from './board-schema-source.js';
 
-const BRIEF_LIMIT = 8000;
 const REVIEW_RELEASE_COOLDOWN_MS = 60 * 60 * 1000;
 
 export const REJECT_REASONS = [
@@ -370,10 +373,10 @@ export { openBoardReadOnly } from './board-read-open.js';
  *
  * @param {string} file
  * @param {{ now: () => Date }} [clock]
- * @param {{ isMain?: boolean, onDiagnostic?: (message: string) => void, writeContext?: {command?:string, seat?:string, path?:string} }} [options] Only the main checkout may upgrade a shared board.
+ * @param {{ isMain?: boolean, onDiagnostic?: (message: string) => void, writeContext?: {command?:string, seat?:string, path?:string}, gitRoot?: string }} [options] Only main upgrades schema; gitRoot is a local verification port, never replicated metadata.
  * @returns {{ db: DatabaseSync, clock: { now: () => Date } }}
  */
-export function openBoard(file, clock = systemClock, { isMain, onDiagnostic, writeContext } = {}) {
+export function openBoard(file, clock = systemClock, { isMain, onDiagnostic, writeContext, gitRoot } = {}) {
   isMain = sharedSchemaOwner(file, isMain);
   if (file !== ':memory:' && isMain === false) {
     let boardVersion = 0;
@@ -408,7 +411,7 @@ export function openBoard(file, clock = systemClock, { isMain, onDiagnostic, wri
     db = new DatabaseSync(file);
     db.exec(`PRAGMA busy_timeout = ${BOARD_BUSY_TIMEOUT_MS}`);
     if (file !== ':memory:' && isMain !== false) configureBoardJournal(db, writeContext);
-    const board = { db, clock, writeContext };
+    const board = { db, clock, writeContext, gitRoot };
     let warmCounters = true;
     if (isMain !== false || file === ':memory:') {
       // Migrate and audit only a board whose version is behind; a drifted shape is reported and left alone (#1047).
@@ -657,32 +660,6 @@ function checkRoute(route) {
 }
 
 /**
- * Refuse an item a lighter model could not build cold (B10, B14). Any brief stays short enough to
- * read. Below the strong route the item needs all of it: a criterion, a check command that proves
- * it, and a brief naming the files and the test.
- *
- * @param {{ brief: string, route: string, criterion: string, check: string }} item
- */
-function checkRouted({ brief, route, criterion, check }, engine = ENGINE_VERSION) {
-  if (brief.length > BRIEF_LIMIT) {
-    throw new Refused('BRIEF_TOO_LONG', `the brief is ${brief.length} characters; keep it under ${BRIEF_LIMIT} and point to longer docs by path`);
-  }
-  refuseMaskedExit(check);
-  if (route === 'strong') return;
-  const referenceOptions = { references: engine >= REFERENCE_ENGINE };
-  const sections = briefSections(brief, referenceOptions);
-  const missing = [
-    ...(briefFiles(brief, referenceOptions).length ? [] : ['a brief with a Files: section naming the paths to touch']),
-    ...(sections.test?.length ? [] : ['a Test: section saying what the test asserts']),
-    ...(criterion.trim() ? [] : ['--criterion, saying when it is done']),
-    ...(check.trim() ? [] : ['--check, the command that proves it']),
-  ];
-  if (missing.length) {
-    throw new Refused('NO_BRIEF', `an item routed ${route} must be buildable cold; it needs ${missing.join(', ')}`);
-  }
-}
-
-/**
  * Add an item to a lane, optionally under a parent in the same lane, with a brief for whoever
  * builds it and a route saying who can (B10, B11). The caller has checked the lane and the spec
  * ids (B6).
@@ -727,8 +704,8 @@ export function requestCompanion(board, options) {
 
 /** Validate that dependencies exist, remain usable, and cannot lead back to the edited item. */
 function validateItemDependencies(board, itemId, after) {
-  dependencyValues(after);
-  const direct = localDependencyIds(after).map((dependency) => itemById(board, dependency));
+  itemDependencies.dependencyValues(after);
+  const direct = itemDependencies.localDependencyIds(after).map((dependency) => itemById(board, dependency));
   const withdrawn = direct.find((dependency) => dependency.item_status === 'withdrawn');
   if (withdrawn) {
     throw new Refused('WITHDRAWN', `item #${withdrawn.item_id} is withdrawn; nothing can wait on it`);
@@ -736,7 +713,7 @@ function validateItemDependencies(board, itemId, after) {
   if (itemId === null) return;
 
   const visited = new Set();
-  const pending = localDependencyIds(after);
+  const pending = itemDependencies.localDependencyIds(after);
   while (pending.length) {
     const dependency = pending.pop();
     if (dependency === itemId) {
@@ -745,7 +722,7 @@ function validateItemDependencies(board, itemId, after) {
     if (visited.has(dependency)) continue;
     const item = itemById(board, dependency);
     visited.add(dependency);
-    pending.push(...localDependencyIds(item));
+    pending.push(...itemDependencies.localDependencyIds(item));
   }
 }
 
@@ -804,7 +781,7 @@ export function editItem(board, id, { agentId, brief, route, criterion, check, a
       ...(next.item_route !== item.item_route ? { route: next.item_route } : {}),
       ...(next.item_criterion !== item.item_criterion ? { criterion: next.item_criterion } : {}),
       ...(command !== undefined ? { check: next.item_check } : {}),
-      ...(next.item_after !== item.item_after ? { after: dependencyValues(next) } : {}),
+      ...(next.item_after !== item.item_after ? { after: itemDependencies.dependencyValues(next) } : {}),
       ...(baseline ? { checkBaseline: baseline } : {}),
       ...(pendingRefreeze ? { pendingRefreeze: pendingFields } : {}),
       ...(clearFrozen && item.item_frozen_digest ? { unfrozen: item.item_frozen_digest } : {}),
@@ -870,7 +847,7 @@ export function validateItemEdit(board, id, { agentId, brief, route, criterion, 
     if (!Array.isArray(after)) {
       throw new Refused('BAD_DEPENDENCIES', 'item dependencies must be an array of positive integer item ids; use --after 1,2 or --after none');
     }
-    validateNativeDependencies(after);
+    itemDependencies.validateNativeDependencies(after);
     validateItemDependencies(board, id, after);
   }
   const next = {
@@ -1064,8 +1041,8 @@ export function claim(board, id, { agentId, lane, leaseMs, freeze, head = null, 
         },
         dependenciesVerified: (found) => {
           const foreign = foreignBlockers(board, found)[0];
-          if (foreign) return new Refused('BLOCKED', `#${id} waits on ${dependencyLabel(foreign)} (${foreign.status} on its own board); refresh that board before claiming`);
-          for (const dependency of localDependencyIds(found)) {
+          if (foreign) return new Refused('BLOCKED', `#${id} waits on ${itemDependencies.dependencyLabel(foreign)} (${foreign.status} on its own board); refresh that board before claiming`);
+          for (const dependency of itemDependencies.localDependencyIds(found)) {
             const before = itemById(board, dependency);
             if (before.item_status !== 'verified') {
               return new Refused(
@@ -1177,6 +1154,8 @@ export function release(board, id, agentId, note = '') {
   });
 }
 
+export { prepareMergeOnlySubmit };
+
 /**
  * Submit your claimed item at a commit (V4, V6). The caller has already checked the tree is clean
  * and run the gate green at that commit.
@@ -1189,15 +1168,23 @@ export function release(board, id, agentId, note = '') {
  * @param {{ agentId: string, commit: string, tree: string, files?: string[], policyCommit?: string, note?: string }} at - `files`: what the
  *   item's own commits changed since its claim; a rework adds to what the first attempt changed.
  */
-export function submit(board, id, { agentId, commit, tree, files = [], policyCommit = null, note, submissionProof: proof, submissionSize: size, infra = null }) {
+export function submit(board, id, { agentId, commit, tree, files = [], policyCommit = null, note, submissionProof: proof, submissionSize: size, infra = null, gateGreen, mergeOnly: recordedCarry }) {
   let recordedProof;
   let recordedSize;
   if (note !== undefined && (typeof note !== 'string' || !note.trim() || /[\r\n\u2028\u2029]/u.test(note))) {
     throw new Refused('USAGE', 'a submission note, when present, is one nonempty line');
   }
   atomic(board, () => {
+    const modern = (board.executionEngineVersion ?? ENGINE_VERSION) >= MERGE_ONLY_VERDICT_ENGINE;
+    const basis = modern && gateGreen === true ? mergeOnlyBasis(board, getItem(board, id)) : null;
+    const mergeOnly = modern ? board.executionEngineVersion === undefined
+      ? prepareMergeOnlySubmit(board, id, { commit, tree, policyCommit, gateGreen })
+      : recordedCarry ?? null : null;
+    const carry = Boolean(mergeOnly);
+    const carriedProblem = found => mergeOnlyProblem(board, found, mergeOnly, { commit, tree, policyCommit });
     const notYours = () => new Refused('NOT_YOURS', `item #${id} is not claimed by you; claim it first`);
     moveItem(board, id, 'submit', {
+      ...(carry ? { transition: MOVES.find(move => move.verb === 'submit-merge') } : {}),
       checks: {
         joined: null, checkProvesSomething: null,
         barReady: found => barReadyProblem(board, found),
@@ -1218,6 +1205,12 @@ export function submit(board, id, { agentId, commit, tree, files = [], policyCom
         gateGreen: null,
         proofRecorded: null, // The CLI records and validates native receipts before sealing submit; replay needs no origin files.
         treeStillDuringGate: null,
+        ...(carry ? {
+          mergeOnlyRecorded: carriedProblem,
+          atSubmittedCommit: null, // The same post-gate HEAD check binds both submission paths.
+          notBuilder: found => retainedVerifierIdentityProblem(board, found, basis.by),
+          proofNoted: () => typeof mergeOnly?.resolutionDiff === 'string' ? null : new Refused('PROOF_REQUIRED', 'record the actual merge resolution diff'),
+        } : {}),
         submissionProofValid: () => {
           if ((board.executionEngineVersion ?? ENGINE_VERSION) >= SUBMISSION_PROOF_ENGINE) recordedProof = submissionProof(proof, board.executionEngineVersion ?? ENGINE_VERSION);
           if ((board.executionEngineVersion ?? ENGINE_VERSION) >= FLOW_SIZE_ENGINE) recordedSize = submissionSize(size, commit);
@@ -1241,28 +1234,11 @@ export function submit(board, id, { agentId, commit, tree, files = [], policyCom
             : null;
         },
       },
-      set: (found) => ({
-        item_built_by: agentId,
-        item_builder_family: board.db.prepare('SELECT agent_family FROM agent WHERE agent_id = ?').get(agentId)?.agent_family ?? null,
-        item_commit: commit,
-        item_tree: tree,
-        item_lease_until: null,
-        item_review_by: null,
-        item_review_until: null,
-        item_files: [...new Set([...(found.item_files ?? '').split('\n').filter(Boolean), ...files])].join('\n'),
-      }),
+      before: () => { if (carry) logEvent(board, agentId, 'merge-only-accept', id, { ...mergeOnly, by: basis.by }); },
+      set: found => submissionItemValues(board, found, { agentId, commit, tree, files, carry, basis }),
     });
-    const engineVersion = board.executionEngineVersion ?? ENGINE_VERSION;
-    const criterionDigest = engineVersion >= 9 ? getItem(board, id).item_frozen_digest : null;
-    logEvent(board, agentId, 'submit', id, {
-      commit,
-      tree,
-      ...(policyCommit ? { policyCommit } : {}),
-      ...(criterionDigest ? { criterionDigest } : {}),
-      ...(note === undefined ? {} : { note: note.trim() }),
-      ...(recordedProof ? { submissionProof: recordedProof } : {}), ...(infra ? { infra } : {}),
-      ...(recordedSize ? { submissionSize: recordedSize } : {}),
-    });
+    recordSubmissionEvent(board, id, { agentId, commit, tree, policyCommit, note, recordedProof, infra,
+      modern, gateGreen, carry, mergeOnly, recordedSize, engineVersion: board.executionEngineVersion ?? ENGINE_VERSION });
   });
 }
 
@@ -1518,7 +1494,7 @@ export function reopen(board, id, { agentId, note = '', conflict, cause, reopenF
           if (forWithdrawal) { supersedes = withdrawnVerdict.acceptEventId; return null; }
           if (found.item_status !== 'verified' || forMerge) return null;
           const accepted = events(board, { itemId: id }).findLast((event) => {
-            if (event.event_kind !== 'accept') return false;
+            if (!['accept', 'merge-only-accept'].includes(event.event_kind)) return false;
             return JSON.parse(event.event_detail).commit === found.item_commit;
           });
           const recorded = landingBatches(board).flatMap((batch) => (batch.culprits ?? []).map((culprit) => ({ batch, culprit })))
@@ -2040,7 +2016,7 @@ export function nextFor(board, { agentId, lane, verify = false, policy = 'any', 
   }
   mine.sort((a, b) => focusCompare(a.entry, b.entry));
   for (const { entry, shared } of mine) {
-    const waiting = localDependencyIds(entry)
+    const waiting = itemDependencies.localDependencyIds(entry)
       .map((id) => current(board, itemById(board, id)))
       .filter((before) => before.item_status !== 'verified');
     const reserved = firstRefusalReason(board, entry.item_id, agentId);
@@ -2049,7 +2025,7 @@ export function nextFor(board, { agentId, lane, verify = false, policy = 'any', 
     if (collisions.length) { reasons.push(...collisions); continue; }
     const foreign = foreignBlockers(board, entry);
     if (foreign.length) {
-      reasons.push(`#${entry.item_id} waits on ${foreign.map(ref => `${dependencyLabel(ref)} (${ref.status} on its own board)`).join(', ')}`);
+      reasons.push(`#${entry.item_id} waits on ${foreign.map(ref => `${itemDependencies.dependencyLabel(ref)} (${ref.status} on its own board)`).join(', ')}`);
       continue;
     }
     if (!waiting.length) return { item: entry, reasons: focusReasons(board, entry,
