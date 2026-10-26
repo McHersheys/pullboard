@@ -7,7 +7,8 @@ import {
 } from './land-collisions.js';
 /** Coordinator landing batches retain exact Git and gate receipts across interruptions [B3,R3]. */
 import { assignEngineNumbers } from './engine-numbers.js';
-import { resolveMechanicalMerge } from './train-mechanical-merge.js';
+import { resolveMechanicalIndex } from './mechanical-merge.js';
+import { mechanicalConflictFiles } from './mechanical-merge.js';
 import { writeFormatTable } from './format-registry.js';
 import {
   createHash,
@@ -275,16 +276,16 @@ async function mergeGroup(state, items) {
     if (result.status !== 0) {
       const files = tryGit(batch.root, ['diff', '--name-only', '--diff-filter=U']).stdout.split('\n').filter(Boolean);
       if (!files.length) throw new Refused('LAND_MERGE', `merge of #${item.item_id} failed outside a conflict: ${result.stderr || result.stdout}; inspect ${batch.root} and its hooks before adopting`);
-      const resolved = resolveMechanicalMerge(batch.root, files);
-      if (resolved) {
+      const resolution = resolveMechanicalIndex(batch.root, files);
+      if (!resolution.files.length) {
         git(batch.root, ['add', '--', ...files]);
         git(batch.root, ['commit', '--no-edit']);
-        resolutions.push({ id: item.item_id, files, entries: resolved });
+        resolutions.push({ id: item.item_id, files, entries: resolution.entries });
         state.say(`mechanical merge #${item.item_id}: ${files.join(', ')}`);
       } else {
         git(batch.root, ['merge', '--abort']);
-        conflicts.push({ id: item.item_id, files, trunk, commit: item.item_commit, reviewedCommit: checked });
-        state.say(`conflict #${item.item_id}: ${files.join(', ')}`);
+        conflicts.push({ id: item.item_id, files: resolution.files, trunk, commit: item.item_commit, reviewedCommit: checked });
+        state.say(`conflict #${item.item_id}: ${resolution.files.join(', ')}`);
         continue;
       }
     }
@@ -1325,12 +1326,9 @@ export async function runLandingBatch({ root, board, config, write, say, owner, 
     if (selected.ready.length && !landsOnTrunk(config)) requirePushTarget(root, trunk.branch);
     const conflicts = [];
     for (const item of selected.ready) {
-      const merge = tryGit(root, ['merge-tree', '--write-tree', '--name-only', '-z', trunk.commit, item.item_landing_commit]);
-      if (merge.status === 1) {
-        const parts = merge.stdout.split('\0').slice(1);
-        const end = parts.indexOf('');
-        conflicts.push({ id: item.item_id, files: parts.slice(0, end < 0 ? parts.length : end) });
-      } else if (merge.status !== 0) throw new Refused('LAND_MERGE', 'Git could not preview the landing; restore its objects and retry the dry run');
+      const files = mechanicalConflictFiles(root, trunk.commit, item.item_landing_commit);
+      if (files === null) throw new Refused('LAND_MERGE', 'Git could not preview the landing; restore its objects and retry the dry run');
+      if (files.length) conflicts.push({ id: item.item_id, files });
     }
     return { batch: null, landed: [], conflicts, blocked: selected.blocked, culprits: [], flakes: [], items: selected.ready.map((item) => item.item_id) };
   }
