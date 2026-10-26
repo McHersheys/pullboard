@@ -194,3 +194,107 @@ test('the client shows queued moves while the relay is degraded [H16,H17,C7]', {
   assert.match(rendered.stdout, /relay outbox: .*move waits|relay outbox: .*moves wait/iu, 'the normal client output names its queued moves');
   assert.match(rendered.stdout, new RegExp(`relay degraded since .+; your moves are queued locally \\(${moveCount}\\)`, 'u'), 'the normal client says moves remain queued while health is degraded');
 });
+
+
+/** Configure an ordinary seat using only that paired host's real repository and private machine settings. */
+async function independentCanaryHost(host, lane, name) {
+  const root = join(host.root, '..', name);
+  runFixtureGit(['worktree', 'add', '-q', '-b', 'agent/' + name, root], { cwd: host.root, env: host.env });
+  const joined = await host.cliAt(root, 'join', lane, '--model', 'canary-fixture');
+  assert.equal(joined.code, 0, joined.failure);
+  const enabled = await host.cliAt(root, 'relay', 'canary', 'on', '--timeout', '5000');
+  assert.equal(enabled.code, 0, enabled.failure);
+  const { loadMachineSettings, machineSettingsFile } = await import('../src/settings.js');
+  const { repoInfo } = await import('../src/git.js');
+  const saved = await withFixtureEnvironment(host.env, () => ({
+    config: loadMachineSettings().relay?.canary,
+    settingsFile: machineSettingsFile(),
+    commonDir: repoInfo(root).commonDir,
+  }));
+  assert.deepEqual(saved.config, enabled.document.config, 'the CLI saves this host’s actual canary configuration');
+  assert.equal(saved.config.root, root);
+  assert.equal(saved.config.agentId, joined.document.agent);
+  assert.equal(saved.config.enabled, true);
+  return { ...host, ...saved, root, healthFile: join(saved.commonDir, 'pullboard', 'relay-health.sqlite') };
+}
+
+test('two paired host configurations independently alert and recover through real configured canaries [H5,H15,H17]',
+  { timeout: 180_000 }, async t => { // budget: two real private clones, ordinary seat joins, eight bounded network probes and cleanup; alert cadence uses an injected health clock.
+    const startedAt = new Date().toISOString();
+    const { runRelayCanary } = await import('../src/relay-canary-watch.js');
+    const { loadMachineSettings } = await import('../src/settings.js');
+    const { readRelayHealth } = await canaryApi();
+    const box = await relayClientFixture(t);
+    commitConfiguration(box);
+    await box.link();
+    const printed = await box.cli('relay', 'pair');
+    assert.equal(printed.code, 0, printed.failure);
+    const paired = await box.otherDeviceJoin(printed.document.code, 'canary-host-b');
+    const left = await independentCanaryHost(box, box.lane, 'canary-host-a-seat');
+    const right = await independentCanaryHost(paired, box.lane, 'canary-host-b-seat');
+    for (const field of ['HOME', 'PULLBOARD_HOME', 'PULLBOARD_MACHINE_HOME']) {
+      assert.notEqual(left.env[field], right.env[field], `${field} belongs to an independent logical host`);
+    }
+    assert.notEqual(left.commonDir, right.commonDir, 'health is not shared through a sibling-worktree common directory');
+    assert.notEqual(left.settingsFile, right.settingsFile, 'machine opt-ins are stored separately');
+    assert.notEqual(left.config.agentId, right.config.agentId, 'each configured probe uses its own ordinary registered seat');
+    const leftLink = JSON.parse(readFileSync(box.linkFile, 'utf8'));
+    const rightLink = JSON.parse(readFileSync(join(paired.root, '.git', 'pullboard', 'relay.json'), 'utf8'));
+    assert.equal(leftLink.board, rightLink.board, 'both independent hosts use the same real fixture relay board');
+    assert.equal(leftLink.url, rightLink.url);
+    assert.notEqual(leftLink.machine, rightLink.machine, 'ordinary pairing issues a distinct machine identity');
+    assert.ok(typeof leftLink.token === 'string' && typeof rightLink.token === 'string' && leftLink.token !== rightLink.token,
+      'ordinary pairing issues separate machine credentials without exposing their values');
+    assert.notEqual(leftLink.tokenId, rightLink.tokenId);
+    let now = Date.now();
+    /** Read the machine's saved configuration for every real probe, restoring the shared process environment afterward. */
+    async function run(host, fail = false) {
+      if (fail) box.beforeNextMove(() => box.refuseReads(true));
+      let result;
+      try {
+        result = await withFixtureEnvironment(host.env, async () => {
+          const config = loadMachineSettings().relay?.canary;
+          assert.deepEqual(config, host.config, 'the actual saved machine configuration remains selected');
+          return runRelayCanary(config, { now: () => now });
+        });
+      } finally { if (fail) box.refuseReads(false); }
+      assert.equal(result.observation.ok, !fail, JSON.stringify(result.observation));
+      assert.equal(result.observation.step, fail ? 'pull' : 'complete');
+      return result;
+    }
+    for (const host of [left, right]) {
+      const healthy = await run(host);
+      assert.equal(healthy.health.status, 'healthy');
+      assert.equal(healthy.transition, null);
+    }
+    const drills = [];
+    for (const [host, other] of [[left, right], [right, left]]) {
+      const untouched = readFileSync(other.healthFile);
+      now += 1_000;
+      const first = await run(host, true);
+      assert.equal(first.transition, null, 'one failed probe degrades without inventing an alert');
+      assert.equal(first.health.status, 'degraded');
+      assert.equal(first.health.consecutiveFailures, 1);
+      assert.deepEqual(readFileSync(other.healthFile), untouched, 'another host’s first failure cannot change this host’s health');
+      now += 119_000;
+      const alert = await run(host, true);
+      assert.equal(alert.transition, 'alert', 'the second real failed pull alerts within the simulated two-minute window');
+      assert.equal(alert.health.consecutiveFailures, 2);
+      assert.equal(alert.health.status, 'degraded');
+      assert.ok(displayText(alert.finding).includes('pull'), 'the persisted finding names the actual failed step');
+      assert.equal(readRelayHealth(host.root, { now }).step, 'pull');
+      assert.deepEqual(readFileSync(other.healthFile), untouched, 'another host’s alert cannot overwrite this host’s health');
+      now += 1_000;
+      const recovered = await run(host);
+      assert.equal(recovered.transition, 'recovery');
+      assert.equal(recovered.health.status, 'healthy');
+      assert.equal(recovered.health.consecutiveFailures, 0);
+      assert.equal(recovered.finding, null);
+      assert.equal(readRelayHealth(host.root, { now }).status, 'healthy');
+      assert.deepEqual(readFileSync(other.healthFile), untouched, 'recovery belongs only to the host that completed the round trip');
+      drills.push({ alertAt: alert.health.lastAt, recoveryAt: recovered.health.lastAt, failedStep: alert.observation.step });
+    }
+    t.diagnostic(JSON.stringify({ drill: 'two independently paired machine configurations share one loopback relay',
+      startedAt, finishedAt: new Date().toISOString(), hosts: drills,
+      cadence: 'injected health clock; real sealed probes; no wall-clock or physical-two-machine claim', production: false }));
+  });
