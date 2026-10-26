@@ -7,8 +7,10 @@ import { AGENT_GRANT_ENGINE } from '../src/agent-grant-engine.js';
 import { appliedSequence } from '../src/engine.js';
 import { applyEngineMove } from '../src/engine.js';
 import { prepareEngineMove } from '../src/engine.js';
+import { startRelayEpoch } from '../src/engine.js';
 import { exportBoard } from '../src/exchange.js';
 import { importBoard } from '../src/exchange.js';
+import { restoreRelaySnapshot } from '../src/exchange.js';
 
 const AT = '2026-10-01T12:00:00.000Z';
 const LEGACY = AGENT_GRANT_ENGINE - 1;
@@ -77,19 +79,20 @@ test('a rolled-back activation never becomes a witness [E21,H16]', t => {
   assert.equal(agentGrantMinimum(box.board, box.probe), AGENT_GRANT_ENGINE, 'a later committed activation is visible');
 });
 
-test('import and replacement use their actual receipt witness rather than stale connection state [E21,H16]', t => {
+test('import, newer checkpoint and epoch reset use their actual receipt witness [E21,H16]', t => {
   const box = fixture(t);
   const legacy = exportBoard(box.board);
   box.activate();
   const activated = exportBoard(box.board);
   const peer = store.openBoard(':memory:');
   t.after(() => store.closeBoard(peer));
-  importBoard(peer, activated);
+  importBoard(peer, legacy);
+  assert.equal(agentGrantMinimum(peer, box.probe), 1);
+  restoreRelaySnapshot(peer, activated, appliedSequence(box.board));
   assert.equal(agentGrantMinimum(peer, box.probe), AGENT_GRANT_ENGINE);
-  importBoard(peer, legacy, { replace: true });
-  assert.equal(agentGrantMinimum(peer, box.probe), 1, 'replacement removes the old witness on the same connection');
-  importBoard(peer, activated, { replace: true });
-  assert.equal(agentGrantMinimum(peer, box.probe), AGENT_GRANT_ENGINE);
+  const identity = peer.db.prepare("SELECT meta_value FROM board_meta WHERE meta_key='board_id'").get().meta_value;
+  startRelayEpoch(peer, identity);
+  assert.equal(agentGrantMinimum(peer, box.probe), 1, 'a real epoch reset removes the old witness on the same connection');
 });
 
 test('a receipt beyond the applied cursor cannot activate the recorded prefix [E21,H16]', t => {
