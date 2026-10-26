@@ -300,10 +300,10 @@ test('a landing escape is proposed as a submit invariant only when modern submit
   assert.equal(appliedSequence(target), sourcePrefix + 1, 'a typed refusal still consumes its authenticated relay position');
   assert.deepEqual(engineReceipt(target, move.id)?.outcome, result, 'the refusal is retained as the move receipt');
   assert.deepEqual(applyRelayMove(target, move, ordered), result, 'redelivery returns the same durable refusal');
-  assert.equal(appliedSequence(target), 1, 'redelivery does not advance twice');
+  assert.equal(appliedSequence(target), sourcePrefix + 1, 'redelivery does not advance twice');
   assert.equal(store.events(target).length, count, 'redelivery adds no submit event');
   assert.deepEqual(applyRelayMove(replica, move, ordered), result, 'another replica reaches the same refusal');
-  assert.equal(appliedSequence(replica), 1, 'both replicas retain the same ordered prefix');
+  assert.equal(appliedSequence(replica), sourcePrefix + 1, 'both replicas retain the same ordered prefix');
   assert.equal(store.getItem(replica, id).item_status, 'claimed');
   assert.deepEqual(store.events(replica), store.events(target), 'neither replica records a submit event');
   assert.deepEqual(engineReceipt(replica, move.id), engineReceipt(target, move.id), 'replica refusal receipts agree');
