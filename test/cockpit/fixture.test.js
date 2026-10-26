@@ -174,7 +174,11 @@ test('borrowed board presentation keeps parity, shows staged rows, and leaves th
   try {
     importBoard(staged, exportBoard(source));
     const ordinary = projectState(p.repo);
-    assert.deepEqual(projectState(p.repo, { board: staged }), ordinary, 'borrowed and ordinary projections share the same fields and values');
+    assert.ok(ordinary.agents.every(agent => agent.presence === 'live' && typeof agent.heartbeatAt === 'string'),
+      'real native fixture heartbeats remain visible beside the durable board');
+    const borrowed = projectState(p.repo, { board: staged });
+    assert.deepEqual(borrowed, { ...ordinary, agents: ordinary.agents.map(agent => ({ ...agent, heartbeatAt: null, presence: 'gone' })) },
+      'borrowed projection preserves every durable field; an in-memory import has no native presence sidecar');
     const before = exportBoard(source);
     const stagedId = addItem(staged, { by: 'coordinator', lane: 'web', title: 'Staged recovery row', criterion: 'visible only in staged snapshot' });
     const stagedState = projectState(p.repo, { board: staged });
@@ -337,6 +341,7 @@ test('observation-time ages compare by their own clock [A10]', () => {
   const secondAsOf = '2026-10-10T10:00:00.129Z';
   /** Build one synthetic board observation at the supplied capture time. */
   const snapshot = asOf => ({
+    observedAt: asOf,
     board: { id: 'same-board', event: { event_id: 42 } },
     proofStats: {
       flow: {
@@ -355,6 +360,12 @@ test('observation-time ages compare by their own clock [A10]', () => {
   const first = snapshot(firstAsOf);
   const second = snapshot(secondAsOf);
   assertObservationsEqual(first, second, '129ms-separated observations match after validating their own ages');
+
+  const wrongClock = { ...second, observedAt: 'not a timestamp' };
+  assert.throws(() => assertObservationsEqual(first, wrongClock, 'invalid read clock must be rejected'), error => error.code === 'ERR_ASSERTION' && /observedAt/u.test(error.message));
+  const nestedClock = structuredClone(second);
+  nestedClock.board.observedAt = secondAsOf;
+  assert.throws(() => assertObservationsEqual(first, nestedClock, 'nested observedAt remains invariant'), error => error.code === 'ERR_ASSERTION');
 
   const wrongAge = structuredClone(second);
   wrongAge.proofStats.flow.queues.open.oldest.ageMinutes += 1;

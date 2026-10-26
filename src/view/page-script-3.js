@@ -423,14 +423,17 @@ async function revokeCredential(id) {
 }
 
 /**
- * A board read as text with its clock readings blanked: the flow's observation time (asOf) and each queue's oldest age
- * (ageMinutes) are stamped afresh on every read, so two reads that differ only there show the same board (#644).
+ * A board read as text with its clock readings blanked: root observedAt, the flow's observation time (asOf) and each
+ * queue's oldest age (ageMinutes) are stamped afresh on every read, so clock-only changes show the same board (#644).
  * Authenticated local report metadata compares recorded facts and native expiry, not display-only duration increments.
  * Matching whole JSON keys is safe: a quote inside any string value is escaped, so no title can look like one.
  */
 function boardText(state) {
+  const observations = new Set([state?.project, ...(state?.group?.repos ?? []).map(repo => repo.board)]);
   return JSON.stringify(state, (_key, value) => value && typeof value === 'object' && reportValidators.has(value)
-    ? { reportValidator: reportValidators.get(value) } : value).replace(/"(asOf|ageMinutes)":(?:"[^"]*"|[-+.0-9eE]+|null)/g, '"$1":null');
+    ? { reportValidator: reportValidators.get(value) }
+    : observations.has(value) && value && Object.hasOwn(value, 'observedAt') ? { ...value, observedAt: null } : value)
+    .replace(/"(asOf|ageMinutes)":(?:"[^"]*"|[-+.0-9eE]+|null)/g, '"$1":null');
 }
 
 /** Show each queue's oldest age from the board on hand in place: the one thing on the page that moves with the clock alone. */
