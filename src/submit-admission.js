@@ -14,6 +14,8 @@ export function submitAdmission(board, itemId, actor, value) {
   if (item?.item_status !== 'claimed' || item.item_owner !== actor || !(item.item_lease_until > board.clock.now().toISOString())) {
     throw new Refused('ITEM_LEASE_LOST', 'the submit admission needs the same live claim; claim the item before starting a new submit');
   }
+  const used = board.db.prepare("SELECT 1 FROM event WHERE event_kind IN ('claim','renew') AND json_valid(event_detail) AND json_extract(event_detail,'$.submitAdmission.id')=? LIMIT 1").get(value.id);
+  if (used) throw new Refused('USAGE', 'a submit admission id is used once; start a new native admission instead of reusing an old proof');
   return { id: value.id, commit: value.commit, tree: value.tree };
 }
 
@@ -33,5 +35,5 @@ export function completesAdmittedSubmit(board, move, item, actor) {
     .filter(receipt => receipt?.submitAdmission === admission.id);
   return receipts.length > 0 && receipts.every(receipt => receipt.kind === 'submit' && receipt.item === item.item_id
     && receipt.seat === actor && receipt.commit === admission.commit && receipt.tree === admission.tree
-    && receipt.frozenDigest === item.item_frozen_digest && receipt.sourceClean === true && receipt.exitCode === 0);
+    && receipt.frozenDigest === item.item_frozen_digest && receipt.sourceClean === true && Number.isSafeInteger(receipt.exitCode));
 }

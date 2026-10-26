@@ -488,8 +488,12 @@ async function withOneGateSlot(root, action, { landing = false, itemCheck = fals
   };
   const inherited = inheritedGateSlot({ root, browser, namedFiles: shortEligible, timing });
   if (inherited && (!runnerOnly || inherited.runnerExecution)) {
-    timed(Object.assign(inherited, { inherited: true })).tracker.mark('actionAt');
-    try { return await action(inherited); }
+    timed(Object.assign(inherited, { inherited: true }));
+    try {
+      await onWait?.({ admitted: true });
+      inherited.tracker.mark('actionAt');
+      return await action(inherited);
+    }
     finally {
       try { settleReceipt(inherited); } finally { inherited.release(); }
       record(inherited);
