@@ -50,7 +50,7 @@ export function senderFiles() {
 
 // Budget: a sender refreshes its claim every few seconds while it runs; a claim this old belongs to a process that
 // died, whose number may since have been reused.
-const CLAIM_STALE_MS = 120_000;
+export const SENDER_CLAIM_STALE_MS = 120_000;
 
 /** Whether a process is alive; one another user owns still is. */
 export function alive(pid) {
@@ -67,7 +67,7 @@ export function alive(pid) {
 export function senderHolding() {
   const { pid } = senderFiles();
   try {
-    if (Date.now() - statSync(pid).mtimeMs > CLAIM_STALE_MS) return 0;
+    if (Date.now() - statSync(pid).mtimeMs > SENDER_CLAIM_STALE_MS) return 0;
     const holder = Number(readFileSync(pid, 'utf8'));
     return alive(holder) ? holder : 0;
   } catch { return 0; }
