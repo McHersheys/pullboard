@@ -243,6 +243,7 @@ globalThis.fetch = function tracedFetch(input, init) {
   let stateReadStarted = 0;
   let refuseSnapshotWrites = false;
   let stallApi = false;
+  let studyApiFault = null;
   let holdPublishes = false;
   const heldPublishes = [];
   let holdProbes = false;
@@ -393,6 +394,16 @@ globalThis.fetch = function tracedFetch(input, init) {
       recordResponse({ method: req.method, path: req.url, request: Buffer.concat(requestChunks), response: Buffer.concat(responseChunks) });
     });
     calls.push(call);
+    if (studyApiFault && (req.url ?? '').startsWith('/api/')) {
+      const fault = studyApiFault;
+      if (fault.delayMs) await new Promise(resolve => setTimeout(resolve, fault.delayMs));
+      if (fault.status) {
+        request.resume();
+        res.writeHead(fault.status, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ version: 1, error: { code: fault.code, message: 'private study fault' } }));
+        return;
+      }
+    }
     if (stallApi && (req.url ?? '').startsWith('/api/')) { request.resume(); await new Promise(() => {}); }
     // A held API2 checkpoint publish waits until released, so a test can act while an upload is in flight (#1014).
     if (holdPublishes && req.method === 'POST' && /^\/api\/v2\/boards\/[0-9a-f]{32}\/uploads\/[^/]+\/publish$/u.test(req.url ?? '')) {
@@ -808,6 +819,13 @@ globalThis.fetch = function tracedFetch(input, init) {
     refuseSnapshotWrites(value) { refuseSnapshotWrites = value; },
     /** Leave every board API request unanswered until its client times out, like an overloaded relay. */
     stallApi(value = true) { stallApi = value; },
+    /** Apply a private study's real HTTP fault to both snapshot protocol versions. */
+    studyApiFault(value = null) {
+      assert.ok(value === null || Number.isSafeInteger(value.delayMs) && value.delayMs >= 0 && value.delayMs <= 5000
+        && (value.status === null || [409, 503].includes(value.status))
+        && (value.status === null || ['ENGINE_VERSION', 'RELAY_UNAVAILABLE'].includes(value.code)));
+      studyApiFault = value;
+    },
     /** Hold every API2 checkpoint publish until called with false, which releases the held ones. */
     holdPublishes(value = true) {
       holdPublishes = value;

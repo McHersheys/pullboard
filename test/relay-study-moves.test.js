@@ -1,0 +1,144 @@
+/** Exercise native move effects before comparing the actual relay's complete decoded projection [H5,H17]. */
+import assert from 'node:assert/strict';
+import { createHash, randomUUID } from 'node:crypto';
+import { join } from 'node:path';
+import { test } from 'node:test';
+import * as store from '../src/board.js';
+import * as milestones from '../src/milestones.js';
+import { MOVE_OPERATIONS } from '../src/move-registry.js';
+import { relaySnapshot } from '../src/relay-presentation.js';
+import { relayClientFixture } from './relay-client-fixture.js';
+import { differences, readRelay } from './relay-study-fixture.js';
+import { submitFixture } from './board-submit-fixture.js';
+import { syntheticFlakeObservation } from './flake-observation-fixture.js';
+
+const SKIP = process.env.PULLBOARD_RELAY_STUDY !== '1' && 'a measurement: set PULLBOARD_RELAY_STUDY=1 to run it';
+
+test('relay study compares each exercised move effect through the real API2 reader [H5,H17]', { timeout: 180_000, skip: SKIP }, async t => {
+  const box = await relayClientFixture(t);
+  await box.link();
+  const board = store.openBoard(join(box.root, '.git', 'pullboard', 'board.sqlite'));
+  t.after(() => store.closeBoard(board));
+  const covered = new Set(), setupRefusals = [];
+  t.after(() => t.diagnostic(JSON.stringify({ phase: 'move-effect-parity', node: process.versions.node,
+    coveredMoves: [...covered], setupRefusals, uncoveredMoves: MOVE_OPERATIONS.filter(operation => !covered.has(operation)),
+    limitation: 'Native board-state fixtures with actual API2 transport; synthetic submit is explicitly not a gate proof. Only successful event-producing calls counted.' })));
+  /** Only successful native calls count as covered; a refused setup never supplies parity evidence. */
+  async function exercise(operation, work) {
+    const before = board.db.prepare('SELECT COALESCE(MAX(event_id),0) AS n FROM event').get().n;
+    let result;
+    try { result = work(); }
+    catch (error) {
+      if (!error.code) throw error;
+      setupRefusals.push({ operation, code: error.code });
+      return null;
+    }
+    if (board.db.prepare('SELECT COALESCE(MAX(event_id),0) AS n FROM event').get().n === before) {
+      setupRefusals.push({ operation, code: 'NO_MUTATION' });
+      return result;
+    }
+    const published = await box.cli('status');
+    assert.equal(published.code, 0, 'the actual CLI publishes after ' + operation);
+    const expected = relaySnapshot(box.root);
+    const read = await readRelay(box);
+    assert.deepEqual(differences(expected.presentation, read.document.presentation), [], operation + ' full presentation');
+    assert.deepEqual(differences(expected.tables, read.document.tables), [], operation + ' native tables');
+    covered.add(operation);
+    return result;
+  }
+  const agent = await exercise('register', () => store.register(board, { lane: box.lane, path: join(box.root, 'study-worker'), parentDigest: 'a'.repeat(64) }));
+  const reviewer = store.register(board, { lane: 'tests', path: join(box.root, 'study-reviewer'), parentDigest: 'b'.repeat(64) });
+  const item = await exercise('addItem', () => store.addItem(board, { by: 'coordinator', lane: box.lane,
+    title: 'Lifecycle study', criterion: 'A seeded lifecycle.', brief: 'Seeded brief.' }));
+  await exercise('editItem', () => store.editItem(board, item, { agentId: 'coordinator', brief: 'Changed brief.', reason: 'study' }));
+  await exercise('appendFact', () => store.appendFact(board, item, { agentId: 'coordinator', kind: 'measurement', text: 'Seeded fact.' }));
+  const shout = await exercise('shout', () => store.shout(board, { from: agent, to: 'coordinator', text: 'Study question?', lanes: [box.lane], decision: true }));
+  await exercise('passDecision', () => store.passDecision(board, shout, { agentId: 'coordinator', note: 'Study pass.', lanes: [box.lane] }));
+  const answerable = store.shout(board, { from: agent, to: 'coordinator', text: 'Separate answerable question?', lanes: [box.lane], decision: true });
+  await exercise('answerDecision', () => store.answerDecision(board, answerable, { agentId: 'coordinator', text: 'Study answer.', lanes: [box.lane] }));
+  await exercise('holdItem', () => store.holdItem(board, item, { agentId: 'coordinator', reason: 'Study hold.' }));
+  await exercise('releaseItemHold', () => store.releaseItemHold(board, item, { agentId: 'coordinator' }));
+  await exercise('holdLane', () => store.holdLane(board, box.lane, { agentId: 'coordinator', reason: 'Study hold.' }));
+  await exercise('releaseLane', () => store.releaseLane(board, box.lane, { agentId: 'coordinator' }));
+  await exercise('declareJob', () => store.declareJob(board, { agentId: 'coordinator', name: 'study-job', every: '10m', owner: agent }));
+  await exercise('recordJobRun', () => store.recordJobRun(board, { agentId: agent, name: 'study-job' }));
+  await exercise('setLineSetting', () => store.setLineSetting(board, { agentId: 'coordinator', key: 'order', value: true, reason: 'Study projection.', window: { samples: 1 } }));
+  await exercise('setBarReady', () => store.setBarReady(board, { agentId: 'coordinator', enabled: true }));
+  await exercise('setBarReady', () => store.setBarReady(board, { agentId: 'coordinator', enabled: false }));
+  await exercise('addMilestone', () => milestones.addMilestone(board, { agentId: 'coordinator', name: 'Study A', items: [item] }));
+  const other = store.addItem(board, { by: 'coordinator', lane: box.lane, title: 'Second study item', criterion: 'Second seed.' });
+  await exercise('editMilestoneItems', () => milestones.editMilestoneItems(board, 'Study A', { agentId: 'coordinator', add: [other] }));
+  await exercise('orderMilestoneItems', () => milestones.orderMilestoneItems(board, 'Study A', { agentId: 'coordinator', items: [other, item] }));
+  await exercise('editMilestone', () => milestones.editMilestone(board, 'Study A', { agentId: 'coordinator', note: 'Changed roadmap note.', target: '2026-12-01' }));
+  milestones.addMilestone(board, { agentId: 'coordinator', name: 'Study B' });
+  await exercise('moveMilestone', () => milestones.moveMilestone(board, 'Study B', { agentId: 'coordinator', before: 'Study A' }));
+  await exercise('shipMilestone', () => milestones.shipMilestone(board, 'Study B', { agentId: 'coordinator', commit: 'a'.repeat(40) }));
+  milestones.addMilestone(board, { agentId: 'coordinator', name: 'Study removable' });
+  await exercise('removeMilestone', () => milestones.removeMilestone(board, 'Study removable', { agentId: 'coordinator' }));
+  const claim = { agentId: agent, lane: box.lane, leaseMs: 3600000,
+    freeze: () => ({ text: '{"rows":[]}', digest: 'study-frozen' }) };
+  await exercise('claim', () => store.claim(board, item, claim));
+  await exercise('recordAttempt', () => store.recordAttempt(board, item, { agentId: agent, n: 1, seconds: 1, result: 'red' }));
+  await exercise('release', () => store.release(board, item, agent, 'Study release.'));
+  await exercise('refreeze', () => store.refreeze(board, item, { agentId: 'coordinator', freeze: claim.freeze }));
+  store.claim(board, item, claim);
+  await exercise('submit', () => submitFixture(board, item, { agentId: agent, commit: 'a'.repeat(40), tree: 'b'.repeat(40) }));
+  await exercise('reopen', () => store.reopen(board, item, { agentId: 'coordinator', note: 'Study submitted-item return.' }));
+  if (store.getItem(board, item).item_status === 'open') {
+    store.claim(board, item, claim);
+    submitFixture(board, item, { agentId: agent, commit: 'c'.repeat(40), tree: 'b'.repeat(40) });
+  }
+  await exercise('reserveReview', () => store.reserveReview(board, item, { agentId: reviewer, lane: 'tests', leaseMs: 3600000, policy: 'any' }));
+  await exercise('reserveNextReview', () => store.reserveNextReview(board, { agentId: reviewer, lane: 'tests', leaseMs: 3600000, policy: 'any' }));
+  await exercise('verify', () => store.verify(board, item, { agentId: reviewer, decision: 'ACCEPT', head: 'c'.repeat(40),
+    digest: 'study-frozen', policy: 'any', note: 'Synthetic native state only; no gate execution claimed.' }));
+  await exercise('merged', () => store.merged(board, item, { agentId: 'coordinator', commit: 'c'.repeat(40) }));
+  await exercise('withdraw', () => store.withdraw(board, other, { agentId: 'coordinator', reason: 'Study withdrawal.' }));
+  const watch = await exercise('proposeSentinel', () => store.proposeSentinel(board, { agentId: agent,
+    row: { name: 'study-watch', check: 'true', every: 'hourly', owner: 'coordinator' } }));
+  if (watch) {
+    await exercise('decideSentinel', () => store.decideSentinel(board, { agentId: 'person', channel: 'terminal',
+      name: watch.name, digest: watch.digest, decision: 'approve' }));
+    await exercise('beginSentinelRun', () => store.beginSentinelRun(board, { agentId: agent, name: watch.name, digest: watch.digest, run: 'study-run' }));
+    await exercise('finishSentinelRun', () => store.finishSentinelRun(board, { agentId: agent, name: watch.name, digest: watch.digest,
+      run: 'study-run', result: { green: true, code: 0, timedOut: false, signal: null, aborted: false, durationMs: 1, output: 'Synthetic watch receipt, no command execution claimed.' } }));
+  }
+  await exercise('recordHealthFindings', () => store.recordHealthFindings(board, { agentId: 'coordinator',
+    observedRevision: board.db.prepare('SELECT MAX(event_id) AS n FROM event').get().n,
+    findings: [{ key: 'study-fixture', cause: 'STUDY_FIXTURE', subject: agent, title: 'Synthetic projection observation',
+      since: board.clock.now().toISOString(), why: 'Private state fixture, not a real health finding', next: 'Read study metadata', item: null }] }));
+  await exercise('recordFlakeObservation', () => store.recordFlakeObservation(board, { agentId: 'coordinator',
+    lane: box.lane, observation: syntheticFlakeObservation('study-synthetic-unclassified') }));
+  const outsideText = '{"rows":[]}';
+  const outside = await exercise('intakeOutside', () => store.intakeOutside(board, { agentId: 'coordinator',
+    source: { kind: 'pull-request', repository: 'fixture/repository', number: 1281, author: 'study-contributor',
+      state: 'open', maintainerReplied: false, commit: 'd'.repeat(40), tree: 'e'.repeat(40), base: 'f'.repeat(40),
+      files: ['synthetic-study.txt'], sensitive: true },
+    item: { lane: box.lane, title: 'Synthetic outside state', criterion: 'State projection only.', route: 'strong' },
+    frozen: { text: outsideText, digest: createHash('sha256').update(outsideText).digest('hex') } }));
+  if (outside) await exercise('approveOutside', () => store.approveOutside(board, outside, { agentId: 'person' }));
+  await exercise('recordPublishFinding', () => store.recordPublishFinding(board, { agentId: 'coordinator', item,
+    repository: 'fixture/repository', pull: 1281, head: 'c'.repeat(40),
+    failures: [{ id: 1281, name: 'Synthetic state only, not a CI failure', url: 'https://example.invalid/study', files: ['synthetic-study.txt'] }] }));
+  const command = 'node -e "process.exit(0)"';
+  const pending = { command, main: 'a'.repeat(40), request: randomUUID(), result: 'pending' };
+  const baselineItem = store.addItem(board, { by: 'coordinator', lane: box.lane, title: 'Unavailable baseline state',
+    criterion: 'State projection only.', check: command, checkBaseline: pending });
+  await exercise('completeCheckBaseline', () => store.completeCheckBaseline(board, baselineItem, { agentId: 'coordinator', expected: pending,
+    baseline: { ...pending, result: 'unavailable', reason: 'Synthetic native-state fixture; no baseline execution claimed.' } }));
+  await exercise('acceptCheck', () => store.acceptCheck(board, baselineItem, { agentId: 'person', channel: 'terminal',
+    digest: createHash('sha256').update(command).digest('hex') }));
+  const answered = board.db.prepare("SELECT MAX(event_id) AS n FROM event WHERE event_kind='answer'").get().n;
+  const through = board.db.prepare('SELECT MAX(event_id) AS n FROM event').get().n;
+  await exercise('recordActivityDelivery', () => store.recordActivityDelivery(board, { agentId: agent, through, digestThrough: through,
+    interrupts: answered ? [{ id: 'event:' + answered, eventId: answered, reason: 'answered' }] : [] }));
+  if (answered) await exercise('actOnActivity', () => store.actOnActivity(board, { agentId: agent, ids: ['event:' + answered] }));
+  await exercise('draftSpecRow', () => store.draftSpecRow(board, { agentId: agent,
+    row: { id: 'Z1281', text: 'Study row.', gate: 'review', tier: 'must', section: 'Study', target: 'spec' } }));
+  const row = { kind: 'spec', id: 'Z1281', file: 'SPEC.md', source: '- Z1281 [draft, must] Study row. | gate: review',
+    replacement: '- Z1281 [approved, must] Study row. | gate: review', text: 'Study row.', decision: 'approve' };
+  const decisions = await exercise('recordRowDecisions', () => store.recordRowDecisions(board, { agentId: 'person', channel: 'terminal', decisions: [row] }));
+  if (decisions) await exercise('applyRowDecisions', () => store.applyRowDecisions(board, { agentId: 'coordinator', events: decisions.map(value => value.event) }));
+  const handoff = await exercise('openHandoff', () => store.openHandoff(board, { agentId: agent }));
+  if (handoff) await exercise('takeHandoff', () => store.takeHandoff(board, { agentId: reviewer, item: handoff.item }));
+});
