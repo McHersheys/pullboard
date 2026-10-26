@@ -1,13 +1,18 @@
 /** @pullboard-test-loads src/relay.js src/cli.js */
 /** A transient outage never turns an acknowledged-authority exception into a local move [H21,H16]. */
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { relayOutboxSetting } from '../src/cli.js';
 import { outboxFile, outboxQueueable } from '../src/relay-outbox.js';
 import { Refused } from '../src/refused.js';
 import { relayClientFixture } from './relay-client-fixture.js';
+import { runFixtureGit } from './fixture-child.js';
+
+const CLI = fileURLToPath(new URL('../bin/pullboard.js', import.meta.url));
 
 /** Run a synchronous policy control with a synthetic token, restoring the test process's original environment. */
 function withToken(value, work) {
@@ -62,6 +67,14 @@ test('landing-fenced arguments remain acknowledged across every transient fallba
 
 test('an accepted linked environment-token CLI refuses an offline move without creating an outbox [H21,H16,E18]', async t => {
   const box = await relayClientFixture(t);
+  const configFile = join(box.root, 'pullboard.json');
+  const config = JSON.parse(readFileSync(configFile, 'utf8'));
+  assert.equal(Object.hasOwn(config.relay ?? {}, 'outbox'), false, 'the private board uses the absent-setting default');
+  // The real policy reader reads committed configuration; init alone leaves this file uncommitted.
+  writeFileSync(join(box.env.PATH, 'pullboard'), `#!/bin/sh\nexec node "${CLI}" "$@"\n`, { mode: 0o700 });
+  runFixtureGit(['add', 'pullboard.json'], { cwd: box.root, env: box.env });
+  runFixtureGit(['commit', '-q', '-m', 'chore(config): retain default outbox policy'], { cwd: box.root, env: box.env });
+  assert.equal(relayOutboxSetting(box.root), true, 'the committed absent setting really enables fallback');
   assert.equal((await box.link()).code, 0);
   const state = JSON.parse(readFileSync(box.linkFile, 'utf8'));
   assert.equal(state.baselineAccepted, true, 'the private relay accepted this real linked board');
