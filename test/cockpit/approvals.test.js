@@ -2,6 +2,7 @@
 /** @pullboard-test-gui */
 /** Agent-approved rows remain readable and actionable in the person view [B26,N26,S1,P6]. */
 import assert from 'node:assert/strict';
+import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { machine, project, startView, boardOf, chromeExecutable, openSnapshotChrome, closeSnapshotChrome } from './fixture.js';
@@ -29,7 +30,9 @@ test('agent approvals show full rows and styled actions at narrow width and reso
         const buttons = [...row.querySelectorAll('[data-row-decision]')];
         const boxes = buttons.map(button => button.getBoundingClientRect());
         const commit = row.querySelector('code');
+        const title = row.querySelector('.t');
         return { text: row.textContent, commit: commit.textContent, full: commit.title, at: row.querySelector('time')?.dateTime,
+          unclipped: getComputedStyle(title).whiteSpace !== 'nowrap' && title.scrollHeight <= title.clientHeight,
           labels: buttons.map(button => button.textContent),
           styled: buttons.every(button => button.classList.contains(button.dataset.rowDecision === 'approve' ? 'approve-row' : 'decline-row'))
             && getComputedStyle(buttons[0]).backgroundColor !== 'rgba(0, 0, 0, 0)' && getComputedStyle(buttons[1]).borderTopStyle === 'solid',
@@ -38,6 +41,7 @@ test('agent approvals show full rows and styled actions at narrow width and reso
           overflow: document.documentElement.scrollWidth > innerWidth };
       })())`));
       assert.ok(shown.text.includes(row.text), 'Needs-you includes the entire actual row text');
+      assert.equal(shown.unclipped, true, 'the complete row wraps without visual clipping');
       assert.ok(shown.text.includes(row.gate), 'Needs-you includes the actual gate');
       assert.ok(shown.text.includes(row.agentApproval.agent), 'plain attribution preserves the actual recorded Git author');
       assert.equal(shown.at, commitDate, 'the visible date uses the core-provided timestamp');
@@ -70,6 +74,13 @@ test('agent approvals show full rows and styled actions at narrow width and reso
     const declined = await boardOf(view, alpha.repo);
     assert.equal(declined.spec.find(row => row.id === 'G2').decision.reason, 'The second requirement needs revision.');
     assert.equal(declined.needs.some(row => row.kind === 'agent-approved' && row.id === 'G2'), false);
+    appendFileSync(join(alpha.repo, 'SPEC.md'), '- G3 [approved, must] A working-tree approval has no commit date. | gate: manual review\n');
+    await chrome.stable('refresh()');
+    await chrome.click("document.querySelector('[data-tab=items]')");
+    await chrome.waitFor('document.querySelector(\'#needs [data-agent-approved="G3"]\') !== null');
+    assert.equal(await chrome.stable('data.project.spec.find(row => row.id === "G3").agentApproval.commit'), null);
+    assert.match(await chrome.stable('document.querySelector(\'#needs [data-agent-approved="G3"]\').textContent'), /Date unknown/u,
+      'an actual uncommitted approval never invents a date');
   } finally {
     try { if (chrome) await closeSnapshotChrome(chrome); }
     finally { await view.stop(); }
