@@ -18,11 +18,18 @@ const ROOT = resolve(import.meta.dirname, '..');
 const e2e = createE2eHelpers();
 after(e2e.cleanup);
 const README = readFileSync(join(ROOT, 'README.md'), 'utf8');
+const CONTRIBUTING = readFileSync(join(ROOT, 'CONTRIBUTING.md'), 'utf8');
 const drawn = Object.keys(FIGURES).map((name) => `docs/img/${name}.svg`).sort();
 const SHOT_FIGURES = [
   { path: 'docs/shots/tour.svg', alt: 'The timed Pullboard tour shows a change submitted, rejected for a missed edge, fixed and accepted.' },
   { path: 'docs/shots/desktop-light.png', alt: "The desktop board shows open, claimed, submitted and accepted work, a Needs you row for a held lane, search in the top bar, the status bar, an accepted item's review history, and a stats line with merged work, sent-back share and the bottleneck recommendation." },
 ];
+
+test('CONTRIBUTING explains issue clarification and the seven-day reply aim [I1]', () => {
+  assert.match(CONTRIBUTING, /^## Issues and pull requests$/mu, 'the contribution section is present');
+  assert.match(CONTRIBUTING, /- `clarify`: closes after 14 days without a reply\. Reply to reopen\./u, 'the clarify rule says when issues close and how to reopen them');
+  assert.match(CONTRIBUTING, /1\. \*\*We aim to reply within 7 days\.\*\*/u, 'the first reply step has the new seven-day aim');
+});
 
 /**
  * The dark file a README picture pairs with its light file: a PNG's `-light` becomes `-dark`, and an SVG gains `-dark`.
