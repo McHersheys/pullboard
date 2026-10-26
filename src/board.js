@@ -201,7 +201,8 @@ import {
   boardBusyError,
 } from './board-access.js';
 import { ensureHotIndexes } from './board-hot.js';
-import { guardStore, refreshStoreDeclarations } from './board-store-guards.js';
+import { guardStore } from './board-store-guards.js';
+import { refreshStoreDeclarations } from './board-store-guards.js';
 import { ensureAdditiveIndexes } from './board-hot.js';
 import { missingAdditiveIndexes } from './board-hot.js';
 import {

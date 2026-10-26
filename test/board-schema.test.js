@@ -1,14 +1,22 @@
 /** Main owns declaration upgrades; valid old stamps and manual drift remain distinct [M3,A5,A6,C7,H16]. */
 import assert from 'node:assert/strict';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
+import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { after, test } from 'node:test';
+import { after } from 'node:test';
+import { test } from 'node:test';
 import * as store from '../src/board.js';
-import { MACHINE, storeTriggers } from '../src/machine.js';
-import { SCHEMA_DIGEST, SCHEMA_VERSION } from '../src/board-schema-source.js';
-import { boardStanding, recordSchemaStamp } from '../src/board-migrate.js';
+import { MACHINE } from '../src/machine.js';
+import { storeTriggers } from '../src/machine.js';
+import { SCHEMA_DIGEST } from '../src/board-schema-source.js';
+import { SCHEMA_VERSION } from '../src/board-schema-source.js';
+import { boardStanding } from '../src/board-migrate.js';
+import { recordSchemaStamp } from '../src/board-migrate.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { runFixtureChild } from './fixture-child.js';
 

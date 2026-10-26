@@ -1,7 +1,10 @@
 /** Install declared machine guards without confusing an approved old shape with manual drift [M3,A5,A6]. */
-import { atomic, logEvent } from './board-event-log.js';
-import { boardStanding, recordSchemaStamp } from './board-migrate.js';
-import { SCHEMA_DIGEST, SCHEMA_VERSION } from './board-schema-source.js';
+import { atomic } from './board-event-log.js';
+import { logEvent } from './board-event-log.js';
+import { boardStanding } from './board-migrate.js';
+import { recordSchemaStamp } from './board-migrate.js';
+import { SCHEMA_DIGEST } from './board-schema-source.js';
+import { SCHEMA_VERSION } from './board-schema-source.js';
 import { storeTriggers } from './machine.js';
 
 const GUARDED = 1;
