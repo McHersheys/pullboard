@@ -73,7 +73,7 @@ test('every Needs-you surface follows the shared builder [N26,A9]', async () => 
   }
 });
 
-test('a local relay-health Needs-you entry is an inspection with no release or hold action', { timeout: 180_000 }, async (t) => { // budget: private board/API startup and one real Chrome rendering pass; no throughput claim.
+test('a local relay-health Needs-you entry is an inspection with no release or hold action [N26]', { timeout: 180_000 }, async (t) => { // budget: private board/API startup and one real Chrome rendering pass; no throughput claim.
   const executable = chromeExecutable();
   assert.ok(executable, 'Chrome is required for the relay-health Needs-you inspection check.');
   const box = machine();
