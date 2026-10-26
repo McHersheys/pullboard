@@ -1,7 +1,9 @@
 /** Read and replay fixture replica state without changing its durable history [H16,V1,V17]. */
 import { DatabaseSync } from 'node:sqlite';
+import assert from 'node:assert/strict';
 import { unseal } from '../src/seal.js';
 import { syncRelay } from '../src/relay.js';
+import * as store from '../src/board.js';
 
 /** Read local events directly so inspection itself cannot drain the durable retry queue. */
 export function localEvents(file) {
@@ -25,8 +27,70 @@ export async function relayUploadSummary(uploads, key, boardId) {
     const plain = await unseal(key, Buffer.from(sealed, 'base64url'), { boardId, kind: 'move', sequence });
     const move = JSON.parse(new TextDecoder().decode(plain));
     return { sequence, operation: move.operation, moveId: move.id,
-      item: Number.isSafeInteger(move.args?.[0]) ? move.args[0] : null };
+      itemId: move.operation === 'recordProofRun' ? move.args?.[0]?.itemId
+        : move.operation === 'submit' && Number.isSafeInteger(move.args?.[0]) ? move.args[0] : null,
+      commit: move.operation === 'submit' ? move.args?.[1]?.commit ?? null : null,
+      recipient: move.operation === 'recordActivityDelivery' ? move.args?.[0]?.agentId ?? null : null };
   }));
+}
+
+/** Bind stacked submit, synchronization, and retry uploads to their exact durable outcomes [H16]. */
+export async function assertRecoveredStackUploads({ uploads, bounds, key, boardId, replicaFiles,
+  stackedA, stackedB, firstRecoveryCommit, recoveredStackCommit, pendingOutcome }) {
+  const stackBoardA = store.openBoardForRead(replicaFiles[0]);
+  const stackBoardB = store.openBoardForRead(replicaFiles[1]);
+  let stackOwnerA;
+  let stackOwnerB;
+  try {
+    stackOwnerB = store.getItem(stackBoardA, stackedB).item_owner;
+    stackOwnerA = store.getItem(stackBoardB, stackedA).item_owner;
+  } finally {
+    store.closeBoard(stackBoardA);
+    store.closeBoard(stackBoardB);
+  }
+
+  assert.equal(pendingOutcome.move.operation, 'submit');
+  assert.equal(pendingOutcome.move.args[0], stackedB);
+  assert.equal(pendingOutcome.move.args[1].commit, recoveredStackCommit);
+  assert.equal(pendingOutcome.move.args[1].agentId, stackOwnerB);
+  const recoveredReceipt = receipts(replicaFiles[0]).find((receipt) => JSON.parse(receipt.move).id === pendingOutcome.move.id);
+  assert.deepEqual(JSON.parse(recoveredReceipt.move), pendingOutcome.move,
+    'the pending reply has the exact durable engine receipt');
+
+  const [lostBMoves, submitAMoves, syncAMoves, pendingReceiptReadMoves] = await Promise.all([
+    relayUploadSummary(uploads.slice(bounds.beforeRecoveredStack, bounds.afterLostStackSubmit), key, boardId),
+    relayUploadSummary(uploads.slice(bounds.afterLostStackSubmit, bounds.afterLaterA), key, boardId),
+    relayUploadSummary(uploads.slice(bounds.afterLaterA, bounds.afterStackRecovery), key, boardId),
+    relayUploadSummary(uploads.slice(bounds.afterStackRecovery, bounds.beforeOutcomeRetry), key, boardId),
+  ]);
+  assert.deepEqual(lostBMoves.map(({ operation }) => operation), ['recordProofRun', 'recordProofRun', 'submit'],
+    'B records both proof runs before its one ordered submit');
+  assert.deepEqual(lostBMoves.slice(0, 2).map(({ itemId }) => itemId), [stackedB, stackedB]);
+  assert.equal(lostBMoves[2].itemId, stackedB);
+  assert.equal(lostBMoves[2].commit, recoveredStackCommit);
+  assert.equal(lostBMoves[2].moveId, pendingOutcome.move.id);
+  assert.deepEqual(submitAMoves.map(({ operation }) => operation),
+    ['recordProofRun', 'recordProofRun', 'submit', 'recordActivityDelivery'],
+    'A records both proof runs, its one ordered submit, and its activity delivery');
+  assert.deepEqual(submitAMoves.slice(0, 2).map(({ itemId }) => itemId), [stackedA, stackedA]);
+  assert.equal(submitAMoves[2].itemId, stackedA);
+  assert.equal(submitAMoves[2].commit, firstRecoveryCommit);
+  assert.equal(submitAMoves[3].recipient, stackOwnerA);
+  const submittedAReceipt = receipts(replicaFiles[1]).map(({ move }) => JSON.parse(move))
+    .find((move) => move.id === submitAMoves[2].moveId);
+  assert.equal(submittedAReceipt?.operation, 'submit');
+  assert.equal(submittedAReceipt?.args[0], stackedA);
+  assert.deepEqual(syncAMoves, [], 'sync after both accepted submissions creates no relay moves');
+  assert.deepEqual(pendingReceiptReadMoves, [], 'reading the pending receipt creates no relay moves');
+  return stackOwnerB;
+}
+
+/** Require an original-outcome retry to deliver only its activity receipt to the original submitter [H16]. */
+export async function assertOriginalOutcomeDelivery(uploads, key, boardId, submitter) {
+  const moves = await relayUploadSummary(uploads, key, boardId);
+  assert.deepEqual(moves.map(({ operation }) => operation), ['recordActivityDelivery'],
+    'reporting the durable outcome records only its activity delivery, never another proof or submit');
+  assert.equal(moves[0].recipient, submitter);
 }
 
 /** Make a submitted commit locally verifiable by the other replica's real Git history. */

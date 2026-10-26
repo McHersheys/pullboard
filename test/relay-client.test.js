@@ -31,7 +31,7 @@ import { captureSpecApprovalBaseline } from '../src/spec-approval.js';
 import { AGENT_SHELL_MARKERS, SSH_SHELL_MARKERS } from '../src/person.js';
 import { legacyMirrorQueueFragment } from './relay-client-legacy-case.js';
 import { assertBaselineResumeEvidence, assertOriginalBaselineEvidence } from './relay-client-baseline-case.js';
-import { localEvents, mergeCandidateForReview, receipts, relayUploadSummary, syncReplica } from './relay-client-replica-fixture.js';
+import { assertOriginalOutcomeDelivery, assertRecoveredStackUploads, localEvents, mergeCandidateForReview, receipts, syncReplica } from './relay-client-replica-fixture.js';
 import { assertDroppedReplyConsumed, commitInitializedRepoFiles, enterLegacyAckPolicy } from './relay-client-policy-fixture.js';
 import { threeReplicaPhaseCapture } from './relay-client-timing.js';
 
@@ -1251,23 +1251,17 @@ async function recoverReplicaReplies(fixture, timing) {
 
   const recoveredLink = join(commonDir(clones[0], envs[0]), 'pullboard', 'relay.json');
   const pendingOutcome = JSON.parse(readFileSync(recoveredLink, 'utf8')).recovered;
-  assert.equal(pendingOutcome.move.operation, 'submit');
-  assert.equal(pendingOutcome.move.args[0], stackedB);
-  assert.ok(pendingOutcome.move.args[1].commit === recoveredStackCommit);
-  const recoveredReceipt = receipts(replicaFiles[0]).find((receipt) => JSON.parse(receipt.move).id === pendingOutcome.move.id);
-  assert.deepEqual(JSON.parse(recoveredReceipt.move), pendingOutcome.move, 'the pending reply has the exact durable engine receipt');
   const beforeOutcomeRetry = relay.uploads.length;
-  console.log('stacked submit upload diagnostic', JSON.stringify({
-    lostB: await relayUploadSummary(relay.uploads.slice(beforeRecoveredStack, afterLostStackSubmit), key, boardId),
-    submitA: await relayUploadSummary(relay.uploads.slice(afterLostStackSubmit, afterLaterA), key, boardId),
-    syncA: await relayUploadSummary(relay.uploads.slice(afterLaterA, afterStackRecovery), key, boardId),
-    pendingReceiptRead: await relayUploadSummary(relay.uploads.slice(afterStackRecovery, beforeOutcomeRetry), key, boardId),
-  }));
-  assert.equal(beforeOutcomeRetry, beforeRecoveredStack + 2, 'the relay applied B and then A once each');
+  const stackOwnerB = await assertRecoveredStackUploads({
+    uploads: relay.uploads,
+    bounds: { beforeRecoveredStack, afterLostStackSubmit, afterLaterA, afterStackRecovery, beforeOutcomeRetry },
+    key, boardId, replicaFiles, stackedA, stackedB, firstRecoveryCommit, recoveredStackCommit, pendingOutcome,
+  });
   const originalOutcome = await timing.wait('read the durable original submission outcome for B', () => cli(worktrees[0], envs[0], 'submit', String(stackedB)));
   assert.equal(originalOutcome.commit, recoveredStackCommit);
   assert.match(originalOutcome.gate.report, /recovered the original submission/u);
-  assert.equal(relay.uploads.length, beforeOutcomeRetry, 'reporting the durable outcome creates no new relay move');
+  await assertOriginalOutcomeDelivery(relay.uploads.slice(beforeOutcomeRetry), key, boardId, stackOwnerB);
+  assert.equal(relay.uploads.length, beforeOutcomeRetry + 1);
 
   await timing.wait('sync clone C before checking its fabricated receiptless descriptor', () => cli(clones[2], envs[2], 'status'));
   const freshLinkFile = join(commonDir(clones[2], envs[2]), 'pullboard', 'relay.json');
