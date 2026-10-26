@@ -1,4 +1,5 @@
 /** Additional real native mutations for the complete reader inventory [H5,H16,A2]. */
+import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -7,6 +8,7 @@ import { tryGit } from '../src/git.js';
 import { barReadiness } from '../src/bar-readiness.js';
 import { revisionReference } from '../src/spec-revisions.js';
 import { receiptBody } from '../src/gate-run-receipt.js';
+import { requireHandoffActive } from '../src/handoff-state.js';
 
 /** Outside metadata is synthetic fixture input; these calls make no GitHub or owner-authentication assurance claim. */
 export async function seedOutside(context) {
@@ -134,6 +136,13 @@ export async function seedBarSignature(context) {
 /** New declared operations retain unknown proof facts and real cross-lane child state, without fabricated execution claims. */
 export async function seedCurrentOperations(context) {
   const { board, box, store, exercise, agent } = context;
+  const lead = store.listAgents(board).find(seat => seat.agent_id === agent);
+  assert.equal(lead?.agent_lane, box.lane, 'the lane lead is an actual registered seat in this lane');
+  requireHandoffActive(board, agent, 'setLaneLead', []);
+  await exercise('setLaneLead', () => store.setLaneLead(board, { agentId: 'coordinator', lane: box.lane, seat: agent, lanes: [box.lane] }));
+  assert.equal(store.laneLeads(board)[box.lane], agent, 'the native operation records the qualified lane lead');
+  await exercise('setLaneLead', () => store.setLaneLead(board, { agentId: 'coordinator', lane: box.lane, seat: null, lanes: [box.lane] }));
+  assert.equal(store.laneLeads(board)[box.lane], undefined, 'the native off form clears the same lane policy');
   const item = store.addItem(board, { by: 'coordinator', lane: box.lane, title: 'Synthetic provenance projection', criterion: 'Readers retain unknown receipt facts' });
   const head = resolveCommit(box.root, 'HEAD');
   const tree = tryGit(box.root, ['rev-parse', `${head}^{tree}`]).stdout.trim();
