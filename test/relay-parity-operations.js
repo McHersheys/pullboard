@@ -10,7 +10,7 @@ import { captureSpecApprovalBaseline } from '../src/spec-approval.js';
 import { loadConfig } from '../src/config.js';
 import { decodeBoardKey } from '../src/seal.js';
 import { createParityReader, assertReaderParity } from './relay-parity-reader.js';
-import { createStudyExercise, seedStudyState } from './relay-parity-seeds.js';
+import { createStudyExercise, seedStudyState, seedHandoff } from './relay-parity-seeds.js';
 import { submitFixture } from './board-submit-fixture.js';
 import { seedOutside, seedLandingObservations, seedMembership, seedAdministrative, seedBatch, seedCoordinatorAuthority, seedSpecOutcomes, seedBarSignature, seedCurrentOperations } from './relay-parity-extra-seeds.js';
 import { syntheticFlakeObservation } from './flake-observation-fixture.js';
@@ -56,6 +56,7 @@ export async function exerciseOperationParity({ root, origin, token, boardId, la
     await seedCurrentOperations(context);
     await seedBarSignature(context);
     await seedCoordinatorAuthority(context);
+    await seedHandoff(context);
     const missing = tracking.missing(MOVE_OPERATIONS);
     assert.deepEqual(missing, [], `every declared native operation must pass the complete oracle; setup refusals=${JSON.stringify(tracking.setupRefusals)}`);
     return { covered: [...tracking.covered].sort(), declared: [...MOVE_OPERATIONS].sort() };

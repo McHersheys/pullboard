@@ -179,6 +179,12 @@ export async function seedSpecAndHandoff(context) {
     replacement: '- Z1281 [approved, must] Study row. | gate: review', text: 'Study row.', decision: 'approve' };
   const decisions = await exercise('recordRowDecisions', () => store.recordRowDecisions(board, { agentId: 'person', channel: 'terminal', decisions: [row] }));
   if (decisions) await exercise('applyRowDecisions', () => store.applyRowDecisions(board, { agentId: 'coordinator', events: decisions.map(value => value.event) }));
+  return context;
+}
+
+/** Retire the outgoing native seat only after its remaining projection recipes have completed. */
+export async function seedHandoff(context) {
+  const { board, store, exercise, agent, reviewer } = context;
   const handoff = await exercise('openHandoff', () => store.openHandoff(board, { agentId: agent }));
   if (handoff) await exercise('takeHandoff', () => store.takeHandoff(board, { agentId: reviewer, item: handoff.item }));
   return context;
