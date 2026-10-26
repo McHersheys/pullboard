@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import '../src/cli.js'; // The child exercises this public entry point; retain its affected-test dependency.
 import { outboxGuardFile } from '../src/relay-outbox-guard.js';
-import { runFixtureChildAsync } from './fixture-child.js';
+import { runFixtureChildAsync, runFixtureGit } from './fixture-child.js';
 import { relayClientFixture } from './relay-client-fixture.js';
 
 const CLI = fileURLToPath(new URL('../bin/pullboard.js', import.meta.url));
@@ -70,12 +70,19 @@ async function keyDiagnostic(t, mode) {
   const worker = {};
   t.after(() => stopWorker(worker)); // Registered before the fixture’s own directory cleanup.
   const box = await relayClientFixture(t);
+  const configFile = join(box.root, 'pullboard.json');
+  const config = JSON.parse(readFileSync(configFile, 'utf8'));
+  if (config.relay) delete config.relay.outbox;
+  writeFileSync(configFile, JSON.stringify(config, null, 2) + '\n');
+  // Primary policy is read from Git; an uncommitted init config would select the legacy path.
+  writeFileSync(join(box.env.PATH, 'pullboard'), `#!/bin/sh\nexec node "${CLI}" "$@"\n`, { mode: 0o700 });
+  runFixtureGit(['add', 'pullboard.json'], { cwd: box.root, env: box.env });
+  runFixtureGit(['commit', '-q', '-m', 'chore(config): exercise local-first default'], { cwd: box.root, env: box.env });
   await box.link();
   const state = JSON.parse(readFileSync(box.linkFile, 'utf8'));
   assert.equal(state.baselineAccepted, true);
   assert.ok(state.agentTokens?.coordinator, 'the fixture uses its ordinary saved agent credential');
-  const config = JSON.parse(readFileSync(join(box.root, 'pullboard.json'), 'utf8'));
-  assert.notEqual(config.relay?.outbox, false, 'the board uses the production default rather than opting out');
+  assert.equal(Object.hasOwn(config.relay ?? {}, 'outbox'), false, 'the committed board uses the production default rather than an explicit setting');
   const env = { ...box.env };
   delete env.PULLBOARD_RELAY_SENDER_BACKGROUND;
   delete env.PULLBOARD_RELAY_TOKEN;
