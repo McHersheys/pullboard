@@ -9,7 +9,7 @@ import { delimiter, join, resolve } from 'node:path';
 import { test } from 'node:test';
 // The native child executes this entry point; keep its affected-test dependency explicit.
 import '../src/cli.js';
-import { createRelayAuth } from '../relay/auth.js';
+import { ACCESS_WINDOW_MS, createRelayAuth } from '../relay/auth.js';
 import { createAuthHandler } from '../relay/auth-http.js';
 import { createRelayHandler } from '../relay/service.js';
 import { createRelayJournal } from '../relay/journal.js';
@@ -88,7 +88,9 @@ test("a removed person's agent cannot move on the board [H2,H9]", async (t) => {
       return { id: '100', name: repository, permission: person.permission, public: false };
     },
   };
-  auth = createRelayAuth({ database: join(scratch, 'auth.sqlite'), github });
+  // The auth clock moves past one access window when the test removes a person (#1013).
+  let authOffsetMs = 0;
+  auth = createRelayAuth({ database: join(scratch, 'auth.sqlite'), github, now: () => Date.now() + authOffsetMs });
   const relayDirectory = join(scratch, 'relay');
   let signIn;
   const acceptedMoves = [];
@@ -128,12 +130,14 @@ test("a removed person's agent cannot move on the board [H2,H9]", async (t) => {
   const accepted = acceptedMoves.length;
   const checks = permissionChecks.length;
   people.get('bob').permission = 'none';
+  // A grant lasts one access window, so the removal takes effect once it ends, never later [H8,H21].
+  authOffsetMs = ACCESS_WINDOW_MS;
   const refused = await cli('add', lane, 'Bob after removal');
   assert.equal(refused.document.error?.code, 'NO_REPO_ACCESS', 'the removed person cannot send through a cached agent');
   assert.equal(refused.code, 1, 'the CLI reports the typed refusal');
   assert.equal(acceptedMoves.length, accepted, 'no removed-person move enters the relay');
   assert.equal(journal.latest(), prefix, 'the durable relay prefix does not advance');
   assert.equal(cachedOwner, '8', 'the agent credential belongs to the newly signed-in person');
-  assert.ok(permissionChecks.slice(checks).some(check => check.user === '8' && check.permission === 'none'), 'the write refreshes Bob current access');
+  assert.ok(permissionChecks.slice(checks).some(check => check.user === '8' && check.permission === 'none'), 'the first write after the window refreshes Bob current access');
   assert.equal(people.get('alice').permission, 'write', 'Alice retains access throughout the revocation');
 });

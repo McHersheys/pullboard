@@ -14,6 +14,11 @@ import {
   relaySnapshot,
 } from './relay-presentation.js';
 import { locked } from './relay-lock.js';
+import {
+  outboxGeneration,
+  outboxWaiting,
+} from './relay-outbox.js';
+import { withOutboxGuard } from './relay-outbox-guard.js';
 import { Refused } from './refused.js';
 
 /**
@@ -69,7 +74,10 @@ export function checkpointPublisher({ request, saveLink, loadLink, linkFile, rea
       delete state.checkpointRefusal;
       saveLink(file, state);
     } else {
-      const fresh = prepared && !(state.checkpoint?.sequence > prepared.sequence) ? prepared : await prepareCheckpoint(root, state);
+      // A queued move shows on the board before the relay orders it, so a board with one is never published (#1013).
+      const fresh = prepared && !(state.checkpoint?.sequence > prepared.sequence) ? prepared
+        : await withOutboxGuard(file, () => outboxWaiting(file) ? null : prepareCheckpoint(root, state));
+      if (!fresh) return null;
       if (!state.checkpoint || state.checkpoint.sequence !== fresh.sequence || state.checkpointPresentationDigest !== fresh.digest) {
         delete state.checkpointRefusal;
         state.checkpointPresentationDigest = fresh.digest;
@@ -130,10 +138,14 @@ export function checkpointPublisher({ request, saveLink, loadLink, linkFile, rea
     const paused = Boolean(linked.checkpointRefusal && uploadPauseType(linked.checkpointRefusal));
     if (!await probeUploadPause(file, linked, io)) return false;
     // Reading and sealing a large board takes about a second; it happens before the lock, so moves never wait on it.
+    // A move queued before or while it is read shows on the board unordered, so that read is not published (#1013).
+    const generation = outboxGeneration(file);
+    if (outboxWaiting(file)) return false;
     const prepared = await prepareCheckpoint(root, linked);
     const staged = await locked(file, async () => {
       const state = loadLink(file);
       if (!state || state.unlinking || state.recovery || state.pending || state.board !== linked.board) return null;
+      if (outboxWaiting(file) || outboxGeneration(file) !== generation) return null;
       if (ifChanged && !state.checkpoint && !state.checkpointRefusal && state.presentationDigest === prepared.digest) return { current: true };
       const result = await stageCheckpoint(root, file, state, io, prepared, { probe: false });
       // A pause the probe ended counts as resumed, so its notices clear once this upload is acknowledged.

@@ -194,14 +194,15 @@ test('an offline item stays bound to its queued moves through a replay that stop
   await box.restartRelay();
   const agent = await otherAgent(box, other);
   assert.equal((await agent('add', box.lane, 'Remote item takes the first number')).document.item.item_id, first);
-  // The relay takes the first replayed add, then stops answering reads, so the replay stops part way.
-  box.beforeNextMove(() => { box.refuseReads(true); });
+  // The relay takes the first replayed add, then stops answering reads and moves, so the replay stops part way.
+  box.beforeNextMove(() => { box.refuseReads(true); box.refuseMoves(true); });
   await box.cli('status');
   const shown = (await box.cli('export')).document.tables.item.find((row) => row.item_title === 'Second item added here offline').item_id;
   assert.notEqual(shown, second, 'the part-way replay shows the second item under a new number here');
   const withdrawn = await box.cli('withdraw', String(shown), 'withdrawn here at the number this machine shows');
   assert.equal(withdrawn.code, 0, withdrawn.failure);
   box.refuseReads(false);
+  box.refuseMoves(false);
   assert.equal((await agent('add', box.lane, 'Remote item takes the shown number')).document.item.item_id, shown,
     'the other machine takes the number this machine showed');
 

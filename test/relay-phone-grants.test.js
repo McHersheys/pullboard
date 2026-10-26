@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { createRelayAuth } from '../relay/auth.js';
+import { ACCESS_WINDOW_MS, createRelayAuth } from '../relay/auth.js';
 import { createGitHubClient } from '../relay/github.js';
 import { githubFixture } from './relay-fixture.js';
 
@@ -75,5 +75,6 @@ test('phone grants expire, bind every action field and permit one execution acro
   const unavailable = box.context('permission-lost');
   const beforeLoss = await box.auth.issueActionGrant(box.phone.token, unavailable);
   box.provider.state.access = false;
+  box.advance(ACCESS_WINDOW_MS); // Lost access takes effect when the cached grant's window ends [H8,H21].
   await assert.rejects(box.auth.consumeActionGrant(box.machine.token, beforeLoss.grant, unavailable), { code: 'NO_REPO_ACCESS' });
 });
