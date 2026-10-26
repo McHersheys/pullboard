@@ -408,20 +408,41 @@ async function recordLandingRun(state, receiptId) {
   await state.write('recordGateRun', [{ agentId: 'coordinator', receipt, lane: owner ?? store.getItem(state.board, state.batch.items[0].id).item_lane }]);
 }
 
+/** Select one deduplicated merged-tree test plan for both inline and local-first landing paths. */
+function batchAffectedTests(state) {
+  const root = state.batch.root;
+  const commit = headCommit(root);
+  const selection = state.config.affectedTests
+    ? selectAffectedTests(root, { base: state.batch.base, commit })
+    : { full: true, reason: 'affected-test selection is not enabled for this project', files: [] };
+  const registry = selectRegistryGuards(root, state.config.registryGuards, { base: state.batch.base });
+  return { ...selection, files: [...new Set([...(state.config.submitInvariants ?? []), ...registry, ...(!selection.full ? selection.files : [])])].sort() };
+}
+
+/** Bind every cached landing proof to the full gate and its merged-tree affected floor. */
+function batchGatePlan(state) {
+  const selection = batchAffectedTests(state);
+  const appended = selection.files.length ? `${state.config.affectedTests} ${selection.files.map(quote).join(' ')}` : '';
+  const config = appended ? { ...state.config, gate: `(\n${state.config.gate}\n) && ${appended}` } : state.config;
+  return { config, affectedGate: createHash('sha256').update(config.gate).digest('hex') };
+}
+
 /** Run one full landing gate and retain its complete output under this batch's immutable phase path. */
 async function gateGroup(state, label) {
   const tree = headTree(state.batch.root);
   const commit = headCommit(state.batch.root);
-  const cached = state.gates.get(tree);
-  if (cached?.timedOut) throw new Refused('LAND_GATE_TIMEOUT', 'this exact tree has a recorded landing timeout; inspect its log before starting a new batch');
+  const { config, affectedGate } = batchGatePlan(state);
+  const recorded = state.gates.get(tree);
+  if (recorded?.timedOut) throw new Refused('LAND_GATE_TIMEOUT', 'this exact tree has a recorded landing timeout; inspect its log before starting a new batch');
+  const cached = recorded?.affectedGate === affectedGate ? recorded : null;
   if (cached && (completeGate(cached) || !coveredFailures(state, cached))) return cached;
   const directory = join(dirname(state.batch.root), 'logs');
   mkdirSync(directory, { recursive: true });
   const logPath = join(directory, `${label}-${state.batch.revision}.log`);
   await save(state, { state: 'gating', tip: headCommit(state.batch.root), logPath });
   const pin = flakeSource(state.batch.root, { commit, main: state.batch.base });
-  const gate = await runGate(state.batch.root, state.config, { trustStamp: false, landing: true, agent: 'coordinator', onWait: state.onWait, stages: true, waivers: liveWaiverProjection(state.board),
-    onFailure: Object.assign((run, { root, command, lease }) => observeNativeFailure({ root, config: state.config, pin, run, command, lease, kind: 'land',
+  const gate = await runGate(state.batch.root, config, { trustStamp: false, landing: true, agent: 'coordinator', onWait: state.onWait, stages: true, waivers: liveWaiverProjection(state.board),
+    onFailure: Object.assign((run, { root, command, lease }) => observeNativeFailure({ root, config, pin, run, command, lease, kind: 'land',
       record: observation => {
         const owner = observation.file ? laneOf(state.config, observation.file) : 'coordinator';
         const lane = owner === 'coordinator' ? store.getItem(state.board, state.batch.items[0].id).item_lane : owner;
@@ -434,7 +455,7 @@ async function gateGroup(state, label) {
     throw new Refused('LAND_SOURCE_CHANGED', `the landing source changed while the gate ran; inspect ${logPath} and restore the recorded batch before adopting`);
   }
   const result = { ...gate, failures: landingFailures(gate.output, state.batch.root), accounted: accountedFailures(gate, state.batch.root), complete: completeGate(gate),
-    requiresGreen: Boolean(cached && !completeGate(cached)), tree, logPath };
+    requiresGreen: Boolean(cached && !completeGate(cached)), tree, logPath, affectedGate };
   state.gates.set(tree, result);
   const evidence = state.batch.invariantEvidence ?? { version: 1, gates: [], diagnostics: [] };
   const tested = { commit, isGreen: gate.isGreen && completeGate(gate),
@@ -443,8 +464,8 @@ async function gateGroup(state, label) {
     fileTimes: landingFileTimes(state.batch.root, gate.profile) };
   const warnings = gate.environment ? environmentWarnings(state.board, state.batch.items, gate.environment) : [];
   for (const warning of warnings) state.say(`#${warning.item} was checked on ${environmentLabel(warning.recorded)}; this landing ran on ${environmentLabel(warning.landing)}`);
-  await save(state, { environmentWarnings: warnings, gateResults: [...state.gates.values()].map(({ tree: testedTree, isGreen, failures, accounted, complete, requiresGreen, logPath: log, flakeDiagnostics, environment: executor, timedOut }) =>
-    ({ tree: testedTree, isGreen, ...(timedOut ? { timedOut: true } : {}), failures, accounted: accounted ?? null, complete: complete ?? null, requiresGreen: Boolean(requiresGreen), logPath: log,
+  await save(state, { environmentWarnings: warnings, gateResults: [...state.gates.values()].map(({ tree: testedTree, isGreen, failures, accounted, complete, requiresGreen, logPath: log, flakeDiagnostics, environment: executor, timedOut, affectedGate: plan }) =>
+    ({ tree: testedTree, isGreen, ...(timedOut ? { timedOut: true } : {}), failures, accounted: accounted ?? null, complete: complete ?? null, requiresGreen: Boolean(requiresGreen), logPath: log, ...(plan ? { affectedGate: plan } : {}),
       environment: executor ?? null, ...(flakeDiagnostics ? { flakeDiagnostics } : {}) })),
     invariantEvidence: { ...evidence, gates: [...evidence.gates, tested] } });
   if (gate.timedOut) {
@@ -470,7 +491,7 @@ export async function runLandingCandidate({ root, board, config, batch, entries,
   // A conflicting prefix is not its requested composition. Never test the smaller accidental tree.
   if (build.conflicts.length || !build.items.length) return { batch: state.batch, gate: null };
   const tree = headTree(batch.root);
-  const claimed = await claimGate(tree);
+  const claimed = await claimGate(tree, batchGatePlan(state).affectedGate);
   if (claimed.previous) state.gates.set(tree, claimed.previous);
   const gate = claimed.cached ?? { ...await gateGroup(state, 'candidate'), proofRoot: state.batch.root, proofCommit: headCommit(state.batch.root) };
   if (!claimed.cached) await finishGate(tree, gate);
@@ -489,8 +510,8 @@ function savedCandidateResult(candidate) {
 /** Keep only small replayable gate metadata; the complete output remains in its immutable log. */
 function candidateGateRecord(gate) {
   if (!gate) return null;
-  const { tree, isGreen, failures, accounted, complete, requiresGreen, logPath, flakeDiagnostics, timedOut, proofRoot, proofCommit } = gate;
-  return { tree, isGreen, failures, accounted, complete, requiresGreen, logPath,
+  const { tree, isGreen, failures, accounted, complete, requiresGreen, logPath, flakeDiagnostics, timedOut, proofRoot, proofCommit, affectedGate } = gate;
+  return { tree, isGreen, failures, accounted, complete, requiresGreen, logPath, affectedGate,
     ...(proofRoot ? { proofRoot, proofCommit } : {}),
     ...(flakeDiagnostics ? { flakeDiagnostics } : {}), ...(timedOut ? { timedOut } : {}) };
 }
@@ -508,7 +529,7 @@ async function parallelPrefixes(state, entries) {
   const counts = badgeCounts(state.board);
   const groups = entries.map((_, index) => entries.slice(0, index + 1));
   const descriptors = groups.map(group => {
-    const key = createHash('sha256').update(JSON.stringify([state.batch.base, group, counts, liveWaiverProjection(state.board)])).digest('hex');
+    const key = createHash('sha256').update(JSON.stringify(['affected-gate-v1', state.batch.base, group, counts, liveWaiverProjection(state.board)])).digest('hex');
     const previous = state.batch.parallelCandidates?.find(candidate => candidate.key === key);
     if (previous) {
       if (previous.gate) state.gates.set(previous.gate.tree, previous.gate);
@@ -536,9 +557,10 @@ async function parallelPrefixes(state, entries) {
     /** Virtual child batches append deltas to their one canonical parent, never overwrite it. */
     const write = async (operation, args) => {
       if (operation === 'claimGate') {
-        const [tree] = args;
-        const cached = state.gates.get(tree);
-        if (cached?.timedOut) throw new Refused('LAND_GATE_TIMEOUT', 'this exact tree has a recorded landing timeout; inspect its log before starting a new batch');
+        const [tree, affectedGate] = args;
+        const recorded = state.gates.get(tree);
+        if (recorded?.timedOut) throw new Refused('LAND_GATE_TIMEOUT', 'this exact tree has a recorded landing timeout; inspect its log before starting a new batch');
+        const cached = recorded?.affectedGate === affectedGate ? recorded : null;
         if (cached && (completeGate(cached) || !coveredFailures(state, cached))) return { cached };
         const prior = claims.get(tree);
         if (prior) return { cached: await prior.promise };
@@ -1091,11 +1113,14 @@ async function quickGuards(state) {
   await runStaticChecks(root, state.config, { agent: 'coordinator', onWait: state.onWait });
   const commit = headCommit(root);
   const tree = headTree(root);
-  const selection = state.config.affectedTests
-    ? selectAffectedTests(root, { base: state.batch.base, commit })
-    : { full: true, reason: 'affected-test selection is not enabled for this project', files: [] };
-  const registry = selectRegistryGuards(root, state.config.registryGuards, { base: state.batch.base });
-  const files = [...new Set([...(state.config.submitInvariants ?? []), ...registry, ...(!selection.full ? selection.files : [])])].sort();
+  const selection = batchAffectedTests(state);
+  if (selection.full) {
+    state.say(`batch affected tests require the full gate: ${selection.reason}`);
+    const gate = await gateGroup(state, 'affected');
+    if (!gate.isGreen) throw new Refused('GATE_RED', 'the full affected gate is red on the merged tree; inspect its recorded failures before landing');
+    return;
+  }
+  const files = selection.files;
   if (files.length) {
     const command = `${state.config.affectedTests} ${files.map(quote).join(' ')}`;
     const browser = !browserFreeChecksEnabled() || await testsNeedBrowser(root, files);
@@ -1106,11 +1131,6 @@ async function quickGuards(state) {
     }
     state.say(`batch affected tests: ${files.length} file(s) ${run.isGreen ? 'green' : 'red'} on the merged tree`);
     if (!run.isGreen) throw new Refused('GATE_RED', `the batch affected tests are red on the merged tree: ${files.join(', ')}`);
-  }
-  if (selection.full) {
-    state.say(`batch affected tests require the full gate: ${selection.reason}`);
-    const gate = await gateGroup(state, 'affected');
-    if (!gate.isGreen) throw new Refused('GATE_RED', 'the full affected gate is red on the merged tree; inspect its recorded failures before landing');
   }
 }
 
