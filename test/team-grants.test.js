@@ -19,6 +19,7 @@ import {
 import {
   appliedSequence,
   applyEngineMove,
+  applyRelayMove,
   prepareEngineMove,
 } from '../src/engine.js';
 import { createE2eHelpers } from './e2e-helpers.js';
@@ -424,7 +425,18 @@ test('an agent grant narrows at claim without losing its submitted attempt recei
   for (const board of boards) {
     assert.deepEqual(store.getItem(board, id), before, 'recording a result does not change item authority or state');
     const rows = board.db.prepare("SELECT event_by,event_detail FROM event WHERE event_kind='attempt' AND item_id=?").all(id);
-    assert.deepEqual(rows, [{ event_by: agentId, event_detail: JSON.stringify({ n: 1, seconds: 2, result: 'green' }) }]);
+    assert.deepEqual(rows.map(row => ({ ...row })), [{ event_by: agentId, event_detail: JSON.stringify({ n: 1, seconds: 2, result: 'green' }) }]);
+  }
+  const foreignAttempt = prepareEngineMove(primary, 'recordAttempt', [id, { agentId, n: 2, seconds: 1, result: 'red' }]);
+  const foreign = boards.map(board => applyRelayMove(board, foreignAttempt, {
+    sequence: appliedSequence(board) + 1, at: clock.now().toISOString(), kind: 'move',
+    sender: { kind: 'agent', userId: 'fixture-user', agent: 'foreign-agent' },
+  }));
+  assert.deepEqual(foreign[0], foreign[1]);
+  assert.equal(foreign[0].error.code, 'RELAY_SENDER_MISMATCH', 'append-only exemption never lets another authenticated seat supply this actor');
+  for (const board of boards) {
+    assert.equal(board.db.prepare("SELECT COUNT(*) AS n FROM event WHERE event_kind='attempt' AND item_id=?").get(id).n, 1);
+    assert.deepEqual(store.getItem(board, id), before);
   }
   const edit = prepareEngineMove(primary, 'editItem', [id, { agentId, brief: 'claim-free state mutation' }]);
   const refused = boards.map(board => applyEngineMove(board, edit, { sequence: appliedSequence(board) + 1, at: clock.now().toISOString() }));
