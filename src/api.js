@@ -793,7 +793,7 @@ function isLiteralIPv4(host) {
 /** Share the local router with the person's view and other local transports; the standalone API explicitly denies person authority.
  * @param {{ secret: string | Buffer, getPort: () => number, runCommand: Function, projects?: () => any[], scope?: { projectRoot: string }, isMain?: boolean, allowedOrigins?: string[], allowedHosts?: string[], onStateBuild?: Function, onItemBuild?: Function, personChannel?: string, stateDetail?: string, now?: () => number, sessionCookie?: {name:string,value:string} }} [options]
  */
-export function createLocalApiHandler({ secret, getPort, runCommand, projects = listApiProjects, scope, isMain, allowedOrigins = [], allowedHosts = [], onStateBuild, onItemBuild, personChannel = 'view', stateDetail = 'full', sessionCookie, now = Date.now } = {}) {
+export function createLocalApiHandler({ secret, getPort, runCommand, projects = listApiProjects, scope, isMain, allowedOrigins = [], allowedHosts = [], onStateBuild, onItemBuild, personChannel = 'view', stateDetail = 'full', sessionCookie, now = () => Date.now() } = {}) {
   if (typeof now !== 'function') throw new TypeError('createLocalApiHandler needs an observation clock');
   if (typeof getPort !== 'function') throw new TypeError('createLocalApiHandler needs a bound-port getter');
   if (typeof runCommand !== 'function') throw new TypeError('createLocalApiHandler needs the actual CLI entry point as runCommand');
@@ -1088,7 +1088,7 @@ export function createLocalApiHandler({ secret, getPort, runCommand, projects = 
  * Serve the RFC 0002 API only on loopback, behind the same session-secret boundary as the view. Its
  * state sends item summaries unless asked for detail=full; each item's detail has its own path (A2).
  */
-export function serveApi({ port = 0, secret = randomBytes(18).toString('base64url'), runCommand, projects = listApiProjects, isMain, onStateBuild, onItemBuild, stateDetail = 'summary', now = Date.now, scope } = {}) {
+export function serveApi({ port = 0, secret = randomBytes(18).toString('base64url'), runCommand, projects = listApiProjects, isMain, onStateBuild, onItemBuild, stateDetail = 'summary', now = () => Date.now(), scope } = {}) {
   if (typeof runCommand !== 'function') throw new TypeError('serveApi needs the actual CLI entry point as runCommand');
   let bound;
   // A serve key authenticates board access, never a person, even in an ordinary terminal.
