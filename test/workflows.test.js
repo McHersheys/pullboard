@@ -66,6 +66,8 @@ function contributorWorkflows() {
   const dco = workflowText(resolve(ROOT, '.github/workflows/dco.yml'));
   assert.match(dco, /^name: DCO\n/u, 'the DCO check has a stable required-check name');
   assert.match(dco, /\npull_request:\n/u, 'the DCO workflow runs on pull requests');
+  assert.match(dco, /\n  dco:\n {4}name: DCO\n/u, 'the pull-request check is named DCO');
+  assert.match(dco, /\n {8}fetch-depth: 0\n/u, 'the checker receives the full pull-request history');
   assert.match(dco, /run: node bin\/check-signoffs\.js\n/u,
     'the DCO workflow runs the repository sign-off checker');
 }
