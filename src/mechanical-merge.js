@@ -1,4 +1,4 @@
-/** Conservative additive-only resolution of explicitly known registry/table regions [B3,R3,C7]. */
+/** Shared conservative data-only conflict decisions; candidate generators run only during landing [B3,R3,C7]. */
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -177,14 +177,13 @@ function sourceResolution(path, base, ours, theirs) {
     } catch { return null; /* Invalid snapshots remain ordinary conflicts, never guessed data. */ }
   }
   const keyed = mergeMechanicalSources(path, base, ours, theirs);
-  if (keyed) return { kind: 'keyed', ...keyed };
-  const source = additiveSource(base, ours, theirs);
+  const source = keyed?.source ?? additiveSource(base, ours, theirs);
   if (source === null) return null;
   if (/\.(?:js|mjs|cjs)$/u.test(path)) {
     const args = path.endsWith('.cjs') ? ['--check'] : ['--input-type=module', '--check'];
     if (spawnSync(process.execPath, args, { input: source, env: cleanGitEnvironment(), maxBuffer: 1024 * 1024 }).status !== 0) return null;
   }
-  return { kind: 'add-only', source, keys: [] };
+  return keyed ? { kind: 'keyed', ...keyed } : { kind: 'add-only', source, keys: [] };
 }
 
 /** Run Git against explicit immutable objects, never inherited repository selectors or replacement refs. */

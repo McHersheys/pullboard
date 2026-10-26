@@ -28,10 +28,30 @@ export function trunkMerge(root, commit, retainedRef = trunkRef(root)) {
 
 
 /** Verify exactly the recorded immutable commits, independent of this machine's current trunk. */
-export function recordedTrunkMerge(gitDirectory, head, trunk) {
+export function recordedTrunkMerge(gitDirectory, head, trunk, { version = 2 } = {}) {
+  if (version === 1) return plainRecordedTrunkMerge(gitDirectory, head, trunk);
   const files = mechanicalConflictFiles(gitDirectory, trunk, head, { gitDirectory });
   if (files === null) throw new Refused('MERGE_CHECK_FAILED', 'fetch the recorded submitted and trunk commits, then resume this move; Git could not verify its immutable conflict');
   return files.length ? files : null;
+}
+
+/** Preserve version-one immutable evidence exactly: mechanical policy never reinterprets historical receipts. */
+function plainRecordedTrunkMerge(gitDirectory, head, trunk) {
+  const result = spawnSync('git', ['--no-replace-objects', `--git-dir=${gitDirectory}`, '-c', 'core.quotepath=false',
+    'merge-tree', '--write-tree', '--name-only', '-z', trunk, head], {
+    env: cleanGitEnvironment(), encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
+  });
+  // Git may return 1 for an invalid/missing merge parent as well as for a real conflict.
+  // Only a merge result carrying its output tree can establish either clean or conflicting state.
+  const output = (result.stdout ?? '').split('\0');
+  if (![0, 1].includes(result.status) || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(output[0].trim())) {
+    throw new Refused('MERGE_CHECK_FAILED', 'fetch the recorded submitted and trunk commits, then resume this move; Git could not verify its immutable conflict');
+  }
+  if (result.status === 0) return null;
+  const records = output.slice(1), end = records.indexOf('');
+  const files = records.slice(0, end < 0 ? records.length : end);
+  if (!files.length) throw new Refused('MERGE_CHECK_FAILED', 'Git did not provide conflict paths for the recorded commits; fetch their complete objects before resuming');
+  return files;
 }
 
 

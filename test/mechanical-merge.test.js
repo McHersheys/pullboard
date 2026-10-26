@@ -11,6 +11,14 @@ import { recordedTrunkMerge, trunkMerge } from '../src/trunk-merge.js';
 import { resolveMechanicalMerge } from '../src/train-mechanical-merge.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { json } from './land-board-fixture.js';
+import { createHash, randomUUID } from 'node:crypto';
+import * as store from '../src/board.js';
+import { appliedSequence, prepareEngineMove } from '../src/engine.js';
+import { requireComputedConflict, requireComputedConflictObjects } from '../src/computed-conflict-receipt.js';
+import { withRecordedConflictContext } from '../src/recorded-conflict-context.js';
+import reopenMove from '../src/moves/reopen.js';
+import { MECHANICAL_MERGE_ENGINE } from '../src/mechanical-merge-engine.js';
+import { AGENT_GRANT_ENGINE } from '../src/agent-grant-engine.js';
 
 const directories = [];
 after(() => directories.forEach(root => rmSync(root, { recursive: true, force: true })));
@@ -106,6 +114,10 @@ for (const [name, path, base, left, right] of [
   ['a decreased counter', 'snapshot.json', '{"value":2}\n', '{"value":1}\n', '{"value":3}\n'],
   ['delete versus edit', 'snapshot.json', '{"value":null}\n', '{}\n', '{"value":1}\n'],
   ['an invalid JavaScript union', 'src/cli.js', 'export {};\n', 'const value = 1;\nexport {};\n', 'const value = 2;\nexport {};\n'],
+  ['keyed additions with invalid JavaScript context', 'src/api-moves.js',
+    'export = ;\nconst MOVES = {\n  base: { item: true },\n};\n',
+    'export = ;\nconst MOVES = {\n  left: { item: true },\n  base: { item: true },\n};\n',
+    'export = ;\nconst MOVES = {\n  right: { item: true },\n  base: { item: true },\n};\n'],
 ]) {
   test(`${name} remains a real conflict [B3,R3,C7]`, () => {
     const box = fixture(path, base, left, right);
@@ -138,7 +150,7 @@ function boardFixture() {
 }
 
 /** Obtain a genuine independently verified submission with ordinary fixture authority and immutable Git bytes. */
-function accepted(box, number, files) {
+function accepted(box, number, files, { verify = true } = {}) {
   const builder = join(box.dir, `builder-${number}`);
   box.git(box.repo, 'worktree', 'add', '-q', '--detach', builder, 'main');
   json(box, builder, 'join', 'web');
@@ -151,6 +163,7 @@ function accepted(box, number, files) {
   assert.equal(commit.status, 0, commit.stderr);
   const head = box.git(builder, 'rev-parse', 'HEAD');
   json(box, builder, 'submit', String(id));
+  if (!verify) return id;
   box.git(box.repo, 'checkout', '-q', '--detach', head);
   try { json(box, box.repo, 'verify', String(id), 'accept', '--as', 'coordinator', '--note', 'checked the private fixture contribution'); }
   finally { box.git(box.repo, 'checkout', '-q', 'main'); }
@@ -167,14 +180,44 @@ test('public land retains JSON and Markdown additions, while a same-line edit re
   assert.deepEqual(JSON.parse(box.git(box.repo, 'show', 'main:test/snapshot.json')), { base: true, left: true, right: true });
   assert.match(box.git(box.repo, 'show', 'main:docs/api.md'), /Left\.\nRight\./u);
   assert.equal(box.git(box.remote, 'rev-parse', 'main'), box.git(box.repo, 'rev-parse', 'main'));
-  const conflict = accepted(box, 3, { 'docs/api.md': '# Edited by item\n\nLeft.\nRight.\nEnd.\n' });
-  writeFileSync(join(box.repo, 'docs/api.md'), '# Edited by trunk\n\nLeft.\nRight.\nEnd.\n');
-  box.git(box.repo, 'add', '-A');
-  box.git(box.repo, 'commit', '-q', '-m', 'chore: conflicting private trunk change');
-  const preview = json(box, box.repo, 'land', '--dry-run');
-  assert.deepEqual(preview.conflicts, [{ id: conflict, files: ['docs/api.md'] }]);
-  const returned = json(box, box.repo, 'land');
+  const competing = accepted(box, 3, { 'docs/api.md': '# Edited by first item\n\nLeft.\nRight.\nEnd.\n' });
+  const conflict = accepted(box, 4, { 'docs/api.md': '# Edited by second item\n\nLeft.\nRight.\nEnd.\n' });
+  const returned = json(box, box.repo, 'land', '--max', '2');
+  assert.deepEqual(returned.landed, [competing], 'both accepts are fresh against the batch base; their actual composition exposes the conflict');
   assert.deepEqual(returned.conflicts.map(entry => entry.id), [conflict]);
   const item = json(box, box.repo, 'show', String(conflict));
   assert.equal(item.item_status, 'open', 'a real conflicting accepted submission returns to its builder');
+});
+
+test('version-one conflict replay keeps its original Git meaning while fresh mechanical returns use engine130 [H16,V4]', t => {
+  const box = boardFixture();
+  const id = accepted(box, 1, { 'test/snapshot.json': '{"base":true,"left":true}\n' }, { verify: false });
+  writeFileSync(join(box.repo, 'test/snapshot.json'), '{"base":true,"right":true}\n');
+  box.git(box.repo, 'add', '-A');
+  box.git(box.repo, 'commit', '-q', '-m', 'chore: independent snapshot addition');
+  const board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
+  t.after(() => store.closeBoard(board));
+  const item = store.getItem(board, id);
+  const fields = { version: 1, id: randomUUID(), board: board.db.prepare("SELECT meta_value FROM board_meta WHERE meta_key='board_id'").get().meta_value,
+    item: id, actor: 'coordinator', head: item.item_commit, trunk: box.git(box.repo, 'rev-parse', 'HEAD'),
+    files: ['test/snapshot.json'], at: board.clock.now().toISOString(),
+    submission: board.db.prepare("SELECT event_id FROM event WHERE item_id=? AND event_kind='submit' ORDER BY event_id DESC LIMIT 1").get(id).event_id };
+  /** Self-hashes bind bytes; the real recorded Git objects independently establish their meaning. */
+  const receipt = value => ({ ...value, digest: createHash('sha256').update(JSON.stringify(value)).digest('hex') });
+  const historical = receipt(fields), mechanical = receipt({ ...fields, version: 2 });
+  assert.deepEqual(requireComputedConflictObjects(board, historical), fields.files);
+  assert.equal(requireComputedConflictObjects(board, mechanical), null, 'version participates in the immutable-object cache key');
+  assert.throws(() => requireComputedConflict(board, mechanical), error => error.code === 'COORDINATOR_ONLY',
+    'a version-two self-hash cannot turn a mechanically clean snapshot into a conflict');
+  assert.throws(() => prepareEngineMove(board, 'reopen', [id, { agentId: 'coordinator', automaticConflict: true }]),
+    error => error.code === 'NOT_CONFLICTING', 'fresh selection cannot return this additive conflict');
+  assert.throws(() => store.reopen(board, id, { agentId: 'coordinator', computedConflict: historical }),
+    error => error.code === 'COORDINATOR_ONLY', 'historical semantics are not a fresh-authoring escape');
+  assert.equal(reopenMove.minimumEngine([id, { computedConflict: historical }]), AGENT_GRANT_ENGINE);
+  assert.equal(reopenMove.minimumEngine([id, { computedConflict: mechanical }]), MECHANICAL_MERGE_ENGINE);
+  const options = { agentId: 'coordinator', computedConflict: historical };
+  const move = { operation: 'reopen', args: [id, options], engine: AGENT_GRANT_ENGINE };
+  withRecordedConflictContext(board, move, { sequence: appliedSequence(board) + 1, at: fields.at }, () => store.reopen(board, id, options));
+  assert.equal(store.getItem(board, id).item_status, 'open', 'a validated historical replay retains its recorded outcome');
+  assert.deepEqual(JSON.parse(store.events(board, { itemId: id }).at(-1).event_detail).computedConflict, historical);
 });
