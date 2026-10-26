@@ -331,8 +331,9 @@ function cpuBindings(source, moduleExports, callable = false, literalCache) {
     const aliasPasses = names.size;
     for (let pass = 0; pass < aliasPasses; pass++) {
       let removed = false;
-      for (const match of code.matchAll(/\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*;/gu)) {
-        if (names.has(match[1]) && !names.has(match[2])) { names.delete(match[1]); removed = true; }
+      for (const match of code.matchAll(/\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*([^;\n]+)/gu)) {
+        const alias = /^([A-Za-z_$][\w$]*)\s*$/u.exec(match[2].trim())?.[1];
+        if (alias && names.has(match[1]) && !names.has(alias)) { names.delete(match[1]); removed = true; }
       }
       if (!removed) break;
     }
