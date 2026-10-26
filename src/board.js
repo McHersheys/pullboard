@@ -199,12 +199,10 @@ import {
   boardBusyError,
 } from './board-access.js';
 import { ensureHotIndexes } from './board-hot.js';
-import { ensureGrantActivationIndex } from './relay-activation.js';
-import { missingGrantActivationIndex } from './relay-activation.js';
+import { ensureAdditiveIndexes } from './board-hot.js';
+import { missingAdditiveIndexes } from './board-hot.js';
 import {
-  ensureFactIdentityIndexes,
   factIdentityExists,
-  missingFactIdentityIndexes,
   requireFactIdentityIndexes,
 } from './fact-identity.js';
 import { NEXT_STEPS } from './next-step-words.js';
@@ -433,10 +431,9 @@ export function openBoard(file, clock = systemClock, { isMain, onDiagnostic, wri
       });
       // Index-only upgrades keep the data version/digest unchanged. Install and restamp together;
       // drifted or read-only stores never take this path, and old clients accept the resulting stamp.
-      if (standing !== 'drifted' && (missingFactIdentityIndexes(db).length || missingGrantActivationIndex(db))) atomic(board, () => {
+      if (standing !== 'drifted' && missingAdditiveIndexes(db)) atomic(board, () => {
         if (boardStanding(db, SCHEMA_DIGEST, SCHEMA_VERSION) !== 'current') return;
-        ensureFactIdentityIndexes(db);
-        ensureGrantActivationIndex(db);
+        ensureAdditiveIndexes(db);
         recordSchemaStamp(db, SCHEMA_DIGEST);
       });
       if (standing === 'drifted') { warmCounters = false; reportDrift(file, onDiagnostic); }

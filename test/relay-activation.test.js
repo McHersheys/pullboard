@@ -49,7 +49,8 @@ function lookupPlan(board, probe) {
   const plans = [];
   board.db.prepare = sql => {
     if (sql.includes("meta_key GLOB 'relay_receipt_*'") && sql.includes('json_extract')) {
-      const bindings = sql.includes('$.sequence') ? [appliedSequence(board), AGENT_GRANT_ENGINE] : [];
+      const placeholders = (sql.match(/\?/gu) ?? []).length;
+      const bindings = [appliedSequence(board), AGENT_GRANT_ENGINE].slice(0, placeholders);
       plans.push(...prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...bindings).map(row => row.detail));
     }
     return prepare(sql);
@@ -131,7 +132,7 @@ test('a receipt beyond the applied cursor cannot activate the recorded prefix [E
   assert.equal(agentGrantMinimum(box.board, box.probe), AGENT_GRANT_ENGINE, 'the exact boundary includes its witness');
 });
 
-test('activation lookup seeks the engine index as genuine old receipts grow [E21,C7]', t => {
+test('activation lookup excludes old engines and seeks sequence as genuine receipts grow [E21,C7]', t => {
   const box = fixture(t);
   const observations = [];
   for (const population of [8, 1024]) {
@@ -144,9 +145,12 @@ test('activation lookup seeks the engine index as genuine old receipts grow [E21
   t.diagnostic(JSON.stringify({ method: 'actual predicate EXPLAIN QUERY PLAN at two native receipt populations; no wall-time inference', observations }));
   for (const { floor, plans } of observations) {
     assert.equal(floor, 1);
-    assert.ok(plans.some(plan => /SEARCH board_meta USING INDEX board_meta_grant_activation_v1.*<expr>>\?/u.test(plan)),
-      `lookup must seek qualifying engines instead of scanning every receipt: ${JSON.stringify(plans)}`);
+    assert.ok(plans.some(plan => /SEARCH board_meta USING INDEX board_meta_grant_activation_v2.*<expr><\?/u.test(plan)),
+      `lookup must seek the applied sequence inside qualifying engines: ${JSON.stringify(plans)}`);
   }
+  const definition = box.board.db.prepare("SELECT sql FROM sqlite_master WHERE name='board_meta_grant_activation_v2'").get().sql;
+  assert.ok(definition.includes("json_extract(json_extract(meta_value, '$.move'), '$.engine')"));
+  assert.match(definition, new RegExp(`>= ${AGENT_GRANT_ENGINE}\\b`, 'u'), 'the index excludes old-engine rows before the sequence seek');
   box.activate();
   assert.equal(lookupPlan(box.board, box.probe).floor, AGENT_GRANT_ENGINE);
 });
@@ -222,17 +226,17 @@ test('owning open upgrades an old indexless board once without changing native d
     document = exportBoard(board);
     version = board.db.prepare('PRAGMA user_version').get().user_version;
     // Model an otherwise-current legacy board with its original, indexless schema stamp.
-    board.db.exec('DROP INDEX IF EXISTS board_meta_grant_activation_v1');
+    board.db.exec('DROP INDEX IF EXISTS board_meta_grant_activation_v2; DROP INDEX IF EXISTS board_meta_grant_activation_unsafe_v1');
     recordSchemaStamp(board.db, SCHEMA_DIGEST);
   } finally { store.closeBoard(board); }
   const read = store.openBoardForRead(file);
   try {
     assert.equal(read.current, true, 'old indexless boards remain readable at the same native schema version');
-    assert.equal(read.db.prepare("SELECT 1 FROM sqlite_master WHERE name='board_meta_grant_activation_v1'").get(), undefined);
+    assert.equal(read.db.prepare("SELECT 1 FROM sqlite_master WHERE name='board_meta_grant_activation_v2'").get(), undefined);
   } finally { read.db.close(); }
   board = store.openBoard(file, undefined, { isMain: false });
   try {
-    assert.equal(board.db.prepare("SELECT 1 FROM sqlite_master WHERE name='board_meta_grant_activation_v1'").get(), undefined,
+    assert.equal(board.db.prepare("SELECT 1 FROM sqlite_master WHERE name='board_meta_grant_activation_v2'").get(), undefined,
       'a non-owner never installs the additive index');
     const probe = { operation: 'editItem', args: [1, { agentId: 'unmarked-web-seat' }] };
     const warnings = [];
@@ -244,12 +248,12 @@ test('owning open upgrades an old indexless board once without changing native d
     } finally { console.warn = warn; }
     assert.equal(warnings.length, 1, 'missing-index fallback emits only one notice per process');
     assert.match(warnings[0], /^\[RELAY_ACTIVATION_INDEX_MISSING\].*owning main checkout/u);
-    assert.equal(board.db.prepare("SELECT 1 FROM sqlite_master WHERE name='board_meta_grant_activation_v1'").get(), undefined,
+    assert.equal(board.db.prepare("SELECT 1 FROM sqlite_master WHERE name='board_meta_grant_activation_v2'").get(), undefined,
       'the fallback remains read-only and does not refuse or install an index');
   } finally { store.closeBoard(board); }
   board = store.openBoard(file);
   try {
-    assert.ok(board.db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='board_meta_grant_activation_v1'").get(),
+    assert.ok(board.db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='board_meta_grant_activation_v2'").get(),
       'the owning writable opener installs the missing index on an already-current board');
     assert.equal(board.db.prepare('PRAGMA user_version').get().user_version, version);
     assert.deepEqual(exportBoard(board), document, 'index installation leaves every native row and export field unchanged');
@@ -259,7 +263,7 @@ test('owning open upgrades an old indexless board once without changing native d
   finally { stamped.db.close(); }
   board = store.openBoard(file);
   try {
-    assert.equal(board.db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE name='board_meta_grant_activation_v1'").get().n, 1);
+    assert.equal(board.db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE name='board_meta_grant_activation_v2'").get().n, 1);
     assert.deepEqual(exportBoard(board), document, 'a second owning open is idempotent');
   } finally { store.closeBoard(board); }
 });
