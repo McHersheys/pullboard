@@ -1,3 +1,4 @@
+import { mergeOnlyLandingProblem } from './merge-only-verdict.js';
 import { localDependencyIds } from './item-dependencies.js';
 import { requireOutsideOwner } from './outside-source.js';
 import {
@@ -994,6 +995,7 @@ function requirePushTarget(root, branch) {
 
 /** Recheck immutable publication inputs after the last awaited canonical operation. */
 function publicationInputs(state, batch) {
+  requireLandingCarries(state, batch);
   for (const entry of batch.items) {
     const item = store.getItem(state.board, entry.id);
     requireOutsideOwner(state.board, item);
@@ -1033,6 +1035,7 @@ function parallelPublicationRoot(state, batch) {
 /** Push the exact gated tip before recording receipts, then fast-forward only a clean unchanged main. */
 async function publish(state) {
   let batch = state.batch;
+  requireLandingCarries(state, batch);
   const remote = requirePushTarget(state.root, batch.branch);
   if (batch.proof?.failures?.length && batch.state !== 'pushed') {
     const failures = batch.proof.failures.map((failure) => ({ ...failure, waiver: store.landingWaiverFor(state.board, failure)?.id }));
@@ -1167,8 +1170,17 @@ async function landOnTrunk(state) {
   await finishTrunk(state);
 }
 
+/** Reject forged or stale canonical carries even when resuming an already-gated batch. */
+function requireLandingCarries(state, batch) {
+  for (const entry of batch.items) {
+    const problem = mergeOnlyLandingProblem(state.root, state.board, store.getItem(state.board, entry.id));
+    if (problem) throw problem;
+  }
+}
+
 /** Record a tier-1 batch's merged receipts and move the local trunk to it; an adopted 'trunk' batch resumes here (#801). */
 async function finishTrunk(state) {
+  requireLandingCarries(state, state.batch);
   state.batch = await state.write('finishLandingBatch', [{ agentId: 'coordinator', id: state.batch.id, tip: state.batch.tip }]);
   await state.checkLease();
   const main = mainCheckout(state.root);
