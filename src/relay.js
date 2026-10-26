@@ -1031,7 +1031,8 @@ function outboxLink(root, file, state, io) {
  * The link a move may queue on and return at once (#1013), or null when it must reach the relay first: the board's
  * relay.outbox is on and the relay accepted its baseline, and the move needs no relay answer to exist (a
  * registration mints its token there, a takeover needs the relay's sign-in lineage, a person's request is the
- * phone's, and landing authority needs real order).
+ * phone's, and landing authority needs real order). Environment-token sessions always wait: ephemeral jobs
+ * cannot retain queued moves after they exit.
  */
 function localFirstLink(file, operation, args, io) {
   let state;
