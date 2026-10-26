@@ -437,6 +437,7 @@ export const DEFAULT_NEXT_STEPS = Object.freeze({
   "TOO_LARGE": "open the file in your editor instead",
   "UNAUTHORIZED_SIGNERS_CHANGE": "restore the previous signer list (git checkout HEAD -- .pullboard/signers), or sign the change with a listed key",
   "UNLISTED_SIGNER": "add the signer: pullboard spec signers add --by <principal> --key <path>",
+  "SCHEMA_DRIFT": "run pullboard inbox from the main checkout; if drift remains, preserve the board and ask the coordinator to inspect its schema",
   "UNMERGED_SCHEMA": "merge this code into the main checkout first, or test it against its own board",
   "UNKNOWN_TOOL": "call tools/list and use a tool name returned by that MCP server",
   "VIEW_START": "run pullboard view in the foreground to see why it stopped",

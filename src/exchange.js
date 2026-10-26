@@ -1,3 +1,4 @@
+import { suspendStoreGuards } from './board-store-guards.js';
 import { AGENT_GRANT_ENGINE } from './agent-grant-engine.js';
 import { beginCommandPhase } from './command-phase.js';
 import { LANDING_LOCAL_PREFIX } from './landing-local-lease.js';
@@ -15,10 +16,7 @@ import {
  */
 import { createHash } from 'node:crypto';
 import { Refused } from './refused.js';
-import {
-  ENGINE_VERSION,
-  storeTriggers,
-} from './machine.js';
+import { ENGINE_VERSION } from './machine.js';
 import {
   EVENT_LOG_VERSION,
   SIGNED_EVENT_LOG_VERSION,
@@ -270,9 +268,8 @@ function restoreDocument(board, document, replace = false, expectedNativeDigest 
       throw new Refused('IMPORT_NOT_EMPTY', `board tables already have rows (${occupied.join(', ')}); import into a repo with an empty board`);
     }
     // Signed person moves survive a restore: this board keeps its own relay key pin and its signing state [E22].
+    const restoreGuards = suspendStoreGuards(board);
     const signing = guardRestore(db, document);
-    const triggers = db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'machine_%'").all();
-    for (const { name } of triggers) db.exec(`DROP TRIGGER ${identifier(name)}`);
     if (replace) {
       for (const table of [...names].reverse()) db.exec(`DELETE FROM ${identifier(table)}`);
     } else if (initCoordinator) {
@@ -304,7 +301,7 @@ function restoreDocument(board, document, replace = false, expectedNativeDigest 
     const restoreLocal = db.prepare('INSERT OR REPLACE INTO board_meta(meta_key,meta_value) VALUES (?,?)');
     for (const row of localLanding) restoreLocal.run(row.meta_key, row.meta_value);
     rebuildProofCounters(board);
-    for (const { name, sql } of storeTriggers()) db.exec(sql);
+    restoreGuards();
     db.exec('COMMIT');
     released = true;
     outcome = 'committed';

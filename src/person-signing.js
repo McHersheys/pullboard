@@ -27,17 +27,17 @@ import {
   rememberAttested,
 } from './person-attested.js';
 
+import { boardStanding } from './board-migrate.js';
+import { recordSchemaStamp } from './board-migrate.js';
+import { SCHEMA_DIGEST } from './board-schema-source.js';
+import { SCHEMA_VERSION } from './board-schema-source.js';
+
+import { AUTHORITY } from './person-authority-schema.js';
+import { AUTHORITY_TRIGGERS } from './person-authority-schema.js';
+
 const PROPOSALS = 'person_proposals';
-const AUTHORITY = 'person_authority_local';
 const PROPOSAL_MS = 10 * 60_000;
 const KEPT_PROPOSALS = 50;
-
-/** Triggers that keep the pinned relay key from being changed, removed or replaced through SQLite. */
-const AUTHORITY_TRIGGERS = [
-  ['person_authority_update', `BEFORE UPDATE ON board_meta WHEN OLD.meta_key = '${AUTHORITY}'`],
-  ['person_authority_delete', `BEFORE DELETE ON board_meta WHEN OLD.meta_key = '${AUTHORITY}'`],
-  ['person_authority_replace', `BEFORE INSERT ON board_meta WHEN NEW.meta_key = '${AUTHORITY}' AND EXISTS (SELECT 1 FROM board_meta WHERE meta_key = '${AUTHORITY}')`],
-].map(([name, on]) => ({ name, sql: `CREATE TRIGGER IF NOT EXISTS ${name} ${on}\nBEGIN SELECT RAISE(ABORT, 'PERSON_AUTHORITY: the pinned relay key is kept for good'); END` }));
 
 /** Write one board metadata value inside the caller's transaction. */
 function meta(board, key, value) {
@@ -91,9 +91,11 @@ export function pinAuthority(board, origin, authority) {
       if (existing.origin === origin && existing.publicKey === authority.publicKey) return existing;
       throw new Refused('PERSON_AUTHORITY_CHANGED', `this board pinned the relay key of ${existing.origin}, and ${origin} now presents another; check which relay this board belongs to before linking it there`);
     }
+    const current = boardStanding(board.db, SCHEMA_DIGEST, SCHEMA_VERSION) === 'current';
     const pinned = { origin, publicKey: authority.publicKey };
     meta(board, AUTHORITY, JSON.stringify(pinned));
     for (const { sql } of AUTHORITY_TRIGGERS) board.db.exec(sql);
+    if (current) recordSchemaStamp(board.db, SCHEMA_DIGEST);
     return pinned;
   });
 }
@@ -211,8 +213,10 @@ export function setPersonSigning(board, { agentId, signed, request }) {
   const detail = presence ? { signed, request, presence, intent: JSON.parse(record.encoded) } : { signed };
   if (!signed && (agentId !== PERSON || !presence || !offIntent(detail))) throw signedRefusal('only the person turns signing off, on their passkey');
   return atomic(board, () => {
+    const current = boardStanding(board.db, SCHEMA_DIGEST, SCHEMA_VERSION) === 'current';
     logEvent(board, agentId, 'person_signing', null, detail);
     stampSigningFormat(board.db);
+    if (current) recordSchemaStamp(board.db, SCHEMA_DIGEST);
     return { signed, by: agentId };
   });
 }
