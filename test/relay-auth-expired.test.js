@@ -90,7 +90,7 @@ test('a revoked agent token is never reminted from the machine credential; the p
   assert.equal(tokens.document.coordinatorEvents[1].issued, reissued.id);
 });
 
-test('a move without a machine credential refuses with the fix [H16,H5]', async t => {
+test('moves stay local while the machine credential expires, then replay after sign-in [H21,H16,H5]', async t => {
   const box = await relayClientFixture(t);
   await box.link();
   const seed = await box.cli('add', box.lane, 'seed revoked machine fixture');
@@ -125,19 +125,36 @@ test('a move without a machine credential refuses with the fix [H16,H5]', async 
   } finally { delete box.env.PULLBOARD_RELAY_TOKEN; }
 
   await revokeCredential(box, state.tokenId);
-  const refused = await box.cli('add', box.lane, 'must stay ordered without machine auth');
-  assert.equal(refused.code, 1);
-  assert.equal(refused.document.error.code, 'AUTH_REQUIRED');
-  assert.equal(refused.document.error.message.split('\n').length, 1, 'the refusal stays on one line');
-  assert.match(refused.document.error.message, new RegExp(state.board));
-  assert.match(refused.document.error.message, /expired or was revoked/u);
-  assert.match(refused.document.error.message, /pullboard relay on.*pullboard relay off/u);
-  assert.deepEqual((await box.cli('export')).document.tables, before, 'a move without renewable machine authority is never applied locally out of order');
+  box.env.PULLBOARD_RELAY_SENDER_BACKGROUND = '0'; // The test runner's supported foreground sender mode exposes the auth diagnostic.
+  const expired = await box.cli('status');
+  assert.equal(expired.code, 0, expired.failure ?? 'status still reads the local board when machine authorization expires');
+  assert.match(expired.stderr, new RegExp(`\\[AUTH_REQUIRED\\].*relay sign-in expired or was revoked for board ${state.board}.*run pullboard relay on to sign in again or pullboard relay off`, 'u'));
+  const queued = await box.cli('add', box.lane, 'local work waits for machine sign-in');
+  assert.equal(queued.code, 0, queued.failure ?? 'the expired relay credential does not block the local move');
+  assert.equal(queued.document.item.item_title, 'local work waits for machine sign-in');
+  const queuedId = queued.document.item.item_id;
+  const locallyRecorded = (await box.cli('export')).document.tables;
+  assert.equal(locallyRecorded.event.filter(event => event.item_id === queuedId && event.event_kind === 'add').length, 1,
+    'the local add is durable exactly once while machine authorization is unavailable');
   const next = await box.cliAt(agentRoot, 'next', '--build');
-  assert.equal(next.code, 1, 'next is an ordered claim/reservation move, not an offline read');
-  assert.equal(next.document.error.code, 'AUTH_REQUIRED');
-  assert.match(next.document.error.message, /pullboard relay on.*pullboard relay off/u);
-  assert.deepEqual((await box.cli('export')).document.tables, before, 'an unauthenticated next cannot reserve locally out of order');
+  assert.equal(next.code, 0, next.failure ?? 'next queues its claim locally while the sender cannot authenticate');
+  const claimId = next.document.item.item_id;
+  const pending = await box.cli('status');
+  assert.equal(pending.code, 0);
+  assert.ok(pending.document.relay.outbox.some(move => move.operation === 'addItem'), 'the local add remains queued for ordered delivery');
+  assert.ok(pending.document.relay.outbox.some(move => move.operation === 'claim'), 'the local next claim remains queued too');
+  const beforeRelink = (await box.cli('export')).document.tables;
+  assert.equal(beforeRelink.event.filter(event => event.item_id === queuedId && event.event_kind === 'add').length, 1);
+  assert.equal(beforeRelink.event.filter(event => event.item_id === claimId && event.event_kind === 'claim').length, 1);
+  box.env.PULLBOARD_RELAY_SENDER_BACKGROUND = '1';
+  const relink = await box.cli('relay', 'on', '--url', box.origin);
+  assert.equal(relink.code, 0, relink.failure ?? 'fresh person sign-in restores the machine credential and drains local work');
+  const afterRelink = (await box.cli('export')).document.tables;
+  assert.equal(afterRelink.event.filter(event => event.item_id === queuedId && event.event_kind === 'add').length, 1,
+    'replay does not duplicate the locally completed add');
+  assert.equal(afterRelink.event.filter(event => event.item_id === claimId && event.event_kind === 'claim').length, 1,
+    'replay does not duplicate the locally completed next claim');
+  assert.equal((await box.cli('status')).document.relay.outbox.length, 0, 'the reauthorized machine drains the queued moves');
   const textRefusal = await box.script(`
     const { main } = await import(${JSON.stringify(box.mainURL)});
     let stdout = '', stderr = '';

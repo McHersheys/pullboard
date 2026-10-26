@@ -874,37 +874,49 @@ function receipts(file) {
 /** Preserve the competing CLI claims, durable refusals, registration and local API ordering checks. */
 async function competingReplicaClaims(fixture, timing) {
   const { clones, worktrees, envs, gitAt, auth, relay, person, key, boardId, replicaFiles } = fixture;
-  timing.begin('competing claims', 'send each paired claim through two clones, release the winner, and compare ordered receipts');
-  const refusals = new Map();
+  timing.begin('competing claims', 'queue both local claims, replay them in relay order, and compare each durable winner and refusal');
+  // Keep the sender out of the race so the later status commands replay each clone's durable queue in order.
+  for (const env of envs) env.PULLBOARD_RELAY_SENDER_BACKGROUND = '0';
+  const actors = new Map();
+  relay.failMoves(true);
   for (let id = 1; id <= 20; id += 1) {
     const [left, right] = await timing.wait(`run the two competing CLI claims for item #${id}`, () => Promise.all([
       cliResult(worktrees[0], envs[0], 'claim', String(id)),
       cliResult(worktrees[1], envs[1], 'claim', String(id)),
     ]));
     const attempts = [left, right];
-    assert.equal(attempts.filter((result) => result.status === 0).length, 1, `one clone claims #${id}`);
-    const winner = attempts.findIndex((result) => result.status === 0);
-    const loser = attempts[1 - winner];
-    assert.equal(loser.status, 1, `the competing claim for #${id} is refused`);
-    assert.equal(loser.document.error.code, 'HELD');
-    assert.equal(typeof loser.document.error.message, 'string');
-    assert.equal(typeof loser.document.error.next, 'string');
-    refusals.set(id, loser.document.error);
-    const released = await timing.wait(`release item #${id} from its winning clone`, () => cliResult(worktrees[winner], envs[winner], 'release', String(id)));
-    assert.equal(released.status, 0, `the winner releases #${id} before the next round`);
+    assert.ok(attempts.every((result) => result.status === 0), `both clones claim #${id} locally before relay ordering`);
+    const claimActors = [0, 1].map((index) => {
+      const claim = localEvents(replicaFiles[index]).filter((event) => event.item_id === id && event.event_kind === 'claim');
+      assert.equal(claim.length, 1, `clone ${index + 1} records its local claim for #${id} once`);
+      return claim[0].event_by;
+    });
+    assert.notEqual(claimActors[0], claimActors[1], `the competing local claims for #${id} have distinct agents`);
+    actors.set(id, claimActors);
   }
 
-  const synced = await timing.wait('sync the three replicas after the competing claims', () => Promise.all(clones.map((clone, index) => cliResult(worktrees[index], envs[index], 'status'))));
-  assert.ok(synced.every((result) => result.status === 0), 'both replicas finish by applying the same relay prefix');
+  relay.failMoves(false);
+  const synced = [];
+  for (let index = 0; index < clones.length; index += 1) {
+    synced.push(await timing.wait(`sync clone ${index + 1} and replay its queued claims`, () => cliResult(worktrees[index], envs[index], 'status')));
+    assert.equal(synced[index].status, 0, `clone ${index + 1} finishes applying the ordered relay prefix`);
+  }
 
   const eventRows = replicaFiles.map((file) => localEvents(file));
   const receiptRows = replicaFiles.map(receipts);
-  const canonicalRefusals = new Map();
+  const winners = new Map();
+  const losers = new Map();
   for (let id = 1; id <= 20; id += 1) {
     for (const events of eventRows) {
-      assert.equal(events.filter((event) => event.item_id === id && event.event_kind === 'claim').length, 1,
-        `item #${id} has exactly one applied claim event on each clone`);
+      const claims = events.filter((event) => event.item_id === id && event.event_kind === 'claim');
+      assert.equal(claims.length, 1, `item #${id} has exactly one applied claim event on each clone`);
+      assert.ok(actors.get(id).includes(claims[0].event_by), `item #${id} is owned by one of its two local claimants`);
+      if (winners.has(id)) assert.equal(claims[0].event_by, winners.get(id), `all replicas retain the same ordered winner for #${id}`);
+      else winners.set(id, claims[0].event_by);
     }
+    const winningActor = winners.get(id);
+    const losingActor = actors.get(id).find((actor) => actor !== winningActor);
+    losers.set(id, losingActor);
     for (const rows of receiptRows) {
       const claims = rows.map((receipt) => ({ receipt, move: JSON.parse(receipt.move) }))
         .filter(({ move }) => move.operation === 'claim' && move.args[0] === id);
@@ -912,18 +924,35 @@ async function competingReplicaClaims(fixture, timing) {
       const denied = claims.filter(({ receipt }) => receipt.outcome.error);
       assert.equal(denied.length, 1, `exactly one durable claim receipt for #${id} is a refusal`);
       const error = denied[0].receipt.outcome.error;
-      const displayed = refusals.get(id);
-      assert.deepEqual({ code: error.code, message: error.message },
-        { code: displayed.code, message: displayed.message }, `the durable refusal for #${id} retains the CLI rule and reason`);
+      assert.equal(error.code, 'HELD', `the durable losing claim for #${id} is refused by the engine`);
+      assert.equal(denied[0].move.actor, losingActor, `the durable refusal for #${id} belongs to the losing local claimant`);
       assert.equal(error.next, 'Run pullboard help, correct the reported problem, and retry the command.',
         'current display guidance does not rewrite the historical receipt envelope');
-      assert.equal(displayed.next, 'take another item: pullboard next', 'the CLI names the current recovery action');
-      if (canonicalRefusals.has(id)) assert.deepEqual(error, canonicalRefusals.get(id),
-        `all replicas retain the exact canonical refusal for #${id}`);
-      else canonicalRefusals.set(id, error);
     }
+    const displayed = (synced[1].document.relay.outboxRefusals ?? []).find((entry) => entry.move === `claim #${id} by ${losingActor}`);
+    assert.ok(displayed, `the replayed local refusal for #${id} is retained for its losing agent`);
+    assert.equal(displayed.code, 'HELD');
+    assert.ok(displayed.earlier.some(move => move.move === `claim #${id} by ${winningActor}`),
+      `the local refusal for #${id} names the ordered winning claim`);
   }
   assert.equal(receiptRows[0].length, receiptRows[1].length, 'both cloned boards retain the same number of applied operation receipts');
+
+  for (let id = 1; id <= 20; id += 1) {
+    assert.match(synced[1].stderr, new RegExp(`\\[RELAY_OUTBOX_REFUSED\\].*claim #${id} by ${losers.get(id)} .*\\[HELD\\].*won by sequence \\d+ claim #${id} by ${winners.get(id)}`, 'u'));
+  }
+  const repeatedNotice = await timing.wait('confirm the losing-clone notices are consumed once', () => cliResult(worktrees[1], envs[1], 'status'));
+  assert.equal(repeatedNotice.status, 0);
+  assert.doesNotMatch(repeatedNotice.stderr, /RELAY_OUTBOX_REFUSED/u, 'the replay refusal notices are delivered once');
+
+  for (let id = 1; id <= 20; id += 1) {
+    const winner = actors.get(id).indexOf(winners.get(id));
+    const released = await timing.wait(`release item #${id} from its replayed winner`, () => cliResult(worktrees[winner], envs[winner], 'release', String(id)));
+    assert.equal(released.status, 0, `the ordered winner releases #${id}`);
+  }
+  for (let index = 0; index < clones.length; index += 1) {
+    const result = await timing.wait(`sync clone ${index + 1} after winner releases`, () => cliResult(worktrees[index], envs[index], 'status'));
+    assert.equal(result.status, 0);
+  }
 
   relay.failMoves(true);
   const beforeWorktreeFailure = localEvents(replicaFiles[0]);
@@ -1439,12 +1468,16 @@ test('a pending legacy approval baseline keeps its exact source through resume [
   await timing.run(async () => {
     const fixture = await threeReplicaFixture(t, timing);
     const { clones, envs, relay, replicaFiles } = fixture;
+    for (const env of envs) env.PULLBOARD_RELAY_SENDER_BACKGROUND = '0';
     timing.begin('baseline reply recovery', 'lose one compatibility setup reply, change the spec, and resume');
+    const uploadsBeforeLocalMove = relay.uploads.length;
     relay.dropNextReply({ offline: true });
     const first = await cliResult(clones[0], envs[0], 'add', 'web', 'Work after migration');
-    assert.equal(first.status, 1);
-    assert.equal(first.document.error.code, 'RELAY_UNAVAILABLE');
-    assert.equal(relay.uploads.length, 1, 'only setup reached the relay before the interrupted work');
+    assert.equal(first.status, 0, 'a lost setup reply does not block the local-first add');
+    const addedId = first.document.item.item_id;
+    assert.equal(localEvents(replicaFiles[0]).filter(event => event.item_id === addedId && event.event_kind === 'add').length, 1,
+      'the local add is recorded once before replay');
+    assert.equal(relay.uploads.length, uploadsBeforeLocalMove, 'the local move waits in the outbox instead of synchronously reaching the relay');
     const spec = join(clones[0], 'SPEC.md');
     writeFileSync(spec, readFileSync(spec, 'utf8') + '- G99 [approved, must] A later row needs confirmation. | gate: review\n');
     const local = store.openBoard(replicaFiles[0]);
@@ -1459,10 +1492,17 @@ test('a pending legacy approval baseline keeps its exact source through resume [
     relay.failReads(false);
     const resumed = await cli(clones[0], envs[0], 'resume');
     assert.ok(resumed.needsYou.some(need => need.kind === 'agent-approved' && need.id === 'G99'));
+    relay.failReads(false);
+    const caughtUp = await cli(clones[0], envs[0], 'status');
+    assert.equal(caughtUp.relay.outbox.length, 0, 'the next reachable read completes ordered replay');
     const events = localEvents(replicaFiles[0]);
     assert.equal(events.filter(event => event.event_kind === 'spec_approval_baseline').length, 1);
-    assert.equal(events.filter(event => event.event_kind === 'add' && JSON.parse(event.event_detail).title === 'Work after migration').length, 0,
-      'recovering internal setup never claims the interrupted add was performed');
+    assert.equal(events.filter(event => event.event_kind === 'add' && event.item_id === addedId
+      && JSON.parse(event.event_detail).title === 'Work after migration').length, 1,
+    'replay retains the already completed local add exactly once');
+    assert.equal(receipts(replicaFiles[0]).map(receipt => JSON.parse(receipt.move))
+      .filter(move => move.operation === 'addItem' && move.args.some(value => value?.title === 'Work after migration')).length, 1,
+    'the relay keeps one durable receipt for the recovered local add');
     timing.finish(['cloning three replicas', 'baseline reply recovery']);
   });
 });
