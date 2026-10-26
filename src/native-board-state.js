@@ -12,6 +12,7 @@ import { COORDINATOR } from './config.js';
 import { loadConfig } from './config.js';
 import { repoInfo } from './git.js';
 import { listApiProjects } from './projects.js';
+import { nativeStateClockWindow } from './native-state-clock.js';
 import { milestoneRoadmap } from './roadmap.js';
 import { proofStats } from './stats.js';
 import { ruleProofCounts } from './rule-proof-counts.js';
@@ -116,8 +117,9 @@ export function buildLocalBoardState(root, boardId, board, codeIsMain, { previou
       milestone: milestoneNames.get(item.item_id) ?? null,
     }]));
     const history = store.events(board);
+    const clockWindow = nativeStateClockWindow(listFields.state, history, currentItems, observedAt);
     board.db.exec('COMMIT');
-    return { state: listFields.state, itemMeta, itemMoveCounts: listFields.itemMoveCounts, sequence, history };
+    return { state: listFields.state, itemMeta, itemMoveCounts: listFields.itemMoveCounts, sequence, history, clockWindow };
   } catch (error) {
     try { board.db.exec('ROLLBACK'); } catch { /* Preserve the projection failure. */ }
     throw error;

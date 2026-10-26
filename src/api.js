@@ -2,6 +2,7 @@ import { buildLocalBoardState } from './native-board-state.js';
 import { dependencyIds } from './native-board-state.js';
 import { stateFileInputs } from './native-board-state.js';
 import { fileRevision } from './native-board-state.js';
+import { nativeStateClockMatches } from './native-state-clock.js';
 /** The local API v1: the CLI's moves, persistent board identities and live events (A2). */
 import {
   createHash,
@@ -421,13 +422,13 @@ function searchText(item) {
 }
 
 /** One cached board build: the full state, its item summaries, its delta fingerprint and the lookups that serve them. */
-function snapshotEntry(revision, state, preparedFlow, { inputs = null, itemMeta = new Map(), itemMoveCounts = new Map() } = {}) {
+function snapshotEntry(revision, state, preparedFlow, { inputs = null, itemMeta = new Map(), itemMoveCounts = new Map(), clockWindow = null } = {}) {
   const summary = { ...state, items: state.items.map(itemSummary) };
   const reportValidator = { json: JSON.stringify(state.proofStats?.flow?.report), expiries: [...new Set(preparedFlow.items.flatMap(item =>
     item.state === 'claimed' ? [item.leaseUntil] : item.state === 'submitted' ? [item.reserve?.until] : []).filter(Number.isFinite))].sort((a, b) => a - b) };
   reportValidator.digest = createHash('sha256').update(reportValidator.json ?? 'null').digest('hex');
   return { revision, sequence: state.sequence, state, summary, preparedFlow, reportValidator, summaryFields: prepareStateJson(summary), stateJsonFields: null,
-    print: fingerprint(summary), items: new Map(state.items.map((item) => [item.id, item])), itemMeta, itemMoveCounts, inputs, searchTexts: null };
+    print: fingerprint(summary), items: new Map(state.items.map((item) => [item.id, item])), itemMeta, itemMoveCounts, inputs, clockWindow, searchTexts: null };
 }
 
 /** State fields every delta carries whole: this request's unread count and flow, and the small Needs-you lists. */
@@ -856,10 +857,11 @@ export function createLocalApiHandler({ secret, getPort, runCommand, projects = 
   function withSnapshot(board, read, observedAt = now()) {
     const before = boardStateRevision(board.root, board.id, codeIsMain, { projects: apiProjects, scopeCommonDir, observedAt });
     const cached = stateCache.get(before.cacheId);
-    if (before.cacheable && cached?.revision === before.revision) {
+    if (before.cacheable && cached?.revision === before.revision && nativeStateClockMatches(cached.clockWindow, observedAt)) {
       const result = read(cached, true);
       const after = boardStateRevision(board.root, board.id, codeIsMain, { projects: apiProjects, scopeCommonDir, observedAt });
       if (after.cacheable && after.revision === before.revision) {
+        cached.clockWindow.observedAt = observedAt; // A backwards request must rebuild even within the prior constant window.
         stateCache.delete(before.cacheId);
         stateCache.set(before.cacheId, cached);
         return result;
@@ -885,6 +887,7 @@ export function createLocalApiHandler({ secret, getPort, runCommand, projects = 
       inputs: before.inputs,
       itemMeta: built.itemMeta,
       itemMoveCounts: built.itemMoveCounts,
+      clockWindow: built.clockWindow,
     });
     entry.cacheId = before.cacheId;
     const after = boardStateRevision(board.root, board.id, codeIsMain, { projects: apiProjects, scopeCommonDir, observedAt });
