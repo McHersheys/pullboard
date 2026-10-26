@@ -1,3 +1,5 @@
+import { foreignDependencyStates } from './cross-repo-dependencies.js';
+import { dependencyValues } from './item-dependencies.js';
 /**
  * `pullboard view` (N26, N27): the person's micro site. One page on this machine shows every
  * registered project: items by state, what needs the person, shouts, doctrine, agents and activity,
@@ -289,7 +291,8 @@ function verdictOf(row) {
  */
 export function projectItemState(board, item, status) {
   const verdicts = store.verdictsFor(board, item.item_id).map(verdictOf);
-  const after = item.item_after ? item.item_after.split(',').map(Number) : [];
+  const after = dependencyValues(item);
+  const foreign = new Map(foreignDependencyStates(board, item).map(ref => [`${ref.repo}#${ref.id}`, ref.status]));
   return {
     id: item.item_id,
     title: item.item_title,
@@ -307,7 +310,7 @@ export function projectItemState(board, item, status) {
     brief: item.item_brief,
     commit: item.item_commit,
     merged: item.item_merged_commit,
-    blockedBy: after.filter((id) => status.get(id) !== 'verified'),
+    blockedBy: after.filter((id) => (typeof id === 'number' ? status.get(id) : foreign.get(id)) !== 'verified'),
     updatedAt: item.item_updated_at,
     verdict: verdicts.at(-1) ?? null,
     verdicts,

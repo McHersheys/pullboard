@@ -1,3 +1,5 @@
+import { CROSS_REPO_DEPENDENCY_ENGINE } from '../cross-repo-dependency-engine.js';
+import { hasForeignDependencies } from '../item-dependencies.js';
 import { RIGOR_AUTO_ENGINE } from '../rigor-auto-engine.js';
 /** Routing metadata owned by editItem, discovered without a shared registry edit [C7,V4,H16]. */
 import {
@@ -10,7 +12,7 @@ import { LANDING_LEASE_ENGINE } from '../landing-lease-engine.js';
 import { BOARD_SENTINEL_ENGINE } from '../sentinel-engine.js';
 
 /** Preserve this operation's historical first-matching engine conditions [H16]. */
-function minimumEngine(args, board, at) {
+function existingEngine(args, board, at) {
   if (typeof args[1]?.cause === 'string' && args[1].cause.startsWith('conflict:')) return RIGOR_AUTO_ENGINE;
   if (board && barReadySetting(board).enabled) return BAR_READY_ENGINE;
   if (args[0]?.landingFence !== undefined) return LANDING_LEASE_ENGINE;
@@ -18,6 +20,11 @@ function minimumEngine(args, board, at) {
   if (carriesBarReason('editItem', args)) return BAR_ENGINE;
   if (args[1] && Object.hasOwn(args[1], 'after') && args[1].after !== undefined) return 10;
   return 1;
+}
+
+/** Preserve every historical floor while preventing older replicas from flattening foreign references. */
+function minimumEngine(args, board, at) {
+  return Math.max(existingEngine(args, board, at), hasForeignDependencies(args[1]?.after) ? CROSS_REPO_DEPENDENCY_ENGINE : 1);
 }
 
 /** Read precisely the actor argument used by this operation [H2,H16]. */

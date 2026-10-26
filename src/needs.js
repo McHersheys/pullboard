@@ -46,6 +46,7 @@ export function personNeeds(state) {
     ...personBlocks(state.blocks ?? []),
     ...(drafts ? [{ kind: 'draft', id: 'drafts', count: drafts, ref: String(drafts),
       text: 'draft spec rows to approve or drop' + rows.filter(row => row.staleDecision).map(row => `; ${row.stage}`).join(''), what: 'review in SPEC.md', target: 'tab:spec' }] : []),
+    ...(state.relayHealthAlerts ?? []),
   ];
 }
 

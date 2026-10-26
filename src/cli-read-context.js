@@ -1,3 +1,7 @@
+import {
+  dependencyReferences,
+  dependencyLabel,
+} from './item-dependencies.js';
 /**
  * What every command shares and a read needs: the checkout's context, the board opened around one piece of work,
  * argument parsing and the one-line item format. It loads no gate, relay or landing module, so a read command that
@@ -162,7 +166,7 @@ export function itemLine(item, name = (id) => id, mainMerge = false) {
   const verifier = item.item_status === 'verified' ? ` by ${name(item.item_verified_by)}` : '';
   const specs = item.item_spec_ids ? `  [${item.item_spec_ids}]` : '';
   const parent = item.item_parent_id ? `  under #${item.item_parent_id}` : '';
-  const after = item.item_after ? `  after ${item.item_after.split(',').map((id) => `#${id}`).join(',')}` : '';
+  const after = item.item_after ? `  after ${dependencyReferences(item).map(dependencyLabel).join(',')}` : '';
   const rejected = item.item_status === 'open' && item.item_verdict === 'REJECT' ? ' (rejected)' : mainMerge ? ` (${MAIN_MERGE_LABEL})` : '';
   const light = item.item_route === 'strong' ? '' : `  ${item.item_route}`;
   const staleVerdict = item.item_verdict_state ? `  ${item.item_verdict_state.code}` : '';

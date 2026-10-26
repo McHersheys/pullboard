@@ -1,3 +1,4 @@
+import { localDependencyIds } from './item-dependencies.js';
 /**
  * `pullboard health`: every stuck item on the board, why it is stuck, since when, the one next step
  * and who takes it [A6]. Doctor checks a board's integrity; health checks its flow, so nobody has
@@ -35,6 +36,7 @@ import { localReleaseRank } from './release-queue.js';
 import { workQueue } from './queue.js';
 import { trunkRef } from './trusted-policy.js';
 import { routeWorkShortages } from './route-capacity.js';
+import { readRelayHealth } from './relay-canary-health.js';
 
 /** Each threshold's pullboard.json key under "health" and its default. */
 export const HEALTH_DEFAULTS = Object.freeze({ stuck: '1h', holds: '1d', release: '1d' });
@@ -88,6 +90,22 @@ export function healthReport({ db, root, config, now }) {
   const report = { asOf, thresholds: { stuck: limits.stuck, holds: limits.holds, release: limits.release }, stuck: [], waiting: [] };
   // Gate alarms read the git directory, so they report even before a board exists (U41).
   report.stuck.push(...gateControlFindings(root, config ?? {}, now));
+  const canary = readRelayHealth(root);
+  if (typeof canary.alertSince === 'string' && Number.isFinite(Date.parse(canary.alertSince))) {
+    const step = typeof canary.step === 'string' ? canary.step : 'unknown';
+    const code = typeof canary.code === 'string' ? canary.code : 'RELAY_CANARY_FAILURE';
+    const slow = canary.p95Ms !== null && canary.p95Ms > 2000;
+    const why = slow ? `Ten-minute p95 is ${Math.round(canary.p95Ms)} ms`
+      : canary.consecutiveFailures >= 2 ? `The last canary probe failed during ${step} (${code})`
+        : `The relay canary alert remains active; the latest recorded step is ${step} (${code})`;
+    report.stuck.push(finding('RELAY_CANARY', null, {
+      subject: 'relay canary', key: 'RELAY_CANARY:relay', since: canary.alertSince, now: now.getTime(),
+      title: 'sealed round trips are degraded',
+      why,
+      next: 'inspect pullboard relay canary; keep working locally while queued moves await the relay',
+      owner: { role: 'coordinator', who: COORDINATOR }, detail: { step, code, roundTripMs: canary.roundTripMs, p95Ms: canary.p95Ms },
+    }));
+  }
   if (!db) return report;
   const at = now.getTime();
   const age = (iso) => at - Date.parse(iso);
@@ -180,7 +198,7 @@ export function healthReport({ db, root, config, now }) {
     }
 
     if (['open', 'claimed', 'submitted'].includes(status)) {
-      const after = String(item.item_after ?? '').split(',').filter(Boolean).map(Number);
+      const after = localDependencyIds(item);
       const gone = after.filter((other) => byId.get(other)?.item_status === 'withdrawn');
       if (gone.length) {
         const rest = after.filter((other) => !gone.includes(other));
@@ -445,7 +463,7 @@ function unlanded(item, { since, now, trunk, root, byId, stacked }) {
       detail: { parent: parent.item_id, commit: parent.item_commit },
     });
   }
-  const waits = String(item.item_after ?? '').split(',').filter(Boolean).map(Number)
+  const waits = localDependencyIds(item)
     .filter((other) => byId.get(other) && !byId.get(other).item_merged_commit && byId.get(other).item_status !== 'withdrawn');
   if (waits.length) {
     return finding('UNLANDED_WAITING', item, {

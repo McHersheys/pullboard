@@ -1,3 +1,4 @@
+import { localDependencyIds } from './item-dependencies.js';
 import { shoutMatchesAudience } from './shout-audience.js';
 /**
  * pullboard watch: follow the board's own live event stream and print one line per event [A2,N26].
@@ -182,7 +183,7 @@ function laneWork(file, lane, reviewWaitMs, nowMs) {
     for (const item of items) {
       const lapsed = item.item_status === 'claimed' && (item.item_lease_until ?? '') <= now;
       if (item.item_status === 'claimed' && !lapsed && item.item_lease_until) wakes.push(Date.parse(item.item_lease_until));
-      const after = item.item_after ? item.item_after.split(',').map(Number) : [];
+      const after = localDependencyIds(item);
       if ((item.item_status === 'open' || lapsed) && !laneHeld && !item.item_hold_reason && after.every((id) => status.get(id) === 'verified')) {
         claimable.set(item.item_id, item);
       }

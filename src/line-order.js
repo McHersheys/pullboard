@@ -1,3 +1,4 @@
+import { localDependencyIds } from './item-dependencies.js';
 /** Opt-in queue ordering reads recorded board policy and the same review guards as actual reservation [N2,B13,H16]. */
 import { ENGINE_VERSION } from './machine.js';
 import { LINE_ORDER_ENGINE } from './line-order-engine.js';
@@ -14,7 +15,7 @@ export function waitedOnItems(items) {
   const wanted = new Set();
   for (const item of items) {
     if (['withdrawn', 'verified'].includes(item.item_status)) continue;
-    for (const id of (item.item_after ?? '').split(',').filter(Boolean)) wanted.add(Number(id));
+    for (const id of localDependencyIds(item)) wanted.add(id);
   }
   return wanted;
 }
