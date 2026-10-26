@@ -8,6 +8,7 @@ import {
 } from './cli.js';
 import { COORDINATOR } from './config.js';
 import { PERSON } from './board.js';
+import { laneNames } from './lanes.js';
 import { Refused } from './refused.js';
 import {
   relayMachineContext,
@@ -49,7 +50,7 @@ async function notify(ctx, config, notice, observation) {
   await withBoard(ctx, async board => {
     const me = requireSeat(ctx, board, config);
     for (const to of [COORDINATOR, PERSON]) {
-      await ordered(ctx, board, 'shout', [{ from: me.id, to, text, decision: false }]);
+      await ordered(ctx, board, 'shout', [{ from: me.id, to, text, lanes: laneNames(ctx.config), decision: false }]);
     }
   });
 }
