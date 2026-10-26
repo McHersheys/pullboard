@@ -132,7 +132,7 @@ test('each row says what it waits on [N26]', async () => {
     }]));
     assert.deepEqual(rows['1'], { chip: 'free: unclaimed', edge: false, waits: [] }, 'free to claim');
     assert.deepEqual(rows['2'], { chip: 'busy: web-1 (Test Model)', edge: false, waits: [] }, 'a claim names its holder');
-    assert.deepEqual(rows['3'], { chip: 'gate: gated', edge: true, waits: [`<span class="wait-unit">waits on <a class="ref" href="/items/2?k=${view.key}" data-go="item:2">#2</a>`] }, 'gated on #2, which is still being built');
+    assert.deepEqual(rows['3'], { chip: 'gate: gated', edge: true, waits: [`<span class="wait-unit">waits on <a class="ref" href="/items/2" data-go="item:2">#2</a>`] }, 'gated on #2, which is still being built');
     assert.deepEqual(rows['4'], { chip: 'gate: lane held', edge: true, waits: ['lane held: API &lt;freeze&gt; until Friday'] });
     assert.deepEqual(rows['5'], { chip: 'warn: to verify', edge: false, waits: [] });
     assert.deepEqual(rows['6'], { chip: 'no: sent back', edge: false, waits: [] });
@@ -648,10 +648,10 @@ test('shout ids, search and narrow windows reach the item [N26]', async () => {
     await page.type('q', '');
 
     const feed = page.show('feed');
-    assert.ok(feed.includes(`<a class="ref" href="/items/1?k=${view.key}" data-go="item:1" title="Greeting">#1</a> is next;`), feed);
-    assert.ok(feed.includes(`<a class="ref" href="/items/2?k=${view.key}" data-go="item:2" title="Farewell banner">#2</a> shipped`));
-    assert.ok(feed.includes(`(<a class="ref" href="/items/99?k=${view.key}" data-go="item:99">#99</a> is not an item) and it&#39;s done`), 'an unknown item still has its address, and the apostrophe stays intact');
-    const ref = (id, title) => `<a class="ref" href="/items/${id}?k=${view.key}" data-go="item:${id}" title="${title}">#${id}</a>`;
+    assert.ok(feed.includes(`<a class="ref" href="/items/1" data-go="item:1" title="Greeting">#1</a> is next;`), feed);
+    assert.ok(feed.includes(`<a class="ref" href="/items/2" data-go="item:2" title="Farewell banner">#2</a> shipped`));
+    assert.ok(feed.includes(`(<a class="ref" href="/items/99" data-go="item:99">#99</a> is not an item) and it&#39;s done`), 'an unknown item still has its address, and the apostrophe stays intact');
+    const ref = (id, title) => `<a class="ref" href="/items/${id}" data-go="item:${id}" title="${title}">#${id}</a>`;
     assert.ok(feed.includes(`${ref(7, 'Filler 7')}, see${ref(7, 'Filler 7')} and ${ref(7, 'Filler 7')}${ref(8, 'Filler 8')}: it&#39;s 5 o&#39;clock`), 'every #id links, whatever stands next to it');
     assert.equal(feed.match(/class="ref"/g).length, 7);
     await page.click({ go: 'item:2', classes: 'ref' });
