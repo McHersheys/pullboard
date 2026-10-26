@@ -219,7 +219,7 @@ function cpuLiteral(text) {
 }
 
 /** Read one module's registration bindings; ordinary imported helpers acquire no test authority. */
-function cpuBindings(source, moduleExports) {
+function cpuBindings(source, moduleExports, callable = false) {
   const lexical = lex(source);
   const code = lexical.code;
   const clean = source.split('');
@@ -270,19 +270,56 @@ function cpuBindings(source, moduleExports) {
     if (!/^(?:const|let|var)\b/u.test(code.slice(match.index))) continue;
     namedBindings(match[1], known(cpuLiteral(match[2])), name => names.add(name), ':');
   }
+  const moduleLevel = new Uint8Array(code.length);
+  let depth = 0;
+  for (let at = 0; at < code.length; at++) {
+    moduleLevel[at] = depth === 0 ? 1 : 0;
+    if ('([{'.includes(code[at])) depth++;
+    else if (')]}'.includes(code[at])) depth--;
+  }
+  // Callable evidence is separate from registration authority. Only immutable module bindings
+  // can prove that an otherwise ambiguous second argument is a callback rather than options.
+  if (callable) {
+    for (const match of code.matchAll(/\b(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/gu)) if (moduleLevel[match.index]) names.add(match[1]);
+    for (const match of code.matchAll(/\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*((?:async\s+)?(?:function\b|(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>))/gu)) if (moduleLevel[match.index]) names.add(match[1]);
+  }
   let changed = true;
   while (changed) {
     changed = false;
     for (const match of code.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([^;\n]+)/gu)) {
-      if (names.has(match[1])) continue;
+      if (names.has(match[1]) || callable && !moduleLevel[match.index]) continue;
       const rhs = match[2].trim();
       const alias = /^([A-Za-z_$][\w$]*)\s*$/u.exec(rhs)?.[1];
       const wrapper = /^(?:async\s+)?(?:function\b|(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>)/u.test(rhs)
         && [...names].some(name => new RegExp(`\\b${name}\\s*\\(`, 'u').test(rhs));
-      if (names.has(alias) || wrapper) { names.add(match[1]); changed = true; }
+      if (names.has(alias) || wrapper && !callable) { names.add(match[1]); changed = true; }
     }
   }
-  for (const match of code.matchAll(/\bexport\s+(?:const|let|var|function)\s+([A-Za-z_$][\w$]*)/gu)) if (names.has(match[1])) exports.add(match[1]);
+  if (callable) {
+    for (const name of names) {
+      const pattern = name.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+      const writes = [...code.matchAll(new RegExp(`(?<![\\w$])${pattern}\\s*(?:[+*/%&|^?-]*=(?!=|>)|<<=|>>>=|>>=|\\+\\+|--)`, 'gu'))];
+      const initialized = new RegExp(`\\bconst\\s+${pattern}\\s*=`, 'u').test(code);
+      const declarations = [...code.matchAll(new RegExp(`\\b(?:const|let|var|function|class)\\s+${pattern}\\b`, 'gu'))];
+      const parameters = [...code.matchAll(/(?:function(?:\s+[\w$]+)?\s*|catch\s*)\(([^)]*)\)|\(([^)]*)\)\s*=>|\b([A-Za-z_$][\w$]*)\s*=>/gu)];
+      const shadowed = parameters.some(match => new RegExp(`\\b${pattern}\\b`, 'u').test(match[1] ?? match[2] ?? match[3] ?? ''));
+      if (writes.length > (initialized ? 1 : 0) || declarations.length > 1 || shadowed) names.delete(name);
+    }
+    // Remove aliases whose original binding was later disqualified as mutable or shadowed.
+    const aliasPasses = names.size;
+    for (let pass = 0; pass < aliasPasses; pass++) {
+      let removed = false;
+      for (const match of code.matchAll(/\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*;/gu)) {
+        if (names.has(match[1]) && !names.has(match[2])) { names.delete(match[1]); removed = true; }
+      }
+      if (!removed) break;
+    }
+    const defaultFunction = /\bexport\s+default\s+(?:async\s+)?(?:function\s*\(|(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>)/u.test(code)
+      || names.has(/\bexport\s+default\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/u.exec(code)?.[1]);
+    const defaultName = /\bexport\s+default\s+([A-Za-z_$][\w$]*)\s*;/u.exec(code)?.[1];
+    if (defaultFunction || names.has(defaultName)) exports.add('default');
+  }
+  for (const match of code.matchAll(/\bexport\s+(?:async\s+)?(?:const|let|var|function)\s+([A-Za-z_$][\w$]*)/gu)) if (names.has(match[1])) exports.add(match[1]);
   for (const match of text.matchAll(/\bexport\s*\{([^}]+)\}(?!\s*from)/gu)) {
     if (code.slice(match.index, match.index + 6) === 'export') namedBindings(match[1], names, name => exports.add(name), 'as');
   }
@@ -354,15 +391,21 @@ export function cpuRegistrationExportsIn(sources, moduleExports = () => new Set(
   return sources.map((source, index) => cpuBindings(source, name => moduleExports(index, name)).exports);
 }
 
+/** Proven callable exports for the same bounded graph; these never confer registration authority. */
+export function cpuCallableExportsIn(sources, moduleExports = () => new Set()) {
+  return sources.map((source, index) => cpuBindings(source, name => moduleExports(index, name), true).exports);
+}
+
 /** Infer CPU load only from options of provenance-recognized test registrations [C7]. */
-export function cpuLoadOptionsIn(sources, moduleExports = () => new Set()) {
+export function cpuLoadOptionsIn(sources, moduleExports = () => new Set(), callableExports = () => new Set()) {
   return sources.map((source, index) => {
     const bindings = cpuBindings(source, name => moduleExports(index, name));
     const quoted = quotedProperties(source);
+    const callables = cpuBindings(source, name => callableExports(index, name), true).names;
     return cpuCalls(source, bindings).some(args => {
       if (!args.length) return false;
       const last = lex(source.slice(...args.at(-1))).code.trim();
-      const callback = /^(?:async\s+)?(?:function\b|(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>)/u.test(last);
+      const callback = callables.has(last) || /^(?:async\s+)?(?:function\b|(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>)/u.test(last);
       if (args.length >= 3) return cpuOption(source, bindings.code, quoted, args[1]);
       if (args.length === 2 && callback) {
         const first = source.slice(...args[0]).trim();

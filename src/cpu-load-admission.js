@@ -10,6 +10,7 @@ import { sep } from 'node:path';
 import { loadMachineSettings } from './settings.js';
 import { cpuLoadOptionsIn } from './module-imports.js';
 import { cpuRegistrationExportsIn } from './module-imports.js';
+import { cpuCallableExportsIn } from './module-imports.js';
 import { importsIn } from './module-imports.js';
 
 const MAX_FILES = 256;
@@ -54,21 +55,29 @@ export function testsNeedCpuRunner(root, files) {
   } catch { /* Unreadable ordinary code cannot invent CPU authority; retain the readable prefix. */ }
   const sources = entries.map(entry => entry.source);
   const exports = new Map(entries.map(entry => [entry.path, new Set()]));
-  const imported = (index, name) => {
+  const callables = new Map(entries.map(entry => [entry.path, new Set()]));
+  const resolveExports = table => (index, name) => {
     if (typeof name !== 'string' || !name.startsWith('.')) return new Set();
-    return exports.get(resolve(dirname(entries[index].path), name)) ?? new Set();
+    return table.get(resolve(dirname(entries[index].path), name)) ?? new Set();
   };
-  // Propagate only registration exports, bounded by the already bounded module count.
+  const imported = resolveExports(exports);
+  const importedCallables = resolveExports(callables);
+  // Propagate registration authority and callable evidence separately in the same bounded graph.
   for (let pass = 0; pass < entries.length; pass++) {
     const next = cpuRegistrationExportsIn(sources, imported);
+    const nextCallables = cpuCallableExportsIn(sources, importedCallables);
     let changed = false;
     for (const [index, entry] of entries.entries()) for (const name of next[index]) {
       const names = exports.get(entry.path);
       if (!names.has(name)) { names.add(name); changed = true; }
     }
+    for (const [index, entry] of entries.entries()) for (const name of nextCallables[index]) {
+      const names = callables.get(entry.path);
+      if (!names.has(name)) { names.add(name); changed = true; }
+    }
     if (!changed) break;
   }
-  return cpuLoadOptionsIn(sources, imported).some(Boolean);
+  return cpuLoadOptionsIn(sources, imported, importedCallables).some(Boolean);
 }
 
 /** Report the explicit no-runner fallback while keeping registered CPU work off the coordinator. */

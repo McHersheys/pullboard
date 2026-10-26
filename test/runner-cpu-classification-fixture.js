@@ -29,6 +29,12 @@ export async function fixtureContextCpuCase(t) {
   });
   assert.equal(cpuLoadOptionsIn(["import test from 'node:test'; import options from './unresolved.js'; test('pending', options);"])[0], true,
     'an unresolved import may be options and stays conservative');
+  assert.equal(cpuLoadOptionsIn(["import test from 'node:test'; const options = { cpuLoad: true }; test('pending', options);"])[0], true,
+    'a two-argument named TODO registration may still supply options');
+  assert.equal(cpuLoadOptionsIn(["import test from 'node:test'; function body() {} body = { cpuLoad: true }; test('pending', body);"])[0], true,
+    'a reassigned function binding is not proven callable');
+  assert.equal(cpuLoadOptionsIn(["import test from 'node:test'; function body() {} function register(body) { test('pending', body); }"])[0], true,
+    'a shadowed callback name may be options and stays conservative');
   assert.equal(cpuLoadOptionsIn(["import test from 'node:test'; test('busy', { cpuLoad: true }, () => {});"])[0], true,
     'an explicit CPU-load declaration remains classified');
   assert.equal(cpuLoadOptionsIn(["import test from 'node:test'; test('ordinary', { cpuLoad: false }, () => {});"])[0], false,
