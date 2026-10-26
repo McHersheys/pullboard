@@ -1,3 +1,4 @@
+import { withRelayExclusion } from './relay-exclusion-state.js';
 import { relinkReplacement } from './relay-relink.js';
 import { relayExclusion } from './relay-exclusion-state.js';
 import { excludeRelayByPerson } from './relay-exclusion-state.js';
@@ -1497,7 +1498,7 @@ export async function relayRecover(root, skip, io) {
 }
 
 /** Read the local link and lag without opening a network connection or revealing its relay token. */
-export function relayStatus(root) { return summary(root, loadLink(linkFile(root))); }
+export function relayStatus(root) { return withRelayExclusion(root, summary(root, loadLink(linkFile(root)))); }
 
 /** Cancel one device ticket without the already-aborted caller signal. */
 async function cancelDeviceFlow(url, ticket, io) {
@@ -1676,9 +1677,9 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
 
 /** Unlink locally without approval, then request a separate phone-approved remote deletion if possible. */
 export async function relayOff(root, io) {
-  excludeRelayByPerson(root, io, { localRecords, store });
   const file = linkFile(root);
   return locked(file, async () => {
+    excludeRelayByPerson(root, io, { localRecords });
     const state = loadLink(file);
     if (!state) { await publishOffExclusions(null, io, { loadLink, linkFile, request: relayDeviceRequest }); return summary(root, null); }
     let joined = [];

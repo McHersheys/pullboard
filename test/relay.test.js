@@ -1427,7 +1427,7 @@ test('plain relay off explains the retained relay copy without printing credenti
   assert.equal(existsSync(box.linkFile), false, 'plain local off removes the device link');
   assert.equal(existsSync(box.keyFile), false, 'plain local off forgets the device key');
   assert.ok(JSON.parse(readFileSync(join(box.env.PULLBOARD_HOME, 'relay-machine/state.json'), 'utf8')).excluded.includes(box.root));
-  assert.deepEqual((await box.cli('export')).document.tables, localBeforeOff, 'plain local off preserves native rows');
+  assertPersonUnlinkHistory((await box.cli('export')).document.tables, localBeforeOff);
   assert.equal(box.calls.slice(callsBeforeOff).some(call => call.method === 'DELETE'), false,
     'plain local off never deletes the remote copy without phone approval');
 });

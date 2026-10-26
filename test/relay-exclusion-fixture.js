@@ -76,6 +76,12 @@ export async function relayOnClearsExclusion(t) {
   assert.equal(status.document.relay.exclusion.reason, 'person relay off');
   assert.ok(Number.isFinite(Date.parse(status.document.relay.exclusion.at)), 'new exclusions retain their actual time');
   assert.match(status.document.relay.exclusion.next, /pullboard relay on/u);
+  box.refuseSnapshotWrites(true);
+  const pending = await box.cli('relay', 'on', '--url', box.origin);
+  assert.equal(pending.code, 0, 'a refused checkpoint retains a retryable authorized link');
+  assert.equal(machine(box).excluded.includes(box.root), true, 'a pending upload cannot prematurely clear the opt-out');
+  assert.equal((await box.cli('status')).document.relay.excluded, true, 'pending-link status still exposes the uncleared exclusion');
+  box.refuseSnapshotWrites(false);
   const linked = await box.cli('relay', 'on', '--url', box.origin);
   assert.equal(linked.code, 0);
   assert.match(linked.document.notice, /exclusion.*clear|clear.*exclusion/iu, 'successful explicit on names the cleared exclusion');
@@ -92,7 +98,9 @@ export async function relayOnClearsExclusion(t) {
 
 /** Person opt-out appends exactly one attributed native intent and preserves every prior row. */
 export function assertPersonUnlinkHistory(after, before) {
-  assert.deepEqual({ ...after, event: before.event }, before, 'unlink preserves all non-event native tables');
+  const sequences = before.sqlite_sequence.map(row => row.name === 'event' ? { ...row, seq: row.seq + 1 } : row);
+  assert.deepEqual(after.sqlite_sequence, sequences, 'only the event allocation advances, by exactly one audit');
+  assert.deepEqual({ ...after, event: before.event, sqlite_sequence: before.sqlite_sequence }, before, 'unlink preserves every other native table and sequence');
   assert.deepEqual(after.event.slice(0, before.event.length), before.event, 'unlink preserves the exact previous event prefix');
   assert.equal(after.event.length, before.event.length + 1, 'person unlink adds exactly its audit intent');
   const receipt = after.event.at(-1);
