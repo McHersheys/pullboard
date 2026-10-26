@@ -18,6 +18,7 @@ import { relayClientFixture } from './relay-client-fixture.js';
 import { findChromeExecutable, startChrome } from './relay-browser-fixture.js';
 import { readSealedDescriptor } from '../src/sealed-pages.js';
 import { openPagedSnapshot } from '../src/relay-page-layout.js';
+import { PROOF_RUN_ENGINE } from '../src/proof-run-engine.js';
 
 const LEGACY_BODY_THRESHOLD = 14_000_000;
 const LEGACY_RELAY_THRESHOLD = 10_000_000;
@@ -43,6 +44,18 @@ async function textCommand(box, ...args) {
   return (await box.script(source)).document;
 }
 
+/**
+ * Write shouts the way a board upgraded from before the 400-character limit (#1109) holds them.
+ * Replay applies a move at its recorded engine, so this history stays as long as it was written.
+ */
+function beforeShoutLimit(board, write) {
+  const recorded = Object.hasOwn(board, 'executionEngineVersion') ? board.executionEngineVersion : undefined;
+  board.executionEngineVersion = PROOF_RUN_ENGINE - 1;
+  try { return write(); } finally {
+    if (recorded === undefined) delete board.executionEngineVersion; else board.executionEngineVersion = recorded;
+  }
+}
+
 /** Seal a legacy plaintext snapshot at its current authenticated relay position. */
 async function sealedSnapshot(box, document, sequence, compressed) {
   const state = JSON.parse(readFileSync(box.linkFile, 'utf8'));
@@ -58,8 +71,9 @@ test('a 20 MB sealed snapshot syncs to the relay and reads back whole [H5,H15,H1
   await box.link();
   const local = store.openBoard(join(box.root, '.git/pullboard/board.sqlite'));
   try {
-    // A shout is at most 400 characters (#1109); an attempt record carries the same incompressible bytes.
-    store.recordAttempt(local, null, { agentId: 'coordinator', n: 1, seconds: 0, result: 'LARGE_SEALED_SNAPSHOT_' + randomBytes(14_000_000).toString('base64url') });
+    beforeShoutLimit(local, () => store.shout(local, { from: 'coordinator', to: 'all', text: 'LARGE_SEALED_SNAPSHOT_' + randomBytes(14_000_000).toString('base64url'), lanes: [box.lane] }));
+    assert.throws(() => store.shout(local, { from: 'coordinator', to: 'all', text: 'q'.repeat(401), lanes: [box.lane] }),
+      { code: 'SHOUT_TOO_LONG' }, 'a new shout at the current engine is still held to 400 characters');
   } finally { store.closeBoard(local); }
 
   const state = JSON.parse(readFileSync(box.linkFile, 'utf8'));
@@ -141,7 +155,7 @@ test('a large board syncs to the relay compressed [H5,H15,H17]', {
   const longText = marker + 'q'.repeat(7_200_000);
   const native = store.openBoard(join(box.root, '.git/pullboard/board.sqlite'));
   try {
-    store.recordAttempt(native, null, { agentId: 'coordinator', n: 1, seconds: 0, result: longText });
+    beforeShoutLimit(native, () => store.shout(native, { from: 'coordinator', to: 'all', text: longText, lanes: [box.lane] }));
     // The historical payload grows the native snapshot without sending a seven-megabyte paragraph to the recent UI feed.
     for (let index = 0; index < 100; index++) {
       store.shout(native, { from: 'coordinator', to: 'all', text: marker + 'recent ' + index, lanes: [box.lane] });
@@ -290,8 +304,10 @@ async function thirtyThousandBoard(t) {
       });
       oldest = store.shout(native, { from: 'coordinator', to: 'all', text: oldestMarker, lanes: [box.lane] });
       // Incompressible retained history proves several times the old cap in actual uploaded cipher bytes.
-      for (let index = 0; index < 32; index++) store.recordAttempt(native, null, {
-        agentId: 'coordinator', n: index + 1, seconds: 0, result: 'Private historical data ' + index + ':' + randomBytes(1_000_000).toString('base64'),
+      beforeShoutLimit(native, () => {
+        for (let index = 0; index < 32; index++) store.shout(native, {
+          from: 'coordinator', to: 'all', text: 'Private historical data ' + index + ':' + randomBytes(1_000_000).toString('base64'), lanes: [box.lane],
+        });
       });
       for (let index = 0; index < 30_017; index++) store.shout(native, {
         from: 'coordinator', to: 'all', text: 'Recent and retained work ' + index, lanes: [box.lane],
@@ -521,8 +537,10 @@ test('large compressible history uses bounded pages even when its whole encrypte
   const board = store.openBoard(join(box.root, '.git/pullboard/board.sqlite'));
   try {
     store.atomic(board, () => {
-      for (let index = 0; index < 4_000; index++) store.recordAttempt(board, null, {
-        agentId: 'coordinator', n: index + 1, seconds: 0, result: 'Retained compressible history ' + index + ' ' + 'q'.repeat(1_000),
+      beforeShoutLimit(board, () => {
+        for (let index = 0; index < 4_000; index++) store.shout(board, {
+          from: 'coordinator', to: 'all', lanes: [box.lane], text: 'Retained compressible history ' + index + ' ' + 'q'.repeat(1_000),
+        });
       });
     });
   } finally { store.closeBoard(board); }
