@@ -9,6 +9,7 @@ import { barReadiness } from '../src/bar-readiness.js';
 import { revisionReference } from '../src/spec-revisions.js';
 import { receiptBody } from '../src/gate-run-receipt.js';
 import { requireHandoffActive } from '../src/handoff-state.js';
+import { preparePersonRequest } from '../src/person-request.js';
 
 /** Outside metadata is synthetic fixture input; these calls make no GitHub or owner-authentication assurance claim. */
 export async function seedOutside(context) {
@@ -159,4 +160,17 @@ export async function seedCurrentOperations(context) {
   await exercise('requestCompanion', () => store.requestCompanion(board, { agentId: agent, parentId: item,
     lane: box.lane === 'tests' ? 'core' : 'tests', key: 'reader-parity', title: 'Projection companion',
     criterion: 'A real cross-lane child remains visible in both readers', brief: 'Synthetic private board child; no real work requested.' }));
+}
+
+/** New signing mutations are projection inputs, never proof of passkey authority or presence [E22,H16]. */
+export async function seedPersonSigning(context) {
+  const { board, store, exercise, agent } = context;
+  await exercise('setPersonSigning', () => store.setPersonSigning(board, { agentId: agent, signed: true }));
+  assert.equal(store.personSigning(board).signed, true, 'the actual native signing event enables the device projection');
+  const request = preparePersonRequest({ verb: 'signing', args: { signed: 'off' } }, randomUUID());
+  await exercise('proposePersonMove', () => store.proposePersonMove(board, { agentId: agent, request }));
+  const proposal = store.personProposals(board).find(entry => entry.id === request.id);
+  assert.ok(proposal, 'the native proposal retains its exact request identity');
+  assert.deepEqual(proposal.move, request.move, 'the device projection carries the exact proposed intent');
+  assert.equal(store.personSigning(board).signed, true, 'a proposal grants no authority to turn signing off');
 }
