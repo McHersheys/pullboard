@@ -92,3 +92,12 @@ test('outbox undo refuses a foreign key conflict and restores its transaction [H
   assert.deepEqual(image(board), before);
   assert.deepEqual(board.db.prepare('PRAGMA foreign_key_check').all(), []);
 });
+
+
+test('outbox undo rejects an unterminated table header and rolls back its setup [H21,H16]', t => {
+  const board = fixture(t, "CREATE TABLE sample (id INTEGER PRIMARY KEY, value TEXT); INSERT INTO sample VALUES(1,'kept')");
+  const before = image(board);
+  const malformed = Buffer.from([0x54, 1, 1, 0x61]).toString('base64');
+  assert.throws(() => undoQueued(board, [{ changes: [malformed] }]), /table header is incomplete/);
+  assert.deepEqual(image(board), before);
+});

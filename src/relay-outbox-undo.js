@@ -74,6 +74,9 @@ export function invertChangeset(changeset) {
       const count = varint(bytes, at + 1);
       columns = count.value;
       const end = bytes.indexOf(0, count.next + columns);
+      if (!Number.isSafeInteger(columns) || columns < 1 || count.next + columns >= bytes.length || end < 0) {
+        throw new Error('a changeset table header is incomplete');
+      }
       out.push(bytes.subarray(at, end + 1));
       at = end + 1;
       continue;
