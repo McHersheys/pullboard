@@ -253,7 +253,7 @@ export function createRelayAuth({ database, github, now = Date.now, sessionTTL =
     const key = row.user_id + ':' + board;
     const prior = permissions.get(key);
     const started = now();
-    if (prior && started >= prior.checked && started - prior.checked < ACCESS_WINDOW_MS && (!write || prior.allowed)) return authorize(prior, linked, write);
+    if (prior && started >= prior.checked && started - prior.checked < ACCESS_WINDOW_MS) return authorize(prior, linked, write);
     let repo;
     try {
       repo = await github.access({ id: row.user_id, login: row.login }, linked.repository);
