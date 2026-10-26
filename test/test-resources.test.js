@@ -447,7 +447,9 @@ test('only a file that reaches a browser launch takes a browser slot [C7,O5]', a
   // 22 Oct: 22, since #978's relay-pairing.test.js really launches two Chromes to pair a second browser.
   // #1109's runtime-choice array is deliberately unresolved, so its provenance test stays conservatively bound.
   assert.ok(bound.includes('test/proof-provenance.test.js'), 'the runtime-choice array never loses browser admission');
-  assert.ok(reached.length <= 23,
+  assert.ok(bound.includes('test/person-passkey-browser.test.js'), 'the real passkey journey retains Chrome admission');
+  // #408 adds one real Chrome/WebAuthn journey to the prior 23 non-cockpit browser-bound files.
+  assert.ok(reached.length <= 24,
     `about 42 of ${tracked.length} test files are browser-bound by launch (the census's 15 non-cockpit launchers, plus cockpit and journey files until #741); got ${bound.length}, ${reached.length} outside cockpit: ${reached.join(', ')}`);
 
   const runner = runnerFixture(t, {

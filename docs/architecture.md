@@ -77,7 +77,9 @@ Everything durable lives on one volume at `/data`: `auth.sqlite`, then `devices.
 | `relay_credentials` | `auth.sqlite` | Per credential: id, SHA-256 hash, kind, account, board, agent or machine name, created, expiry, revoked flag. | The board is deleted or expires. Session rows stay, expired or revoked. |
 | `relay_seats` | `auth.sqlite` | Per board seat: board, agent name, how the seat was made (machine, registered or root), its creator, the registering move's sequence and digest, and its first credential's id, creation and expiry. | The board is unlinked or deleted. |
 | `relay_coordinator_events` | `auth.sqlite` | Each coordinator token the person issued: board, reason (bootstrap, reissue or reset), session id, the revoked token ids, the issued id and the time. | The board is unlinked or deleted. |
-| `relay_action_grants` | `auth.sqlite` | Per approved action: grant hash, request id, account, the full approval context in clear, expiry, used flag. | No deletion path. |
+| `relay_action_grants` | `auth.sqlite` | Per approved action: grant hash, request id, account, the full approval context in clear, expiry, used flag. For a passkey grant on a person request, the context is the board, the request id and the SHA-256 of the request's exact intent. | No deletion path. |
+| `relay_passkeys` | `auth.sqlite` | Per passkey a person registered: its credential id, account, public key and algorithm, signature counter and creation time. The private key stays in the person's authenticator. | No deletion path. |
+| `relay_person_authority` | `auth.sqlite` | One row: the relay's Ed25519 key pair that signs the passkey stamp on person requests. Only the public key leaves the relay. | No deletion path. |
 | `device` | `boards/devices.sqlite` | Per paired phone: account, device id, revoked flag. | No deletion path; a revoked row stays so its id is never reused. |
 | `device_session` | `boards/devices.sqlite` | Per signed-in browser session: account, session id, the paired device it belongs to, and its expiry, so a revoked device's sessions are refused. | Its expiry; expired rows are deleted whenever a session is recorded. |
 | `wrapped_key` | `boards/devices.sqlite` | Per phone and board: the board key, encrypted to that phone's public key, and the engine version. | The device is revoked or the board deleted. A board that expires idle leaves its wraps behind. |
@@ -88,7 +90,7 @@ Everything durable lives on one volume at `/data`: `auth.sqlite`, then `devices.
 | `excluded_inventory_wrap` | `boards/devices.sqlite` | Per account, machine and enrolled device: the excluded-list key encrypted to that device. Reads recheck the device is active. | The machine replaces or clears its publication. Revocation blocks reads but does not delete this row. |
 | `journal_meta` | `boards/<board>.journal.sqlite` | The board id and the journal format. | The board is deleted or expires. |
 | `journal_head` | `boards/<board>.journal.sqlite` | The latest sequence number and the time of the last move or request. | The board is deleted or expires. |
-| `journal_record` | `boards/<board>.journal.sqlite` | Per record: sequence, arrival time, kind (move or request), sealed payload, sender kind, sender account, agent or machine name. | The next snapshot covers it. |
+| `journal_record` | `boards/<board>.journal.sqlite` | Per record: sequence, arrival time, kind (move or request), sealed payload, sender kind, sender account, agent or machine name, and, for a person request a passkey confirmed, its stamp: board, request id, intent digest, passkey credential id, time and the relay's signature. | The next snapshot covers it. |
 | `journal_registration` | `boards/<board>.journal.sqlite` | Per seat a move registered: the target seat, its creator, the move's sequence and the sealed move's digest, so a replica checks who created a seat. | The board is deleted or expires. |
 | `journal_snapshot` | `boards/<board>.journal.sqlite` | One sealed snapshot: the sequence it covers, arrival time, sealed payload, sender. | The next snapshot replaces it. |
 | `board_link_delivery` | `boards/<board>.journal.sqlite` | Per cross-board envelope a linked board receives: the source board, a correlation id, the link id and generation, its position, digest, the sealed envelope and its receipt. The relay cannot open the envelope. | The board is deleted or expires; it counts toward the board storage quota. |
@@ -160,6 +162,6 @@ Agents on a machine share what is on disk. Every agent runs as the same operatin
 
 Revoking a phone stops new wraps and deletes its stored ones, and the board keys it already received stay usable to whoever holds them. Board key rotation is a separate step.
 
-Some rows have no deletion path: `relay_users`, `relay_action_grants`, `phone_approval`, `person_enrollment` and the `device` tombstones. A board that expires for inactivity leaves its `wrapped_key` rows behind.
+Some rows have no deletion path: `relay_users`, `relay_action_grants`, `relay_passkeys`, `relay_person_authority`, `phone_approval`, `person_enrollment` and the `device` tombstones. A board that expires for inactivity leaves its `wrapped_key` rows behind.
 
 RFC 0004 describes keeping the board key in the operating system's keychain. The code keeps it in a mode-600 file and moves any older keychain copy into that file (`src/relay-key.js`).

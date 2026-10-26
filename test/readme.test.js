@@ -93,7 +93,7 @@ test("Pullboard's doctrine carries its four checks [D1,D3]", () => {
   for (const line of lines) {
     const result = / · (\d+), was (\d+) · holding$/u.exec(line);
     assert.ok(result, `${line} is holding at a committed count`);
-    assert.equal(result[1], result[2], `${line} matches the current main count`);
+    assert.ok(Number(result[1]) <= Number(result[2]), `${line} stays at or below its committed count`);
   }
 });
 

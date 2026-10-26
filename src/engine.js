@@ -28,6 +28,7 @@ import {
 } from './machine.js';
 import { canonicalMilestoneTarget } from './milestones.js';
 import { Refused } from './refused.js';
+import { signedMoveProblem } from './person-signing.js';
 import {
   requestMoveProblem,
   recordRequestMove,
@@ -35,6 +36,7 @@ import {
   requestPerson,
 } from './relay-requests.js';
 import {
+  personAuthority,
   relayMoveActor,
   relaySenderProblem,
   validRelaySender,
@@ -278,7 +280,9 @@ export function applyRelayMove(board, move, { sequence, at, sender, kind, digest
   const phoneReceipt = sender?.kind === 'machine' && move?.engine >= 6 && Boolean(move.personRequest) && !requestMoveProblem(board, move, { checkExecutorLease: false });
   const problem = relaySenderProblem(move, sender, kind, { phoneReceipt })
     ?? (kind === 'move' ? handoffMoveProblem(board, relayMoveActor(move), move.operation, move.args) : null)
-    ?? (kind === 'move' ? registrationProblem(board, move, { sender, registration, sequence, digest }) : null);
+    ?? (kind === 'move' ? registrationProblem(board, move, { sender, registration, sequence, digest }) : null)
+    // With signing on, a person-only move counts only when it carries out a passkey-confirmed request [E22].
+    ?? (kind === 'move' ? signedMoveProblem(board, personAuthority(move), phoneReceipt ? move.personRequest : null) : null);
   if (!problem) {
     // Engine-48 relay moves run under linked verifier standing; older recorded moves replay as they did.
     // The person is above every seat; their own moves act with the coordinator's standing.

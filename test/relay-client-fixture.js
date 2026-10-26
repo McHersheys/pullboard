@@ -3,13 +3,30 @@ import { AGENT_SHELL_MARKERS, SSH_SHELL_MARKERS } from '../src/person.js';
 /** Private real CLI, auth and relay fixture; credentials never enter assertion messages [H1,H7,H18]. */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { startFixtureChild as spawn, reportFixtureChildFailure, runFixtureChild } from './fixture-child.js';
+import {
+  startFixtureChild as spawn,
+  reportFixtureChildFailure,
+  runFixtureChild,
+} from './fixture-child.js';
 import { performance } from 'node:perf_hooks';
 import { createServer } from 'node:http';
 import { Readable, Transform } from 'node:stream';
 import { once } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { delimiter, join, resolve } from 'node:path';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import {
+  delimiter,
+  join,
+  resolve,
+} from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { createAuthHandler } from '../relay/auth-http.js';
@@ -145,7 +162,7 @@ export { childResult as relayFixtureChild };
  * fixture once used, a loaded machine kept the test process busy enough that browser replies queued past their
  * deadlines (#955, #979). A case that needs a faster poll passes pollMs by name and says why.
  */
-export async function relayClientFixture(t, { cliChildren, coordinatorModel, accountStorageBytes, pollMs = 200 } = {}) {
+export async function relayClientFixture(t, { cliChildren, coordinatorModel, accountStorageBytes, pollMs = 200, host = '127.0.0.1' } = {}) {
   const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-relay-cleanup-')));
   const root = join(scratch, 'repo');
   const home = join(scratch, 'home');
@@ -532,7 +549,8 @@ globalThis.fetch = function tracedFetch(input, init) {
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const relayPort = server.address().port;
-  const origin = 'http://127.0.0.1:' + relayPort;
+  // A browser passkey needs a domain for its RP id, so a passkey case names the relay by `localhost` [E22].
+  const origin = 'http://' + host + ':' + relayPort;
   auth = createRelayAuth({ database: authDatabase, github: createGitHubClient({ ...provider.config, callbackURL: origin + '/auth/github/callback' }), now: () => Date.now() + authOffsetMs });
   signIn = createAuthHandler({ auth, publicOrigin: origin });
   api = createRelayHandler({ directory: join(scratch, 'relay'), auth, publicOrigin: origin, pollMs, maintenanceMs: 0, accountStorageBytes, now: () => Date.now() + timeOffsetMs });

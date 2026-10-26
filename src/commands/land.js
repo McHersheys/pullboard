@@ -15,6 +15,9 @@ import {
   requirePersonChannel,
 } from '../person.js';
 import {
+  requireSignedPerson,
+} from '../person-signing-cli.js';
+import {
   Refused,
 } from '../refused.js';
 import {
@@ -35,6 +38,8 @@ export async function run(io, { first, second, rest, values }) {
   if (me.id !== COORDINATOR || !ctx.info.isMain) throw new Refused('COORDINATOR_ONLY', 'only the coordinator lands verified batches; ask your coordinator to run pullboard land');
   if (first || second || rest.length) throw new Refused('USAGE', 'pullboard land [--max N] [--dry-run] [--adopt] | --waive <test> --until <date> --reason "why"');
   if (values.waive !== undefined) {
+    const confirmed = await requireSignedPerson(ctx, board, me, { verb: 'land-waive', args: { waive: String(values.waive), until: String(values.until ?? ''), reason: String(values.reason ?? '') } });
+    if (confirmed !== null) return confirmed;
     requirePersonChannel(io.personChannel);
     const waiver = await ordered(ctx, board, 'recordLandingWaiver', [{ agentId: store.PERSON, channel: io.personChannel ?? 'terminal',
       id: randomUUID(), test: values.waive, until: values.until, reason: values.reason }]);

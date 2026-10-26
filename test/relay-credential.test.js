@@ -1,11 +1,17 @@
 /** Real transport proves credential selection follows every public operation class [H2,H9,H16]. */
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync } from 'node:fs';
+import {
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { createServer } from 'node:http';
 import { test } from 'node:test';
 import { ENGINE_OPERATIONS } from '../src/engine.js';
 import { ENGINE_VERSION } from '../src/machine.js';
-import { decodeBoardKey, unseal } from '../src/seal.js';
+import {
+  decodeBoardKey,
+  unseal,
+} from '../src/seal.js';
 import { relayClientFixture } from './relay-client-fixture.js';
 import { syntheticFlakeObservation } from './flake-observation-fixture.js';
 
@@ -47,6 +53,8 @@ test('every current operation selects its native actor credential without a seco
     if (operation === 'recordJobRun') args = [{ agentId: actor, name: 'credential-job' }];
     if (operation === 'takeCoordinator') args = [{ agentId: actor, machine: 'credential-machine' }];
     if (operation === 'landingLeaseMove') args = [{ agentId: actor, action: 'renew', token: 'credential-lease', branch: 'main', pid: 1, generation: 0 }];
+    if (operation === 'setPersonSigning') args = [{ agentId: actor, signed: true }];
+    if (operation === 'proposePersonMove') args = [{ agentId: actor, request: { version: 1, type: 'person-request', id: 'credential-proposal', move: { verb: 'shout', args: { text: 'credential proposal fixture' } } } }];
     if (operation === 'recordPublishFinding') args = [{ agentId: actor, item: 999999, repository: 'fixture/repository',
       pull: 1, head: 'a'.repeat(40), failures: [{ id: 1, name: 'credential fixture',
         url: 'https://github.com/fixture/repository/actions/runs/1', files: ['test/fixture.test.js'] }] }];
