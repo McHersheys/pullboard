@@ -1,7 +1,7 @@
 /** The complete person-signing case, extracted without changing its native fixtures or assertions [E22,H16]. */
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { relayClientFixture, relayFixtureChild } from './relay-client-fixture.js';
@@ -9,6 +9,8 @@ import { runFixtureChild, runFixtureGit } from './fixture-child.js';
 import { grantChallenge, softwarePasskey } from './person-passkey-fixture.js';
 import { refuseNamedSigners } from '../src/person-signing-cli.js';
 import { relayWorkBudgetMs } from './relay-budget.js';
+import { executeMove } from '../src/api.js';
+import { main } from '../src/cli.js';
 
 /** Reuse the original test's paths, process helpers and request/credential assertions. */
 export async function personSigningCase(t, { CLI, TRUSTED_CLI, helpers, passkeyRequest, holdsNoPersonCredential, relayCall }) {
