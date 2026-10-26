@@ -27,7 +27,7 @@ export function checkReleaseReferences(root, board, name, commit) {
     if (typeof id !== 'number') continue;
     const item = store.getItem(board, id);
     if (item.item_status !== 'verified' || !item.item_merged_commit || !commit
-      || !contains(root, commit, item.item_merged_commit)) continue;
+      || !contains(root, item.item_merged_commit, commit)) continue;
     for (const reference of handledReferences(item.item_brief)) {
       references.set(JSON.stringify([reference.target, reference.handle.toLowerCase()]), reference);
     }

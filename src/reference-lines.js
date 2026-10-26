@@ -11,7 +11,7 @@ export function handledReferences(brief) {
 
 /** Match the target and exact handle on one changelog line, allowing ordinary Markdown links. */
 export function referenceAcknowledged(reference, lines) {
-  return lines.some(line => line.includes(reference.target)
+  return lines.some(line => line.split(reference.target).slice(1).some(tail => !tail || /^[\s)\]>.,;:!?]/u.test(tail))
     && [...line.matchAll(/@([A-Za-z0-9][A-Za-z0-9-]{0,38})/gu)]
       .some(match => match[1].toLowerCase() === reference.handle.toLowerCase()));
 }

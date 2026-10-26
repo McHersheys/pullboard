@@ -9,8 +9,16 @@ import * as store from '../src/board.js';
 import { minimumMoveEngine } from '../src/move-registry.js';
 import { REFERENCE_ENGINE } from '../src/reference-engine.js';
 import { createE2eHelpers } from './e2e-helpers.js';
-import { referenceLines } from '../src/reference-lines.js';
+import { referenceLines, referenceAcknowledged } from '../src/reference-lines.js';
 import { bridgeProject, bridgeProvider, landBridgeItems, runBridgeCLI } from './pr-bridge-fixture.js';
+
+test('changelog matching distinguishes issue numbers and accepts Markdown acknowledgement links [C7]', () => {
+  const reference = { target: 'https://github.com/example/project/issues/1', handle: 'Reporter' };
+  assert.equal(referenceAcknowledged(reference, ['https://github.com/example/project/issues/10 @Reporter']), false);
+  assert.equal(referenceAcknowledged(reference, ['https://github.com/example/project/issues/1/other @Reporter']), false);
+  assert.equal(referenceAcknowledged(reference, ['[issue](https://github.com/example/project/issues/1), thanks @reporter.']), true);
+  assert.equal(referenceAcknowledged(reference, ['https://github.com/example/project/issues/1 @ReporterOther']), false);
+});
 
 test('reference points 19 and 23: only explicitly labelled lines can acknowledge someone [C7]', () => {
   const brief = 'Reference: https://example.com/public @Reporter\nprivate unlabelled continuation @PrivatePerson\nReference: https://example.com/private';
