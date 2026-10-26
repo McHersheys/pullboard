@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, test } from 'node:test';
 import * as store from '../src/board.js';
+import { AGENT_GRANT_ENGINE } from '../src/agent-grant-engine.js';
 import { displayAgentName } from '../src/agent-names.js';
 import { projectState } from '../src/serve.js';
 import { applyEngineMove, prepareEngineMove } from '../src/engine.js';
@@ -87,10 +88,13 @@ beforeEach(() => {
   let at = Date.parse('2026-10-04T12:00:00Z');
   clock = { now: () => new Date(at), advance: (ms) => { at += ms; } };
   board = store.openBoard(':memory:', clock);
+  // The seats predate agent grants (#348), so this board's replays at older engines stay legitimate.
+  board.executionEngineVersion = AGENT_GRANT_ENGINE - 1;
   store.register(board, { lane: 'coordinator', path: '/repo' });
   store.register(board, { lane: 'web', path: '/repo-web-1' });
   store.register(board, { lane: 'web', path: '/repo-web-2' });
   store.register(board, { lane: 'api', path: '/repo-api-1' });
+  delete board.executionEngineVersion;
 });
 
 test('[B14] notes in parentheses are not paths, and a foreign path still refuses', async (t) => {
