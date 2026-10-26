@@ -1,4 +1,5 @@
 import { mergeOnlyLandingProblem } from './merge-only-verdict.js';
+import { localDependencyIds } from './item-dependencies.js';
 import { requireOutsideOwner } from './outside-source.js';
 import {
   landingChangedFiles,
@@ -215,7 +216,7 @@ function candidates(board, root, base, maximum, { firstReady = false } = {}) {
       blocked.push({ id: item.item_id, code: 'LAND_KNOWN_RED', tests: known.tests });
       continue;
     }
-    const dependencies = (item.item_after || '').split(',').filter(Boolean).map(Number);
+    const dependencies = localDependencyIds(item);
     if (dependencies.some((id) => !all.find((other) => other.item_id === id)?.item_merged_commit && !ready.some((other) => other.item_id === id))) continue;
     const stacked = store.unverifiedSubmissions(board).find((other) => other.item_id !== item.item_id
       && tryGit(root, ['merge-base', '--is-ancestor', other.item_commit, item.item_landing_commit]).status === 0
@@ -615,7 +616,7 @@ function withoutParallelBlocker(state, entries, removed) {
     if (blocked.has(entry.id)) return false;
     const item = store.getItem(state.board, entry.id);
     requireOutsideOwner(state.board, item);
-    const dependency = (item.item_after ?? '').split(',').filter(Boolean).map(Number).find(id => blocked.has(id));
+    const dependency = localDependencyIds(item).find(id => blocked.has(id));
     const stacked = tryGit(state.root, ['merge-base', '--is-ancestor', removed.reviewedCommit ?? removed.commit, entry.reviewedCommit ?? entry.commit]).status === 0;
     if (dependency || stacked) {
       blocked.add(entry.id);

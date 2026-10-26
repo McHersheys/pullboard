@@ -192,6 +192,7 @@ async function startView(box, { bin = BIN, signal, onOwned } = {}) {
     });
     return stopPromise;
   };
+  let cookie;
   try { onOwned?.(stop); }
   catch (error) { await stop(); throw error; }
   signal?.addEventListener('abort', abortStartup, { once: true });
@@ -224,7 +225,12 @@ async function startView(box, { bin = BIN, signal, onOwned } = {}) {
       else signal?.addEventListener('abort', onAbort, { once: true });
     });
     throwIfFixtureAborted(signal);
-    const ready = await fetchLive(link, { signal: signal
+    const opened = await fetchLive(link, { redirect: 'manual', signal: signal
+      ? AbortSignal.any([AbortSignal.timeout(30_000), signal]) : AbortSignal.timeout(30_000) });
+    assert.equal(opened.status, 303, 'the printed link exchanges its key');
+    cookie = (opened.headers.get('set-cookie') ?? '').split(';')[0];
+    await opened.arrayBuffer();
+    const ready = await fetchLive(new URL(opened.headers.get('location') ?? '/', link), { headers: { cookie }, signal: signal
       ? AbortSignal.any([AbortSignal.timeout(30_000), signal]) : AbortSignal.timeout(30_000) });
     assert.equal(ready.status, 200, 'the view answers before the test fetches its page');
     await ready.arrayBuffer();
@@ -232,7 +238,7 @@ async function startView(box, { bin = BIN, signal, onOwned } = {}) {
     await stop();
     throw error;
   }
-  return { link, key: link.searchParams.get('k'), base: `http://127.0.0.1:${link.port}`, stop };
+  return { link, key: link.searchParams.get('k'), cookie, base: `http://127.0.0.1:${link.port}`, stop };
 }
 
 /**
@@ -240,6 +246,19 @@ async function startView(box, { bin = BIN, signal, onOwned } = {}) {
  */
 async function styleOf(view) {
   return (await fetchLive(`${view.base}/view.css`, { headers: { 'x-pullboard-key': view.key } })).text();
+}
+
+/**
+ * Fetch one of the view's own pages at its clean address, as the browser does once the printed link has
+ * traded its key for the session cookie (N39).
+ *
+ * @param {{ base: string, cookie?: string }} view
+ * @param {string} [path]
+ * @param {RequestInit} [init]
+ * @returns {Promise<Response>}
+ */
+function fetchPage(view, path = '/', init = {}) {
+  return fetchLive(`${view.base}${path}`, { ...init, headers: { ...init.headers, ...(view.cookie ? { cookie: view.cookie } : {}) } });
 }
 
 /**
@@ -360,7 +379,8 @@ function daysOn(days) {
  * is what that region holds; click() and type() act as the person would.
  */
 async function openPage(view, { width = 1280, later = 0, store = null, hold = false } = {}) {
-  const html = await (await fetchLive(view.link, { signal: AbortSignal.timeout(30_000) })).text();
+  const session = view.cookie ? { cookie: view.cookie } : {};
+  const html = await (await fetchLive(view.cookie ? new URL('/', view.link) : view.link, { headers: session, signal: AbortSignal.timeout(30_000) })).text();
   const script = html.slice(html.indexOf('<script>') + '<script>'.length, html.lastIndexOf('</script>'));
   const known = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]));
   const elements = new Map();
@@ -386,7 +406,7 @@ async function openPage(view, { width = 1280, later = 0, store = null, hold = fa
   if (!hold) release();
   const context = vm.createContext({
     document,
-    location: { search: `?k=${view.key}` },
+    location: { search: '' },
     URLSearchParams,
     structuredClone,
     innerWidth: width,
@@ -399,7 +419,7 @@ async function openPage(view, { width = 1280, later = 0, store = null, hold = fa
     clearTimeout,
     fetch: (path, init = {}) => {
       requests.push({ path, method: init?.method ?? 'GET', body: init?.body ? JSON.parse(init.body) : null });
-      const answer = held.then(() => fetchLive(`${view.base}${path}`, { ...init, signal: init.signal ?? AbortSignal.timeout(30_000) })).then(async (res) => {
+      const answer = held.then(() => fetchLive(`${view.base}${path}`, { ...init, headers: { ...init.headers, ...session }, signal: init.signal ?? AbortSignal.timeout(30_000) })).then(async (res) => {
         const body = await res.json();
         return { ok: res.ok, status: res.status, headers: res.headers, json: async () => body };
       });
@@ -1255,4 +1275,4 @@ async function searchFor(chrome, words, timeoutMs) {
   }
 }
 
-export { BIN, scratch, chooseFilter, tapTarget, SPEC, machine, project, build, sendBack, fetchReason, fetchView, fetchLive, startView, styleOf, element, ageNodes, target, settle, storage, daysOn, openPage, projectRows, productEntries, timelineRows, agentEntries, drawing, textBoxes, meet, accept, needEntries, itemRow, boardId, boardOf, assertObservationAges, withoutObservationAges, assertObservationsEqual, shoutNameText, chromeExecutable, browserPause, startSnapshotChrome, openSnapshotChrome, stopOwnedChrome, closeSnapshotChrome, watchSpecDecisionWait, earlier, shoutsAt, press, tapTouch, pickProject, travel, pressedInto, settled, roadmapRow, showing, readRoadmap, openRoadmapParts, tabBar, serveFolder, proofShot, searchFor, allowLiveHold, holdLive };
+export { BIN, scratch, chooseFilter, tapTarget, SPEC, machine, project, build, sendBack, fetchReason, fetchView, fetchLive, fetchPage, startView, styleOf, element, ageNodes, target, settle, storage, daysOn, openPage, projectRows, productEntries, timelineRows, agentEntries, drawing, textBoxes, meet, accept, needEntries, itemRow, boardId, boardOf, assertObservationAges, withoutObservationAges, assertObservationsEqual, shoutNameText, chromeExecutable, browserPause, startSnapshotChrome, openSnapshotChrome, stopOwnedChrome, closeSnapshotChrome, watchSpecDecisionWait, earlier, shoutsAt, press, tapTouch, pickProject, travel, pressedInto, settled, roadmapRow, showing, readRoadmap, openRoadmapParts, tabBar, serveFolder, proofShot, searchFor, allowLiveHold, holdLive };

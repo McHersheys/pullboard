@@ -16,6 +16,10 @@ import {
 } from './relay-snapshot-size.js';
 export { formatSnapshotLimit, originRepository };
 import { beginCommandPhase } from './command-phase.js';
+import {
+  recordClientHealth,
+  readRelayHealth,
+} from './relay-canary-health.js';
 import { deliverPersonEnrollments } from './relay-person-enrollment.js';
 import { recordedMoveRefusal } from './recorded-move.js';
 import {
@@ -24,6 +28,7 @@ import {
 } from './relay-excluded.js';
 import {
   recoverySummary,
+  recoveryRefusalMatches,
   unlinkedRelayStatus,
 } from './relay-status-fields.js';
 import { originRepository } from './github-origin.js';
@@ -362,6 +367,8 @@ export async function request(state, path, options = {}, io) {
 
 /** The sole raw HTTP transport: explicit sign-in or a saved, opted-in board link, with bounded deadlines. */
 async function rawRequest(state, path, { method = 'GET', body, allowMissing = false, initialBaseline = false, signal } = {}, io) {
+  signal ??= io?.relaySignal;
+  io?.onRelayRequest?.({ method, path });
   const supplied = io?.ignoreRelayEnvironmentToken ? undefined : process.env.PULLBOARD_RELAY_TOKEN;
   const readToken = method === 'GET' && /^\/api\/v[12]\/boards\//u.test(path) ? supplied : undefined;
   if (readToken !== undefined && !/^pa_[A-Za-z0-9_-]{43}$/.test(readToken)) throw new Refused('AUTH_REQUIRED', 'supply a current scoped board token without including it in command arguments');
@@ -415,7 +422,8 @@ async function rawRequest(state, path, { method = 'GET', body, allowMissing = fa
       if (storage) error.storage = storage;
       throw error;
     }
-    if (document.version !== 1) throw new Refused('RELAY_VERSION', 'the relay API version is unsupported; upgrade Pullboard before syncing');
+    if (document.version !== 1) throw Object.assign(new Refused('RELAY_VERSION', 'the relay API version is unsupported; upgrade Pullboard before syncing'),
+      Number.isSafeInteger(document.version) ? { relayVersion: document.version } : {});
     return document;
   } finally { finishPhase(); }
 }
@@ -430,25 +438,6 @@ export function localRecords(root, work) {
 /** Fingerprint native board contents so async recovery can refuse concurrent local writes. */
 function nativeBoardDigest(board) {
   return semanticBoardDigest(exportBoard(board));
-}
-
-/** Confirm a recovered checkpoint contains the same durable refusal for the blocked transport slot. */
-function recoveryRefusalMatches(document, recovery) {
-  const boardMeta = Array.isArray(document?.tables?.board_meta) ? document.tables.board_meta : [];
-  const events = Array.isArray(document?.tables?.event) ? document.tables.event : [];
-  const meta = boardMeta.find((row) => row?.meta_key === 'relay_refusal_' + recovery.skip);
-  if (!meta || typeof meta.meta_value !== 'string') return false;
-  let refusal;
-  try { refusal = JSON.parse(meta.meta_value); } catch { return false; }
-  if (typeof refusal?.outcome?.error?.code !== 'string' ||
-      (recovery.blockerDigest && refusal.record !== recovery.blockerDigest)) return false;
-  return events.some((event) => {
-    if (event?.event_kind !== 'relay_refused' || typeof event.event_detail !== 'string') return false;
-    try {
-      const detail = JSON.parse(event.event_detail);
-      return detail.sequence === recovery.skip && detail.code === refusal.outcome.error.code;
-    } catch { return false; }
-  });
 }
 
 /** Count unapplied uploads using durable event ids, without counting relay transport metadata. */
@@ -471,6 +460,7 @@ function summary(root, state, { pairing = false } = {}) {
     sequence: state.sequence, behind: (state.baselinePause ? behind(root, state) : state.mode === 'ordered' ? Number(Boolean(state.pending)) : behind(root, state)) + Number(Boolean(state.snapshot || state.checkpoint))
       + (state.outbox?.moves?.length ?? 0),
     recovery: recoverySummary(state),
+    health: readRelayHealth(root, { queued: state.outbox?.moves?.length ?? 0 }),
     ...outboxFields(state),
     ...(relayStorage(state.storage) ? { storage: relayStorage(state.storage) } : {}),
     ...(oversizedSnapshot ? { oversizedSnapshot } : {}),
@@ -547,10 +537,10 @@ export function pendingCheckpointProblem(root) {
   return state?.checkpointRefusal ? checkpointProblem(state) : null;
 }
 
-/** Deduplicate within one move, retaining its preflight notice and allowing later moves to warn. */
+/** Share one notice across a native command and its bookkeeping, or one direct ordered move. */
 function reportCheckpointRefusal(state, io) {
-  let boards = CHECKPOINT_NOTICES.get(io);
-  if (!boards) { boards = new Set(); CHECKPOINT_NOTICES.set(io, boards); }
+  let boards = CHECKPOINT_NOTICES.get(io.relayCommand ?? io);
+  if (!boards) { boards = new Set(); CHECKPOINT_NOTICES.set(io.relayCommand ?? io, boards); }
   if (boards.has(state.board)) return;
   boards.add(state.board);
   if (uploadPauseType(state.checkpointRefusal) && !firstUploadPauseNotice(state)) return;
@@ -1116,6 +1106,7 @@ function outboxLink(root, file, state, io) {
 
 /** Send one board operation before executing it locally, and report its canonical engine result. */
 export async function relayOperation(root, operation, args, io, command, applyLocally, onRecorded) {
+  const roundTripStarted = Date.now();
   const file = linkFile(root);
   return locked(file, async () => {
     const state = loadLink(file);
@@ -1132,7 +1123,7 @@ export async function relayOperation(root, operation, args, io, command, applyLo
     }
     let moves = CHECKPOINT_MOVES.get(io);
     if (!moves) { moves = new Set(); CHECKPOINT_MOVES.set(io, moves); }
-    if (moves.has(state.board)) CHECKPOINT_NOTICES.get(io)?.delete(state.board);
+    if (!io.relayCommand && moves.has(state.board)) CHECKPOINT_NOTICES.get(io)?.delete(state.board);
     moves.add(state.board);
     let requestedMove;
     try {
@@ -1207,7 +1198,11 @@ export async function relayOperation(root, operation, args, io, command, applyLo
       }
       const receipt = localRecords(root, (board) => engineReceipt(board, move.id));
       if (!receipt) throw new Refused('RELAY_RESPONSE', 'the acknowledged operation has no replay receipt; fetch a consistent relay snapshot');
-      if (!receipt.outcome.error) onRecorded?.();
+      if (!receipt.outcome.error) {
+        onRecorded?.();
+        await io.onRelayMoveRecorded?.({ moveId: move.id, sequence: receipt.sequence });
+        if (!io.relayCanary) recordClientHealth(root, true, null, Date.now() - roundTripStarted);
+      }
       delete state.recovered;
       saveLink(file, state);
       // A phone reads the next checkpoint; the background publisher sends it once moves go quiet (#1014).
@@ -1230,6 +1225,7 @@ export async function relayOperation(root, operation, args, io, command, applyLo
       return receipt.outcome.result;
     } catch (error) {
       // Catch-up may commit the requested receipt before a later link write refuses. A refused receipt counts as nothing.
+      if (!io.relayCanary) recordClientHealth(root, false, error, Date.now() - roundTripStarted);
       if (requestedMove && onRecorded) {
         try {
           const committed = localRecords(root, board => engineReceipt(board, requestedMove.id));
@@ -1248,6 +1244,7 @@ export async function relayOperation(root, operation, args, io, command, applyLo
 
 /** Catch up an opted-in replica before/after a CLI command; offline reads retain local evidence. */
 export async function syncRelay(root, io) {
+  const roundTripStarted = Date.now();
   // Reuse Git discovery only within this command; still re-read the link before each retry.
   const files = LINK_FILES.get(io) ?? LINK_FILES.set(io, new Map()).get(io);
   const file = files.get(root) ?? linkFile(root);
@@ -1279,6 +1276,7 @@ export async function syncRelay(root, io) {
     }
     catch (error) {
       if (!(error instanceof Refused)) throw error;
+      if (!io.relayCanary) recordClientHealth(root, false, error, Date.now() - roundTripStarted, 'pull');
       if (confirmedDeletion(state, error)) { forgetDeletedCopy(root, file, state, io); return summary(root, null); }
       if (error.code === 'RELAY_KEY_MISSING') {
         if (!KEY_WARNED_COMMANDS.has(io)) {
@@ -1290,7 +1288,8 @@ export async function syncRelay(root, io) {
       } else if (!(orderedMoveCommand(io) && (baselineNotAccepted(state) || outboxQueueable(state, error, null, io)) && transientRelayFailure(error))) io.err(`pullboard: ${error.message}; run pullboard status to see pending uploads`);
       return { linked: true, board: state.board, url: state.url, sequence: state.sequence,
         behind: (state.mode === 'ordered' ? Number(Boolean(state.pending)) : behind(root, state)) + Number(Boolean(state.snapshot || state.checkpoint)) + (state.outbox?.moves?.length ?? 0),
-        recovery: recoverySummary(state), ...outboxFields(state) };
+        recovery: recoverySummary(state), ...outboxFields(state),
+        health: readRelayHealth(root, { queued: state.outbox?.moves?.length ?? 0 }) };
     }
   }, io);
 }

@@ -7,7 +7,7 @@ import { ENGINE_VERSION } from './engine.js';
 import { Refused } from './refused.js';
 import { SNAPSHOT_BODY_BYTES } from './relay-limits.js';
 import { enqueueStream, followStream } from './browser-stream.js';
-import { emptyBoardStep, homeLineDismissed, homeScreenLine, noticeLines, rememberOwnedRequestId, showRelayScreen, storedOwnedRequestState } from './browser-notice.js';
+import { recordBrowserReadFailure, clearBrowserReadFailure, emptyBoardStep, homeLineDismissed, homeScreenLine, noticeLines, rememberOwnedRequestId, showRelayScreen, storedOwnedRequestState } from './browser-notice.js';
 import { registerApp, requestPairingPersistence } from './install.js';
 import { browserJSON, withBrowserDeadline } from './browser-deadline.js';
 import { phoneApprovalStatus, placePhoneApprovals, forgetPhoneApprovals } from './browser-approval-card.js';
@@ -84,11 +84,11 @@ async function checkAuthorization(path, status, onDenied, error) {
   if (error?.code === 'DEVICE_REVOKED' && onDenied) { await onDenied(error); return; }
   if (![401, 403].includes(status) || !onDenied) return;
   if (['/api/v1/boards', '/api/v1/devices/session'].includes(new URL(path, location.origin).pathname)) onDenied();
-  else await documentAt('/api/v1/devices/session', onDenied);
+  else await rawDocumentAt('/api/v1/devices/session', onDenied);
 }
 
 /** Fetch only same-origin API documents, retaining stable refusal guidance and no provider details. */
-async function documentAt(path, onDenied, options = {}) {
+async function rawDocumentAt(path, onDenied, options = {}) {
   const headers = new Headers(options.headers ?? {});
   headers.set('x-pullboard-engine', String(ENGINE_VERSION));
   const { response, document } = await browserJSON(path, { ...options, headers, credentials: 'same-origin', cache: 'no-store', redirect: 'error' });
@@ -121,6 +121,7 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
   let warnings = [];
   let failure = '';
   let failureBoard = null;
+  const degradedBoards = new Map();
   let accessLost = false;
   let accessError = null;
   const access = new AbortController();
@@ -131,6 +132,18 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
   let pair = takePairing() ?? stored(sessionStorage, PENDING, null);
   if (pair && (!BOARD.test(pair.board ?? '') || typeof pair.key !== 'string')) pair = null;
   try { if (pair) decodeBoardKey(pair.key); } catch { pair = null; }
+
+  /** Observe failed board reads on this phone; user-intent refusals are not transport health. */
+  async function documentAt(path, onDenied, options = {}) {
+    try { return await rawDocumentAt(path, onDenied, options); }
+    catch (error) {
+      const id = /^\/api\/v[12]\/boards\/([^/]+)\//u.exec(new URL(path, location.origin).pathname)?.[1];
+      if (id && (!options.method || options.method === 'GET') && !['NO_ITEM', 'NO_SHOUT', 'BAD_REQUEST'].includes(error?.code)) {
+        recordBrowserReadFailure(degradedBoards, id); notice();
+      }
+      throw error;
+    }
+  }
 
   /** Preserve shared collections across updates: the cockpit shallow-copies state and revocation must clear those arrays too. */
   function installState(entry, value) {
@@ -258,13 +271,16 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
     if (!element) return;
     element.replaceChildren();
     const ownedRequestIds = new Map();
+    const queuedRequests = new Map();
     for (const [id, entry] of paired) {
       const key = OWNED + id;
       let state = { owned: new Set() };
       try { state = storedOwnedRequestState(localStorage, key, entry.state?.personRequests); } catch { /* Missing device storage can only hide this device's own notice. */ }
       ownedRequestIds.set(id, state.owned);
+      try { queuedRequests.set(id, pendingRequests(entry).length); }
+      catch { queuedRequests.set(id, null); }
     }
-    const lines = noticeLines({ available, paired, ownedRequestIds, waitingBoards, sizeProblems, approvedBoards, pendingLinks, warnings, exclusions,
+    const lines = noticeLines({ available, paired, ownedRequestIds, degradedBoards, queuedRequests, waitingBoards, sizeProblems, approvedBoards, pendingLinks, warnings, exclusions,
       failure: failure || pendingLinksFailure || exclusionsFailure });
     for (const text of lines) {
       const paragraph = document.createElement('p');
@@ -355,6 +371,15 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
 
   /** Authenticate the latest native snapshot before installing its presentation in this device. */
   async function snapshot(entry) {
+    try { return await readSnapshot(entry); }
+    catch (error) {
+      if (!access.signal.aborted) { recordBrowserReadFailure(degradedBoards, entry.id); notice(); }
+      throw error;
+    }
+  }
+
+  /** Decode the actual checkpoint before a later complete prefix can clear degraded status. */
+  async function readSnapshot(entry) {
     let path = '/api/v' + (entry.snapshotApiVersion === 2 ? '2' : '1') + '/boards/' + entry.id + '/state';
     const settings = {
       credentials: 'same-origin', cache: 'no-store', redirect: 'error',
@@ -474,6 +499,15 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
 
   /** Read any durable prefix before attaching the live stream, including compaction repair. */
   async function catchUp(entry) {
+    try { return await readCompletePrefix(entry); }
+    catch (error) {
+      if (!access.signal.aborted) { recordBrowserReadFailure(degradedBoards, entry.id); notice(); }
+      throw error;
+    }
+  }
+
+  /** Validate every received sealed event before this board can recover its local health. */
+  async function readCompletePrefix(entry) {
     let document;
     try { document = await boardEvents(entry); }
     catch (error) {
@@ -484,6 +518,8 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
     warning(document.warning, entry.id);
     for (const value of document.warnings ?? []) warning(value, entry.id);
     for (const row of document.events) await receive(entry, row, true);
+    clearBrowserReadFailure(degradedBoards, entry.id);
+    if (failureBoard === entry.id) { failure = ''; failureBoard = null; }
   }
 
   /** Handle a relay stream message in sequence, matching EventSource behavior with an engine header. */
@@ -508,14 +544,14 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
         if (['AUTH_REQUIRED', 'NO_REPO_ACCESS', 'TOKEN_BOARD'].includes(error?.code)) await documentAt('/api/v1/devices/session', denied);
         failure = error ? '[' + error.code + '] ' + error.message : 'The relay stream ended. Refresh this board.';
         failureBoard = entry.id;
+        recordBrowserReadFailure(degradedBoards, entry.id);
         notice();
       }
       return;
     }
     if (document.version !== 1) throw new Error('Upgrade this browser client to read the relay API.');
     await receive(entry, document.event);
-    failure = '';
-    failureBoard = null;
+    // One event is not a successful full read, and cannot clear another board's failure.
     notice();
     onUpdate();
   }
@@ -554,6 +590,7 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
         if (['NO_BOARD', 'NO_SNAPSHOT'].includes(error?.code)) { waitForFirstSnapshot(entry); return; }
         failure = error.message;
         failureBoard = entry.id;
+        recordBrowserReadFailure(degradedBoards, entry.id);
         notice();
         if (fatal) stream.close();
       },
@@ -646,6 +683,7 @@ export async function createTransport({ onUpdate = () => {}, onOpenBoard = () =>
         rememberOwnedRequestId(localStorage, OWNED + entry.id, entry.outbox.id);
       }
     } catch { throw new Refused('REQUEST_STORAGE', 'This browser cannot save the sealed request. Enable device storage before sending it.'); }
+    notice();
   }
 
   /** Read each independently saved request so another tab cannot overwrite or clear its intent. */

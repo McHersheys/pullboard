@@ -1,3 +1,5 @@
+import { foreignBlockers } from '../cross-repo-dependencies.js';
+import { localDependencyIds } from '../item-dependencies.js';
 /** The pullboard resume command, in its own module so an item adding another command never edits these lines. */
 import {
   keepViewRunning,
@@ -155,6 +157,7 @@ export async function resumeHere(io, view, diagnostics = false, { json = false }
   let setupDecisions;
   let doctrine;
   let sources;
+  let foreignBlocked;
   const card = await withBoardRead(ctx, async (board) => {
     setupScope = diagnostics ? setupIdentity(board) : null;
     sources = await readResumeSources(ctx, board, { compareBranch: !json, includeHeadDoctrine: diagnostics });
@@ -168,6 +171,7 @@ export async function resumeHere(io, view, diagnostics = false, { json = false }
     const me = whoAmI(ctx, board);
     const projector = diagnostics ? verdictProjector(root, board) : null;
     const all = store.listItems(board, { all: true }).map(item => projector ? projector.project(item) : item);
+    foreignBlocked = new Set(all.filter(item => foreignBlockers(board, item).length).map(item => item.item_id));
     const pendingMerges = all.filter((item) => item.item_status === 'verified' && !item.item_merged_commit)
       .map(item => ({ ...item, item_checked_commit: store.checkedLandingCommit(board, item) }));
     const toMerge = pendingMerges.filter(item => !item.item_verdict_state);
@@ -330,7 +334,7 @@ export async function resumeHere(io, view, diagnostics = false, { json = false }
   if (card.unread && !card.inbox) say(`${plural(card.unread, 'unread shout')}; newest from ${name(card.newest[0].shout_from)}: ${firstLine(card.newest[0].shout_text)} (pullboard inbox reads them)`);
   const inLane = card.open.filter((item) => item.item_lane === me.lane);
   const isVerified = (id) => card.all.find((other) => other.item_id === Number(id))?.item_status === 'verified';
-  const ready = inLane.filter((item) => !item.item_after || item.item_after.split(',').every(isVerified)).length;
+  const ready = inLane.filter((item) => !foreignBlocked.has(item.item_id) && localDependencyIds(item).every(isVerified)).length;
   let next;
   if (isMain) {
     next = coordinatorNext(diagnostics ? card : { ...card, toMerge: card.acceptedAwaitingLanding, staleVerdicts: [] }, loadSpec(root, ctx.config).rows);
