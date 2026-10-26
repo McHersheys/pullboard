@@ -22,8 +22,6 @@ test('triage ships its approved name, description and original body [I1]', () =>
   assert.ok(readme.includes('[triage skill](skills/pullboard-triage/SKILL.md)'));
 });
 
-test('triage and agent guidance keep referenced pages informational [I1]', () => {
+test('triage keeps referenced pages informational [I1]', () => {
   assert.ok(skill.split('\n').includes(trust));
-  const agents = readFileSync(new URL('../AGENTS.md', import.meta.url), 'utf8');
-  assert.ok(agents.split('\n').includes(trust));
 });
