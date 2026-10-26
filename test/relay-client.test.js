@@ -32,7 +32,7 @@ import { AGENT_SHELL_MARKERS, SSH_SHELL_MARKERS } from '../src/person.js';
 import { legacyMirrorQueueFragment } from './relay-client-legacy-case.js';
 import { assertBaselineResumeEvidence, assertOriginalBaselineEvidence } from './relay-client-baseline-case.js';
 import { localEvents, receipts, syncReplica } from './relay-client-replica-fixture.js';
-import { assertDroppedReplyConsumed, enterLegacyAckPolicy } from './relay-client-policy-fixture.js';
+import { assertDroppedReplyConsumed, commitInitializedRepoFiles, enterLegacyAckPolicy } from './relay-client-policy-fixture.js';
 import { threeReplicaPhaseCapture } from './relay-client-timing.js';
 
 const SIGN_INS = new Map();
@@ -76,9 +76,8 @@ async function relayServer(t, directory, auth, { legacyRelay = false } = {}) {
   let signIn;
   let api;
   let refuseMoves = false;
-  let loseReply = false;
+  let loseReply = null;
   let refuseReads = false;
-  let blockAfterDrop = false;
   let now = Date.now();
   const calls = [];
   const uploads = [];
@@ -92,12 +91,38 @@ async function relayServer(t, directory, auth, { legacyRelay = false } = {}) {
     }
     if (req.method === 'POST' && /\/moves$/.test(req.url)) {
       const drop = loseReply;
-      loseReply = false;
       const end = res.end.bind(res);
       res.end = (chunk, ...args) => {
         const document = JSON.parse(String(chunk));
         if (document.event) uploads.push({ sequence: document.event.event_id, sealed: document.event.sealed });
-        if (drop && document.event) { refuseReads = blockAfterDrop; res.destroy(); return res; }
+        if (drop && document.event) {
+          if (!drop.operation) {
+            loseReply = null;
+            refuseReads = drop.offline;
+            res.destroy();
+            return res;
+          }
+          // Select a targeted drop from authenticated fixture data; never expose plaintext to logs.
+          void (async () => {
+            const plain = await unseal(drop.key, Buffer.from(document.event.sealed, 'base64url'), {
+              boardId: drop.boardId, kind: 'move', sequence: document.event.event_id,
+            });
+            const move = JSON.parse(new TextDecoder().decode(plain));
+            const matches = move.operation === drop.operation
+              && (drop.item === undefined || move.args?.[0] === drop.item);
+            if (matches && loseReply === drop) {
+              loseReply = null;
+              refuseReads = drop.offline;
+              res.destroy();
+              return;
+            }
+            end(chunk, ...args);
+          })().catch(() => {
+            // Keep the drop armed so the existing consumed-drop assertion reports failure without exposing payload details.
+            res.destroy();
+          });
+          return res;
+        }
         return end(chunk, ...args);
       };
     }
@@ -141,8 +166,15 @@ async function relayServer(t, directory, auth, { legacyRelay = false } = {}) {
     throw new Error(`relay fixture: the reply drop armed before ${at} was never consumed by a move; relay calls since arming: ${since.join(', ') || 'none'}`);
   }
   return { origin, calls, uploads, failMoves(value) { refuseMoves = value; },
-    dropNextReply({ offline = false } = {}) { requireDropConsumed('arming another drop'); loseReply = true; blockAfterDrop = offline; dropArmedAt = calls.length; },
-    dropPending() { return loseReply; },
+    dropNextReply({ offline = false, operation, item, key, boardId } = {}) {
+      requireDropConsumed('arming another drop');
+      if (operation !== undefined && (typeof operation !== 'string' || !key || !boardId)) {
+        throw new Error('relay fixture: an operation-targeted drop needs its private board key and id');
+      }
+      loseReply = { offline, ...(operation === undefined ? {} : { operation, item, key, boardId }) };
+      dropArmedAt = calls.length;
+    },
+    dropPending() { return Boolean(loseReply); },
     failReads(value) { if (!value) requireDropConsumed('reads were restored'); refuseReads = value; },
     advance(days) { now = Date.now() + days * 86400000; } };
 }
@@ -631,6 +663,7 @@ async function threeReplicaFixture(t, timing) {
   symlinkSync(realpathSync(gitBinary), join(privateBin, 'git'));
   symlinkSync(realpathSync(process.execPath), join(privateBin, 'node'));
   symlinkSync(realpathSync('/bin/sh'), join(privateBin, 'sh'));
+  symlinkSync(resolve(import.meta.dirname, '../bin/pullboard.js'), join(privateBin, 'pullboard'));
   const envs = homes.map((home) => {
     const env = { ...process.env, HOME: home, USERPROFILE: home, PULLBOARD_HOME: join(home, '.pullboard'), PATH: privateBin };
     for (const key of Object.keys(env)) if (key.startsWith('GIT_')) delete env[key];
@@ -900,6 +933,7 @@ async function competingReplicaClaims(fixture, timing) {
   const initializedClone = await timing.wait('initialize clone A without bypassing relay ordering', () => cli(clones[0], modelFreeInitEnv, 'init'));
   assert.equal(initializedClone.root, clones[0]);
   assert.deepEqual(localEvents(replicaFiles[0]), beforeInit, 'repeated init cannot bypass relay ordering to rewrite coordinator registration');
+  commitInitializedRepoFiles(clones[0], envs[0], gitAt);
 
   const board = store.openBoard(replicaFiles[0]);
   let earlier;
@@ -1059,7 +1093,7 @@ async function recoverReplicaReplies(fixture, timing) {
     cli(worktrees[0], envs[0], 'status'));
   assert.equal(beforeLostSubmit.relay.linked, true);
   assert.deepEqual(beforeLostSubmit.relay.outbox ?? [], [], 'the armed submit reply loss cannot hit a queued setup move');
-  relay.dropNextReply({ offline: true });
+  relay.dropNextReply({ offline: true, operation: 'submit', item: 2, key, boardId });
   const lostSubmit = await timing.wait('submit item 2 with its relay reply dropped', () => cliResult(worktrees[0], envs[0], 'submit', '2'));
   assertDroppedReplyConsumed(relay, 'the lost item-2 submission reply');
   assert.equal(lostSubmit.status, 1);
@@ -1089,7 +1123,7 @@ async function recoverReplicaReplies(fixture, timing) {
   assert.equal(gitAt(worktrees[0], envs[0], 'rev-parse', retriedSubmit.pin), originalCommit);
   gitAt(worktrees[0], envs[0], 'restore', 'web/README.md');
 
-  relay.dropNextReply({ offline: true });
+  relay.dropNextReply({ offline: true, operation: 'verify', item: 2, key, boardId });
   const lostVerify = await timing.wait('verify item 2 with its acknowledgement dropped', () => cliResult(worktrees[1], envs[1], 'verify', '2', 'accept', '--note', 'Lost verdict acknowledgement'));
   assertDroppedReplyConsumed(relay, 'the lost item-2 verification reply');
   assert.equal(lostVerify.status, 1);
@@ -1175,7 +1209,7 @@ async function recoverReplicaReplies(fixture, timing) {
   const freshStackCommit = gitAt(worktrees[2], envs[2], 'rev-parse', 'HEAD');
 
   const beforeRecoveredStack = relay.uploads.length;
-  relay.dropNextReply({ offline: true });
+  relay.dropNextReply({ offline: true, operation: 'submit', item: stackedB, key, boardId });
   const lostStackSubmit = await timing.wait('submit recovered-stack item B with its reply dropped', () => cliResult(worktrees[0], envs[0], 'submit', String(stackedB)));
   assertDroppedReplyConsumed(relay, 'the recovered-stack submission reply');
   assert.equal(lostStackSubmit.status, 1);

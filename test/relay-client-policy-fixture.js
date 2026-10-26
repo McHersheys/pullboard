@@ -2,6 +2,32 @@
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { ROLES } from '../src/skills.js';
+
+const INITIALIZED_REPO_FILES = [
+  '.claude/settings.json',
+  ...Object.values(ROLES).map(name => `.claude/skills/${name}/SKILL.md`),
+  '.codex/config.toml',
+  '.codex/hooks.json',
+  '.codex/rules/pullboard.rules',
+  '.githooks/commit-msg',
+  '.githooks/pre-commit',
+  '.githooks/pre-merge-commit',
+  '.githooks/pre-push',
+  '.gitignore',
+  '.mcp.json',
+  'AGENTS.md',
+  'CLAUDE.md',
+];
+
+/** Commit only the exact setup files `init` created, through the fixture's installed hooks. */
+export function commitInitializedRepoFiles(root, env, gitAt) {
+  const untracked = gitAt(root, env, 'ls-files', '--others', '--exclude-standard').split('\n').filter(Boolean).sort();
+  assert.deepEqual(untracked, [...INITIALIZED_REPO_FILES].sort(), 'init created only its expected agent setup files');
+  gitAt(root, env, 'add', '--', ...INITIALIZED_REPO_FILES);
+  gitAt(root, env, 'commit', '-q', '-m', 'test: commit initialized fixture setup [G1]');
+  assert.equal(gitAt(root, env, 'status', '--porcelain'), '', 'the ordinary hook-checked setup commit leaves clone main clean');
+}
 
 /** Commit and merge an explicit legacy ACK policy, returning an exact-byte restoration callback. */
 export async function enterLegacyAckPolicy({ clones, worktrees, envs, gitAt }) {
