@@ -4,9 +4,9 @@
  * row keeps its meaning however the spec changes.
  */
 import { spawnSync } from 'node:child_process';
+import { parseCommitMessage } from './commit-message.js';
 import {
   ID_RE,
-  citedIds,
   parseSpec,
 } from './spec.js';
 
@@ -68,8 +68,9 @@ export function committedIds(root, path, revs = ['HEAD']) {
 }
 
 /**
- * The spec ids cited in commit headers from `since` (the spec's first commit) to HEAD, each with
- * the newest commit that cites it. Commits older than the spec cite nothing it could hold.
+ * The complete spec citations from `since` (the spec's first commit) to HEAD, each with the newest
+ * commit that cites it. Final row trailers take priority over header previews; legacy commits fall
+ * back to their named header rows. Commits older than the spec cite nothing it could hold.
  *
  * @param {string} root
  * @param {string} since
@@ -77,13 +78,17 @@ export function committedIds(root, path, revs = ['HEAD']) {
  */
 export function commitCitations(root, since) {
   const out = [
-    gitOut(root, ['log', '--format=%h%x09%s', `${since}..HEAD`]),
-    gitOut(root, ['log', '-1', '--format=%h%x09%s', since]),
+    gitOut(root, ['log', '--format=%h%x00%B%x00', `${since}..HEAD`]),
+    gitOut(root, ['log', '-1', '--format=%h%x00%B%x00', since]),
   ].join('\n');
   const cited = new Map();
-  for (const line of out.split('\n')) {
-    const [short, ...subject] = line.split('\t');
-    for (const id of citedIds(subject.join('\t')).filter((entry) => ID_RE.test(entry))) {
+  // Git commit messages cannot contain NUL, so body lines and tabs cannot forge record boundaries.
+  const records = out.split('\0');
+  for (let index = 0; index + 1 < records.length; index += 2) {
+    const short = records[index].trim();
+    if (!short) continue;
+    const parsed = parseCommitMessage(records[index + 1]);
+    for (const id of (parsed.rows ?? parsed.shown).filter((entry) => ID_RE.test(entry))) {
       if (!cited.has(id)) cited.set(id, `commit ${short}`);
     }
   }

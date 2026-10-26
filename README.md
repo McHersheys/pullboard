@@ -307,7 +307,7 @@ A few commands keep every agent on track.
 - `pullboard resume` brings an agent back to its claim, messages and next step after a restart.
 - `pullboard next` claims the next free item, never one someone else holds.
 - `pullboard run` lets a lighter model build simple items unattended.
-- Claude Code gets skills. Codex and others read `AGENTS.md` or `pullboard prompt <role>`.
+- Claude Code gets skills. Codex and others read `AGENTS.md` or `pullboard prompt <role>`. The [triage skill](skills/pullboard-triage/SKILL.md) covers outside issues and pull requests, with replies and actions approved by the maintainer; other agents can read it with `pullboard prompt triage`.
 
 ## Architecture
 
