@@ -378,7 +378,7 @@ export async function privateBoardMoves(box, privateFile) {
   const reserveOffline = await box.cli('move', `~fixture/repository#${pendingPrivate.document.item.item_id}`, '--to', 'fixture/repository');
   assert.notEqual(reserveOffline.code, 0);
   assert.equal(reserveOffline.document.error.code, 'RELAY_UNAVAILABLE');
-  assert.match(reserveOffline.document.error.message, /retry the move when the relay accepts/u);
+  assert.match(reserveOffline.document.error.message, /retry this move when the relay is reachable/u);
   assert.deepEqual(moveState(linkedTeamFile), beforeReserveFailure, 'an unavailable reservation allocates no team ID');
   assert.deepEqual(moveState(privateFile), beforePrivateReserveFailure, 'an unavailable reservation leaves its private source unchanged');
   assert.deepEqual(outboxOperations(box), [], 'a reservation is refused instead of becoming a provisional outbox result');
