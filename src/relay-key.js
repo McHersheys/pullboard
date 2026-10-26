@@ -113,7 +113,7 @@ export function readBoardKey(boardId) {
     }
   }
   if (process.env.PULLBOARD_RELAY_KEY !== undefined) return decodeBoardKey(process.env.PULLBOARD_RELAY_KEY);
-  throw new Refused('RELAY_KEY_MISSING', 'the board key is missing on this device; set PULLBOARD_RELAY_KEY from your local secret store, pair this device again, or run pullboard relay off then relay on to upload a new sealed snapshot; run this command where the key is available, or pair this device' + ' STACK ' + new Error().stack.split('\n').slice(1, 12).join(' | '));
+  throw new Refused('RELAY_KEY_MISSING', 'the board key is missing on this device; set PULLBOARD_RELAY_KEY from your local secret store, pair this device again, or run pullboard relay off then relay on to upload a new sealed snapshot; run this command where the key is available, or pair this device');
 }
 
 /** Remove the device key after a successful unlink, leaving all local board records untouched. */
