@@ -234,7 +234,7 @@ test('the roadmap reads every item as the Items tab does, opens each one, anothe
       const bar = await tabBar(chrome);
       for (const layout of bar.layouts) {
         const place = `${width} with ${layout.on} picked`;
-        assert.equal(layout.tabs.length, 7, `${place}: seven tabs including Stats`);
+        assert.equal(layout.tabs.length, 7, `${place}: seven tabs including Home`);
         for (const tab of layout.tabs) assert.ok(tab.labelLeft >= tab.left + 2 && tab.labelRight <= tab.right - 2, `${place}: ${tab.tab}'s label sits inside its highlight: ${JSON.stringify(tab)}`);
         layout.tabs.forEach((tab, n) => { if (n) assert.ok(tab.left >= layout.tabs[n - 1].right - 0.5, `${place}: ${tab.tab} starts after the tab before it ends`); });
         assert.ok(layout.tabs[0].left >= layout.bar[0] - 0.5 && layout.tabs.at(-1).right <= layout.bar[1] + 0.5 && layout.bar[1] <= bar.client, `${place}: the tab bar fits on screen: ${JSON.stringify(layout)}`);

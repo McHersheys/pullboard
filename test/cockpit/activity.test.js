@@ -208,7 +208,7 @@ test('the activity tab draws the lifecycle from the declaration, as the README d
     const esc = (text) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
     assert.deepEqual(boxes.map((entry) => entry.state), MACHINE.states.map((state) => state.id), 'a box for every declared state');
     for (const state of MACHINE.states) assert.ok(boxes.find((entry) => entry.state === state.id).title.startsWith(esc(`${state.id}: ${state.means}`)), `${state.id} says what it means`);
-    assert.match(boxes.find((entry) => entry.state === 'verified').title, /Every way in checks:\n {2}the caller&#39;s checkout contains the submitted commit\n {2}the caller did not build it/);
+    assert.match(boxes.find((entry) => entry.state === 'verified').title, /Every way in checks:\n {2}the caller&#39;s checkout contains the submitted commit\n {2}the decision’s verifier did not build it, and its agent session did not build or submit it under any seat/);
     assert.deepEqual(Object.fromEntries(boxes.map((entry) => [entry.state, entry.count])), { open: 2, claimed: 1, submitted: 0, verified: 1, withdrawn: 4 });
     assert.equal(sentBack, '1 sent back');
     assert.deepEqual(boxes.filter((entry) => entry.double).map((entry) => entry.state), MACHINE.states.filter((state) => state.final).map((state) => state.id), 'a final state has a double border');
@@ -243,6 +243,7 @@ test('the activity tab draws the lifecycle from the declaration, as the README d
       'open>claimed': 'claim 6',
       'claimed>open': 'release · lapse · escalate · refreeze (none yet)',
       'claimed>submitted': 'submit 3',
+      'claimed>verified': 'submit-merge (none yet)',
       'open>submitted': 'intake (none yet)',
       'submitted>verified': 'accept 1',
       'submitted>open': 'reject 1',

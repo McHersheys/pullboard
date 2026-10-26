@@ -116,7 +116,7 @@ test('opening an item loads its detail on demand [N26,A2]', { timeout: 150_000 }
         check: ['true', 'green'],
         brief: 'Keep the greeting short.',
         verdicts: [['REJECT', 'the first greeting needs a correction'], ['ACCEPT', 'the page shows it']],
-        moves: ['add', 'claim', 'proof-run', 'submit', 'reject', 'claim', 'proof-run', 'submit', 'accept'],
+        moves: ['add', 'claim', 'proof-run', 'proof-run', 'submit', 'reject', 'claim', 'proof-run', 'proof-run', 'submit', 'proof-run', 'accept'],
         facts: ['The corrected greeting renders offline.'],
       }, 'the detail carries what the summary leaves out');
       assert.deepEqual(itemReads(await chrome.stable('window.__pbReads')), ['items?q=zeppelin', 'items/2', 'items/1']);
