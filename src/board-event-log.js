@@ -1,6 +1,7 @@
 import { requireHandoffActive } from './handoff-state.js';
 /** Append native events and their rebuildable proof projection in the same transaction [R2]. */
 import { ENGINE_VERSION } from './machine.js';
+import { writeSync } from 'node:fs';
 import { agentModel } from './seats.js';
 import { appendProofCounter } from './proof-counters.js';
 import { ensureProofCounters } from './proof-counters.js';
@@ -35,29 +36,40 @@ export function atomic(board, work) {
   TRANSACTION_DEPTH.set(board, depth + 1);
   const writeRecord = depth ? null : beginBoardWrite(board.db, board.writeContext);
   // A local-first move records the rows it changed, so the relay's order can take it back later (#1013).
-  const capture = depth ? null : beginCapture(board.db);
+  let capture;
   let released = false;
   let outcome = 'release-failed';
   const lastEvent = board.lastEvent;
   const emitted = board.emittedEvents?.length ?? 0;
   try {
+    capture = depth ? null : beginCapture(board.db);
     const result = work();
+    capture?.prepare();
     board.db.exec(depth ? `RELEASE ${savepoint}` : 'COMMIT');
     released = true;
     outcome = 'committed';
     capture?.commit();
     return result;
   } catch (error) {
-    board.db.exec(depth ? `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}` : 'ROLLBACK');
-    released = true;
-    outcome = 'rolled-back';
-    board.lastEvent = lastEvent;
-    board.emittedEvents?.splice(emitted);
+    if (!released) {
+      board.db.exec(depth ? `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}` : 'ROLLBACK');
+      released = true;
+      outcome = 'rolled-back';
+      board.lastEvent = lastEvent;
+      board.emittedEvents?.splice(emitted);
+    }
     throw error;
   } finally {
-    capture?.close();
-    TRANSACTION_DEPTH.set(board, depth);
-    finishBoardWrite(writeRecord, released, outcome);
+    try { capture?.close(); }
+    catch {
+      // Cleanup must never discard a committed move's replication intent or replace its original failure.
+      try { writeSync(2, 'pullboard: capture session cleanup failed; original transaction outcome retained\n'); }
+      catch { /* A closed diagnostic stream cannot change the committed result or original refusal. */ }
+    }
+    finally {
+      TRANSACTION_DEPTH.set(board, depth);
+      finishBoardWrite(writeRecord, released, outcome);
+    }
   }
 }
 

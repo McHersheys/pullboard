@@ -4,8 +4,10 @@
  * back row for row instead of restoring the whole board.
  */
 
-/** The capture lists of the calls running now, innermost last. */
-const CAPTURES = [];
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+/** Each asynchronous operation owns its capture, including across interleaved awaits. */
+const CAPTURES = new AsyncLocalStorage();
 
 /**
  * Run `work`, collecting the changeset of every board transaction it commits, in order.
@@ -16,9 +18,11 @@ const CAPTURES = [];
  */
 export async function captureBoardChanges(work) {
   const changes = [];
-  CAPTURES.push(changes);
-  try { return { result: await work(), changes }; }
-  finally { CAPTURES.splice(CAPTURES.lastIndexOf(changes), 1); }
+  const context = { changes, active: true };
+  return CAPTURES.run(context, async () => {
+    try { return { result: await work(), changes }; }
+    finally { context.active = false; } // Detached descendants cannot extend an already returned capture.
+  });
 }
 
 /**
@@ -26,17 +30,18 @@ export async function captureBoardChanges(work) {
  * Why: a session sees only the rows its own connection changes, so each transaction opens its own on its board.
  *
  * @param {import('node:sqlite').DatabaseSync} db
- * @returns {{ commit: () => void, close: () => void } | null}
+ * @returns {{ prepare: () => void, commit: () => void, close: () => void } | null}
  */
 export function beginCapture(db) {
-  const into = CAPTURES.at(-1);
-  if (!into) return null;
+  const into = CAPTURES.getStore();
+  if (!into?.active) return null;
   const session = db.createSession();
+  let prepared;
   return {
-    commit() {
-      const changeset = session.changeset();
-      if (changeset.length) into.push(changeset);
-    },
+    // Serialization can fail: do it while the transaction can still roll back.
+    prepare() { prepared = session.changeset(); },
+    // Only successful COMMIT publishes bytes; a failed COMMIT cannot leak an undone move.
+    commit() { if (prepared.length) into.changes.push(prepared); },
     close() { session.close(); },
   };
 }
