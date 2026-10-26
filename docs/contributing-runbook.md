@@ -1,6 +1,6 @@
 # Procedure: handling an outside contribution (maintainers and the coordinator)
 
-Approved direction from the person, 22 Oct 2026. This is the internal runbook. Contributors read CONTRIBUTING.md; this file is for us.
+This is the internal runbook. Contributors read CONTRIBUTING.md; this file is for us.
 
 ## When an issue arrives
 1. Reply when capacity allows: thank them, and say what happens next ("on our board as #N", "a question first", or "not planned, because...").
