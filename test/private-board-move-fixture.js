@@ -56,7 +56,7 @@ function enableRehomeOutbox(box, root) {
   const cli = fileURLToPath(new URL('../bin/pullboard.js', import.meta.url));
   writeFileSync(pullboard, `#!/bin/sh\nexec node "${cli}" "$@"\n`, { mode: 0o700 });
   runFixtureGit(['add', 'pullboard.json'], { cwd: root, env: box.env });
-  runFixtureGit(['commit', '-q', '-m', 'chore(config): enable the linked local-first outbox [H21]'], { cwd: root, env: box.env });
+  runFixtureGit(['commit', '-q', '-m', 'chore(config): queue relay moves while the relay is down'], { cwd: root, env: box.env });
 }
 
 /** Read only the key-free summary used by public relay status, never the sealed outbox payload. */
