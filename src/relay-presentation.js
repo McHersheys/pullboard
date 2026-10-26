@@ -15,6 +15,7 @@ import { stateFileInputs } from './native-board-state.js';
 import { fileRevision } from './native-board-state.js';
 import { resolveCommit } from './git.js';
 import { trunkRevisionReader } from './trunk-revision.js';
+import { cachedVerdictStates } from './verdict-freshness.js';
 
 // A comparison clock is an internal fingerprint input, never a displayed forecast or observation.
 const COMPARISON_CLOCK = Date.UTC(2000, 0, 1);
@@ -33,9 +34,11 @@ function readRelayPresentation(root, providedBoard, observedAt) {
     const boardId = store.boardId(board);
     const config = loadConfig(root);
     const projects = () => [{ root: info.root, name: config.name, project: config.project }];
+    // Staged caller boards retain fresh reads; only ordinary owned reads reuse committed verdict state.
+    const freshnessReader = providedBoard ? null : cachedVerdictStates(root, board, info);
     /** Preserve a single authorized board, including existing unavailable external milestone entries. */
     const project = (clock) => {
-      const built = buildLocalBoardState(root, boardId, board, isMain, { projects, scopeCommonDir: info.commonDir, observedAt: clock });
+      const built = buildLocalBoardState(root, boardId, board, isMain, { projects, scopeCommonDir: info.commonDir, observedAt: clock, freshnessReader });
       return { ...built.state, sequence: built.sequence };
     };
     const state = project(observedAt);

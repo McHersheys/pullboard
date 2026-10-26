@@ -30,7 +30,7 @@ import { projectState } from './serve.js';
 import { personRequestStatuses } from './relay-requests.js';
 
 /** Build the complete local API state, including fields that the shared project snapshot omits. */
-export function buildLocalBoardState(root, boardId, board, codeIsMain, { previous = null, fullItemRebuild = true, afterSequence = 0, changedLeases = new Set(), onItemBuild, projects = listApiProjects, scopeCommonDir = null, observedAt = Date.now() } = {}) {
+export function buildLocalBoardState(root, boardId, board, codeIsMain, { previous = null, fullItemRebuild = true, afterSequence = 0, changedLeases = new Set(), onItemBuild, projects = listApiProjects, scopeCommonDir = null, observedAt = Date.now(), freshnessReader = null } = {}) {
   if (!Number.isSafeInteger(observedAt) || observedAt < 0) throw new TypeError('native projection needs an observation timestamp');
   board = Object.assign(Object.create(board), { clock: { ...board.clock, now: () => new Date(observedAt) } });
   board.db.exec('BEGIN');
@@ -64,11 +64,11 @@ export function buildLocalBoardState(root, boardId, board, codeIsMain, { previou
     }
 
     const config = loadConfig(root);
-    const freshness = verdictProjector(root, board, { main: trunkRevisionReader(repoInfo(root))() });
+    const freshness = freshnessReader ?? verdictProjector(root, board, { main: trunkRevisionReader(repoInfo(root))() }).state;
     const state = projectState(root, { seen: null, board, itemProjector: (item, context) => {
       if (dirtyIds.has(item.item_id)) {
         const projected = context.project();
-        const verdictState = freshness.state(item);
+        const verdictState = freshness(item);
         return verdictState ? { ...projected, verdictState } : projected;
       }
       return previous.items.get(item.item_id);
