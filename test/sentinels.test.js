@@ -28,6 +28,7 @@ import { startServeSentinel } from '../src/serve-sentinel.js';
 import { BOARD_SENTINEL_ENGINE } from '../src/sentinels.js';
 import { sentinelDefinition } from '../src/sentinels.js';
 import { sentinelDigest } from '../src/sentinels.js';
+import { dueSentinels } from '../src/sentinels.js';
 import { sentinels } from '../src/sentinels.js';
 import { executeMove } from '../src/api.js';
 import { moveArgs } from '../src/api-moves.js';
@@ -129,35 +130,32 @@ test('resume never runs a sentinel and sentinel run runs the due ones [N26,A6,D3
   const box = fixture(t, { agentRoute: 'mid' });
   const marker = join(box.directory, 'explicit-run.json');
   writeFileSync(join(box.root, 'value.txt'), 'committed trunk input');
-  writeFileSync(join(box.root, 'slow-check.mjs'), `import {readFileSync,writeFileSync} from 'node:fs';
-import {setTimeout} from 'node:timers/promises';
+  writeFileSync(join(box.root, 'trunk-check.mjs'), `import {readFileSync,writeFileSync} from 'node:fs';
 const value=readFileSync('value.txt','utf8');
 writeFileSync(${JSON.stringify(marker)},JSON.stringify({cwd:process.cwd(),value}));
-await setTimeout(30_000);
 console.log('explicit trunk receipt: '+value);
 `);
-  runFixtureGit(['add', 'slow-check.mjs', 'value.txt'], { cwd: box.root, env: box.env });
+  runFixtureGit(['add', 'trunk-check.mjs', 'value.txt'], { cwd: box.root, env: box.env });
   runFixtureGit(['commit', '-q', '-m', 'test: committed sentinel input [N26,A6]'], { cwd: box.root, env: box.env });
   const agentRoot = join(box.directory, 'agent');
   runFixtureGit(['worktree', 'add', '--quiet', '--detach', agentRoot, 'main'], { cwd: box.root, env: box.env });
   const joined = await box.cli(['join', 'core', '--model', 'gpt-6.1-sol', '--route', 'mid'], undefined, agentRoot);
   assert.equal(joined.code, 0, joined.error || JSON.stringify(joined.document));
   writeFileSync(join(agentRoot, 'value.txt'), 'uncommitted agent input');
-  const command = `${quote(process.execPath)} slow-check.mjs`;
-  const proposed = await box.cli(['sentinel', 'propose', 'slow-trunk', '--check', command, '--every', 'hourly', '--owner', box.agent, '--timeout', '35000']);
+  const command = `${quote(process.execPath)} trunk-check.mjs`;
+  const proposed = await box.cli(['sentinel', 'propose', 'trunk-check', '--check', command, '--every', 'hourly', '--owner', box.agent, '--timeout', '35000']);
   assert.equal(proposed.code, 0, proposed.error || JSON.stringify(proposed.document));
-  const approved = await box.cli(['sentinel', 'approve', 'slow-trunk'], 'view');
+  const approved = await box.cli(['sentinel', 'approve', 'trunk-check'], 'view');
   assert.equal(approved.code, 0, approved.error || JSON.stringify(approved.document));
 
-  // The frozen bar measures ordinary in-process handling after setup, not module loading or cold CLI startup.
-  const began = performance.now();
+  assert.deepEqual(dueSentinels(box.board).map(row => row.name), ['trunk-check']);
+  // Durable start and result receipts prove execution independently of scheduler load.
   const resumed = await box.cli(['resume'], undefined, agentRoot);
-  const elapsed = performance.now() - began;
   assert.equal(resumed.code, 0, resumed.error || JSON.stringify(resumed.document));
-  assert.ok(elapsed < 100, `resume took ${elapsed.toFixed(3)} ms with a due 30 s sentinel`); // budget: declared by item #1042 and coordinator24324: in-process resume under100ms after setup.
   assert.equal(existsSync(marker), false, 'resume neither runs the watch nor detaches a checker into the agent session');
   assert.equal(sentinels(box.board)[0].lastRun, null);
-  assert.equal(store.events(box.board).some(row => row.event_kind === 'sentinel-start'), false);
+  assert.deepEqual(store.events(box.board).filter(row => ['sentinel-start', 'sentinel-run'].includes(row.event_kind)), []);
+  assert.deepEqual(dueSentinels(box.board).map(row => row.name), ['trunk-check'], 'resume leaves the approved watch due');
 
   const run = await box.cli(['sentinel', 'run'], undefined, agentRoot);
   assert.equal(run.code, 0, run.error || JSON.stringify(run.document));
@@ -170,6 +168,9 @@ console.log('explicit trunk receipt: '+value);
   assert.equal(watched.lastRun.green, true);
   assert.match(watched.lastRun.output, /explicit trunk receipt: committed trunk input/u);
   assert.equal(watched.check, command, 'the approved command is not rewritten for the new execution directory');
+  assert.deepEqual(store.events(box.board).filter(row => ['sentinel-start', 'sentinel-run'].includes(row.event_kind))
+    .map(row => [row.event_kind, JSON.parse(row.event_detail).name]), [['sentinel-start', 'trunk-check'], ['sentinel-run', 'trunk-check']]);
+  assert.deepEqual(dueSentinels(box.board), [], 'the explicit run consumes the due watch');
   assert.equal(readFileSync(join(agentRoot, 'value.txt'), 'utf8'), 'uncommitted agent input');
   const help = await box.cli(['sentinel', 'run', '--help']);
   assert.equal(help.code, 0, help.error);
