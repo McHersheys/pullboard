@@ -15,13 +15,13 @@ const ID = /^[a-f0-9-]{36}$/u;
 
 /** Read the canonical immutable record, rejecting altered, unknown or malformed fields. */
 export function computedConflictFields(value) {
-  if (!value || value.version !== 1 || !ID.test(value.id ?? '') || !/^[a-f0-9]{32}$/u.test(value.board ?? '')
+  if (!value || ![1, 2].includes(value.version) || !ID.test(value.id ?? '') || !/^[a-f0-9]{32}$/u.test(value.board ?? '')
     || !Number.isSafeInteger(value.item) || value.item < 1 || typeof value.actor !== 'string' || !value.actor || value.actor.length > 128 || /[\r\n\0]/u.test(value.actor)
     || !Number.isSafeInteger(value.submission) || value.submission < 1
     || !SHA.test(value.head ?? '') || !SHA.test(value.trunk ?? '') || !Array.isArray(value.files)
     || !value.files.length || value.files.length > 4096 || value.files.some(file => typeof file !== 'string' || !file || file.length > 4096 || file.includes('\0'))
     || new Set(value.files).size !== value.files.length || typeof value.at !== 'string' || !Number.isFinite(Date.parse(value.at))) return null;
-  const fields = { version: 1, id: value.id, board: value.board, item: value.item, actor: value.actor,
+  const fields = { version: value.version, id: value.id, board: value.board, item: value.item, actor: value.actor,
     head: value.head, trunk: value.trunk, files: [...value.files], at: value.at, submission: value.submission };
   const digest = createHash('sha256').update(JSON.stringify(fields)).digest('hex');
   return value.digest === digest && Object.keys(value).length === Object.keys(fields).length + 1 ? { ...fields, digest } : null;
@@ -47,8 +47,8 @@ export function requireComputedConflictObjects(board, receipt) {
   refuseRecordedHistoryOverrides(gitDirectory);
   let cache = VERIFIED_OBJECTS.get(board);
   if (!cache) { cache = new Map(); VERIFIED_OBJECTS.set(board, cache); }
-  const key = `${fields.head}:${fields.trunk}`;
-  if (!cache.has(key)) cache.set(key, recordedTrunkMerge(gitDirectory, fields.head, fields.trunk));
+  const key = `${fields.version}:${fields.head}:${fields.trunk}`;
+  if (!cache.has(key)) cache.set(key, recordedTrunkMerge(gitDirectory, fields.head, fields.trunk, { version: fields.version }));
   return cache.get(key);
 }
 
@@ -63,6 +63,7 @@ export function requireComputedConflict(board, receipt) {
 
 /** Fresh authoring must use the current trunk; recorded acknowledgments return before this mutation path. */
 function requireCurrentConflict(board, fields) {
+  if (fields.version !== 2) throw new Refused('COORDINATOR_ONLY', 'fresh automatic returns need current mechanical conflict evidence; compute a new return');
   const root = board.db.prepare("SELECT agent_path FROM agent WHERE agent_id='coordinator'").get()?.agent_path;
   if (!root) throw new Refused('COORDINATOR_ONLY', 'fresh automatic return needs the registered native trunk');
   const current = trunkMerge(root, fields.head);
