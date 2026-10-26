@@ -1,3 +1,5 @@
+import { REFERENCE_ENGINE } from './reference-engine.js';
+import { validateReferences } from './reference-authors.js';
 import {
   submissionItemValues,
   recordSubmissionEvent,
@@ -214,10 +216,7 @@ import {
   reportDrift,
 } from './board-migrate.js';
 export { schemaMissing, writeRefused } from './board-migrate.js';
-import {
-  briefFiles,
-  briefSections,
-} from './brief.js';
+import { checkRouted } from './item-routing.js';
 import {
   itemFiles,
   itemFileCollisions,
@@ -264,7 +263,6 @@ import {
   itemAuthorProblem,
   retainedVerifierIdentityProblem,
 } from './item-authors.js';
-import { refuseMaskedExit } from './check-mask.js';
 import {
   ROUTES,
   canTake,
@@ -352,7 +350,6 @@ export { EVENT_LOG_VERSION } from './board-schema-source.js';
 
 export { BOARD_BUSY_TIMEOUT_MS } from './board-schema-source.js';
 
-const BRIEF_LIMIT = 8000;
 const REVIEW_RELEASE_COOLDOWN_MS = 60 * 60 * 1000;
 
 export const REJECT_REASONS = [
@@ -663,31 +660,6 @@ function checkRoute(route) {
 }
 
 /**
- * Refuse an item a lighter model could not build cold (B10, B14). Any brief stays short enough to
- * read. Below the strong route the item needs all of it: a criterion, a check command that proves
- * it, and a brief naming the files and the test.
- *
- * @param {{ brief: string, route: string, criterion: string, check: string }} item
- */
-function checkRouted({ brief, route, criterion, check }) {
-  if (brief.length > BRIEF_LIMIT) {
-    throw new Refused('BRIEF_TOO_LONG', `the brief is ${brief.length} characters; keep it under ${BRIEF_LIMIT} and point to longer docs by path`);
-  }
-  refuseMaskedExit(check);
-  if (route === 'strong') return;
-  const sections = briefSections(brief);
-  const missing = [
-    ...(briefFiles(brief).length ? [] : ['a brief with a Files: section naming the paths to touch']),
-    ...(sections.test?.length ? [] : ['a Test: section saying what the test asserts']),
-    ...(criterion.trim() ? [] : ['--criterion, saying when it is done']),
-    ...(check.trim() ? [] : ['--check, the command that proves it']),
-  ];
-  if (missing.length) {
-    throw new Refused('NO_BRIEF', `an item routed ${route} must be buildable cold; it needs ${missing.join(', ')}`);
-  }
-}
-
-/**
  * Add an item to a lane, optionally under a parent in the same lane, with a brief for whoever
  * builds it and a route saying who can (B10, B11). The caller has checked the lane and the spec
  * ids (B6).
@@ -696,9 +668,9 @@ function checkRouted({ brief, route, criterion, check }) {
  * @param {{ by: string, lane: string, title: string, criterion?: string, specIds?: string[], parentId?: number | null, after?: (number | string)[], brief?: string, route?: string, check?: string }} item
  * @returns {number} The new item's id.
  */
-export function addItem(board, { by, lane, title, criterion = '', specIds = [], parentId = null, after = [], brief = '', route = 'strong', check, checkBaseline, barActor }) {
+export function addItem(board, { by, lane, title, criterion = '', specIds = [], parentId = null, after = [], brief = '', route = 'strong', check, checkBaseline, barActor, referenceAuthors, referenceAuthority }) {
   return atomic(board, () => {
-    const item = { by, lane, title, criterion, specIds, parentId, after, brief, route, check, checkBaseline, barActor };
+    const item = { by, lane, title, criterion, specIds, parentId, after, brief, route, check, checkBaseline, barActor, referenceAuthors, referenceAuthority };
     return insertItem(board, item, validateItemAddition(board, item));
   });
 }
@@ -755,12 +727,14 @@ function validateItemDependencies(board, itemId, after) {
 }
 
 /** Validate an addition before its sender runs a new check, and again when the ordered move applies. */
-export function validateItemAddition(board, { by, lane, title, criterion = '', parentId = null, after = [], brief = '', route = 'strong', check }) {
+export function validateItemAddition(board, { by, lane, title, criterion = '', parentId = null, after = [], brief = '', route = 'strong', check, referenceAuthors, referenceAuthority }) {
   const command = coordinatorCheck(by, check) ?? '';
   const cleanTitle = title.trim();
   if (!cleanTitle) throw new Refused('NO_TITLE', 'an item needs a title');
   checkRoute(route);
-  checkRouted({ brief: brief.trim(), route, criterion, check: command });
+  const engine = board.executionEngineVersion ?? ENGINE_VERSION;
+  if (engine >= REFERENCE_ENGINE) validateReferences(brief, { actor: by, authors: referenceAuthors, authority: referenceAuthority });
+  checkRouted({ brief: brief.trim(), route, criterion, check: command }, engine);
   if (parentId !== null) {
     const parent = itemById(board, parentId);
     if (parent.item_lane !== lane) {
@@ -783,11 +757,11 @@ export function validateItemAddition(board, { by, lane, title, criterion = '', p
  * @param {number} id
  * @param {{ agentId: string, brief?: string, route?: string, criterion?: string, check?: string, after?: (number | string)[] }} change
  */
-export function editItem(board, id, { agentId, brief, route, criterion, check, after, checkBaseline, reason, barActor }) {
+export function editItem(board, id, { agentId, brief, route, criterion, check, after, checkBaseline, reason, barActor, referenceAuthors, referenceAuthority }) {
   atomic(board, () => {
     const stored = itemById(board, id);
     const expiredHolder = stored.item_status === 'claimed' && !isHeld(board, stored) ? stored.item_owner : null;
-    const { item, next, command, unfreeze, bar } = validateItemEdit(board, id, { agentId, brief, route, criterion, check, after, reason });
+    const { item, next, command, unfreeze, bar } = validateItemEdit(board, id, { agentId, brief, route, criterion, check, after, reason, referenceAuthors, referenceAuthority });
     const baseline = normalizeCheckBaseline(agentId, command, checkBaseline);
     const pendingFields = [
       ...(next.item_criterion !== item.item_criterion ? ['criterion'] : []),
@@ -849,7 +823,7 @@ function notifyFileGrowth(board, before, after) {
 }
 
 /** Validate an edit without side effects, so a refused change never starts a shell baseline; a bar correction needs a reason [B31]. */
-export function validateItemEdit(board, id, { agentId, brief, route, criterion, check, after, reason }) {
+export function validateItemEdit(board, id, { agentId, brief, route, criterion, check, after, reason, referenceAuthors, referenceAuthority }) {
   const engine = board.executionEngineVersion ?? ENGINE_VERSION;
   if (after !== undefined && engine < 10) {
     throw new Refused('ENGINE_VERSION', `editing item dependencies requires engine 10; this board uses engine ${engine}; upgrade Pullboard before using --after`);
@@ -892,7 +866,8 @@ export function validateItemEdit(board, id, { agentId, brief, route, criterion, 
   if (moved.length && item.item_status !== 'open' && (routeChanged || !correctionWhileClaimed)) {
     throw new Refused('HELD', `item #${id} is ${item.item_status}; change its route, criterion or check only while it is open`);
   }
-  checkRouted({ brief: next.item_brief, route: next.item_route, criterion: next.item_criterion, check: next.item_check });
+  if (brief !== undefined && engine >= REFERENCE_ENGINE) validateReferences(brief, { actor: agentId, authors: referenceAuthors, authority: referenceAuthority, previous: item.item_brief });
+  checkRouted({ brief: next.item_brief, route: next.item_route, criterion: next.item_criterion, check: next.item_check }, engine);
   const unfreeze = next.item_criterion !== item.item_criterion || next.item_check !== item.item_check;
   return { item, next, command, unfreeze, bar: barCorrectionFields(board, item, next, { reason }) };
 }
