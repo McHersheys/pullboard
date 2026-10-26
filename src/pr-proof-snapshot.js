@@ -23,8 +23,8 @@ export function capturePrProof(board) {
       WHERE meta_key GLOB 'verdict_assurance:*' OR meta_key GLOB 'outside:*'`).all()
       .map(row => [row.meta_key, row]));
     const batches = store.landingBatches(board);
-    // This private reader accepts only the canonical interpreter's already captured queries.
-    // Never fall through to fresh SQL after releasing the snapshot or cache a public mutable result.
+    // This private reader accepts only the canonical interpreter's known queries. Carry lookups
+    // keep SQLite's JSON/error semantics inside this snapshot; the reader never escapes RELEASE.
     const captured = { ...board, db: {
       /** Supply fresh row lists to the existing receipt and withdrawal semantics. */
       prepare(sql) {
@@ -34,6 +34,10 @@ export function capturePrProof(board) {
         if (/^SELECT (?:\*|(?:event_id, )?event_kind, event_detail) FROM event(?:_history)? WHERE item_id\s*=\s*\? AND event_kind (?:IN \('accept', 'reject'\)|= 'reopen') ORDER BY event_id$/u.test(query)) {
           const kinds = /event_kind = 'reopen'/u.test(query) ? ['reopen'] : ['accept', 'reject'];
           return { all: id => (events.get(id) ?? []).filter(row => kinds.includes(row.event_kind)) };
+        }
+        if (/^SELECT event_detail FROM event(?:_history)? WHERE item_id = \? AND event_kind = 'merge-only-accept' AND json_extract\(event_detail,'\$\.commit'\) = \? ORDER BY event_id DESC LIMIT 1$/u.test(query)
+            || /^SELECT 1 FROM event(?:_history)? WHERE item_id = \? AND event_kind = 'merge-only-accept' AND event_id > \? AND event_id < \? AND json_extract\(event_detail,'\$\.commit'\) = \? AND json_extract\(event_detail,'\$\.verdict'\) = \?$/u.test(query)) {
+          return board.db.prepare(sql);
         }
         throw new Refused('PUBLISH_STATE', 'the native receipt reader changed; update Pullboard before publishing');
       },
