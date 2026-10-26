@@ -248,14 +248,14 @@ Each move checks its guards in this order and refuses with the first one that do
 | AGENT_GRANT_ITEM | an item mutation belongs to the current claim or review grant (accept result) | finish or release the claim, then claim the intended item; use shout for coordination |
 | AGENT_GRANT_LANE | an item mutation stays inside the unclaimed seat lane (accept result) | join a seat in the intended lane or ask its owner to make the item change |
 | VERDICT_ENVIRONMENT | optional recorded verdict environment contains exact platform, architecture and Node version (accept result) | run the frozen check with current Pullboard, then have an independent reviewer record a fresh verdict with its actual executor environment |
-| LAND_HEADER | a displayed merge command fits the commit-header limit (accept result) | shorten the item title or cited rows so the merge header fits |
+| LAND_HEADER | a displayed merge command carries a landing message that passes its own check (accept result) | shout the coordinator the item id; landing writes the message, so the item itself needs no change |
 | ENGINE_VERSION | a verdict that implies items replays only under engine 20 or later (accept result) | upgrade Pullboard on every linked device before using --implies |
 | BAD_DEPENDENCIES | persisted prerequisites contain only positive local item ids or exact repo#id references (reject result) | restore the item dependencies from their ordered history, then retry |
 | AGENT_GRANT_EXPIRED | an item mutation has a live claim or review grant (reject result) | claim the intended item, or shout the coordinator if its claim is unavailable |
 | AGENT_GRANT_ITEM | an item mutation belongs to the current claim or review grant (reject result) | finish or release the claim, then claim the intended item; use shout for coordination |
 | AGENT_GRANT_LANE | an item mutation stays inside the unclaimed seat lane (reject result) | join a seat in the intended lane or ask its owner to make the item change |
 | VERDICT_ENVIRONMENT | optional recorded verdict environment contains exact platform, architecture and Node version (reject result) | run the frozen check with current Pullboard, then have an independent reviewer record a fresh verdict with its actual executor environment |
-| LAND_HEADER | a displayed merge command fits the commit-header limit (reject result) | shorten the item title or cited rows so the merge header fits |
+| LAND_HEADER | a displayed merge command carries a landing message that passes its own check (reject result) | shout the coordinator the item id; landing writes the message, so the item itself needs no change |
 | ENGINE_VERSION | a verdict that implies items replays only under engine 20 or later (reject result) | upgrade Pullboard on every linked device before using --implies |
 | NOT_YOURS | the automatic escalation is authorized as the coordinator or item holder (reject result) | ask the coordinator to inspect the item and its route |
 | CLOSED | the rejected item remains open or claimed when automatic escalation starts (reject result) | pullboard show <id>, then ask the coordinator to inspect its current state |

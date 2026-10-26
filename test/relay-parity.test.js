@@ -1,0 +1,34 @@
+/** Native API and actual sealed relay readers must expose the same board [H5,H15,H16,A2]. */
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { parityRoundtrip, assertReaderParity } from './relay-parity-fixture.js';
+
+test('a field that differs between native and relay readers is refused, naming the field [H5,H16,A2]', { timeout: 60_000 }, async t => { // budget: criterion's sixty-second guard ceiling, including real local HTTP and cleanup.
+  const { native, relay, exerciseOperations } = await parityRoundtrip(t);
+  const live = native.agents.find(agent => agent.heartbeatAt !== null);
+  assert.ok(live, 'a real native heartbeat is present in the seed');
+  const missingHeartbeat = structuredClone(native);
+  delete missingHeartbeat.agents.find(agent => agent.agent_id === live.agent_id).heartbeatAt;
+  assert.throws(() => assertReaderParity(native, missingHeartbeat), error => /agents\.\d+\.heartbeatAt/u.test(error.message)
+    && error.message.includes('native=') && error.message.includes('relay=<missing>'), 'the deliberate heartbeat removal names its exact field and both values');
+  assertReaderParity(native, relay);
+  const inventory = await exerciseOperations();
+  assert.deepEqual(inventory.covered, inventory.declared, 'every declared operation passes complete reader parity');
+});
+
+
+test('single-board parity never seals another board title through a milestone reference [H5,H16,A2]', { timeout: 60_000 }, async t => { // budget: the same real transport and cleanup ceiling as the parity guard.
+  const { native, relay } = await parityRoundtrip(t, { foreign: true });
+  assertReaderParity(native, relay);
+});
+
+test('local relay health and its Needs stay outside sealed state without hiding other differences [H5,H16,A2]', { timeout: 60_000 }, async t => { // budget: real local HTTP, sealed snapshot retrieval and cleanup under the guard ceiling.
+  const { native, relay, restored } = await parityRoundtrip(t, { localHealth: true });
+  assert.equal(native.relayHealthAlerts.length, 1, 'actual private canary failures remain visible locally');
+  assert.ok(native.needs.some(entry => entry.kind === 'relay-health'), 'local Needs retains the derived alert');
+  assert.equal(Object.hasOwn(restored.presentation.state, 'relayHealthAlerts'), false, 'sealed state omits the private telemetry field');
+  assert.ok(!restored.presentation.state.needs.some(entry => entry.kind === 'relay-health'), 'sealed Needs omits the private alert');
+  assertReaderParity(native, relay);
+  assert.throws(() => assertReaderParity(native, { ...relay, needs: [...relay.needs, { kind: 'undeclared-difference' }] }),
+    /reader parity needs/u, 'other Needs differences remain refused');
+});

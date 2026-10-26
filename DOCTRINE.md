@@ -40,13 +40,14 @@ Statuses: approved = in force · draft = proposed · wont = considered and decli
 - G1 [approved, must] `npm run gate` (spec check and tests) passes before every push. | gate: pre-push hook
 - G2 [approved, must] Never bypass a hook. Never rewrite the main line, except to remove a secret. | gate: review
 - G3 [approved, must] This repo's hooks run the source in this checkout. | gate: .githooks
-- G4 [draft, must] Every outside issue and pull request gets a first reply within 3 days. Source: tests-85 shout #23059, 22 Oct | gate: review
+- G4 [draft, aim] We aim to give every outside issue and pull request a first reply within 7 days. | gate: review
 
 ## S · Security
 - S1 [approved, must] No secrets and no env files in git; test fixtures build fake secrets at run time. | gate: pre-commit secret scan
 - S2 [approved, must] The board never stores source code, only ids, commits and digests. | gate: review
-- S22 [draft, must] Outside contributions are MIT, carry a DCO sign-off, and are verified like any work, only in a sandbox with no credentials and no network. Source: tests-85 shout #23059, 22 Oct | gate: review
-- S23 [draft, must] A change from outside that touches a sensitive path (relay, sealing, signing, person moves, hooks) lands only with the owner's approval. Source: tests-85 shout #23059, 22 Oct | gate: review
+- S22 [draft, must] outside contributions are MIT, carry a DCO sign-off and are verified in a sandbox with no credentials or network. | gate: review
+- S23 [draft, must] a change from outside that touches the relay, sealing, signing, person moves or hooks lands only with the owner's approval. | gate: review
+- S24 [draft, must] never copy code from an issue or comment into Pullboard; reimplement it. Only code from a signed pull request is used. | gate: review
 
 ## DR · Rulings
 - DR1 [draft, must] Consider splitting "docs/formats.md" into independently owned modules (for example, one module per command). It caused 12 conflict reopens and 0 conflict holds across items #418, #775, #801, #855, #918, #922, #940, #966, #1036 in 14 days; review the architecture before deciding. Source: conflict-split:eyJmaWxlIjoiZG9jcy9mb3JtYXRzLm1kIiwiZXZlbnRzIjpbMjk5ODgsMzAxOTksMzEyNzYsMzY3MDIsMzg4OTcsMzkwNjEsMzk4NTksNDU1MDcsNDY1NDMsNDc2MTcsNDc4NDMsNDgzNjJdfQ | gate: review
