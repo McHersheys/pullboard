@@ -910,7 +910,7 @@ test('docs/lifecycle.md is the page the declaration generates, so a stale copy f
     for (const id of machineRules.effectiveGuards(move)) assert.ok(page.includes(id), `${move.verb}'s guard ${id} is listed`);
   }
   for (const [state, guards] of Object.entries(machineRules.MACHINE.exitGuards)) assert.ok(page.includes(`| ${state} | ${guards.join(', ')} |`), `${state}'s exit guards are listed`);
-  const codes = new Set([...MACHINE.guards.flatMap((guard) => [guard.refuse, ...(guard.alsoRefuses ?? []).map((entry) => entry.code)]), ...MACHINE.moves.flatMap((move) => [move.refuse, ...(move.alsoRefuses ?? []).map((entry) => entry.code)]), machineRules.MACHINE.unknownMove.refuse].filter(Boolean));
+  const codes = new Set([...machineRules.MACHINE.guards.flatMap((guard) => [guard.refuse, ...(guard.alsoRefuses ?? []).map((entry) => entry.code)]), ...machineRules.MACHINE.moves.flatMap((move) => [move.refuse, ...(move.alsoRefuses ?? []).map((entry) => entry.code)]), machineRules.MACHINE.unknownMove.refuse].filter(Boolean));
   for (const code of codes) assert.match(page, new RegExp(`^\\| ${code} \\|`, 'm'), `${code} is in the refusal table`);
 });
 
