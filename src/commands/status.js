@@ -10,6 +10,10 @@ import { unlinkedRelayStatus } from '../relay-status-fields.js';
 import { ruleProofCounts } from '../rule-proof-counts.js';
 import { memoryHeldRuns } from '../memory-held.js';
 import {
+  runnerDeadlineLine,
+  runnerDeadlineRuns,
+} from '../runner-wait.js';
+import {
   reviewQueueLine,
 } from '../next-steps.js';
 import {
@@ -52,6 +56,7 @@ export async function run(io, { values }) {
     if (exclusion) Object.assign(summary.relay, { excluded: true, exclusion });
   }
   summary.memoryHeld = memoryHeldRuns();
+  summary.runnerDeadlines = runnerDeadlineRuns();
   if (values.json) {
     io.result(summary);
     return 0;
@@ -68,6 +73,8 @@ export async function run(io, { values }) {
   for (const seat of summary.agents.filter(seat => values.all || seat.presence !== 'gone')) io.say(`${seat.agent_id}: ${seat.presence}${seat.heartbeatAt ? ` (heartbeat ${seat.heartbeatAt})` : ' (no local heartbeat)'}`);
   if (summary.memoryHeld === null) io.say('local memory hold status unavailable; pullboard resources shows the queue');
   else for (const run of summary.memoryHeld) io.say(`local memory holds ${run.agent}${run.item ? ` #${run.item}` : ''}${run.kind ? ` (${run.kind})` : ''}${run.repo ? ` in ${run.repo}` : ''}`);
+  if (summary.runnerDeadlines === null) io.say('runner wait deadline status unavailable; pullboard resources shows the queue');
+  else for (const run of summary.runnerDeadlines) io.say(`${run.agent}${run.item ? ` #${run.item}` : ''}${run.repo ? ` in ${run.repo}` : ''}: ${runnerDeadlineLine(run)}`);
   for (const proposal of summary.submitInvariantProposals) io.say(submitInvariantLine(proposal));
   for (const need of summary.needs.filter(need => need.kind === 'agent-approved')) io.say(`${need.text}; ${need.what}`);
   if (!summary.relay.linked && !originRepository(ctx.info.root, { optional: true })) {
