@@ -1,0 +1,35 @@
+name: Reopen clarification issues when their author replies
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+  pull-requests: none
+
+jobs:
+  reopen-clarification-issue:
+    if: >-
+      github.event.issue.pull_request == null &&
+      github.event.issue.state == 'closed' &&
+      contains(github.event.issue.labels.*.name, 'clarify') &&
+      github.event.comment.user.id == github.event.issue.user.id
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v9.0.0
+        with:
+          script: |
+            const eventIssue = context.payload.issue;
+            const comment = context.payload.comment;
+            if (!eventIssue || eventIssue.pull_request || eventIssue.state !== 'closed'
+                || comment.user.id !== eventIssue.user.id
+                || !eventIssue.labels.some(label => label.name === 'clarify')) return;
+
+            const { owner, repo } = context.repo;
+            const { data: issue } = await github.rest.issues.get({ owner, repo, issue_number: eventIssue.number });
+            if (issue.state !== 'closed' || issue.user?.id !== comment.user.id
+                || !issue.labels.some(label => label.name === 'clarify')) return;
+
+            const labels = issue.labels.filter(label => !['clarify', 'clarify-inactive'].includes(label.name)).map(label => label.name);
+            await github.rest.issues.update({ owner, repo, issue_number: issue.number, state: 'open', labels });
