@@ -610,6 +610,10 @@ async function boardOf(view, root) {
 
 /** Check each reported queue age before comparing observations, so independent clocks stay exact. */
 function assertObservationAges(observation) {
+  if (Object.hasOwn(observation ?? {}, 'observedAt')) {
+    assert.equal(typeof observation.observedAt, 'string', 'project.observedAt is a read timestamp');
+    assert.ok(Number.isFinite(Date.parse(observation.observedAt)), 'project.observedAt is a valid read timestamp');
+  }
   const flow = observation?.proofStats?.flow;
   for (const [state, queue] of Object.entries(flow?.queues ?? {})) {
     const oldest = queue?.oldest;
@@ -634,12 +638,13 @@ function withoutObservationAges(value, path = []) {
       const flowClock = path.length === 2 && path[0] === 'proofStats' && path[1] === 'flow' && key === 'asOf';
       const queueAge = path.length === 5 && path[0] === 'proofStats' && path[1] === 'flow'
         && path[2] === 'queues' && path[4] === 'oldest' && key === 'ageMinutes';
-      return !flowClock && !queueAge;
+      const readClock = path.length === 0 && key === 'observedAt';
+      return !flowClock && !queueAge && !readClock;
     })
     .map(([key, entry]) => [key, withoutObservationAges(entry, [...path, key])]));
 }
 
-/** Validate both clocks independently, then compare every field except asOf and ageMinutes. */
+/** Validate clocks independently, then compare every field except declared observation stamps and derived ages. */
 function assertObservationsEqual(expected, actual, message) {
   assertObservationAges(expected);
   assertObservationAges(actual);
