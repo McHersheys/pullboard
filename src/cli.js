@@ -387,11 +387,10 @@ import { unlinkedRelayProjects } from './relay-setup.js';
 import {
   accountedFailures,
   landingRemote,
-  itemCommitType,
-  landingMessage,
   waivedFailures,
   waiverLine,
 } from './land.js';
+import { handMergeCommand } from './landing-message.js';
 import { installStep } from './worktree.js';
 import * as infraNotes from './infra-note.js';
 export { gateWaitReporter };
@@ -1454,12 +1453,8 @@ export function landNext(info, item, commit = item.item_commit, { spec = null, r
   const trunk = mainCheckout(info.root);
   const branch = trunk?.branch ?? '';
   const remote = landingRemote(info.root, branch);
-  // The hand merge writes the same generated message as pullboard land: the trailers are one paragraph.
-  const message = landingMessage(item, { spec, type: itemCommitType(info.root, trunk?.commit, commit), ...(requireIds ? { requireIds } : {}) });
-  const trailers = `"$(printf '%s\\n' ${message.trailers.split('\n').map(shellWord).join(' ')})"`;
-  const command = remote
-    ? 'pullboard land'
-    : `git merge --no-ff ${commit} -m ${shellWord(message.header)} -m ${trailers} && pullboard merged ${item.item_id} HEAD`;
+  const command = remote ? 'pullboard land'
+    : handMergeCommand(item, commit, { root: info.root, base: trunk?.commit, spec, requireIds, quote: shellWord });
   if (!mainRoot) return `next: could not safely locate the primary checkout; run from the main checkout: ${command}`;
   if (remote) return `next: the coordinator lands it: ${cdTo(mainRoot)} ${command}`;
   return `next: this repo has no remote for pullboard land to push to, so the coordinator merges it on ${branch.replace(/^refs\/heads\//u, '') || 'the trunk'}: ${cdTo(mainRoot)} ${command}`;
