@@ -1,3 +1,5 @@
+import { foreignBlockers } from './cross-repo-dependencies.js';
+import { localDependencyIds } from './item-dependencies.js';
 /**
  * The queue orders itself (#1017) [N22,B13]. Within each release, an item's unblock count (unfinished items that
  * wait on it, directly or through others) and effort (its route: light 1, mid 2, strong 3) give a score of
@@ -40,7 +42,7 @@ export function workOrderActive(board) {
 
 /** The item numbers an item waits on, as recorded. */
 function afterIds(item) {
-  return item.item_after ? item.item_after.split(',').map(Number) : [];
+  return localDependencyIds(item);
 }
 
 /**
@@ -93,14 +95,14 @@ export function unblockCounts(unfinished) {
  * @param {Set<number>} withdrawn
  * @returns {(item: any) => number}
  */
-function blockerDepth(open, withdrawn) {
+function blockerDepth(board, open, withdrawn) {
   const depths = new Map();
   const depth = (item, visiting = new Set()) => {
     if (depths.has(item.item_id)) return depths.get(item.item_id);
     if (visiting.has(item.item_id)) return 0;
     visiting.add(item.item_id);
     const blockers = afterIds(item).map((id) => open.get(id)).filter(Boolean);
-    const never = afterIds(item).some((id) => withdrawn.has(id));
+    const never = foreignBlockers(board, item).length > 0 || afterIds(item).some((id) => withdrawn.has(id));
     const value = blockers.length || never ? 1 + Math.max(0, ...blockers.map((blocker) => depth(blocker, visiting))) : 0;
     depths.set(item.item_id, value);
     return value;
@@ -151,7 +153,7 @@ export function computedOrder(board, { priority, shared = () => 0, tieBreak = ()
   const unfinished = listItems(board);
   const withdrawn = new Set(board.db.prepare("SELECT item_id FROM item WHERE item_status = 'withdrawn'").all().map((row) => row.item_id));
   const counts = unblockCounts(unfinished);
-  const depthOf = blockerDepth(new Map(unfinished.map((item) => [item.item_id, item])), withdrawn);
+  const depthOf = blockerDepth(board, new Map(unfinished.map((item) => [item.item_id, item])), withdrawn);
   const entries = unfinished.map((item) => {
     const unblocks = counts.get(item.item_id) ?? 0;
     const effort = EFFORT[item.item_route] ?? EFFORT.strong;

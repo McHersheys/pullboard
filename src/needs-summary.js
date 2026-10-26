@@ -15,6 +15,7 @@ import {
   sentinelDraftNeeds,
   sentinels,
 } from './board-query.js';
+import { relayCanaryNeeds } from './relay-canary-needs.js';
 
 /** Keep status obligations; reuse its same-call seat rows, otherwise read them freshly. */
 export function personNeedsSummary(root, { board, config, agents }) {
@@ -25,7 +26,8 @@ export function personNeedsSummary(root, { board, config, agents }) {
     agents: (agents ?? store.listAgents(board)).map(agent => ({ ...agent, displayName: displayAgentName(agent, config.agents.names) })),
     rigorDrafts: rigorDraftNeeds(rows, store.rowDrafts(board), store.rowDecisions(board)), sentinelDrafts: sentinelDraftNeeds(sentinels(board)), blocks: recentBlocks(repoInfo(root).commonDir, board),
   }, specApprovalState(root, { board, config, spec }));
-  return projected;
+  const relayHealthAlerts = relayCanaryNeeds(root);
+  return { ...projected, relayHealthAlerts, needs: [...projected.needs, ...relayHealthAlerts] };
 }
 
 /** The person's blocks from the last day, by the board's clock, for Needs you [C6]. */
