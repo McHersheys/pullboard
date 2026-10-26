@@ -14,6 +14,7 @@ import {
 import { validateRunner } from './runners.js';
 import { Refused } from './refused.js';
 import { relayCanaryConfig } from './relay-canary-config.js';
+import { relayCanaryProblem } from './relay-canary-config.js';
 import {
   DEFAULT_RUNNER_WAIT_MS,
   validateRunnerWaitMs,
@@ -64,7 +65,8 @@ export function loadMachineSettings() {
   if (value.relay?.offerAtInit !== undefined && typeof value.relay.offerAtInit !== 'boolean') {
     throw new Refused('BAD_MACHINE_SETTINGS', `relay.offerAtInit in ${file} must be true or false`);
   }
-  relayCanaryConfig(value.relay?.canary);
+  const canaryProblem = relayCanaryProblem(value.relay?.canary);
+  if (canaryProblem) throw new Refused('BAD_MACHINE_SETTINGS', `relay.canary in ${file} is invalid: ${canaryProblem}`);
   if (value.gate?.memoryFloorMB !== undefined && (!Number.isSafeInteger(value.gate.memoryFloorMB) || value.gate.memoryFloorMB < 0)) {
     throw new Refused('BAD_MACHINE_SETTINGS', `gate.memoryFloorMB in ${file} must be a whole number of megabytes, 0 or more; fix it before running Pullboard`);
   }
