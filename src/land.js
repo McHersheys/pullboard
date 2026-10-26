@@ -64,6 +64,12 @@ import { runLandingWorker } from './landing-worker.js';
 import { runLandingCandidateWorker } from './landing-candidates.js';
 import { inheritedGateSlot } from './resources.js';
 import { Refused } from './refused.js';
+import {
+  buildCommitMessage,
+  commitMessageProblems,
+  specOrder,
+} from './commit-message.js';
+import { loadSpec } from './spec.js';
 import { requireLandingHost } from './landing-host.js';
 import {
   environmentLabel,
@@ -155,23 +161,68 @@ export function landingFailures(output, root, { excludeCancelled = false } = {})
 /** The merge header type an item with no spec rows takes from its lane; any other lane lands as chore. */
 const LANE_MERGE_TYPES = Object.freeze({ docs: 'docs', test: 'test' });
 
-/** Produce a hook-valid lower-case merge subject at a word boundary [R3]. */
-export function landingSubject(item) {
-  const suffix = item.item_spec_ids ? ` [${item.item_spec_ids.split(/[\s,]+/u).filter(Boolean).join(',')}]` : '';
+/**
+ * The rows a landing names: the item's final frozen set when it has one, since a refreeze after the
+ * claim is what the verdict checked, else its cited ids; in spec order when the spec is at hand.
+ *
+ * @param {any} item
+ * @param {{ rows: { id: string }[] } | null} [spec]
+ * @returns {string[]}
+ */
+export function landingRows(item, spec = null) {
+  let frozen = null;
+  try { frozen = item.item_frozen ? JSON.parse(item.item_frozen) : null; } catch { frozen = null; }
+  const ids = Array.isArray(frozen?.rows)
+    ? frozen.rows.map((row) => row.id)
+    : String(item.item_spec_ids ?? '').split(/[\s,]+/u);
+  return specOrder(ids.filter(Boolean), spec);
+}
+
+/**
+ * The whole landing message from board state through the shared builder [B3,R3]: header
+ * `<type>(merge): <title> [<rows that fit>,+N]`, then `Pullboard-Item` and `Pullboard-Rows` as the
+ * last paragraph. It never refuses for how many rows an item cites.
+ *
+ * @param {any} item
+ * @param {{ spec?: { rows: { id: string }[] } | null }} [options]
+ * @returns {{ header: string, body: string, trailers: string, message: string, rows: string[] }}
+ */
+export function landingMessage(item, { spec = null } = {}) {
+  const rows = landingRows(item, spec);
   // An item with no rows cites none, so its merge header names its lane's type: docs or test; anything else is chore (B3).
-  const type = item.item_spec_ids ? 'chore' : (LANE_MERGE_TYPES[item.item_lane] ?? 'chore');
-  const prefix = `${type}(merge): `;
-  const budget = 72 - prefix.length - suffix.length;
-  if (budget < 1) throw new Refused('LAND_HEADER', `item #${item.item_id} cites too many rows for a merge header; shorten its cited set before landing`);
-  const words = item.item_title.toLowerCase().replace(/[\p{Extended_Pictographic}\u200d\uFE0E\uFE0F]/gu, '').replace(/[\r\n]+/gu, ' ').replace(/\[[^\]]*\]/gu, '').trim().split(/\s+/u);
-  let subject = '';
-  for (const word of words) {
-    if ((subject ? `${subject} ${word}` : word).length > budget) break;
-    subject = subject ? `${subject} ${word}` : word;
+  const type = rows.length ? 'chore' : (LANE_MERGE_TYPES[item.item_lane] ?? 'chore');
+  return { ...buildCommitMessage({ type, scope: 'merge', title: item.item_title, item: item.item_id, rows }), rows };
+}
+
+/** Produce a hook-valid lower-case merge header at a word boundary [R3]. */
+export function landingSubject(item, options = {}) {
+  return landingMessage(item, options).header;
+}
+
+/**
+ * Check every item's landing message before the first merge of a batch [B3,R3]. The builder
+ * writes them, so a problem here is a Pullboard defect, never something an item's citations fix.
+ *
+ * @param {any[]} items
+ * @param {{ rows: { id: string }[] } | null} spec
+ * @returns {Map<number, ReturnType<typeof landingMessage>>}
+ */
+export function checkLandingMessages(items, spec) {
+  const messages = new Map();
+  for (const item of items) {
+    const built = landingMessage(item, { spec });
+    const problems = commitMessageProblems(built.message, { item: item.item_id, rows: built.rows });
+    if (problems.length) {
+      throw new Refused('LAND_HEADER', `the landing message for #${item.item_id} fails its own check (${problems.join('; ')}); nothing merged; shout the coordinator: pullboard shout coordinator "#${item.item_id} landing message fails its check"`);
+    }
+    messages.set(item.item_id, built);
   }
-  if (!subject) subject = `item ${item.item_id}`.length <= budget ? `item ${item.item_id}` : String(item.item_id);
-  if (subject.length > budget) throw new Refused('LAND_HEADER', `item #${item.item_id} has no title word that fits its merge header; shorten its cited set before landing`);
-  return `${prefix}${subject.replace(/\.$/u, '')}${suffix}`;
+  return messages;
+}
+
+/** The trunk spec a landing orders rows by, or none when the repo has no spec file. */
+function landingSpec(root, config) {
+  return config?.spec ? loadSpec(root, config) : null;
 }
 
 /** Keep the submitted identity and, when different, its sealed checked composition. */
@@ -255,6 +306,8 @@ async function mergeGroup(state, items) {
   const { batch } = state;
   if (!isClean(batch.root) || untracked(batch.root).length) throw new Refused('LAND_DIRTY', 'the landing worktree has unfinished edits; inspect its recorded path before adopting');
   git(batch.root, ['checkout', '--detach', batch.base]);
+  // Every message is built and checked before the first merge, so a bad one cannot land half a batch.
+  const messages = checkLandingMessages(items.map((entry) => store.getItem(state.board, entry.id ?? entry.item_id)), landingSpec(batch.root, state.config));
   const merged = [];
   const conflicts = [];
   const resolutions = [];
@@ -266,17 +319,19 @@ async function mergeGroup(state, items) {
     if (checked !== (entry.reviewedCommit ?? entry.commit ?? item.item_commit)) throw new Refused('LAND_ITEM_MOVED', `item #${item.item_id} was re-reviewed; rebuild its landing from the checked commit`);
     const stale = verdictProjector(state.root, state.board, { main: batch.base }).state(item);
     if (stale) throw staleVerdictRefusal(item, stale);
-    // The body is the item trailer alone: the subject carries the title, and no lane branch is named [B3,R3].
+    // The body is the trailer paragraph alone: the header carries the title, and no lane branch is named [B3,R3].
     // merge.log is switched off on this call, so a local Git config cannot append a shortlog to the body.
     const trunk = headCommit(batch.root);
-    const result = tryGit(batch.root, ['-c', 'merge.log=false', 'merge', '--no-ff', '--no-log', checked, '-m', landingSubject(item), '-m', `Pullboard-Item: #${item.item_id}`]);
+    const message = messages.get(item.item_id);
+    const result = tryGit(batch.root, ['-c', 'merge.log=false', 'merge', '--no-ff', '--no-log', checked, '-m', message.header, '-m', message.trailers]);
     if (result.status !== 0) {
       const files = tryGit(batch.root, ['diff', '--name-only', '--diff-filter=U']).stdout.split('\n').filter(Boolean);
       if (!files.length) throw new Refused('LAND_MERGE', `merge of #${item.item_id} failed outside a conflict: ${result.stderr || result.stdout}; inspect ${batch.root} and its hooks before adopting`);
       const resolved = resolveMechanicalMerge(batch.root, files);
       if (resolved) {
         git(batch.root, ['add', '--', ...files]);
-        git(batch.root, ['commit', '--no-edit']);
+        // The message is written again, so Git's conflict notes can never follow the trailers.
+        git(batch.root, ['commit', '-m', message.header, '-m', message.trailers]);
         resolutions.push({ id: item.item_id, files, entries: resolved });
         state.say(`mechanical merge #${item.item_id}: ${files.join(', ')}`);
       } else {
@@ -1306,6 +1361,7 @@ export async function runLandingBatch({ root, board, config, write, say, owner, 
   }
   const selected = candidates(board, root, trunk.commit, maximum);
   if (!dryRun) for (const item of selected.ready) requireOutsideOwner(board, item);
+  checkLandingMessages(selected.ready, landingSpec(root, config));
   const stale = selected.blocked.find(item => item.code === 'STALE_VERDICT');
   if (!selected.ready.length && stale) throw staleVerdictRefusal({ item_id: stale.id }, stale);
   if (dryRun) {

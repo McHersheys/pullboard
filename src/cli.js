@@ -386,7 +386,7 @@ import { unlinkedRelayProjects } from './relay-setup.js';
 import {
   accountedFailures,
   landingRemote,
-  landingSubject,
+  landingMessage,
   waivedFailures,
   waiverLine,
 } from './land.js';
@@ -1443,15 +1443,19 @@ export async function addBlueprint(ctx, board, me, blueprint, { report = true, r
  * @param {any} info
  * @param {any} item
  * @param {string} [commit] - The exact checked composition the acceptance authorizes.
+ * @param {{ spec?: any }} [options] - The spec the trailer's rows are ordered by.
  * @returns {string}
  */
-export function landNext(info, item, commit = item.item_commit) {
+export function landNext(info, item, commit = item.item_commit, { spec = null } = {}) {
   const mainRoot = primaryCheckoutRoot(info);
   const branch = mainCheckout(info.root)?.branch ?? '';
   const remote = landingRemote(info.root, branch);
+  // The hand merge writes the same generated message as pullboard land: the trailers are one paragraph.
+  const message = landingMessage(item, { spec });
+  const trailers = `"$(printf '%s\\n' ${message.trailers.split('\n').map(shellWord).join(' ')})"`;
   const command = remote
     ? 'pullboard land'
-    : `git merge --no-ff ${commit} -m ${shellWord(landingSubject(item))} && pullboard merged ${item.item_id} HEAD`;
+    : `git merge --no-ff ${commit} -m ${shellWord(message.header)} -m ${trailers} && pullboard merged ${item.item_id} HEAD`;
   if (!mainRoot) return `next: could not safely locate the primary checkout; run from the main checkout: ${command}`;
   if (remote) return `next: the coordinator lands it: ${cdTo(mainRoot)} ${command}`;
   return `next: this repo has no remote for pullboard land to push to, so the coordinator merges it on ${branch.replace(/^refs\/heads\//u, '') || 'the trunk'}: ${cdTo(mainRoot)} ${command}`;
