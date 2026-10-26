@@ -94,6 +94,12 @@ test('[N39,N26] the view key becomes a cookie', async (t) => {
   const routed = await exchange(port, `/roadmap?q=launch&k=${encodeURIComponent(key)}`, key);
   assert.equal(routed.landed.pathname + routed.landed.search, '/roadmap?q=launch', 'any address keeps its path and other parameters');
   assert.equal(routed.pair, pair, 'one session, one cookie');
+  const opened = await get(port, `/roadmap?k=${encodeURIComponent(key)}`);
+  assert.equal(opened.headers.location, '/roadmap', 'the redirect is relative, so a page opened through a proxy stays behind it');
+  for (const path of [`//pullboard.example/?k=${encodeURIComponent(key)}`, `/\\pullboard.example/?k=${encodeURIComponent(key)}`]) {
+    const elsewhere = await get(port, path);
+    assert.ok(!/^[/\\]{2}|^[a-z]+:/iu.test(String(elsewhere.headers.location ?? '/')), `${path.split('?')[0]}: the redirect never names another host`);
+  }
 
   // The clean address works with the cookie alone: the page, its stylesheet and its API.
   const page = await get(port, '/', { cookie: pair });

@@ -2,7 +2,7 @@
 /** The view opens on whether the rules hold, then what needs the person; Items stay one click away [N26,U91]. */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { fetchLive, machine, openPage, project, startView, storage } from './fixture.js';
+import { fetchPage, machine, openPage, project, startView, storage } from './fixture.js';
 
 /** Two gated rows, one approved aim with no gate, and an open question for the person. */
 const SPEC = `# Home spec
@@ -24,7 +24,7 @@ test('the first screen shows the rules and their proof before the work queue [N2
   const alpha = project(box, 'alpha', SPEC);
   const view = await startView(box);
   try {
-    const html = await (await fetchLive(view.link)).text();
+    const html = await (await fetchPage(view)).text();
     const before = (first, then) => html.includes(first) && html.indexOf(first) < html.indexOf(then);
     assert.ok(before('data-tab="home"', 'data-tab="items"'), 'Home is the first tab, Items the next');
     assert.ok(before('data-pane="home"', 'data-pane="items"'), 'the rules come before the work queue');

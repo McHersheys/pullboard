@@ -249,6 +249,19 @@ async function styleOf(view) {
 }
 
 /**
+ * Fetch one of the view's own pages at its clean address, as the browser does once the printed link has
+ * traded its key for the session cookie (N39).
+ *
+ * @param {{ base: string, cookie?: string }} view
+ * @param {string} [path]
+ * @param {RequestInit} [init]
+ * @returns {Promise<Response>}
+ */
+function fetchPage(view, path = '/', init = {}) {
+  return fetchLive(`${view.base}${path}`, { ...init, headers: { ...init.headers, ...(view.cookie ? { cookie: view.cookie } : {}) } });
+}
+
+/**
  * An element as the page's script uses one: what it writes, how often it rewrote its markup, its
  * classes and attributes, the listeners it adds, and how often it was scrolled into view.
  */
@@ -1262,4 +1275,4 @@ async function searchFor(chrome, words, timeoutMs) {
   }
 }
 
-export { BIN, scratch, chooseFilter, tapTarget, SPEC, machine, project, build, sendBack, fetchReason, fetchView, fetchLive, startView, styleOf, element, ageNodes, target, settle, storage, daysOn, openPage, projectRows, productEntries, timelineRows, agentEntries, drawing, textBoxes, meet, accept, needEntries, itemRow, boardId, boardOf, assertObservationAges, withoutObservationAges, assertObservationsEqual, shoutNameText, chromeExecutable, browserPause, startSnapshotChrome, openSnapshotChrome, stopOwnedChrome, closeSnapshotChrome, watchSpecDecisionWait, earlier, shoutsAt, press, tapTouch, pickProject, travel, pressedInto, settled, roadmapRow, showing, readRoadmap, openRoadmapParts, tabBar, serveFolder, proofShot, searchFor, allowLiveHold, holdLive };
+export { BIN, scratch, chooseFilter, tapTarget, SPEC, machine, project, build, sendBack, fetchReason, fetchView, fetchLive, fetchPage, startView, styleOf, element, ageNodes, target, settle, storage, daysOn, openPage, projectRows, productEntries, timelineRows, agentEntries, drawing, textBoxes, meet, accept, needEntries, itemRow, boardId, boardOf, assertObservationAges, withoutObservationAges, assertObservationsEqual, shoutNameText, chromeExecutable, browserPause, startSnapshotChrome, openSnapshotChrome, stopOwnedChrome, closeSnapshotChrome, watchSpecDecisionWait, earlier, shoutsAt, press, tapTouch, pickProject, travel, pressedInto, settled, roadmapRow, showing, readRoadmap, openRoadmapParts, tabBar, serveFolder, proofShot, searchFor, allowLiveHold, holdLive };

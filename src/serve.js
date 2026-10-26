@@ -706,8 +706,10 @@ export async function serveView({ port = 0, secret = randomBytes(18).toString('b
     }
     if (req.method === 'GET' && url.searchParams.has('k')) {
       url.searchParams.delete('k');
+      // A relative address keeps the browser on whatever origin it opened, so a page reached through a proxy stays
+      // behind it; collapsing leading slashes keeps "//elsewhere" from reading as another host.
       return reply(res, 303, 'text/plain; charset=utf-8', '', {
-        location: `http://${req.headers.host}${url.pathname}${url.search}`,
+        location: `/${url.pathname.replace(/^[/\\]+/u, '')}${url.search}`,
         ...(validKey ? { 'set-cookie': `${cookieName}=${session}; Path=/; HttpOnly; SameSite=Strict` } : {}),
       });
     }

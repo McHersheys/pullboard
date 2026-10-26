@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { generateStressBoard, removeStressBoard } from './perf/generate.mjs';
-import { BIN, tapTarget, SPEC, machine, project, build, sendBack, fetchLive, startView, target, accept, chromeExecutable, openSnapshotChrome, closeSnapshotChrome, press, travel, pressedInto, settled, roadmapRow, showing, readRoadmap, openRoadmapParts, tabBar, proofShot, pickProject, chooseFilter } from './fixture.js';
+import { BIN, tapTarget, SPEC, machine, project, build, sendBack, fetchLive, fetchPage, startView, target, accept, chromeExecutable, openSnapshotChrome, closeSnapshotChrome, press, travel, pressedInto, settled, roadmapRow, showing, readRoadmap, openRoadmapParts, tabBar, proofShot, pickProject, chooseFilter } from './fixture.js';
 
 
 /** The roadmap state a failed wait saw: its tab, rows, row ids and expansion, dots and open detail (#938). */
@@ -196,8 +196,8 @@ test('the roadmap reads every item as the Items tab does, opens each one, anothe
   const profile = mkdtempSync(join(tmpdir(), 'pullboard-roadmap-chrome-'));
   let chrome;
   try {
-    const direct = await fetchLive(new URL(roadmap, view.link));
-    assert.equal(direct.status, 200, 'the view serves its page at /roadmap, behind its secret');
+    const direct = await fetchPage(view, roadmapPath);
+    assert.equal(direct.status, 200, 'the view serves its page at /roadmap, behind its session cookie');
     assert.equal((await fetchLive(new URL('/roadmap', view.link))).status, 403, 'and nothing there without the secret');
     chrome = await openRoadmapChrome(executable, new URL(roadmap, view.link).href, profile);
     const consoleErrors = [];
@@ -244,13 +244,13 @@ test('the roadmap reads every item as the Items tab does, opens each one, anothe
       // An item opens on the Items tab; Back shows the Roadmap at its address again, Forward the item.
       await openRoadmapItem(chrome, '#3');
       await pressedInto(chrome, `${showing('items', '/roadmap-demo/items/3')} && document.querySelector('#detail h2')?.innerText.includes('Session timeout banner')`);
-      assert.equal(await chrome.stable('location.search'), view.link.search, `${width}: the address keeps the rest of itself`);
+      assert.equal(await chrome.stable('location.search'), '', `${width}: the address keeps the rest of itself, which holds no key`);
       await travel(chrome, -1);
       await settled(chrome, `${showing('roadmap', roadmapPath)} && document.querySelector('.tab.on')?.dataset.tab === 'roadmap'`);
       await travel(chrome, 1);
       await settled(chrome, `${showing('items', '/roadmap-demo/items/3')} && document.querySelector('.tab.on')?.dataset.tab === 'items' && document.querySelector('#detail h2')?.innerText.includes('Session timeout banner')`);
       await press(chrome, `document.querySelector('[data-tab="roadmap"]')`);
-      await pressedInto(chrome, `${showing('roadmap', roadmapPath)} && location.search === ${JSON.stringify(view.link.search)}`);
+      await pressedInto(chrome, `${showing('roadmap', roadmapPath)} && location.search === ''`);
     }
 
     // Another repo's item opens on its own board, and Back and Forward move between the two boards.
