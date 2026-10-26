@@ -421,11 +421,8 @@ async function rawRequest(state, path, { method = 'GET', body, allowMissing = fa
       if (storage) error.storage = storage;
       throw error;
     }
-    if (document.version !== 1) {
-      const error = new Refused('RELAY_VERSION', 'the relay API version is unsupported; upgrade Pullboard before syncing');
-      if (Number.isSafeInteger(document.version)) error.relayVersion = document.version;
-      throw error;
-    }
+    if (document.version !== 1) throw Object.assign(new Refused('RELAY_VERSION', 'the relay API version is unsupported; upgrade Pullboard before syncing'),
+      Number.isSafeInteger(document.version) ? { relayVersion: document.version } : {});
     return document;
   } finally { finishPhase(); }
 }
