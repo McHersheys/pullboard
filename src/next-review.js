@@ -26,7 +26,7 @@ export async function returnUnmergeable(root, board, me, { ordered, trunkMerge }
     catch (error) { if (error instanceof Refused) return returned; throw error; }
     if (!merge.files?.length) continue;
     try {
-      await ordered('reopen', [item.item_id, { agentId: me.id, conflict: { files: merge.files, trunk: merge.commit } }]);
+      await ordered('reopen', [item.item_id, { agentId: me.id, automaticConflict: true }]);
       returned.push({ id: item.item_id, files: merge.files });
     } catch (error) {
       // Only a race is forgiven: another move already took the head out of review. A head still waiting

@@ -206,6 +206,7 @@ export async function tour(io) {
     step(4, 'A second agent checks out exactly that commit and tries the edge the builder skipped.');
     pb('coordinator', ['worktree', 'review', '--model', 'Scripted'], { show: /^made /, label: 'pullboard worktree review --model Scripted' });
     run('review-1', 'git', ['switch', '-q', '--detach', first]);
+    pb('review-1', ['next', '--verify', '1'], { show: /^next to verify/ });
     const edge = run('review-1', process.execPath, TRY_EDGE, { label: "node -e \"greet('')\"" });
     pb('review-1', ['verify', '1', 'reject', '--reason', 'BEHAVIOR_MISMATCH', '--note', `greet('') returns "${edge}"; G1 says a blank name greets the world`], { tone: 'red' });
 
@@ -221,6 +222,7 @@ export async function tour(io) {
 
     step(7, 'The verifier breaks the fix on purpose, to prove the new test can fail, then restores it and accepts.');
     run('review-1', 'git', ['switch', '-q', '--detach', second]);
+    pb('review-1', ['next', '--verify', '1'], { show: /^next to verify/ });
     write('review-1', { 'src/greet.mjs': FIRST });
     // Pin the summary we display: Node 24 defaults to the spec reporter even through a pipe.
     run('review-1', process.execPath, ['--test', '--test-reporter=tap'], { label: 'node --test   # with the fix removed', show: /^# (pass|fail)/, fails: true, tone: 'red' });
