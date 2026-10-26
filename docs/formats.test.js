@@ -1,5 +1,6 @@
 /** @pullboard-test-input source-tree */
 /** Keep the format guide aligned with parser behavior, live SQLite schema and static export [A5,A10]. */
+import { recordRelayExclusionIntent } from '../src/relay-exclusion-state.js';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -447,6 +448,7 @@ function recordEventContract() {
   beginSentinelRun(board, { agentId: coordinator, name: watch.name, digest: watch.digest, run: 'format-run' });
   finishSentinelRun(board, { agentId: coordinator, name: watch.name, digest: watch.digest, run: 'format-run',
     result: { green: false, code: 1, timedOut: false, durationMs: 0, output: 'synthetic format receipt' } });
+  recordRelayExclusionIntent(board, 'view'); // Synthetic person format fixture, not a real settings opt-out.
   const rows = events(board).map((row) => ({ ...row, detail: JSON.parse(row.event_detail) }));
   closeBoard(board);
   return { rows, actors: { [coordinator]: 'coordinator', [builder]: 'builder', [returnedBuilder]: 'builder', [reviewer]: 'reviewer', [PERSON]: 'person', board: 'board', rigor: 'rigor' } };
