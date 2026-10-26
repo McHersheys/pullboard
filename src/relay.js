@@ -1615,7 +1615,7 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
     if (state.linkPending) {
       if (signed.linkConfirmed && signed.linkedBoard !== state.board) throw new Refused('RELAY_RESPONSE', 'the relay confirmed a different board; sign in again');
       // Another board is the repository's: forget this never-linked intent so relay on can join it [E12].
-      if (!reusableCredential && !signed.linkConfirmed) await request({ ...state, token: signed.token }, '/auth/boards/link', { method: 'POST', body: { board: state.board, repository, ...(state.replaces ? { replaces: state.replaces } : {}) } }, io)
+      if (!reusableCredential && !signed.linkConfirmed) await (await import('./relay-relink.js')).linkReplacing((replaces) => request({ ...state, token: signed.token }, '/auth/boards/link', { method: 'POST', body: { board: state.board, repository, ...(replaces ? { replaces } : {}) } }, io), state.replaces)
         .catch((error) => { if (error.code === 'BOARD_REPO_LINKED') restoreConfig(() => { rmSync(file, { force: true }); forgetBoardKey(state.board, state.keyStorage); }); throw error; });
       delete state.linkPending; delete state.replaces;
       saveLink(file, state);
