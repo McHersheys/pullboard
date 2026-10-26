@@ -29,6 +29,11 @@ import { handOverBoardKeys, statementBytes } from '../src/relay-handover.js';
 import { signSshVouch } from '../src/relay-ssh-proof.js';
 import { assertMatchingLandingHost, assertNoCulpritTrunkHold } from './landing-environment-fixture.js';
 import { landingQueueCase } from './landing-queue-fixture.js';
+import {
+  prepareKeylessInbox,
+  readKeylessInbox,
+  finishKeylessInbox,
+} from './inbox-key-fixture.js';
 
 const CLI = join(import.meta.dirname, '..', 'bin', 'pullboard.js');
 
@@ -841,15 +846,17 @@ test('every session reads and moves: terminal, SSH, agent, job or CI [E9,E18]', 
 
   // S6b: a session that cannot read the key (SSH, a scheduled job, a locked keychain) still reads the whole board.
   assert.equal((await box.cli('add', box.lane, 'Read from any session')).code, 0);
+  const inbox = await prepareKeylessInbox(box);
   renameSync(keys, keys + '.parked');
   try {
     for (const command of [['list'], ['show', '1'], ['inbox'], ['whoami'], ['status'], ['resume'], ['log']]) {
-      const read = await box.cli(...command);
+      const read = command[0] === 'inbox' ? await readKeylessInbox(box, inbox) : await box.cli(...command);
       assert.equal(read.code, 0, `${command[0]} reads without the key: ${JSON.stringify(read.document?.error ?? null)}`);
     }
     const move = await box.cli('add', box.lane, 'Needs the key');
     assert.equal(move.document?.error?.code, 'RELAY_KEY_MISSING', 'a move without the key is refused, never sent or lost');
   } finally { renameSync(keys + '.parked', keys); }
+  await finishKeylessInbox(box, inbox);
 
   // S6c: a CI or cloud session, with an agent token and the board key in its environment and no key file, reads and moves.
   // The project's committed setup is what every checkout, CI's included, gets.

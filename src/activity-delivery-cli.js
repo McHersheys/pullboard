@@ -68,14 +68,14 @@ export async function deliverActivity(ctx, { actedIds = [], afterSubmit = false,
     else {
       try { await recordIncluded(ctx, board, me.id, observation); }
       catch (error) {
-        if (!(error instanceof Refused) || error.code !== 'RELAY_RECOVERY_PENDING') throw error;
-        // Recovery keeps canonical writes fenced; unread obligations replay until their delivery is recorded.
+        if (!(error instanceof Refused) || !['RELAY_RECOVERY_PENDING', 'RELAY_KEY_MISSING'].includes(error.code)) throw error;
+        // A read remains available while canonical writes are fenced; its obligations remain unrecorded.
         activity.receipt = { recorded: false, code: error.code, message: error.message };
       }
     }
     return { shouts, agents: store.listAgents(board), activity, local };
   });
-  if (!saveActivityCursor(delivered.local, delivered.activity.cursor)) {
+  if (delivered.activity.receipt?.recorded !== false && !saveActivityCursor(delivered.local, delivered.activity.cursor)) {
     ctx.io.err('activity cursor could not be saved; activity may repeat when you read inbox again');
   }
   const { local, ...result } = delivered;
