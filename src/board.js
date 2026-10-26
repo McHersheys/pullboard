@@ -1,6 +1,7 @@
 import { foreignBlockers } from './cross-repo-dependencies.js';
 import {
   dependencyValues,
+  validateNativeDependencies,
   localDependencyIds,
   dependencyLabel,
 } from './item-dependencies.js';
@@ -864,7 +865,7 @@ export function validateItemEdit(board, id, { agentId, brief, route, criterion, 
     if (!Array.isArray(after)) {
       throw new Refused('BAD_DEPENDENCIES', 'item dependencies must be an array of positive integer item ids; use --after 1,2 or --after none');
     }
-    dependencyValues(after);
+    validateNativeDependencies(after);
     validateItemDependencies(board, id, after);
   }
   const next = {

@@ -17,6 +17,15 @@ export function parseDependency(value) {
   return { kind: 'foreign', repo: match[1], id: Number(match[2]) };
 }
 
+/** Keep native dependency-edit arrays typed; only CLI and persisted fields decode textual local ids. */
+export function validateNativeDependencies(value) {
+  if (!Array.isArray(value)) invalid();
+  for (const part of value) {
+    const reference = parseDependency(part);
+    if (reference.kind === 'local' && typeof part !== 'number') invalid();
+  }
+}
+
 /** Read a persisted comma-separated field or a public dependency list as typed references. */
 export function dependencyReferences(value) {
   if (value && typeof value === 'object' && !Array.isArray(value)) value = value.item_after;
