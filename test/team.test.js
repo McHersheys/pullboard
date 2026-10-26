@@ -1,4 +1,5 @@
 /** @pullboard-test-loads src/board.js src/engine.js src/exchange.js */
+import { submitFixture as submitBoardStateFixture } from './board-submit-fixture.js';
 /** Two independent Git/SQLite replicas derive verdict freshness without rewriting proof [E8]. */
 import { signedBoard, consent, linkRelay } from './board-link-fixture.js';
 import { submitFixture } from './board-submit-fixture.js';

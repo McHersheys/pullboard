@@ -1,3 +1,8 @@
+import { computedReturnArgs } from './computed-conflict-return.js';
+import { requirePreparedComputedConflict } from './computed-conflict-receipt.js';
+import { preflightComputedConflict } from './computed-conflict-receipt.js';
+import { agentGrantMinimum } from './agent-grant.js';
+import { requireAgentGrant } from './agent-grant.js';
 import { boundProofReceipt } from './proof-receipts.js';
 import {
   handoffMoveProblem,
@@ -90,6 +95,7 @@ export function startRelayEpoch(board, boardId) {
 /** Turn caller-only callbacks into deterministic values before sealing an executable operation. */
 export function prepareEngineMove(board, operation, args, { id = randomUUID(), actor } = {}) {
   if (!ENGINE_OPERATIONS.includes(operation) || !Array.isArray(args)) throw new Refused('RELAY_MOVE', 'use a supported board-engine operation with its argument array');
+  if (operation === 'reopen') args = computedReturnArgs(board, args);
   const values = args.map((value) => value && typeof value === 'object' ? { ...value } : value);
   if (operation === 'reopen' && values[1] && typeof values[1] === 'object'
     && manualLandingFailureQuoted(values[1].note)) values[1].quotedLandingFailure = true;
@@ -103,10 +109,14 @@ export function prepareEngineMove(board, operation, args, { id = randomUUID(), a
   if (operation === 'claim' && ['wipPerReviewer', 'takeoverMinutes'].some(key => typeof lineSettings(board)[key] === 'number')) {
     values[1] = { ...values[1], lineCapacity: true };
   }
-  const minimumEngine = minimumOperationEngine(operation, values, board);
+  const minimumEngine = Math.max(minimumOperationEngine(operation, values, board), agentGrantMinimum(board, { operation, args: values }));
   if (ENGINE_VERSION < minimumEngine) throw new Refused('ENGINE_VERSION', `${operation} requires engine version ${minimumEngine}; this pullboard uses engine ${ENGINE_VERSION}; upgrade before sending it`);
   // A gate run is sealed only as its gate's own receipt; a run made up by hand is refused before it reaches any replica.
   if (operation === 'recordGateRun') requireBound(board, values[0]?.receipt);
+  if (operation === 'reopen' && values[1]?.computedConflict !== undefined) {
+    if (values[1].conflict !== undefined) throw new Refused('COORDINATOR_ONLY', 'automatic conflict evidence accepts no caller conflict assertion');
+    requirePreparedComputedConflict(board, values[0], values[1].agentId, values[1].computedConflict);
+  }
   if (operation === 'verify' && values[1]?.sandbox !== undefined) requireOutsideReceipt(board, values[1].sandbox);
   if (operation === 'release') {
     const problem = store.reviewReleaseNoteProblem(board, values[0], values[1], values[2]);
@@ -295,8 +305,10 @@ export function applyEngineMove(board, move, { sequence, at, standing = null, en
     let outcome = previous?.outcome;
     if (!outcome) {
       // Existing receipts replay before consulting newer snapshot semantics.
-      const minimumEngine = minimumOperationEngine(move.operation, move.args, board, new Date(at));
+      const minimumEngine = Math.max(minimumOperationEngine(move.operation, move.args, board, new Date(at)), agentGrantMinimum(board, move));
       if (move.engine < minimumEngine) throw new Refused('RELAY_MOVE', `${move.operation} cannot act on a checked-composition snapshot from engine ${move.engine}; use engine ${minimumEngine} or newer`);
+      // Missing immutable objects abort before a refusal receipt or cursor could make a fetch unrecoverable.
+      if (move.operation === 'reopen' && move.args[1]?.computedConflict !== undefined) preflightComputedConflict(board, move.args[0], move.args[1].agentId, move.args[1].computedConflict);
       const clock = board.clock;
       const engineVersion = board.executionEngineVersion;
       board.clock = { now: () => new Date(at) };
@@ -312,6 +324,7 @@ export function applyEngineMove(board, move, { sequence, at, standing = null, en
           // One main checkout coordinates a linked board at a time; another is refused by name (#347).
           requireCoordinatorHold(board, move, standing?.lineage, at);
           requireHandoffActive(board, relayMoveActor(move), move.operation, move.args);
+          requireAgentGrant(board, move);
           return store[move.operation](board, ...executableArgs(move, board));
         });
         const result = standing ? store.withVerifierStanding(board, standing, execute) : execute();
