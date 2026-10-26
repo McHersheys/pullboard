@@ -162,7 +162,11 @@ test('one header per item type: the type is the item\'s commits\' first of feat,
   for (const type of ['feat', 'fix', 'test']) {
     const rowless = landingMessage({ ...item, item_spec_ids: '', item_lane: 'docs' }, { type });
     assert.equal(rowless.message, `${type}(merge): typed landing\n\nPullboard-Item: #40`);
-    assert.deepEqual(commitMsgProblems(rowless.message, { rules, spec }), [], `the commit hook accepts a rowless ${type} landing`);
+    assert.deepEqual(commitMsgProblems(rowless.message, { rules, spec, rowlessLandings: [40] }), [], `a landing checkout accepts a rowless ${type} landing`);
+    if (type !== 'test') {
+      assert.notDeepEqual(commitMsgProblems(rowless.message, { rules, spec }), [], `outside a landing the ${type} trailer exempts nothing`);
+      assert.notDeepEqual(commitMsgProblems(rowless.message.replace('#40', '#999'), { rules, spec, rowlessLandings: [40] }), [], 'another item\'s trailer exempts nothing');
+    }
   }
   assert.equal(landingMessage({ ...item, item_spec_ids: '', item_lane: 'docs' }).header, 'docs(merge): typed landing', 'no typed commit: the lane rule');
   assert.notDeepEqual(commitMsgProblems('feat(core): add it', { rules, spec }), [], 'a work commit still cites its rows');

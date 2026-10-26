@@ -123,10 +123,11 @@ function citationGuide(spec, type) {
  * Every rule a commit message breaks (C1, C2). Merges, reverts and fixups git wrote are exempt.
  *
  * @param {string} raw - The message as git hands it, comments included.
- * @param {{ rules: any, spec: any, doctrine?: any, claimedItems?: number[] }} context
+ * @param {{ rules: any, spec: any, doctrine?: any, claimedItems?: number[], rowlessLandings?: number[] }} context
+ *   rowlessLandings: verified items citing no rows that a landing checkout may merge now.
  * @returns {string[]}
  */
-export function commitMsgProblems(raw, { rules, spec, doctrine = null, claimedItems = [] }) {
+export function commitMsgProblems(raw, { rules, spec, doctrine = null, claimedItems = [], rowlessLandings = [] }) {
   const lines = raw.split('\n').filter((line) => !line.startsWith('#'));
   while (lines.length && !lines.at(-1)?.trim()) lines.pop();
   const [header = '', second, ...body] = lines;
@@ -141,10 +142,10 @@ export function commitMsgProblems(raw, { rules, spec, doctrine = null, claimedIt
   const itemCitations = [...header.matchAll(/(?:^|\s)#([1-9]\d*)(?=\s|$)/gu)].map(match => Number(match[1]));
   const firstItem = !spec.rows.some(row => row.status === 'approved')
     && itemCitations.some(id => claimedItems.includes(id));
-  // A generated landing message names its item in a trailer; one that cites no rows has no brackets and no
-  // Pullboard-Rows trailer, yet keeps the item's own type (RFC 0005), so the id rule reads the trailer.
+  // A generated landing message keeps a rowless item's own type (RFC 0005), so it has no ids to cite. Only a
+  // landing checkout, merging a verified item the board says cites no rows, passes on its trailer.
   const landing = parseCommitMessage(lines.join('\n'));
-  const rowlessLanding = landing.scope === 'merge' && landing.item !== null && landing.rows === null;
+  const rowlessLanding = landing.scope === 'merge' && landing.rows === null && rowlessLandings.includes(landing.item);
   if (type && rules.requireIds.includes(type) && !ids.length && !firstItem && !rowlessLanding) {
     problems.push(
       citationGuide(spec, type),

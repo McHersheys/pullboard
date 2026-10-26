@@ -32,7 +32,7 @@ function localProject() {
 
 /** Add one web item and a builder worktree that claims it. */
 function claimedItem(box, title, specs, file) {
-  const added = box.run(box.repo, 'add', 'web', title, '--specs', specs.join(','), '--criterion', `${file} exists`, '--check', `test -f ${file}`, '--json');
+  const added = box.run(box.repo, 'add', 'web', title, ...(specs.length ? ['--specs', specs.join(',')] : []), '--criterion', `${file} exists`, '--check', `test -f ${file}`, '--json');
   assert.equal(added.code, 0, added.err);
   const id = JSON.parse(added.out).item.item_id;
   const made = box.run(box.repo, 'worktree', 'web', '--model', 'message-builder', '--json');
@@ -44,8 +44,8 @@ function claimedItem(box, title, specs, file) {
 }
 
 /** Commit, submit and accept one item as the coordinator at its submitted commit. */
-function buildAndAccept(box, entry) {
-  const committed = commitFile(box, entry.path, entry.file, 'built\n', `feat(web): build ${entry.file.split('/').pop()} [Z1]`);
+function buildAndAccept(box, entry, header = `feat(web): build ${entry.file.split('/').pop()} [Z1]`) {
+  const committed = commitFile(box, entry.path, entry.file, 'built\n', header);
   assert.equal(committed.status, 0, committed.stderr);
   const submitted = box.run(entry.path, 'submit', String(entry.id), '--json');
   assert.equal(submitted.code, 0, submitted.err);
@@ -89,4 +89,25 @@ test('a landing batch writes ids that fit then +N, and every frozen row in spec 
   for (const message of messages.values()) assert.ok(message.split('\n')[0].length <= 72, message);
   // Git's own trailer reader agrees with the shared parser.
   assert.equal(box.git(box.repo, 'log', '-1', '--format=%(trailers:key=Pullboard-Rows,valueonly)', merges.find((commit) => box.git(box.repo, 'log', '-1', '--format=%B', commit) === messages.get(many.id))), ROWS.join(','));
+});
+
+test('a rowless feat item lands under feat(merge) through the real hooks, and a seat cannot borrow that exemption [C7,B3,R3]', () => {
+  const box = localProject();
+  const rowless = claimedItem(box, 'Rowless feature', [], 'web/rowless.txt');
+  buildAndAccept(box, rowless, 'feat(web): build the rowless feature [G1]');
+  // A seat commit headed like a landing, naming the verified rowless item or an unknown one, still cites rows.
+  const seat = claimedItem(box, 'Seat work', ['G1'], 'web/seat.txt');
+  for (const id of [rowless.id, 999]) {
+    const forged = commitFile(box, seat.path, `web/forged-${id}.txt`, 'forged\n', `feat(merge): unrelated work\n\nPullboard-Item: #${id}`);
+    assert.notEqual(forged.status, 0, `a seat commit with Pullboard-Item: #${id} is refused`);
+    assert.match(forged.stderr + forged.stdout, /spec rows/u);
+  }
+  const base = box.git(box.repo, 'rev-parse', 'main');
+  const landed = box.run(box.repo, 'land', '--json');
+  assert.equal(landed.code, 0, landed.err || landed.out);
+  assert.deepEqual(JSON.parse(landed.out).landed, [rowless.id]);
+  const merge = box.git(box.repo, 'rev-list', '--first-parent', '-n', '1', 'main');
+  assert.notEqual(merge, base);
+  assert.equal(box.git(box.repo, 'log', '-1', '--format=%B', merge), `feat(merge): rowless feature\n\nPullboard-Item: #${rowless.id}`,
+    'the item keeps its feat type with no brackets and no Pullboard-Rows trailer');
 });

@@ -2,6 +2,7 @@
 import * as store from '../board.js';
 import { pendingCommitSignoffProblem } from '../commit-signoff.js';
 import { landingBatchOwnsRoot } from '../landing-candidates.js';
+import { landingRows } from '../landing-message.js';
 import {
   hookRead,
   readStdin,
@@ -86,7 +87,11 @@ export async function hookCommand(io, { first, second }) {
       return agent ? store.listItems(board, { lane: agent.agent_lane }).filter(item =>
         item.item_status === 'claimed' && item.item_owner === agent.agent_id).map(item => item.item_id) : [];
     }) ?? []);
-    problems = commitMsgProblems(message, { rules: ctx.config.commits, spec, doctrine: ctx.doctrine, claimedItems });
+    // Only the main checkout or a landing worktree merges a verified item; elsewhere no trailer exempts a header.
+    const rowlessLandings = hookRead(ctx, (board) => (info.isMain || store.landingBatches(board).some((batch) => landingBatchOwnsRoot(batch, info.root))
+      ? store.listItems(board, { all: true }).filter((item) => item.item_status === 'verified' && !item.item_merged_commit && !landingRows(item).length).map((item) => item.item_id)
+      : [])) ?? [];
+    problems = commitMsgProblems(message, { rules: ctx.config.commits, spec, doctrine: ctx.doctrine, claimedItems, rowlessLandings });
   } else if (first === 'pre-push') {
     const refsText = await readStdin(io.stdin);
     if (gitBoardDataPush(info.root, refsText)) {
