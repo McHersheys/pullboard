@@ -32,8 +32,8 @@ import {
   roadmapSummary,
 } from './view/roadmap-summary.js';
 import { roadmapBlock } from './view/roadmap-block.js';
-import { openPageDialog } from './view/page-dialog.js';
-import { closePageDialog } from './view/page-dialog.js';
+import { openPageDialog, closePageDialog } from './view/page-dialog.js';
+import { needsEntries, renderNeedsRow } from './view/needs-list.js';
 import { applyStateDelta } from './api-http.js';
 import { pageScriptPart1 } from './view/page-script-1.js';
 import { pageScriptPart2 } from './view/page-script-2.js';
@@ -1126,11 +1126,7 @@ function render() {
   // on the board with who holds it; it is the agents' to move.
   const personalNeeds = personNeeds(p);
   // Adapt display targets and the existing hold age without reimplementing which calls belong here.
-  const needs = personalNeeds.filter((row) => !['draft', 'rigor-draft', 'sentinel-draft', 'agent-approved'].includes(row.kind)).map((row) => row.kind === 'spec-revision' ? { revision: row } : row.kind === 'decision'
-    ? ['decide:' + row.id, row.ref, row.text, 'decide', row.at]
-    : row.kind === 'pending' ? ['spec:' + row.id, row.ref, row.text, 'answer ' + row.ref] // the person's words; agents get the command (#875)
-      : row.kind === 'block' ? [null, row.ref, row.text, row.what, row.at, 'block']
-        : ['tab:shouts', row.ref, row.text, row.what, p.holds.find((hold) => hold.hold_lane === row.id)?.hold_at]);
+  const needs = (${needsEntries.toString()})(personalNeeds, p.holds);
   const drafts = personalNeeds.find((row) => row.kind === 'draft')?.count ?? 0;
   const rigorDrafts = personalNeeds.filter((row) => row.kind === 'rigor-draft');
   const sentinelDrafts = personalNeeds.filter((row) => row.kind === 'sentinel-draft');
@@ -1141,9 +1137,7 @@ function render() {
   $('needs').hidden = (!needs.length && !drafts && !rigorDrafts.length && !sentinelDrafts.length && !agentApprovals.length) || view.state !== 'active' || Boolean(view.lane);
   const needRow = ([target, ref, text, what, at], kind, action) => '<li class="row ask"' + (readOnly || !target ? '' : ' data-go="' + esc(target) + '"') + '><span class="dot ask"></span><div><div class="t">' + (ref ? '<span>' + esc(ref) + '</span>' : '') + rich(text, titles, !readOnly) + '</div>'
     + (at ? '<span class="row-age">' + age(at) + '</span>' : '') + '<div class="meta"><span class="why"><b>NEEDS YOU</b> ' + esc(kind) + '</span></div></div><span class="chip warn">' + esc(action) + '</span></li>';
-  const needKind = (entry) => entry.revision ? specRevisionRow(entry.revision) : entry[5] === 'block' ? needRow(entry, entry[3], 'next step')
-    : entry[3] === 'decide' ? needRow([entry[0], '', entry[2], entry[3], entry[4]], 'a decision, asked by ' + entry[1], 'decide')
-      : entry[0].startsWith('spec:') ? needRow(entry, 'an open question in SPEC.md', 'answer') : needRow(entry, entry[3], 'release');
+  const needKind = (${renderNeedsRow.toString()}).bind(null, needRow, specRevisionRow);
   const needsHtml = needs.map(needKind).join('')
     + rigorDrafts.map(row => needRow([row.unproved && !row.materialized ? null : row.target, row.ref,
       row.unproved && !row.materialized ? row.text + ' ' + row.what : row.text],
