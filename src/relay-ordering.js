@@ -46,7 +46,7 @@ export function relayOrdering({ request, localRecords, decoded, replayRelayRecor
   async function applyRecords(root, key, state, records) {
     const outcomes = [];
     for (const record of records) {
-      const board = store.openBoard(join(repoInfo(root).commonDir, 'pullboard', 'board.sqlite'), undefined, { isMain: codeIsFromMain() });
+      const board = store.openBoard(join(repoInfo(root).commonDir, 'pullboard', 'board.sqlite'), undefined, { isMain: codeIsFromMain(), gitRoot: root });
       try { outcomes.push(await replayRelayRecord(board, key, state, record)); } finally { store.closeBoard(board); }
     }
     return outcomes;

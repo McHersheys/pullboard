@@ -15,6 +15,10 @@ permissions:
 
 jobs:
   publish:
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -59,7 +63,33 @@ jobs:
           console.log(`${label}: all ${linux.length} Linux jobs succeeded for ${run.headSha}.`);
           appendFileSync(process.env.GITHUB_OUTPUT, 'passed=true\n');
           NODE
+      - name: Release notes from the tagged changelog section
+        run: |
+          node --input-type=module <<'NOTES'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const tag = process.env.GITHUB_REF_NAME;
+          if (!/^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u.test(tag ?? '')) {
+            throw new Error('The release tag must name a version; refusing publication.');
+          }
+          const source = readFileSync('CHANGELOG.md', 'utf8');
+          const headings = [...source.matchAll(/^##[ \t]+([^\r\n]+)(?:\r?\n|$)/gmu)];
+          const title = '[' + tag.slice(1) + ']';
+          // Match the whole version label, never a prefix or the Unreleased section.
+          const selected = headings.filter(heading => heading[1] === title || heading[1].startsWith(title + ' ') || heading[1].startsWith(title + '\t'));
+          if (selected.length !== 1) throw new Error('CHANGELOG.md must contain exactly one section for ' + tag + '; refusing publication.');
+          const heading = selected[0];
+          const next = headings.find(value => value.index > heading.index);
+          const notes = source.slice(heading.index + heading[0].length, next?.index);
+          if (!notes.trim()) throw new Error('The changelog section for ' + tag + ' is empty; refusing publication.');
+          writeFileSync(join(process.env.RUNNER_TEMP, 'release-notes.md'), notes);
+          NOTES
       - name: npm new enough for trusted publishing
         run: npm install -g npm@latest
       - if: ${{ steps.main-ci.outputs.passed == 'true' }}
         run: npm publish --provenance --access public
+      - name: Publish the GitHub release with its changelog notes
+        if: ${{ steps.main-ci.outputs.passed == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/release-notes.md"

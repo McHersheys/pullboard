@@ -1,4 +1,5 @@
 /** Acceptance stays append-only; freshness is derived from the known Git trunk [E8,V8]. */
+import { mergeOnlyLandingProblem } from './merge-only-verdict.js';
 import { spawnSync } from 'node:child_process';
 import * as store from './board-query.js';
 import {
@@ -95,6 +96,8 @@ export function verdictProjector(root, board, { main } = {}) {
   const state = item => {
     if (item.item_status !== 'verified') return null;
     const accepted = store.acceptedVerdict(board, item);
+    const carryProblem = !item.item_merged_commit && mergeOnlyLandingProblem(root, board, item);
+    if (carryProblem) return { code: 'STALE_VERDICT', reason: carryProblem.message, main: tip ?? null };
     const mismatch = item.item_merged_commit && store.events(board, { itemId: item.item_id }).findLast(event => {
       if (event.event_kind !== 'landing-review-moved') return false;
       const detail = JSON.parse(event.event_detail);

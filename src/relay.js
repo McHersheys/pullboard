@@ -438,7 +438,7 @@ async function rawRequest(state, path, { method = 'GET', body, allowMissing = fa
 /** Read durable local event rows; their ids are the crash-safe outbox after the saved cursor. */
 export function localRecords(root, work) {
   const info = repoInfo(root);
-  const board = store.openBoard(join(info.commonDir, 'pullboard', 'board.sqlite'), undefined, { isMain: codeIsFromMain() });
+  const board = store.openBoard(join(info.commonDir, 'pullboard', 'board.sqlite'), undefined, { isMain: codeIsFromMain(), gitRoot: root });
   try { return work(board); } finally { store.closeBoard(board); }
 }
 
@@ -1375,8 +1375,8 @@ export async function relayRecover(root, skip, io) {
     const state = loadLink(file);
     if (!state || state.unlinking || state.mode !== 'ordered') throw new Refused('RELAY_LINKED', 'link this ordered relay board before recovering a blocked sequence');
     const boardFile = join(repoInfo(root).commonDir, 'pullboard', 'board.sqlite');
-    const source = store.openBoard(boardFile, undefined, { isMain: codeIsFromMain() });
-    const staged = store.openBoard(':memory:');
+    const source = store.openBoard(boardFile, undefined, { isMain: codeIsFromMain(), gitRoot: root });
+    const staged = store.openBoard(':memory:', undefined, { gitRoot: root });
     try {
       const cursor = appliedSequence(source);
       const sourceDigest = nativeBoardDigest(source);
