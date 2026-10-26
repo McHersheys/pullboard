@@ -1,3 +1,4 @@
+import { mechanicalConflictFiles } from './mechanical-merge.js';
 import { localDependencyIds } from './item-dependencies.js';
 /**
  * `pullboard health`: every stuck item on the board, why it is stuck, since when, the one next step
@@ -567,12 +568,7 @@ function trunkTip(root) {
  */
 export function conflictFiles(root, trunk, commit) {
   if (!/^[0-9a-f]{40,64}$/u.test(commit ?? '')) return null;
-  const merge = tryGit(root, ['-c', 'core.quotepath=false', 'merge-tree', '--write-tree', '--name-only', '-z', trunk, commit]);
-  if (merge.status === 0) return [];
-  if (merge.status !== 1) return null;
-  const parts = merge.stdout.split('\0').slice(1);
-  const end = parts.indexOf('');
-  return parts.slice(0, end < 0 ? parts.length : end);
+  return mechanicalConflictFiles(root, trunk, commit);
 }
 
 /** The index of the current release, as localReleaseRank counts it: the first with unverified local work. */
