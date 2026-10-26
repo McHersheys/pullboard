@@ -105,8 +105,13 @@ export function credentialActor(move) {
 /** Compare caller intent without executing frozen callbacks or allocating another operation id. */
 export function operationIntent(operation, args) {
   const values = Array.isArray(args) ? args.map((value, index) => {
-    if (!['claim', 'refreeze'].includes(operation) || index !== 1 || !value || typeof value !== 'object') return value;
+    if (!['claim', 'refreeze', 'submit'].includes(operation) || index !== 1 || !value || typeof value !== 'object') return value;
     const options = { ...value };
+    if (operation === 'submit') {
+      // Native proof is derived after caller intent is saved, and is not a different retry.
+      delete options.mergeOnly;
+      return options;
+    }
     delete options.freeze;
     delete options.frozen;
     delete options.freezeError;
