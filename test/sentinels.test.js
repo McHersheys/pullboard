@@ -1,5 +1,7 @@
 /** Real board watches: exact person approval, automatic execution, owner notices and replay [A6,D1,D3,H16]. */
 import assert from 'node:assert/strict';
+import { ChildProcess } from 'node:child_process';
+import { once } from 'node:events';
 import { existsSync } from 'node:fs';
 import { mkdirSync } from 'node:fs';
 import { mkdtempSync } from 'node:fs';
@@ -127,12 +129,25 @@ function repeatedCause(box) {
 }
 
 test('resume never runs a sentinel and sentinel run runs the due ones [N26,A6,D3]', async t => {
+  const resumeChildren = [];
+  // Register before fixture cleanup so a regression's owned process cannot outlive its files.
+  t.after(async () => {
+    for (const { child, detached } of resumeChildren) {
+      if (!child.pid || child.exitCode !== null || child.signalCode !== null) continue;
+      const closed = once(child, 'close');
+      try {
+        if (detached && process.platform !== 'win32') process.kill(-child.pid, 'SIGKILL');
+        else child.kill('SIGKILL');
+      } catch (error) { if (error.code !== 'ESRCH') throw error; }
+      await closed;
+    }
+  });
   const box = fixture(t, { agentRoute: 'mid' });
   const marker = join(box.directory, 'explicit-run.json');
   writeFileSync(join(box.root, 'value.txt'), 'committed trunk input');
-  writeFileSync(join(box.root, 'trunk-check.mjs'), `import {readFileSync,writeFileSync} from 'node:fs';
+  writeFileSync(join(box.root, 'trunk-check.mjs'), `import {readFileSync,appendFileSync} from 'node:fs';
 const value=readFileSync('value.txt','utf8');
-writeFileSync(${JSON.stringify(marker)},JSON.stringify({cwd:process.cwd(),value}));
+appendFileSync(${JSON.stringify(marker)},JSON.stringify({cwd:process.cwd(),value})+'\\n');
 console.log('explicit trunk receipt: '+value);
 `);
   runFixtureGit(['add', 'trunk-check.mjs', 'value.txt'], { cwd: box.root, env: box.env });
@@ -149,9 +164,24 @@ console.log('explicit trunk receipt: '+value);
   assert.equal(approved.code, 0, approved.error || JSON.stringify(approved.document));
 
   assert.deepEqual(dueSentinels(box.board).map(row => row.name), ['trunk-check']);
-  // Durable start and result receipts prove execution independently of scheduler load.
-  const resumed = await box.cli(['resume'], undefined, agentRoot);
+  // This local fixture disables background workers. Observe actual process creation before child scheduling,
+  // so an unref'ed checker cannot hide behind the parent returning before its marker is written.
+  const spawnProcess = ChildProcess.prototype.spawn;
+  /** Observe the real spawn, preserving its receiver and result while retaining exact child ownership. */
+  const observedSpawn = t.mock.method(ChildProcess.prototype, 'spawn', function (options) {
+    const result = Reflect.apply(spawnProcess, this, [options]);
+    const record = { child: this, detached: Boolean(options.detached), args: options.args };
+    this.once('error', error => { record.error = error; });
+    resumeChildren.push(record);
+    return result;
+  });
+  let resumed;
+  try { resumed = await box.cli(['resume'], undefined, agentRoot); }
+  finally { observedSpawn.mock.restore(); }
   assert.equal(resumed.code, 0, resumed.error || JSON.stringify(resumed.document));
+  const checkerChildren = resumeChildren.filter(row => row.detached
+    || JSON.stringify(row.args) !== JSON.stringify(['git', '--no-replace-objects', 'cat-file', '--batch']));
+  assert.deepEqual(checkerChildren.map(row => row.args), [], 'resume starts no checker process, including a detached checker');
   assert.equal(existsSync(marker), false, 'resume neither runs the watch nor detaches a checker into the agent session');
   assert.equal(sentinels(box.board)[0].lastRun, null);
   assert.deepEqual(store.events(box.board).filter(row => ['sentinel-start', 'sentinel-run'].includes(row.event_kind)), []);
@@ -159,7 +189,9 @@ console.log('explicit trunk receipt: '+value);
 
   const run = await box.cli(['sentinel', 'run'], undefined, agentRoot);
   assert.equal(run.code, 0, run.error || JSON.stringify(run.document));
-  const executed = JSON.parse(readFileSync(marker, 'utf8'));
+  const executions = readFileSync(marker, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(executions.length, 1, 'only the explicit run executes the checker');
+  const [executed] = executions;
   assert.notEqual(executed.cwd, agentRoot, 'the explicit runner never uses the agent checkout');
   assert.notEqual(executed.cwd, box.root, 'the runner prepares a separate checkout rather than using live trunk');
   assert.equal(executed.value, 'committed trunk input', 'the run reads trunk, not the dirty agent file');
