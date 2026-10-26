@@ -58,7 +58,7 @@ function localFirstLink(io) {
 /** Keep the existing device-key repair warning on local reads without acquiring a relay lock or making a request. */
 function tellLocalKeyDiagnostic(io, link) {
   if (KEY_WARNED_COMMANDS.has(io)) return;
-  try { readBoardKey(link.board); }
+  try { readBoardKey(link.board, { legacyKeychain: false }); }
   catch (error) {
     if (!(error instanceof Refused) || error.code !== 'RELAY_KEY_MISSING') throw error;
     KEY_WARNED_COMMANDS.add(io);
