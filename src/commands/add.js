@@ -46,9 +46,9 @@ import {
 export async function run(io, args) {
   const command = 'add';
   const { first, second, rest, values } = args;
-  const act = (work) => actOn(io, work);
+  const act = (work) => actOn(io, work, { privateBoard: values.private === true });
   return act(async (ctx, board, me) => {
-  const recovered = await relayCommandReceipt(ctx.info.root, io.relayCommand);
+  const recovered = values.private ? null : await relayCommandReceipt(ctx.info.root, io.relayCommand);
   if (recovered) {
     io.recordedMove = true;
     for (const event of recovered.events) io.onEvent?.(event);

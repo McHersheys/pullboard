@@ -15,7 +15,7 @@ export function milestoneNamesByItem(milestones) {
 
 /** What a board-state item summary keeps: what the lists and the roadmap read (A2, N26). */
 const SUMMARY_FIELDS = Object.freeze(['id', 'title', 'lane', 'status', 'route', 'milestone', 'specs', 'claim', 'builtBy',
-  'blockedBy', 'updatedAt', 'stage', 'since', 'counts', 'verdict', 'verdictState']);
+  'blockedBy', 'updatedAt', 'stage', 'since', 'counts', 'imported', 'verdict', 'verdictState']);
 export const SUMMARY_KEYS = new Set(SUMMARY_FIELDS);
 const CLOCK_MOVES = MACHINE.moves.filter((move) => move.by.includes('clock'));
 

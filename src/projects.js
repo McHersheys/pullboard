@@ -4,6 +4,7 @@
  */
 import {
   closeSync,
+  chmodSync,
   existsSync,
   fsyncSync,
   mkdirSync,
@@ -16,13 +17,19 @@ import {
 import { homedir } from 'node:os';
 import {
   basename,
+  dirname,
   join,
   resolve,
 } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { loadConfig } from './config.js';
+import { originRepository } from './github-origin.js';
 import { withMachineHomeWrite } from './machine-home.js';
+import { boardReferenceId } from './board-reference.js';
+import { repoInfo } from './git.js';
+import * as store from './board.js';
+import { Refused } from './refused.js';
 
 /**
  * The registry file.
@@ -31,6 +38,95 @@ import { withMachineHomeWrite } from './machine-home.js';
  */
 export function registryFile() {
   return join(process.env.PULLBOARD_HOME || join(homedir(), '.pullboard'), 'projects.json');
+}
+
+/** Return a stable team handle only when Git origin and the opened board identity are both exact. */
+export function projectBoardIdentity(root, boardId) {
+  const id = boardReferenceId(boardId);
+  const repository = originRepository(root, { optional: true });
+  if (!repository) return null;
+  const [owner, name] = repository.split('/');
+  return { boardId: id, owner, name };
+}
+
+/**
+ * Locate one repo's device-local private board from the repo board's immutable identity.
+ * @param {string} repoBoardId
+ * @param {string} [home]
+ * @returns {string}
+ */
+export function privateBoardPath(repoBoardId, home = process.env.PULLBOARD_HOME || join(homedir(), '.pullboard')) {
+  const id = boardReferenceId(repoBoardId);
+  return join(resolve(home), 'private', id, 'board.sqlite');
+}
+
+/**
+ * Prepare owner-only storage for one repo's private board without changing the shared repo board.
+ * @param {string} repoBoardId
+ * @param {string} [home]
+ * @returns {string}
+ */
+export function preparePrivateBoardPath(repoBoardId, home) {
+  const file = privateBoardPath(repoBoardId, home);
+  const directory = dirname(file);
+  const privateRoot = dirname(directory);
+  withMachineHomeWrite(privateRoot, () => {
+    mkdirSync(privateRoot, { recursive: true, mode: 0o700 });
+    chmodSync(privateRoot, 0o700);
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    chmodSync(directory, 0o700);
+  });
+  return file;
+}
+
+/** Keep the private SQLite file readable and writable only by this machine account. */
+export function protectPrivateBoard(file) {
+  withMachineHomeWrite(file, () => chmodSync(file, 0o600));
+}
+
+/**
+ * Open this device's private board for one repo; a reader may require an existing board, while add creates it.
+ * @param {string} repoBoardId
+ * @param {(board: any, file: string) => any} work
+ * @param {{ create?: boolean, clock?: any }} [options]
+ * @returns {Promise<any>}
+ */
+export async function withPrivateBoard(repoBoardId, work, { create = false, clock, reference = null } = {}) {
+  const ownerBoardId = boardReferenceId(repoBoardId);
+  const file = create ? preparePrivateBoardPath(repoBoardId) : privateBoardPath(repoBoardId);
+  if (!create && !existsSync(file)) throw new Refused('PRIVATE_BOARD_NOT_FOUND', 'this device has no private board for that repo; open it from the repo checkout first');
+  const board = store.openBoard(file, clock, { isMain: true });
+  try {
+    protectPrivateBoard(file);
+    const registered = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?').get('private_repo_board_id');
+    if (!registered && create) store.atomic(board, () => board.db.prepare('INSERT OR IGNORE INTO board_meta (meta_key, meta_value) VALUES (?, ?)')
+      .run('private_repo_board_id', ownerBoardId));
+    const owner = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key = ?').get('private_repo_board_id');
+    if (!owner || owner.meta_value !== ownerBoardId) {
+      throw new Refused('PRIVATE_BOARD_IDENTITY', 'the device-local board belongs to a different repo; keep its existing identity intact');
+    }
+    if (reference) {
+      if (typeof reference.handle !== 'string' || !/^[A-Za-z0-9_.-]{1,128}$/u.test(reference.handle)
+          || typeof reference.organization !== 'string' || !/^[A-Za-z0-9_.-]{1,128}$/u.test(reference.organization)
+          || typeof reference.owner !== 'string' || !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/u.test(reference.owner)) {
+        throw new Refused('BOARD_REFERENCE', 'record the exact repository owner/name and signed-in GitHub login for a private board');
+      }
+      store.atomic(board, () => {
+        const savedReference = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get('private_board_reference');
+        const value = JSON.stringify({ version: 1, kind: 'private', repoBoardId: ownerBoardId, ...reference });
+        if (!savedReference) board.db.prepare('INSERT INTO board_meta(meta_key,meta_value) VALUES (?,?)').run('private_board_reference', value);
+        else {
+          const previous = JSON.parse(savedReference.meta_value);
+          if (previous.version !== 1 || previous.kind !== 'private' || previous.repoBoardId !== ownerBoardId
+              || previous.handle !== reference.handle || previous.organization !== reference.organization
+              || previous.owner !== reference.owner) {
+            throw new Refused('PRIVATE_BOARD_IDENTITY', 'the saved private board reference belongs to a different repo or signed-in GitHub login');
+          }
+        }
+      });
+    }
+    return await work(board, file);
+  } finally { store.closeBoard(board); }
 }
 
 /**
@@ -245,12 +341,21 @@ export function listApiProjects() {
  * @param {object} [config]
  * @returns {boolean} Whether it was new.
  */
-export function registerProject(root, now = new Date(), config = {}) {
+export function registerProject(root, now = new Date(), config = {}, identity = null) {
   const normalizedRoot = resolve(root);
   return withRegistry((stored, readable) => {
     if (!readable) return false;
     const projects = stored.map((entry) => ({ ...entry, root: resolve(entry.root) }));
     const metadata = configMetadata(normalizedRoot, config);
+    const handle = identity && typeof identity === 'object' ? {
+      ...(typeof identity.boardId === 'string' && /^[0-9a-f]{32}$/u.test(identity.boardId) ? { boardId: identity.boardId } : {}),
+      ...(typeof identity.owner === 'string' && /^[A-Za-z0-9_.-]{1,128}$/u.test(identity.owner) ? { owner: identity.owner } : {}),
+      ...(typeof identity.name === 'string' && /^[A-Za-z0-9_.-]{1,128}$/u.test(identity.name) ? { handle: identity.name } : {}),
+      kind: 'team',
+    } : null;
+    if (handle && (!handle.boardId || !handle.owner || !handle.handle)) {
+      throw new Refused('BOARD_REFERENCE', 'record a complete origin owner/name and immutable board ID before adding it to the local board inventory');
+    }
     const existing = projects.find((project) => project.root === normalizedRoot);
     if (existing) {
       if (metadata) {
@@ -260,10 +365,14 @@ export function registerProject(root, now = new Date(), config = {}) {
           writeRegistry(projects);
         }
       }
+      if (handle && (existing.boardId !== handle.boardId || existing.owner !== handle.owner || existing.handle !== handle.handle || existing.kind !== 'team')) {
+        Object.assign(existing, handle);
+        writeRegistry(projects);
+      }
       return false;
     }
     const initialMetadata = metadata ?? { name: basename(normalizedRoot), project: '' };
-    projects.push({ root: normalizedRoot, ...initialMetadata, added: now.toISOString() });
+    projects.push({ root: normalizedRoot, ...initialMetadata, ...(handle ?? {}), added: now.toISOString() });
     writeRegistry(projects);
     return true;
   });
@@ -287,8 +396,17 @@ export function forgetProject(path) {
 }
 
 /** Register locally and complete opted-in automatic relay linking before the CLI returns. */
-export async function registerProjectAndLink(root, now, config, io) {
-  const added = registerProject(root, now, config);
+export async function registerProjectAndLink(root, now, config, io, identity) {
+  let exactIdentity = identity;
+  if (!exactIdentity) {
+    const file = join(repoInfo(root).commonDir, 'pullboard', 'board.sqlite');
+    if (existsSync(file)) {
+      const board = store.openBoardForRead(file);
+      try { exactIdentity = projectBoardIdentity(root, store.boardId(board)); }
+      finally { store.closeBoard(board); }
+    }
+  }
+  const added = registerProject(root, now, config, exactIdentity);
   const { autoLinkProject } = await import('./relay-setup.js');
   await autoLinkProject(root, io);
   return added;

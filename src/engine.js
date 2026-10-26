@@ -100,6 +100,10 @@ export function prepareEngineMove(board, operation, args, { id = randomUUID(), a
   if (!ENGINE_OPERATIONS.includes(operation) || !Array.isArray(args)) throw new Refused('RELAY_MOVE', 'use a supported board-engine operation with its argument array');
   if (operation === 'reopen') args = computedReturnArgs(board, args);
   const values = args.map((value) => value && typeof value === 'object' ? { ...value } : value);
+  if (operation === 'rehomeItem' && values[1] && typeof values[1] === 'object') {
+    if (values[1].sourceMoveId !== undefined && values[1].sourceMoveId !== id) throw new Refused('RELAY_MOVE', 'a re-home must retain its exact source MOVEID');
+    values[1] = { ...values[1], sourceMoveId: id };
+  }
   if (operation === 'reopen' && values[1] && typeof values[1] === 'object'
     && manualLandingFailureQuoted(values[1].note)) values[1].quotedLandingFailure = true;
   // Seal native stored facts at origin; replicas replay these bytes without the origin file.
@@ -171,6 +175,7 @@ function validateMove(move) {
 /** Restore only the frozen criterion callback; no receiver runs another machine's Git or shell. */
 export function executableArgs(move, board) {
   const args = structuredClone(move.args);
+  if (move.operation === 'rehomeItem' && args[1]?.sourceMoveId !== move.id) throw new Refused('RELAY_MOVE', 'a re-home source MOVEID does not match its sealed move');
   if (move.operation === 'appendFact') {
     if (!args[1] || typeof args[1] !== 'object' || Array.isArray(args[1])) throw new Refused('RELAY_MOVE', 'a fact needs its typed arguments; use the current Pullboard engine');
     args[1].factId = move.id;

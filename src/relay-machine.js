@@ -62,7 +62,9 @@ function validate(state) {
   }
   if (state.v === 2 && (!/^[A-Za-z0-9_-]{1,128}$/u.test(state.machine ?? '') || !Array.isArray(state.approvals) ||
       (state.owner !== null && (!state.owner || typeof state.owner.account !== 'string' || !state.owner.account ||
-        typeof state.owner.url !== 'string' || !state.owner.url || Object.keys(state.owner).some(key => !['account', 'url'].includes(key)))))) {
+        typeof state.owner.url !== 'string' || !state.owner.url ||
+        state.owner.login !== undefined && (typeof state.owner.login !== 'string' || !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/u.test(state.owner.login)) ||
+        Object.keys(state.owner).some(key => !['account', 'url', 'login'].includes(key)))))) {
     throw new Refused('RELAY_MACHINE_STORAGE', 'Restore the supported machine identity and phone-link metadata, or sign in again explicitly.');
   }
   for (const entry of state.approvals ?? []) {
@@ -111,7 +113,7 @@ export function readRelayMachine() {
 export function relayMachineOwner() {
   const state = readState();
   const owner = state.owner ?? (state.session ? { account: state.session.account, url: state.session.url } : null);
-  return owner ? { account: owner.account, url: owner.url } : null;
+  return owner ? { account: owner.account, login: owner.login ?? null, url: owner.url } : null;
 }
 
 /** Read a public root pinned through native person setup; relay replies never establish this trust. */

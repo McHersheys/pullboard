@@ -16,6 +16,8 @@ import {
 import { runFixtureGit } from './fixture-child.js';
 import { relayClientFixture } from './relay-client-fixture.js';
 import { relayFixtureChild } from './relay-client-fixture.js';
+import { Refused } from '../src/refused.js';
+import { outboxQueueable } from '../src/relay-outbox.js';
 
 const CLI = fileURLToPath(new URL('../bin/pullboard.js', import.meta.url));
 
@@ -275,6 +277,17 @@ test('every ordered move kind says where it names an item, and each place follow
     }
   }
   assert.ok(places >= 30, `the walk covers every declared place (${places})`);
+});
+
+test('re-home reservation and delivery moves always require relay order [E15,H16]', () => {
+  const state = { mode: 'ordered', baselineAccepted: true, baselineConflict: false, environment: false };
+  const io = { relayOutbox: () => true };
+  const unavailable = new Refused('RELAY_UNAVAILABLE', 'the relay did not answer');
+  const itemSlots = { reserveRehomeItemId: [], rehomeItem: [[0]], applyRehomeItem: [[0, 'destinationItemId']] };
+  for (const operation of ['reserveRehomeItemId', 'rehomeItem', 'applyRehomeItem']) {
+    assert.deepEqual(ITEM_SLOTS[operation], itemSlots[operation], `${operation} declares only its local item IDs`);
+    assert.equal(outboxQueueable(state, unavailable, operation, io), false, `${operation} waits for an acknowledged result`);
+  }
 });
 
 test('a move that names an offline item where the outbox cannot follow it is refused, never sent [B26,H16]', () => {

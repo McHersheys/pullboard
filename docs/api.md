@@ -104,6 +104,7 @@ For example: `flow: review wait average 61 min (1 measured; > 60 min); bottlenec
 | `relay` | `version:number`, `linked:boolean`, `board:string`, `url:string`, `link:string`, `sequence:number`, `behind:number`, `recovery:object` |
 | `sync` | `version:number`, `ref:string`, `sequence:number`, `pending:string|null` |
 | `list` | `version:number`, `items:array` |
+| `move` | `version:number`, `source:string`, `destination:string`, `moveId:string`, `item:object` |
 | `queue` | `version:number`, `releases:array`, `unreleased:array`, `first:object` |
 | `map` | `version:number`, `main:string`, `map:string` |
 | `flow replay` | `version:number`, `history:object`, `replay:object` |
