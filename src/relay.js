@@ -1200,7 +1200,7 @@ export async function relayOperation(root, operation, args, io, command, applyLo
       if (!receipt) throw new Refused('RELAY_RESPONSE', 'the acknowledged operation has no replay receipt; fetch a consistent relay snapshot');
       if (!receipt.outcome.error) {
         onRecorded?.();
-        await io.onRelayMoveRecorded?.({ moveId: move.id, sequence: state.sequence });
+        await io.onRelayMoveRecorded?.({ moveId: move.id, sequence: receipt.sequence });
         if (!io.relayCanary) recordClientHealth(root, true, null, Date.now() - roundTripStarted);
       }
       delete state.recovered;

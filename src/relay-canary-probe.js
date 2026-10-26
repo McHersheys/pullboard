@@ -99,8 +99,7 @@ export async function probeRelayCanary(root, { agentId, deadlineMs = 5000, io = 
     if (!actor || actor.agent_lane === 'coordinator') {
       throw new Refused('NOT_JOINED', 'join an ordinary noncoordinator seat on the dedicated canary board');
     }
-    let previousSequence = state.sequence;
-    if (!Number.isSafeInteger(previousSequence) || previousSequence < 0) {
+    if (!Number.isSafeInteger(state.sequence) || state.sequence < 0) {
       throw new Refused('RELAY_STORAGE', 'restore the canary link sequence before probing it');
     }
     const probeIo = Object.create(io);
@@ -133,7 +132,6 @@ export async function probeRelayCanary(root, { agentId, deadlineMs = 5000, io = 
       remaining();
       await relayOperation(root, interrupted.operation, interrupted.args, probeIo);
       state = relayMachineContext(root);
-      previousSequence = state.sequence;
     }
     const text = 'Relay canary ' + randomUUID();
     let verified;
@@ -143,7 +141,11 @@ export async function probeRelayCanary(root, { agentId, deadlineMs = 5000, io = 
       moveId = recordedId; sequence = recordedSequence;
       verified = (async () => {
         remaining(); step = 'pull';
-        const pulled = await request(transport, '/api/v1/boards/' + state.board + '/events?after=' + previousSequence,
+        if (!Number.isSafeInteger(recordedSequence) || recordedSequence < 1) {
+          throw new Refused('RELAY_RESPONSE', 'the canary acknowledgement has no positive native receipt sequence');
+        }
+        // Ordinary replay already caught up peer checkpoints; only the acknowledged nonce must remain in this fresh pull.
+        const pulled = await request(transport, '/api/v1/boards/' + state.board + '/events?after=' + (recordedSequence - 1),
           { signal: controller.signal }, probeIo);
         relayVersion = pulled.version;
         await verifyReturnedMove(root, state, pulled, { moveId, sequence, agentId, text,
