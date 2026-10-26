@@ -346,7 +346,7 @@ function cpuBindings(source, moduleExports, callable = false, literalCache) {
   for (const match of text.matchAll(/\bexport\s*\{([^}]+)\}(?!\s*from)/gu)) {
     if (code.slice(match.index, match.index + 6) === 'export') namedBindings(match[1], names, name => exports.add(name), 'as');
   }
-  return { code, names, namespaces, exports };
+  return { code, names, namespaces, exports, moduleLevel, strings: lexical.strings };
 }
 
 /** Extract registration calls, including subtests only from a real callback's own context. */
@@ -409,6 +409,32 @@ function cpuOption(source, code, quoted, option) {
   return false;
 }
 
+/** Resolve only a single-use immutable module constant in the name-omitted overload. */
+function firstCpuOption(source, bindings, quoted, argument) {
+  let [from, to] = argument;
+  while (/\s/u.test(bindings.code[from] ?? '') && from < to) from++;
+  while (/\s/u.test(bindings.code[to - 1] ?? '') && to > from) to--;
+  const text = source.slice(from, to);
+  if (/^[A-Za-z_$][\w$]*$/u.test(text)) {
+    const name = text.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+    const occurrences = [...bindings.code.matchAll(new RegExp(`(?<![\\w$])${name}(?![\\w$])`, 'gu'))];
+    const declarations = [...bindings.code.matchAll(new RegExp(`\\bconst\\s+${name}\\s*=`, 'gu'))];
+    // Any other use may mutate an object or pass it to unknown code. Such a value stays opaque.
+    if (occurrences.length === 2 && declarations.length === 1 && bindings.moduleLevel[declarations[0].index]) {
+      const declaration = declarations[0];
+      let start = declaration.index + declaration[0].length;
+      while (/\s/u.test(bindings.code[start] ?? '') && start < bindings.code.length) start++;
+      const literal = bindings.strings.find(value => value.start === start);
+      const object = bindings.code[start] === '{' ? sourceParts(bindings.code, start + 1, '}') : null;
+      const end = object ? object.end + 1 : literal?.end;
+      if (end !== undefined && /^(?:[ \t]*[;,\r\n]|\s*$)/u.test(bindings.code.slice(end))) [from, to] = [start, end];
+    }
+  }
+  // A complete string/template is a title; every unresolved expression may instead be options.
+  if (bindings.strings.some(value => value.start === from && value.end === to)) return false;
+  return cpuOption(source, bindings.code, quoted, [from, to]);
+}
+
 /** Return registration exports for bounded static module-graph propagation, not execution. */
 export function cpuRegistrationExportsIn(sources, moduleExports = () => new Set(), literalCache = new Map()) {
   return sources.map((source, index) => cpuBindings(source, name => moduleExports(index, name), false, literalCache).exports);
@@ -430,10 +456,7 @@ export function cpuLoadOptionsIn(sources, moduleExports = () => new Set(), calla
       const last = lex(source.slice(...args.at(-1))).code.trim();
       const callback = callables.has(last) || /^(?:async\s+)?(?:function\b|(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>)/u.test(last);
       if (args.length >= 3) return cpuOption(source, bindings.code, quoted, args[1]);
-      if (args.length === 2 && callback) {
-        const first = source.slice(...args[0]).trim();
-        return first.startsWith('{') ? cpuOption(source, bindings.code, quoted, args[0]) : false;
-      }
+      if (args.length === 2 && callback) return firstCpuOption(source, bindings, quoted, args[0]);
       if (args.length === 2) return cpuOption(source, bindings.code, quoted, args[1]);
       return false;
     });
