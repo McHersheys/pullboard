@@ -15,9 +15,8 @@ export function prepareCommitMetadata(raw, { claim = null, claims = null, landin
   const supplied = message.split('\n').filter(line => /^\s*Pullboard-/iu.test(line));
   const metadata = parsed.trailers.filter(entry => /^Pullboard-/iu.test(entry.key));
   const held = claims ?? (claim ? [claim] : []);
-  const selected = held.find(item => item.item_id === parsed.item);
-  if (held.length > 1 && !selected) problems.push(`this seat holds ${held.map(item => `#${item.item_id}`).join(', ')}; name one with an explicit Pullboard-Item trailer, or release one claim`);
-  const expected = held.length > 1 ? selected : held[0] ?? landings.find(item => item.item_id === parsed.item);
+  if (held.length > 1) problems.push(`this checkout's seat holds ${held.map(item => `#${item.item_id}`).join(', ')}; commit from the item's own worktree or release one claim; Pullboard generates its trailers`);
+  const expected = held.length > 1 ? null : held[0] ?? landings.find(item => item.item_id === parsed.item);
   if (supplied.length !== metadata.length) problems.push('keep Pullboard trailers together in the final paragraph, with no text after them');
   if (metadata.some(entry => !['Pullboard-Item', 'Pullboard-Rows'].includes(entry.key))) problems.push('the Pullboard- trailer prefix is reserved for Item and Rows');
   for (const key of ['Pullboard-Item', 'Pullboard-Rows']) {
