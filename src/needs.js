@@ -39,7 +39,7 @@ export function personNeeds(state) {
         { verb: 'spec-approve', args: { ids: revision.id } }, { verb: 'spec-decline', args: { ids: revision.id } }] })),
     ...(state.sentinelDrafts ?? []),
     ...(state.spec ?? []).filter(row => row.agentApproval && row.agentApproval.mode !== 'allow' && row.decision?.decision !== 'decline').map(row => ({ kind: 'agent-approved', id: row.id,
-      ref: row.id, agent: row.agentApproval.agent, commit: row.agentApproval.commit, attribution: row.agentApproval.attribution,
+      ref: row.id, agent: row.agentApproval.agent, commit: row.agentApproval.commit, approvedAt: row.agentApproval.approvedAt ?? null, attribution: row.agentApproval.attribution,
       text: `${row.id} is agent-approved; ${row.agentApproval.attribution}: ${row.agentApproval.agent}; commit ${row.agentApproval.commit ?? 'not committed'}`,
       what: 'confirm or decline this row', target: `spec:${row.id}`,
       actions: [{ verb: 'spec-approve', args: { ids: row.id } }, { verb: 'spec-decline', args: { ids: row.id } }] })),
