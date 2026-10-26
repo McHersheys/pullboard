@@ -1,3 +1,4 @@
+import { submissionItemValues, recordSubmissionEvent } from './submission-record.js';
 import { companionPlan } from './companion.js';
 import { applyCompanionRequest } from './companion.js';
 export { readBoardMembers, setBoardMembers } from './board-members.js';
@@ -1239,31 +1240,10 @@ export function submit(board, id, { agentId, commit, tree, files = [], policyCom
         },
       },
       before: () => { if (carry) logEvent(board, agentId, 'merge-only-accept', id, { ...mergeOnly, by: basis.by }); },
-      set: (found) => ({
-        item_built_by: agentId,
-        item_builder_family: board.db.prepare('SELECT agent_family FROM agent WHERE agent_id = ?').get(agentId)?.agent_family ?? null,
-        item_commit: commit,
-        item_tree: tree,
-        item_lease_until: null,
-        item_review_by: null,
-        item_review_until: null,
-        item_files: [...new Set([...(found.item_files ?? '').split('\n').filter(Boolean), ...files])].join('\n'),
-        ...(carry ? { item_verdict: 'ACCEPT', item_verified_by: basis.by } : {}),
-      }),
+      set: found => submissionItemValues(board, found, { agentId, commit, tree, files, carry, basis }),
     });
-    const engineVersion = board.executionEngineVersion ?? ENGINE_VERSION;
-    const criterionDigest = engineVersion >= 9 ? getItem(board, id).item_frozen_digest : null;
-    logEvent(board, agentId, 'submit', id, {
-      commit,
-      tree,
-      ...(policyCommit ? { policyCommit } : {}),
-      ...(criterionDigest ? { criterionDigest } : {}),
-      ...(note === undefined ? {} : { note: note.trim() }),
-      ...(recordedProof ? { submissionProof: recordedProof } : {}), ...(infra ? { infra } : {}),
-      ...(modern && gateGreen !== undefined ? { gateGreen: gateGreen === true } : {}),
-      ...(carry ? { mergeOnly } : {}),
-      ...(recordedSize ? { submissionSize: recordedSize } : {}),
-    });
+    recordSubmissionEvent(board, id, { agentId, commit, tree, policyCommit, note, recordedProof, infra,
+      modern, gateGreen, carry, mergeOnly, recordedSize, engineVersion: board.executionEngineVersion ?? ENGINE_VERSION });
   });
 }
 
