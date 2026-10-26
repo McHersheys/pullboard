@@ -21,6 +21,19 @@ export function receipts(file) {
   } finally { db.close(); }
 }
 
+/** Keep each replica's complete ordered refusal envelope identical for a competing item claim [H16]. */
+export function assertReplicaClaimErrorEquality(receiptRows, itemId) {
+  const errors = receiptRows.map((rows, index) => {
+    const denied = rows.map((receipt) => ({ receipt, move: JSON.parse(receipt.move) }))
+      .filter(({ receipt, move }) => move.operation === 'claim' && move.args[0] === itemId && receipt.outcome.error);
+    assert.equal(denied.length, 1, `replica ${index + 1} has one durable refusal for item #${itemId}`);
+    return denied[0].receipt.outcome.error;
+  });
+  for (const error of errors.slice(1)) {
+    assert.deepEqual(error, errors[0], `every replica preserves the full refusal envelope for item #${itemId}`);
+  }
+}
+
 /** Decode only stable operation identity fields from captured fixture relay posts. */
 export async function relayUploadSummary(uploads, key, boardId) {
   return Promise.all(uploads.map(async ({ sequence, sealed }) => {

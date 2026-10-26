@@ -31,7 +31,7 @@ import { captureSpecApprovalBaseline } from '../src/spec-approval.js';
 import { AGENT_SHELL_MARKERS, SSH_SHELL_MARKERS } from '../src/person.js';
 import { legacyMirrorQueueFragment } from './relay-client-legacy-case.js';
 import { assertBaselineResumeEvidence, assertOriginalBaselineEvidence } from './relay-client-baseline-case.js';
-import { assertOriginalOutcomeDelivery, assertRecoveredStackUploads, localEvents, mergeCandidateForReview, receipts, syncReplica } from './relay-client-replica-fixture.js';
+import { assertOriginalOutcomeDelivery, assertRecoveredStackUploads, assertReplicaClaimErrorEquality, localEvents, mergeCandidateForReview, receipts, syncReplica } from './relay-client-replica-fixture.js';
 import { assertDroppedReplyConsumed, commitInitializedRepoFiles, enterLegacyAckPolicy } from './relay-client-policy-fixture.js';
 import { threeReplicaPhaseCapture } from './relay-client-timing.js';
 
@@ -875,6 +875,7 @@ async function competingReplicaClaims(fixture, timing) {
   }
   const receiptRows = replicaFiles.map((file) => receipts(file));
   for (let id = 1; id <= 20; id += 1) {
+    assertReplicaClaimErrorEquality(receiptRows, id);
     for (const rows of receiptRows) {
       const claims = rows.map((receipt) => ({ receipt, move: JSON.parse(receipt.move) }))
         .filter(({ move }) => move.operation === 'claim' && move.args[0] === id);
