@@ -36,7 +36,7 @@ test('reclaim at newer main submits only the item edits, without reverting coord
   assert.equal(reclaimed.item_claim_head, newerMain, 'the new claim is bounded by newer main');
   assert.equal(box.git(box.web, 'rev-parse', 'HEAD'), candidate, 'the item still has its older main parent');
   const submitted = box.run(box.web, 'submit', '1', '--json');
-  assert.equal(submitted.code, 0, submitted.err || submitted.out);
+  assert.equal(submitted.code, 0, submitted.out + '\n' + submitted.err);
   const record = JSON.parse(box.run(box.web, 'show', '1', '--json').out);
   assert.equal(record.item_status, 'submitted');
   assert.equal(record.item_commit, candidate);
