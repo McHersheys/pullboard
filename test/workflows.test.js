@@ -70,8 +70,15 @@ function contributorWorkflows() {
   assert.match(dco, /\n {2}pull_request:\n/u, 'the DCO workflow runs on pull requests');
   assert.match(dco, /\n  dco:\n {4}name: DCO\n/u, 'the pull-request check is named DCO');
   assert.match(dco, /\n {10}fetch-depth: 0\n/u, 'the checker receives the full pull-request history');
-  assert.match(dco, /run: node bin\/check-signoffs\.js\n/u,
-    'the DCO workflow runs the repository sign-off checker');
+  assert.equal([...dco.matchAll(/uses: actions\/checkout@v4/gu)].length, 2,
+    'contribution history and trusted implementation use separate checkouts');
+  assert.match(dco, /path: contribution\n {10}persist-credentials: false\n/u);
+  assert.match(dco, /ref: \$\{\{ github\.event\.pull_request\.base\.sha \|\| github\.event\.before != '0{40}' && github\.event\.before \|\| github\.sha \}\}\n {10}path: trusted-dco\n {10}persist-credentials: false\n/u,
+    'PRs use the exact base SHA, pushes use before, and only an initial push falls back to HEAD');
+  assert.match(dco, /working-directory: contribution\n {8}run: node "\$GITHUB_WORKSPACE\/trusted-dco\/bin\/check-signoffs\.js"\n/u,
+    'the trusted entry point checks history from the contribution working directory');
+  assert.match(dco, /permissions:\n {2}contents: read\n/u);
+  assert.doesNotMatch(dco, /pull_request_target/u, 'PR work never gains a privileged event context');
 }
 
 test('the named DCO check runs for pull requests [I1]', contributorWorkflows);

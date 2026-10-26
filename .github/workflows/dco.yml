@@ -16,8 +16,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          path: contribution
+          persist-credentials: false
+      # Trust the complete base tree, including the checker's relative imports.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.event.before != '0000000000000000000000000000000000000000' && github.event.before || github.sha }}
+          path: trusted-dco
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '22.13'
       - name: Check every new non-merge commit
-        run: node bin/check-signoffs.js
+        working-directory: contribution
+        run: node "$GITHUB_WORKSPACE/trusted-dco/bin/check-signoffs.js"
