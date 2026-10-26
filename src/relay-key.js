@@ -73,8 +73,13 @@ function removeKeychainValue(service, id) {
   if (removed.status !== 0 && !absent) throw new Refused('RELAY_KEYCHAIN', 'unlock the system keychain to finish moving this board key');
 }
 
-/** Read device storage first; a CI or cloud session then uses its environment key, and any other session migrates a legacy keychain value before the environment fallback. */
-export function readBoardKey(boardId) {
+/**
+ * Read device storage first, then the environment or a legacy keychain. Transport keeps migration enabled;
+ * foreground local-read diagnostics opt out so a missing file cannot launch a blocking credential helper.
+ * @param {string} boardId - The persistent board identity.
+ * @param {{legacyKeychain?: boolean}} options - Whether to probe and migrate a legacy credential service.
+ */
+export function readBoardKey(boardId, { legacyKeychain = true } = {}) {
   const id = identity(boardId);
   const file = keyFile(id);
   if (existsSync(file)) {
@@ -96,7 +101,7 @@ export function readBoardKey(boardId) {
   // a keychain or writes a key file [E18]. A person's machine still migrates a legacy keychain value first.
   const environmentSession = process.env.PULLBOARD_RELAY_TOKEN !== undefined && process.env.PULLBOARD_RELAY_KEY !== undefined;
   if (environmentSession) return decodeBoardKey(process.env.PULLBOARD_RELAY_KEY);
-  const service = keychain();
+  const service = legacyKeychain ? keychain() : null;
   if (service) {
     const args = service === 'security'
       ? ['find-generic-password', '-a', id, '-s', 'pullboard.board-key', '-w']
