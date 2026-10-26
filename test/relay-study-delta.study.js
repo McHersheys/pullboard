@@ -1,4 +1,4 @@
-/** Measured change-based sync against whole checkpoints, for the private relay study [H5,H17]. */
+/** Change-based sync measured against whole checkpoints [H5,H17]. Run it explicitly: the default gate skips *.study.js. */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -10,16 +10,12 @@ import { ENGINE_VERSION } from '../src/machine.js';
 import { relayClientFixture } from './relay-client-fixture.js';
 import { readRelay } from './relay-study-fixture.js';
 
-const STUDY = process.env.PULLBOARD_RELAY_STUDY === '1';
-
 /** Sum the request or response bytes of transit rows that match one route. */
 function bytes(rows, pick, side) {
   return rows.filter(pick).reduce((sum, row) => sum + row[side].byteLength, 0);
 }
 
-test('relay study measures one sealed move against its checkpoint at 10k and 50k events [H5,H17]', {
-  timeout: 300_000, skip: !STUDY && 'a measurement: set PULLBOARD_RELAY_STUDY=1 to run it',
-}, async t => {
+test('relay study measures one sealed move against its checkpoint at 10k and 50k events [H5,H17]', { timeout: 300_000 }, async t => {
   const box = await relayClientFixture(t);
   await box.link();
   const board = store.openBoard(join(box.root, '.git', 'pullboard', 'board.sqlite'));

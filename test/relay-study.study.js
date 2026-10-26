@@ -12,9 +12,7 @@ import { relaySnapshot } from '../src/relay-presentation.js';
 import { relayClientFixture } from './relay-client-fixture.js';
 import { differences, readRelay } from './relay-study-fixture.js';
 
-const SKIP = process.env.PULLBOARD_RELAY_STUDY !== '1' && 'a measurement: set PULLBOARD_RELAY_STUDY=1 to run it';
-
-test('relay study measures seeded native and API2 reader parity [H5,H17]', { timeout: 180_000, skip: SKIP }, async t => {
+test('relay study measures seeded native and API2 reader parity [H5,H17]', { timeout: 180_000 }, async t => {
   const box = await relayClientFixture(t);
   await box.link();
   const board = store.openBoard(join(box.root, '.git', 'pullboard', 'board.sqlite'));
@@ -48,7 +46,7 @@ test('relay study measures seeded native and API2 reader parity [H5,H17]', { tim
   assert.equal(full.length, 0, 'the measured relay restores every full presentation field');
 });
 
-test('relay study measures 1k 10k and 50k native-event sync and private request saturation [H5,H17]', { timeout: 300_000, skip: SKIP }, async t => {
+test('relay study measures 1k 10k and 50k native-event sync and private request saturation [H5,H17]', { timeout: 300_000 }, async t => {
   const box = await relayClientFixture(t);
   await box.link();
   const board = store.openBoard(join(box.root, '.git', 'pullboard', 'board.sqlite'));

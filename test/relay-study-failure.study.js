@@ -6,9 +6,7 @@ import { test } from 'node:test';
 import * as store from '../src/board.js';
 import { relayClientFixture } from './relay-client-fixture.js';
 
-const SKIP = process.env.PULLBOARD_RELAY_STUDY !== '1' && 'a measurement: set PULLBOARD_RELAY_STUDY=1 to run it';
-
-test('relay study measures native reads and local moves across private transport failures [H5,H17]', { timeout: 300_000, skip: SKIP }, async t => {
+test('relay study measures native reads and local moves across private transport failures [H5,H17]', { timeout: 300_000 }, async t => {
   for (const fault of ['down', 'slow-5s', '5xx', 'stale-engine']) {
     const box = await relayClientFixture(t);
     await box.link();

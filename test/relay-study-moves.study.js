@@ -12,9 +12,7 @@ import { differences, readRelay } from './relay-study-fixture.js';
 import { submitFixture } from './board-submit-fixture.js';
 import { syntheticFlakeObservation } from './flake-observation-fixture.js';
 
-const SKIP = process.env.PULLBOARD_RELAY_STUDY !== '1' && 'a measurement: set PULLBOARD_RELAY_STUDY=1 to run it';
-
-test('relay study compares each exercised move effect through the real API2 reader [H5,H17]', { timeout: 180_000, skip: SKIP }, async t => {
+test('relay study compares each exercised move effect through the real API2 reader [H5,H17]', { timeout: 180_000 }, async t => {
   const box = await relayClientFixture(t);
   await box.link();
   const board = store.openBoard(join(box.root, '.git', 'pullboard', 'board.sqlite'));
