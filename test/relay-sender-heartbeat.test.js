@@ -89,18 +89,39 @@ function workerIdentity(pid, root) {
     throw error;
   }
   assert.equal(cwd, root, 'only this freshly spawned private worker belongs to the test');
-  return { pid, metadata: metadata.replace(/^\S+\s+/u, ''), cwd };
+  const command = metadata.replace(/^\S+\s+/u, '');
+  const started = command.match(/^([A-Z][a-z]{2}\s+[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})/u)?.[1].replace(/\s+/gu, ' ');
+  assert.ok(started, 'the owned worker has a parseable original start identity');
+  return { pid, metadata: command, started, cwd };
+}
+
+/** After a verified signal, observe only identity and state: an exiting process need not retain its live command or cwd. */
+function exitObservation(record) {
+  let row;
+  try { row = execFileSync('ps', ['-p', String(record.pid), '-o', 'lstart=,stat='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); }
+  catch (error) {
+    try { process.kill(record.pid, 0); }
+    catch (gone) { if (gone.code === 'ESRCH') return { pid: record.pid, terminal: true, reason: 'ESRCH' }; }
+    throw error;
+  }
+  const match = /^([A-Z][a-z]{2}\s+[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(\S+)$/u.exec(row);
+  assert.ok(match, 'the post-signal start/state observation is parseable');
+  const started = match[1].replace(/\s+/gu, ' '), state = match[2];
+  const reason = started !== record.started ? 'original start gone' : state.startsWith('Z') ? 'zombie' : 'still running';
+  return { pid: record.pid, started, state, reason, terminal: reason !== 'still running' };
 }
 
 /** Recheck exact PID/start/cwd immediately before terminating only this test's recorded sender. */
 async function stopWorker(record) {
   const current = workerIdentity(record.pid, record.cwd);
-  if (!current) return;
+  if (!current) return { pid: record.pid, terminal: true, reason: 'not running before signal' };
   assert.ok(current.metadata === record.metadata, 'a reused PID is never signalled');
   const checked = workerIdentity(record.pid, record.cwd);
   assert.ok(checked?.metadata === record.metadata, 'the exact identity is unchanged immediately before signalling');
   process.kill(record.pid, 'SIGTERM');
-  await until('the exact fixture sender did not terminate', () => !workerIdentity(record.pid, record.cwd));
+  let observed;
+  await until('the exact fixture sender did not terminate', () => { observed = exitObservation(record); return observed.terminal; });
+  return observed;
 }
 
 /** Nudge once through the public helper, passively recording only the exact real child handles it creates. */
@@ -157,7 +178,14 @@ test('one sender keeps its claim through a slow multi-board pass [H21,H5,H16]', 
   t.after(async () => {
     releaseAll();
     const stopped = await Promise.allSettled(workers.map(stopWorker));
-    cleanupErrors.push(...stopped.filter(result => result.status === 'rejected').map(result => result.reason));
+    for (const [index, result] of stopped.entries()) {
+      if (result.status === 'fulfilled') t.diagnostic(JSON.stringify({ cleanupExit: result.value }));
+      else {
+        cleanupErrors.push(result.reason);
+        t.diagnostic(JSON.stringify({ cleanupError: { pid: workers[index].pid, name: result.reason.name,
+          code: result.reason.code ?? null, message: result.reason.message } }));
+      }
+    }
   });
   const box = await relayClientFixture(t);
   // Report every scoped cleanup failure only after the fixture's normal provider and relay closers have run.
