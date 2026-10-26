@@ -26,6 +26,7 @@ import {
 } from './config.js';
 import { cleanGitEnvironment } from './git.js';
 import { Refused } from './refused.js';
+import { headerRows } from './commit-message.js';
 import {
   parseRowVerification,
   rowVerificationFormatProblems,
@@ -572,15 +573,14 @@ export function signOff(root, spec, { ids, by, on, note = '', commit = '' }) {
 }
 
 /**
- * Spec ids cited at the end of a commit header: `feat(x): subject [G1.2,K3]`.
+ * Spec ids cited at the end of a commit header: `feat(x): subject [G1.2,K3]`. A landing header's
+ * `+N` stands for rows only its trailer names, so it is not an id; the shared parser reads both.
  *
  * @param {string} header
  * @returns {string[]}
  */
 export function citedIds(header) {
-  const match = /\[([A-Za-z0-9:.,\s]+)\]\s*$/.exec(header);
-  if (!match) return [];
-  return match[1].split(',').map((id) => id.trim()).filter(Boolean);
+  return headerRows(header).shown;
 }
 
 /**
