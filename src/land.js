@@ -57,6 +57,9 @@ import {
   receiptStore,
 } from './gate-run-receipt.js';
 import { testsNeedBrowser } from './browser-admission.js';
+import { testsNeedGui } from './gui-admission.js';
+import { selectAffectedTests } from './affected-tests.js';
+import { selectRegistryGuards } from './registry-guards.js';
 import { laneOf } from './lanes.js';
 import { takeLandingResource } from './landing-resource.js';
 import {
@@ -67,6 +70,10 @@ import { runLandingWorker } from './landing-worker.js';
 import { runLandingCandidateWorker } from './landing-candidates.js';
 import { inheritedGateSlot } from './resources.js';
 import { Refused } from './refused.js';
+import {
+  checkLandingMessages,
+  landingContext,
+} from './landing-message.js';
 import { requireLandingHost } from './landing-host.js';
 import {
   environmentLabel,
@@ -155,27 +162,14 @@ export function landingFailures(output, root, { excludeCancelled = false } = {})
   return [...unique.values()];
 }
 
-/** The merge header type an item with no spec rows takes from its lane; any other lane lands as chore. */
-const LANE_MERGE_TYPES = Object.freeze({ docs: 'docs', test: 'test' });
-
-/** Produce a hook-valid lower-case merge subject at a word boundary [R3]. */
-export function landingSubject(item) {
-  const suffix = item.item_spec_ids ? ` [${item.item_spec_ids.split(/[\s,]+/u).filter(Boolean).join(',')}]` : '';
-  // An item with no rows cites none, so its merge header names its lane's type: docs or test; anything else is chore (B3).
-  const type = item.item_spec_ids ? 'chore' : (LANE_MERGE_TYPES[item.item_lane] ?? 'chore');
-  const prefix = `${type}(merge): `;
-  const budget = 72 - prefix.length - suffix.length;
-  if (budget < 1) throw new Refused('LAND_HEADER', `item #${item.item_id} cites too many rows for a merge header; shorten its cited set before landing`);
-  const words = item.item_title.toLowerCase().replace(/[\p{Extended_Pictographic}\u200d\uFE0E\uFE0F]/gu, '').replace(/[\r\n]+/gu, ' ').replace(/\[[^\]]*\]/gu, '').trim().split(/\s+/u);
-  let subject = '';
-  for (const word of words) {
-    if ((subject ? `${subject} ${word}` : word).length > budget) break;
-    subject = subject ? `${subject} ${word}` : word;
-  }
-  if (!subject) subject = `item ${item.item_id}`.length <= budget ? `item ${item.item_id}` : String(item.item_id);
-  if (subject.length > budget) throw new Refused('LAND_HEADER', `item #${item.item_id} has no title word that fits its merge header; shorten its cited set before landing`);
-  return `${prefix}${subject.replace(/\.$/u, '')}${suffix}`;
-}
+export {
+  checkLandingMessages,
+  itemCommitType,
+  landingContext,
+  landingMessage,
+  landingRows,
+  landingSubject,
+} from './landing-message.js';
 
 /** Keep the submitted identity and, when different, its sealed checked composition. */
 function landingEntry(item) {
@@ -258,6 +252,9 @@ async function mergeGroup(state, items) {
   const { batch } = state;
   if (!isClean(batch.root) || untracked(batch.root).length) throw new Refused('LAND_DIRTY', 'the landing worktree has unfinished edits; inspect its recorded path before adopting');
   git(batch.root, ['checkout', '--detach', batch.base]);
+  // Every message is built and checked before the first merge, so a bad one cannot land half a batch.
+  const messages = checkLandingMessages(items.map((entry) => store.getItem(state.board, entry.id ?? entry.item_id)),
+    landingContext(batch.root, batch.base, state.config, (item) => store.checkedLandingCommit(state.board, item)));
   const merged = [];
   const conflicts = [];
   const resolutions = [];
@@ -269,10 +266,11 @@ async function mergeGroup(state, items) {
     if (checked !== (entry.reviewedCommit ?? entry.commit ?? item.item_commit)) throw new Refused('LAND_ITEM_MOVED', `item #${item.item_id} was re-reviewed; rebuild its landing from the checked commit`);
     const stale = verdictProjector(state.root, state.board, { main: batch.base }).state(item);
     if (stale) throw staleVerdictRefusal(item, stale);
-    // The body is the item trailer alone: the subject carries the title, and no lane branch is named [B3,R3].
+    // The body is the trailer paragraph alone: the header carries the title, and no lane branch is named [B3,R3].
     // merge.log is switched off on this call, so a local Git config cannot append a shortlog to the body.
     const trunk = headCommit(batch.root);
-    const result = tryGit(batch.root, ['-c', 'merge.log=false', 'merge', '--no-ff', '--no-log', checked, '-m', landingSubject(item), '-m', `Pullboard-Item: #${item.item_id}`]);
+    const message = messages.get(item.item_id);
+    const result = tryGit(batch.root, ['-c', 'merge.log=false', 'merge', '--no-ff', '--no-log', checked, '-m', message.header, '-m', message.trailers]);
     if (result.status !== 0) {
       const files = tryGit(batch.root, ['diff', '--name-only', '--diff-filter=U']).stdout.split('\n').filter(Boolean);
       if (!files.length) throw new Refused('LAND_MERGE', `merge of #${item.item_id} failed outside a conflict: ${result.stderr || result.stdout}; inspect ${batch.root} and its hooks before adopting`);
@@ -283,7 +281,8 @@ async function mergeGroup(state, items) {
       }
       if (!resolution.files.length) {
         git(batch.root, ['add', '--', ...files]);
-        git(batch.root, ['commit', '--no-edit']);
+        // The message is written again, so Git's conflict notes can never follow the trailers.
+        git(batch.root, ['commit', '-m', message.header, '-m', message.trailers]);
         resolutions.push({ id: item.item_id, files, entries: resolution.entries });
         state.say(`mechanical merge #${item.item_id}: ${files.join(', ')}`);
       } else {
@@ -339,7 +338,12 @@ function completionAccount() {
   let early = false;
   let plan = null;
   let topLevel = 0;
-  const counts = {};
+  let counts = {};
+  let prior = true;
+  /** Require every completed TAP stream, not just the last appended phase, to account for its tests. */
+  const finished = () => !early && Number.isSafeInteger(plan) && plan > 0 && plan === topLevel && Number.isSafeInteger(counts.tests)
+    && Number.isSafeInteger(counts.pass) && Number.isSafeInteger(counts.fail) && (counts.cancelled ?? 0) === 0
+    && counts.pass + counts.fail + (counts.skipped ?? 0) + (counts.todo ?? 0) === counts.tests;
   /** Recognize canonical incomplete accounts even when only a bounded line prefix is retained. */
   const markerPrefix = (text) => {
     if (/^(?:Landing gate stopped early after |Files not run: |Interrupted test files: )/u.test(text)) early = true;
@@ -349,6 +353,9 @@ function completionAccount() {
     /** Consume one complete output line without retaining test output or diagnostic blocks. */
     line(text) {
       markerPrefix(text);
+      if (/^TAP version \d+\s*$/u.test(text) && (plan !== null || topLevel || Object.keys(counts).length)) {
+        prior = prior && finished(); plan = null; topLevel = 0; counts = {};
+      }
       if (/^(?:not )?ok \d+\b/u.test(text)) topLevel++;
       const planned = /^1\.\.(\d+)\s*$/u.exec(text);
       if (planned) plan = Number(planned[1]);
@@ -357,10 +364,7 @@ function completionAccount() {
     },
     /** A complete plan accounts for every test and contains no interrupted or cancelled work. */
     complete() {
-      return !early && Number.isSafeInteger(plan) && plan > 0 && plan === topLevel && Number.isSafeInteger(counts.tests)
-        && Number.isSafeInteger(counts.pass) && Number.isSafeInteger(counts.fail)
-        && (counts.cancelled ?? 0) === 0
-        && counts.pass + counts.fail + (counts.skipped ?? 0) + (counts.todo ?? 0) === counts.tests;
+      return prior && finished();
     },
   };
 }
@@ -411,20 +415,41 @@ async function recordLandingRun(state, receiptId) {
   await state.write('recordGateRun', [{ agentId: 'coordinator', receipt, lane: owner ?? store.getItem(state.board, state.batch.items[0].id).item_lane }]);
 }
 
+/** Select one deduplicated merged-tree test plan for both inline and local-first landing paths. */
+function batchAffectedTests(state) {
+  const root = state.batch.root;
+  const commit = headCommit(root);
+  const selection = state.config.affectedTests
+    ? selectAffectedTests(root, { base: state.batch.base, commit })
+    : { full: true, reason: 'affected-test selection is not enabled for this project', files: [] };
+  const registry = selectRegistryGuards(root, state.config.registryGuards, { base: state.batch.base });
+  return { ...selection, files: [...new Set([...(state.config.submitInvariants ?? []), ...registry, ...(!selection.full ? selection.files : [])])].sort() };
+}
+
+/** Bind every cached landing proof to the full gate and its merged-tree affected floor. */
+function batchGatePlan(state) {
+  const selection = batchAffectedTests(state);
+  const appended = selection.files.length ? `${state.config.affectedTests} ${selection.files.map(quote).join(' ')}` : '';
+  const config = appended ? { ...state.config, gate: `(\n${state.config.gate}\n) && ${appended}` } : state.config;
+  return { config, affectedGate: createHash('sha256').update(config.gate).digest('hex') };
+}
+
 /** Run one full landing gate and retain its complete output under this batch's immutable phase path. */
 async function gateGroup(state, label) {
   const tree = headTree(state.batch.root);
   const commit = headCommit(state.batch.root);
-  const cached = state.gates.get(tree);
-  if (cached?.timedOut) throw new Refused('LAND_GATE_TIMEOUT', 'this exact tree has a recorded landing timeout; inspect its log before starting a new batch');
+  const { config, affectedGate } = batchGatePlan(state);
+  const recorded = state.gates.get(tree);
+  if (recorded?.timedOut) throw new Refused('LAND_GATE_TIMEOUT', 'this exact tree has a recorded landing timeout; inspect its log before starting a new batch');
+  const cached = recorded?.affectedGate === affectedGate ? recorded : null;
   if (cached && (completeGate(cached) || !coveredFailures(state, cached))) return cached;
   const directory = join(dirname(state.batch.root), 'logs');
   mkdirSync(directory, { recursive: true });
   const logPath = join(directory, `${label}-${state.batch.revision}.log`);
   await save(state, { state: 'gating', tip: headCommit(state.batch.root), logPath });
   const pin = flakeSource(state.batch.root, { commit, main: state.batch.base });
-  const gate = await runGate(state.batch.root, state.config, { trustStamp: false, landing: true, agent: 'coordinator', onWait: state.onWait, stages: true, waivers: liveWaiverProjection(state.board),
-    onFailure: Object.assign((run, { root, command, lease }) => observeNativeFailure({ root, config: state.config, pin, run, command, lease, kind: 'land',
+  const gate = await runGate(state.batch.root, config, { trustStamp: false, landing: true, agent: 'coordinator', onWait: state.onWait, stages: true, waivers: liveWaiverProjection(state.board),
+    onFailure: Object.assign((run, { root, command, lease }) => observeNativeFailure({ root, config, pin, run, command, lease, kind: 'land',
       record: observation => {
         const owner = observation.file ? laneOf(state.config, observation.file) : 'coordinator';
         const lane = owner === 'coordinator' ? store.getItem(state.board, state.batch.items[0].id).item_lane : owner;
@@ -437,7 +462,7 @@ async function gateGroup(state, label) {
     throw new Refused('LAND_SOURCE_CHANGED', `the landing source changed while the gate ran; inspect ${logPath} and restore the recorded batch before adopting`);
   }
   const result = { ...gate, failures: landingFailures(gate.output, state.batch.root), accounted: accountedFailures(gate, state.batch.root), complete: completeGate(gate),
-    requiresGreen: Boolean(cached && !completeGate(cached)), tree, logPath };
+    requiresGreen: Boolean(cached && !completeGate(cached)), tree, logPath, affectedGate };
   state.gates.set(tree, result);
   const evidence = state.batch.invariantEvidence ?? { version: 1, gates: [], diagnostics: [] };
   const tested = { commit, isGreen: gate.isGreen && completeGate(gate),
@@ -446,8 +471,8 @@ async function gateGroup(state, label) {
     fileTimes: landingFileTimes(state.batch.root, gate.profile) };
   const warnings = gate.environment ? environmentWarnings(state.board, state.batch.items, gate.environment) : [];
   for (const warning of warnings) state.say(`#${warning.item} was checked on ${environmentLabel(warning.recorded)}; this landing ran on ${environmentLabel(warning.landing)}`);
-  await save(state, { environmentWarnings: warnings, gateResults: [...state.gates.values()].map(({ tree: testedTree, isGreen, failures, accounted, complete, requiresGreen, logPath: log, flakeDiagnostics, environment: executor, timedOut }) =>
-    ({ tree: testedTree, isGreen, ...(timedOut ? { timedOut: true } : {}), failures, accounted: accounted ?? null, complete: complete ?? null, requiresGreen: Boolean(requiresGreen), logPath: log,
+  await save(state, { environmentWarnings: warnings, gateResults: [...state.gates.values()].map(({ tree: testedTree, isGreen, failures, accounted, complete, requiresGreen, logPath: log, flakeDiagnostics, environment: executor, timedOut, affectedGate: plan }) =>
+    ({ tree: testedTree, isGreen, ...(timedOut ? { timedOut: true } : {}), failures, accounted: accounted ?? null, complete: complete ?? null, requiresGreen: Boolean(requiresGreen), logPath: log, ...(plan ? { affectedGate: plan } : {}),
       environment: executor ?? null, ...(flakeDiagnostics ? { flakeDiagnostics } : {}) })),
     invariantEvidence: { ...evidence, gates: [...evidence.gates, tested] } });
   if (gate.timedOut) {
@@ -473,7 +498,7 @@ export async function runLandingCandidate({ root, board, config, batch, entries,
   // A conflicting prefix is not its requested composition. Never test the smaller accidental tree.
   if (build.conflicts.length || !build.items.length) return { batch: state.batch, gate: null };
   const tree = headTree(batch.root);
-  const claimed = await claimGate(tree);
+  const claimed = await claimGate(tree, batchGatePlan(state).affectedGate);
   if (claimed.previous) state.gates.set(tree, claimed.previous);
   const gate = claimed.cached ?? { ...await gateGroup(state, 'candidate'), proofRoot: state.batch.root, proofCommit: headCommit(state.batch.root) };
   if (!claimed.cached) await finishGate(tree, gate);
@@ -492,8 +517,8 @@ function savedCandidateResult(candidate) {
 /** Keep only small replayable gate metadata; the complete output remains in its immutable log. */
 function candidateGateRecord(gate) {
   if (!gate) return null;
-  const { tree, isGreen, failures, accounted, complete, requiresGreen, logPath, flakeDiagnostics, timedOut, proofRoot, proofCommit } = gate;
-  return { tree, isGreen, failures, accounted, complete, requiresGreen, logPath,
+  const { tree, isGreen, failures, accounted, complete, requiresGreen, logPath, flakeDiagnostics, timedOut, proofRoot, proofCommit, affectedGate } = gate;
+  return { tree, isGreen, failures, accounted, complete, requiresGreen, logPath, affectedGate,
     ...(proofRoot ? { proofRoot, proofCommit } : {}),
     ...(flakeDiagnostics ? { flakeDiagnostics } : {}), ...(timedOut ? { timedOut } : {}) };
 }
@@ -511,7 +536,7 @@ async function parallelPrefixes(state, entries) {
   const counts = badgeCounts(state.board);
   const groups = entries.map((_, index) => entries.slice(0, index + 1));
   const descriptors = groups.map(group => {
-    const key = createHash('sha256').update(JSON.stringify([state.batch.base, group, counts, liveWaiverProjection(state.board)])).digest('hex');
+    const key = createHash('sha256').update(JSON.stringify(['affected-gate-v1', state.batch.base, group, counts, liveWaiverProjection(state.board)])).digest('hex');
     const previous = state.batch.parallelCandidates?.find(candidate => candidate.key === key);
     if (previous) {
       if (previous.gate) state.gates.set(previous.gate.tree, previous.gate);
@@ -539,9 +564,10 @@ async function parallelPrefixes(state, entries) {
     /** Virtual child batches append deltas to their one canonical parent, never overwrite it. */
     const write = async (operation, args) => {
       if (operation === 'claimGate') {
-        const [tree] = args;
-        const cached = state.gates.get(tree);
-        if (cached?.timedOut) throw new Refused('LAND_GATE_TIMEOUT', 'this exact tree has a recorded landing timeout; inspect its log before starting a new batch');
+        const [tree, affectedGate] = args;
+        const recorded = state.gates.get(tree);
+        if (recorded?.timedOut) throw new Refused('LAND_GATE_TIMEOUT', 'this exact tree has a recorded landing timeout; inspect its log before starting a new batch');
+        const cached = recorded?.affectedGate === affectedGate ? recorded : null;
         if (cached && (completeGate(cached) || !coveredFailures(state, cached))) return { cached };
         const prior = claims.get(tree);
         if (prior) return { cached: await prior.promise };
@@ -1088,18 +1114,33 @@ export function landsOnTrunk(config) {
 }
 
 /**
- * The quick guards a tier-1 landing runs on its merged tree (#801): the project's static checks and its submit
- * invariants. Each item's frozen check already ran at verify, and the whole suite runs at publish.
+ * Prove a tier-1 batch's actual merged diff with submit's affected map (#1277). Fixed invariants and registry
+ * guards remain a floor; an uncertain import graph requires the configured full gate before adoption.
  */
 async function quickGuards(state) {
   const root = state.batch.root;
   await runStaticChecks(root, state.config, { agent: 'coordinator', onWait: state.onWait });
-  const invariants = [...new Set(state.config.submitInvariants ?? [])].sort();
-  if (!invariants.length) return;
-  const command = `${state.config.affectedTests} ${invariants.map(quote).join(' ')}`;
-  const run = await withGateSlot(root, lease => runProfiledShell(root, command, { waitMs: lease.waitMs, gateLease: lease }),
-    { agent: 'coordinator', kind: 'check', itemCheck: true, onWait: state.onWait });
-  if (!run.isGreen) throw new Refused('GATE_RED', `the submit invariants are red on the merged tree: ${invariants.join(', ')}`);
+  const commit = headCommit(root);
+  const tree = headTree(root);
+  const selection = batchAffectedTests(state);
+  if (selection.full) {
+    state.say(`batch affected tests require the full gate: ${selection.reason}`);
+    const gate = await gateGroup(state, 'affected');
+    if (!gate.isGreen) throw new Refused('GATE_RED', 'the full affected gate is red on the merged tree; inspect its recorded failures before landing');
+    return;
+  }
+  const files = selection.files;
+  if (files.length) {
+    const command = `${state.config.affectedTests} ${files.map(quote).join(' ')}`;
+    const browser = !browserFreeChecksEnabled() || await testsNeedBrowser(root, files);
+    const run = await withLandingGateSlot(root, lease => runProfiledShell(root, command, { waitMs: lease.waitMs, gateLease: lease, stages: true }),
+      { agent: 'coordinator', kind: 'gate', landing: true, browser, gui: testsNeedGui(root, files), onWait: state.onWait });
+    if (headCommit(root) !== commit || headTree(root) !== tree || !isClean(root)) {
+      throw new Refused('LAND_SOURCE_CHANGED', 'the landing source changed while its affected tests ran; restore the recorded batch before adopting');
+    }
+    state.say(`batch affected tests: ${files.length} file(s) ${run.isGreen ? 'green' : 'red'} on the merged tree`);
+    if (!run.isGreen) throw new Refused('GATE_RED', `the batch affected tests are red on the merged tree: ${files.join(', ')}`);
+  }
 }
 
 /** The affected test files each batch item's submission moved to the landing gate, read from its exact submit. */
@@ -1324,6 +1365,7 @@ export async function runLandingBatch({ root, board, config, write, say, owner, 
   }
   const selected = candidates(board, root, trunk.commit, maximum);
   if (!dryRun) for (const item of selected.ready) requireOutsideOwner(board, item);
+  checkLandingMessages(selected.ready, landingContext(root, trunk.commit, config, (item) => item.item_landing_commit));
   const stale = selected.blocked.find(item => item.code === 'STALE_VERDICT');
   if (!selected.ready.length && stale) throw staleVerdictRefusal({ item_id: stale.id }, stale);
   if (dryRun) {
