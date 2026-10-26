@@ -128,7 +128,51 @@ test('moves stay local while the machine credential expires, then replay after s
   box.env.PULLBOARD_RELAY_SENDER_BACKGROUND = '0'; // The test runner's supported foreground sender mode exposes the auth diagnostic.
   const expired = await box.cli('status');
   assert.equal(expired.code, 0, expired.failure ?? 'status still reads the local board when machine authorization expires');
-  assert.match(expired.stderr, new RegExp(`\\[AUTH_REQUIRED\\].*relay sign-in expired or was revoked for board ${state.board}.*run pullboard relay on to sign in again or pullboard relay off`, 'u'));
+  assert.match((expired.document.diagnostics ?? []).join('\n'), new RegExp(`\\[AUTH_REQUIRED\\].*relay sign-in expired or was revoked for board ${state.board}.*run pullboard relay on to sign in again or pullboard relay off`, 'u'));
+  const textRefusal = await box.script(`
+    const { main } = await import(${JSON.stringify(box.mainURL)});
+    let stdout = '', stderr = '';
+    const code = await main(['join', ${JSON.stringify(box.lane)}], {
+      cwd: ${JSON.stringify(agentRoot)}, stdout: { write(value) { stdout += value; } }, stderr: { write(value) { stderr += value; } },
+    });
+    console.log(JSON.stringify({ code, stdout, stderr }));
+  `);
+  assert.equal(textRefusal.code, 0, 'the private production CLI capture completes');
+  assert.equal(textRefusal.document.code, 1);
+  const stderrLines = textRefusal.document.stderr.trim().split('\n');
+  const refusalLines = stderrLines.filter(line => !/^next: /u.test(line));
+  assert.equal(refusalLines.length, 1, 'text registration reports exactly one refusal line');
+  assert.equal(stderrLines.length - refusalLines.length, 1, 'followed by the one next step every text refusal ends with (#176)');
+  assert.match(refusalLines[0], new RegExp(state.board));
+  assert.match(refusalLines[0], /pullboard relay on.*pullboard relay off/u);
+  const rejoin = await box.cliAt(agentRoot, 'join', box.lane);
+  assert.equal(rejoin.code, 1);
+  assert.equal(rejoin.document.error.code, 'AUTH_REQUIRED');
+  assert.equal((rejoin.document.diagnostics ?? []).length, 0, 'registration reports only its refusal, without a read fallback first');
+  assert.equal(rejoin.document.error.message.split('\n').length, 1);
+  assert.match(rejoin.document.error.message, new RegExp(state.board));
+  assert.match(rejoin.document.error.message, /pullboard relay on.*pullboard relay off/u);
+
+  const orderedLink = readFileSync(box.linkFile, 'utf8');
+  const phone = await box.phoneSession();
+  for (const token of [state.agentTokens.coordinator.token, phone.token, undefined]) {
+    const legacy = { ...JSON.parse(readFileSync(box.linkFile, 'utf8')), token };
+    delete legacy.tokenId;
+    delete legacy.agentTokens;
+    writeFileSync(box.linkFile, JSON.stringify(legacy) + '\n', { mode: 0o600 });
+    const oldRead = await assertLocalRead(box, state.board, 'status');
+    assert.equal(oldRead.code, 0);
+    const oldMove = await box.cli('add', box.lane, 'old links cannot apply out of order');
+    assert.equal(oldMove.code, 1);
+    assert.equal(oldMove.document.error.code, 'AUTH_REQUIRED');
+    assert.equal((oldMove.document.diagnostics ?? []).length, 0);
+    assert.equal(oldMove.document.error.message.split('\n').length, 1);
+    assert.match(oldMove.document.error.message, new RegExp(state.board));
+    assert.match(oldMove.document.error.message, /pullboard relay on.*pullboard relay off/u);
+    assert.deepEqual((await box.cli('export')).document.tables, before, 'old PA, PS and tokenless links retain the local board');
+  }
+  writeFileSync(box.linkFile, orderedLink, { mode: 0o600 });
+
   const queued = await box.cli('add', box.lane, 'local work waits for machine sign-in');
   assert.equal(queued.code, 0, queued.failure ?? 'the expired relay credential does not block the local move');
   assert.equal(queued.document.item.item_title, 'local work waits for machine sign-in');
@@ -155,47 +199,7 @@ test('moves stay local while the machine credential expires, then replay after s
   assert.equal(afterRelink.event.filter(event => event.item_id === claimId && event.event_kind === 'claim').length, 1,
     'replay does not duplicate the locally completed next claim');
   assert.equal((await box.cli('status')).document.relay.outbox.length, 0, 'the reauthorized machine drains the queued moves');
-  const textRefusal = await box.script(`
-    const { main } = await import(${JSON.stringify(box.mainURL)});
-    let stdout = '', stderr = '';
-    const code = await main(['join', ${JSON.stringify(box.lane)}], {
-      cwd: ${JSON.stringify(agentRoot)}, stdout: { write(value) { stdout += value; } }, stderr: { write(value) { stderr += value; } },
-    });
-    console.log(JSON.stringify({ code, stdout, stderr }));
-  `);
-  assert.equal(textRefusal.code, 0, 'the private production CLI capture completes');
-  assert.equal(textRefusal.document.code, 1);
-  const stderrLines = textRefusal.document.stderr.trim().split('\n');
-  const refusalLines = stderrLines.filter(line => !/^next: /u.test(line));
-  assert.equal(refusalLines.length, 1, 'text registration reports exactly one refusal line');
-  assert.equal(stderrLines.length - refusalLines.length, 1, 'followed by the one next step every text refusal ends with (#176)');
-  assert.match(refusalLines[0], new RegExp(state.board));
-  assert.match(refusalLines[0], /pullboard relay on.*pullboard relay off/u);
-  const rejoin = await box.cliAt(agentRoot, 'join', box.lane);
-  assert.equal(rejoin.code, 1);
-  assert.equal(rejoin.document.error.code, 'AUTH_REQUIRED');
-  assert.equal((rejoin.document.diagnostics ?? []).length, 0, 'registration reports only its refusal, without a read fallback first');
-  assert.equal(rejoin.document.error.message.split('\n').length, 1);
-  assert.match(rejoin.document.error.message, new RegExp(state.board));
-  assert.match(rejoin.document.error.message, /pullboard relay on.*pullboard relay off/u);
 
-  const phone = await box.phoneSession();
-  for (const token of [state.agentTokens.coordinator.token, phone.token, undefined]) {
-    const legacy = { ...JSON.parse(readFileSync(box.linkFile, 'utf8')), token };
-    delete legacy.tokenId;
-    delete legacy.agentTokens;
-    writeFileSync(box.linkFile, JSON.stringify(legacy) + '\n', { mode: 0o600 });
-    const oldRead = await assertLocalRead(box, state.board, 'status');
-    assert.equal(oldRead.code, 0);
-    const oldMove = await box.cli('add', box.lane, 'old links cannot apply out of order');
-    assert.equal(oldMove.code, 1);
-    assert.equal(oldMove.document.error.code, 'AUTH_REQUIRED');
-    assert.equal((oldMove.document.diagnostics ?? []).length, 0);
-    assert.equal(oldMove.document.error.message.split('\n').length, 1);
-    assert.match(oldMove.document.error.message, new RegExp(state.board));
-    assert.match(oldMove.document.error.message, /pullboard relay on.*pullboard relay off/u);
-    assert.deepEqual((await box.cli('export')).document.tables, before, 'old PA, PS and tokenless links retain the local board');
-  }
 });
 
 test('relay off keeps a board out of auto-link [H1,H7,H16]', async t => {
