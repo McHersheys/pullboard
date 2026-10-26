@@ -725,6 +725,7 @@ test('lost GitHub access takes effect at ten minutes for reads and writes alike,
   box.advance(1);
   assert.deepEqual(await box.auth.boardsFor(signed.token), []);
   box.state.access = true;
+  box.advance(ACCESS_WINDOW_MS); // A denied grant is cached for the same window as an allowed grant [H21].
   await box.auth.authenticate(signed.token, { board: 'alpha', write: true });
   const asked = () => box.calls.filter(call => call.path.endsWith('/permission')).length;
   const before = asked();
@@ -738,7 +739,9 @@ test('lost GitHub access takes effect at ten minutes for reads and writes alike,
   assert.deepEqual(await box.auth.boardsFor(signed.token), [], 'a denied write invalidates an earlier allowed read');
   box.state.access = true;
   await assert.rejects(box.auth.authenticate(signed.token, { board: 'alpha' }), { code: 'NO_REPO_ACCESS' }, 'a read reuses the denial inside its window');
-  assert.equal((await box.auth.authenticate(signed.token, { board: 'alpha', write: true })).user.id, signed.user.id, 'a write asks GitHub again after a denial, so restored access works at once');
+  await assert.rejects(box.auth.authenticate(signed.token, { board: 'alpha', write: true }), { code: 'NO_REPO_ACCESS' }, 'a write also reuses the denial inside its window');
+  box.advance(ACCESS_WINDOW_MS);
+  assert.equal((await box.auth.authenticate(signed.token, { board: 'alpha', write: true })).user.id, signed.user.id, 'the next window checks restored access again');
 });
 
 test('person token management lists only owned scoped metadata and preserves independent revocation [H2,H9]', async (t) => {
