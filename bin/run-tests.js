@@ -243,6 +243,8 @@ function testEnvironment(sandbox, gateMarkers = {}) {
   env.PULLBOARD_VIEW_BACKGROUND = '0';
   // Likewise the relay checkpoint publishes inside the command; a test of the background publisher opts in (#1014).
   env.PULLBOARD_RELAY_CHECKPOINT_BACKGROUND = '0';
+  // And a local-first board's relay sender runs inside each command; a test of the machine's sender opts in (#1013).
+  env.PULLBOARD_RELAY_SENDER_BACKGROUND = '0';
   env.TMPDIR = sandbox;
   env.TMP = sandbox;
   env.TEMP = sandbox;

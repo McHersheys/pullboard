@@ -1,4 +1,12 @@
-import { prepareBarCoverage } from '../bar-coverage.js';
+import {
+  confirmBarEffect,
+  executingBarEffect,
+  personBarMode,
+} from '../person-bar-cli.js';
+import {
+  barCoverageForPolicy,
+  prepareBarCoverage,
+} from '../bar-coverage.js';
 import { mainPolicy } from '../trusted-policy.js';
 /** Inspect, enable and independently sign acceptance bars [B4,V1,V2,H16]. */
 import { getItem } from '../board.js';
@@ -11,7 +19,6 @@ import {
   barActorForCommand,
   idArg,
   ordered,
-  personMode,
 } from '../cli.js';
 import { Refused } from '../refused.js';
 
@@ -36,8 +43,13 @@ export async function run(io, { first, second, rest, values }) {
       return 0;
     }
     io.say(`Sign-off asks: can the builder meet this bar, and would two reviewers grade it the same? Check the named baseline, every measurement method, coverage and reviewer edges in pullboard show ${id}.`);
-    const coverage = prepareBarCoverage(ctx.info.root, item, mainPolicy(ctx.info.root), values['coverage-file']);
-    const signed = await ordered(ctx, board, 'signBar', [id, { agentId: me.id, revision: status.revision?.revision, digest: status.revision?.digest, note: values.note, coverage, barActor: barActorForCommand(ctx, board, { asPerson: personMode(ctx, me, values) }) }]);
+    const sealed = executingBarEffect(ctx, board, 'bar-sign', id);
+    const coverage = sealed ? barCoverageForPolicy(ctx.info.root, item, sealed.coverage, mainPolicy(ctx.info.root)) : prepareBarCoverage(ctx.info.root, item, mainPolicy(ctx.info.root), values['coverage-file']);
+    const asPerson = personBarMode(ctx, board, me, values);
+    const effect = sealed ?? { revision: status.revision?.revision, digest: status.revision?.digest, note: values.note, coverage };
+    const confirmed = await confirmBarEffect(ctx, board, me, { verb: 'bar-sign', item: id, args: { note: effect.note } }, effect, asPerson);
+    if (confirmed !== null) return confirmed;
+    const signed = await ordered(ctx, board, 'signBar', [id, { agentId: io.personRequest?.phase === 'execute' ? 'person' : me.id, ...effect, barActor: barActorForCommand(ctx, board, { asPerson }) }]);
     io.result?.({ signed });
     io.say(`signed #${id} revision ${signed.revision}; any bar edit needs a fresh signature`);
     return 0;

@@ -18,13 +18,22 @@ export function validRelaySender(sender) {
     (sender.lineage === undefined || typeof sender.lineage === 'string' && sender.lineage.length > 0 && sender.lineage.length <= 64) &&
     (sender.login === undefined || typeof sender.login === 'string' && /^[A-Za-z0-9-]{1,39}$/u.test(sender.login)) &&
     (sender.approver === undefined || typeof sender.approver === 'boolean') &&
-    (sender.engine === undefined || Number.isSafeInteger(sender.engine) && sender.engine > 0));
+    (sender.engine === undefined || Number.isSafeInteger(sender.engine) && sender.engine > 0) &&
+    (sender.presence === undefined || sender.kind === 'person' && validPresence(sender.presence)));
 }
 
+export { validPresence } from './person-presence.js';
+import { validPresence } from './person-presence.js';
 /** Person bar provenance follows the same authenticated authority as existing person moves. */
 function personBarMove(move) {
   const at = move?.operation === 'addItem' ? 0 : ['editItem', 'signBar'].includes(move?.operation) ? 1 : null;
   return at !== null && move.args?.[at]?.barActor?.authority === 'person';
+}
+
+/** Public acknowledgement follows authenticated person credentials even when the actor is the coordinator. */
+function personReferenceMove(move) {
+  const options = move?.operation === 'addItem' ? move.args?.[0] : move?.operation === 'editItem' ? move.args?.[1] : null;
+  return options?.referenceAuthority === 'person';
 }
 
 /**
@@ -32,8 +41,8 @@ function personBarMove(move) {
  * person fact or request, or any move whose actor is the person. On a board that names approvers, only an approver's
  * session makes one [E4].
  */
-function personAuthority(move) {
-  return personBarMove(move) || personFact(move) || ['recordRowDecisions', 'decideSpecRevisions', 'decideSentinel'].includes(move?.operation) || move?.operation === 'answerDecision' && Boolean(move.args?.[1]?.asPerson) ||
+export function personAuthority(move) {
+  return personReferenceMove(move) || personBarMove(move) || personFact(move) || ['holdLane', 'releaseLane'].includes(move?.operation) && Boolean(move.args?.[1]?.asPerson) || ['recordRowDecisions', 'decideSpecRevisions', 'decideSentinel'].includes(move?.operation) || move?.operation === 'answerDecision' && Boolean(move.args?.[1]?.asPerson) ||
     move?.operation === 'shout' && Boolean(move.args?.[0]?.request) || relayMoveActor(move) === 'person';
 }
 
@@ -64,7 +73,8 @@ export function relaySenderProblem(move, sender, kind, { phoneReceipt = false } 
     return sender.approver === false && (kind === 'snapshot' || personAuthority(move))
       ? new Refused('NOT_APPROVER', `${sender.login ?? 'this person'} is not an approver of this board; only an approver it names answers person decisions, approves rows or replaces its snapshot`) : null;
   }
-  if (personFact(move)) {
+  // A machine may carry out the person's own never-again only as the request the person confirmed (#408).
+  if (personFact(move) && !(sender.kind === 'machine' && phoneReceipt)) {
     return new Refused('RELAY_PERSON_ONLY', `${sender.kind === 'agent' ? `agent ${sender.agent}` : 'a machine'} cannot record the person's never-again; the person marks it from their own session`);
   }
   if (sender.kind === 'machine') {
@@ -75,7 +85,7 @@ export function relaySenderProblem(move, sender, kind, { phoneReceipt = false } 
         move.operation === 'ensureCoordinator' && typeof move.args?.[0] === 'string')) return null;
     return new Refused('RELAY_PERSON_ONLY', 'a machine cannot act as the person; approve this action on the paired phone');
   }
-  if (personBarMove(move) || kind === 'snapshot' || ['recordRowDecisions', 'decideSpecRevisions'].includes(move?.operation) || move?.operation === 'decideSentinel' || move?.operation === 'answerDecision' && move.args?.[1]?.asPerson ||
+  if (personReferenceMove(move) || personBarMove(move) || kind === 'snapshot' || ['recordRowDecisions', 'decideSpecRevisions'].includes(move?.operation) || move?.operation === 'decideSentinel' || move?.operation === 'answerDecision' && move.args?.[1]?.asPerson ||
     move?.operation === 'shout' && move.args?.[0]?.request || relayMoveActor(move) === 'person') {
     return new Refused('RELAY_PERSON_ONLY', `agent ${sender.agent} cannot make a person-only relay ${kind}; use the person's authenticated session`);
   }
@@ -92,7 +102,7 @@ export function credentialActor(move) {
     return typeof creator === 'string' && creator !== 'machine' ? creator : 'machine';
   }
   if (move.personRequest || ['register', 'ensureCoordinator'].includes(move.operation)) return 'machine';
-  if (personBarMove(move) || ['recordRowDecisions', 'decideSpecRevisions', 'recordLandingWaiver'].includes(move.operation)
+  if (personReferenceMove(move) || personBarMove(move) || ['recordRowDecisions', 'decideSpecRevisions', 'recordLandingWaiver'].includes(move.operation)
     || move.operation === 'answerDecision' && args[1]?.asPerson
     || move.operation === 'shout' && args[0]?.request) return 'person';
   return relayMoveActor(move);

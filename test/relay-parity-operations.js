@@ -12,7 +12,7 @@ import { decodeBoardKey } from '../src/seal.js';
 import { createParityReader, assertReaderParity } from './relay-parity-reader.js';
 import { createStudyExercise, seedStudyState, seedHandoff } from './relay-parity-seeds.js';
 import { submitFixture } from './board-submit-fixture.js';
-import { seedOutside, seedLandingObservations, seedMembership, seedAdministrative, seedBatch, seedCoordinatorAuthority, seedSpecOutcomes, seedBarSignature, seedCurrentOperations } from './relay-parity-extra-seeds.js';
+import { seedOutside, seedLandingObservations, seedMembership, seedAdministrative, seedBatch, seedCoordinatorAuthority, seedSpecOutcomes, seedBarSignature, seedCurrentOperations, seedPersonSigning } from './relay-parity-extra-seeds.js';
 import { syntheticFlakeObservation } from './flake-observation-fixture.js';
 
 /** Run inside the existing private fixture's genuine environment, retaining one HTTP server and person session. */
@@ -57,6 +57,7 @@ export async function exerciseOperationParity({ root, origin, token, boardId, la
     await seedBarSignature(context);
     await seedCoordinatorAuthority(context);
     await seedHandoff(context);
+    await seedPersonSigning(context);
     const missing = tracking.missing(MOVE_OPERATIONS);
     assert.deepEqual(missing, [], `every declared native operation must pass the complete oracle; setup refusals=${JSON.stringify(tracking.setupRefusals)}`);
     return { covered: [...tracking.covered].sort(), declared: [...MOVE_OPERATIONS].sort() };

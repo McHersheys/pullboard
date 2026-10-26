@@ -89,6 +89,7 @@ import {
 import { recordedRecovery } from '../recorded-recovery.js';
 import { failureSignatures } from '../main-failure-matches.js';
 import { matchingMainFailures } from '../main-failure-matches.js';
+import { submitReferenceReminders } from '../reference-lines.js';
 
 /**
  * Submit: a clean tree, nothing untracked, the gate green at HEAD, then the board (V4).
@@ -257,6 +258,7 @@ export async function submitHere(ctx, id, infra) {
   // A large submit still goes through; the note only suggests a chain of smaller items (#1162).
   const sizeNote = oversizeNote(measuredLines, acceptedMain.config.itemSizeBudget);
   if (sizeNote) ctx.io.say(`note: ${sizeNote}`);
+  for (const reminder of submitReferenceReminders(root, held, commit)) ctx.io.err(reminder);
   const report = knownMainFailures
     ? `submission proof red with ${knownMainFailures.failures.length} known main failure(s) at ${knownMainFailures.main}; item check green; no new failures accepted. ${submitGateReport(gate)}`
     : waived

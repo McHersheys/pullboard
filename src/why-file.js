@@ -39,7 +39,7 @@ export function itemsTouching(root, { file, line }) {
   }
   const ids = [];
   for (const body of log.stdout.split('\x01')) {
-    for (const match of body.matchAll(/^Pullboard-Item:\s*#(\d+)\s*$/gmu)) ids.push(Number(match[1]));
+    for (const match of body.matchAll(/^Pullboard-(?:Item|Companion):\s*#(\d+)\s*$/gmu)) ids.push(Number(match[1]));
   }
   return [...new Set(ids)];
 }

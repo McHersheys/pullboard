@@ -40,6 +40,7 @@ Set up
                                         release priority is opt-in: gate.queue.currentReleaseFirst (default false), within each board's otherwise-tied positions
                                         memory hold is opt-in: gate.memoryFloorMB in ~/.pullboard/settings.json holds the queue under that many MB free or critical pressure (default off)
                                         short slots for runs that name their test files are opt-in: pullboard settings gate.shortSlots <n> (default 0)
+                                        signed person moves are opt-in: pullboard settings person.signed on makes each wait for your passkey; only the passkey turns it off
                                         runner-first dispatch is opt-in: pullboard settings gate.runnersFirst on|off (default off)
                                         runner admission deadline: pullboard settings gate.runnerWaitMs <n> (default 300000ms)
   pullboard runner add <ssh-host> --slots <n> --browser <n> [--node <remote-path>] [--root <remote-path>]
@@ -547,7 +548,7 @@ export const HELP = buildHelp();
 /** Replace help placeholders with ordinary values so every command receives a usable example. */
 function exampleFor(name, usage) {
   if (HELP_EXAMPLES[name]) return HELP_EXAMPLES[name];
-  return usage.split(/\s+\|\s+|\|/u, 1)[0]
+  return usage.split(/\s+\|\s+/u, 1)[0]
     .replace(/\s+\[[^\]]+\]/gu, '')
     .replace(/<lane>/gu, 'web')
     .replace(/<title>/gu, '"Example"')
@@ -556,7 +557,8 @@ function exampleFor(name, usage) {
     .replace(/<path>/gu, 'src/cli.js')
     .replace(/<commit>/gu, '0123456')
     .replace(/<principal>/gu, 'person@example.invalid')
-    .replace(/<[^>]+>/gu, 'value');
+    .replace(/<[^>]+>/gu, 'value')
+    .replace(/\|[^\s|]+/gu, '');
 }
 
 /** Read literal command words before an argument, flag or optional segment. */

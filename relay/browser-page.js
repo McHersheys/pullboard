@@ -50,6 +50,7 @@ export function createRelayBrowserHandler({ authenticate }) {
     ['/relay/browser-excluded.js', ['text/javascript', readFileSync(new URL('./browser-excluded.js', import.meta.url), 'utf8')]],
     ['/relay/excluded-notice.js', ['text/javascript', readFileSync(new URL('./excluded-notice.js', import.meta.url), 'utf8')]],
     ['/relay/browser-approval-card.js', ['text/javascript', readFileSync(new URL('./browser-approval-card.js', import.meta.url), 'utf8')]],
+    ['/relay/browser-passkeys.js', ['text/javascript', readFileSync(new URL('./browser-passkeys.js', import.meta.url), 'utf8')]],
     ['/relay/client.js', ['text/javascript', readFileSync(new URL('./browser-client.js', import.meta.url), 'utf8')]],
     ['/relay/relay-limits.js', ['text/javascript', readFileSync(new URL('../src/relay-limits.js', import.meta.url), 'utf8')]],
     ['/relay/sign-in.js', ['text/javascript', SIGN_IN_TRANSPORT]],
@@ -65,6 +66,7 @@ export function createRelayBrowserHandler({ authenticate }) {
     ['/relay/engine.js', ['text/javascript', 'export const ENGINE_VERSION = ' + ENGINE_VERSION + ';\n']],
     ['/relay/seal.js', ['text/javascript', readFileSync(new URL('../src/seal.js', import.meta.url), 'utf8')]],
     ['/relay/api-moves.js', ['text/javascript', readFileSync(new URL('../src/api-moves.js', import.meta.url), 'utf8')]],
+    ['/relay/person-bar-effect.js', ['text/javascript', readFileSync(new URL('../src/person-bar-effect.js', import.meta.url), 'utf8')]],
     ['/relay/person-request.js', ['text/javascript', readFileSync(new URL('../src/person-request.js', import.meta.url), 'utf8')]],
     ['/relay/refused.js', ['text/javascript', readFileSync(new URL('../src/refused.js', import.meta.url), 'utf8')]],
   ]);

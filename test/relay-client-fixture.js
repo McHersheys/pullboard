@@ -3,13 +3,30 @@ import { AGENT_SHELL_MARKERS, SSH_SHELL_MARKERS } from '../src/person.js';
 /** Private real CLI, auth and relay fixture; credentials never enter assertion messages [H1,H7,H18]. */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { startFixtureChild as spawn, reportFixtureChildFailure, runFixtureChild } from './fixture-child.js';
+import {
+  startFixtureChild as spawn,
+  reportFixtureChildFailure,
+  runFixtureChild,
+} from './fixture-child.js';
 import { performance } from 'node:perf_hooks';
 import { createServer } from 'node:http';
 import { Readable, Transform } from 'node:stream';
 import { once } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { delimiter, join, resolve } from 'node:path';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import {
+  delimiter,
+  join,
+  resolve,
+} from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { createAuthHandler } from '../relay/auth-http.js';
@@ -145,7 +162,7 @@ export { childResult as relayFixtureChild };
  * fixture once used, a loaded machine kept the test process busy enough that browser replies queued past their
  * deadlines (#955, #979). A case that needs a faster poll passes pollMs by name and says why.
  */
-export async function relayClientFixture(t, { cliChildren, coordinatorModel, accountStorageBytes, pollMs = 200 } = {}) {
+export async function relayClientFixture(t, { cliChildren, coordinatorModel, accountStorageBytes, pollMs = 200, host = '127.0.0.1' } = {}) {
   const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-relay-cleanup-')));
   const root = join(scratch, 'repo');
   const home = join(scratch, 'home');
@@ -227,6 +244,9 @@ globalThis.fetch = function tracedFetch(input, init) {
   let override = null;
   let mintFailures = 0;
   let refuseEventReads = false;
+  let refuseMoveSends = false;
+  // Moves the relay auth clock alone, so a test can end a cached GitHub grant without expiring board records (#1013).
+  let authOffsetMs = 0;
   let revokeOnNextListing = false;
   const boardsWithoutSnapshots = new Map();
   const injectedSnapshotWriteDelayMs = Number(process.env.PULLBOARD_TEST_SNAPSHOT_WRITE_DELAY_MS ?? 0);
@@ -497,6 +517,12 @@ globalThis.fetch = function tracedFetch(input, init) {
       if (stateReadHold) await stateReadHold;
       else await new Promise(resolveDelay => setTimeout(resolveDelay, stateReadDelayMs));
     }
+    // Checked before the move hook, so a hook that turns refusal on lets its own move through (#1013).
+    if (refuseMoveSends && req.method === 'POST' && /\/api\/v1\/boards\/[0-9a-f]{32}\/moves$/.test(req.url ?? '')) {
+      res.writeHead(503, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ version: 1, error: { code: 'RELAY_UNAVAILABLE', message: 'fixture move outage' } }));
+      request.resume(); return;
+    }
     if (beforeMove && req.method === 'POST' && /\/api\/v1\/boards\/[0-9a-f]{32}\/moves$/.test(req.url ?? '')) {
       const action = beforeMove; beforeMove = null; await action();
     }
@@ -523,8 +549,9 @@ globalThis.fetch = function tracedFetch(input, init) {
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const relayPort = server.address().port;
-  const origin = 'http://127.0.0.1:' + relayPort;
-  auth = createRelayAuth({ database: authDatabase, github: createGitHubClient({ ...provider.config, callbackURL: origin + '/auth/github/callback' }) });
+  // A browser passkey needs a domain for its RP id, so a passkey case names the relay by `localhost` [E22].
+  const origin = 'http://' + host + ':' + relayPort;
+  auth = createRelayAuth({ database: authDatabase, github: createGitHubClient({ ...provider.config, callbackURL: origin + '/auth/github/callback' }), now: () => Date.now() + authOffsetMs });
   signIn = createAuthHandler({ auth, publicOrigin: origin });
   api = createRelayHandler({ directory: join(scratch, 'relay'), auth, publicOrigin: origin, pollMs, maintenanceMs: 0, accountStorageBytes, now: () => Date.now() + timeOffsetMs });
   /** Sign a separate phone in over actual OAuth HTTP; its person session stays only in fixture RAM. */
@@ -895,6 +922,10 @@ globalThis.fetch = function tracedFetch(input, init) {
     /** Revoke the real session when the next listing arrives so its HTTP authorization refusal is exercised. */
     revokeSessionOnNextListing() { revokeOnNextListing = true; },
     refuseReads(value) { refuseEventReads = value; },
+    /** Answer every move send with a temporary outage, as a relay that stops taking moves part way (#1013). */
+    refuseMoves(value) { refuseMoveSends = value; },
+    /** Move the relay's auth clock forward by `ms`, past a cached GitHub grant's window (#1013). */
+    advanceAuthorization(ms) { authOffsetMs += ms; },
     /** Return a selected listed-board read's missing-snapshot refusal over real HTTP. */
     noBoardOnReads(id, paths = ['state']) {
       boardsWithoutSnapshots.set(id, new Set(paths));

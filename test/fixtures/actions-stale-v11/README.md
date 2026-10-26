@@ -1,0 +1,3 @@
+Pinned MIT-licensed actions/stale v11.0.0 source, retained byte for byte as test data. manifest.json records the original URLs and SHA-256 digests. No package is installed and tests make no network requests.
+
+clarify-stale-fixture.js strips TypeScript and module syntax, then executes the complete upstream processor, Issue and policy-helper bodies against deterministic clock and REST adapters. Logging, quota counting and ASCII-only label normalization are adapters; no authorization, scheduler, real GitHub or elapsed-fourteen-day behavior is claimed. before-stale.yml is the former Pullboard configuration used as the regression control.

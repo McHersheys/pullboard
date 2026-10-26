@@ -1,3 +1,4 @@
+/** @pullboard-test-input source-tree */
 /** Standard doctrine and repo overrides (D1–D4), using real private files. */
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -9,6 +10,11 @@ import { doctrineText, loadDoctrine, standardDoctrine, STANDARD_VERSION } from '
 import { lintSpec, parseSpec } from '../src/spec.js';
 import { renderSpecView } from '../src/view.js';
 
+const PB9_TRAILER_SENTENCE = ' Pullboard trailers are generated, and no text follows the final trailer paragraph.';
+// RFC 0005 deliberately extends PB9; retain the linter's exact warning, not a blanket exemption.
+const PB9_LENGTH_WARNING = { level: 'warning', line: 14, id: 'PB9',
+  message: '31 words; rows stay under 20, the why goes elsewhere' };
+
 /** A private repo's configured practice file, automatically removed after its test. */
 function practiceBox(t, text, name = 'PRACTICE.md') {
   const root = mkdtempSync(join(tmpdir(), 'pullboard-doctrine-'));
@@ -17,12 +23,14 @@ function practiceBox(t, text, name = 'PRACTICE.md') {
   return { root, config: { practice: name } };
 }
 
-test('standard version1 ships exactly the twelve RFC rules and is inherited without a practice file [D1,D2]', (t) => {
+test('standard version1 retains twelve rules with the approved PB9 trailer amendment [D1,D2,C7]', (t) => {
   const standard = standardDoctrine();
   const rfc = parseSpec(readFileSync(new URL('../docs/rfcs/0001-standard-doctrine.md', import.meta.url), 'utf8'));
   /** Comparable rule fields; the packaged file legitimately has different source lines. */
   const fields = ({ id, status, tier, text, gate, serves }) => ({ id, status, tier, text, gate, serves });
-  assert.deepEqual(standard.rows.map(fields), rfc.rows.filter((row) => /^PB\d/.test(row.id)).map(fields));
+  const expected = rfc.rows.filter((row) => /^PB\d/.test(row.id))
+    .map(row => row.id === 'PB9' ? { ...row, text: row.text + PB9_TRAILER_SENTENCE } : row);
+  assert.deepEqual(standard.rows.map(fields), expected.map(fields));
   assert.equal(standard.rows.length, 12);
   assert.equal(STANDARD_VERSION, 1);
   assert.match(readFileSync(new URL('../src/standard-doctrine.md', import.meta.url), 'utf8'), /\nVersion: 1\n/);
@@ -30,7 +38,7 @@ test('standard version1 ships exactly the twelve RFC rules and is inherited with
   const merged = loadDoctrine(box.root, box.config);
   assert.equal(merged.repoExists, false);
   assert.deepEqual(merged.rows, standard.rows);
-  assert.deepEqual(lintSpec(merged), []);
+  assert.deepEqual(lintSpec(merged), [PB9_LENGTH_WARNING]);
   assert.ok(merged.rows.every((row) => row.origin === 'standard' && row.version === 1));
 });
 
@@ -38,7 +46,7 @@ test('repo rules override and decline inherited rows with a reason, keeping sour
   const text = '# Local rules\n\n## Team\n- PB2 [approved, must] Deletion needs two approvals. | gate: review\n- PB8 [wont] No persistent data is stored.\n- R1 [fact] An existing local rule.\n';
   const box = practiceBox(t, text, 'ways.md');
   const merged = loadDoctrine(box.root, box.config);
-  assert.deepEqual(lintSpec(merged), []);
+  assert.deepEqual(lintSpec(merged), [PB9_LENGTH_WARNING]);
   assert.equal(merged.rows.length, 13);
   const own = merged.rows.filter((row) => row.origin === 'repo');
   assert.deepEqual(own.map((row) => row.id), ['PB2', 'PB8', 'R1']);

@@ -28,6 +28,7 @@ import { verdictProjector } from './verdict-freshness.js';
 import { trunkRevisionReader } from './trunk-revision.js';
 import { projectState } from './serve.js';
 import { personRequestStatuses } from './relay-requests.js';
+import { personSigningPresentation } from './person-signing-presentation.js';
 import {
   dependencyValues,
   hasForeignDependencies,
@@ -96,6 +97,7 @@ export function buildLocalBoardState(root, boardId, board, codeIsMain, { previou
     state.proofStats = projectData.proofStats;
     state.requests = projectData.requests;
     state.personRequests = projectData.personRequests;
+    Object.assign(state, personSigningPresentation(root, board, config));
     state.milestones = projectData.milestones;
     state.blocks = personBlockWords(repoInfo(root).commonDir, board.clock.now()); // Needs you below is recomputed with them [C6].
     // Only the local HTTP host supplies its private telemetry; sealed projections omit it entirely.
@@ -160,4 +162,3 @@ export function fileRevision(file) {
   if (!existsSync(file.path)) return [file.name, null];
   return [file.name, createHash('sha256').update(readFileSync(file.path)).digest('hex')];
 }
-
