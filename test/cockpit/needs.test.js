@@ -73,6 +73,61 @@ test('every Needs-you surface follows the shared builder [N26,A9]', async () => 
   }
 });
 
+test('a local relay-health Needs-you entry is an inspection with no release or hold action [N26]', { timeout: 180_000 }, async (t) => { // budget: private board/API startup and one real Chrome rendering pass; no throughput claim.
+  const executable = chromeExecutable();
+  assert.ok(executable, 'Chrome is required for the relay-health Needs-you inspection check.');
+  const box = machine();
+  project(box, 'relay health inspection');
+  const view = await startView(box);
+  const profile = mkdtempSync(join(tmpdir(), 'pullboard-relay-health-needs-'));
+  let chrome;
+  const text = 'relay degraded since 10:30; your moves are queued locally (2)';
+  const nextStep = 'the last canary probe failed during pull (RELAY_READ); inspect pullboard relay canary';
+  try {
+    chrome = await openSnapshotChrome(executable, view.link.href, profile);
+    await chrome.waitFor("typeof data === 'object' && data?.project && document.querySelector('#needs')");
+    // Inject the declared shared-builder output, independent of which API release supplies that field.
+    const call = { kind: 'relay-health', id: 'relay-canary', ref: 'relay', text, what: nextStep,
+      at: new Date().toISOString(), target: 'relay:relay-canary' };
+    await chrome.stable(`(() => {
+      globalThis.builderCalls = ${JSON.stringify([call])};
+      personNeeds = () => builderCalls;
+      render();
+      return true;
+    })()`);
+    await chrome.waitFor(`Array.from(document.querySelectorAll('#needs > .row')).some(row => row.textContent.includes(${JSON.stringify(text)}))`);
+    const rendered = JSON.parse(await chrome.stable(`JSON.stringify((() => {
+      const row = [...document.querySelectorAll('#needs > .row')].find(entry => entry.textContent.includes(${JSON.stringify(text)}));
+      const homeRow = [...document.querySelectorAll('#home-needs > .row')].find(entry => entry.textContent.includes(${JSON.stringify(text)}));
+      return row && homeRow ? {
+        target: row.dataset.go ?? null,
+        ref: row.querySelector('.t > span')?.textContent ?? null,
+        title: row.querySelector('.t').textContent,
+        need: row.querySelector('.meta .why').textContent,
+        action: row.querySelector(':scope > .chip').textContent,
+        hasAge: !!row.querySelector('.row-age'),
+        homeTarget: homeRow.dataset.go ?? null,
+        homeAction: homeRow.querySelector(':scope > .chip').textContent,
+      } : null;
+    })())`));
+    assert.deepEqual(rendered, {
+      target: null,
+      ref: 'relay',
+      title: `relay${text}`,
+      need: `NEEDS YOU ${nextStep}`,
+      action: 'inspect',
+      hasAge: true,
+      homeTarget: null,
+      homeAction: 'inspect',
+    }, 'both real Chrome surfaces show an age-stamped inspection step and do not turn the health alert into a shouts/hold link');
+    assert.deepEqual(chrome.exceptions, [], 'the actual page renders the new Needs-you kind without exceptions');
+  } finally {
+    if (chrome) await closeSnapshotChrome(chrome);
+    rmSync(profile, { recursive: true, force: true });
+    await view.stop();
+  }
+});
+
 test("the page's Needs-you comes from the shared builder [N26]", { timeout: 180_000 }, async (t) => { // budget: hang ceiling for private board/API setup and the two real browser modes, not a throughput claim.
   const box = machine();
   const alpha = project(box, 'shared needs', `${SPEC}- G3 [pending] Choose the greeting. | gate: review\n- G4 [draft, must] Keep the footer. | gate: review\n- G5 [draft, aim] Keep the header. | gate: review\n`);
@@ -180,7 +235,7 @@ globalThis.fetch = async function controlledStateFetch(path, init) {
   const body = await reply.json();
   if (!body.state) throw new Error('the test expected a fresh board-state response');
   body.state.blocks = [];
-  return { ok: reply.ok, status: reply.status, json: async () => body };
+  return { ok: reply.ok, status: reply.status, headers: reply.headers, json: async () => body };
 };`);
     page.run('globalThis.hidePersonBlocks = true; sentStates.clear();');
     await page.run('refresh()');
@@ -386,6 +441,8 @@ test('needs you and the asks sit in their lists [N26]', { timeout: 180_000 }, as
       needs: [...needs.querySelectorAll(':scope > .row')].map((row) => ({ go: row.dataset.go ?? null, words: row.querySelector('.t').textContent, ref: row.querySelector('.t > span')?.textContent ?? null,
         kind: row.querySelector('.meta .why').textContent, label: getComputedStyle(row.querySelector('.meta .why b')).color === warn && getComputedStyle(row.querySelector('.meta .why')).color === warn, chip: row.querySelector(':scope > .chip').textContent, age: !!row.querySelector('.row-age') })),
       card: card ? [...card.children].map((e) => e.id || e.className) : null,
+      coordinatorDecisionsHidden: document.querySelector('#coordinator-decisions').hidden,
+      coordinatorDecisions: [...document.querySelectorAll('#coordinator-decisions .shout .text')].map((text) => text.textContent),
       composer: box(document.querySelector('.shout-form .composer')), asks: box(document.querySelector('.asks-toggle[data-fold="waiting"]')),
       asksOpen: document.querySelector('.asks-toggle[data-fold="waiting"]')?.getAttribute('aria-expanded') ?? null, showAgents: box(document.querySelector('.asks-slot [data-agents-toggle]')),
       decisions: shown(decisions) ? [...decisions.querySelectorAll('.shout .text')].map((text) => text.textContent) : [], groupTint: getComputedStyle(decisions).backgroundColor, cardTint: card ? getComputedStyle(card).backgroundColor : null,
@@ -427,8 +484,10 @@ test('needs you and the asks sit in their lists [N26]', { timeout: 180_000 }, as
         await chrome.waitFor("!document.querySelector('[data-pane=shouts]').hidden && !!document.querySelector('#feed .shout')");
         r = await read();
         assert.ok(r.page.scroll <= r.page.width && r.page.body <= r.page.width, `${at}: no sideways scroll on Shouts`);
-        // One card: the composer's line, the asks, the feed.
-        assert.deepEqual(r.card, ['shout-form', 'decisions', 'feed'], `${at}: Shouts is one card`);
+        // One card: the composer's line, the coordinator's own queue, the asks, the feed.
+        assert.deepEqual(r.card, ['shout-form', 'coordinator-decisions', 'decisions', 'feed'], `${at}: Shouts is one card`);
+        assert.equal(r.coordinatorDecisionsHidden, false, `${at}: the coordinator's own unanswered ask is visible`);
+        assert.ok(r.coordinatorDecisions.some((text) => text.includes('Ship the footer first?')), `${at}: the coordinator queue shows the second agent's ask`);
         if (width === 1280) assert.ok(Math.abs((r.composer.top + r.composer.height / 2) - (r.asks.top + r.asks.height / 2)) <= 4 && r.asks.left >= r.composer.right, `${at}: the asks waiting sit at the end of the composer's line: ${JSON.stringify([r.composer, r.asks])}`);
         assert.deepEqual([r.asksOpen, r.decisions.length, /Which colour for the button\?/.test(r.decisions[0] ?? '')], ['false', 1, true], `${at}: the asks waiting on others stay folded; the person's own decision shows`);
         assert.equal(r.feedBar, false, `${at}: no bar above the feed while it shows every shout`);
