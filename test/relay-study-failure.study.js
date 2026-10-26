@@ -5,13 +5,15 @@ import { performance } from 'node:perf_hooks';
 import { test } from 'node:test';
 import * as store from '../src/board.js';
 import { relayClientFixture } from './relay-client-fixture.js';
+import { faultProxy } from './relay-study-fixture.js';
 
 test('relay study measures native reads and local moves across private transport failures [H5,H17]', { timeout: 300_000 }, async t => {
   for (const fault of ['down', 'slow-5s', '5xx', 'stale-engine']) {
     const box = await relayClientFixture(t);
     await box.link();
+    const proxy = fault === 'down' ? null : await faultProxy(t, box);
     if (fault === 'down') await box.stopRelay();
-    else box.studyApiFault({ delayMs: fault === 'slow-5s' ? 5000 : 0,
+    else proxy.set({ delayMs: fault === 'slow-5s' ? 5000 : 0,
       status: fault === '5xx' ? 503 : fault === 'stale-engine' ? 409 : null,
       code: fault === 'stale-engine' ? 'ENGINE_VERSION' : 'RELAY_UNAVAILABLE' });
     const before = box.calls.length;
@@ -41,7 +43,7 @@ test('relay study measures native reads and local moves across private transport
       requests: box.calls.slice(before).map(call => ({ method: call.method, path: call.path })),
       limitation: fault === 'stale-engine' ? 'Injected real HTTP409 ENGINE_VERSION response; current CLI binary itself remains current.'
         : 'Private real HTTP failure; this stage measures native CLI only, not browser behavior.' }));
-    box.studyApiFault();
+    proxy?.set();
     if (fault === 'down') await box.restartRelay();
   }
 });

@@ -1,6 +1,7 @@
 /** Shared authenticated readers for the measured private relay study [H5,H17]. */
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { createServer, request as httpRequest } from 'node:http';
 import { performance } from 'node:perf_hooks';
 import { ENGINE_VERSION } from '../src/machine.js';
 import { decodeBoardKey } from '../src/seal.js';
@@ -64,3 +65,44 @@ export async function readRelay(box) {
   return { document, requests, receivedBytes, readMs: performance.now() - started };
 }
 
+
+/**
+ * Put a real HTTP fault proxy between the linked CLI and the fixture relay by pointing this scratch board's link at
+ * it. API requests can be delayed, or answered with a refusal, without changing the shared relay fixture.
+ */
+export async function faultProxy(t, box) {
+  const target = new URL(box.origin);
+  let fault = null;
+  const server = createServer((req, res) => {
+    /** Forward one request unchanged, after any configured delay or instead of a configured refusal. */
+    async function handle() {
+      const api = (req.url ?? '').startsWith('/api/');
+      if (api && fault?.delayMs) await new Promise(resolve => setTimeout(resolve, fault.delayMs));
+      if (api && fault?.status) {
+        req.resume();
+        res.writeHead(fault.status, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ version: 1, error: { code: fault.code, message: 'private study fault' } }));
+        return;
+      }
+      const upstream = httpRequest({ host: target.hostname, port: target.port, method: req.method, path: req.url,
+        headers: { ...req.headers, host: target.host } }, reply => { res.writeHead(reply.statusCode, reply.headers); reply.pipe(res); });
+      upstream.on('error', () => { if (!res.headersSent) res.writeHead(502); res.end(); });
+      req.pipe(upstream);
+    }
+    handle().catch(() => { if (!res.headersSent) res.writeHead(500); res.end(); });
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
+  const original = readFileSync(box.linkFile, 'utf8');
+  const state = JSON.parse(original);
+  state.url = 'http://127.0.0.1:' + server.address().port;
+  writeFileSync(box.linkFile, JSON.stringify(state), { mode: 0o600 });
+  return {
+    /** Set the fault for later API requests: { delayMs, status, code }, or null to pass them through. */
+    set(value = null) {
+      assert.ok(value === null || Number.isSafeInteger(value.delayMs) && value.delayMs >= 0
+        && (value.status === null || [409, 503].includes(value.status)));
+      fault = value;
+    },
+  };
+}
