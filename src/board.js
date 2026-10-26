@@ -1,4 +1,7 @@
-import { submissionItemValues, recordSubmissionEvent } from './submission-record.js';
+import {
+  submissionItemValues,
+  recordSubmissionEvent,
+} from './submission-record.js';
 import { companionPlan } from './companion.js';
 import { applyCompanionRequest } from './companion.js';
 export { readBoardMembers, setBoardMembers } from './board-members.js';
