@@ -67,6 +67,7 @@ import { Refused } from './refused.js';
 import {
   buildCommitMessage,
   commitMessageProblems,
+  parseCommitMessage,
   specOrder,
 } from './commit-message.js';
 import { loadSpec } from './spec.js';
@@ -158,8 +159,29 @@ export function landingFailures(output, root, { excludeCancelled = false } = {})
   return [...unique.values()];
 }
 
-/** The merge header type an item with no spec rows takes from its lane; any other lane lands as chore. */
+/** The merge header type an item with no typed commit takes from its lane; any other lane lands as chore. */
 const LANE_MERGE_TYPES = Object.freeze({ docs: 'docs', test: 'test' });
+
+/** Which commit type names an item when its commits mix types: the first in this list wins. */
+const TYPE_RANK = Object.freeze(['feat', 'fix', 'perf', 'refactor', 'revert', 'docs', 'test', 'build', 'ci', 'style', 'chore']);
+
+/**
+ * The item's type, read from the typed headers of its own commits (those in `commit` and not in
+ * `base`): feat over fix over the rest (RFC 0005 takes the type from the item, and an item has no
+ * type field). Null when none of its commits is typed, so the lane rule applies.
+ *
+ * @param {string} root
+ * @param {string | null | undefined} base
+ * @param {string | null | undefined} commit
+ * @returns {string | null}
+ */
+export function itemCommitType(root, base, commit) {
+  if (!root || !commit) return null;
+  const listed = tryGit(root, ['log', '--no-merges', '--format=%s', base ? `${base}..${commit}` : commit]);
+  if (listed.status !== 0) return null;
+  const types = new Set(listed.stdout.split('\n').map((subject) => parseCommitMessage(subject).type).filter(Boolean));
+  return TYPE_RANK.find((type) => types.has(type)) ?? null;
+}
 
 /**
  * The rows a landing names: the item's final frozen set when it has one, since a refreeze after the
@@ -181,17 +203,18 @@ export function landingRows(item, spec = null) {
 /**
  * The whole landing message from board state through the shared builder [B3,R3]: header
  * `<type>(merge): <title> [<rows that fit>,+N]`, then `Pullboard-Item` and `Pullboard-Rows` as the
- * last paragraph. It never refuses for how many rows an item cites.
+ * last paragraph. It never refuses for how many rows an item cites. The type is the item's own
+ * (from its commits); with none, or with one the commit hook would refuse without rows, the lane's.
  *
  * @param {any} item
- * @param {{ spec?: { rows: { id: string }[] } | null }} [options]
- * @returns {{ header: string, body: string, trailers: string, message: string, rows: string[] }}
+ * @param {{ spec?: { rows: { id: string }[] } | null, type?: string | null, requireIds?: string[] }} [options]
+ * @returns {{ header: string, body: string, trailers: string, message: string, rows: string[], type: string }}
  */
-export function landingMessage(item, { spec = null } = {}) {
+export function landingMessage(item, { spec = null, type = null, requireIds = ['feat', 'fix'] } = {}) {
   const rows = landingRows(item, spec);
-  // An item with no rows cites none, so its merge header names its lane's type: docs or test; anything else is chore (B3).
-  const type = rows.length ? 'chore' : (LANE_MERGE_TYPES[item.item_lane] ?? 'chore');
-  return { ...buildCommitMessage({ type, scope: 'merge', title: item.item_title, item: item.item_id, rows }), rows };
+  const own = type && !(requireIds.includes(type) && !rows.length) ? type : null;
+  const chosen = own ?? (rows.length ? 'chore' : (LANE_MERGE_TYPES[item.item_lane] ?? 'chore'));
+  return { ...buildCommitMessage({ type: chosen, scope: 'merge', title: item.item_title, item: item.item_id, rows }), rows, type: chosen };
 }
 
 /** Produce a hook-valid lower-case merge header at a word boundary [R3]. */
@@ -204,13 +227,13 @@ export function landingSubject(item, options = {}) {
  * writes them, so a problem here is a Pullboard defect, never something an item's citations fix.
  *
  * @param {any[]} items
- * @param {{ rows: { id: string }[] } | null} spec
+ * @param {{ spec: { rows: { id: string }[] } | null, typeOf?: (item: any) => string | null, requireIds?: string[] }} context
  * @returns {Map<number, ReturnType<typeof landingMessage>>}
  */
-export function checkLandingMessages(items, spec) {
+export function checkLandingMessages(items, { spec, typeOf = () => null, requireIds = ['feat', 'fix'] }) {
   const messages = new Map();
   for (const item of items) {
-    const built = landingMessage(item, { spec });
+    const built = landingMessage(item, { spec, type: typeOf(item), requireIds });
     const problems = commitMessageProblems(built.message, { item: item.item_id, rows: built.rows });
     if (problems.length) {
       throw new Refused('LAND_HEADER', `the landing message for #${item.item_id} fails its own check (${problems.join('; ')}); nothing merged; shout the coordinator: pullboard shout coordinator "#${item.item_id} landing message fails its check"`);
@@ -223,6 +246,21 @@ export function checkLandingMessages(items, spec) {
 /** The trunk spec a landing orders rows by, or none when the repo has no spec file. */
 function landingSpec(root, config) {
   return config?.spec ? loadSpec(root, config) : null;
+}
+
+/**
+ * Everything a landing message needs from the trunk at `base`: its spec, each item's own type and
+ * the types the commit hook requires ids for.
+ *
+ * @param {string} root
+ * @param {string} base
+ * @param {any} config
+ * @param {(item: any) => string} commitOf - The item's checked landing commit.
+ * @returns {{ spec: any, typeOf: (item: any) => string | null, requireIds: string[] }}
+ */
+export function landingContext(root, base, config, commitOf) {
+  return { spec: landingSpec(root, config), typeOf: (item) => itemCommitType(root, base, commitOf(item)),
+    requireIds: config?.commits?.requireIds ?? ['feat', 'fix'] };
 }
 
 /** Keep the submitted identity and, when different, its sealed checked composition. */
@@ -307,7 +345,8 @@ async function mergeGroup(state, items) {
   if (!isClean(batch.root) || untracked(batch.root).length) throw new Refused('LAND_DIRTY', 'the landing worktree has unfinished edits; inspect its recorded path before adopting');
   git(batch.root, ['checkout', '--detach', batch.base]);
   // Every message is built and checked before the first merge, so a bad one cannot land half a batch.
-  const messages = checkLandingMessages(items.map((entry) => store.getItem(state.board, entry.id ?? entry.item_id)), landingSpec(batch.root, state.config));
+  const messages = checkLandingMessages(items.map((entry) => store.getItem(state.board, entry.id ?? entry.item_id)),
+    landingContext(batch.root, batch.base, state.config, (item) => store.checkedLandingCommit(state.board, item)));
   const merged = [];
   const conflicts = [];
   const resolutions = [];
@@ -1361,7 +1400,7 @@ export async function runLandingBatch({ root, board, config, write, say, owner, 
   }
   const selected = candidates(board, root, trunk.commit, maximum);
   if (!dryRun) for (const item of selected.ready) requireOutsideOwner(board, item);
-  checkLandingMessages(selected.ready, landingSpec(root, config));
+  checkLandingMessages(selected.ready, landingContext(root, trunk.commit, config, (item) => item.item_landing_commit));
   const stale = selected.blocked.find(item => item.code === 'STALE_VERDICT');
   if (!selected.ready.length && stale) throw staleVerdictRefusal({ item_id: stale.id }, stale);
   if (dryRun) {

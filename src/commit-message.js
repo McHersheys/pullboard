@@ -29,7 +29,7 @@ function titleWords(title) {
 
 /**
  * The bracket suffix for a header with `room` characters left: every id when they all fit, else the
- * first ids that fit and `+N` for the rest. `[+N]` alone always fits, because the title left room for it.
+ * first ids that fit and `+N` for the rest. The first id always fits, because the title left room for it.
  *
  * @param {string[]} rows
  * @param {number} room
@@ -39,14 +39,15 @@ function bracket(rows, room) {
   if (!rows.length) return '';
   const all = ` [${rows.join(',')}]`;
   if (all.length <= room) return all;
-  let shown = 0;
+  let shown = 1;
   while (shown < rows.length - 1 && ` [${[...rows.slice(0, shown + 1), `+${rows.length - shown - 1}`].join(',')}]`.length <= room) shown += 1;
   return ` [${[...rows.slice(0, shown), `+${rows.length - shown}`].join(',')}]`;
 }
 
 /**
  * Build a commit message from board facts. The title keeps priority: it takes the header up to the
- * room a `[+N]` needs, then the rows fill what is left. It never refuses for how many rows an item
+ * room the first id (and a `+N`) needs, so the header always cites a row the commit hook can check,
+ * then the rows fill what is left. It never refuses for how many rows an item
  * cites: every row is in the `Pullboard-Rows` trailer whatever the header shows.
  *
  * @param {{ type: string, scope?: string, title: string, item?: number | null, rows?: string[], fallback?: string, body?: string }} message
@@ -55,7 +56,7 @@ function bracket(rows, room) {
  */
 export function buildCommitMessage({ type, scope = '', title, item = null, rows = [], fallback = '', body = '' }) {
   const prefix = `${type}${scope ? `(${scope})` : ''}: `;
-  const reserve = rows.length ? ` [+${rows.length}]`.length : 0;
+  const reserve = rows.length ? ` [${rows.length === 1 ? rows[0] : `${rows[0]},+${rows.length - 1}`}]`.length : 0;
   const budget = HEADER_LIMIT - prefix.length - reserve;
   let subject = '';
   for (const word of titleWords(title)) {

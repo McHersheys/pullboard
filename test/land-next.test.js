@@ -55,7 +55,7 @@ test('an accept says how to land, and a dry run catches a missing origin [I1,B3]
 
   // Clause 1, repo without a remote: the accept prints the exact git merge command for this repo.
   const first = acceptedItem(box, 'web/first.txt');
-  const merge = new RegExp(`^next: this repo has no remote for pullboard land to push to, so the coordinator merges it on main: (cd ${literal(box.repo)} && git merge --no-ff ${first.commit} -m 'chore\\(merge\\): write web/first\\.txt \\[G1\\]' ${literal(trailerArg(first.id))} && pullboard merged ${first.id} HEAD)$`, 'mu');
+  const merge = new RegExp(`^next: this repo has no remote for pullboard land to push to, so the coordinator merges it on main: (cd ${literal(box.repo)} && git merge --no-ff ${first.commit} -m 'feat\\(merge\\): write web/first\\.txt \\[G1\\]' ${literal(trailerArg(first.id))} && pullboard merged ${first.id} HEAD)$`, 'mu');
   const printed = merge.exec(first.out);
   assert.ok(printed, `the accept names the hand merge for a repo without origin:\n${first.out}`);
 
@@ -70,7 +70,7 @@ test('an accept says how to land, and a dry run catches a missing origin [I1,B3]
   const ran = spawnSync('/bin/sh', ['-c', printed[1]], { cwd: box.dir, env: box.env, encoding: 'utf8' });
   assert.equal(ran.status, 0, `${ran.stdout}${ran.stderr}`);
   assert.equal(box.tryGit(box.repo, 'merge-base', '--is-ancestor', first.commit, 'main').status, 0, 'main now carries the accepted commit');
-  assert.equal(box.git(box.repo, 'log', '-1', '--format=%B', 'main'), `chore(merge): write web/first.txt [G1]\n\nPullboard-Item: #${first.id}\nPullboard-Rows: G1`,
+  assert.equal(box.git(box.repo, 'log', '-1', '--format=%B', 'main'), `feat(merge): write web/first.txt [G1]\n\nPullboard-Item: #${first.id}\nPullboard-Rows: G1`,
     'the hand merge writes the generated header and the trailers as its last paragraph');
   const shown = JSON.parse(box.run(box.repo, 'show', String(first.id), '--json').out);
   assert.equal(shown.item_merged_commit, box.git(box.repo, 'rev-parse', 'main'));
@@ -90,7 +90,7 @@ test('an accept says how to land, and a dry run catches a missing origin [I1,B3]
 test('an accept names the primary checkout when Git metadata is stored separately [I1,B3]', () => {
   const box = withReviewer(project(undefined, undefined, { separateGitDir: true }));
   const accepted = acceptedItem(box, 'web/separate.txt');
-  const merge = new RegExp(`^next: this repo has no remote for pullboard land to push to, so the coordinator merges it on main: (cd ${literal(box.repo)} && git merge --no-ff ${accepted.commit} -m 'chore\\(merge\\): write web/separate\\.txt \\[G1\\]' ${literal(trailerArg(accepted.id))} && pullboard merged ${accepted.id} HEAD)$`, 'mu');
+  const merge = new RegExp(`^next: this repo has no remote for pullboard land to push to, so the coordinator merges it on main: (cd ${literal(box.repo)} && git merge --no-ff ${accepted.commit} -m 'feat\\(merge\\): write web/separate\\.txt \\[G1\\]' ${literal(trailerArg(accepted.id))} && pullboard merged ${accepted.id} HEAD)$`, 'mu');
   const printed = merge.exec(accepted.out);
   assert.ok(printed, `the accept names the actual primary checkout for separate Git metadata:\n${accepted.out}`);
 
@@ -102,7 +102,7 @@ test('an accept names the primary checkout when Git metadata is stored separatel
   const fallback = acceptedItem(unregistered, 'web/fallback.txt', {
     beforeVerify: () => rmSync(join(unregistered.env.PULLBOARD_HOME, 'projects.json'), { force: true }),
   });
-  const mergeCommand = `git merge --no-ff ${fallback.commit} -m 'chore(merge): write web/fallback.txt [G1]' ${trailerArg(fallback.id)} && pullboard merged ${fallback.id} HEAD`;
+  const mergeCommand = `git merge --no-ff ${fallback.commit} -m 'feat(merge): write web/fallback.txt [G1]' ${trailerArg(fallback.id)} && pullboard merged ${fallback.id} HEAD`;
   assert.ok(fallback.out.includes(`next: could not safely locate the primary checkout; run from the main checkout: ${mergeCommand}`), fallback.out);
   assert.doesNotMatch(fallback.out, /\bcd\s/u, 'an unvalidated path is never guessed');
   const ranFallback = spawnSync('/bin/sh', ['-c', mergeCommand], { cwd: unregistered.repo, env: unregistered.env, encoding: 'utf8' });

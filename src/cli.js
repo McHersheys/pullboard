@@ -386,6 +386,7 @@ import { unlinkedRelayProjects } from './relay-setup.js';
 import {
   accountedFailures,
   landingRemote,
+  itemCommitType,
   landingMessage,
   waivedFailures,
   waiverLine,
@@ -1443,15 +1444,17 @@ export async function addBlueprint(ctx, board, me, blueprint, { report = true, r
  * @param {any} info
  * @param {any} item
  * @param {string} [commit] - The exact checked composition the acceptance authorizes.
- * @param {{ spec?: any }} [options] - The spec the trailer's rows are ordered by.
+ * @param {{ spec?: any, requireIds?: string[] }} [options] - The spec the trailer's rows are ordered by, and
+ *   the commit types the hook requires ids for.
  * @returns {string}
  */
-export function landNext(info, item, commit = item.item_commit, { spec = null } = {}) {
+export function landNext(info, item, commit = item.item_commit, { spec = null, requireIds } = {}) {
   const mainRoot = primaryCheckoutRoot(info);
-  const branch = mainCheckout(info.root)?.branch ?? '';
+  const trunk = mainCheckout(info.root);
+  const branch = trunk?.branch ?? '';
   const remote = landingRemote(info.root, branch);
   // The hand merge writes the same generated message as pullboard land: the trailers are one paragraph.
-  const message = landingMessage(item, { spec });
+  const message = landingMessage(item, { spec, type: itemCommitType(info.root, trunk?.commit, commit), ...(requireIds ? { requireIds } : {}) });
   const trailers = `"$(printf '%s\\n' ${message.trailers.split('\n').map(shellWord).join(' ')})"`;
   const command = remote
     ? 'pullboard land'

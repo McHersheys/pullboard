@@ -1,6 +1,8 @@
 /** The shared commit-message builder and parser: ids fill what fits, then +N, with every row in a trailer (RFC 0005) [C7,B3,R3]. */
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { after, test } from 'node:test';
 import {
   HEADER_LIMIT,
   buildCommitMessage,
@@ -9,8 +11,12 @@ import {
   parseCommitMessage,
   specOrder,
 } from '../src/commit-message.js';
-import { checkLandingMessages, landingMessage, landingRows } from '../src/land.js';
+import { checkLandingMessages, itemCommitType, landingMessage, landingRows } from '../src/land.js';
 import { citedIds, parseSpec } from '../src/spec.js';
+import { createE2eHelpers } from './e2e-helpers.js';
+
+const e2e = createE2eHelpers();
+after(e2e.cleanup);
 
 /** Row ids A1..An, the shape a long cited set takes. */
 const rowsUpTo = (count, letter = 'A') => Array.from({ length: count }, (_, index) => `${letter}${index + 1}`);
@@ -104,14 +110,51 @@ test('a landing names the refrozen rows in spec order, and a batch checks every 
   assert.equal(landingMessage(none, { spec }).message, 'docs(merge): no rows\n\nPullboard-Item: #6');
   const many = { item_id: 8, item_lane: 'core', item_title: 'Many rows', item_spec_ids: rowsUpTo(36).join(',') };
   assert.equal(landingMessage(many).rows.length, 36, 'no citation count refuses');
-  const checked = checkLandingMessages([refrozen, none, many], spec);
+  const checked = checkLandingMessages([refrozen, none, many], { spec });
   assert.deepEqual([...checked.keys()], [5, 6, 8]);
   // A malformed row id (never written by the spec) fails the check for the whole batch, naming the item.
   const broken = { ...many, item_id: 9, item_spec_ids: '', item_frozen: JSON.stringify({ rows: [{ id: 'A1' }, { id: 'A2,A3' }] }) };
-  assert.throws(() => checkLandingMessages([refrozen, broken], spec), (error) => {
+  assert.throws(() => checkLandingMessages([refrozen, broken], { spec }), (error) => {
     assert.equal(error.code, 'LAND_HEADER');
     assert.match(error.message, /#9/u);
     assert.doesNotMatch(error.message, /shorten|cut|remove|fewer|cited set/iu, 'no refusal advises removing citations');
     return true;
   });
+});
+
+test('one header per item type: the type comes from the item\'s own commits, feat over fix over the rest [C7,B3,R3]', () => {
+  const box = e2e.sandbox();
+  const repo = join(box.dir, 'types');
+  box.git(box.dir, 'init', '-q', '-b', 'main', repo);
+  /** Commit one file with a header, returning the new head. */
+  const commit = (file, header) => {
+    writeFileSync(join(repo, file), `${header}\n`);
+    box.git(repo, 'add', file);
+    box.git(repo, 'commit', '-q', '-m', header);
+    return box.git(repo, 'rev-parse', 'HEAD');
+  };
+  const base = commit('base.txt', 'chore: start the fixture');
+  const item = { item_id: 40, item_lane: 'core', item_title: 'Typed landing', item_spec_ids: 'A1' };
+  const cases = [
+    [['docs(core): explain it [A1]', 'feat(core): add it [A1]', 'fix(core): mend it [A1]'], 'feat'],
+    [['test(core): prove it', 'fix(core): mend it [A1]'], 'fix'],
+    [['docs(core): explain it'], 'docs'],
+    [['test(core): prove it'], 'test'],
+    [['refactor(core): tidy it', 'chore(core): sweep it'], 'refactor'],
+    [['perf(core): speed it', 'docs(core): explain it'], 'perf'],
+    [['chore(core): sweep it'], 'chore'],
+    [['an untyped header'], null],
+  ];
+  for (const [index, [headers, expected]] of cases.entries()) {
+    box.git(repo, 'switch', '-q', '--detach', base);
+    let head = base;
+    for (const [step, header] of headers.entries()) head = commit(`case-${index}-${step}.txt`, header);
+    assert.equal(itemCommitType(repo, base, head), expected, headers.join(' | '));
+    const built = landingMessage(item, { type: itemCommitType(repo, base, head) });
+    assert.equal(built.header, `${expected ?? 'chore'}(merge): typed landing [A1]`, 'each item type writes its own merge header');
+    assert.deepEqual(parseCommitMessage(built.message).type, expected ?? 'chore');
+  }
+  // A feat item with no rows would fail the commit hook's id rule, so it lands under its lane's type.
+  assert.equal(landingMessage({ ...item, item_spec_ids: '', item_lane: 'docs' }, { type: 'feat' }).header, 'docs(merge): typed landing');
+  assert.equal(landingMessage({ ...item, item_spec_ids: '' }, { type: 'test' }).header, 'test(merge): typed landing');
 });
