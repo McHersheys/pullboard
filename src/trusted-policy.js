@@ -85,19 +85,22 @@ function pathObject(root, commit, path) {
   return policyGit(root, ['ls-tree', '-z', commit, '--', ':(literal)' + path]);
 }
 
-/** Enforce the complete claim-base diff; accepted-main merges may carry only identical foreign objects. */
+/** Enforce item changes from every shared ancestry base; newer unrelated main changes are not item reversions. */
 export function submissionPaths(root, item, commit, { config, mainCommit, dependencies = [] } = {}) {
   refuseGrafts(root);
   const policy = itemPolicy(root, item);
   const base = item.item_claim_head;
   if (!/^[0-9a-f]{40,64}$/.test(base ?? '')) throw new Refused('NO_POLICY', 'this item has no claim base; ask the coordinator to refreeze it and claim again');
   policyGit(root, ['rev-parse', '--verify', base + '^{commit}']);
-  const changed = [base, policy.commit].flatMap(start => policyGit(root, ['diff', '--no-renames', '--name-only', '-z', start, commit, '--']).split('\0').filter(Boolean));
+  const snapshot = mainCommit ?? policy.commit;
+  policyAt(root, snapshot); // Authenticate main before using it in ancestry or object comparisons.
+  // Include main to catch a foreign reversion after merging it; every crisscross base is conservative.
+  const bases = [...new Set([base, policy.commit, snapshot].flatMap(start =>
+    policyGit(root, ['merge-base', '--all', start, commit]).trim().split('\n').filter(Boolean)))];
+  const changed = bases.flatMap(start => policyGit(root, ['diff', '--no-renames', '--name-only', '-z', start, commit, '--']).split('\0').filter(Boolean));
   const paths = [...new Set(changed)];
   const ownership = config ?? policy.config;
   const foreign = paths.filter(path => outOfLane(ownership, item.item_lane, [path]).length);
-  const snapshot = mainCommit ?? policy.commit;
-  policyAt(root, snapshot); // Reject a malformed historical proof before it can become a Git argument.
   const accepted = dependencies.map(dependency => ({ ...dependency,
     paths: new Set(policyGit(root, ['diff', '--no-renames', '--name-only', '-z', dependency.base, dependency.commit, '--']).split('\0').filter(Boolean)),
   }));
