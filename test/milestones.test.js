@@ -62,7 +62,7 @@ function fixture(t) {
   t.after(() => store.closeBoard(board));
   store.ensureCoordinator(board, repo);
   const builder = store.register(board, { lane: 'web', path: join(dir, 'builder'), model: 'Fixture Model' });
-  const freeze = () => ({ text: 'Tracked work', digest: 'digest:tracked' });
+  const freeze = item => ({ text: JSON.stringify({ title: item.item_title, criterion: item.item_criterion, rows: [] }), digest: 'digest:tracked' });
   /** File an item and take it to the named state: open, accepted or landed. */
   const item = (title, state) => {
     const id = store.addItem(board, { by: 'coordinator', lane: 'web', title, criterion: 'Tracked work', specIds: ['G1'] });
