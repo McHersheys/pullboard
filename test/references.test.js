@@ -47,6 +47,39 @@ test('reference point 23: actual PR create and update publish handled references
   assert.equal(provider.requests.some(request => request.path.endsWith('/merge') && request.method !== 'GET'), false);
 });
 
+test('reference point 21: shipping checks only the selected release and every landed handled reference [C7,N26]', t => {
+  const box = bridgeProject(t);
+  const shared = 'https://example.com/shared @Reporter';
+  const first = 'https://example.com/first @FirstReporter';
+  const second = 'https://example.com/second @SecondReporter';
+  const entries = landBridgeItems(box, { briefs: [
+    `Reference: ${shared}\nReference: ${first}\nReference: PRIVATE-RELEASE-SENTINEL`,
+    `Reference: ${shared}\nReference: ${second}`,
+  ] });
+  assert.equal(box.run(box.repo, 'milestone', 'add', '0.9.3', '--items', entries.map(entry => entry.id).join(',')).code, 0);
+  assert.equal(box.run(box.repo, 'milestone', 'add', '0.9.4').code, 0);
+  const future = box.run(box.repo, 'add', 'web', 'Unlanded acknowledgement', '--brief', 'Reference: https://example.com/unlanded @LaterReporter', '--json');
+  assert.equal(future.code, 0, future.err || future.out);
+  assert.equal(box.run(box.repo, 'milestone', 'items', '0.9.3', '--add', String(JSON.parse(future.out).item.item_id)).code, 0);
+  /** Commit the actual release section so the check cannot read unrelated working-tree edits. */
+  const changelog = lines => {
+    writeFileSync(join(box.repo, 'CHANGELOG.md'), `# Changelog\n\n## [0.9.3]\n${lines.join('\n')}\n\n## [0.9.2]\n- ${shared}\n- ${first}\n- ${second}\n`);
+    box.git(box.repo, 'add', 'CHANGELOG.md');
+    box.git(box.repo, 'commit', '-q', '-m', 'docs: prepare release acknowledgements [G1]');
+  };
+  changelog(['Release preparation.']);
+  const missing = box.run(box.repo, 'milestone', 'ship', '0.9.3', '--json');
+  assert.equal(missing.code, 1, 'older release acknowledgements cannot satisfy this release');
+  const refusal = JSON.parse(missing.out).error;
+  assert.equal(refusal.code, 'REFERENCES_MISSING');
+  for (const reference of [shared, first, second]) assert.ok(refusal.message.includes(reference), refusal.message);
+  assert.equal(refusal.message.includes('PRIVATE-RELEASE-SENTINEL'), false);
+  assert.equal(refusal.message.includes('unlanded'), false);
+  changelog([`- ${shared}`, `- ${first}`, `- ${second}`]);
+  const shipped = box.run(box.repo, 'milestone', 'ship', '0.9.3', '--json');
+  assert.equal(shipped.code, 0, shipped.err || shipped.out);
+});
+
 test('reference point 19: repeated external references remain separate labelled brief entries [C7]', () => {
   const references = [
     'https://github.com/example/project/issues/10 @Reporter',
