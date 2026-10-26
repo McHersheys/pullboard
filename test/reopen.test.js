@@ -12,6 +12,7 @@ import { appliedSequence, applyRelayMove, engineReceipt, prepareEngineMove } fro
 import { exportBoard, importBoard } from '../src/exchange.js';
 import { ENGINE_VERSION } from '../src/machine.js';
 import { QUOTED_LANDING_FAILURE_ENGINE } from '../src/quoted-landing-failure-engine.js';
+import { AGENT_GRANT_ENGINE } from '../src/agent-grant-engine.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { unpackRelease } from './release-archive.js';
 
@@ -635,6 +636,7 @@ test('manual reopen records a timestamp-prefixed failing test after an unrecorde
 });
 
 test('a reopened bar takes the same commit again [V2,V6,H16]', async (t) => {
+  let engine10Store, engine10Exchange;
   const box = project();
   const submitted = submitFixture(box);
   const reviewPath = reserveFixtureReview(box);
@@ -676,6 +678,7 @@ test('a reopened bar takes the same commit again [V2,V6,H16]', async (t) => {
     const legacyExchange = await import(pathToFileURL(join(legacyDirectory, 'src/exchange.js')).href);
     const legacyMachine = await import(pathToFileURL(join(legacyDirectory, 'src/machine.js')).href);
     assert.equal(legacyMachine.ENGINE_VERSION, version, `exercise the actual engine-${version} source`);
+    if (version === 10) { engine10Store = legacyStore; engine10Exchange = legacyExchange; }
     const legacyReceiver = legacyStore.openBoard(join(box.dir, `engine-${version}-reopen.sqlite`));
     t.after(() => legacyStore.closeBoard(legacyReceiver));
     const submittedSnapshot = exportBoard(copies[0]);
@@ -768,8 +771,37 @@ test('a reopened bar takes the same commit again [V2,V6,H16]', async (t) => {
   const builderSender = { kind: 'agent', userId: 'fixture-user', agent: 'web-1' };
   const engine10Replica = store.openBoard(join(box.dir, 'engine-10-same-commit.sqlite'));
   t.after(() => store.closeBoard(engine10Replica));
-  importBoard(engine10Replica, exportBoard(claimedBoard));
   const engine10Move = { ...engine11Move, id: 'same-commit-engine-10', engine: 10 };
+  const markedReplica = store.openBoard(join(box.dir, 'modern-grant-same-commit.sqlite'));
+  t.after(() => store.closeBoard(markedReplica));
+  importBoard(markedReplica, exportBoard(claimedBoard));
+  assert.throws(() => applyRelayMove(markedReplica, engine10Move, {
+    sequence: 1, at: '2026-10-10T12:00:02.000Z', kind: 'move', sender: builderSender,
+  }), error => error.code === 'RELAY_MOVE' && error.message.includes(String(AGENT_GRANT_ENGINE)),
+  'an engine-10 move cannot interpret a current claim carrying the new grant marker');
+
+  // Seed the historical lifecycle with the actual released engine-10 writer, not by deleting modern markers.
+  // These are board-state fixtures only: neither direct submit call claims an executed gate.
+  const legacySeed = engine10Store.openBoard(join(box.dir, 'actual-engine10-submit-state.sqlite'));
+  t.after(() => engine10Store.closeBoard(legacySeed));
+  engine10Store.register(legacySeed, { lane: 'coordinator', path: box.repo });
+  const legacyBuilder = engine10Store.register(legacySeed, { lane: 'web', path: box.web });
+  const initialItem = store.getItem(copies[0], 1), correctedItem = store.getItem(claimedBoard, 1);
+  const legacyId = engine10Store.addItem(legacySeed, { by: 'coordinator', lane: 'web', title: initialItem.item_title,
+    criterion: initialItem.item_criterion, check: initialItem.item_check });
+  /** Reuse each criterion's real frozen bytes while the released writer records its own historical claim. */
+  const historicalFreeze = item => () => ({ text: item.item_frozen, digest: item.item_frozen_digest });
+  engine10Store.claim(legacySeed, legacyId, { agentId: legacyBuilder, lane: 'web', leaseMs: 60_000,
+    freeze: historicalFreeze(initialItem) });
+  engine10Store.submit(legacySeed, legacyId, { agentId: legacyBuilder, commit: submitted.commit, tree: submitted.tree });
+  engine10Store.reopen(legacySeed, legacyId, { agentId: 'coordinator', note: 'Historical criterion correction' });
+  engine10Store.editItem(legacySeed, legacyId, { agentId: 'coordinator', criterion: correctedItem.item_criterion });
+  engine10Store.claim(legacySeed, legacyId, { agentId: legacyBuilder, lane: 'web', leaseMs: 60_000,
+    freeze: historicalFreeze(correctedItem) });
+  const historicalSnapshot = engine10Exchange.exportBoard(legacySeed);
+  assert.ok(historicalSnapshot.tables.event.filter(row => ['join', 'claim'].includes(row.event_kind))
+    .every(row => JSON.parse(row.event_detail).grantEngine === undefined), 'the actual old writer emitted no future grant marker');
+  importBoard(engine10Replica, historicalSnapshot);
   const oldBehavior = applyRelayMove(engine10Replica, engine10Move, {
     sequence: 1, at: '2026-10-10T12:00:02.000Z', kind: 'move', sender: builderSender,
   });

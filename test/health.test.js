@@ -389,6 +389,43 @@ test('health names a rank inversion [N2,B13]', async (t) => {
   assert.ok(inversion.next.includes(`claim #${earlier}`), `the next step claims it: ${inversion.next}`);
 });
 
+/** A real board permits a parent and child claim; advice must preserve the claim it does not release. */
+test('health models only its named release when a child claim keeps the preferred file occupied [N2,B13]', (t) => {
+  const box = repo(t);
+  const { board, at } = boardAt(box);
+  try {
+    at(HOUR / 12);
+    store.register(board, { lane: 'coordinator', path: box.root });
+    const builder = store.register(board, { lane: 'core', route: 'strong', path: join(box.dir, 'core-multiple') });
+    const earlier = store.addItem(board, { by: 'coordinator', lane: 'core', route: 'strong',
+      title: 'Older free work on the child file', brief: 'Files: src/child.js' });
+    const held = store.addItem(board, { by: 'coordinator', lane: 'core', route: 'strong',
+      title: 'Current parent work on a separate file', brief: 'Files: src/parent.js' });
+    const child = store.addItem(board, { by: 'coordinator', lane: 'core', route: 'strong', parentId: held,
+      title: 'A legitimate live child claim', brief: 'Files: src/child.js' });
+    store.claim(board, held, { agentId: builder, lane: 'core', leaseMs: 2 * HOUR, freeze });
+    store.claim(board, child, { agentId: builder, lane: 'core', leaseMs: 2 * HOUR, freeze });
+    assert.equal(store.getItem(board, held).item_owner, builder);
+    assert.equal(store.getItem(board, child).item_owner, builder, 'the second claim uses the normal child exception');
+    const before = boardHealth(box.file, { root: box.root, now: new Date(NOW) });
+    assert.ok(!before.stuck.some(entry => entry.key === `RANK_INVERSION:item:${held}`),
+      'releasing only the parent would leave the child overlap; the older free item does not rank ahead');
+
+    store.release(board, child, builder);
+    assert.equal(store.getItem(board, held).item_status, 'claimed', 'the control releases exactly one claim');
+    const after = boardHealth(box.file, { root: box.root, now: new Date(NOW) });
+    const advice = after.stuck.find(entry => entry.key === `RANK_INVERSION:item:${held}`);
+    assert.ok(advice, 'once the child occupancy is actually removed, older free work ranks ahead');
+    assert.equal(advice.detail.ahead, earlier);
+    assert.equal(advice.command, `pullboard release ${held}`);
+    const [, verb, id] = advice.command.split(' ');
+    assert.equal(verb, 'release');
+    store.release(board, Number(id), builder);
+    assert.equal(store.nextFor(board, { agentId: builder, lane: 'core' }).item.item_id, earlier,
+      'the single release advice now agrees with the normal next selector');
+  } finally { store.closeBoard(board); }
+});
+
 test('every printed next step runs as pasted through main() [N2,B13]', async (t) => {
   // Each next step health prints runs from the directory a person would use: the worktree commands from
   // the main checkout, and the agent steps from that agent's own worktree (#798).

@@ -20,14 +20,17 @@ const HOUR = 3_600_000;
 const CLAIM_AT = '2026-10-07T18:00:00.000Z';
 
 /** Open two independent SQLite copies of the same registered board and one available item. */
-function engineCopies(t, initialize = () => {}) {
+function engineCopies(t, initialize = () => {}, seedEngine = ENGINE_VERSION) {
   const directory = mkdtempSync(join(tmpdir(), 'pullboard-engine-'));
   const source = store.openBoard(join(directory, 'source.sqlite'));
+  // A historical move needs the actual historical join prefix, not a current writer's activated grant.
+  source.executionEngineVersion = seedEngine;
   store.register(source, { lane: 'coordinator', path: '/source' });
   store.register(source, { lane: 'web', path: '/source/web-1' });
   store.register(source, { lane: 'web', path: '/source/web-2' });
   const item = store.addItem(source, { by: 'coordinator', lane: 'web', title: 'Engine fixture' });
   initialize(source);
+  delete source.executionEngineVersion;
   const document = exportBoard(source);
   const copies = ['one', 'two'].map((name, index) => {
     const clock = { now: () => new Date(`2026-10-07T${index + 16}:00:00.000Z`) };
@@ -628,7 +631,7 @@ test('a failed durable receipt rolls back an otherwise successful move and its c
 });
 
 test('engine 65 keeps an ordinary claim available without a return window [B13,H16]', t => {
-  const { copies: [board], item } = engineCopies(t);
+  const { copies: [board], item } = engineCopies(t, undefined, 65);
   const move = { ...claimMove(board, item, 'web-2'), engine: 65 };
   const result = applyEngineMove(board, move, { sequence: 1, at: CLAIM_AT });
   assert.equal(result.error, undefined);
@@ -644,7 +647,7 @@ test('return-window engine admission uses the receipt time rather than replica c
     submitFixture(board, id, { agentId: 'web-1', commit: 'a'.repeat(40), tree: 'a'.repeat(40) });
     store.verify(board, id, { agentId: 'web-2', decision: 'REJECT', reason: 'OTHER', note: 'proof',
       head: 'a'.repeat(40), digest: 'f'.repeat(64), policy: 'any', reopenFirstRefusalMinutes: 30 });
-  });
+  }, 66);
   const before = boardRows(expiredClock, item);
   const old = { ...claimMove(expiredClock, item, 'web-2'), engine: 65 };
   assert.throws(() => applyEngineMove(expiredClock, old, { sequence: 1, at: '2026-10-07T16:05:00.000Z' }), /engine/);
