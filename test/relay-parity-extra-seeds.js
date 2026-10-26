@@ -164,11 +164,13 @@ export async function seedCurrentOperations(context) {
 
 /** New signing mutations are projection inputs, never proof of passkey authority or presence [E22,H16]. */
 export async function seedPersonSigning(context) {
-  const { board, store, exercise, agent } = context;
-  await exercise('setPersonSigning', () => store.setPersonSigning(board, { agentId: agent, signed: true }));
+  const { board, store, exercise, reviewer } = context;
+  // The preceding handoff retired the worker; its actual recipient remains an active native actor.
+  requireHandoffActive(board, reviewer, 'setPersonSigning', []);
+  await exercise('setPersonSigning', () => store.setPersonSigning(board, { agentId: reviewer, signed: true }));
   assert.equal(store.personSigning(board).signed, true, 'the actual native signing event enables the device projection');
   const request = preparePersonRequest({ verb: 'signing', args: { signed: 'off' } }, randomUUID());
-  await exercise('proposePersonMove', () => store.proposePersonMove(board, { agentId: agent, request }));
+  await exercise('proposePersonMove', () => store.proposePersonMove(board, { agentId: reviewer, request }));
   const proposal = store.personProposals(board).find(entry => entry.id === request.id);
   assert.ok(proposal, 'the native proposal retains its exact request identity');
   assert.deepEqual(proposal.move, request.move, 'the device projection carries the exact proposed intent');
