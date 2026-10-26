@@ -1,3 +1,4 @@
+import { AGENT_GRANT_ENGINE } from '../agent-grant-engine.js';
 import { VERDICT_WITHDRAW_ENGINE } from '../verdict-withdraw-engine.js';
 import { RIGOR_AUTO_ENGINE } from '../rigor-auto-engine.js';
 /** Routing metadata owned by reopen, discovered without a shared registry edit [C7,V4,H16]. */
@@ -29,7 +30,8 @@ function existingEngine(args, board, at) {
 
 /** Keep verdict withdrawal as an independent maximum over every prior first-match floor [H16]. */
 function minimumEngine(args, board, at) {
-  return Math.max(args[1]?.withdrawVerdict === true ? VERDICT_WITHDRAW_ENGINE : 1, existingEngine(args, board, at));
+  return Math.max(args[1]?.computedConflict !== undefined ? AGENT_GRANT_ENGINE : 1,
+    args[1]?.withdrawVerdict === true ? VERDICT_WITHDRAW_ENGINE : 1, existingEngine(args, board, at));
 }
 
 /** Read precisely the actor argument used by this operation [H2,H16]. */

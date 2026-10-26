@@ -1,3 +1,16 @@
+import { AGENT_GRANT_ENGINE } from './agent-grant-engine.js';
+import * as computedConflictEvidence from './computed-conflict-receipt.js';
+import { reopenAuthority } from './reopen-authority.js';
+import { applyLaneLead } from './lane-lead-policy.js';
+import { applyHealthFindings } from './board-health.js';
+import {
+  isLaneEscalation,
+  laneLeads,
+  leadOwnsDecision,
+  routeLaneMessage,
+} from './lane-lead.js';
+export { laneLeads };
+
 import { companionPlan } from './companion.js';
 import { applyCompanionRequest } from './companion.js';
 export { readBoardMembers, setBoardMembers } from './board-members.js';
@@ -5,6 +18,11 @@ import { heartbeatSeat } from './seat-presence.js';
 import * as itemDecisions from './item-decision-queue.js';
 import * as activityDeliveryStore from './activity-delivery-store.js';
 import { requireFactKind } from './item-notes.js';
+import {
+  criticalPathEnabled,
+  criticalPathOrder,
+  remainingPaths,
+} from './critical-path-order.js';
 import { activityNewsFlag } from './activity-news.js';
 import { migrateEventLogVersion } from './board-event-log-migrate.js';
 import {
@@ -14,6 +32,7 @@ import {
 import {
   focusOrder,
   focusReasons,
+  milestoneFocus,
 } from './focus-milestone.js';
 import { answerProvenance } from './decision-origin.js';
 import { ensureProofCounters } from './proof-counters.js';
@@ -213,7 +232,6 @@ import {
   IN_STATE,
   MOVES,
   STATES,
-  SUBMITTED_CONFLICT_ENGINE,
   UNKNOWN_MOVE,
   VERIFIER_STANDING_ENGINE,
   effectiveGuards,
@@ -252,8 +270,6 @@ import {
 } from './rigor-notices.js';
 import { RIGOR_NOTICE_ENGINE } from './rigor-source.js';
 import { RIGOR_AUTO_ENGINE } from './rigor-auto-engine.js';
-import { CPU_SENTINEL_ENGINE } from './cpu-sentinel-engine.js';
-import { hasPendingCpuNotices } from './health-receipts.js';
 import {
   milestoneRanks,
   workOrderCompare,
@@ -273,13 +289,6 @@ import {
   conflictProblem,
   returnedHeadNotice,
 } from './trunk-conflict.js';
-import {
-  HEALTH_SENTINEL_ENGINE,
-  deliverHealthNotices,
-  healthFindingIdentity,
-  healthTargets,
-  normalizedHealthFindings,
-} from './health-receipts.js';
 import { factReference } from './fact-reference.js';
 import {
   factFromEvent,
@@ -600,7 +609,8 @@ export function register(board, who) {
       const lineage = createdBy === COORDINATOR ? board.verifierStanding?.lineage ?? null : seatLineage(board, createdBy);
       if (lineage) board.db.prepare('INSERT INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run(`agent_lineage:${id}`, lineage);
     }
-    logEvent(board, id, 'join', null, route === 'strong' ? { lane } : { lane, route });
+    logEvent(board, id, 'join', null, { lane, ...(route === 'strong' ? {} : { route }),
+      ...(engine >= AGENT_GRANT_ENGINE ? { grantEngine: AGENT_GRANT_ENGINE } : {}) });
     if (board.executionEngineVersion === undefined) heartbeatSeat(board, id);
     return id;
   });
@@ -1103,7 +1113,8 @@ export function claim(board, id, { agentId, lane, leaseMs, freeze, head = null, 
       board.db.prepare('DELETE FROM board_meta WHERE meta_key = ?').run(`item_lineage:${id}`);
       if (board.verifierStanding.lineage) board.db.prepare('INSERT INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run(`item_lineage:${id}`, board.verifierStanding.lineage);
     }
-    logEvent(board, agentId, renewed ? 'renew' : 'claim', id, { leaseUntil, digest, ...(!renewed && reviewSkipped ? { reviewSkipped } : {}) });
+    logEvent(board, agentId, renewed ? 'renew' : 'claim', id, { leaseUntil, digest, ...(!renewed && reviewSkipped ? { reviewSkipped } : {}),
+      ...((board.executionEngineVersion ?? ENGINE_VERSION) >= AGENT_GRANT_ENGINE ? { grantEngine: AGENT_GRANT_ENGINE } : {}) });
     return { leaseUntil, digest, renewed };
   });
 }
@@ -1191,7 +1202,7 @@ export function submit(board, id, { agentId, commit, tree, files = [], policyCom
         proofRecorded: null, // The CLI records and validates native receipts before sealing submit; replay needs no origin files.
         treeStillDuringGate: null,
         submissionProofValid: () => {
-          if ((board.executionEngineVersion ?? ENGINE_VERSION) >= SUBMISSION_PROOF_ENGINE) recordedProof = submissionProof(proof);
+          if ((board.executionEngineVersion ?? ENGINE_VERSION) >= SUBMISSION_PROOF_ENGINE) recordedProof = submissionProof(proof, board.executionEngineVersion ?? ENGINE_VERSION);
           if ((board.executionEngineVersion ?? ENGINE_VERSION) >= FLOW_SIZE_ENGINE) recordedSize = submissionSize(size, commit);
           return null;
         },
@@ -1462,9 +1473,11 @@ export function verify(board, id, { agentId, decision, reason, note = '', cause,
  * @param {{ agentId: string, note: string, cause?: string, withdrawVerdict?: boolean }} request
  * @returns {{ id: number, commit: string, supersedes?: number, landingFailure?: object }}
  */
-export function reopen(board, id, { agentId, note = '', conflict, cause, reopenFirstRefusalMinutes, quotedLandingFailure, withdrawVerdict }) {
+export function reopen(board, id, { agentId, note = '', conflict, cause, reopenFirstRefusalMinutes, quotedLandingFailure, withdrawVerdict, computedConflict }) {
   return atomic(board, () => {
     let submittedCommit = null;
+    const assertedConflict = conflict;
+    conflict = computedConflictEvidence.conflictValue(computedConflict, conflict);
     const forMerge = conflict !== undefined && conflict !== null;
     let supersedes, landingFailure, withdrawnVerdict;
     const forWithdrawal = withdrawVerdict === true;
@@ -1477,12 +1490,8 @@ export function reopen(board, id, { agentId, note = '', conflict, cause, reopenF
       checks: {
         joined: null,
         [IN_STATE]: (found) => new Refused('NOT_SUBMITTED', `item #${id} is ${current(board, found).item_status}, not submitted`),
-        // Any joined seat returns a submitted head that no longer merges, with Git's files and trunk (#807).
-        reopenAuthority: (found) => {
-          if (forWithdrawal) { withdrawnVerdict = verdictWithdrawal.verdictWithdrawalTarget(board, found, agentId); return null; }
-          return (forMerge && found.item_status === 'submitted' && currentEngine >= SUBMITTED_CONFLICT_ENGINE && listAgents(board).some((agent) => agent.agent_id === agentId)
-          ? null : onlyCoordinator(agentId, 'reopens submissions'));
-        },
+        reopenAuthority: (found) => reopenAuthority(board, found, agentId,
+          { forWithdrawal, forMerge, currentEngine, computedConflict, assertedConflict }, value => { withdrawnVerdict = value; }),
         noteGiven: () => (forMerge || note.trim() ? null : new Refused('NOTE_REQUIRED', 'say why the criterion needs correction: --note "why"')),
         causeWellFormed: () => causeProblem(cause),
         notMerged: (found) => found.item_status !== 'verified' || !found.item_merged_commit
@@ -1528,7 +1537,7 @@ export function reopen(board, id, { agentId, note = '', conflict, cause, reopenF
     });
     const returnedAt = (forMerge || landingFailure || forWithdrawal) && currentEngine >= REOPEN_FIRST_REFUSAL_ENGINE && reopenFirstRefusalMinutes > 0 && item.item_built_by ? board.clock.now() : undefined;
     const reservation = (forMerge || landingFailure || forWithdrawal) && currentEngine >= REOPEN_FIRST_REFUSAL_ENGINE ? firstRefusalDetail(board, item, reopenFirstRefusalMinutes, returnedAt) : {};
-    const returned = forWithdrawal ? { supersedes, withdrawnVerdict } : forMerge ? { supersedes, ...conflictDetail(conflict) } : supersedes ? { supersedes, landingFailure } : {};
+    const returned = forWithdrawal ? { supersedes, withdrawnVerdict } : forMerge ? { supersedes, ...conflictDetail(conflict), ...(computedConflict !== undefined ? { computedConflict } : {}) } : supersedes ? { supersedes, landingFailure } : {};
     const derivedCause = currentEngine >= RIGOR_AUTO_ENGINE
       ? deriveRigorCause(board, item, { cause, conflict, landingFailure, agentId }) : cause != null ? { cause } : {};
     const returnedWithCause = currentEngine >= RIGOR_AUTO_ENGINE ? { ...returned, ...derivedCause } : { ...derivedCause, ...returned };
@@ -1737,49 +1746,13 @@ function persistShout(board, { from, to, text, decision = false, answers = null,
  */
 export function shout(board, message) {
   if ((board.executionEngineVersion ?? ENGINE_VERSION) >= PROOF_RUN_ENGINE) refuseLongShout(message.text);
-  return atomic(board, () => insertShout(board, { ...message,
-    news: activityNewsFlag(message, board.executionEngineVersion ?? ENGINE_VERSION) }));
+  return atomic(board, () => insertShout(board, routeLaneMessage(board, { ...message,
+    news: activityNewsFlag(message, board.executionEngineVersion ?? ENGINE_VERSION) }, board.executionEngineVersion ?? ENGINE_VERSION)));
 }
 
-/** Record one current health snapshot atomically, notifying each new or resolved episode once [A6]. */
-export function recordHealthFindings(board, { agentId, observedRevision, findings }) {
-  return atomic(board, () => {
-    const minimum = hasPendingCpuNotices(board) || (Array.isArray(findings) && findings.some(finding => finding?.cause === 'AGENT_CPU')) ? CPU_SENTINEL_ENGINE : HEALTH_SENTINEL_ENGINE;
-    if ((board.executionEngineVersion ?? ENGINE_VERSION) < minimum) {
-      throw new Refused('ENGINE_VERSION', `sentinel receipts require engine ${minimum}; upgrade Pullboard before scanning`);
-    }
-    if (!board.db.prepare('SELECT 1 FROM agent WHERE agent_id = ?').get(agentId)) {
-      throw new Refused('NOT_JOINED', 'join this board before recording a health scan: pullboard join <lane>');
-    }
-    const revision = board.db.prepare('SELECT COALESCE(MAX(event_id), 0) AS revision FROM event').get().revision;
-    if (!Number.isSafeInteger(observedRevision) || observedRevision !== revision) {
-      throw new Refused('HEALTH_SCAN_STALE', 'the board changed while health was scanning; run pullboard resume again');
-    }
-    const active = normalizedHealthFindings(findings);
-    const last = board.db.prepare("SELECT event_detail FROM event WHERE event_kind = 'health-scan' ORDER BY event_id DESC LIMIT 1").get();
-    const previous = last ? JSON.parse(last.event_detail).active : [];
-    const before = new Map(previous.map(finding => [healthFindingIdentity(finding), finding]));
-    const after = new Map(active.map(finding => [healthFindingIdentity(finding), finding]));
-    const added = active.filter(finding => !before.has(healthFindingIdentity(finding)));
-    const resolved = previous.filter(finding => !after.has(healthFindingIdentity(finding)));
-    const pending = last ? JSON.parse(last.event_detail).pendingCpu ?? [] : [];
-    if (!added.length && !resolved.length && !pending.length) return { added: [], resolved: [] };
-    const agents = listAgents(board);
-    const lanes = [...new Set(agents.map(agent => agent.agent_lane))];
-    const engine = board.executionEngineVersion ?? ENGINE_VERSION;
-    /** Deliver through ordinary feed/inbox records without registering a synthetic worktree seat. */
-    const log = (finding, cleared) => {
-      const item = finding.item === null ? null : itemById(board, finding.item);
-      logEvent(board, 'sentinel', cleared ? 'health-resolved' : 'health-failure', finding.item, {
-        key: finding.key, cause: `refusal:${finding.cause}`, since: finding.since, subject: finding.subject,
-        owner: finding.owner, commit: item?.item_commit ?? null, engine: HEALTH_SENTINEL_ENGINE,
-      });
-    };
-    const deferred = deliverHealthNotices({ resolved, added, pending, engine, log, coordinator: COORDINATOR, shout: (to, text) => insertShout(board, { from: 'sentinel', to, text, lanes }),
-      targets: finding => healthTargets(finding, { engine, coordinator: COORDINATOR, person: PERSON, lanes, agents }) });
-    logEvent(board, agentId, 'health-scan', null, { active, ...(deferred === undefined ? {} : { pendingCpu: deferred }), engine: HEALTH_SENTINEL_ENGINE });
-    return { added: added.map(finding => finding.key), resolved: resolved.map(finding => finding.key) };
-  });
+/** Record one health snapshot through its unchanged transactional implementation [A6]. */
+export function recordHealthFindings(board, options) {
+  return applyHealthFindings(board, options, { atomic, insertShout });
 }
 
 /**
@@ -1792,13 +1765,14 @@ export function recordHealthFindings(board, { agentId, observedRevision, finding
  */
 export function passDecision(board, id, { agentId, note, lanes }) {
   return atomic(board, () => {
-    if (agentId !== COORDINATOR) throw new Refused('COORDINATOR_ONLY', 'only the coordinator can pass a decision up');
     const ask = getShout(board, id);
-    if (!ask.shout_decision || (ask.shout_to !== COORDINATOR && ask.shout_to !== COORDINATION_SHOUT && shoutItemId(ask.shout_to) === null)) throw new Refused('NOT_COORDINATOR_DECISION', `shout #${id} is not a decision waiting for the coordinator`);
+    const laneEscalation = leadOwnsDecision(board, ask, agentId);
+    if (agentId !== COORDINATOR && !laneEscalation) throw new Refused('COORDINATOR_ONLY', 'only the coordinator or the addressed lane lead can pass a decision up');
+    if (!ask.shout_decision || (!laneEscalation && ask.shout_to !== COORDINATOR && ask.shout_to !== COORDINATION_SHOUT && shoutItemId(ask.shout_to) === null)) throw new Refused('NOT_COORDINATOR_DECISION', `shout #${id} is not a decision waiting for the coordinator`);
     if (board.db.prepare('SELECT 1 FROM shout WHERE shout_answers = ?').get(id)) throw new Refused('ALREADY_ANSWERED', `shout #${id} already has an answer`);
     const text = `Passed up from ${ask.shout_from}: ${ask.shout_text}\nCoordinator note: ${String(note ?? '').trim()}`;
     if (!String(note ?? '').trim()) throw new Refused('EMPTY_NOTE', 'include a note with the reason for passing this decision');
-    return insertShout(board, { from: COORDINATOR, to: PERSON, text, lanes, decision: true, answers: id, detail: shoutItemId(ask.shout_to) === null ? {} : { item: shoutItemId(ask.shout_to), text } });
+    return insertShout(board, { from: agentId, to: laneEscalation ? COORDINATOR : PERSON, text, lanes, decision: true, answers: id, detail: shoutItemId(ask.shout_to) === null ? {} : { item: shoutItemId(ask.shout_to), text } });
   });
 }
 
@@ -1834,10 +1808,11 @@ export function answerDecision(board, id, { agentId, text, lanes, asPerson = fal
     }
     const from = personAnswer ? PERSON : agentId;
     const provenance = answerProvenance(board, { agentId, asPerson: personAnswer, text, origin, rationale });
+    if (!personAnswer && leadOwnsDecision(board, ask, agentId)) insertShout(board, { from, to: COORDINATOR, text: `Lane decision #${id}: ${String(text).trim()}`, lanes, detail: { messageKind: 'decision' } });
     const answerId = tellAnswerImplications(board, (by, itemId, fact) => logEvent(board, by, 'fact', itemId, fact), insertShout(board, { from, to: ask.shout_from, text, lanes, answers: id, channel, ...(addressedItem === null ? {} : { item: addressedItem }), detail: { ...(implies?.length ? { implies } : {}), ...(supersedes !== null ? { supersedes } : {}), ...(provenance ? { provenance } : {}) } }), { seed: impliesId, implies, supersedes, from, person: PERSON });
-    if (personAnswer && ask.shout_answers !== null) {
+    if ((personAnswer || agentId === COORDINATOR && isLaneEscalation(board, ask)) && ask.shout_answers !== null) {
       const original = getShout(board, ask.shout_answers);
-      insertShout(board, { from: PERSON, to: original.shout_from, text: `Person answered #${id}: ${String(text).trim()}`, lanes, answers: original.shout_id, channel, ...(shoutItemId(original.shout_to) === null ? {} : { item: shoutItemId(original.shout_to) }) });
+      insertShout(board, { from, to: original.shout_from, text: `${personAnswer ? 'Person' : 'Coordinator'} answered #${id}: ${String(text).trim()}`, lanes, answers: original.shout_id, channel, ...(shoutItemId(original.shout_to) === null ? {} : { item: shoutItemId(original.shout_to) }) });
     }
     return answerId;
   });
@@ -1925,17 +1900,23 @@ function postRigorNotices(board, trigger) {
 }
 
 
-/** Make the shared build-queue comparator once: milestone, explicit rank, then the self-ordered queue (#1017; older engines: route, recent files, oldest). */
-export function buildOrder(board, { warm = [], agentId, readiness = barReadyForOrder, tierFirst = false, priority } = {}) {
+/** Share milestone policy, primary computed order and equal-score path ties across queue and health. */
+export function buildOrder(board, { warm = [], agentId, readiness = barReadyForOrder, releasedClaims = [], tierFirst = false, priority } = {}) {
   const milestonePriority = priority ?? milestonePriorities(board);
+  const items = listItems(board, { all: true });
   const rank = milestoneRanks(board, milestonePriority);
   const recent = new Set(warm);
-  const shared = (entry) => itemFiles(entry).filter((path) => recent.has(path)).length;
-  const fallback = workOrderCompare(board, { priority: milestonePriority, rank, shared, tierFirst }) ?? ((first, second) => milestonePriority(first) - milestonePriority(second)
+  const shared = entry => itemFiles(entry).filter(path => recent.has(path)).length;
+  const focus = milestoneFocus(board);
+  const group = item => focus?.ids.has(item.item_id) ? -1 : milestonePriority(item);
+  const paths = criticalPathEnabled(board) ? remainingPaths(items, group) : new Map();
+  const tieBreak = (first, second) => (paths.get(second.item_id) ?? 0) - (paths.get(first.item_id) ?? 0);
+  const fallback = workOrderCompare(board, { priority: milestonePriority, rank, shared, tierFirst, tieBreak }) ?? ((first, second) => milestonePriority(first) - milestonePriority(second)
     || rank(first) - rank(second)
     || ROUTES.indexOf(second.item_route) - ROUTES.indexOf(first.item_route)
     || shared(second) - shared(first) || first.item_id - second.item_id);
-  return focusOrder(board, lineOrderEnabled(board) ? lineBuildOrder({ agentId, release: milestonePriority, rank, items: listItems(board, { all: true }), ready: item => readiness(board, item), fallback }) : fallback);
+  return focusOrder(board, lineOrderEnabled(board)
+    ? lineBuildOrder({ agentId, release: milestonePriority, rank, items, ready: item => readiness(board, item), fallback }) : fallback);
 }
 
 /**
@@ -1985,9 +1966,13 @@ export function nextFor(board, { agentId, lane, verify = false, policy = 'any', 
     const scarcity = lineOrderEnabled(board) ? reviewerScarcity(board, candidates.map(candidate => candidate.entry), (entry, reviewer) =>
       Object.values(reviewerChecks(board, { agentId: reviewer, policy, familyPolicy })).every(guard => !guard(entry))) : null;
     const lineCompare = scarcity ? buildOrder(board, { agentId }) : null;
-    candidates.sort((first, second) => (scarcity ? scarcity.get(first.entry.item_id) - scarcity.get(second.entry.item_id)
-      || lineCompare(first.entry, second.entry) : milestonePriority(first.entry) - milestonePriority(second.entry)
-      || rank(first.entry) - rank(second.entry)));
+    const previousOrder = (first, second) => scarcity ? scarcity.get(first.item_id) - scarcity.get(second.item_id)
+      || lineCompare(first, second) : milestonePriority(first) - milestonePriority(second)
+      || rank(first) - rank(second);
+    const focus = milestoneFocus(board);
+    const group = item => focus?.ids.has(item.item_id) ? -1 : milestonePriority(item);
+    const order = criticalPathEnabled(board) ? criticalPathOrder({ items: listItems(board, { all: true }), group, fallback: previousOrder }) : previousOrder;
+    candidates.sort((first, second) => order(first.entry, second.entry));
     candidates.sort((a, b) => focusCompare(a.entry, b.entry));
     const item = candidates.find((candidate) => !candidate.holder && !candidate.cooldown)?.entry;
     if (item) return { item, reasons: focusReasons(board, item) };
@@ -2045,7 +2030,8 @@ export function nextFor(board, { agentId, lane, verify = false, policy = 'any', 
     if (reserved) { reasons.push(reserved); continue; }
     const collisions = itemFileCollisions(entry, inFlight);
     if (collisions.length) { reasons.push(...collisions); continue; }
-    if (!waiting.length) return { item: entry, reasons: focusReasons(board, entry, reasons), shared };
+    if (!waiting.length) return { item: entry, reasons: focusReasons(board, entry,
+      [...reasons, ...collisions.map(reason => reason.replace(' waits for ', ' overlaps with '))]), shared };
     reasons.push(`#${entry.item_id} waits on ${waiting.map(waitingOn).join(', ')}`);
   }
   if (!mine.length && !reasons.length) reasons.push(idleReason(items, lane, routed));
@@ -2364,6 +2350,10 @@ export function intakeOutside(board, options) { return applyOutsideIntake(board,
 /** Record the person's exact-commit owner approval. */
 export function approveOutside(board, id, options) { return applyOutsideApproval(board, id, options, atomic); }
 
+/** Name a lane lead only through coordinator-owned ordered policy [B21]. */
+export function setLaneLead(board, options) {
+  return applyLaneLead(board, options, { atomic, logEvent });
+}
 /** Tailored inbox activity is the same canonical read projection as other board queries. */
 export { agentActivity } from './board-query.js';
 

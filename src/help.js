@@ -41,6 +41,7 @@ Set up
                                         memory hold is opt-in: gate.memoryFloorMB in ~/.pullboard/settings.json holds the queue under that many MB free or critical pressure (default off)
                                         short slots for runs that name their test files are opt-in: pullboard settings gate.shortSlots <n> (default 0)
                                         runner-first dispatch is opt-in: pullboard settings gate.runnersFirst on|off (default off)
+                                        runner admission deadline: pullboard settings gate.runnerWaitMs <n> (default 300000ms)
   pullboard runner add <ssh-host> --slots <n> --browser <n> [--node <remote-path>] [--root <remote-path>]
                                         register SSH test capacity; no runner sign-in; root defaults to ~/.pullboard-runner
   pullboard runner list                 each runner's registered slots and browsers, which it runs at
@@ -169,6 +170,8 @@ Work
   pullboard inbox --acted-on <interrupt-ids>     acknowledge comma-separated ids only after acting; reading is not acting
   pullboard shout --item <id> <text>             message the item builder, reviewer and coordinator
   A seat shout to all reaches only coordinator and person; their broadcasts reach everyone.
+  pullboard shout coordinator <text> --kind question|blocker --decision  route through a named lane lead
+  pullboard lanes lead <lane> <seat|off>          coordinator names or removes the existing lane seat
   pullboard shout all <text> --news              coordinator/person release or focus news, digested at session start
   Inbox combines direct coordination with item/dependency, file and cited-row activity; other lane activity is summarized.
   pullboard shout [<to>] <text> --decision       ask for a decision; defaults to your coordinator or the person
@@ -182,7 +185,7 @@ Work
                                                       [--origin person-relayed|agent|inherited] [--rationale <why>]
                                         --supersedes tells the items an earlier answer implied; only the person
                                         supersedes the person's answer
-  pullboard pass <shout-id> <note>                coordinator passes a decision to the person
+  pullboard pass <shout-id> <note>                lead escalates to coordinator; coordinator passes to person
   pullboard decisions [--as person]               shouts waiting for you; main checkout defaults to coordinator
                                         as the person, a project's repos list together as repo#id
   pullboard watch [--to <agent|lane|all>] [--kinds <kinds>] [--item <id>] [--since <sequence>] [--json]
@@ -511,7 +514,7 @@ function overviewHelp(groups, firstRun = false) {
 }
 
 /** The settings forms settingsCommand dispatches with a value; each gets its own help, from this list (N2). */
-export const SETTING_FORMS = Object.freeze(['gateSlots', 'browserSlots', 'gate.shortSlots', 'gate.runnersFirst', 'landing.pool']);
+export const SETTING_FORMS = Object.freeze(['gateSlots', 'browserSlots', 'gate.shortSlots', 'gate.runnersFirst', 'gate.runnerWaitMs', 'landing.pool']);
 
 /** Help for each settings form the printed usage did not already name, so each form is covered (N2). */
 function settingFormHelp(commands) {

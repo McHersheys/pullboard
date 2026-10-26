@@ -1,3 +1,10 @@
+import * as conflictRecords from './relay-conflict-record.js';
+import { withRelayExclusion } from './relay-exclusion-state.js';
+import { relinkReplacement } from './relay-relink.js';
+import { relayExclusion } from './relay-exclusion-state.js';
+import { excludeRelayByPerson } from './relay-exclusion-state.js';
+import { clearRelayExclusion } from './relay-exclusion-state.js';
+import { reportClearedExclusion } from './relay-exclusion-state.js';
 import {
   cancellationOutcome,
   waitForDevicePoll,
@@ -304,12 +311,13 @@ function deletedMoveResult(root, operation, args, command, io, applyLocally) {
 function forgetDeletedCopy(root, file, state, io) {
   const recovered = retainDeletedMove(root, state);
   saveDeletedLink(root, { version: 1, board: state.board, url: state.url, ...(recovered ? { recovered } : {}) });
-  updateRelayMachine(machine => { const project = repoInfo(root).root; if (!machine.excluded.includes(project)) machine.excluded.push(project); });
+  rememberRelink(root, state.board);
+  archiveRelinkOutbox(root, state);
   rmSync(file, { force: true });
   try { forgetBoardKey(state.board, state.keyStorage); } catch { /* An unavailable key store cannot block completed local opt-out. */ }
   if (!DELETION_NOTICES.has(io)) {
     DELETION_NOTICES.add(io);
-    io.err(`pullboard: [RELAY_BOARD_DELETED] relay copy ${state.board} was deleted; local work continues; run pullboard relay on only to link it again`);
+    io.err(`pullboard: [RELAY_BOARD_DELETED] relay copy ${state.board} was deleted; local work continues; run pullboard relay on for fresh person approval to link it again`);
   }
 }
 
@@ -462,7 +470,8 @@ function behind(root, state) {
 function summary(root, state, { pairing = false } = {}) {
   if (!state) {
     const deleted = deletedLink(root);
-    return unlinkedRelayStatus(deleted);
+    const exclusion = relayExclusion(root);
+    return { ...unlinkedRelayStatus(deleted), ...(exclusion ? { excluded: true, exclusion } : {}) };
   }
   if (state.unlinking) return { linked: false, board: state.board, url: state.url, link: '', sequence: state.sequence, behind: 0, cleanup: true, recovery: recoverySummary(state) };
   const fragment = pairing ? '&key=' + encodeBoardKey(readBoardKey(state.board)) : '';
@@ -859,8 +868,7 @@ async function replayRelayRecord(board, key, state, record) {
     move = await decoded(key, record, state, record.kind, record.event_id);
     requireSupportedEngine(move);
     if (record.kind === 'request') return receivePersonRequest(board, move, { sequence: record.event_id, at: record.event_at, sender: record.sender });
-    return applyRelayMove(board, move, { sequence: record.event_id, at: record.event_at, sender: record.sender, kind: record.kind,
-      digest: createHash('sha256').update(record.sealed).digest('hex'), registration: record.registration });
+    return conflictRecords.replay(board, move, record, applyRelayMove);
   } catch (error) { // A seal no key opens, from an engine no newer than this one, is junk: set aside, never a stop [E20].
     if (!(error instanceof Refused) || !(['RELAY_MOVE', 'RELAY_RESPONSE', 'SEAL_FORMAT', 'SEAL_AUTH_FAILED'].includes(error.code) || error.code === 'SEAL_VERSION' && record.sender?.engine <= ENGINE_VERSION)) throw error;
     return refuseRelayMove(board, move, { sequence: record.event_id, at: record.event_at, sender: record.sender, kind: record.kind, code: ['SEAL_AUTH_FAILED', 'SEAL_VERSION'].includes(error.code) ? 'RELAY_SEAL' : error.code,
@@ -1058,7 +1066,7 @@ async function postPending(root, file, state, pending, io) {
   for (let tries = 0; tries < 100; tries += 1) {
     const actor = credentialActor(pending.move);
     try {
-      const transport = await actorTransport(root, file, state, actor, io);
+      const transport = await conflictRecords.transport(root, pending.move, localRecords, () => actorTransport(root, file, state, actor, io));
       const reply = await request(transport, '/api/v1/boards/' + state.board + '/moves', { method: 'POST',
         body: { sequence: pending.sequence, sealed: pending.sealed, ...(pending.registration ? { registration: pending.registration } : {}) } }, io);
       if (reply.event?.event_id !== pending.sequence || reply.event.sealed !== pending.sealed) throw new Refused('RELAY_RESPONSE', 'the relay acknowledgement differs from this executable send; fetch the configured relay');
@@ -1594,7 +1602,7 @@ export async function relayRecover(root, skip, io) {
 }
 
 /** Read the local link and lag without opening a network connection or revealing its relay token. */
-export function relayStatus(root) { return summary(root, loadLink(linkFile(root))); }
+export function relayStatus(root) { return withRelayExclusion(root, summary(root, loadLink(linkFile(root)))); }
 
 /** Cancel one device ticket without the already-aborted caller signal. */
 async function cancelDeviceFlow(url, ticket, io) {
@@ -1681,7 +1689,8 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
     if (state && (state.url !== url || state.repository !== repository)) throw new Refused('RELAY_LINKED', 'this board is linked to another relay or repository; run relay off before changing its link');
     const key = state ? readBoardKey(state.board) : await generateBoardKey();
     const nextBoard = state?.board ?? plannedRelayBoard(root, localRecords(root, store.boardId));
-    const relink = state ? null : relayRelink(root), replacement = state?.replaces ?? relink?.previous;
+    const relink = state ? null : relayRelink(root);
+    const replacement = relinkReplacement(state, relink, deletedLink(root)?.board);
     const intent = remoteShell ? { board: nextBoard, repository,
       host: hostname(), boardName: basename(root), ...(replacement ? { replaces: replacement } : {}) } : undefined;
     const signed = remoteShell ? await deviceSignIn(url, io, { intent }) : reusableCredential ?? reusableSession ?? await deviceSignIn(url, io);
@@ -1701,7 +1710,7 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
         cursor: snapshot.document.tables.event.at(-1)?.event_id ?? 0, baselineCursor: snapshot.document.tables.event.at(-1)?.event_id ?? 0,
         baselineAccepted: false, linkPending: true };
       state.snapshot = { sequence: 0, sealed: await sealedRecord(key, snapshot.document, state, 'snapshot', 0) };
-      if (relink) { state.previousBoardNotice = relink.previous; state.replaces = relink.previous; }
+      if (relink && replacement) { state.previousBoardNotice = relink.previous; state.replaces = replacement; }
     }
     const account = signed.account ?? signed.user?.id;
     // Persist the exact sealed snapshot and a recoverable link intent before making the remote link.
@@ -1734,6 +1743,7 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
     // The person's own sign-in sets up the coordinator's token, so no agent can mint it (#579).
     if (/^ps_[A-Za-z0-9_-]{43}$/u.test(signed.token ?? '')) { await ensurePersonCoordinator(file, state, signed.token, io); await syncApprovers(root, state, signed.token, io); }
     let result;
+    let clearedExclusion = false;
     try {
       let ready = true;
       if (state.mode === 'ordered' && state.snapshot) {
@@ -1751,7 +1761,7 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
         await flushOutbox(outboxLink(root, file, state, io));
         await catchUp(root, file, state, io);
         await deliverDeviceWraps(root, io);
-        updateRelayMachine(machine => { machine.excluded = machine.excluded.filter(entry => entry !== repoInfo(root).root); });
+        clearedExclusion = clearRelayExclusion(root);
         if (reusableSession === undefined) await publishExcludedBoards({ ...signed, account, url }, io, request);
       }
       result = summary(root, state, { pairing: !quiet });
@@ -1764,15 +1774,16 @@ export async function relayOn(root, address, io, { session, credential, quiet = 
       delete state.previousBoardNotice;
       saveLink(file, state);
     }
+    if (clearedExclusion) reportClearedExclusion(result, io);
     return result;
   });
 }
 
 /** Unlink locally without approval, then request a separate phone-approved remote deletion if possible. */
 export async function relayOff(root, io) {
-  updateRelayMachine(machine => { const project = repoInfo(root).root; if (!machine.excluded.includes(project)) machine.excluded.push(project); });
   const file = linkFile(root);
   return locked(file, async () => {
+    excludeRelayByPerson(root, io, { localRecords });
     const state = loadLink(file);
     if (!state) { await publishOffExclusions(null, io, { loadLink, linkFile, request: relayDeviceRequest }); return summary(root, null); }
     let joined = [];

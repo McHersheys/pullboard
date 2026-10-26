@@ -1,5 +1,9 @@
 /** General CLI recovery text; operation-owned codes live in src/moves/ [P4,C7]. */
 export const DEFAULT_NEXT_STEPS = Object.freeze({
+  "AGENT_GRANT_EXPIRED": "claim the intended item, or shout the coordinator if its claim is unavailable",
+  "AGENT_GRANT_ITEM": "finish or release the claim, then claim the intended item; use shout for coordination",
+  "AGENT_GRANT_LANE": "join a seat in the intended lane or ask its owner to make the item change",
+  "GIT_REPLACE_REFS": "ask the coordinator to remove this replica's refs/replace entries, then resume the same ordered move",
   "DECISIONS_NOT_AVAILABLE": "read each board's state from the local API, which carries its own person decisions",
   "PROJECT_REPO_AMBIGUOUS": "run pullboard decisions --as person and answer with the repo name it prints before the #",
   "PROJECT_REPO_UNKNOWN": "run pullboard decisions --as person to see the repos of this project, then answer repo#id",
@@ -370,6 +374,7 @@ export const DEFAULT_NEXT_STEPS = Object.freeze({
   "RUNNER_CAPACITY_MISMATCH": "wait for active runner leases to fit the configured capacity, then retry the run",
   "RUNNER_CLEANUP_TIMEOUT": "inspect the named job under that runner's namespace and confirm its cleanup before starting another run",
   "RUNNER_NOT_REGISTERED": "choose a host already registered in this machine's runner settings, then run pullboard runner remove <ssh-host> again",
+  "RUNNER_WAIT_DEADLINE": "check the runners the message names, or restore local gate capacity with pullboard settings, then retry",
   "RUNNER_REQUIRED_FOR_ZERO_CAPACITY": "restore positive gateSlots and browserSlots with pullboard settings before removing the last registered runner",
   "RUNNER_OUTPUT_LIMIT": "reduce the command output, or keep the run local",
   "RUNNER_REQUEST_LIMIT": "keep the run local, or reduce the runner request before retrying",

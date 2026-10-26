@@ -115,7 +115,7 @@ The version table is generated from the source-owned declarations in `src/format
 | `row grammar` | `1` | `SPEC_GRAMMAR_VERSION` in `src/spec.js`; optional `<!-- pullboard-grammar N -->` line in either file (absence means the current grammar) | Both files share the version. A declared version must match; an incompatible grammar change requires a coordinated version bump and compatible files. No automatic conversion occurs. |
 | `board schema` | `3` | `SCHEMA_VERSION` in `src/board.js`, persisted as `PRAGMA user_version` | On a write open of a board whose version is behind: create missing tables and indexes (version 3 adds the hot-path indexes), add missing columns in place with declared defaults, restore missing or changed triggers, and remove stale machine triggers without replacing rows. Read opens never migrate; a board at the current version whose shape differs is reported once on stderr and left as it is. |
 | `event log` | `1` | `EVENT_LOG_VERSION` in `src/board.js`, persisted in `board_meta` as `event_log_version` | Older event-log versions upgrade in place; newer versions are refused with `EVENT_LOG_VERSION`. Preserve event rows when the board schema changes. |
-| `move engine` | `123` | `ENGINE_VERSION` in `src/machine.js`, carried as `engine` in every sealed executable move | Bump when a move's meaning changes, independently of the event log and sealed envelope. A newer engine is refused with `ENGINE_VERSION`, naming both versions and asking you to upgrade Pullboard. |
+| `move engine` | `127` | `ENGINE_VERSION` in `src/machine.js`, carried as `engine` in every sealed executable move | Bump when a move's meaning changes, independently of the event log and sealed envelope. A newer engine is refused with `ENGINE_VERSION`, naming both versions and asking you to upgrade Pullboard. |
 <!-- format-versions:end -->
 
 A builder never picks an engine number (#1101). An item that adds a board move adds its own `src/<name>-engine.js` leaf as `export const NAME_ENGINE = unassignedEngine();` (importing `unassignedEngine` from `./engine-next.js`); on its branch the leaf reads as one above the highest landed engine. The landing merge writes the next number into the leaf, in landing order, inside that item's merge commit, and sets the `move engine` row above to the highest landed number. A landed number never changes, so recorded moves replay as they were written. Moves are recorded under landed numbers only: code with an unnumbered engine is for its branch's own tests, and a move it records on a real board before landing may later read under another item's number, so the item lands before its moves are used.
@@ -418,10 +418,12 @@ Each connection also has a temporary `moving(token INTEGER)` table and `status_t
 
 The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its append-only record format has the independent `EVENT_LOG_VERSION`. Each event has an increasing integer id, an ISO timestamp, the actor, the event kind, an optional item id, and a JSON object in `event_detail`. Board moves append their event inside the same immediate transaction as the move. Events are append-only; board triggers reject updates and deletes. The actor column is the acting agent id, except guard-repair events, which use `board`. Under engine 8 and later, each event by a registered agent also carries a `model` string snapshot in `event_detail`; legacy agents without a declaration use `unknown`. Declared models live under `agent_model:<agent id>` in `board_meta`, without changing the agent table or stable ids. Rejoining with another model appends a `model` event whose common snapshot holds the new declaration. This common snapshot is separate from the per-kind payload fields listed below. The following rows name the emitted kinds and the union of their operation-specific detail keys; CLI accept events additionally carry the frozen-check result described below:
 
+The computed-grant engine adds `grantEngine` to new join, claim and renewal events as a version marker only. It stores no grant or scope: permission is computed from the seat lane, current claim and lease, or the current review reservation. Older event bytes remain unchanged. A new marker prevents an older engine from reinterpreting a narrowed claim; shout, release and review reservation keep their existing engine floors. Reopen still checks the marked seat and target version floor, while its own authority guards decide permission: direct current conflict requests are coordinator-only; automatic review preflight records native-computed evidence bound to the board, actor, item, submitted head, trunk and conflicting files, verified at origin and replay by merging the recorded immutable commits, never the replica current trunk; missing objects refuse without advancing the replay cursor until fetched. The exact accepting reviewer can withdraw its current verdict independently of a build claim. Older recorded submitted-conflict moves retain their joined-seat authority.
+
 <!-- events:start -->
 | Kind | Actor | Detail fields |
 | --- | --- | --- |
-| `join` | joining agent | `lane`, `route` |
+| `join` | joining agent | `lane`, `route`, optional `grantEngine` |
 | `family` | agent | `family` |
 | `model` | agent | — |
 | `moved` | coordinator | `path` |
@@ -430,10 +432,11 @@ The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its ap
 | `edit` | editor | `brief`, `route`, `criterion`, `check`, `unfrozen`, optional `after`, optional `pendingRefreeze`, engine-19 `reason`, `barCorrection` |
 | `escalate` | builder | `from`, `to`, `note`, `attempt` |
 | `attempt` | reporting agent | `n`, `seconds`, `result` |
+| `relay_exclusion` | person | `action` (exclude, the durable opt-out intent), `path` (relayOff), `reason`, `channel`; event time and actor identify the request before machine settings persist it |
 | `board_members` | coordinator | `document` (exact version-1 body with board, repository, revision and complete members, approving login and SSH signature; native moves and checkpoints carry it sealed) |
 | `fact` | author | `id`, `kind`, `text`, `ref`, `supersedes`, engine-20 `implies`, `decision`, `supersededBy`, engine-30 `cause`, `neverAgain`, `channel` |
-| `claim` | builder | `leaseUntil`, `digest` |
-| `renew` | builder | `leaseUntil`, `digest` |
+| `claim` | builder | `leaseUntil`, `digest`, optional `grantEngine` |
+| `renew` | builder | `leaseUntil`, `digest`, optional `grantEngine` |
 | `release` | builder | — |
 | `submit` | builder | `commit`, `tree`, `policyCommit`, engine-9 `criterionDigest`, engine-38 `submissionProof`, optional `submissionSize` |
 | `reserve` | reviewer | `until` |
@@ -448,6 +451,7 @@ The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its ap
 | `main-moved` | coordinator | `batch`, `items`, `sha` |
 | `withdraw` | coordinator | `reason` |
 | `refreeze` | coordinator, or live holder adopting a pending correction | `before`, `after`, optional `retainedClaim` |
+| `lane-lead` | coordinator | `lane`, `seat` |
 | `hold` | coordinator | `lane`, `reason` |
 | `unhold` | coordinator | `lane` |
 | `hold_item` | coordinator | `reason` |
@@ -457,7 +461,7 @@ The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its ap
 | `rigor-draft` | rigor | `id`, `target`, `cause`, exact typed `source`, `unproved` (always true), `items`, `occurrences`, `engine` |
 | `activity-delivered` | recipient | `interrupts`, `through`, `observedThrough`, `digestThrough` |
 | `activity-acted` | recipient | `interrupts` |
-| `shout` | sender | `shout`, `to`, `decision`, `request`, `answers` |
+| `shout` | sender | `shout`, `to`, `decision`, `request`, `answers`, `messageKind` |
 | `shout_news` | sender | `shout`, `to`, `decision`, `request`, `answers` |
 | `flake-observation` | reporting agent | `engine`, `observation` |
 | `flake-repair` | reporting agent | `engine`, `key`, `item` |
@@ -469,7 +473,7 @@ The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its ap
 | `sentinel-start` | running agent | `name`, `digest`, `run`, `until`, `engine` |
 | `sentinel-run` | running agent | `name`, `digest`, `run`, `result`, `engine` |
 | `sentinel-failure` | sentinel | `name`, `digest`, `run`, `cause`, `engine` |
-| `pass` | coordinator | `shout`, `to`, `decision`, `request`, `answers` |
+| `pass` | coordinator, or lane lead | `shout`, `to`, `decision`, `request`, `answers` |
 | `answer` | answerer | `shout`, `to`, `decision`, `request`, `answers`, `outcome`, `channel`, engine-20 `implies`, `supersedes`, decision-origin `provenance` |
 | `row_decision` | person | `record`, `channel` |
 | `row_draft` | builder, or rigor | engine-55 `row`, `written` |
@@ -525,7 +529,7 @@ A project with `"submitGate": "landing"` can also set `"submitInvariants": ["tes
 With `"submitGate": "landing"`, `"submitDeferAbove": N` (a whole number, 1 or more; absent by default) moves an affected selection of more than N test files from submit to landing. Such a submit runs its frozen check, the static checks and `submitInvariants` only, records the selection as `submissionProof.deferredFiles`, and notes `<count> affected test files deferred to the landing gate` on the submission, where `show` prints it. A full-gate landing already runs every file. A landing with `"landing": { "publish": "separate" }` runs the recorded files on the merged tree before anything lands; a red sends back each item whose own deferred files failed, and nothing in that batch lands.
 
 <!-- pass-rule:start -->
-The `pass` event is emitted by `passDecision` only for the coordinator; another agent receives `COORDINATOR_ONLY`. Its event actor is the coordinator. The person receives the passed decision, while the event table records who performed the pass.
+The `pass` event is emitted by `passDecision` only for the coordinator in the historical protocol; another agent receives `COORDINATOR_ONLY`. The lane-lead engine also permits the addressed lead to escalate its own lane question to the coordinator. Its event actor is the coordinator or that lane lead. The coordinator passes to the person; the lead passes to the coordinator, while the event table records who performed the pass.
 <!-- pass-rule:end -->
 
 ## Static view export
@@ -608,6 +612,8 @@ Native `event_id` order is canonical, even when an input array is shuffled. A hi
 | `landingCadenceMinutes` | whole minutes 5 through 30 | `false` |
 
 `order` opts into next ordering: a builder’s own send-back, scarce review eligibility, release, downstream demand, signed-bar readiness, then coordinator rank. The readiness tier stays inert until the signed-readiness predicate is available (#1110); it never guesses a sign-off from prose. The other inputs retain their separate meanings; `reviewsFirst` selects review versus build and does not turn ordering on. Takeover and landing behavior are separate changes. The move carries `{agentId,key,value,reason,window}`; its native `line_setting` event carries `{key,value,reason,window}` with the board's actor and time outside that detail. Latest values live under `board_meta` keys `line_setting:<name>`, and ordered engine replay updates them and appends the same evidence. The unassigned `LINE_SETTINGS_ENGINE` leaf receives its permanent number at landing. Older engine records cannot request this new operation. Range, unknown-key, missing-reason and invalid-window refusals have named codes. The existing settings API reports each input as `scope: "board"`, key `line.<name>`, with off as its default and the board SQLite file as its source; it does not expose reason text or evidence payloads through that inventory.
+
+The critical-path engine, numbered at landing, adds a longest-remaining-path tie-break inside the primary self-ordering policy (#1017). That policy retains release/focus groups, coordinator pins and sinks, route availability, quick-win interleaving and (unblocks + 1) / effort scores. Only equal primary scores use the remaining unit-item dependency path before recent-file and age ties. Verified and withdrawn work contributes no remaining path. Build offers and queue availability preserve the hard file-collision skip (#1114), even when the colliding item is the only otherwise-ready work. Review offers retain their versioned critical-chain preference and all reviewer-authority guards. Opt-in own-send-back priority and historical engine ordering remain in force. This is a unit-duration ordering, not a measured completion-time forecast. This precedence follows coordinator ruling 29931 and the sharpened #1210 criterion.
 
 With `collisionFreeBatch` on, landing selection previews each reviewed commit against the immutable trunk and reads the resulting Git changed paths, including both rename paths. Overlapping later verdicts wait without reopening; disjoint items still join the current batch. Deferred items keep their recorded place ahead of newer acceptances, even after merge-only re-acceptance. This priority applies only while the setting is on and the item remains accepted and unlanded with the identical submitted commit and frozen digest; new source or a new bar loses that old priority. Once the first batch lands, each deferred item receives one item-addressed reviewer notice in the same atomic landed transition. Existing verdict freshness is unchanged: if main touched the deferred review, its reviewer merges the new trunk and records a merge-only re-accept without a builder cycle or reopening. The default off path keeps existing composition. The control has its own replay-engine boundary; it does not infer paths from briefs.
 
@@ -713,6 +719,8 @@ not a native move, parent identity, configuration or authority record. Missing/d
 replays activity. Reads freeze an event high-water mark before observing Git; subsequent events
 and messages remain pending. News has a separate cursor so an ordinary poll cannot consume a
 future session-start digest.
+
+The lane-lead engine, numbered at landing, adds coordinator-only `setLaneLead` with `{agentId, lane, seat, lanes}`. The seat is an existing agent in that lane, or `null` to remove the lead. Its `lane-lead` event records `lane` and `seat`. Typed shout routing records `messageKind` (`question`, `blocker` or `decision`); a status shout is refused. Older recorded engines retain their original routing and event details. Questions and blockers go to the named lead; lead decisions and explicit escalations go to the coordinator. Naming a lead grants no claim, lease or person authority.
 
 Companion requests use the `requestCompanion` move and the unassigned `COMPANION_ENGINE` boundary allocated at landing. The authenticated first argument names `agentId`, `parentId`, target `lane` and stable `key`. A `board_meta` key `companion:` plus SHA-256 of JSON `[parentId,lane,key]` binds that identity to its child. The immediate transaction creates the ordinary item, records its check baseline and bar, appends the companion event, and stores the binding. A retry returns the existing child without changing its contents or claim. Ordinary `addItem` parent-lane validation remains unchanged.
 

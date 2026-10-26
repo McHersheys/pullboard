@@ -470,7 +470,8 @@ globalThis.fetch = function tracedFetch(input, init) {
       res.end(JSON.stringify({ version: 1, error: { code: 'FIXTURE_LINK_REFUSED', message: 'fixture link sentinel' } }));
       return;
     }
-    if (refuseSnapshotWrites && req.method === 'PUT' && /\/api\/v1\/boards\/[0-9a-f]{32}\/state$/.test(req.url ?? '')) {
+    if (refuseSnapshotWrites && ((req.method === 'PUT' && /\/api\/v1\/boards\/[0-9a-f]{32}\/state$/.test(req.url ?? ''))
+      || (req.method === 'POST' && /^\/api\/v2\/boards\/[0-9a-f]{32}\/uploads\/[A-Za-z0-9-]+\/publish$/u.test(req.url ?? '')))) {
       res.writeHead(503, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ version: 1, error: { code: 'RELAY_UNAVAILABLE', message: 'fixture snapshot outage' } }));
       return;
@@ -756,7 +757,10 @@ globalThis.fetch = function tracedFetch(input, init) {
     assert.equal((await childResult(otherRoot, initEnv, [CLI, 'init', '--json'])).code, 0, 'the cloned project initializes its private local board');
     const joined = await run('relay', 'join', code, '--url', origin, ...(name === undefined ? [] : ['--name', name]));
     const document = joined.document;
-    if (joined.code !== 0) throw new Error('real clone did not join the one-use pairing code');
+    if (joined.code !== 0) {
+      const refusal = document?.error?.code;
+      throw new Error(`real clone did not join the one-use pairing code (${typeof refusal === 'string' && /^[A-Z0-9_]+$/u.test(refusal) ? refusal : 'NO_TYPED_REFUSAL'})`);
+    }
     const exported = await run('export');
     if (exported.code !== 0) throw new Error('paired clone could not read its restored board');
     const link = JSON.parse(readFileSync(join(otherRoot, '.git', 'pullboard', 'relay.json'), 'utf8'));
@@ -814,6 +818,7 @@ globalThis.fetch = function tracedFetch(input, init) {
     advance(days) { timeOffsetMs = days * 86400000; },
     overrideDelete(value) { override = value; },
     failTokenMints(count) { mintFailures = count; },
+    /** Refuse the real API1 snapshot write or current API2 publish, preserving its pending client state. */
     refuseSnapshotWrites(value) { refuseSnapshotWrites = value; },
     /** Leave every board API request unanswered until its client times out, like an overloaded relay. */
     stallApi(value = true) { stallApi = value; },
