@@ -1,4 +1,4 @@
-import { createQueuedItemLease } from "./queued-item-lease.js";
+import { createQueuedItemLease } from './queued-item-lease.js';
 import * as personIdentity from './person.js';
 import { dependencyValues } from './item-dependencies.js';
 import { computedReturnArgs } from './computed-conflict-return.js';
@@ -1678,7 +1678,7 @@ export function resourceAgent(ctx) {
 
 /** Keep the public queue adapter while its lease protocol lives in a bounded module. */
 export function queuedItemLease(ctx, initial, agentId, kind, admission = null) {
-  return createQueuedItemLease(ctx, initial, agentId, kind, admission, { ordered, withBoard, claimFreezer });
+  return createQueuedItemLease(ctx, initial, agentId, kind, admission);
 }
 
 /** Print the file and reason when conservative uncertainty reserves browser capacity.
