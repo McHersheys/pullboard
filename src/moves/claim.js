@@ -1,4 +1,5 @@
 import { CROSS_REPO_DEPENDENCY_ENGINE } from '../cross-repo-dependency-engine.js';
+import { SUBMIT_ADMISSION_ENGINE } from '../submit-admission-engine.js';
 import { hasForeignDependencies } from '../item-dependencies.js';
 import { LINE_CAPACITY_ENGINE } from '../line-capacity-engine.js';
 import { RIGOR_AUTO_ENGINE } from '../rigor-auto-engine.js';
@@ -29,7 +30,8 @@ function minimumEngine(args, board, at) {
   const validId = ['number', 'string'].includes(typeof id) && Number.isSafeInteger(Number(id)) && Number(id) > 0;
   const item = board && validId ? board.db.prepare('SELECT item_after FROM item WHERE item_id=?').get(id) : null;
   const foreign = item && hasForeignDependencies(item);
-  return Math.max(foreign ? CROSS_REPO_DEPENDENCY_ENGINE : 1, outside ? OUTSIDE_INTAKE_ENGINE : 1, capacity ? LINE_CAPACITY_ENGINE : 1, existingEngine(args, board, at));
+  return Math.max(args[1]?.submitAdmission != null ? SUBMIT_ADMISSION_ENGINE : 1,
+    foreign ? CROSS_REPO_DEPENDENCY_ENGINE : 1, outside ? OUTSIDE_INTAKE_ENGINE : 1, capacity ? LINE_CAPACITY_ENGINE : 1, existingEngine(args, board, at));
 }
 
 /** Read precisely the actor argument used by this operation [H2,H16]. */
@@ -46,6 +48,7 @@ export default Object.freeze({ operation: "claim", order: 13, engine: 1,
   "BLOCKED": "take another item with pullboard next, or shout the lane it waits on: pullboard shout <lane> \"<text>\"",
   "CRITERION_PROVES_NOTHING": "set a check that fails before the work: pullboard edit <id> --check \"<command>\", or ask the person to accept this one: pullboard check accept <id>",
   "HELD": "take another item: pullboard next",
+  "ITEM_LEASE_LOST": "read pullboard show <id>; if the item is free, claim it again for a build or reserve it with pullboard next --verify <id> for a review, then retry",
   "ITEM_HELD": "take another item with pullboard next while the coordinator holds this one",
   "LANE_HELD": "wait for the lane: pullboard next --wait 9 (minutes)",
   "NOT_CLAIMABLE": "take open work: pullboard next",

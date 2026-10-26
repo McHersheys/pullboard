@@ -6,6 +6,8 @@ import { pathToFileURL } from 'node:url';
 import { createInterface } from 'node:readline';
 import { DatabaseSync } from 'node:sqlite';
 import * as store from '../src/board.js';
+import { exportBoard, importBoard } from '../src/exchange.js';
+import { appliedSequence, applyEngineMove, prepareEngineMove } from '../src/engine.js';
 import { registerProject } from '../src/projects.js';
 import { serveView } from '../src/serve.js';
 import { runFixtureChild } from './fixture-child.js';
@@ -190,6 +192,83 @@ function itemLeaseFixture(t, helpers) {
   return box;
 }
 
+/** Neither a fresh CLI submit nor an unwitnessed receiver move inherits a running command's admission. */
+function refuseFreshExpiredSubmit(box, id) {
+  const late = runFixtureChild(process.execPath, ['--input-type=module', '-e', CLOCKED_CLI, 'submit', String(id), '--json'],
+    { cwd: box.web, env: box.env, encoding: 'utf8' });
+  assert.equal(late.status, 1, late.stdout);
+  assert.equal(JSON.parse(late.stdout).error.code, 'NOT_YOURS', 'a new submit cannot start on an expired claim');
+  const replica = store.openBoard(join(box.dir, 'expired-submit-receiver.sqlite'), box.clock);
+  try {
+    importBoard(replica, exportBoard(box.board));
+    const before = store.itemById(replica, id);
+    const move = prepareEngineMove(replica, 'submit', [id, { agentId: before.item_owner,
+      commit: box.git(box.web, 'rev-parse', 'HEAD'), tree: box.git(box.web, 'rev-parse', 'HEAD^{tree}'),
+      submissionProof: { version: 1, files: [], full: false, deferred: true, reason: 'receiver negative control; no completed proof' } }]);
+    const result = applyEngineMove(replica, move, { sequence: appliedSequence(replica) + 1, at: box.clock.now().toISOString() });
+    assert.equal(result.error?.code, 'AGENT_GRANT_EXPIRED', 'even a real admission nonce grants no receiver completion without its native final proof');
+    assert.deepEqual(store.itemById(replica, id), before, 'the refused receiver leaves the claimed item unchanged');
+  } finally { store.closeBoard(replica); }
+}
+
+/** Replay the real completed native receipt; changed source or a new claim cannot borrow it. */
+function admittedCompletionReplicas(box, id, snapshot) {
+  const receipt = store.proofReceipts(box.board, id).findLast(run => run.submitAdmission);
+  assert.ok(receipt, 'the real mandatory submit proof carries its admission witness');
+  const proof = prepareEngineMove(box.board, 'recordProofRun', [{ agentId: receipt.seat, itemId: id, receiptId: receipt.id }]);
+  for (const scenario of ['same admission', 'different commit', 'different tree', 'reclaim', 'historical engine']) {
+    let instant = box.clock.now().getTime();
+    const clock = { now: () => new Date(instant) };
+    const peer = store.openBoard(join(box.dir, `completion-${scenario.replaceAll(' ', '-')}.sqlite`), clock);
+    try {
+      importBoard(peer, snapshot);
+      assert.equal(applyEngineMove(peer, proof, { sequence: appliedSequence(peer) + 1, at: clock.now().toISOString() }).error, undefined);
+      const item = store.itemById(peer, id);
+      if (scenario === 'reclaim') {
+        const options = { agentId: item.item_owner, lane: item.item_lane, leaseMs: 60_000, head: receipt.commit };
+        store.claim(peer, id, options);
+        assert.throws(() => store.claim(peer, id, { ...options, submitAdmission: {
+          id: receipt.submitAdmission, commit: receipt.commit, tree: receipt.tree } }), error => error.code === 'USAGE',
+        'a new claim cannot reuse an earlier admission id');
+        store.claim(peer, id, options);
+        instant = Date.parse(store.itemById(peer, id).item_lease_until) + 1;
+      }
+      const move = prepareEngineMove(peer, 'submit', [id, { agentId: receipt.seat,
+        commit: scenario === 'different commit' ? '1'.repeat(receipt.commit.length) : receipt.commit,
+        tree: scenario === 'different tree' ? '2'.repeat(receipt.tree.length) : receipt.tree,
+        submissionProof: { version: 1, files: [], full: false, deferred: true, reason: 'private replay of actual native proof' } }]);
+      if (scenario === 'historical engine') move.engine = proof.engine - 1;
+      const result = applyEngineMove(peer, move, { sequence: appliedSequence(peer) + 1, at: clock.now().toISOString() });
+      assert.equal(result.error?.code, scenario === 'same admission' ? undefined : 'AGENT_GRANT_EXPIRED', scenario);
+    } finally { store.closeBoard(peer); }
+  }
+}
+
+/** Inherit a genuine private lease and prove awaited admission runs before the nested action. */
+function inheritedAdmissionProof(box) {
+  const program = `
+import assert from 'node:assert/strict';
+import { takeResource, gateSlotEnvironment } from ${JSON.stringify(pathToFileURL(resolve(import.meta.dirname, '../src/resources.js')).href)};
+import { withGateSlot } from ${JSON.stringify(pathToFileURL(resolve(import.meta.dirname, '../src/gate.js')).href)};
+const root = process.cwd();
+const lease = await takeResource({ name: 'gate', capacity: 2, scope: 'machine', root, agent: 'inherited-admission-control' });
+Object.assign(process.env, gateSlotEnvironment(lease));
+try {
+  let renewed = false;
+  await withGateSlot(root, inherited => {
+    assert.equal(inherited.inherited, true);
+    assert.equal(renewed, true, 'renewal finishes before inherited work starts');
+  }, { onWait: async state => { assert.equal(state.admitted, true); await Promise.resolve(); renewed = true; } });
+  const lost = new Error('private item lease lost');
+  await assert.rejects(withGateSlot(root, () => assert.fail('lost admission must not run'), {
+    onWait: async () => { throw lost; },
+  }), error => error === lost);
+} finally { lease.release(); }
+`;
+  const result = runFixtureChild(process.execPath, ['--input-type=module', '-e', program], { cwd: box.repo, env: box.env, encoding: 'utf8' });
+  assert.equal(result.status, 0, `${result.stdout}\n${result.failure ?? result.stderr}`);
+}
+
 /**
  * Run the queued-lease scenario against the resource suite's private pool helpers.
  *
@@ -278,9 +357,12 @@ export async function queuedLeaseProof(t, deps) {
     clockedCli(box, box.repo, 'resources', '--json');
     assert.equal(end(buildId, 'check'), runningBuildEnd, 'admission ends build item renewals');
     assert.ok(runningBuildEnd < box.clock.now().toISOString(), 'the running build resumes ordinary lease expiry');
+    refuseFreshExpiredSubmit(box, buildId);
+    const admittedBuild = exportBoard(box.board);
     writeFileSync(buildGate.release, 'release');
     assert.equal((await build.finished).code, 0, `${build.stdoutText}\n${build.stderrText}`);
     assert.equal(item(buildId).item_status, 'submitted', 'the actual queued submit completes its ordinary board move');
+    admittedCompletionReplicas(box, buildId, admittedBuild);
     await waitUntil(() => existsSync(checkGate.events), 'the independent owned check starts');
     const runningCheckEnd = end(checkId, 'check');
     box.advance(Date.parse(runningCheckEnd) - box.clock.now().getTime() + 1);
@@ -341,6 +423,7 @@ export async function queuedLeaseProof(t, deps) {
         assert.deepEqual(pool.holders, [], 'failed renewal never leaves a held resource');
       } finally { result.lease?.release(); }
     });
+    await t.test('an inherited native slot awaits item admission and refuses a lost lease', () => inheritedAdmissionProof(box));
   } finally {
     for (const gate of box.gates) writeFileSync(gate.release, 'release');
     if (holder && !holder.exitResult) await release(holder);
