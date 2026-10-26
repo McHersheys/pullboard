@@ -17,7 +17,9 @@ test('reclaim at newer main submits only the item edits, without reverting coord
   assert.equal(box.run(box.web, 'claim', '1').code, 0);
   const initial = JSON.parse(box.run(box.web, 'show', '1', '--json').out);
   mkdirSync(join(box.web, 'web'));
-  const candidate = e2e.commitFile(box, box.web, 'web/reclaimed.txt', 'owned work\n', 'feat(web): reclaimed fixture [G1]');
+  const committed = e2e.commitFile(box, box.web, 'web/reclaimed.txt', 'owned work\n', 'feat(web): reclaimed fixture [G1]');
+  assert.equal(committed.status, 0, committed.context);
+  const candidate = box.git(box.web, 'rev-parse', 'HEAD');
   assert.equal(box.run(box.web, 'release', '1').code, 0);
 
   const config = JSON.parse(readFileSync(join(box.repo, 'pullboard.json'), 'utf8'));
