@@ -305,7 +305,7 @@ export function outboxFields(state) {
     ...(state?.outboxRenumbered?.length ? { outboxRenumbered: structuredClone(state.outboxRenumbered) } : {}) };
 }
 
-/** Whether this command may queue a move in the ordered outbox: the board's relay.outbox setting, off by default (#922). */
+/** Whether this command may queue a move in the ordered outbox: the board's relay.outbox setting, on unless opted out (#922,H21). */
 function outboxEnabled(io) {
   try { return io?.relayOutbox?.() === true; } catch { return false; }
 }
