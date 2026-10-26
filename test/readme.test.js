@@ -28,6 +28,7 @@ const SHOT_FIGURES = [
 test('CONTRIBUTING explains issue clarification and the seven-day reply aim [I1]', () => {
   assert.match(CONTRIBUTING, /^## Issues and pull requests$/mu, 'the contribution section is present');
   assert.match(CONTRIBUTING, /- `clarify`: closes after 14 days without a reply\. Reply to reopen\./u, 'the clarify rule says when issues close and how to reopen them');
+  assert.match(CONTRIBUTING, /- Confirmed issues move to our board and close; the changelog credits them when fixed\./u, 'the brief keeps the confirmed-issue closing sentence exact');
   assert.match(CONTRIBUTING, /1\. \*\*We aim to reply within 7 days\.\*\*/u, 'the first reply step has the new seven-day aim');
 });
 
