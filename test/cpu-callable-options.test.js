@@ -33,3 +33,21 @@ test('an unmodified callable alias works with automatic semicolon insertion [C7]
   assert.equal(cpuLoadOptionsIn([source])[0], false,
     'the fix retains a real callable alias without any CPU options');
 });
+
+for (const [kind, preparation, argument, expected] of [
+  ['literal true options', '', '{ cpuLoad: true }', true],
+  ['literal false options', '', '{ cpuLoad: false }', false],
+  ['identifier true options', 'const configuration = { cpuLoad: true };', 'configuration', true],
+  ['identifier false options', 'const configuration = { cpuLoad: false };', 'configuration', false],
+]) test(`an omitted test name preserves ${kind} [C7]`, () => {
+  const source = `import test from 'node:test'; const execute = async () => {}; ${preparation} test(${argument}, execute);`;
+  assert.equal(cpuLoadOptionsIn([source])[0], expected,
+    'the options-first overload keeps the declared load without inventing a test title');
+});
+
+test('a proven string title and callable callback do not become CPU options [C7]', () => {
+  for (const title of ["'ordinary'", 'heading']) {
+    const source = `import test from 'node:test'; const heading = 'ordinary'; function execute() {} test(${title}, execute);`;
+    assert.equal(cpuLoadOptionsIn([source])[0], false);
+  }
+});
