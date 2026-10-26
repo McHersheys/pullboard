@@ -7,12 +7,25 @@ import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { relayOutboxSetting } from '../src/cli.js';
+import { ENGINE_VERSION } from '../src/engine-version.js';
 import { outboxFile, outboxQueueable } from '../src/relay-outbox.js';
 import { Refused } from '../src/refused.js';
 import { relayClientFixture } from './relay-client-fixture.js';
 import { runFixtureGit } from './fixture-child.js';
 
 const CLI = fileURLToPath(new URL('../bin/pullboard.js', import.meta.url));
+
+/** Commit the private board's absent-setting default, as the real policy reader requires. */
+function commitDefaultOutbox(box) {
+  const configFile = join(box.root, 'pullboard.json');
+  const config = JSON.parse(readFileSync(configFile, 'utf8'));
+  assert.equal(Object.hasOwn(config.relay ?? {}, 'outbox'), false, 'the private board uses the absent-setting default');
+  // The real policy reader reads committed configuration; init alone leaves this file uncommitted.
+  writeFileSync(join(box.env.PATH, 'pullboard'), `#!/bin/sh\nexec node "${CLI}" "$@"\n`, { mode: 0o700 });
+  runFixtureGit(['add', 'pullboard.json'], { cwd: box.root, env: box.env });
+  runFixtureGit(['commit', '-q', '-m', 'chore(config): retain default outbox policy'], { cwd: box.root, env: box.env });
+  assert.equal(relayOutboxSetting(box.root), true, 'the committed absent setting really enables fallback');
+}
 
 /** Run a synchronous policy control with a synthetic token, restoring the test process's original environment. */
 function withToken(value, work) {
@@ -67,14 +80,7 @@ test('landing-fenced arguments remain acknowledged across every transient fallba
 
 test('an accepted linked environment-token CLI refuses an offline move without creating an outbox [H21,H16,E18]', async t => {
   const box = await relayClientFixture(t);
-  const configFile = join(box.root, 'pullboard.json');
-  const config = JSON.parse(readFileSync(configFile, 'utf8'));
-  assert.equal(Object.hasOwn(config.relay ?? {}, 'outbox'), false, 'the private board uses the absent-setting default');
-  // The real policy reader reads committed configuration; init alone leaves this file uncommitted.
-  writeFileSync(join(box.env.PATH, 'pullboard'), `#!/bin/sh\nexec node "${CLI}" "$@"\n`, { mode: 0o700 });
-  runFixtureGit(['add', 'pullboard.json'], { cwd: box.root, env: box.env });
-  runFixtureGit(['commit', '-q', '-m', 'chore(config): retain default outbox policy'], { cwd: box.root, env: box.env });
-  assert.equal(relayOutboxSetting(box.root), true, 'the committed absent setting really enables fallback');
+  commitDefaultOutbox(box);
   assert.equal((await box.link()).code, 0);
   const state = JSON.parse(readFileSync(box.linkFile, 'utf8'));
   assert.equal(state.baselineAccepted, true, 'the private relay accepted this real linked board');
@@ -94,4 +100,42 @@ test('an accepted linked environment-token CLI refuses an offline move without c
   assert.ok(['RELAY_UNAVAILABLE', 'RELAY_RESPONSE'].includes(document.error?.code), 'the public response preserves a typed transport refusal');
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM shout WHERE shout_text=?').get(text).n, 0, 'the refused requested move never enters the local board');
   assert.equal(existsSync(outboxFile(box.linkFile)), false, 'no ephemeral outbox can be lost when the job exits');
+});
+
+test('an environment token cannot use legacy unaccepted-baseline local apply [H21,H16,E18]', async t => {
+  const box = await relayClientFixture(t);
+  commitDefaultOutbox(box);
+  assert.equal((await box.link()).code, 0);
+  const state = JSON.parse(readFileSync(box.linkFile, 'utf8'));
+  assert.equal(state.baselineAccepted, true);
+  const token = state.agentTokens?.coordinator?.token;
+  assert.equal(typeof token, 'string');
+  const response = await fetch(box.origin + '/api/v1/boards/' + state.board + '/state', {
+    headers: { authorization: 'Bearer ' + state.token, 'x-pullboard-engine': String(ENGINE_VERSION) },
+  });
+  assert.equal(response.status, 200);
+  const original = (await response.json()).state;
+  // Synthetic legacy upload intent on a genuinely accepted fixture: only the local saved state is changed.
+  const legacy = { ...state, baselineAccepted: false, snapshot: { sequence: 0, sealed: original.sealed } };
+  writeFileSync(box.linkFile, JSON.stringify(legacy) + '\n', { mode: 0o600 });
+  const db = new DatabaseSync(join(box.root, '.git', 'pullboard', 'board.sqlite'), { readOnly: true });
+  t.after(() => db.close());
+  const text = 'An ephemeral legacy move still needs acknowledgment';
+  const eventsBefore = db.prepare('SELECT COUNT(*) AS n FROM event').get().n;
+  await box.stopRelay();
+  const result = await box.startCli(['shout', 'all', text], { PULLBOARD_RELAY_TOKEN: token }).closed;
+  assert.equal(result.signal, null);
+  assert.notEqual(result.code, 0, 'legacy baseline fallback must not acknowledge an ephemeral local write');
+  const document = JSON.parse(result.stdout);
+  assert.ok(['RELAY_UNAVAILABLE', 'RELAY_RESPONSE'].includes(document.error?.code));
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM shout WHERE shout_text=?').get(text).n, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM event').get().n, eventsBefore, 'no native event is applied');
+  assert.equal(existsSync(outboxFile(box.linkFile)), false);
+  // The same legacy intent remains eligible for the established persistent-session fallback (#341/#919).
+  writeFileSync(box.linkFile, JSON.stringify(legacy) + '\n', { mode: 0o600 });
+  const persistentText = 'A persistent legacy move is retained on this machine';
+  const persistent = await box.startCli(['shout', 'all', persistentText]).closed;
+  assert.equal(persistent.signal, null);
+  assert.equal(persistent.code, 0, 'ordinary persistent prebaseline fallback is preserved');
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM shout WHERE shout_text=?').get(persistentText).n, 1);
 });
