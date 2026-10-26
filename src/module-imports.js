@@ -214,12 +214,19 @@ function sourceParts(code, start, closing) {
 }
 
 /** Decode import/key spelling through the same V8 reader, without evaluating code. */
-function cpuLiteral(text) {
-  try { return look([`import ${text};`])[0].imports[0] ?? null; } catch { return null; }
+function cpuLiteral(text, cache) {
+  if (cache?.has(text)) return cache.get(text);
+  let value;
+  try { value = look([`import ${text};`])[0].imports[0] ?? null; } catch { value = null; }
+  // Compilation is pure for these exact bytes. Keep both successful and unknown results bounded
+  // to this caller's analysis, never retaining repository source in a process-global cache.
+  if (cache && cache.size < 1024) cache.set(text, value);
+  return value;
 }
 
 /** Read one module's registration bindings; ordinary imported helpers acquire no test authority. */
-function cpuBindings(source, moduleExports, callable = false) {
+function cpuBindings(source, moduleExports, callable = false, literalCache) {
+  const literalValue = text => cpuLiteral(text, literalCache);
   const lexical = lex(source);
   const code = lexical.code;
   const clean = source.split('');
@@ -231,7 +238,7 @@ function cpuBindings(source, moduleExports, callable = false) {
   const namespaces = new Set();
   const exports = new Set();
   const known = name => name === 'node:test' ? new Set(['default', 'test', 'it', 'describe', 'suite']) : moduleExports(name);
-  const word = value => /^["']/u.test(value) ? cpuLiteral(value) : value;
+  const word = value => /^["']/u.test(value) ? literalValue(value) : value;
   const pieces = value => value.split(',').map(entry => entry.trim()).filter(Boolean);
   /** Add only bindings whose imported/exported source is a proven registration function. */
   function namedBindings(value, available, add, separator) {
@@ -249,7 +256,7 @@ function cpuBindings(source, moduleExports, callable = false) {
   const declarations = [...text.matchAll(new RegExp(`\\b(import|export)\\s+([^;]*?)\\s+from\\s*(${literal})`, 'gu'))]
     .filter(match => code.slice(match.index, match.index + match[1].length) === match[1]);
   for (const match of declarations) {
-    const available = known(cpuLiteral(match[3]));
+    const available = known(literalValue(match[3]));
     const binding = match[2].trim();
     const named = /\{([\s\S]*)\}/u.exec(binding);
     if (match[1] === 'export') {
@@ -268,7 +275,7 @@ function cpuBindings(source, moduleExports, callable = false) {
   // Literal require/dynamic-import destructuring has the same node:test provenance as a static import.
   for (const match of text.matchAll(new RegExp(`\\b(?:const|let|var)\\s*\\{([^}]+)\\}\\s*=\\s*(?:await\\s+)?(?:require|import)\\s*\\(\\s*(${literal})\\s*\\)`, 'gu'))) {
     if (!/^(?:const|let|var)\b/u.test(code.slice(match.index))) continue;
-    namedBindings(match[1], known(cpuLiteral(match[2])), name => names.add(name), ':');
+    namedBindings(match[1], known(literalValue(match[2])), name => names.add(name), ':');
   }
   const moduleLevel = new Uint8Array(code.length);
   let depth = 0;
@@ -387,21 +394,21 @@ function cpuOption(source, code, quoted, option) {
 }
 
 /** Return registration exports for bounded static module-graph propagation, not execution. */
-export function cpuRegistrationExportsIn(sources, moduleExports = () => new Set()) {
-  return sources.map((source, index) => cpuBindings(source, name => moduleExports(index, name)).exports);
+export function cpuRegistrationExportsIn(sources, moduleExports = () => new Set(), literalCache = new Map()) {
+  return sources.map((source, index) => cpuBindings(source, name => moduleExports(index, name), false, literalCache).exports);
 }
 
 /** Proven callable exports for the same bounded graph; these never confer registration authority. */
-export function cpuCallableExportsIn(sources, moduleExports = () => new Set()) {
-  return sources.map((source, index) => cpuBindings(source, name => moduleExports(index, name), true).exports);
+export function cpuCallableExportsIn(sources, moduleExports = () => new Set(), literalCache = new Map()) {
+  return sources.map((source, index) => cpuBindings(source, name => moduleExports(index, name), true, literalCache).exports);
 }
 
 /** Infer CPU load only from options of provenance-recognized test registrations [C7]. */
-export function cpuLoadOptionsIn(sources, moduleExports = () => new Set(), callableExports = () => new Set()) {
+export function cpuLoadOptionsIn(sources, moduleExports = () => new Set(), callableExports = () => new Set(), literalCache = new Map()) {
   return sources.map((source, index) => {
-    const bindings = cpuBindings(source, name => moduleExports(index, name));
+    const bindings = cpuBindings(source, name => moduleExports(index, name), false, literalCache);
     const quoted = quotedProperties(source);
-    const callables = cpuBindings(source, name => callableExports(index, name), true).names;
+    const callables = cpuBindings(source, name => callableExports(index, name), true, literalCache).names;
     return cpuCalls(source, bindings).some(args => {
       if (!args.length) return false;
       const last = lex(source.slice(...args.at(-1))).code.trim();

@@ -54,6 +54,7 @@ export function testsNeedCpuRunner(root, files) {
     }
   } catch { /* Unreadable ordinary code cannot invent CPU authority; retain the readable prefix. */ }
   const sources = entries.map(entry => entry.source);
+  const literalCache = new Map();
   const exports = new Map(entries.map(entry => [entry.path, new Set()]));
   const callables = new Map(entries.map(entry => [entry.path, new Set()]));
   const resolveExports = table => (index, name) => {
@@ -64,8 +65,8 @@ export function testsNeedCpuRunner(root, files) {
   const importedCallables = resolveExports(callables);
   // Propagate registration authority and callable evidence separately in the same bounded graph.
   for (let pass = 0; pass < entries.length; pass++) {
-    const next = cpuRegistrationExportsIn(sources, imported);
-    const nextCallables = cpuCallableExportsIn(sources, importedCallables);
+    const next = cpuRegistrationExportsIn(sources, imported, literalCache);
+    const nextCallables = cpuCallableExportsIn(sources, importedCallables, literalCache);
     let changed = false;
     for (const [index, entry] of entries.entries()) for (const name of next[index]) {
       const names = exports.get(entry.path);
@@ -77,7 +78,7 @@ export function testsNeedCpuRunner(root, files) {
     }
     if (!changed) break;
   }
-  return cpuLoadOptionsIn(sources, imported, importedCallables).some(Boolean);
+  return cpuLoadOptionsIn(sources, imported, importedCallables, literalCache).some(Boolean);
 }
 
 /** Report the explicit no-runner fallback while keeping registered CPU work off the coordinator. */
