@@ -20,7 +20,7 @@ import { trunkRevisionReader } from './trunk-revision.js';
 const COMPARISON_CLOCK = Date.UTC(2000, 0, 1);
 
 /** Capture spec, doctrine, config and board presentation without sending plaintext to a relay. */
-export function relayPresentation(root, { board: providedBoard = null, observedAt = Date.now() } = {}) {
+export function relayPresentation(root, { board: providedBoard = null, observedAt = providedBoard ? providedBoard.clock.now().getTime() : Date.now() } = {}) {
   return withGitReadFacts(() => readRelayPresentation(root, providedBoard, observedAt));
 }
 
@@ -70,19 +70,19 @@ export function presentationDigest(presentation) {
 }
 
 /** Capture importable native tables beside matching API presentation, retrying a concurrent local move. */
-export function relaySnapshot(root, { board: providedBoard = null } = {}) {
-  return withGitReadFacts(() => readRelaySnapshot(root, providedBoard));
+export function relaySnapshot(root, { board: providedBoard = null, observedAt = providedBoard ? providedBoard.clock.now().getTime() : Date.now() } = {}) {
+  return withGitReadFacts(() => readRelaySnapshot(root, providedBoard, observedAt));
 }
 
 /** Keep native tables and their device presentation at one observed board revision. */
-function readRelaySnapshot(root, providedBoard) {
+function readRelaySnapshot(root, providedBoard, observedAt) {
   const info = repoInfo(root);
   for (let attempt = 0; attempt < 3; attempt++) {
-    const before = providedBoard ? null : relayPresentation(info.root);
+    const before = providedBoard ? null : relayPresentation(info.root, { observedAt });
     const board = providedBoard ?? store.openBoard(join(info.commonDir, 'pullboard', 'board.sqlite'), undefined, { isMain: codeIsFromMain() });
     let native;
     try { native = exportBoard(board); } finally { if (!providedBoard) store.closeBoard(board); }
-    const presentation = relayPresentation(info.root, { board: providedBoard });
+    const presentation = relayPresentation(info.root, { board: providedBoard, observedAt });
     const event = native.tables.event.at(-1)?.event_id ?? 0;
     if (event === (presentation.state.events[0]?.event_id ?? 0) &&
         (providedBoard || presentationDigest(before) === presentationDigest(presentation))) return { ...native, presentation };
