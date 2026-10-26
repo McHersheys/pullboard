@@ -835,6 +835,7 @@ test('every session reads and moves: terminal, SSH, agent, job or CI [E9,E18]', 
     writeFileSync(join(keychainBin, name), `#!/bin/sh\necho "$1" >> ${JSON.stringify(keychainLog)}\n[ "$1" = search ] && exit 1\nexit 0\n`, { mode: 0o755 });
   }
   const plainPath = box.env.PATH;
+  const inbox = await prepareKeylessInbox(box);
   box.env.PATH = keychainBin;
   assert.equal((await box.link()).code, 0, 'relay on links the board on a machine with a keychain');
   box.env.PATH = plainPath;
@@ -846,7 +847,6 @@ test('every session reads and moves: terminal, SSH, agent, job or CI [E9,E18]', 
 
   // S6b: a session that cannot read the key (SSH, a scheduled job, a locked keychain) still reads the whole board.
   assert.equal((await box.cli('add', box.lane, 'Read from any session')).code, 0);
-  const inbox = await prepareKeylessInbox(box, { phoneRequest, receivedRequests });
   renameSync(keys, keys + '.parked');
   try {
     for (const command of [['list'], ['show', '1'], ['inbox'], ['whoami'], ['status'], ['resume'], ['log']]) {

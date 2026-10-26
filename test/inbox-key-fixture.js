@@ -20,17 +20,22 @@ function cursor(box) {
   return existsSync(file) ? readFileSync(file, 'utf8') : null;
 }
 
-/** Create a genuine answered decision through the authenticated public CLI before hiding its key. */
-export async function prepareKeylessInbox(box, { phoneRequest, receivedRequests }) {
-  const asked = await box.cli('shout', 'person', 'May this session read without recording delivery?', '--decision');
-  assert.equal(asked.code, 0, 'the fixture asks a real decision');
-  const request = await phoneRequest(box, (await box.phoneSession()).token,
-    { verb: 'answer', item: asked.document.id, args: { text: 'Read without acknowledging until the key returns.' } });
-  assert.equal((await receivedRequests(box))[request].status, 'done', 'the signed-in phone answers through ordinary authentication');
-  const exported = await box.cli('export');
-  const answer = exported.document.tables.shout.find(row => row.shout_answers === asked.document.id);
-  assert.ok(answer, 'the actual phone answer is recorded on the board');
-  return { answer: answer.shout_id };
+/** Seed ordinary native decision records before relay linking; the real snapshot then carries their history. */
+export async function prepareKeylessInbox(box) {
+  const result = await box.script(`
+    import * as store from ${JSON.stringify(new URL('../src/board.js', import.meta.url).href)};
+    import { join } from 'node:path';
+    const board = store.openBoard(join(process.cwd(), '.git', 'pullboard', 'board.sqlite'));
+    try {
+      const question = store.shout(board, { from: 'coordinator', to: 'person',
+        text: 'May this session read without recording delivery?', decision: true, lanes: [${JSON.stringify(box.lane)}] });
+      const answer = store.answerDecision(board, question, { agentId: 'coordinator', asPerson: true, channel: 'terminal',
+        text: 'Read without acknowledging until the key returns.', lanes: [${JSON.stringify(box.lane)}] });
+      console.log(JSON.stringify({ answer }));
+    } finally { store.closeBoard(board); }
+  `);
+  assert.equal(result.code, 0, `native fixture setup: ${result.stderr}`);
+  return JSON.parse(result.stdout);
 }
 
 /** Preserve both cursors while displaying a real obligation and refusing explicit acknowledgement. */
