@@ -86,11 +86,13 @@ import { createApiHandler } from './api-http.js';
 import { settingsInventory } from './settings-inventory.js';
 import { moveArgs } from './api-moves.js';
 import { personRequestStatuses } from './relay-requests.js';
+import { relayCanaryNeeds } from './relay-canary-needs.js';
+import { relayFiles } from './local-state.js';
 export { moveArgs } from './api-moves.js';
 
 /** Inputs shared by the complete state cache and the lightweight live-change watcher. */
 const STATE_REVISION_INPUTS = Object.freeze([
-  'identity', 'head', 'trunk', 'files', 'event', 'agents', 'leases', 'requestReceipts', 'milestones', 'externalRoadmap', 'eventLogVersion', 'ruleProofWindow',
+  'identity', 'head', 'trunk', 'files', 'event', 'agents', 'leases', 'requestReceipts', 'milestones', 'externalRoadmap', 'eventLogVersion', 'ruleProofWindow', 'localRelayMarker',
 ]);
 
 /** Serialize named state inputs in one stable order for cache and stream comparisons. */
@@ -179,6 +181,7 @@ function boardStateRevision(root, id, isMain, { projects = listApiProjects, scop
     externalRoadmap: local.externalMilestones,
     eventLogVersion: store.EVENT_LOG_VERSION,
     ruleProofWindow: local.ruleProofWindow,
+    localRelayMarker: localRelayMarker(info),
   };
   const revision = stateRevision(inputs);
   return { cacheId: info.commonDir + '\0' + id, revision, event: local.event, milestones: local.externalMilestones,
@@ -205,6 +208,12 @@ function fileMarkerForPath(path) {
     if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return 'missing';
     throw error;
   }
+}
+
+/** Invalidate only this local API state when its private canary record or queued link changes. */
+function localRelayMarker(info) {
+  const files = relayFiles(info.commonDir);
+  return [fileMarkerForPath(join(info.commonDir, 'pullboard', 'relay-health.sqlite')), fileMarkerForPath(files.link)];
 }
 
 /** Read HEAD and its selected ref without spawning Git on every 200 ms poll. */
@@ -428,6 +437,7 @@ function watchLocalStateRevision(board, { scopeCommonDir = null } = {}) {
       externalRoadmap,
       eventLogVersion: store.EVENT_LOG_VERSION,
       ruleProofWindow: local.ruleProofWindow,
+      localRelayMarker: localRelayMarker(info),
     });
   }
 
@@ -500,6 +510,8 @@ function buildLocalBoardState(root, boardId, board, codeIsMain, { previous = nul
     state.personRequests = projectData.personRequests;
     state.milestones = projectData.milestones;
     state.blocks = personBlockWords(repoInfo(root).commonDir, board.clock.now()); // Needs you below is recomputed with them [C6].
+    // Private telemetry belongs only to this local API host, not a sealed relay presentation.
+    state.relayHealthAlerts = relayCanaryNeeds(root);
     const decorated = projectSpecApprovals(projectFit(pendingFit(repoInfo(root).commonDir), projectRowDecisions(projectData.rowDecisions, state)), specApprovalState(root, { board, config }));
     decorated.ruleCounts = ruleProofCounts(root, board, decorated.spec);
     const bases = new Map(decorated.items.map((item) => [item.id, item]));

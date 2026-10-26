@@ -733,3 +733,16 @@ The activity-delivery engine, numbered at landing, adds recipient-owned `recordA
 
 The machine resource database adds `waiter.runner_only` and `holder.runner_execution`, both integer booleans defaulting to zero. A runner-only gate ticket cannot consume local or short capacity while a runner is registered. The trusted SSH worker sets `runner_execution` on its own actual private gate holder; inherited admission reads that holder rather than accepting an environment-only claim of remote execution. These are local, additive scheduling metadata, not board move or relay formats.
 The CPU-sentinel engine, numbered at landing, names an agent-worktree process after more than twenty CPU minutes, once per host, PID and start time. Current `health-scan` receipts carry `pendingCpu`, the findings whose coordinator notice was held by the existing ten-notice cap. Later scans drain that durable queue without inventing another health-failure episode. An older engine refuses while this queue is pending, preserving its history; older receipts retain their original fields. Observation never signals a process.
+
+## Machine-local relay canary
+
+The canary setting is part of the machine's `settings.json`, not project `pullboard.json` or the native board. Its optional `relay.canary` object is `{enabled, root, agentId, deadlineMs}`. `root` is an absolute checkout path, `agentId` is an ordinary registered non-coordinator seat, and `deadlineMs` defaults to 5000 and may be 100 through 25000. `pullboard relay canary off` sets an existing object to `enabled: false` (or leaves an absent setting unset); it creates no board event or relay credential.
+
+The client-local file `<git common dir>/pullboard/relay-health.sqlite` is separate from `board.sqlite` and from the relay's journal. It contains:
+
+| Table | Rows | Meaning |
+| --- | --- | --- |
+| `relay_health` | One row with `id = 1` and a JSON `value` | Version-one local history: monitoring start; bounded timestamped probe samples (`ok`, failed step, safe code, elapsed milliseconds and relay version); failure count; degraded/alert timestamps; p95; and durable pending alert or recovery notices. A separate `client` record holds the latest ordinary request sample and its degraded timestamp; ordinary requests never populate monitor samples or clear its active episode. |
+| `canary_schedule` | One row with `id = 1` and numeric `next_due` | The next eligible minute, claimed atomically so multiple local views of the same repository do not start duplicate probes. |
+
+The containing directory is created with mode 0700 and the SQLite file is created with mode 0600. A status read does not create it or contact the relay. Pending notices are removed only after the ordinary native notification path completes; a failed or interrupted notification leaves the notice available for retry. These records are machine-local display and scheduling state. They add no board table, event, engine field, relay journal record or sealed presentation field.
