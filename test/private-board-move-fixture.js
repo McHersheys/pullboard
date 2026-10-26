@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import * as store from '../src/board.js';
 import { exportBoard } from '../src/exchange.js';
@@ -50,6 +51,10 @@ function enableRehomeOutbox(box, root) {
   const file = join(root, 'pullboard.json');
   const config = JSON.parse(readFileSync(file, 'utf8'));
   writeFileSync(file, JSON.stringify({ ...config, relay: { ...(config.relay ?? {}), outbox: true } }, null, 2) + '\n');
+  const pullboard = join(box.env.PATH, 'pullboard');
+  assert.equal(existsSync(pullboard), false, 'the fixture has no preexisting private Pullboard wrapper to overwrite');
+  const cli = fileURLToPath(new URL('../bin/pullboard.js', import.meta.url));
+  writeFileSync(pullboard, `#!/bin/sh\nexec node "${cli}" "$@"\n`, { mode: 0o700 });
   runFixtureGit(['add', 'pullboard.json'], { cwd: root, env: box.env });
   runFixtureGit(['commit', '-q', '-m', 'chore(config): enable the linked local-first outbox [H21]'], { cwd: root, env: box.env });
 }
