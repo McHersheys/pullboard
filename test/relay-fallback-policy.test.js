@@ -10,7 +10,7 @@ import { relayOutboxSetting } from '../src/cli.js';
 import { ENGINE_VERSION } from '../src/machine.js';
 import { outboxFile, outboxQueueable } from '../src/relay-outbox.js';
 import { Refused } from '../src/refused.js';
-import { relayClientFixture } from './relay-client-fixture.js';
+import { legacyRelayClientFixture, relayClientFixture } from './relay-client-fixture.js';
 import { runFixtureGit } from './fixture-child.js';
 
 const CLI = fileURLToPath(new URL('../bin/pullboard.js', import.meta.url));
@@ -103,7 +103,7 @@ test('an accepted linked environment-token CLI refuses an offline move without c
 });
 
 test('an environment token cannot use legacy unaccepted-baseline local apply [H21,H16,E18]', async t => {
-  const box = await relayClientFixture(t);
+  const box = await legacyRelayClientFixture(t);
   commitDefaultOutbox(box);
   assert.equal((await box.link()).code, 0);
   const state = JSON.parse(readFileSync(box.linkFile, 'utf8'));
