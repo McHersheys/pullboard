@@ -92,7 +92,7 @@ test('a local relay-health Needs-you entry is an inspection with no release or h
     await chrome.stable(`(() => {
       globalThis.builderCalls = ${JSON.stringify([call])};
       personNeeds = () => builderCalls;
-      refresh();
+      render();
       return true;
     })()`);
     await chrome.waitFor(`Array.from(document.querySelectorAll('#needs > .row')).some(row => row.textContent.includes(${JSON.stringify(text)}))`);
