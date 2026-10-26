@@ -25,7 +25,8 @@ export function prepareCommitMetadata(raw, { claim = null, landings = [], spec =
   if (metadata.some(entry => entry.key === 'Pullboard-Item') && parsed.item !== expected.item_id) problems.push(`Pullboard-Item must name this board item #${expected.item_id}`);
   if (parsed.rows !== null && parsed.rows.join(',') !== rows.join(',')) problems.push('Pullboard-Rows must match the frozen rows in spec order');
   if (!rows.length && parsed.rows !== null) problems.push('omit Pullboard-Rows for an item with no rows');
-  if (parsed.more && (parsed.shown.join(',') !== rows.slice(0, parsed.shown.length).join(',') || parsed.shown.length + parsed.more !== rows.length)) {
+  const preview = /\[[^\]\n]*\+/u.test(parsed.header);
+  if (preview && (!parsed.more || !parsed.shown.length || parsed.shown.join(',') !== rows.slice(0, parsed.shown.length).join(',') || parsed.shown.length + parsed.more !== rows.length)) {
     problems.push('the header preview must show the first frozen rows and +N for exactly the rest');
   }
   const keys = parsed.trailers.map(entry => entry.key);
