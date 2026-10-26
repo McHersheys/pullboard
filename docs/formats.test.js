@@ -1,6 +1,6 @@
-import { recordRelayExclusionIntent } from '../src/relay-exclusion-state.js';
 /** @pullboard-test-input source-tree */
 /** Keep the format guide aligned with parser behavior, live SQLite schema and static export [A5,A10]. */
+import { recordRelayExclusionIntent } from '../src/relay-exclusion-state.js';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
