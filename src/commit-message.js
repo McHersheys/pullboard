@@ -112,7 +112,9 @@ export function parseCommitMessage(message) {
   const isTrailers = Boolean(last) && lines.every((line) => TRAILER_RE.test(line));
   const trailers = isTrailers ? lines.map((line) => { const [, key, value] = TRAILER_RE.exec(line); return { key, value: value.trim() }; }) : [];
   const body = (isTrailers ? paragraphs.slice(0, -1) : paragraphs).join('\n\n');
-  const itemValue = trailers.find((entry) => entry.key === ITEM_TRAILER)?.value;
+  // Historical coordinator companions named their item with this retired alias; writers never do.
+  const itemValue = (trailers.find((entry) => entry.key === ITEM_TRAILER)
+    ?? trailers.find((entry) => entry.key === 'Pullboard-Companion'))?.value;
   const rowsValue = trailers.find((entry) => entry.key === ROWS_TRAILER)?.value;
   const typed = HEADER_RE.exec(header);
   const { shown, more, rest } = headerRows(header);
@@ -146,6 +148,9 @@ export function commitMessageProblems(message, { item, rows }) {
   const problems = [];
   if (parsed.header.length > HEADER_LIMIT) problems.push(`its header has ${parsed.header.length} characters, over ${HEADER_LIMIT}`);
   if (!parsed.type) problems.push('its header has no type(scope): prefix');
+  if (parsed.trailers.some((entry) => entry.key === 'Pullboard-Companion')) {
+    problems.push('its Pullboard-Companion trailer is retired; generate Pullboard-Item instead');
+  }
   if (parsed.item !== item) problems.push(`its ${ITEM_TRAILER} trailer is not #${item}`);
   const written = parsed.rows ?? [];
   if (written.join(',') !== rows.join(',')) problems.push(`its ${ROWS_TRAILER} trailer is not ${rows.join(',') || 'absent'}`);

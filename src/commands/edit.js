@@ -4,6 +4,10 @@ import {
   personBarMode,
 } from '../person-bar-cli.js';
 import { barReadySetting } from '../bar-readiness.js';
+import {
+  referenceAuthors,
+  referenceAuthority,
+} from '../reference-authors.js';
 /** The pullboard edit command, in its own module so an item adding another command never edits these lines. */
 import * as store from '../board.js';
 import {
@@ -60,6 +64,12 @@ export async function run(io, args) {
   const confirmed = await confirmBarEffect(ctx, board, me, { verb: 'edit', item: id,
     args: { as: 'person', ...(values.wait ? { wait: true } : {}) } }, change, asPerson);
   if (confirmed !== null) return confirmed;
+  if (change.brief !== undefined) {
+    const authority = referenceAuthority(ctx, me.id, change.brief, store.getItem(board, id).item_brief);
+    if (authority) change.referenceAuthority = authority;
+    const authors = referenceAuthors(ctx.info.root, change.brief);
+    if (authors.length) change.referenceAuthors = authors;
+  }
   const { item, command } = store.validateItemEdit(board, id, change);
   if (command && command !== item.item_check) refuseCheckSyntax(command);
   if (command && (command !== item.item_check || barReadySetting(board).enabled)) change.checkBaseline = values.wait ? checkBaseline(ctx.info.root, command) : prepareCheckBaseline(ctx.info.root, command);

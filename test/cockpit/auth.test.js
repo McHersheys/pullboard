@@ -1,3 +1,4 @@
+/** @pullboard-test-gui */
 /**
  * The view's secret leaves the address bar (N39, N26): the printed link's key is traded for a
  * session cookie, and every later request is authorized by that cookie, over real HTTP.
