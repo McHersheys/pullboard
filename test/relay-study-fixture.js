@@ -12,7 +12,7 @@ import { openPagedSnapshot } from '../src/relay-page-layout.js';
  * publisher's and the comparing reader's values differ by the seconds between them (coordinator ruling 31625).
  */
 function asOfField(path, name) {
-  return ['observedAt', 'asOf', 'ageMinutes'].includes(name) || name === 'minutes' && path.includes('["stages"]');
+  return ['observedAt', 'asOf', 'ageMinutes'].includes(name) || name === 'minutes' && (path.includes('["stages"]') || path.includes('.stages.'));
 }
 
 /** Compare every JSON field except as-of clock readings, retaining paths but never printing board contents or credentials. */
@@ -70,13 +70,14 @@ export async function readRelay(box) {
  * Put a real HTTP fault proxy between the linked CLI and the fixture relay by pointing this scratch board's link at
  * it. API requests can be delayed, or answered with a refusal, without changing the shared relay fixture.
  */
-export async function faultProxy(t, box) {
+export async function faultProxy(t, box, { rewriteLink = true } = {}) {
   const target = new URL(box.origin);
   let fault = null;
   const server = createServer((req, res) => {
     /** Forward one request unchanged, after any configured delay or instead of a configured refusal. */
     async function handle() {
       const api = (req.url ?? '').startsWith('/api/');
+      if (api && fault?.down) { req.socket.destroy(); return; }
       if (api && fault?.delayMs) await new Promise(resolve => setTimeout(resolve, fault.delayMs));
       if (api && fault?.status) {
         req.resume();
@@ -85,7 +86,7 @@ export async function faultProxy(t, box) {
         return;
       }
       const upstream = httpRequest({ host: target.hostname, port: target.port, method: req.method, path: req.url,
-        headers: { ...req.headers, host: target.host } }, reply => { res.writeHead(reply.statusCode, reply.headers); reply.pipe(res); });
+        headers: { ...req.headers, host: target.host, ...(req.headers.origin ? { origin: box.origin } : {}) } }, reply => { res.writeHead(reply.statusCode, reply.headers); reply.pipe(res); });
       upstream.on('error', () => { if (!res.headersSent) res.writeHead(502); res.end(); });
       req.pipe(upstream);
     }
@@ -93,16 +94,51 @@ export async function faultProxy(t, box) {
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
-  const original = readFileSync(box.linkFile, 'utf8');
-  const state = JSON.parse(original);
-  state.url = 'http://127.0.0.1:' + server.address().port;
-  writeFileSync(box.linkFile, JSON.stringify(state), { mode: 0o600 });
+  const origin = 'http://127.0.0.1:' + server.address().port;
+  if (rewriteLink) writeFileSync(box.linkFile, JSON.stringify({ ...JSON.parse(readFileSync(box.linkFile, 'utf8')), url: origin }), { mode: 0o600 });
   return {
-    /** Set the fault for later API requests: { delayMs, status, code }, or null to pass them through. */
+    origin,
+    /** Drop every open connection, so a live stream must reconnect through the current fault. */
+    drop() { server.closeAllConnections(); },
+    /** Set the fault for later API requests: { down } or { delayMs, status, code }, or null to pass them through. */
     set(value = null) {
-      assert.ok(value === null || Number.isSafeInteger(value.delayMs) && value.delayMs >= 0
+      assert.ok(value === null || value.down === true || Number.isSafeInteger(value.delayMs) && value.delayMs >= 0
         && (value.status === null || [409, 503].includes(value.status)));
       fault = value;
     },
   };
+}
+
+/** Collect every key path, with array members folded to [], so shapes compare without board contents. */
+export function paths(value, prefix = '$', found = new Set()) {
+  found.add(prefix);
+  if (Array.isArray(value)) for (const member of value) paths(member, prefix + '[]', found);
+  else if (value && typeof value === 'object') for (const [name, child] of Object.entries(value)) paths(child, prefix + '.' + name, found);
+  return found;
+}
+
+/** Name the common scalar paths whose values differ between the two states, sampled by item and agent id. */
+export function valueDifferences(native, relay) {
+  const found = new Set();
+  /** Compare two values below one path, matching array members by their id when they carry one. */
+  function walk(left, right, path) {
+    if (Array.isArray(left) && Array.isArray(right)) {
+      const key = member => member && typeof member === 'object' ? member.id ?? member.agent_id ?? member.shout_id ?? null : null;
+      const byKey = new Map(right.map(member => [key(member), member]));
+      left.forEach((member, index) => {
+        const other = key(member) === null ? right[index] : byKey.get(key(member));
+        if (other !== undefined) walk(member, other, path + '[]');
+      });
+      return;
+    }
+    if (left && right && typeof left === 'object' && typeof right === 'object') {
+      for (const name of Object.keys(left)) {
+        if (Object.hasOwn(right, name) && !asOfField(path, name)) walk(left[name], right[name], path + '.' + name);
+      }
+      return;
+    }
+    if (JSON.stringify(left) !== JSON.stringify(right)) found.add(path);
+  }
+  walk(native, relay, '$');
+  return [...found].sort();
 }

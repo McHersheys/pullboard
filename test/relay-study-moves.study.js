@@ -8,7 +8,11 @@ import * as milestones from '../src/milestones.js';
 import { MOVE_OPERATIONS } from '../src/move-registry.js';
 import { relaySnapshot } from '../src/relay-presentation.js';
 import { relayClientFixture } from './relay-client-fixture.js';
-import { differences, readRelay } from './relay-study-fixture.js';
+import { differences, paths, readRelay, valueDifferences } from './relay-study-fixture.js';
+import { serveApi } from '../src/api.js';
+import { main } from '../src/cli.js';
+import { presentationState } from '../relay/browser-model.js';
+import { apiFetch } from './api-fixture.js';
 import { submitFixture } from './board-submit-fixture.js';
 import { syntheticFlakeObservation } from './flake-observation-fixture.js';
 
@@ -17,7 +21,28 @@ test('relay study compares each exercised move effect through the real API2 read
   await box.link();
   const board = store.openBoard(join(box.root, '.git', 'pullboard', 'board.sqlite'));
   t.after(() => store.closeBoard(board));
-  const covered = new Set(), setupRefusals = [];
+  const covered = new Set(), setupRefusals = [], nativeParity = [];
+  const api = await serveApi({ runCommand: main, projects: () => [{ root: box.root, name: 'study', project: '', added: '2026-10-26T00:00:00.000Z' }], stateDetail: 'full' });
+  t.after(() => api.close());
+  const address = new URL(api.url);
+  const nativeApi = { origin: address.origin, secret: address.searchParams.get('k') };
+  const boardId = (await (await apiFetch(nativeApi, '/api/v1/boards')).json()).boards[0].id;
+  /** Diff the native view's state against what a relay reader renders from the decrypted presentation. */
+  async function compareNative(operation, presentation) {
+    const native = (await (await apiFetch(nativeApi, '/api/v1/boards/' + boardId + '/state')).json()).state;
+    const reader = presentationState(presentation, boardId);
+    const nativePaths = paths(native), readerPaths = paths(reader);
+    nativeParity.push({ operation, onlyNative: [...nativePaths].filter(path => !readerPaths.has(path)).sort(),
+      onlyReader: [...readerPaths].filter(path => !nativePaths.has(path)).sort(), differingValues: valueDifferences(native, reader) });
+  }
+  t.after(() => {
+    const union = field => [...new Set(nativeParity.flatMap(entry => entry[field]))].sort();
+    t.diagnostic(JSON.stringify({ phase: 'native-versus-reader-per-move', node: process.versions.node, operations: nativeParity.length,
+      onlyNative: union('onlyNative'), onlyReader: union('onlyReader'), differingValues: union('differingValues'),
+      perOperation: nativeParity.map(entry => ({ operation: entry.operation, onlyNative: entry.onlyNative.length,
+        onlyReader: entry.onlyReader, differingValues: entry.differingValues })),
+      scope: 'After each exercised move: GET /api/v1/boards/:id/state (stateDetail full) against presentationState of the decrypted relay presentation; as-of clock readings ignored.' }));
+  });
   t.after(() => t.diagnostic(JSON.stringify({ phase: 'move-effect-parity', node: process.versions.node,
     coveredMoves: [...covered], setupRefusals, uncoveredMoves: MOVE_OPERATIONS.filter(operation => !covered.has(operation)),
     limitation: 'Native board-state fixtures with actual API2 transport; synthetic submit is explicitly not a gate proof. Only successful event-producing calls counted.' })));
@@ -41,6 +66,7 @@ test('relay study compares each exercised move effect through the real API2 read
     const read = await readRelay(box);
     assert.deepEqual(differences(expected.presentation, read.document.presentation), [], operation + ' full presentation');
     assert.deepEqual(differences(expected.tables, read.document.tables), [], operation + ' native tables');
+    await compareNative(operation, read.document.presentation);
     covered.add(operation);
     return result;
   }

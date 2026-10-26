@@ -8,38 +8,7 @@ import { relayPresentation } from '../src/relay-presentation.js';
 import { presentationState } from '../relay/browser-model.js';
 import { relayClientFixture } from './relay-client-fixture.js';
 import { apiFetch } from './api-fixture.js';
-
-/** Collect every key path, with array members folded to [], so shapes compare without board contents. */
-function paths(value, prefix = '$', found = new Set()) {
-  found.add(prefix);
-  if (Array.isArray(value)) for (const member of value) paths(member, prefix + '[]', found);
-  else if (value && typeof value === 'object') for (const [name, child] of Object.entries(value)) paths(child, prefix + '.' + name, found);
-  return found;
-}
-
-/** Name the common scalar paths whose values differ between the two states, sampled by item and agent id. */
-function valueDifferences(native, relay) {
-  const found = new Set();
-  /** Compare two values below one path, matching array members by their id when they carry one. */
-  function walk(left, right, path) {
-    if (Array.isArray(left) && Array.isArray(right)) {
-      const key = member => member && typeof member === 'object' ? member.id ?? member.agent_id ?? member.shout_id ?? null : null;
-      const byKey = new Map(right.map(member => [key(member), member]));
-      left.forEach((member, index) => {
-        const other = key(member) === null ? right[index] : byKey.get(key(member));
-        if (other !== undefined) walk(member, other, path + '[]');
-      });
-      return;
-    }
-    if (left && right && typeof left === 'object' && typeof right === 'object') {
-      for (const name of Object.keys(left)) if (Object.hasOwn(right, name)) walk(left[name], right[name], path + '.' + name);
-      return;
-    }
-    if (JSON.stringify(left) !== JSON.stringify(right)) found.add(path);
-  }
-  walk(native, relay, '$');
-  return [...found].sort();
-}
+import { paths, valueDifferences } from './relay-study-fixture.js';
 
 test('relay study diffs the native view state and the relay reader state [H5,H17]', { timeout: 180_000 }, async t => {
   const box = await relayClientFixture(t);
