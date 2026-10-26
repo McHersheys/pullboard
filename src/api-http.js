@@ -40,7 +40,7 @@ function sendState(req, res, text, tagged, validator = text, reportValidator) {
   const headers = { 'cache-control': 'no-store', 'referrer-policy': 'no-referrer', 'x-content-type-options': 'nosniff' };
   if (typeof reportValidator === 'string' && /^[a-f0-9]{64}:[0-9]+$/u.test(reportValidator)) headers['x-pullboard-report-validator'] = reportValidator;
   if (tagged) {
-    const board = validator.replace(/"(asOf|ageMinutes)":(?:"[^"]*"|[-+.0-9eE]+|null)/gu, '"$1":null');
+    const board = validator.replace(/"(asOf|ageMinutes|observedAt)":(?:"[^"]*"|[-+.0-9eE]+|null)/gu, '"$1":null');
     Object.assign(headers, { etag: '"' + createHash('sha256').update(board).digest('base64url').slice(0, 32) + '"' });
     const held = String(req.headers['if-none-match'] ?? '').split(',').map((tag) => tag.trim().replace(/^W\//u, ''));
     if (held.includes(headers.etag)) {

@@ -1,7 +1,9 @@
+import { buildLocalBoardState } from './native-board-state.js';
+import { stateFileInputs } from './native-board-state.js';
+import { fileRevision } from './native-board-state.js';
+import { nativeStateClockMatches } from './native-state-clock.js';
 import { foreignDependencyStates } from './cross-repo-dependencies.js';
 import {
-  dependencyValues,
-  hasForeignDependencies,
   localDependencyIds,
 } from './item-dependencies.js';
 /** The local API v1: the CLI's moves, persistent board identities and live events (A2). */
@@ -24,7 +26,6 @@ import {
 import { displayAgentName } from './agent-names.js';
 import * as store from './board.js';
 import {
-  CONFIG_FILE,
   COORDINATOR,
   loadConfig,
 } from './config.js';
@@ -49,37 +50,22 @@ import {
   registeredProjectRootsSnapshot,
 } from './projects.js';
 import { milestoneRoadmap } from './roadmap.js';
-import { proofStats } from './stats.js';
 import {
-  ruleProofCounts,
   ruleProofWindow,
 } from './rule-proof-counts.js';
 import {
   SUMMARY_KEYS,
   itemSummary,
-  milestoneNamesByItem,
-  withListFields,
 } from './item-list.js';
 import {
   prepareFlowHistory,
   projectFlowStats,
 } from './stats-flow.js';
-import { projectRowDecisions } from './row-decisions.js';
 import {
   projectItemSpecApprovals,
-  projectSpecApprovals,
   specApprovalState,
 } from './spec-approval.js';
-import {
-  fitFile,
-  pendingFit,
-  projectFit,
-} from './blueprint-fit.js';
 import { Refused } from './refused.js';
-import {
-  BLOCKS_FILE,
-  personBlockWords,
-} from './blocks.js';
 import { verdictProjector } from './verdict-freshness.js';
 import { trunkRevisionReader } from './trunk-revision.js';
 import {
@@ -106,31 +92,12 @@ function stateRevision(inputs) {
   return JSON.stringify(STATE_REVISION_INPUTS.map((name) => [name, inputs[name]]));
 }
 
-/** Name project and built-in files separately, even when their basenames collide. */
-function stateFileInputs(root, config) {
-  return [
-    { name: `config:${CONFIG_FILE}`, path: join(root, CONFIG_FILE) },
-    { name: `spec:${config.spec}`, path: join(root, config.spec) },
-    { name: `practice:${config.practice}`, path: join(root, config.practice) },
-    { name: 'builtin:standard-doctrine.md', path: new URL('./standard-doctrine.md', import.meta.url) },
-    ...['signoffs.jsonl', 'signers', 'first-commit', 'signers.initial'].map(name => ({ name: `approval:${name}`, path: join(root, '.pullboard', name) })),
-    { name: 'fit:blueprint-fit.json', path: fitFile(repoInfo(root).commonDir) },
-    // A new block changes Needs you without a board move, so the ledger is a state input [C6].
-    { name: 'blocks:blocks.jsonl', path: join(repoInfo(root).commonDir, BLOCKS_FILE) },
-  ];
-}
-
-/** Hash the exact bytes of one named input, preserving a missing-file marker. */
-function fileRevision(file) {
-  if (!existsSync(file.path)) return [file.name, null];
-  return [file.name, createHash('sha256').update(readFileSync(file.path)).digest('hex')];
-}
-
 /**
  * Read this board's own revision inputs from one open connection, for the cache and the watcher alike.
  * nextExpiry is the earliest live claim or review lease, when a lease turns over with no write.
  */
 function localRevisionInputs(board, now) {
+  board = Object.assign(Object.create(board), { clock: { ...board.clock, now: () => new Date(now) } });
   const leases = board.db.prepare('SELECT item_id, item_status, item_owner, item_lease_until, item_review_by, item_review_until FROM item ORDER BY item_id').all()
     .map((item) => [
       item.item_id, item.item_status, item.item_owner, item.item_lease_until, item.item_review_by, item.item_review_until,
@@ -161,12 +128,12 @@ function visibleMilestoneInputs(milestones, scoped) {
 }
 
 /** Capture the inexpensive inputs that can invalidate a complete board-state snapshot. */
-function boardStateRevision(root, id, isMain, { projects = listApiProjects, scopeCommonDir = null } = {}) {
+function boardStateRevision(root, id, isMain, { projects = listApiProjects, scopeCommonDir = null, observedAt = Date.now() } = {}) {
   const info = repoInfo(root);
   const config = loadConfig(info.root);
   const files = stateFileInputs(info.root, config).map(fileRevision);
   const local = withBoard(info.root, (board) => {
-    const inputs = localRevisionInputs(board, board.clock.now().toISOString());
+    const inputs = localRevisionInputs(board, new Date(observedAt).toISOString());
     const hasExternalMilestones = inputs.milestones.some((milestone) => milestone.items.some((item) => typeof item !== 'number'));
     return { ...inputs, externalMilestones: hasExternalMilestones
       ? scopeCommonDir === null
@@ -457,109 +424,6 @@ function watchLocalStateRevision(board, { scopeCommonDir = null } = {}) {
   };
 }
 
-/** Build the complete local API state, including fields that the shared project snapshot omits. */
-function buildLocalBoardState(root, boardId, board, codeIsMain, { previous = null, fullItemRebuild = true, afterSequence = 0, changedLeases = new Set(), onItemBuild, projects = listApiProjects, scopeCommonDir = null } = {}) {
-  board.db.exec('BEGIN');
-  try {
-    const sequence = board.db.prepare('SELECT COALESCE(MAX(event_id), 0) AS id FROM event').get().id;
-    let rebuildAll = fullItemRebuild || (previous && previous.sequence > sequence);
-    const eventRows = rebuildAll || !previous ? [] : board.db.prepare('SELECT event_id, item_id, event_kind FROM event WHERE event_id > ? ORDER BY event_id').all(afterSequence);
-    if (!rebuildAll && previous && eventRows.length !== sequence - previous.sequence) rebuildAll = true;
-    const dirtyIds = new Set(rebuildAll ? [] : [...changedLeases]);
-    for (const event of eventRows) if (event.item_id !== null) dirtyIds.add(event.item_id);
-
-    const foreignChanged = eventRows.some(event => event.event_kind === 'board_link_state' || event.event_kind === 'board_link');
-    const currentItems = store.listItems(board, { all: true });
-    const currentById = new Map(currentItems.map((item) => [item.item_id, item]));
-    const currentDependencies = new Map(currentItems.map((item) => [item.item_id, dependencyIds(item)]));
-    const milestoneNames = milestoneNamesByItem(store.milestones(board));
-    for (const prior of previous?.itemMeta.values() ?? []) {
-      if (!currentById.has(prior.id)) dirtyIds.add(prior.id);
-    }
-    for (const item of currentItems) {
-      const prior = previous?.itemMeta.get(item.item_id);
-      // E32 announcements and consent changes carry no local item_id, but change foreign blockers.
-      if (foreignChanged && hasForeignDependencies(item)) dirtyIds.add(item.item_id);
-      if (rebuildAll || !previous?.items.has(item.item_id) || !prior || prior.raw !== JSON.stringify(item)) dirtyIds.add(item.item_id);
-      if (prior && prior.milestone !== (milestoneNames.get(item.item_id) ?? null)) dirtyIds.add(item.item_id);
-    }
-    // A dirty item's status affects the blockedBy list of every direct old or new dependent.
-    const changedIds = [...dirtyIds];
-    for (const dependent of previous?.itemMeta.values() ?? []) {
-      if (changedIds.some((id) => dependent.dependencies.includes(id))) dirtyIds.add(dependent.id);
-    }
-    for (const [id, dependencies] of currentDependencies) {
-      if (changedIds.some((changed) => dependencies.includes(changed))) dirtyIds.add(id);
-    }
-
-    const config = loadConfig(root);
-    const freshness = verdictProjector(root, board, { main: trunkRevisionReader(repoInfo(root))() });
-    const state = projectState(root, { seen: null, board, itemProjector: (item, context) => {
-      if (dirtyIds.has(item.item_id)) {
-        const projected = context.project();
-        const verdictState = freshness.state(item);
-        return verdictState ? { ...projected, verdictState } : projected;
-      }
-      return previous.items.get(item.item_id);
-    } });
-    state.agents = state.agents.map((agent) => ({ ...agent, model: agent.agent_model ?? 'unknown', displayName: displayAgentName(agent, config.agents.names) }));
-    state.board = boardId;
-    state.decisionQueue = store.openDecisions(board, COORDINATOR);
-    const projectData = {
-      requests: store.openRequests(board),
-      personRequests: personRequestStatuses(board),
-      milestones: scopeCommonDir === null
-        ? milestoneRoadmap(root, board)
-        : milestoneRoadmap(root, board, { projects, hideOutOfScope: true }),
-      rowDecisions: store.rowDecisions(board),
-      proofStats: proofStats(board),
-    };
-    state.proofStats = projectData.proofStats;
-    state.requests = projectData.requests;
-    state.personRequests = projectData.personRequests;
-    state.milestones = projectData.milestones;
-    state.blocks = personBlockWords(repoInfo(root).commonDir, board.clock.now()); // Needs you below is recomputed with them [C6].
-    // Private telemetry belongs only to this local API host, not a sealed relay presentation.
-    state.relayHealthAlerts = relayCanaryNeeds(root);
-    const decorated = projectSpecApprovals(projectFit(pendingFit(repoInfo(root).commonDir), projectRowDecisions(projectData.rowDecisions, state)), specApprovalState(root, { board, config }));
-    decorated.ruleCounts = ruleProofCounts(root, board, decorated.spec);
-    const bases = new Map(decorated.items.map((item) => [item.id, item]));
-    for (const id of dirtyIds) {
-      if (!currentById.has(id)) continue;
-      const item = store.getItem(board, id);
-      const base = bases.get(id);
-      const full = {
-        ...base,
-        check: item.item_check,
-        ...(item.item_check_baseline ? { checkBaseline: item.item_check_baseline } : {}),
-        thread: store.itemThread(board, id),
-      };
-      bases.set(id, full);
-      onItemBuild?.({ board: boardId, itemId: id });
-    }
-    decorated.items = decorated.items.map((item) => bases.get(item.id) ?? item);
-    const leases = new Map(currentItems.map((item) => [item.item_id, item.item_lease_until ?? null]));
-    const listFields = withListFields(decorated, leases, { previous, dirtyIds });
-    const itemMeta = new Map(currentItems.map((item) => [item.item_id, {
-      id: item.item_id,
-      raw: JSON.stringify(item),
-      dependencies: currentDependencies.get(item.item_id) ?? [],
-      milestone: milestoneNames.get(item.item_id) ?? null,
-    }]));
-    const history = store.events(board);
-    board.db.exec('COMMIT');
-    return { state: listFields.state, itemMeta, itemMoveCounts: listFields.itemMoveCounts, sequence, history };
-  } catch (error) {
-    try { board.db.exec('ROLLBACK'); } catch { /* Preserve the projection failure. */ }
-    throw error;
-  }
-}
-
-/** Parse an item's ordered prerequisite IDs from its persisted row. */
-function dependencyIds(item) {
-  return dependencyValues(item);
-}
-
 /** Everything a summary leaves out, with the latest verdict whole: laid over its summary, it is the full item. */
 function itemDetail(item) {
   return Object.fromEntries(Object.entries(item).filter(([key]) => key === 'id' || key === 'verdict' || key === 'verdictState' || !SUMMARY_KEYS.has(key)));
@@ -571,17 +435,17 @@ function searchText(item) {
 }
 
 /** One cached board build: the full state, its item summaries, its delta fingerprint and the lookups that serve them. */
-function snapshotEntry(revision, state, preparedFlow, { inputs = null, itemMeta = new Map(), itemMoveCounts = new Map() } = {}) {
+function snapshotEntry(revision, state, preparedFlow, { inputs = null, itemMeta = new Map(), itemMoveCounts = new Map(), clockWindow = null } = {}) {
   const summary = { ...state, items: state.items.map(itemSummary) };
   const reportValidator = { json: JSON.stringify(state.proofStats?.flow?.report), expiries: [...new Set(preparedFlow.items.flatMap(item =>
     item.state === 'claimed' ? [item.leaseUntil] : item.state === 'submitted' ? [item.reserve?.until] : []).filter(Number.isFinite))].sort((a, b) => a - b) };
   reportValidator.digest = createHash('sha256').update(reportValidator.json ?? 'null').digest('hex');
   return { revision, sequence: state.sequence, state, summary, preparedFlow, reportValidator, summaryFields: prepareStateJson(summary), stateJsonFields: null,
-    print: fingerprint(summary), items: new Map(state.items.map((item) => [item.id, item])), itemMeta, itemMoveCounts, inputs, searchTexts: null };
+    print: fingerprint(summary), items: new Map(state.items.map((item) => [item.id, item])), itemMeta, itemMoveCounts, inputs, clockWindow, searchTexts: null };
 }
 
 /** State fields every delta carries whole: this request's unread count and flow, and the small Needs-you lists. */
-const DELTA_WHOLE = new Set(['unseen', 'proofStats', 'decisions', 'decisionQueue', 'holds', 'requests', 'personRequests']);
+const DELTA_WHOLE = new Set(['observedAt', 'unseen', 'proofStats', 'decisions', 'decisionQueue', 'holds', 'requests', 'personRequests']);
 /** The state lists a delta merges entry by entry, and the field that names each entry. */
 const DELTA_KEYS = Object.freeze({ items: 'id', shouts: 'shout_id', asked: 'shout_id', events: 'event_id', agents: 'agent_id', spec: 'id', practice: 'id', milestones: 'name' });
 /** How many recent builds of each board a server keeps as possible delta bases. */
@@ -647,23 +511,23 @@ function stateDelta(bases, current, state) {
 }
 
 /** Add the request-specific unread count without mutating the reusable snapshot. */
-function stateForRequest(state, root, seen, preparedFlow, refreshFlow, isMain) {
+function stateForRequest(state, root, seen, preparedFlow, refreshFlow, isMain, observedAt) {
   const projection = seen === null ? { unseen: null } : withBoard(root, (board) => ({
     unseen: { since: seen, count: board.db.prepare('SELECT COUNT(*) AS n FROM shout WHERE shout_id > ?').get(seen).n },
   }), isMain);
   if (refreshFlow && preparedFlow) {
     projection.proofStats = {
       ...state.proofStats,
-      flow: projectFlowStats(preparedFlow, null, Date.now(), state.proofStats),
+      flow: projectFlowStats(preparedFlow, null, observedAt, state.proofStats),
     };
   }
-  return { ...state, ...projection };
+  return { ...state, ...projection, observedAt: new Date(observedAt).toISOString() };
 }
 
 /** Cache JSON fragments for state fields whose values stay fixed across a cache hit. */
 function prepareStateJson(state) {
   const fields = Object.entries(state).map(([key, value]) => {
-    if (key === 'unseen') return { dynamic: key };
+    if (key === 'unseen' || key === 'observedAt') return { dynamic: key };
     if (key === 'proofStats') {
       const stats = Object.entries(value).filter(([name]) => name !== 'flow').map(([name, entry]) => jsonField(name, entry)).filter(Boolean);
       return { dynamic: key, stats };
@@ -693,7 +557,7 @@ function serializeState(state, fields, reportJson) {
   if (!fields) return JSON.stringify(state);
   const encoded = fields.map((field) => {
     if (field.static !== undefined) return field.static;
-    if (field.dynamic === 'unseen') return jsonField('unseen', state.unseen);
+    if (field.dynamic === 'unseen' || field.dynamic === 'observedAt') return jsonField(field.dynamic, state[field.dynamic]);
     if (field.dynamic === 'proofStats') {
       const value = state.proofStats?.flow;
       const flow = reportJson === undefined || !value ? jsonField('flow', value)
@@ -940,9 +804,10 @@ function isLiteralIPv4(host) {
 }
 
 /** Share the local router with the person's view and other local transports; the standalone API explicitly denies person authority.
- * @param {{ secret: string | Buffer, getPort: () => number, runCommand: Function, projects?: () => any[], scope?: { projectRoot: string }, isMain?: boolean, allowedOrigins?: string[], allowedHosts?: string[], onStateBuild?: Function, onItemBuild?: Function, personChannel?: string, stateDetail?: string, sessionCookie?: {name:string,value:string} }} [options]
+ * @param {{ secret: string | Buffer, getPort: () => number, runCommand: Function, projects?: () => any[], scope?: { projectRoot: string }, isMain?: boolean, allowedOrigins?: string[], allowedHosts?: string[], onStateBuild?: Function, onItemBuild?: Function, personChannel?: string, stateDetail?: string, now?: () => number, sessionCookie?: {name:string,value:string} }} [options]
  */
-export function createLocalApiHandler({ secret, getPort, runCommand, projects = listApiProjects, scope, isMain, allowedOrigins = [], allowedHosts = [], onStateBuild, onItemBuild, personChannel = 'view', stateDetail = 'full', sessionCookie } = {}) {
+export function createLocalApiHandler({ secret, getPort, runCommand, projects = listApiProjects, scope, isMain, allowedOrigins = [], allowedHosts = [], onStateBuild, onItemBuild, personChannel = 'view', stateDetail = 'full', sessionCookie, now = () => Date.now() } = {}) {
+  if (typeof now !== 'function') throw new TypeError('createLocalApiHandler needs an observation clock');
   if (typeof getPort !== 'function') throw new TypeError('createLocalApiHandler needs a bound-port getter');
   if (typeof runCommand !== 'function') throw new TypeError('createLocalApiHandler needs the actual CLI entry point as runCommand');
   // A page that still reads each item's detail from the state keeps full items until it opts in.
@@ -1002,13 +867,14 @@ export function createLocalApiHandler({ secret, getPort, runCommand, projects = 
    * Read the current board build through `read(entry, cached)`, reusing the cached build while every
    * input revision holds before and after the read, and building it again when one moved.
    */
-  function withSnapshot(board, read) {
-    const before = boardStateRevision(board.root, board.id, codeIsMain, { projects: apiProjects, scopeCommonDir });
+  function withSnapshot(board, read, observedAt = now()) {
+    const before = boardStateRevision(board.root, board.id, codeIsMain, { projects: apiProjects, scopeCommonDir, observedAt });
     const cached = stateCache.get(before.cacheId);
-    if (before.cacheable && cached?.revision === before.revision) {
+    if (before.cacheable && cached?.revision === before.revision && nativeStateClockMatches(cached.clockWindow, observedAt)) {
       const result = read(cached, true);
-      const after = boardStateRevision(board.root, board.id, codeIsMain, { projects: apiProjects, scopeCommonDir });
+      const after = boardStateRevision(board.root, board.id, codeIsMain, { projects: apiProjects, scopeCommonDir, observedAt });
       if (after.cacheable && after.revision === before.revision) {
+        cached.clockWindow.observedAt = observedAt; // A backwards request must rebuild even within the prior constant window.
         stateCache.delete(before.cacheId);
         stateCache.set(before.cacheId, cached);
         return result;
@@ -1027,15 +893,18 @@ export function createLocalApiHandler({ secret, getPort, runCommand, projects = 
       onItemBuild,
       projects: apiProjects,
       scopeCommonDir,
+      observedAt,
+      localRelayHealth: relayCanaryNeeds(board.root),
     }), codeIsMain);
     const state = { ...built.state, sequence: built.sequence };
     const entry = snapshotEntry(before.revision, state, prepareFlowHistory(built.history), {
       inputs: before.inputs,
       itemMeta: built.itemMeta,
       itemMoveCounts: built.itemMoveCounts,
+      clockWindow: built.clockWindow,
     });
     entry.cacheId = before.cacheId;
-    const after = boardStateRevision(board.root, board.id, codeIsMain, { projects: apiProjects, scopeCommonDir });
+    const after = boardStateRevision(board.root, board.id, codeIsMain, { projects: apiProjects, scopeCommonDir, observedAt });
     // Missing Git objects can arrive without a board event or trunk move; retry that uncertainty.
     if (before.cacheable && after.cacheable && before.revision === after.revision &&
         !state.items.some(item => item.verdictState?.reason)) {
@@ -1048,15 +917,16 @@ export function createLocalApiHandler({ secret, getPort, runCommand, projects = 
   }
   /** Return item summaries or every item in full, as asked or by this server's default, and the JSON for either. */
   function localState(board, seen, { detail = null } = {}) {
+    const observedAt = now();
     const full = (detail ?? stateDetail) === 'full';
     const sent = withSnapshot(board, (entry, cached) => {
-      const state = stateForRequest(full ? entry.state : entry.summary, board.root, seen, entry.preparedFlow, cached, codeIsMain);
+      const state = stateForRequest(full ? entry.state : entry.summary, board.root, seen, entry.preparedFlow, cached, codeIsMain, observedAt);
       // Full fragments wait for the first full request, so a server sending summaries never builds them.
       const fields = full ? (entry.stateJsonFields ??= prepareStateJson(entry.state)) : entry.summaryFields;
       const reportValidator = reportValidation(entry);
       const validator = serializeState(state, fields, entry.reportValidator.json) + '\0report-expiry:' + reportValidator;
       return { state, json: serializeState(state, fields), validator, reportValidator, entry };
-    });
+    }, observedAt);
     // Only the build actually returned is sent; a delta extends summaries, never a full state.
     if (!full) keepSentBase(sent.entry);
     return sent;
@@ -1067,9 +937,10 @@ export function createLocalApiHandler({ secret, getPort, runCommand, projects = 
    * names why instead of guessing; a delta's result is what the client then holds, so it is kept.
    */
   function localDelta(board, seen, { since, eventLogVersion = null }) {
+    const observedAt = now();
     /** One build's answer: its delta from the summary states sent at `since`, or a reset naming why there is none. */
     const answerFor = (entry, cached) => {
-      const state = stateForRequest(entry.summary, board.root, seen, entry.preparedFlow, cached, codeIsMain);
+      const state = stateForRequest(entry.summary, board.root, seen, entry.preparedFlow, cached, codeIsMain, observedAt);
       const answer = { since, sequence: entry.sequence, eventLogVersion: store.EVENT_LOG_VERSION };
       const path = '/api/v1/boards/' + board.id + '/state';
       /** Tell the client to load a fresh snapshot, and why. */
@@ -1083,7 +954,7 @@ export function createLocalApiHandler({ secret, getPort, runCommand, projects = 
       if (!bases.length) return reset('BASE_NOT_KEPT', `this server keeps no snapshot it sent at event ${since}; use GET ${path} for a fresh snapshot`);
       return { ...answer, delta: stateDelta(bases, entry.print, state) };
     };
-    const sent = withSnapshot(board, (entry, cached) => ({ entry, answer: answerFor(entry, cached) }));
+    const sent = withSnapshot(board, (entry, cached) => ({ entry, answer: answerFor(entry, cached) }), observedAt);
     if (sent.answer.delta) keepSentBase(sent.entry);
     return Object.defineProperty(sent.answer, 'reportValidator', { value: reportValidation(sent.entry) });
   }
@@ -1232,11 +1103,11 @@ export function createLocalApiHandler({ secret, getPort, runCommand, projects = 
  * Serve the RFC 0002 API only on loopback, behind the same session-secret boundary as the view. Its
  * state sends item summaries unless asked for detail=full; each item's detail has its own path (A2).
  */
-export function serveApi({ port = 0, secret = randomBytes(18).toString('base64url'), runCommand, projects = listApiProjects, isMain, onStateBuild, onItemBuild, stateDetail = 'summary' } = {}) {
+export function serveApi({ port = 0, secret = randomBytes(18).toString('base64url'), runCommand, projects = listApiProjects, isMain, onStateBuild, onItemBuild, stateDetail = 'summary', now = () => Date.now(), scope } = {}) {
   if (typeof runCommand !== 'function') throw new TypeError('serveApi needs the actual CLI entry point as runCommand');
   let bound;
   // A serve key authenticates board access, never a person, even in an ordinary terminal.
-  const handler = createLocalApiHandler({ secret, getPort: () => bound, runCommand, projects, isMain, onStateBuild, onItemBuild, personChannel: 'api', stateDetail });
+  const handler = createLocalApiHandler({ secret, getPort: () => bound, runCommand, projects, isMain, onStateBuild, onItemBuild, personChannel: 'api', stateDetail, now, scope });
   const server = createServer(handler);
   server.requestTimeout = 15_000;
   return new Promise((ready, fail) => {
