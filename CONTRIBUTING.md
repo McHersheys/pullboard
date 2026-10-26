@@ -16,7 +16,7 @@ These are aims, not promises.
 - We aim to have a first reply within 7 days.
 - Labelled `bug`, `feature`, `question` or `docs`.
 - `clarify`: closes after 14 days without a reply. Reply to reopen.
-- Confirmed issues move to our board and close; the changelog credits them when fixed.
+- Confirmed issues move to our board and close; the changelog may acknowledge them.
 - Ideas and feedback in issues are welcome; Pullboard may use them freely, with no obligation. Code goes through a pull request.
 
 **Pull requests**
