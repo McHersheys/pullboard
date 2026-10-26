@@ -49,7 +49,7 @@ test('relay study measures one sealed move against its checkpoint at 10k and 50k
       moveMs, movePosts: rows.filter(isMove).length, moveRequestBytes: bytes(rows, isMove, 'request'),
       checkpointRequests: rows.filter(isUpload).length, checkpointRequestBytes: bytes(rows, isUpload, 'request'),
       allRequestBytes: bytes(rows, () => true, 'request'), allResponseBytes: bytes(rows, () => true, 'response'),
-      deltaReadStatus: delta.status, deltaReadBytes: deltaBody.byteLength, deltaReadMs,
+      deltaReadStatus: delta.status, deltaReadError: delta.status === 200 ? null : JSON.parse(deltaBody.toString('utf8')).error ?? null, deltaReadBytes: deltaBody.byteLength, deltaReadMs,
       fullReadRequests: full.requests, fullReadBytes: full.receivedBytes, fullReadMs: full.readMs,
       scope: 'Private loopback relay, foreground checkpoint (PULLBOARD_RELAY_CHECKPOINT_BACKGROUND=0), one shout move.' }));
     assert.equal(delta.status, 200, 'the relay serves the sealed moves after the reader cursor');
