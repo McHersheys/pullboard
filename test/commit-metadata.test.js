@@ -131,20 +131,43 @@ function twoClaims() {
   return { ...box, other };
 }
 
-test('two live claims require an explicit item and accept either matching claim [B5,C7]', () => {
+test('two live claims in one checkout refuse typed selection until one is released [B5,C7]', () => {
   const box = twoClaims();
-  const input = 'test: ambiguous work\n';
-  const ambiguous = hook(box, input);
-  assert.notEqual(ambiguous.code, 0, 'the hook must not silently choose the newer item');
-  for (const id of [box.id, box.other]) assert.ok(ambiguous.err.includes(`#${id}`), 'both live claims are named');
-  assert.match(ambiguous.err, /Pullboard-Item/u);
-  assert.match(ambiguous.err, /release/u);
-  assert.equal(ambiguous.message, input, 'refusal preserves the message');
-  for (const id of [box.id, box.other]) {
-    const selected = hook(box, `test: explicit work\n\nPullboard-Item: #${id}\n`);
-    assert.equal(selected.code, 0, selected.err);
-    assert.equal(selected.message, `test: explicit work\n\nPullboard-Item: #${id}\nPullboard-Rows: G1\n`);
+  const inputs = [box.id, box.other].map(id => `test: explicit work\n\nPullboard-Item: #${id}\n`);
+  inputs.push('test: ambiguous work\n');
+  for (const input of inputs) {
+    const ambiguous = hook(box, input);
+    assert.notEqual(ambiguous.code, 0, 'typed metadata cannot select either ambiguous live claim');
+    for (const id of [box.id, box.other]) assert.ok(ambiguous.err.includes(`#${id}`), 'both live claims are named');
+    assert.match(ambiguous.err, /worktree/u);
+    assert.match(ambiguous.err, /release/u);
+    assert.doesNotMatch(ambiguous.err, /explicit Pullboard-Item/u);
+    assert.equal(ambiguous.message, input, 'refusal preserves the message');
   }
-  const unrelated = hook(box, `test: unrelated work\n\nPullboard-Item: #${box.other + 100}\n`);
-  assert.notEqual(unrelated.code, 0, 'an unrelated item cannot select a claim');
+  assert.equal(box.run(box.web, 'release', String(box.other)).code, 0);
+  const remaining = hook(box, 'test: unambiguous work\n');
+  assert.equal(remaining.code, 0, remaining.err);
+  assert.equal(remaining.message, `test: unambiguous work\n\nPullboard-Item: #${box.id}\nPullboard-Rows: G1\n`);
+});
+
+test('the hook binds its claim to the current checkout rather than another session seat [B13,C7]', () => {
+  const box = claimed();
+  const otherRoot = join(box.dir, 'web-2');
+  box.git(box.repo, 'worktree', 'add', '-q', otherRoot, '-b', 'web/two');
+  const joined = box.run(otherRoot, 'join', 'web');
+  assert.equal(joined.code, 0, joined.err);
+  const added = box.run(box.repo, 'add', 'web', 'Other checkout claim', '--criterion', 'the checkout owns its metadata', '--specs', 'G1', '--json');
+  assert.equal(added.code, 0, added.err);
+  const other = JSON.parse(added.out).item.item_id;
+  const claim = box.run(otherRoot, 'claim', String(other));
+  assert.equal(claim.code, 0, claim.err);
+  for (const [root, id, foreign] of [[box.web, box.id, other], [otherRoot, other, box.id]]) {
+    const generated = hook(box, 'test: current checkout\n', root);
+    assert.equal(generated.code, 0, generated.err);
+    assert.equal(generated.message, `test: current checkout\n\nPullboard-Item: #${id}\nPullboard-Rows: G1\n`);
+    const input = `test: foreign checkout\n\nPullboard-Item: #${foreign}\n`;
+    const refused = hook(box, input, root);
+    assert.notEqual(refused.code, 0, 'a trailer cannot borrow another checkout claim');
+    assert.equal(refused.message, input);
+  }
 });
