@@ -16,6 +16,8 @@ function valueTest(expected) {
 
 test('a batch that breaks an affected test is caught at landing [C7,V4]', t => {
   const box = e2e.project('node --test web/*.test.js');
+  // A fixture CLI is a fresh process, not the outer Node test worker. Admission markers stay intact.
+  delete box.env.NODE_TEST_CONTEXT;
   const configFile = join(box.repo, 'pullboard.json');
   const config = JSON.parse(readFileSync(configFile, 'utf8'));
   writeFileSync(configFile, JSON.stringify({ ...config, affectedTests: 'node --test', submitGate: 'landing',
@@ -39,6 +41,8 @@ test('a batch that breaks an affected test is caught at landing [C7,V4]', t => {
   const commit = box.git(box.web, 'rev-parse', 'HEAD');
   const submitted = box.run(box.web, 'submit', String(item));
   assert.equal(submitted.code, 0, submitted.out + submitted.err);
+  const checkLog = box.git(box.web, 'rev-parse', '--git-path', 'pullboard-submit.log.check.log');
+  assert.match(readFileSync(join(box.web, checkLog), 'utf8'), /# tests 1\b/u, 'submit really executes its frozen test');
   box.git(box.repo, 'switch', '-q', '--detach', commit);
   try {
     const verified = box.run(box.repo, 'verify', String(item), 'accept', '--as', 'coordinator', '--note', 'private real affected-test fixture');
@@ -50,6 +54,7 @@ test('a batch that breaks an affected test is caught at landing [C7,V4]', t => {
   const main = box.git(box.repo, 'rev-parse', 'main');
   const mainGate = box.run(box.repo, 'gate');
   assert.equal(mainGate.code, 0, mainGate.out + mainGate.err);
+  assert.match(readFileSync(join(box.repo, '.git/pullboard-gate.log'), 'utf8'), /# tests 3\b/u, 'main really executes all three tests');
   const outcome = box.run(box.repo, 'land', '--json');
   assert.equal(outcome.code, 0, outcome.out + outcome.err);
   const landing = JSON.parse(outcome.out);

@@ -55,9 +55,6 @@ import {
   receiptStore,
 } from './gate-run-receipt.js';
 import { testsNeedBrowser } from './browser-admission.js';
-import { testsNeedGui } from './gui-admission.js';
-import { selectAffectedTests } from './affected-tests.js';
-import { selectRegistryGuards } from './registry-guards.js';
 import { laneOf } from './lanes.js';
 import { takeLandingResource } from './landing-resource.js';
 import {
@@ -1083,35 +1080,18 @@ export function landsOnTrunk(config) {
 }
 
 /**
- * Prove a tier-1 batch's actual merged diff with submit's affected map (#1277). Fixed invariants and registry
- * guards remain a floor; an uncertain import graph requires the configured full gate before adoption.
+ * The quick guards a tier-1 landing runs on its merged tree (#801): the project's static checks and its submit
+ * invariants. Each item's frozen check already ran at verify, and the whole suite runs at publish.
  */
 async function quickGuards(state) {
   const root = state.batch.root;
   await runStaticChecks(root, state.config, { agent: 'coordinator', onWait: state.onWait });
-  const commit = headCommit(root);
-  const tree = headTree(root);
-  const selection = state.config.affectedTests
-    ? selectAffectedTests(root, { base: state.batch.base, commit })
-    : { full: true, reason: 'affected-test selection is not enabled for this project', files: [] };
-  const registry = selectRegistryGuards(root, state.config.registryGuards, { base: state.batch.base });
-  const files = [...new Set([...(state.config.submitInvariants ?? []), ...registry, ...(!selection.full ? selection.files : [])])].sort();
-  if (files.length) {
-    const command = `${state.config.affectedTests} ${files.map(quote).join(' ')}`;
-    const browser = !browserFreeChecksEnabled() || await testsNeedBrowser(root, files);
-    const run = await withLandingGateSlot(root, lease => runProfiledShell(root, command, { waitMs: lease.waitMs, gateLease: lease, stages: true }),
-      { agent: 'coordinator', kind: 'gate', landing: true, browser, gui: testsNeedGui(root, files), onWait: state.onWait });
-    if (headCommit(root) !== commit || headTree(root) !== tree || !isClean(root)) {
-      throw new Refused('LAND_SOURCE_CHANGED', 'the landing source changed while its affected tests ran; restore the recorded batch before adopting');
-    }
-    state.say(`batch affected tests: ${files.length} file(s) ${run.isGreen ? 'green' : 'red'} on the merged tree`);
-    if (!run.isGreen) throw new Refused('GATE_RED', `the batch affected tests are red on the merged tree: ${files.join(', ')}`);
-  }
-  if (selection.full) {
-    state.say(`batch affected tests require the full gate: ${selection.reason}`);
-    const gate = await gateGroup(state, 'affected');
-    if (!gate.isGreen) throw new Refused('GATE_RED', 'the full affected gate is red on the merged tree; inspect its recorded failures before landing');
-  }
+  const invariants = [...new Set(state.config.submitInvariants ?? [])].sort();
+  if (!invariants.length) return;
+  const command = `${state.config.affectedTests} ${invariants.map(quote).join(' ')}`;
+  const run = await withGateSlot(root, lease => runProfiledShell(root, command, { waitMs: lease.waitMs, gateLease: lease }),
+    { agent: 'coordinator', kind: 'check', itemCheck: true, onWait: state.onWait });
+  if (!run.isGreen) throw new Refused('GATE_RED', `the submit invariants are red on the merged tree: ${invariants.join(', ')}`);
 }
 
 /** The affected test files each batch item's submission moved to the landing gate, read from its exact submit. */
