@@ -75,6 +75,8 @@ export function archiveRelinkOutbox(root, state) {
     url: state.url, sequence: state.sequence, machine: state.machine, records,
     ...(queued ? { encryptedFile: name + '.sealed' } : {}) }) + '\n', { flag: 'wx', mode: 0o600 });
   if (queued) renameSync(file, join(directory, name + '.sealed'));
+  // The key-free summary went with the outbox it described (#1013).
+  rmSync(join(directory, 'relay-outbox.summary.json'), { force: true });
 }
 
 /** Consume the intent only after the new link and its exact sealed baseline are durable. */

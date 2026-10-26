@@ -566,11 +566,11 @@ export async function reserveRow(ctx, row, written) {
 async function withItemSession(info, operation, args, move) { const noted = operation === 'claim' || operation === 'submit'; if (noted) itemSessions.requireLedger(info); const result = await move(); if (noted) itemSessions.recordItemSession(info, args[0], operation); return result; }
 
 /**
- * Whether the board's committed relay.outbox setting queues moves while the relay is down (#922).
- * Why: it is read from the trunk's pullboard.json, so every machine on the board follows the same committed choice.
+ * Whether the board's committed relay.outbox setting queues moves while the relay is down (#922, H21).
+ * Why: absent means enabled for existing boards; an explicit false is the shared opt-out.
  */
 export function relayOutboxSetting(root) {
-  try { return configFromSource(coordinatorFile(root, CONFIG_FILE).stdout).relay?.outbox === true; } catch { return false; }
+  try { return configFromSource(coordinatorFile(root, CONFIG_FILE).stdout).relay?.outbox !== false; } catch { return false; }
 }
 
 export async function ordered(ctx, board, operation, args) {

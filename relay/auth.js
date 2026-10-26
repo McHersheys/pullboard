@@ -284,14 +284,19 @@ export function createRelayAuth({ database, github, now = Date.now, sessionTTL =
     return { ...linked, permission: permission.role, public: permission.public };
   }
 
-  /** Require current repository roles; cache visibility for ten minutes but never authorize a write from cache. */
+  /**
+   * Require current repository roles, asking GitHub once per sign-in and board in each ten-minute window (#1013).
+   * Why: a write that asked GitHub every time made every move wait on GitHub; a cached grant still ends at ten
+   * minutes, and any denial GitHub returns meanwhile replaces it at once, so lost access takes effect within the
+   * window for reads and writes alike.
+   */
   async function access(row, board, write) {
     const linked = db.prepare('SELECT * FROM relay_boards WHERE id=?').get(board);
     if (!linked) throw new Refused('BOARD_NOT_LINKED', 'link this board to a readable GitHub repository before using it');
     const key = row.user_id + ':' + board;
     const prior = permissions.get(key);
     const started = now();
-    if (!write && prior && started >= prior.checked && started - prior.checked < ACCESS_WINDOW_MS) return authorize(prior, linked, false);
+    if (prior && started >= prior.checked && started - prior.checked < ACCESS_WINDOW_MS) return authorize(prior, linked, write);
     let repo;
     try {
       repo = await github.access({ id: row.user_id, login: row.login }, linked.repository);
@@ -533,7 +538,7 @@ export function createRelayAuth({ database, github, now = Date.now, sessionTTL =
       }
       return { confirmed: true, board: flow.intent.board };
     },
-    /** Authenticate a human or a scoped agent; every board write asks GitHub again. */
+    /** Authenticate a human or a scoped agent; GitHub is asked once per sign-in and board in each access window. */
     async authenticate(token, { board, write = false } = {}) {
       const row = credential(token);
       if (row.kind === 'board' && board !== row.board) throw new Refused('TOKEN_BOARD', 'use this token only on its named board; obtain another token for another board');
