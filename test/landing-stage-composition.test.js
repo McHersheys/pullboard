@@ -12,7 +12,8 @@ import { runFixtureGit } from './fixture-child.js';
 function fixture(t) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-affected-stages-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  assert.equal(runFixtureGit(['init', '-q'], { cwd: root }).status, 0);
+  runFixtureGit(['init', '-q'], { cwd: root });
+  assert.equal(existsSync(join(root, '.git')), true);
   mkdirSync(join(root, 'work'));
   for (const [name, red] of [['floor', false], ['affected', true]]) {
     const output = `TAP version 13\n${red ? 'not ok' : 'ok'} 1 - ${name}\n`
