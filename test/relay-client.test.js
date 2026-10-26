@@ -1172,9 +1172,12 @@ async function recoverReplicaReplies(fixture, timing) {
   assert.equal(relay.uploads.length, beforeEdit + 1, 'edit retries recover the original receipt after its brief disappears');
 
   const lostRef = 'lost-merge-reference';
+  gitAt(clones[0], envs[0], 'merge', '--ff-only', originalCommit);
+  assert.equal(gitAt(clones[0], envs[0], 'rev-parse', 'HEAD'), originalCommit,
+    'the verified submission is actually on fixture main before its merge receipt is recorded');
   gitAt(clones[0], envs[0], 'tag', lostRef, originalCommit);
   const beforeMerge = relay.uploads.length;
-  relay.dropNextReply({ offline: true });
+  relay.dropNextReply({ offline: true, operation: 'merged', item: 2, key, boardId });
   const lostMerge = await timing.wait('merge the lost reference with its reply dropped', () => cliResult(clones[0], envs[0], 'merged', '2', lostRef));
   assertDroppedReplyConsumed(relay, 'the lost merge reply');
   assert.equal(lostMerge.document.error.code, 'RELAY_UNAVAILABLE');
