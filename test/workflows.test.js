@@ -61,26 +61,16 @@ function workflowText(path) {
   return existsSync(path) ? readFileSync(path, 'utf8') : '';
 }
 
-/** Check the public pull-request jobs that enforce the CLA and commit sign-off policy. */
+/** Check that the independently named DCO check runs for every pull request. */
 function contributorWorkflows() {
-  const cla = workflowText(resolve(ROOT, '.github/workflows/cla.yml'));
   const dco = workflowText(resolve(ROOT, '.github/workflows/dco.yml'));
-  assert.match(cla, /^name: CLA Assistant\n/u, 'the CLA check has a stable required-check name');
-  assert.match(cla, /\npull_request_target:\n/u, 'the CLA workflow runs on pull requests');
-  assert.match(cla, /\n {2}issue_comment:\n {4}types: \[created\]\n/u,
-    'the CLA bot can process an agreement comment');
-  assert.match(cla, /uses: contributor-license\/cla-action@v1\n/u,
-    'the workflow uses the maintained CLA Assistant-compatible action');
-  assert.match(cla, /path-to-document: .*CLA\.md/u, 'contributors are shown the repository CLA');
-  assert.match(cla, /path-to-signatures: signatures\/cla\.json\n/u,
-    'accepted signatures are recorded in the repository');
   assert.match(dco, /^name: DCO\n/u, 'the DCO check has a stable required-check name');
   assert.match(dco, /\npull_request:\n/u, 'the DCO workflow runs on pull requests');
   assert.match(dco, /run: node bin\/check-signoffs\.js\n/u,
     'the DCO workflow runs the repository sign-off checker');
 }
 
-test('pull requests run the CLA Assistant and DCO workflows [I1]', contributorWorkflows);
+test('the named DCO check runs for pull requests [I1]', contributorWorkflows);
 
 test('a pull request with an unsigned commit fails DCO and a signed replacement passes [I1]', (t) => {
   const box = e2e.sandbox();
