@@ -35,6 +35,7 @@ Statuses: approved = in force · draft = proposed · wont = considered and decli
 - T9 [draft, must] A guard test fails when the guard is deleted. Rigor turns each throw a change adds to a source file into a no-op, one at a time, and runs the test files the change touches; a guard they still pass without is named. | gate: check node bin/pullboard.js rigor quality --rule guard-mutation | count: 0 | source: rigor-quality:guard-mutation
 - T10 [draft, must] A root cause is proven by a control that would have come out differently before the fix lands. Rigor runs each fix commit's changed test files on the fix's parent, where they must fail, and at the fix, where they must pass; a cause argued only in prose is review. | gate: check node bin/pullboard.js rigor quality --rule root-cause-control | count: 0 | source: rigor-quality:root-cause-control
 - T11 [approved, must] Proof is what the board records. An agent keeps no evidence of its own; when the board's runs cannot decide an item, its bar is sharpened. | gate: review
+- T12 [approved, must] Zero flaky tests. A test that gives two verdicts on the same tree is a defect. It is quarantined at once and never blocks an item. Its owner gets an item the same day, and the fix is at the cause: never a retry, a longer timeout or a skip. The count of flaky tests only falls. Baseline: 246 flaky tests (23 to 26 Oct 2026). | gate: review
 
 ## G · Git and the gate
 - G1 [approved, must] `npm run gate` (spec check and tests) passes before every push. | gate: pre-push hook
