@@ -1,0 +1,45 @@
+/** Checkpoint invalidation follows sealed business inputs rather than private command recovery [H5,C6,H16]. */
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { createE2eHelpers } from './e2e-helpers.js';
+import { repoInfo } from '../src/git.js';
+import { recordBlock } from '../src/blocks.js';
+import {
+  relayPresentation,
+  presentationDigest,
+} from '../src/relay-presentation.js';
+
+/** Supply real Git and SQLite state while freezing only the documented presentation observation argument. */
+function checkpointBox(t) {
+  const helpers = createE2eHelpers();
+  t.after(helpers.cleanup);
+  const box = helpers.project();
+  const observedAt = Date.now();
+  t.diagnostic('checkpoint input executor: ' + JSON.stringify({ node: process.versions.node, platform: process.platform, arch: process.arch }));
+  return { root: box.repo, commonDir: repoInfo(box.repo).commonDir, observedAt };
+}
+
+/** Write a synthetic local refusal through the public ledger API, without a board move or authentication claim. */
+function refusal(box, audience, code) {
+  recordBlock(box.commonDir, { at: new Date(box.observedAt).toISOString(), code, command: 'pullboard add',
+    by: 'coordinator', path: box.root, audience, reason: 'synthetic checkpoint input refusal', step: 'correct the synthetic request' });
+}
+
+test('checkpoint fingerprints ignore an agent-only refusal when complete sealed state is unchanged [H5,C6,H16]', t => {
+  const box = checkpointBox(t);
+  const before = relayPresentation(box.root, { observedAt: box.observedAt });
+  refusal(box, 'agent', 'UNKNOWN_SPEC');
+  const after = relayPresentation(box.root, { observedAt: box.observedAt });
+  assert.deepEqual(after.state, before.state, 'all emitted state fields remain exact, including presence, proof stats and observation time');
+  assert.equal(presentationDigest(after), presentationDigest(before), 'a private recovery ledger append alone needs no new sealed checkpoint');
+});
+
+test('checkpoint fingerprints retain a new person-visible refusal and its complete Needs you state [H5,C6,H16]', t => {
+  const box = checkpointBox(t);
+  const before = relayPresentation(box.root, { observedAt: box.observedAt });
+  refusal(box, 'person', 'HUMAN_REQUIRED');
+  const after = relayPresentation(box.root, { observedAt: box.observedAt });
+  assert.ok(after.state.blocks.some(block => block.code === 'HUMAN_REQUIRED' && block.reason === 'synthetic checkpoint input refusal'));
+  assert.notDeepEqual(after.state, before.state);
+  assert.notEqual(presentationDigest(after), presentationDigest(before), 'public recovery still invalidates the complete checkpoint');
+});
