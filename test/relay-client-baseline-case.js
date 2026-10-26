@@ -1,0 +1,48 @@
+/** Check the exact migrated baseline and its ordered receipt after a lost setup reply [H16,S1]. */
+import assert from 'node:assert/strict';
+
+/** Verify the local compatibility event before replay adds authenticated attribution. */
+export function assertOriginalBaselineEvidence(event, baseline) {
+  const detail = JSON.parse(event.event_detail);
+  assert.deepEqual({ version: detail.version, file: detail.file, anchor: detail.anchor, rows: detail.rows }, baseline,
+    'the original event records the exact accepted source rather than a later spec snapshot');
+}
+
+/** Keep the original event identity while checking the authenticated canonical replay and its ordering. */
+export function assertBaselineResumeEvidence({ events, receipts, originalBaseline, originalBaselineEvent, authenticatedLogin, addedId }) {
+  assert.equal(events.filter(event => event.event_kind === 'spec_approval_baseline').length, 1);
+  const canonicalEvent = events.find(event => event.event_kind === 'spec_approval_baseline');
+  assert.equal(canonicalEvent.event_id, originalBaselineEvent.event_id, 'resume preserves the original setup event identity');
+  assert.equal(canonicalEvent.event_kind, originalBaselineEvent.event_kind);
+  assert.equal(canonicalEvent.item_id, originalBaselineEvent.item_id);
+  assert.equal(canonicalEvent.event_by, originalBaselineEvent.event_by);
+  const detail = JSON.parse(canonicalEvent.event_detail);
+  const originalDetail = JSON.parse(originalBaselineEvent.event_detail);
+  assert.deepEqual({ version: detail.version, file: detail.file, anchor: detail.anchor, rows: detail.rows }, originalBaseline,
+    'ordered replay preserves the exact version, file, anchor, and approved source rows');
+  assert.equal(detail.model, originalDetail.model, 'ordered replay preserves the original event model');
+  assert.equal(detail.person, authenticatedLogin, 'the ordered baseline event carries the authenticated GitHub person');
+
+  const baselineReceipt = receipts.find(receipt => receipt.outcome.events?.some(event => event.event_id === originalBaselineEvent.event_id));
+  assert.ok(baselineReceipt, 'the original baseline event is tied to its applied ordered receipt');
+  assert.equal(JSON.parse(baselineReceipt.move).operation, 'recordSpecApprovalBaseline');
+  assert.deepEqual(JSON.parse(baselineReceipt.move).args[0].baseline, originalBaseline,
+    'the actual ordered move carries the accepted source snapshot');
+  const receiptEvent = baselineReceipt.outcome.events.find(event => event.event_id === originalBaselineEvent.event_id);
+  assert.ok(Number.isSafeInteger(baselineReceipt.sequence) && baselineReceipt.sequence > 0,
+    'the baseline receipt has a positive relay sequence');
+  assert.equal(canonicalEvent.event_at, receiptEvent.event_at, 'the replayed event time matches its ordered receipt');
+  assert.deepEqual(canonicalEvent, receiptEvent, 'the local event is exactly the event recorded in its applied receipt');
+  assert.ok(Number.isFinite(Date.parse(receiptEvent.event_at)), 'the ordered receipt carries a valid event time');
+
+  assert.equal(events.filter(event => event.event_kind === 'add' && event.item_id === addedId
+    && JSON.parse(event.event_detail).title === 'Work after migration').length, 1,
+  'replay retains the already completed local add exactly once');
+  const addReceipts = receipts.filter(receipt => JSON.parse(receipt.move).operation === 'addItem'
+    && JSON.parse(receipt.move).args.some(value => value?.title === 'Work after migration'));
+  assert.equal(addReceipts.length, 1, 'the relay keeps exactly one durable receipt for the recovered local add');
+  const addReceipt = addReceipts[0];
+  assert.ok(baselineReceipt.sequence < addReceipt.sequence, 'the accepted baseline remains ordered before the recovered add');
+  assert.ok(Date.parse(receiptEvent.event_at) <= Date.parse(addReceipt.outcome.events[0].event_at),
+    'the baseline receipt time precedes the later add receipt time');
+}
