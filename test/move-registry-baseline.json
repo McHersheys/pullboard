@@ -6719,7 +6719,7 @@
     "LAND_DIRTY": "inspect the landing worktree, commit or remove its edits, then pullboard land --adopt",
     "LAND_FLAKE": "fix the flaky test, or ask the person for a waiver: pullboard land --waive <test> --until <date> --reason \"why\"",
     "LAND_HOST_NOT_JOINED": "on the matching machine, run pullboard settings landing.pool on, then pullboard land",
-    "LAND_HEADER": "shorten the item's cited rows (pullboard edit <id>), then pullboard land",
+    "LAND_HEADER": "shout the coordinator: pullboard shout coordinator \"#<id> landing message fails its check\"",
     "LAND_INTERACTION": "read the batch's failing tests, then land the items in separate batches",
     "LAND_ITEM_MOVED": "rebuild the batch from current verified work: pullboard land",
     "LAND_MERGE": "inspect the landing worktree and its hooks, then pullboard land --adopt",

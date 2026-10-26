@@ -1,6 +1,7 @@
 import { outsideVerdict } from '../outside-verify.js';
 /** The pullboard verify command, in its own module so an item adding another command never edits these lines. */
 import * as store from '../board.js';
+import { loadSpec } from '../spec.js';
 import {
   agentApprovalLine,
   itemAgentApprovals,
@@ -220,7 +221,7 @@ export async function verifyHere(ctx, id, { second, values }) {
   ctx.io.say(result.decision === 'ACCEPT'
     ? `verified #${id}: ${result.reason}${result.check === 'none' ? '; no frozen check ran' : ''}${approvalRows.length ? `; ${agentApprovalLine(approvalRows)}` : ''}${verifiedTiming}`
     : `rejected #${id}: ${result.reason}; it is open again for rework`);
-  if (accepted) ctx.io.say(landNext(ctx.info, accepted, acceptedLandingCommit));
+  if (accepted) ctx.io.say(landNext(ctx.info, accepted, acceptedLandingCommit, { spec: loadSpec(ctx.info.root, ctx.config) }));
   return 0;
 }
 

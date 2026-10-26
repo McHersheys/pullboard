@@ -458,7 +458,7 @@ test('land pushes one exact batch in verdict order and records each first-contai
   const result = json(box, box.repo, 'land', '--max', '4');
   const order = [3, 1, 0, 2].map((index) => entries[index].item);
   assert.deepEqual(result.landed, order);
-  assert.deepEqual(mergeSubjects(box, base, result.batch.tip), [4, 2, 1, 3].map((n) => `chore(merge): land fixture ${n} [G1]`));
+  assert.deepEqual(mergeSubjects(box, base, result.batch.tip), [4, 2, 1, 3].map((n) => `feat(merge): land fixture ${n} [G1]`), 'each merge takes its item\'s type from the item\'s feat commit');
   assert.equal(result.batch.state, 'landed');
   assert.equal(box.git(box.repo, 'rev-parse', 'main'), result.batch.tip);
   assert.equal(box.git(box.remote, 'rev-parse', 'main'), result.batch.tip, 'real pre-push accepted the gated tip');
@@ -467,7 +467,7 @@ test('land pushes one exact batch in verdict order and records each first-contai
   assert.deepEqual(calls(box).slice(start), [[]], 'one full batch gate; pre-push reads its exact green tree stamp');
   const merges = box.git(box.repo, 'rev-list', '--reverse', '--first-parent', `${base}..${result.batch.tip}`).split('\n');
   for (const [index, id] of order.entries()) assert.equal(json(box, box.repo, 'show', String(id)).item_merged_commit, merges[index]);
-  for (const [index, id] of order.entries()) assert.equal(box.git(box.repo, 'log', '-1', '--format=%b', merges[index]).trim(), `Pullboard-Item: #${id}`, 'each train merge body is only its item trailer, naming no lane branch');
+  for (const [index, id] of order.entries()) assert.equal(box.git(box.repo, 'log', '-1', '--format=%b', merges[index]).trim(), `Pullboard-Item: #${id}\nPullboard-Rows: G1`, 'each train merge body is only its trailers, naming no lane branch');
   const receipt = events(box).filter((event) => event.event_kind === 'main-moved');
   assert.equal(receipt.length, 1);
   assert.equal(JSON.parse(receipt[0].event_detail).sha, result.batch.tip);
@@ -489,7 +489,7 @@ test('a train merge body is only the item trailer even when the local Git config
   assert.equal(result.landed.length, 4);
   const merges = box.git(box.repo, 'rev-list', '--reverse', '--first-parent', `${base}..${result.batch.tip}`).split('\n');
   for (const [index, id] of result.landed.entries()) {
-    assert.equal(box.git(box.repo, 'log', '-1', '--format=%b', merges[index]).trim(), `Pullboard-Item: #${id}`, 'merge.log=true appends no shortlog to the body');
+    assert.equal(box.git(box.repo, 'log', '-1', '--format=%b', merges[index]).trim(), `Pullboard-Item: #${id}\nPullboard-Rows: G1`, 'merge.log=true appends no shortlog to the body');
   }
 });
 
@@ -1252,6 +1252,7 @@ test('landing diagnostics retain unknown failures and merge subjects obey typed 
   // Node 24 node --test reports with spec by default: its failing-tests summary names each file and test (#1071).
   const spec = landingFailures(`\u2716 red one (1.2ms)\n\u2716 failing tests:\n\ntest at web/red.test.js:6:1\n\u2716 red one (1.2ms)\n  AssertionError\n\ntest at /elsewhere/x.test.js:1:1\n\u2716 outside (3ms)\n`, root);
   assert.deepEqual(spec, [{ name: 'red one', file: 'web/red.test.js' }, { name: 'outside', file: null }], 'spec failures keep their file, and an outside path is unknown');
+  // The title keeps priority up to the room its first row needs; the rows fill what is left (RFC 0005).
   const subject = landingSubject({ item_id: 91, item_title: 'A VERY LONG TITLE '.repeat(10), item_spec_ids: 'B3,R3' });
   assert.equal(subject, 'chore(merge): a very long title a very long title a very long [B3,R3]');
   assert.ok(subject.length <= 72);
@@ -1402,7 +1403,7 @@ test('publish pushes only a head the whole suite passed and names every red [B3,
   assert.equal(box.git(box.remote, 'rev-parse', 'main'), fixed, 'only the head the whole suite passed reaches the remote');
 });
 
-test('an accepted item lands on the local trunk before the whole suite runs [B3,R3]', () => {
+test('an uncertain affected batch passes its full gate before local adoption [B3,R3,C7,V4]', () => {
   const box = landProject();
   const path = join(box.repo, 'pullboard.json');
   const config = JSON.parse(readFileSync(path, 'utf8'));
@@ -1417,14 +1418,14 @@ test('an accepted item lands on the local trunk before the whole suite runs [B3,
   assert.equal(result.batch.state, 'landed');
   assert.equal(box.git(box.repo, 'rev-parse', 'main'), result.batch.tip, 'the local trunk holds the landed batch');
   assert.equal(box.git(box.remote, 'rev-parse', 'main'), remoteBefore, 'tier 1 pushes nothing');
-  assert.deepEqual(calls(box).slice(start), [], 'no whole-suite run before the items land');
+  assert.equal(calls(box).length - start, 1, 'an unsupported fixture graph requires one full gate before adoption');
   const merges = box.git(box.repo, 'rev-list', '--first-parent', `${result.batch.base}..${result.batch.tip}`).split('\n');
   for (const entry of entries) assert.ok(merges.includes(json(box, box.repo, 'show', String(entry.item)).item_merged_commit), `#${entry.item} has its merged receipt on the local trunk`);
   // Tier 2 then runs the whole suite once on that exact head and pushes it.
   const published = json(box, box.repo, 'publish');
   assert.equal(published.published, true);
   assert.equal(box.git(box.remote, 'rev-parse', 'main'), result.batch.tip);
-  assert.equal(calls(box).length - start, 1, 'publish ran the whole suite once');
+  assert.equal(calls(box).length - start, 2, 'publish also proves its exact trunk head before pushing');
 });
 
 test('a publish gate run is recorded and a red and green pair it sees files the flake [C7,D1]', () => {
