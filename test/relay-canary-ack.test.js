@@ -1,3 +1,4 @@
+// @pullboard-test-loads src/relay.js src/cli.js
 /** A transport canary proves relay acknowledgment even when ordinary writes are local first [H21,H16]. */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
