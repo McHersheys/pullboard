@@ -5,6 +5,7 @@ This is the internal runbook. Contributors read CONTRIBUTING.md; this file is fo
 ## When an issue arrives
 1. Reply when capacity allows: thank them, and say what happens next ("on our board as #N", "a question first", or "not planned, because...").
 2. File it on the board, or map it onto an existing item or milestone. Link the board item in the reply.
+3. If you need more from the reporter, label it `clarify`. After 14 days with no activity it gets `clarify-inactive` and closes; any activity restarts the clock, and it reopens when its author replies.
 
 ## When a pull request arrives
 1. **Reply when capacity allows; there is no fixed response time.** Thank them, and ask for a sign-off if any commit lacks one (point at CONTRIBUTING, "How to sign off").
