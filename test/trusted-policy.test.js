@@ -27,7 +27,9 @@ test('reclaim at newer main submits only the item edits, without reverting coord
   box.git(box.repo, 'commit', '-q', '-m', 'chore(config): coordinator changes claim lease');
   const newerMain = box.git(box.repo, 'rev-parse', 'HEAD');
   assert.notEqual(initial.item_claim_head, newerMain);
+  box.git(box.web, 'checkout', '-q', '--detach', newerMain);
   assert.equal(box.run(box.web, 'claim', '1').code, 0);
+  box.git(box.web, 'checkout', '-q', 'web/one');
   const reclaimed = JSON.parse(box.run(box.web, 'show', '1', '--json').out);
   assert.equal(reclaimed.item_claim_head, newerMain, 'the new claim is bounded by newer main');
   assert.equal(box.git(box.web, 'rev-parse', 'HEAD'), candidate, 'the item still has its older main parent');
