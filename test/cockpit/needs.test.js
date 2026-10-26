@@ -440,8 +440,9 @@ test('needs you and the asks sit in their lists [N26]', { timeout: 180_000 }, as
       needsShown: shown(needs), inList: needs.parentElement === document.querySelector('#chain').parentElement, separateCard: !!document.querySelector('section.needs-you#needs'),
       needs: [...needs.querySelectorAll(':scope > .row')].map((row) => ({ go: row.dataset.go ?? null, words: row.querySelector('.t').textContent, ref: row.querySelector('.t > span')?.textContent ?? null,
         kind: row.querySelector('.meta .why').textContent, label: getComputedStyle(row.querySelector('.meta .why b')).color === warn && getComputedStyle(row.querySelector('.meta .why')).color === warn, chip: row.querySelector(':scope > .chip').textContent, age: !!row.querySelector('.row-age') })),
-      card: card ? [...card.children].filter((e) => !e.hidden).map((e) => e.id || e.className) : null,
+      card: card ? [...card.children].map((e) => e.id || e.className) : null,
       coordinatorDecisionsHidden: document.querySelector('#coordinator-decisions').hidden,
+      coordinatorDecisions: [...document.querySelectorAll('#coordinator-decisions .shout .text')].map((text) => text.textContent),
       composer: box(document.querySelector('.shout-form .composer')), asks: box(document.querySelector('.asks-toggle[data-fold="waiting"]')),
       asksOpen: document.querySelector('.asks-toggle[data-fold="waiting"]')?.getAttribute('aria-expanded') ?? null, showAgents: box(document.querySelector('.asks-slot [data-agents-toggle]')),
       decisions: shown(decisions) ? [...decisions.querySelectorAll('.shout .text')].map((text) => text.textContent) : [], groupTint: getComputedStyle(decisions).backgroundColor, cardTint: card ? getComputedStyle(card).backgroundColor : null,
@@ -483,9 +484,10 @@ test('needs you and the asks sit in their lists [N26]', { timeout: 180_000 }, as
         await chrome.waitFor("!document.querySelector('[data-pane=shouts]').hidden && !!document.querySelector('#feed .shout')");
         r = await read();
         assert.ok(r.page.scroll <= r.page.width && r.page.body <= r.page.width, `${at}: no sideways scroll on Shouts`);
-        // One card: the composer's line, the asks, the feed.
-        assert.deepEqual(r.card, ['shout-form', 'decisions', 'feed'], `${at}: Shouts is one card`);
-        assert.equal(r.coordinatorDecisionsHidden, true, `${at}: the empty coordinator queue stays hidden`);
+        // One card: the composer's line, the coordinator's own queue, the asks, the feed.
+        assert.deepEqual(r.card, ['shout-form', 'coordinator-decisions', 'decisions', 'feed'], `${at}: Shouts is one card`);
+        assert.equal(r.coordinatorDecisionsHidden, false, `${at}: the coordinator's own unanswered ask is visible`);
+        assert.ok(r.coordinatorDecisions.some((text) => text.includes('Ship the footer first?')), `${at}: the coordinator queue shows the second agent's ask`);
         if (width === 1280) assert.ok(Math.abs((r.composer.top + r.composer.height / 2) - (r.asks.top + r.asks.height / 2)) <= 4 && r.asks.left >= r.composer.right, `${at}: the asks waiting sit at the end of the composer's line: ${JSON.stringify([r.composer, r.asks])}`);
         assert.deepEqual([r.asksOpen, r.decisions.length, /Which colour for the button\?/.test(r.decisions[0] ?? '')], ['false', 1, true], `${at}: the asks waiting on others stay folded; the person's own decision shows`);
         assert.equal(r.feedBar, false, `${at}: no bar above the feed while it shows every shout`);
