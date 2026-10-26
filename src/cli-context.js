@@ -42,6 +42,7 @@ export {
  */
 export function withBoard(ctx, work, opened) {
   const board = opened ?? store.openBoard(ctx.file, ctx.clock, { isMain: ctx.allowSchemaUpgrade,
+    gitRoot: ctx.info.root,
     writeContext: { command: ctx.io.relayCommand?.cliOperation, path: ctx.info.root, ...(ctx.info.isMain ? { seat: 'coordinator' } : {}) },
     /** Report each source mismatch once through this invocation's text or JSON diagnostics. */
     onDiagnostic(message) {
@@ -52,6 +53,7 @@ export function withBoard(ctx, work, opened) {
       ctx.io.err(message);
     },
   });
+  board.gitRoot = ctx.info.root; // A connection-local verification port, never board or wire metadata.
   return withOpenedBoard(ctx, work, board);
 }
 
