@@ -93,7 +93,7 @@ test('blueprint add files a blueprint as drafts [S1,I1]', () => {
   const check = box.run('spec', 'check');
   assert.equal(check.status, 0, check.stdout + check.stderr);
   const checkLines = (check.stdout + check.stderr).split('\n');
-  const blueprintLengthWarnings = rows.filter((row) => checkLines.some((line) => line.includes(`${row.id} warning: `)
+  const blueprintLengthWarnings = rows.filter((row) => checkLines.some((line) => line.includes(` ${row.id} warning: `)
     && /words; rows stay under/u.test(line)));
   assert.deepEqual(blueprintLengthWarnings.map((row) => row.id), [], 'a reason or the choices do not count toward the blueprint row length');
 
