@@ -1,3 +1,5 @@
+import { CROSS_REPO_DEPENDENCY_ENGINE } from '../cross-repo-dependency-engine.js';
+import { hasForeignDependencies } from '../item-dependencies.js';
 import { LINE_CAPACITY_ENGINE } from '../line-capacity-engine.js';
 import { RIGOR_AUTO_ENGINE } from '../rigor-auto-engine.js';
 /** Routing metadata owned by claim, discovered without a shared registry edit [C7,V4,H16]. */
@@ -23,7 +25,11 @@ function existingEngine(args, board, at) {
 function minimumEngine(args, board, at) {
   const outside = board && Boolean(outsideSource(board, args[0]));
   const capacity = args[1]?.lineCapacity === true;
-  return Math.max(outside ? OUTSIDE_INTAKE_ENGINE : 1, capacity ? LINE_CAPACITY_ENGINE : 1, existingEngine(args, board, at));
+  const id = args[0];
+  const validId = ['number', 'string'].includes(typeof id) && Number.isSafeInteger(Number(id)) && Number(id) > 0;
+  const item = board && validId ? board.db.prepare('SELECT item_after FROM item WHERE item_id=?').get(id) : null;
+  const foreign = item && hasForeignDependencies(item);
+  return Math.max(foreign ? CROSS_REPO_DEPENDENCY_ENGINE : 1, outside ? OUTSIDE_INTAKE_ENGINE : 1, capacity ? LINE_CAPACITY_ENGINE : 1, existingEngine(args, board, at));
 }
 
 /** Read precisely the actor argument used by this operation [H2,H16]. */

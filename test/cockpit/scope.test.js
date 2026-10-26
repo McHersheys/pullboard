@@ -29,8 +29,9 @@ async function startProjectView(box, repo) {
       child.once('error', () => reject(new Error('the scoped view process could not start')));
       child.once('exit', () => reject(new Error('the scoped view exited before printing its link')));
     });
-    const ready = await fetchLive(link.href, { signal: AbortSignal.timeout(30_000) });
-    assert.equal(ready.status, 200, 'the scoped view answers before its pages are read');
+    // The printed link trades its key for the session cookie (N39); its answer shows the view is serving.
+    const ready = await fetchLive(link.href, { redirect: 'manual', signal: AbortSignal.timeout(30_000) });
+    assert.equal(ready.status, 303, 'the scoped view answers before its pages are read');
     await ready.arrayBuffer();
     return {
       link,

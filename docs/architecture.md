@@ -130,6 +130,18 @@ The relay never receives a board key in a form it can use. A phone gets it wrapp
 
 **One order for every move.** The relay gives each record the next sequence number atomically and refuses repeats and gaps (`insert` in `relay/journal.js`). Every client applies records in that order with the CLI's own rules.
 
+## Machine-local relay canary
+
+A relay canary is an opt-in monitor on an ordinary client machine. It checks the authenticated board move path by signing in as its configured ordinary seat, sending a nonce-bearing shout through the normal ordered move, pulling the fresh event and unsealing the exact returned move. A successful `/health` response alone is not a round trip. The canary does not alter the relay API or add a server-side table.
+
+`pullboard relay canary on [--timeout <milliseconds>]` stores `relay.canary` in this machine's settings: an enabled flag, an absolute checkout path, the registered non-coordinator `agentId`, and an optional deadline (5 seconds by default; 100–25,000 ms when set). The credentials stay in the existing local link and key stores. The setting binds the run to that checkout and seat. To monitor the dedicated board from Studio and MacBook, link that board normally on each non-relay host and configure one ordinary seat per machine after the feature lands. `pullboard relay canary off` disables an existing setting (or leaves an absent setting unset); `status` reads local observations without a network request; `run` executes one probe; `watch` runs an immediate probe and then checks once per minute until stopped with Ctrl-C. The watch is separate from the ordinary ten-minute health scan.
+
+Each machine keeps its observations and minute schedule in a private SQLite file at `<git common dir>/pullboard/relay-health.sqlite`. A fresh result is healthy or degraded; after two minutes without a recent sample, status is unknown. Two consecutive failed probes create an alert. A latency alert requires a complete ten-minute window and at least ten successful samples, with p95 above two seconds. The local Needs-you entry reports the actual queued move count from that machine's outbox. It is local telemetry: it is not included in sealed board presentations or sent to other devices as health state.
+
+On an alert or recovery, the configured seat sends notices through ordinary native ordered shouts to the coordinator and person. If the relay or native notification route is unavailable, the notice remains pending locally and is retried; a later delivery is labeled delayed. A local alert or successful native write is not a phone acknowledgement. Closed-phone push delivery is a separate notification path.
+
+For an operational drill, interrupt the authenticated sign-in, move-upload or fresh-event-read route used by the client, then restore that route and run a complete probe. Do not substitute an HTTP health endpoint for those client routes. The expected recovery is a later successful sealed round trip; if its notice could not travel during the outage, it remains delayed. Configuration alone does not mean either production host has been linked or has completed a successful probe.
+
 ## Redeploys
 
 A new relay process on the same `/data` volume keeps every account, link, credential hash, paired phone, wrapped key, approval and journal; `test/relay-deploy.test.js` restarts the relay and proves that no one re-pairs. A restart ends what lives only in memory, so a half-finished sign-in or pairing starts again. The service runs as a single replica, since one writer owns these SQLite files (`relay/README.md`).

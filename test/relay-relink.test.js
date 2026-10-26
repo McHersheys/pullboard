@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { decodeBoardKey, seal, unseal } from '../src/seal.js';
 import { relayClientFixture } from './relay-client-fixture.js';
+import { assertPersonUnlinkHistory } from './relay-exclusion-fixture.js';
 import { runFixtureGit } from './fixture-child.js';
 import { ENGINE_VERSION } from '../src/machine.js';
 
@@ -18,8 +19,7 @@ test('a relink after relay off seals moves with the new key [H15,H17]', async t 
   assert.equal((await box.cli('shout', 'all', 'before explicit unlink')).code, 0);
   const beforeOff = (await box.cli('export')).document;
   assert.equal((await box.cli('relay', 'off')).code, 0);
-  assert.deepEqual((await box.cli('export')).document.tables, beforeOff.tables,
-    'local unlink does not rewrite native history or board identity');
+  assertPersonUnlinkHistory((await box.cli('export')).document.tables, beforeOff.tables);
   assert.equal((await box.cli('relay', 'on', '--url', box.origin)).code, 0);
   const linked = JSON.parse(readFileSync(box.linkFile, 'utf8'));
   assert.notEqual(linked.board, oldLink.board, 'forgetting the key requires a fresh remote board');

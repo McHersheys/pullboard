@@ -3,6 +3,7 @@ import {
   executingBarEffect,
   personBarMode,
 } from '../person-bar-cli.js';
+import { dependencyValues } from '../item-dependencies.js';
 /** The pullboard add command, in its own module so an item adding another command never edits these lines. */
 import * as store from '../board.js';
 import {
@@ -59,7 +60,7 @@ export async function run(io, args) {
   const problems = idProblems(loadSpec(ctx.info.root, ctx.config), specIds, ctx.doctrine);
   if (problems.length) throw new Refused('UNKNOWN_SPEC', `${problems.join('; ')}`);
   const parentId = values.parent ? idArg(values.parent, 'a parent item id') : null;
-  const after = idList(values.after).map((text) => idArg(text, 'an item id after --after'));
+  const after = dependencyValues(idList(values.after));
   const title = [second, ...rest].filter(Boolean).join(' ');
   let item = {
     by: io.personRequest?.phase === 'execute' ? store.PERSON : me.id,

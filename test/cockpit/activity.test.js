@@ -535,7 +535,7 @@ export async function createTransport({ onUpdate }) {
     if (url.pathname === '/') return response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(cockpitPage('', { readOnly: true, transportModule: '/transport.js', stylesheet: '/view.css' }));
     if (url.pathname === '/transport.js') return response.writeHead(200, { 'content-type': 'text/javascript' }).end(moduleSource);
     // The stylesheet and board reads come from the real view, so the case reads no source file itself.
-    const forward = url.pathname === '/view.css' ? '/view.css?k=' + encodeURIComponent(live.key) : url.pathname.slice('/fixture'.length) + url.search;
+    const forward = url.pathname === '/view.css' ? '/view.css' : url.pathname.slice('/fixture'.length) + url.search;
     if ((url.pathname !== '/view.css' && !url.pathname.startsWith('/fixture/')) || request.method !== 'GET') return response.writeHead(404).end();
     reads.push(url.pathname);
     fetchLive(live.base + forward, { headers: { 'x-pullboard-key': live.key } })

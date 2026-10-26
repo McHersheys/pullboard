@@ -18,6 +18,7 @@ import * as store from '../src/board.js';
 import { preparePersonRequest } from '../src/person-request.js';
 import { receivePersonRequest } from '../src/relay-requests.js';
 import { fetchFresh } from './http-fixture.js';
+import { liveFrames } from './http-stream-fixture.js';
 
 const BIN = resolve(import.meta.dirname, '../bin/pullboard.js');
 
@@ -36,7 +37,7 @@ const require = createRequire(import.meta.url);
 const childProcess = require('node:child_process');
 const gitIdentity = { ...process.env, GIT_AUTHOR_NAME: 'HTTP Agent', GIT_AUTHOR_EMAIL: 'agent@example.invalid',
   GIT_COMMITTER_NAME: 'HTTP Agent', GIT_COMMITTER_EMAIL: 'agent@example.invalid' };
-const counters = { git: 0, node: 0, other: 0, methods: {}, gitCalls: [] };
+const counters = { git: 0, node: 0, other: 0, methods: {}, gitCalls: [], otherCalls: [] };
 let counting = false;
 let currentRoute = 'setup';
 const childMethods = ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork'];
@@ -48,6 +49,10 @@ function countChild(method, args) {
   const kind = base === 'git' ? 'git' : (command === process.execPath || base === 'node' ? 'node' : 'other');
   counters[kind] += 1;
   counters.methods[method] = (counters.methods[method] ?? 0) + 1;
+  if (kind === 'other' && counters.otherCalls.length < 32) {
+    counters.otherCalls.push({ method, argv: [raw, ...(Array.isArray(args[1]) ? args[1] : [])],
+      stack: String(new Error().stack ?? '').slice(0, 3000) });
+  }
   if (kind === 'git' && counters.gitCalls.length < 32) {
     const commandArgs = Array.isArray(args[1]) ? args[1].slice(0, 32).map(value => String(value).slice(0, 512)) : [];
     const options = Array.isArray(args[1]) ? args[2] : args[1];
@@ -146,6 +151,7 @@ try {
   counters.other = 0;
   counters.methods = {};
   counters.gitCalls = [];
+  counters.otherCalls = [];
   requestCount = 0;
   if (codeMetadataMarker) {
     const changed = new Date(0);
@@ -170,6 +176,10 @@ try {
   if (codeMetadataMarker) {
     const { apiBoards } = await import(new URL('./api.js', pathToFileURL(serveFile)));
     const { withGitReadFacts } = await import(new URL('./git.js', pathToFileURL(serveFile)));
+    // A deliberately stale board stamp forces a write-open below. Warm its one-time own-PID
+    // diagnostic before measuring provenance; ordinary warmed reads still require zero children.
+    const { prepareBoardWriteIdentity } = await import(new URL('./board-write-lock.js', pathToFileURL(serveFile)));
+    prepareBoardWriteIdentity();
     for (const status of [undefined, true]) {
       // A current board opens read-only with no authority to decide; a cleared stamp makes each need a write open (#1047).
       for (const { root } of projects) {
@@ -181,6 +191,7 @@ try {
       counters.other = 0;
       counters.methods = {};
       counters.gitCalls = [];
+  counters.otherCalls = [];
       currentRoute = status === undefined ? 'unknown main status' : 'true main status';
       const changed = new Date(status === undefined ? 1000 : 2000);
       utimesSync(codeMetadataMarker, changed, changed);
@@ -878,8 +889,9 @@ test('[A2, N26] a delta brings a snapshot up to date', async (t) => {
   assert.equal(Object.hasOwn(claimed.merge.items, 'ids'), false, 'no item came or went, so the order is not sent');
   const still = await catchUp('nothing changed');
   assert.deepEqual(still.merge, {}, 'an unchanged board merges nothing');
-  assert.deepEqual(Object.keys(still.replace).sort(), ['decisions', 'holds', 'personRequests', 'proofStats', 'requests', 'unseen'],
-    'only the always-whole fields come');
+  assert.deepEqual(Object.keys(still.replace).sort(), ['decisionQueue', 'decisions', 'holds', 'personRequests', 'proofStats', 'requests', 'unseen'],
+    'only the always-whole fields come, including the landed coordinator decision queue');
+  assert.deepEqual(still.replace.decisionQueue, [], 'the unchanged empty coordinator queue travels as a whole field');
 
   await move({ verb: 'submit', item, agent: builder.agent });
   assert.equal((await catchUp('submit')).merge.items.set[0].status, 'submitted');
@@ -893,10 +905,12 @@ test('[A2, N26] a delta brings a snapshot up to date', async (t) => {
   const shouted = await catchUp('shout');
   assert.ok(changed(shouted, 'shouts').includes(asked.id), 'the new shout travels');
   assert.ok(changed(shouted, 'asked').includes(asked.id), 'and so does the open question');
+  assert.ok(shouted.replace.decisionQueue.some(row => row.shout_id === asked.id), 'the coordinator queue carries its actual new question');
   const answered = await move({ verb: 'answer', item: asked.id, args: { text: 'Only when nothing moved.' } });
   const answer = await catchUp('answer');
   assert.ok(changed(answer, 'shouts').includes(answered.id), 'the answer travels');
   assert.ok(answer.merge.asked.ids.every((id) => id !== asked.id), 'the answered question leaves the open list');
+  assert.ok(answer.replace.decisionQueue.every(row => row.shout_id !== asked.id), 'the answered question also leaves the coordinator queue');
 
   box.cli(box.root, 'spec', 'approve', 'G2');
   const decided = await catchUp('spec decision');
@@ -1398,9 +1412,12 @@ test('[A2, N26] the event stream says when the board changes without a move', as
   const cursorBefore = store.openBoard(localBoardPath);
   let beforeSeen;
   let beforeEvent;
+  let beforeHistory;
+  let deliveryEvent;
   try {
     beforeSeen = store.listAgents(cursorBefore).find((entry) => entry.agent_id === agent.agent).agent_last_shout_id;
     beforeEvent = cursorBefore.db.prepare('SELECT COALESCE(MAX(event_id), 0) AS id FROM event').get().id;
+    beforeHistory = cursorBefore.db.prepare('SELECT * FROM event ORDER BY event_id').all();
   } finally { store.closeBoard(cursorBefore); }
   box.cli(agent.path, 'inbox');
   const cursorAfter = store.openBoard(localBoardPath);
@@ -1408,8 +1425,20 @@ test('[A2, N26] the event stream says when the board changes without a move', as
     const afterSeen = store.listAgents(cursorAfter).find((entry) => entry.agent_id === agent.agent).agent_last_shout_id;
     const afterEvent = cursorAfter.db.prepare('SELECT COALESCE(MAX(event_id), 0) AS id FROM event').get().id;
     assert.ok(afterSeen > beforeSeen, 'the joined agent inbox advances its shout cursor');
-    assert.equal(afterEvent, beforeEvent, 'reading the inbox changes no append-only board event');
+    const delivered = cursorAfter.db.prepare('SELECT event_by,event_kind,item_id,event_detail FROM event WHERE event_id>? ORDER BY event_id').all(beforeEvent);
+    deliveryEvent = { ...cursorAfter.db.prepare('SELECT * FROM event WHERE event_id=?').get(afterEvent) };
+    assert.equal(afterEvent, beforeEvent + 1, 'inbox records exactly its landed native delivery receipt');
+    assert.deepEqual(delivered.map(row => ({ by: row.event_by, kind: row.event_kind, item: row.item_id, detail: JSON.parse(row.event_detail) })), [{
+      by: agent.agent, kind: 'activity-delivered', item: null,
+      detail: { interrupts: [], through: beforeEvent, observedThrough: beforeEvent, digestThrough: beforeEvent, model: 'fixture-agent' },
+    }], 'only the attributed receipt for the observed prefix is appended, without an acknowledgement or item move');
+    assert.deepEqual(cursorAfter.db.prepare('SELECT * FROM event WHERE event_id<=? ORDER BY event_id').all(beforeEvent), beforeHistory,
+      'the delivered receipt never rewrites the existing native history');
   } finally { store.closeBoard(cursorAfter); }
+  const deliveryFrame = await nextFrame();
+  assert.equal(deliveryFrame.event, 'message', 'the appended native delivery receipt travels before its state notification');
+  assert.equal(deliveryFrame.id, deliveryEvent.event_id, 'the receipt advances the append-only stream cursor exactly once');
+  assert.deepEqual(deliveryFrame.data, { version: 1, event: deliveryEvent }, 'the stream carries the complete actual native receipt');
   await changedOnce('seen-cursor');
 
   const clockNow = Date.now();
@@ -1426,84 +1455,6 @@ test('[A2, N26] the event stream says when the board changes without a move', as
 
   await closeStream();
 });
-
-/**
- * Open a live event stream and read its frames one at a time. A pending read is shared across
- * timeouts, so a quiet-period check cannot consume a later frame.
- */
-async function liveFrames(t, url, headers) {
-  const controller = new AbortController();
-  const response = await fetchFresh(url, { headers: { ...headers, accept: 'text/event-stream' }, signal: controller.signal });
-  assert.equal(response.status, 200, 'the stream opens');
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffered = '';
-  let pending = null;
-  let closing = false;
-  /** Parse the next complete frame that carries data, skipping comments. */
-  async function read() {
-    while (true) {
-      const boundary = buffered.indexOf('\n\n');
-      if (boundary >= 0) {
-        const raw = buffered.slice(0, boundary);
-        buffered = buffered.slice(boundary + 2);
-        const data = /^data: (.+)$/m.exec(raw)?.[1];
-        if (raw.startsWith(':') || data === undefined) continue;
-        return { event: /^event: (.+)$/m.exec(raw)?.[1] ?? 'message', id: /^id: (.+)$/m.exec(raw)?.[1] ?? null, data: JSON.parse(data) };
-      }
-      const { value, done } = await reader.read();
-      if (done && closing) return null;
-      assert.equal(done, false, 'the live stream stays open while its boards are served');
-      buffered += decoder.decode(value, { stream: true });
-    }
-  }
-  /** Share one pending read until it settles. */
-  function next() {
-    pending ??= read().finally(() => { pending = null; });
-    return pending;
-  }
-  /** Read the next frame, failing rather than hanging if none comes, and clear the ceiling either way. */
-  async function frame(label) {
-    let timer;
-    try {
-      return await Promise.race([
-        next(),
-        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`no frame arrived (${label})`)), 10_000); }), // budget: hang ceiling for one live frame, not a latency claim.
-      ]);
-    } finally { clearTimeout(timer); }
-  }
-  /** Read frames until each predicate has matched one, returning every frame read. */
-  async function until(label, ...wanted) {
-    const frames = [];
-    const left = [...wanted];
-    while (left.length) {
-      const got = await frame(label);
-      frames.push(got);
-      const matched = left.findIndex((predicate) => predicate(got));
-      if (matched >= 0) left.splice(matched, 1);
-    }
-    return frames;
-  }
-  /** Require silence for longer than one server poll, clearing the window's timer either way. */
-  async function quiet(label) {
-    let timer;
-    const silence = new Promise((resolve) => { timer = setTimeout(() => resolve(null), 350); }); // budget: silence across more than one 200 ms server poll.
-    try {
-      const extra = await Promise.race([next().then((value) => ({ value })), silence]);
-      assert.equal(extra, null, `nothing is sent while nothing changes (${label})`); // budget: silence across more than one 200 ms server poll.
-    } finally { clearTimeout(timer); }
-  }
-  /** Stop the response and settle any pending read on pass and failure paths. */
-  async function close() {
-    if (closing) return;
-    closing = true;
-    controller.abort();
-    await reader.cancel().catch(() => {});
-    await pending?.catch(() => {});
-  }
-  t.after(close);
-  return { until, quiet, close };
-}
 
 /** Read a many-board event id as one cursor per board. */
 function boardCursorMap(id) {

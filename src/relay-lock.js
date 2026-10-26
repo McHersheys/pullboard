@@ -39,9 +39,9 @@ function gone(pid) {
  * transaction that checks the holder and replaces it only when that holder's process is gone, so of any number of
  * waiters exactly one holds it, and a live holder is never displaced: there is no separate removal step to race.
  */
-function openLease(file) {
+function openLease(file, timeoutMs = 10000) {
   const db = new DatabaseSync(`${file}.lease.sqlite`);
-  db.exec(`PRAGMA busy_timeout = 10000;
+  db.exec(`PRAGMA busy_timeout = ${Math.max(1, Math.min(10000, Math.floor(timeoutMs)))};
     CREATE TABLE IF NOT EXISTS relay_lease(name TEXT PRIMARY KEY, pid INTEGER NOT NULL, token TEXT NOT NULL);`);
   return db;
 }
@@ -101,15 +101,22 @@ export async function locked(file, work, io) {
   const finishWait = beginCommandPhase('waiting-lock');
   try {
     const lock = file + '.lock';
+    /** A caller deadline stops waiting without displacing or signaling another lock holder. */
+    const checkAbort = () => {
+      if (io?.relaySignal?.aborted) throw new Refused('RELAY_TIMEOUT', 'the relay deadline expired; this waiter did not take over another sender');
+    };
+    checkAbort();
     mkdirSync(dirname(file), { recursive: true });
     const startedAt = Date.now();
     const deadline = startedAt + (io?.relayLockWaitMs ?? LOCK_WAIT_MS);
     const progressEvery = io?.relayLockProgressMs ?? LOCK_PROGRESS_MS;
     let nextProgress = startedAt + progressEvery;
-    const lease = openLease(file);
+    const lease = openLease(file, io?.relaySignal ? deadline - Date.now() : 10000);
     const token = randomUUID();
     try {
-      while (!(takeLease(lease, token) && takeDirectory(lock))) {
+      while (true) {
+        checkAbort();
+        if (takeLease(lease, token) && takeDirectory(lock)) break;
         if (Date.now() >= deadline) throw new Refused('RELAY_BUSY', `another worktree was still sending this board after ${Math.round((Date.now() - startedAt) / 1000)} s; this attempt was not recorded; run the command again`);
         if (io?.err && Date.now() >= nextProgress) {
           nextProgress = Date.now() + progressEvery;
@@ -119,6 +126,7 @@ export async function locked(file, work, io) {
       }
       finishWait();
       try {
+        checkAbort();
         // Only the current lock holder can have a live link write; remove crashed legacy bearer fragments.
         for (const name of readdirSync(dirname(file))) {
           if (/^relay\.json\.[0-9a-f-]+\.tmp$/u.test(name)) rmSync(join(dirname(file), name), { force: true });

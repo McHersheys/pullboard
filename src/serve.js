@@ -1,3 +1,5 @@
+import { foreignDependencyStates } from './cross-repo-dependencies.js';
+import { dependencyValues } from './item-dependencies.js';
 /**
  * `pullboard view` (N26, N27): the person's micro site. One page on this machine shows every
  * registered project: items by state, what needs the person, shouts, doctrine, agents and activity,
@@ -5,8 +7,8 @@
  * real CLI in the project, so every rule and refusal applies exactly as at a terminal.
  *
  * By default it listens on loopback only; explicit LAN mode binds one assigned private IPv4 interface [H19].
- * It answers nothing without its own Host, and no board without the
- * session's secret, so another site in the browser cannot reach it. Besides its own page, it answers one other origin,
+ * It answers nothing without its own Host, and no board without the session's secret or its HttpOnly session cookie,
+ * so another site in the browser cannot reach it. Besides its own page, it answers one other origin,
  * the hosted page at https://app.pullboard.dev, which gets the secret by a round trip that only ever returns there.
  * Idle reads open no outbound connection (P5); an explicit person sign-in reuses the existing relay linking flow.
  */
@@ -289,7 +291,8 @@ function verdictOf(row) {
  */
 export function projectItemState(board, item, status) {
   const verdicts = store.verdictsFor(board, item.item_id).map(verdictOf);
-  const after = item.item_after ? item.item_after.split(',').map(Number) : [];
+  const after = dependencyValues(item);
+  const foreign = new Map(foreignDependencyStates(board, item).map(ref => [`${ref.repo}#${ref.id}`, ref.status]));
   return {
     id: item.item_id,
     title: item.item_title,
@@ -307,7 +310,7 @@ export function projectItemState(board, item, status) {
     brief: item.item_brief,
     commit: item.item_commit,
     merged: item.item_merged_commit,
-    blockedBy: after.filter((id) => status.get(id) !== 'verified'),
+    blockedBy: after.filter((id) => (typeof id === 'number' ? status.get(id) : foreign.get(id)) !== 'verified'),
     updatedAt: item.item_updated_at,
     verdict: verdicts.at(-1) ?? null,
     verdicts,
@@ -446,6 +449,41 @@ function sandboxListenStep(env = process.env) {
 }
 
 /**
+ * The one value a request's Cookie header gives the named cookie, or null when it gives none, names
+ * it without a value, or gives it twice: another server on this host can set a cookie of the same
+ * name, so a second copy makes both untrustworthy. It reads the view's cookie exactly as the local
+ * API does (src/api.js), so the page and its API never disagree about who holds the session.
+ *
+ * @param {unknown} header
+ * @param {string} name
+ * @returns {string | null}
+ */
+function requestCookie(header, name) {
+  if (typeof header !== 'string') return null;
+  let found = null;
+  for (const part of header.split(';')) {
+    const separator = part.indexOf('=');
+    if (separator < 0) {
+      if (part.trim() === name) return null;
+      continue;
+    }
+    if (part.slice(0, separator).trim() !== name) continue;
+    if (found !== null) return null;
+    found = part.slice(separator + 1).trim();
+  }
+  return found;
+}
+
+/**
+ * Whether a credential a request offers is the expected one, compared in constant time.
+ *
+ * @param {Buffer} given
+ * @param {Buffer} expected
+ * @returns {boolean}
+ */
+const credentialMatches = (given, expected) => given.length === expected.length && timingSafeEqual(given, expected);
+
+/**
  * Serve the view until stopped, optionally giving its API access to only one registered project.
  *
  * @param {{ port?: number, secret?: string, projectRoot?: string, lan?: boolean }} [options]
@@ -454,6 +492,16 @@ function sandboxListenStep(env = process.env) {
 export async function serveView({ port = 0, secret = randomBytes(18).toString('base64url'), projectRoot, lan = false } = {}) {
   const address = lan ? viewLanAddress() : LOOPBACK;
   const key = Buffer.from(secret);
+  const cookieName = `pullboard_view_${randomBytes(9).toString('hex')}`;
+  const session = randomBytes(18).toString('base64url');
+  const sessionKey = Buffer.from(session);
+  /** Match this view's session cookie only in same-origin requests or a typed top-level page visit. */
+  const cookieMatches = (req) => {
+    if (!credentialMatches(Buffer.from(requestCookie(req.headers.cookie, cookieName) ?? ''), sessionKey)) return false;
+    const site = req.headers['sec-fetch-site'];
+    return site === undefined || site === 'same-origin'
+      || (site === 'none' && req.method === 'GET' && req.headers.origin === undefined && req.headers['sec-fetch-dest'] === 'document');
+  };
   let bound = 0;
   // The API reads projectState and codeAt from this module. Load its factory after our exports
   // initialize, and use the real CLI entry point without adding a second move implementation.
@@ -464,14 +512,15 @@ export async function serveView({ port = 0, secret = randomBytes(18).toString('b
   const signInLifetime = new AbortController();
   const apiHandler = createLocalApiHandler({ secret, getPort: () => bound, runCommand: main, stateDetail: 'summary',
     allowedOrigins: lan ? [] : [HOSTED_ORIGIN], allowedHosts: lan ? [address] : [],
-    ...(projectRoot === undefined ? {} : { scope: { projectRoot } }) });
-  const reply = (res, code, type, body) => {
+    sessionCookie: { name: cookieName, value: session }, ...(projectRoot === undefined ? {} : { scope: { projectRoot } }) });
+  const reply = (res, code, type, body, headers = {}) => {
     res.writeHead(code, {
       'content-type': type,
       'cache-control': 'no-store',
       'referrer-policy': 'no-referrer',
       'x-content-type-options': 'nosniff',
       'content-security-policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      ...headers,
     });
     res.end(body);
   };
@@ -533,7 +582,7 @@ export async function serveView({ port = 0, secret = randomBytes(18).toString('b
   /** Forget only roots that the same current registry snapshot cannot open as boards. */
   async function forgetUnreadableRequest(req, res, url) {
     const given = Buffer.from(String(req.headers['x-pullboard-key'] ?? ''));
-    if (given.length !== key.length || !timingSafeEqual(given, key) || url.search || req.headers.authorization !== undefined) {
+    if ((!credentialMatches(given, key) && !cookieMatches(req)) || url.search || req.headers.authorization !== undefined) {
       return json(res, 403, refusalDocument(new Refused('VIEW_SIGN_IN_AUTH', 'open this view and send its session key in the x-pullboard-key header only')));
     }
     if (req.method !== 'POST') return json(res, 405, refusalDocument(new Refused('BAD_REQUEST', 'use a confirmed JSON POST to forget unreadable boards')));
@@ -554,7 +603,7 @@ export async function serveView({ port = 0, secret = randomBytes(18).toString('b
   /** Run only the existing person-channel adapter, with per-view intent ownership and header authentication. */
   async function sharingRequest(req, res, url) {
     const given = Buffer.from(String(req.headers['x-pullboard-key'] ?? ''));
-    if (given.length !== key.length || !timingSafeEqual(given, key) || url.search || req.headers.authorization !== undefined) {
+    if ((!credentialMatches(given, key) && !cookieMatches(req)) || url.search || req.headers.authorization !== undefined) {
       return json(res, 403, refusalDocument(new Refused('VIEW_SIGN_IN_AUTH', 'open the view link and send its session key in the x-pullboard-key header only')));
     }
     try {
@@ -647,8 +696,10 @@ export async function serveView({ port = 0, secret = randomBytes(18).toString('b
       if (projectRoot === undefined && url.pathname === '/api/v1/projects/forget-unreadable') return forgetUnreadableRequest(req, res, url);
       return apiHandler(req, res);
     }
+    if (hosted) return json(res, 403, { error: 'open the printed view link for local pages; the hosted page uses the API' });
     const given = Buffer.from(String(req.headers['x-pullboard-key'] ?? url.searchParams.get('k') ?? ''));
-    if (given.length !== key.length || !timingSafeEqual(given, key)) {
+    const validKey = credentialMatches(given, key);
+    if (!validKey && !cookieMatches(req)) {
       const destination = req.headers['sec-fetch-dest'];
       const browserPage = req.method === 'GET' && url.pathname === '/' && !url.searchParams.has('k') && req.headers['x-pullboard-key'] === undefined
         && /(?:^|,)\s*text\/html(?:\s*;|\s*,|\s*$)/iu.test(String(req.headers.accept ?? ''))
@@ -656,9 +707,18 @@ export async function serveView({ port = 0, secret = randomBytes(18).toString('b
       if (browserPage) return reply(res, 401, 'text/html; charset=utf-8', '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Open your board</title><h1>Open your board</h1><p>The board opens at <a href="' + HOSTED_ORIGIN + '">app.pullboard.dev</a>.</p></html>');
       return json(res, 403, { error: 'this view needs its own address and secret: open the link pullboard view printed' });
     }
+    if (req.method === 'GET' && url.searchParams.has('k')) {
+      url.searchParams.delete('k');
+      // A relative address keeps the browser on whatever origin it opened, so a page reached through a proxy stays
+      // behind it; collapsing leading slashes keeps "//elsewhere" from reading as another host.
+      return reply(res, 303, 'text/plain; charset=utf-8', '', {
+        location: `/${url.pathname.replace(/^[/\\]+/u, '')}${url.search}`,
+        ...(validKey ? { 'set-cookie': `${cookieName}=${session}; Path=/; HttpOnly; SameSite=Strict` } : {}),
+      });
+    }
     try {
       // The board, and the Roadmap at its own address (N38), are the one page.
-      if (req.method === 'GET' && (url.pathname === '/' || /^\/(?:[^/]+\/)?(?:home|items|shouts|spec|doctrine|activity|roadmap|settings)(?:\/[^/]+)?$/.test(url.pathname))) return reply(res, 200, 'text/html; charset=utf-8', cockpitPage(secret, { paths: true }));
+      if (req.method === 'GET' && (url.pathname === '/' || /^\/(?:[^/]+\/)?(?:home|items|shouts|spec|doctrine|activity|roadmap|settings)(?:\/[^/]+)?$/.test(url.pathname))) return reply(res, 200, 'text/html; charset=utf-8', cockpitPage('', { paths: true, apiHeaders: {}, stylesheet: '/view.css' }));
       if (req.method === 'GET' && url.pathname === '/view.css') return reply(res, 200, 'text/css; charset=utf-8', VIEW_CSS);
       return json(res, 404, { error: 'no such page' });
     } catch (error) {

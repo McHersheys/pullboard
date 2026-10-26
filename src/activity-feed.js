@@ -1,3 +1,4 @@
+import { localDependencyIds } from './item-dependencies.js';
 import { itemFiles } from './item-files.js';
 /** Read item activity without duplicating a landing's immutable board-wide receipt [R2,N26]. */
 
@@ -26,7 +27,7 @@ export function activityEventDetail(event) {
 
 /** Parse only recorded item dependency ids; a shared prerequisite does not make siblings dependents. */
 function prerequisites(item) {
-  return String(item.item_after ?? '').split(',').filter(Boolean).map(Number);
+  return localDependencyIds(item);
 }
 
 /** Exact files and explicit directory plans overlap without matching a similarly spelled file. */

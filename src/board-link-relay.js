@@ -128,8 +128,4 @@ export async function receiveBoardState(board, delivery, { authority, capability
   });
 }
 
-/** Read the detached latest disclosed state without scanning full board history. */
-export function readReceivedBoardState(board, { linkId, generation, sourceBoardId }) {
-  if (!Number.isSafeInteger(generation) || generation < 1) throw new Refused('BOARD_LINK_FORMAT', 'use a positive link generation');
-  return saved(board, `board_link_state:${boardLinkName(linkId)}:${generation}:${boardReferenceId(sourceBoardId)}`);
-}
+export { readReceivedBoardState } from './board-link-state.js';

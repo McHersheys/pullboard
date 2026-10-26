@@ -4,17 +4,11 @@
  * The item lifecycle's declaration (M1, M2, M4): sound on its own terms, each property shown
  * failing on a broken copy, and in step with the refusals the board, CLI and spec parser raise today.
  */
+import * as fs from 'node:fs';
+import * as machineRules from '../src/machine.js';
 import { submitFixture } from './board-submit-fixture.js';
 import assert from 'node:assert/strict';
-import {
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -24,16 +18,7 @@ import * as store from '../src/board.js';
 import { HELP } from '../src/cli.js';
 import { loadConfig } from '../src/config.js';
 import { Refused } from '../src/refused.js';
-import {
-  BLANKS,
-  IN_STATE,
-  MACHINE,
-  effectiveGuards,
-  lifecycleHelp,
-  lifecycleMarkdown,
-  machineProblems,
-  storeTriggers,
-} from '../src/machine.js';
+
 import {
   runFixtureExecFile as execFileSync,
   runFixtureChild as spawnSync,
@@ -149,6 +134,8 @@ const CALLBACKS = {
  * reads committed doctrine rules leniently: a doctrine it cannot parse carries no check [D1].
  */
 const CAUGHT = {
+  // Invalid authenticated-link metadata remains an unavailable dependency inside these exact catches.
+  'cross-repo-dependencies.js#stateFor': ['board-link-format.js#boardLinkRecord', 'board-link-state.js#readReceivedBoardState'],
   // Review eligibility returns Refused values as data, and this helper also catches thrown eligibility refusals.
   'line-capacity-board.js#oldestCapacityReview': ['board.js#reviewerChecks'],
   'commands/submit.js#submitHere': ['native-flakes.js#observeFailure', 'cli.js#freezer', 'main-red.js#compareMainFailures', 'main-red.js#matchingReworks', 'doctrine-checks.js#checkRulesAt'],
@@ -271,7 +258,7 @@ function codeWalk(read, { caught = false } = {}) {
  * @param {string} file
  * @returns {string}
  */
-const fromDisk = (file) => readFileSync(new URL(`../src/${file}`, import.meta.url), 'utf8');
+const fromDisk = (file) => fs.readFileSync(new URL(`../src/${file}`, import.meta.url), 'utf8');
 
 /**
  * The refusal codes the named moves declare, or the whole declaration's when none is named: their
@@ -283,7 +270,7 @@ const fromDisk = (file) => readFileSync(new URL(`../src/${file}`, import.meta.ur
  */
 function declaredCodes(machine, verbs) {
   const moves = verbs ? machine.moves.filter((move) => verbs.includes(move.verb)) : machine.moves;
-  const used = new Set(moves.flatMap((move) => effectiveGuards(move, machine)));
+  const used = new Set(moves.flatMap((move) => machineRules.effectiveGuards(move, machine)));
   return new Set([
     ...machine.guards.filter((guard) => !verbs || used.has(guard.id)).flatMap((guard) => [guard.refuse, ...(guard.alsoRefuses ?? []).map((entry) => entry.code)]),
     ...moves.flatMap((move) => [move.refuse, ...(move.alsoRefuses ?? []).map((entry) => entry.code)]),
@@ -310,7 +297,7 @@ function codeProblems(machine, read = fromDisk) {
       }
     }
   }
-  const commandFiles = readdirSync(new URL('../src/commands/', import.meta.url)).filter((name) => name.endsWith('.js') && name !== 'index.js').map((name) => `commands/${name}`);
+  const commandFiles = fs.readdirSync(new URL('../src/commands/', import.meta.url)).filter((name) => name.endsWith('.js') && name !== 'index.js').map((name) => `commands/${name}`);
   const raised = new Set(['board.js', 'cli.js', 'spec.js', ...commandFiles].flatMap((file) => walk.functions(file).flatMap((name) => [...walk.refusalsOf(`${file}#${name}`)])));
   for (const code of declaredCodes(machine)) if (!raised.has(code)) problems.add(`${code} is declared but the board, CLI and spec parser never raise it`);
   return [...problems];
@@ -339,7 +326,7 @@ function editedSource(file, line, replacement) {
  *
  * @returns {any}
  */
-const copy = () => structuredClone(MACHINE);
+const copy = () => structuredClone(machineRules.MACHINE);
 
 /**
  * The move with this verb.
@@ -401,13 +388,13 @@ const BROKEN = [
     property: 'every non-final state has a way out',
     breaks: (machine) => {
       machine.states.push({ id: 'parked', means: 'set aside', requires: [] });
-      machine.moves.push({ verb: 'park', from: ['open'], to: 'parked', by: ['agent', 'coordinator'], refuse: 'CLOSED', guards: ['joined', 'itemExists', IN_STATE] });
+      machine.moves.push({ verb: 'park', from: ['open'], to: 'parked', by: ['agent', 'coordinator'], refuse: 'CLOSED', guards: ['joined', 'itemExists', machineRules.IN_STATE] });
     },
     says: /state parked is a trap/,
   },
   {
     property: 'nothing leaves a final state',
-    breaks: (machine) => machine.moves.push({ verb: 'restore', from: ['withdrawn'], to: 'open', by: ['agent', 'coordinator'], refuse: 'CLOSED', guards: ['joined', 'coordinatorOnly', 'itemExists', IN_STATE] }),
+    breaks: (machine) => machine.moves.push({ verb: 'restore', from: ['withdrawn'], to: 'open', by: ['agent', 'coordinator'], refuse: 'CLOSED', guards: ['joined', 'coordinatorOnly', 'itemExists', machineRules.IN_STATE] }),
     says: /final state withdrawn has a move out/,
   },
   {
@@ -427,7 +414,7 @@ const BROKEN = [
   },
   {
     property: 'no second door into verified',
-    breaks: (machine) => machine.moves.push({ verb: 'land', from: ['submitted'], to: 'verified', by: ['agent', 'coordinator'], refuse: 'NOT_SUBMITTED', guards: ['joined', 'itemExists', IN_STATE], sets: ['item_verified_by'] }),
+    breaks: (machine) => machine.moves.push({ verb: 'land', from: ['submitted'], to: 'verified', by: ['agent', 'coordinator'], refuse: 'NOT_SUBMITTED', guards: ['joined', 'itemExists', machineRules.IN_STATE], sets: ['item_verified_by'] }),
     says: /land reaches verified without naming its exit guard atSubmittedCommit: a second door/,
   },
   {
@@ -460,7 +447,7 @@ const BROKEN = [
     property: "every caller's move checks the item's state once",
     breaks: (machine) => {
       const release = moveOf(machine, 'release');
-      release.guards = release.guards.filter((id) => id !== IN_STATE);
+      release.guards = release.guards.filter((id) => id !== machineRules.IN_STATE);
     },
     says: /release checks the item's state 0 times, not once/,
   },
@@ -488,41 +475,41 @@ const BROKEN = [
 ];
 
 test('the declared lifecycle is sound: reachable, no traps, no second door, every refusal with a next step [M1, M2, M4]', () => {
-  assert.deepEqual(machineProblems(), []);
-  assert.deepEqual(MACHINE.states.map((state) => state.id), ['open', 'claimed', 'submitted', 'verified', 'withdrawn']);
-  assert.deepEqual(MACHINE.states.filter((state) => state.final).map((state) => state.id), ['withdrawn']);
-  assert.deepEqual(MACHINE.moves.map((move) => move.verb), ['intake', 'claim', 'release', 'lapse', 'submit', 'reserve', 'accept', 'reject', 'reopen', 'escalate', 'refreeze', 'refreeze', 'withdraw']);
+  assert.deepEqual(machineRules.machineProblems(), []);
+  assert.deepEqual(machineRules.MACHINE.states.map((state) => state.id), ['open', 'claimed', 'submitted', 'verified', 'withdrawn']);
+  assert.deepEqual(machineRules.MACHINE.states.filter((state) => state.final).map((state) => state.id), ['withdrawn']);
+  assert.deepEqual(machineRules.MACHINE.moves.map((move) => move.verb), ['intake', 'claim', 'release', 'lapse', 'submit', 'reserve', 'accept', 'reject', 'reopen', 'escalate', 'refreeze', 'refreeze', 'withdraw']);
 });
 
 for (const broken of BROKEN) {
   test(`a broken copy fails the check: ${broken.property} [M4]`, () => {
     const machine = copy();
     broken.breaks(machine);
-    const problems = machineProblems(machine);
+    const problems = machineRules.machineProblems(machine);
     assert.ok(problems.some((problem) => broken.says.test(problem)), `expected ${broken.says}, got:\n${problems.join('\n')}`);
-    assert.deepEqual(machineProblems(), [], 'the real declaration stays sound');
+    assert.deepEqual(machineRules.machineProblems(), [], 'the real declaration stays sound');
   });
 }
 
 test('a door declared without its exit guards still passes them [M2]', () => {
   const machine = copy();
-  const land = { verb: 'land', from: ['submitted'], to: 'verified', by: ['agent', 'coordinator'], refuse: 'NOT_SUBMITTED', guards: ['joined', 'itemExists', IN_STATE] };
+  const land = { verb: 'land', from: ['submitted'], to: 'verified', by: ['agent', 'coordinator'], refuse: 'NOT_SUBMITTED', guards: ['joined', 'itemExists', machineRules.IN_STATE] };
   machine.moves.push(land);
-  const passes = effectiveGuards(land, machine);
+  const passes = machineRules.effectiveGuards(land, machine);
   for (const id of machine.exitGuards.verified) assert.ok(passes.includes(id), `land passes ${id}`);
   assert.deepEqual(passes.slice(0, land.guards.length), land.guards, 'its own guards come first, in order');
-  assert.deepEqual(effectiveGuards(moveOf(MACHINE, 'accept')), moveOf(MACHINE, 'accept').guards, 'accept names them all already, so nothing is added');
+  assert.deepEqual(machineRules.effectiveGuards(moveOf(machineRules.MACHINE, 'accept')), moveOf(machineRules.MACHINE, 'accept').guards, 'accept names them all already, so nothing is added');
 });
 
 test('verified and withdrawn keep the exit guards their rules need, and a copy that drops one fails [V1, V3, V5, V7, M2, M4]', () => {
-  assert.deepEqual(unpinned(MACHINE), []);
+  assert.deepEqual(unpinned(machineRules.MACHINE), []);
   const broken = copy();
   broken.exitGuards.verified = broken.exitGuards.verified.filter((id) => id !== 'notBuilder');
   assert.deepEqual(unpinned(broken), ['verified no longer requires notBuilder (V1) of every move into it']);
 });
 
 test('accept and reject hold a verifier to the same checks until the verdict, and a copy that splits them fails [M1, M4]', () => {
-  assert.deepEqual(verdictsDiverge(MACHINE), []);
+  assert.deepEqual(verdictsDiverge(machineRules.MACHINE), []);
   const broken = copy();
   const accept = moveOf(broken, 'accept');
   accept.guards = accept.guards.filter((id) => id !== 'routeAllows');
@@ -530,7 +517,7 @@ test('accept and reject hold a verifier to the same checks until the verdict, an
 });
 
 test('every refusal a move raises today is declared on that move, and every declared code is raised [M1]', () => {
-  assert.deepEqual(codeProblems(MACHINE), []);
+  assert.deepEqual(codeProblems(machineRules.MACHINE), []);
   const walk = codeWalk(fromDisk);
   assert.ok(walk.refusalsOf('board.js#claim').has('UNKNOWN_SPEC'), 'the walk follows claim into the freezer the CLI hands it');
   assert.ok(walk.refusalsOf('board.js#refreeze').has('UNKNOWN_SPEC'), 'and refreeze too');
@@ -585,12 +572,26 @@ test('a broken copy of the declaration fails the check against the code, both wa
 });
 
 test('a broken copy of the code fails the check: a refusal added wherever a move reaches [M1, M4]', () => {
+  for (const [file, pattern] of [
+    ['board-link-format.js', /^export function boardLinkRecord\(value\) \{$/m],
+    ['board-link-state.js', /^export function readReceivedBoardState\(board, .*$/m],
+  ]) {
+    const inForeignReader = editedSource(file, pattern,
+      "$&\n  throw new Refused('MOON_PHASE', 'wait for the full moon');");
+    assert.deepEqual(codeProblems(machineRules.MACHINE, inForeignReader), [], 'only the exact foreign evidence reader is caught as unavailable');
+  }
+  const inForeignCaller = editedSource('cross-repo-dependencies.js', /^function stateFor\(board, ref\) \{$/m,
+    "$&\n  throw new Refused('MOON_PHASE', 'wait for the full moon');");
+  assert.deepEqual(codeProblems(machineRules.MACHINE, inForeignCaller).sort(), [
+    'MOON_PHASE is raised by claim but not declared there',
+    'MOON_PHASE is raised by reserve but not declared there',
+  ], 'the foreign-state caller is still audited outside its exact evidence catches');
   const inCaughtBaseline = editedSource('board-query.js', /^export function specApprovalBaseline\(board\) \{$/m,
     "$&\n  if (!board) throw new Refused('MOON_PHASE', 'wait for the full moon');");
-  assert.deepEqual(codeProblems(MACHINE, inCaughtBaseline), [], 'the real caller catches a Refused from the baseline reader');
+  assert.deepEqual(codeProblems(machineRules.MACHINE, inCaughtBaseline), [], 'the real caller catches a Refused from the baseline reader');
   const inBaselineCaller = editedSource('spec-approval.js', /^export function specApprovalState\(root, .*$/m,
     "$&\n  if (!root) throw new Refused('MOON_PHASE', 'wait for the full moon');");
-  assert.deepEqual(codeProblems(MACHINE, inBaselineCaller).sort(), [
+  assert.deepEqual(codeProblems(machineRules.MACHINE, inBaselineCaller).sort(), [
     'MOON_PHASE is raised by accept and reject but not declared there',
     'MOON_PHASE is raised by claim but not declared there',
     'MOON_PHASE is raised by refreeze but not declared there',
@@ -600,34 +601,34 @@ test('a broken copy of the code fails the check: a refusal added wherever a move
     const inHistoricalCaller = editedSource('rigor-auto-source.js',
       new RegExp(`^export function ${helper}\\(record\\) \\{$`, 'm'),
       "$&\n  throw new Refused('MOON_PHASE', 'wait for the full moon');");
-    assert.deepEqual(codeProblems(MACHINE, inHistoricalCaller).sort(), [
+    assert.deepEqual(codeProblems(machineRules.MACHINE, inHistoricalCaller).sort(), [
       'MOON_PHASE is raised by accept and reject but not declared there',
       'MOON_PHASE is raised by reopen but not declared there',
     ], 'a new refusal outside the historical parser catch still reaches lifecycle moves');
   }
 
   const inFreeze = editedSource('spec.js', /^export function frozenCriterion\(spec, item, doctrine = null\) \{$/m, "$&\n  if (item.item_title === 'moon') throw new Refused('MOON_PHASE', 'wait for the full moon');");
-  assert.deepEqual(codeProblems(MACHINE, inFreeze).sort(), [
+  assert.deepEqual(codeProblems(machineRules.MACHINE, inFreeze).sort(), [
     'MOON_PHASE is raised by claim but not declared there',
     'MOON_PHASE is raised by refreeze but not declared there',
   ], 'claim and refreeze let a freeze refusal through; submit and verify catch it');
 
   const inProof = editedSource('spec-approval.js', /^function approvalEvidence\(root, evidenceErrors\) \{$/m, "$&\n  if (!root) throw new Refused('MOON_PHASE', 'wait for the full moon');");
-  assert.deepEqual(codeProblems(MACHINE, inProof).sort(), [
+  assert.deepEqual(codeProblems(machineRules.MACHINE, inProof).sort(), [
     'MOON_PHASE is raised by accept and reject but not declared there',
     'MOON_PHASE is raised by claim but not declared there',
     'MOON_PHASE is raised by refreeze but not declared there',
   ], 'only caught proof readers are excluded; a new guard inside their caller is still audited');
 
   const inArrow = editedSource('route-escalation.js', /^export const canTake = .*$/m, "import { Refused } from './refused.js';\nexport const canTake = (agentRoute, itemRoute) => { if (!agentRoute) throw new Refused('NO_ROUTE', 'no route'); return ROUTES.indexOf(itemRoute) <= ROUTES.indexOf(agentRoute); };");
-  assert.deepEqual(codeProblems(MACHINE, inArrow).sort(), [
+  assert.deepEqual(codeProblems(machineRules.MACHINE, inArrow).sort(), [
     'NO_ROUTE is raised by accept and reject but not declared there',
     'NO_ROUTE is raised by claim but not declared there',
     'NO_ROUTE is raised by reserve but not declared there',
   ], 'reserve reaches the route check through the reviewer checks it shares with a verdict');
 
   const doubleQuoted = editedSource('cli-read-context.js', /^(?:export )?const cdTo = .*$/m, "const cdTo = (root) => { if (!root) throw new Refused(\"NO_ROOT\", 'no root'); return 'cd ' + root + ' &&'; };");
-  assert.deepEqual(codeProblems(MACHINE, doubleQuoted), [
+  assert.deepEqual(codeProblems(machineRules.MACHINE, doubleQuoted), [
     'NO_ROOT is raised by submit but not declared there',
     'NO_ROOT is raised by accept and reject but not declared there',
   ]);
@@ -652,7 +653,7 @@ const freeze = (item) => ({ text: item.item_title, digest: `digest:${item.item_t
  * @returns {{ file: string, board: any, raw: () => DatabaseSync, done: () => void }}
  */
 function boardOnDisk(clock) {
-  const dir = mkdtempSync(join(tmpdir(), 'pullboard-machine-'));
+  const dir = fs.mkdtempSync(join(tmpdir(), 'pullboard-machine-'));
   const file = join(dir, 'board.sqlite');
   const board = store.openBoard(file, clock);
   store.register(board, { lane: 'coordinator', path: '/repo' });
@@ -675,7 +676,7 @@ function boardOnDisk(clock) {
           // already closed by the test
         }
       }
-      rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true });
     },
   };
 }
@@ -790,7 +791,7 @@ test('an older board gets the triggers quietly on its next open; one dropped by 
   const lab = boardOnDisk();
   try {
     const id = store.addItem(lab.board, { by: 'coordinator', lane: 'web', title: 'Page' });
-    const every = storeTriggers().map(({ name }) => name).sort();
+    const every = machineRules.storeTriggers().map(({ name }) => name).sort();
     assert.deepEqual(triggerNames(lab.board), every);
     store.closeBoard(lab.board);
 
@@ -829,16 +830,16 @@ test('an older board gets the triggers quietly on its next open; one dropped by 
 });
 
 test('the triggers come from the declaration, so a changed declaration changes them [M1, M3]', () => {
-  const moveSql = (machine) => storeTriggers(machine).find(({ name }) => name === 'machine_item_move').sql;
-  const pairs = MACHINE.moves.flatMap((move) => move.from.filter((from) => from !== move.to).map((from) => `'${from}>${move.to}'`));
-  for (const pair of pairs) assert.ok(moveSql(MACHINE).includes(pair), `the move trigger allows ${pair}`);
+  const moveSql = (machine) => machineRules.storeTriggers(machine).find(({ name }) => name === 'machine_item_move').sql;
+  const pairs = machineRules.MACHINE.moves.flatMap((move) => move.from.filter((from) => from !== move.to).map((from) => `'${from}>${move.to}'`));
+  for (const pair of pairs) assert.ok(moveSql(machineRules.MACHINE).includes(pair), `the move trigger allows ${pair}`);
   // Outside intake now legitimately declares open>submitted; claimed>verified still cannot bypass a submitted review.
-  assert.ok(!moveSql(MACHINE).includes("'claimed>verified'"));
+  assert.ok(!moveSql(machineRules.MACHINE).includes("'claimed>verified'"));
   const machine = copy();
-  machine.moves.push({ verb: 'testDirectVerdict', from: ['claimed'], to: 'verified', by: ['coordinator'], refuse: 'CLOSED', guards: ['joined', 'coordinatorOnly', 'itemExists', IN_STATE], sets: ['item_built_by', 'item_commit', 'item_frozen_digest'] });
+  machine.moves.push({ verb: 'testDirectVerdict', from: ['claimed'], to: 'verified', by: ['coordinator'], refuse: 'CLOSED', guards: ['joined', 'coordinatorOnly', 'itemExists', machineRules.IN_STATE], sets: ['item_built_by', 'item_commit', 'item_frozen_digest'] });
   assert.ok(moveSql(machine).includes("'claimed>verified'"));
-  const names = storeTriggers().map(({ name }) => name);
-  for (const state of MACHINE.states.filter((entry) => entry.requires.length)) assert.ok(names.includes(`machine_fields_${state.id}`), `${state.id} has a fields trigger`);
+  const names = machineRules.storeTriggers().map(({ name }) => name);
+  for (const state of machineRules.MACHINE.states.filter((entry) => entry.requires.length)) assert.ok(names.includes(`machine_fields_${state.id}`), `${state.id} has a fields trigger`);
   assert.ok(names.includes('machine_proof_verified'));
 });
 
@@ -892,29 +893,29 @@ test('a field a state needs cannot be blanked, on the way in or while the item s
 test("a blank field in the board file is exactly what JavaScript's trim removes [M3]", () => {
   const trimmed = [];
   for (let code = 0; code <= 0xffff; code += 1) if (String.fromCharCode(code).trim() === '') trimmed.push(code);
-  assert.deepEqual(BLANKS, trimmed);
+  assert.deepEqual(machineRules.BLANKS, trimmed);
 });
 
 const BIN = join(import.meta.dirname, '..', 'bin', 'pullboard.js');
 
 test('docs/lifecycle.md is the page the declaration generates, so a stale copy fails [M1, P4]', () => {
-  const page = lifecycleMarkdown();
-  const committed = readFileSync(new URL('../docs/lifecycle.md', import.meta.url), 'utf8');
+  const page = machineRules.lifecycleMarkdown();
+  const committed = fs.readFileSync(new URL('../docs/lifecycle.md', import.meta.url), 'utf8');
   assert.equal(committed, page, 'docs/lifecycle.md is stale; regenerate it: node bin/pullboard.js lifecycle > docs/lifecycle.md');
   assert.match(page, /```mermaid\nstateDiagram-v2\n {2}\[\*\] --> open\n/);
-  for (const state of MACHINE.states) assert.match(page, new RegExp(`^\\| ${state.id}( \\(final\\))? \\|`, 'm'), `${state.id} has a row`);
-  for (const move of MACHINE.moves) {
+  for (const state of machineRules.MACHINE.states) assert.match(page, new RegExp(`^\\| ${state.id}( \\(final\\))? \\|`, 'm'), `${state.id} has a row`);
+  for (const move of machineRules.MACHINE.moves) {
     assert.match(page, new RegExp(`^\\| ${move.verb} \\| ${move.from.join(', ')} \\| ${move.to} \\|`, 'm'), `${move.verb} has a row`);
     for (const from of move.from) assert.ok(page.includes(`  ${from} --> ${move.to}: ${move.verb}`), `the diagram draws ${move.verb} from ${from}`);
-    for (const id of effectiveGuards(move)) assert.ok(page.includes(id), `${move.verb}'s guard ${id} is listed`);
+    for (const id of machineRules.effectiveGuards(move)) assert.ok(page.includes(id), `${move.verb}'s guard ${id} is listed`);
   }
-  for (const [state, guards] of Object.entries(MACHINE.exitGuards)) assert.ok(page.includes(`| ${state} | ${guards.join(', ')} |`), `${state}'s exit guards are listed`);
-  const codes = new Set([...MACHINE.guards.flatMap((guard) => [guard.refuse, ...(guard.alsoRefuses ?? []).map((entry) => entry.code)]), ...MACHINE.moves.flatMap((move) => [move.refuse, ...(move.alsoRefuses ?? []).map((entry) => entry.code)]), MACHINE.unknownMove.refuse].filter(Boolean));
+  for (const [state, guards] of Object.entries(machineRules.MACHINE.exitGuards)) assert.ok(page.includes(`| ${state} | ${guards.join(', ')} |`), `${state}'s exit guards are listed`);
+  const codes = new Set([...MACHINE.guards.flatMap((guard) => [guard.refuse, ...(guard.alsoRefuses ?? []).map((entry) => entry.code)]), ...MACHINE.moves.flatMap((move) => [move.refuse, ...(move.alsoRefuses ?? []).map((entry) => entry.code)]), machineRules.MACHINE.unknownMove.refuse].filter(Boolean));
   for (const code of codes) assert.match(page, new RegExp(`^\\| ${code} \\|`, 'm'), `${code} is in the refusal table`);
 });
 
 test('the lifecycle page limits family matching to require and explains unknown families [O2, O3]', () => {
-  const page = lifecycleMarkdown();
+  const page = machineRules.lifecycleMarkdown();
   assert.match(page, /^\| O2_FAMILY_MATCH \| the builder and verifier have different declared families; an undeclared family counts as a match, only when verify\.family is require \| ask the coordinator for a verifier from another declared family \|$/m);
   for (const verb of ['reserve', 'accept', 'reject']) {
     assert.match(page, new RegExp(`^\\| ${verb} \\| .*familyAllows \\(O2_FAMILY_MATCH\\)`, 'm'));
@@ -923,27 +924,27 @@ test('the lifecycle page limits family matching to require and explains unknown 
 
 test('the page and the help follow the declaration: a new move appears in both [M1, P4]', () => {
   const machine = copy();
-  machine.moves.push({ verb: 'shelve', from: ['open'], to: 'withdrawn', by: ['coordinator'], refuse: 'CLOSED', guards: ['joined', 'coordinatorOnly', 'noteGiven', 'itemExists', IN_STATE], sets: ['item_withdrawn_reason'] });
-  assert.ok(!lifecycleMarkdown().includes('shelve'));
-  assert.ok(lifecycleMarkdown(machine).includes('  open --> withdrawn: shelve'));
-  assert.match(lifecycleMarkdown(machine), /^\| shelve \| open \| withdrawn \| coordinator \|/m);
-  assert.match(lifecycleHelp(machine), /^ {2}coordinator +.*\bshelve\b/m);
-  assert.doesNotMatch(lifecycleHelp(machine), /^ {2}agent +.*\bshelve\b/m);
+  machine.moves.push({ verb: 'shelve', from: ['open'], to: 'withdrawn', by: ['coordinator'], refuse: 'CLOSED', guards: ['joined', 'coordinatorOnly', 'noteGiven', 'itemExists', machineRules.IN_STATE], sets: ['item_withdrawn_reason'] });
+  assert.ok(!machineRules.lifecycleMarkdown().includes('shelve'));
+  assert.ok(machineRules.lifecycleMarkdown(machine).includes('  open --> withdrawn: shelve'));
+  assert.match(machineRules.lifecycleMarkdown(machine), /^\| shelve \| open \| withdrawn \| coordinator \|/m);
+  assert.match(machineRules.lifecycleHelp(machine), /^ {2}coordinator +.*\bshelve\b/m);
+  assert.doesNotMatch(machineRules.lifecycleHelp(machine), /^ {2}agent +.*\bshelve\b/m);
 });
 
 test('pullboard help lists each role\'s moves from the declaration, and pullboard lifecycle prints the page [M1, P4]', () => {
   const help = runFixtureChild(process.execPath, [BIN, 'help', '--all'], { encoding: 'utf8' });
   assert.equal(help.status, 0, help.stderr);
-  for (const role of MACHINE.roles) {
+  for (const role of machineRules.MACHINE.roles) {
     const line = help.stdout.split('\n').find((text) => text.startsWith(`  ${role} `));
     assert.ok(line, `help has a line for ${role}`);
     const listed = line.slice(role.length + 2).split(',').map((part) => part.trim().split(' ')[0]).filter(Boolean);
-    assert.deepEqual(listed.sort(), [...new Set(MACHINE.moves.filter((move) => move.by.includes(role)).map((move) => move.verb))].sort(), `${role}'s moves`);
+    assert.deepEqual(listed.sort(), [...new Set(machineRules.MACHINE.moves.filter((move) => move.by.includes(role)).map((move) => move.verb))].sort(), `${role}'s moves`);
   }
-  assert.ok(HELP.all.includes(lifecycleHelp()), 'the full help screen carries the generated section, not a typed copy');
+  assert.ok(HELP.all.includes(machineRules.lifecycleHelp()), 'the full help screen carries the generated section, not a typed copy');
   const printed = runFixtureChild(process.execPath, [BIN, 'lifecycle'], { encoding: 'utf8' });
   assert.equal(printed.status, 0, printed.stderr);
-  assert.equal(printed.stdout, lifecycleMarkdown());
+  assert.equal(printed.stdout, machineRules.lifecycleMarkdown());
 });
 
 /** Guards checked before the explicit transition: CLI facts and optional roadmap selection. */
@@ -962,10 +963,10 @@ const PRECHECKED = {
  * @returns {string[]}
  */
 function declaredBoardOrder(verb) {
-  const move = moveOf(MACHINE, verb);
-  return effectiveGuards(move)
+  const move = moveOf(machineRules.MACHINE, verb);
+  return machineRules.effectiveGuards(move)
     .filter((id) => !PRECHECKED[verb].includes(id))
-    .map((id) => (id === IN_STATE ? move.refuse : MACHINE.guards.find((guard) => guard.id === id).refuse));
+    .map((id) => (id === machineRules.IN_STATE ? move.refuse : machineRules.MACHINE.guards.find((guard) => guard.id === id).refuse));
 }
 
 /**
@@ -1215,7 +1216,7 @@ test('a reserved review refuses every other verdict while its lease lives, and o
 });
 
 test('next --verify reserves the review for the reviewLease and says until when; show names the holder; another verifier is passed over and refused [V15]', () => {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-reserve-')));
+  const dir = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), 'pullboard-reserve-')));
   try {
     const env = {
       ...process.env,
@@ -1232,10 +1233,10 @@ test('next --verify reserves the review for the reviewLease and says until when;
     // The test runner's per-test timeout bounds hangs without killing this CLI early under load.
     const run = (cwd, ...args) => runFixtureChild(process.execPath, [BIN, ...args], { cwd, env, encoding: 'utf8' });
     const repo = join(dir, 'repo');
-    mkdirSync(repo);
+    fs.mkdirSync(repo);
     git(repo, 'init', '-q', '-b', 'main');
-    writeFileSync(join(repo, 'pullboard.json'), JSON.stringify({ gate: 'true', reviewLease: '45m', lanes: { web: { owns: ['web/'] } } }));
-    writeFileSync(join(repo, 'SPEC.md'), '# Demo\n\n## G · Goals\n- G1 [approved, must] It greets. | gate: test\n');
+    fs.writeFileSync(join(repo, 'pullboard.json'), JSON.stringify({ gate: 'true', reviewLease: '45m', lanes: { web: { owns: ['web/'] } } }));
+    fs.writeFileSync(join(repo, 'SPEC.md'), '# Demo\n\n## G · Goals\n- G1 [approved, must] It greets. | gate: test\n');
     git(repo, 'add', '-A');
     git(repo, 'commit', '-q', '-m', 'chore: a spec');
     const [builder, holder, other] = ['web-1', 'web-2', 'web-3'].map((name) => {
@@ -1248,8 +1249,8 @@ test('next --verify reserves the review for the reviewLease and says until when;
     const added = run(repo, 'add', 'web', 'Greet', '--specs', 'G1', '--criterion', 'It greets.');
     assert.equal(added.status, 0, added.stderr);
     assert.equal(run(builder, 'claim', '1').status, 0);
-    mkdirSync(join(builder, 'web'));
-    writeFileSync(join(builder, 'web', 'greet.txt'), 'hello\n');
+    fs.mkdirSync(join(builder, 'web'));
+    fs.writeFileSync(join(builder, 'web', 'greet.txt'), 'hello\n');
     git(builder, 'add', '-A');
     git(builder, 'commit', '-q', '-m', 'feat(web): greet [G1]');
     const commit = git(builder, 'rev-parse', 'HEAD');
@@ -1290,7 +1291,7 @@ test('next --verify reserves the review for the reviewLease and says until when;
     const accepted = run(holder, 'verify', '1', 'accept', '--note', 'checked out the commit; web/greet.txt says hello');
     assert.equal(accepted.status, 0, accepted.stderr);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -1336,23 +1337,23 @@ test('next --verify looks and reserves in one transaction, so no other verifier 
 });
 
 test('the review lease is reviewLease in pullboard.json, 30 minutes unless the repo says otherwise [V15]', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'pullboard-review-lease-'));
+  const dir = fs.mkdtempSync(join(tmpdir(), 'pullboard-review-lease-'));
   try {
     const leaseOf = (config) => {
-      writeFileSync(join(dir, 'pullboard.json'), JSON.stringify({ gate: 'true', ...config }));
+      fs.writeFileSync(join(dir, 'pullboard.json'), JSON.stringify({ gate: 'true', ...config }));
       return loadConfig(dir).reviewLeaseMs;
     };
     assert.equal(leaseOf({}), 30 * 60_000);
     assert.equal(leaseOf({ reviewLease: '2h' }), 2 * 3_600_000);
     assert.throws(() => leaseOf({ reviewLease: 'soon' }), { code: 'BAD_CONFIG', message: /reviewLease "soon" is not a duration/ });
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
 test('the lifecycle page and the help show the reservation: reserve, and reviewFree on every verdict [V15, M1]', () => {
-  const page = lifecycleMarkdown();
-  assert.match(page, /^\| reserve \| submitted \| submitted \| agent, coordinator \| .*reviewFree \(REVIEW_HELD\) \|$/m);
+  const page = machineRules.lifecycleMarkdown();
+  assert.match(page, /^\| reserve \| submitted \| submitted \| agent, coordinator \| .*reviewFree \(REVIEW_HELD\), result \(BAD_DEPENDENCIES\) \|$/m);
   for (const verb of ['accept', 'reject']) assert.match(page, new RegExp(`^\\| ${verb} \\| submitted, verified \\| .*policyAllows \\(COORDINATOR_VERIFIES\\), familyAllows \\(O2_FAMILY_MATCH\\), reviewFree \\(REVIEW_HELD\\), criterionUnchanged`, 'm'));
   assert.match(page, /^\| REVIEW_HELD \| no other agent holds its review under a live lease \| pullboard next --verify/m);
   assert.match(HELP.all, /^ {2}agent +intake, claim, release, submit, reserve, accept, reject, reopen, escalate, refreeze \(when a live claim has a pending coordinator correction\)$/m);
@@ -1364,8 +1365,8 @@ test('the two conditional guards behave as declared: a renewal passes a held lan
   try {
     const { board } = lab;
     const claimAs = (id, agentId, freezer) => outcome(() => store.claim(board, id, { agentId, lane: 'web', leaseMs: 7_200_000, freeze: freezer }));
-    assert.match(MACHINE.guards.find((guard) => guard.id === 'laneOpen').when, /renewing its own live claim/);
-    assert.match(MACHINE.guards.find((guard) => guard.id === 'rowsInForce').when, /where the criterion freezes/);
+    assert.match(machineRules.MACHINE.guards.find((guard) => guard.id === 'laneOpen').when, /renewing its own live claim/);
+    assert.match(machineRules.MACHINE.guards.find((guard) => guard.id === 'rowsInForce').when, /where the criterion freezes/);
 
     const mine = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'Page' });
     const theirs = store.addItem(board, { by: 'coordinator', lane: 'web', title: 'Page' });
@@ -1401,7 +1402,7 @@ test('the two conditional guards behave as declared: a renewal passes a held lan
  */
 function statusWriters(read) {
   const writers = [];
-  for (const file of readdirSync(new URL('../src/', import.meta.url)).filter((name) => name.endsWith('.js'))) {
+  for (const file of fs.readdirSync(new URL('../src/', import.meta.url)).filter((name) => name.endsWith('.js'))) {
     const source = read(file);
     const allowedNames = file === 'board.js' ? ['moveItem', 'setItem'] : file === 'board-query.js' ? ['current'] : [];
     const allowed = allowedNames.map((name) => functionsIn(source).get(name));
@@ -1461,12 +1462,12 @@ test('the board refuses a status written outside moveItem at run time, however i
 });
 
 test('a helper added to the board that changes a status outside moveItem is refused when it runs [M1]', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'pullboard-planted-'));
+  const dir = fs.mkdtempSync(join(tmpdir(), 'pullboard-planted-'));
   try {
-    for (const file of readdirSync(new URL('../src/', import.meta.url), { recursive: true }).filter((name) => name.endsWith('.js'))) {
+    for (const file of fs.readdirSync(new URL('../src/', import.meta.url), { recursive: true }).filter((name) => name.endsWith('.js'))) {
       const source = fromDisk(file);
-      mkdirSync(dirname(join(dir, file)), { recursive: true });
-      writeFileSync(join(dir, file), file === 'board.js' ? `${source}\nexport function reopenByHand(board, id) {\n  board.db.prepare("update item set item_status = 'open', item_owner = null, item_lease_until = null where item_id = ?").run(id);\n}\n` : source);
+      fs.mkdirSync(dirname(join(dir, file)), { recursive: true });
+      fs.writeFileSync(join(dir, file), file === 'board.js' ? `${source}\nexport function reopenByHand(board, id) {\n  board.db.prepare("update item set item_status = 'open', item_owner = null, item_lease_until = null where item_id = ?").run(id);\n}\n` : source);
     }
     const copy = await import(pathToFileURL(join(dir, 'board.js')).href);
     const board = copy.openBoard(':memory:');
@@ -1478,7 +1479,7 @@ test('a helper added to the board that changes a status outside moveItem is refu
     assert.equal(copy.getItem(board, id).item_status, 'claimed');
     copy.closeBoard(board);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -1486,7 +1487,7 @@ test('a helper added to the board that changes a status outside moveItem is refu
 test('transport boundaries keep a new item refusal in ordered dispatch visible [M1,M4,H16]', () => {
   const inDispatch = editedSource('cli.js', /^(?:export )?async function ordered\(ctx, board, operation, args\) \{$/m,
     "$&\n  if (args[0] === 999) throw new Refused('MOON_PHASE', 'wait for the full moon');");
-  assert.deepEqual(codeProblems(MACHINE, inDispatch).sort(), [
+  assert.deepEqual(codeProblems(machineRules.MACHINE, inDispatch).sort(), [
     'MOON_PHASE is raised by accept and reject but not declared there',
     'MOON_PHASE is raised by submit but not declared there',
   ], 'transport authentication is separate but a dispatcher item guard still belongs to the lifecycle');
@@ -1495,5 +1496,5 @@ test('transport boundaries keep a new item refusal in ordered dispatch visible [
 
 test('Rigor historical data boundaries do not hide a new projection refusal [M1,M4]', () => {
   const broken = editedSource('rigor-counter-state.js', /export function rigorCounterKeys\(event, person\) \{/, "export function rigorCounterKeys(event, person) { if (event.event_kind === 'probe') throw new Refused('RIGOR_PROBE', 'new item eligibility rule');");
-  assert.ok(codeProblems(MACHINE, broken).includes('RIGOR_PROBE is raised by claim but not declared there'));
+  assert.ok(codeProblems(machineRules.MACHINE, broken).includes('RIGOR_PROBE is raised by claim but not declared there'));
 });

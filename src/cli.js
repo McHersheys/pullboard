@@ -1,3 +1,5 @@
+import * as personIdentity from './person.js';
+import { dependencyValues } from './item-dependencies.js';
 import { computedReturnArgs } from './computed-conflict-return.js';
 import { AGENT_GRANT_ENGINE } from './agent-grant-engine.js';
 import { requireAgentGrant } from './agent-grant.js';
@@ -124,11 +126,7 @@ import {
   holdDoctrine,
   ruleLine,
 } from './doctrine-checks.js';
-import {
-  AGENT_SESSION_IDS,
-  agentSessionDigest,
-  personCommand,
-} from './person.js';
+
 import { signedMoveProblem } from './person-signing.js';
 import { personAuthority } from './relay-sender.js';
 import {
@@ -448,7 +446,7 @@ export function editAfter(text) {
   if (!text.trim() || parts.some((part) => !part || part === 'none')) {
     throw new Refused('USAGE', 'use --after <id>[,<id>...] or --after none');
   }
-  return parts.map((part) => idArg(part, 'an item id after --after'));
+  return dependencyValues(parts);
 }
 /**
  * Text a command was given as --<name> "..." or as --<name>-file <file>, or undefined when neither.
@@ -636,7 +634,7 @@ export async function ordered(ctx, board, operation, args) {
     if (requested && ctx.io.recordedMove) (await import('./cli-presence.js')).heartbeatCommand(ctx.io, { ctx, board });
     return result;
   };
-  const digest = agentSessionDigest();
+  const digest = personIdentity.agentSessionDigest();
   const boardOnly = CHECKOUT_BOARD_ONLY.get(ctx.io);
   const boardOnlyOperation = (boardOnly === 'shout' && operation === 'shout') || (boardOnly === 'fact' && operation === 'appendFact');
   const boardOnlyAgent = ctx.info.isMain ? COORDINATOR : store.agentAt(board, ctx.info.root)?.agent_id ?? 'unjoined agent';
@@ -661,7 +659,7 @@ export async function claimOrdered(ctx, board, args) {
  */
 export async function bindWriteSession(io, positionals, values) {
   const [command, first] = positionals;
-  const digest = agentSessionDigest();
+  const digest = personIdentity.agentSessionDigest();
   if (!digest) {
     if (command === 'takeover' && !(repoInfo(io.cwd).isMain && relayLinked(repoInfo(io.cwd).root))) throw new Refused('AGENT_SESSION', 'takeover belongs to an agent session; run pullboard takeover from the agent’s shell');
     return;
@@ -1507,8 +1505,8 @@ export function primaryCheckoutRoot(info) {
 /** A real runtime session may route across its own local seats; marker-only shells stay isolated. */
 function nextSessionSeats(ctx, board) {
   if (ctx.info.isMain || ctx.io.personChannel === 'view' || ctx.io.personRequest
-    || !AGENT_SESSION_IDS.some((name) => Boolean(process.env[name]))) return null;
-  const digest = agentSessionDigest();
+    || !personIdentity.AGENT_SESSION_IDS.some((name) => Boolean(process.env[name]))) return null;
+  const digest = personIdentity.agentSessionDigest();
   return digest ? localSessionSeats(ctx.info, { agents: store.listAgents(board), digest }) : null;
 }
 
@@ -1529,7 +1527,7 @@ async function nextSeatContext(ctx, board, me, item, seats) {
   }
   const target = agent.agent_path === ctx.info.root ? ctx : context({ ...ctx.io, cwd: agent.agent_path });
   if (target.info.commonDir !== ctx.info.commonDir) throw new Refused('NOT_YOUR_CHECKOUT', 'the selected lane seat no longer belongs to this board; run pullboard next again');
-  await bindLocalSession(target.info, { agent: agent.agent_id, digest: agentSessionDigest() });
+  await bindLocalSession(target.info, { agent: agent.agent_id, digest: personIdentity.agentSessionDigest() });
   return { context: target, seat: { agent: agent.agent_id, lane: agent.agent_lane, path: target.info.root, created } };
 }
 
