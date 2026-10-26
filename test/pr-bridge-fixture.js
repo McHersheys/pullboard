@@ -102,7 +102,9 @@ export function landBridgeItems(box, { independent = false, briefs = [] } = {}) 
 
 /** Stand in for GitHub over real HTTP, refusing every merge endpoint. */
 export async function bridgeProvider(t, box) {
-  const state = { requests: [], pulls: [], checks: [], statuses: [], annotations: [], annotationsByRun: {}, next: 1 };
+  const state = { requests: [], pulls: [], checks: [], statuses: [], annotations: [], annotationsByRun: {}, next: 1,
+    references: { pulls: { 7: { number: 7, user: { login: 'pr-author' } } },
+      issues: { 6: { number: 6, user: { login: 'issue-author' } } } } };
   const server = createServer(async (req, res) => {
     let raw = '';
     for await (const chunk of req) raw += chunk;
@@ -117,7 +119,7 @@ export async function bridgeProvider(t, box) {
       if (req.method === 'POST') {
         const head = box.git(box.remote, 'rev-parse', `refs/heads/${body.head}`);
         const pull = { number: state.next++, html_url: `https://github.com/fixture/repository/pull/${state.next - 1}`,
-          title: body.title, body: body.body, state: 'open', merged: false,
+          title: body.title, body: body.body, state: 'open', merged: false, user: { login: 'pr-author' },
           head: { ref: body.head, sha: head }, base: { ref: body.base, sha: box.git(box.remote, 'rev-parse', body.base) }, merged_by: null, merge_commit_sha: null };
         state.pulls.push(pull); return reply(201, pull);
       }
@@ -136,10 +138,18 @@ export async function bridgeProvider(t, box) {
       const files = box.git(box.remote, 'diff', '--name-only', `${pull.base.sha}...${pull.head.sha}`).split('\n').filter(Boolean);
       return reply(200, files.map(filename => ({ filename })));
     }
+    const issueRoute = /^\/repos\/fixture\/repository\/issues\/(\d+)$/u.exec(url.pathname);
+    if (issueRoute && req.method === 'GET') {
+      const issue = state.references.issues[issueRoute[1]];
+      return issue ? reply(200, issue) : reply(404, { message: 'missing private issue' });
+    }
     const pullRoute = /^\/repos\/fixture\/repository\/pulls\/(\d+)$/u.exec(url.pathname);
     if (pullRoute) {
       const pull = state.pulls.find(p => p.number === Number(pullRoute[1]));
-      if (!pull) return reply(404, { message: 'missing private pull' });
+      if (!pull) {
+        const reference = state.references.pulls[pullRoute[1]];
+        return reference ? reply(200, reference) : reply(404, { message: 'missing private pull' });
+      }
       if (req.method === 'PATCH') {
         Object.assign(pull, { title: body.title, body: body.body });
         pull.head.sha = box.git(box.remote, 'rev-parse', `refs/heads/${pull.head.ref}`);

@@ -193,3 +193,49 @@ test('reference point 20: Submit reminds without refusing and only for missing n
       'private unhandled references do not acquire an acknowledgement check');
   });
 });
+
+
+test('GitHub issue and pull references check explicit author handles during async add and edit [C7]', async t => {
+  const box = bridgeProject(t);
+  const provider = await bridgeProvider(t, box);
+  const referenceCalls = path => provider.requests.filter(request => request.method === 'GET' && request.path === path).length;
+  const issuePath = '/repos/fixture/repository/issues/6';
+  const pullPath = '/repos/fixture/repository/pulls/7';
+
+  const wrongIssue = await runBridgeCLI(box, 'add', 'web', 'Wrong issue author', '--brief',
+    'Reference: https://github.com/fixture/repository/issues/6 @another-person', '--json');
+  assert.notEqual(wrongIssue.code, 0, 'an explicit handle that differs from the issue author is refused');
+  assert.match(`${wrongIssue.out}\n${wrongIssue.err}`, /issue-author/iu);
+  assert.equal(referenceCalls(issuePath), 1, 'issue author is checked through the private provider');
+
+  const matchingIssue = await runBridgeCLI(box, 'add', 'web', 'Matching issue author', '--brief',
+    'Reference: https://github.com/fixture/repository/issues/6 @ISSUE-AUTHOR', '--json');
+  assert.equal(matchingIssue.code, 0, matchingIssue.err || matchingIssue.out);
+  assert.equal(referenceCalls(issuePath), 2, 'GitHub login matching is case-insensitive');
+
+  const beforeUnhandled = referenceCalls(issuePath) + referenceCalls(pullPath);
+  const unhandledAdd = await runBridgeCLI(box, 'add', 'web', 'Unhandled reference', '--brief',
+    'Reference: https://github.com/fixture/repository/issues/6', '--json');
+  assert.equal(unhandledAdd.code, 0, unhandledAdd.err || unhandledAdd.out);
+  const itemId = JSON.parse(unhandledAdd.out).item.item_id;
+  assert.equal(referenceCalls(issuePath) + referenceCalls(pullPath), beforeUnhandled,
+    'an issue reference without an explicit handle performs no author lookup');
+
+  const wrongPull = await runBridgeCLI(box, 'edit', String(itemId), '--brief',
+    'Reference: https://github.com/fixture/repository/pull/7 @another-person', '--json');
+  assert.notEqual(wrongPull.code, 0, 'an explicit handle that differs from the pull author is refused');
+  assert.match(`${wrongPull.out}\n${wrongPull.err}`, /pr-author/iu);
+  assert.equal(referenceCalls(pullPath), 1, 'pull author is checked through the private provider');
+
+  const matchingPull = await runBridgeCLI(box, 'edit', String(itemId), '--brief',
+    'Reference: https://github.com/fixture/repository/pull/7 @PR-AUTHOR', '--json');
+  assert.equal(matchingPull.code, 0, matchingPull.err || matchingPull.out);
+  assert.equal(referenceCalls(pullPath), 2, 'pull login matching is case-insensitive too');
+
+  const beforeUnhandledEdit = referenceCalls(issuePath) + referenceCalls(pullPath);
+  const unhandledEdit = await runBridgeCLI(box, 'edit', String(itemId), '--brief',
+    'Reference: https://github.com/fixture/repository/pull/7', '--json');
+  assert.equal(unhandledEdit.code, 0, unhandledEdit.err || unhandledEdit.out);
+  assert.equal(referenceCalls(issuePath) + referenceCalls(pullPath), beforeUnhandledEdit,
+    'an edit without an explicit handle performs no author lookup');
+});
