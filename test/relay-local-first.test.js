@@ -10,13 +10,13 @@ import { fileURLToPath } from 'node:url';
 import { ACCESS_WINDOW_MS } from '../relay/auth.js';
 import * as store from '../src/board.js';
 import { captureBoardChanges } from '../src/board-capture.js';
+import { SENDER_WORKER } from '../src/relay-local-first.js';
 import { outboxGuardFile } from '../src/relay-outbox-guard.js';
 import { undoQueued } from '../src/relay-outbox-undo.js';
 import { runFixtureChildAsync, runFixtureGit } from './fixture-child.js';
 import { relayClientFixture, relayFixtureChild } from './relay-client-fixture.js';
 
 const CLI = fileURLToPath(new URL('../bin/pullboard.js', import.meta.url));
-const WORKER = fileURLToPath(new URL('../src/relay-sender-worker.js', import.meta.url));
 // Budget: the criterion's bar for a move or a read, measured from spawn to exit of the real CLI.
 const LOCAL_MS = 1_000;
 // Budget: how long a test waits for the background sender to reach the relay; it polls every 200 ms here.
@@ -60,7 +60,7 @@ async function stopSender(env) {
 /** Every running sender process from this checkout's worker file. */
 function runningSenders() {
   return execFileSync('ps', ['-Ao', 'pid=,command='], { encoding: 'utf8' }).split('\n')
-    .filter(line => line.includes(WORKER)).length;
+    .filter(line => line.includes(SENDER_WORKER)).length;
 }
 
 /** Wait until `ready()` holds, or fail naming what never happened and what `detail()` says. */
@@ -97,7 +97,7 @@ async function local(box, t, cwd, env, name, args) {
   const fetches = existsSync(trace) ? readFileSync(trace, 'utf8').trim().split('\n').length : 0;
   t.diagnostic(JSON.stringify({ name, elapsedMs: result.elapsedMs, status: result.status, foregroundFetches: fetches }));
   assert.equal(result.status, 0, result.context);
-  assert.ok(result.elapsedMs < LOCAL_MS, `${name} took ${result.elapsedMs} ms; a local-first command returns within one second`);
+  assert.ok(result.elapsedMs < LOCAL_MS, `${name} took ${result.elapsedMs} ms; a local-first command returns within one second`); // budget: declared by #1013's frozen bar: a local move or read returns within one second.
   assert.equal(fetches, 0, `${name} made no network call`);
   return { document: JSON.parse(result.stdout), stderr: result.stderr };
 }
