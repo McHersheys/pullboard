@@ -6,7 +6,15 @@ import { ENGINE_VERSION } from '../src/machine.js';
 import { decodeBoardKey } from '../src/seal.js';
 import { openPagedSnapshot } from '../src/relay-page-layout.js';
 
-/** Compare every JSON field, retaining paths but never printing board contents or credentials. */
+/**
+ * Whether a field is a reading of the clock rather than board data: a sealed page states its as-of time, so the
+ * publisher's and the comparing reader's values differ by the seconds between them (coordinator ruling 31625).
+ */
+function asOfField(path, name) {
+  return ['observedAt', 'asOf', 'ageMinutes'].includes(name) || name === 'minutes' && path.includes('["stages"]');
+}
+
+/** Compare every JSON field except as-of clock readings, retaining paths but never printing board contents or credentials. */
 export function differences(left, right, path = '$', found = []) {
   if (Object.is(left, right)) return found;
   if (left === null || right === null || typeof left !== 'object' || typeof right !== 'object'
@@ -16,6 +24,7 @@ export function differences(left, right, path = '$', found = []) {
   }
   for (const name of new Set([...Object.keys(left), ...Object.keys(right)])) {
     const next = path + '[' + JSON.stringify(name) + ']';
+    if (asOfField(path, name) && Object.hasOwn(left, name) && Object.hasOwn(right, name)) continue;
     if (!Object.hasOwn(left, name) || !Object.hasOwn(right, name)) found.push(next);
     else differences(left[name], right[name], next, found);
   }
