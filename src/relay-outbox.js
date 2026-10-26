@@ -312,12 +312,14 @@ function outboxEnabled(io) {
 
 /**
  * Whether a failure on an accepted link may queue the move instead of refusing it (#922): the relay said nothing
- * definite, and the move needs no relay answer to exist (a registration mints its token there; a person's request
- * is the phone's to send).
+ * definite, and the move needs no relay answer to exist. Ephemeral sessions cannot retain an outbox, while
+ * registration, takeover, person requests and landing authority need an acknowledgment.
  */
-export function outboxQueueable(state, error, operation, io) {
-  return state.mode === 'ordered' && state.baselineAccepted === true && !state.baselineConflict && !io?.personRequest
-    && !['register', 'ensureCoordinator'].includes(operation) && transientRelayFailure(error) && outboxEnabled(io);
+export function outboxQueueable(state, error, operation, io, args = []) {
+  return state.mode === 'ordered' && state.baselineAccepted === true && !state.baselineConflict && !state.environment
+    && process.env.PULLBOARD_RELAY_TOKEN === undefined && !io?.personRequest && !io?.personRequestMoveId
+    && !['register', 'ensureCoordinator', 'takeCoordinator', 'landingLeaseMove'].includes(operation)
+    && !args.some(arg => arg?.landingFence !== undefined) && transientRelayFailure(error) && outboxEnabled(io);
 }
 
 /** The key-free summary of the outbox beside a link file, which pullboard status reads (#1013). */

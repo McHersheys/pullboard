@@ -1092,7 +1092,7 @@ export async function relayOperation(root, operation, args, io, command, applyLo
       const queue = guarded.queue;
       try { ordered = await ensureOrdered(root, file, state, io); }
       catch (error) {
-        if (outboxQueueable(state, error, operation, io)) return await queue(error);
+        if (outboxQueueable(state, error, operation, io, args)) return await queue(error);
         // #341: a baseline the relay has not accepted never blocks a move; the move rides in the later baseline.
         if (!baselineNotAccepted(state) || !transientRelayFailure(error)) throw error;
         keepMoveForLaterBaseline(file, state, error, io);
@@ -1107,7 +1107,7 @@ export async function relayOperation(root, operation, args, io, command, applyLo
         await flushOutbox(outboxLink(root, file, state, io));
         await catchUp(root, file, state, io);
       } catch (error) {
-        if (outboxQueueable(state, error, operation, io)) return await queue(error);
+        if (outboxQueueable(state, error, operation, io, args)) return await queue(error);
         throw error;
       }
       if (state.pending) {
@@ -1154,7 +1154,7 @@ export async function relayOperation(root, operation, args, io, command, applyLo
         }
       } catch (error) {
         // #922: on an accepted link, a relay that stays down queues the move; a lost reply's copy is matched at replay.
-        if (move && !localRecords(root, (board) => engineReceipt(board, move.id)) && outboxQueueable(state, error, operation, io)) return await queue(error, move);
+        if (move && !localRecords(root, (board) => engineReceipt(board, move.id)) && outboxQueueable(state, error, operation, io, args)) return await queue(error, move);
         throw error;
       }
       const receipt = localRecords(root, (board) => engineReceipt(board, move.id));
