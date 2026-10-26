@@ -292,7 +292,7 @@ test("a dependency's own verified dependency admits its files [N16,V4]", () => {
   /** Record a real accepted verdict from the other lane's worktree. */
   const accept = (cwd, id, note) => {
     const result = box.run(cwd, 'verify', String(id), 'accept', '--note', note, '--json');
-    assert.equal(result.code, 0, result.err || result.out);
+    assert.equal(result.code, 0, `${result.err}\n${result.out}`);
   };
 
   const webItem = add('web', 'verified web ancestor');
