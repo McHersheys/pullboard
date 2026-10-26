@@ -1088,17 +1088,19 @@ export async function relayOperation(root, operation, args, io, command, applyLo
     moves.add(state.board);
     let requestedMove;
     try {
+      const requiresAcknowledgment = process.env.PULLBOARD_RELAY_TOKEN !== undefined || state.environment || io.relayCanary;
       let ordered;
       const queue = guarded.queue;
       try { ordered = await ensureOrdered(root, file, state, io); }
       catch (error) {
         if (outboxQueueable(state, error, operation, io, args)) return await queue(error);
-        // #341: a baseline the relay has not accepted never blocks a move; the move rides in the later baseline.
-        if (!baselineNotAccepted(state) || !transientRelayFailure(error)) throw error;
+        // #341/#919 retain persistent local moves; ephemeral sessions and canaries always require acknowledgment.
+        if (requiresAcknowledgment || !baselineNotAccepted(state) || !transientRelayFailure(error)) throw error;
         keepMoveForLaterBaseline(file, state, error, io);
         ordered = false;
       }
       if (!ordered) {
+        if (requiresAcknowledgment) throw new Refused('RELAY_UNAVAILABLE', 'this session requires a relay acknowledgment; retry the move when the relay accepts the board baseline');
         if (state.baselinePause) reportBaselinePause(state, io);
         return applyPausedMoveLocally();
       }
