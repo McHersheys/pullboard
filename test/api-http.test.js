@@ -1412,6 +1412,7 @@ test('[A2, N26] the event stream says when the board changes without a move', as
   let beforeSeen;
   let beforeEvent;
   let beforeHistory;
+  let deliveryEvent;
   try {
     beforeSeen = store.listAgents(cursorBefore).find((entry) => entry.agent_id === agent.agent).agent_last_shout_id;
     beforeEvent = cursorBefore.db.prepare('SELECT COALESCE(MAX(event_id), 0) AS id FROM event').get().id;
@@ -1424,6 +1425,7 @@ test('[A2, N26] the event stream says when the board changes without a move', as
     const afterEvent = cursorAfter.db.prepare('SELECT COALESCE(MAX(event_id), 0) AS id FROM event').get().id;
     assert.ok(afterSeen > beforeSeen, 'the joined agent inbox advances its shout cursor');
     const delivered = cursorAfter.db.prepare('SELECT event_by,event_kind,item_id,event_detail FROM event WHERE event_id>? ORDER BY event_id').all(beforeEvent);
+    deliveryEvent = { ...cursorAfter.db.prepare('SELECT * FROM event WHERE event_id=?').get(afterEvent) };
     assert.equal(afterEvent, beforeEvent + 1, 'inbox records exactly its landed native delivery receipt');
     assert.deepEqual(delivered.map(row => ({ by: row.event_by, kind: row.event_kind, item: row.item_id, detail: JSON.parse(row.event_detail) })), [{
       by: agent.agent, kind: 'activity-delivered', item: null,
@@ -1432,6 +1434,10 @@ test('[A2, N26] the event stream says when the board changes without a move', as
     assert.deepEqual(cursorAfter.db.prepare('SELECT * FROM event WHERE event_id<=? ORDER BY event_id').all(beforeEvent), beforeHistory,
       'the delivered receipt never rewrites the existing native history');
   } finally { store.closeBoard(cursorAfter); }
+  const deliveryFrame = await nextFrame();
+  assert.equal(deliveryFrame.event, 'message', 'the appended native delivery receipt travels before its state notification');
+  assert.equal(deliveryFrame.id, deliveryEvent.event_id, 'the receipt advances the append-only stream cursor exactly once');
+  assert.deepEqual(deliveryFrame.data, { version: 1, event: deliveryEvent }, 'the stream carries the complete actual native receipt');
   await changedOnce('seen-cursor');
 
   const clockNow = Date.now();
