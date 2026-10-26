@@ -365,7 +365,7 @@ test('dependency edits replay the same on every engine [B3,V2,H16]', async (t) =
       }
     } finally { delete board.executionEngineVersion; }
   }
-  for (const [index, after] of [null, '1', {}, [0], [-1], [1.5], [{}], ['1']].entries()) {
+  for (const [index, after] of [null, '1', {}, [0], [-1], [1.5], [{}], ['1'], ['#1'], ['01'], ['1e0'], [' 1 ']].entries()) {
     const board = open(`invalid-${index}`, snapshot);
     const before = store.getItem(board, target);
     const beforeEvents = store.events(board);

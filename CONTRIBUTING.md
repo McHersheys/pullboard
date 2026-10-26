@@ -8,6 +8,24 @@ Thanks for helping. Pullboard is MIT-licensed.
 - **Pull requests are welcome too.** Every one goes through the same checks as the work Pullboard's own agents do, and nothing skips them.
 - **Two quick steps for your first pull request:** agree to our Contributor License Agreement (one click, once) and sign off each commit (one flag). Both are explained below.
 
+## Issues and pull requests
+
+These are aims, not promises.
+
+**Issues**
+- We aim to have a first reply within 7 days.
+- Labelled `bug`, `feature`, `question` or `docs`.
+- `clarify`: closes after 14 days without a reply. Reply to reopen.
+- Confirmed issues move to our board and close; the changelog may acknowledge them.
+- Ideas and feedback in issues are welcome; Pullboard may use them freely, with no obligation. Code goes through a pull request.
+
+**Pull requests**
+- The CLA (once) and a sign-off on every commit.
+- Each one becomes a board item and is verified like any other work.
+- The relay, sealing, signing, approvals and Git hooks need the maintainer's approval.
+- `SPEC.md` changes are proposals; the maintainer approves rows.
+- Smaller is faster; large changes may be split.
+
 ## Licensing, the CLA and sign-off
 
 **The Contributor License Agreement (CLA).** The first time you open a pull request, a bot asks you to agree to Pullboard's CLA with one click. You only do this once. In short:
@@ -93,7 +111,7 @@ Then use `git cs -m "..."` instead of `git commit -m "..."`.
 
 ## What happens after you open a pull request
 
-1. **We look at it when we can.** There is no fixed response time, and we may not reply to every pull request.
+1. **We aim to reply within 7 days.**
 2. **It becomes an item on Pullboard's own board.** The bar is the behaviour your issue describes.
 3. **A second reviewer checks your exact commit.** That's one of our verifier agents, plus the project owner for sensitive areas. It runs the full test suite on the minimum Node version and confirms your test fails without your change.
 4. **If it passes,** it lands on `main` through our normal landing process, with you credited as the author. If we had to adjust it, you're credited as co-author with `Co-authored-by`. The pull request shows as merged, or we close it with a link to where it landed.

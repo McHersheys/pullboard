@@ -124,6 +124,8 @@ const CALLBACKS = {
  * reads committed doctrine rules leniently: a doctrine it cannot parse carries no check [D1].
  */
 const CAUGHT = {
+  // Invalid authenticated-link metadata remains an unavailable dependency inside these exact catches.
+  'cross-repo-dependencies.js#stateFor': ['board-link-format.js#boardLinkRecord', 'board-link-state.js#readReceivedBoardState'],
   // Review eligibility returns Refused values as data, and this helper also catches thrown eligibility refusals.
   'line-capacity-board.js#oldestCapacityReview': ['board.js#reviewerChecks'],
   'commands/submit.js#submitHere': ['native-flakes.js#observeFailure', 'cli.js#freezer', 'main-red.js#compareMainFailures', 'main-red.js#matchingReworks', 'doctrine-checks.js#checkRulesAt'],
@@ -559,6 +561,20 @@ test('a broken copy of the declaration fails the check against the code, both wa
 });
 
 test('a broken copy of the code fails the check: a refusal added wherever a move reaches [M1, M4]', () => {
+  for (const [file, pattern] of [
+    ['board-link-format.js', /^export function boardLinkRecord\(value\) \{$/m],
+    ['board-link-state.js', /^export function readReceivedBoardState\(board, .*$/m],
+  ]) {
+    const inForeignReader = editedSource(file, pattern,
+      "$&\n  throw new Refused('MOON_PHASE', 'wait for the full moon');");
+    assert.deepEqual(codeProblems(MACHINE, inForeignReader), [], 'only the exact foreign evidence reader is caught as unavailable');
+  }
+  const inForeignCaller = editedSource('cross-repo-dependencies.js', /^function stateFor\(board, ref\) \{$/m,
+    "$&\n  throw new Refused('MOON_PHASE', 'wait for the full moon');");
+  assert.deepEqual(codeProblems(MACHINE, inForeignCaller).sort(), [
+    'MOON_PHASE is raised by claim but not declared there',
+    'MOON_PHASE is raised by reserve but not declared there',
+  ], 'the foreign-state caller is still audited outside its exact evidence catches');
   const inCaughtBaseline = editedSource('board-query.js', /^export function specApprovalBaseline\(board\) \{$/m,
     "$&\n  if (!board) throw new Refused('MOON_PHASE', 'wait for the full moon');");
   assert.deepEqual(codeProblems(MACHINE, inCaughtBaseline), [], 'the real caller catches a Refused from the baseline reader');
@@ -1326,7 +1342,7 @@ test('the review lease is reviewLease in pullboard.json, 30 minutes unless the r
 
 test('the lifecycle page and the help show the reservation: reserve, and reviewFree on every verdict [V15, M1]', () => {
   const page = lifecycleMarkdown();
-  assert.match(page, /^\| reserve \| submitted \| submitted \| agent, coordinator \| .*reviewFree \(REVIEW_HELD\) \|$/m);
+  assert.match(page, /^\| reserve \| submitted \| submitted \| agent, coordinator \| .*reviewFree \(REVIEW_HELD\), result \(BAD_DEPENDENCIES\) \|$/m);
   for (const verb of ['accept', 'reject']) assert.match(page, new RegExp(`^\\| ${verb} \\| submitted, verified \\| .*policyAllows \\(COORDINATOR_VERIFIES\\), familyAllows \\(O2_FAMILY_MATCH\\), reviewFree \\(REVIEW_HELD\\), criterionUnchanged`, 'm'));
   assert.match(page, /^\| REVIEW_HELD \| no other agent holds its review under a live lease \| pullboard next --verify/m);
   assert.match(HELP.all, /^ {2}agent +intake, claim, release, submit, reserve, accept, reject, reopen, escalate, refreeze \(when a live claim has a pending coordinator correction\)$/m);
