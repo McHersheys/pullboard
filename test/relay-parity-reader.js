@@ -7,18 +7,25 @@ import { ENGINE_VERSION } from '../src/machine.js';
 import { openPagedSnapshot } from '../src/relay-page-layout.js';
 import { snapshotState } from '../relay/browser-model.js';
 
-/** Only the native filesystem routing identity differs deliberately from the relay board identity. */
+/** Deliberate machine-local differences; all other fields retain complete reader parity. */
 export const LOCAL_PARITY_FIELDS = Object.freeze([
   { path: 'root', reason: 'Native routing uses a local repository directory; a relay reader routes by persistent board id.' },
+  { path: 'relayHealthAlerts', reason: 'Canary observations are private telemetry on this local client, never sealed board state.' },
+  { path: 'needs', kind: 'relay-health', reason: 'Only Needs derived from this local client canary stay on that client.' },
 ]);
 
 /** Report the first undeclared field difference with both actual values, including missing keys. */
 export function assertReaderParity(native, relay, localFields = LOCAL_PARITY_FIELDS) {
-  const ignored = new Set(localFields.map(entry => entry.path));
+  const ignored = new Set(localFields.filter(entry => !entry.kind).map(entry => entry.path));
   assert.ok(localFields.every(entry => entry.path && entry.reason?.trim()), 'every local-only field has a reason');
   /** Compare structure as well as values; a missing field is never equivalent to an explicit null. */
   function compare(left, right, path) {
     if (ignored.has(path)) return;
+    const localKinds = localFields.filter(entry => entry.path === path && entry.kind).map(entry => entry.kind);
+    if (localKinds.length && Array.isArray(left) && Array.isArray(right)) {
+      left = left.filter(entry => !localKinds.includes(entry.kind));
+      right = right.filter(entry => !localKinds.includes(entry.kind));
+    }
     const label = value => value === undefined ? '<missing>' : JSON.stringify(value);
     if (left === null || right === null || typeof left !== 'object' || typeof right !== 'object') {
       assert.deepEqual(left, right, `reader parity ${path}: native=${label(left)} relay=${label(right)}`);

@@ -6736,6 +6736,7 @@
     "LANE_HELD": "wait for the lane: pullboard next --wait 9 (minutes)",
     "LOCAL_RUNNER_REQUEUE": "call requeueRunner only on a lease with a runner; release a local lease normally",
     "MAIN_IS_COORDINATOR": "use an independent agent checkout for agent work, or run person-only actions from the main checkout as the coordinator",
+    "MERGE_ONLY_PROOF": "submit the exact gated merge with the unchanged frozen criterion, or leave the new head for outside review",
     "MERGE_CHECK_FAILED": "use Git 2.38 or newer (git --version), then retry",
     "MERGE_CONFLICT": "merge main into your branch, resolve the conflicts, commit, and run the command again",
     "MILESTONES_CORRUPT": "restore the board from a known-good export: pullboard import <file>",
@@ -7104,7 +7105,13 @@
     "STATUS_IS_ACTIVITY": "keep working on the item; status is board activity, not a shout",
     "LANE_MESSAGE_ITEM": "omit --kind for an item-specific message",
     "NOT_LANE_LEAD": "ask your named lane lead to send the decision upward",
-    "RUNNER_WAIT_DEADLINE": "check the runners the message names, or restore local gate capacity with pullboard settings, then retry"
+    "RUNNER_WAIT_DEADLINE": "check the runners the message names, or restore local gate capacity with pullboard settings, then retry",
+    "RELAY_TIMEOUT": "run the command again; pullboard status shows any moves still queued for the relay",
+    "RELAY_HEALTH": "read recorded round trips with pullboard relay canary status, then run the command again",
+    "RELAY_CANARY_CONFIG": "enable this machine's dedicated canary from its ordinary joined seat: pullboard relay canary on",
+    "RELAY_CANARY_DEADLINE": "read the failed step with pullboard relay canary status; the next minute's probe retries on its own",
+    "RELAY_CANARY_SEAT": "run the canary from the seat that enabled it, or run pullboard relay canary on in a dedicated joined seat",
+    "RELAY_CANARY_STOPPED": "start the watch again with pullboard relay canary watch; pending notices are sent on its next run"
   },
   "replay": {
     "initial": {

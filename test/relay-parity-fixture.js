@@ -7,6 +7,7 @@ import * as store from '../src/board.js';
 import { decodeBoardKey } from '../src/seal.js';
 import { relayPresentation } from '../src/relay-presentation.js';
 import { presentationDigest } from '../src/relay-presentation.js';
+import { observeRelayHealth } from '../src/relay-canary-health.js';
 import { runFixtureChild } from './fixture-child.js';
 import { runFixtureChildAsync } from './fixture-child.js';
 export { assertReaderParity } from './relay-parity-reader.js';
@@ -61,11 +62,17 @@ function foreignBoardFixture(t, box) {
 }
 
 /** Capture full API state and independently reconstruct the sealed API2 snapshot over actual authenticated HTTP. */
-export async function parityRoundtrip(t, { foreign = false } = {}) {
+export async function parityRoundtrip(t, { foreign = false, localHealth = false } = {}) {
   const box = await relayClientFixture(t);
   const seeded = seedParityBoard(box.root, box.lane);
   const other = foreign ? foreignBoardFixture(t, box) : null;
   assertPresentationChangeClock(box.root, seeded.item);
+  if (localHealth) {
+    const now = Date.now();
+    for (const at of [now - 1, now]) observeRelayHealth(box.root, {
+      ok: false, step: 'pull', code: 'RELAY_UNREACHABLE', roundTripMs: 1, relayVersion: 1,
+    }, { now: at });
+  }
   await box.link();
   const link = JSON.parse(readFileSync(box.linkFile, 'utf8'));
   const key = decodeBoardKey(readFileSync(box.keyFile, 'utf8').trim());
@@ -103,5 +110,5 @@ try { console.log(JSON.stringify(await exerciseOperationParity(JSON.parse(readFi
       return document;
     } finally { rmSync(file, { force: true }); }
   }
-  return { native, relay, exercised: seeded.exercised, exerciseOperations };
+  return { native, relay, restored, exercised: seeded.exercised, exerciseOperations };
 }

@@ -1,8 +1,11 @@
 import { buildLocalBoardState } from './native-board-state.js';
-import { dependencyIds } from './native-board-state.js';
 import { stateFileInputs } from './native-board-state.js';
 import { fileRevision } from './native-board-state.js';
 import { nativeStateClockMatches } from './native-state-clock.js';
+import { foreignDependencyStates } from './cross-repo-dependencies.js';
+import {
+  localDependencyIds,
+} from './item-dependencies.js';
 /** The local API v1: the CLI's moves, persistent board identities and live events (A2). */
 import {
   createHash,
@@ -75,11 +78,13 @@ import { createApiHandler } from './api-http.js';
 import { settingsInventory } from './settings-inventory.js';
 import { moveArgs } from './api-moves.js';
 import { personRequestStatuses } from './relay-requests.js';
+import { relayCanaryNeeds } from './relay-canary-needs.js';
+import { relayFiles } from './local-state.js';
 export { moveArgs } from './api-moves.js';
 
 /** Inputs shared by the complete state cache and the lightweight live-change watcher. */
 const STATE_REVISION_INPUTS = Object.freeze([
-  'identity', 'head', 'trunk', 'files', 'event', 'agents', 'leases', 'requestReceipts', 'milestones', 'externalRoadmap', 'eventLogVersion', 'ruleProofWindow',
+  'identity', 'head', 'trunk', 'files', 'event', 'agents', 'leases', 'requestReceipts', 'milestones', 'externalRoadmap', 'eventLogVersion', 'ruleProofWindow', 'localRelayMarker',
 ]);
 
 /** Serialize named state inputs in one stable order for cache and stream comparisons. */
@@ -149,6 +154,7 @@ function boardStateRevision(root, id, isMain, { projects = listApiProjects, scop
     externalRoadmap: local.externalMilestones,
     eventLogVersion: store.EVENT_LOG_VERSION,
     ruleProofWindow: local.ruleProofWindow,
+    localRelayMarker: localRelayMarker(info),
   };
   const revision = stateRevision(inputs);
   return { cacheId: info.commonDir + '\0' + id, revision, event: local.event, milestones: local.externalMilestones,
@@ -175,6 +181,12 @@ function fileMarkerForPath(path) {
     if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return 'missing';
     throw error;
   }
+}
+
+/** Invalidate only this local API state when its private canary record or queued link changes. */
+function localRelayMarker(info) {
+  const files = relayFiles(info.commonDir);
+  return [fileMarkerForPath(join(info.commonDir, 'pullboard', 'relay-health.sqlite')), fileMarkerForPath(files.link)];
 }
 
 /** Read HEAD and its selected ref without spawning Git on every 200 ms poll. */
@@ -398,6 +410,7 @@ function watchLocalStateRevision(board, { scopeCommonDir = null } = {}) {
       externalRoadmap,
       eventLogVersion: store.EVENT_LOG_VERSION,
       ruleProofWindow: local.ruleProofWindow,
+      localRelayMarker: localRelayMarker(info),
     });
   }
 
@@ -881,6 +894,7 @@ export function createLocalApiHandler({ secret, getPort, runCommand, projects = 
       projects: apiProjects,
       scopeCommonDir,
       observedAt,
+      localRelayHealth: relayCanaryNeeds(board.root),
     }), codeIsMain);
     const state = { ...built.state, sequence: built.sequence };
     const entry = snapshotEntry(before.revision, state, prepareFlowHistory(built.history), {
@@ -987,10 +1001,11 @@ export function createLocalApiHandler({ secret, getPort, runCommand, projects = 
     if (!row) return null;
     const now = currentBoard.clock.now().toISOString();
     const status = new Map();
-    for (const dependency of dependencyIds(row)) {
+    for (const dependency of localDependencyIds(row)) {
       const dependent = db.prepare('SELECT item_status FROM item WHERE item_id = ?').get(dependency);
       if (dependent) status.set(dependency, dependent.item_status);
     }
+    for (const ref of foreignDependencyStates(currentBoard, row)) status.set(`${ref.repo}#${ref.id}`, ref.status);
     // Detail reads need no new Git process while the trunk holds.
     const tip = trunkRevisionReader(info)();
     const approval = approvalFor(board.root, currentBoard, info);

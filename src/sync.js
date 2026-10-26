@@ -206,6 +206,7 @@ async function settle(root, board, pending) {
 
 /** Sync only after explicit opt-in; a normal read catches network refusals and keeps its local prefix. */
 export async function syncGitBoard(root, board, io, { settlePending = false } = {}) {
+  board.gitRoot = root; // Runtime Git authority is local, not a field supplied by a replicated move.
   const file = paths(root);
   return locked(file.marker, async () => {
     save(file.marker, { version: 1, remote: 'origin', ref: GIT_BOARD_REF });
@@ -219,6 +220,7 @@ export async function syncGitBoard(root, board, io, { settlePending = false } = 
 
 /** Route a mutation through the single remote order, retaining a pending intent before its first push. */
 export async function gitBoardOperation(root, board, operation, args, io = {}) {
+  board.gitRoot = root;
   const file = paths(root);
   return locked(file.marker, async () => {
     // An enabled replica seals its intent before its first network attempt, including an outage.

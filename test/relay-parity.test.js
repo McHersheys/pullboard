@@ -21,3 +21,14 @@ test('single-board parity never seals another board title through a milestone re
   const { native, relay } = await parityRoundtrip(t, { foreign: true });
   assertReaderParity(native, relay);
 });
+
+test('local relay health and its Needs stay outside sealed state without hiding other differences [H5,H16,A2]', { timeout: 60_000 }, async t => { // budget: real local HTTP, sealed snapshot retrieval and cleanup under the guard ceiling.
+  const { native, relay, restored } = await parityRoundtrip(t, { localHealth: true });
+  assert.equal(native.relayHealthAlerts.length, 1, 'actual private canary failures remain visible locally');
+  assert.ok(native.needs.some(entry => entry.kind === 'relay-health'), 'local Needs retains the derived alert');
+  assert.equal(Object.hasOwn(restored.presentation.state, 'relayHealthAlerts'), false, 'sealed state omits the private telemetry field');
+  assert.ok(!restored.presentation.state.needs.some(entry => entry.kind === 'relay-health'), 'sealed Needs omits the private alert');
+  assertReaderParity(native, relay);
+  assert.throws(() => assertReaderParity(native, { ...relay, needs: [...relay.needs, { kind: 'undeclared-difference' }] }),
+    /reader parity needs/u, 'other Needs differences remain refused');
+});

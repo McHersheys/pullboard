@@ -28,20 +28,22 @@ import { verdictProjector } from './verdict-freshness.js';
 import { trunkRevisionReader } from './trunk-revision.js';
 import { projectState } from './serve.js';
 import { personRequestStatuses } from './relay-requests.js';
+import { dependencyValues, hasForeignDependencies } from './item-dependencies.js';
 
 /** Build the complete local API state, including fields that the shared project snapshot omits. */
-export function buildLocalBoardState(root, boardId, board, codeIsMain, { previous = null, fullItemRebuild = true, afterSequence = 0, changedLeases = new Set(), onItemBuild, projects = listApiProjects, scopeCommonDir = null, observedAt = Date.now(), freshnessReader = null } = {}) {
+export function buildLocalBoardState(root, boardId, board, codeIsMain, { previous = null, fullItemRebuild = true, afterSequence = 0, changedLeases = new Set(), onItemBuild, projects = listApiProjects, scopeCommonDir = null, observedAt = Date.now(), freshnessReader = null, localRelayHealth = null } = {}) {
   if (!Number.isSafeInteger(observedAt) || observedAt < 0) throw new TypeError('native projection needs an observation timestamp');
   board = Object.assign(Object.create(board), { clock: { ...board.clock, now: () => new Date(observedAt) } });
   board.db.exec('BEGIN');
   try {
     const sequence = board.db.prepare('SELECT COALESCE(MAX(event_id), 0) AS id FROM event').get().id;
     let rebuildAll = fullItemRebuild || (previous && previous.sequence > sequence);
-    const eventRows = rebuildAll || !previous ? [] : board.db.prepare('SELECT event_id, item_id FROM event WHERE event_id > ? ORDER BY event_id').all(afterSequence);
+    const eventRows = rebuildAll || !previous ? [] : board.db.prepare('SELECT event_id, item_id, event_kind FROM event WHERE event_id > ? ORDER BY event_id').all(afterSequence);
     if (!rebuildAll && previous && eventRows.length !== sequence - previous.sequence) rebuildAll = true;
     const dirtyIds = new Set(rebuildAll ? [] : [...changedLeases]);
     for (const event of eventRows) if (event.item_id !== null) dirtyIds.add(event.item_id);
 
+    const foreignChanged = eventRows.some(event => event.event_kind === 'board_link_state' || event.event_kind === 'board_link');
     const currentItems = store.listItems(board, { all: true });
     const currentById = new Map(currentItems.map((item) => [item.item_id, item]));
     const currentDependencies = new Map(currentItems.map((item) => [item.item_id, dependencyIds(item)]));
@@ -51,6 +53,8 @@ export function buildLocalBoardState(root, boardId, board, codeIsMain, { previou
     }
     for (const item of currentItems) {
       const prior = previous?.itemMeta.get(item.item_id);
+      // E32 announcements and consent changes carry no local item_id, but change foreign blockers.
+      if (foreignChanged && hasForeignDependencies(item)) dirtyIds.add(item.item_id);
       if (rebuildAll || !previous?.items.has(item.item_id) || !prior || prior.raw !== JSON.stringify(item)) dirtyIds.add(item.item_id);
       if (prior && prior.milestone !== (milestoneNames.get(item.item_id) ?? null)) dirtyIds.add(item.item_id);
     }
@@ -91,6 +95,8 @@ export function buildLocalBoardState(root, boardId, board, codeIsMain, { previou
     state.personRequests = projectData.personRequests;
     state.milestones = projectData.milestones;
     state.blocks = personBlockWords(repoInfo(root).commonDir, board.clock.now()); // Needs you below is recomputed with them [C6].
+    // Only the local HTTP host supplies its private telemetry; sealed projections omit it entirely.
+    if (localRelayHealth !== null) state.relayHealthAlerts = localRelayHealth;
     const decorated = projectSpecApprovals(projectFit(pendingFit(repoInfo(root).commonDir), projectRowDecisions(projectData.rowDecisions, state)), specApprovalState(root, { board, config }));
     decorated.ruleCounts = ruleProofCounts(root, board, decorated.spec);
     const bases = new Map(decorated.items.map((item) => [item.id, item]));
@@ -128,7 +134,7 @@ export function buildLocalBoardState(root, boardId, board, codeIsMain, { previou
 
 /** Parse an item's ordered prerequisite IDs from its persisted row. */
 export function dependencyIds(item) {
-  return item.item_after ? item.item_after.split(',').map(Number) : [];
+  return dependencyValues(item);
 }
 
 
