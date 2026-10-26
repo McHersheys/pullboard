@@ -86,7 +86,7 @@ export async function hookCommand(io, { first, second }) {
       const items = store.listItems(board, { all: true });
       const landing = info.isMain || store.landingBatches(board).some(batch => landingBatchOwnsRoot(batch, info.root));
       return {
-        claim: items.find(item => item.item_status === 'claimed' && item.item_owner === agent?.agent_id) ?? null,
+        claims: items.filter(item => item.item_status === 'claimed' && item.item_owner === agent?.agent_id),
         landings: landing ? items.filter(item => item.item_status === 'verified' && !item.item_merged_commit) : [],
       };
     }) ?? {};

@@ -6,7 +6,7 @@ import {
 import { landingRows } from './landing-message.js';
 
 /** Validate supplied metadata before replacing it with the board's canonical trailer paragraph. */
-export function prepareCommitMetadata(raw, { claim = null, landings = [], spec = null, syncMerge = false } = {}) {
+export function prepareCommitMetadata(raw, { claim = null, claims = null, landings = [], spec = null, syncMerge = false } = {}) {
   const message = raw.replace(/\r\n/gu, '\n').split('\n').filter(line => !line.startsWith('#')).join('\n').trimEnd();
   if (syncMerge && /^Merge /u.test(message)) return { message: raw, problems: [] };
   const parsed = parseCommitMessage(message);
@@ -14,7 +14,10 @@ export function prepareCommitMetadata(raw, { claim = null, landings = [], spec =
   if (!parsed.type) problems.push('write a typed header: type(scope): subject; only Git sync merges are exempt');
   const supplied = message.split('\n').filter(line => /^\s*Pullboard-/iu.test(line));
   const metadata = parsed.trailers.filter(entry => /^Pullboard-/iu.test(entry.key));
-  const expected = claim ?? landings.find(item => item.item_id === parsed.item);
+  const held = claims ?? (claim ? [claim] : []);
+  const selected = held.find(item => item.item_id === parsed.item);
+  if (held.length > 1 && !selected) problems.push(`this seat holds ${held.map(item => `#${item.item_id}`).join(', ')}; name one with an explicit Pullboard-Item trailer, or release one claim`);
+  const expected = held.length > 1 ? selected : held[0] ?? landings.find(item => item.item_id === parsed.item);
   if (supplied.length !== metadata.length) problems.push('keep Pullboard trailers together in the final paragraph, with no text after them');
   if (metadata.some(entry => !['Pullboard-Item', 'Pullboard-Rows'].includes(entry.key))) problems.push('the Pullboard- trailer prefix is reserved for Item and Rows');
   for (const key of ['Pullboard-Item', 'Pullboard-Rows']) {
