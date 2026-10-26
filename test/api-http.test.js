@@ -36,7 +36,7 @@ const require = createRequire(import.meta.url);
 const childProcess = require('node:child_process');
 const gitIdentity = { ...process.env, GIT_AUTHOR_NAME: 'HTTP Agent', GIT_AUTHOR_EMAIL: 'agent@example.invalid',
   GIT_COMMITTER_NAME: 'HTTP Agent', GIT_COMMITTER_EMAIL: 'agent@example.invalid' };
-const counters = { git: 0, node: 0, other: 0, methods: {}, gitCalls: [] };
+const counters = { git: 0, node: 0, other: 0, methods: {}, gitCalls: [], otherCalls: [] };
 let counting = false;
 let currentRoute = 'setup';
 const childMethods = ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork'];
@@ -48,6 +48,10 @@ function countChild(method, args) {
   const kind = base === 'git' ? 'git' : (command === process.execPath || base === 'node' ? 'node' : 'other');
   counters[kind] += 1;
   counters.methods[method] = (counters.methods[method] ?? 0) + 1;
+  if (kind === 'other' && counters.otherCalls.length < 32) {
+    counters.otherCalls.push({ method, argv: [raw, ...(Array.isArray(args[1]) ? args[1] : [])],
+      stack: String(new Error().stack ?? '').slice(0, 3000) });
+  }
   if (kind === 'git' && counters.gitCalls.length < 32) {
     const commandArgs = Array.isArray(args[1]) ? args[1].slice(0, 32).map(value => String(value).slice(0, 512)) : [];
     const options = Array.isArray(args[1]) ? args[2] : args[1];
@@ -146,6 +150,7 @@ try {
   counters.other = 0;
   counters.methods = {};
   counters.gitCalls = [];
+  counters.otherCalls = [];
   requestCount = 0;
   if (codeMetadataMarker) {
     const changed = new Date(0);
@@ -181,6 +186,7 @@ try {
       counters.other = 0;
       counters.methods = {};
       counters.gitCalls = [];
+  counters.otherCalls = [];
       currentRoute = status === undefined ? 'unknown main status' : 'true main status';
       const changed = new Date(status === undefined ? 1000 : 2000);
       utimesSync(codeMetadataMarker, changed, changed);
@@ -1408,6 +1414,7 @@ test('[A2, N26] the event stream says when the board changes without a move', as
     const afterSeen = store.listAgents(cursorAfter).find((entry) => entry.agent_id === agent.agent).agent_last_shout_id;
     const afterEvent = cursorAfter.db.prepare('SELECT COALESCE(MAX(event_id), 0) AS id FROM event').get().id;
     assert.ok(afterSeen > beforeSeen, 'the joined agent inbox advances its shout cursor');
+    process.stderr.write(JSON.stringify({ inboxEvents: cursorAfter.db.prepare('SELECT event_by,event_kind,item_id,event_detail FROM event WHERE event_id>? ORDER BY event_id').all(beforeEvent) }) + '\n');
     assert.equal(afterEvent, beforeEvent, 'reading the inbox changes no append-only board event');
   } finally { store.closeBoard(cursorAfter); }
   await changedOnce('seen-cursor');
