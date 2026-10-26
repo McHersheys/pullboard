@@ -303,6 +303,21 @@ function cpuBindings(source, moduleExports, callable = false, literalCache) {
     }
   }
   if (callable) {
+    const destructured = new Set();
+    const delimiters = [];
+    for (let at = 0; at < code.length; at++) {
+      const char = code[at];
+      if ('([{'.includes(char)) delimiters.push({ char, at });
+      else if (')]}'.includes(char)) {
+        const opening = delimiters.pop();
+        if (!opening || { '(': ')', '[': ']', '{': '}' }[opening.char] !== char) continue;
+        if (opening.char !== '(' && /^\s*=(?!=|>)/u.test(code.slice(at + 1))) {
+          // Including property keys is deliberately conservative: an ambiguous binding must
+          // never inherit a same-spelled function's evidence and hide executable options.
+          for (const word of code.slice(opening.at + 1, at).matchAll(/[A-Za-z_$][\w$]*/gu)) destructured.add(word[0]);
+        }
+      }
+    }
     for (const name of names) {
       const pattern = name.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
       const writes = [...code.matchAll(new RegExp(`(?<![\\w$])${pattern}\\s*(?:[+*/%&|^?-]*=(?!=|>)|<<=|>>>=|>>=|\\+\\+|--)`, 'gu'))];
@@ -310,7 +325,7 @@ function cpuBindings(source, moduleExports, callable = false, literalCache) {
       const declarations = [...code.matchAll(new RegExp(`\\b(?:const|let|var|function|class)\\s+${pattern}\\b`, 'gu'))];
       const parameters = [...code.matchAll(/(?:function(?:\s+[\w$]+)?\s*|catch\s*)\(([^)]*)\)|\(([^)]*)\)\s*=>|\b([A-Za-z_$][\w$]*)\s*=>/gu)];
       const shadowed = parameters.some(match => new RegExp(`\\b${pattern}\\b`, 'u').test(match[1] ?? match[2] ?? match[3] ?? ''));
-      if (writes.length > (initialized ? 1 : 0) || declarations.length > 1 || shadowed) names.delete(name);
+      if (writes.length > (initialized ? 1 : 0) || declarations.length > 1 || shadowed || destructured.has(name)) names.delete(name);
     }
     // Remove aliases whose original binding was later disqualified as mutable or shadowed.
     const aliasPasses = names.size;
