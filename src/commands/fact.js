@@ -6,6 +6,9 @@ import {
   requirePersonChannel,
 } from '../person.js';
 import {
+  requireSignedPerson,
+} from '../person-signing-cli.js';
+import {
   Refused,
 } from '../refused.js';
 import {
@@ -23,6 +26,13 @@ export async function run(io, { first, second, rest, values }) {
   const id = idArg(first);
   const implies = parseImplies(values.implies);
   const asPerson = values.as === 'person' && personMode(ctx, me, values);
+  if (asPerson || values['never-again'] || values.cause !== undefined) {
+    const confirmed = await requireSignedPerson(ctx, board, me, { verb: 'fact', item: id, args: { kind: second, text: rest[0], as: 'person',
+      ...(values.supersedes === undefined ? {} : { supersedes: String(values.supersedes) }), ...(values.ref === undefined ? {} : { ref: String(values.ref) }),
+      ...(values.implies === undefined ? {} : { implies: String(values.implies) }), ...(values.cause === undefined ? {} : { cause: String(values.cause) }),
+      ...(values['never-again'] ? { 'never-again': true } : {}) } });
+    if (confirmed !== null) return confirmed;
+  }
   if (asPerson) requirePersonChannel(ctx.io.personChannel);
   const marked = asPerson || values['never-again'] || values.cause !== undefined
     ? { cause: values.cause ?? null, neverAgain: Boolean(values['never-again']), asPerson, channel: ctx.io.personChannel ?? 'terminal' } : {};

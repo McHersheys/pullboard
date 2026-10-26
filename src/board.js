@@ -336,6 +336,7 @@ export { declareJob, recordJobRun } from './recurring-jobs.js';
 export { proposeSentinel, decideSentinel, beginSentinelRun, finishSentinelRun } from './sentinels.js';
 export { flakeLedger, recordFlakeObservation } from './flakes.js';
 export { flakeQuarantines, gateRuns, recordGateRun } from './quarantine.js';
+export { personProposals, personSigning, proposePersonMove, setPersonSigning } from './person-signing.js'; // Signed person moves [E22].
 export { proofReceipts, recordProofRun } from './proof-receipts.js';
 import { refuseLongShout } from './proof-receipts.js';
 import { PROOF_RUN_ENGINE } from './proof-run-engine.js';
@@ -346,7 +347,7 @@ export { agentAt, agentById, agentCreator, coordinatorHolder, listAgents, nextSe
 export const ACCEPT_REASON = 'CRITERION_MET';
 export { PERSON } from './board-query.js';
 
-export { EVENT_LOG_VERSION } from './board-schema-source.js';
+export { EVENT_LOG_VERSION, SIGNED_EVENT_LOG_VERSION } from './board-schema-source.js';
 
 export { BOARD_BUSY_TIMEOUT_MS } from './board-schema-source.js';
 

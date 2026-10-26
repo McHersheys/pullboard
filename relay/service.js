@@ -1,9 +1,21 @@
 /** Opt-in sealed API v1 relay: authorization, opaque persistence and ordered live delivery [A4,H7,H16,H3]. */
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
-import { lstatSync, mkdirSync } from 'node:fs';
-import { join, resolve } from 'node:path';
-import { createApiHandler, apiJson, apiRefusal, apiStatus, readApiBody } from '../src/api-http.js';
+import {
+  lstatSync,
+  mkdirSync,
+} from 'node:fs';
+import {
+  join,
+  resolve,
+} from 'node:path';
+import {
+  createApiHandler,
+  apiJson,
+  apiRefusal,
+  apiStatus,
+  readApiBody,
+} from '../src/api-http.js';
 import { Refused } from '../src/refused.js';
 import { createRelayJournal } from './journal.js';
 import { createRelayRetention } from './retention.js';
@@ -15,9 +27,16 @@ import { createKeyRequestStore } from './key-request-store.js';
 import { createKeyRequestHandler } from './key-request-http.js';
 import { createRelayBrowserHandler } from './browser-page.js';
 import { VERIFIER_STANDING_ENGINE } from '../src/machine.js';
-import { SEALED_SNAPSHOT_BYTES, SNAPSHOT_BODY_BYTES } from '../src/relay-limits.js';
-import { createRelayPagesHandler, snapshotPageRoot } from './pages-http.js';
+import {
+  SEALED_SNAPSHOT_BYTES,
+  SNAPSHOT_BODY_BYTES,
+} from '../src/relay-limits.js';
+import {
+  createRelayPagesHandler,
+  snapshotPageRoot,
+} from './pages-http.js';
 import { createStorageQuota } from './storage-quota.js';
+import { createPasskeyHandler } from './passkey-http.js';
 import { createUploadStatusHandler } from './upload-status.js';
 import { createRelayBoardLinks } from './board-links.js';
 
@@ -61,8 +80,8 @@ function trustedOrigin(value) {
 }
 
 /** Decode only canonical transport bytes; sealed payloads are never parsed or unsealed. */
-function sealed(body, allowRegistration = false) {
-  const keys = allowRegistration ? ['sealed', 'sequence', 'registration'] : ['sealed', 'sequence'];
+function sealed(body, allowRegistration = false, allowPresence = false) {
+  const keys = ['sealed', 'sequence', ...(allowRegistration ? ['registration'] : []), ...(allowPresence ? ['presence'] : [])];
   if (!body || Object.keys(body).some((key) => !keys.includes(key)) || typeof body.sealed !== 'string' || !/^[A-Za-z0-9_-]+$/.test(body.sealed)) {
     throw new Refused('BAD_UPLOAD', 'send only sequence and a nonempty base64url sealed payload; keep keys on your device');
   }
@@ -118,6 +137,8 @@ function sender(who, personOnly = false) {
     // The engine the sender declared: a seal no replica opens, from an engine no newer than the replica's, is junk to set aside [E20].
     ...(Number.isSafeInteger(who.engineVersion) && who.engineVersion > 0 ? { engine: who.engineVersion } : {}),
     ...(who.kind === 'board' ? { agent: who.agent } : who.kind === 'machine' ? { machine: who.machine } : {}),
+    // The relay's signed stamp that a passkey confirmed this person request with the person present [E22].
+    ...(who.kind === 'session' && who.presence ? { presence: who.presence } : {}),
     ...(personOnly === 'snapshot' ? {} : { policy: VERIFIER_STANDING_ENGINE,
       ...(who.root === true ? { root: true, ...(who.lineage ? { lineage: who.lineage } : {}) } : {}) }) };
 }
@@ -271,14 +292,18 @@ export function createRelayHandler({ directory, auth, pollMs = 200, publicOrigin
 
   /** Append ciphertext under its server-allocated sequence, with no engine or filesystem access. */
   async function append(board, body, who, kind = 'move') {
-    const bytes = sealed(body, kind === 'move');
+    const bytes = sealed(body, kind === 'move', kind === 'request');
     if (!Number.isSafeInteger(body.sequence) || body.sequence < 1) throw new Refused('BAD_SEQUENCE', 'seal this move for the next positive sequence after the latest committed prefix');
     const authenticated = await authorized(who.credential, board.id, true);
     const principal = sender({ ...authenticated, engineVersion: who.engineVersion });
     if (body.registration === undefined) {
       return withJournal(board.id, (journal) => {
-        const row = body.sequence <= journal.latest() ? journal.append(body.sequence, bytes, kind, principal)
-          : storing(board.id, principal, bytes.byteLength, () => journal.append(body.sequence, bytes, kind, principal));
+        // Under the board lock, a passkey answer is checked, the request stored, then its grant spent, so one grant stamps one request [E22].
+        const presence = body.presence === undefined ? null : auth.personPresence(authenticated, board.id, body.presence, passkeyOrigin());
+        const stamped = presence ? sender({ ...authenticated, engineVersion: who.engineVersion, presence: presence.stamp }) : principal;
+        const row = body.sequence <= journal.latest() ? journal.append(body.sequence, bytes, kind, stamped)
+          : storing(board.id, stamped, bytes.byteLength, () => journal.append(body.sequence, bytes, kind, stamped));
+        presence?.commit();
         return { status: 200, body: { event: event(row), result: { sequence: row.sequence } } };
       }, false, who.engineVersion);
     }
@@ -306,6 +331,14 @@ export function createRelayHandler({ directory, auth, pollMs = 200, publicOrigin
     }, false, who.engineVersion);
   }
 
+  /** The origin and RP id a passkey ceremony must name: this relay's configured public origin. */
+  function passkeyOrigin() {
+    if (!origin) throw new Refused('RELAY_CONFIG', 'configure the relay public origin before using passkeys');
+    return { origin, rpId: new URL(origin).hostname };
+  }
+  const passkeys = createPasskeyHandler({ auth, origin: passkeyOrigin,
+    person: async (req, write) => deviceStore.authorizeSession(await auth.authenticate(credential(req, origin, write))),
+    board: (req, id) => authorizedRequest(req, identity(id), true) });
   const browser = origin ? createRelayBrowserHandler({ authenticate: (req) => auth.authenticate(credential(req, origin)) }) : null;
   const pagesHandler = createRelayPagesHandler({ directory: root, now, authorize: authorizedRequest, withJournal, sender, quota, annotated, refreshStorage, enabled: Boolean(quota) });
   const common = createApiHandler({
@@ -359,6 +392,7 @@ export function createRelayHandler({ directory, auth, pollMs = 200, publicOrigin
 
   /** Add authenticated snapshot replacement and deletion to the common versioned read/move paths. */
   async function handle(req, res) {
+    if (await passkeys(req, res)) return;
     if (await pagesHandler(req, res)) return;
     if (await deviceHandler(req, res)) return;
     if (await pairing(req, res)) return;
