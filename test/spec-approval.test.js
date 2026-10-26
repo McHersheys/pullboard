@@ -555,7 +555,10 @@ test('an authenticated first baseline cannot grandfather an absent future row [H
 test('cached origins follow dirty lines and changed history while person decisions stay live [S1,B26,N26]', t => {
   const helpers = createE2eHelpers();
   t.after(helpers.cleanup);
-  const box = helpers.project('true');
+  const sandbox = helpers.sandbox();
+  sandbox.env.GIT_AUTHOR_DATE = '2001-02-03T04:05:06+00:00';
+  sandbox.env.GIT_COMMITTER_DATE = '2004-05-06T07:08:09+05:30';
+  const box = helpers.project('true', sandbox);
   const board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
   t.after(() => store.closeBoard(board));
   const config = configFromSource(readFileSync(join(box.repo, 'pullboard.json'), 'utf8'));
@@ -563,11 +566,21 @@ test('cached origins follow dirty lines and changed history while person decisio
   const original = readFileSync(join(box.repo, 'SPEC.md'), 'utf8');
   const first = read();
   assert.equal(first.commit, box.git(box.repo, 'rev-parse', 'HEAD'));
+  const committedAt = new Date(box.git(box.repo, 'log', '-1', '--format=%cI', first.commit)).toISOString();
+  const authoredAt = new Date(box.git(box.repo, 'log', '-1', '--format=%aI', first.commit)).toISOString();
+  assert.notEqual(committedAt, authoredAt, 'the fixture distinguishes approval commit time from Git author time');
+  assert.equal(first.approvedAt, committedAt, 'approval date is the actual origin commit committer date in ISO UTC');
+  const need = document(box, box.repo, 'status').needs.find(entry => entry.kind === 'agent-approved' && entry.id === 'G1');
+  assert.equal(need.approvedAt, committedAt, 'Needs you carries the same approval date without changing attribution');
+  assert.equal(need.attribution, 'Git author, seat unknown');
   assert.deepEqual(read(), first, 'a stable origin map preserves the full attribution');
   assert.deepEqual(read(box.web), first, 'a linked worktree starts with the same historical attribution');
   writeFileSync(join(box.repo, 'SPEC.md'), '\n' + original.replace('The page renders.', 'The changed page renders.'));
   const dirty = read();
   assert.equal(dirty.commit, null, 'dirty moved lines cannot reuse the old committed attribution');
+  assert.equal(dirty.approvedAt, null, 'zero-SHA blame never turns its synthetic committer time into an approval date');
+  const dirtyNeed = document(box, box.repo, 'status').needs.find(entry => entry.kind === 'agent-approved' && entry.id === 'G1');
+  assert.equal(dirtyNeed.approvedAt, null, 'Needs you preserves an unknown uncommitted approval date');
   assert.equal(dirty.text, 'The changed page renders.');
   writeFileSync(join(box.repo, 'SPEC.md'), original);
   box.git(box.repo, 'commit', '-q', '--amend', '--no-edit', '--author', 'Replacement Author <replacement@example.test>');
