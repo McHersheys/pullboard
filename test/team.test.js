@@ -1,6 +1,6 @@
-import { memberHandoverCase } from './handover-membership-case.js';
 /** @pullboard-test-loads src/board.js src/engine.js src/exchange.js src/person-signing.js relay/passkeys.js */
 /** Two independent Git/SQLite replicas derive verdict freshness without rewriting proof [E8]. */
+import { memberHandoverCase } from './handover-membership-case.js';
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
