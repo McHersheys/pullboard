@@ -875,7 +875,10 @@ async function competingReplicaClaims(fixture, timing) {
     assert.doesNotMatch((repeated.document.diagnostics ?? []).join('\n'), /RELAY_OUTBOX_REFUSED/u, 'replay refusal notices are delivered once');
   }
 
-  await timing.wait('finish the setup baseline before refusing registration', () => cli(clones[0], envs[0], 'status'));
+  await timing.wait('record the main-checkout setup baseline before refusing registration', () =>
+    cli(clones[0], envs[0], 'shout', 'all', 'Fixture setup before registration refusal'));
+  await timing.wait('sync the setup baseline to every clone before refusing registration', () =>
+    Promise.all(clones.map((root, index) => cli(root, envs[index], 'status'))));
   relay.failMoves(true);
   const beforeWorktreeFailure = localEvents(replicaFiles[0]);
   const beforeWorktrees = gitAt(clones[0], envs[0], 'worktree', 'list', '--porcelain');
@@ -1045,16 +1048,31 @@ async function recoverReplicaReplies(fixture, timing) {
   const afterRetry = receipts(replicaFiles[1]).find((receipt) => JSON.parse(receipt.move).id === queuedB.id);
   assert.equal(JSON.stringify(afterRetry), originalReceipt, 'presenting a retry does not rewrite any canonical receipt field');
   assert.equal(relay.uploads.length, beforeDenied + 2, 'the two queued claims each post exactly once, including the refused move');
+  const restoreOutboxDefault = await enterLegacyAckPolicy(fixture);
+  const ackSetup = await timing.wait('confirm the ACK scenario starts with an empty outbox', () =>
+    cli(worktrees[0], envs[0], 'status'));
+  assert.equal(ackSetup.relay.linked, true);
+  assert.deepEqual(ackSetup.relay.outbox ?? [], [], 'legacy ACK probes start with no queued setup moves');
   await timing.wait('release item 1 after its durable refusal is checked', () => cli(worktrees[0], envs[0], 'release', '1'));
   await timing.wait('claim item 2 before its lost submission reply', () => cli(worktrees[0], envs[0], 'claim', '2'));
-  const restoreOutboxDefault = await enterLegacyAckPolicy(fixture);
+  const beforeLostSubmit = await timing.wait('confirm release and claim were acknowledged before the submit fault', () =>
+    cli(worktrees[0], envs[0], 'status'));
+  assert.equal(beforeLostSubmit.relay.linked, true);
+  assert.deepEqual(beforeLostSubmit.relay.outbox ?? [], [], 'the armed submit reply loss cannot hit a queued setup move');
   relay.dropNextReply({ offline: true });
   const lostSubmit = await timing.wait('submit item 2 with its relay reply dropped', () => cliResult(worktrees[0], envs[0], 'submit', '2'));
   assertDroppedReplyConsumed(relay, 'the lost item-2 submission reply');
   assert.equal(lostSubmit.status, 1);
   assert.equal(lostSubmit.document.error.code, 'RELAY_UNAVAILABLE');
+  const linkFile = join(commonDir(clones[0], envs[0]), 'pullboard', 'relay.json');
+  const pendingSubmit = JSON.parse(readFileSync(linkFile, 'utf8')).pending?.move;
+  assert.equal(pendingSubmit?.operation, 'submit', 'the dropped reply belongs to the actual submission, not a preceding proof move');
+  assert.equal(pendingSubmit?.args?.[0], 2, 'the pending submission is for item 2');
   relay.failReads(false);
   await timing.wait('sync clone A after the lost submission reply', () => cli(clones[0], envs[0], 'status'));
+  const recoveredSubmit = JSON.parse(readFileSync(linkFile, 'utf8')).recovered?.move;
+  assert.equal(recoveredSubmit?.operation, 'submit', 'sync preserves the exact lost submit as a retryable outcome');
+  assert.equal(recoveredSubmit?.args?.[0], 2, 'the recovered outcome remains tied to item 2');
   const beforeSubmitRetry = relay.uploads.length;
   const originalCommit = gitAt(worktrees[0], envs[0], 'rev-parse', 'HEAD');
   writeFileSync(join(worktrees[0], 'web', 'README.md'), 'new committed work while the original submission reply is missing\n');
