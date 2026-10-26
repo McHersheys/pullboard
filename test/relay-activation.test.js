@@ -151,6 +151,23 @@ test('activation lookup seeks the engine index as genuine old receipts grow [E21
   assert.equal(lookupPlan(box.board, box.probe).floor, AGENT_GRANT_ENGINE);
 });
 
+test('activation seeks the applied sequence even when modern receipts are all in the future [E21,H16,C7]', t => {
+  const box = fixture(t);
+  const before = appliedSequence(box.board);
+  box.activate();
+  while (appliedSequence(box.board) < 1024) {
+    box.move('shout', [{ from: box.actor, to: 'coordinator', text: `Modern receipt ${appliedSequence(box.board)}`, lanes: ['web'] }], AGENT_GRANT_ENGINE);
+  }
+  const recorded = appliedSequence(box.board);
+  // All receipts above are genuine executions; this private cursor models a restored earlier prefix.
+  box.board.db.prepare("UPDATE board_meta SET meta_value=? WHERE meta_key='relay_applied_sequence'").run(String(before));
+  const lookup = lookupPlan(box.board, box.probe);
+  t.diagnostic(JSON.stringify({ recordedReceipts: recorded, appliedCursor: before, ...lookup }));
+  assert.equal(lookup.floor, 1, 'unapplied modern receipts are not witnesses');
+  assert.ok(lookup.plans.some(plan => /SEARCH board_meta USING INDEX board_meta_grant_activation_\w+.*<expr><\?/u.test(plan)),
+    `the sequence cutoff must be an indexed range, not a filter after scanning future engines: ${JSON.stringify(lookup.plans)}`);
+});
+
 test('indexed activation retains original JSON types and malformed-receipt short circuits [E21,H16]', t => {
   const box = fixture(t);
   const { board, probe } = box;
