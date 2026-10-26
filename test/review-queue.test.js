@@ -1,3 +1,4 @@
+/** @pullboard-test-loads src/board.js src/engine.js src/exchange.js */
 /** A review offer accounts for backlog, live reservations and reviewer eligibility [Q1,V15]. */
 import { submitFixture } from './board-submit-fixture.js';
 import assert from 'node:assert/strict';
@@ -5,11 +6,26 @@ import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import * as store from '../src/board.js';
 import { mkdirSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
+import { rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { pathToFileURL } from 'node:url';
+import { unpackRelease } from './release-archive.js';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { nextReview } from '../src/next-review.js';
 import { Refused } from '../src/refused.js';
+import { AGENT_GRANT_ENGINE } from '../src/agent-grant-engine.js';
+import {
+  appliedSequence,
+  applyEngineMove,
+  prepareEngineMove,
+} from '../src/engine.js';
+import {
+  exportBoard,
+  importBoard,
+} from '../src/exchange.js';
 
 const HOUR = 60 * 60 * 1000;
 const REVIEW_LEASE = 1_000;
@@ -243,4 +259,289 @@ test('a return refused because the head already left review is a race, not a sto
   await run();
   assert.deepEqual(operations, ['reopen', 'reserveNextReview'], 'the loop goes on to the next review');
   assert.equal(store.itemById(board, id).item_status, 'open');
+});
+
+/** Real Git conflicts and independent private SQLite copies distinguish review administration from agent authority. */
+test('a fresh same-lane seat cannot reopen submitted conflicts under its grant [E21,V2,H16]', t => {
+  const copies = [];
+  t.after(() => copies.forEach(board => store.closeBoard(board)));
+  const { box, json, conflicted } = staleHeadFixture(t);
+  const fresh = join(box.dir, 'fresh-web-conflict-seat');
+  box.git(box.repo, 'worktree', 'add', '-q', '--detach', fresh, 'main');
+  const actor = json(box.run(fresh, 'join', 'web', '--json')).agent;
+  const source = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
+  let snapshot;
+  try { snapshot = exportBoard(source); } finally { store.closeBoard(source); }
+  for (const name of ['coordinator-one', 'coordinator-two', 'agent-one', 'agent-two']) {
+    const board = store.openBoard(join(box.dir, `${name}.sqlite`));
+    copies.push(board);
+    importBoard(board, snapshot);
+  }
+  const options = { sequence: 1, at: new Date().toISOString() };
+  const conflict = { files: ['web/list.html'], trunk: box.git(box.repo, 'rev-parse', 'HEAD') };
+  const positiveMove = prepareEngineMove(copies[0], 'reopen', [conflicted, { agentId: 'coordinator', conflict }]);
+  const positive = copies.slice(0, 2).map(board => applyEngineMove(board, positiveMove, options));
+  assert.deepEqual(positive[0], positive[1]);
+  assert.equal(positive[0].error, undefined, 'the coordinator can return this actual conflicting head');
+  const move = prepareEngineMove(copies[2], 'reopen', [conflicted, { agentId: actor, conflict }]);
+  for (const board of copies.slice(2)) {
+    assert.throws(() => applyEngineMove(board, { ...move, engine: AGENT_GRANT_ENGINE - 1 }, options),
+      error => error.code === 'RELAY_MOVE' && error.message.includes(String(AGENT_GRANT_ENGINE)),
+      'a newly joined seat cannot hide its current grant semantics behind an old engine tag');
+  }
+  const refused = copies.slice(2).map(board => applyEngineMove(board, move, options));
+  assert.deepEqual(refused[0], refused[1]);
+  assert.equal(refused[0].error?.code, 'COORDINATOR_ONLY', 'same-lane membership without a prior claim is not conflict-reopen authority');
+  for (const board of copies.slice(2)) {
+    assert.equal(store.getItem(board, conflicted).item_status, 'submitted', 'the refused agent move leaves the submission intact');
+    assert.equal(store.getItem(board, conflicted).item_review_by, null, 'the refused agent move reserves no review');
+  }
+});
+
+
+test('recorded pre-grant submitted-conflict moves retain joined-seat authority [V2,H16]', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'pullboard-legacy-submitted-conflict-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  // Accepted pre-grant source writes its own historical events; no future marker is removed or fabricated.
+  unpackRelease('e4b7c30d674cde73803f8e8cb3f53fb2f9f62621', directory);
+  const legacyStore = await import(pathToFileURL(join(directory, 'src/board.js')).href);
+  const legacyExchange = await import(pathToFileURL(join(directory, 'src/exchange.js')).href);
+  const legacyEngine = await import(pathToFileURL(join(directory, 'src/engine.js')).href);
+  const legacy = legacyStore.openBoard(':memory:');
+  const copies = [store.openBoard(':memory:'), store.openBoard(':memory:')];
+  t.after(() => { legacyStore.closeBoard(legacy); copies.forEach(board => store.closeBoard(board)); });
+  legacyStore.register(legacy, { lane: 'coordinator', path: join(directory, 'main') });
+  const builder = legacyStore.register(legacy, { lane: 'web', path: join(directory, 'builder') });
+  const reporter = legacyStore.register(legacy, { lane: 'web', path: join(directory, 'reporter') });
+  const id = legacyStore.addItem(legacy, { by: 'coordinator', lane: 'web', title: 'Historical conflict', criterion: 'Retain the submitted conflict.' });
+  legacyStore.claim(legacy, id, { agentId: builder, lane: 'web', leaseMs: HOUR, freeze });
+  // Synthetic board-state receipt only; this test makes no gate-execution claim.
+  legacyStore.submit(legacy, id, { agentId: builder, commit: 'a'.repeat(40), tree: 'b'.repeat(40),
+    submissionProof: { version: 1, files: [], full: false, deferred: true, reason: 'synthetic board-state fixture; no gate execution' } });
+  const snapshot = legacyExchange.exportBoard(legacy);
+  assert.ok(snapshot.tables.event.filter(row => ['join', 'claim'].includes(row.event_kind))
+    .every(row => JSON.parse(row.event_detail).grantEngine === undefined), 'the accepted old writer emits no future grant marker');
+  for (const board of copies) importBoard(board, snapshot);
+  const move = legacyEngine.prepareEngineMove(legacy, 'reopen', [id, {
+    agentId: reporter, conflict: { files: ['web/list.html'], trunk: 'c'.repeat(40) },
+  }]);
+  assert.ok(move.engine < AGENT_GRANT_ENGINE, 'the genuine writer predates the new authority fence');
+  const receipt = { sequence: 1, at: new Date().toISOString() };
+  const historical = legacyEngine.applyEngineMove(legacy, move, receipt);
+  assert.equal(historical.error, undefined, 'the accepted historical engine permits its joined-seat report');
+  for (const board of copies) {
+    assert.deepEqual(applyEngineMove(board, move, receipt), historical, 'each current replica preserves the recorded outcome');
+    assert.equal(store.getItem(board, id).item_status, 'open');
+    assert.deepEqual(store.events(board), legacyStore.events(legacy), 'replay preserves historical event bytes');
+  }
+});
+
+
+test('automatic conflict returns bind native evidence and replay without caller assertions [V4,H16]', t => {
+  const copies = [];
+  t.after(() => copies.forEach(board => store.closeBoard(board)));
+  const { box, json, conflicted, reviewer, build } = staleHeadFixture(t);
+  const source = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
+  copies.push(source);
+  const actor = store.agentAt(source, reviewer).agent_id;
+  const original = exportBoard(source);
+  const move = prepareEngineMove(source, 'reopen', [conflicted, { agentId: actor, automaticConflict: true }]);
+  const evidence = move.args[1].computedConflict;
+  assert.equal(move.args[1].automaticConflict, undefined, 'a caller boolean does not enter the executable move');
+  assert.equal(move.args[1].conflict, undefined, 'the agent asserts no conflict tuple');
+  assert.equal(evidence.head, store.getItem(source, conflicted).item_commit);
+  assert.equal(evidence.trunk, box.git(box.repo, 'rev-parse', 'HEAD'));
+  assert.deepEqual(evidence.files, ['web/list.html']);
+  assert.equal(evidence.actor, actor, 'the move retains the actual reviewer actor');
+  /** Rehashing altered data must not make it trusted: immutable Git still decides the actual conflict. */
+  const rehash = changes => {
+    const { digest, ...fields } = { ...evidence, ...changes };
+    return { ...fields, digest: createHash('sha256').update(JSON.stringify(fields)).digest('hex') };
+  };
+  const forged = rehash({ files: ['web/false.html'] });
+  for (const receipt of [forged, rehash({ head: evidence.trunk }), { ...evidence, files: ['web/false.html'] }]) {
+    assert.throws(() => prepareEngineMove(source, 'reopen', [conflicted, { agentId: actor, computedConflict: receipt }]),
+      error => error.code === 'COORDINATOR_ONLY', 'false or mutated conflict evidence cannot be sealed');
+    assert.throws(() => store.reopen(source, conflicted, { agentId: actor, computedConflict: receipt }),
+      error => error.code === 'COORDINATOR_ONLY', 'the direct origin API independently verifies the immutable conflict');
+  }
+  assert.deepEqual(exportBoard(source), original, 'evidence preparation and refusals do not change the board');
+  /** Each independent SQLite replica verifies the recorded objects, without choosing its own current trunk. */
+  const replica = name => {
+    const board = store.openBoard(join(box.dir, `${name}.sqlite`));
+    copies.push(board); importBoard(board, original); return board;
+  };
+  for (const [name, options] of [
+    ['flag', { agentId: actor, automaticConflict: true }],
+    ['mutated', { agentId: actor, computedConflict: { ...evidence, files: ['web/false.html'] } }],
+    ['rehashed', { agentId: actor, computedConflict: forged }],
+    ['clean-record', { agentId: actor, computedConflict: rehash({ trunk: evidence.head }) }],
+    ['actor', { agentId: store.agentAt(source, box.web).agent_id, computedConflict: evidence }],
+  ]) {
+    const board = replica(name);
+    const result = applyEngineMove(board, { ...move, id: `${move.id}-${name}`, args: [conflicted, options] },
+      { sequence: 1, at: new Date().toISOString() });
+    assert.equal(result.error?.code, 'COORDINATOR_ONLY', 'a flag, altered evidence or different actor grants no replay authority');
+    assert.equal(store.getItem(board, conflicted).item_status, 'submitted');
+  }
+  const left = replica('missing-object-control');
+  const missing = { ...move, args: [conflicted, { agentId: actor, computedConflict: rehash({ trunk: 'f'.repeat(40) }) }] };
+  assert.throws(() => {
+    const unexpected = applyEngineMove(left, missing, { sequence: 1, at: new Date().toISOString() });
+    t.diagnostic('unexpected missing-object outcome: ' + JSON.stringify({ move: missing, outcome: unexpected }));
+  }, error => error.code === 'MERGE_CHECK_FAILED', 'missing immutable objects refuse by name until fetched');
+  assert.equal(appliedSequence(left), 0, 'a missing-object refusal does not consume the position needed after fetch');
+  assert.throws(() => prepareEngineMove(left, 'reopen', [conflicted, { agentId: actor, automaticConflict: true }]),
+    error => error.code === 'COORDINATOR_ONLY', 'an imported replica cannot fabricate native origin evidence');
+  assert.throws(() => applyEngineMove(left, { ...move, engine: AGENT_GRANT_ENGINE - 1 }, { sequence: 1, at: new Date().toISOString() }),
+    error => error.code === 'RELAY_MOVE', 'an older engine cannot interpret the new computed-return record');
+  // Ruling 28066: preparation is not a recorded move. Seal the origin outcome before advancing main.
+  const receipt = { sequence: 1, at: new Date().toISOString() };
+  const origin = applyEngineMove(source, move, receipt);
+  assert.equal(origin.error, undefined, 'the current-trunk origin move is recorded successfully');
+  const sealed = exportBoard(source);
+  const recorded = sealed.tables.board_meta.find(row => row.meta_key === 'relay_receipt_' + move.id);
+  assert.equal(JSON.parse(recorded.meta_value).move, JSON.stringify(move), 'the snapshot retains the exact recorded move');
+  // Main now contains the submitted head, while the recorded earlier trunk remains conflicting.
+  box.git(box.repo, 'merge', '-q', '--no-edit', '-s', 'ours', evidence.head);
+  const recordedCopies = ['sealed-left', 'sealed-right'].map(name => {
+    const board = store.openBoard(join(box.dir, `${name}.sqlite`));
+    copies.push(board); importBoard(board, sealed); return board;
+  });
+  const results = recordedCopies.map(board => applyEngineMove(board, move, receipt));
+  assert.deepEqual(results[0], results[1]);
+  assert.equal(results[0].error, undefined);
+  assert.deepEqual(store.events(recordedCopies[0]), store.events(recordedCopies[1]));
+  assert.equal(store.getItem(recordedCopies[0], conflicted).item_status, 'open');
+  const second = join(box.dir, 'clean-computed-return');
+  box.git(box.repo, 'worktree', 'add', '-q', second, '-b', 'web/clean-return', 'main');
+  json(box.run(second, 'join', 'web', '--json'));
+  const clean = build('Keep a clean footer', 'web/footer.html', '<footer>clean</footer>\n', second);
+  assert.throws(() => prepareEngineMove(source, 'reopen', [clean, { agentId: actor, automaticConflict: true }]),
+    error => error.code === 'NOT_CONFLICTING', 'a clean submitted head cannot acquire computed conflict evidence');
+  assert.equal(store.getItem(source, clean).item_status, 'submitted');
+});
+
+
+/** Fresh requests cannot borrow an earlier conflict after the native trunk has made the submission clean. */
+test('fresh conflict requests refuse an older trunk after main advances [V4,H16]', t => {
+  const { box, conflicted, reviewer } = staleHeadFixture(t);
+  const board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
+  t.after(() => store.closeBoard(board));
+  const actor = store.agentAt(board, reviewer).agent_id;
+  const prepared = prepareEngineMove(board, 'reopen', [conflicted, { agentId: actor, automaticConflict: true }]);
+  const evidence = prepared.args[1].computedConflict;
+  assert.ok(prepareEngineMove(board, 'reopen', [conflicted, { agentId: actor, computedConflict: evidence }]),
+    'the current conflicting trunk permits normal preparation');
+  box.git(box.repo, 'merge', '-q', '--no-edit', '-s', 'ours', evidence.head);
+  assert.throws(() => prepareEngineMove(board, 'reopen', [conflicted, { agentId: actor, automaticConflict: true }]),
+    error => error.code === 'NOT_CONFLICTING', 'native computation establishes that the current trunk is clean');
+  const original = exportBoard(board);
+  const { digest, ...fields } = evidence;
+  fields.id = '11111111-2222-4333-8444-555555555555';
+  fields.at = new Date(Date.parse(fields.at) + 1).toISOString();
+  const stale = { ...fields, digest: createHash('sha256').update(JSON.stringify(fields)).digest('hex') };
+  assert.throws(() => prepareEngineMove(board, 'reopen', [conflicted, { agentId: actor, computedConflict: stale }]),
+    error => error.code === 'COORDINATOR_ONLY', 'a fresh self-hash does not authorize an earlier trunk');
+  assert.throws(() => store.reopen(board, conflicted, { agentId: actor, computedConflict: stale }),
+    error => error.code === 'COORDINATOR_ONLY', 'the direct mutation independently enforces the current trunk');
+  assert.deepEqual(exportBoard(board), original, 'both fresh refusals leave the submission and event prefix unchanged');
+  const replica = store.openBoard(join(box.dir, 'fresh-stale-replica.sqlite'));
+  t.after(() => store.closeBoard(replica));
+  importBoard(replica, original);
+  const result = applyEngineMove(replica, { ...prepared, id: 'fresh-stale-request',
+    args: [conflicted, { agentId: actor, computedConflict: stale }] }, { sequence: 1, at: stale.at });
+  assert.equal(result.error?.code, 'COORDINATOR_ONLY', 'an unrecorded wire object is also a fresh request');
+  assert.equal(store.getItem(replica, conflicted).item_status, 'submitted');
+});
+
+
+/** A cached immutable merge is not permission to replay through a locally overridden object graph. */
+test('automatic conflict returns reject local history overrides before replay [V4,H16]', t => {
+  const { box, conflicted, reviewer } = staleHeadFixture(t);
+  const source = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
+  const copies = [source];
+  t.after(() => copies.forEach(board => store.closeBoard(board)));
+  const actor = store.agentAt(source, reviewer).agent_id;
+  const snapshot = exportBoard(source);
+  const move = prepareEngineMove(source, 'reopen', [conflicted, { agentId: actor, automaticConflict: true }]);
+  const evidence = move.args[1].computedConflict;
+  const receipt = { sequence: 1, at: new Date().toISOString() };
+  const results = [];
+  for (const kind of ['grafts', 'replace']) {
+    const board = store.openBoard(join(box.dir, `history-${kind}.sqlite`));
+    copies.push(board); importBoard(board, snapshot);
+    // This positive preparation also warms the normal per-board immutable-object verification cache.
+    assert.ok(prepareEngineMove(board, 'reopen', [conflicted, { agentId: actor, computedConflict: evidence }]));
+    const graft = join(box.repo, '.git', 'info', 'grafts');
+    if (kind === 'grafts') writeFileSync(graft, evidence.head + '\n');
+    else box.git(box.repo, 'replace', evidence.head, evidence.trunk);
+    try {
+      assert.throws(() => applyEngineMove(board, move, receipt),
+        error => error.code === (kind === 'grafts' ? 'GIT_GRAFTS' : 'GIT_REPLACE_REFS'),
+        'local ancestry overrides refuse by name even after a prior clean verification');
+      assert.equal(appliedSequence(board), 0, 'history refusal does not consume the replay cursor');
+      assert.equal(store.getItem(board, conflicted).item_status, 'submitted');
+    } finally {
+      if (kind === 'grafts') rmSync(graft);
+      else box.git(box.repo, 'replace', '-d', evidence.head);
+    }
+    results.push(applyEngineMove(board, move, receipt));
+    assert.equal(results.at(-1).error, undefined, 'the same position succeeds once the private repository is clean');
+  }
+  assert.deepEqual(results[0], results[1], 'cleaned replicas apply the same actual recorded conflict');
+});
+
+test('a recorded automatic conflict return first replays after the replica trunk advances [V4,H16]', t => {
+  const { box, json, conflicted, reviewer } = staleHeadFixture(t);
+  const remote = join(box.dir, 'recorded-return.git');
+  box.git(box.dir, 'clone', '--bare', box.repo, remote);
+  box.git(box.repo, 'remote', 'add', 'origin', remote);
+  json(box.run(box.repo, 'sync', '--json'));
+  const replica = join(box.dir, 'behind-return-replica');
+  box.git(box.dir, 'clone', remote, replica);
+  const inheritedModel = box.env.PULLBOARD_MODEL;
+  delete box.env.PULLBOARD_MODEL;
+  try { assert.equal(box.run(replica, 'init').code, 0, 'initialize only the replica-local board'); }
+  finally { if (inheritedModel !== undefined) box.env.PULLBOARD_MODEL = inheritedModel; }
+  json(box.run(replica, 'sync', '--json'));
+  const before = json(box.run(replica, 'export'));
+  assert.equal(before.tables.item.find(item => item.item_id === conflicted).item_status, 'submitted');
+  const origin = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
+  t.after(() => store.closeBoard(origin));
+  const head = store.getItem(origin, conflicted).item_commit;
+  const offered = box.run(reviewer, 'next', '--verify', '--json');
+  assert.match(offered.err, /returned .*unreviewed/, 'the origin records its real current-trunk automatic return');
+  const sealed = json(box.run(box.repo, 'export'));
+  const record = sealed.tables.board_meta.filter(row => row.meta_key.startsWith('relay_receipt_'))
+    .map(row => JSON.parse(row.meta_value)).find(receipt => JSON.parse(receipt.move).operation === 'reopen');
+  assert.ok(record, 'the origin has an acknowledged exact move in its board log');
+  assert.equal(record.outcome.error, undefined);
+  assert.equal(before.tables.board_meta.some(row => row.meta_key === 'relay_receipt_' + JSON.parse(record.move).id), false,
+    'the replica has never applied this position: this is not duplicate acknowledgement replay');
+  box.git(box.repo, 'merge', '-q', '--no-edit', '-s', 'ours', head);
+  box.git(replica, 'fetch', box.repo, 'main');
+  box.git(replica, 'merge', '-q', '--ff-only', 'FETCH_HEAD');
+  assert.notEqual(box.git(replica, 'rev-parse', 'HEAD'), JSON.parse(record.move).args[1].computedConflict.trunk);
+  const fresh = store.openBoard(join(box.dir, 'fresh-stale-return.sqlite'));
+  try {
+    importBoard(fresh, before);
+    const wire = JSON.parse(record.move);
+    const options = wire.args[1];
+    assert.throws(() => prepareEngineMove(fresh, 'reopen', wire.args), error => error.code === 'COORDINATOR_ONLY',
+      'preparing the same now-stale evidence remains a fresh author request');
+    assert.throws(() => store.reopen(fresh, conflicted, options), error => error.code === 'COORDINATOR_ONLY',
+      'the direct board API cannot borrow recorded transport authority');
+    const forged = applyEngineMove(fresh, { ...wire, args: [conflicted, { ...options,
+      recorded: true, recordedConflictContext: { sequence: record.sequence, move: record.move } }] },
+    { sequence: record.sequence, at: new Date().toISOString(), recorded: true });
+    assert.equal(forged.error?.code, 'COORDINATOR_ONLY', 'caller-shaped context and generic engine replay grant no authority');
+    assert.equal(store.getItem(fresh, conflicted).item_status, 'submitted');
+  } finally { store.closeBoard(fresh); }
+  json(box.run(replica, 'sync', '--json'));
+  const replayed = json(box.run(replica, 'export'));
+  assert.equal(replayed.tables.item.find(item => item.item_id === conflicted).item_status, 'open',
+    'first delivery of the validated Git-log record uses its immutable recorded trunk, not current local main');
+  const acknowledged = replayed.tables.board_meta.find(row => row.meta_key === 'relay_receipt_' + JSON.parse(record.move).id);
+  assert.deepEqual(JSON.parse(acknowledged.meta_value).outcome, record.outcome);
 });

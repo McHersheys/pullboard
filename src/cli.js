@@ -1,3 +1,6 @@
+import { computedReturnArgs } from './computed-conflict-return.js';
+import { AGENT_GRANT_ENGINE } from './agent-grant-engine.js';
+import { requireAgentGrant } from './agent-grant.js';
 import {
   focusReviewFirst,
   focusReasons,
@@ -599,7 +602,11 @@ export async function ordered(ctx, board, operation, args) {
     const actor = ctx.info.isMain ? COORDINATOR : store.agentAt(board, ctx.info.root)?.agent_id;
     requireHandoffActive(board, actor, operation, args);
     ensureSpecApprovalCoordinator(ctx, board, initialBaseline);
-    const write = () => store.atomic(board, () => { requireHandoffActive(board, actor, operation, args); return store[operation](board, ...args); });
+    const write = () => store.atomic(board, () => {
+      requireHandoffActive(board, actor, operation, args);
+      requireAgentGrant(board, { operation, args, engine: AGENT_GRANT_ENGINE });
+      return store[operation](board, ...args);
+    });
     if (initialBaseline && actor) await recordBaseline(actor);
     const requested = requestedCommandMove(ctx.io.relayCommand?.cliOperation, operation);
     const heartbeat = requested ? (await import('./cli-presence.js')).heartbeatCommand : null;
@@ -1536,7 +1543,7 @@ export async function nextOnce(ctx, values) {
   if (!looked.claim) return looked;
   return await withBoard(ctx, async (board) => {
     if (values.verify) checkMainVerifier(ctx, board, values);
-    if (values.verify) return nextReview(ctx, board, whoAmI(ctx, board), values, { ordered: (operation, args) => ordered(ctx, board, operation, args), idArg, trunkMerge });
+    if (values.verify) return nextReview(ctx, board, whoAmI(ctx, board), values, { ordered: (operation, args) => ordered(ctx, board, operation, operation === 'reopen' ? computedReturnArgs(board, args) : args), idArg, trunkMerge });
     const picked = nextPick(ctx, board, values);
     if (!picked.claim) return picked;
     const { me, item, held, shared, reasons, reviewSkipped, seats } = picked;

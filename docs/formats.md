@@ -115,7 +115,7 @@ The version table is generated from the source-owned declarations in `src/format
 | `row grammar` | `1` | `SPEC_GRAMMAR_VERSION` in `src/spec.js`; optional `<!-- pullboard-grammar N -->` line in either file (absence means the current grammar) | Both files share the version. A declared version must match; an incompatible grammar change requires a coordinated version bump and compatible files. No automatic conversion occurs. |
 | `board schema` | `3` | `SCHEMA_VERSION` in `src/board.js`, persisted as `PRAGMA user_version` | On a write open of a board whose version is behind: create missing tables and indexes (version 3 adds the hot-path indexes), add missing columns in place with declared defaults, restore missing or changed triggers, and remove stale machine triggers without replacing rows. Read opens never migrate; a board at the current version whose shape differs is reported once on stderr and left as it is. |
 | `event log` | `1` | `EVENT_LOG_VERSION` in `src/board.js`, persisted in `board_meta` as `event_log_version` | Older event-log versions upgrade in place; newer versions are refused with `EVENT_LOG_VERSION`. Preserve event rows when the board schema changes. |
-| `move engine` | `126` | `ENGINE_VERSION` in `src/machine.js`, carried as `engine` in every sealed executable move | Bump when a move's meaning changes, independently of the event log and sealed envelope. A newer engine is refused with `ENGINE_VERSION`, naming both versions and asking you to upgrade Pullboard. |
+| `move engine` | `127` | `ENGINE_VERSION` in `src/machine.js`, carried as `engine` in every sealed executable move | Bump when a move's meaning changes, independently of the event log and sealed envelope. A newer engine is refused with `ENGINE_VERSION`, naming both versions and asking you to upgrade Pullboard. |
 <!-- format-versions:end -->
 
 A builder never picks an engine number (#1101). An item that adds a board move adds its own `src/<name>-engine.js` leaf as `export const NAME_ENGINE = unassignedEngine();` (importing `unassignedEngine` from `./engine-next.js`); on its branch the leaf reads as one above the highest landed engine. The landing merge writes the next number into the leaf, in landing order, inside that item's merge commit, and sets the `move engine` row above to the highest landed number. A landed number never changes, so recorded moves replay as they were written. Moves are recorded under landed numbers only: code with an unnumbered engine is for its branch's own tests, and a move it records on a real board before landing may later read under another item's number, so the item lands before its moves are used.
@@ -416,10 +416,12 @@ Each connection also has a temporary `moving(token INTEGER)` table and `status_t
 
 The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its append-only record format has the independent `EVENT_LOG_VERSION`. Each event has an increasing integer id, an ISO timestamp, the actor, the event kind, an optional item id, and a JSON object in `event_detail`. Board moves append their event inside the same immediate transaction as the move. Events are append-only; board triggers reject updates and deletes. The actor column is the acting agent id, except guard-repair events, which use `board`. Under engine 8 and later, each event by a registered agent also carries a `model` string snapshot in `event_detail`; legacy agents without a declaration use `unknown`. Declared models live under `agent_model:<agent id>` in `board_meta`, without changing the agent table or stable ids. Rejoining with another model appends a `model` event whose common snapshot holds the new declaration. This common snapshot is separate from the per-kind payload fields listed below. The following rows name the emitted kinds and the union of their operation-specific detail keys; CLI accept events additionally carry the frozen-check result described below:
 
+The computed-grant engine adds `grantEngine` to new join, claim and renewal events as a version marker only. It stores no grant or scope: permission is computed from the seat lane, current claim and lease, or the current review reservation. Older event bytes remain unchanged. A new marker prevents an older engine from reinterpreting a narrowed claim; shout, release and review reservation keep their existing engine floors. Reopen still checks the marked seat and target version floor, while its own authority guards decide permission: direct current conflict requests are coordinator-only; automatic review preflight records native-computed evidence bound to the board, actor, item, submitted head, trunk and conflicting files, verified at origin and replay by merging the recorded immutable commits, never the replica current trunk; missing objects refuse without advancing the replay cursor until fetched. The exact accepting reviewer can withdraw its current verdict independently of a build claim. Older recorded submitted-conflict moves retain their joined-seat authority.
+
 <!-- events:start -->
 | Kind | Actor | Detail fields |
 | --- | --- | --- |
-| `join` | joining agent | `lane`, `route` |
+| `join` | joining agent | `lane`, `route`, optional `grantEngine` |
 | `family` | agent | `family` |
 | `model` | agent | — |
 | `moved` | coordinator | `path` |
@@ -431,8 +433,8 @@ The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its ap
 | `relay_exclusion` | person | `action` (exclude, the durable opt-out intent), `path` (relayOff), `reason`, `channel`; event time and actor identify the request before machine settings persist it |
 | `board_members` | coordinator | `document` (exact version-1 body with board, repository, revision and complete members, approving login and SSH signature; native moves and checkpoints carry it sealed) |
 | `fact` | author | `id`, `kind`, `text`, `ref`, `supersedes`, engine-20 `implies`, `decision`, `supersededBy`, engine-30 `cause`, `neverAgain`, `channel` |
-| `claim` | builder | `leaseUntil`, `digest` |
-| `renew` | builder | `leaseUntil`, `digest` |
+| `claim` | builder | `leaseUntil`, `digest`, optional `grantEngine` |
+| `renew` | builder | `leaseUntil`, `digest`, optional `grantEngine` |
 | `release` | builder | — |
 | `submit` | builder | `commit`, `tree`, `policyCommit`, engine-9 `criterionDigest`, engine-38 `submissionProof`, optional `submissionSize` |
 | `reserve` | reviewer | `until` |

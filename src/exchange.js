@@ -1,3 +1,4 @@
+import { AGENT_GRANT_ENGINE } from './agent-grant-engine.js';
 import { beginCommandPhase } from './command-phase.js';
 import { LANDING_LOCAL_PREFIX } from './landing-local-lease.js';
 import { PROOF_COUNTER_PREFIX } from './proof-counters.js';
@@ -183,6 +184,8 @@ function hasOnlyInitCoordinator(db, names) {
     const detail = JSON.parse(event.event_detail);
     if (detail.model !== undefined && detail.model !== 'unknown') return false;
     delete detail.model;
+    if (detail.grantEngine !== undefined && detail.grantEngine !== AGENT_GRANT_ENGINE) return false;
+    delete detail.grantEngine;
     if (JSON.stringify(detail) !== JSON.stringify({ lane: 'coordinator' })) return false;
   } catch {
     return false;

@@ -1,3 +1,4 @@
+import { AGENT_GRANT_ENGINE } from '../src/agent-grant-engine.js';
 /** Declared models replay with their recorded engine and survive board exchange [O8,O3,H16]. */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -47,8 +48,9 @@ test('model declarations and event snapshots retain all supported engine semanti
     assert.equal(first.error, undefined);
     assert.equal(first.result, 'web-1');
     assert.equal(store.agentAt(board, '/web').agent_model, version < 8 ? null : 'First Model');
-    assert.deepEqual(JSON.parse(first.events[0].event_detail), version < 8
-      ? { lane: 'web' } : { lane: 'web', model: 'First Model' });
+    const joinedDetail = version < 8 ? { lane: 'web' } : { lane: 'web', model: 'First Model',
+      ...(version >= AGENT_GRANT_ENGINE ? { grantEngine: AGENT_GRANT_ENGINE } : {}) };
+    assert.deepEqual(JSON.parse(first.events[0].event_detail), joinedDetail);
 
     const update = prepareEngineMove(board, 'register', [{ lane: 'web', path: '/web', model: 'Second Model' }]);
     const changed = applyEngineMove(board, { ...update, engine: version }, { sequence: 2, at: '2026-10-10T07:01:00Z' });
@@ -59,7 +61,7 @@ test('model declarations and event snapshots retain all supported engine semanti
     if (version >= 8) {
       assert.equal(changed.events[0].event_kind, 'model');
       assert.deepEqual(JSON.parse(changed.events[0].event_detail), { model: 'Second Model' });
-      assert.deepEqual(JSON.parse(store.events(board)[0].event_detail), { lane: 'web', model: 'First Model' },
+      assert.deepEqual(JSON.parse(store.events(board)[0].event_detail), joinedDetail,
         'later model changes never rewrite an earlier move snapshot');
     }
   }
