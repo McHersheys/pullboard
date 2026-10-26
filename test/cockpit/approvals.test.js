@@ -22,12 +22,14 @@ test('agent approvals show full rows and styled actions at narrow width and reso
     await chrome.send('Emulation.setDeviceMetricsOverride', { width: 375, height: 900, deviceScaleFactor: 1, mobile: false });
     await chrome.waitFor('innerWidth === 375 && document.querySelectorAll("#needs [data-agent-approved]").length === 2');
     for (const row of before.spec) {
+      const commitDate = new Date(box.git(alpha.repo, 'show', '-s', '--format=%cI', row.agentApproval.commit)).toISOString();
+      assert.equal(row.agentApproval.approvedAt, commitDate, 'core approval time matches the actual commit committer date');
       const shown = JSON.parse(await chrome.stable(`JSON.stringify((() => {
         const row = document.querySelector('#needs [data-agent-approved="${row.id}"]');
         const buttons = [...row.querySelectorAll('[data-row-decision]')];
         const boxes = buttons.map(button => button.getBoundingClientRect());
         const commit = row.querySelector('code');
-        return { text: row.textContent, commit: commit.textContent, full: commit.title,
+        return { text: row.textContent, commit: commit.textContent, full: commit.title, at: row.querySelector('time')?.dateTime,
           labels: buttons.map(button => button.textContent),
           styled: buttons.every(button => button.classList.contains(button.dataset.rowDecision === 'approve' ? 'approve-row' : 'decline-row'))
             && getComputedStyle(buttons[0]).backgroundColor !== 'rgba(0, 0, 0, 0)' && getComputedStyle(buttons[1]).borderTopStyle === 'solid',
@@ -37,7 +39,8 @@ test('agent approvals show full rows and styled actions at narrow width and reso
       })())`));
       assert.ok(shown.text.includes(row.text), 'Needs-you includes the entire actual row text');
       assert.ok(shown.text.includes(row.gate), 'Needs-you includes the actual gate');
-      assert.ok(shown.text.includes('Agent <review> & team'), 'plain attribution preserves escaped Git author text');
+      assert.ok(shown.text.includes(row.agentApproval.agent), 'plain attribution preserves the actual recorded Git author');
+      assert.equal(shown.at, commitDate, 'the visible date uses the core-provided timestamp');
       assert.doesNotMatch(shown.text, /Git author, seat unknown/u);
       assert.equal(shown.commit, row.agentApproval.commit.slice(0, 12));
       assert.equal(shown.full, row.agentApproval.commit, 'the full commit remains available on hover');

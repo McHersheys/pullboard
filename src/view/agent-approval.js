@@ -14,8 +14,8 @@ function agentApprovalActions(row, detail = false) {
 }
 /** Show Git provenance plainly without treating a Git author as a confirmed person. */
 function agentApprovalAttribution(approval) {
-  const at = approval?.at;
-  const date = typeof at === 'string' && Number.isFinite(Date.parse(at)) ? '<time datetime="' + esc(at) + '">' + esc(new Date(at).toLocaleString()) + '</time>' : 'date unavailable';
+  const at = approval?.approvedAt;
+  const date = typeof at === 'string' && Number.isFinite(Date.parse(at)) ? '<time datetime="' + esc(at) + '">' + esc(new Date(at).toLocaleString()) + '</time>' : 'Date unknown';
   return '<p class="approval-attribution">Approved in Git by ' + esc(approval?.agent ?? 'unknown author') + ' · ' + date + '. Person confirmation pending.</p>';
 }
 /** Render the complete current row from this same board snapshot, plus literal provenance. */
