@@ -2,6 +2,32 @@
 import { briefSections } from './brief.js';
 import { Refused } from './refused.js';
 import { ID_RE } from './spec.js';
+import { tryGit } from './git.js';
+
+/** Select only the references a maintainer explicitly chose to acknowledge. */
+export function handledReferences(brief) {
+  return referenceLines(brief).filter(reference => reference.handle !== null);
+}
+
+/** Match the target and exact handle on one changelog line, allowing ordinary Markdown links. */
+export function referenceAcknowledged(reference, lines) {
+  return lines.some(line => line.includes(reference.target)
+    && [...line.matchAll(/@([A-Za-z0-9][A-Za-z0-9-]{0,38})/gu)]
+      .some(match => match[1].toLowerCase() === reference.handle.toLowerCase()));
+}
+
+/** A reminder never prevents submission, including when historical Git evidence is unavailable. */
+export function submitReferenceReminders(root, item, commit) {
+  const references = handledReferences(item.item_brief);
+  if (!references.length) return [];
+  const diff = item.item_claim_head
+    ? tryGit(root, ['diff', '--no-ext-diff', '--no-textconv', '--unified=0', item.item_claim_head, commit, '--', 'CHANGELOG.md'])
+    : null;
+  const added = diff?.status === 0 ? diff.stdout.split('\n')
+    .filter(line => line.startsWith('+') && !line.startsWith('+++')).map(line => line.slice(1)) : [];
+  return references.filter(reference => !referenceAcknowledged(reference, added))
+    .map(reference => `changelog reminder: add an acknowledgement for ${reference.target} @${reference.handle}`);
+}
 
 /** Preserve every reference and distinguish an explicit trailing acknowledgement from an incidental @. */
 export function referenceLines(brief = '') {

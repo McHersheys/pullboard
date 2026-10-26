@@ -55,6 +55,7 @@ export function briefSections(brief, { references = true } = {}) {
       if (current === 'reference') {
         sections.reference ??= [];
         if (label[2].trim()) sections.reference.push(label[2].trim());
+        current = ''; // Only explicit Reference: lines can opt private text into acknowledgement.
       } else sections[current] = label[2].trim() ? [label[2].trim()] : [];
     } else if (current && line) {
       sections[current].push(line.replace(/^[-*]\s+/, ''));
