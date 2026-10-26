@@ -1,3 +1,8 @@
+import {
+  confirmBarEffect,
+  executingBarEffect,
+  personBarMode,
+} from '../person-bar-cli.js';
 import { dependencyValues } from '../item-dependencies.js';
 import {
   referenceAuthors,
@@ -35,7 +40,6 @@ import {
   idList,
   launchBaseline,
   ordered,
-  personMode,
 } from '../cli.js';
 
 /** Run `pullboard add` and return its exit code. */
@@ -62,7 +66,7 @@ export async function run(io, args) {
   const parentId = values.parent ? idArg(values.parent, 'a parent item id') : null;
   const after = dependencyValues(idList(values.after));
   const title = [second, ...rest].filter(Boolean).join(' ');
-  const item = {
+  let item = {
     by: io.personRequest?.phase === 'execute' ? store.PERSON : me.id,
     lane: first,
     title,
@@ -74,7 +78,19 @@ export async function run(io, args) {
     route: values.route ?? 'strong',
     check: values.check,
   };
-  buildInFilelessLane(ctx.config, first, after);
+  const sealed = executingBarEffect(ctx, board, 'add');
+  if (sealed) item = { ...sealed };
+  if (sealed) {
+    const sealedProblems = idProblems(loadSpec(ctx.info.root, ctx.config), item.specIds, ctx.doctrine);
+    if (sealedProblems.length) throw new Refused('UNKNOWN_SPEC', sealedProblems.join('; '));
+    briefInLane(ctx, item.lane, item.brief);
+  }
+  const asPerson = personBarMode(ctx, board, me, values);
+  const confirmed = await confirmBarEffect(ctx, board, me, { verb: 'add', args: {
+    lane: item.lane, title: item.title, ...(values.wait ? { wait: true } : {}), as: 'person',
+  } }, item, asPerson);
+  if (confirmed !== null) return confirmed;
+  buildInFilelessLane(ctx.config, item.lane, item.after);
   const authority = referenceAuthority(ctx, me.id, item.brief);
   if (authority) item.referenceAuthority = authority;
   const authors = referenceAuthors(ctx.info.root, item.brief);
@@ -82,7 +98,7 @@ export async function run(io, args) {
   const { command } = store.validateItemAddition(board, item);
   if (command) refuseCheckSyntax(command);
   if (command) item.checkBaseline = values.wait ? checkBaseline(ctx.info.root, command) : prepareCheckBaseline(ctx.info.root, command);
-  item.barActor = barActorForCommand(ctx, board, { asPerson: personMode(ctx, me, values) });
+  item.barActor = barActorForCommand(ctx, board, { asPerson });
   const id = await ordered(ctx, board, 'addItem', [item]);
   if (item.checkBaseline?.result === 'pending') await launchBaseline(ctx, board, id, item.checkBaseline);
   io.result?.({ item: store.getItem(board, id) });

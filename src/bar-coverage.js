@@ -54,8 +54,8 @@ export function normalizeBarCoverage(value, item) {
     runner: value.runner, required, files, totalMs, ...(files.length ? { named: { ...value.named }, installMs: value.installMs, ...(value.install ? { install: { ...value.install } } : {}) } : {}) };
 }
 /** Bind inventory and accepted execution settings, allowing unrelated main changes without resigning. */
-function coverageInputs(root, item, policy) {
-  const committed = new Set(git(root, ['ls-tree', '-r', '--name-only', '-z', policy.commit]).split('\0').filter(Boolean));
+function coverageInputs(root, item, policy, inventory) {
+  const committed = inventory ?? new Set(git(root, ['ls-tree', '-r', '--name-only', '-z', policy.commit]).split('\0').filter(Boolean));
   const required = [...new Set(briefFiles(item.item_brief).filter(path => committed.has(path) && barTestPath(path, policy.config.claim.barTestFiles)))].sort();
   const policyKey = createHash('sha256').update(JSON.stringify({ required, runner: policy.config.affectedTests ?? '',
     install: policy.config.check.install, timeoutMs: policy.config.check.timeoutMs, patterns: policy.config.claim.barTestFiles })).digest('hex');
@@ -91,4 +91,19 @@ export function barCoverageDigest(plan) { return createHash('sha256').update(JSO
 export function barCoverageCommand(sourceCheck, plan) {
   const paths = plan.files.filter(file => file.mode === 'whole').map(file => `'./${file.path.replaceAll("'", "'\\''")}'`);
   return paths.length ? `(\n${sourceCheck}\n) && (\n${plan.runner} ${paths.join(' ')}\n)` : sourceCheck;
+}
+
+/** Build sealed phone previews with one accepted inventory read; missing measured evidence remains missing. */
+export function previewBarCoverage(root, entries, policy) {
+  const inventory = new Set(git(root, ['ls-tree', '-r', '--name-only', '-z', policy.commit]).split('\0').filter(Boolean));
+  return entries.map(({ item, coverage }) => {
+    const { required, policyKey } = coverageInputs(root, item, policy, inventory);
+    if (coverage) {
+      const plan = normalizeBarCoverage(coverage, item);
+      if (plan.policyKey === policyKey && plan.sourceCheck === item.item_check) return plan;
+    }
+    if (required.length) return null;
+    return normalizeBarCoverage({ version: 1, sourceMain: policy.commit, sourceCheck: item.item_check, policyKey,
+      timeoutMs: policy.config.check.timeoutMs, runner: policy.config.affectedTests ?? '', required: [], files: [] }, item);
+  });
 }

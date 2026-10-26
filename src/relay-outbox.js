@@ -189,7 +189,7 @@ export const ITEM_SLOTS = Object.freeze({
   recordRowDecisions: [], decideSpecRevisions: [], applyRowDecisions: [], draftSpecRow: [], recordSpecApprovalBaseline: [],
   recordLandingBatch: [], recordLandingWaiver: [], recordLandingFlake: [], recordLandingTestDefect: [], finishLandingBatch: [],
   recordHealthFindings: [], decideSentinel: [], beginSentinelRun: [], finishSentinelRun: [],
-  recordFlakeObservation: [], recordGateRun: [], recordProofRun: [[0, 'itemId'], [0, 'receipt', 'proof', 'item']], declareJob: [], recordJobRun: [], takeCoordinator: [], openHandoff: [], landingLeaseMove: [],
+  recordFlakeObservation: [], recordGateRun: [], recordProofRun: [[0, 'itemId'], [0, 'receipt', 'proof', 'item']], declareJob: [], recordJobRun: [], takeCoordinator: [], openHandoff: [], landingLeaseMove: [], setPersonSigning: [], proposePersonMove: [],
   recordActivityDelivery: [], actOnActivity: [], recordRowVerification: [], setBoardMembers: [],
   // Re-home IDs are acknowledged-only; foreign board/source IDs are never locally rewritten.
   reserveRehomeItemId: [], rehomeItem: [[0]], applyRehomeItem: [[0, 'destinationItemId']],

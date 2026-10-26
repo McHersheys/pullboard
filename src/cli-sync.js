@@ -105,6 +105,9 @@ export async function syncBefore(io, main) {
     return;
   }
   await retrySync(io);
+  // An off that only the relay can vouch for is checked against the relay's own authority before anything reads it (#408).
+  try { await (await import('./person-signing-cli.js')).attestBeforeCommand(io.cwd, io); }
+  catch (error) { reportQuietly(io, error); }
   try { await executePersonRequests(io.cwd, io, main); }
   catch (error) { await reportQuietly(io, error); }
   tellConflicts(io, local);

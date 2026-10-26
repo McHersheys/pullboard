@@ -1,5 +1,17 @@
 /** General CLI recovery text; operation-owned codes live in src/moves/ [P4,C7]. */
 export const DEFAULT_NEXT_STEPS = Object.freeze({
+  PASSKEY_ASSERTION: 'confirm the move again on your passkey from the relay view',
+  PASSKEY_PRESENCE: 'confirm the move again with Face ID, Touch ID or a key touch',
+  PASSKEY_REGISTRATION: 'add the passkey again from the relay view on this phone or browser',
+  PASSKEY_REQUIRED: 'add a passkey in the relay view on your phone or browser, then confirm the move',
+  PERSON_AUTHORITY: 'upgrade the relay so it publishes its passkey stamp key, then retry',
+  PERSON_AUTHORITY_CHANGED: 'check which relay this board belongs to; link it to the relay it pinned',
+  PERSON_PROPOSAL: 'start the person move from a terminal seat, then confirm it with your passkey',
+  PERSON_SIGNED: 'confirm it with your passkey in the relay view; pair a phone or browser first with pullboard relay on --all',
+  PERSON_SIGNER_REQUIRED: 'decide the other rows with your passkey; a row that names SSH signers waits until signing is off',
+  PERSON_SIGNING_CORRUPT: 'restore the board from a known-good export',
+  PERSON_SIGNING_ERASED: 'restore a known-good board that keeps its signing history',
+  PERSON_SIGNING_RELAY: 'link this board to the relay with pullboard relay on --all, then turn signing on',
   "AGENT_GRANT_EXPIRED": "claim the intended item, or shout the coordinator if its claim is unavailable",
   "AGENT_GRANT_ITEM": "finish or release the claim, then claim the intended item; use shout for coordination",
   "AGENT_GRANT_LANE": "join a seat in the intended lane or ask its owner to make the item change",

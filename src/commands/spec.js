@@ -1,4 +1,5 @@
 /** The pullboard spec command, in its own module so an item adding another command never edits these lines. */
+import { verifiedPasskeyRowDecision } from '../person-signing.js';
 import {
   planRowVerificationApply,
   rowVerificationFindings,
@@ -52,6 +53,15 @@ import {
   productProblems,
 } from '../products.js';
 import {
+  personSigning,
+} from '../person-signing.js';
+import {
+  refuseNamedSigners,
+  requireShownRows,
+  requireSignedPerson,
+  signsPersonMoves,
+} from '../person-signing-cli.js';
+import {
   Refused,
 } from '../refused.js';
 import {
@@ -64,6 +74,7 @@ import {
   pendingAnswers,
   planRowApply,
   prepareRowDecisions,
+  shownDecisionRows,
   restoreRowApply,
   rowDecisionView,
   writeRowApply,
@@ -233,13 +244,34 @@ export async function specCommand(io, { first, second, rest, values }) {
     return 0;
   }
   if (first === 'approve' || first === 'decline') {
-    requirePersonChannel(io.personChannel);
     return withBoard(ctx, async (board) => {
       const me = whoAmI(ctx, board);
-      if (!ctx.info.isMain || me.id !== COORDINATOR) throw new Refused('B26_PERSON_APPROVAL', 'only the person from the main checkout approves or declines rows; use pullboard view for the person to decide');
       const ids = [second, ...rest].filter(Boolean).flatMap((text) => text.split(/[\s,]+/u)).filter(Boolean);
       const drafts = store.rowDrafts(board);
       const revisionIds = ids.filter(id => drafts.some(draft => draft.id === id && draft.revises));
+      // A passkey request cannot yet show a revision proposal's exact rows, so a signed board refuses rather than guess [E22].
+      if (revisionIds.length && personSigning(board).signed) {
+        throw new Refused('PERSON_SIGNED', 'a proposed revision to an approved row cannot be confirmed with a passkey yet', 'turn signed person moves off with your passkey to decide revision proposals, then turn them on again');
+      }
+      // With signed person moves on, the decision goes to the person's passkey; a named SSH signer has no passkey yet [E22].
+      const shown = [...spec.rows, ...(practice.rows ?? []).map(row => ({ ...row, id: `doctrine:${row.id}` }))].filter(row => ids.includes(row.id));
+      if (personSigning(board).signed) {
+        refuseNamedSigners(shown, ids);
+        if (values.by !== undefined && values.by !== 'person') throw new Refused('PERSON_SIGNER_REQUIRED', `the requested SSH signer ${values.by} has no passkey identity`, 'confirm as the person without --by, or wait until signing is off');
+      }
+      // The rows are read only when a passkey request is built, so an unpaired board refuses before reading them.
+      const confirmed = await requireSignedPerson(ctx, board, me, { verb: `spec-${first}`, args: { ids: ids.join(','),
+        ...(values.text === undefined ? {} : { text: values.text }), ...(values.reason === undefined ? {} : { reason: values.reason }) } },
+      () => shownDecisionRows(ctx.info.root, ctx.config, ids));
+    if (confirmed !== null) return confirmed;
+      const sources = personSigning(board).signed ? shownDecisionRows(ctx.info.root, ctx.config, ids) : [];
+      requirePersonChannel(io.personChannel);
+      if (!ctx.info.isMain || me.id !== COORDINATOR) throw new Refused('B26_PERSON_APPROVAL', 'only the person from the main checkout approves or declines rows; use pullboard view for the person to decide');
+      if (personSigning(board).signed) {
+        const decidable = [...spec.rows, ...(practice.rows ?? []).map((row) => ({ ...row, id: `doctrine:${row.id}` }))];
+        refuseNamedSigners(decidable, ids);
+        requireShownRows(board, io.personRequest, decidable, ids, sources);
+      }
       if (revisionIds.length) {
         if (revisionIds.length !== ids.length || values.text !== undefined) throw new Refused('SPEC_REVISION', 'decide exact revision proposals separately; draft a new proposal to change its text');
         const records = prepareSpecRevisionDecisions(ctx.info.root, ctx.config, drafts, { ids, decision: first,
@@ -250,8 +282,10 @@ export async function specCommand(io, { first, second, rest, values }) {
         return 0;
       }
       // An approve keeps a pending answer: plain, it approves the answered text; --text says what it replaces.
+      const signedDecision = personSigning(board).signed;
       const kept = first === 'approve' ? pendingAnswers(ctx.info.root, ctx.config, ids, store.rowDecisions(board)) : new Map();
-      const decide = { decision: first, reason: values.reason, by: values.by, on: new Date().toISOString(), commit: headCommit(ctx.info.root) ?? '' };
+      if (signedDecision && values.text === undefined && kept.size) throw new Refused('STALE_ROW_DECISION', 'this row has a pending answer different from the original shown source', 'approve one row with --text containing the exact pending answer you want your passkey to confirm');
+      const decide = { decision: first, reason: values.reason, by: signedDecision ? 'person' : values.by, sshSign: !signedDecision, passkeyRequest: signedDecision ? io.personRequest?.id : undefined, on: new Date().toISOString(), commit: headCommit(ctx.info.root) ?? '' };
       const records = values.text === undefined && kept.size ? ids.flatMap((id) => prepareRowDecisions(ctx.info.root, ctx.config, { ...decide, ids: [id], text: kept.get(id)?.text }))
         : prepareRowDecisions(ctx.info.root, ctx.config, { ...decide, ids, text: values.text });
       const decisions = await ordered(ctx, board, 'recordRowDecisions', [{ agentId: store.PERSON, channel: io.personChannel ?? 'terminal', decisions: records }]);
@@ -265,7 +299,35 @@ export async function specCommand(io, { first, second, rest, values }) {
       return 0;
     });
   }
+  // Read without creating a board: a repo that has none signs nothing [E22].
+  if (first === 'signoff' && signsPersonMoves(ctx.info.root)) {
+    return withBoard(ctx, async board => {
+      const ids = [second, ...rest].filter(Boolean).flatMap(text => idList(text));
+      if (!ids.length) throw new Refused('USAGE', 'pullboard spec signoff <ids>');
+      const rows = ids.map(id => spec.rows.find(row => row.id === id));
+      if (rows.some(row => !row || row.status !== 'approved')) throw new Refused('CANNOT_SIGN', 'only approved rows in this spec are signed');
+      refuseNamedSigners(rows, ids);
+      if (values.by) throw new Refused('PERSON_SIGNER_REQUIRED', `the requested SSH signer ${values.by} has no passkey identity`, 'omit --by for a person approval, or wait until signing is off to use that named SSH principal');
+      if (values.note !== undefined || values['note-file'] !== undefined) throw new Refused('USAGE', 'signed optional sign-off records the exact row approval, without an SSH sign-off note', 'use spec approve <ids> to confirm those rows with your passkey');
+      const proof = specProof(ctx);
+      const testFiles = citedTestFiles(ctx.info.root);
+      const evidence = ids.map(id => ({ id, ...rowEvidence(ctx.info.root, id, { ...proof, testFiles }) }));
+      const missing = evidence.filter(row => !row.files.length && !row.verified.length).map(row => row.id);
+      if (missing.length) throw new Refused('NO_EVIDENCE', `${missing.join(', ')} has no evidence; build it or cite its id in a test first`);
+      const completed = await requireSignedPerson(ctx, board, whoAmI(ctx, board), { verb: 'spec-approve', args: { ids: ids.join(',') } }, shownDecisionRows(ctx.info.root, ctx.config, ids));
+      if (completed === null) throw new Refused('PERSON_SIGNED', 'confirm optional sign-off as a row approval through its original terminal request', 'run spec approve <ids> with your passkey');
+      io.result?.({ count: ids.length, by: 'person', ids, evidence, ...io.personConfirmation });
+      return completed;
+    });
+  }
   if (first === 'answer') {
+    const completed = signsPersonMoves(ctx.info.root) ? await withBoard(ctx, async board => {
+      const row = spec.rows.find(entry => entry.id === second);
+      if (!row) throw new Refused('NO_ROW', `${second} is not a row in ${ctx.config.spec}`);
+      if (personSigning(board).signed) refuseNamedSigners([row], [second]);
+      return requireSignedPerson(ctx, board, whoAmI(ctx, board), { verb: 'spec-answer', args: { row: second, answer: rest.join(' ').trim() } }, shownDecisionRows(ctx.info.root, ctx.config, [row.id]));
+    }) : null;
+    if (completed !== null) return completed;
     requirePersonChannel(io.personChannel, process.env, { command: personCommand(primaryCheckoutRoot(ctx.info) ?? ctx.info.root, ['spec', 'answer', second, rest.join(' ')]) });
     return withBoard(ctx, async (board) => {
       const me = whoAmI(ctx, board);
@@ -275,8 +337,9 @@ export async function specCommand(io, { first, second, rest, values }) {
       const row = spec.rows.find((entry) => entry.id === second);
       if (!row) throw new Refused('NO_ROW', `${second} is not a row in ${ctx.config.spec}`, 'list the pending questions with pullboard spec --json, then answer one of them');
       if (row.status !== 'pending') throw new Refused('SPEC_ANSWER', `${second} is ${row.status}, not a pending question`, `read it with pullboard spec show ${second}; only a pending row takes an answer`);
+      if (personSigning(board).signed) requireShownRows(board, io.personRequest, [row], [second], shownDecisionRows(ctx.info.root, ctx.config, [second]));
       const { text } = answerQuestion(row.text, given, second);
-      const records = prepareRowDecisions(ctx.info.root, ctx.config, { ids: [second], decision: 'approve', text, on: new Date().toISOString(), commit: headCommit(ctx.info.root) ?? '' });
+      const records = prepareRowDecisions(ctx.info.root, ctx.config, { ids: [second], decision: 'approve', text, sshSign: !personSigning(board).signed, passkeyRequest: personSigning(board).signed ? io.personRequest?.id : undefined, by: personSigning(board).signed ? 'person' : undefined, on: new Date().toISOString(), commit: headCommit(ctx.info.root) ?? '' });
       const decisions = await ordered(ctx, board, 'recordRowDecisions', [{ agentId: store.PERSON, channel: io.personChannel ?? 'terminal', decisions: records }]);
       // The answer reported is read back from the signed text, never carried as a field of its own.
       const answered = decisions.map((record) => ({ ...record, answer: decisionAnswer(record) }));
@@ -291,7 +354,8 @@ export async function specCommand(io, { first, second, rest, values }) {
       const me = whoAmI(ctx, board);
       if (!ctx.info.isMain || me.id !== COORDINATOR) throw new Refused('COORDINATOR_ONLY', 'only the coordinator applies row decisions; ask your coordinator to run pullboard spec apply');
       // Every automatic proposal is preflighted before any draft or decision changes a file.
-      planRowApply(ctx.info.root, ctx.config, store.rowDecisions(board));
+      const passkeyDecision = record => verifiedPasskeyRowDecision(board, record);
+      planRowApply(ctx.info.root, ctx.config, store.rowDecisions(board), { passkeyDecision });
       const automatic = planAutomaticRigorApply(ctx.info.root, ctx.config, store.rowDrafts(board), store.rowDecisions(board));
       writeRowApply(ctx.info.root, automatic);
       automatic.files.forEach(file => io.say(`${file.file}: materialized unproved Rigor drafts for the person's review`));
@@ -299,7 +363,7 @@ export async function specCommand(io, { first, second, rest, values }) {
       const drafted = pendingRowDrafts(loadSpec(ctx.info.root, ctx.config), store.rowDrafts(board)).map((draft) => draftRow(ctx.info.root, ctx.config, { target: 'spec', text: draft.text, gate: draft.gate, tier: draft.tier, section: /^(.*?)\d+$/u.exec(draft.id)[1], id: draft.id }));
       drafted.forEach((row) => io.say(`${row.file}: ${row.id} drafted from a lane, for the person to approve`));
       clashingRowDrafts(loadSpec(ctx.info.root, ctx.config), store.rowDrafts(board)).forEach((draft) => io.say(`${ctx.config.spec}: ${draft.id} holds other text, so the draft by ${draft.by} was not written; shout ${draft.by} to run pullboard spec draft again and cite the new id`));
-      const plan = planRowApply(ctx.info.root, ctx.config, store.rowDecisions(board));
+      const plan = planRowApply(ctx.info.root, ctx.config, store.rowDecisions(board), { passkeyDecision });
       writeRowApply(ctx.info.root, plan);
       let applied;
       try { applied = await ordered(ctx, board, 'applyRowDecisions', [{ agentId: me.id, events: plan.records.map((record) => record.event) }]); }
@@ -402,6 +466,7 @@ export async function specCommand(io, { first, second, rest, values }) {
     return errors ? 1 : 0;
   }
   if (first === 'signers' && second === 'add') {
+    if (signsPersonMoves(ctx.info.root)) throw new Refused('PERSON_SIGNER_REQUIRED', `SSH signer ${values.by ?? defaultPrincipal(ctx.info.root)} cannot be enrolled by a passkey identity`, 'keep signing on and use passkey row approvals; named SSH signer changes wait until signing is off');
     requirePersonChannel(io.personChannel);
     const signer = addSigner(ctx.info.root, { by: values.by, key: values.key });
     io.result?.(signer);

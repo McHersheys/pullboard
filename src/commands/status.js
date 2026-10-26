@@ -25,6 +25,9 @@ import {
   loadSpec,
 } from '../spec.js';
 import {
+  signingLine,
+} from '../person-signing-words.js';
+import {
   submitInvariantLine,
   submitInvariantProposals,
 } from '../submit-invariants.js';
@@ -40,7 +43,7 @@ export async function run(io, { values }) {
   const relay = hasRelayState ? await import('../relay.js') : null;
   const environment = hasRelayState && process.env.PULLBOARD_RELAY_TOKEN !== undefined
     ? await import('../relay-environment.js') : null;
-  const summary = await withBoardRead(ctx, (board, readers) => {
+  const summary = await withBoardRead(ctx, async (board, readers) => {
     const me = identifyCaller(ctx, board, { environmentAgent: environment?.environmentAgent ?? (() => null),
       relayLinked: relay?.relayLinked ?? (() => false) }, readers);
     const mine = store.itemsInStatus(board, 'claimed', me.id);
@@ -48,7 +51,9 @@ export async function run(io, { values }) {
     const presenceCounts = { live: 0, idle: 0, gone: 0 };
     for (const seat of agents) presenceCounts[seat.presence] += 1;
     const approvalState = personNeedsSummary(ctx.info.root, { board, config: ctx.config, agents });
-    return { me, mine, agents, presenceCounts, ruleCounts: ruleProofCounts(ctx.info.root, board, approvalState.spec), needs: approvalState.needs, specApprovalBaseline: approvalState.specApprovalBaseline, specApprovalEvidenceErrors: approvalState.specApprovalEvidenceErrors, stats: store.stats(board), reviewQueue: { ...store.reviewQueue(board), ...store.reviewQueueBreakdown(board) }, unread: store.unreadCount(board, me.id), relay: relay ? relay.relayStatus(ctx.info.root) : unlinkedRelayStatus(),
+    const person = board.db.prepare("SELECT 1 FROM event WHERE event_kind='person_signing' LIMIT 1").get()
+      ? { signed: (await import('../person-signing.js')).personSigning(board).signed } : { signed: false };
+    return { me, mine, person, agents, presenceCounts, ruleCounts: ruleProofCounts(ctx.info.root, board, approvalState.spec), needs: approvalState.needs, specApprovalBaseline: approvalState.specApprovalBaseline, specApprovalEvidenceErrors: approvalState.specApprovalEvidenceErrors, stats: store.stats(board), reviewQueue: { ...store.reviewQueue(board), ...store.reviewQueueBreakdown(board) }, unread: store.unreadCount(board, me.id), relay: relay ? relay.relayStatus(ctx.info.root) : unlinkedRelayStatus(),
       submitInvariantProposals: submitInvariantProposals(store.submitInvariantEvents(board, ctx.config), ctx.config) };
   });
   if (!summary.relay.linked && existsSync(relayMachineDirectory())) {
@@ -69,6 +74,7 @@ export async function run(io, { values }) {
   if (summary.specApprovalBaseline?.pending) io.say('approval baseline pending: the next coordinator or person command in the main checkout records the existing approved rows; lane work may continue and none are flagged until then');
   if (summary.specApprovalBaseline?.invalid) io.say('approval baseline unreadable: existing rows need approval evidence; restore a known-good board export to recover the original baseline');
   io.say(reviewQueueLine(ctx, summary.reviewQueue, span));
+  io.say(signingLine(summary.person));
   io.say(`seats: ${summary.presenceCounts.live} live, ${summary.presenceCounts.idle} idle, ${summary.presenceCounts.gone} gone`);
   for (const seat of summary.agents.filter(seat => values.all || seat.presence !== 'gone')) io.say(`${seat.agent_id}: ${seat.presence}${seat.heartbeatAt ? ` (heartbeat ${seat.heartbeatAt})` : ' (no local heartbeat)'}`);
   if (summary.memoryHeld === null) io.say('local memory hold status unavailable; pullboard resources shows the queue');

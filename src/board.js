@@ -211,10 +211,10 @@ import {
   boardBusyError,
 } from './board-access.js';
 import { ensureHotIndexes } from './board-hot.js';
+import { ensureAdditiveIndexes } from './board-hot.js';
+import { missingAdditiveIndexes } from './board-hot.js';
 import {
-  ensureFactIdentityIndexes,
   factIdentityExists,
-  missingFactIdentityIndexes,
   requireFactIdentityIndexes,
 } from './fact-identity.js';
 import { NEXT_STEPS } from './next-step-words.js';
@@ -346,6 +346,7 @@ export { declareJob, recordJobRun } from './recurring-jobs.js';
 export { proposeSentinel, decideSentinel, beginSentinelRun, finishSentinelRun } from './sentinels.js';
 export { flakeLedger, recordFlakeObservation } from './flakes.js';
 export { flakeQuarantines, gateRuns, recordGateRun } from './quarantine.js';
+export { personProposals, personSigning, proposePersonMove, setPersonSigning } from './person-signing.js'; // Signed person moves [E22].
 export { proofReceipts, recordProofRun } from './proof-receipts.js';
 import { refuseLongShout } from './proof-receipts.js';
 import { PROOF_RUN_ENGINE } from './proof-run-engine.js';
@@ -356,7 +357,7 @@ export { agentAt, agentById, agentCreator, coordinatorHolder, listAgents, nextSe
 export const ACCEPT_REASON = 'CRITERION_MET';
 export { PERSON } from './board-query.js';
 
-export { EVENT_LOG_VERSION } from './board-schema-source.js';
+export { EVENT_LOG_VERSION, SIGNED_EVENT_LOG_VERSION } from './board-schema-source.js';
 
 export { BOARD_BUSY_TIMEOUT_MS } from './board-schema-source.js';
 
@@ -438,9 +439,9 @@ export function openBoard(file, clock = systemClock, { isMain, onDiagnostic, wri
       });
       // Index-only upgrades keep the data version/digest unchanged. Install and restamp together;
       // drifted or read-only stores never take this path, and old clients accept the resulting stamp.
-      if (standing !== 'drifted' && missingFactIdentityIndexes(db).length) atomic(board, () => {
+      if (standing !== 'drifted' && missingAdditiveIndexes(db)) atomic(board, () => {
         if (boardStanding(db, SCHEMA_DIGEST, SCHEMA_VERSION) !== 'current') return;
-        ensureFactIdentityIndexes(db);
+        ensureAdditiveIndexes(db);
         recordSchemaStamp(db, SCHEMA_DIGEST);
       });
       if (standing === 'drifted') { warmCounters = false; reportDrift(file, onDiagnostic); }
