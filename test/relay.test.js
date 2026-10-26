@@ -774,6 +774,7 @@ test('person token management lists only owned scoped metadata and preserves ind
   assert.equal((await box.auth.authenticate(second.token, { board: 'alpha', write: true })).agent, 'worker-two');
   assert.equal((await box.auth.authenticate(other.token, { board: 'beta', write: true })).agent, 'worker-one');
   box.state.permission = 'read';
+  box.advance(ACCESS_WINDOW_MS); // A role change takes effect when the cached grant's window ends [H8,H21].
   await assert.rejects(box.auth.listTokens(person.token, 'alpha'), { code: 'WRITE_REQUIRED' });
 });
 
@@ -970,6 +971,7 @@ test('a public reader sees no board and cannot act, mint or revoke; refusal matc
   await box.auth.linkBoard(signed.token, 'alpha', 'fixture/repository');
   const existing = await box.auth.issueToken(signed.token, { board: 'alpha', agent: 'worker' });
   box.state.permission = 'none';
+  box.advance(ACCESS_WINDOW_MS); // A role change takes effect when the cached grant's window ends [H8,H21].
   let missing;
   await assert.rejects(box.auth.authenticate(signed.token, { board: 'absent', write: true }), error => {
     missing = { code: error.code, message: error.message }; return error.code === 'BOARD_NOT_LINKED';
@@ -981,6 +983,7 @@ test('a public reader sees no board and cannot act, mint or revoke; refusal matc
   await assert.rejects(box.auth.issueToken(signed.token, { board: 'alpha', agent: 'second' }), { code: 'BOARD_NOT_LINKED' });
   await assert.rejects(box.auth.revoke(signed.token, existing.id), { code: 'BOARD_NOT_LINKED' });
   box.state.permission = 'write';
+  box.advance(ACCESS_WINDOW_MS); // A role change takes effect when the cached grant's window ends [H8,H21].
   assert.equal((await box.auth.authenticate(existing.token, { board: 'alpha', write: true })).agent, 'worker', 'denied revocation did not alter the token');
 });
 
@@ -991,6 +994,7 @@ test('a public triage account sees its board but cannot act, mint or revoke its 
   await box.auth.linkBoard(signed.token, 'alpha', 'fixture/repository');
   const existing = await box.auth.issueToken(signed.token, { board: 'alpha', agent: 'worker' });
   box.state.permission = 'triage';
+  box.advance(ACCESS_WINDOW_MS); // A role change takes effect when the cached grant's window ends [H8,H21].
   await assert.rejects(box.auth.authenticate(signed.token, { board: 'alpha', write: true }), { code: 'WRITE_REQUIRED' });
   assert.deepEqual((await box.auth.boardsFor(signed.token)).map(board => board.id), ['alpha']);
   assert.equal((await box.auth.authenticate(existing.token, { board: 'alpha' })).permission, 'triage');
@@ -1005,6 +1009,7 @@ test('write, maintain and admin accounts act and mint while private readers only
   let existing;
   for (const permission of ['write', 'maintain', 'admin']) {
     box.state.permission = permission;
+    box.advance(ACCESS_WINDOW_MS); // A role change takes effect when the cached grant's window ends [H8,H21].
     assert.equal((await box.auth.authenticate(signed.token, { board: 'alpha', write: true })).permission, permission);
     // Each seat gets one first mint (#579), so each permission mints its own seat.
     existing = await box.auth.issueToken(signed.token, { board: 'alpha', agent: 'worker-' + permission });
@@ -1013,8 +1018,10 @@ test('write, maintain and admin accounts act and mint while private readers only
     await assert.rejects(box.auth.authenticate(existing.token, { board: 'alpha' }), { code: 'AUTH_REQUIRED' });
   }
   box.state.permission = 'write';
+  box.advance(ACCESS_WINDOW_MS); // A role change takes effect when the cached grant's window ends [H8,H21].
   existing = await box.auth.issueToken(signed.token, { board: 'alpha', agent: 'reader' });
   box.state.permission = 'read';
+  box.advance(ACCESS_WINDOW_MS); // A role change takes effect when the cached grant's window ends [H8,H21].
   await assert.rejects(box.auth.authenticate(signed.token, { board: 'alpha', write: true }), { code: 'WRITE_REQUIRED' });
   assert.equal((await box.auth.boardsFor(signed.token)).length, 1);
   assert.equal((await box.auth.authenticate(existing.token, { board: 'alpha' })).permission, 'read');
@@ -1028,6 +1035,7 @@ test('an explicit read role still hides a public board below triage [H13,H14,H8]
   const signed = await login(box);
   await box.auth.linkBoard(signed.token, 'alpha', 'fixture/repository');
   box.state.permission = 'read';
+  box.advance(ACCESS_WINDOW_MS); // A role change takes effect when the cached grant's window ends [H8,H21].
   assert.deepEqual(await box.auth.boardsFor(signed.token), []);
   await assert.rejects(box.auth.authenticate(signed.token, { board: 'alpha', write: true }), { code: 'BOARD_NOT_LINKED' });
   await assert.rejects(box.auth.issueToken(signed.token, { board: 'alpha', agent: 'worker' }), { code: 'BOARD_NOT_LINKED' });
