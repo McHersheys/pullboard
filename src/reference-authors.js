@@ -1,8 +1,16 @@
 /** Bind explicit GitHub acknowledgements to source authors without executing referenced content [C7]. */
 import { handledReferences } from './reference-lines.js';
+import { validateReferenceTargets } from './reference-lines.js';
 import { githubPullClient } from './pr-github.js';
 import { Refused } from './refused.js';
 import { requirePersonChannel } from './person.js';
+
+/** Validate typed targets and the public acknowledgement's authority and source in one ordered move. */
+export function validateReferences(brief, { actor, authors, authority, previous = '' }) {
+  validateReferenceTargets(brief);
+  validateReferenceAuthority(actor, brief, authority, previous);
+  validateReferenceAuthors(brief, authors);
+}
 
 /** Changing a handled target or handle is a new public acknowledgement; retaining one is ordinary triage. */
 function newAcknowledgements(brief, previous = '') {

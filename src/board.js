@@ -1,10 +1,6 @@
 import { foreignBlockers } from './cross-repo-dependencies.js';
 import { REFERENCE_ENGINE } from './reference-engine.js';
-import { validateReferenceTargets } from './reference-lines.js';
-import {
-  validateReferenceAuthors,
-  validateReferenceAuthority,
-} from './reference-authors.js';
+import { validateReferences } from './reference-authors.js';
 import {
   dependencyValues,
   validateNativeDependencies,
@@ -760,7 +756,7 @@ export function validateItemAddition(board, { by, lane, title, criterion = '', p
   if (!cleanTitle) throw new Refused('NO_TITLE', 'an item needs a title');
   checkRoute(route);
   const engine = board.executionEngineVersion ?? ENGINE_VERSION;
-  if (engine >= REFERENCE_ENGINE) { validateReferenceTargets(brief); validateReferenceAuthority(by, brief, referenceAuthority); validateReferenceAuthors(brief, referenceAuthors); }
+  if (engine >= REFERENCE_ENGINE) validateReferences(brief, { actor: by, authors: referenceAuthors, authority: referenceAuthority });
   checkRouted({ brief: brief.trim(), route, criterion, check: command }, engine);
   if (parentId !== null) {
     const parent = itemById(board, parentId);
@@ -893,7 +889,7 @@ export function validateItemEdit(board, id, { agentId, brief, route, criterion, 
   if (moved.length && item.item_status !== 'open' && (routeChanged || !correctionWhileClaimed)) {
     throw new Refused('HELD', `item #${id} is ${item.item_status}; change its route, criterion or check only while it is open`);
   }
-  if (brief !== undefined && engine >= REFERENCE_ENGINE) { validateReferenceTargets(brief); validateReferenceAuthority(agentId, brief, referenceAuthority, item.item_brief); validateReferenceAuthors(brief, referenceAuthors); }
+  if (brief !== undefined && engine >= REFERENCE_ENGINE) validateReferences(brief, { actor: agentId, authors: referenceAuthors, authority: referenceAuthority, previous: item.item_brief });
   checkRouted({ brief: next.item_brief, route: next.item_route, criterion: next.item_criterion, check: next.item_check }, engine);
   const unfreeze = next.item_criterion !== item.item_criterion || next.item_check !== item.item_check;
   return { item, next, command, unfreeze, bar: barCorrectionFields(board, item, next, { reason }) };
