@@ -4,6 +4,10 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { commitCitations } from '../src/history.js';
+import * as store from '../src/board.js';
+import { frozenCriterion, parseSpec } from '../src/spec.js';
+import { rowEvidence } from '../src/evidence.js';
+import { submitFixture } from './board-submit-fixture.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 
 const e2e = createE2eHelpers();
@@ -61,4 +65,46 @@ test('a legacy preview without full trailers preserves only the rows actually na
   commit('fix(core): incomplete historical preview [G2,+4]');
   const found = commitCitations(root, first);
   assert.deepEqual([...found.keys()].sort(), ['G1', 'G2']);
+});
+
+
+test('mixed Git history cannot replace show, ledger or coverage board authority [C7,S8,B3]', () => {
+  const { box, root, first, commit } = historyFixture();
+  const spec = '# Spec\n\n## G · Goals\n- G1 [approved, must] Board requirement. | gate: test\n- G2 [approved, must] Historical requirement. | gate: test\n';
+  writeFileSync(join(root, 'SPEC.md'), spec);
+  writeFileSync(join(root, 'pullboard.json'), JSON.stringify({ gate: 'true', spec: 'SPEC.md',
+    lanes: { web: { owns: ['web/'], specs: ['G'] } } }));
+  box.git(root, 'add', 'SPEC.md', 'pullboard.json');
+  box.git(root, 'commit', '-q', '-m', 'chore: configure historical fixture');
+  commit('test: legacy citation [G1]');
+  commit('test(merge): historic item [G2]\n\nPullboard-Item: #1\nPullboard-Rows: G2');
+  const source = box.git(root, 'rev-parse', 'HEAD').trim();
+  const initialized = box.run(root, 'init');
+  assert.equal(initialized.code, 0, initialized.err);
+  const board = store.openBoard(join(root, '.git', 'pullboard', 'board.sqlite'));
+  let id;
+  let item;
+  try {
+    id = store.addItem(board, { by: 'coordinator', lane: 'coordinator', title: 'Board rows remain authoritative',
+      criterion: 'Keep the live and frozen requirement.', specIds: ['G1'] });
+    assert.equal(id, 1);
+    store.claim(board, id, { agentId: 'coordinator', lane: 'coordinator', leaseMs: 60_000,
+      freeze: () => frozenCriterion(parseSpec(spec), store.getItem(board, id)), head: source });
+    // Synthetic historical submission proves a reader contract, not successful gate execution.
+    submitFixture(board, id, { agentId: 'coordinator', commit: source,
+      tree: box.git(root, 'rev-parse', source + '^{tree}').trim() });
+    item = store.getItem(board, id);
+    const coverage = rowEvidence(root, 'G1', { items: [item], testFiles: [] });
+    assert.equal(coverage.awaiting, true);
+    assert.equal(rowEvidence(root, 'G2', { items: [item], testFiles: [] }).awaiting, false);
+  } finally { store.closeBoard(board); }
+  const shown = box.run(root, 'show', String(id), '--json');
+  assert.equal(shown.code, 0, shown.err);
+  const detail = JSON.parse(shown.out);
+  assert.equal(detail.item_spec_ids, 'G1');
+  assert.deepEqual(JSON.parse(detail.item_frozen).rows.map(row => row.id), ['G1']);
+  const ledger = box.run(root, 'ledger', '--json');
+  assert.equal(ledger.code, 0, ledger.err);
+  assert.equal(JSON.parse(ledger.out).items.find(entry => entry.item_id === id).item_spec_ids, 'G1');
+  assert.deepEqual([...commitCitations(root, first).keys()].sort(), ['G1', 'G2']);
 });
