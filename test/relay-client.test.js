@@ -1116,27 +1116,32 @@ async function recoverReplicaReplies(fixture, timing) {
   writeFileSync(join(worktrees[0], 'web', 'README.md'), 'dirty current work is not a fresh submission\n');
   const afterSubmitRecoverySetup = relay.uploads.length;
   const retriedSubmit = await timing.wait('retry the original lost submission outcome', () => cli(worktrees[0], envs[0], 'submit', '2'));
-  const describeNewMoves = async (from, to) => Promise.all(relay.uploads.slice(from, to).map(async (upload) => {
+  const retryMoves = await Promise.all(relay.uploads.slice(afterSubmitRecoverySetup).map(async (upload) => {
     const plain = await unseal(key, Buffer.from(upload.sealed, 'base64url'), {
       boardId, kind: 'move', sequence: upload.sequence,
     });
     const move = JSON.parse(new TextDecoder().decode(plain));
     return {
-      sequence: upload.sequence,
       operation: move.operation,
       moveId: move.id,
-      firstArg: Number.isSafeInteger(move.args?.[0]) ? move.args[0] : null,
+      recipient: move.operation === 'recordActivityDelivery' ? move.args?.[0]?.agentId ?? null : null,
     };
   }));
-  console.log('relay retry diagnostic', JSON.stringify({
-    setupMoves: await describeNewMoves(beforeSubmitRetry, afterSubmitRecoverySetup),
-    retryMoves: await describeNewMoves(afterSubmitRecoverySetup, relay.uploads.length),
-  }));
+  const setupMoves = relay.uploads.slice(beforeSubmitRetry, afterSubmitRecoverySetup);
+  assert.equal(setupMoves.length, 0, 'committing and dirtying HEAD does not create a relay move');
+  const submittedBoard = store.openBoardForRead(join(commonDir(worktrees[0], envs[0]), 'pullboard', 'board.sqlite'));
+  let submittingAgent;
+  try { submittingAgent = store.getItem(submittedBoard, 2).item_owner; }
+  finally { store.closeBoard(submittedBoard); }
+  assert.deepEqual(retryMoves.map(({ operation }) => operation), ['recordActivityDelivery'],
+    'recovered reporting records only the expected activity delivery, never a second submit');
+  assert.equal(retryMoves[0].recipient, submittingAgent, 'the activity delivery is recorded for the submitting agent');
+  assert.equal(typeof retryMoves[0].moveId, 'string');
   assert.equal(retriedSubmit.commit, originalCommit);
   assert.equal(retriedSubmit.gate.green, true);
   assert.match(retriedSubmit.gate.report, /recovered the original submission/,
     'changed or dirty HEAD only receives the original receipt, never a fresh gate claim');
-  assert.equal(relay.uploads.length, beforeSubmitRetry, 'submitted-state preconditions cannot duplicate or strand recovery');
+  assert.equal(relay.uploads.length, beforeSubmitRetry + 1, 'submitted-state recovery emits only its one activity receipt, not another submit');
   assert.equal(gitAt(worktrees[0], envs[0], 'rev-parse', retriedSubmit.pin), originalCommit);
   gitAt(worktrees[0], envs[0], 'restore', 'web/README.md');
 
