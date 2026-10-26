@@ -96,6 +96,16 @@ const MISSING = Symbol('missing');
 const CONFLICT = Symbol('conflict');
 const GENERATED = new Map([['docs/lifecycle.md', ['bin/pullboard.js', 'lifecycle']]]);
 
+/** Refuse numeric data JavaScript cannot faithfully round-trip instead of silently changing an untouched value. */
+function snapshot(source) {
+  return JSON.parse(source, (_key, value) => {
+    if (typeof value === 'number' && (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value)))) {
+      throw new Error('snapshot number cannot round-trip exactly');
+    }
+    return value;
+  });
+}
+
 /** Compare JSON values structurally, without confusing absent keys with explicit null. */
 function identity(value) {
   if (value === MISSING) return MISSING;
@@ -170,7 +180,7 @@ function sourceResolution(path, base, ours, theirs) {
   if (GENERATED.has(path)) return { kind: 'generated', keys: [] };
   if (path.endsWith('.json')) {
     try {
-      const merged = jsonValue(JSON.parse(base), JSON.parse(ours), JSON.parse(theirs));
+      const merged = jsonValue(snapshot(base), snapshot(ours), snapshot(theirs));
       if (merged === CONFLICT) return null;
       const indent = /\n([ \t]+)\S/u.exec(ours)?.[1];
       return { kind: 'json', keys: Object.keys(merged ?? {}), source: JSON.stringify(merged, null, indent) + (ours.endsWith('\n') ? '\n' : '') };

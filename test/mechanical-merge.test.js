@@ -123,6 +123,7 @@ for (const [name, path, base, left, right] of [
   ['conflicting JSON scalars', 'snapshot.json', '{"value":"base"}\n', '{"value":"left"}\n', '{"value":"right"}\n'],
   ['a decreased counter', 'snapshot.json', '{"value":2}\n', '{"value":1}\n', '{"value":3}\n'],
   ['delete versus edit', 'snapshot.json', '{"value":null}\n', '{}\n', '{"value":1}\n'],
+  ['JSON numbers that cannot round-trip', 'snapshot.json', '{"value":1}\n', '{"value":1e400}\n', '{"value":2e400}\n'],
   ['an invalid JavaScript union', 'src/cli.js', 'export {};\n', 'const value = 1;\nexport {};\n', 'const value = 2;\nexport {};\n'],
   ['keyed additions with invalid JavaScript context', 'src/api-moves.js',
     'export = ;\nconst MOVES = {\n  base: { item: true },\n};\n',
