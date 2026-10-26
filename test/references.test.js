@@ -1,4 +1,4 @@
-/** @pullboard-test-loads src/brief.js src/board.js */
+/** @pullboard-test-loads src/brief.js src/board.js src/engine.js src/machine.js src/relay-sender.js */
 /** External references stay distinct from the board's requirement and dependency links [C7]. */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -8,9 +8,12 @@ import { briefSections } from '../src/brief.js';
 import * as store from '../src/board.js';
 import { minimumMoveEngine } from '../src/move-registry.js';
 import { REFERENCE_ENGINE } from '../src/reference-engine.js';
+import { prepareEngineMove } from '../src/engine.js';
+import { relaySenderProblem } from '../src/relay-sender.js';
+import { AGENT_SHELL_MARKERS, SSH_SHELL_MARKERS } from '../src/person.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { referenceLines, referenceAcknowledged } from '../src/reference-lines.js';
-import { bridgeProject, bridgeProvider, landBridgeItems, runBridgeCLI } from './pr-bridge-fixture.js';
+import { bridgeProject, bridgeProvider, landBridgeItems, runBridgeCLI, runBridgeCLIAs } from './pr-bridge-fixture.js';
 
 test('changelog matching distinguishes issue numbers and accepts Markdown acknowledgement links [C7]', () => {
   const reference = { target: 'https://github.com/example/project/issues/1', handle: 'Reporter' };
@@ -206,6 +209,8 @@ test('reference point 20: Submit reminds without refusing and only for missing n
 test('GitHub issue and pull references check explicit author handles during async add and edit [C7]', async t => {
   const box = bridgeProject(t);
   const provider = await bridgeProvider(t, box);
+  const personEnv = { ...box.env };
+  for (const marker of [...AGENT_SHELL_MARKERS, ...SSH_SHELL_MARKERS]) delete personEnv[marker];
   const referenceCalls = path => provider.requests.filter(request => request.method === 'GET' && request.path === path).length;
   const issuePath = '/repos/fixture/repository/issues/6';
   const pullPath = '/repos/fixture/repository/pulls/7';
@@ -216,7 +221,7 @@ test('GitHub issue and pull references check explicit author handles during asyn
   assert.match(`${wrongIssue.out}\n${wrongIssue.err}`, /issue-author/iu);
   assert.equal(referenceCalls(issuePath), 1, 'issue author is checked through the private provider');
 
-  const matchingIssue = await runBridgeCLI(box, 'add', 'web', 'Matching issue author', '--brief',
+  const matchingIssue = await runBridgeCLIAs(box, { cwd: box.repo, env: personEnv }, 'add', 'web', 'Matching issue author', '--brief',
     'Reference: https://github.com/fixture/repository/issues/6 @ISSUE-AUTHOR', '--json');
   assert.equal(matchingIssue.code, 0, matchingIssue.err || matchingIssue.out);
   assert.equal(referenceCalls(issuePath), 2, 'GitHub login matching is case-insensitive');
@@ -235,7 +240,7 @@ test('GitHub issue and pull references check explicit author handles during asyn
   assert.match(`${wrongPull.out}\n${wrongPull.err}`, /pr-author/iu);
   assert.equal(referenceCalls(pullPath), 1, 'pull author is checked through the private provider');
 
-  const matchingPull = await runBridgeCLI(box, 'edit', String(itemId), '--brief',
+  const matchingPull = await runBridgeCLIAs(box, { cwd: box.repo, env: personEnv }, 'edit', String(itemId), '--brief',
     'Reference: https://github.com/fixture/repository/pull/7 @PR-AUTHOR', '--json');
   assert.equal(matchingPull.code, 0, matchingPull.err || matchingPull.out);
   assert.equal(referenceCalls(pullPath), 2, 'pull login matching is case-insensitive too');
@@ -246,4 +251,92 @@ test('GitHub issue and pull references check explicit author handles during asyn
   assert.equal(unhandledEdit.code, 0, unhandledEdit.err || unhandledEdit.out);
   assert.equal(referenceCalls(issuePath) + referenceCalls(pullPath), beforeUnhandledEdit,
     'an edit without an explicit handle performs no author lookup');
+});
+
+
+test('only the person can add or edit an explicit GitHub author acknowledgement [C7,B26,H16]', async t => {
+  const box = bridgeProject(t);
+  const provider = await bridgeProvider(t, box);
+  const issuePath = '/repos/fixture/repository/issues/6';
+  const pullPath = '/repos/fixture/repository/pulls/7';
+  const lookups = () => provider.requests.filter(request => request.method === 'GET' &&
+    [issuePath, pullPath].includes(request.path)).length;
+  const humanEnv = { ...box.env };
+  for (const marker of [...AGENT_SHELL_MARKERS, ...SSH_SHELL_MARKERS]) delete humanEnv[marker];
+  const coordinatorAgentEnv = { ...box.env, CODEX_THREAD_ID: 'fixture-coordinator-agent' };
+  const worktreeAgentEnv = { ...box.env, CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'fixture-web-agent' };
+  const beforeItems = () => {
+    const board = store.openBoard(join(box.repo, '.git/pullboard/board.sqlite'));
+    try { return store.listItems(board).length; } finally { store.closeBoard(board); }
+  };
+  const initialItems = beforeItems();
+
+  const coordinatorMark = await runBridgeCLIAs(box, { cwd: box.repo, env: coordinatorAgentEnv },
+    'add', 'web', 'Coordinator cannot acknowledge', '--brief',
+    'Reference: https://github.com/fixture/repository/issues/6 @issue-author', '--json');
+  assert.notEqual(coordinatorMark.code, 0, 'the coordinator agent may triage an issue but cannot mark its author acknowledged');
+  assert.equal(JSON.parse(coordinatorMark.out).error.code, 'B26_PERSON_CHANNEL');
+  assert.equal(beforeItems(), initialItems, 'a rejected coordinator acknowledgement has no local item effect');
+  assert.equal(lookups(), 0, 'person-only authority is checked before an author network lookup');
+
+  const ordinaryCoordinatorAdd = await runBridgeCLIAs(box, { cwd: box.repo, env: coordinatorAgentEnv },
+    'add', 'web', 'Unacknowledged issue', '--brief',
+    'Reference: https://github.com/fixture/repository/issues/6', '--json');
+  assert.equal(ordinaryCoordinatorAdd.code, 0, ordinaryCoordinatorAdd.err || ordinaryCoordinatorAdd.out);
+  const itemId = JSON.parse(ordinaryCoordinatorAdd.out).item.item_id;
+  assert.equal(lookups(), 0, 'a coordinator can record an unhandled issue without looking up an author');
+
+  const ordinaryAgentAdd = await runBridgeCLIAs(box, { cwd: box.web, env: worktreeAgentEnv },
+    'add', 'web', 'Agent unhandled pull', '--brief',
+    'Reference: https://github.com/fixture/repository/pull/7', '--json');
+  assert.equal(ordinaryAgentAdd.code, 0, ordinaryAgentAdd.err || ordinaryAgentAdd.out);
+  const agentItemId = JSON.parse(ordinaryAgentAdd.out).item.item_id;
+  assert.equal(lookups(), 0, 'an agent can add an unhandled pull reference without author lookup');
+
+  const agentMark = await runBridgeCLIAs(box, { cwd: box.web, env: worktreeAgentEnv },
+    'edit', String(agentItemId), '--brief',
+    'Reference: https://github.com/fixture/repository/pull/7 @pr-author', '--json');
+  assert.notEqual(agentMark.code, 0, 'a lane agent cannot mark a pull author acknowledged');
+  assert.equal(JSON.parse(agentMark.out).error.code, 'B26_PERSON_CHANNEL');
+  assert.equal(lookups(), 0, 'a rejected agent edit performs no author lookup');
+
+  const ordinaryAgentEdit = await runBridgeCLIAs(box, { cwd: box.web, env: worktreeAgentEnv },
+    'edit', String(agentItemId), '--brief',
+    'Reference: https://github.com/fixture/repository/pull/7', '--json');
+  assert.equal(ordinaryAgentEdit.code, 0, ordinaryAgentEdit.err || ordinaryAgentEdit.out);
+  assert.equal(lookups(), 0, 'an agent can edit an unhandled pull reference without author lookup');
+
+  const humanAdd = await runBridgeCLIAs(box, { cwd: box.repo, env: humanEnv },
+    'add', 'web', 'Person acknowledgement', '--brief',
+    'Reference: https://github.com/fixture/repository/issues/6 @ISSUE-AUTHOR', '--json');
+  assert.equal(humanAdd.code, 0, humanAdd.err || humanAdd.out);
+  assert.equal(lookups(), 1, 'the marker-free private person terminal verifies the issue author');
+  const humanEdit = await runBridgeCLIAs(box, { cwd: box.repo, env: humanEnv },
+    'edit', String(itemId), '--brief',
+    'Reference: https://github.com/fixture/repository/pull/7 @PR-AUTHOR', '--json');
+  assert.equal(humanEdit.code, 0, humanEdit.err || humanEdit.out);
+  assert.equal(lookups(), 2, 'the person may acknowledge a matching pull author, case-insensitively');
+});
+
+test('a relay agent cannot forge person authority for handled add and edit references [C7,H16]', t => {
+  const box = bridgeProject(t);
+  const board = store.openBoard(join(box.repo, '.git/pullboard/board.sqlite'));
+  t.after(() => store.closeBoard(board));
+  const target = 'https://github.com/fixture/repository/issues/6';
+  const authors = [{ target, author: 'issue-author' }];
+  const add = { by: 'coordinator', lane: 'web', title: 'Forged author authority',
+    brief: `Reference: ${target} @issue-author`, referenceAuthors: authors, referenceAuthority: 'person' };
+  const edit = { agentId: 'coordinator', brief: `Reference: ${target} @issue-author`,
+    referenceAuthors: authors, referenceAuthority: 'person' };
+  assert.equal(minimumMoveEngine('addItem', [add], board), REFERENCE_ENGINE,
+    'a person-authorized reference add retains the reference engine floor');
+  assert.equal(minimumMoveEngine('editItem', [1, edit], board), REFERENCE_ENGINE,
+    'a person-authorized reference edit retains the reference engine floor');
+  for (const [operation, args] of [['addItem', [add]], ['editItem', [1, edit]]]) {
+    const move = prepareEngineMove(board, operation, args, { id: `forged-reference-${operation}` });
+    assert.ok(move.engine >= REFERENCE_ENGINE);
+    const refusal = relaySenderProblem(move,
+      { kind: 'agent', userId: 'fixture-user', agent: 'coordinator' }, 'move');
+    assert.equal(refusal?.code, 'RELAY_PERSON_ONLY', `${operation} cannot relay the forged person marker`);
+  }
 });

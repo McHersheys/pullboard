@@ -10,8 +10,13 @@ import { startFixtureChild } from './fixture-child.js';
 
 /** Run the actual CLI without blocking the loopback provider's event loop. */
 export async function runBridgeCLI(box, ...args) {
+  return runBridgeCLIAs(box, { cwd: box.repo, env: box.env }, ...args);
+}
+
+/** Run one fixture command in an explicitly scoped shell, without changing the shared fixture environment. */
+export async function runBridgeCLIAs(box, { cwd = box.repo, env = box.env } = {}, ...args) {
   const child = startFixtureChild(process.execPath, [box.BIN, ...args],
-    { cwd: box.repo, env: box.env, stdio: ['ignore', 'pipe', 'pipe'] });
+    { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
   let out = '';
   let err = '';
   child.stdout.setEncoding('utf8').on('data', chunk => { out += chunk; });
