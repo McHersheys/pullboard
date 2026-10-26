@@ -464,7 +464,7 @@ test('a refused later checkpoint names its repair once on every native agent com
   /** Demand one bounded diagnostic with upload, reason and the coordinator's concrete repair. */
   function diagnostic(result, name) {
     const lines = result.document.diagnostics ?? [];
-    assert.equal(lines.length, 1, name + ' prints one diagnostic across preflight, move and postflight');
+    assert.equal(lines.length, 1, name + ' prints one diagnostic across preflight, move and postflight: ' + JSON.stringify(lines));
     assert.match(lines[0], /relay checkpoint refused for [0-9a-f]{32}: BAD_UPLOAD malformed sealed snapshot/u);
     assert.match(lines[0], /moves still sync in order; a fresh checkpoint goes up on the next change/u);
     assert.match(lines[0], /upgrade pullboard \(npm i -g pullboard\) or run pullboard relay off then relay on --all/u);
@@ -547,14 +547,25 @@ test('a refused later checkpoint names each distinct ordered move with the same 
     const second = await relayOperation(root, 'shout', [{ from: 'coordinator', to: 'all', text: 'same io second ordered move', lanes: [] }], io);
     await syncRelay(root, io);
     await syncRelay(root, io);
-    console.log(JSON.stringify({ first: Number.isSafeInteger(first), second: Number.isSafeInteger(second), firstCount, lines: notices() }));
+    const directCount = notices().length;
+    io.relayCommand = { cliOperation: 'submit', cwd: root };
+    await syncRelay(root, io);
+    await relayOperation(root, 'shout', [{ from: 'coordinator', to: 'all', text: 'command bookkeeping first', lanes: [] }], { ...io });
+    await relayOperation(root, 'shout', [{ from: 'coordinator', to: 'all', text: 'command bookkeeping second', lanes: [] }], { ...io });
+    const commandCount = notices().length;
+    io.relayCommand = { cliOperation: 'submit', cwd: root };
+    await syncRelay(root, io);
+    await relayOperation(root, 'shout', [{ from: 'coordinator', to: 'all', text: 'next independent command', lanes: [] }], io);
+    console.log(JSON.stringify({ first: Number.isSafeInteger(first), second: Number.isSafeInteger(second), firstCount, directCount, commandCount, lines: notices() }));
   `);
   assert.equal(result.code, 0);
   assert.equal(result.document.first, true);
   assert.equal(result.document.second, true);
-  assert.equal(box.moveAcks.length - before, 2, 'both distinct moves are acknowledged through the real ordered relay');
+  assert.equal(box.moveAcks.length - before, 5, 'all distinct moves are acknowledged through the real ordered relay');
   assert.equal(result.document.firstCount, 1, 'preflight, one move and repeated synchronization share one diagnostic');
-  assert.equal(result.document.lines.length, 2, 'two distinct acknowledged moves sharing io each name the refused checkpoint');
+  assert.equal(result.document.directCount, 2, 'two distinct acknowledged moves sharing io each name the refused checkpoint');
+  assert.equal(result.document.commandCount, 3, 'preflight and cloned bookkeeping io share one logical command notice');
+  assert.equal(result.document.lines.length, 4, 'the next independent command sharing io receives a fresh notice');
   for (const line of result.document.lines) {
     assert.match(line, /relay checkpoint refused for [0-9a-f]{32}: BAD_UPLOAD malformed sealed snapshot/u);
     assert.match(line, /moves still sync in order.*npm i -g pullboard.*relay off then relay on --all/u);
