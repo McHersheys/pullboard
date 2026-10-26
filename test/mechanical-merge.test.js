@@ -1,3 +1,4 @@
+/** @pullboard-test-input source-tree */
 /** Real Git conflict inspection and landing share conservative mechanical resolutions [B3,R3,C7]. */
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
