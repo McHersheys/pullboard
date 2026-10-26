@@ -59,7 +59,7 @@ function enableBridgeMode(box, companion) {
 }
 
 /** Build, verify and locally land two real items before enabling the opt-in publisher. */
-export function landBridgeItems(box, { independent = false } = {}) {
+export function landBridgeItems(box, { independent = false, briefs = [] } = {}) {
   const entries = [];
   for (const [index, name] of ['one', 'two'].entries()) {
     const path = index === 0 ? box.web : join(box.dir, 'web-two');
@@ -75,7 +75,8 @@ export function landBridgeItems(box, { independent = false } = {}) {
       } finally { store.closeBoard(board); }
     }
     const add = box.run(box.repo, 'add', 'web', `private bridge ${name}`, '--specs', 'G1',
-      '--criterion', `private ${name} remains correct`, '--check', 'test ! -f RED', '--json');
+      '--criterion', `private ${name} remains correct`, '--check', 'test ! -f RED',
+      ...(briefs[index] === undefined ? [] : ['--brief', briefs[index]]), '--json');
     assert.equal(add.code, 0, add.err);
     const id = JSON.parse(add.out).item.item_id;
     assert.equal(box.run(path, 'claim', String(id)).code, 0);

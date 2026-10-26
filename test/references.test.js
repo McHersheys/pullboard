@@ -8,6 +8,43 @@ import * as store from '../src/board.js';
 import { minimumMoveEngine } from '../src/move-registry.js';
 import { REFERENCE_ENGINE } from '../src/reference-engine.js';
 import { createE2eHelpers } from './e2e-helpers.js';
+import { referenceLines } from '../src/reference-lines.js';
+import { bridgeProject, bridgeProvider, landBridgeItems, runBridgeCLI } from './pr-bridge-fixture.js';
+
+test('reference points 19 and 23: only explicitly labelled lines can acknowledge someone [C7]', () => {
+  const brief = 'Reference: https://example.com/public @Reporter\nprivate unlabelled continuation @PrivatePerson\nReference: https://example.com/private';
+  assert.deepEqual(referenceLines(brief), [
+    { text: 'https://example.com/public @Reporter', target: 'https://example.com/public', handle: 'Reporter' },
+    { text: 'https://example.com/private', target: 'https://example.com/private', handle: null },
+  ]);
+});
+
+test('reference point 23: actual PR create and update publish handled references and keep all others private [C7,B3,R3]', async t => {
+  const box = bridgeProject(t);
+  const publicReference = 'https://example.com/acknowledged-report';
+  const privateReference = 'https://example.com/PRIVATE-REFERENCE-SENTINEL';
+  const privateContinuation = 'PRIVATE-CONTINUATION-SENTINEL @PrivatePerson';
+  const entries = landBridgeItems(box, { briefs: [
+    `Reference: ${publicReference} @Reporter\n${privateContinuation}\nReference: ${privateReference}`,
+    'Reference: PRIVATE-CONVERSATION-SENTINEL',
+  ] });
+  const provider = await bridgeProvider(t, box);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const published = await runBridgeCLI(box, 'publish', '--json');
+    assert.equal(published.code, 0, published.err || published.out);
+    assert.equal(provider.pulls.length, 1);
+    const pull = provider.pulls[0];
+    assert.ok(pull.body.includes(publicReference), 'the acknowledged reference is included in the actual provider body');
+    assert.ok(pull.body.includes('@Reporter'));
+    for (const entry of entries) assert.ok(pull.body.includes(entry.commit), 'existing exact accepted receipt remains');
+    assert.equal(box.git(box.remote, 'rev-parse', 'main'), box.published, 'the protected remote remains unchanged');
+  }
+  const outgoing = JSON.stringify(provider.requests.filter(request => request.method !== 'GET').map(request => request.body));
+  for (const secret of [privateReference, privateContinuation, 'PRIVATE-CONVERSATION-SENTINEL', '@PrivatePerson']) {
+    assert.equal(outgoing.includes(secret), false, `unhandled private reference never leaves the board: ${secret}`);
+  }
+  assert.equal(provider.requests.some(request => request.path.endsWith('/merge') && request.method !== 'GET'), false);
+});
 
 test('reference point 19: repeated external references remain separate labelled brief entries [C7]', () => {
   const references = [
