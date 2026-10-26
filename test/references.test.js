@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { join } from 'node:path';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { briefSections } from '../src/brief.js';
 import * as store from '../src/board.js';
 import { minimumMoveEngine } from '../src/move-registry.js';
@@ -97,4 +98,65 @@ test('reference point 22: add and edit refuse board-only references with the rig
       assert.ok(refusal.message.includes(flag), refusal.message);
     }
   }
+});
+
+
+/** Exercise the actual Submit lifecycle with a private changelog owned by the fixture's lane. */
+function submitReferenceFixture(t, { handled, matchingAddition }) {
+  const e2e = createE2eHelpers();
+  t.after(() => e2e.cleanup());
+  const box = e2e.project('true');
+  const target = 'https://example.invalid/conversations/reference-submit-20';
+  const handle = 'ReferenceReporter';
+  const acknowledgement = `${target} @${handle}`;
+  const configFile = join(box.repo, 'pullboard.json');
+  const config = JSON.parse(readFileSync(configFile, 'utf8'));
+  config.lanes.web.owns.push('CHANGELOG.md');
+  writeFileSync(configFile, JSON.stringify(config, null, 2) + '\n');
+  // An old matching line is insufficient: point 20 concerns what this item's change adds.
+  writeFileSync(join(box.repo, 'CHANGELOG.md'), `# Changelog\n\n## Earlier release\n- Earlier work: ${acknowledgement}\n`);
+  box.git(box.repo, 'add', 'pullboard.json', 'CHANGELOG.md');
+  box.git(box.repo, 'commit', '-q', '-m', 'chore: prepare reference changelog fixture [G1]');
+  box.git(box.web, 'merge', '-q', '--ff-only', 'main');
+  const reference = handled ? acknowledgement : target;
+  const added = box.run(box.repo, 'add', 'web', 'Submit reference reminder', '--specs', 'G1',
+    '--criterion', 'The private reference change remains green.', '--check', 'test -f web/reference-change.txt',
+    '--brief', `${e2e.LIGHT_BRIEF}Reference: ${reference}\n`, '--json');
+  assert.equal(added.code, 0, added.err || added.out);
+  const id = JSON.parse(added.out).item.item_id;
+  const claimed = box.run(box.web, 'claim', String(id));
+  assert.equal(claimed.code, 0, claimed.err || claimed.out);
+  if (matchingAddition) {
+    const file = join(box.web, 'CHANGELOG.md');
+    writeFileSync(file, readFileSync(file, 'utf8') + `\n## Unreleased\n- New reference change: ${acknowledgement}\n`);
+  }
+  const committed = e2e.commitFile(box, box.web, 'web/reference-change.txt', 'PASS\n',
+    'feat(web): exercise reference submit [G1]');
+  assert.equal(committed.status, 0, committed.stderr || committed.stdout);
+  const submitted = box.run(box.web, 'submit', String(id), '--json');
+  assert.equal(submitted.code, 0, submitted.err || submitted.out);
+  const shown = box.run(box.repo, 'show', String(id), '--json');
+  assert.equal(shown.code, 0, shown.err || shown.out);
+  assert.equal(JSON.parse(shown.out).item_status, 'submitted', 'the reminder never prevents the native submission');
+  return { submitted, target, handle };
+}
+
+test('reference point 20: Submit reminds without refusing and only for missing newly added acknowledgements [C7]', async t => {
+  await t.test('an old matching line does not hide the missing addition', t => {
+    const { submitted, target, handle } = submitReferenceFixture(t, { handled: true, matchingAddition: false });
+    const output = `${submitted.out}\n${submitted.err}`;
+    const reminders = output.split(/\r?\n/u).filter(line => /changelog/iu.test(line));
+    assert.ok(reminders.some(line => line.includes(target) && line.includes(`@${handle}`)),
+      'successful Submit reminds about the exact handled reference missing from this change');
+  });
+  await t.test('a matching newly added changelog line needs no reminder', t => {
+    const { submitted } = submitReferenceFixture(t, { handled: true, matchingAddition: true });
+    assert.doesNotMatch(`${submitted.out}\n${submitted.err}`, /changelog/iu,
+      'the actual added acknowledgement satisfies the reminder');
+  });
+  await t.test('an unhandled reference needs no acknowledgement or reminder', t => {
+    const { submitted } = submitReferenceFixture(t, { handled: false, matchingAddition: false });
+    assert.doesNotMatch(`${submitted.out}\n${submitted.err}`, /changelog/iu,
+      'private unhandled references do not acquire an acknowledgement check');
+  });
 });
