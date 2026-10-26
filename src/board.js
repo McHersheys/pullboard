@@ -201,6 +201,8 @@ import {
   boardBusyError,
 } from './board-access.js';
 import { ensureHotIndexes } from './board-hot.js';
+import { guardStore } from './board-store-guards.js';
+import { refreshStoreDeclarations } from './board-store-guards.js';
 import { ensureAdditiveIndexes } from './board-hot.js';
 import { missingAdditiveIndexes } from './board-hot.js';
 import {
@@ -427,6 +429,7 @@ export function openBoard(file, clock = systemClock, { isMain, onDiagnostic, wri
         }
         recordSchemaStamp(db, SCHEMA_DIGEST);
       });
+      if (standing === 'current') refreshStoreDeclarations(board);
       // Index-only upgrades keep the data version/digest unchanged. Install and restamp together;
       // drifted or read-only stores never take this path, and old clients accept the resulting stamp.
       if (standing !== 'drifted' && missingAdditiveIndexes(db)) atomic(board, () => {
@@ -473,42 +476,6 @@ function guardMoves(board) {
 }
 
 export { SCHEMA_VERSION } from './board-schema-source.js';
-const GUARDED = 1;
-
-/**
- * Install the triggers that make the board file refuse what the lifecycle does not allow (M3), and
- * put back any that are missing or differ from the declaration. A board that never had them is just
- * older and gets them quietly; a board that had them and lost one was edited by hand, so the event
- * log says which came back.
- *
- * @param {any} board
- */
-function guardStore(board) {
-  const wanted = storeTriggers();
-  const drift = () => {
-    const have = new Map(
-      board.db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'machine%'").all().map((row) => [row.name, row.sql]),
-    );
-    return {
-      missing: wanted.filter(({ name }) => !have.has(name)).map(({ name }) => name),
-      changed: wanted.filter(({ name, sql }) => have.has(name) && have.get(name) !== sql).map(({ name }) => name),
-      stale: [...have.keys()].filter((name) => !wanted.some((trigger) => trigger.name === name)),
-    };
-  };
-  const isWhole = ({ missing, changed, stale }) => !missing.length && !changed.length && !stale.length;
-  if (isWhole(drift())) {
-    if (board.db.prepare('PRAGMA user_version').get().user_version < SCHEMA_VERSION) board.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
-    return;
-  }
-  atomic(board, () => {
-    const found = drift();
-    if (isWhole(found)) return;
-    for (const name of [...found.changed, ...found.stale]) board.db.exec(`DROP TRIGGER IF EXISTS "${name}"`);
-    for (const { name, sql } of wanted) if (found.missing.includes(name) || found.changed.includes(name)) board.db.exec(sql);
-    if (board.db.prepare('PRAGMA user_version').get().user_version >= GUARDED) logEvent(board, 'board', 'guards', null, found);
-    if (board.db.prepare('PRAGMA user_version').get().user_version < SCHEMA_VERSION) board.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
-  });
-}
 
 export { readEventLogVersion } from './board-read-open.js';
 
