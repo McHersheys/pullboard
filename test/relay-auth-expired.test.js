@@ -23,7 +23,7 @@ async function revokeCredential(box, id) {
 /** Read one real CLI result and check its single board-named local fallback diagnostic. */
 async function assertLocalRead(box, board, ...args) {
   const result = await box.cli(...args);
-  assert.equal(result.code, 0, result.failure ?? `${args[0]} answers from the local board`);
+  assert.equal(result.code, 0, `${result.failure ?? `${args[0]} answers from the local board`}; ${JSON.stringify(result.document?.error ?? null)}`);
   assert.equal(result.document.diagnostics?.length, 1, `${args[0]} prints one auth-expiry line`);
   assert.match(result.document.diagnostics[0], new RegExp(board));
   assert.match(result.document.diagnostics[0], /sign-in expired or was revoked/u);

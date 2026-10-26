@@ -464,7 +464,7 @@ test('a refused later checkpoint names its repair once on every native agent com
   /** Demand one bounded diagnostic with upload, reason and the coordinator's concrete repair. */
   function diagnostic(result, name) {
     const lines = result.document.diagnostics ?? [];
-    assert.equal(lines.length, 1, name + ' prints one diagnostic across preflight, move and postflight');
+    assert.equal(lines.length, 1, name + ' prints one diagnostic across preflight, move and postflight: ' + JSON.stringify(lines));
     assert.match(lines[0], /relay checkpoint refused for [0-9a-f]{32}: BAD_UPLOAD malformed sealed snapshot/u);
     assert.match(lines[0], /moves still sync in order; a fresh checkpoint goes up on the next change/u);
     assert.match(lines[0], /upgrade pullboard \(npm i -g pullboard\) or run pullboard relay off then relay on --all/u);
