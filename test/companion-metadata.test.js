@@ -9,6 +9,9 @@ import {
   parseCommitMessage,
 } from '../src/commit-message.js';
 import { landingMessage } from '../src/landing-message.js';
+import { commitMsgProblems } from '../src/hooks.js';
+import { defaults } from '../src/config.js';
+import { parseSpec } from '../src/spec.js';
 import { itemsTouching } from '../src/why-file.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 
@@ -53,6 +56,9 @@ test('a new companion commit carries Pullboard-Item and an old one still parses 
   assert.doesNotMatch(rewritten.message, /Pullboard-Companion:/u);
   assert.ok(commitMessageProblems(historical, { item: 17, rows: ['C7'] }).some(problem => /retired/u.test(problem)),
     'historical readability never authorizes a new legacy trailer');
+  assert.ok(commitMsgProblems('feat(merge): old rowless\n\nPullboard-Companion: #17', {
+    rules: defaults().commits, spec: parseSpec(''), rowlessLandings: [17],
+  }).some(problem => /retired/u.test(problem)), 'legacy reading cannot borrow the hook exemption for a new rowless landing');
   const mixed = historical.replace('Pullboard-Companion: #17', 'Pullboard-Item: #18\nPullboard-Companion: #17');
   assert.equal(parseCommitMessage(mixed).item, 18, 'the canonical trailer takes precedence');
   assert.equal(parseCommitMessage(mixed.replace('Pullboard-Item: #18', 'Pullboard-Item: invalid')).item, null,
