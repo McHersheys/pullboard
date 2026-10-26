@@ -4,7 +4,10 @@ import { loadSpec } from './spec.js';
 import { loadDoctrine } from './doctrine.js';
 import { shownDecisionRows } from './row-decisions.js';
 import { personRequestRecords } from './relay-requests.js';
-import { barDigest, barReadiness } from './bar-readiness.js';
+import {
+  barDigest,
+  barReadiness,
+} from './bar-readiness.js';
 import { mainPolicy } from './trusted-policy.js';
 import { previewBarCoverage } from './bar-coverage.js';
 import { Refused } from './refused.js';
