@@ -6,6 +6,9 @@ import * as store from '../src/board.js';
 import { exportBoard, importBoard } from '../src/exchange.js';
 import { applyEngineMove, prepareEngineMove } from '../src/engine.js';
 import { ENGINE_VERSION } from '../src/machine.js';
+import { AGENT_GRANT_ENGINE } from '../src/agent-grant-engine.js';
+import { appliedSequence } from '../src/engine.js';
+import { replayHistoricalSeatMove } from './pre-grant-seats.js';
 
 const CLAIM_AT = '2026-10-08T12:00:00.000Z';
 const RENEW_AT = '2026-10-08T12:00:30.000Z';
@@ -21,11 +24,15 @@ const REVIEW_SKIPPED = {
 };
 
 /** Create one seed board and two independent in-memory replicas with different ambient clocks. */
-function memoryCopies(t) {
+function memoryCopies(t, historicalSeats = false) {
   const source = store.openBoard(':memory:', { now: () => new Date('2026-10-08T10:00:00.000Z') });
-  store.register(source, { lane: 'coordinator', path: '/fixture' });
-  store.register(source, { lane: 'web', path: '/fixture/web-1' });
-  store.register(source, { lane: 'web', path: '/fixture/web-2' });
+  /** Engine-1 claim history starts with real engine-1 joins, not a newer seat's activated grant. */
+  const register = who => historicalSeats
+    ? replayHistoricalSeatMove(source, 1, 'register', [who])
+    : store.register(source, who);
+  register({ lane: 'coordinator', path: '/fixture' });
+  register({ lane: 'web', path: '/fixture/web-1' });
+  register({ lane: 'web', path: '/fixture/web-2' });
   const item = store.addItem(source, { by: 'coordinator', lane: 'web', title: 'Review queue fixture' });
   const snapshot = exportBoard(source);
   const copies = ['one', 'two'].map((name, index) => {
@@ -59,17 +66,25 @@ function eventRows(board) {
 }
 
 test('review-skip semantics seal after released engine 1, accept legacy claims and refuse future engines before mutation [Q1,V15,H16]', (t) => {
-  const { copies: [one], item } = memoryCopies(t);
+  const { copies: [one], item } = memoryCopies(t, true);
   const fresh = claimMove(one, item, 'web-1', 'new-engine');
   assert.ok(fresh.engine >= 2, 'released engine 1 cannot silently ignore the new claim snapshot');
   assert.equal(fresh.engine, ENGINE_VERSION);
   const legacy = { ...claimMove(one, item, 'web-1', 'legacy-engine', null), engine: 1 };
-  const accepted = applyEngineMove(one, legacy, { sequence: 1, at: CLAIM_AT });
+  const sequence = appliedSequence(one) + 1;
+  const accepted = applyEngineMove(one, legacy, { sequence, at: CLAIM_AT });
   assert.equal(Boolean(accepted.error), false, 'legacy engine-1 claims remain executable');
   assert.equal(accepted.events[0].event_kind, 'claim');
   assert.equal(Object.hasOwn(JSON.parse(accepted.events[0].event_detail), 'reviewSkipped'), false);
+  const { copies: [modern], item: modernItem } = memoryCopies(t);
+  const modernBefore = exportBoard(modern);
+  const forgedOld = { ...claimMove(modern, modernItem, 'web-1', 'modern-seat-old-claim', null), engine: 1 };
+  assert.throws(() => applyEngineMove(modern, forgedOld, { sequence: 1, at: CLAIM_AT }),
+    error => error.code === 'RELAY_MOVE' && error.message.includes(`engine ${AGENT_GRANT_ENGINE}`),
+    'a current-engine join still requires its grant floor; historical setup must not weaken this control');
+  assert.deepEqual(exportBoard(modern), modernBefore, 'a forged old claim leaves a modern board unchanged');
   const before = exportBoard(one);
-  assert.throws(() => applyEngineMove(one, { ...fresh, engine: ENGINE_VERSION + 1 }, { sequence: 2, at: RENEW_AT }), (error) => {
+  assert.throws(() => applyEngineMove(one, { ...fresh, engine: ENGINE_VERSION + 1 }, { sequence: sequence + 1, at: RENEW_AT }), (error) => {
     assert.equal(error.code, 'ENGINE_VERSION');
     assert.match(error.message, new RegExp(`engine version ${ENGINE_VERSION + 1}.*engine version ${ENGINE_VERSION}`));
     assert.match(error.message, /upgrade pullboard/);

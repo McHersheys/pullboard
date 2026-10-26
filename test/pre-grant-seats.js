@@ -1,6 +1,29 @@
 /** Seats registered as history from before agent grants (#348), for replays of older engines [E21,H16]. */
 import * as store from '../src/board.js';
 import { AGENT_GRANT_ENGINE } from '../src/agent-grant-engine.js';
+import assert from 'node:assert/strict';
+import { applyEngineMove } from '../src/engine.js';
+import { appliedSequence } from '../src/engine.js';
+
+/** Replay a real historical join/claim prefix, retaining its receipts and cursor instead of erasing modern grant markers. */
+export function replayHistoricalSeatMove(board, engine, operation, args) {
+  assert.ok(Number.isSafeInteger(engine) && engine > 0 && engine < AGENT_GRANT_ENGINE);
+  assert.ok(['register', 'claim'].includes(operation));
+  const values = [...args];
+  if (operation === 'claim') {
+    const options = { ...values[1] };
+    const frozen = options.freeze(store.getItem(board, values[0]));
+    delete options.freeze;
+    values[1] = { ...options, frozen, freezeError: null };
+  }
+  const sequence = appliedSequence(board) + 1;
+  const move = { version: 1, engine, id: `historical-${operation}-${sequence}`,
+    operation, args: JSON.parse(JSON.stringify(values)) };
+  const outcome = applyEngineMove(board, move, { sequence, at: board.clock.now().toISOString() });
+  assert.equal(outcome.error, undefined, `historical ${operation} must reach its real operation: ${JSON.stringify(outcome.error)}`);
+  assert.equal(board.executionEngineVersion, undefined, 'historical replay restores the current execution context');
+  return outcome.result;
+}
 
 /**
  * Register each [lane, path] seat as an engine before AGENT_GRANT_ENGINE wrote it, and return the seat ids.
