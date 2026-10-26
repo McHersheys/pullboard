@@ -19,7 +19,7 @@ function existingEngine(args, board, at) {
 
 /** Preserve every historical floor while preventing older replicas from flattening foreign references. */
 function minimumEngine(args, board, at) {
-  return Math.max(args[0]?.referenceAuthors !== undefined ? REFERENCE_ENGINE : 1, existingEngine(args, board, at), hasForeignDependencies(args[0]?.after) ? CROSS_REPO_DEPENDENCY_ENGINE : 1);
+  return Math.max((args[0]?.referenceAuthors !== undefined || args[0]?.referenceAuthority !== undefined) ? REFERENCE_ENGINE : 1, existingEngine(args, board, at), hasForeignDependencies(args[0]?.after) ? CROSS_REPO_DEPENDENCY_ENGINE : 1);
 }
 
 /** Read precisely the actor argument used by this operation [H2,H16]. */

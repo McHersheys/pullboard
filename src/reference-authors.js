@@ -2,6 +2,29 @@
 import { handledReferences } from './reference-lines.js';
 import { githubPullClient } from './pr-github.js';
 import { Refused } from './refused.js';
+import { requirePersonChannel } from './person.js';
+
+/** Changing a handled target or handle is a new public acknowledgement; retaining one is ordinary triage. */
+function newAcknowledgements(brief, previous = '') {
+  const old = new Set(handledReferences(previous).map(reference => JSON.stringify([reference.target, reference.handle.toLowerCase()])));
+  return handledReferences(brief).some(reference => !old.has(JSON.stringify([reference.target, reference.handle.toLowerCase()])));
+}
+
+/** Authorize public acknowledgement through the same authenticated person channels as outside approval. */
+export function referenceAuthority(ctx, actor, brief, previous = '') {
+  if (!newAcknowledgements(brief, previous)) return undefined;
+  if (ctx.io.personRequest?.phase !== 'execute') requirePersonChannel(ctx.io.personChannel);
+  if (!ctx.info.isMain || actor !== 'coordinator') throw new Refused('B26_PERSON_CHANNEL', 'the person acknowledges an outside reference from the main checkout or its authenticated view; leave the reference unhandled for triage.');
+  return 'person';
+}
+
+/** Replay person acknowledgement authority without consulting another device's shell. */
+export function validateReferenceAuthority(actor, brief, authority, previous = '') {
+  if (!newAcknowledgements(brief, previous)) return;
+  if (!['coordinator', 'person'].includes(actor) || authority !== 'person') {
+    throw new Refused('B26_PERSON_CHANNEL', 'only the authenticated person marks an outside reference handled; keep it without a handle for ordinary triage.');
+  }
+}
 
 /** Recognize only a fixed GitHub issue or PR route; arbitrary references never become fetch URLs. */
 function githubReference(target) {

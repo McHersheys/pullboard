@@ -1,5 +1,5 @@
 import { barReadySetting } from '../bar-readiness.js';
-import { referenceAuthors } from '../reference-authors.js';
+import { referenceAuthors, referenceAuthority } from '../reference-authors.js';
 /** The pullboard edit command, in its own module so an item adding another command never edits these lines. */
 import * as store from '../board.js';
 import {
@@ -52,6 +52,8 @@ export async function run(io, args) {
     ...(values.reason !== undefined ? { reason: values.reason } : {}),
   };
   if (change.brief !== undefined) {
+    const authority = referenceAuthority(ctx, me.id, change.brief, store.getItem(board, id).item_brief);
+    if (authority) change.referenceAuthority = authority;
     const authors = referenceAuthors(ctx.info.root, change.brief);
     if (authors.length) change.referenceAuthors = authors;
   }

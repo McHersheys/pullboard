@@ -27,13 +27,19 @@ function personBarMove(move) {
   return at !== null && move.args?.[at]?.barActor?.authority === 'person';
 }
 
+/** Public acknowledgement follows authenticated person credentials even when the actor is the coordinator. */
+function personReferenceMove(move) {
+  const options = move?.operation === 'addItem' ? move.args?.[0] : move?.operation === 'editItem' ? move.args?.[1] : null;
+  return options?.referenceAuthority === 'person';
+}
+
 /**
  * True for a move only the person may make: a row decision, a sentinel decision, an answer or hold as the person, a
  * person fact or request, or any move whose actor is the person. On a board that names approvers, only an approver's
  * session makes one [E4].
  */
 function personAuthority(move) {
-  return personBarMove(move) || personFact(move) || ['recordRowDecisions', 'decideSpecRevisions', 'decideSentinel'].includes(move?.operation) || move?.operation === 'answerDecision' && Boolean(move.args?.[1]?.asPerson) ||
+  return personReferenceMove(move) || personBarMove(move) || personFact(move) || ['recordRowDecisions', 'decideSpecRevisions', 'decideSentinel'].includes(move?.operation) || move?.operation === 'answerDecision' && Boolean(move.args?.[1]?.asPerson) ||
     move?.operation === 'shout' && Boolean(move.args?.[0]?.request) || relayMoveActor(move) === 'person';
 }
 
@@ -75,7 +81,7 @@ export function relaySenderProblem(move, sender, kind, { phoneReceipt = false } 
         move.operation === 'ensureCoordinator' && typeof move.args?.[0] === 'string')) return null;
     return new Refused('RELAY_PERSON_ONLY', 'a machine cannot act as the person; approve this action on the paired phone');
   }
-  if (personBarMove(move) || kind === 'snapshot' || ['recordRowDecisions', 'decideSpecRevisions'].includes(move?.operation) || move?.operation === 'decideSentinel' || move?.operation === 'answerDecision' && move.args?.[1]?.asPerson ||
+  if (personReferenceMove(move) || personBarMove(move) || kind === 'snapshot' || ['recordRowDecisions', 'decideSpecRevisions'].includes(move?.operation) || move?.operation === 'decideSentinel' || move?.operation === 'answerDecision' && move.args?.[1]?.asPerson ||
     move?.operation === 'shout' && move.args?.[0]?.request || relayMoveActor(move) === 'person') {
     return new Refused('RELAY_PERSON_ONLY', `agent ${sender.agent} cannot make a person-only relay ${kind}; use the person's authenticated session`);
   }
@@ -92,7 +98,7 @@ export function credentialActor(move) {
     return typeof creator === 'string' && creator !== 'machine' ? creator : 'machine';
   }
   if (move.personRequest || ['register', 'ensureCoordinator'].includes(move.operation)) return 'machine';
-  if (personBarMove(move) || ['recordRowDecisions', 'decideSpecRevisions', 'recordLandingWaiver'].includes(move.operation)
+  if (personReferenceMove(move) || personBarMove(move) || ['recordRowDecisions', 'decideSpecRevisions', 'recordLandingWaiver'].includes(move.operation)
     || move.operation === 'answerDecision' && args[1]?.asPerson
     || move.operation === 'shout' && args[0]?.request) return 'person';
   return relayMoveActor(move);
