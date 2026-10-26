@@ -10,19 +10,25 @@ import { lineCapacitySnapshot } from '../src/line-capacity.js';
 import { LINE_CAPACITY_ENGINE } from '../src/line-capacity-engine.js';
 import { applyEngineMove, prepareEngineMove } from '../src/engine.js';
 import { exportBoard, importBoard } from '../src/exchange.js';
+import { appliedSequence } from '../src/engine.js';
+import { replayHistoricalSeatMove } from './pre-grant-seats.js';
 
 const HOUR = 3_600_000;
 const FREEZE = () => ({ text: 'private lifecycle bar', digest: 'private-lifecycle-bar' });
 /** Create one real board with explicit actor identities and an adjustable observation clock. */
-function fixture(t) {
+function fixture(t, historicalSeats = false) {
   const root = mkdtempSync(join(tmpdir(), 'pullboard-line-capacity-'));
   let at = Date.parse('2026-10-24T00:00:00Z');
   const clock = { now: () => new Date(at) };
   const board = store.openBoard(join(root, 'board.sqlite'), clock);
   t.after(() => { store.closeBoard(board); rmSync(root, { recursive: true, force: true }); });
-  store.register(board, { lane: 'coordinator', path: root });
-  const author = store.register(board, { lane: 'core', path: join(root, 'author'), route: 'strong', parent: 'A', session: 'a' });
-  const reviewer = store.register(board, { lane: 'core', path: join(root, 'reviewer'), route: 'strong', parent: 'R', session: 'r' });
+  /** Keep current fixtures current; only the legacy-claim case receives actual pre-feature joins. */
+  const register = who => historicalSeats
+    ? replayHistoricalSeatMove(board, LINE_CAPACITY_ENGINE - 1, 'register', [who])
+    : store.register(board, who);
+  register({ lane: 'coordinator', path: root });
+  const author = register({ lane: 'core', path: join(root, 'author'), route: 'strong', parent: 'A', session: 'a' });
+  const reviewer = register({ lane: 'core', path: join(root, 'reviewer'), route: 'strong', parent: 'R', session: 'r' });
   /** Record normal private claims without asserting a gate execution. */
   function claim(id, agentId = author, options = {}) {
     return store.claim(board, id, { agentId, lane: 'core', leaseMs: HOUR, freeze: FREEZE, ...options });
@@ -83,7 +89,7 @@ test('the offered oldest review respects the actual claim caller policy and auth
 });
 
 test('old recorded claims ignore new capacity while new claims retain the feature floor on replay [N2,H16]', t => {
-  const f = fixture(t); f.submit(); f.submit(); f.setting('wipPerReviewer', 1.5);
+  const f = fixture(t, true); f.submit(); f.submit(); f.setting('wipPerReviewer', 1.5);
   const id = store.addItem(f.board, { by: 'coordinator', lane: 'core', title: 'old recorded claim' });
   const snapshot = exportBoard(f.board);
   const options = { agentId: f.reviewer, lane: 'core', leaseMs: HOUR, freeze: FREEZE };
@@ -91,13 +97,14 @@ test('old recorded claims ignore new capacity while new claims retain the featur
   assert.equal(move.args[1].lineCapacity, true, 'newly prepared claims bind their new meaning explicitly');
   const legacy = structuredClone(move);
   delete legacy.args[1].lineCapacity;
-  assert.throws(() => applyEngineMove(f.board, { ...move, engine: LINE_CAPACITY_ENGINE - 1 }, { sequence: 1, at: f.board.clock.now().toISOString() }), { code: 'RELAY_MOVE' }, 'the true marker cannot be forged onto an older engine');
-  const old = applyEngineMove(f.board, { ...legacy, engine: LINE_CAPACITY_ENGINE - 1 }, { sequence: 1, at: f.board.clock.now().toISOString() });
+  const sequence = appliedSequence(f.board) + 1;
+  assert.throws(() => applyEngineMove(f.board, { ...move, engine: LINE_CAPACITY_ENGINE - 1 }, { sequence, at: f.board.clock.now().toISOString() }), { code: 'RELAY_MOVE' }, 'the true marker cannot be forged onto an older engine');
+  const old = applyEngineMove(f.board, { ...legacy, engine: LINE_CAPACITY_ENGINE - 1 }, { sequence, at: f.board.clock.now().toISOString() });
   assert.equal(old.error, undefined, JSON.stringify(old.error));
   const replica = store.openBoard(join(f.root, 'replica.sqlite'), f.board.clock);
   t.after(() => store.closeBoard(replica));
   importBoard(replica, snapshot);
-  const current = applyEngineMove(replica, move, { sequence: 1, at: f.board.clock.now().toISOString() });
+  const current = applyEngineMove(replica, move, { sequence, at: f.board.clock.now().toISOString() });
   assert.equal(current.error?.code, 'LINE_WIP_LIMIT');
   assert.equal(store.getItem(replica, id).item_status, 'open');
 });

@@ -8,6 +8,9 @@ import { createE2eHelpers } from './e2e-helpers.js';
 import { applyEngineMove, applyRelayMove, prepareEngineMove } from '../src/engine.js';
 import { exportBoard, importBoard } from '../src/exchange.js';
 import { FLOW_SIZE_ENGINE } from '../src/flow-size-engine.js';
+import { appliedSequence } from '../src/engine.js';
+import { ENGINE_VERSION } from '../src/machine.js';
+import { replayHistoricalSeatMove } from './pre-grant-seats.js';
 
 test('a native submit records its immutable changed-line base and head for flow buckets [R1,R2,V4]', { timeout: 60_000 }, t => {
   const helpers = createE2eHelpers();
@@ -62,11 +65,13 @@ test('submission size replays identically and refuses unsupported or malformed m
   const source = store.openBoard(join(box.dir, 'source.sqlite'));
   const copies = [];
   t.after(() => { for (const board of [source, ...copies]) store.closeBoard(board); });
-  store.register(source, { lane: 'coordinator', path: '/fixture/main' });
-  store.register(source, { lane: 'web', path: '/fixture/web' });
+  // The older submit control needs joins and a claim that its writer could actually have recorded.
+  const historicalEngine = FLOW_SIZE_ENGINE - 1;
+  replayHistoricalSeatMove(source, historicalEngine, 'register', [{ lane: 'coordinator', path: '/fixture/main' }]);
+  replayHistoricalSeatMove(source, historicalEngine, 'register', [{ lane: 'web', path: '/fixture/web' }]);
   const id = store.addItem(source, { by: 'coordinator', lane: 'web', title: 'Size replay' });
-  store.claim(source, id, { agentId: 'web-1', lane: 'web', leaseMs: 3_600_000,
-    freeze: () => ({ text: '{"rows":[]}', digest: 'f'.repeat(64) }) });
+  replayHistoricalSeatMove(source, historicalEngine, 'claim', [id, { agentId: 'web-1', lane: 'web', leaseMs: 3_600_000,
+    freeze: () => ({ text: '{"rows":[]}', digest: 'f'.repeat(64) }) }]);
   const document = exportBoard(source);
   for (let index = 0; index < 4; index += 1) {
     const board = store.openBoard(join(box.dir, `replica-${index}.sqlite`));
@@ -77,7 +82,8 @@ test('submission size replays identically and refuses unsupported or malformed m
   const options = { agentId: 'web-1', commit: size.head, tree: 'c'.repeat(40), submissionSize: size,
     submissionProof: { version: 1, files: [], full: false, deferred: true, reason: 'private replay fixture' } };
   const move = prepareEngineMove(source, 'submit', [id, options], { id: 'size-replay', actor: 'web-1' });
-  const receipt = { sequence: 1, at: '2026-10-25T06:00:00.000Z', kind: 'move',
+  assert.equal(move.engine, ENGINE_VERSION, 'the modern measurement is produced by the current engine');
+  const receipt = { sequence: appliedSequence(source) + 1, at: '2026-10-25T06:00:00.000Z', kind: 'move',
     sender: { kind: 'agent', userId: 'fixture', agent: 'web-1' } };
   const first = applyRelayMove(copies[0], move, receipt);
   assert.equal(first.error, undefined);
@@ -93,7 +99,7 @@ test('submission size replays identically and refuses unsupported or malformed m
     const forged = structuredClone(move);
     forged.id = `size-invalid-${index}`;
     Object.assign(forged.args[1].submissionSize, change);
-    assert.equal(applyRelayMove(copies[2], forged, { ...receipt, sequence: index + 1 }).error?.code, 'SUBMISSION_PROOF');
+    assert.equal(applyRelayMove(copies[2], forged, { ...receipt, sequence: receipt.sequence + index }).error?.code, 'SUBMISSION_PROOF');
     assert.deepEqual(store.events(copies[2]), before);
   }
   const legacy = structuredClone(move);
