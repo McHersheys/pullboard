@@ -6736,6 +6736,7 @@
     "LANE_HELD": "wait for the lane: pullboard next --wait 9 (minutes)",
     "LOCAL_RUNNER_REQUEUE": "call requeueRunner only on a lease with a runner; release a local lease normally",
     "MAIN_IS_COORDINATOR": "use an independent agent checkout for agent work, or run person-only actions from the main checkout as the coordinator",
+    "MERGE_ONLY_PROOF": "submit the exact gated merge with the unchanged frozen criterion, or leave the new head for outside review",
     "MERGE_CHECK_FAILED": "use Git 2.38 or newer (git --version), then retry",
     "MERGE_CONFLICT": "merge main into your branch, resolve the conflicts, commit, and run the command again",
     "MILESTONES_CORRUPT": "restore the board from a known-good export: pullboard import <file>",
