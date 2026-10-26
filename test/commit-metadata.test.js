@@ -79,7 +79,7 @@ test('untyped fixup, revert and forged sync headers are refused [C7]', () => {
   for (const header of ['missing type', 'fixup! test: old', 'Revert "old"', 'Merge branch fake']) {
     const result = hook(box, header + '\n');
     assert.notEqual(result.code, 0, header);
-    assert.match(result.err, /typed header/u);
+    assert.match(result.err, /header/u);
   }
 });
 

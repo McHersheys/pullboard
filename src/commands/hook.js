@@ -1,6 +1,7 @@
 /** The pullboard hook command, in its own module so an item adding another command never edits these lines. */
 import * as store from '../board.js';
 import { pendingCommitSignoffProblem } from '../commit-signoff.js';
+import { prepareCommitMetadata } from '../commit-metadata.js';
 import { landingBatchOwnsRoot } from '../landing-candidates.js';
 import { landingRows } from '../landing-message.js';
 import {
@@ -19,6 +20,7 @@ import {
   isClean,
   repoInfo,
   untracked,
+  gitPath,
 } from '../git.js';
 import {
   applyFixers,
@@ -44,6 +46,8 @@ import {
 } from '../trusted-policy.js';
 import {
   readFileSync,
+  existsSync,
+  writeFileSync,
 } from 'node:fs';
 import {
   context,
@@ -76,10 +80,21 @@ export async function hookCommand(io, { first, second }) {
     else if (agent) io.caller('seat', info.root);
     problems = preCommitProblems({ root: info.root, isMain: info.isMain || landing, config: ctx.config, agent, boardFile: ctx.file, preMergeHook: first === 'pre-merge-commit', onNotice: (message) => io.err(`pullboard pre-commit: warning: ${message}`) });
   } else if (first === 'commit-msg') {
-    const message = readFileSync(second ?? '', 'utf8');
+    const originalMessage = readFileSync(second ?? '', 'utf8');
+    const metadataContext = hookRead(ctx, board => {
+      const agent = store.agentAt(board, info.root);
+      const items = store.listItems(board, { all: true });
+      const landing = info.isMain || store.landingBatches(board).some(batch => landingBatchOwnsRoot(batch, info.root));
+      return {
+        claim: items.find(item => item.item_status === 'claimed' && item.item_owner === agent?.agent_id) ?? null,
+        landings: landing ? items.filter(item => item.item_status === 'verified' && !item.item_merged_commit) : [],
+      };
+    }) ?? {};
+    const spec = withRowDrafts(loadSpec(info.root, ctx.config), hookRead(ctx, (board) => store.rowDrafts(board)));
+    const prepared = prepareCommitMetadata(originalMessage, { ...metadataContext, spec, syncMerge: existsSync(gitPath(info.root, 'MERGE_HEAD')) });
+    const message = prepared.message;
     const signoff = pendingCommitSignoffProblem(info.root, message);
     if (signoff) { io.err(signoff); return 1; }
-    const spec = withRowDrafts(loadSpec(info.root, ctx.config), hookRead(ctx, (board) => store.rowDrafts(board)));
     commitCitationWarnings(message, { spec, doctrine: ctx.doctrine })
       .forEach((warning) => io.say(`pullboard commit-msg: warning: ${warning}`));
     const claimedItems = spec.rows.some(row => row.status === 'approved') ? [] : (hookRead(ctx, board => {
@@ -91,7 +106,8 @@ export async function hookCommand(io, { first, second }) {
     const rowlessLandings = hookRead(ctx, (board) => (info.isMain || store.landingBatches(board).some((batch) => landingBatchOwnsRoot(batch, info.root))
       ? store.listItems(board, { all: true }).filter((item) => item.item_status === 'verified' && !item.item_merged_commit && !landingRows(item).length).map((item) => item.item_id)
       : [])) ?? [];
-    problems = commitMsgProblems(message, { rules: ctx.config.commits, spec, doctrine: ctx.doctrine, claimedItems, rowlessLandings });
+    problems = [...prepared.problems, ...commitMsgProblems(message, { rules: ctx.config.commits, spec, doctrine: ctx.doctrine, claimedItems, rowlessLandings })];
+    if (!problems.length && message !== originalMessage) writeFileSync(second, message);
   } else if (first === 'pre-push') {
     const refsText = await readStdin(io.stdin);
     if (gitBoardDataPush(info.root, refsText)) {
