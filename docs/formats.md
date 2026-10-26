@@ -428,6 +428,7 @@ The `event` table is a SQLite schema object governed by `SCHEMA_VERSION`; its ap
 | `edit` | editor | `brief`, `route`, `criterion`, `check`, `unfrozen`, optional `after`, optional `pendingRefreeze`, engine-19 `reason`, `barCorrection` |
 | `escalate` | builder | `from`, `to`, `note`, `attempt` |
 | `attempt` | reporting agent | `n`, `seconds`, `result` |
+| `relay_exclusion` | person | `action` (exclude, the durable opt-out intent), `path` (relayOff), `reason`, `channel`; event time and actor identify the request before machine settings persist it |
 | `board_members` | coordinator | `document` (exact version-1 body with board, repository, revision and complete members, approving login and SSH signature; native moves and checkpoints carry it sealed) |
 | `fact` | author | `id`, `kind`, `text`, `ref`, `supersedes`, engine-20 `implies`, `decision`, `supersededBy`, engine-30 `cause`, `neverAgain`, `channel` |
 | `claim` | builder | `leaseUntil`, `digest` |
