@@ -387,10 +387,10 @@ import { unlinkedRelayProjects } from './relay-setup.js';
 import {
   accountedFailures,
   landingRemote,
-  landingSubject,
   waivedFailures,
   waiverLine,
 } from './land.js';
+import { handMergeCommand } from './landing-message.js';
 import { installStep } from './worktree.js';
 import * as infraNotes from './infra-note.js';
 export { gateWaitReporter };
@@ -1444,15 +1444,16 @@ export async function addBlueprint(ctx, board, me, blueprint, { report = true, r
  * @param {any} info
  * @param {any} item
  * @param {string} [commit] - The exact checked composition the acceptance authorizes.
+ * @param {{ spec?: any }} [options] - The spec the trailer's rows are ordered by.
  * @returns {string}
  */
-export function landNext(info, item, commit = item.item_commit) {
+export function landNext(info, item, commit = item.item_commit, { spec = null } = {}) {
   const mainRoot = primaryCheckoutRoot(info);
-  const branch = mainCheckout(info.root)?.branch ?? '';
+  const trunk = mainCheckout(info.root);
+  const branch = trunk?.branch ?? '';
   const remote = landingRemote(info.root, branch);
-  const command = remote
-    ? 'pullboard land'
-    : `git merge --no-ff ${commit} -m ${shellWord(landingSubject(item))} && pullboard merged ${item.item_id} HEAD`;
+  const command = remote ? 'pullboard land'
+    : handMergeCommand(item, commit, { root: info.root, base: trunk?.commit, spec, quote: shellWord });
   if (!mainRoot) return `next: could not safely locate the primary checkout; run from the main checkout: ${command}`;
   if (remote) return `next: the coordinator lands it: ${cdTo(mainRoot)} ${command}`;
   return `next: this repo has no remote for pullboard land to push to, so the coordinator merges it on ${branch.replace(/^refs\/heads\//u, '') || 'the trunk'}: ${cdTo(mainRoot)} ${command}`;
