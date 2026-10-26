@@ -1,7 +1,7 @@
 /** Landing reselects the actual merged batch, rather than trusting a submit's earlier subset [C7,V4]. */
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { after, test } from 'node:test';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { json } from './land-board-fixture.js';
@@ -42,7 +42,7 @@ test('a batch that breaks an affected test is caught at landing [C7,V4]', t => {
   const submitted = box.run(box.web, 'submit', String(item));
   assert.equal(submitted.code, 0, submitted.out + submitted.err);
   const checkLog = box.git(box.web, 'rev-parse', '--git-path', 'pullboard-submit.log.check.log');
-  assert.match(readFileSync(join(box.web, checkLog), 'utf8'), /# tests 1\b/u, 'submit really executes its frozen test');
+  assert.match(readFileSync(resolve(box.web, checkLog), 'utf8'), /# tests 1\b/u, 'submit really executes its frozen test');
   box.git(box.repo, 'switch', '-q', '--detach', commit);
   try {
     const verified = box.run(box.repo, 'verify', String(item), 'accept', '--as', 'coordinator', '--note', 'private real affected-test fixture');
