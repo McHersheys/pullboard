@@ -32,6 +32,18 @@ Approved direction from the person, 22 Oct 2026. This is the internal runbook. C
 - CODEOWNERS requests the owner's review on sensitive paths.
 - Inbound contributions are MIT, with the DCO sign-off and a lightweight one-click CLA (decided 22 Oct). Make no public promise about future licensing.
 
+## Changelog acknowledgements
+
+Acknowledgement is at the maintainer's discretion: trivial reports or many related issues may get none. It is a record, not a thank-you. When given, the changelog entry ends with its board item and a linked acknowledgement:
+
+- Bug: `(#1325; reported in [GitHub #10](https://github.com/pullboard-dev/pullboard/issues/10) by @McHersheys)`
+- Feature: `(#1321; requested in [GitHub #7](https://github.com/pullboard-dev/pullboard/issues/7) by @Herklos)`
+- The person's own pull request: `(#1330; [PR #9](https://github.com/pullboard-dev/pullboard/pull/9) by @McHersheys)`
+
+When an item with a handled reference ships, its changelog line carries the acknowledgement in the matching form above. The handle records the maintainer's choice to acknowledge that issue's or pull request's author; a reference without a handle gets no acknowledgement. Do not publish private, unhandled references.
+
+The docs check validates every changelog line containing `GitHub #` or `PR #`, including the linked number and whether it names an issue or pull request. Syntax validation does not look up GitHub authors; confirm the handle against the referenced author when granting the acknowledgement.
+
 ## Automation to build (so this runs without anyone remembering it)
 - **Sign-off check** in the commit-msg hook and CI for outside commits, with a message naming the fix.
 - **`pullboard intake <PR>`** (the first real use of the PR bridge):
