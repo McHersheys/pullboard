@@ -95,6 +95,7 @@ export function verdictProjector(root, board, { main } = {}) {
   /** Derive pending proof freshness and an older landing's explicitly recorded review mismatch. */
   const state = item => {
     if (item.item_status !== 'verified') return null;
+    if (item.item_rehome_import?.sourceStatus === 'verified') return null;
     const accepted = store.acceptedVerdict(board, item);
     const carryProblem = !item.item_merged_commit && mergeOnlyLandingProblem(root, board, item);
     if (carryProblem) return { code: 'STALE_VERDICT', reason: carryProblem.message, main: tip ?? null };

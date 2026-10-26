@@ -36,6 +36,7 @@ test('every current operation selects its native actor credential without a seco
     if (operation === 'release') args = [999999, actor];
     if (['claim', 'refreeze'].includes(operation)) args = [box.before.tables.item[0].item_id, options];
     if (operation === 'reserveNextReview') args = [options];
+    if (operation === 'reserveRehomeItemId') args = ['a'.repeat(32), 'credential-rehome-reservation', { agentId: actor }];
     if (operation === 'setLineSetting') args = [{ agentId: actor, key: 'reviewsFirst', value: true, reason: 'credential fixture', window: { windowMinutes: 60, activeReviewers: 1 } }];
     if (operation === 'setLaneLead') args = [{ agentId: actor, lane: box.lane, seat: null, lanes: [box.lane] }];
     if (operation === 'setBoardMembers') args = [{ agentId: actor, document: null }]; // Native format refusal still exercises the authenticated credential.

@@ -8,6 +8,11 @@ import { Refused } from './refused.js';
  * @returns {any}
  */
 export function itemById(board, id) {
+  const redirect = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get(`item_redirect:${id}`);
+  if (redirect) {
+    const target = JSON.parse(redirect.meta_value);
+    throw new Refused('NO_ITEM', `item #${id} moved to ${target.destinationHandle ?? target.destinationBoardId}#${target.destinationItemId}; use that destination reference`);
+  }
   const item = board.db.prepare('SELECT * FROM item WHERE item_id = ?').get(id);
   if (!item) throw new Refused('NO_ITEM', `no item #${id}; see: pullboard list`);
   return item;

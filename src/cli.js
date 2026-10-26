@@ -1,4 +1,6 @@
 import { createQueuedItemLease } from './queued-item-lease.js';
+export { resourceRunLabel } from './cli-resource-display.js';
+export { browserAdmissionReporter } from './cli-resource-display.js';
 import * as personIdentity from './person.js';
 import { dependencyValues } from './item-dependencies.js';
 import { computedReturnArgs } from './computed-conflict-return.js';
@@ -300,6 +302,7 @@ import {
   sweepItems,
 } from './sweep.js';
 import { renderSpecView } from './view.js';
+import { runPrivateBoard } from './private-board.js';
 import {
   listApiProjects,
   registerProjectAndLink,
@@ -588,7 +591,7 @@ export async function ordered(ctx, board, operation, args) {
     const joined = store.agentAt(board, ctx.info.root)?.agent_id;
     args = [{ ...args[0], createdBy: ctx.info.isMain ? COORDINATOR : joined ?? 'machine' }, ...args.slice(1)];
   }
-  const command = ['add', 'companion', 'edit', 'merged'].includes(ctx.io.relayCommand?.cliOperation) ? ctx.io.relayCommand : undefined;
+  const command = ['add', 'companion', 'edit', 'merged', 'move'].includes(ctx.io.relayCommand?.cliOperation) ? ctx.io.relayCommand : undefined;
   /** Dispatch while this session holds the checkout, including long-running next/run loops. */
   const execute = async () => {
     /** Keep bootstrap in the same authenticated seat, without borrowing a person's action receipt. */
@@ -596,7 +599,9 @@ export async function ordered(ctx, board, operation, args) {
       const values = [{ agentId, baseline: initialBaseline }];
       const baselineIo = ctx.io.personRequest || ctx.io.personRequestMoveId
         ? { ...ctx.io, personRequest: undefined, personRequestMoveId: undefined } : ctx.io;
-      return gitSyncLinked(ctx.info.root)
+      return ctx.privateBoard
+        ? store.recordSpecApprovalBaseline(board, ...values)
+        : gitSyncLinked(ctx.info.root)
         ? (await import('./sync.js')).gitBoardOperation(ctx.info.root, board, 'recordSpecApprovalBaseline', values, baselineIo)
         : relayLinked(ctx.info.root) || relayRecovered(ctx.info.root)
         ? relayOperation(ctx.info.root, 'recordSpecApprovalBaseline', values, baselineIo, undefined,
@@ -612,7 +617,8 @@ export async function ordered(ctx, board, operation, args) {
       return store[operation](board, ...args);
     });
     if (initialBaseline && actor) await recordBaseline(actor);
-    const requested = requestedCommandMove(ctx.io.relayCommand?.cliOperation, operation);
+    const requestedCommand = ctx.io.relayCommand?.cliOperation ?? (ctx.privateBoard ? ctx.io.requestedCommand : undefined);
+    const requested = requestedCommandMove(requestedCommand, operation);
     const heartbeat = requested ? (await import('./cli-presence.js')).heartbeatCommand : null;
     /** Observe a committed requested write before its relay checkpoint captures the presentation. */
     const observeRequested = () => {
@@ -626,12 +632,14 @@ export async function ordered(ctx, board, operation, args) {
       if (requested && board.lastEvent !== before) observeRequested();
       return result;
     };
-    const result = await withItemSession(ctx.info, operation, args, async () => gitSyncLinked(ctx.info.root)
-      ? (await import('./sync.js')).gitBoardOperation(ctx.info.root, board, operation, args, ctx.io)
-      : relayLinked(ctx.info.root) || relayRecovered(ctx.info.root)
-        ? relayOperation(ctx.info.root, operation, args, ctx.io, command, applyRequested,
-          requested ? observeRequested : undefined) : applyRequested());
-    if (requested && gitSyncLinked(ctx.info.root)) ctx.io.recordedMove = true;
+    const result = await withItemSession(ctx.info, operation, args, async () => ctx.privateBoard
+      ? applyRequested()
+      : gitSyncLinked(ctx.info.root)
+        ? (await import('./sync.js')).gitBoardOperation(ctx.info.root, board, operation, args, ctx.io)
+        : relayLinked(ctx.info.root) || relayRecovered(ctx.info.root)
+          ? relayOperation(ctx.info.root, operation, args, ctx.io, command, applyRequested,
+            requested ? observeRequested : undefined) : applyRequested());
+    if (!ctx.privateBoard && requested && gitSyncLinked(ctx.info.root)) ctx.io.recordedMove = true;
     if (requested && ctx.io.recordedMove) (await import('./cli-presence.js')).heartbeatCommand(ctx.io, { ctx, board });
     return result;
   };
@@ -1654,22 +1662,14 @@ export async function sweepHere(ctx, board, me, values) {
   return blind.length ? 1 : 0;
 }
 
-/** Run board work for the caller's checkout: open the board, find who is calling, then hand all three to the work. */
-export function actOn(io, work) {
+/** Run board work for the caller's checkout, or select its device-local repo board for a private add. */
+export function actOn(io, work, { privateBoard = false } = {}) {
   const ctx = context(io);
+  if (privateBoard) return runPrivateBoard(ctx, work, { withBoard, whoAmI,
+    checkoutLeases: CHECKOUT_LEASES, checkoutBoardOnly: CHECKOUT_BOARD_ONLY });
   return withBoard(ctx, (board) => work(ctx, board, whoAmI(ctx, board)));
 }
 
-
-/** Label the kind and item of a queued run without hiding older queue-class labels.
- * With short slots on, a holder also names the slot it holds and a waiter says it may take a short one.
- */
-export function resourceRunLabel(entry, shortSlots = 0) {
-  const priority = entry.landing ? 'landing' : entry.itemCheck ? 'item check' : entry.diagnostic ? 'diagnostic' : '';
-  const slot = !shortSlots ? '' : entry.slot ? `${entry.slot} slot` : entry.requestedSlot === 'short-eligible' ? 'may use a short slot' : '';
-  const details = [slot, entry.kind !== priority ? entry.kind : '', entry.item ? `#${entry.item}` : '', entry.leaseUntil ? `lease until ${entry.leaseUntil}` : '', entry.browser ? 'browser' : ''].filter(Boolean);
-  return `${priority ? ` (${priority})` : ''}${details.length ? ` (${details.join(', ')})` : ''}`;
-}
 
 /** Name a known board seat for queue diagnostics without requiring an unjoined checkout to join. */
 export function resourceAgent(ctx) {
@@ -1680,19 +1680,6 @@ export function resourceAgent(ctx) {
 export function queuedItemLease(ctx, initial, agentId, kind, admission = null) {
   return createQueuedItemLease(ctx, initial, agentId, kind, admission);
 }
-
-/** Print the file and reason when conservative uncertainty reserves browser capacity.
- * @param {any} io
- * @param {boolean} jsonMode
- * @returns {(decision:{file:string,reason:string})=>void}
- */
-export function browserAdmissionReporter(io, jsonMode = false) {
-  return ({ file, reason }) => {
-    if (!jsonMode) io.stderr.write(`browser admission fallback: ${file}: ${reason}\n`);
-  };
-}
-
-
 
 /**
  * Every spec id something cites (S8): commit headers since the spec's first commit, and every item

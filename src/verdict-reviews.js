@@ -41,6 +41,23 @@ export function acceptedVerdict(board, item) {
   const latest = verdicts.findLast(verdict =>
     verdict.verdict_decision === 'ACCEPT' && verdict.verdict_commit === item.item_commit);
   if (latest) return latest.withdrawn ? undefined : latest;
+  if (item.item_status === 'verified') {
+    const row = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get(`rehome_import:${item.item_id}`);
+    if (row) {
+      let imported;
+      try { imported = JSON.parse(row.meta_value); } catch { imported = null; }
+      const source = (imported?.sourceVerdicts ?? []).findLast(verdict => verdict.verdict_decision === 'ACCEPT'
+        && verdict.verdict_commit === item.item_commit && verdict.verdict_digest === item.item_frozen_digest
+        && verdict.verdict_by === item.item_verified_by && verdict.verdict_by !== item.item_built_by);
+      if (source && imported.sourceStatus === 'verified' && imported.sourceMoveDigest === imported.sourceReceipt?.resultDigest
+          && typeof imported.attestedBy === 'string' && imported.moveId) {
+        return { ...source, verdict_id: `import:${imported.sourceBoardId}:${imported.moveId}:${source.verdict_id}`,
+          assurance: 'imported', imported: { sourceBoardId: imported.sourceBoardId, sourceItemId: imported.sourceItemId,
+            sourceHandle: imported.sourceHandle, moveId: imported.moveId, attestedBy: imported.attestedBy,
+            sourceReceipt: imported.sourceReceipt } };
+      }
+    }
+  }
   const event = board.db.prepare("SELECT event_detail FROM event WHERE item_id = ? AND event_kind = 'merge-only-accept' AND json_extract(event_detail,'$.commit') = ? ORDER BY event_id DESC LIMIT 1")
     .get(item.item_id, item.item_commit);
   if (!event) return undefined;

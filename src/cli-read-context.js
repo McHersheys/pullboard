@@ -163,7 +163,7 @@ export function firstLineOf(note) {
  */
 export function itemLine(item, name = (id) => id, mainMerge = false) {
   const holder = item.item_status === 'claimed' ? ` ${name(item.item_owner)}` : '';
-  const verifier = item.item_status === 'verified' ? ` by ${name(item.item_verified_by)}` : '';
+  const verifier = item.item_status === 'verified' && !item.item_rehome_import ? ` by ${name(item.item_verified_by)}` : '';
   const specs = item.item_spec_ids ? `  [${item.item_spec_ids}]` : '';
   const parent = item.item_parent_id ? `  under #${item.item_parent_id}` : '';
   const after = item.item_after ? `  after ${dependencyReferences(item).map(dependencyLabel).join(',')}` : '';

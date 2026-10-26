@@ -21,4 +21,3 @@ export function waitForDevicePoll(seconds, signal) {
     if (signal?.aborted) cancel();
   });
 }
-

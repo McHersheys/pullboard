@@ -236,7 +236,8 @@ export async function gitBoardOperation(root, board, operation, args, io = {}) {
       }
       if (outcome.error) throw new Refused(outcome.error.code, outcome.error.message, outcome.error.next);
     }
-    pending = { version: 1, command, at: new Date().toISOString(), move: prepareEngineMove(board, operation, args) };
+    const moveOptions = operation === 'rehomeItem' && io.rehomeMoveId ? { id: io.rehomeMoveId } : {};
+    pending = { version: 1, command, at: new Date().toISOString(), move: prepareEngineMove(board, operation, args, moveOptions) };
     save(file.pending, pending);
     outcome = await settle(root, board, pending);
     if (outcome.error) throw new Refused(outcome.error.code, outcome.error.message, outcome.error.next);

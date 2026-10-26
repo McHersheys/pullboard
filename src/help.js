@@ -82,10 +82,15 @@ Set up
 Work
   pullboard map [<module or function>] [--for <item>] [--budget <tokens>]  source map for main, a card, or an item's one-hop slice
                                         slices default to 4k tokens and cap at 8k; effects the scan cannot see say "not detected"
-  pullboard add <lane> <title> [--criterion "..."] [--specs G1.2,K3] [--after 3,4] [--parent <id>]
+  pullboard add <lane> <title> [--criterion "..."] [--specs G1.2,K3] [--after 3,4] [--parent <id>] [--private]
                 [--brief "..." | --brief-file <file>] [--route light|mid]
                                         --after: ids or repo#id; claiming waits for verified items on their own boards
                                         --brief: what a cold agent needs; --route light: any model can build it
+                                        --private: keep this item in your device-local board for this repo
+  pullboard move <handle#id|owner/handle#id|~handle#id|id> --to <handle|owner/handle|~handle> [--private]
+                                        --private makes a bare item ID refer to this repo's device-local board
+                                        move one open or verified item between this repo's team and private boards; old IDs forward
+                                        private references start with ~; ambiguous bare handles require owner/handle
                 [--check "<command>"] [--wait]   the command that proves it; --wait waits for its main baseline
                                         with --criterion and a brief, --check is needed below strong
   pullboard edit <id> [--brief "..." | --brief-file <file>] [--route light|mid|strong] [--criterion "..."] [--check "..."]
@@ -343,7 +348,7 @@ const HELP_EXAMPLES = {
   join: 'pullboard join web --model "my-model"', resume: 'pullboard resume',
   intake: 'pullboard intake https://github.com/owner/repo/pull/7 --criterion "behavior" --check "npm test"',
   companion: 'pullboard companion 12 api "Provide the API" --key api-part',
-  add: ADD_EXAMPLE, list: 'pullboard list web', show: 'pullboard show 12',
+  add: ADD_EXAMPLE, move: 'pullboard move ~web#3 --to web', list: 'pullboard list web', show: 'pullboard show 12',
   claim: 'pullboard claim 12', submit: 'pullboard submit 12', 'next --verify': 'pullboard next --verify',
   fact: 'pullboard fact 12 measurement "The check passes in 8 seconds"',
   why: 'pullboard why 12',
@@ -431,6 +436,7 @@ const HELP_FLAG_EXPLANATIONS = {
   '--json': 'prints one versioned document',
   '--note': 'what was checked stays with the receipt',
   '--note-file': 'keeps quotes, $ and backticks intact',
+  '--private': 'keeps an added item in this device-local repo board, or selects that board for move IDs',
   '--route': 'sets which work the model can take',
   '--source': 'where the person gave the ruling; required with --doctrine',
 };

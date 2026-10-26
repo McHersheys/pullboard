@@ -20,6 +20,9 @@ import {
 import {
   relayLinked,
 } from '../relay.js';
+import * as store from '../board.js';
+import { projectBoardIdentity } from '../projects.js';
+import { registerProject } from '../projects.js';
 import {
   context,
   ordered,
@@ -27,6 +30,7 @@ import {
   requiredModel,
   shellWord,
   withBoard,
+  primaryCheckoutRoot,
 } from '../cli.js';
 
 /** Run `pullboard join` and return its exit code. */
@@ -41,9 +45,14 @@ export async function run(io, { first, values }) {
     const route = values.route ?? 'strong';
     const model = requiredModel(values.model, process.env, `join ${shellWord(COORDINATOR)}${values.route ? ` --route ${shellWord(values.route)}` : ''}${values.family ? ` --family ${shellWord(values.family)}` : ''}`);
     if (relayLinked(ctx.info.root)) refuseRemoteCoordinatorModel(ctx, 'join coordinator');
-    const id = await withBoard(ctx, async (board) => await ordered(ctx, board, 'register', [
-      { lane: COORDINATOR, path: ctx.info.root, route, family: values.family, model, parentDigest, sessionDigest },
-    ]));
+    const joined = await withBoard(ctx, async (board) => ({
+      id: await ordered(ctx, board, 'register', [
+        { lane: COORDINATOR, path: ctx.info.root, route, family: values.family, model, parentDigest, sessionDigest },
+      ]),
+      boardId: store.boardId(board),
+    }));
+    registerProject(ctx.info.root, new Date(), ctx.config, projectBoardIdentity(ctx.info.root, joined.boardId));
+    const id = joined.id;
     const displayName = displayAgentName({ agent_id: id, agent_model: model }, ctx.config.agents.names);
     io.result?.({ agent: id, lane: COORDINATOR, route, path: ctx.info.root, model, displayName });
     io.say(`declared ${displayName} in the coordinator lane`);
@@ -54,7 +63,14 @@ export async function run(io, { first, values }) {
   }
   const route = values.route ?? 'strong';
   const model = requiredModel(values.model, process.env, `join ${shellWord(first)}${values.route ? ` --route ${shellWord(values.route)}` : ''}${values.family ? ` --family ${shellWord(values.family)}` : ''}`);
-  const id = await withBoard(ctx, async (board) => await ordered(ctx, board, 'register', [{ lane: first, path: ctx.info.root, route, family: values.family, model, parentDigest, sessionDigest }]));
+  const projectRoot = primaryCheckoutRoot(ctx.info);
+  if (!projectRoot) throw new Refused('NO_POLICY', 'cannot safely register the project without locating its main checkout; restore Git worktree metadata and retry join');
+  const joined = await withBoard(ctx, async (board) => ({
+    id: await ordered(ctx, board, 'register', [{ lane: first, path: ctx.info.root, route, family: values.family, model, parentDigest, sessionDigest }]),
+    boardId: store.boardId(board),
+  }));
+  registerProject(projectRoot, new Date(), ctx.config, projectBoardIdentity(projectRoot, joined.boardId));
+  const id = joined.id;
   const displayName = displayAgentName({ agent_id: id, agent_model: model }, ctx.config.agents.names);
   io.result?.({ agent: id, lane: first, route, path: ctx.info.root, model, displayName });
   io.say(`joined as ${displayName} in the ${first} lane${route === 'light' ? ', on the light route' : ''}`);

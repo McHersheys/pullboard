@@ -37,11 +37,16 @@ function rowOrigins(root, file) {
   let line;
   let commit;
   let author = '';
+  let approvedAt = null;
   for (const text of (result.status === 0 ? result.stdout : '').split('\n')) {
     const header = /^([0-9a-f]{40,64}) \d+ (\d+)(?: \d+)?$/u.exec(text);
-    if (header) { commit = /^0+$/u.test(header[1]) ? null : header[1]; line = Number(header[2]); author = ''; }
+    if (header) { commit = /^0+$/u.test(header[1]) ? null : header[1]; line = Number(header[2]); author = ''; approvedAt = null; }
     else if (text.startsWith('author ')) author = text.slice(7);
-    else if (text.startsWith('\t') && line) origins.set(line, { commit, agent: author || 'unknown', attribution: 'Git author, seat unknown' });
+    else if (text.startsWith('committer-time ') && commit) {
+      const date = new Date(Number(text.slice(15)) * 1000);
+      approvedAt = Number.isFinite(date.getTime()) ? date.toISOString() : null;
+    }
+    else if (text.startsWith('\t') && line) origins.set(line, { commit, approvedAt, agent: author || 'unknown', attribution: 'Git author, seat unknown' });
   }
   // Only origins are reused: live board decisions and signature trust are checked on every projection.
   if (key !== null && result.status === 0 && before === signature()) {
@@ -116,7 +121,7 @@ export function specApprovalState(root, { board, config, spec = loadSpec(root, c
   });
   const origins = unconfirmed.length ? rowOrigins(root, config.spec) : new Map();
   return { mode, baselinePending: false, baselineInvalid, evidenceErrors, rows: unconfirmed.map(row => ({ id: row.id, text: row.text, gate: row.gate,
-    status: 'agent-approved', ...(origins.get(row.line) ?? { commit: null, agent: 'unknown', attribution: 'Git author, seat unknown' }) })) };
+    status: 'agent-approved', ...(origins.get(row.line) ?? { commit: null, approvedAt: null, agent: 'unknown', attribution: 'Git author, seat unknown' }) })) };
 }
 
 /** Current unconfirmed citations for a raw board item or an API item projection. */
