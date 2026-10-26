@@ -9,7 +9,8 @@ export function assertOriginalBaselineEvidence(event, baseline) {
 }
 
 /** Keep the original event identity while checking the authenticated canonical replay and its ordering. */
-export function assertBaselineResumeEvidence({ events, receipts, originalBaseline, originalBaselineEvent, authenticatedLogin, addedId }) {
+export function assertBaselineResumeEvidence({ events, receipts, originalBaseline, originalBaselineEvent,
+  authenticatedLogin, addedId, outboxRenumbered, addedItem }) {
   assert.equal(events.filter(event => event.event_kind === 'spec_approval_baseline').length, 1);
   const canonicalEvent = events.find(event => event.event_kind === 'spec_approval_baseline');
   assert.equal(canonicalEvent.event_id, originalBaselineEvent.event_id, 'resume preserves the original setup event identity');
@@ -35,13 +36,26 @@ export function assertBaselineResumeEvidence({ events, receipts, originalBaselin
   assert.deepEqual(canonicalEvent, receiptEvent, 'the local event is exactly the event recorded in its applied receipt');
   assert.ok(Number.isFinite(Date.parse(receiptEvent.event_at)), 'the ordered receipt carries a valid event time');
 
-  assert.equal(events.filter(event => event.event_kind === 'add' && event.item_id === addedId
-    && JSON.parse(event.event_detail).title === 'Work after migration').length, 1,
-  'replay retains the already completed local add exactly once');
   const addReceipts = receipts.filter(receipt => JSON.parse(receipt.move).operation === 'addItem'
     && JSON.parse(receipt.move).args.some(value => value?.title === 'Work after migration'));
   assert.equal(addReceipts.length, 1, 'the relay keeps exactly one durable receipt for the recovered local add');
   const addReceipt = addReceipts[0];
+  const addMove = JSON.parse(addReceipt.move);
+  const renumbered = outboxRenumbered.filter(row => row.was === addedId);
+  assert.ok(renumbered.length <= 1, 'the original local add has at most one canonical renumber mapping');
+  const canonicalAddId = renumbered.length ? renumbered[0].is : addedId;
+  assert.ok(Number.isSafeInteger(canonicalAddId), 'the original add resolves to a valid canonical item id');
+  assert.ok(Number.isSafeInteger(addReceipt.outcome.result), 'the add receipt returns its canonical item id');
+  assert.equal(addReceipt.outcome.result, canonicalAddId, 'the add result agrees with its explicit renumber mapping');
+  assert.equal(addMove.args.find(value => value?.title === 'Work after migration').title, 'Work after migration',
+    'the exact durable add receipt names the original requested title');
+  const addReceiptEvents = (addReceipt.outcome.events ?? []).filter(event => event.event_kind === 'add' && event.item_id === canonicalAddId);
+  assert.equal(addReceiptEvents.length, 1, 'the add receipt contains exactly one event for its canonical item');
+  const canonicalAddEvents = events.filter(event => event.event_kind === 'add' && event.item_id === canonicalAddId);
+  assert.equal(canonicalAddEvents.length, 1, 'replay retains the already completed canonical add exactly once');
+  assert.deepEqual(canonicalAddEvents[0], addReceiptEvents[0], 'the canonical add event exactly matches its durable receipt');
+  assert.equal(addedItem.item_id, canonicalAddId, 'the local item row uses the receipt-resolved canonical id');
+  assert.equal(addedItem.item_title, 'Work after migration', 'the canonical item row retains the requested title');
   assert.ok(baselineReceipt.sequence < addReceipt.sequence, 'the accepted baseline remains ordered before the recovered add');
   assert.ok(Date.parse(receiptEvent.event_at) <= Date.parse(addReceipt.outcome.events[0].event_at),
     'the baseline receipt time precedes the later add receipt time');

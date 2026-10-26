@@ -5,7 +5,6 @@ import { createServer } from 'node:http';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { delimiter, dirname, join, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { performance } from 'node:perf_hooks';
 import { after, test } from 'node:test';
 import { gunzipSync } from 'node:zlib';
 import { createAuthHandler } from '../relay/auth-http.js';
@@ -33,6 +32,8 @@ import { AGENT_SHELL_MARKERS, SSH_SHELL_MARKERS } from '../src/person.js';
 import { legacyMirrorQueueFragment } from './relay-client-legacy-case.js';
 import { assertBaselineResumeEvidence, assertOriginalBaselineEvidence } from './relay-client-baseline-case.js';
 import { localEvents, receipts, syncReplica } from './relay-client-replica-fixture.js';
+import { assertDroppedReplyConsumed, enterLegacyAckPolicy } from './relay-client-policy-fixture.js';
+import { threeReplicaPhaseCapture } from './relay-client-timing.js';
 
 const SIGN_INS = new Map();
 after(cleanupFixtureChildren);
@@ -68,119 +69,6 @@ async function cli(root, env, ...args) {
   const refusal = safeFixtureDiagnostic(JSON.stringify(result.document), env);
   assert.equal(result.status, 0, `${result.failure ?? `pullboard ${args.join(' ')} exited ${result.status}: ${result.stderr}`}\n${refusal}`);
   return result.document;
-}
-
-/** Keep sanitized timings for the three-clone fixture without extending its test timeout. */
-function threeReplicaPhaseCapture(t) {
-  const testStartedAt = performance.now();
-  const completed = [];
-  let active = null;
-  let timeoutSignal = null;
-
-  /** Record one completed phase while excluding fixture contents and credentials. */
-  function finishPhase() {
-    if (!active) return;
-    completed.push({
-      phase: active.phase,
-      startedAtMs: Math.round(active.startedAt - testStartedAt),
-      elapsedMs: Math.round(performance.now() - active.startedAt),
-      lastCompletedWait: active.lastCompletedWait,
-      waitingDescription: active.waitingDescription ?? null,
-      completedWaits: active.completedWaits,
-      activeWaits: active.activeWaits.map(({ operation, startedAt }) => ({ operation, elapsedMs: Math.round(performance.now() - startedAt) })),
-    });
-    active = null;
-  }
-
-  /** Return only timing labels and safe error identifiers for failure diagnostics. */
-  function snapshot(outcome, error = null) {
-    const now = performance.now();
-    const running = active && {
-      phase: active.phase,
-      startedAtMs: Math.round(active.startedAt - testStartedAt),
-      elapsedMs: Math.round(now - active.startedAt),
-      waitingOn: active.activeWaits.at(-1)?.operation ?? active.waitingDescription ?? null,
-      waitingElapsedMs: active.activeWaits.length ? Math.round(now - active.activeWaits.at(-1).startedAt) : null,
-      activeWaits: active.activeWaits.map(({ operation, startedAt }) => ({ operation, elapsedMs: Math.round(now - startedAt) })),
-      completedWaits: active.completedWaits,
-      lastCompletedWait: active.lastCompletedWait,
-    };
-    return {
-      outcome,
-      timeoutSignalled: timeoutSignal !== null,
-      timeoutSignalName: timeoutSignal?.name ?? null,
-      timeoutSignalCode: timeoutSignal?.code ?? null,
-      totalElapsedMs: Math.round(now - testStartedAt),
-      activePhase: running?.phase ?? null,
-      activeWait: running,
-      lastCompletedPhase: completed.at(-1)?.phase ?? null,
-      completedPhases: completed,
-      errorName: error?.name ?? null,
-      errorCode: error?.code ?? null,
-    };
-  }
-
-  /** Emit one bounded timing record before teardown, without replacing the original failure. */
-  function report(outcome, error = null) {
-    try { process.stderr.write('[three-replica-phase] ' + JSON.stringify(snapshot(outcome, error)) + '\n'); }
-    catch { /* Diagnostics must never replace the test result or timeout error. */ }
-  }
-
-  const onAbort = () => {
-    timeoutSignal = t.signal.reason ?? new Error('test timeout signal');
-    report('timeout-signal', timeoutSignal);
-  };
-  t.signal?.addEventListener('abort', onAbort, { once: true });
-  t.after(() => {
-    t.signal?.removeEventListener('abort', onAbort);
-    report('test-after-hook');
-  });
-
-  return {
-    /** Start a phase with a safe description of the operation it is waiting on. */
-    begin(phase, waitingOn) {
-      finishPhase();
-      active = { phase, startedAt: performance.now(), activeWaits: [], completedWaits: [], lastCompletedWait: null };
-      if (waitingOn) active.waitingDescription = waitingOn;
-    },
-    /** Time one unchanged operation and name the wait before yielding. */
-    async wait(label, operation) {
-      assert.ok(active, 'a named phase is active before every asynchronous wait');
-      const phase = active;
-      const frame = { operation: label, startedAt: performance.now() };
-      phase.activeWaits.push(frame);
-      let outcome = 'resolved';
-      try {
-        return await operation();
-      } catch (error) {
-        outcome = error?.name ?? 'rejected';
-        throw error;
-      } finally {
-        const waitReceipt = { operation: label, elapsedMs: Math.round(performance.now() - frame.startedAt), outcome };
-        phase.completedWaits.push(waitReceipt);
-        phase.lastCompletedWait = waitReceipt;
-        const index = phase.activeWaits.indexOf(frame);
-        if (index !== -1) phase.activeWaits.splice(index, 1);
-      }
-    },
-    /** Run the existing body and report the same thrown object after recording safe diagnostics. */
-    async run(body) {
-      try {
-        return await body();
-      } catch (error) {
-        report('test-error', error);
-        throw error;
-      }
-    },
-    /** Finish the final phase and require this scenario's named phases to have completed. */
-    finish(expected) {
-      finishPhase();
-      assert.deepEqual(completed.map(({ phase }) => phase), expected, 'all named relay phases completed in order');
-      assert.ok(completed.every((phase) => Number.isFinite(phase.startedAtMs) && Number.isFinite(phase.elapsedMs)),
-        'every phase has finite start and elapsed timings');
-      return completed;
-    },
-  };
 }
 
 /** Run the real auth and opaque board handlers together on a private loopback port. */
@@ -457,6 +345,7 @@ test('[H1,H3,H7,H15,H16] relay on snapshots and orders ciphertext, refuses offli
   writeFileSync(lostBrief, 'The original lost-reply brief.\n');
   relay.dropNextReply({ offline: true });
   await assert.rejects(cli(root, relayEnv, 'add', lane, 'committed reply lost', '--specs', 'G1', '--brief-file', lostBrief), /RELAY_UNAVAILABLE/);
+  assertDroppedReplyConsumed(relay, 'the legacy add reply');
   const durableId = JSON.parse(readFileSync(linkFile, 'utf8')).pending.move.id;
   await cli(root, relayEnv, 'status');
   assert.equal(JSON.parse(readFileSync(linkFile, 'utf8')).pending.move.id, durableId,
@@ -614,6 +503,7 @@ function heldSecrets(root, pullboardHome) {
 async function loseReplyAtTransport({ root, env, lane, relay, pullboardHome }) {
   relay.dropNextReply({ offline: true });
   const lost = await cliResult(root, env, 'add', lane, 'reply lost at the transport');
+  assertDroppedReplyConsumed(relay, 'the legacy transport-failure add reply');
   assert.equal(lost.status, 1, lost.stderr);
   const refusal = lost.document.error;
   assert.equal(refusal.code, 'RELAY_UNAVAILABLE', 'the refusal code is unchanged');
@@ -985,6 +875,7 @@ async function competingReplicaClaims(fixture, timing) {
     assert.doesNotMatch((repeated.document.diagnostics ?? []).join('\n'), /RELAY_OUTBOX_REFUSED/u, 'replay refusal notices are delivered once');
   }
 
+  await timing.wait('finish the setup baseline before refusing registration', () => cli(clones[0], envs[0], 'status'));
   relay.failMoves(true);
   const beforeWorktreeFailure = localEvents(replicaFiles[0]);
   const beforeWorktrees = gitAt(clones[0], envs[0], 'worktree', 'list', '--porcelain');
@@ -1024,6 +915,7 @@ async function competingReplicaClaims(fixture, timing) {
     method: 'POST', headers, body: JSON.stringify({ sequence: next, sealed: earlierSealed }),
   }))).status, 200);
 
+  const restoreApiOutboxDefault = await enterLegacyAckPolicy(fixture);
   /** Run the actual local API command under this clone's isolated device credentials. */
   async function apiCommand(argv, io) {
     const names = ['PATH', 'HOME', 'PULLBOARD_HOME', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM'];
@@ -1037,8 +929,9 @@ async function competingReplicaClaims(fixture, timing) {
       }
     }
   }
-  const localApi = await timing.wait('start the local API used to exercise relay ordering', () => serveApi({ runCommand: apiCommand, projects: () => [{ root: clones[0], name: 'Clone API' }] }));
+  let localApi;
   try {
+    localApi = await timing.wait('start the local API used to exercise relay ordering', () => serveApi({ runCommand: apiCommand, projects: () => [{ root: clones[0], name: 'Clone API' }] }));
     const address = new URL(localApi.url);
     const response = await timing.wait('send the first API move through clone A', () => fetchFresh(`${address.origin}/api/v1/boards/${boardId}/moves`, {
       method: 'POST', headers: { 'x-pullboard-key': address.searchParams.get('k'), 'content-type': 'application/json' },
@@ -1058,6 +951,7 @@ async function competingReplicaClaims(fixture, timing) {
     const lostApi = await timing.wait('send the API move whose reply is dropped', () => fetchFresh(`${address.origin}/api/v1/boards/${boardId}/moves`, {
       method: 'POST', headers: apiLostHeaders, body: apiLostBody,
     }));
+    assertDroppedReplyConsumed(relay, 'the lost local API add reply');
     const lostApiResult = await timing.wait('read the dropped-reply API response', () => lostApi.json());
     assert.equal(lostApi.status, 409, JSON.stringify(lostApiResult));
     assert.equal(lostApiResult.error.code, 'RELAY_UNAVAILABLE');
@@ -1072,7 +966,10 @@ async function competingReplicaClaims(fixture, timing) {
     assert.equal(apiRetryResult.event.item_id, apiRetryResult.result.item.item_id);
     assert.equal(apiRetryResult.result.item.item_title, apiLostTitle);
     assert.equal(relay.uploads.length, beforeLostApi + 1, 'local API retry returns its original emitted event without posting again');
-  } finally { await timing.wait('close the local clone API server', () => localApi.close()); }
+  } finally {
+    try { if (localApi) await timing.wait('close the local clone API server', () => localApi.close()); }
+    finally { await restoreApiOutboxDefault(); }
+  }
 }
 
 /** Preserve lost CLI replies, original outcomes and the receipt-missing stack guard. */
@@ -1091,6 +988,7 @@ async function recoverReplicaReplies(fixture, timing) {
     'the add is durable locally once even though its relay reply is lost');
   relay.failReads(false);
   await timing.wait('sync all clones to recover the lost add reply', () => Promise.all(clones.map((root, index) => cli(root, envs[index], 'status'))));
+  assertDroppedReplyConsumed(relay, 'the local-first add during background replay');
   const recovered = await timing.wait('read clone A after recovering its lost add reply', () => cli(clones[0], envs[0], 'status'));
   assert.equal(recovered.relay.linked, true, 'receipt recovery leaves the board linked');
   assert.equal(recovered.relay.behind, 0, 'the lost move has been acknowledged in order');
@@ -1149,8 +1047,10 @@ async function recoverReplicaReplies(fixture, timing) {
   assert.equal(relay.uploads.length, beforeDenied + 2, 'the two queued claims each post exactly once, including the refused move');
   await timing.wait('release item 1 after its durable refusal is checked', () => cli(worktrees[0], envs[0], 'release', '1'));
   await timing.wait('claim item 2 before its lost submission reply', () => cli(worktrees[0], envs[0], 'claim', '2'));
+  const restoreOutboxDefault = await enterLegacyAckPolicy(fixture);
   relay.dropNextReply({ offline: true });
   const lostSubmit = await timing.wait('submit item 2 with its relay reply dropped', () => cliResult(worktrees[0], envs[0], 'submit', '2'));
+  assertDroppedReplyConsumed(relay, 'the lost item-2 submission reply');
   assert.equal(lostSubmit.status, 1);
   assert.equal(lostSubmit.document.error.code, 'RELAY_UNAVAILABLE');
   relay.failReads(false);
@@ -1173,6 +1073,7 @@ async function recoverReplicaReplies(fixture, timing) {
 
   relay.dropNextReply({ offline: true });
   const lostVerify = await timing.wait('verify item 2 with its acknowledgement dropped', () => cliResult(worktrees[1], envs[1], 'verify', '2', 'accept', '--note', 'Lost verdict acknowledgement'));
+  assertDroppedReplyConsumed(relay, 'the lost item-2 verification reply');
   assert.equal(lostVerify.status, 1);
   assert.equal(lostVerify.document.error.code, 'RELAY_UNAVAILABLE');
   relay.failReads(false);
@@ -1187,6 +1088,7 @@ async function recoverReplicaReplies(fixture, timing) {
   const beforeEdit = relay.uploads.length;
   relay.dropNextReply({ offline: true });
   const lostEdit = await timing.wait('edit item 1 with its relay reply dropped', () => cliResult(clones[0], envs[0], 'edit', '1', '--brief-file', lostEditBrief));
+  assertDroppedReplyConsumed(relay, 'the lost item-1 edit reply');
   assert.equal(lostEdit.document.error.code, 'RELAY_UNAVAILABLE');
   relay.failReads(false);
   await timing.wait('sync clone A before retrying the edit', () => cli(clones[0], envs[0], 'status'));
@@ -1200,6 +1102,7 @@ async function recoverReplicaReplies(fixture, timing) {
   const beforeMerge = relay.uploads.length;
   relay.dropNextReply({ offline: true });
   const lostMerge = await timing.wait('merge the lost reference with its reply dropped', () => cliResult(clones[0], envs[0], 'merged', '2', lostRef));
+  assertDroppedReplyConsumed(relay, 'the lost merge reply');
   assert.equal(lostMerge.document.error.code, 'RELAY_UNAVAILABLE');
   relay.failReads(false);
   await timing.wait('sync clone A before retrying the merge', () => cli(clones[0], envs[0], 'status'));
@@ -1213,6 +1116,7 @@ async function recoverReplicaReplies(fixture, timing) {
   const beforeAutomatic = relay.uploads.length;
   relay.dropNextReply();
   const automatic = await timing.wait('recover a dropped reply automatically on clone C', () => cli(clones[2], envs[2], 'add', 'web', 'Automatically recovered reply'));
+  assertDroppedReplyConsumed(relay, 'the automatically recovered add reply');
   assert.equal(automatic.item.item_title, 'Automatically recovered reply');
   assert.equal(relay.uploads.length, beforeAutomatic + 1, 'automatic recovery keeps one ordered move');
   assert.equal(JSON.parse(readFileSync(join(commonDir(clones[2], envs[2]), 'pullboard', 'relay.json'), 'utf8')).recovered,
@@ -1255,6 +1159,7 @@ async function recoverReplicaReplies(fixture, timing) {
   const beforeRecoveredStack = relay.uploads.length;
   relay.dropNextReply({ offline: true });
   const lostStackSubmit = await timing.wait('submit recovered-stack item B with its reply dropped', () => cliResult(worktrees[0], envs[0], 'submit', String(stackedB)));
+  assertDroppedReplyConsumed(relay, 'the recovered-stack submission reply');
   assert.equal(lostStackSubmit.status, 1);
   assert.equal(lostStackSubmit.document.error.code, 'RELAY_UNAVAILABLE');
   relay.failReads(false);
@@ -1319,6 +1224,7 @@ async function recoverReplicaReplies(fixture, timing) {
   const freshAfter = store.openBoard(replicaFiles[2]);
   try { assert.equal(store.getItem(freshAfter, freshB).item_status, 'claimed'); }
   finally { store.closeBoard(freshAfter); }
+  await restoreOutboxDefault();
 }
 
 /** Reject the future engine move after all three replicas have recovered their ordered prefix. */
@@ -1493,8 +1399,13 @@ test('an accepted legacy approval baseline keeps its exact source through resume
     assert.equal(caughtUp.relay.linked, true, 'the next reachable read keeps the board linked');
     assert.equal(caughtUp.relay.behind, 0, 'the next reachable read completes ordered replay');
     assert.deepEqual(caughtUp.relay.outbox ?? [], [], 'no queued moves remain after replay');
+    const outboxRenumbered = caughtUp.relay.outboxRenumbered ?? [];
+    const canonicalAddedId = outboxRenumbered.find(row => row.was === addedId)?.is ?? addedId;
+    const canonicalBoard = store.openBoard(replicaFiles[0]);
+    let addedItem;
+    try { addedItem = store.getItem(canonicalBoard, canonicalAddedId); } finally { store.closeBoard(canonicalBoard); }
     assertBaselineResumeEvidence({ events: localEvents(replicaFiles[0]), receipts: receipts(replicaFiles[0]),
-      originalBaseline, originalBaselineEvent, authenticatedLogin: person.user.login, addedId });
+      originalBaseline, originalBaselineEvent, authenticatedLogin: person.user.login, addedId, outboxRenumbered, addedItem });
     timing.finish(['cloning three replicas', 'baseline reply recovery']);
   });
 });
