@@ -83,7 +83,7 @@ test('a landing batch writes ids that fit then +N, and every frozen row in spec 
     return [parseCommitMessage(message).item, message];
   }));
   assert.equal(messages.get(many.id),
-    `chore(merge): land every cited row [Z1,Z2,Z3,Z4,Z5,Z6,Z7,Z8,Z9,Z10,Z11,+25]\n\nPullboard-Item: #${many.id}\nPullboard-Rows: ${ROWS.join(',')}`);
+    `chore(merge): land every cited row [Z1,Z2,Z3,Z4,Z5,Z6,Z7,Z8,Z9,Z10,+26]\n\nPullboard-Item: #${many.id}\nPullboard-Rows: ${ROWS.join(',')}`);
   assert.equal(messages.get(refrozen.id),
     `chore(merge): refrozen after the claim [G1,Z3,Z9]\n\nPullboard-Item: #${refrozen.id}\nPullboard-Rows: G1,Z3,Z9`);
   for (const message of messages.values()) assert.ok(message.split('\n')[0].length <= 72, message);
