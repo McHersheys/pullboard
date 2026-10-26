@@ -33,11 +33,12 @@ function recordedGrantActivation(board) {
 
 /** A version marker is not a grant: it only prevents an older engine bypassing a new seat or claim. */
 export function agentGrantMinimum(board, move) {
-  if (recordedGrantActivation(board)) return AGENT_GRANT_ENGINE;
   // Communication and review administration neither widen nor replace a claim. An old claim could erase its version marker.
   if (move.operation !== 'claim' && (ADMINISTRATIVE.has(move.operation) || !target(move))) return 1;
   const actor = MOVE_REGISTRY[move.operation]?.actor(move);
+  // Person, coordinator and machine moves are never grant-checked, so activation cannot wedge an in-flight one.
   if (typeof actor !== 'string' || ['person', 'coordinator', 'machine'].includes(actor)) return 1;
+  if (recordedGrantActivation(board)) return AGENT_GRANT_ENGINE;
   const event = board.db.prepare("SELECT event_detail FROM event WHERE event_by=? AND event_kind IN ('join','claim','renew') ORDER BY event_id DESC LIMIT 1").get(actor);
   const item = existingItem(board, target(move)?.item ?? (move.operation === 'claim' ? move.args?.[0] : null));
   const claimed = item ? board.db.prepare("SELECT event_detail FROM event WHERE item_id=? AND event_kind IN ('claim','renew') ORDER BY event_id DESC LIMIT 1").get(item.item_id) : null;

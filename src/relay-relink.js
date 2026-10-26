@@ -91,3 +91,15 @@ export function relinkReplacement(state, relink, deletedBoard) {
   }
   return previous;
 }
+
+/**
+ * Link, naming the board this relink retires; a board the relay no longer has active (deleted from the
+ * phone, or already replaced) has nothing to retire, so link once more without it. The relay still
+ * refuses BOARD_REPO_LINKED when the repository has another active board, so it keeps one team board [E12,H17].
+ */
+export async function linkReplacing(link, replaces) {
+  try { return await link(replaces); } catch (error) {
+    if (!replaces || error?.code !== 'BOARD_REPLACE') throw error;
+    return link(null);
+  }
+}
