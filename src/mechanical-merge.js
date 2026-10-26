@@ -1,5 +1,9 @@
 /** Shared conservative data-only conflict decisions; candidate generators run only during landing [B3,R3,C7]. */
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
