@@ -63,7 +63,7 @@ test('a landing batch writes ids that fit then +N, and every frozen row in spec 
   const many = claimedItem(box, 'Land every cited row', [...ROWS].reverse(), 'web/many.txt');
   // Rows cited out of order, then refrozen after the claim by a coordinator correction.
   const refrozen = claimedItem(box, 'Refrozen after the claim', ['Z9', 'Z3', 'G1'], 'web/refrozen.txt');
-  const edited = box.run(box.repo, 'edit', String(refrozen.id), '--criterion', `${refrozen.file} exists after the correction`);
+  const edited = box.run(box.repo, 'edit', String(refrozen.id), '--criterion', `${refrozen.file} exists after the correction`, '--reason', 'the old bar named the file without the correction');
   assert.equal(edited.code, 0, edited.err);
   const again = box.run(refrozen.path, 'refreeze', String(refrozen.id));
   assert.equal(again.code, 0, again.err);
