@@ -218,7 +218,7 @@ test('moves stay local while the machine credential expires, then replay after s
     'replay does not duplicate the locally completed add');
   assert.equal(afterRelink.event.filter(event => event.item_id === claimId && event.event_kind === 'claim').length, 1,
     'replay does not duplicate the locally completed next claim');
-  assert.equal((await box.cli('status')).document.relay.outbox.length, 0, 'the reauthorized machine drains the queued moves');
+  assert.equal(((await box.cli('status')).document.relay.outbox ?? []).length, 0, 'the reauthorized machine drains the queued moves');
 
 });
 

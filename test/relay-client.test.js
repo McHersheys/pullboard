@@ -520,7 +520,7 @@ test('[H1,H3,H7,H15,H16] relay on snapshots and orders ciphertext, refuses offli
   delete afterOffWithoutEvents.event;
   assert.deepEqual(afterOffWithoutEvents, beforeOffWithoutEvents, 'unlink preserves the local board rows and counters');
   assert.deepEqual(afterOffTables.event.slice(0, -1), localBeforeOff.tables.event, 'unlink appends one exclusion fact without changing earlier events');
-  assert.equal(afterOffTables.event.at(-1).event_kind, 'relay_exclusion', 'the person's opt-out intent stays in local history');
+  assert.equal(afterOffTables.event.at(-1).event_kind, 'relay_exclusion', 'the person\'s opt-out intent stays in local history');
   assert.deepEqual(await auth.boardsFor(person.token), [{ id: boardId, repository: 'fixture/repository', linkedAt }],
     'zero-tap local unlink leaves the remote board linked');
   const session = await fetch(relay.origin + '/auth/session', { headers: { 'x-pullboard-engine': String(ENGINE_VERSION), authorization: `Bearer ${person.token}` } });
