@@ -1,3 +1,4 @@
+import { dependencyValues } from './item-dependencies.js';
 import { computedReturnArgs } from './computed-conflict-return.js';
 import { AGENT_GRANT_ENGINE } from './agent-grant-engine.js';
 import { requireAgentGrant } from './agent-grant.js';
@@ -446,7 +447,7 @@ export function editAfter(text) {
   if (!text.trim() || parts.some((part) => !part || part === 'none')) {
     throw new Refused('USAGE', 'use --after <id>[,<id>...] or --after none');
   }
-  return parts.map((part) => idArg(part, 'an item id after --after'));
+  return dependencyValues(parts);
 }
 /**
  * Text a command was given as --<name> "..." or as --<name>-file <file>, or undefined when neither.
