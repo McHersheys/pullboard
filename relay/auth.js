@@ -519,23 +519,26 @@ export function createRelayAuth({ database, github, now = Date.now, sessionTTL =
       credential(token);
       if (deadline <= now()) throw new Refused('OAUTH_EXPIRED', 'the relay confirmation expired before the board link was made; run pullboard relay on again');
       open();
+      let replaced = null;
       lifecycle(() => {
         if (db.prepare('SELECT 1 FROM relay_cleanup WHERE board=?').get(board)) throw new Refused('RELAY_CLEANUP', 'finish pending board cleanup before linking again');
         const existing = db.prepare('SELECT * FROM relay_boards WHERE id=?').get(board);
         if (existing && existing.repository_id !== String(repo.id)) throw new Refused('BOARD_LINK_CONFLICT', 'use a new board identifier for a different repository');
         // A repository has one active link: an off board, with its receipt, or one under cleanup no longer counts [E12].
+        // A board the person deleted from the relay has nothing left to turn off; the link replaces nothing [E12,H17].
+        replaced = replaces !== null && replaces !== undefined && db.prepare('SELECT 1 FROM relay_boards WHERE id=?').get(replaces) ? replaces : null;
         const active = db.prepare("SELECT id FROM relay_boards WHERE repository_id=? AND id<>? AND id NOT IN (SELECT board FROM relay_board_off) AND id NOT IN (SELECT board FROM relay_cleanup) ORDER BY linked_at DESC, id").all(String(repo.id), board);
-        if (replaces !== null && replaces !== undefined && !active.some((entry) => entry.id === replaces)) {
-          throw new Refused('BOARD_REPLACE', `board ${replaces} is not this repository's active board, so this link replaces nothing; run pullboard relay on again to join the repository's board`);
+        if (replaced && !active.some((entry) => entry.id === replaced)) {
+          throw new Refused('BOARD_REPLACE', `board ${replaced} is not this repository's active board, so this link replaces nothing; run pullboard relay on again to join the repository's board`);
         }
-        const other = active.find((entry) => entry.id !== replaces);
+        const other = active.find((entry) => entry.id !== replaced);
         if (other) throw new Refused('BOARD_REPO_LINKED', `${repo.name} already has board ${other.id}, and a repository has one team board; pull pullboard.json from main, which names that board, then run pullboard relay on again to join it`);
         // Relinking after relay off turns the old link off in the same transaction, with its receipt [E12].
-        if (replaces) db.prepare('INSERT INTO relay_board_off (board,repository_id,replaced_by,user_id,at) VALUES (?,?,?,?,?)').run(replaces, String(repo.id), board, row.user_id, now());
+        if (replaced) db.prepare('INSERT INTO relay_board_off (board,repository_id,replaced_by,user_id,at) VALUES (?,?,?,?,?)').run(replaced, String(repo.id), board, row.user_id, now());
         db.prepare('INSERT INTO relay_boards (id,repository,repository_id,linked_at,storage_account) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET repository=excluded.repository,storage_account=COALESCE(relay_boards.storage_account,excluded.storage_account)').run(board, repo.name, String(repo.id), now(), row.user_id);
         permissions.delete(row.user_id + ':' + board);
       });
-      return { id: board, repository: repo.name, repositoryID: String(repo.id), ...(replaces ? { replaced: replaces } : {}) };
+      return { id: board, repository: repo.name, repositoryID: String(repo.id), ...(replaced ? { replaced } : {}) };
     },
     /** The receipt that turned a board's link off when a relink replaced it, or null [E12]. */
     boardOff(board) {
