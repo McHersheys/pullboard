@@ -29,6 +29,13 @@ export async function relayUploadSummary(uploads, key, boardId) {
   }));
 }
 
+/** Make a submitted commit locally verifiable by the other replica's real Git history. */
+export function mergeCandidateForReview(root, env, sourceRoot, commit, gitAt) {
+  gitAt(root, env, 'fetch', sourceRoot, commit);
+  gitAt(root, env, 'merge', '--no-ff', '-m', 'test: make submitted commit available to verifier [G1]', 'FETCH_HEAD');
+  gitAt(root, env, 'merge-base', '--is-ancestor', commit, 'HEAD');
+}
+
 /** Replay a fixture clone's real outbox through the production sync path without another CLI process. */
 export async function syncReplica(root, env) {
   const keys = ['HOME', 'USERPROFILE', 'PULLBOARD_HOME', 'PULLBOARD_RELAY_TOKEN', 'PULLBOARD_RELAY_SENDER_BACKGROUND',

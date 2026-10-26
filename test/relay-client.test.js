@@ -31,7 +31,7 @@ import { captureSpecApprovalBaseline } from '../src/spec-approval.js';
 import { AGENT_SHELL_MARKERS, SSH_SHELL_MARKERS } from '../src/person.js';
 import { legacyMirrorQueueFragment } from './relay-client-legacy-case.js';
 import { assertBaselineResumeEvidence, assertOriginalBaselineEvidence } from './relay-client-baseline-case.js';
-import { localEvents, receipts, relayUploadSummary, syncReplica } from './relay-client-replica-fixture.js';
+import { localEvents, mergeCandidateForReview, receipts, relayUploadSummary, syncReplica } from './relay-client-replica-fixture.js';
 import { assertDroppedReplyConsumed, commitInitializedRepoFiles, enterLegacyAckPolicy } from './relay-client-policy-fixture.js';
 import { threeReplicaPhaseCapture } from './relay-client-timing.js';
 
@@ -1145,11 +1145,12 @@ async function recoverReplicaReplies(fixture, timing) {
   assert.equal(gitAt(worktrees[0], envs[0], 'rev-parse', retriedSubmit.pin), originalCommit);
   gitAt(worktrees[0], envs[0], 'restore', 'web/README.md');
 
+  mergeCandidateForReview(worktrees[1], envs[1], worktrees[0], originalCommit, gitAt);
   relay.dropNextReply({ offline: true, operation: 'verify', item: 2, key, boardId });
   const lostVerify = await timing.wait('verify item 2 with its acknowledgement dropped', () => cliResult(worktrees[1], envs[1], 'verify', '2', 'accept', '--note', 'Lost verdict acknowledgement'));
-  assertDroppedReplyConsumed(relay, 'the lost item-2 verification reply');
   assert.equal(lostVerify.status, 1);
   assert.equal(lostVerify.document.error.code, 'RELAY_UNAVAILABLE');
+  assertDroppedReplyConsumed(relay, 'the lost item-2 verification reply');
   relay.failReads(false);
   await timing.wait('sync clone B after the lost verdict acknowledgement', () => cli(clones[1], envs[1], 'status'));
   const beforeVerifyRetry = relay.uploads.length;
