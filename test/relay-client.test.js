@@ -1114,7 +1114,24 @@ async function recoverReplicaReplies(fixture, timing) {
   gitAt(worktrees[0], envs[0], 'commit', '-q', '-m', 'test: move HEAD during submission recovery [G1]');
   assert.notEqual(gitAt(worktrees[0], envs[0], 'rev-parse', 'HEAD'), originalCommit);
   writeFileSync(join(worktrees[0], 'web', 'README.md'), 'dirty current work is not a fresh submission\n');
+  const afterSubmitRecoverySetup = relay.uploads.length;
   const retriedSubmit = await timing.wait('retry the original lost submission outcome', () => cli(worktrees[0], envs[0], 'submit', '2'));
+  const describeNewMoves = async (from, to) => Promise.all(relay.uploads.slice(from, to).map(async (upload) => {
+    const plain = await unseal(key, Buffer.from(upload.sealed, 'base64url'), {
+      boardId, kind: 'move', sequence: upload.sequence,
+    });
+    const move = JSON.parse(new TextDecoder().decode(plain));
+    return {
+      sequence: upload.sequence,
+      operation: move.operation,
+      moveId: move.id,
+      firstArg: Number.isSafeInteger(move.args?.[0]) ? move.args[0] : null,
+    };
+  }));
+  console.log('relay retry diagnostic', JSON.stringify({
+    setupMoves: await describeNewMoves(beforeSubmitRetry, afterSubmitRecoverySetup),
+    retryMoves: await describeNewMoves(afterSubmitRecoverySetup, relay.uploads.length),
+  }));
   assert.equal(retriedSubmit.commit, originalCommit);
   assert.equal(retriedSubmit.gate.green, true);
   assert.match(retriedSubmit.gate.report, /recovered the original submission/,
