@@ -68,8 +68,15 @@ export function schemaDigest(schema, eventLogVersion) {
  * @param {string} digest
  * @returns {number}
  */
-function schemaStamp(db, digest) {
+function schemaStamp(db, digest, guards = null) {
   const shape = db.prepare("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name").all();
+  if (guards) {
+    const replacements = new Map(guards.map(entry => [entry.name, entry.sql]));
+    const installed = shape.filter(entry => entry.type === 'trigger' && entry.name.startsWith('machine_'));
+    // Missing or extra guards remain manual drift; only an exact installed-name set can recover.
+    if (installed.length !== replacements.size || installed.some(entry => !replacements.has(entry.name))) return null;
+    for (const entry of installed) entry.sql = replacements.get(entry.name);
+  }
   const meta = shape.some((entry) => entry.type === 'table' && entry.name === 'board_meta')
     ? db.prepare("SELECT meta_key, meta_value FROM board_meta WHERE meta_key IN ('board_id', 'event_log_version') ORDER BY meta_key").all()
       .map((entry) => (entry.meta_key === 'board_id' ? 'board_id' : entry.meta_value))
@@ -134,4 +141,10 @@ export function schemaMissing(error) {
 /** True when SQLite refused a write because the board was opened read-only. */
 export function writeRefused(error) {
   return (error?.errcode & 0xff) === 8;
+}
+
+/** Verify a guard-only recovery against the existing complete-shape stamp, without writing a new one. */
+export function guardsMatchStoredStamp(db, digest, guards) {
+  const stored = db.prepare('PRAGMA application_id').get().application_id;
+  return stored !== 0 && stored === schemaStamp(db, digest, guards);
 }

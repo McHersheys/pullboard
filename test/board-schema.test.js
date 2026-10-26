@@ -19,19 +19,27 @@ import { boardStanding } from '../src/board-migrate.js';
 import { recordSchemaStamp } from '../src/board-migrate.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { runFixtureChild } from './fixture-child.js';
+import { exportBoard } from '../src/exchange.js';
+import { importBoard } from '../src/exchange.js';
+import { undoQueued } from '../src/relay-outbox-undo.js';
+import { pinAuthority } from '../src/person-signing.js';
+import { setPersonSigning } from '../src/person-signing.js';
+import { localAuthority } from '../src/person-signing.js';
+import { restoreRelaySnapshot } from '../src/exchange.js';
+import { ENGINE_VERSION } from '../src/machine.js';
 
 const e2e = createE2eHelpers();
 after(e2e.cleanup);
 
 /** Install and stamp the real previous declaration in a private fixture, without changing its data version. */
-function olderDeclaration(file) {
+function olderDeclaration(file, stamp = true) {
   const db = new DatabaseSync(file);
   try {
     const old = storeTriggers({ ...MACHINE, moves: MACHINE.moves.filter(move => move.verb !== 'submit-merge') })
       .find(trigger => trigger.name === 'machine_item_move');
     assert.ok(!old.sql.includes("'claimed>verified'"));
     db.exec(`DROP TRIGGER machine_item_move; ${old.sql}`);
-    recordSchemaStamp(db, SCHEMA_DIGEST);
+    if (stamp) recordSchemaStamp(db, SCHEMA_DIGEST);
   } finally { db.close(); }
 }
 
@@ -166,4 +174,139 @@ test('a stamped pre-carry board upgrades on main open and completes a native mer
     assert.equal(db.prepare('SELECT count(*) AS n FROM verdict WHERE item_id=?').get(id).n, 1, 'carry retains the original reviewer verdict');
     assert.equal(db.prepare("SELECT count(*) AS n FROM event WHERE item_id=? AND event_kind='merge-only-accept'").get(id).n, 1);
   } finally { db.close(); }
+});
+
+/** Install a real future transition so the running module is genuinely older than the installed declaration. */
+function newerDeclaration(db) {
+  const future = { ...MACHINE, moves: [...MACHINE.moves,
+    { ...MACHINE.moves.find(move => move.verb === 'claim'), verb: 'future-reopen', from: ['withdrawn'], to: 'open' }] };
+  for (const { name } of storeTriggers()) db.exec(`DROP TRIGGER "${name}"`);
+  for (const { sql } of storeTriggers(future)) db.exec(sql);
+  recordSchemaStamp(db, SCHEMA_DIGEST);
+}
+
+/** Observe the exact guards and header stamp without reopening or refreshing the board. */
+function guardImage(board) {
+  return {
+    stamp: board.db.prepare('PRAGMA application_id').get().application_id,
+    triggers: board.db.prepare("SELECT name, sql FROM sqlite_master WHERE type='trigger' AND name LIKE 'machine_%' ORDER BY name").all(),
+  };
+}
+
+test('an older checkpoint restore preserves newer installed guards and reports the declaration difference [M3,A5,A6,H16]', () => {
+  const diagnostics = [];
+  const board = store.openBoard(':memory:', undefined, { onDiagnostic: text => diagnostics.push(text) });
+  const source = store.openBoard(':memory:');
+  try {
+    store.addItem(source, { by: 'coordinator', lane: 'web', title: 'Restored data under current guards' });
+    // Install after opening: verification must occur under the restore transaction, not at open time.
+    newerDeclaration(board.db);
+    const before = guardImage(board);
+    importBoard(board, exportBoard(source));
+    assert.deepEqual(guardImage(board), before, 'the caller must not replace newer SQL with its own cached declaration');
+    assert.equal(boardStanding(board.db, SCHEMA_DIGEST, SCHEMA_VERSION), 'current');
+    assert.equal(board.db.prepare('SELECT item_title FROM item').get().item_title, 'Restored data under current guards');
+    assert.match(diagnostics.join('\n'), /preserving the installed trunk guards/u);
+  } finally { store.closeBoard(board); store.closeBoard(source); }
+});
+
+test('an older queued undo restores exact newer guards, including when its transaction rolls back [M3,A5,A6,H16]', () => {
+  const board = store.openBoard(':memory:');
+  try {
+    const session = board.db.createSession({ table: 'shout' });
+    board.db.prepare('INSERT INTO shout(shout_from,shout_to,shout_text,shout_at) VALUES(?,?,?,?)')
+      .run('coordinator', 'all', 'Queued private fixture', new Date().toISOString());
+    const changes = session.changeset();
+    session.close();
+    newerDeclaration(board.db);
+    const before = guardImage(board);
+    const diagnostics = [];
+    board.onDiagnostic = text => diagnostics.push(text);
+    assert.equal(undoQueued(board, [{ changes: [Buffer.from(changes).toString('base64')] }]), null);
+    assert.equal(board.db.prepare('SELECT count(*) AS n FROM shout').get().n, 0, 'the actual queued row was undone');
+    assert.deepEqual(guardImage(board), before);
+    assert.equal(boardStanding(board.db, SCHEMA_DIGEST, SCHEMA_VERSION), 'current');
+    assert.match(diagnostics.join('\n'), /preserving the installed trunk guards/u);
+    assert.throws(() => undoQueued(board, [{ changes: [Buffer.from('invalid SQLite changeset').toString('base64')] }]));
+    assert.deepEqual(guardImage(board), before, 'failed undo rolls back both the temporary guard suspension and its data');
+  } finally { store.closeBoard(board); }
+});
+
+test('main recovers a guard-only downgrade only when the unchanged stamp attests its complete target shape [M3,A5,A6,C7]', t => {
+  const file = legacyBoard(t);
+  store.closeBoard(store.openBoard(file));
+  const attested = observe(file);
+  olderDeclaration(file, false);
+  const drifted = observe(file);
+  assert.equal(drifted.standing, 'drifted');
+  assert.equal(drifted.stamp, attested.stamp);
+  const readonly = store.openBoardReadOnly(file);
+  readonly.close();
+  store.closeBoard(store.openBoard(file, undefined, { isMain: false, onDiagnostic: () => {} }));
+  assert.deepEqual(observe(file), drifted, 'only main may recover the previously attested declaration');
+  store.closeBoard(store.openBoard(file));
+  const recovered = observe(file);
+  assert.equal(recovered.standing, 'current');
+  assert.equal(recovered.stamp, attested.stamp, 'recovery must not invent a new stamp to bless drift');
+  assert.deepEqual(recovered.schema, attested.schema);
+  assert.deepEqual(recovered.items, attested.items);
+  assert.equal(recovered.identity, attested.identity);
+  assert.equal(recovered.guards.length, attested.guards.length + 1);
+  const bytes = readFileSync(file);
+  store.closeBoard(store.openBoard(file));
+  assert.deepEqual(readFileSync(file), bytes, 'recovered declaration is idempotent');
+});
+
+test('unrecognized stamps and non-guard drift cannot be approved by main recovery or restoration [M3,A5,A6,H16]', t => {
+  const file = legacyBoard(t);
+  store.closeBoard(store.openBoard(file));
+  olderDeclaration(file, false);
+  const changed = new DatabaseSync(file);
+  try { changed.exec('CREATE INDEX unexpected_item_name ON item(item_title)'); }
+  finally { changed.close(); }
+  const before = observe(file);
+  const messages = [];
+  const board = store.openBoard(file, undefined, { onDiagnostic: text => messages.push(text) });
+  const source = store.openBoard(':memory:');
+  try {
+    assert.deepEqual(observe(file), before, 'a table or index change must not be hidden by guard repair');
+    assert.throws(() => importBoard(board, exportBoard(source)), error => error.code === 'IMPORT_NOT_EMPTY');
+    const empty = store.openBoard(':memory:');
+    try {
+      empty.db.exec('PRAGMA application_id = 123');
+      const unknown = guardImage(empty);
+      assert.throws(() => importBoard(empty, exportBoard(source)), error => error.code === 'SCHEMA_DRIFT');
+      assert.deepEqual(guardImage(empty), unknown, 'checkpoint restore cannot approve an unrecognized stamp');
+    } finally { store.closeBoard(empty); }
+    assert.throws(() => undoQueued(board, []), error => error.code === 'SCHEMA_DRIFT');
+    assert.deepEqual(observe(file), before, 'refused restores leave both rows and guards unchanged');
+    assert.match(messages.join('\n'), /different shape/u);
+  } finally { store.closeBoard(board); store.closeBoard(source); }
+});
+
+
+test('normal authority pinning and signed-format restore keep a verified stamp without approving prior drift [M3,E22,H16]', () => {
+  const board = store.openBoard(':memory:');
+  const source = store.openBoard(':memory:');
+  try {
+    const authority = { version: 1, algorithm: 'Ed25519', publicKey: 'a'.repeat(43) };
+    pinAuthority(board, 'https://relay.fixture', authority);
+    assert.equal(boardStanding(board.db, SCHEMA_DIGEST, SCHEMA_VERSION), 'current', 'authorized authority guards are stamped atomically');
+    const guards = guardImage(board);
+    importBoard(source, exportBoard(board));
+    source.db.prepare('INSERT INTO board_meta(meta_key,meta_value) VALUES(?,?)').run('relay_applied_sequence', '0');
+    source.db.prepare('INSERT INTO board_meta(meta_key,meta_value) VALUES(?,?)').run('relay_engine_version', String(ENGINE_VERSION));
+    setPersonSigning(source, { agentId: 'coordinator', signed: true });
+    assert.equal(boardStanding(source.db, SCHEMA_DIGEST, SCHEMA_VERSION), 'current', 'authorized signed format is stamped atomically');
+    restoreRelaySnapshot(board, exportBoard(source), 0);
+    assert.deepEqual(guardImage(board).triggers, guards.triggers);
+    assert.equal(boardStanding(board.db, SCHEMA_DIGEST, SCHEMA_VERSION), 'current', 'signed restore stamps only the unchanged complete SQL shape');
+    assert.equal(localAuthority(board).origin, 'https://relay.fixture', 'restore retains the target authority');
+    assert.equal(undoQueued(board, []), null, 'normal pinned boards remain usable for queued undo');
+    board.db.exec('CREATE INDEX unexpected_signed_item ON item(item_title)');
+    const badStamp = guardImage(board).stamp;
+    setPersonSigning(board, { agentId: 'coordinator', signed: true });
+    assert.equal(guardImage(board).stamp, badStamp, 'an authorized format operation must never bless pre-existing drift');
+    assert.equal(boardStanding(board.db, SCHEMA_DIGEST, SCHEMA_VERSION), 'drifted');
+  } finally { store.closeBoard(board); store.closeBoard(source); }
 });

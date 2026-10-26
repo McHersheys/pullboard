@@ -2,9 +2,13 @@
 import { atomic } from './board-event-log.js';
 import { logEvent } from './board-event-log.js';
 import { boardStanding } from './board-migrate.js';
+import { guardsMatchStoredStamp } from './board-migrate.js';
+import { Refused } from './refused.js';
 import { recordSchemaStamp } from './board-migrate.js';
 import { SCHEMA_DIGEST } from './board-schema-source.js';
 import { SCHEMA_VERSION } from './board-schema-source.js';
+import { EVENT_LOG_VERSION } from './board-schema-source.js';
+import { SIGNED_EVENT_LOG_VERSION } from './board-schema-source.js';
 import { storeTriggers } from './machine.js';
 
 const GUARDED = 1;
@@ -43,15 +47,50 @@ export function guardStore(board) {
 }
 
 /**
- * Refresh only a main-owned board whose installed shape still has its valid stamp. A new declaration may
- * differ without changing table versions; a hand-edited shape fails this check and remains untouched.
+ * Main may upgrade a valid old declaration or restore the exact guards attested by the stored stamp.
+ * A missing guard or any additional table/index drift remains untouched, never approved by restamping.
  */
 export function refreshStoreDeclarations(board) {
-  if (isWhole(differences(board.db, storeTriggers()))) return;
-  atomic(board, () => {
-    // Recheck after taking the write lock, before approving any declaration or replacing its guard SQL.
-    if (boardStanding(board.db, SCHEMA_DIGEST, SCHEMA_VERSION) !== 'current') return;
+  const wanted = storeTriggers();
+  if (isWhole(differences(board.db, wanted))) return false;
+  return atomic(board, () => {
+    const standing = boardStanding(board.db, SCHEMA_DIGEST, SCHEMA_VERSION);
+    const recovery = standing === 'drifted' && guardsMatchStoredStamp(board.db, SCHEMA_DIGEST, wanted);
+    if (standing !== 'current' && !recovery) return false;
     guardStore(board);
-    recordSchemaStamp(board.db, SCHEMA_DIGEST);
+    if (!recovery) recordSchemaStamp(board.db, SCHEMA_DIGEST);
+    if (boardStanding(board.db, SCHEMA_DIGEST, SCHEMA_VERSION) !== 'current') {
+      throw new Refused('SCHEMA_DRIFT', 'the restored guards do not match the stored board stamp; keep the board and ask the coordinator to inspect its schema');
+    }
+    return true;
   });
+}
+
+/**
+ * Called inside the restore transaction: verify and preserve the installed guards, never this caller's
+ * declaration. Another connection may have upgraded the board since this connection was opened.
+ */
+export function suspendStoreGuards(board) {
+  if (boardStanding(board.db, SCHEMA_DIGEST, SCHEMA_VERSION) !== 'current') {
+    throw new Refused('SCHEMA_DRIFT', 'cannot restore an unverified board shape; run pullboard inbox from the main checkout, then retry; preserve any remaining drift for the coordinator');
+  }
+  const shapeQuery = "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name";
+  const shape = JSON.stringify(board.db.prepare(shapeQuery).all());
+  const installed = board.db.prepare("SELECT name, sql FROM sqlite_master WHERE type='trigger' AND name LIKE 'machine_%' ORDER BY name").all();
+  if (!isWhole(differences(board.db, storeTriggers()))) {
+    const diagnostic = 'pullboard: preserving the installed trunk guards; this caller has a different declaration; update this CLI from main';
+    if (board.onDiagnostic) board.onDiagnostic(diagnostic);
+    else process.stderr.write(`${diagnostic}\n`);
+  }
+  for (const { name } of installed) board.db.exec(`DROP TRIGGER "${name.replaceAll('"', '""')}"`);
+  return () => {
+    for (const { sql } of installed) board.db.exec(sql);
+    const version = board.db.prepare("SELECT meta_value FROM board_meta WHERE meta_key='event_log_version'").get()?.meta_value;
+    if (JSON.stringify(board.db.prepare(shapeQuery).all()) !== shape
+      || ![String(EVENT_LOG_VERSION), String(SIGNED_EVENT_LOG_VERSION)].includes(version)) {
+      throw new Refused('SCHEMA_DRIFT', 'restore changed the verified board shape or format; its transaction was rolled back; preserve the board and ask the coordinator to inspect it');
+    }
+    // Validated restore may change the signed-event format. The complete persistent SQL is unchanged.
+    recordSchemaStamp(board.db, SCHEMA_DIGEST);
+  };
 }
