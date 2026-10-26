@@ -846,7 +846,7 @@ test('every session reads and moves: terminal, SSH, agent, job or CI [E9,E18]', 
 
   // S6b: a session that cannot read the key (SSH, a scheduled job, a locked keychain) still reads the whole board.
   assert.equal((await box.cli('add', box.lane, 'Read from any session')).code, 0);
-  const inbox = await prepareKeylessInbox(box);
+  const inbox = await prepareKeylessInbox(box, { phoneRequest, receivedRequests });
   renameSync(keys, keys + '.parked');
   try {
     for (const command of [['list'], ['show', '1'], ['inbox'], ['whoami'], ['status'], ['resume'], ['log']]) {

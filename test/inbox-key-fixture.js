@@ -21,12 +21,16 @@ function cursor(box) {
 }
 
 /** Create a genuine answered decision through the authenticated public CLI before hiding its key. */
-export async function prepareKeylessInbox(box) {
+export async function prepareKeylessInbox(box, { phoneRequest, receivedRequests }) {
   const asked = await box.cli('shout', 'person', 'May this session read without recording delivery?', '--decision');
   assert.equal(asked.code, 0, 'the fixture asks a real decision');
-  const answer = await box.cli('answer', String(asked.document.id), 'Read without acknowledging until the key returns.', '--as', 'person');
-  assert.equal(answer.code, 0, 'the fixture person answers through ordinary authentication');
-  return { answer: answer.document.id };
+  const request = await phoneRequest(box, (await box.phoneSession()).token,
+    { verb: 'answer', item: asked.document.id, args: { text: 'Read without acknowledging until the key returns.' } });
+  assert.equal((await receivedRequests(box))[request].status, 'done', 'the signed-in phone answers through ordinary authentication');
+  const exported = await box.cli('export');
+  const answer = exported.document.tables.shout.find(row => row.shout_answers === asked.document.id);
+  assert.ok(answer, 'the actual phone answer is recorded on the board');
+  return { answer: answer.shout_id };
 }
 
 /** Preserve both cursors while displaying a real obligation and refusing explicit acknowledgement. */
