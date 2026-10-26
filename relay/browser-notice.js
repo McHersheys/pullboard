@@ -32,9 +32,27 @@ export function storedOwnedRequestState(storage, key, requests) {
   return { ...state, owned: new Set(owned) };
 }
 
+/** Preserve this browser's first failed read per board; another board cannot clear it. */
+export function recordBrowserReadFailure(degradedBoards, id, now = Date.now()) {
+  if (!degradedBoards.has(id)) degradedBoards.set(id, new Date(now).toISOString());
+}
+
+/** Clear only the board whose authenticated snapshot and complete prefix were read successfully. */
+export function clearBrowserReadFailure(degradedBoards, id) {
+  degradedBoards.delete(id);
+}
+
 /** Build truthful device notices from authorized boards and their decrypted pending requests. */
-export function noticeLines({ available, paired, ownedRequestIds = new Map(), waitingBoards = new Map(), sizeProblems = new Map(), approvedBoards = new Set(), pendingLinks = [], warnings = [], failure = '', exclusions = [] }) {
+export function noticeLines({ available, paired, ownedRequestIds = new Map(), waitingBoards = new Map(), sizeProblems = new Map(), approvedBoards = new Set(), pendingLinks = [], warnings = [], failure = '', exclusions = [], degradedBoards = new Map(), queuedRequests = new Map() }) {
   const lines = [];
+  for (const [id, entry] of paired) {
+    const since = degradedBoards.get(id);
+    const queued = queuedRequests.get(id);
+    if (!since && !(queued > 0) && queued !== null) continue;
+    const name = entry.repository ?? id;
+    const count = queued === null ? 'queued request count unavailable' : `${queued ?? 0} sealed request${queued === 1 ? '' : 's'} queued locally`;
+    lines.push(`${name}: ${since ? `relay degraded since ${since.slice(11, 16)}; ` : ''}${count}.${queued > 0 ? ' This device has not received an acknowledgement for these queued requests.' : ''}`);
+  }
   const waiting = [...paired.entries()].reduce((count, [id, entry]) => {
     const owned = ownedRequestIds.get(id) ?? new Set();
     return count + reconcileOwnedRequests(entry.state?.personRequests, owned).waiting.length;

@@ -16,9 +16,8 @@ export function itemAuthors(board, item) {
   return [...authors];
 }
 
-/** Apply the same author and linked-seat independence rule to explicit reviews and queue selection. */
-export function itemAuthorProblem(board, item, reviewer) {
-  const authors = itemAuthors(board, item);
+/** Compare immutable author and parent identities without borrowing the current sender’s verifier credential. */
+function authorIdentityProblem(board, item, reviewer, authors) {
   if (authors.includes(reviewer)) return new Refused('SELF_VERIFY', 'the builder never verifies its own work; another agent must');
   if ((board.executionEngineVersion ?? ENGINE_VERSION) >= PARENT_SESSION_ENGINE) {
     const parent = effectiveAgentParent(board, reviewer);
@@ -26,6 +25,19 @@ export function itemAuthorProblem(board, item, reviewer) {
       return new Refused('SELF_SESSION_VERIFY', `this seat shares a parent session with an author of #${item.item_id}; ask a seat under another parent session to verify it`);
     }
   }
+  return null;
+}
+
+/** A retained native verdict keeps its original authority but may not cover work by a newly related author. */
+export function retainedVerifierIdentityProblem(board, item, reviewer) {
+  return authorIdentityProblem(board, item, reviewer, itemAuthors(board, item));
+}
+
+/** Apply full author identity and current linked standing to every fresh review and queue selection. */
+export function itemAuthorProblem(board, item, reviewer) {
+  const authors = itemAuthors(board, item);
+  const identity = authorIdentityProblem(board, item, reviewer, authors);
+  if (identity) return identity;
   return (authors.length ? authors : [item.item_built_by])
     .map(author => standingProblem(board, reviewer, author, item.item_id)).find(Boolean) ?? null;
 }

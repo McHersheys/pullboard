@@ -16,6 +16,26 @@
   "registryGuards": [
     {
       "inputs": [
+        "src/api.js",
+        "src/serve.js",
+        "src/native-board-state.js",
+        "src/native-state-clock.js",
+        "src/relay-presentation.js",
+        "src/exchange.js",
+        "src/board-schema.js",
+        "src/board-schema-source.js",
+        "src/formats/board-schema.json",
+        "src/machine.js",
+        "src/move-registry.js",
+        "relay/browser-model.js"
+      ],
+      "tests": [
+        "test/relay-parity.test.js",
+        "test/relay-parity-clock.test.js"
+      ]
+    },
+    {
+      "inputs": [
         "src/moves/**",
         "src/recorded-move.js",
         "src/api-moves.js",
@@ -66,8 +86,7 @@
         "bin/",
         "test/",
         "package.json",
-        ".github/workflows/gate.yml",
-        ".github/workflows/release.yml",
+        ".github/workflows/",
         "relay/",
         "docs/api.md",
         "docs/api.test.js",

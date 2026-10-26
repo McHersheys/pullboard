@@ -60,6 +60,7 @@ Set up
                                         pair prints a one-use machine code; join stores it in another clone
   pullboard relay members set <login> [<login> ...] | clear  publish an approver-signed membership list
   pullboard relay pair --new-browser    sign in and pair one more browser; existing browsers stay paired
+  pullboard relay canary [on|off|status|run|watch]  opt this linked seat into minute sealed round-trip monitoring
   pullboard relay on --all [--url <address>] [--name <computer>]  link every registered project after one sign-in; pair the phone once
                                         keep this command open until pairing finishes; later projects link on registration
   pullboard relay devices [--verbose]   paired phones and joined computers by name, with paired date, last seen and boards
@@ -82,7 +83,7 @@ Work
                                         slices default to 4k tokens and cap at 8k; effects the scan cannot see say "not detected"
   pullboard add <lane> <title> [--criterion "..."] [--specs G1.2,K3] [--after 3,4] [--parent <id>]
                 [--brief "..." | --brief-file <file>] [--route light|mid]
-                                        --after: claiming waits until those items are verified
+                                        --after: ids or repo#id; claiming waits for verified items on their own boards
                                         --brief: what a cold agent needs; --route light: any model can build it
                 [--check "<command>"] [--wait]   the command that proves it; --wait waits for its main baseline
                                         with --criterion and a brief, --check is needed below strong
@@ -309,7 +310,7 @@ Spec
                                         submit refuses a touched rule whose count rises; runs: nightly skips submit, mode: watch only counts
 
 Role guides
-  pullboard prompt decompose|plan|signoff|review|verify   how to do each role; Claude Code gets them as skills
+  pullboard prompt decompose|plan|signoff|review|verify|run|triage   how to do each role; Claude Code gets them as skills
 
 Gate and hooks
   pullboard gate [--landing]            run the configured gate; prioritize a trunk landing in the machine queue
@@ -416,7 +417,7 @@ const HELP_ALIASES = {
 
 const HELP_FLAG_EXPLANATIONS = {
   '--take': 'take the existing hand-off from a newly joined agent worktree',
-  '--after': 'claiming waits until those items are verified',
+  '--after': 'ids or repo#id; claiming waits for verified items on their own boards',
   '--blueprint': 'start from a bundled blueprint or a JSON file; repeat it for one product, one architecture and any practice blueprints',
   '--brief': 'what a cold agent needs',
   '--check': 'the command that proves it',

@@ -123,16 +123,22 @@ export function milestoneRoadmap(root, board, options = {}) {
   });
 }
 
-/** Count distinct currently landed local items at their first recording of the current merge. */
-function landingPace(board, items, now) {
+/** Exact first matching merge observations shared by roadmap display and its cache-window boundary. */
+export function qualifyingLandingTimes(history, items) {
   const first = new Map();
-  for (const event of eventsOfKinds(board, ['merged'])) {
+  for (const event of history) {
+    if (event.event_kind !== 'merged') continue;
     const item = items.get(event.item_id);
     if (item?.item_status !== 'verified' || !item.item_merged_commit || first.has(event.item_id)) continue;
     if (JSON.parse(event.event_detail).commit !== item.item_merged_commit) continue;
     first.set(event.item_id, Date.parse(event.event_at));
   }
-  const times = [...first.values()].filter(at => at <= now);
+  return [...first.values()].filter(Number.isFinite);
+}
+
+/** Count distinct currently landed local items at their first recording of the current merge. */
+function landingPace(board, items, now) {
+  const times = qualifyingLandingTimes(eventsOfKinds(board, ['merged']), items).filter(at => at <= now);
   return { last6h: times.filter(at => at > now - 6 * 3_600_000).length,
     last2h: times.filter(at => at > now - 2 * 3_600_000).length,
     last24h: times.filter(at => at > now - 24 * 3_600_000).length };

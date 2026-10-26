@@ -71,6 +71,7 @@ export const ROLES = {
   review: 'pullboard-spec-review',
   verify: 'pullboard-verify',
   run: 'pullboard-run',
+  triage: 'pullboard-triage',
 };
 
 /**
