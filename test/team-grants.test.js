@@ -416,7 +416,9 @@ test('an agent grant narrows at claim without losing its submitted attempt recei
   submitBoardStateFixture(primary, id, { agentId, commit: box.git(box.repo, 'rev-parse', 'HEAD'), tree: box.git(box.repo, 'rev-parse', 'HEAD^{tree}') });
   const before = store.getItem(primary, id);
   assert.equal(before.item_status, 'submitted');
-  assert.equal(before.item_owner, null, 'successful submit ended the claim before the runner records its attempt');
+  assert.equal(before.item_owner, agentId, 'submitted history retains its builder attribution');
+  assert.equal(primary.db.prepare("SELECT COUNT(*) AS n FROM item WHERE item_owner=? AND item_status='claimed'").get(agentId).n, 0,
+    'successful submit ended the active claim before the runner records its attempt');
   importBoard(boards[1], exportBoard(primary));
   const move = prepareEngineMove(primary, 'recordAttempt', [id, { agentId, n: 1, seconds: 2, result: 'green' }]);
   const outcomes = boards.map(board => applyEngineMove(board, move, { sequence: appliedSequence(board) + 1, at: clock.now().toISOString() }));
