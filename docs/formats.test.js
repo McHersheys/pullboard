@@ -62,6 +62,7 @@ import {
   reopen,
   reserveReview,
   SCHEMA_VERSION,
+  setLaneLead,
   shout,
   verify,
   withdraw,
@@ -308,6 +309,11 @@ function recordEventContract() {
   register(board, { lane: 'docs', path: '/builder', family: 'codex' });
   register(board, { lane: 'docs', path: '/builder', model: 'Fixture Model' });
   const reviewer = register(board, { lane: 'tests', path: '/reviewer' });
+  setLaneLead(board, { agentId: coordinator, lane: 'docs', seat: builder, lanes: ['docs', 'tests'] });
+  const laneWorker = register(board, { lane: 'docs', path: '/lane-worker' });
+  const laneQuestion = shout(board, { from: laneWorker, to: coordinator, text: 'sample lane escalation', decision: true, lanes: ['docs', 'tests'] });
+  passDecision(board, laneQuestion, { agentId: builder, note: 'Needs coordination', lanes: ['docs', 'tests'] });
+  setLaneLead(board, { agentId: coordinator, lane: 'docs', seat: null, lanes: ['docs', 'tests'] });
   register(board, { lane: 'small', path: '/small', route: 'light' });
   ensureCoordinator(board, '/coordinator-moved');
   shout(board, { from: builder, to: 'all', text: 'sample announcement', lanes: ['docs', 'tests'] });
@@ -737,6 +743,7 @@ test('[A5] schema, versions, event kinds and event detail fields match live beha
     family: 'agent',
     model: 'agent',
     moved: 'coordinator',
+    'lane-lead': 'coordinator',
     add: 'item creator',
     companion: 'requesting agent',
     edit: 'editor',
@@ -765,7 +772,7 @@ test('[A5] schema, versions, event kinds and event detail fields match live beha
   for (const row of actualRows) {
     const kind = row.event_kind;
     const entry = actual[kind] ?? { actors: new Set(), fields: new Set() };
-    const actor = kind === 'refreeze' && row.event_by !== COORDINATOR
+    const actor = kind === 'pass' && row.event_by !== COORDINATOR ? 'lane lead' : kind === 'refreeze' && row.event_by !== COORDINATOR
       ? 'live holder adopting a pending correction'
       : actorByKind[kind] ?? actors[row.event_by] ?? 'unknown';
     entry.actors.add(actor);
