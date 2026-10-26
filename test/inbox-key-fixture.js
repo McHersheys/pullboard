@@ -34,8 +34,8 @@ export async function prepareKeylessInbox(box) {
       console.log(JSON.stringify({ answer }));
     } finally { store.closeBoard(board); }
   `);
-  assert.equal(result.code, 0, `native fixture setup: ${result.stderr}`);
-  return JSON.parse(result.stdout);
+  assert.equal(result.code, 0, `native fixture setup: ${result.failure}`);
+  return result.document;
 }
 
 /** Preserve both cursors while displaying a real obligation and refusing explicit acknowledgement. */
