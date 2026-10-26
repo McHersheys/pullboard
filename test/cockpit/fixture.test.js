@@ -378,7 +378,7 @@ test('view fixture retries one disconnected read with its cause and never repeat
     const count = (calls.get(req.url) ?? 0) + 1;
     calls.set(req.url, count);
     if (req.url !== '/retry' || count === 1) return req.socket.destroy();
-    const upstream = request(view.link, (answer) => {
+    const upstream = request(new URL('/', view.link), { headers: { cookie: view.cookie } }, (answer) => {
       res.writeHead(answer.statusCode, answer.headers);
       answer.pipe(res);
     });

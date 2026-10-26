@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
-import { SPEC, machine, project, build, sendBack, fetchLive, startView, styleOf, element, settle, storage, openPage, accept, chromeExecutable, openSnapshotChrome, closeSnapshotChrome, press } from './fixture.js';
+import { SPEC, machine, project, build, sendBack, fetchLive, fetchPage, startView, styleOf, element, settle, storage, openPage, accept, chromeExecutable, openSnapshotChrome, closeSnapshotChrome, press } from './fixture.js';
 
 
 test('the view never scrolls sideways at 320px [N26]', { timeout: 120_000 }, async (t) => {
@@ -59,7 +59,7 @@ test('the view never scrolls sideways at 320px [N26]', { timeout: 120_000 }, asy
 test('the tabs fit one row on a phone [N26]', async () => {
   const view = await startView(machine());
   try {
-    const html = await (await fetchLive(view.link)).text();
+    const html = await (await fetchPage(view)).text();
     const style = await styleOf(view);
     const phone = /@media \(width < 480px\) \{\n([^@]*?)\n\}/.exec(style)?.[1] ?? '';
     assert.doesNotMatch(style, /max-width: 480px/, 'at 480px itself the tabs keep their row');
@@ -141,8 +141,9 @@ test("the view's styles live in their own file [N26]", async () => {
   try {
     const page = await openPage(view);
     assert.doesNotMatch(page.html, /<style|style=/, 'the page holds no styles');
-    assert.match(page.html, new RegExp(`\n<link rel="stylesheet" href="/view\\.css\\?k=${view.key}">\n`), 'it links its own, with the secret');
-    const css = await fetchLive(`${view.base}/view.css?k=${view.key}`);
+    assert.match(page.html, /\n<link rel="stylesheet" href="\/view\.css">\n/, 'it links its own, at a clean address the session cookie opens');
+    assert.ok(!page.html.includes(view.key), 'the page holds no secret');
+    const css = await fetchPage(view, '/view.css');
     assert.equal(css.status, 200);
     assert.equal(css.headers.get('content-type'), 'text/css; charset=utf-8');
     assert.equal(await css.text(), readFileSync(new URL('../../src/view.css', import.meta.url), 'utf8'), 'src/view.css, as it is');
@@ -151,7 +152,7 @@ test("the view's styles live in their own file [N26]", async () => {
       request({ host: '127.0.0.1', port: view.link.port, path: `/view.css?k=${view.key}`, headers: { host: 'pullboard.example' } }, (res) => done(res.statusCode)).on('error', fail).end();
     });
     assert.equal(stranger, 403, 'nor under another Host');
-    const policy = (await fetchLive(view.link)).headers.get('content-security-policy');
+    const policy = (await fetchPage(view)).headers.get('content-security-policy');
     assert.equal(/(?:^|; )style-src ([^;]*)/.exec(policy)?.[1], "'self'", 'styles come from the view alone, never inline');
 
     // Nothing the script draws carries a style either: products, the list, a picked item, a spec row.
