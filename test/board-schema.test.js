@@ -310,3 +310,93 @@ test('normal authority pinning and signed-format restore keep a verified stamp w
     assert.equal(boardStanding(board.db, SCHEMA_DIGEST, SCHEMA_VERSION), 'drifted');
   } finally { store.closeBoard(board); store.closeBoard(source); }
 });
+
+
+/** Reproduce an old normal API's unchanged header using its actual pre-operation stamp. */
+function legacySigningBoard(t, mode) {
+  const directory = mkdtempSync(join(tmpdir(), 'pullboard-legacy-signing-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const file = join(directory, 'board.sqlite');
+  const board = store.openBoard(file);
+  try {
+    store.addItem(board, { by: 'coordinator', lane: 'web', title: 'Keep signed legacy data' });
+    board.db.prepare('INSERT INTO board_meta(meta_key,meta_value) VALUES(?,?)').run('relay_applied_sequence', '0');
+    board.db.prepare('INSERT INTO board_meta(meta_key,meta_value) VALUES(?,?)').run('relay_engine_version', String(ENGINE_VERSION));
+    let stamp = guardImage(board).stamp;
+    const pin = () => pinAuthority(board, 'https://relay.fixture', { version: 1, algorithm: 'Ed25519', publicKey: 'a'.repeat(43) });
+    if (mode === 'sign-then-pin') {
+      setPersonSigning(board, { agentId: 'coordinator', signed: true });
+      stamp = guardImage(board).stamp;
+      pin();
+    } else {
+      if (mode !== 'signed-only') pin();
+      if (mode === 'pin-then-sign') stamp = guardImage(board).stamp;
+      if (mode !== 'pin-only') setPersonSigning(board, { agentId: 'coordinator', signed: true });
+    }
+    // Prior implementations performed these same normal operations but left this pre-operation header.
+    board.db.exec(`PRAGMA application_id = ${stamp}`);
+  } finally { store.closeBoard(board); }
+  return file;
+}
+
+test('main recognizes exact legacy pin-only, signed-only and intermediate signed-format stamps [M3,E22,H16]', t => {
+  for (const mode of ['pin-only', 'signed-only', 'both', 'pin-then-sign', 'sign-then-pin']) {
+    const file = legacySigningBoard(t, mode);
+    const before = observe(file);
+    assert.equal(before.standing, 'drifted', mode);
+    store.openBoardReadOnly(file).close();
+    store.closeBoard(store.openBoard(file, undefined, { isMain: false, onDiagnostic: () => {} }));
+    assert.deepEqual(observe(file), before, `${mode}: readers and non-main do not heal`);
+    const board = store.openBoard(file);
+    try {
+      assert.equal(boardStanding(board.db, SCHEMA_DIGEST, SCHEMA_VERSION), 'current', mode);
+      assert.deepEqual(observe(file).items, before.items, `${mode}: business rows survive`);
+      assert.equal(observe(file).identity, before.identity);
+      assert.equal(board.db.prepare("SELECT count(*) AS n FROM event WHERE event_kind='schema-signing-recovery'").get().n, 1);
+      const checkpoint = exportBoard(board);
+      restoreRelaySnapshot(board, checkpoint, 0);
+      assert.equal(undoQueued(board, []), null, `${mode}: restored and queued paths remain usable`);
+      assert.equal(boardStanding(board.db, SCHEMA_DIGEST, SCHEMA_VERSION), 'current');
+      assert.equal(localAuthority(board)?.origin ?? null, mode === 'signed-only' ? null : 'https://relay.fixture');
+    } finally { store.closeBoard(board); }
+    const bytes = readFileSync(file);
+    store.closeBoard(store.openBoard(file));
+    assert.deepEqual(readFileSync(file), bytes, `${mode}: recovery is idempotent`);
+  }
+});
+
+test('legacy signing recognition also recovers the exact attested machine declaration [M3,E22,H16]', t => {
+  const file = legacySigningBoard(t, 'both');
+  olderDeclaration(file, false);
+  const before = observe(file);
+  const board = store.openBoard(file);
+  try {
+    assert.equal(boardStanding(board.db, SCHEMA_DIGEST, SCHEMA_VERSION), 'current');
+    assert.deepEqual(observe(file).items, before.items);
+    assert.equal(guardImage(board).triggers.find(row => row.name === 'machine_item_move').sql,
+      storeTriggers().find(row => row.name === 'machine_item_move').sql);
+  } finally { store.closeBoard(board); }
+});
+
+test('legacy pin or signing recovery never approves missing guards, extra schema or unknown headers [M3,E22,H16]', t => {
+  const damage = [
+    "DROP TRIGGER person_authority_delete",
+    "DROP TRIGGER person_authority_delete; CREATE TRIGGER person_authority_delete BEFORE DELETE ON board_meta BEGIN SELECT 1; END",
+    "CREATE INDEX unexpected_legacy_index ON item(item_title)",
+    "DROP TRIGGER machine_fields_claimed",
+    "PRAGMA application_id = 123",
+  ];
+  for (const sql of damage) {
+    const file = legacySigningBoard(t, 'both');
+    const db = new DatabaseSync(file);
+    try { db.exec(sql); } finally { db.close(); }
+    const before = observe(file);
+    const board = store.openBoard(file, undefined, { onDiagnostic: () => {} });
+    try {
+      assert.equal(boardStanding(board.db, SCHEMA_DIGEST, SCHEMA_VERSION), 'drifted', sql);
+      assert.deepEqual(observe(file), before, sql);
+      assert.throws(() => undoQueued(board, []), error => error.code === 'SCHEMA_DRIFT');
+      assert.deepEqual(observe(file), before, 'refusal preserves damaged evidence');
+    } finally { store.closeBoard(board); }
+  }
+});

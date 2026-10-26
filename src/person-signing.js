@@ -32,17 +32,12 @@ import { recordSchemaStamp } from './board-migrate.js';
 import { SCHEMA_DIGEST } from './board-schema-source.js';
 import { SCHEMA_VERSION } from './board-schema-source.js';
 
+import { AUTHORITY } from './person-authority-schema.js';
+import { AUTHORITY_TRIGGERS } from './person-authority-schema.js';
+
 const PROPOSALS = 'person_proposals';
-const AUTHORITY = 'person_authority_local';
 const PROPOSAL_MS = 10 * 60_000;
 const KEPT_PROPOSALS = 50;
-
-/** Triggers that keep the pinned relay key from being changed, removed or replaced through SQLite. */
-const AUTHORITY_TRIGGERS = [
-  ['person_authority_update', `BEFORE UPDATE ON board_meta WHEN OLD.meta_key = '${AUTHORITY}'`],
-  ['person_authority_delete', `BEFORE DELETE ON board_meta WHEN OLD.meta_key = '${AUTHORITY}'`],
-  ['person_authority_replace', `BEFORE INSERT ON board_meta WHEN NEW.meta_key = '${AUTHORITY}' AND EXISTS (SELECT 1 FROM board_meta WHERE meta_key = '${AUTHORITY}')`],
-].map(([name, on]) => ({ name, sql: `CREATE TRIGGER IF NOT EXISTS ${name} ${on}\nBEGIN SELECT RAISE(ABORT, 'PERSON_AUTHORITY: the pinned relay key is kept for good'); END` }));
 
 /** Write one board metadata value inside the caller's transaction. */
 function meta(board, key, value) {

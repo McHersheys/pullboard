@@ -68,8 +68,9 @@ export function schemaDigest(schema, eventLogVersion) {
  * @param {string} digest
  * @returns {number}
  */
-function schemaStamp(db, digest, guards = null) {
-  const shape = db.prepare("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name").all();
+function schemaStamp(db, digest, guards = null, prior = {}) {
+  const shape = db.prepare("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name").all()
+    .filter(entry => !prior.omitTriggers?.includes(entry.type === 'trigger' ? entry.name : null));
   if (guards) {
     const replacements = new Map(guards.map(entry => [entry.name, entry.sql]));
     const installed = shape.filter(entry => entry.type === 'trigger' && entry.name.startsWith('machine_'));
@@ -79,7 +80,7 @@ function schemaStamp(db, digest, guards = null) {
   }
   const meta = shape.some((entry) => entry.type === 'table' && entry.name === 'board_meta')
     ? db.prepare("SELECT meta_key, meta_value FROM board_meta WHERE meta_key IN ('board_id', 'event_log_version') ORDER BY meta_key").all()
-      .map((entry) => (entry.meta_key === 'board_id' ? 'board_id' : entry.meta_value))
+      .map((entry) => (entry.meta_key === 'board_id' ? 'board_id' : prior.eventLogVersion ?? entry.meta_value))
     : [];
   return createHash('sha256').update(JSON.stringify([digest, shape, meta])).digest().readInt32BE(0) || 1;
 }
@@ -147,4 +148,10 @@ export function writeRefused(error) {
 export function guardsMatchStoredStamp(db, digest, guards) {
   const stored = db.prepare('PRAGMA application_id').get().application_id;
   return stored !== 0 && stored === schemaStamp(db, digest, guards);
+}
+
+/** Compare one bounded prior authorized shape with the existing header, without modifying schema or metadata. */
+export function priorShapeMatchesStoredStamp(db, digest, guards, prior) {
+  const stored = db.prepare('PRAGMA application_id').get().application_id;
+  return stored !== 0 && stored === schemaStamp(db, digest, guards, prior);
 }

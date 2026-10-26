@@ -2,6 +2,7 @@
 import { atomic } from './board-event-log.js';
 import { logEvent } from './board-event-log.js';
 import { boardStanding } from './board-migrate.js';
+import { legacySigningMatchesStamp } from './board-signing-recovery.js';
 import { guardsMatchStoredStamp } from './board-migrate.js';
 import { Refused } from './refused.js';
 import { recordSchemaStamp } from './board-migrate.js';
@@ -52,13 +53,16 @@ export function guardStore(board) {
  */
 export function refreshStoreDeclarations(board) {
   const wanted = storeTriggers();
-  if (isWhole(differences(board.db, wanted))) return false;
+  const whole = isWhole(differences(board.db, wanted));
+  if (whole && boardStanding(board.db, SCHEMA_DIGEST, SCHEMA_VERSION) === 'current') return false;
   return atomic(board, () => {
     const standing = boardStanding(board.db, SCHEMA_DIGEST, SCHEMA_VERSION);
     const recovery = standing === 'drifted' && guardsMatchStoredStamp(board.db, SCHEMA_DIGEST, wanted);
-    if (standing !== 'current' && !recovery) return false;
+    const legacy = standing === 'drifted' && legacySigningMatchesStamp(board.db, SCHEMA_DIGEST, wanted);
+    if (standing !== 'current' && !recovery && !legacy) return false;
     guardStore(board);
-    if (!recovery) recordSchemaStamp(board.db, SCHEMA_DIGEST);
+    if (!recovery || legacy) recordSchemaStamp(board.db, SCHEMA_DIGEST);
+    if (legacy) logEvent(board, 'board', 'schema-signing-recovery', null, { prior: 'legacy-pin-or-signing', guards: 'exact', stamp: 'matched' });
     if (boardStanding(board.db, SCHEMA_DIGEST, SCHEMA_VERSION) !== 'current') {
       throw new Refused('SCHEMA_DRIFT', 'the restored guards do not match the stored board stamp; keep the board and ask the coordinator to inspect its schema');
     }
