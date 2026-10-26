@@ -404,6 +404,7 @@ export async function privateBoardMoves(box, privateFile) {
   const authoritative = await box.cli('show', String(provisionalId));
   assert.equal(authoritative.code, 0, JSON.stringify(authoritative.document?.error));
   assert.equal(authoritative.document.item_id, provisionalId, 'the current relay-authoritative ID is looked up explicitly');
+  assert.equal(authoritative.document.item_title, 'provisional item cannot be re-homed', 'the relay lookup returns the original item identity');
   const movedProvisional = await box.cli('move', `fixture/repository#${authoritative.document.item_id}`, '--to', '~fixture/repository');
   assert.equal(movedProvisional.code, 0, JSON.stringify(movedProvisional.document?.error));
   assert.equal(movedProvisional.document.item.sourceItemId, provisionalId);
@@ -426,15 +427,19 @@ export async function privateBoardMoves(box, privateFile) {
   const unavailableSourceMove = await box.cli('move', `fixture/repository#${authoritativeTeamSource.document.item_id}`, '--to', '~fixture/repository');
   assert.notEqual(unavailableSourceMove.code, 0);
   assert.equal(unavailableSourceMove.document.error.code, 'RELAY_UNAVAILABLE');
-  assert.match(unavailableSourceMove.document.error.message, /retry the move when the relay accepts/u);
+  assert.match(unavailableSourceMove.document.error.message, /retry this move when the relay is reachable/u);
   assert.deepEqual(outboxOperations(box), [], 'a rehome source move is refused instead of being queued');
   withMoveBoard(linkedTeamFile, board => assert.equal(store.itemRedirect(board, authoritativeTeamSource.document.item_id), null,
     'no source tombstone is written without an acknowledged source move'));
   withMoveBoard(linkedTeamFile, board => assert.equal(store.getItem(board, authoritativeTeamSource.document.item_id).item_title,
     'acknowledged source remains put while relay is offline'));
   const afterOfflineDestinationReservation = moveState(privateFile);
+  assert.deepEqual(afterOfflineDestinationReservation.items, beforeOfflineDestinationReservation.items,
+    'the private reservation leaves every existing item unchanged');
+  assert.deepEqual(afterOfflineDestinationReservation.verdicts, beforeOfflineDestinationReservation.verdicts,
+    'the private reservation leaves every existing verdict unchanged');
   assert.ok((afterOfflineDestinationReservation.sequence?.seq ?? 0) > (beforeOfflineDestinationReservation.sequence?.seq ?? 0),
-    'the private destination reservation may consume an ID, but does not rewrite or replace an item');
+    'the private destination reservation may consume an ID without replacing an item');
   await box.restartRelay();
   await box.cli('relay', 'status');
   const movedAfterReconnect = await box.cli('move', `fixture/repository#${authoritativeTeamSource.document.item_id}`, '--to', '~fixture/repository');
