@@ -48,14 +48,20 @@ export function bridgeProject(t, mode = 'release') {
   return { ...box, ...helpers, remote, published, gateCalls, mode };
 }
 
-/** Opt in through a real committed coordinator configuration, optionally tied to its native item. */
-function enableBridgeMode(box, companion) {
+/** Opt in through a real coordinator commit, or the new item merge before its landing receipt. */
+function enableBridgeMode(box, item) {
   const configPath = join(box.repo, 'pullboard.json');
   const config = JSON.parse(readFileSync(configPath, 'utf8'));
   writeFileSync(configPath, JSON.stringify({ ...config, publish: { pullRequest: box.mode }, approvers: ['fixture-person'] }, null, 2));
   box.git(box.repo, 'add', 'pullboard.json');
-  box.git(box.repo, 'commit', '-q', '-m', 'chore: opt in to private pull request bridge [G1]',
-    ...(companion ? ['-m', `Pullboard-Companion: #${companion}`] : []));
+  if (item) {
+    assert.equal(box.git(box.repo, 'show', '-s', '--format=%P', 'HEAD').split(' ').length, 2,
+      'the coordinator adds configuration to the new merge before recording it, not a recorded item');
+    assert.match(box.git(box.repo, 'show', '-s', '--format=%B', 'HEAD'),
+      new RegExp(`^Pullboard-Item: #${item}$`, 'mu'));
+  }
+  box.git(box.repo, 'commit', '-q', ...(item ? ['--amend', '--no-edit']
+    : ['-m', 'chore: opt in to private pull request bridge [G1]']));
 }
 
 /** Build, verify and locally land two real items before enabling the opt-in publisher. */
@@ -90,10 +96,10 @@ export function landBridgeItems(box, { independent = false } = {}) {
       assert.equal(reviewed.code, 0, reviewed.err);
     } finally { box.git(box.repo, 'switch', '-q', 'main'); }
     box.git(box.repo, 'merge', '-q', '--no-ff', '-m', `chore(merge): private bridge ${name} [G1]`, ...(independent ? ['-m', `Pullboard-Item: #${id}`] : []), commit);
+    if (independent && index === 0) enableBridgeMode(box, id);
     const merged = box.run(box.repo, 'merged', String(id), box.git(box.repo, 'rev-parse', 'HEAD'));
     assert.equal(merged.code, 0, merged.err);
     entries.push({ id, commit, file });
-    if (independent && index === 0) enableBridgeMode(box, id);
   }
   if (!independent) enableBridgeMode(box);
   return entries;
