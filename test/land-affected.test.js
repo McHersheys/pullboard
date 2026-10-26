@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { after, test } from 'node:test';
 import { selectAffectedTests } from '../src/affected-tests.js';
 import { createE2eHelpers } from './e2e-helpers.js';
+import { runFixtureChild } from './fixture-child.js';
 import { json } from './land-board-fixture.js';
 
 const e2e = createE2eHelpers();
@@ -16,14 +17,15 @@ function valueTest(expected) {
 }
 
 /** Reject the actual merged importer, exercising either full fallback or the finite import subset. */
-function affectedBatch(t, { stableBadges = false } = {}) {
+function affectedBatch(t, { stableBadges = false, inline = false } = {}) {
   const box = e2e.project('node --test web/*.test.js');
   // A fixture CLI is a fresh process, not the outer Node test worker. Admission markers stay intact.
   delete box.env.NODE_TEST_CONTEXT;
   const configFile = join(box.repo, 'pullboard.json');
   const config = JSON.parse(readFileSync(configFile, 'utf8'));
-  writeFileSync(configFile, JSON.stringify({ ...config, affectedTests: 'node --test', submitGate: 'landing',
-    submitInvariants: ['web/floor.test.js'], submitDeferAbove: 20, landing: { publish: 'separate' },
+  writeFileSync(configFile, JSON.stringify({ ...config, gate: inline ? 'node --test web/floor.test.js' : config.gate,
+    affectedTests: 'node --test', submitGate: 'landing',
+    submitInvariants: ['web/floor.test.js'], submitDeferAbove: 20, landing: inline ? {} : { publish: 'separate' },
     verify: { policy: 'any', unrelatedTrunkMoves: true } }, null, 2) + '\n');
   writeFileSync(join(box.repo, 'package.json'), '{"type":"module"}\n');
   mkdirSync(join(box.repo, 'web'), { recursive: true });
@@ -32,6 +34,12 @@ function affectedBatch(t, { stableBadges = false } = {}) {
   writeFileSync(join(box.repo, 'web/floor.test.js'), "import { test } from 'node:test';\ntest('the fixed quick guard remains green', () => {});\n");
   box.git(box.repo, 'add', '-A');
   box.git(box.repo, 'commit', '-q', '-m', 'chore: prepare affected landing fixture');
+  if (inline) {
+    const remote = join(box.dir, 'private-origin.git');
+    box.git(box.dir, 'init', '-q', '--bare', remote);
+    box.git(box.repo, 'remote', 'add', 'origin', remote);
+    box.git(box.repo, 'push', '-q', '-u', 'origin', 'main');
+  }
   box.git(box.web, 'merge', '-q', '--ff-only', 'main');
   const item = json(box, box.repo, 'add', 'web', 'Change the value and its test', '--specs', 'G1',
     '--criterion', 'the changed value passes its test', '--check', 'node --test web/value.test.js').item.item_id;
@@ -57,7 +65,13 @@ function affectedBatch(t, { stableBadges = false } = {}) {
   const main = box.git(box.repo, 'rev-parse', 'main');
   const mainGate = box.run(box.repo, 'gate');
   assert.equal(mainGate.code, 0, mainGate.out + mainGate.err);
-  assert.match(readFileSync(join(box.repo, '.git/pullboard-gate.log'), 'utf8'), /# tests 3\b/u, 'main really executes all three tests');
+  assert.match(readFileSync(join(box.repo, '.git/pullboard-gate.log'), 'utf8'), inline ? /# tests 1\b/u : /# tests 3\b/u,
+    'main really executes its configured gate');
+  if (inline) {
+    const importer = runFixtureChild(process.execPath, ['--test', 'web/new-importer.test.js'], { cwd: box.repo, env: box.env, encoding: 'utf8' });
+    assert.equal(importer.status, 0, importer.context);
+    assert.match(importer.stdout, /# tests 1\b/u, 'the omitted importer really passes on main');
+  }
   const outcome = box.run(box.repo, 'land', '--json');
   assert.equal(outcome.code, 0, outcome.out + outcome.err);
   const landing = JSON.parse(outcome.out);
@@ -77,4 +91,8 @@ test('a batch that breaks an affected test is caught at landing [C7,V4]', t => {
 
 test('a finite affected import subset is checked with the fixed guard floor [C7,V4]', t => {
   affectedBatch(t, { stableBadges: true });
+});
+
+test('a custom inline gate cannot omit a batch affected importer [C7,V4]', t => {
+  affectedBatch(t, { stableBadges: true, inline: true });
 });
