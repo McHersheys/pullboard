@@ -22,6 +22,11 @@ test('agent approvals show full rows and styled actions at narrow width and reso
     chrome = await openSnapshotChrome(executable, view.link.href, join(box.dir, 'approval-review-chrome'));
     await chrome.send('Emulation.setDeviceMetricsOverride', { width: 375, height: 900, deviceScaleFactor: 1, mobile: false });
     await chrome.waitFor('innerWidth === 375 && document.querySelectorAll("#needs [data-agent-approved]").length === 2');
+    await chrome.click("document.querySelector('[data-tab=items]')");
+    await chrome.waitFor(`view.tab === 'items' && [...document.querySelectorAll('#needs [data-agent-approved], #needs [data-row-decision]')].every(element => {
+      const box = element.getBoundingClientRect();
+      return !element.closest('[hidden]') && getComputedStyle(element).visibility === 'visible' && box.width > 0 && box.height > 0;
+    })`);
     for (const row of before.spec) {
       const commitDate = new Date(box.git(alpha.repo, 'show', '-s', '--format=%cI', row.agentApproval.commit)).toISOString();
       assert.equal(row.agentApproval.approvedAt, commitDate, 'core approval time matches the actual commit committer date');
@@ -32,6 +37,7 @@ test('agent approvals show full rows and styled actions at narrow width and reso
         const commit = row.querySelector('code');
         const title = row.querySelector('.t');
         return { text: row.textContent, commit: commit.textContent, full: commit.title, at: row.querySelector('time')?.dateTime,
+          tab: view.tab, boxes: boxes.map(box => ({ x: box.x, y: box.y, width: box.width, height: box.height })),
           unclipped: getComputedStyle(title).whiteSpace !== 'nowrap' && title.scrollHeight <= title.clientHeight,
           labels: buttons.map(button => button.textContent),
           styled: buttons.every(button => button.classList.contains(button.dataset.rowDecision === 'approve' ? 'approve-row' : 'decline-row'))
@@ -50,7 +56,7 @@ test('agent approvals show full rows and styled actions at narrow width and reso
       assert.equal(shown.full, row.agentApproval.commit, 'the full commit remains available on hover');
       assert.deepEqual(shown.labels, ['Confirm', 'Decline']);
       assert.equal(shown.styled, true);
-      assert.equal(shown.targets, true);
+      assert.equal(shown.targets, true, 'visible action geometry: ' + JSON.stringify({ tab: shown.tab, boxes: shown.boxes }));
       assert.equal(shown.beside, true, 'both styled buttons remain side by side on a phone');
       assert.equal(shown.overflow, false);
     }
