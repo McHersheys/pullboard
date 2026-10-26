@@ -28,7 +28,10 @@ import { verdictProjector } from './verdict-freshness.js';
 import { trunkRevisionReader } from './trunk-revision.js';
 import { projectState } from './serve.js';
 import { personRequestStatuses } from './relay-requests.js';
-import { dependencyValues, hasForeignDependencies } from './item-dependencies.js';
+import {
+  dependencyValues,
+  hasForeignDependencies,
+} from './item-dependencies.js';
 
 /** Build the complete local API state, including fields that the shared project snapshot omits. */
 export function buildLocalBoardState(root, boardId, board, codeIsMain, { previous = null, fullItemRebuild = true, afterSequence = 0, changedLeases = new Set(), onItemBuild, projects = listApiProjects, scopeCommonDir = null, observedAt = Date.now(), freshnessReader = null, localRelayHealth = null } = {}) {
