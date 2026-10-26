@@ -548,9 +548,8 @@ export function pendingCheckpointProblem(root) {
 
 /** Share one notice across a native command and its bookkeeping, or one direct ordered move. */
 function reportCheckpointRefusal(state, io) {
-  const scope = io.relayCommand ?? io;
-  let boards = CHECKPOINT_NOTICES.get(scope);
-  if (!boards) { boards = new Set(); CHECKPOINT_NOTICES.set(scope, boards); }
+  let boards = CHECKPOINT_NOTICES.get(io.relayCommand ?? io);
+  if (!boards) { boards = new Set(); CHECKPOINT_NOTICES.set(io.relayCommand ?? io, boards); }
   if (boards.has(state.board)) return;
   boards.add(state.board);
   if (uploadPauseType(state.checkpointRefusal) && !firstUploadPauseNotice(state)) return;
