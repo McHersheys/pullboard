@@ -122,7 +122,7 @@ test('a landing names the refrozen rows in spec order, and a batch checks every 
   });
 });
 
-test('one header per item type: the type comes from the item\'s own commits, feat over fix over the rest [C7,B3,R3]', () => {
+test('one header per item type: the type is the item\'s commits\' first of feat, fix, perf, refactor, revert, docs, test, build, ci, style, chore, else the lane rule [C7,B3,R3]', () => {
   const box = e2e.sandbox();
   const repo = join(box.dir, 'types');
   box.git(box.dir, 'init', '-q', '-b', 'main', repo);
