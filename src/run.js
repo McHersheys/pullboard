@@ -1,3 +1,4 @@
+import { localDependencyIds } from './item-dependencies.js';
 import { itemNotesText } from './item-notes.js';
 /**
  * `pullboard run` (N14, B15): builds routed items with no one at the keyboard. For each item it may
@@ -300,7 +301,7 @@ function pinAttempt(root, id) {
  */
 async function mergeDependencies(ctx, item, deps) {
   const { root } = ctx.info;
-  const after = item.item_after ? item.item_after.split(',').map(Number) : [];
+  const after = localDependencyIds(item);
   const needed = deps.withBoard(ctx, (board) => after.map((id) => store.getItem(board, id)))
     .filter((before) => before.item_commit && !contains(root, before.item_commit, 'HEAD'));
   for (const before of needed) {

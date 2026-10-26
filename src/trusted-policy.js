@@ -1,3 +1,4 @@
+import { localDependencyIds } from './item-dependencies.js';
 import { trunkMerge } from './trunk-merge.js';
 export { trunkMerge } from './trunk-merge.js';
 import { privateGuard } from './runner-private-mode.js';
@@ -113,7 +114,7 @@ export function submissionPaths(root, item, commit, { config, mainCommit, depend
 
 /** Verified dependencies may contribute their own unchanged lane files, including through a verified chain [N16]. */
 export function dependencySnapshots(db, item) {
-  const pending = String(item.item_after ?? '').split(',').map(Number).filter(id => Number.isSafeInteger(id) && id > 0);
+  const pending = localDependencyIds(item);
   const visited = new Set();
   const snapshots = [];
   while (pending.length) {
@@ -123,7 +124,7 @@ export function dependencySnapshots(db, item) {
     const row = db.prepare("SELECT item_lane, item_claim_head, item_commit, item_after FROM item WHERE item_id=? AND item_status='verified' AND EXISTS (SELECT 1 FROM verdict WHERE item_id=? AND verdict_decision='ACCEPT' AND verdict_commit=item.item_commit)").get(id, id);
     if (!row?.item_claim_head || !/^[0-9a-f]{40,64}$/.test(row.item_commit ?? '')) continue;
     snapshots.push({ lane: row.item_lane, base: row.item_claim_head, commit: row.item_commit });
-    pending.push(...String(row.item_after ?? '').split(',').map(Number).filter(dependency => Number.isSafeInteger(dependency) && dependency > 0));
+    pending.push(...localDependencyIds(row));
   }
   return snapshots;
 }

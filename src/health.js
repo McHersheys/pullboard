@@ -1,3 +1,4 @@
+import { localDependencyIds } from './item-dependencies.js';
 /**
  * `pullboard health`: every stuck item on the board, why it is stuck, since when, the one next step
  * and who takes it [A6]. Doctor checks a board's integrity; health checks its flow, so nobody has
@@ -180,7 +181,7 @@ export function healthReport({ db, root, config, now }) {
     }
 
     if (['open', 'claimed', 'submitted'].includes(status)) {
-      const after = String(item.item_after ?? '').split(',').filter(Boolean).map(Number);
+      const after = localDependencyIds(item);
       const gone = after.filter((other) => byId.get(other)?.item_status === 'withdrawn');
       if (gone.length) {
         const rest = after.filter((other) => !gone.includes(other));
@@ -445,7 +446,7 @@ function unlanded(item, { since, now, trunk, root, byId, stacked }) {
       detail: { parent: parent.item_id, commit: parent.item_commit },
     });
   }
-  const waits = String(item.item_after ?? '').split(',').filter(Boolean).map(Number)
+  const waits = localDependencyIds(item)
     .filter((other) => byId.get(other) && !byId.get(other).item_merged_commit && byId.get(other).item_status !== 'withdrawn');
   if (waits.length) {
     return finding('UNLANDED_WAITING', item, {
