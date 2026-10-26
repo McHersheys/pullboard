@@ -1114,7 +1114,7 @@ function holdsNoPersonCredential(directory) {
 }
 
 test('person-only moves are signed [E22,B26,H16]', { timeout: relayWorkBudgetMs(60) }, async (t) => { // budget: hang ceiling for real CLI runs and relay calls; not a speed target.
-  await personSigningCase(t, { CLI, TRUSTED_CLI, helpers, passkeyRequest, holdsNoPersonCredential, relayCall });
+  await personSigningCase(t, { CLI, TRUSTED_CLI, helpers, passkeyRequest, holdsNoPersonCredential, relayCall, receivedRequests });
 });
 
 /** Keep the initial-unpaired local-edit clause distinct from the post-pin trigger controls. */

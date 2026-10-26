@@ -13,7 +13,7 @@ import { executeMove } from '../src/api.js';
 import { main } from '../src/cli.js';
 
 /** Reuse the original test's paths, process helpers and request/credential assertions. */
-export async function personSigningCase(t, { CLI, TRUSTED_CLI, helpers, passkeyRequest, holdsNoPersonCredential, relayCall }) {
+export async function personSigningCase(t, { CLI, TRUSTED_CLI, helpers, passkeyRequest, holdsNoPersonCredential, relayCall, receivedRequests }) {
   const box = await relayClientFixture(t);
   // The shipped command, handed the loopback fixture relay as an explicit trusted parameter in this test's own call path:
   // no environment variable or global can make the real CLI trust it (#408 rulings 38756cb3 and 28611).
