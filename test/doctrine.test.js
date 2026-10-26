@@ -10,10 +10,8 @@ import { doctrineText, loadDoctrine, standardDoctrine, STANDARD_VERSION } from '
 import { lintSpec, parseSpec } from '../src/spec.js';
 import { renderSpecView } from '../src/view.js';
 
-const PB9_TRAILER_SENTENCE = ' Pullboard trailers are generated, and no text follows the final trailer paragraph.';
-// RFC 0005 deliberately extends PB9; retain the linter's exact warning, not a blanket exemption.
-const PB9_LENGTH_WARNING = { level: 'warning', line: 14, id: 'PB9',
-  message: '31 words; rows stay under 20, the why goes elsewhere' };
+// RFC 0005 extends PB9; its 26 Oct amendment is the approved 20-word text, so the row lints clean.
+const PB9_TEXT = 'Headers: type(scope): subject [ids], ≤72 characters. Body only for a non-obvious why, three sentences at most. Generated trailers come last.';
 
 /** A private repo's configured practice file, automatically removed after its test. */
 function practiceBox(t, text, name = 'PRACTICE.md') {
@@ -29,7 +27,7 @@ test('standard version1 retains twelve rules with the approved PB9 trailer amend
   /** Comparable rule fields; the packaged file legitimately has different source lines. */
   const fields = ({ id, status, tier, text, gate, serves }) => ({ id, status, tier, text, gate, serves });
   const expected = rfc.rows.filter((row) => /^PB\d/.test(row.id))
-    .map(row => row.id === 'PB9' ? { ...row, text: row.text + PB9_TRAILER_SENTENCE } : row);
+    .map(row => row.id === 'PB9' ? { ...row, text: PB9_TEXT } : row);
   assert.deepEqual(standard.rows.map(fields), expected.map(fields));
   assert.equal(standard.rows.length, 12);
   assert.equal(STANDARD_VERSION, 1);
@@ -38,7 +36,7 @@ test('standard version1 retains twelve rules with the approved PB9 trailer amend
   const merged = loadDoctrine(box.root, box.config);
   assert.equal(merged.repoExists, false);
   assert.deepEqual(merged.rows, standard.rows);
-  assert.deepEqual(lintSpec(merged), [PB9_LENGTH_WARNING]);
+  assert.deepEqual(lintSpec(merged), []);
   assert.ok(merged.rows.every((row) => row.origin === 'standard' && row.version === 1));
 });
 
@@ -46,7 +44,7 @@ test('repo rules override and decline inherited rows with a reason, keeping sour
   const text = '# Local rules\n\n## Team\n- PB2 [approved, must] Deletion needs two approvals. | gate: review\n- PB8 [wont] No persistent data is stored.\n- R1 [fact] An existing local rule.\n';
   const box = practiceBox(t, text, 'ways.md');
   const merged = loadDoctrine(box.root, box.config);
-  assert.deepEqual(lintSpec(merged), [PB9_LENGTH_WARNING]);
+  assert.deepEqual(lintSpec(merged), []);
   assert.equal(merged.rows.length, 13);
   const own = merged.rows.filter((row) => row.origin === 'repo');
   assert.deepEqual(own.map((row) => row.id), ['PB2', 'PB8', 'R1']);

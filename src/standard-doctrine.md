@@ -11,7 +11,7 @@ Version: 1
 - PB6 [approved, must] Tests pass before a change merges. | gate: the project's gate
 - PB7 [pending, aim] Tests touch nothing outside a temporary sandbox. | gate: review
 - PB8 [approved, must] No secrets or sensitive info in the repo; test data is synthetic. | gate: review
-- PB9 [approved, must] Headers: type(scope): subject [ids], 72 characters at most. A body only for a non-obvious why, three sentences at most. Pullboard trailers are generated, and no text follows the final trailer paragraph. | gate: commit-msg hook, review
+- PB9 [approved, must] Headers: type(scope): subject [ids], ≤72 characters. Body only for a non-obvious why, three sentences at most. Generated trailers come last. | gate: commit-msg hook, review
 - PB10 [approved, must] Comments explain why, not what; no commented-out code. | gate: review
 - PB11 [approved, must] A new dependency states why it is needed and what it pulls in. | gate: review
 - PB12 [approved, must] Questions go on the board, one step up the chain, and the asker keeps working on what it can meanwhile. | gate: review

@@ -81,6 +81,7 @@ A commit not tied to an item (configuration, chores) carries no Pullboard traile
 
 - A short `docs/commits.md` documents the format above, versioned (not the long `docs/formats.md`).
 - The standard doctrine's PB9 gains one sentence: the trailers are generated, and text never follows them.
+  Amended 26 Oct 2026, approved by the person: the extended row broke the 20-word row limit, so PB9 now reads "Headers: type(scope): subject [ids], ≤72 characters. Body only for a non-obvious why, three sentences at most. Generated trailers come last."
 - `Pullboard-Companion` is retired: a change another lane needs is a child item (#1221) with its own `Pullboard-Item`. Existing commits keep it; readers treat it as `Pullboard-Item`.
 - Applies from the release that ships it. History is not rewritten.
 
