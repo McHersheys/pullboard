@@ -1,7 +1,7 @@
 /** Local first: a linked board reads and moves locally whether or not the relay answers [H21,H5,H16]. */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import { dirname, join } from 'node:path';
@@ -45,22 +45,48 @@ function senderPid(env) {
   return join(env.PULLBOARD_HOME, 'relay-sender', 'sender.pid');
 }
 
-/** Stop this machine's sender, if one runs, so no background process outlives its test. */
-async function stopSender(env) {
-  let pid = 0;
-  try { pid = Number(readFileSync(senderPid(env), 'utf8')); } catch { return; }
-  try { process.kill(pid, 'SIGKILL'); } catch { return; }
-  const deadline = Date.now() + 5000; // budget: a killed process is gone within moments.
-  while (Date.now() < deadline) {
-    try { process.kill(pid, 0); } catch { return; }
-    await new Promise(next => setTimeout(next, 20));
-  }
+/** Read exact worker identities and scope this simulated machine to its private fixture checkout. */
+function senderProcesses(root) {
+  const expected = realpathSync(root);
+  const rows = execFileSync('ps', ['-Ao', 'pid=,lstart=,command='], { encoding: 'utf8' }).split('\n')
+    .map(line => /^\s*(\d+)\s+(.+)$/u.exec(line))
+    .filter(match => match && match[2].endsWith(SENDER_WORKER))
+    .map(match => ({ pid: Number(match[1]), identity: match[2] }));
+  const owned = rows.filter(record => {
+    try {
+      const cwd = process.platform === 'linux' ? readlinkSync(`/proc/${record.pid}/cwd`)
+        : execFileSync('lsof', ['-a', '-p', String(record.pid), '-d', 'cwd', '-Fn'],
+          { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).split('\n').find(line => line.startsWith('n'))?.slice(1);
+      return cwd === expected;
+    } catch (error) {
+      if ((error.code === 'ENOENT' && process.platform === 'linux') || error.status === 1) return false;
+      throw error;
+    }
+  });
+  return { owned, others: rows.length - owned.length };
 }
 
-/** Every running sender process from this checkout's worker file. */
-function runningSenders() {
-  return execFileSync('ps', ['-Ao', 'pid=,command='], { encoding: 'utf8' }).split('\n')
-    .filter(line => line.includes(SENDER_WORKER)).length;
+/** Stop only verified PID/start/command/cwd identities from this fixture; other test homes stay untouched. */
+async function stopSender(root) {
+  for (const record of senderProcesses(root).owned) {
+    const current = senderProcesses(root).owned.find(candidate => candidate.pid === record.pid);
+    if (!current || current.identity !== record.identity) continue;
+    try { process.kill(record.pid, 'SIGTERM'); } catch (error) { if (error.code === 'ESRCH') continue; throw error; }
+    const started = record.identity.match(/^([A-Z][a-z]{2}\s+[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})/u)?.[1].replace(/\s+/gu, ' ');
+    assert.ok(started, 'the verified sender has a stable start identity');
+    const deadline = Date.now() + 5000; // budget: the verified fixture worker normally exits immediately.
+    let stopped = false;
+    while (Date.now() < deadline) {
+      let row;
+      try { row = execFileSync('ps', ['-p', String(record.pid), '-o', 'lstart=,stat='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); }
+      catch { stopped = true; break; }
+      const state = /^([A-Z][a-z]{2}\s+[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(\S+)$/u.exec(row);
+      assert.ok(state, 'post-signal sender start/state is readable');
+      if (state[1].replace(/\s+/gu, ' ') !== started || state[2].startsWith('Z')) { stopped = true; break; }
+      await new Promise(next => setTimeout(next, 20));
+    }
+    assert.ok(stopped, `fixture sender ${record.pid} exited after its verified signal`);
+  }
 }
 
 /** Wait until `ready()` holds, or fail naming what never happened and what `detail()` says. */
@@ -111,11 +137,12 @@ function shoutTexts(exported) {
 async function linkedBoard(t) {
   // Registered before the fixture's own cleanup, so the sender stops before the board's folder is removed.
   const sender = {};
-  t.after(() => sender.env && stopSender(sender.env));
+  t.after(() => sender.root && stopSender(sender.root));
   const box = await relayClientFixture(t);
   enableOutbox(box);
   assert.equal((await box.link()).code, 0, 'the real relay accepts the board first');
   assert.equal(JSON.parse(readFileSync(box.linkFile, 'utf8')).baselineAccepted, true);
+  sender.root = box.root;
   sender.env = senderEnv(box.env);
   return { box, env: sender.env };
 }
@@ -239,13 +266,18 @@ test('one background sender per machine sends each new move once, asks GitHub on
   const acks = box.moveAcks.length;
 
   const texts = ['first burst move', 'second burst move', 'third burst move'];
-  let senders = 0;
-  const sampling = setInterval(() => { senders = Math.max(senders, runningSenders()); }, 20);
+  let senders = 0, otherFixtures = 0;
+  const sampling = setInterval(() => {
+    const observed = senderProcesses(box.root);
+    senders = Math.max(senders, observed.owned.length);
+    otherFixtures = Math.max(otherFixtures, observed.others);
+  }, 20);
   try {
     await Promise.all(texts.map((text, index) => local(box, t, box.root, env, `burst-${index}`, ['shout', 'all', text])));
     await eventually('the sender sends the burst', () => outboxEmpty(box), () => senderLog(env));
   } finally { clearInterval(sampling); }
-  assert.equal(senders, 1, 'one sender ran for the machine, however many commands nudged it');
+  t.diagnostic(JSON.stringify({ privateFixtureSenderPeak: senders, otherFixtureWorkersObserved: otherFixtures }));
+  assert.equal(senders, 1, 'one sender ran for this private fixture machine, however many commands nudged it');
   const sent = box.moveAcks.slice(acks);
   assert.equal(new Set(sent.map(ack => ack.event_id)).size, sent.length, 'no sequence was sent twice');
   assert.ok(permission() - asked <= 1, `the relay asked GitHub at most once for the burst (${permission() - asked})`);
