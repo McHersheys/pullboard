@@ -73,7 +73,7 @@ function fixture(t) {
   };
   /** Change exactly one version constant in linked source, leaving the primary source untouched. */
   const bump = (name, from, to) => {
-    const path = join(lane, 'src/board.js');
+    const path = join(lane, 'src/board-schema-source.js');
     const before = readFileSync(path, 'utf8');
     const after = before.replace(`export const ${name} = ${from};`, `export const ${name} = ${to};`);
     assert.notEqual(after, before, `the linked checkout contains ${name} ${from}`);

@@ -1,6 +1,7 @@
 /** Derive authority from existing seats and claims; no mutable saved grant supplies permission [E21]. */
 import { AGENT_GRANT_ENGINE } from './agent-grant-engine.js';
 import { REVIEW_GRANT_ENGINE } from './review-grant-engine.js';
+import { BAR_SIGN_GRANT_ENGINE } from './bar-sign-grant-engine.js';
 import { MOVE_REGISTRY } from './move-registry.js';
 import { Refused } from './refused.js';
 import { recordedGrantActivation } from './relay-activation.js';
@@ -30,6 +31,8 @@ export function agentGrantMinimum(board, move) {
   const actor = MOVE_REGISTRY[move.operation]?.actor(move);
   // Person, coordinator and machine moves are never grant-checked, so activation cannot wedge an in-flight one.
   if (typeof actor !== 'string' || ['person', 'coordinator', 'machine'].includes(actor)) return 1;
+  // The newest engine never grant-checks a verdict, so an older verdict bypasses nothing and replays under its own rules.
+  if (move.operation === 'verify') return 1;
   if (recordedGrantActivation(board)) return AGENT_GRANT_ENGINE;
   const event = board.db.prepare("SELECT event_detail FROM event WHERE event_by=? AND event_kind IN ('join','claim','renew') ORDER BY event_id DESC LIMIT 1").get(actor);
   const item = existingItem(board, target(move)?.item ?? (move.operation === 'claim' ? move.args?.[0] : null));
@@ -58,6 +61,8 @@ export function requireAgentGrant(board, move, at = board.clock.now()) {
   // independence) govern reviewers, who check other lanes' work by design. Older verdicts keep the
   // reservation-only rule they were recorded under, so every replica replays them identically.
   if (move.operation === 'verify' && move.engine >= REVIEW_GRANT_ENGINE) return;
+  // A bar signature is the outside review a bar needs before anyone claims it, so it crosses lanes by design.
+  if (move.operation === 'signBar' && move.engine >= BAR_SIGN_GRANT_ENGINE) return;
   if (item?.item_review_by === actor && item.item_status === 'submitted' && item.item_review_until > now
     && move.operation === 'verify') return;
   const claims = board.db.prepare("SELECT item_id,item_lease_until FROM item WHERE item_owner=? AND item_status='claimed'").all(actor);

@@ -1,5 +1,6 @@
 /** Deterministically seed a disposable Pullboard board through its public board operations. */
 import { createHash } from 'node:crypto';
+import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -7,11 +8,13 @@ import { spawnSync } from 'node:child_process';
 import { loadDoctrine } from '../../../src/doctrine.js';
 import { STATUSES, frozenCriterion, loadSpec } from '../../../src/spec.js';
 import {
-  ACCEPT_REASON, addItem, addMilestone, allShouts, appendFact, claim, closeBoard,
+  ACCEPT_REASON, addItem, addMilestone, allShouts, appendFact, atomic, claim, closeBoard,
   ensureCoordinator, events, listAgents, listItems, milestones, openBoard, recordAttempt,
   register, reopen, shout, verify, withdraw,
 } from '../../../src/board.js';
 import { submitFixture } from '../../board-submit-fixture.js';
+import { appliedSequence, applyEngineMove } from '../../../src/engine.js';
+import { PROOF_RUN_ENGINE } from '../../../src/proof-run-engine.js';
 
 const ROOT = resolve(import.meta.dirname, '../../..');
 const BIN = join(ROOT, 'bin', 'pullboard.js');
@@ -25,6 +28,14 @@ const LANE_WEIGHTS = [317, 199, 46, 43];
 /** Hash one stable tuple for generated commits, trees, criterion digests and fact ids. */
 function digest(seed, ...parts) {
   return createHash('sha256').update(JSON.stringify([seed, ...parts])).digest('hex');
+}
+
+/** Retain the long historical stress corpus through real pre-limit replay, without relaxing current writes. */
+function historicalShout(board, { seed, index, from, text }) {
+  const move = { version: 1, engine: PROOF_RUN_ENGINE - 1, id: digest(seed, 'pre-limit-shout', index),
+    operation: 'shout', args: [{ from, to: 'all', text, lanes: LANES }] };
+  const result = applyEngineMove(board, move, { sequence: appliedSequence(board) + 1, at: FIXED_NOW.toISOString() });
+  assert.equal(result.error, undefined, 'the synthetic pre-limit record replays through the public engine');
 }
 
 /** Build a deterministic text body near the requested size without storing fixture randomness. */
@@ -236,75 +247,82 @@ export function generateStressBoard({ seed = 'pullboard-perf-606', size = 150, p
     board = openBoard(boardFile, { now: () => new Date(FIXED_NOW) });
     ensureCoordinator(board, canonicalRoot);
     const initialEvent = events(board).at(-1)?.event_id ?? 0;
-    const agents = registerAgents(board, root, size);
-    const statuses = lifecyclePlan(size);
-    const firstOpenIndex = statuses.indexOf('open');
-    const longestHistoryIndex = statuses.indexOf('claimed');
-    const { sequence: itemLanes, counts: laneTotals } = lanePlan(size);
-    // Keep claims within ONE_CLAIM while preserving the generated lane proportions. The synthetic
-    // coordinator owns its lane; move any later coordinator-lane claims onto an unused docs item.
-    for (let index = 0; index < statuses.length; index += 1) {
-      if (statuses[index] !== 'claimed' || itemLanes[index] !== 'coordinator') continue;
-      const replacement = statuses.findIndex((status, candidate) => status !== 'claimed' && itemLanes[candidate] === 'docs');
-      if (replacement < 0) throw new Error('the generated lane mix has no docs item to keep coordinator claims unique');
-      [itemLanes[index], itemLanes[replacement]] = [itemLanes[replacement], itemLanes[index]];
-    }
-    const ids = [];
-    let smallItemId = null;
-    let smallItemTitle = null;
-    let longestHistoryItemId = null;
-    let longestHistoryTitle = null;
-    const claimOrdinalByLane = Object.fromEntries(LANES.map((lane) => [lane, 0]));
-    for (let index = 0; index < statuses.length; index += 1) {
-      const status = statuses[index];
-      const lane = itemLanes[index];
-      const title = index === firstOpenIndex ? `Small item ${seed}` : `Board item ${index + 1} in ${lane}`;
-      const briefLength = index === firstOpenIndex ? 500 : index === Math.floor(size / 3) ? 3_300 : 1_350;
-      const id = addItem(board, { by: 'coordinator', lane, title, specIds: [`P${(index % Math.max(5, Math.round(size * 250 / 605))) + 1}`],
-        criterion: `The generated board retains item ${index + 1} in ${status}.`,
-        brief: textOf(seed, `Item ${index + 1} brief`, briefLength), route: 'strong' });
-      ids.push(id);
-      if (status === 'open' && smallItemId === null) { smallItemId = id; smallItemTitle = title; }
-      if (index === longestHistoryIndex) {
-        longestHistoryItemId = id;
-        longestHistoryTitle = title;
+    // This isolated fixture has no readers until return; retain every native move and commit
+    // the generated population together, instead of paying an outer transaction per record.
+    const manifest = atomic(board, () => {
+      const agents = registerAgents(board, root, size);
+      const statuses = lifecyclePlan(size);
+      const firstOpenIndex = statuses.indexOf('open');
+      const longestHistoryIndex = statuses.indexOf('claimed');
+      const { sequence: itemLanes, counts: laneTotals } = lanePlan(size);
+      // Keep claims within ONE_CLAIM while preserving the generated lane proportions. The synthetic
+      // coordinator owns its lane; move any later coordinator-lane claims onto an unused docs item.
+      for (let index = 0; index < statuses.length; index += 1) {
+        if (statuses[index] !== 'claimed' || itemLanes[index] !== 'coordinator') continue;
+        const replacement = statuses.findIndex((status, candidate) => status !== 'claimed' && itemLanes[candidate] === 'docs');
+        if (replacement < 0) throw new Error('the generated lane mix has no docs item to keep coordinator claims unique');
+        [itemLanes[index], itemLanes[replacement]] = [itemLanes[replacement], itemLanes[index]];
       }
-      const laneBuilders = agents.byLane[lane];
-      const builder = laneBuilders[index % laneBuilders.length];
-      let usedEvents = 1;
-      if (status === 'withdrawn') {
-        withdraw(board, id, { agentId: 'coordinator', reason: 'The generated board includes withdrawn work.' });
-        usedEvents += 1;
-      } else if (status === 'claimed') {
-        const claimOrdinal = claimOrdinalByLane[lane]++;
-        if (claimOrdinal >= laneBuilders.length) throw new Error(`the generated ${lane} claim count exceeds its unique fixture agents`);
-        const claimBuilder = laneBuilders[claimOrdinal];
-        claim(board, id, { agentId: claimBuilder, lane, leaseMs: LEASE_MS, freeze: freezer,
-          head: digest(seed, 'claim-head', id, 0).slice(0, 40) });
-        usedEvents += 1;
-      } else if (status === 'submitted') {
-        submitItem(board, id, seed, lane, builder, 1, freezer);
-        usedEvents += 2;
-      } else if (status === 'verified') {
-        if (index === statuses.indexOf('verified')) {
-          exerciseReopen(board, id, seed, lane, builder, agents.reviewer, freezer);
-          usedEvents += 9;
-        } else {
-          const submitted = submitItem(board, id, seed, lane, builder, 1, freezer);
-          verify(board, id, { agentId: agents.reviewer, decision: 'ACCEPT', reason: ACCEPT_REASON,
-            note: 'The generated state records a verified review.', head: submitted.commit, digest: submitted.digest,
-            policy: 'any', familyPolicy: 'off', check: 'none' });
-          usedEvents += 3;
+      const ids = [];
+      let smallItemId = null;
+      let smallItemTitle = null;
+      let longestHistoryItemId = null;
+      let longestHistoryTitle = null;
+      const claimOrdinalByLane = Object.fromEntries(LANES.map((lane) => [lane, 0]));
+      for (let index = 0; index < statuses.length; index += 1) {
+        const status = statuses[index];
+        const lane = itemLanes[index];
+        const title = index === firstOpenIndex ? `Small item ${seed}` : `Board item ${index + 1} in ${lane}`;
+        const briefLength = index === firstOpenIndex ? 500 : index === Math.floor(size / 3) ? 3_300 : 1_350;
+        const id = addItem(board, { by: 'coordinator', lane, title, specIds: [`P${(index % Math.max(5, Math.round(size * 250 / 605))) + 1}`],
+          criterion: `The generated board retains item ${index + 1} in ${status}.`,
+          brief: textOf(seed, `Item ${index + 1} brief`, briefLength), route: 'strong' });
+        ids.push(id);
+        if (status === 'open' && smallItemId === null) { smallItemId = id; smallItemTitle = title; }
+        if (index === longestHistoryIndex) {
+          longestHistoryItemId = id;
+          longestHistoryTitle = title;
         }
+        const laneBuilders = agents.byLane[lane];
+        const builder = laneBuilders[index % laneBuilders.length];
+        let usedEvents = 1;
+        if (status === 'withdrawn') {
+          withdraw(board, id, { agentId: 'coordinator', reason: 'The generated board includes withdrawn work.' });
+          usedEvents += 1;
+        } else if (status === 'claimed') {
+          const claimOrdinal = claimOrdinalByLane[lane]++;
+          if (claimOrdinal >= laneBuilders.length) throw new Error(`the generated ${lane} claim count exceeds its unique fixture agents`);
+          const claimBuilder = laneBuilders[claimOrdinal];
+          claim(board, id, { agentId: claimBuilder, lane, leaseMs: LEASE_MS, freeze: freezer,
+            head: digest(seed, 'claim-head', id, 0).slice(0, 40) });
+          usedEvents += 1;
+        } else if (status === 'submitted') {
+          submitItem(board, id, seed, lane, builder, 1, freezer);
+          usedEvents += 2;
+        } else if (status === 'verified') {
+          if (index === statuses.indexOf('verified')) {
+            exerciseReopen(board, id, seed, lane, builder, agents.reviewer, freezer);
+            usedEvents += 9;
+          } else {
+            const submitted = submitItem(board, id, seed, lane, builder, 1, freezer);
+            verify(board, id, { agentId: agents.reviewer, decision: 'ACCEPT', reason: ACCEPT_REASON,
+              note: 'The generated state records a verified review.', head: submitted.commit, digest: submitted.digest,
+              policy: 'any', familyPolicy: 'off', check: 'none' });
+            usedEvents += 3;
+          }
+        }
+        const targetHistory = id === longestHistoryItemId ? 168 : index % 100 === 0 ? 37 : index % 10 === 0 ? 18 : 8;
+        fillHistory(board, id, seed, builder, targetHistory, usedEvents, id === longestHistoryItemId ? 8 : index % 12 === 0 ? 2 : 0);
       }
-      const targetHistory = id === longestHistoryItemId ? 168 : index % 100 === 0 ? 37 : index % 10 === 0 ? 18 : 8;
-      fillHistory(board, id, seed, builder, targetHistory, usedEvents, id === longestHistoryItemId ? 8 : index % 12 === 0 ? 2 : 0);
-    }
       const shoutCount = Math.round(7_289 * size / 605);
       for (let index = 0; index < shoutCount; index += 1) {
         const text = index === 0 ? textOf(seed, 'Longest generated shout', 14_000) : textOf(seed, `Generated board update ${index + 1}`, 410);
-        shout(board, { from: agents.writer, to: 'all', text, lanes: LANES });
+        historicalShout(board, { seed, index, from: agents.writer, text });
       }
+      const historicalCount = allShouts(board).length;
+      assert.throws(() => shout(board, { from: agents.writer, to: 'all', text: 'x'.repeat(401), lanes: LANES }),
+        error => error.code === 'SHOUT_TOO_LONG', 'new writes still obey the landed 400-character cap');
+      assert.equal(allShouts(board).length, historicalCount, 'the current-write refusal creates no extra fixture shout');
       const milestoneCount = Math.max(1, Math.round(size * 56 / 605));
       const rowCount = Math.max(milestoneCount, Math.round(size * 384 / 605));
       for (let index = 0, cursor = 0; index < milestoneCount; index += 1) {
@@ -323,13 +341,14 @@ export function generateStressBoard({ seed = 'pullboard-perf-606', size = 150, p
         throw new Error('the generated board lifecycle does not match its planned state counts');
       }
       if (JSON.stringify(actualLaneTotals) !== JSON.stringify(laneTotals)) throw new Error('the generated board lanes do not match their planned counts');
-      const manifest = { version: 1, seed, size, digest: boardDigest, root, home, machineHome, boardFile, parent: resolve(parent),
+      return { version: 1, seed, size, digest: boardDigest, root, home, machineHome, boardFile, parent: resolve(parent),
         smallItemId, smallItemTitle, longestHistoryItemId, longestHistoryTitle, liveWriter: agents.writer, itemEvents, shoutCount,
         milestoneCount, milestoneRows: rowCount, specRows: Math.max(5, Math.round(size * 250 / 605)), statusTotals, laneTotals: actualLaneTotals,
         specStatusTotals, agentCount: listAgents(board).length };
-      writeFileSync(join(workspace, 'stress-board.json'), `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
-      keepWorkspace = true;
-      return { ...manifest, workspace, env };
+    });
+    writeFileSync(join(workspace, 'stress-board.json'), `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
+    keepWorkspace = true;
+    return { ...manifest, workspace, env };
   } finally {
     if (board) closeBoard(board);
     if (!keepWorkspace) rmSync(workspace, { recursive: true, force: true });

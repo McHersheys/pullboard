@@ -104,8 +104,9 @@ test('a materialized automatic Rigor draft shows in Needs you, marked unproved, 
     assert.ok(served.length > 0, 'serve.js carries the automatic draft');
     assert.ok(served.every((call) => call.proof == null && call.evidence.occurrences >= 2), 'with its repeat evidence and no proof');
     assert.ok(!state.needs.some((call) => call.kind === 'rigor-draft'), 'board-only proposals stay with the coordinator');
-    const applied = box.run(alpha.repo, 'spec', 'apply', '--json');
-    assert.equal(applied.code, 0, applied.err || applied.out);
+    const applied = JSON.parse(box.run(alpha.repo, 'spec', 'apply', '--json'));
+    assert.equal(applied.version, 1, 'the successful CLI helper returns the public JSON document');
+    assert.deepEqual(applied.applied, [], 'materializing an unproved proposal approves no person decision');
     const materialized = await boardOf(view, alpha.repo);
     assert.ok(materialized.needs.some((call) => call.kind === 'rigor-draft' && call.materialized), 'the real coordinator write exposes a person-actionable draft');
     chrome = await openSnapshotChrome(executable, view.link.href, profile);
