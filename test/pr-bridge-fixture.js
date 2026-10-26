@@ -10,8 +10,13 @@ import { startFixtureChild } from './fixture-child.js';
 
 /** Run the actual CLI without blocking the loopback provider's event loop. */
 export async function runBridgeCLI(box, ...args) {
+  return runBridgeCLIAs(box, { cwd: box.repo, env: box.env }, ...args);
+}
+
+/** Run one fixture command in an explicitly scoped shell, without changing the shared fixture environment. */
+export async function runBridgeCLIAs(box, { cwd = box.repo, env = box.env } = {}, ...args) {
   const child = startFixtureChild(process.execPath, [box.BIN, ...args],
-    { cwd: box.repo, env: box.env, stdio: ['ignore', 'pipe', 'pipe'] });
+    { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
   let out = '';
   let err = '';
   child.stdout.setEncoding('utf8').on('data', chunk => { out += chunk; });
@@ -65,7 +70,7 @@ function enableBridgeMode(box, item) {
 }
 
 /** Build, verify and locally land two real items before enabling the opt-in publisher. */
-export function landBridgeItems(box, { independent = false } = {}) {
+export function landBridgeItems(box, { independent = false, briefs = [] } = {}) {
   const entries = [];
   for (const [index, name] of ['one', 'two'].entries()) {
     const path = index === 0 ? box.web : join(box.dir, 'web-two');
@@ -81,7 +86,8 @@ export function landBridgeItems(box, { independent = false } = {}) {
       } finally { store.closeBoard(board); }
     }
     const add = box.run(box.repo, 'add', 'web', `private bridge ${name}`, '--specs', 'G1',
-      '--criterion', `private ${name} remains correct`, '--check', 'test ! -f RED', '--json');
+      '--criterion', `private ${name} remains correct`, '--check', 'test ! -f RED',
+      ...(briefs[index] === undefined ? [] : ['--brief', briefs[index]]), '--json');
     assert.equal(add.code, 0, add.err);
     const id = JSON.parse(add.out).item.item_id;
     assert.equal(box.run(path, 'claim', String(id)).code, 0);
@@ -107,7 +113,9 @@ export function landBridgeItems(box, { independent = false } = {}) {
 
 /** Stand in for GitHub over real HTTP, refusing every merge endpoint. */
 export async function bridgeProvider(t, box) {
-  const state = { requests: [], pulls: [], checks: [], statuses: [], annotations: [], annotationsByRun: {}, next: 1 };
+  const state = { requests: [], pulls: [], checks: [], statuses: [], annotations: [], annotationsByRun: {}, next: 1,
+    references: { pulls: { 7: { number: 7, user: { login: 'pr-author' } } },
+      issues: { 6: { number: 6, user: { login: 'issue-author' } } } } };
   const server = createServer(async (req, res) => {
     let raw = '';
     for await (const chunk of req) raw += chunk;
@@ -122,7 +130,7 @@ export async function bridgeProvider(t, box) {
       if (req.method === 'POST') {
         const head = box.git(box.remote, 'rev-parse', `refs/heads/${body.head}`);
         const pull = { number: state.next++, html_url: `https://github.com/fixture/repository/pull/${state.next - 1}`,
-          title: body.title, body: body.body, state: 'open', merged: false,
+          title: body.title, body: body.body, state: 'open', merged: false, user: { login: 'pr-author' },
           head: { ref: body.head, sha: head }, base: { ref: body.base, sha: box.git(box.remote, 'rev-parse', body.base) }, merged_by: null, merge_commit_sha: null };
         state.pulls.push(pull); return reply(201, pull);
       }
@@ -141,10 +149,18 @@ export async function bridgeProvider(t, box) {
       const files = box.git(box.remote, 'diff', '--name-only', `${pull.base.sha}...${pull.head.sha}`).split('\n').filter(Boolean);
       return reply(200, files.map(filename => ({ filename })));
     }
+    const issueRoute = /^\/repos\/fixture\/repository\/issues\/(\d+)$/u.exec(url.pathname);
+    if (issueRoute && req.method === 'GET') {
+      const issue = state.references.issues[issueRoute[1]];
+      return issue ? reply(200, issue) : reply(404, { message: 'missing private issue' });
+    }
     const pullRoute = /^\/repos\/fixture\/repository\/pulls\/(\d+)$/u.exec(url.pathname);
     if (pullRoute) {
       const pull = state.pulls.find(p => p.number === Number(pullRoute[1]));
-      if (!pull) return reply(404, { message: 'missing private pull' });
+      if (!pull) {
+        const reference = state.references.pulls[pullRoute[1]];
+        return reference ? reply(200, reference) : reply(404, { message: 'missing private pull' });
+      }
       if (req.method === 'PATCH') {
         Object.assign(pull, { title: body.title, body: body.body });
         pull.head.sha = box.git(box.remote, 'rev-parse', `refs/heads/${pull.head.ref}`);
