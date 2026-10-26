@@ -6804,6 +6804,8 @@
     "NO_CONFIG": "run pullboard init in the main checkout and commit pullboard.json",
     "READ_ONLY": "read settings with GET /api/v1/settings; use pullboard settings for supported machine-setting changes",
     "REFERENCE_IS_BOARD": "use --specs for spec rows, --after for item dependencies, or --parent for a parent item",
+    "REFERENCE_AUTHOR": "use the issue or pull request author's handle, or remove the handle from its Reference line, then add or edit the item again",
+    "REFERENCES_MISSING": "add every named acknowledgement to the selected release section in CHANGELOG.md, commit it on main, then run pullboard milestone ship <name> before tagging",
     "SETTINGS_NOT_AVAILABLE": "use the authenticated local API address printed by pullboard serve to read machine and repository settings",
     "DECISIONS_NOT_AVAILABLE": "read each board's state from the local API, which carries its own person decisions",
     "PROJECT_REPO_AMBIGUOUS": "run pullboard decisions --as person and answer with the repo name it prints before the #",

@@ -18,6 +18,7 @@ function actor(move) { return move.args[1]?.agentId ?? null; }
 export default Object.freeze({ operation: "shipMilestone", order: 36, engine: MILESTONE_SHIP_ENGINE,
   itemIdFirstArgument: false, minimumEngine, actor,
   nextSteps: Object.freeze({
+  "REFERENCES_MISSING": "add every named acknowledgement to the selected release section in CHANGELOG.md, commit it on main, then run pullboard milestone ship <name> before tagging",
   "MILESTONE_LIMIT": "remove or swap an unstarted item, or edit the milestone with --limit <n>|none",
   "MILESTONE_COMMIT": "commit to main, then ship from the main checkout: pullboard milestone ship <name>",
   "MILESTONE_ORDER": "move it before a different milestone; see pullboard roadmap",
