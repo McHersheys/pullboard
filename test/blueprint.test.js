@@ -92,10 +92,7 @@ test('blueprint add files a blueprint as drafts [S1,I1]', () => {
   for (const row of rows) assert.ok(!doctrine.rows.some((entry) => entry.id === row.id), `${row.id} is unique across SPEC.md and DOCTRINE.md`);
   const check = box.run('spec', 'check');
   assert.equal(check.status, 0, check.stdout + check.stderr);
-  const checkLines = (check.stdout + check.stderr).split('\n');
-  const blueprintLengthWarnings = rows.filter((row) => checkLines.some((line) => line.includes(` ${row.id} warning: `)
-    && /words; rows stay under/u.test(line)));
-  assert.deepEqual(blueprintLengthWarnings.map((row) => row.id), [], 'a reason or the choices do not count toward the blueprint row length');
+  assert.equal(rows.some(({ id }) => (check.stdout + check.stderr).split('\n').some((line) => line.includes(` ${id} warning: `) && line.includes('words; rows stay under'))), false, 'a reason or the choices do not count toward the blueprint row length');
 
   // Starter items: open, citing the new rows, the third waiting on the first.
   const items = json(box, 'list', '--all').items.sort((a, b) => a.item_id - b.item_id);
