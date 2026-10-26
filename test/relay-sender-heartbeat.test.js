@@ -73,13 +73,23 @@ async function secondBoard(box) {
 /** Capture only a freshly spawned fixture worker's start, command and cwd; never enumerate another process. */
 function workerIdentity(pid, root) {
   let metadata;
-  try { metadata = execFileSync('ps', ['-p', String(pid), '-o', 'lstart=,command='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); }
+  try { metadata = execFileSync('ps', ['-p', String(pid), '-o', 'stat=,lstart=,command='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); }
   catch { return null; }
+  if (/^Z/u.test(metadata)) return null; // A zombie has exited; it must not be signalled or mistaken for a reused live worker.
   assert.ok(metadata.includes(SENDER_WORKER), 'the recorded fixture PID still runs the expected sender entry');
-  const cwd = process.platform === 'linux' ? readlinkSync(`/proc/${pid}/cwd`)
-    : execFileSync('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], { encoding: 'utf8' }).split('\n').find(line => line.startsWith('n'))?.slice(1);
+  let cwd;
+  try {
+    cwd = process.platform === 'linux' ? readlinkSync(`/proc/${pid}/cwd`)
+      : execFileSync('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).split('\n').find(line => line.startsWith('n'))?.slice(1);
+  } catch (error) {
+    let state;
+    try { state = execFileSync('ps', ['-p', String(pid), '-o', 'stat='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); }
+    catch { return null; }
+    if (state.startsWith('Z')) return null;
+    throw error;
+  }
   assert.equal(cwd, root, 'only this freshly spawned private worker belongs to the test');
-  return { pid, metadata, cwd };
+  return { pid, metadata: metadata.replace(/^\S+\s+/u, ''), cwd };
 }
 
 /** Recheck exact PID/start/cwd immediately before terminating only this test's recorded sender. */
@@ -140,17 +150,18 @@ async function queueMoves(box) {
 test('one sender keeps its claim through a slow multi-board pass [H21,H5,H16]', { timeout: 660_000 }, async t => { // budget: one real two-minute stale window, under-deadline replies, and bounded fixture cleanup.
   t.diagnostic(JSON.stringify({ node: process.version, host: hostname(), execPath: process.execPath,
     binarySha256: createHash('sha256').update(readFileSync(process.execPath)).digest('hex') }));
-  const workers = [], pending = new Set();
+  const workers = [], pending = new Set(), cleanupErrors = [];
   let slowing = true;
   /** Release all real response barriers before any owned worker or fixture is cleaned up. */
   const releaseAll = () => { slowing = false; for (const release of [...pending]) release(); };
   t.after(async () => {
     releaseAll();
     const stopped = await Promise.allSettled(workers.map(stopWorker));
-    const errors = stopped.filter(result => result.status === 'rejected').map(result => result.reason);
-    if (errors.length) throw new AggregateError(errors, 'scoped fixture sender cleanup failed');
+    cleanupErrors.push(...stopped.filter(result => result.status === 'rejected').map(result => result.reason));
   });
   const box = await relayClientFixture(t);
+  // Report every scoped cleanup failure only after the fixture's normal provider and relay closers have run.
+  t.after(() => { if (cleanupErrors.length) throw new AggregateError(cleanupErrors, 'scoped fixture sender cleanup failed'); });
   commitDefault(box.root, box.env);
   await box.link();
   const other = await secondBoard(box);
