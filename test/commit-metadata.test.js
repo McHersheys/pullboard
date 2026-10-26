@@ -59,9 +59,12 @@ test('typed rows must be the complete frozen set in board order [C7]', () => {
 });
 
 test('an abbreviated header preview must count the actual frozen remainder [C7]', () => {
-  const result = hook(claimed(), 'test: wrong preview [G1,+2]\n');
-  assert.notEqual(result.code, 0);
-  assert.match(result.err, /preview/u);
+  const box = claimed();
+  for (const preview of ['G1,+0', 'G1,+text', 'G1,+1,G2', 'G1,+2']) {
+    const result = hook(box, `test: wrong preview [${preview}]\n`);
+    assert.notEqual(result.code, 0, preview);
+    assert.match(result.err, /preview/u);
+  }
 });
 
 test('reserved, duplicate and non-final Pullboard trailers are refused [C7]', () => {
