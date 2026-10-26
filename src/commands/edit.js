@@ -1,4 +1,5 @@
 import { barReadySetting } from '../bar-readiness.js';
+import { referenceAuthors } from '../reference-authors.js';
 /** The pullboard edit command, in its own module so an item adding another command never edits these lines. */
 import * as store from '../board.js';
 import {
@@ -50,6 +51,10 @@ export async function run(io, args) {
     after: editAfter(values.after),
     ...(values.reason !== undefined ? { reason: values.reason } : {}),
   };
+  if (change.brief !== undefined) {
+    const authors = referenceAuthors(ctx.info.root, change.brief);
+    if (authors.length) change.referenceAuthors = authors;
+  }
   const { item, command } = store.validateItemEdit(board, id, change);
   if (command && command !== item.item_check) refuseCheckSyntax(command);
   if (command && (command !== item.item_check || barReadySetting(board).enabled)) change.checkBaseline = values.wait ? checkBaseline(ctx.info.root, command) : prepareCheckBaseline(ctx.info.root, command);

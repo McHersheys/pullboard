@@ -1,6 +1,7 @@
 import { foreignBlockers } from './cross-repo-dependencies.js';
 import { REFERENCE_ENGINE } from './reference-engine.js';
 import { validateReferenceTargets } from './reference-lines.js';
+import { validateReferenceAuthors } from './reference-authors.js';
 import {
   dependencyValues,
   validateNativeDependencies,
@@ -691,9 +692,9 @@ function checkRouted({ brief, route, criterion, check }, engine = ENGINE_VERSION
  * @param {{ by: string, lane: string, title: string, criterion?: string, specIds?: string[], parentId?: number | null, after?: (number | string)[], brief?: string, route?: string, check?: string }} item
  * @returns {number} The new item's id.
  */
-export function addItem(board, { by, lane, title, criterion = '', specIds = [], parentId = null, after = [], brief = '', route = 'strong', check, checkBaseline, barActor }) {
+export function addItem(board, { by, lane, title, criterion = '', specIds = [], parentId = null, after = [], brief = '', route = 'strong', check, checkBaseline, barActor, referenceAuthors }) {
   return atomic(board, () => {
-    const item = { by, lane, title, criterion, specIds, parentId, after, brief, route, check, checkBaseline, barActor };
+    const item = { by, lane, title, criterion, specIds, parentId, after, brief, route, check, checkBaseline, barActor, referenceAuthors };
     return insertItem(board, item, validateItemAddition(board, item));
   });
 }
@@ -750,13 +751,13 @@ function validateItemDependencies(board, itemId, after) {
 }
 
 /** Validate an addition before its sender runs a new check, and again when the ordered move applies. */
-export function validateItemAddition(board, { by, lane, title, criterion = '', parentId = null, after = [], brief = '', route = 'strong', check }) {
+export function validateItemAddition(board, { by, lane, title, criterion = '', parentId = null, after = [], brief = '', route = 'strong', check, referenceAuthors }) {
   const command = coordinatorCheck(by, check) ?? '';
   const cleanTitle = title.trim();
   if (!cleanTitle) throw new Refused('NO_TITLE', 'an item needs a title');
   checkRoute(route);
   const engine = board.executionEngineVersion ?? ENGINE_VERSION;
-  if (engine >= REFERENCE_ENGINE) validateReferenceTargets(brief);
+  if (engine >= REFERENCE_ENGINE) { validateReferenceTargets(brief); validateReferenceAuthors(brief, referenceAuthors); }
   checkRouted({ brief: brief.trim(), route, criterion, check: command }, engine);
   if (parentId !== null) {
     const parent = itemById(board, parentId);
@@ -780,11 +781,11 @@ export function validateItemAddition(board, { by, lane, title, criterion = '', p
  * @param {number} id
  * @param {{ agentId: string, brief?: string, route?: string, criterion?: string, check?: string, after?: (number | string)[] }} change
  */
-export function editItem(board, id, { agentId, brief, route, criterion, check, after, checkBaseline, reason, barActor }) {
+export function editItem(board, id, { agentId, brief, route, criterion, check, after, checkBaseline, reason, barActor, referenceAuthors }) {
   atomic(board, () => {
     const stored = itemById(board, id);
     const expiredHolder = stored.item_status === 'claimed' && !isHeld(board, stored) ? stored.item_owner : null;
-    const { item, next, command, unfreeze, bar } = validateItemEdit(board, id, { agentId, brief, route, criterion, check, after, reason });
+    const { item, next, command, unfreeze, bar } = validateItemEdit(board, id, { agentId, brief, route, criterion, check, after, reason, referenceAuthors });
     const baseline = normalizeCheckBaseline(agentId, command, checkBaseline);
     const pendingFields = [
       ...(next.item_criterion !== item.item_criterion ? ['criterion'] : []),
@@ -846,7 +847,7 @@ function notifyFileGrowth(board, before, after) {
 }
 
 /** Validate an edit without side effects, so a refused change never starts a shell baseline; a bar correction needs a reason [B31]. */
-export function validateItemEdit(board, id, { agentId, brief, route, criterion, check, after, reason }) {
+export function validateItemEdit(board, id, { agentId, brief, route, criterion, check, after, reason, referenceAuthors }) {
   const engine = board.executionEngineVersion ?? ENGINE_VERSION;
   if (after !== undefined && engine < 10) {
     throw new Refused('ENGINE_VERSION', `editing item dependencies requires engine 10; this board uses engine ${engine}; upgrade Pullboard before using --after`);
@@ -889,7 +890,7 @@ export function validateItemEdit(board, id, { agentId, brief, route, criterion, 
   if (moved.length && item.item_status !== 'open' && (routeChanged || !correctionWhileClaimed)) {
     throw new Refused('HELD', `item #${id} is ${item.item_status}; change its route, criterion or check only while it is open`);
   }
-  if (brief !== undefined && engine >= REFERENCE_ENGINE) validateReferenceTargets(brief);
+  if (brief !== undefined && engine >= REFERENCE_ENGINE) { validateReferenceTargets(brief); validateReferenceAuthors(brief, referenceAuthors); }
   checkRouted({ brief: next.item_brief, route: next.item_route, criterion: next.item_criterion, check: next.item_check }, engine);
   const unfreeze = next.item_criterion !== item.item_criterion || next.item_check !== item.item_check;
   return { item, next, command, unfreeze, bar: barCorrectionFields(board, item, next, { reason }) };

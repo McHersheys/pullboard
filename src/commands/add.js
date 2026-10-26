@@ -1,4 +1,5 @@
 import { dependencyValues } from '../item-dependencies.js';
+import { referenceAuthors } from '../reference-authors.js';
 /** The pullboard add command, in its own module so an item adding another command never edits these lines. */
 import * as store from '../board.js';
 import {
@@ -71,6 +72,8 @@ export async function run(io, args) {
     check: values.check,
   };
   buildInFilelessLane(ctx.config, first, after);
+  const authors = referenceAuthors(ctx.info.root, item.brief);
+  if (authors.length) item.referenceAuthors = authors;
   const { command } = store.validateItemAddition(board, item);
   if (command) refuseCheckSyntax(command);
   if (command) item.checkBaseline = values.wait ? checkBaseline(ctx.info.root, command) : prepareCheckBaseline(ctx.info.root, command);
