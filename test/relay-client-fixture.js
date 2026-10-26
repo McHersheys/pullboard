@@ -821,7 +821,7 @@ globalThis.fetch = function tracedFetch(input, init) {
     stallApi(value = true) { stallApi = value; },
     /** Apply a private study's real HTTP fault to both snapshot protocol versions. */
     studyApiFault(value = null) {
-      assert.ok(value === null || Number.isSafeInteger(value.delayMs) && value.delayMs >= 0 && value.delayMs <= 5000
+      assert.ok(value === null || Number.isSafeInteger(value.delayMs) && value.delayMs >= 0 && value.delayMs <= 5000 // budget: declared study fault ceiling, the 5 s slow relay the #1281 bar names
         && (value.status === null || [409, 503].includes(value.status))
         && (value.status === null || ['ENGINE_VERSION', 'RELAY_UNAVAILABLE'].includes(value.code)));
       studyApiFault = value;
