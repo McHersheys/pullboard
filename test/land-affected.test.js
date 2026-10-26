@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { after, test } from 'node:test';
+import { selectAffectedTests } from '../src/affected-tests.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { json } from './land-board-fixture.js';
 
@@ -14,7 +15,8 @@ function valueTest(expected) {
   return `import assert from 'node:assert/strict';\nimport { test } from 'node:test';\nimport { value } from './value.js';\ntest('the imported value remains compatible', () => assert.equal(value, ${expected}));\n`;
 }
 
-test('a batch that breaks an affected test is caught at landing [C7,V4]', t => {
+/** Reject the actual merged importer, exercising either full fallback or the finite import subset. */
+function affectedBatch(t, { stableBadges = false } = {}) {
   const box = e2e.project('node --test web/*.test.js');
   // A fixture CLI is a fresh process, not the outer Node test worker. Admission markers stay intact.
   delete box.env.NODE_TEST_CONTEXT;
@@ -48,6 +50,7 @@ test('a batch that breaks an affected test is caught at landing [C7,V4]', t => {
     const verified = box.run(box.repo, 'verify', String(item), 'accept', '--as', 'coordinator', '--note', 'private real affected-test fixture');
     assert.equal(verified.code, 0, verified.out + verified.err);
   } finally { box.git(box.repo, 'switch', '-q', 'main'); }
+  if (stableBadges) assert.equal(box.run(box.repo, 'badge').code, 0, 'committed badges already match the verified roster');
   // A later accepted-trunk importer passes on main but fails only when this already-verified item is merged.
   const addedTest = e2e.commitFile(box, box.repo, 'web/new-importer.test.js', valueTest(1), 'test(web): retain the original importing contract [G1]');
   assert.equal(addedTest.status, 0, addedTest.stderr);
@@ -63,4 +66,15 @@ test('a batch that breaks an affected test is caught at landing [C7,V4]', t => {
   assert.equal(landing.batch.state, 'blocked');
   assert.equal(box.git(box.repo, 'rev-parse', 'main'), main, 'red affected tests never move main');
   assert.equal(json(box, box.repo, 'show', String(item)).item_merged_commit, null);
+  const selection = selectAffectedTests(landing.batch.root, { base: landing.batch.base, commit: landing.batch.tip });
+  assert.equal(selection.full, !stableBadges, selection.reason);
+  if (stableBadges) assert.deepEqual(selection.files, ['web/new-importer.test.js', 'web/value.test.js']);
+}
+
+test('a batch that breaks an affected test is caught at landing [C7,V4]', t => {
+  affectedBatch(t);
+});
+
+test('a finite affected import subset is checked with the fixed guard floor [C7,V4]', t => {
+  affectedBatch(t, { stableBadges: true });
 });
