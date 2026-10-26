@@ -1402,7 +1402,7 @@ test('publish pushes only a head the whole suite passed and names every red [B3,
   assert.equal(box.git(box.remote, 'rev-parse', 'main'), fixed, 'only the head the whole suite passed reaches the remote');
 });
 
-test('an accepted item lands on the local trunk before the whole suite runs [B3,R3]', () => {
+test('an uncertain affected batch passes its full gate before local adoption [B3,R3,C7,V4]', () => {
   const box = landProject();
   const path = join(box.repo, 'pullboard.json');
   const config = JSON.parse(readFileSync(path, 'utf8'));
@@ -1417,14 +1417,14 @@ test('an accepted item lands on the local trunk before the whole suite runs [B3,
   assert.equal(result.batch.state, 'landed');
   assert.equal(box.git(box.repo, 'rev-parse', 'main'), result.batch.tip, 'the local trunk holds the landed batch');
   assert.equal(box.git(box.remote, 'rev-parse', 'main'), remoteBefore, 'tier 1 pushes nothing');
-  assert.deepEqual(calls(box).slice(start), [], 'no whole-suite run before the items land');
+  assert.equal(calls(box).length - start, 1, 'an unsupported fixture graph requires one full gate before adoption');
   const merges = box.git(box.repo, 'rev-list', '--first-parent', `${result.batch.base}..${result.batch.tip}`).split('\n');
   for (const entry of entries) assert.ok(merges.includes(json(box, box.repo, 'show', String(entry.item)).item_merged_commit), `#${entry.item} has its merged receipt on the local trunk`);
   // Tier 2 then runs the whole suite once on that exact head and pushes it.
   const published = json(box, box.repo, 'publish');
   assert.equal(published.published, true);
   assert.equal(box.git(box.remote, 'rev-parse', 'main'), result.batch.tip);
-  assert.equal(calls(box).length - start, 1, 'publish ran the whole suite once');
+  assert.equal(calls(box).length - start, 2, 'publish also proves its exact trunk head before pushing');
 });
 
 test('a publish gate run is recorded and a red and green pair it sees files the flake [C7,D1]', () => {
