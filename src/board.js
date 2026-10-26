@@ -4,6 +4,18 @@ import {
   localDependencyIds,
   dependencyLabel,
 } from './item-dependencies.js';
+import { applyLaneLead } from './lane-lead-policy.js';
+import { applyHealthFindings } from './board-health.js';
+import {
+  isLaneEscalation,
+  laneLeads,
+  leadOwnsDecision,
+  routeLaneMessage,
+} from './lane-lead.js';
+export { laneLeads };
+
+import { companionPlan } from './companion.js';
+import { applyCompanionRequest } from './companion.js';
 export { readBoardMembers, setBoardMembers } from './board-members.js';
 import { heartbeatSeat } from './seat-presence.js';
 import * as itemDecisions from './item-decision-queue.js';
@@ -112,6 +124,7 @@ import {
   unreadCount,
   events,
   itemThread,
+  itemHold,
   laneHold,
   laneHolds,
   rowDecisions,
@@ -255,8 +268,6 @@ import {
 } from './rigor-notices.js';
 import { RIGOR_NOTICE_ENGINE } from './rigor-source.js';
 import { RIGOR_AUTO_ENGINE } from './rigor-auto-engine.js';
-import { CPU_SENTINEL_ENGINE } from './cpu-sentinel-engine.js';
-import { hasPendingCpuNotices } from './health-receipts.js';
 import {
   milestoneRanks,
   workOrderCompare,
@@ -276,13 +287,6 @@ import {
   conflictProblem,
   returnedHeadNotice,
 } from './trunk-conflict.js';
-import {
-  HEALTH_SENTINEL_ENGINE,
-  deliverHealthNotices,
-  healthFindingIdentity,
-  healthTargets,
-  normalizedHealthFindings,
-} from './health-receipts.js';
 import { factReference } from './fact-reference.js';
 import {
   factFromEvent,
@@ -317,6 +321,9 @@ export { declareJob, recordJobRun } from './recurring-jobs.js';
 export { proposeSentinel, decideSentinel, beginSentinelRun, finishSentinelRun } from './sentinels.js';
 export { flakeLedger, recordFlakeObservation } from './flakes.js';
 export { flakeQuarantines, gateRuns, recordGateRun } from './quarantine.js';
+export { proofReceipts, recordProofRun } from './proof-receipts.js';
+import { refuseLongShout } from './proof-receipts.js';
+import { PROOF_RUN_ENGINE } from './proof-run-engine.js';
 export { recordPublishFinding } from './pr-findings.js';
 /** The seat readers live in seats.js; the board re-exports them so `store.*` callers keep one import. */
 export { agentAt, agentById, agentCreator, coordinatorHolder, listAgents, nextSeatId, seatEnrolled, seatLineage, takeCoordinator, withVerifierStanding } from './seats.js';
@@ -673,22 +680,36 @@ function checkRouted({ brief, route, criterion, check }) {
  */
 export function addItem(board, { by, lane, title, criterion = '', specIds = [], parentId = null, after = [], brief = '', route = 'strong', check, checkBaseline, barActor }) {
   return atomic(board, () => {
-    const { command, cleanTitle } = validateItemAddition(board, { by, lane, title, criterion, parentId, after, brief, route, check });
-    const baseline = normalizeCheckBaseline(by, command, checkBaseline);
-    const at = now(board);
-    const result = board.db
-      .prepare(
-        `INSERT INTO item (item_parent_id, item_lane, item_title, item_criterion, item_spec_ids,
-           item_after, item_brief, item_route, item_check, item_created_by, item_created_at, item_updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(parentId, lane, cleanTitle, criterion.trim(), specIds.join(','), after.join(','), brief.trim(), route, command, by, at, at);
-    const id = Number(result.lastInsertRowid);
-    saveCheckBaseline(board, id, baseline);
-    logEvent(board, by, 'add', id, { lane, specIds, after, route, ...(baseline ? { checkBaseline: baseline } : {}) });
-    recordBarRevision(board, itemById(board, id), by, null, barActor);
-    return id;
+    const item = { by, lane, title, criterion, specIds, parentId, after, brief, route, check, checkBaseline, barActor };
+    return insertItem(board, item, validateItemAddition(board, item));
   });
+}
+
+/** Insert an already validated ordinary or companion child without bypassing check or bar recording. */
+function insertItem(board, item, { command, cleanTitle }) {
+  const { by, lane, criterion, specIds, parentId, after, brief, route, checkBaseline, barActor } = item;
+  const baseline = normalizeCheckBaseline(by, command, checkBaseline);
+  const at = now(board);
+  const result = board.db
+    .prepare(
+      `INSERT INTO item (item_parent_id, item_lane, item_title, item_criterion, item_spec_ids,
+         item_after, item_brief, item_route, item_check, item_created_by, item_created_at, item_updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(parentId, lane, cleanTitle, criterion.trim(), specIds.join(','), after.join(','), brief.trim(), route, command, by, at, at);
+  const id = Number(result.lastInsertRowid);
+  saveCheckBaseline(board, id, baseline);
+  logEvent(board, by, 'add', id, { lane, specIds, after, route, ...(baseline ? { checkBaseline: baseline } : {}) });
+  recordBarRevision(board, itemById(board, id), by, null, barActor);
+  return id;
+}
+
+/** Read the canonical request plan before a CLI performs any authorized baseline work. */
+export function planCompanion(board, options) { return companionPlan(board, options, validateItemAddition); }
+
+/** The single ordered operation permitted to create a child in a different lane. */
+export function requestCompanion(board, options) {
+  return applyCompanionRequest(board, options, { validateAddition: validateItemAddition, insertItem });
 }
 
 /** Validate that dependencies exist, remain usable, and cannot lead back to the edited item. */
@@ -1178,9 +1199,10 @@ export function submit(board, id, { agentId, commit, tree, files = [], policyCom
         doctrineHolds: null,
         gateConfigured: null, queuedItemLease: null,
         gateGreen: null,
+        proofRecorded: null, // The CLI records and validates native receipts before sealing submit; replay needs no origin files.
         treeStillDuringGate: null,
         submissionProofValid: () => {
-          if ((board.executionEngineVersion ?? ENGINE_VERSION) >= SUBMISSION_PROOF_ENGINE) recordedProof = submissionProof(proof);
+          if ((board.executionEngineVersion ?? ENGINE_VERSION) >= SUBMISSION_PROOF_ENGINE) recordedProof = submissionProof(proof, board.executionEngineVersion ?? ENGINE_VERSION);
           if ((board.executionEngineVersion ?? ENGINE_VERSION) >= FLOW_SIZE_ENGINE) recordedSize = submissionSize(size, commit);
           return null;
         },
@@ -1410,6 +1432,7 @@ export function verify(board, id, { agentId, decision, reason, note = '', cause,
         trunkMergeClean: null,
         noUnverifiedStack: null, queuedItemLease: null,
         itemCheckGreen: found => isAccept ? outsideSandboxProblem(board, found, sandbox) : null,
+        proofRecorded: null, // The native verifier records the gate receipt before this ordered outcome.
         proofNoted: () =>
           note.trim()
             ? null
@@ -1724,49 +1747,14 @@ function persistShout(board, { from, to, text, decision = false, answers = null,
  * @returns {number}
  */
 export function shout(board, message) {
-  return atomic(board, () => insertShout(board, { ...message,
-    news: activityNewsFlag(message, board.executionEngineVersion ?? ENGINE_VERSION) }));
+  if ((board.executionEngineVersion ?? ENGINE_VERSION) >= PROOF_RUN_ENGINE) refuseLongShout(message.text);
+  return atomic(board, () => insertShout(board, routeLaneMessage(board, { ...message,
+    news: activityNewsFlag(message, board.executionEngineVersion ?? ENGINE_VERSION) }, board.executionEngineVersion ?? ENGINE_VERSION)));
 }
 
-/** Record one current health snapshot atomically, notifying each new or resolved episode once [A6]. */
-export function recordHealthFindings(board, { agentId, observedRevision, findings }) {
-  return atomic(board, () => {
-    const minimum = hasPendingCpuNotices(board) || (Array.isArray(findings) && findings.some(finding => finding?.cause === 'AGENT_CPU')) ? CPU_SENTINEL_ENGINE : HEALTH_SENTINEL_ENGINE;
-    if ((board.executionEngineVersion ?? ENGINE_VERSION) < minimum) {
-      throw new Refused('ENGINE_VERSION', `sentinel receipts require engine ${minimum}; upgrade Pullboard before scanning`);
-    }
-    if (!board.db.prepare('SELECT 1 FROM agent WHERE agent_id = ?').get(agentId)) {
-      throw new Refused('NOT_JOINED', 'join this board before recording a health scan: pullboard join <lane>');
-    }
-    const revision = board.db.prepare('SELECT COALESCE(MAX(event_id), 0) AS revision FROM event').get().revision;
-    if (!Number.isSafeInteger(observedRevision) || observedRevision !== revision) {
-      throw new Refused('HEALTH_SCAN_STALE', 'the board changed while health was scanning; run pullboard resume again');
-    }
-    const active = normalizedHealthFindings(findings);
-    const last = board.db.prepare("SELECT event_detail FROM event WHERE event_kind = 'health-scan' ORDER BY event_id DESC LIMIT 1").get();
-    const previous = last ? JSON.parse(last.event_detail).active : [];
-    const before = new Map(previous.map(finding => [healthFindingIdentity(finding), finding]));
-    const after = new Map(active.map(finding => [healthFindingIdentity(finding), finding]));
-    const added = active.filter(finding => !before.has(healthFindingIdentity(finding)));
-    const resolved = previous.filter(finding => !after.has(healthFindingIdentity(finding)));
-    const pending = last ? JSON.parse(last.event_detail).pendingCpu ?? [] : [];
-    if (!added.length && !resolved.length && !pending.length) return { added: [], resolved: [] };
-    const agents = listAgents(board);
-    const lanes = [...new Set(agents.map(agent => agent.agent_lane))];
-    const engine = board.executionEngineVersion ?? ENGINE_VERSION;
-    /** Deliver through ordinary feed/inbox records without registering a synthetic worktree seat. */
-    const log = (finding, cleared) => {
-      const item = finding.item === null ? null : itemById(board, finding.item);
-      logEvent(board, 'sentinel', cleared ? 'health-resolved' : 'health-failure', finding.item, {
-        key: finding.key, cause: `refusal:${finding.cause}`, since: finding.since, subject: finding.subject,
-        owner: finding.owner, commit: item?.item_commit ?? null, engine: HEALTH_SENTINEL_ENGINE,
-      });
-    };
-    const deferred = deliverHealthNotices({ resolved, added, pending, engine, log, coordinator: COORDINATOR, shout: (to, text) => insertShout(board, { from: 'sentinel', to, text, lanes }),
-      targets: finding => healthTargets(finding, { engine, coordinator: COORDINATOR, person: PERSON, lanes, agents }) });
-    logEvent(board, agentId, 'health-scan', null, { active, ...(deferred === undefined ? {} : { pendingCpu: deferred }), engine: HEALTH_SENTINEL_ENGINE });
-    return { added: added.map(finding => finding.key), resolved: resolved.map(finding => finding.key) };
-  });
+/** Record one health snapshot through its unchanged transactional implementation [A6]. */
+export function recordHealthFindings(board, options) {
+  return applyHealthFindings(board, options, { atomic, insertShout });
 }
 
 /**
@@ -1779,13 +1767,14 @@ export function recordHealthFindings(board, { agentId, observedRevision, finding
  */
 export function passDecision(board, id, { agentId, note, lanes }) {
   return atomic(board, () => {
-    if (agentId !== COORDINATOR) throw new Refused('COORDINATOR_ONLY', 'only the coordinator can pass a decision up');
     const ask = getShout(board, id);
-    if (!ask.shout_decision || (ask.shout_to !== COORDINATOR && ask.shout_to !== COORDINATION_SHOUT && shoutItemId(ask.shout_to) === null)) throw new Refused('NOT_COORDINATOR_DECISION', `shout #${id} is not a decision waiting for the coordinator`);
+    const laneEscalation = leadOwnsDecision(board, ask, agentId);
+    if (agentId !== COORDINATOR && !laneEscalation) throw new Refused('COORDINATOR_ONLY', 'only the coordinator or the addressed lane lead can pass a decision up');
+    if (!ask.shout_decision || (!laneEscalation && ask.shout_to !== COORDINATOR && ask.shout_to !== COORDINATION_SHOUT && shoutItemId(ask.shout_to) === null)) throw new Refused('NOT_COORDINATOR_DECISION', `shout #${id} is not a decision waiting for the coordinator`);
     if (board.db.prepare('SELECT 1 FROM shout WHERE shout_answers = ?').get(id)) throw new Refused('ALREADY_ANSWERED', `shout #${id} already has an answer`);
     const text = `Passed up from ${ask.shout_from}: ${ask.shout_text}\nCoordinator note: ${String(note ?? '').trim()}`;
     if (!String(note ?? '').trim()) throw new Refused('EMPTY_NOTE', 'include a note with the reason for passing this decision');
-    return insertShout(board, { from: COORDINATOR, to: PERSON, text, lanes, decision: true, answers: id, detail: shoutItemId(ask.shout_to) === null ? {} : { item: shoutItemId(ask.shout_to), text } });
+    return insertShout(board, { from: agentId, to: laneEscalation ? COORDINATOR : PERSON, text, lanes, decision: true, answers: id, detail: shoutItemId(ask.shout_to) === null ? {} : { item: shoutItemId(ask.shout_to), text } });
   });
 }
 
@@ -1821,10 +1810,11 @@ export function answerDecision(board, id, { agentId, text, lanes, asPerson = fal
     }
     const from = personAnswer ? PERSON : agentId;
     const provenance = answerProvenance(board, { agentId, asPerson: personAnswer, text, origin, rationale });
+    if (!personAnswer && leadOwnsDecision(board, ask, agentId)) insertShout(board, { from, to: COORDINATOR, text: `Lane decision #${id}: ${String(text).trim()}`, lanes, detail: { messageKind: 'decision' } });
     const answerId = tellAnswerImplications(board, (by, itemId, fact) => logEvent(board, by, 'fact', itemId, fact), insertShout(board, { from, to: ask.shout_from, text, lanes, answers: id, channel, ...(addressedItem === null ? {} : { item: addressedItem }), detail: { ...(implies?.length ? { implies } : {}), ...(supersedes !== null ? { supersedes } : {}), ...(provenance ? { provenance } : {}) } }), { seed: impliesId, implies, supersedes, from, person: PERSON });
-    if (personAnswer && ask.shout_answers !== null) {
+    if ((personAnswer || agentId === COORDINATOR && isLaneEscalation(board, ask)) && ask.shout_answers !== null) {
       const original = getShout(board, ask.shout_answers);
-      insertShout(board, { from: PERSON, to: original.shout_from, text: `Person answered #${id}: ${String(text).trim()}`, lanes, answers: original.shout_id, channel, ...(shoutItemId(original.shout_to) === null ? {} : { item: shoutItemId(original.shout_to) }) });
+      insertShout(board, { from, to: original.shout_from, text: `${personAnswer ? 'Person' : 'Coordinator'} answered #${id}: ${String(text).trim()}`, lanes, answers: original.shout_id, channel, ...(shoutItemId(original.shout_to) === null ? {} : { item: shoutItemId(original.shout_to) }) });
     }
     return answerId;
   });
@@ -2123,14 +2113,7 @@ export function releaseLane(board, lane, { agentId, asPerson = false, channel = 
 
 export { laneHold, laneHolds } from './board-query.js';
 
-/** Read an item's coordinator hold, or null when it is available for claims. */
-export function itemHold(board, id) {
-  const item = getItem(board, id);
-  return item.item_hold_reason ? {
-    item_id: item.item_id, item_hold_reason: item.item_hold_reason,
-    item_hold_by: item.item_hold_by, item_hold_at: item.item_hold_at,
-  } : null;
-}
+export { itemHold } from './board-query.js';
 
 /** Hold an open or already-claimed item without changing its current lifecycle state. */
 export function holdItem(board, id, { agentId, reason }) {
@@ -2363,6 +2346,10 @@ export function intakeOutside(board, options) { return applyOutsideIntake(board,
 /** Record the person's exact-commit owner approval. */
 export function approveOutside(board, id, options) { return applyOutsideApproval(board, id, options, atomic); }
 
+/** Name a lane lead only through coordinator-owned ordered policy [B21]. */
+export function setLaneLead(board, options) {
+  return applyLaneLead(board, options, { atomic, logEvent });
+}
 /** Tailored inbox activity is the same canonical read projection as other board queries. */
 export { agentActivity } from './board-query.js';
 

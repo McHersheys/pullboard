@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+import { relayMachineDirectory } from '../local-state.js';
 import { withBoardRead } from '../cli-board-read.js';
 /** The pullboard status command, in its own module so an item adding another command never edits these lines. */
 import * as store from '../board-query.js';
@@ -7,6 +9,10 @@ import { relayStateExists } from '../local-state.js';
 import { unlinkedRelayStatus } from '../relay-status-fields.js';
 import { ruleProofCounts } from '../rule-proof-counts.js';
 import { memoryHeldRuns } from '../memory-held.js';
+import {
+  runnerDeadlineLine,
+  runnerDeadlineRuns,
+} from '../runner-wait.js';
 import {
   reviewQueueLine,
 } from '../next-steps.js';
@@ -45,12 +51,17 @@ export async function run(io, { values }) {
     return { me, mine, agents, presenceCounts, ruleCounts: ruleProofCounts(ctx.info.root, board, approvalState.spec), needs: approvalState.needs, specApprovalBaseline: approvalState.specApprovalBaseline, specApprovalEvidenceErrors: approvalState.specApprovalEvidenceErrors, stats: store.stats(board), reviewQueue: { ...store.reviewQueue(board), ...store.reviewQueueBreakdown(board) }, unread: store.unreadCount(board, me.id), relay: relay ? relay.relayStatus(ctx.info.root) : unlinkedRelayStatus(),
       submitInvariantProposals: submitInvariantProposals(store.submitInvariantEvents(board, ctx.config), ctx.config) };
   });
+  if (!summary.relay.linked && existsSync(relayMachineDirectory())) {
+    const exclusion = (await import('../relay-exclusion-state.js')).relayExclusion(ctx.info.root);
+    if (exclusion) Object.assign(summary.relay, { excluded: true, exclusion });
+  }
   summary.memoryHeld = memoryHeldRuns();
+  summary.runnerDeadlines = runnerDeadlineRuns();
   if (values.json) {
     io.result(summary);
     return 0;
   }
-  if (hasRelayState) for (const line of (await import('../relay-output.js')).briefLines(summary.relay)) io.say(line);
+  if (hasRelayState || summary.relay.excluded) for (const line of (await import('../relay-output.js')).briefLines(summary.relay)) io.say(line);
   const { items, accepted, rejected } = summary.stats;
   io.say(`${summary.me.displayName}: ${summary.unread} unread shouts; holding ${summary.mine.map((item) => `#${item.item_id}`).join(', ') || 'nothing'}`);
   io.say(`board: ${items.open} open, ${items.claimed} claimed, ${items.submitted} awaiting verification, ${items.verified} verified, ${items.withdrawn} withdrawn`);
@@ -62,6 +73,8 @@ export async function run(io, { values }) {
   for (const seat of summary.agents.filter(seat => values.all || seat.presence !== 'gone')) io.say(`${seat.agent_id}: ${seat.presence}${seat.heartbeatAt ? ` (heartbeat ${seat.heartbeatAt})` : ' (no local heartbeat)'}`);
   if (summary.memoryHeld === null) io.say('local memory hold status unavailable; pullboard resources shows the queue');
   else for (const run of summary.memoryHeld) io.say(`local memory holds ${run.agent}${run.item ? ` #${run.item}` : ''}${run.kind ? ` (${run.kind})` : ''}${run.repo ? ` in ${run.repo}` : ''}`);
+  if (summary.runnerDeadlines === null) io.say('runner wait deadline status unavailable; pullboard resources shows the queue');
+  else for (const run of summary.runnerDeadlines) io.say(`${run.agent}${run.item ? ` #${run.item}` : ''}${run.repo ? ` in ${run.repo}` : ''}: ${runnerDeadlineLine(run)}`);
   for (const proposal of summary.submitInvariantProposals) io.say(submitInvariantLine(proposal));
   for (const need of summary.needs.filter(need => need.kind === 'agent-approved')) io.say(`${need.text}; ${need.what}`);
   if (!summary.relay.linked && !originRepository(ctx.info.root, { optional: true })) {

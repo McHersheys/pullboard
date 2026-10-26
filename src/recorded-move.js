@@ -23,7 +23,7 @@ export function recordedMoveRefusal(io, error) {
 export function requestedCommandMove(command, operation) {
   if (!command) return false;
   const forms = {
-    add: ['addItem'], edit: ['editItem'], merged: ['merged'], submit: ['submit'],
+    add: ['addItem'], companion: ['requestCompanion'], edit: ['editItem'], merged: ['merged'], submit: ['submit'],
     claim: ['claim'], release: ['release'], verify: ['verify'], withdraw: ['withdraw', 'editMilestoneItems'],
     refreeze: ['refreeze'], reopen: ['reopen'], escalate: ['escalate', 'shout'],
     next: ['claim', 'reserveReview', 'reserveNextReview'], run: ['claim', 'release', 'submit', 'reserveReview', 'reserveNextReview', 'verify', 'escalate', 'shout'],
@@ -32,7 +32,7 @@ export function requestedCommandMove(command, operation) {
     inbox: ['recordActivityDelivery', 'actOnActivity'],
     shout: ['shout'], answer: ['answerDecision'], pass: ['passDecision'], fact: ['appendFact'],
     hold: ['holdLane', 'releaseLane', 'holdItem', 'releaseItemHold'],
-    bar: ['setBarReady', 'signBar'], settings: ['setLineSetting', 'setPersonSigning'], check: ['acceptCheck'],
+    lanes: ['setLaneLead'], bar: ['setBarReady', 'signBar'], settings: ['setLineSetting', 'setPersonSigning'], check: ['acceptCheck'],
     spec: ['recordRowDecisions', 'decideSpecRevisions', 'applyRowDecisions', 'draftSpecRow', 'appendFact', 'editItem', 'withdraw'],
     blueprint: ['draftSpecRow', 'addItem', 'appendFact'], rigor: ['draftSpecRow', 'proposeSentinel'], sweep: ['addItem'],
     milestone: ['addMilestone', 'editMilestoneItems', 'orderMilestoneItems', 'moveMilestone', 'editMilestone', 'removeMilestone', 'shipMilestone'],

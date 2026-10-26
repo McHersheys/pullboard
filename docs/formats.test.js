@@ -1,5 +1,6 @@
 /** @pullboard-test-input source-tree */
 /** Keep the format guide aligned with parser behavior, live SQLite schema and static export [A5,A10]. */
+import { recordRelayExclusionIntent } from '../src/relay-exclusion-state.js';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -28,6 +29,7 @@ import {
   recordActivityDelivery,
   answerDecision,
   addItem,
+  requestCompanion,
   appendFact,
   claim,
   closeBoard,
@@ -60,6 +62,7 @@ import {
   reopen,
   reserveReview,
   SCHEMA_VERSION,
+  setLaneLead,
   shout,
   verify,
   withdraw,
@@ -306,6 +309,11 @@ function recordEventContract() {
   register(board, { lane: 'docs', path: '/builder', family: 'codex' });
   register(board, { lane: 'docs', path: '/builder', model: 'Fixture Model' });
   const reviewer = register(board, { lane: 'tests', path: '/reviewer' });
+  setLaneLead(board, { agentId: coordinator, lane: 'docs', seat: builder, lanes: ['docs', 'tests'] });
+  const laneWorker = register(board, { lane: 'docs', path: '/lane-worker' });
+  const laneQuestion = shout(board, { from: laneWorker, to: coordinator, text: 'sample lane escalation', decision: true, lanes: ['docs', 'tests'] });
+  passDecision(board, laneQuestion, { agentId: builder, note: 'Needs coordination', lanes: ['docs', 'tests'] });
+  setLaneLead(board, { agentId: coordinator, lane: 'docs', seat: null, lanes: ['docs', 'tests'] });
   register(board, { lane: 'small', path: '/small', route: 'light' });
   ensureCoordinator(board, '/coordinator-moved');
   shout(board, { from: builder, to: 'all', text: 'sample announcement', lanes: ['docs', 'tests'] });
@@ -336,6 +344,7 @@ function recordEventContract() {
   appendFact(board, first, { agentId: coordinator, kind: 'measurement', text: 'Corrected evidence', supersedes: fact.id });
   editItem(board, first, { agentId: coordinator, brief: 'Files: docs/formats.md\nTest: docs/formats.test.js', route: 'mid', criterion: 'Changed', check: 'node test' });
   const dependency = addItem(board, { by: coordinator, lane: 'docs', title: 'Dependency example' });
+  requestCompanion(board, { agentId: builder, parentId: dependency, lane: 'core', key: 'format-event', title: 'Companion event example' });
   editItem(board, first, { agentId: coordinator, after: [dependency] });
   const implying = appendFact(board, first, { agentId: coordinator, kind: 'decision', text: 'Dependency changes', implies: [dependency] });
   appendFact(board, first, { agentId: coordinator, kind: 'supersession', text: 'Dependency changes again', supersedes: implying.id });
@@ -445,6 +454,7 @@ function recordEventContract() {
   beginSentinelRun(board, { agentId: coordinator, name: watch.name, digest: watch.digest, run: 'format-run' });
   finishSentinelRun(board, { agentId: coordinator, name: watch.name, digest: watch.digest, run: 'format-run',
     result: { green: false, code: 1, timedOut: false, durationMs: 0, output: 'synthetic format receipt' } });
+  recordRelayExclusionIntent(board, 'view'); // Synthetic person format fixture, not a real settings opt-out.
   const rows = events(board).map((row) => ({ ...row, detail: JSON.parse(row.event_detail) }));
   closeBoard(board);
   return { rows, actors: { [coordinator]: 'coordinator', [builder]: 'builder', [returnedBuilder]: 'builder', [reviewer]: 'reviewer', [PERSON]: 'person', board: 'board', rigor: 'rigor' } };
@@ -733,7 +743,9 @@ test('[A5] schema, versions, event kinds and event detail fields match live beha
     family: 'agent',
     model: 'agent',
     moved: 'coordinator',
+    'lane-lead': 'coordinator',
     add: 'item creator',
+    companion: 'requesting agent',
     edit: 'editor',
     attempt: 'reporting agent',
     fact: 'author',
@@ -760,7 +772,7 @@ test('[A5] schema, versions, event kinds and event detail fields match live beha
   for (const row of actualRows) {
     const kind = row.event_kind;
     const entry = actual[kind] ?? { actors: new Set(), fields: new Set() };
-    const actor = kind === 'refreeze' && row.event_by !== COORDINATOR
+    const actor = kind === 'pass' && row.event_by !== COORDINATOR ? 'lane lead' : kind === 'refreeze' && row.event_by !== COORDINATOR
       ? 'live holder adopting a pending correction'
       : actorByKind[kind] ?? actors[row.event_by] ?? 'unknown';
     entry.actors.add(actor);

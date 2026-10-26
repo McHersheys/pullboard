@@ -20,7 +20,10 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { availableParallelism } from 'node:os';
-import { executionEnvironment } from './execution-environment.js';
+import {
+  captureTestRuntimes,
+  executionEnvironment,
+} from './execution-environment.js';
 import { sampleRunnerLoad } from './runner-load.js';
 import { freemem } from 'node:os';
 import { loadavg } from 'node:os';
@@ -233,7 +236,7 @@ async function readSpec() {
     tagNames.add(tag.name);
     if (tag.chain.length ? tag.chain[0] !== tag.object : tag.object !== tag.peeledCommit) throw new Error('invalid tag manifest');
   }
-  const runtimeNames = ['runner-custody.js', 'resources.js', 'git.js', 'machine-home.js', 'refused.js', 'process-census.js', 'queue-settings.js', 'queue-order.js', 'sandbox-denial.js', 'gate-stages.js', 'child-journal-preload.js', 'execution-environment.js', 'runner-load.js', 'gui-session.js', 'runner-private-mode.js'];
+  const runtimeNames = ['runner-custody.js', 'resources.js', 'runner-wait.js', 'git.js', 'machine-home.js', 'refused.js', 'process-census.js', 'queue-settings.js', 'queue-order.js', 'sandbox-denial.js', 'gate-stages.js', 'child-journal-preload.js', 'execution-environment.js', 'runner-load.js', 'gui-session.js', 'runner-private-mode.js'];
   if (Object.keys(value.runtime.files).length !== runtimeNames.length
     || runtimeNames.some(name => typeof value.runtime.files[name] !== 'string')) throw new Error('invalid work specification');
   if (createHash('sha256').update(JSON.stringify(value.runtime.files)).digest('hex') !== value.runtime.sha256) throw new Error('invalid trusted runtime');
@@ -858,7 +861,7 @@ async function runPrivateCheck(spec, root, env, sink, tracker) {
 async function receipt(spec, fields, sink) {
   await flushStdout();
   const body = { id: spec.id, commit: spec.commit, tree: spec.tree, code: fields.code, signal: fields.signal,
-    environment: executionEnvironment(), gui: fields.gui ?? null, timing: spec.timing === true, executionAdmission: fields.executionAdmission ?? null,
+    environment: executionEnvironment(), testRuntimes: fields.testRuntimes ?? null, gui: fields.gui ?? null, timing: spec.timing === true, executionAdmission: fields.executionAdmission ?? null,
     runtimeSha256: spec.runtime.sha256, toolingSha256: spec.tooling.sha256, root: fields.root ?? '', outputSha256: sink.hash.digest('hex'), wallMs: Math.max(0, Date.now() - sink.wallStart),
     // The execution host's load and the pinned main this run used, so a paired rerun here can be judged (#925).
     main: typeof spec.main === 'string' ? spec.main : null, load: { average: loadavg(), cpus: availableParallelism(), freeMB: Math.floor(freemem() / 1048576) },
@@ -909,6 +912,7 @@ async function main() {
   let api;
   let lease = null;
   let tracker = null;
+  let runtimeCapture = null;
   let runDirectory;
   let setupStep = 'runner directories';
   let gui = null;
@@ -962,7 +966,8 @@ async function main() {
     });
     cleanupDetails = tracker.cleanupState;
     activeDescendantTracker = tracker;
-    const env = scopedEnvironment(privateHome, temporary, canonicalMachineHome, lease, api, tracker.nodeOptions);
+    runtimeCapture = captureTestRuntimes(scopedEnvironment(privateHome, temporary, canonicalMachineHome, lease, api, tracker.nodeOptions));
+    const env = runtimeCapture.env;
     setupStep = 'source history checkout';
     await checkoutHistory(api, runnerRoot, root, packFile, spec, env);
     if (!spec.trustedMode) {
@@ -972,6 +977,7 @@ async function main() {
     setupStep = 'command start';
     const browserRefusal = join(runDirectory, 'browser-refusal.json');
     const commandEnv = { ...env, PULLBOARD_LANDING_RUN: spec.landing === true ? '1' : '0', [api.BROWSER_REFUSAL_FILE_ENV]: browserRefusal, ...(typeof spec.browserByLaunch === 'boolean' ? { PULLBOARD_TEST_BROWSER_BY_LAUNCH: spec.browserByLaunch ? '1' : '0' } : {}), PULLBOARD_LANDING_WAIVERS: JSON.stringify(spec.landing === true ? spec.waivers ?? [] : []) };
+    process.stderr.write(`PULLBOARD_RUNNER_READY ${spec.id}\n`);
     final = { ...(spec.trustedMode ? await runPrivateCheck(spec, root, commandEnv, sink, tracker) : await runCommand(spec, root, commandEnv, sink, tracker)), root };
     if (final.code !== 0 && existsSync(browserRefusal)) final.browserRefused = true;
   } catch (error) {
@@ -1003,6 +1009,7 @@ async function main() {
         }
       } finally { await releaseDrainedLease(lease); }
     }
+    final.testRuntimes = runtimeCapture?.finish() ?? null;
     cleanupStage = 'job files';
     if (runDirectory && !cleanupTimedOut) { try { rmSync(runDirectory, { recursive: true, force: true }); } catch {} }
   }

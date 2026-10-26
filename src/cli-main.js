@@ -133,6 +133,7 @@ const OPTIONS = {
   window: { type: 'string' },
   policy: { type: 'string' },
   decision: { type: 'boolean' },
+  kind: { type: 'string' },
   options: { type: 'string' },
   news: { type: 'boolean' },
   evidence: { type: 'string' },
@@ -251,7 +252,7 @@ async function bindCheckoutSession(io, positionals, values) {
   if (command === 'takeover' && (positionals.length !== 1 || Object.keys(values).some((key) => key !== 'json'))) {
     throw new Refused('USAGE', 'pullboard takeover takes no arguments; run pullboard takeover [--json]');
   }
-  const writes = ['handoff', 'bar', 'init', 'join', 'worktree', 'hooks', 'hook', 'skills', 'add', 'edit', 'fact', 'escalate', 'run', 'sweep',
+  const writes = ['handoff', 'bar', 'init', 'join', 'worktree', 'hooks', 'hook', 'skills', 'add', 'companion', 'edit', 'fact', 'escalate', 'run', 'sweep',
     'next', 'claim', 'hold', 'release', 'submit', 'done', 'verify', 'check', 'merged', 'land', 'withdraw', 'refreeze', 'reopen', 'shout', 'answer', 'pass', 'import', 'milestone', 'takeover', 'forget'];
   if (!writes.includes(command) && !(command === 'lane' && first === 'add') && !(command === 'settings' && first) && !(command === 'spec' && first === 'apply') && !(command === 'relay' && ['on', 'off'].includes(first))) return;
   if (command === 'answer' && values.as === 'person') return;
