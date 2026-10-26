@@ -1,3 +1,5 @@
+import { requirePreparedComputedConflict } from './computed-conflict-receipt.js';
+import { withRecordedConflictContext } from './recorded-conflict-context.js';
 /** Account-free ordered moves on the repository's own Git remote [H11,H10]. */
 import { spawn } from 'node:child_process';
 import {
@@ -150,7 +152,8 @@ async function reconcile(root, board) {
   if (offset < 0) throw new Refused('GIT_SYNC_LOG', 'the remote rewrote this machine\'s acknowledged board prefix; local state was preserved', 'restore the append-only refs/pullboard/board history before syncing');
   for (const { hash, payload } of records.slice(offset + 1)) {
     store.atomic(board, () => {
-      applyEngineMove(board, payload.move, { sequence: payload.sequence, at: payload.at });
+      const position = { sequence: payload.sequence, at: payload.at };
+      withRecordedConflictContext(board, payload.move, position, () => applyEngineMove(board, payload.move, position));
       remember(board, hash);
     });
   }
@@ -184,6 +187,9 @@ async function settle(root, board, pending) {
     if (previous) {
       rmSync(paths(root).pending, { force: true });
       return previous.outcome;
+    }
+    if (pending.move.operation === 'reopen' && pending.move.args[1]?.computedConflict !== undefined) {
+      requirePreparedComputedConflict(board, pending.move.args[0], pending.move.args[1].agentId, pending.move.args[1].computedConflict);
     }
     const payload = { version: 1, kind: 'move', sequence: appliedSequence(board) + 1, at: new Date().toISOString(), move: pending.move };
     const head = await commit(root, payload, tip);

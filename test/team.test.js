@@ -1,4 +1,5 @@
 /** @pullboard-test-loads src/board.js src/engine.js src/exchange.js src/person-signing.js relay/passkeys.js */
+import { submitFixture as submitBoardStateFixture } from './board-submit-fixture.js';
 /** Two independent Git/SQLite replicas derive verdict freshness without rewriting proof [E8]. */
 import { memberHandoverCase } from './handover-membership-case.js';
 import assert from 'node:assert/strict';
