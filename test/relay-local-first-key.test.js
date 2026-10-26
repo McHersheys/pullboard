@@ -1,3 +1,4 @@
+/** @pullboard-test-input source-tree */
 /** Local-first reads retain device-key repair diagnostics without networking or taking relay locks [H17,H21]. */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
