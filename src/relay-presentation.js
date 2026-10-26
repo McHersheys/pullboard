@@ -45,7 +45,9 @@ function readRelayPresentation(root, providedBoard, observedAt) {
     const comparison = project(COMPARISON_CLOCK);
     // exportBoard omits only derived proof counters and machine-local landing lease cache rows.
     // Exact source bytes also retain expired/hidden business inputs that a fixed-clock view may omit.
-    const inputs = { native: exportBoard(board), files: stateFileInputs(root, config).map(fileRevision),
+    // The comparison projects every person-visible block. Private agent recovery lines are not sealed inputs.
+    const files = stateFileInputs(root, config).filter(file => file.name !== 'blocks:blocks.jsonl').map(fileRevision);
+    const inputs = { native: exportBoard(board), files,
       head: resolveCommit(root, 'HEAD'), trunk: trunkRevisionReader(info)(), config };
     const changeFingerprint = createHash('sha256').update(JSON.stringify({ inputs, comparison })).digest('hex');
     return { version: 1, state, config, shouts: store.allShouts(board), changeFingerprint };

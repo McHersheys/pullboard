@@ -198,8 +198,6 @@ test('a large board syncs to the relay compressed [H5,H15,H17]', {
     throw error;
   }
   assert.equal(await chrome.evaluate("document.querySelector('#feed')?.textContent.includes(" + JSON.stringify(marker) + ') ?? false'), true, 'the production browser decoder reads the compressed checkpoint');
-  const projection = { ...expected.presentation.state, root: sourceState.board };
-  const projectionHash = createHash('sha256').update(JSON.stringify(projection)).digest('hex');
   const tablesHash = createHash('sha256').update(JSON.stringify(expected.tables)).digest('hex');
   const browserRead = await chrome.evaluate(`(async () => {
     const { createTransport } = await import('/relay/client.js');
@@ -219,9 +217,17 @@ test('a large board syncs to the relay compressed [H5,H15,H17]', {
       const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(value))));
       return [...bytes].map(value => value.toString(16).padStart(2, '0')).join('');
     }
-    return { projectionHash: await digest(document.state), tablesHash: await digest(native.tables) };
+    return { projectionHash: await digest(document.state), tablesHash: await digest(native.tables),
+      observedAt: native.presentation.state.observedAt, displayedObservedAt: document.state.observedAt };
   })()`, 'hash browser projection and native snapshot');
-  assert.deepEqual(browserRead, { projectionHash, tablesHash }, 'the production browser client reads the exact projection and browser gzip retains every native table byte');
+  const { observedAt, displayedObservedAt, ...browserHashes } = browserRead;
+  assert.equal(displayedObservedAt, observedAt, 'the browser retains the authenticated checkpoint observation');
+  const clock = Date.parse(observedAt);
+  assert.ok(Number.isSafeInteger(clock), 'the native checkpoint carries its explicit observation clock');
+  // Compare complete production readers at the SAME documented observation, not two wall-clock instants.
+  const projection = { ...relaySnapshot(box.root, { observedAt: clock }).presentation.state, root: sourceState.board };
+  const projectionHash = createHash('sha256').update(JSON.stringify(projection)).digest('hex');
+  assert.deepEqual(browserHashes, { projectionHash, tablesHash }, 'the production browser client reads the exact projection and browser gzip retains every native table byte');
 
   // An older relay that does not advertise paged snapshots keeps its explicit per-request refusal.
   box.legacySnapshotApi();

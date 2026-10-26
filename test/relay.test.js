@@ -714,7 +714,7 @@ test('unreadable links are refused; agent tokens belong to exactly one board [H8
   await assert.rejects(box.auth.linkBoard(agent.token, 'gamma', 'fixture/repository'), { code: 'HUMAN_REQUIRED' });
 });
 
-test('lost GitHub read access takes effect at ten minutes and before every board write [H8, H1]', async (t) => {
+test('lost GitHub access takes effect at ten minutes for reads and writes alike, and GitHub is asked once per window, never per write [H8, H1, H21]', async (t) => {
   const box = await fixture(t);
   const signed = await login(box);
   await box.auth.linkBoard(signed.token, 'alpha', 'fixture/repository');
@@ -725,10 +725,23 @@ test('lost GitHub read access takes effect at ten minutes and before every board
   box.advance(1);
   assert.deepEqual(await box.auth.boardsFor(signed.token), []);
   box.state.access = true;
+  box.advance(ACCESS_WINDOW_MS); // A denied grant is cached for the same window as an allowed grant [H21].
   await box.auth.authenticate(signed.token, { board: 'alpha', write: true });
+  const asked = () => box.calls.filter(call => call.path.endsWith('/permission')).length;
+  const before = asked();
+  for (let write = 0; write < 5; write += 1) await box.auth.authenticate(signed.token, { board: 'alpha', write: true });
+  assert.equal(asked(), before, 'writes inside the window reuse the grant instead of asking GitHub each time');
   box.state.access = false;
-  await assert.rejects(box.auth.authenticate(signed.token, { board: 'alpha', write: true }), { code: 'NO_REPO_ACCESS' });
+  box.advance(ACCESS_WINDOW_MS - 1);
+  await box.auth.authenticate(signed.token, { board: 'alpha', write: true });
+  box.advance(1);
+  await assert.rejects(box.auth.authenticate(signed.token, { board: 'alpha', write: true }), { code: 'NO_REPO_ACCESS' }, 'revoked access refuses writes once the window ends');
   assert.deepEqual(await box.auth.boardsFor(signed.token), [], 'a denied write invalidates an earlier allowed read');
+  box.state.access = true;
+  await assert.rejects(box.auth.authenticate(signed.token, { board: 'alpha' }), { code: 'NO_REPO_ACCESS' }, 'a read reuses the denial inside its window');
+  await assert.rejects(box.auth.authenticate(signed.token, { board: 'alpha', write: true }), { code: 'NO_REPO_ACCESS' }, 'a write also reuses the denial inside its window');
+  box.advance(ACCESS_WINDOW_MS);
+  assert.equal((await box.auth.authenticate(signed.token, { board: 'alpha', write: true })).user.id, signed.user.id, 'the next window checks restored access again');
 });
 
 test('person token management lists only owned scoped metadata and preserves independent revocation [H2,H9]', async (t) => {
@@ -764,6 +777,7 @@ test('person token management lists only owned scoped metadata and preserves ind
   assert.equal((await box.auth.authenticate(second.token, { board: 'alpha', write: true })).agent, 'worker-two');
   assert.equal((await box.auth.authenticate(other.token, { board: 'beta', write: true })).agent, 'worker-one');
   box.state.permission = 'read';
+  box.advance(ACCESS_WINDOW_MS); // A role change takes effect when the cached grant's window ends [H8,H21].
   await assert.rejects(box.auth.listTokens(person.token, 'alpha'), { code: 'WRITE_REQUIRED' });
 });
 
@@ -960,6 +974,7 @@ test('a public reader sees no board and cannot act, mint or revoke; refusal matc
   await box.auth.linkBoard(signed.token, 'alpha', 'fixture/repository');
   const existing = await box.auth.issueToken(signed.token, { board: 'alpha', agent: 'worker' });
   box.state.permission = 'none';
+  box.advance(ACCESS_WINDOW_MS); // A role change takes effect when the cached grant's window ends [H8,H21].
   let missing;
   await assert.rejects(box.auth.authenticate(signed.token, { board: 'absent', write: true }), error => {
     missing = { code: error.code, message: error.message }; return error.code === 'BOARD_NOT_LINKED';
@@ -971,6 +986,7 @@ test('a public reader sees no board and cannot act, mint or revoke; refusal matc
   await assert.rejects(box.auth.issueToken(signed.token, { board: 'alpha', agent: 'second' }), { code: 'BOARD_NOT_LINKED' });
   await assert.rejects(box.auth.revoke(signed.token, existing.id), { code: 'BOARD_NOT_LINKED' });
   box.state.permission = 'write';
+  box.advance(ACCESS_WINDOW_MS); // A role change takes effect when the cached grant's window ends [H8,H21].
   assert.equal((await box.auth.authenticate(existing.token, { board: 'alpha', write: true })).agent, 'worker', 'denied revocation did not alter the token');
 });
 
@@ -981,6 +997,7 @@ test('a public triage account sees its board but cannot act, mint or revoke its 
   await box.auth.linkBoard(signed.token, 'alpha', 'fixture/repository');
   const existing = await box.auth.issueToken(signed.token, { board: 'alpha', agent: 'worker' });
   box.state.permission = 'triage';
+  box.advance(ACCESS_WINDOW_MS); // A role change takes effect when the cached grant's window ends [H8,H21].
   await assert.rejects(box.auth.authenticate(signed.token, { board: 'alpha', write: true }), { code: 'WRITE_REQUIRED' });
   assert.deepEqual((await box.auth.boardsFor(signed.token)).map(board => board.id), ['alpha']);
   assert.equal((await box.auth.authenticate(existing.token, { board: 'alpha' })).permission, 'triage');
@@ -995,6 +1012,7 @@ test('write, maintain and admin accounts act and mint while private readers only
   let existing;
   for (const permission of ['write', 'maintain', 'admin']) {
     box.state.permission = permission;
+    box.advance(ACCESS_WINDOW_MS); // A role change takes effect when the cached grant's window ends [H8,H21].
     assert.equal((await box.auth.authenticate(signed.token, { board: 'alpha', write: true })).permission, permission);
     // Each seat gets one first mint (#579), so each permission mints its own seat.
     existing = await box.auth.issueToken(signed.token, { board: 'alpha', agent: 'worker-' + permission });
@@ -1003,8 +1021,10 @@ test('write, maintain and admin accounts act and mint while private readers only
     await assert.rejects(box.auth.authenticate(existing.token, { board: 'alpha' }), { code: 'AUTH_REQUIRED' });
   }
   box.state.permission = 'write';
+  box.advance(ACCESS_WINDOW_MS); // A role change takes effect when the cached grant's window ends [H8,H21].
   existing = await box.auth.issueToken(signed.token, { board: 'alpha', agent: 'reader' });
   box.state.permission = 'read';
+  box.advance(ACCESS_WINDOW_MS); // A role change takes effect when the cached grant's window ends [H8,H21].
   await assert.rejects(box.auth.authenticate(signed.token, { board: 'alpha', write: true }), { code: 'WRITE_REQUIRED' });
   assert.equal((await box.auth.boardsFor(signed.token)).length, 1);
   assert.equal((await box.auth.authenticate(existing.token, { board: 'alpha' })).permission, 'read');
@@ -1018,6 +1038,7 @@ test('an explicit read role still hides a public board below triage [H13,H14,H8]
   const signed = await login(box);
   await box.auth.linkBoard(signed.token, 'alpha', 'fixture/repository');
   box.state.permission = 'read';
+  box.advance(ACCESS_WINDOW_MS); // A role change takes effect when the cached grant's window ends [H8,H21].
   assert.deepEqual(await box.auth.boardsFor(signed.token), []);
   await assert.rejects(box.auth.authenticate(signed.token, { board: 'alpha', write: true }), { code: 'BOARD_NOT_LINKED' });
   await assert.rejects(box.auth.issueToken(signed.token, { board: 'alpha', agent: 'worker' }), { code: 'BOARD_NOT_LINKED' });

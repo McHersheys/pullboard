@@ -91,9 +91,7 @@ import {
 } from './relay-sender.js';
 import {
   actorTransport,
-  cacheSeatToken,
   ensurePersonCoordinator,
-  nameNextSeat,
   seatReceipt,
   withSeatName,
 } from './relay-seats.js';
@@ -123,6 +121,9 @@ import {
 import { terminalQr } from './qr.js';
 import { environmentLink } from './relay-environment.js';
 import { locked } from './relay-lock.js';
+import { withOutboxGuard } from './relay-outbox-guard.js';
+import { relayOrdering } from './relay-ordering.js';
+import { nudgeRelaySender } from './relay-local-first.js';
 import { checkpointPublisher } from './relay-checkpoint-publish.js';
 import {
   checkpointInBackground,
@@ -141,9 +142,10 @@ import {
 } from './relay-move-fallback.js';
 import {
   flushOutbox,
-  outboxAhead,
   outboxFields,
+  outboxFile,
   outboxQueueable,
+  readOutboxSummary,
   queueMove,
 } from './relay-outbox.js';
 import { stampCoordinatorHolder } from './coordinator-hold.js';
@@ -340,6 +342,10 @@ function loadLink(file) {
     saveLink(file, state);
   }
   STATE_FILES.set(state, file);
+  // A move queues itself without the relay lock, so the outbox summary lives in its own file (#1013).
+  const waiting = readOutboxSummary(file);
+  if (waiting) state.outbox = waiting;
+  else if (!existsSync(outboxFile(file))) delete state.outbox;
   return state;
 }
 
@@ -349,7 +355,8 @@ export function saveLink(file, state) {
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   const temporary = file + '.' + randomUUID() + '.tmp';
   try {
-    writeFileSync(temporary, JSON.stringify(state) + '\n', { flag: 'wx', mode: 0o600 });
+    // The outbox summary is the outbox's own file; a link saved by the sender never overwrites a move's (#1013).
+    writeFileSync(temporary, JSON.stringify({ ...state, outbox: undefined }) + '\n', { flag: 'wx', mode: 0o600 });
     renameSync(temporary, file);
   } finally { rmSync(temporary, { force: true }); }
 }
@@ -959,105 +966,10 @@ function reportRecoveredReply(record, io) {
   delete record.lostReply;
 }
 
-/** Apply a validated relay prefix with durable, transaction-bound receipts on this replica. */
-async function catchUp(root, file, state, io) {
-  // Queued moves sit on top of this board until the outbox replays; another machine's moves must not land under them.
-  if (outboxAhead(state)) throw new Refused('RELAY_OUTBOX_PENDING', 'this machine holds moves the relay has not ordered yet; run pullboard status to send them first');
-  const key = readBoardKey(state.board);
-  const after = localRecords(root, appliedSequence);
-  let remote;
-  try { remote = await request(state, '/api/v1/boards/' + state.board + '/events?after=' + after, {}, io); }
-  catch (error) {
-    if (error.code !== 'SNAPSHOT_REQUIRED') throw error;
-    await restoreCheckpoint(root, state, io, key);
-    if (localRecords(root, appliedSequence) <= after) throw new Refused('RELAY_RESPONSE', 'the relay checkpoint did not advance the missing prefix; fetch a consistent newer snapshot');
-    return catchUp(root, file, state, io);
-  }
-  if ([remote.warning, ...(remote.warnings ?? [])].some((warning) => warning?.code === 'KEY_REQUESTS')) io.keyRequestsWaiting = true;
-  if (!Array.isArray(remote.events) || remote.events.some((record, index) => !record || record.event_id !== after + index + 1 || !['move', 'request'].includes(record.kind) || typeof record.sealed !== 'string')) {
-    throw new Refused('RELAY_RESPONSE', 'the relay returned an invalid ordered prefix; fetch a consistent relay snapshot');
-  }
-  let pendingRefusal;
-  for (const record of remote.events) {
-    const board = store.openBoard(join(repoInfo(root).commonDir, 'pullboard', 'board.sqlite'), undefined, { isMain: codeIsFromMain(), gitRoot: root });
-    let outcome;
-    try { outcome = await replayRelayRecord(board, key, state, record); } finally { store.closeBoard(board); }
-    // Exact ciphertext identifies an interrupted send even when its document was refused before replay.
-    if (record.kind === 'move' && state.pending?.move && record.event_id === state.pending.sequence
-        && record.sealed === state.pending.sealed && outcome?.error
-        && !localRecords(root, board => engineReceipt(board, state.pending.move.id))) {
-      pendingRefusal = outcome.error;
-      reportRecoveredReply(state.pending, io);
-      delete state.pending;
-      delete state.recovered;
-    }
-  }
-  state.sequence = localRecords(root, appliedSequence);
-  if (state.pending?.move && localRecords(root, (board) => engineReceipt(board, state.pending.move.id))) {
-    reportRecoveredReply(state.pending, io);
-    state.recovered = state.pending;
-    delete state.pending;
-  }
-  saveLink(file, state);
-  if (pendingRefusal) throw refusalFromReceipt(pendingRefusal);
-}
-
-/** Finish a durable executable send; a collision reseals its unchanged id after applying the winner. */
-async function sendPending(root, file, state, io) {
-  let renewedAgentToken = false;
-  for (let tries = 0; state.pending && tries < 100; tries += 1) {
-    const pending = state.pending;
-    const actor = credentialActor(pending.move);
-    try {
-      const transport = await conflictRecords.transport(root, pending.move, localRecords, () => actorTransport(root, file, state, actor, io));
-      const reply = await request(transport, '/api/v1/boards/' + state.board + '/moves', { method: 'POST',
-        body: { sequence: pending.sequence, sealed: pending.sealed, ...(pending.registration ? { registration: pending.registration } : {}) } }, io);
-      if (reply.event?.event_id !== pending.sequence || reply.event.sealed !== pending.sealed) throw new Refused('RELAY_RESPONSE', 'the relay acknowledgement differs from this executable send; fetch the configured relay');
-      if (pending.registration) {
-        const enrollment = reply.enrollment;
-        if (!enrollment || enrollment.board !== state.board || enrollment.agent !== pending.registration.target || typeof enrollment.id !== 'string') {
-          throw new Refused('RELAY_RESPONSE', 'the relay registered the seat without its issuance; repeat this command to recover its token');
-        }
-        // A retried registration returns the same issuance without a token; its creator reissues it on first use.
-        if (enrollment.token !== undefined) cacheSeatToken(file, state, pending.registration.target, enrollment);
-      }
-    } catch (error) {
-      if (error.code === 'AUTH_REQUIRED' && !renewedAgentToken && actor !== 'machine' && actor !== 'person'
-          && process.env.PULLBOARD_RELAY_TOKEN === undefined && state.agentTokens?.[actor]?.token) {
-        // An expired cache renews only through the seat's creator; a live one the relay refused was revoked.
-        if (state.agentTokens[actor].expires > Date.now()) {
-          state.agentTokens[actor].revoked = true;
-          saveLink(file, state);
-          throw new Refused('TOKEN_REVOKED', `the relay token of ${actor} was revoked on this board; work from a seat with its own token, or ask the coordinator for a fresh worktree`);
-        }
-        delete state.agentTokens[actor].token;
-        saveLink(file, state);
-        renewedAgentToken = true;
-        continue;
-      }
-      if (error.code === 'SEAT_TAKEN' && pending.registration) {
-        // The relay already gave this name a token (a machine first mint): take the next free name.
-        nameNextSeat(root, pending.move, Number(pending.move.args[0].id.slice(pending.move.args[0].lane.length + 1)) + 1);
-        pending.sealed = await sealedRecord(readBoardKey(state.board), pending.move, state, 'move', pending.sequence);
-        pending.registration = seatReceipt(pending.move, pending.sequence, pending.sealed);
-        saveLink(file, state);
-        continue;
-      }
-      if (!['SEQUENCE_REPEAT', 'SEQUENCE_GAP'].includes(error.code)) throw error;
-      await catchUp(root, file, state, io);
-      if (state.pending) {
-        state.pending.sequence = state.sequence + 1;
-        if (state.pending.registration) nameNextSeat(root, state.pending.move, 0);
-        state.pending.sealed = await sealedRecord(readBoardKey(state.board), state.pending.move, state, 'move', state.pending.sequence);
-        state.pending.registration = seatReceipt(state.pending.move, state.pending.sequence, state.pending.sealed);
-        saveLink(file, state);
-      }
-      continue;
-    }
-    await catchUp(root, file, state, io);
-  }
-  if (state.pending) throw new Refused('RELAY_BUSY', 'the relay order stayed busy; retry this command after other clients finish');
-}
+// Catch-up and send live in their own module, over these link and transport helpers (#1013).
+const ordering = relayOrdering({ request, localRecords, decoded, replayRelayRecord, reportRecoveredReply, saveLink, sealedRecord,
+  flush: (root, file, state, io) => flushOutbox(outboxLink(root, file, state, io)) });
+const { applyRecords, fetchCheckpoint, catchUp, postPending, sendPending } = ordering;
 
 /** Set up this machine's coordinator token inside a paired join's own person sign-in (#579). */
 export async function relayPersonCoordinator(root, session, io) {
@@ -1101,13 +1013,53 @@ function keepMoveForLaterBaseline(file, state, error, io) {
 
 /** The relay transport the ordered outbox queues and replays through (#922). */
 function outboxLink(root, file, state, io) {
-  return { root, file, state, io, request, catchUp, sendPending, sealedRecord, localRecords, saveLink, safePauseCode, safePauseMessage };
+  return { root, file, state, io, request, sealedRecord, localRecords, saveLink, safePauseCode, safePauseMessage,
+    applyRecords, fetchCheckpoint: (key) => fetchCheckpoint(state, io, key), postPending };
+}
+
+/**
+ * The link a move may queue on and return at once (#1013), or null when it must reach the relay first: the board's
+ * relay.outbox is on and the relay accepted its baseline, and the move needs no relay answer to exist (a
+ * registration mints its token there, a takeover needs the relay's sign-in lineage, a person's request is the
+ * phone's, and landing authority needs real order). Environment-token sessions always wait: ephemeral jobs
+ * cannot retain queued moves after they exit.
+ */
+function localFirstLink(file, operation, args, io) {
+  let state;
+  try { state = loadLink(file); } catch { return null; }
+  if (!state || state.unlinking || state.recovery || state.mode !== 'ordered' || state.baselineAccepted !== true
+    || state.baselineConflict || state.baselinePause || state.baselineStale || state.environment) return null;
+  if (process.env.PULLBOARD_RELAY_TOKEN !== undefined || io?.relayCanary || io?.personRequest || io?.personRequestMoveId) return null;
+  // A takeover needs the relay's authenticated sign-in lineage, which only the relay's order carries.
+  if (['register', 'ensureCoordinator', 'takeCoordinator', 'landingLeaseMove'].includes(operation) || args?.[0]?.landingFence !== undefined) return null;
+  if (credentialActor({ operation, args }) === 'person') return null;
+  try { if (io?.relayOutbox?.() !== true) return null; } catch { return null; }
+  return state;
+}
+
+/**
+ * Make a move on this machine at once and queue it for the relay (#1013): no network call and no relay lock, only
+ * the short outbox guard. The background sender sends it and rebuilds the board once the relay has ordered it.
+ */
+async function queueLocally(root, file, state, operation, args, io, command, applyLocally, onRecorded) {
+  const guarded = landingRelayCallbacks(operation, args, {
+    apply: () => typeof applyLocally === 'function' ? applyLocally() : localRecords(root, (board) => store[operation](board, ...args)),
+    queue: () => { throw new Refused('RELAY_OUTBOX', 'a local-first move queues itself; it is never queued twice'); },
+  });
+  // An unlink that finished while this move waited for the guard leaves an ordinary local board.
+  const result = await withOutboxGuard(file, () => !existsSync(file) ? guarded.apply() : queueMove(outboxLink(root, file, state, io),
+    { operation, args, command, applyLocally: guarded.apply, quiet: true }));
+  onRecorded?.();
+  nudgeRelaySender(root, file);
+  return result;
 }
 
 /** Send one board operation before executing it locally, and report its canonical engine result. */
 export async function relayOperation(root, operation, args, io, command, applyLocally, onRecorded) {
   const roundTripStarted = Date.now();
   const file = linkFile(root);
+  const local = localFirstLink(file, operation, args, io);
+  if (local) return queueLocally(root, file, local, operation, args, io, command, applyLocally, onRecorded);
   return locked(file, async () => {
     const state = loadLink(file);
     const guarded = landingRelayCallbacks(operation, args, {
@@ -1127,17 +1079,19 @@ export async function relayOperation(root, operation, args, io, command, applyLo
     moves.add(state.board);
     let requestedMove;
     try {
+      const requiresAcknowledgment = process.env.PULLBOARD_RELAY_TOKEN !== undefined || state.environment || io.relayCanary;
       let ordered;
       const queue = guarded.queue;
       try { ordered = await ensureOrdered(root, file, state, io); }
       catch (error) {
-        if (outboxQueueable(state, error, operation, io)) return await queue(error);
-        // #341: a baseline the relay has not accepted never blocks a move; the move rides in the later baseline.
-        if (!baselineNotAccepted(state) || !transientRelayFailure(error)) throw error;
+        if (outboxQueueable(state, error, operation, io, args)) return await queue(error);
+        // #341/#919 retain persistent local moves; ephemeral sessions and canaries always require acknowledgment.
+        if (requiresAcknowledgment || !baselineNotAccepted(state) || !transientRelayFailure(error)) throw error;
         keepMoveForLaterBaseline(file, state, error, io);
         ordered = false;
       }
       if (!ordered) {
+        if (requiresAcknowledgment) throw new Refused('RELAY_UNAVAILABLE', 'this session requires a relay acknowledgment; retry the move when the relay accepts the board baseline');
         if (state.baselinePause) reportBaselinePause(state, io);
         return applyPausedMoveLocally();
       }
@@ -1146,7 +1100,7 @@ export async function relayOperation(root, operation, args, io, command, applyLo
         await flushOutbox(outboxLink(root, file, state, io));
         await catchUp(root, file, state, io);
       } catch (error) {
-        if (outboxQueueable(state, error, operation, io)) return await queue(error);
+        if (outboxQueueable(state, error, operation, io, args)) return await queue(error);
         throw error;
       }
       if (state.pending) {
@@ -1193,7 +1147,7 @@ export async function relayOperation(root, operation, args, io, command, applyLo
         }
       } catch (error) {
         // #922: on an accepted link, a relay that stays down queues the move; a lost reply's copy is matched at replay.
-        if (move && !localRecords(root, (board) => engineReceipt(board, move.id)) && outboxQueueable(state, error, operation, io)) return await queue(error, move);
+        if (move && !localRecords(root, (board) => engineReceipt(board, move.id)) && outboxQueueable(state, error, operation, io, args)) return await queue(error, move);
         throw error;
       }
       const receipt = localRecords(root, (board) => engineReceipt(board, move.id));
@@ -1355,6 +1309,10 @@ export async function relayRevoke(root, id, io) {
 export async function relayCommandReceipt(root, command) {
   if (!command) return null;
   const file = linkFile(root);
+  // Most commands have no interrupted result to recover: they read that without the relay lock, so an add never
+  // waits on the sender holding it (#1013).
+  const peek = loadLink(file);
+  if (peek && !peek.unlinking && !peek.recovered) return null;
   return locked(file, async () => {
     const state = loadLink(file);
     if (!state) {
@@ -1390,6 +1348,8 @@ export async function relayCommandReceipt(root, command) {
 /** Consume the exact cached result after its original CLI outcome has been formatted. */
 export async function relayCommandReceiptReported(root, moveId) {
   const file = linkFile(root);
+  const peek = loadLink(file);
+  if (peek && peek.recovered?.move?.id !== moveId) return;
   return locked(file, async () => {
     const state = loadLink(file);
     if (state?.recovered?.move?.id === moveId) {
@@ -1694,7 +1654,8 @@ export async function relayOff(root, io) {
     try { proposal = await phoneProposal(state, 'delete-board', state.board, { root }); }
     catch { /* Missing key or pairing cannot stop local unlinking. */ }
     rememberRelink(root, state.board);
-    archiveRelinkOutbox(root, state);
+    // A local-first move queues under the outbox guard, so the outbox is set aside under it too (#1013).
+    await withOutboxGuard(file, () => archiveRelinkOutbox(root, state));
     rmSync(file, { force: true });
     try { forgetBoardKey(state.board, state.keyStorage); }
     catch { /* The local opt-out is complete even when secure key storage is temporarily locked. */ }
