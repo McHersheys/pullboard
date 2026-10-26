@@ -1,5 +1,8 @@
 /** Generate work-commit metadata from the seat's claim, never from an author's assertion [C7]. */
-import { buildCommitMessage, parseCommitMessage } from './commit-message.js';
+import {
+  buildCommitMessage,
+  parseCommitMessage,
+} from './commit-message.js';
 import { landingRows } from './landing-message.js';
 
 /** Validate supplied metadata before replacing it with the board's canonical trailer paragraph. */
