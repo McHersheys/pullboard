@@ -14,6 +14,13 @@ function receipts(box) {
   finally { board.db.close(); }
 }
 
+/** Observe the inbox's separate unread projection, which must not consume an unrecorded interrupt. */
+function shoutCursors(box) {
+  const board = openBoardForRead(join(box.root, '.git', 'pullboard', 'board.sqlite'));
+  try { return board.db.prepare('SELECT agent_id, agent_last_shout_id FROM agent ORDER BY agent_id').all(); }
+  finally { board.db.close(); }
+}
+
 /** Read an optional local cursor without creating it. */
 function cursor(box) {
   const file = join(box.root, '.git', 'pullboard-activity.json');
@@ -41,6 +48,7 @@ export async function prepareKeylessInbox(box) {
 /** Preserve both cursors while displaying a real obligation and refusing explicit acknowledgement. */
 export async function readKeylessInbox(box, state) {
   const beforeCursor = cursor(box), beforeReceipts = receipts(box);
+  const beforeShouts = shoutCursors(box);
   const read = await box.cli('inbox');
   assert.equal(read.code, 0, `inbox reads without the key: ${JSON.stringify(read.document?.error ?? null)}`);
   assert.equal(read.document.activity.receipt.recorded, false, 'an unavailable canonical receipt is never claimed');
@@ -50,6 +58,7 @@ export async function readKeylessInbox(box, state) {
   state.interrupt = interrupt.id;
   assert.equal(cursor(box), beforeCursor, 'unrecorded delivery never advances the local cursor');
   assert.deepEqual(receipts(box), beforeReceipts, 'the read cannot forge a canonical delivery');
+  assert.deepEqual(shoutCursors(box), beforeShouts, 'an unrecorded read cannot consume its answer through the unread projection');
   const acted = await box.cli('inbox', '--acted-on', state.interrupt);
   assert.equal(acted.document?.error?.code, 'RELAY_KEY_MISSING', 'explicit acknowledgement stays an authenticated write');
   assert.deepEqual(receipts(box), beforeReceipts, 'a refused acknowledgement changes no receipt');

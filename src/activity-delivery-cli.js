@@ -60,8 +60,6 @@ export async function deliverActivity(ctx, { actedIds = [], afterSubmit = false,
       changesForMain: (commit, detail) => activityMainFiles(ctx.info.root, commit, detail,
         { rowFiles: [ctx.config.spec, ctx.config.practice] }) });
     const { observation, newsShouts, shoutCursor, ...activity } = projected;
-    const shouts = directShouts ? store.inbox(board, me.id, { through: shoutCursor })
-      .filter(shout => !newsShouts.includes(shout.shout_id)) : [];
     // Pending obligations survive an output failure: delivery is not acknowledgement.
     const retired = handoffMoveProblem(board, me.id, 'recordActivityDelivery', [{ agentId: me.id }]);
     if (retired) activity.receipt = { recorded: false, code: retired.code, message: retired.message };
@@ -73,6 +71,8 @@ export async function deliverActivity(ctx, { actedIds = [], afterSubmit = false,
         activity.receipt = { recorded: false, code: error.code, message: error.message };
       }
     }
+    const shouts = directShouts ? store.inbox(board, me.id, { through: shoutCursor, markRead: activity.receipt?.recorded !== false })
+      .filter(shout => !newsShouts.includes(shout.shout_id)) : [];
     return { shouts, agents: store.listAgents(board), activity, local };
   });
   if (delivered.activity.receipt?.recorded !== false && !saveActivityCursor(delivered.local, delivered.activity.cursor)) {
