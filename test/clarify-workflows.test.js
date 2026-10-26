@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { assertClarificationQuietPeriod } from './clarify-stale-fixture.js';
 
 const staleWorkflow = readFileSync(new URL('../.github/workflows/stale.yml', import.meta.url), 'utf8');
 const reopenWorkflow = readFileSync(new URL('../.github/workflows/reopen-clarify.yml', import.meta.url), 'utf8');
@@ -90,4 +91,13 @@ test('non-authors, pull requests, reopened issues, and missing clarify labels do
   const changedAuthor = reopenFixture({ currentIssue: { user: { id: 8 } } });
   await runReopenScript(changedAuthor.github, changedAuthor.context);
   assert.deepEqual(changedAuthor.calls, [['get', { owner: 'pullboard-dev', repo: 'pullboard', issue_number: 12 }]]);
+});
+
+test('the pinned stale processor closes after fourteen quiet days since a day-ten comment [I1]', async t => {
+  const result = await assertClarificationQuietPeriod(staleWorkflow);
+  assert.equal(result.before.observations.at(-1).state, 'open', 'the former config reproduces the permanent-comment bug');
+  assert.deepEqual(result.after.observations.map(({ day, state }) => ({ day, state })), [
+    { day: 20, state: 'open' }, { day: 24, state: 'closed' },
+  ]);
+  t.diagnostic(result.scope);
 });
