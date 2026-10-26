@@ -71,11 +71,11 @@ export async function deliverActivity(ctx, { actedIds = [], afterSubmit = false,
         activity.receipt = { recorded: false, code: error.code, message: error.message };
       }
     }
-    const shouts = directShouts ? store.inbox(board, me.id, { through: shoutCursor, markRead: activity.receipt?.recorded !== false })
+    const shouts = directShouts ? store.inbox(board, me.id, { through: shoutCursor, markRead: activity.receipt?.code !== 'RELAY_KEY_MISSING' })
       .filter(shout => !newsShouts.includes(shout.shout_id)) : [];
     return { shouts, agents: store.listAgents(board), activity, local };
   });
-  if (delivered.activity.receipt?.recorded !== false && !saveActivityCursor(delivered.local, delivered.activity.cursor)) {
+  if (delivered.activity.receipt?.code !== 'RELAY_KEY_MISSING' && !saveActivityCursor(delivered.local, delivered.activity.cursor)) {
     ctx.io.err('activity cursor could not be saved; activity may repeat when you read inbox again');
   }
   const { local, ...result } = delivered;
