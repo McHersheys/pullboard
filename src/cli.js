@@ -607,18 +607,24 @@ export async function ordered(ctx, board, operation, args) {
     const write = () => store.atomic(board, () => { requireHandoffActive(board, actor, operation, args); return store[operation](board, ...args); });
     if (initialBaseline && actor) await recordBaseline(actor);
     const requested = requestedCommandMove(ctx.io.relayCommand?.cliOperation, operation);
+    const heartbeat = requested ? (await import('./cli-presence.js')).heartbeatCommand : null;
+    /** Observe a committed requested write before its relay checkpoint captures the presentation. */
+    const observeRequested = () => {
+      ctx.io.recordedMove = true;
+      heartbeat(ctx.io, { ctx, board });
+    };
     /** Called only for this requested operation, after its store transaction commits, never for bootstrap. */
     const applyRequested = () => {
       const before = board.lastEvent;
       const result = write();
-      if (requested && board.lastEvent !== before) ctx.io.recordedMove = true;
+      if (requested && board.lastEvent !== before) observeRequested();
       return result;
     };
     const result = await withItemSession(ctx.info, operation, args, async () => gitSyncLinked(ctx.info.root)
       ? (await import('./sync.js')).gitBoardOperation(ctx.info.root, board, operation, args, ctx.io)
       : relayLinked(ctx.info.root) || relayRecovered(ctx.info.root)
         ? relayOperation(ctx.info.root, operation, args, ctx.io, command, applyRequested,
-          requested ? () => { ctx.io.recordedMove = true; } : undefined) : applyRequested());
+          requested ? observeRequested : undefined) : applyRequested());
     if (requested && gitSyncLinked(ctx.info.root)) ctx.io.recordedMove = true;
     if (requested && ctx.io.recordedMove) (await import('./cli-presence.js')).heartbeatCommand(ctx.io, { ctx, board });
     return result;
