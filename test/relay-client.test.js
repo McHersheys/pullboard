@@ -31,7 +31,7 @@ import { captureSpecApprovalBaseline } from '../src/spec-approval.js';
 import { AGENT_SHELL_MARKERS, SSH_SHELL_MARKERS } from '../src/person.js';
 import { legacyMirrorQueueFragment } from './relay-client-legacy-case.js';
 import { assertBaselineResumeEvidence, assertOriginalBaselineEvidence } from './relay-client-baseline-case.js';
-import { localEvents, receipts, syncReplica } from './relay-client-replica-fixture.js';
+import { localEvents, receipts, relayUploadSummary, syncReplica } from './relay-client-replica-fixture.js';
 import { assertDroppedReplyConsumed, commitInitializedRepoFiles, enterLegacyAckPolicy } from './relay-client-policy-fixture.js';
 import { threeReplicaPhaseCapture } from './relay-client-timing.js';
 
@@ -1236,14 +1236,17 @@ async function recoverReplicaReplies(fixture, timing) {
   const beforeRecoveredStack = relay.uploads.length;
   relay.dropNextReply({ offline: true, operation: 'submit', item: stackedB, key, boardId });
   const lostStackSubmit = await timing.wait('submit recovered-stack item B with its reply dropped', () => cliResult(worktrees[0], envs[0], 'submit', String(stackedB)));
+  const afterLostStackSubmit = relay.uploads.length;
   assertDroppedReplyConsumed(relay, 'the recovered-stack submission reply');
   assert.equal(lostStackSubmit.status, 1);
   assert.equal(lostStackSubmit.document.error.code, 'RELAY_UNAVAILABLE');
   relay.failReads(false);
   const laterA = await timing.wait('submit stack item A after B has a lost reply', () => cliResult(worktrees[1], envs[1], 'submit', String(stackedA)));
+  const afterLaterA = relay.uploads.length;
   assert.equal(laterA.status, 0, laterA.stderr);
   assert.equal(laterA.document.commit, firstRecoveryCommit);
   await timing.wait('sync clone A to recover stacked submission B', () => cli(clones[0], envs[0], 'status'));
+  const afterStackRecovery = relay.uploads.length;
 
   const recoveredLink = join(commonDir(clones[0], envs[0]), 'pullboard', 'relay.json');
   const pendingOutcome = JSON.parse(readFileSync(recoveredLink, 'utf8')).recovered;
@@ -1253,6 +1256,12 @@ async function recoverReplicaReplies(fixture, timing) {
   const recoveredReceipt = receipts(replicaFiles[0]).find((receipt) => JSON.parse(receipt.move).id === pendingOutcome.move.id);
   assert.deepEqual(JSON.parse(recoveredReceipt.move), pendingOutcome.move, 'the pending reply has the exact durable engine receipt');
   const beforeOutcomeRetry = relay.uploads.length;
+  console.log('stacked submit upload diagnostic', JSON.stringify({
+    lostB: await relayUploadSummary(relay.uploads.slice(beforeRecoveredStack, afterLostStackSubmit), key, boardId),
+    submitA: await relayUploadSummary(relay.uploads.slice(afterLostStackSubmit, afterLaterA), key, boardId),
+    syncA: await relayUploadSummary(relay.uploads.slice(afterLaterA, afterStackRecovery), key, boardId),
+    pendingReceiptRead: await relayUploadSummary(relay.uploads.slice(afterStackRecovery, beforeOutcomeRetry), key, boardId),
+  }));
   assert.equal(beforeOutcomeRetry, beforeRecoveredStack + 2, 'the relay applied B and then A once each');
   const originalOutcome = await timing.wait('read the durable original submission outcome for B', () => cli(worktrees[0], envs[0], 'submit', String(stackedB)));
   assert.equal(originalOutcome.commit, recoveredStackCommit);

@@ -1,5 +1,6 @@
 /** Read and replay fixture replica state without changing its durable history [H16,V1,V17]. */
 import { DatabaseSync } from 'node:sqlite';
+import { unseal } from '../src/seal.js';
 import { syncRelay } from '../src/relay.js';
 
 /** Read local events directly so inspection itself cannot drain the durable retry queue. */
@@ -16,6 +17,16 @@ export function receipts(file) {
     return db.prepare("SELECT meta_value FROM board_meta WHERE meta_key LIKE 'relay_receipt_%'")
       .all().map(({ meta_value }) => JSON.parse(meta_value));
   } finally { db.close(); }
+}
+
+/** Decode only stable operation identity fields from captured fixture relay posts. */
+export async function relayUploadSummary(uploads, key, boardId) {
+  return Promise.all(uploads.map(async ({ sequence, sealed }) => {
+    const plain = await unseal(key, Buffer.from(sealed, 'base64url'), { boardId, kind: 'move', sequence });
+    const move = JSON.parse(new TextDecoder().decode(plain));
+    return { sequence, operation: move.operation, moveId: move.id,
+      item: Number.isSafeInteger(move.args?.[0]) ? move.args[0] : null };
+  }));
 }
 
 /** Replay a fixture clone's real outbox through the production sync path without another CLI process. */
