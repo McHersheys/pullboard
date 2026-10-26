@@ -1,7 +1,10 @@
 import { foreignBlockers } from './cross-repo-dependencies.js';
 import { REFERENCE_ENGINE } from './reference-engine.js';
 import { validateReferenceTargets } from './reference-lines.js';
-import { validateReferenceAuthors, validateReferenceAuthority } from './reference-authors.js';
+import {
+  validateReferenceAuthors,
+  validateReferenceAuthority,
+} from './reference-authors.js';
 import {
   dependencyValues,
   validateNativeDependencies,

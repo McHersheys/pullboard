@@ -1,5 +1,8 @@
 import { dependencyValues } from '../item-dependencies.js';
-import { referenceAuthors, referenceAuthority } from '../reference-authors.js';
+import {
+  referenceAuthors,
+  referenceAuthority,
+} from '../reference-authors.js';
 /** The pullboard add command, in its own module so an item adding another command never edits these lines. */
 import * as store from '../board.js';
 import {

@@ -1,7 +1,13 @@
 /** Check release acknowledgements against committed changelog content before tagging [C7,N26]. */
 import * as store from './board.js';
-import { contains, tryGit } from './git.js';
-import { handledReferences, referenceAcknowledged } from './reference-lines.js';
+import {
+  contains,
+  tryGit,
+} from './git.js';
+import {
+  handledReferences,
+  referenceAcknowledged,
+} from './reference-lines.js';
 import { Refused } from './refused.js';
 
 /** Select exactly one named release section, excluding every neighbouring release. */
