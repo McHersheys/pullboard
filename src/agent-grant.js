@@ -1,5 +1,6 @@
 /** Derive authority from existing seats and claims; no mutable saved grant supplies permission [E21]. */
 import { AGENT_GRANT_ENGINE } from './agent-grant-engine.js';
+import { REVIEW_GRANT_ENGINE } from './review-grant-engine.js';
 import { MOVE_REGISTRY } from './move-registry.js';
 import { Refused } from './refused.js';
 
@@ -32,11 +33,12 @@ function recordedGrantActivation(board) {
 
 /** A version marker is not a grant: it only prevents an older engine bypassing a new seat or claim. */
 export function agentGrantMinimum(board, move) {
-  if (recordedGrantActivation(board)) return AGENT_GRANT_ENGINE;
   // Communication and review administration neither widen nor replace a claim. An old claim could erase its version marker.
   if (move.operation !== 'claim' && (ADMINISTRATIVE.has(move.operation) || !target(move))) return 1;
   const actor = MOVE_REGISTRY[move.operation]?.actor(move);
+  // Person, coordinator and machine moves are never grant-checked, so activation cannot wedge an in-flight one.
   if (typeof actor !== 'string' || ['person', 'coordinator', 'machine'].includes(actor)) return 1;
+  if (recordedGrantActivation(board)) return AGENT_GRANT_ENGINE;
   const event = board.db.prepare("SELECT event_detail FROM event WHERE event_by=? AND event_kind IN ('join','claim','renew') ORDER BY event_id DESC LIMIT 1").get(actor);
   const item = existingItem(board, target(move)?.item ?? (move.operation === 'claim' ? move.args?.[0] : null));
   const claimed = item ? board.db.prepare("SELECT event_detail FROM event WHERE item_id=? AND event_kind IN ('claim','renew') ORDER BY event_id DESC LIMIT 1").get(item.item_id) : null;
@@ -60,6 +62,10 @@ export function requireAgentGrant(board, move, at = board.clock.now()) {
   const item = existingItem(board, scope.item);
   if (!scope.creating && !item) return; // Preserve the operation's own malformed/missing-item refusal.
   const now = at.toISOString();
+  // A verdict is review, not an item change: verify's own rules (reservations, builder and session
+  // independence) govern reviewers, who check other lanes' work by design. Older verdicts keep the
+  // reservation-only rule they were recorded under, so every replica replays them identically.
+  if (move.operation === 'verify' && move.engine >= REVIEW_GRANT_ENGINE) return;
   if (item?.item_review_by === actor && item.item_status === 'submitted' && item.item_review_until > now
     && move.operation === 'verify') return;
   const claims = board.db.prepare("SELECT item_id,item_lease_until FROM item WHERE item_owner=? AND item_status='claimed'").all(actor);

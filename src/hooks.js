@@ -145,6 +145,9 @@ export function commitMsgProblems(raw, { rules, spec, doctrine = null, claimedIt
   // A generated landing message keeps a rowless item's own type (RFC 0005), so it has no ids to cite. Only a
   // landing checkout, merging a verified item the board says cites no rows, passes on its trailer.
   const landing = parseCommitMessage(lines.join('\n'));
+  if (landing.trailers.some(entry => entry.key === 'Pullboard-Companion')) {
+    problems.push('Pullboard-Companion is retired; generated commits use Pullboard-Item');
+  }
   const rowlessLanding = landing.scope === 'merge' && landing.rows === null && rowlessLandings.includes(landing.item);
   if (type && rules.requireIds.includes(type) && !ids.length && !firstItem && !rowlessLanding) {
     problems.push(
