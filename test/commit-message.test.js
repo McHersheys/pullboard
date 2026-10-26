@@ -13,6 +13,8 @@ import {
 } from '../src/commit-message.js';
 import { checkLandingMessages, itemCommitType, landingMessage, landingRows } from '../src/land.js';
 import { citedIds, parseSpec } from '../src/spec.js';
+import { defaults } from '../src/config.js';
+import { commitMsgProblems } from '../src/hooks.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 
 const e2e = createE2eHelpers();
@@ -122,7 +124,7 @@ test('a landing names the refrozen rows in spec order, and a batch checks every 
   });
 });
 
-test('one header per item type: the type is the item\'s commits\' first of feat, fix, perf, refactor, revert, docs, test, build, ci, style, chore, else the lane rule [C7,B3,R3]', () => {
+test('one header per item type: the type is the item\'s commits\' first of feat, fix, perf, refactor, revert, docs, test, build, ci, style, chore, with or without rows, else the lane rule [C7,B3,R3]', () => {
   const box = e2e.sandbox();
   const repo = join(box.dir, 'types');
   box.git(box.dir, 'init', '-q', '-b', 'main', repo);
@@ -154,7 +156,15 @@ test('one header per item type: the type is the item\'s commits\' first of feat,
     assert.equal(built.header, `${expected ?? 'chore'}(merge): typed landing [A1]`, 'each item type writes its own merge header');
     assert.deepEqual(parseCommitMessage(built.message).type, expected ?? 'chore');
   }
-  // A feat item with no rows would fail the commit hook's id rule, so it lands under its lane's type.
-  assert.equal(landingMessage({ ...item, item_spec_ids: '', item_lane: 'docs' }, { type: 'feat' }).header, 'docs(merge): typed landing');
-  assert.equal(landingMessage({ ...item, item_spec_ids: '' }, { type: 'test' }).header, 'test(merge): typed landing');
+  // A rowless item keeps its own type too; only an item with no typed commit takes the lane rule.
+  const rules = defaults().commits;
+  const spec = parseSpec('');
+  for (const type of ['feat', 'fix', 'test']) {
+    const rowless = landingMessage({ ...item, item_spec_ids: '', item_lane: 'docs' }, { type });
+    assert.equal(rowless.message, `${type}(merge): typed landing\n\nPullboard-Item: #40`);
+    assert.deepEqual(commitMsgProblems(rowless.message, { rules, spec }), [], `the commit hook accepts a rowless ${type} landing`);
+  }
+  assert.equal(landingMessage({ ...item, item_spec_ids: '', item_lane: 'docs' }).header, 'docs(merge): typed landing', 'no typed commit: the lane rule');
+  assert.notDeepEqual(commitMsgProblems('feat(core): add it', { rules, spec }), [], 'a work commit still cites its rows');
+  assert.notDeepEqual(commitMsgProblems('feat(merge): add it', { rules, spec }), [], 'a merge header without its item trailer still cites rows');
 });

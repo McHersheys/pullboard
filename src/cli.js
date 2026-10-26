@@ -1444,17 +1444,16 @@ export async function addBlueprint(ctx, board, me, blueprint, { report = true, r
  * @param {any} info
  * @param {any} item
  * @param {string} [commit] - The exact checked composition the acceptance authorizes.
- * @param {{ spec?: any, requireIds?: string[] }} [options] - The spec the trailer's rows are ordered by, and
- *   the commit types the hook requires ids for.
+ * @param {{ spec?: any }} [options] - The spec the trailer's rows are ordered by.
  * @returns {string}
  */
-export function landNext(info, item, commit = item.item_commit, { spec = null, requireIds } = {}) {
+export function landNext(info, item, commit = item.item_commit, { spec = null } = {}) {
   const mainRoot = primaryCheckoutRoot(info);
   const trunk = mainCheckout(info.root);
   const branch = trunk?.branch ?? '';
   const remote = landingRemote(info.root, branch);
   const command = remote ? 'pullboard land'
-    : handMergeCommand(item, commit, { root: info.root, base: trunk?.commit, spec, requireIds, quote: shellWord });
+    : handMergeCommand(item, commit, { root: info.root, base: trunk?.commit, spec, quote: shellWord });
   if (!mainRoot) return `next: could not safely locate the primary checkout; run from the main checkout: ${command}`;
   if (remote) return `next: the coordinator lands it: ${cdTo(mainRoot)} ${command}`;
   return `next: this repo has no remote for pullboard land to push to, so the coordinator merges it on ${branch.replace(/^refs\/heads\//u, '') || 'the trunk'}: ${cdTo(mainRoot)} ${command}`;

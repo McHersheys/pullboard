@@ -41,6 +41,7 @@ import {
   LEGACY_DOCTRINE_FILE,
 } from './config.js';
 import { Refused } from './refused.js';
+import { parseCommitMessage } from './commit-message.js';
 import { outOfLane } from './lanes.js';
 import {
   citedIds,
@@ -140,7 +141,11 @@ export function commitMsgProblems(raw, { rules, spec, doctrine = null, claimedIt
   const itemCitations = [...header.matchAll(/(?:^|\s)#([1-9]\d*)(?=\s|$)/gu)].map(match => Number(match[1]));
   const firstItem = !spec.rows.some(row => row.status === 'approved')
     && itemCitations.some(id => claimedItems.includes(id));
-  if (type && rules.requireIds.includes(type) && !ids.length && !firstItem) {
+  // A generated landing message names its item in a trailer; one that cites no rows has no brackets and no
+  // Pullboard-Rows trailer, yet keeps the item's own type (RFC 0005), so the id rule reads the trailer.
+  const landing = parseCommitMessage(lines.join('\n'));
+  const rowlessLanding = landing.scope === 'merge' && landing.item !== null && landing.rows === null;
+  if (type && rules.requireIds.includes(type) && !ids.length && !firstItem && !rowlessLanding) {
     problems.push(
       citationGuide(spec, type),
     );
