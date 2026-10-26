@@ -1676,7 +1676,7 @@ export function resourceAgent(ctx) {
 }
 
 /** Keep only this queued command's live item lease, using ordinary ordered board moves. */
-export function queuedItemLease(ctx, initial, agentId, kind) {
+export function queuedItemLease(ctx, initial, agentId, kind, admission = null) {
   const report = gateWaitReporter(ctx.io);
   // Naming somebody else's check remains read-only; it never extends their build claim.
   if (kind === 'build' && (initial.item_status !== 'claimed' || initial.item_owner !== agentId)) return report;
@@ -1704,12 +1704,15 @@ export function queuedItemLease(ctx, initial, agentId, kind) {
         throw new Refused('ITEM_LEASE_LOST', `the queued ${review ? 'review' : 'build'} lease for #${initial.item_id} changed or expired; claim or reserve the item again before retrying`);
       }
       if (state.admitted || expires - now <= leaseMs / 2) {
+        const witness = state.admitted && admission ? { id: randomUUID(), commit: admission.commit, tree: admission.tree } : null;
         const result = await ordered(ctx, board, review ? 'reserveReview' : 'claim', [initial.item_id, {
           agentId, leaseMs,
+          ...(witness ? { submitAdmission: witness } : {}),
           ...(review ? { policy: ctx.config.verify.policy, familyPolicy: ctx.config.verify.family }
             : { lane: current.item_lane, freeze: claimFreezer(ctx), head: headCommit(ctx.info.root) }),
         }]);
         confirmedLeaseUntil = review ? result.item_review_until : result.leaseUntil;
+        if (witness) admission.id = witness.id;
         return { leaseUntil: confirmedLeaseUntil };
       }
       confirmedLeaseUntil = current[field];

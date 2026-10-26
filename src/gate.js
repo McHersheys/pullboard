@@ -308,7 +308,8 @@ function leaveProofReceipt(root, command, run, before, context, lease) {
         environment, testRuntimes, runner: remote ?? (lease?.runner ? null
           : run.profile?.receipt?.runner?.id ?? lease?.receipt?.runner?.id ?? lease?.localDescriptor?.id ?? null), exitCode: run.exitCode,
         counts: run.proofCounts ?? proofCounts(run.outputPath ? logLines(run.outputPath) : run.output ?? ''),
-        durationMs: Math.max(0, Math.round(run.remoteWallMs ?? run.profile?.wallMs ?? run.seconds * 1000)), sourceClean } });
+        durationMs: Math.max(0, Math.round(run.remoteWallMs ?? run.profile?.wallMs ?? run.seconds * 1000)), sourceClean,
+        ...(context.submitAdmission ? { submitAdmission: context.submitAdmission } : {}) } });
     if (!receipt) return null;
     mkdirSync(store, { recursive: true, mode: 0o700 });
     writeFileSync(join(store, `${receipt.id}.json`), receiptBody(receipt), { flag: 'wx', mode: 0o600 });
@@ -725,7 +726,9 @@ export async function runSubmitGate(root, config, { base, trunk, changed, check,
   const gui = (check ? await checkNeedsGui(root, check) : false)
     || ((selection.full && !deferFullFallback && !deferSelection) && projectNeedsGui(root)) || testsNeedGui(root, proofFiles);
   return await withGateSlot(root, async (lease) => {
-    if (proofContext) lease.proof = { ...proofContext, kind: 'submit' };
+    const hasFinalProof = !deferFullFallback && !deferSelection && selection.full || proofFiles.length > 0;
+    if (proofContext) lease.proof = { ...proofContext, kind: 'submit',
+      ...(!hasFinalProof && proofContext.admission?.id ? { submitAdmission: proofContext.admission.id } : {}) };
     pinRunMain(lease, onFailure);
     const startedAt = Date.now();
     const log = gitPath(root, 'pullboard-submit.log');
@@ -763,6 +766,7 @@ export async function runSubmitGate(root, config, { base, trunk, changed, check,
       return finish({ isGreen: false, sandboxBlocked: criterion.sandboxBlocked, isCached: false, output: criterion.output, seconds: 0, log: '' });
     }
     // The proof already owns this lease: its phase profile has no additional queue wait.
+    if (hasFinalProof && proofContext?.admission?.id) lease.proof.submitAdmission = proofContext.admission.id;
     const proofWait = check ? 0 : lease.waitMs;
     let proof;
     // The proof keeps each stage's status, so a person's waiver can only ever explain named test failures.

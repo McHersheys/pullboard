@@ -201,8 +201,9 @@ export async function submitHere(ctx, id, infra) {
     registryGuards: acceptedMain.config.registryGuards,
     // The accepted project runner interprets its current invariant files; candidate config cannot replace it.
     ...(acceptedMain.config.submitInvariants.length || acceptedMain.config.registryGuards.length ? { affectedTests: acceptedMain.config.affectedTests } : {}) };
-  const gate = await runSubmitGate(root, submitConfig, { base: claimHead, trunk: acceptedMain.commit, check: frozenCheck(held), agent: me.id, item: String(id), onWait: queuedItemLease(ctx, held, me.id, 'build'), onBrowserFallback: browserAdmissionReporter(ctx.io, ctx.io.relayJson),
-    proofContext: { item: id, frozenDigest: held.item_frozen_digest ?? null, seat: me.id },
+  const admission = { commit, tree: headTree(root) };
+  const gate = await runSubmitGate(root, submitConfig, { base: claimHead, trunk: acceptedMain.commit, check: frozenCheck(held), agent: me.id, item: String(id), onWait: queuedItemLease(ctx, held, me.id, 'build', admission), onBrowserFallback: browserAdmissionReporter(ctx.io, ctx.io.relayJson),
+    proofContext: { item: id, frozenDigest: held.item_frozen_digest ?? null, seat: me.id, admission },
     onFailure: nativeFlakes.observer(ctx, { kind: 'submit', main: acceptedMain.commit, config: submitConfig }, { ordered, withBoard, resourceAgent }) });
   for (const proofReceiptId of gate.proofReceiptIds ?? []) {
     await recordNativeProof(ctx, held, { proofReceiptId }, { ordered, withBoard, resourceAgent });

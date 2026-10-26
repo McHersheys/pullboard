@@ -7,6 +7,7 @@ import {
 import { foreignBlockers } from './cross-repo-dependencies.js';
 import * as itemDependencies from './item-dependencies.js';
 import { AGENT_GRANT_ENGINE } from './agent-grant-engine.js';
+import { submitAdmission as checkedSubmitAdmission } from './submit-admission.js';
 import * as computedConflictEvidence from './computed-conflict-receipt.js';
 import { reopenAuthority } from './reopen-authority.js';
 import { applyLaneLead } from './lane-lead-policy.js';
@@ -979,8 +980,9 @@ export function recordAttempt(board, id, { agentId, n, seconds, result }) {
  * @param {{ agentId: string, lane: string, leaseMs: number, freeze: (item: any) => { text: string, digest: string }, head?: string | null, reviewSkipped?: object | null }} who
  * @returns {{ leaseUntil: string, digest: string, renewed: boolean }}
  */
-export function claim(board, id, { agentId, lane, leaseMs, freeze, head = null, reviewSkipped = null, reviewPolicy = 'any', familyPolicy = 'off' }) {
+export function claim(board, id, { agentId, lane, leaseMs, freeze, head = null, reviewSkipped = null, reviewPolicy = 'any', familyPolicy = 'off', submitAdmission = null }) {
   return atomic(board, () => {
+    const admission = checkedSubmitAdmission(board, id, agentId, submitAdmission);
     const leaseUntil = new Date(board.clock.now().getTime() + leaseMs).toISOString();
     const isRenewal = (item) => item.item_owner === agentId && isHeld(board, item);
     // Reworking your own rejected item is a claim of its own, beside the one live claim (B5): the
@@ -1076,6 +1078,7 @@ export function claim(board, id, { agentId, lane, leaseMs, freeze, head = null, 
       if (board.verifierStanding.lineage) board.db.prepare('INSERT INTO board_meta (meta_key, meta_value) VALUES (?, ?)').run(`item_lineage:${id}`, board.verifierStanding.lineage);
     }
     logEvent(board, agentId, renewed ? 'renew' : 'claim', id, { leaseUntil, digest, ...(!renewed && reviewSkipped ? { reviewSkipped } : {}),
+      ...(admission ? { submitAdmission: admission } : {}),
       ...((board.executionEngineVersion ?? ENGINE_VERSION) >= AGENT_GRANT_ENGINE ? { grantEngine: AGENT_GRANT_ENGINE } : {}) });
     return { leaseUntil, digest, renewed };
   });

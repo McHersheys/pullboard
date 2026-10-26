@@ -5,6 +5,7 @@ import { BAR_SIGN_GRANT_ENGINE } from './bar-sign-grant-engine.js';
 import { MOVE_REGISTRY } from './move-registry.js';
 import { Refused } from './refused.js';
 import { recordedGrantActivation } from './relay-activation.js';
+import { completesAdmittedSubmit } from './submit-admission.js';
 
 // Attributed append-only findings never confer authority over item state.
 const ADMINISTRATIVE = new Set(['shout', 'claim', 'release', 'reserveReview', 'appendFact', 'recordAttempt']);
@@ -67,7 +68,8 @@ export function requireAgentGrant(board, move, at = board.clock.now()) {
   const own = claims.find(claim => claim.item_id === item?.item_id);
   const live = claims.filter(claim => claim.item_lease_until > now);
   const previous = board.db.prepare("SELECT event_id FROM event WHERE event_by=? AND event_kind IN ('claim','renew') ORDER BY event_id DESC LIMIT 1").get(actor);
-  if ((own && !(own.item_lease_until > now)) || (previous && !live.length)) {
+  if (((own && !(own.item_lease_until > now)) || (previous && !live.length))
+    && !completesAdmittedSubmit(board, move, item, actor)) {
     throw new Refused('AGENT_GRANT_EXPIRED', `${actor} has no live item claim; claim work before changing an item`,
       'claim the intended item, or shout the coordinator if its claim is unavailable');
   }

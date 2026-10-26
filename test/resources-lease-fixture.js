@@ -6,6 +6,8 @@ import { pathToFileURL } from 'node:url';
 import { createInterface } from 'node:readline';
 import { DatabaseSync } from 'node:sqlite';
 import * as store from '../src/board.js';
+import { exportBoard, importBoard } from '../src/exchange.js';
+import { appliedSequence, applyEngineMove, prepareEngineMove } from '../src/engine.js';
 import { registerProject } from '../src/projects.js';
 import { serveView } from '../src/serve.js';
 import { runFixtureChild } from './fixture-child.js';
@@ -190,6 +192,25 @@ function itemLeaseFixture(t, helpers) {
   return box;
 }
 
+/** Neither a fresh CLI submit nor an unwitnessed receiver move inherits a running command's admission. */
+function refuseFreshExpiredSubmit(box, id) {
+  const late = runFixtureChild(process.execPath, ['--input-type=module', '-e', CLOCKED_CLI, 'submit', String(id), '--json'],
+    { cwd: box.web, env: box.env, encoding: 'utf8' });
+  assert.equal(late.status, 1, late.stdout);
+  assert.equal(JSON.parse(late.stdout).error.code, 'NOT_YOURS', 'a new submit cannot start on an expired claim');
+  const replica = store.openBoard(join(box.dir, 'expired-submit-receiver.sqlite'), box.clock);
+  try {
+    importBoard(replica, exportBoard(box.board));
+    const before = store.itemById(replica, id);
+    const move = prepareEngineMove(replica, 'submit', [id, { agentId: before.item_owner,
+      commit: box.git(box.web, 'rev-parse', 'HEAD'), tree: box.git(box.web, 'rev-parse', 'HEAD^{tree}'),
+      submissionProof: { version: 1, files: [], full: false, deferred: true, reason: 'receiver negative control; no completed proof' } }]);
+    const result = applyEngineMove(replica, move, { sequence: appliedSequence(replica) + 1, at: box.clock.now().toISOString() });
+    assert.equal(result.error?.code, 'AGENT_GRANT_EXPIRED', 'even a real admission nonce grants no receiver completion without its native final proof');
+    assert.deepEqual(store.itemById(replica, id), before, 'the refused receiver leaves the claimed item unchanged');
+  } finally { store.closeBoard(replica); }
+}
+
 /**
  * Run the queued-lease scenario against the resource suite's private pool helpers.
  *
@@ -278,6 +299,7 @@ export async function queuedLeaseProof(t, deps) {
     clockedCli(box, box.repo, 'resources', '--json');
     assert.equal(end(buildId, 'check'), runningBuildEnd, 'admission ends build item renewals');
     assert.ok(runningBuildEnd < box.clock.now().toISOString(), 'the running build resumes ordinary lease expiry');
+    refuseFreshExpiredSubmit(box, buildId);
     writeFileSync(buildGate.release, 'release');
     assert.equal((await build.finished).code, 0, `${build.stdoutText}\n${build.stderrText}`);
     assert.equal(item(buildId).item_status, 'submitted', 'the actual queued submit completes its ordinary board move');
