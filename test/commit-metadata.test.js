@@ -4,6 +4,8 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { createE2eHelpers } from './e2e-helpers.js';
+import * as store from '../src/board.js';
+import { submitFixture } from './board-submit-fixture.js';
 
 const e2e = createE2eHelpers();
 after(e2e.cleanup);
@@ -103,4 +105,46 @@ test('an unclaimed configuration commit stays typed and carries no item metadata
   assert.equal(plain.code, 0, plain.err);
   assert.equal(plain.message, 'chore: adjust configuration\n');
   assert.notEqual(hook(box, 'chore: fake attribution\n\nPullboard-Item: #1\n').code, 0);
+});
+
+/** Build B5's real two-live-claim state with native lifecycle moves, not direct database edits. */
+function twoClaims() {
+  const box = claimed();
+  const board = store.openBoard(join(box.repo, '.git', 'pullboard', 'board.sqlite'));
+  try {
+    const agentId = store.agentAt(board, box.web).agent_id;
+    const reviewer = store.register(board, { lane: 'web', path: join(box.dir, 'metadata-reviewer') });
+    const head = box.git(box.web, 'rev-parse', 'HEAD');
+    const digest = store.getItem(board, box.id).item_frozen_digest;
+    // Synthetic lifecycle input establishes rejection only; no gate execution or independent assurance is claimed.
+    submitFixture(board, box.id, { agentId, commit: head, tree: box.git(box.web, 'rev-parse', 'HEAD^{tree}') });
+    store.reserveReview(board, box.id, { agentId: reviewer, leaseMs: 3600000, policy: 'any' });
+    store.verify(board, box.id, { agentId: reviewer, decision: 'REJECT', reason: 'TEST_FAILURE',
+      note: 'Synthetic rejected-item state for commit association only.', head, digest, policy: 'any', familyPolicy: 'off' });
+  } finally { store.closeBoard(board); }
+  assert.equal(box.run(box.web, 'claim', String(box.id)).code, 0, 'the builder reclaims its rejected item');
+  const added = box.run(box.repo, 'add', 'web', 'Ordinary parallel claim', '--criterion', 'the second claim is real', '--specs', 'G1', '--json');
+  assert.equal(added.code, 0, added.err);
+  const other = JSON.parse(added.out).item.item_id;
+  const claim = box.run(box.web, 'claim', String(other));
+  assert.equal(claim.code, 0, claim.err);
+  return { ...box, other };
+}
+
+test('two live claims require an explicit item and accept either matching claim [B5,C7]', () => {
+  const box = twoClaims();
+  const input = 'test: ambiguous work\n';
+  const ambiguous = hook(box, input);
+  assert.notEqual(ambiguous.code, 0, 'the hook must not silently choose the newer item');
+  for (const id of [box.id, box.other]) assert.ok(ambiguous.err.includes(`#${id}`), 'both live claims are named');
+  assert.match(ambiguous.err, /Pullboard-Item/u);
+  assert.match(ambiguous.err, /release/u);
+  assert.equal(ambiguous.message, input, 'refusal preserves the message');
+  for (const id of [box.id, box.other]) {
+    const selected = hook(box, `test: explicit work\n\nPullboard-Item: #${id}\n`);
+    assert.equal(selected.code, 0, selected.err);
+    assert.equal(selected.message, `test: explicit work\n\nPullboard-Item: #${id}\nPullboard-Rows: G1\n`);
+  }
+  const unrelated = hook(box, `test: unrelated work\n\nPullboard-Item: #${box.other + 100}\n`);
+  assert.notEqual(unrelated.code, 0, 'an unrelated item cannot select a claim');
 });
