@@ -73,6 +73,61 @@ test('every Needs-you surface follows the shared builder [N26,A9]', async () => 
   }
 });
 
+test('a relay-health need is an inspection without a navigation action in Chrome [N26,H15]', { timeout: 180_000 }, async (t) => { // budget: private board/API startup and one real Chrome rendering pass; no throughput claim.
+  const executable = chromeExecutable();
+  assert.ok(executable, 'Chrome is required for the relay-health Needs-you inspection check.');
+  const box = machine();
+  project(box, 'relay health inspection');
+  const view = await startView(box);
+  const profile = mkdtempSync(join(tmpdir(), 'pullboard-relay-health-needs-'));
+  let chrome;
+  const text = 'relay degraded since 10:30; your moves are queued locally (2)';
+  const nextStep = 'the last canary probe failed during pull (RELAY_READ); inspect pullboard relay canary';
+  try {
+    chrome = await openSnapshotChrome(executable, view.link.href, profile);
+    await chrome.waitFor("typeof data === 'object' && data?.project && document.querySelector('#needs')");
+    // Inject the declared shared-builder output, independent of which API release supplies that field.
+    const call = { kind: 'relay-health', id: 'relay-canary', ref: 'relay', text, what: nextStep,
+      at: new Date().toISOString(), target: 'relay:relay-canary' };
+    await chrome.stable(`(() => {
+      globalThis.builderCalls = ${JSON.stringify([call])};
+      personNeeds = () => builderCalls;
+      refresh();
+      return true;
+    })()`);
+    await chrome.waitFor(`Array.from(document.querySelectorAll('#needs > .row')).some(row => row.textContent.includes(${JSON.stringify(text)}))`);
+    const rendered = JSON.parse(await chrome.stable(`JSON.stringify((() => {
+      const row = [...document.querySelectorAll('#needs > .row')].find(entry => entry.textContent.includes(${JSON.stringify(text)}));
+      const homeRow = [...document.querySelectorAll('#home-needs > .row')].find(entry => entry.textContent.includes(${JSON.stringify(text)}));
+      return row && homeRow ? {
+        target: row.dataset.go ?? null,
+        ref: row.querySelector('.t > span')?.textContent ?? null,
+        title: row.querySelector('.t').textContent,
+        need: row.querySelector('.meta .why').textContent,
+        action: row.querySelector(':scope > .chip').textContent,
+        hasAge: !!row.querySelector('.row-age'),
+        homeTarget: homeRow.dataset.go ?? null,
+        homeAction: homeRow.querySelector(':scope > .chip').textContent,
+      } : null;
+    })())`));
+    assert.deepEqual(rendered, {
+      target: null,
+      ref: 'relay',
+      title: `relay${text}`,
+      need: `NEEDS YOU ${nextStep}`,
+      action: 'inspect',
+      hasAge: true,
+      homeTarget: null,
+      homeAction: 'inspect',
+    }, 'both real Chrome surfaces show an age-stamped inspection step and do not turn the health alert into a shouts/hold link');
+    assert.deepEqual(chrome.exceptions, [], 'the actual page renders the new Needs-you kind without exceptions');
+  } finally {
+    if (chrome) await closeSnapshotChrome(chrome);
+    rmSync(profile, { recursive: true, force: true });
+    await view.stop();
+  }
+});
+
 test("the page's Needs-you comes from the shared builder [N26]", { timeout: 180_000 }, async (t) => { // budget: hang ceiling for private board/API setup and the two real browser modes, not a throughput claim.
   const box = machine();
   const alpha = project(box, 'shared needs', `${SPEC}- G3 [pending] Choose the greeting. | gate: review\n- G4 [draft, must] Keep the footer. | gate: review\n- G5 [draft, aim] Keep the header. | gate: review\n`);
