@@ -1,11 +1,15 @@
 /** Check that main CI shards work without hiding failures or cancelling unrelated runs [C7]. */
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { test } from 'node:test';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { after, test } from 'node:test';
+import { createE2eHelpers } from './e2e-helpers.js';
+import { runFixtureChild } from './fixture-child.js';
 
 const ROOT = resolve(import.meta.dirname, '..');
 const WORKFLOW = readFileSync(resolve(ROOT, '.github/workflows/gate.yml'), 'utf8');
+const e2e = createE2eHelpers();
+after(e2e.cleanup);
 
 /** Return the named workflow job's block so assertions apply to each job independently. */
 function job(name) {
@@ -51,3 +55,69 @@ function workflowShardsAndCancellation() {
 }
 
 test('the gate workflow shards and cancels superseded main runs [C7]', workflowShardsAndCancellation);
+
+/** Read an optional workflow so the test reports its absence as a workflow assertion. */
+function workflowText(path) {
+  return existsSync(path) ? readFileSync(path, 'utf8') : '';
+}
+
+/** Check the public pull-request jobs that enforce the CLA and commit sign-off policy. */
+function contributorWorkflows() {
+  const cla = workflowText(resolve(ROOT, '.github/workflows/cla.yml'));
+  const dco = workflowText(resolve(ROOT, '.github/workflows/dco.yml'));
+  assert.match(cla, /^name: CLA Assistant\n/u, 'the CLA check has a stable required-check name');
+  assert.match(cla, /\npull_request_target:\n/u, 'the CLA workflow runs on pull requests');
+  assert.match(cla, /\n {2}issue_comment:\n {4}types: \[created\]\n/u,
+    'the CLA bot can process an agreement comment');
+  assert.match(cla, /uses: contributor-license\/cla-action@v1\n/u,
+    'the workflow uses the maintained CLA Assistant-compatible action');
+  assert.match(cla, /path-to-document: .*CLA\.md/u, 'contributors are shown the repository CLA');
+  assert.match(cla, /path-to-signatures: signatures\/cla\.json\n/u,
+    'accepted signatures are recorded in the repository');
+  assert.match(dco, /^name: DCO\n/u, 'the DCO check has a stable required-check name');
+  assert.match(dco, /\npull_request:\n/u, 'the DCO workflow runs on pull requests');
+  assert.match(dco, /run: node bin\/check-signoffs\.js\n/u,
+    'the DCO workflow runs the repository sign-off checker');
+}
+
+test('pull requests run the CLA Assistant and DCO workflows [I1]', contributorWorkflows);
+
+test('a pull request with an unsigned commit fails DCO and a signed replacement passes [I1]', (t) => {
+  const box = e2e.sandbox();
+  const repo = join(box.dir, 'dco-workflow');
+  mkdirSync(repo);
+  box.git(repo, 'init', '-q', '-b', 'main');
+  box.env.GIT_AUTHOR_NAME = 'Maintainer';
+  box.env.GIT_AUTHOR_EMAIL = 'maintainer@example.test';
+  writeFileSync(join(repo, 'pullboard.json'), JSON.stringify({ maintainers: ['maintainer@example.test'] }));
+  box.git(repo, 'add', '-A');
+  box.git(repo, 'commit', '-q', '-m', 'chore: add trusted contribution policy');
+  const base = box.git(repo, 'rev-parse', 'HEAD').trim();
+
+  box.env.GIT_AUTHOR_NAME = 'Outside Contributor';
+  box.env.GIT_AUTHOR_EMAIL = 'outside@example.test';
+  writeFileSync(join(repo, 'README.md'), 'An unsigned contribution.\n');
+  box.git(repo, 'add', 'README.md');
+  box.git(repo, 'commit', '-q', '-m', 'feat: add an unsigned contribution');
+  const unsigned = box.git(repo, 'rev-parse', 'HEAD').trim();
+  const event = join(box.dir, 'pull-request.json');
+  /** Run the public CI entry point against a real pull-request event and Git history. */
+  function check() {
+    writeFileSync(event, JSON.stringify({ pull_request: {
+      base: { sha: base }, head: { sha: box.git(repo, 'rev-parse', 'HEAD').trim() },
+    } }));
+    return runFixtureChild(process.execPath, [resolve(ROOT, 'bin/check-signoffs.js')], {
+      cwd: repo, encoding: 'utf8',
+      env: { ...box.env, GITHUB_EVENT_NAME: 'pull_request', GITHUB_EVENT_PATH: event },
+    });
+  }
+  const rejected = check();
+  assert.equal(rejected.status, 1, rejected.failure || rejected.stderr);
+  assert.ok(rejected.stderr.includes(unsigned.slice(0, 12)), 'the failure names the unsigned commit');
+
+  box.git(repo, 'reset', '--soft', base);
+  box.git(repo, 'commit', '-q', '-m', 'feat: sign the contribution',
+    '-m', 'Signed-off-by: Outside Contributor <outside@example.test>');
+  const accepted = check();
+  assert.equal(accepted.status, 0, accepted.failure || accepted.stderr);
+});
