@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { createDeviceKeys, signDeviceEnrollment } from '../src/relay-device-keys.js';
 import { ENGINE_VERSION } from '../src/machine.js';
 import { relayClientFixture } from './relay-client-fixture.js';
+import { prepareKeylessInbox, readKeylessInbox } from './inbox-key-fixture.js';
 import { runFixtureGit } from './fixture-child.js';
 
 /** Revoke one private fixture credential through the real relay authorization endpoint. */
@@ -23,7 +24,7 @@ async function revokeCredential(box, id) {
 /** Read one real CLI result and check its single board-named local fallback diagnostic. */
 async function assertLocalRead(box, board, ...args) {
   const result = await box.cli(...args);
-  assert.equal(result.code, 0, result.failure ?? `${args[0]} answers from the local board`);
+  assert.equal(result.code, 0, `${result.failure ?? `${args[0]} answers from the local board`}; ${JSON.stringify(result.document?.error ?? null)}`);
   assert.equal(result.document.diagnostics?.length, 1, `${args[0]} prints one auth-expiry line`);
   assert.match(result.document.diagnostics[0], new RegExp(board));
   assert.match(result.document.diagnostics[0], /sign-in expired or was revoked/u);
@@ -33,6 +34,7 @@ async function assertLocalRead(box, board, ...args) {
 
 test('reads and status answer when the relay sign-in expired [H16,H5]', async t => {
   const box = await relayClientFixture(t);
+  const obligation = await prepareKeylessInbox(box);
   await box.link();
   const seed = await box.cli('add', box.lane, 'local read fixture');
   assert.equal(seed.code, 0, seed.failure ?? 'the private real relay accepts a fixture move');
@@ -45,7 +47,10 @@ test('reads and status answer when the relay sign-in expired [H16,H5]', async t 
   await assertLocalRead(box, board, 'show', String(seed.document.item.item_id));
   await assertLocalRead(box, board, 'list', '--all');
   await assertLocalRead(box, board, 'decisions');
+  await readKeylessInbox(box, obligation, 'AUTH_REQUIRED');
   await assertLocalRead(box, board, 'inbox');
+  const write = await box.cli('shout', 'all', 'must not bypass expired authentication');
+  assert.equal(write.document?.error?.code, 'AUTH_REQUIRED', 'explicit writes still require relay authentication');
   await assertLocalRead(box, board, 'log');
   const view = await assertLocalRead(box, board, 'view', '--export', join(box.root, 'local-view.html'));
   assert.equal(existsSync(view.document.path), true, 'the local view export is available after relay auth refusal');

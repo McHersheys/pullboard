@@ -46,13 +46,13 @@ export async function prepareKeylessInbox(box) {
 }
 
 /** Preserve both cursors while displaying a real obligation and refusing explicit acknowledgement. */
-export async function readKeylessInbox(box, state) {
+export async function readKeylessInbox(box, state, code = 'RELAY_KEY_MISSING') {
   const beforeCursor = cursor(box), beforeReceipts = receipts(box);
   const beforeShouts = shoutCursors(box);
   const read = await box.cli('inbox');
   assert.equal(read.code, 0, `inbox reads without the key: ${JSON.stringify(read.document?.error ?? null)}`);
   assert.equal(read.document.activity.receipt.recorded, false, 'an unavailable canonical receipt is never claimed');
-  assert.equal(read.document.activity.receipt.code, 'RELAY_KEY_MISSING', 'delivery reports why it remains unrecorded');
+  assert.equal(read.document.activity.receipt.code, code, 'delivery reports why it remains unrecorded');
   const interrupt = read.document.activity.interrupts.find(entry => entry.shout === state.answer);
   assert.ok(interrupt, 'the answered decision remains visible despite the missing key');
   state.interrupt = interrupt.id;
@@ -60,7 +60,7 @@ export async function readKeylessInbox(box, state) {
   assert.deepEqual(receipts(box), beforeReceipts, 'the read cannot forge a canonical delivery');
   assert.deepEqual(shoutCursors(box), beforeShouts, 'an unrecorded read cannot consume its answer through the unread projection');
   const acted = await box.cli('inbox', '--acted-on', state.interrupt);
-  assert.equal(acted.document?.error?.code, 'RELAY_KEY_MISSING', 'explicit acknowledgement stays an authenticated write');
+  assert.equal(acted.document?.error?.code, code, 'explicit acknowledgement stays an authenticated write');
   assert.deepEqual(receipts(box), beforeReceipts, 'a refused acknowledgement changes no receipt');
   return read;
 }

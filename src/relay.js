@@ -558,10 +558,10 @@ export function pendingCheckpointProblem(root) {
   return state?.checkpointRefusal ? checkpointProblem(state) : null;
 }
 
-/** Deduplicate within one move, retaining its preflight notice and allowing later moves to warn. */
+/** Share one notice across a native command and its bookkeeping, or one direct ordered move. */
 function reportCheckpointRefusal(state, io) {
-  let boards = CHECKPOINT_NOTICES.get(io);
-  if (!boards) { boards = new Set(); CHECKPOINT_NOTICES.set(io, boards); }
+  let boards = CHECKPOINT_NOTICES.get(io.relayCommand ?? io);
+  if (!boards) { boards = new Set(); CHECKPOINT_NOTICES.set(io.relayCommand ?? io, boards); }
   if (boards.has(state.board)) return;
   boards.add(state.board);
   if (uploadPauseType(state.checkpointRefusal) && !firstUploadPauseNotice(state)) return;
@@ -1112,7 +1112,7 @@ export async function relayOperation(root, operation, args, io, command, applyLo
     }
     let moves = CHECKPOINT_MOVES.get(io);
     if (!moves) { moves = new Set(); CHECKPOINT_MOVES.set(io, moves); }
-    if (moves.has(state.board)) CHECKPOINT_NOTICES.get(io)?.delete(state.board);
+    if (!io.relayCommand && moves.has(state.board)) CHECKPOINT_NOTICES.get(io)?.delete(state.board);
     moves.add(state.board);
     let requestedMove;
     try {
