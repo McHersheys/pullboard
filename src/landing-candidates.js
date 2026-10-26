@@ -118,7 +118,7 @@ function candidateMain(options) {
       const { runLandingCandidate } = await import('./land.js');
       return await runLandingCandidate({ ...options, board,
         write: (operation, args) => call(operation, args),
-        claimGate: tree => call('claimGate', [tree]),
+        claimGate: (tree, plan) => call('claimGate', [tree, plan]),
         finishGate: (tree, gate) => call('finishGate', [tree, gate]),
         checkLease: async () => { await call('check'); invalidateGitFacts(); checkLeaseNow(board); },
         checkLeaseNow: () => checkLeaseNow(board),

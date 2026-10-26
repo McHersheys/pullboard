@@ -311,7 +311,7 @@ Spec
                                         submit refuses a touched rule whose count rises; runs: nightly skips submit, mode: watch only counts
 
 Role guides
-  pullboard prompt decompose|plan|signoff|review|verify   how to do each role; Claude Code gets them as skills
+  pullboard prompt decompose|plan|signoff|review|verify|run|triage   how to do each role; Claude Code gets them as skills
 
 Gate and hooks
   pullboard gate [--landing]            run the configured gate; prioritize a trunk landing in the machine queue

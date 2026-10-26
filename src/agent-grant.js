@@ -1,5 +1,6 @@
 /** Derive authority from existing seats and claims; no mutable saved grant supplies permission [E21]. */
 import { AGENT_GRANT_ENGINE } from './agent-grant-engine.js';
+import { REVIEW_GRANT_ENGINE } from './review-grant-engine.js';
 import { MOVE_REGISTRY } from './move-registry.js';
 import { Refused } from './refused.js';
 
@@ -60,6 +61,10 @@ export function requireAgentGrant(board, move, at = board.clock.now()) {
   const item = existingItem(board, scope.item);
   if (!scope.creating && !item) return; // Preserve the operation's own malformed/missing-item refusal.
   const now = at.toISOString();
+  // A verdict is review, not an item change: verify's own rules (reservations, builder and session
+  // independence) govern reviewers, who check other lanes' work by design. Older verdicts keep the
+  // reservation-only rule they were recorded under, so every replica replays them identically.
+  if (move.operation === 'verify' && move.engine >= REVIEW_GRANT_ENGINE) return;
   if (item?.item_review_by === actor && item.item_status === 'submitted' && item.item_review_until > now
     && move.operation === 'verify') return;
   const claims = board.db.prepare("SELECT item_id,item_lease_until FROM item WHERE item_owner=? AND item_status='claimed'").all(actor);
