@@ -2,7 +2,11 @@
 /** External references stay distinct from the board's requirement and dependency links [C7]. */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { join } from 'node:path';
 import { briefSections } from '../src/brief.js';
+import * as store from '../src/board.js';
+import { minimumMoveEngine } from '../src/move-registry.js';
+import { REFERENCE_ENGINE } from '../src/reference-engine.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 
 test('reference point 19: repeated external references remain separate labelled brief entries [C7]', () => {
@@ -16,6 +20,25 @@ test('reference point 19: repeated external references remain separate labelled 
   assert.deepEqual(sections.reference, references, 'every reference has its own entry, preserving private text and the explicit acknowledgement');
   assert.deepEqual(sections.files, ['web/site.js'], 'references never become file instructions');
   assert.deepEqual(sections.test, ['node --test test/site.test.js']);
+});
+
+test('historical brief references retain their old routing grammar and replay floor [C7,H16]', t => {
+  const e2e = createE2eHelpers();
+  const box = e2e.project('true');
+  const board = store.openBoard(join(box.repo, '.git/pullboard/board.sqlite'));
+  t.after(() => { store.closeBoard(board); e2e.cleanup(); });
+  const brief = 'Files: web/site.js\nReference: H21';
+  assert.deepEqual(briefSections(brief, { references: false }).files, ['web/site.js', 'Reference: H21']);
+  const addition = { by: 'coordinator', lane: 'web', title: 'Historical reference', brief };
+  assert.equal(minimumMoveEngine('addItem', [addition]), 1, 'unstructured historical text never gains a new replay floor');
+  assert.equal(minimumMoveEngine('editItem', [1, { agentId: 'coordinator', brief }]), 1);
+  board.executionEngineVersion = REFERENCE_ENGINE - 1;
+  const id = store.addItem(board, addition);
+  store.editItem(board, id, { agentId: 'coordinator', brief });
+  delete board.executionEngineVersion;
+  store.editItem(board, id, { agentId: 'coordinator', criterion: 'An unrelated edit preserves legacy text.' });
+  assert.equal(store.getItem(board, id).item_brief, brief);
+  assert.throws(() => store.addItem(board, addition), { code: 'REFERENCE_IS_BOARD' }, 'new moves use the new validation');
 });
 
 test('reference point 22: add and edit refuse board-only references with the right flags [C7]', t => {

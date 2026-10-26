@@ -1,4 +1,6 @@
 import { foreignBlockers } from './cross-repo-dependencies.js';
+import { REFERENCE_ENGINE } from './reference-engine.js';
+import { validateReferenceTargets } from './reference-lines.js';
 import {
   dependencyValues,
   validateNativeDependencies,
@@ -661,15 +663,16 @@ function checkRoute(route) {
  *
  * @param {{ brief: string, route: string, criterion: string, check: string }} item
  */
-function checkRouted({ brief, route, criterion, check }) {
+function checkRouted({ brief, route, criterion, check }, engine = ENGINE_VERSION) {
   if (brief.length > BRIEF_LIMIT) {
     throw new Refused('BRIEF_TOO_LONG', `the brief is ${brief.length} characters; keep it under ${BRIEF_LIMIT} and point to longer docs by path`);
   }
   refuseMaskedExit(check);
   if (route === 'strong') return;
-  const sections = briefSections(brief);
+  const referenceOptions = { references: engine >= REFERENCE_ENGINE };
+  const sections = briefSections(brief, referenceOptions);
   const missing = [
-    ...(briefFiles(brief).length ? [] : ['a brief with a Files: section naming the paths to touch']),
+    ...(briefFiles(brief, referenceOptions).length ? [] : ['a brief with a Files: section naming the paths to touch']),
     ...(sections.test?.length ? [] : ['a Test: section saying what the test asserts']),
     ...(criterion.trim() ? [] : ['--criterion, saying when it is done']),
     ...(check.trim() ? [] : ['--check, the command that proves it']),
@@ -752,7 +755,9 @@ export function validateItemAddition(board, { by, lane, title, criterion = '', p
   const cleanTitle = title.trim();
   if (!cleanTitle) throw new Refused('NO_TITLE', 'an item needs a title');
   checkRoute(route);
-  checkRouted({ brief: brief.trim(), route, criterion, check: command });
+  const engine = board.executionEngineVersion ?? ENGINE_VERSION;
+  if (engine >= REFERENCE_ENGINE) validateReferenceTargets(brief);
+  checkRouted({ brief: brief.trim(), route, criterion, check: command }, engine);
   if (parentId !== null) {
     const parent = itemById(board, parentId);
     if (parent.item_lane !== lane) {
@@ -884,7 +889,8 @@ export function validateItemEdit(board, id, { agentId, brief, route, criterion, 
   if (moved.length && item.item_status !== 'open' && (routeChanged || !correctionWhileClaimed)) {
     throw new Refused('HELD', `item #${id} is ${item.item_status}; change its route, criterion or check only while it is open`);
   }
-  checkRouted({ brief: next.item_brief, route: next.item_route, criterion: next.item_criterion, check: next.item_check });
+  if (brief !== undefined && engine >= REFERENCE_ENGINE) validateReferenceTargets(brief);
+  checkRouted({ brief: next.item_brief, route: next.item_route, criterion: next.item_criterion, check: next.item_check }, engine);
   const unfreeze = next.item_criterion !== item.item_criterion || next.item_check !== item.item_check;
   return { item, next, command, unfreeze, bar: barCorrectionFields(board, item, next, { reason }) };
 }
