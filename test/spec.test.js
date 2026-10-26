@@ -6,6 +6,8 @@ import * as store from '../src/board.js';
 import { applyEngineMove, prepareEngineMove } from '../src/engine.js';
 import { exportBoard, importBoard } from '../src/exchange.js';
 import { SPEC_VERDICT_ENGINE } from '../src/spec-verdict-engine.js';
+import { ENGINE_VERSION } from '../src/machine.js';
+import { minimumMoveEngine } from '../src/move-registry.js';
 import { runFixtureExecFile as execFileSync, runFixtureChild as spawnSync, runFixtureChild, runFixtureGit } from './fixture-child.js';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1246,7 +1248,8 @@ test('an exact row verifier receipt replays once with its engine floor and nativ
     gate: 'review', tier: 'must', section: 'G · Goals' } });
   const move = prepareEngineMove(board, 'recordRowVerification', [{ agentId: verifier,
     source: '- G1 [draft, must] An exact requirement. | gate: review', decision: 'accepted', reason: 'Reviewed exactly.' }]);
-  assert.equal(move.engine, SPEC_VERDICT_ENGINE);
+  assert.equal(move.engine, ENGINE_VERSION, 'the native writer stamps its current version');
+  assert.equal(minimumMoveEngine(move.operation, move.args, board), SPEC_VERDICT_ENGINE, 'the historical reader floor remains fixed');
   const options = { sequence: 1, at: new Date().toISOString() };
   const before = store.events(board).length;
   assert.throws(() => applyEngineMove(board, { ...move, engine: SPEC_VERDICT_ENGINE - 1 }, options), { code: 'RELAY_MOVE' });

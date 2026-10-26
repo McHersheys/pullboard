@@ -432,7 +432,23 @@ function firstCpuOption(source, bindings, quoted, argument) {
   }
   // A complete string/template is a title; every unresolved expression may instead be options.
   if (bindings.strings.some(value => value.start === from && value.end === to)) return false;
+  if (stringConcatenation(bindings, from, to)) return false;
   return cpuOption(source, bindings.code, quoted, [from, to]);
+}
+
+/** A string literal joined only by top-level + always evaluates to a string, so it is a title, never options. */
+function stringConcatenation(bindings, from, to) {
+  const lead = bindings.strings.find(value => value.start === from && value.end < to);
+  if (!lead || !/^\s*\+/u.test(bindings.code.slice(lead.end, to))) return false;
+  let depth = 0;
+  for (let index = lead.end; index < to; index++) {
+    const char = bindings.code[index];
+    if ('([{'.includes(char)) depth++;
+    else if (')]}'.includes(char)) depth--;
+    // A conditional, logical or sequence operator could still yield a non-string value.
+    else if (depth === 0 && '?|&,'.includes(char)) return false;
+  }
+  return depth === 0;
 }
 
 /** Return registration exports for bounded static module-graph propagation, not execution. */

@@ -548,7 +548,7 @@ export const HELP = buildHelp();
 /** Replace help placeholders with ordinary values so every command receives a usable example. */
 function exampleFor(name, usage) {
   if (HELP_EXAMPLES[name]) return HELP_EXAMPLES[name];
-  return usage.split(/\s+\|\s+|\|/u, 1)[0]
+  return usage.split(/\s+\|\s+/u, 1)[0]
     .replace(/\s+\[[^\]]+\]/gu, '')
     .replace(/<lane>/gu, 'web')
     .replace(/<title>/gu, '"Example"')
@@ -557,7 +557,8 @@ function exampleFor(name, usage) {
     .replace(/<path>/gu, 'src/cli.js')
     .replace(/<commit>/gu, '0123456')
     .replace(/<principal>/gu, 'person@example.invalid')
-    .replace(/<[^>]+>/gu, 'value');
+    .replace(/<[^>]+>/gu, 'value')
+    .replace(/\|[^\s|]+/gu, '');
 }
 
 /** Read literal command words before an argument, flag or optional segment. */
