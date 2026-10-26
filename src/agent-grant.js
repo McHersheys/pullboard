@@ -60,8 +60,9 @@ export function requireAgentGrant(board, move, at = board.clock.now()) {
   const item = existingItem(board, scope.item);
   if (!scope.creating && !item) return; // Preserve the operation's own malformed/missing-item refusal.
   const now = at.toISOString();
-  if (item?.item_review_by === actor && item.item_status === 'submitted' && item.item_review_until > now
-    && move.operation === 'verify') return;
+  // A verdict is review, not an item change: verify's own rules (reservations, builder and session
+  // independence) govern reviewers, who check other lanes' work by design.
+  if (move.operation === 'verify') return;
   const claims = board.db.prepare("SELECT item_id,item_lease_until FROM item WHERE item_owner=? AND item_status='claimed'").all(actor);
   const own = claims.find(claim => claim.item_id === item?.item_id);
   const live = claims.filter(claim => claim.item_lease_until > now);
