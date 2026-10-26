@@ -66,4 +66,3 @@ export async function verifySshVouch(bytes, signature, login, githubKeys, namesp
     return sshKeygen(['-Y', 'verify', '-f', join(folder, 'allowed'), '-I', login, '-n', namespace, '-s', join(folder, 'statement.sig')], bytes).status === 0;
   });
 }
-

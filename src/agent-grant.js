@@ -12,6 +12,8 @@ const ADMINISTRATIVE = new Set(['shout', 'claim', 'release', 'reserveReview', 'a
 /** Bind only item mutations declared by the public operation, including item creation. */
 function target(move) {
   if (move.operation === 'addItem') return { lane: move.args?.[0]?.lane, creating: true };
+  if (move.operation === 'applyRehomeItem') return { item: move.args?.[0]?.destinationItemId,
+    lane: move.args?.[0]?.item?.item_lane, creating: true };
   if (MOVE_REGISTRY[move.operation]?.itemIdFirstArgument) return { item: move.args?.[0] };
   return null;
 }

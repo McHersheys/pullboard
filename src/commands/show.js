@@ -70,6 +70,13 @@ export async function run(io, { first, values }) {
   }
   const agentName = (id) => displayAgentName(agents.find((agent) => agent.agent_id === id) ?? { agent_id: id }, ctx.config.agents.names);
   io.say(itemLine(item, agentName, Boolean(mainMerge)));
+  if (item.item_rehome_import) {
+    const imported = item.item_rehome_import;
+    io.say(`${imported.sourceStatus === 'verified' ? 'verified' : 'imported'} on ${imported.sourceHandle}, moved by ${agentName(imported.attestedBy)}; source verdicts are imported references, not reviews on this board`);
+    if (values.history) for (const verdict of imported.sourceVerdicts ?? []) {
+      io.say(`  source ${verdict.verdict_decision} ${verdict.verdict_reason} by ${verdict.verdict_by} at ${verdict.verdict_commit}: ${verdict.verdict_note}`);
+    }
+  }
   if (item.item_status === 'verified' && approvalQualification) io.say(approvalQualification);
   if (item.item_verdict_state) io.say(staleVerdictRefusal(item, item.item_verdict_state).message);
   if (item.item_criterion) io.say(`criterion: ${item.item_criterion}`);

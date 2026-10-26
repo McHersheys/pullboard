@@ -4,4 +4,3 @@ export function signingLine(signing) {
     ? 'person moves are signed: each one waits for your passkey on the relay'
     : 'person moves are not signed; pullboard settings person.signed on makes each one wait for your passkey';
 }
-

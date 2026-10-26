@@ -89,6 +89,16 @@ import {
   requireOutsideOwner,
   saveOutsideSource,
 } from './outside-source.js';
+import { validateItemDependencies } from './board-item-dependencies.js';
+import { validateRehomeCheck } from './board-rehome.js';
+import { applyRehomeItem as applyRehomeRecord } from './item-rehome.js';
+export {
+  itemRedirect,
+  rehomeDestinationItemId,
+  rehomeImport,
+  rehomeItem,
+  reserveRehomeItemId,
+} from './board-rehome.js';
 import { FILE_GROWTH_NOTICE_ENGINE } from './file-growth-notice-engine.js';
 import {
   recordBarRevision,
@@ -670,38 +680,20 @@ export function requestCompanion(board, options) {
   return applyCompanionRequest(board, options, { validateAddition: validateItemAddition, insertItem });
 }
 
-/** Validate that dependencies exist, remain usable, and cannot lead back to the edited item. */
-function validateItemDependencies(board, itemId, after) {
-  itemDependencies.dependencyValues(after);
-  const direct = itemDependencies.localDependencyIds(after).map((dependency) => itemById(board, dependency));
-  const withdrawn = direct.find((dependency) => dependency.item_status === 'withdrawn');
-  if (withdrawn) {
-    throw new Refused('WITHDRAWN', `item #${withdrawn.item_id} is withdrawn; nothing can wait on it`);
-  }
-  if (itemId === null) return;
-
-  const visited = new Set();
-  const pending = itemDependencies.localDependencyIds(after);
-  while (pending.length) {
-    const dependency = pending.pop();
-    if (dependency === itemId) {
-      throw new Refused('DEPENDENCY_CYCLE', `item #${itemId} cannot wait on itself through its dependencies; change --after to remove the cycle`);
-    }
-    if (visited.has(dependency)) continue;
-    const item = itemById(board, dependency);
-    visited.add(dependency);
-    pending.push(...itemDependencies.localDependencyIds(item));
-  }
-}
-
 /** Validate an addition before its sender runs a new check, and again when the ordered move applies. */
-export function validateItemAddition(board, { by, lane, title, criterion = '', parentId = null, after = [], brief = '', route = 'strong', check, referenceAuthors, referenceAuthority }) {
-  const command = coordinatorCheck(by, check) ?? '';
+export function validateItemAddition(board, { by, lane, title, criterion = '', parentId = null, after = [], brief = '', route = 'strong', check, referenceAuthors, referenceAuthority }, { sourceMove = null } = {}) {
+  const command = sourceMove
+    ? validateRehomeCheck(by, check, sourceMove)
+    : coordinatorCheck(by, check) ?? '';
   const cleanTitle = title.trim();
   if (!cleanTitle) throw new Refused('NO_TITLE', 'an item needs a title');
   checkRoute(route);
   const engine = board.executionEngineVersion ?? ENGINE_VERSION;
-  if (engine >= REFERENCE_ENGINE) validateReferences(brief, { actor: by, authors: referenceAuthors, authority: referenceAuthority });
+  if (engine >= REFERENCE_ENGINE) {
+    const proof = sourceMove?.referenceProof;
+    validateReferences(brief, { actor: proof?.actor ?? by,
+      authors: proof?.authors ?? referenceAuthors, authority: proof?.authority ?? referenceAuthority });
+  }
   checkRouted({ brief: brief.trim(), route, criterion, check: command }, engine);
   if (parentId !== null) {
     const parent = itemById(board, parentId);
@@ -2312,6 +2304,11 @@ function tellDeferredLandingReviews(board, batch) {
 
 /** File or refresh an outside source through the ordinary ordered engine. */
 export function intakeOutside(board, options) { return applyOutsideIntake(board, options, { atomic, addItem, moveItem, validateItemAddition }); }
+
+/** Apply a source move once, retaining its source MOVEID receipt [E15,H16]. */
+export function applyRehomeItem(board, record, options) {
+  return applyRehomeRecord(board, { record, ...options }, { atomic, boardId, logEvent, moveItem, validateItemAddition, now });
+}
 
 /** Record the person's exact-commit owner approval. */
 export function approveOutside(board, id, options) { return applyOutsideApproval(board, id, options, atomic); }

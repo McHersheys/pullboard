@@ -429,7 +429,7 @@ export async function relayOnAll(address, io, { signal, onPairingURL, onSignIn, 
   // The view's sign-in links every board itself; a terminal run waits for cards already on the phone.
   const waiting = onPairingURL ? [] : waitingLinkApprovals(session);
   const waitingIds = new Set(waiting.map(entry => entry.context.id));
-  updateRelayMachine(state => { state.autoLink = true; state.owner = { account: session.account, url: session.url }; state.approvals = state.approvals.filter(entry => waitingIds.has(entry.context.id)); });
+  updateRelayMachine(state => { state.autoLink = true; state.owner = { account: session.account, ...(session.login ? { login: session.login } : {}), url: session.url }; state.approvals = state.approvals.filter(entry => waitingIds.has(entry.context.id)); });
   const result = await linkProjects(session, io, { onBoardOutcome, waiting: new Set(waiting.map(entry => entry.root)) });
   const devices = readRelayMachine().devices.filter(device => device.account === session.account && device.url === session.url);
   if (devices.length && !pairAdditional) io.say('Your phone is already paired; the linked boards appear there.');

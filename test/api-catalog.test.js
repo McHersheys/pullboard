@@ -30,6 +30,7 @@ import { registerProject } from '../src/projects.js';
 import { SSH_SHELL_MARKERS } from '../src/person.js';
 import { fetchFresh } from './http-fixture.js';
 import { fixtureJSON as intakeFixtureJSON, intakeFixture } from './intake-fixture.js';
+import { relayClientFixture } from './relay-client-fixture.js';
 
 const BIN = resolve(import.meta.dirname, '../bin/pullboard.js');
 const TEMP_DIRS = [];
@@ -683,6 +684,27 @@ catalogCase('[A1,A10] view exports a static folder through its JSON variant', as
   assert.deepEqual(events.events.map((event) => event.event_id), events.events.map((event) => event.event_id).sort((a, b) => a - b));
 });
 
+
+catalogCase('[A1,E13,E14,E15] move returns its real CLI result across local boards', async (t) => {
+  const box = await relayClientFixture(t);
+  await box.link();
+  const team = await box.cli('add', box.lane, 'Catalog move source');
+  assert.equal(team.code, 0, JSON.stringify(team.document?.error));
+  const local = await box.cli('add', box.lane, 'Catalog move destination', '--private');
+  assert.equal(local.code, 0, JSON.stringify(local.document?.error));
+
+  const shape = shapeFor('move');
+  const moved = await box.cli('move', String(team.document.item.item_id), '--to', '~fixture/repository');
+  assert.equal(moved.code, 0, JSON.stringify(moved.document?.error));
+  assertRequiredShape(moved.document, shape.required, 'move');
+  assert.equal(moved.document.source, `fixture/repository#${team.document.item.item_id}`);
+  assert.equal(moved.document.item.moveId, moved.document.moveId);
+  assert.equal(moved.document.item.sourceItemId, team.document.item.item_id);
+  assert.notEqual(moved.document.item.destinationItemId, local.document.item.item_id, 'the moved item gets a new private-board ID');
+  assert.equal(moved.document.destination, `~fixture/repository#${moved.document.item.destinationItemId}`);
+  assert.match(moved.document.moveId, /^[0-9a-f-]{36}$/u);
+  assert.equal(moved.document.item.item.item_title, 'Catalog move source');
+});
 
 catalogCase('[A1] catalog commands keep their real repository exercises', async () => {
   const source = await project();

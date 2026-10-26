@@ -1,3 +1,4 @@
+import { orderedMoveCommand } from './relay-command-order.js';
 import * as conflictRecords from './relay-conflict-record.js';
 import { withRelayExclusion } from './relay-exclusion-state.js';
 import { relinkReplacement } from './relay-relink.js';
@@ -141,9 +142,11 @@ import {
   transportFailure,
 } from './relay-move-fallback.js';
 import {
+  ACKNOWLEDGED_OPERATIONS,
   flushOutbox,
   outboxFields,
   outboxFile,
+  outboxHasPendingCreatedItem,
   outboxQueueable,
   readOutboxSummary,
   queueMove,
@@ -204,9 +207,23 @@ const CHECKPOINT_MOVES = new WeakMap();
 const BASELINE_FAILURES = new WeakMap();
 const AUTH_NOTICES = new WeakSet();
 const DELETION_NOTICES = new WeakSet();
-const ORDERED_MOVE_COMMANDS = new Set(['add', 'edit', 'fact', 'escalate', 'run', 'sweep', 'next', 'claim', 'hold', 'release',
-  'submit', 'done', 'verify', 'merged', 'land', 'withdraw', 'refreeze', 'shout', 'answer', 'pass', 'import', 'milestone', 'takeover', 'forget', 'join', 'worktree']);
 
+/** Refuse a re-home that names an ID still owned by an unacknowledged local add. */
+async function requireAuthoritativeRehomeItem(file, state, itemId) {
+  if (!state || !Number.isSafeInteger(itemId) || itemId < 1 || !existsSync(outboxFile(file))) return;
+  await withOutboxGuard(file, async () => {
+    if (!existsSync(outboxFile(file))) return;
+    if (await outboxHasPendingCreatedItem(outboxFile(file), readBoardKey(state.board), state.board, itemId)) {
+      throw new Refused('RELAY_OUTBOX_UNBOUND', `item #${itemId} is still waiting for relay order; run pullboard status until it is sent, look up the current item ID, then retry the move`);
+    }
+  });
+}
+
+/** Check a selected team item before move-command destination reservation can choose another ID. */
+export async function assertRehomeSourceItemOrdered(root, itemId, io) {
+  const file = linkFile(root);
+  await locked(file, async () => requireAuthoritativeRehomeItem(file, loadLink(file), itemId), io);
+}
 /** Find the shared local link metadata without opening a board or connecting for an unlinked repo. */
 function linkFile(root) { return relayFiles(repoInfo(root).commonDir).link; }
 
@@ -494,13 +511,6 @@ async function publishSnapshotSize(state, io) {
 /** Return the local pending snapshot's oversize details without contacting the relay. */
 export function pendingSnapshotSize(root) {
   return snapshotSize(loadLink(linkFile(root)));
-}
-
-/** Whether the CLI command will make an ordered move whose refusal should be reported at dispatch. */
-function orderedMoveCommand(io) {
-  const command = io.relayCommand;
-  if (command?.cliOperation === 'spec') return ['approve', 'decline', 'apply'].includes(command.positionals?.[0]);
-  return ORDERED_MOVE_COMMANDS.has(command?.cliOperation);
 }
 
 /** Give a local read a single safe explanation when its signed relay read is refused. */
@@ -1031,7 +1041,7 @@ function localFirstLink(file, operation, args, io) {
     || state.baselineConflict || state.baselinePause || state.baselineStale || state.environment) return null;
   if (process.env.PULLBOARD_RELAY_TOKEN !== undefined || io?.relayCanary || io?.personRequest || io?.personRequestMoveId) return null;
   // A takeover needs the relay's authenticated sign-in lineage, which only the relay's order carries.
-  if (['register', 'ensureCoordinator', 'takeCoordinator', 'landingLeaseMove'].includes(operation) || args?.[0]?.landingFence !== undefined) return null;
+  if (ACKNOWLEDGED_OPERATIONS.includes(operation) || args?.[0]?.landingFence !== undefined) return null;
   if (credentialActor({ operation, args }) === 'person') return null;
   try { if (io?.relayOutbox?.() !== true) return null; } catch { return null; }
   return state;
@@ -1062,6 +1072,7 @@ export async function relayOperation(root, operation, args, io, command, applyLo
   if (local) return queueLocally(root, file, local, operation, args, io, command, applyLocally, onRecorded);
   return locked(file, async () => {
     const state = loadLink(file);
+    if (operation === 'rehomeItem') await requireAuthoritativeRehomeItem(file, state, args?.[0]);
     const guarded = landingRelayCallbacks(operation, args, {
       apply: () => typeof applyLocally === 'function' ? applyLocally() : localRecords(root, (board) => store[operation](board, ...args)),
       queue: (error, move, apply) => queueMove(outboxLink(root, file, state, io), { operation, args, command, move, error, applyLocally: apply }),
@@ -1123,7 +1134,8 @@ export async function relayOperation(root, operation, args, io, command, applyLo
       try {
         if (!move) {
           const sent = withSeatName(root, operation, args);
-          move = stampCoordinatorHolder(localRecords(root, (board) => prepareEngineMove(board, operation, sent, io.personRequestMoveId ? { id: io.personRequestMoveId } : {})), state.machine, state.computerName);
+          move = stampCoordinatorHolder(localRecords(root, (board) => prepareEngineMove(board, operation, sent,
+            io.personRequestMoveId ? { id: io.personRequestMoveId } : operation === 'rehomeItem' && io.rehomeMoveId ? { id: io.rehomeMoveId } : {})), state.machine, state.computerName);
           requestedMove = move;
           if (io.personRequest) move.personRequest = structuredClone(io.personRequest);
           const problem = move.personRequest && localRecords(root, board => requestMoveProblem(board, move, { checkExecutorLease: false }));
@@ -1318,7 +1330,7 @@ export async function relayCommandReceipt(root, command) {
     if (!state) {
       const recovered = deletedRecovery(root);
       if (!recovered || recovered.marker.recovered.commandIntent !== intentDigest(operationIntent('cli:' + command.cliOperation, command))) return null;
-      const expected = { add: 'addItem', companion: 'requestCompanion', edit: 'editItem', merged: 'merged' }[command.cliOperation];
+      const expected = { add: 'addItem', companion: 'requestCompanion', edit: 'editItem', merged: 'merged', move: 'rehomeItem' }[command.cliOperation];
       if (recovered.move.operation !== expected) throw new Refused('RELAY_STORAGE', 'restore the interrupted command receipt before retrying');
       if (recovered.receipt.outcome.error) {
         clearDeletedRecovery(root, recovered.marker);
@@ -1332,7 +1344,7 @@ export async function relayCommandReceipt(root, command) {
     if (recovered.commandIntent !== operationIntent('cli:' + recovered.command?.cliOperation, recovered.command)) {
       throw new Refused('RELAY_STORAGE', 'restore the interrupted command metadata before retrying');
     }
-    const expected = { add: 'addItem', companion: 'requestCompanion', edit: 'editItem', merged: 'merged' }[command.cliOperation];
+    const expected = { add: 'addItem', companion: 'requestCompanion', edit: 'editItem', merged: 'merged', move: 'rehomeItem' }[command.cliOperation];
     if (!recovered.move || recovered.move.operation !== expected) throw new Refused('RELAY_STORAGE', 'restore the interrupted command metadata before retrying');
     const move = recoveredMove(root, state, recovered.move.operation, recovered.move.args, command);
     const receipt = localRecords(root, board => engineReceipt(board, move.id));

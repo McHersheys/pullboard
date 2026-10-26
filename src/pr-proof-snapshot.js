@@ -20,7 +20,7 @@ export function capturePrProof(board) {
     const verdicts = byItem(board.db.prepare('SELECT * FROM verdict ORDER BY verdict_id').all());
     const events = byItem(store.eventsOfKinds(board, ['accept', 'reject', 'reopen']));
     const metadata = new Map(board.db.prepare(`SELECT meta_key,meta_value FROM board_meta
-      WHERE meta_key GLOB 'verdict_assurance:*' OR meta_key GLOB 'outside:*'`).all()
+      WHERE meta_key GLOB 'verdict_assurance:*' OR meta_key GLOB 'outside:*' OR meta_key GLOB 'rehome_import:*'`).all()
       .map(row => [row.meta_key, row]));
     const batches = store.landingBatches(board);
     // This private reader accepts only the canonical interpreter's known queries. Carry lookups
@@ -49,6 +49,6 @@ export function capturePrProof(board) {
       if (raw !== undefined) outside.set(item.item_id, JSON.parse(raw));
     }
     return { items, accepted, outside, batches,
-      assurance: verdict => metadata.get('verdict_assurance:' + verdict?.verdict_id)?.meta_value };
+      assurance: verdict => verdict?.imported ? 'imported' : metadata.get('verdict_assurance:' + verdict?.verdict_id)?.meta_value };
   } finally { board.db.exec('RELEASE pr_proof_snapshot'); }
 }
