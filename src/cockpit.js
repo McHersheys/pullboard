@@ -32,8 +32,10 @@ import {
   roadmapSummary,
 } from './view/roadmap-summary.js';
 import { roadmapBlock } from './view/roadmap-block.js';
-import { openPageDialog, closePageDialog } from './view/page-dialog.js';
-import { needsEntries, renderNeedsRow } from './view/needs-list.js';
+import { openPageDialog } from './view/page-dialog.js';
+import { closePageDialog } from './view/page-dialog.js';
+import { needsEntries } from './view/needs-list.js';
+import { renderNeedsRow } from './view/needs-list.js';
 import { applyStateDelta } from './api-http.js';
 import { pageScriptPart1 } from './view/page-script-1.js';
 import { pageScriptPart2 } from './view/page-script-2.js';
