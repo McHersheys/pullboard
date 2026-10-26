@@ -189,7 +189,7 @@ test('a seat registration waits for relay authority while ordinary moves and rea
     joinResult = await joining;
   }
   assert.equal(joinResult.status, 0, joinResult.context);
-  assert.match(JSON.parse(joinResult.stdout).agent, /^web-/u, 'the real join completes after its authority response is released');
+  assert.match(JSON.parse(joinResult.stdout).agent, new RegExp(`^${box.lane}-[1-9][0-9]*$`, 'u'), 'the real join completes in its configured lane after the authority response is released');
   await eventually('the background sender delivers the ordinary move after registration completes', () => outboxEmpty(box), () => senderLog(env));
 });
 
