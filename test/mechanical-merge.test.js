@@ -201,7 +201,7 @@ test('public land retains JSON and Markdown additions, while a same-line edit re
   assert.equal(item.item_status, 'open', 'a real conflicting accepted submission returns to its builder');
 });
 
-test('version-one conflict replay keeps its original Git meaning while fresh mechanical returns use engine130 [H16,V4]', t => {
+test('version-one conflict replay keeps its original Git meaning while fresh mechanical returns require their engine [H16,V4]', t => {
   const box = boardFixture();
   const id = accepted(box, 1, { 'test/snapshot.json': '{"base":true,"left":true}\n' }, { verify: false });
   writeFileSync(join(box.repo, 'test/snapshot.json'), '{"base":true,"right":true}\n');
