@@ -17,13 +17,13 @@ function valueTest(expected) {
 }
 
 /** Reject the actual merged importer, exercising either full fallback or the finite import subset. */
-function affectedBatch(t, { stableBadges = false, inline = false } = {}) {
+function affectedBatch(t, { stableBadges = false, inline = false, waive = false, opaque = false } = {}) {
   const box = e2e.project('node --test web/*.test.js');
   // A fixture CLI is a fresh process, not the outer Node test worker. Admission markers stay intact.
   delete box.env.NODE_TEST_CONTEXT;
   const configFile = join(box.repo, 'pullboard.json');
   const config = JSON.parse(readFileSync(configFile, 'utf8'));
-  writeFileSync(configFile, JSON.stringify({ ...config, gate: inline ? 'node --test web/floor.test.js' : config.gate,
+  writeFileSync(configFile, JSON.stringify({ ...config, gate: inline ? (opaque ? '(node --test web/floor.test.js)' : 'node --test web/floor.test.js') : config.gate,
     affectedTests: 'node --test', submitGate: 'landing',
     submitInvariants: ['web/floor.test.js'], submitDeferAbove: 20, landing: inline ? {} : { publish: 'separate' },
     verify: { policy: 'any', unrelatedTrunkMoves: true } }, null, 2) + '\n');
@@ -72,14 +72,23 @@ function affectedBatch(t, { stableBadges = false, inline = false } = {}) {
     assert.equal(importer.status, 0, importer.context);
     assert.match(importer.stdout, /# tests 1\b/u, 'the omitted importer really passes on main');
   }
+  if (waive) assert.equal(box.run(box.repo, 'land', '--waive', 'web/new-importer.test.js', '--until', '2099-01-01', '--reason', 'private exact affected-stage waiver').code, 0);
   const outcome = box.run(box.repo, 'land', '--json');
   assert.equal(outcome.code, 0, outcome.out + outcome.err);
   const landing = JSON.parse(outcome.out);
   t.diagnostic(JSON.stringify({ landing, messages: outcome.err }));
-  assert.deepEqual(landing.landed, [], 'the merged-tree importer failure must stop adoption');
-  assert.equal(landing.batch.state, 'blocked');
-  assert.equal(box.git(box.repo, 'rev-parse', 'main'), main, 'red affected tests never move main');
-  assert.equal(json(box, box.repo, 'show', String(item)).item_merged_commit, null);
+  if (waive && !opaque) {
+    assert.deepEqual(landing.landed, [item], 'an exact live waiver covers only the accounted affected failure');
+    assert.equal(landing.batch.state, 'landed');
+    assert.notEqual(box.git(box.repo, 'rev-parse', 'main'), main);
+    assert.equal(json(box, box.repo, 'show', String(item)).item_merged_commit, landing.batch.tip);
+    assert.equal(landing.batch.proof.failures[0].file, 'web/new-importer.test.js');
+  } else {
+    assert.deepEqual(landing.landed, [], 'the merged-tree importer failure must stop adoption');
+    assert.equal(landing.batch.state, 'blocked');
+    assert.equal(box.git(box.repo, 'rev-parse', 'main'), main, 'red affected tests never move main');
+    assert.equal(json(box, box.repo, 'show', String(item)).item_merged_commit, null);
+  }
   const selection = selectAffectedTests(landing.batch.root, { base: landing.batch.base, commit: landing.batch.tip });
   assert.equal(selection.full, !stableBadges, selection.reason);
   if (stableBadges) assert.deepEqual(selection.files, ['web/new-importer.test.js', 'web/value.test.js']);
@@ -95,4 +104,13 @@ test('a finite affected import subset is checked with the fixed guard floor [C7,
 
 test('a custom inline gate cannot omit a batch affected importer [C7,V4]', t => {
   affectedBatch(t, { stableBadges: true, inline: true });
+});
+
+
+test('a generated affected phase retains exact person waiver accounting [C7,V4]', t => {
+  affectedBatch(t, { stableBadges: true, inline: true, waive: true });
+});
+
+test('an opaque inline gate remains unaccounted despite an affected waiver [C7,V4]', t => {
+  affectedBatch(t, { stableBadges: true, inline: true, waive: true, opaque: true });
 });
