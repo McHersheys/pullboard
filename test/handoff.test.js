@@ -8,6 +8,7 @@ import * as store from '../src/board.js';
 import { main } from '../src/cli.js';
 import { appliedSequence, applyRelayMove, prepareEngineMove } from '../src/engine.js';
 import { ENGINE_VERSION } from '../src/machine.js';
+import { HANDOFF_ENGINE } from '../src/handoff-engine.js';
 import { machineSettingsFile } from '../src/settings.js';
 import { loadConfig } from '../src/config.js';
 import { loadDoctrine } from '../src/doctrine.js';
@@ -15,7 +16,7 @@ import { frozenCriterion, loadSpec } from '../src/spec.js';
 import { runFixtureGit } from './fixture-child.js';
 
 /** Keep fixture identity, settings, Git and SQLite separate from the invoking agent. */
-function fixture(t) {
+function fixture(t, { registrationEngine = ENGINE_VERSION, replayEngine = ENGINE_VERSION } = {}) {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), 'pullboard-handoff-'))), root = join(directory, 'repo');
   mkdirSync(root);
   const overrides = { PULLBOARD_HOME: join(directory, 'home'), PULLBOARD_MACHINE_HOME: join(directory, 'machine'), GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
@@ -32,12 +33,15 @@ function fixture(t) {
   writeFileSync(settings, JSON.stringify({ view: { background: false }, relay: { offerAtInit: false } }));
   const clock = { value: Date.parse('2026-10-24T10:00:00Z'), now() { return new Date(this.value); } };
   const board = store.openBoard(join(root, '.git/pullboard/board.sqlite'), clock);
+  // Historical replay tests need actual old join bytes, not current grants followed by an old move.
+  board.executionEngineVersion = registrationEngine;
   store.register(board, { lane: 'coordinator', path: root });
   const paths = ['outgoing', 'incoming', 'other'].map(name => join(directory, name));
   const agents = paths.map(path => {
     runFixtureGit(['worktree', 'add', '--detach', '--quiet', path, 'main'], { cwd: root, env });
     return store.register(board, { lane: 'core', path });
   });
+  delete board.executionEngineVersion;
   /** Execute real CLI parsing/dispatch, with text available to prove the final printed command. */
   async function cli(index, args, json = true) {
     let output = '', error = '';
@@ -46,7 +50,7 @@ function fixture(t) {
     return { code, output, error, document: json && output ? JSON.parse(output) : null };
   }
   /** Replay only with the relay's independent authenticated seat, retaining refusal outcomes. */
-  function replay(operation, args, sender, engine) {
+  function replay(operation, args, sender, engine = replayEngine) {
     const move = prepareEngineMove(board, operation, args);
     if (engine !== undefined) move.engine = engine;
     return applyRelayMove(board, move, { sequence: appliedSequence(board) + 1, at: clock.now().toISOString(), kind: 'move',
@@ -115,7 +119,8 @@ test('handoff takeover prints real work and retires only the outgoing seat [B3,N
 });
 
 test('handoff takeover is first-wins and cannot be forged by facts or an authenticated old engine [B3,H16]', t => {
-  const box = fixture(t), [outgoing, incoming, other] = box.agents;
+  // Keep the whole historical prefix at its real engine; a current receipt activates newer grants.
+  const box = fixture(t, { registrationEngine: HANDOFF_ENGINE, replayEngine: HANDOFF_ENGINE }), [outgoing, incoming, other] = box.agents;
   const opened = box.replay('openHandoff', [{ agentId: outgoing }], outgoing);
   assert.equal(opened.error, undefined);
   const id = opened.result.item;
@@ -135,10 +140,11 @@ test('handoff takeover is first-wins and cannot be forged by facts or an authent
     assert.equal(box.replay('addItem', [{ by: outgoing, lane: 'core', title: 'Old actor must fail', route: 'strong' }], outgoing, engine).error.code, 'AGENT_REPLACED');
   }
   assert.equal(store.listItems(box.board, { all: true }).length, count);
-  assert.equal(box.replay('register', [{ lane: 'core', path: join(box.directory, 'escape'), createdBy: outgoing }], outgoing).error.code, 'AGENT_REPLACED');
-  assert.equal(box.replay('shout', [{ from: outgoing, to: 'coordinator', text: 'wrong target', lanes: ['core'] }], outgoing).error.code, 'AGENT_REPLACED');
-  assert.equal(box.replay('shout', [{ from: outgoing, item: id, text: 'allowed answer', lanes: ['core'] }], outgoing).error, undefined);
-  assert.equal(box.replay('addItem', [{ by: incoming, lane: 'core', title: 'Incoming can work', route: 'strong' }], incoming).error, undefined);
+  // After the explicit current-engine probe, the activated prefix requires current moves.
+  assert.equal(box.replay('register', [{ lane: 'core', path: join(box.directory, 'escape'), createdBy: outgoing }], outgoing, ENGINE_VERSION).error.code, 'AGENT_REPLACED');
+  assert.equal(box.replay('shout', [{ from: outgoing, to: 'coordinator', text: 'wrong target', lanes: ['core'] }], outgoing, ENGINE_VERSION).error.code, 'AGENT_REPLACED');
+  assert.equal(box.replay('shout', [{ from: outgoing, item: id, text: 'allowed answer', lanes: ['core'] }], outgoing, ENGINE_VERSION).error, undefined);
+  assert.equal(box.replay('addItem', [{ by: incoming, lane: 'core', title: 'Incoming can work', route: 'strong' }], incoming, ENGINE_VERSION).error, undefined);
 });
 
 test('handoff rejects main and ordinary items, and a closed untaken channel is replaced [B3,N19]', async t => {

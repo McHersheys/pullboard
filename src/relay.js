@@ -1,3 +1,4 @@
+import * as conflictRecords from './relay-conflict-record.js';
 import { withRelayExclusion } from './relay-exclusion-state.js';
 import { relinkReplacement } from './relay-relink.js';
 import { relayExclusion } from './relay-exclusion-state.js';
@@ -847,8 +848,7 @@ async function replayRelayRecord(board, key, state, record) {
     move = await decoded(key, record, state, record.kind, record.event_id);
     requireSupportedEngine(move);
     if (record.kind === 'request') return receivePersonRequest(board, move, { sequence: record.event_id, at: record.event_at, sender: record.sender });
-    return applyRelayMove(board, move, { sequence: record.event_id, at: record.event_at, sender: record.sender, kind: record.kind,
-      digest: createHash('sha256').update(record.sealed).digest('hex'), registration: record.registration });
+    return conflictRecords.replay(board, move, record, applyRelayMove);
   } catch (error) { // A seal no key opens, from an engine no newer than this one, is junk: set aside, never a stop [E20].
     if (!(error instanceof Refused) || !(['RELAY_MOVE', 'RELAY_RESPONSE', 'SEAL_FORMAT', 'SEAL_AUTH_FAILED'].includes(error.code) || error.code === 'SEAL_VERSION' && record.sender?.engine <= ENGINE_VERSION)) throw error;
     return refuseRelayMove(board, move, { sequence: record.event_id, at: record.event_at, sender: record.sender, kind: record.kind, code: ['SEAL_AUTH_FAILED', 'SEAL_VERSION'].includes(error.code) ? 'RELAY_SEAL' : error.code,
@@ -1009,7 +1009,7 @@ async function sendPending(root, file, state, io) {
     const pending = state.pending;
     const actor = credentialActor(pending.move);
     try {
-      const transport = await actorTransport(root, file, state, actor, io);
+      const transport = await conflictRecords.transport(root, pending.move, localRecords, () => actorTransport(root, file, state, actor, io));
       const reply = await request(transport, '/api/v1/boards/' + state.board + '/moves', { method: 'POST',
         body: { sequence: pending.sequence, sealed: pending.sealed, ...(pending.registration ? { registration: pending.registration } : {}) } }, io);
       if (reply.event?.event_id !== pending.sequence || reply.event.sealed !== pending.sealed) throw new Refused('RELAY_RESPONSE', 'the relay acknowledgement differs from this executable send; fetch the configured relay');

@@ -1,3 +1,4 @@
+import { AGENT_GRANT_ENGINE } from '../src/agent-grant-engine.js';
 /**
  * The v1 board exchange keeps each SQLite row, including lifecycle history and sequence counters.
  */
@@ -325,6 +326,44 @@ test('fresh-init approval baselines are disposable only with exact setup history
           importBoard(target, incoming);
           assert.deepEqual(exportBoard(target), incoming, 'the source baseline and every source row replace local setup');
           assert.equal(store.specApprovalBaseline(target).rows[0].text, 'The imported source governs.');
+        }
+      } finally { store.closeBoard(target); }
+    }
+  } finally {
+    store.closeBoard(setup);
+    store.closeBoard(source);
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+
+test('fresh-init grant markers permit pairing without admitting other history [A2,A7,E21]', () => {
+  const directory = tempDirectory();
+  const source = populatedBoard(join(directory, 'source.sqlite'));
+  const setup = store.openBoard(join(directory, 'setup.sqlite'));
+  try {
+    store.register(setup, { lane: 'coordinator', path: '/fresh' });
+    const incoming = exportBoard(source);
+    const cases = [
+      { detail: { lane: 'coordinator' }, allowed: true },
+      { detail: { lane: 'coordinator', grantEngine: AGENT_GRANT_ENGINE }, allowed: true },
+      { detail: { lane: 'coordinator', grantEngine: String(AGENT_GRANT_ENGINE) }, allowed: false },
+      { detail: { lane: 'coordinator', grantEngine: AGENT_GRANT_ENGINE + 1 }, allowed: false },
+      { detail: { lane: 'coordinator', grantEngine: AGENT_GRANT_ENGINE, grant: 'stored authority' }, allowed: false },
+    ];
+    for (const [index, entry] of cases.entries()) {
+      const target = store.openBoard(join(directory, `marker-${index}.sqlite`));
+      try {
+        const initial = exportBoard(setup);
+        initial.tables.event[0].event_detail = JSON.stringify(entry.detail);
+        importBoard(target, initial);
+        const before = exportBoard(target);
+        if (entry.allowed) {
+          importBoard(target, incoming);
+          assert.deepEqual(exportBoard(target), incoming);
+        } else {
+          assert.throws(() => importBoard(target, incoming), /IMPORT_NOT_EMPTY/u);
+          assert.deepEqual(exportBoard(target), before, 'invalid setup remains untouched');
         }
       } finally { store.closeBoard(target); }
     }

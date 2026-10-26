@@ -1,5 +1,9 @@
 /** General CLI recovery text; operation-owned codes live in src/moves/ [P4,C7]. */
 export const DEFAULT_NEXT_STEPS = Object.freeze({
+  "AGENT_GRANT_EXPIRED": "claim the intended item, or shout the coordinator if its claim is unavailable",
+  "AGENT_GRANT_ITEM": "finish or release the claim, then claim the intended item; use shout for coordination",
+  "AGENT_GRANT_LANE": "join a seat in the intended lane or ask its owner to make the item change",
+  "GIT_REPLACE_REFS": "ask the coordinator to remove this replica's refs/replace entries, then resume the same ordered move",
   "DECISIONS_NOT_AVAILABLE": "read each board's state from the local API, which carries its own person decisions",
   "PROJECT_REPO_AMBIGUOUS": "run pullboard decisions --as person and answer with the repo name it prints before the #",
   "PROJECT_REPO_UNKNOWN": "run pullboard decisions --as person to see the repos of this project, then answer repo#id",
