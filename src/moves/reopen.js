@@ -1,3 +1,4 @@
+import { AGENT_GRANT_ENGINE } from '../agent-grant-engine.js';
 import { VERDICT_WITHDRAW_ENGINE } from '../verdict-withdraw-engine.js';
 import { MERGE_ONLY_VERDICT_ENGINE } from '../merge-only-verdict-engine.js';
 import { RIGOR_AUTO_ENGINE } from '../rigor-auto-engine.js';
@@ -32,6 +33,7 @@ function existingEngine(args, board, at) {
 function minimumEngine(args, board, at) {
   const carried = board && board.db.prepare("SELECT 1 FROM item i JOIN event e ON e.item_id = i.item_id WHERE i.item_id = ? AND e.event_kind = 'merge-only-accept' AND json_extract(e.event_detail,'$.commit') = i.item_commit LIMIT 1").get(args[0]);
   return Math.max(carried ? MERGE_ONLY_VERDICT_ENGINE : 1,
+    args[1]?.computedConflict !== undefined ? AGENT_GRANT_ENGINE : 1,
     args[1]?.withdrawVerdict === true ? VERDICT_WITHDRAW_ENGINE : 1, existingEngine(args, board, at));
 }
 

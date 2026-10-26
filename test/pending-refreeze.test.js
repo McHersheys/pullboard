@@ -382,7 +382,7 @@ test('dependency edits replay the same on every engine [B3,V2,H16]', async (t) =
   await checkDependencyLegacyClients(cleanup, directory, snapshot, target, add, clear);
 });
 
-test('ordered refreeze corrections retain engine-7 history and engine-8 live claims [V2,H16]', (t) => {
+test('ordered refreeze corrections retain engine-7 history and engine-8 live claims [V2,H16]', async (t) => {
   const replicaDirectory = mkdtempSync(join(tmpdir(), 'pullboard-refreeze-replicas-'));
   const replicaBoards = [];
   const legacyClock = '2026-10-10T12:00:00.000Z';
@@ -397,13 +397,30 @@ test('ordered refreeze corrections retain engine-7 history and engine-8 live cla
     for (const replica of replicaBoards) store.closeBoard(replica);
     rmSync(replicaDirectory, { recursive: true, force: true });
   });
+  // Seed genuinely historical joins, rather than marking a modern seat and then downgrading its move.
+  const legacySource = join(replicaDirectory, 'engine-7-source');
+  mkdirSync(legacySource);
+  unpackRelease('v0.8.4', legacySource);
+  const legacyStore = await import(pathToFileURL(join(legacySource, 'src/board.js')).href);
+  const legacyExchange = await import(pathToFileURL(join(legacySource, 'src/exchange.js')).href);
+  const legacyMachine = await import(pathToFileURL(join(legacySource, 'src/machine.js')).href);
+  assert.equal(legacyMachine.ENGINE_VERSION, 7, 'the registration writer is the actual engine-7 release');
+  const seed = legacyStore.openBoard(join(replicaDirectory, 'engine-7-seed.sqlite'), { now: () => new Date(legacyClock) });
+  let legacyId;
+  let snapshot;
+  try {
+    legacyStore.register(seed, { lane: 'coordinator', path: '/legacy/coordinator' });
+    legacyStore.register(seed, { lane: 'web', path: '/legacy/web' });
+    legacyId = legacyStore.addItem(seed, {
+      by: 'web-1', lane: 'web', title: 'Legacy claim', route: 'strong', criterion: 'legacy criterion',
+      brief: e2e.LIGHT_BRIEF,
+    });
+    snapshot = legacyExchange.exportBoard(seed);
+    assert.ok(snapshot.tables.event.filter(event => event.event_kind === 'join')
+      .every(event => JSON.parse(event.event_detail).grantEngine === undefined), 'the old writer emits no future grant marker');
+  } finally { legacyStore.closeBoard(seed); }
   const legacy = openBoardWithClock('legacy', legacyClock);
-  store.register(legacy, { lane: 'coordinator', path: '/legacy/coordinator' });
-  store.register(legacy, { lane: 'web', path: '/legacy/web' });
-  const legacyId = store.addItem(legacy, {
-    by: 'web-1', lane: 'web', title: 'Legacy claim', route: 'strong', criterion: 'legacy criterion',
-    brief: e2e.LIGHT_BRIEF,
-  });
+  importBoard(legacy, snapshot);
   const legacyReplica = openBoardWithClock('legacy-replica', legacyClock);
   importBoard(legacyReplica, exportBoard(legacy));
   const sender = { kind: 'agent', userId: 'fixture-user', agent: 'web-1' };
