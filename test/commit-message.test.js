@@ -44,10 +44,11 @@ test('many consecutive rows fill the header, then +N stands for the rest [C7,B3,
   const twelve = roundTrip({ type: 'chore', scope: 'merge', title: 'Land the batch', item: 7, rows: rowsUpTo(12) });
   assert.equal(twelve.built.header, 'chore(merge): land the batch [A1,A2,A3,A4,A5,A6,A7,A8,A9,A10,A11,A12]', 'every row shows when they all fit');
   const twenty = roundTrip({ type: 'chore', scope: 'merge', title: 'Land the batch', item: 7, rows: rowsUpTo(20) });
-  assert.equal(twenty.built.header, 'chore(merge): land the batch [A1,A2,A3,A4,A5,A6,A7,A8,A9,A10,A11,+9]');
-  assert.equal(twenty.parsed.more, 9);
+  assert.equal(twenty.built.header, 'chore(merge): land the batch [A1,A2,A3,A4,A5,A6,A7,A8,A9,A10,A11,A12,+8]');
+  assert.equal(twenty.built.header.length, HEADER_LIMIT);
+  assert.equal(twenty.parsed.more, 8);
   // The ids fill what fits: one more shown id would cross the limit.
-  const longer = `chore(merge): land the batch [${[...rowsUpTo(12), '+8'].join(',')}]`;
+  const longer = `chore(merge): land the batch [${[...rowsUpTo(13), '+7'].join(',')}]`;
   assert.ok(longer.length > HEADER_LIMIT, longer);
 });
 
@@ -65,9 +66,9 @@ test('36 rows never refuse: the header keeps the title and the trailer keeps all
   assert.equal(built.header, 'docs(merge): update the handbook [A1,A2,A3,A4,A5,A6,A7,A8,A9,A10,+26]');
   assert.equal(built.trailers, `Pullboard-Item: #1326\nPullboard-Rows: ${rows.join(',')}`);
   assert.equal(parsed.rows.length, 36);
-  // The title keeps priority: a title that needs the whole header still lands, showing only +N.
+  // The title keeps priority: a title that needs the whole header still lands, showing the ids that fit after it.
   const long = roundTrip({ type: 'chore', scope: 'merge', title: 'A VERY LONG TITLE '.repeat(10), item: 91, rows });
-  assert.equal(long.built.header, 'chore(merge): a very long title a very long title a very long [+36]');
+  assert.equal(long.built.header, 'chore(merge): a very long title a very long title a very long [A1,+35]');
 });
 
 test('no rows: no brackets and no Pullboard-Rows trailer [C7,B3,R3]', () => {
