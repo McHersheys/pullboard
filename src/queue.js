@@ -56,7 +56,8 @@ function waitsOf(board, item, inFlight) {
     .filter((before) => before && before.item_status !== 'verified')
     .map((before) => `#${before.item_id} (${before.item_status})`);
   const lane = laneHold(board, item.item_lane);
-  return [...after, ...foreignBlockers(board, item).map(ref => `${dependencyLabel(ref)} (${ref.status} on its own board)`), ...itemFileCollisions(item, inFlight), ...(item.item_hold_reason ? [`held: ${item.item_hold_reason}`] : []), ...(lane ? [`${item.item_lane} lane held: ${lane.hold_reason}`] : [])];
+  const collisions = itemFileCollisions(item, inFlight);
+  return [...after, ...foreignBlockers(board, item).map(ref => `${dependencyLabel(ref)} (${ref.status} on its own board)`), ...collisions, ...(item.item_hold_reason ? [`held: ${item.item_hold_reason}`] : []), ...(lane ? [`${item.item_lane} lane held: ${lane.hold_reason}`] : [])];
 }
 
 /**

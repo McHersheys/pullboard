@@ -9,6 +9,7 @@ import { ENGINE_VERSION, MILESTONE_RANK_ENGINE } from '../src/machine.js';
 import { LINE_ORDER_ENGINE } from '../src/line-order-engine.js';
 import { setLineSetting } from '../src/line-settings.js';
 import { FOCUS_MILESTONE_ENGINE } from '../src/focus-milestone-engine.js';
+import { CRITICAL_PATH_ENGINE } from '../src/critical-path-engine.js';
 import { exportBoard, importBoard } from '../src/exchange.js';
 import { createE2eHelpers } from './e2e-helpers.js';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
@@ -44,6 +45,109 @@ function submitted(board, builder, title, route, number) {
   submitFixture(board, id, { agentId: builder, commit: hash, tree: hash });
   return id;
 }
+
+test('next offers the item on the longest remaining path first [N2,B13,N20]', t => {
+  const { board, builder } = boardFixture();
+  t.after(() => store.closeBoard(board));
+  const add = (title, after = []) => store.addItem(board, {
+    by: 'coordinator', lane: 'core', title, after, route: 'strong',
+  });
+  const independent = add('Older independent work');
+  const wide = add('A broad but short fan-out');
+  const wideChildren = Array.from({ length: 4 }, (_, index) => add(`Short follower ${index}`, [wide]));
+  const longest = add('A newer root on the critical chain');
+  const middle = add('Middle of the chain', [longest]);
+  const end = add('End of the chain', [middle]);
+  const outside = add('A path outside the focus');
+  const outsideMiddle = add('Outside middle', [outside]);
+  const outsideEnd = add('Outside end', [outsideMiddle]);
+  const outsideLast = add('Outside last', [outsideEnd]);
+  store.addMilestone(board, { agentId: 'coordinator', name: 'later', items: [outside, outsideMiddle, outsideEnd, outsideLast] });
+  store.addMilestone(board, { agentId: 'coordinator', name: 'focus', items: [independent, wide, ...wideChildren, longest, middle, end] });
+  setLineSetting(board, { agentId: 'coordinator', key: 'focusMilestone', value: 'focus',
+    reason: 'Synthetic focused DAG scheduling fixture.', window: { items: 14 } });
+  assert.equal(store.nextFor(board, { agentId: builder, lane: 'core' }).item.item_id, wide,
+    'ruling 29931: higher (unblocks + 1) / effort wins before the longer path inside the focus');
+  assert.equal(workQueue(board).first.strong, wide, 'queue and next share the primary score order');
+});
+
+/** The sharpened primary score leaves a real equal-score tie for the critical path to resolve. */
+test('equal primary scores use the longer remaining path before age [N2,B13,N20]', t => {
+  const { board, builder } = boardFixture();
+  t.after(() => store.closeBoard(board));
+  const add = (title, after = []) => store.addItem(board, {
+    by: 'coordinator', lane: 'core', title, after, route: 'strong',
+  });
+  const wide = add('Older short fan-out with two successors');
+  const children = [add('First short successor', [wide]), add('Second short successor', [wide])];
+  const long = add('Newer chain with the same two descendants');
+  const middle = add('Chain middle', [long]);
+  const end = add('Chain end', [middle]);
+  store.addMilestone(board, { agentId: 'coordinator', name: 'equal-score focus', items: [wide, ...children, long, middle, end] });
+  setLineSetting(board, { agentId: 'coordinator', key: 'focusMilestone', value: 'equal-score focus',
+    reason: 'Equal-score critical-path tie fixture under ruling 29931.', window: { items: 6 } });
+  assert.equal(store.nextFor(board, { agentId: builder, lane: 'core' }).item.item_id, long,
+    'both roots score 3/3; only the remaining path distinguishes them before their age');
+  assert.equal(workQueue(board).first.strong, long, 'the queue resolves the same equal-score tie');
+});
+
+test('a file overlap keeps the hard collision skip under the sharpened precedence [N2,N20]', t => {
+  const { board, builder } = boardFixture();
+  t.after(() => store.closeBoard(board));
+  const busy = store.register(board, { lane: 'api', path: '/soft-overlap', route: 'strong' });
+  const active = store.addItem(board, { by: 'coordinator', lane: 'api', title: 'A live shared file', brief: 'Files: src/shared.js' });
+  store.claim(board, active, { agentId: busy, lane: 'api', leaseMs: HOUR, freeze: FREEZE });
+  const colliding = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Ready overlapping work', brief: 'Files: src/shared.js' });
+  assert.equal(store.nextFor(board, { agentId: builder, lane: 'core' }).item, null,
+    'ruling 29931 retains the hard collision skip even when the colliding item is the only ready work');
+  assert.equal(workQueue(board).first.strong, null, 'queue and next both retain the collision block');
+  assert.ok(workQueue(board).releases.flatMap(release => release.items).concat(workQueue(board).unreleased)
+    .find(item => item.id === colliding).waits.length > 0, 'the blocked offer still explains its live collision');
+  const free = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Equally short independent work', brief: 'Files: src/free.js' });
+  assert.equal(store.nextFor(board, { agentId: builder, lane: 'core' }).item.item_id, free,
+    'an independent item remains offerable while the collision stays blocked');
+});
+
+test('next reviews the longer remaining path with line ordering off [N2,B13,H16]', t => {
+  const { board, builder, reviewer } = boardFixture();
+  t.after(() => store.closeBoard(board));
+  const independent = submitted(board, builder, 'Older independent submission', 'strong', 1);
+  const root = submitted(board, builder, 'Newer submission unlocks follow-up work', 'strong', 2);
+  const follower = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Follow-up waits for review', after: [root] });
+  store.addMilestone(board, { agentId: 'coordinator', name: 'focus', items: [independent, root, follower] });
+  setLineSetting(board, { agentId: 'coordinator', key: 'focusMilestone', value: 'focus',
+    reason: 'Synthetic review critical-chain fixture.', window: { items: 3 } });
+  assert.equal(store.nextFor(board, { agentId: reviewer, lane: 'review', verify: true }).item.item_id, root,
+    'review offers also advance the longer remaining path with the separate line.order switch off');
+});
+
+test('recorded review selection keeps its historical path priority on replay [N2,H16]', t => {
+  for (const engine of [CRITICAL_PATH_ENGINE - 1, ENGINE_VERSION]) {
+    const { board, builder, reviewer } = boardFixture();
+    const replica = store.openBoard(':memory:');
+    t.after(() => { store.closeBoard(board); store.closeBoard(replica); });
+    const independent = submitted(board, builder, 'Older independent review', 'strong', 1);
+    const root = submitted(board, builder, 'Review that unlocks a longer path', 'strong', 2);
+    const follower = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Blocked follow-up', after: [root] });
+    store.addMilestone(board, { agentId: 'coordinator', name: 'focus', items: [independent, root, follower] });
+    setLineSetting(board, { agentId: 'coordinator', key: 'focusMilestone', value: 'focus',
+      reason: 'Synthetic old/current selection replay fixture.', window: { items: 3 } });
+    importBoard(replica, exportBoard(board));
+    const prepared = prepareEngineMove(board, 'reserveNextReview', [{ agentId: reviewer, lane: 'review', leaseMs: HOUR, policy: 'any' }]);
+    const move = { ...prepared, engine };
+    const receipt = { sequence: 1, at: '2026-10-25T12:00:00Z' };
+    const outcomes = [board, replica].map(current => applyEngineMove(current, move, receipt));
+    assert.equal(outcomes[0].error, undefined, JSON.stringify(outcomes[0]));
+    assert.deepEqual(outcomes[0], outcomes[1], 'independent SQLite replicas select and record the same offer');
+    assert.equal(outcomes[0].result.item.item_id, engine < CRITICAL_PATH_ENGINE ? independent : root,
+      'only current-feature moves acquire longest-path selection');
+    for (const current of [board, replica]) {
+      const count = store.events(current).length;
+      assert.deepEqual(applyEngineMove(current, move, receipt), outcomes[0], 'same move identity reuses its immutable outcome');
+      assert.equal(store.events(current).length, count, 'receipt replay appends no duplicate reservation');
+    }
+  }
+});
 
 test('a reviewer gets the earliest milestone\'s submissions first [B16]', (t) => {
   const { board, builder, reviewer } = boardFixture();
@@ -540,9 +644,10 @@ test('a reserve-next move with skipIds needs engine 69 and older engines replay 
 });
 
 /** The native lifecycle is seeded here; these are board-state records, not claimed gate executions. */
-test('next never hands out work that collides with work in flight [N2,B13,N20]', (t) => {
+test('historical next never hands out work that collides with work in flight [N2,B13,N20,H16]', (t) => {
   const { board, builder, reviewer } = boardFixture();
   t.after(() => store.closeBoard(board));
+  board.executionEngineVersion = CRITICAL_PATH_ENGINE - 1;
   const other = store.register(board, { lane: 'core', path: '/busy-builder', route: 'strong' });
   /** Name the actual files as a coordinator's ordinary brief does. */
   const add = (title, file) => store.addItem(board, { by: 'coordinator', lane: 'core', title,
@@ -624,9 +729,10 @@ test('next leaves a brief without named files in its original order [N2,N20]', (
     'missing file declarations do not invent a reservation or change selection');
 });
 
-test('the queue names the same noncolliding work next can serve [N2,N20]', (t) => {
+test('the historical queue names the same noncolliding work next can serve [N2,N20,H16]', (t) => {
   const { board, builder } = boardFixture();
   t.after(() => store.closeBoard(board));
+  board.executionEngineVersion = CRITICAL_PATH_ENGINE - 1;
   const busy = store.register(board, { lane: 'core', path: '/queue-busy', route: 'strong' });
   const a = store.addItem(board, { by: 'coordinator', lane: 'core', title: 'Already changing a file',
     brief: 'Files: src/shared.js' });

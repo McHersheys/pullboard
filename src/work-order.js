@@ -145,10 +145,10 @@ function whyOf(entry) {
  * The computed order of every unfinished item, release by release.
  *
  * @param {any} board
- * @param {{ priority: (entry: any) => number, shared?: (entry: any) => number }} options
+ * @param {{ priority: (entry: any) => number, shared?: (entry: any) => number, tieBreak?: (first: any, second: any) => number }} options
  * @returns {Map<number, { position: number, unblocks: number, effort: number, score: number, why: string }>}
  */
-export function computedOrder(board, { priority, shared = () => 0 }) {
+export function computedOrder(board, { priority, shared = () => 0, tieBreak = () => 0 }) {
   // Only unfinished items and withdrawn ids matter, so a large board's finished history is never read.
   const unfinished = listItems(board);
   const withdrawn = new Set(board.db.prepare("SELECT item_id FROM item WHERE item_status = 'withdrawn'").all().map((row) => row.item_id));
@@ -161,7 +161,7 @@ export function computedOrder(board, { priority, shared = () => 0 }) {
     return { item, unblocks, effort, score: (unblocks + 1) / effort, depth,
       kind: item.item_hold_reason ? 'held' : depth ? 'blocked' : 'ready', release: priority(item) };
   });
-  const byScore = (first, second) => second.score - first.score || shared(second.item) - shared(first.item) || first.item.item_id - second.item.item_id;
+  const byScore = (first, second) => second.score - first.score || tieBreak(first.item, second.item) || shared(second.item) - shared(first.item) || first.item.item_id - second.item.item_id;
   const order = new Map();
   for (const release of [...new Set(entries.map((entry) => entry.release))].sort((a, b) => a - b)) {
     const group = entries.filter((entry) => entry.release === release);
@@ -180,12 +180,12 @@ export function computedOrder(board, { priority, shared = () => 0 }) {
  * (B13). Null below WORK_ORDER_ENGINE, where buildOrder keeps its recorded order.
  *
  * @param {any} board
- * @param {{ priority: (entry: any) => number, rank: (entry: any) => number, shared: (entry: any) => number, tierFirst?: boolean }} options
+ * @param {{ priority: (entry: any) => number, rank: (entry: any) => number, shared: (entry: any) => number, tierFirst?: boolean, tieBreak?: (first: any, second: any) => number }} options
  * @returns {((first: any, second: any) => number) | null}
  */
-export function workOrderCompare(board, { priority, rank, shared, tierFirst = false }) {
+export function workOrderCompare(board, { priority, rank, shared, tierFirst = false, tieBreak = () => 0 }) {
   if (!workOrderActive(board)) return null;
-  const order = computedOrder(board, { priority, shared });
+  const order = computedOrder(board, { priority, shared, tieBreak });
   const { sunk } = milestoneOverrides(board, priority);
   const position = (entry) => order.get(entry.item_id)?.position ?? Number.MAX_SAFE_INTEGER;
   return (first, second) => priority(first) - priority(second)
