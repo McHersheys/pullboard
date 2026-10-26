@@ -467,7 +467,7 @@ test('land pushes one exact batch in verdict order and records each first-contai
   assert.deepEqual(calls(box).slice(start), [[]], 'one full batch gate; pre-push reads its exact green tree stamp');
   const merges = box.git(box.repo, 'rev-list', '--reverse', '--first-parent', `${base}..${result.batch.tip}`).split('\n');
   for (const [index, id] of order.entries()) assert.equal(json(box, box.repo, 'show', String(id)).item_merged_commit, merges[index]);
-  for (const [index, id] of order.entries()) assert.equal(box.git(box.repo, 'log', '-1', '--format=%b', merges[index]).trim(), `Pullboard-Item: #${id}`, 'each train merge body is only its item trailer, naming no lane branch');
+  for (const [index, id] of order.entries()) assert.equal(box.git(box.repo, 'log', '-1', '--format=%b', merges[index]).trim(), `Pullboard-Item: #${id}\nPullboard-Rows: G1`, 'each train merge body is only its trailers, naming no lane branch');
   const receipt = events(box).filter((event) => event.event_kind === 'main-moved');
   assert.equal(receipt.length, 1);
   assert.equal(JSON.parse(receipt[0].event_detail).sha, result.batch.tip);
@@ -489,7 +489,7 @@ test('a train merge body is only the item trailer even when the local Git config
   assert.equal(result.landed.length, 4);
   const merges = box.git(box.repo, 'rev-list', '--reverse', '--first-parent', `${base}..${result.batch.tip}`).split('\n');
   for (const [index, id] of result.landed.entries()) {
-    assert.equal(box.git(box.repo, 'log', '-1', '--format=%b', merges[index]).trim(), `Pullboard-Item: #${id}`, 'merge.log=true appends no shortlog to the body');
+    assert.equal(box.git(box.repo, 'log', '-1', '--format=%b', merges[index]).trim(), `Pullboard-Item: #${id}\nPullboard-Rows: G1`, 'merge.log=true appends no shortlog to the body');
   }
 });
 
@@ -1252,8 +1252,9 @@ test('landing diagnostics retain unknown failures and merge subjects obey typed 
   // Node 24 node --test reports with spec by default: its failing-tests summary names each file and test (#1071).
   const spec = landingFailures(`\u2716 red one (1.2ms)\n\u2716 failing tests:\n\ntest at web/red.test.js:6:1\n\u2716 red one (1.2ms)\n  AssertionError\n\ntest at /elsewhere/x.test.js:1:1\n\u2716 outside (3ms)\n`, root);
   assert.deepEqual(spec, [{ name: 'red one', file: 'web/red.test.js' }, { name: 'outside', file: null }], 'spec failures keep their file, and an outside path is unknown');
+  // The title keeps priority; the rows fill what is left, and +N counts the rest (RFC 0005).
   const subject = landingSubject({ item_id: 91, item_title: 'A VERY LONG TITLE '.repeat(10), item_spec_ids: 'B3,R3' });
-  assert.equal(subject, 'chore(merge): a very long title a very long title a very long [B3,R3]');
+  assert.equal(subject, 'chore(merge): a very long title a very long title a very long title [+2]');
   assert.ok(subject.length <= 72);
 });
 
