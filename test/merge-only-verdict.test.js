@@ -71,6 +71,17 @@ test('a merge-only resubmission keeps its accept and records the resolution diff
   assert.notEqual(box.tryGit(box.web, 'merge', '-q', '--no-edit', 'main').status, 0);
   const head = content(box, box.web, 'resolved', 'fix(web): resolve the accepted trunk merge [G1]');
   assert.deepEqual(box.git(box.web, 'show', '-s', '--format=%P', head).split(' '), [accepted, trunk]);
+  // Build the adversarial object while this real seat still holds the claim. The hook must
+  // generate its metadata normally; the later counterexample must not amend an unclaimed commit.
+  assert.equal(state(box, id).item.item_status, 'claimed');
+  writeFileSync(join(box.web, 'web/feature.js'), "export const choice = 'resolved';\n\nexport const unrelated = 'silently changed';\n");
+  box.git(box.web, 'add', 'web/feature.js');
+  box.git(box.web, 'commit', '-q', '--amend', '--no-edit');
+  const extraHead = box.git(box.web, 'rev-parse', 'HEAD');
+  const extraTree = box.git(box.web, 'rev-parse', 'HEAD^{tree}');
+  assert.match(box.git(box.web, 'show', '-s', '--format=%B', extraHead), new RegExp(`^Pullboard-Item: #${id}$`, 'mu'));
+  assert.deepEqual(box.git(box.web, 'show', '-s', '--format=%P', extraHead).split(' '), [accepted, trunk]);
+  box.git(box.web, 'reset', '--hard', head);
   const pending = state(box, id);
   succeeds(box, box.web, 'submit', String(id));
   const carried = state(box, id);
@@ -185,9 +196,11 @@ test('a merge-only resubmission keeps its accept and records the resolution diff
   // The real commit retains both merge parents but changes behavior outside the conflict region.
   writeFileSync(join(box.web, 'web/feature.js'), "export const choice = 'resolved';\n\nexport const unrelated = 'silently changed';\n");
   box.git(box.web, 'add', 'web/feature.js');
-  box.git(box.web, 'commit', '-q', '--amend', '--no-edit');
-  const extraHead = box.git(box.web, 'rev-parse', 'HEAD');
-  const extraTree = box.git(box.web, 'rev-parse', 'HEAD^{tree}');
+  const unclaimedAmend = box.tryGit(box.web, 'commit', '-q', '--amend', '--no-edit');
+  assert.notEqual(unclaimedAmend.status, 0, 'an unclaimed amended trailer must still be refused');
+  assert.match(unclaimedAmend.stderr, /live claim|verified item in the landing checkout/u);
+  assert.equal(box.git(box.web, 'rev-parse', 'HEAD'), head, 'the refused amend cannot replace the accepted merge');
+  box.git(box.web, 'reset', '--hard', extraHead);
   const forged = store.openBoard(':memory:', undefined, { gitRoot: box.web });
   try {
     importBoard(forged, pending.snapshot);
