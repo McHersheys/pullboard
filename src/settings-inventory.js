@@ -28,14 +28,14 @@ import { Refused } from './refused.js';
 import { environmentProblem } from './execution-environment.js';
 
 const MACHINE_DEFAULTS = {
-  gateSlots: 2, browserSlots: 1, 'gate.shortSlots': 0,
+  gateSlots: 2, browserSlots: 1, 'gate.shortSlots': 0, 'gate.runnerWaitMs': 300_000,
   'gate.queue.reviewsFirst': false, 'gate.queue.currentReleaseFirst': false, 'gate.queue.agingMinutes': 30,
   'gate.memoryFloorMB': null, 'gate.browserFreeChecks': false, 'gate.browserByLaunch': false, 'gate.runnersFirst': false,
   'health.sentinel': true, 'view.background': true, 'relay.offerAtInit': true, runners: [], 'landing.pools': [],
 };
 const OPTIONAL_REPO_DEFAULTS = {
   project: null, name: null, 'checks.provesNothing': 'warn', 'verify.unrelatedTrunkMoves': false, 'verify.composeAtAdmission': false,
-  'flakes.rerun': false, 'flakes.quarantine': false, 'rigor.budget': 400, 'relay.outbox': false,
+  'flakes.rerun': false, 'flakes.quarantine': false, 'rigor.budget': 400, 'relay.outbox': false, 'relay.board': null,
   submitGate: null, submitDeferAbove: null, landingShards: 1, 'landing.publish': null, 'landing.environment': null, positiveControl: null, affectedTests: null,
   'health.sentinel': true, 'testConcurrency.browser': 2, approvers: null,
 };

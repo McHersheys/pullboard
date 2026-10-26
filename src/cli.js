@@ -104,6 +104,7 @@ import {
   configFromSource,
   loadConfig,
 } from './config.js';
+import { onlyNamedBoardChanged } from './relay-board-config.js';
 import { displayAgentName } from './agent-names.js';
 import {
   doctrineHistory,
@@ -585,7 +586,7 @@ export async function ordered(ctx, board, operation, args) {
     const joined = store.agentAt(board, ctx.info.root)?.agent_id;
     args = [{ ...args[0], createdBy: ctx.info.isMain ? COORDINATOR : joined ?? 'machine' }, ...args.slice(1)];
   }
-  const command = ['add', 'edit', 'merged'].includes(ctx.io.relayCommand?.cliOperation) ? ctx.io.relayCommand : undefined;
+  const command = ['add', 'companion', 'edit', 'merged'].includes(ctx.io.relayCommand?.cliOperation) ? ctx.io.relayCommand : undefined;
   /** Dispatch while this session holds the checkout, including long-running next/run loops. */
   const execute = async () => {
     /** Keep bootstrap in the same authenticated seat, without borrowing a person's action receipt. */
@@ -1254,7 +1255,8 @@ export function uncommittedPolicySetup(info) {
  */
 export function refuseUncommittedSetup(mainRoot, config) {
   const hasCommit = headCommit(mainRoot) !== null;
-  const differ = differFromHead(mainRoot, setupFiles(mainRoot, config));
+  const differ = differFromHead(mainRoot, setupFiles(mainRoot, config))
+    .filter(({ path, how }) => !(path === CONFIG_FILE && how === 'changed' && onlyNamedBoardChanged(mainRoot)));
   if (hasCommit && !differ.length) return;
   const why = hasCommit
     ? `a new worktree starts from the last commit, and these differ from it here: ${differ.map(({ path, how }) => `${path} (${how})`).join(', ')}`

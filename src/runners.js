@@ -33,7 +33,10 @@ import {
 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pipeline } from 'node:stream/promises';
-import { environmentProblem } from './execution-environment.js';
+import {
+  environmentProblem,
+  testRuntimeRows,
+} from './execution-environment.js';
 import {
   gunzipSync,
   gzipSync,
@@ -76,7 +79,7 @@ const MAX_BLOB_BYTES = 8 * 1024 ** 2;
 const MAX_HISTORY_TAGS = 1_024;
 const MAX_TAG_CHAIN = 8;
 const TOOL_ROOT = fileURLToPath(new URL('../', import.meta.url));
-const RUNTIME_NAMES = ['runner-custody.js', 'resources.js', 'git.js', 'machine-home.js', 'refused.js', 'process-census.js', 'queue-settings.js', 'queue-order.js', 'sandbox-denial.js', 'gate-stages.js', 'child-journal-preload.js', 'execution-environment.js', 'runner-load.js', 'gui-session.js', 'runner-private-mode.js'];
+const RUNTIME_NAMES = ['runner-custody.js', 'resources.js', 'runner-wait.js', 'git.js', 'machine-home.js', 'refused.js', 'process-census.js', 'queue-settings.js', 'queue-order.js', 'sandbox-denial.js', 'gate-stages.js', 'child-journal-preload.js', 'execution-environment.js', 'runner-load.js', 'gui-session.js', 'runner-private-mode.js'];
 
 /** Validate an SSH destination as one argument, never a command or an SSH option. */
 export function validateRunner(value) {
@@ -592,6 +595,7 @@ function resultFrom(request, result) {
   } else if (receipt.trustedMode !== undefined) throw new RunnerDropped(request.runner.host);
   const text = staged?.output ?? output.toString('utf8');
   if (receipt.environment !== undefined && environmentProblem(receipt.environment)) throw new RunnerDropped(request.runner.host);
+  if (receipt.testRuntimes != null && !testRuntimeRows(receipt.testRuntimes)) throw new RunnerDropped(request.runner.host);
   if (receipt.browserRefused !== undefined && (receipt.browserRefused !== true || receipt.code === 0 || request.spec.browserRequired)) throw new RunnerDropped(request.runner.host);
   const admission = remoteAdmission(receipt.executionAdmission);
   if (request.spec.timing === true && (receipt.timing !== true || !admission)) throw new RunnerDropped(request.runner.host);
@@ -602,7 +606,7 @@ function resultFrom(request, result) {
     throw refused;
   }
   return { isGreen: receipt.code === 0 && !receipt.signal, output: text, sandboxBlocked, ...(receipt.timedOut ? { timedOut: true } : {}),
-    environment: receipt.environment ?? null, executionCapabilities: { gui: receipt.gui ?? null },
+    environment: receipt.environment ?? null, testRuntimes: receipt.testRuntimes ?? null, executionCapabilities: { gui: receipt.gui ?? null },
     ...(request.spec.stageMarker ? { stages: staged?.stages ?? null } : {}),
     seconds: Math.round(receipt.wallMs / 1000), exitCode: receipt.code,
     executionRunner: request.runner.host, executionRoot: receipt.root, remoteWallMs: receipt.wallMs,
@@ -673,6 +677,8 @@ export async function runOnRunnerAsync(root, command, options) {
   if (options.signal?.aborted) throw new RunnerDropped(options.runner.host);
   const request = requestFor(root, command, options);
   let removeAbort = () => {};
+  let runnerWaitTimer;
+  let runnerWaitKill;
   let rawFd = null;
   try {
     if (request.rawOutputPath) rawFd = openSync(request.rawOutputPath, 'wx', 0o600);
@@ -683,6 +689,13 @@ export async function runOnRunnerAsync(root, command, options) {
     let rawBytes = 0, head = Buffer.alloc(0), tail = Buffer.alloc(0);
     const half = 4 * 1024 ** 2;
     const abort = () => { error ??= new Error('runner transport canceled'); child.stdin.destroy(); child.kill('SIGTERM'); };
+    // Bound connection, worker admission and checkout, until READY immediately before execution.
+    // An executing test keeps its existing test timeout and may outlive the runner wait.
+    if (Number.isSafeInteger(options.runnerWaitDeadline)) runnerWaitTimer = setTimeout(() => {
+      abort();
+      // Budget: a non-responsive SSH child cannot retain a local reservation forever.
+      runnerWaitKill = setTimeout(() => child.kill('SIGKILL'), 1_000);
+    }, Math.max(0, options.runnerWaitDeadline - Date.now()));
     options.signal?.addEventListener('abort', abort, { once: true });
     removeAbort = () => options.signal?.removeEventListener('abort', abort);
     if (options.signal?.aborted) abort();
@@ -716,6 +729,7 @@ export async function runOnRunnerAsync(root, command, options) {
       let newline;
       while ((newline = control.indexOf('\n')) >= 0) {
         const line = control.slice(0, newline); control = control.slice(newline + 1);
+        if (line === `PULLBOARD_RUNNER_READY ${request.spec.id}`) clearTimeout(runnerWaitTimer);
         const cleanupPrefix = `PULLBOARD_RUNNER_CLEANUP_UNVERIFIED ${request.spec.id} `;
         if (line.startsWith(cleanupPrefix)) cleanupReason = line.slice(cleanupPrefix.length, cleanupPrefix.length + 240);
         if (line === `PULLBOARD_RUNNER_CLEANUP_TIMEOUT ${request.spec.id}`) {
@@ -751,5 +765,5 @@ export async function runOnRunnerAsync(root, command, options) {
     const bounded = request.rawOutputPath ? Buffer.concat([head, ...(rawBytes > half * 2 ? [Buffer.from('\n[output capped at 8 MiB; middle omitted]\n')] : []), tail]) : Buffer.concat(output);
     return resultFrom(request, { status, error, stdout: bounded, stderr: Buffer.concat(diagnostics),
       ...(request.rawOutputPath ? { rawOutputPath: request.rawOutputPath, rawBytes, rawSha256: rawHash.digest('hex') } : {}) });
-  } finally { if (rawFd !== null) closeSync(rawFd); removeAbort(); request.cleanup(); }
+  } finally { clearTimeout(runnerWaitTimer); clearTimeout(runnerWaitKill); if (rawFd !== null) closeSync(rawFd); removeAbort(); request.cleanup(); }
 }

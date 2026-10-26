@@ -38,6 +38,7 @@ import {
   recordActivityDelivery,
   answerDecision,
   addItem,
+  requestCompanion,
   appendFact,
   claim,
   closeBoard,
@@ -54,6 +55,8 @@ import {
   recordLandingFlake,
   recordHealthFindings,
   openBoard,
+  boardId,
+  setBoardMembers,
   passDecision,
   PERSON,
   recordAttempt,
@@ -321,6 +324,8 @@ function engineLeafFixture(t, landedVersion, pendingLeaves) {
 function recordEventContract() {
   const board = openBoard(':memory:');
   const coordinator = ensureCoordinator(board, '/coordinator');
+  // Synthetic format fixture; cryptographic authority is exercised by relay-membership.test.js.
+  setBoardMembers(board, { agentId: coordinator, document: { body: { v: 1, board: boardId(board), repository: 'fixture/repository', revision: 1, members: ['bob'] }, by: 'alice', signature: '-----BEGIN SSH SIGNATURE-----\nsynthetic format fixture\n' } });
   const builder = register(board, { lane: 'docs', path: '/builder' });
   register(board, { lane: 'docs', path: '/builder', family: 'codex' });
   register(board, { lane: 'docs', path: '/builder', model: 'Fixture Model' });
@@ -355,6 +360,7 @@ function recordEventContract() {
   appendFact(board, first, { agentId: coordinator, kind: 'measurement', text: 'Corrected evidence', supersedes: fact.id });
   editItem(board, first, { agentId: coordinator, brief: 'Files: docs/formats.md\nTest: docs/formats.test.js', route: 'mid', criterion: 'Changed', check: 'node test' });
   const dependency = addItem(board, { by: coordinator, lane: 'docs', title: 'Dependency example' });
+  requestCompanion(board, { agentId: builder, parentId: dependency, lane: 'core', key: 'format-event', title: 'Companion event example' });
   editItem(board, first, { agentId: coordinator, after: [dependency] });
   const implying = appendFact(board, first, { agentId: coordinator, kind: 'decision', text: 'Dependency changes', implies: [dependency] });
   appendFact(board, first, { agentId: coordinator, kind: 'supersession', text: 'Dependency changes again', supersedes: implying.id });
@@ -754,6 +760,7 @@ test('[A5] schema, versions, event kinds and event detail fields match live beha
     model: 'agent',
     moved: 'coordinator',
     add: 'item creator',
+    companion: 'requesting agent',
     edit: 'editor',
     attempt: 'reporting agent',
     fact: 'author',
