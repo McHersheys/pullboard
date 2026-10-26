@@ -32,6 +32,8 @@ const IDLE_MS = Number(process.env.PULLBOARD_RELAY_SENDER_IDLE_MS) || 60_000;
 // Budget: a failing board is retried no more often than this at worst, and once a second at best.
 const BACKOFF_MAX_MS = 30_000;
 const TICK_MS = 100;
+// Budget: keep the live claim fresh independently of a pass awaiting many bounded network requests.
+const HEARTBEAT_MS = 5_000;
 
 /** Keep a short record of each pass beside the claim; status and a person debugging read it. */
 const io = {
@@ -70,6 +72,28 @@ async function claim() {
   });
 }
 
+/** Refresh only this process's claim under the same lock used by claim and release, never a successor's marker. */
+async function refreshClaim() {
+  await withFileLock(join(files.directory, 'claim.sqlite'), () => {
+    let holder;
+    try { holder = Number(readFileSync(files.pid, 'utf8')); }
+    catch (error) { if (error.code === 'ENOENT') return; throw error; }
+    if (holder === process.pid) utimesSync(files.pid, new Date(), new Date());
+  });
+}
+
+/** Pulse through asynchronous serve waits; stop and drain the last pulse before the claim can be released. */
+function startHeartbeat() {
+  let pending = null;
+  const timer = setInterval(() => {
+    if (pending) return;
+    pending = refreshClaim().catch(error => io.err(`claim heartbeat failed: ${error.message}`)).finally(() => { pending = null; });
+  }, HEARTBEAT_MS);
+  timer.unref();
+  /** No pulse may touch a later claim after this worker releases its own. */
+  return async () => { clearInterval(timer); if (pending) await pending; };
+}
+
 /** Give up the claim, only while it is still this process's own. */
 async function release() {
   await withFileLock(join(files.directory, 'claim.sqlite'), () => {
@@ -101,7 +125,6 @@ const boards = new Map();
 async function serveUntilIdle() {
   let newest = 0;
   for (;;) {
-    try { utimesSync(files.pid, new Date(), new Date()); } catch { /* A removed claim is re-made by the next sender. */ }
     const now = Date.now();
     const seen = notes();
     let waiting = false;
@@ -133,8 +156,9 @@ async function serveUntilIdle() {
 // A nudge after the last look, but before the claim was released, saw a live sender and started none: look once
 // more after releasing, and go again if a newer one came.
 for (let newest = -1; await claim();) {
+  const stopHeartbeat = startHeartbeat();
   try { newest = await serveUntilIdle(); }
   catch (error) { io.err(`sender stopped: ${error.message}`); newest = Infinity; }
-  finally { await release(); }
+  finally { await stopHeartbeat(); await release(); }
   if (!notes().some((note) => note.due > newest)) break;
 }
