@@ -12,6 +12,7 @@ import { pathToFileURL } from 'node:url';
 import { after, test } from 'node:test';
 import { runFixtureChild, runFixtureGit } from './fixture-child.js';
 import * as store from '../src/board.js';
+import { AGENT_GRANT_ENGINE } from '../src/agent-grant-engine.js';
 import { applyEngineMove, applyRelayMove, appliedSequence, prepareEngineMove } from '../src/engine.js';
 import { executeMove } from '../src/api.js';
 import { main } from '../src/cli.js';
@@ -491,11 +492,14 @@ test('reject, reopen and fact moves without a cause replay unchanged from engine
     const old = legacyStore.openBoard(join(directory, `old-${version}.sqlite`), fixed);
     const current = store.openBoard(join(directory, `current-${version}.sqlite`), fixed);
     t.after(() => { legacyStore.closeBoard(old); store.closeBoard(current); });
+    // The current replica's seats predate agent grants (#348), as on the board the released client wrote.
+    current.executionEngineVersion = AGENT_GRANT_ENGINE - 1;
     for (const [replica, module] of [[old, legacyStore], [current, store]]) {
       module.register(replica, { lane: 'coordinator', path: '/fixture/main' });
       module.register(replica, { lane: 'app', path: '/fixture/app-1', model: 'Builder model' });
       module.register(replica, { lane: 'app', path: '/fixture/app-2', model: 'Reviewer model' });
     }
+    delete current.executionEngineVersion;
     const first = '1'.repeat(40);
     const second = '2'.repeat(40);
     const journal = [

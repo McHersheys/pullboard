@@ -51,3 +51,12 @@ test('a proven string title and callable callback do not become CPU options [C7]
     assert.equal(cpuLoadOptionsIn([source])[0], false);
   }
 });
+
+test('a string-concatenated title is a title, while a conditional first argument stays conservative [C7,V4]', () => {
+  // The landing-shards fixture names its case 'fixture file ' + name; that can only be a string.
+  assert.equal(cpuLoadOptionsIn(["import test from 'node:test'; const name = 'a'; test('fixture file ' + name, async () => {});"])[0], false);
+  assert.equal(cpuLoadOptionsIn(["import test from 'node:test'; test('case ' + name + ' at ' + (Date.now() % 7), () => {});"])[0], false);
+  assert.equal(cpuLoadOptionsIn(["import test from 'node:test'; test('x' + flag ? options : 'y', () => {});"])[0], true,
+    'a top-level conditional could still pass an options object');
+  assert.equal(cpuLoadOptionsIn(["import test from 'node:test'; test({ cpuLoad: true }, async () => {});"])[0], true);
+});

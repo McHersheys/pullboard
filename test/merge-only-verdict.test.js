@@ -15,6 +15,7 @@ import { exportBoard, importBoard } from '../src/exchange.js';
 import { prepareEngineMove, applyEngineMove, applyRelayMove } from '../src/engine.js';
 import { MERGE_ONLY_VERDICT_ENGINE } from '../src/merge-only-verdict-engine.js';
 import { operationIntent } from '../src/relay-sender.js';
+import { capturePrProof } from '../src/pr-proof-snapshot.js';
 
 const e2e = createE2eHelpers();
 after(e2e.cleanup);
@@ -120,6 +121,8 @@ test('a merge-only resubmission keeps its accept and records the resolution diff
     assert.equal(store.getItem(origin, id).item_status, 'verified');
     assert.deepEqual(withoutObjects, withObjects, 'one canonical move must emit identical events and event IDs without Git objects');
     assert.deepEqual(exportBoard(objectless), exportBoard(origin), 'replicas must retain exactly identical native state');
+    assert.deepEqual(capturePrProof(origin).accepted.get(id), store.acceptedVerdict(origin, store.getItem(origin, id)),
+      'publication retains the canonical carried acceptance within its snapshot');
     const freshReview = prepareEngineMove(origin, 'verify', [id, { agentId: 'coordinator', decision: 'ACCEPT',
       note: 'a fresh verdict still requires its own reviewer authority', head,
       digest: pending.item.item_frozen_digest, check: 'green',
@@ -137,6 +140,8 @@ test('a merge-only resubmission keeps its accept and records the resolution diff
     assert.deepEqual(applyEngineMove(objectless, subsequent, { sequence: 3, at }), next,
       'a later verdict-ID-bound move must retain the same outcome and event IDs');
     assert.deepEqual(exportBoard(objectless), exportBoard(origin));
+    assert.equal(capturePrProof(origin).accepted.get(id), undefined,
+      'publication cannot revive an original verdict withdrawn after its carry');
 
   } finally { store.closeBoard(origin); store.closeBoard(objectless); }
   for (const key of ['commit', 'tree', 'policyCommit']) {

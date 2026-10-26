@@ -1,37 +1,99 @@
-/** @pullboard-test-loads src/board.js src/engine.js src/exchange.js */
+/** @pullboard-test-loads src/board.js src/engine.js src/exchange.js src/person-signing.js relay/passkeys.js */
+import { personSigningCase } from './person-signing-case.js';
 import { submitFixture as submitBoardStateFixture } from './board-submit-fixture.js';
 /** Two independent Git/SQLite replicas derive verdict freshness without rewriting proof [E8]. */
+import { memberHandoverCase } from './handover-membership-case.js';
 import { signedBoard, consent, linkRelay } from './board-link-fixture.js';
 import { submitFixture } from './board-submit-fixture.js';
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, cpSync, readdirSync, lstatSync, renameSync, symlinkSync } from 'node:fs';
-import { randomBytes, randomUUID } from 'node:crypto';
-import { join, resolve } from 'node:path';
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  rmSync,
+  cpSync,
+  readdirSync,
+  lstatSync,
+  renameSync,
+  symlinkSync,
+} from 'node:fs';
+import {
+  createHash,
+  randomBytes,
+  randomUUID,
+} from 'node:crypto';
+import {
+  join,
+  resolve,
+} from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { after, test } from 'node:test';
+import {
+  after,
+  test,
+} from 'node:test';
 import * as store from '../src/board.js';
-import { exportBoard, importBoard } from '../src/exchange.js';
-import { applyEngineMove, prepareEngineMove } from '../src/engine.js';
-import { relayClientFixture as sessionRelay, relayFixtureChild as sessionChild, relayClientFixture, relayFixtureChild } from './relay-client-fixture.js';
-import { runFixtureGit as sessionGit, runFixtureGit, runFixtureChild } from './fixture-child.js';
+import {
+  exportBoard,
+  importBoard,
+} from '../src/exchange.js';
+import {
+  applyEngineMove,
+  prepareEngineMove,
+} from '../src/engine.js';
+import {
+  relayClientFixture as sessionRelay,
+  relayFixtureChild as sessionChild,
+  relayClientFixture,
+  relayFixtureChild,
+} from './relay-client-fixture.js';
+import {
+  runFixtureChild,
+  runFixtureGit as sessionGit,
+  runFixtureGit,
+} from './fixture-child.js';
+import {
+  grantChallenge,
+  softwarePasskey,
+} from './person-passkey-fixture.js';
+import {
+  optionalPasskeyApply,
+  optionalPasskeyApplyThroughCli,
+  rejectFabricatedPasskeyMetadata,
+  rejectSyntheticPasskeyEvent,
+} from './person-optional-apply-fixture.js';
+import { rejectConsumedOffReplay } from './person-off-replay-fixture.js';
+import {
+  firstPinNeedsBuiltInRelay,
+  firstUnpairedAuthorityInsertion,
+} from './person-first-pin-fixture.js';
+import { refuseNamedSigners } from '../src/person-signing-cli.js';
 import { createE2eHelpers } from './e2e-helpers.js';
-import { serveApi } from '../src/api.js';
+import {
+  executeMove,
+  serveApi,
+} from '../src/api.js';
 import { main } from '../src/cli.js';
 import { fetchFresh } from './http-fixture.js';
-import { relaySnapshot, presentationDigest } from '../src/relay-presentation.js';
+import {
+  relaySnapshot,
+  presentationDigest,
+} from '../src/relay-presentation.js';
 import { snapshotState } from '../relay/browser-model.js';
 import { unpackRelease } from './release-archive.js';
-import { decodeBoardKey, seal } from '../src/seal.js';
+import {
+  decodeBoardKey,
+  seal,
+} from '../src/seal.js';
 import { ENGINE_VERSION as PEOPLE_VERSION } from '../src/machine.js';
 import { relayWorkBudgetMs } from './relay-budget.js';
 import { hostname, tmpdir } from 'node:os';
-import { createDeviceKeys, unwrapDeviceBoardKey } from '../src/relay-device-keys.js';
-import { handOverBoardKeys, statementBytes } from '../src/relay-handover.js';
-import { signSshVouch } from '../src/relay-ssh-proof.js';
 import { assertMatchingLandingHost, assertNoCulpritTrunkHold } from './landing-environment-fixture.js';
 import { landingQueueCase } from './landing-queue-fixture.js';
+import { DatabaseSync } from 'node:sqlite';
 import {
   prepareKeylessInbox,
   readKeylessInbox,
@@ -39,6 +101,8 @@ import {
 } from './inbox-key-fixture.js';
 
 const CLI = join(import.meta.dirname, '..', 'bin', 'pullboard.js');
+/** The shipped command run with an explicit trusted fixture relay; test-only, never published (#408). */
+const TRUSTED_CLI = join(import.meta.dirname, 'person-trusted-cli.js');
 
 const helpers = createE2eHelpers();
 after(helpers.cleanup);
@@ -86,7 +150,10 @@ async function holdForReviewQueue(box) {
   const source = `
 import {setTimeout as pause} from 'node:timers/promises';
 import {writeFileSync} from 'node:fs';
-import {takeResource,listResources} from ${JSON.stringify(new URL('../src/resources.js', import.meta.url).href)};
+import {
+  takeResource,
+  listResources,
+} from ${JSON.stringify(new URL('../src/resources.js', import.meta.url).href)};
 import {loadMachineSettings} from ${JSON.stringify(new URL('../src/settings.js', import.meta.url).href)};
 const [root,ready,observed]=process.argv.slice(1);
 const capacity=loadMachineSettings().gateSlots;
@@ -549,10 +616,10 @@ async function phoneRequest(box, session, move) {
   return document.id;
 }
 
-/** The phone requests this board has received, by id. */
-async function receivedRequests(box) {
-  assert.equal((await box.cli('status')).code, 0, 'the coordinator reads the relay');
-  const meta = (await box.cli('export')).document.tables.board_meta.find((row) => row.meta_key === 'relay_person_requests');
+/** The phone requests this board has received, by id, read through `run` (a test may pass its trusted command). */
+async function receivedRequests(box, run = (...args) => box.cli(...args)) {
+  assert.equal((await run('status')).code, 0, 'the coordinator reads the relay');
+  const meta = (await run('export')).document.tables.board_meta.find((row) => row.meta_key === 'relay_person_requests');
   return Object.fromEntries((meta ? JSON.parse(meta.meta_value) : []).map((record) => [record.id, record]));
 }
 
@@ -1030,6 +1097,44 @@ test('a landing lease renewal or waiter poll writes no board event [Q1,Q2,Q3]', 
   assert.equal(state.line.length, 1, 'suppressing polling events does not discard the waiting command');
 });
 
+/** Send one sealed person request with its passkey presence, returning the relay's answer. */
+async function passkeyRequest(box, session, document, presence) {
+  const link = JSON.parse(readFileSync(box.linkFile, 'utf8'));
+  const head = await relayCall(box, session, 'GET', '/api/v2/boards/' + link.board + '/state');
+  const events = await relayCall(box, session, 'GET', `/api/v1/boards/${link.board}/events?after=${head.document.state.sequence}`);
+  const sequence = Math.max(head.document.state.sequence, ...(events.document.events ?? []).map((event) => event.event_id)) + 1;
+  const key = decodeBoardKey(readFileSync(box.keyFile, 'utf8').trim());
+  const sealed = Buffer.from(await seal(key, new TextEncoder().encode(JSON.stringify(document)), { boardId: link.board, kind: 'request', sequence })).toString('base64url');
+  return relayCall(box, session, 'POST', `/api/v1/boards/${link.board}/requests`, { sequence, sealed, ...(presence ? { presence } : {}) });
+}
+
+/** True when no regular file under a directory holds a person session or a person grant. */
+function holdsNoPersonCredential(directory) {
+  return filesUnder(directory).every((file) => !/(?:ps_|pg_)[A-Za-z0-9_-]{43}/u.test(readFileSync(file).toString('latin1')));
+}
+
+test('person-only moves are signed [E22,B26,H16]', { timeout: relayWorkBudgetMs(60) }, async (t) => { // budget: hang ceiling for real CLI runs and relay calls; not a speed target.
+  await personSigningCase(t, { CLI, TRUSTED_CLI, helpers, passkeyRequest, holdsNoPersonCredential, relayCall, receivedRequests });
+});
+
+/** Keep the initial-unpaired local-edit clause distinct from the post-pin trigger controls. */
+test('person-only moves are signed before the first authority pin [E22,B26,H16]', firstUnpairedAuthorityInsertion);
+
+test('person-only moves are signed only from the built-in relay over TLS [E22,B26,H16]', { timeout: relayWorkBudgetMs(8) }, firstPinNeedsBuiltInRelay); // budget: hang ceiling for one link and two refused CLI runs; not a speed target.
+
+/** Optional SSH policy must accept a genuinely bound passkey row decision without using an SSH key. */
+test('person-only moves are signed through optional SSH apply [E22,H16]', optionalPasskeyApply);
+
+/** The actual CLI applies and projects the recorded passkey approval even with optional SSH enabled. */
+test('person-only moves are signed: an unlinked CLI applies no passkey decision it cannot verify [E22,H16]', optionalPasskeyApplyThroughCli);
+
+/** Initial trust and committed execution provenance are separate signing boundaries. */
+test('person-only moves are signed against fabricated receipt metadata [E22,H16]', rejectFabricatedPasskeyMetadata);
+
+/** A local event insertion is not an authenticated execution of a different row source. */
+test('person-only moves are signed against synthetic execution events [E22,H16]', rejectSyntheticPasskeyEvent);
+
+test('person-only moves are signed against consumed OFF replay [E22,H16]', rejectConsumedOffReplay);
 /** Cross-repository prerequisites use real signed E32 disclosure and never a same-number local item [B24,H16]. */
 test('an item waits across repos [B24,H16]', async t => {
   /** A private board clock makes exact canonical replay comparisons deterministic. */
@@ -1230,56 +1335,4 @@ test('two repos of a project that share a name are addressed by folder, never gu
 });
 
 
-test('a non-approver device without a signed member list receives no board key [H15,E17]', async t => {
-  const folder = mkdtempSync(join(tmpdir(), 'pullboard-handover-membership-'));
-  t.after(() => rmSync(folder, { recursive: true, force: true }));
-  const box = helpers.project();
-  const state = { board: withBoard(box.repo, store.boardId), repository: 'fixture/repository', login: 'alice' };
-  const boardKey = randomBytes(32);
-  /** Make an actual SSH signature and device key, independent of what the malicious relay asserts. */
-  async function request(login) {
-    const file = join(folder, login);
-    const made = runFixtureChild('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', file], { encoding: 'utf8' });
-    assert.equal(made.status, 0, 'OpenSSH creates the private fixture signing key');
-    const device = await createDeviceKeys();
-    const statement = { v: 1, board: state.board, repository: state.repository, login, device: device.deviceId,
-      publicKey: device.publicKey, engine: PEOPLE_VERSION, expires: Date.now() + 60_000 };
-    const input = file + '.statement';
-    writeFileSync(input, statementBytes(statement), { mode: 0o600 });
-    const signed = runFixtureChild('ssh-keygen', ['-Y', 'sign', '-q', '-n', 'pullboard-device-key', '-f', file, input], { encoding: 'utf8' });
-    assert.equal(signed.status, 0, "the request is genuinely signed by that login's SSH key");
-    return { device, signingKey: file, publicKey: readFileSync(file + '.pub', 'utf8').trim().split(' ').slice(0, 2).join(' '),
-      entry: { id: login, login, statement, signature: readFileSync(input + '.sig', 'utf8') } };
-  }
-  const outsider = await request('bob');
-  const member = await request('alice');
-  const body = { v: 1, board: state.board, repository: state.repository, login: 'alice' };
-  const identity = { body, signature: signSshVouch(JSON.stringify(['pullboard-person-identity', body]), 'pullboard-person-identity', member.signingKey) };
-  /** Present attacker-controlled relay entries while resolving SSH ownership directly for each account. */
-  async function answer(person) {
-    const deliveries = [];
-    await handOverBoardKeys(state, boardKey, {
-      root: box.repo, identity,
-      async send(_state, _path, options) {
-        if (options.method === 'PUT') { deliveries.push(options.body); return {}; }
-        return { requests: [person.entry] };
-      },
-      async githubKeys(login) { return login === person.entry.login ? [person.publicKey] : []; },
-    }, { err() {} });
-    assert.equal(deliveries.length, 1, 'each request gets one explicit refusal or delivery');
-    return deliveries[0];
-  }
-  const refused = await answer(outsider);
-  const leaked = refused.wrapped ? await unwrapDeviceBoardKey(outsider.device.privateKey,
-    JSON.parse(Buffer.from(refused.wrapped, 'base64url').toString('utf8')),
-    { board: state.board, device: outsider.device.deviceId, engine: PEOPLE_VERSION }) : null;
-  assert.equal(leaked !== null && Buffer.from(leaked).equals(boardKey), false, 'the outsider cannot decrypt the actual board key');
-  assert.equal(refused.refused?.code, 'RELAY_NOT_MEMBER', 'a valid outsider signature cannot establish trusted board membership');
-  assert.equal(Object.hasOwn(refused, 'wrapped'), false, 'the relay receives no key ciphertext it could unwrap as the outsider');
-  const allowed = await answer(member);
-  assert.ok(allowed.wrapped, 'the linked person can still bootstrap their own independently vouched device');
-  const unwrapped = await unwrapDeviceBoardKey(member.device.privateKey,
-    JSON.parse(Buffer.from(allowed.wrapped, 'base64url').toString('utf8')),
-    { board: state.board, device: member.device.deviceId, engine: PEOPLE_VERSION });
-  assert.deepEqual(Buffer.from(unwrapped), boardKey, 'the legitimate new device receives the actual board key');
-});
+test('a non-approver device without a signed member list receives no board key [H15,E17]', async t => memberHandoverCase(t, { helpers, withBoard }));

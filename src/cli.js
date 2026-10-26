@@ -1,3 +1,4 @@
+import * as personIdentity from './person.js';
 import { dependencyValues } from './item-dependencies.js';
 import { computedReturnArgs } from './computed-conflict-return.js';
 import { ENGINE_VERSION as NATIVE_ENGINE } from './engine-metadata.js';
@@ -125,11 +126,9 @@ import {
   holdDoctrine,
   ruleLine,
 } from './doctrine-checks.js';
-import {
-  AGENT_SESSION_IDS,
-  agentSessionDigest,
-  personCommand,
-} from './person.js';
+
+import { signedMoveProblem } from './person-signing.js';
+import { personAuthority } from './relay-sender.js';
 import {
   bindLocalSession,
   HOOK_CHECKOUT_WAIT_MS,
@@ -510,7 +509,7 @@ export function checkMainVerifier(ctx, board, values) {
  */
 export function personMode(ctx, me, values) {
   if (values.as === undefined) return false;
-  if (values.as !== 'person') throw new Refused('USAGE', '--as person is supported for answer, decisions and fact --never-again');
+  if (values.as !== 'person') throw new Refused('USAGE', '--as person is supported for answer, decisions, hold and fact --never-again');
   if (!ctx.info.isMain || me.id !== COORDINATOR) {
     throw new Refused('B26_PERSON_ANSWER', 'only the main checkout can act as the person; ask your coordinator to answer or pass this decision');
   }
@@ -567,14 +566,17 @@ export async function reserveRow(ctx, row, written) {
 async function withItemSession(info, operation, args, move) { const noted = operation === 'claim' || operation === 'submit'; if (noted) itemSessions.requireLedger(info); const result = await move(); if (noted) itemSessions.recordItemSession(info, args[0], operation); return result; }
 
 /**
- * Whether the board's committed relay.outbox setting queues moves while the relay is down (#922).
- * Why: it is read from the trunk's pullboard.json, so every machine on the board follows the same committed choice.
+ * Whether the board's committed relay.outbox setting queues moves while the relay is down (#922, H21).
+ * Why: absent means enabled for existing boards; an explicit false is the shared opt-out.
  */
 export function relayOutboxSetting(root) {
-  try { return configFromSource(coordinatorFile(root, CONFIG_FILE).stdout).relay?.outbox === true; } catch { return false; }
+  try { return configFromSource(coordinatorFile(root, CONFIG_FILE).stdout).relay?.outbox !== false; } catch { return false; }
 }
 
 export async function ordered(ctx, board, operation, args) {
+  // With signed person moves on, a person-only move counts only as a passkey-confirmed request [E22].
+  const unsigned = signedMoveProblem(board, personAuthority({ operation, args }), ctx.io.personRequest, { strict: true });
+  if (unsigned) throw unsigned;
   const initialBaseline = initialSpecApprovalBaseline(ctx, board, operation);
   // Only a reject or a reopen can open a builder's first-refusal window (#954), so an accept never reads the coordinator's policy.
   if (operation === 'reopen' || operation === 'verify' && args[1]?.decision === 'REJECT') args = firstRefusalArgs(operation, args, configFromSource(coordinatorFile(ctx.info.root, CONFIG_FILE).stdout));
@@ -632,7 +634,7 @@ export async function ordered(ctx, board, operation, args) {
     if (requested && ctx.io.recordedMove) (await import('./cli-presence.js')).heartbeatCommand(ctx.io, { ctx, board });
     return result;
   };
-  const digest = agentSessionDigest();
+  const digest = personIdentity.agentSessionDigest();
   const boardOnly = CHECKOUT_BOARD_ONLY.get(ctx.io);
   const boardOnlyOperation = (boardOnly === 'shout' && operation === 'shout') || (boardOnly === 'fact' && operation === 'appendFact');
   const boardOnlyAgent = ctx.info.isMain ? COORDINATOR : store.agentAt(board, ctx.info.root)?.agent_id ?? 'unjoined agent';
@@ -657,7 +659,7 @@ export async function claimOrdered(ctx, board, args) {
  */
 export async function bindWriteSession(io, positionals, values) {
   const [command, first] = positionals;
-  const digest = agentSessionDigest();
+  const digest = personIdentity.agentSessionDigest();
   if (!digest) {
     if (command === 'takeover' && !(repoInfo(io.cwd).isMain && relayLinked(repoInfo(io.cwd).root))) throw new Refused('AGENT_SESSION', 'takeover belongs to an agent session; run pullboard takeover from the agent’s shell');
     return;
@@ -1504,8 +1506,8 @@ export function primaryCheckoutRoot(info) {
 /** A real runtime session may route across its own local seats; marker-only shells stay isolated. */
 function nextSessionSeats(ctx, board) {
   if (ctx.info.isMain || ctx.io.personChannel === 'view' || ctx.io.personRequest
-    || !AGENT_SESSION_IDS.some((name) => Boolean(process.env[name]))) return null;
-  const digest = agentSessionDigest();
+    || !personIdentity.AGENT_SESSION_IDS.some((name) => Boolean(process.env[name]))) return null;
+  const digest = personIdentity.agentSessionDigest();
   return digest ? localSessionSeats(ctx.info, { agents: store.listAgents(board), digest }) : null;
 }
 
@@ -1526,7 +1528,7 @@ async function nextSeatContext(ctx, board, me, item, seats) {
   }
   const target = agent.agent_path === ctx.info.root ? ctx : context({ ...ctx.io, cwd: agent.agent_path });
   if (target.info.commonDir !== ctx.info.commonDir) throw new Refused('NOT_YOUR_CHECKOUT', 'the selected lane seat no longer belongs to this board; run pullboard next again');
-  await bindLocalSession(target.info, { agent: agent.agent_id, digest: agentSessionDigest() });
+  await bindLocalSession(target.info, { agent: agent.agent_id, digest: personIdentity.agentSessionDigest() });
   return { context: target, seat: { agent: agent.agent_id, lane: agent.agent_lane, path: target.info.root, created } };
 }
 

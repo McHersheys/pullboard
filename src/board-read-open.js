@@ -7,6 +7,7 @@ import { boardIsCurrent } from './board-migrate.js';
 import {
   BOARD_BUSY_TIMEOUT_MS,
   EVENT_LOG_VERSION,
+  SIGNED_EVENT_LOG_VERSION,
   SCHEMA_DIGEST,
   SCHEMA_VERSION,
 } from './board-schema-source.js';
@@ -59,8 +60,8 @@ export function readEventLogVersion(db) {
   if (!Number.isSafeInteger(version) || version < 0) {
     throw new Refused('EVENT_LOG_VERSION', `event log version ${stored?.meta_value ?? 'missing'} is invalid; restore a valid board or upgrade pullboard`);
   }
-  if (version > EVENT_LOG_VERSION) {
-    throw new Refused('EVENT_LOG_VERSION', `event log version ${version} is newer than this pullboard version ${EVENT_LOG_VERSION}; upgrade pullboard to open this board`);
+  if (version > Math.max(EVENT_LOG_VERSION, SIGNED_EVENT_LOG_VERSION)) {
+    throw new Refused('EVENT_LOG_VERSION', `event log version ${version} is newer than this pullboard version ${SIGNED_EVENT_LOG_VERSION}; upgrade pullboard to open this board`);
   }
   return version;
 }

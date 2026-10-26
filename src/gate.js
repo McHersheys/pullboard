@@ -266,7 +266,7 @@ export function runProfiledShell(root, command, { waitMs = 0, artifactDirectory,
   const profiledRun = { ...run, sandboxBlocked };
   if (logPath) writeFileSync(logPath, safeLog(run.output), { mode: 0o600 });
   const profile = writeTimingProfile(profilePath, {
-    ...runTiming(profiledRun, command),
+    ...runTiming(profiledRun, command, root),
     waitMs: Math.max(0, Math.round(waitMs)), wallMs: Math.max(0, Date.now() - started), receipt: settleReceipt(gateLease),
   });
   const result = { ...profiledRun, profile, profilePath, logPath };
@@ -350,7 +350,7 @@ export async function runProfiledShellAsync(root, command, { waitMs = 0, gateSlo
     const profilePath = join(dirname(gitPath(root, LOG)), `pullboard-gate-${randomUUID()}.profile.json`);
     const sandboxBlocked = run.isGreen ? null : run.sandboxBlocked
       ?? sandboxBlockedOperation(root, run.output, { includeFilePaths: false });
-    const profile = writeTimingProfile(profilePath, { ...runTiming(run, command), waitMs, wallMs, receipt: settleReceipt(gateLease) });
+    const profile = writeTimingProfile(profilePath, { ...runTiming(run, command, root), waitMs, wallMs, receipt: settleReceipt(gateLease) });
     return { ...run, sandboxBlocked, seconds: Math.round(wallMs / 1000), profile, profilePath, logPath: null };
   }
   const inherited = {
@@ -408,11 +408,20 @@ function settleReceipt(lease) {
   return lease.receipt;
 }
 
-/** Keep raw remote TAP intact while resolving its measured filenames against the local source. */
-function runTiming(run, command) {
+/** Keep raw TAP intact while resolving its measured filenames against the checkout that ran them. */
+function runTiming(run, command, root) {
   const shards = landingShardProfile(run.output);
   const profile = { ...timingFromOutput(run.output, timingRunner(command)), ...(shards ? { landingShards: shards } : {}) };
-  if (!run.executionRunner) return profile;
+  if (!run.executionRunner) {
+    // Node names a crashed file by the absolute path it ran; a local profile names files from the repository root.
+    const bases = [root, (() => { try { return realpathSync(root); } catch { return root; } })()];
+    const repoPath = path => {
+      if (typeof path !== 'string' || !isAbsolute(path)) return path;
+      const inside = bases.map(base => relative(base, path)).find(suffix => suffix && suffix !== '..' && !suffix.startsWith(`..${sep}`) && !isAbsolute(suffix));
+      return inside ?? path;
+    };
+    return { ...profile, files: (profile.files ?? []).map(file => ({ ...file, path: repoPath(file.path) })) };
+  }
   /** Relocate only paths inside the actual remote checkout, never a foreign absolute path. */
   const localPath = path => {
     if (typeof path !== 'string') return path;

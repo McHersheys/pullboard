@@ -4,6 +4,9 @@ import {
   SETTING_FORMS,
 } from '../help.js';
 import {
+  signingSetting,
+} from '../person-signing-cli.js';
+import {
   Refused,
 } from '../refused.js';
 import {
@@ -38,6 +41,7 @@ export function settingsCommand(io, { first, second, rest, values }) {
     io.say(`this board's landing pool: ${second}`);
     return 0;
   }
+  if (first === 'person.signed' && !rest.length) return signingSetting(io, second);
   if (!first && !second && !rest.length) {
     const settings = loadMachineSettings();
     const queue = gateQueueSettings();

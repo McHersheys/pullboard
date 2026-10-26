@@ -6,6 +6,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import * as store from '../src/board.js';
+import { PROOF_RUN_ENGINE } from '../src/proof-run-engine.js';
 import { relayClientFixture } from './relay-client-fixture.js';
 import { findChromeExecutable, startChrome } from './relay-browser-fixture.js';
 
@@ -62,6 +63,8 @@ test('quota-paused checkpoints keep exact pending bytes, permit ordered moves an
   const box = await relayClientFixture(t, { accountStorageBytes: 256_000 });
   await box.link();
   const board = store.openBoard(join(box.root, '.git/pullboard/board.sqlite'));
+  // A large shout from before the 400-character limit (#1109), as an upgraded board holds it.
+  board.executionEngineVersion = PROOF_RUN_ENGINE - 1;
   try { store.shout(board, { from: 'coordinator', to: 'all', lanes: [box.lane], text: randomBytes(300_000).toString('base64') }); }
   finally { store.closeBoard(board); }
   const refused = await box.cli('status');
