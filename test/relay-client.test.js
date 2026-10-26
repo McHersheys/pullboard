@@ -1312,31 +1312,37 @@ async function recoverReplicaReplies(fixture, timing) {
 async function finalReplicaOrder(fixture, timing) {
   const { clones, worktrees, envs, auth, relay, person, key, boardId, replicaFiles } = fixture;
   timing.begin('final order check', 'sync the worktrees, reject the future engine move, and confirm no replica applies later events');
-  await timing.wait('sync all worktrees before the final engine-version check', () => Promise.all(worktrees.map((root, index) => cli(root, envs[index], 'status'))));
-  const updated = store.openBoard(replicaFiles[0]);
-  let future;
-  let next;
+  // A known future relay prefix must use the ordered ACK guard, not local-first queuing.
+  const restoreOutboxDefault = await enterLegacyAckPolicy(fixture);
   try {
-    next = appliedSequence(updated) + 1;
-    future = { ...prepareEngineMove(updated, 'addItem', [{ by: 'coordinator', lane: 'web', title: 'Future engine item' }]), engine: ENGINE_VERSION + 1 };
-  } finally { store.closeBoard(updated); }
-  const coordinatorCredential = await timing.wait('issue the coordinator fixture credential for the final order check', () => auth.issueCoordinator(person.token, { board: boardId }));
-  const headers = { 'x-pullboard-engine': String(ENGINE_VERSION), authorization: 'Bearer ' + coordinatorCredential.token, 'content-type': 'application/json' };
-  const futureSealed = Buffer.from(await timing.wait('seal the future-engine move', () => seal(key, new TextEncoder().encode(JSON.stringify(future)), {
-    boardId, kind: 'move', sequence: next,
-  }))).toString('base64url');
-  assert.equal((await timing.wait('append the future-engine move to the relay', () => fetch(`${relay.origin}/api/v1/boards/${boardId}/moves`, {
-    method: 'POST', headers, body: JSON.stringify({ sequence: next, sealed: futureSealed }),
-  }))).status, 200);
-  const beforeFuture = replicaFiles.map(localEvents);
-  const incompatible = await timing.wait('ask all three replicas to reject the future engine move', () => Promise.all(clones.map((root, index) => cliResult(root, envs[index], 'add', 'web', 'Must not apply'))));
-  for (const result of incompatible) {
-    assert.equal(result.status, 1);
-    assert.equal(result.document.error.code, 'ENGINE_VERSION');
-    assert.match(result.document.error.message, new RegExp(`engine version ${ENGINE_VERSION + 1}.*engine version ${ENGINE_VERSION}`));
-    assert.match(result.document.error.next, /upgrade/);
+    await timing.wait('sync all worktrees before the final engine-version check', () => Promise.all(worktrees.map((root, index) => cli(root, envs[index], 'status'))));
+    const updated = store.openBoard(replicaFiles[0]);
+    let future;
+    let next;
+    try {
+      next = appliedSequence(updated) + 1;
+      future = { ...prepareEngineMove(updated, 'addItem', [{ by: 'coordinator', lane: 'web', title: 'Future engine item' }]), engine: ENGINE_VERSION + 1 };
+    } finally { store.closeBoard(updated); }
+    const coordinatorCredential = await timing.wait('issue the coordinator fixture credential for the final order check', () => auth.issueCoordinator(person.token, { board: boardId }));
+    const headers = { 'x-pullboard-engine': String(ENGINE_VERSION), authorization: 'Bearer ' + coordinatorCredential.token, 'content-type': 'application/json' };
+    const futureSealed = Buffer.from(await timing.wait('seal the future-engine move', () => seal(key, new TextEncoder().encode(JSON.stringify(future)), {
+      boardId, kind: 'move', sequence: next,
+    }))).toString('base64url');
+    assert.equal((await timing.wait('append the future-engine move to the relay', () => fetch(`${relay.origin}/api/v1/boards/${boardId}/moves`, {
+      method: 'POST', headers, body: JSON.stringify({ sequence: next, sealed: futureSealed }),
+    }))).status, 200);
+    const beforeFuture = replicaFiles.map(localEvents);
+    const incompatible = await timing.wait('ask all three replicas to reject the future engine move', () => Promise.all(clones.map((root, index) => cliResult(root, envs[index], 'add', 'web', 'Must not apply'))));
+    for (const result of incompatible) {
+      assert.equal(result.status, 1);
+      assert.equal(result.document.error.code, 'ENGINE_VERSION');
+      assert.match(result.document.error.message, new RegExp(`engine version ${ENGINE_VERSION + 1}.*engine version ${ENGINE_VERSION}`));
+      assert.match(result.document.error.next, /upgrade/);
+    }
+    assert.deepEqual(replicaFiles.map(localEvents), beforeFuture, 'neither clone applies a future engine or its own later move');
+  } finally {
+    await restoreOutboxDefault();
   }
-  assert.deepEqual(replicaFiles.map(localEvents), beforeFuture, 'neither clone applies a future engine or its own later move');
 }
 
 test('[H3,H16,V1,V17] three cloned linked replicas order competing claims', { timeout: 240_000 }, async (t) => { // 20 paired rounds (60 CLI spawns), six sync/registration spawns and three local API calls took 170s under load; setup fits the remaining ceiling.
