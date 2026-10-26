@@ -367,6 +367,8 @@ The following live SQLite declarations include nullability, defaults, primary an
 <!-- board-indexes:start -->
 | Index | Table | Columns | Unique |
 | --- | --- | --- | --- |
+| `board_meta_grant_activation_unsafe_v1` | `board_meta` | `meta_key` | no |
+| `board_meta_grant_activation_v2` | `board_meta` | `(expression)` | no |
 | `event_by_at` | `event` | `event_by`, `event_at` | no |
 | `event_fact_identity_v2` | `event` | `(expression)`, `event_id` | no |
 | `event_fact_malformed_v2` | `event` | `event_id` | no |
@@ -383,6 +385,8 @@ The following live SQLite declarations include nullability, defaults, primary an
 <!-- board-indexes:end -->
 
 `(expression)` denotes an unnamed expression column in SQLite's `index_info`. For `event_fact_identity_v2`, it is `json_extract(event_detail, '$.id')`, followed by `event_id`; the partial index includes fact rows readable by `json_valid(event_detail, 10)`. The malformed index covers invalid TEXT fact rows and the unknown index covers invalid non-TEXT fact rows, both ordered by `event_id`. All three are nonunique additive indexes installed once by the owning writable opener; read opens do not install them. A missing-index append refuses with `FACT_INDEX_NOT_READY` and asks the owning checkout to open the board once.
+
+For `board_meta_grant_activation_v2`, the expression is `CASE WHEN json_valid(meta_value, 10) THEN json_extract(meta_value, '$.sequence') END`. Its partial predicate includes only `relay_receipt_*` keys whose nested move engine is at least `AGENT_GRANT_ENGINE` (currently 127), with both the envelope and nested move guarded for JSON5/JSONB readability. `board_meta_grant_activation_unsafe_v1` indexes the receipt keys whose envelope or nested move is unreadable; the exact guarded expressions are in `src/relay-activation.js`. Owning writable opens install these derived indexes and restamp the board, including already-current boards; read and non-owner opens do not install them. An indexless writer retains the literal legacy query with one `RELAY_ACTIVATION_INDEX_MISSING` notice per process, rather than refusing the write. Unsafe legacy receipts also retain that query and its original errors and short-circuit behavior; this compatibility path remains unbounded. Neither index changes native receipt bytes or the schema or engine version.
 
 
 `src/machine.js` declares the lifecycle and retained records. `src/board.js` installs these persistent triggers in the board file:
