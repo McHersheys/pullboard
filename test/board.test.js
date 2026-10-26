@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, test } from 'node:test';
 import * as store from '../src/board.js';
+import { registerPreGrant } from './pre-grant-seats.js';
 import { displayAgentName } from '../src/agent-names.js';
 import { projectState } from '../src/serve.js';
 import { applyEngineMove, prepareEngineMove } from '../src/engine.js';
@@ -87,10 +88,7 @@ beforeEach(() => {
   let at = Date.parse('2026-10-04T12:00:00Z');
   clock = { now: () => new Date(at), advance: (ms) => { at += ms; } };
   board = store.openBoard(':memory:', clock);
-  store.register(board, { lane: 'coordinator', path: '/repo' });
-  store.register(board, { lane: 'web', path: '/repo-web-1' });
-  store.register(board, { lane: 'web', path: '/repo-web-2' });
-  store.register(board, { lane: 'api', path: '/repo-api-1' });
+  registerPreGrant(board, [['coordinator', '/repo'], ['web', '/repo-web-1'], ['web', '/repo-web-2'], ['api', '/repo-api-1']]);
 });
 
 test('[B14] notes in parentheses are not paths, and a foreign path still refuses', async (t) => {
@@ -496,9 +494,7 @@ test('a rejected commit resubmits after its bar is corrected [V4,B3]', async (t)
   ];
   t.after(() => legacy.forEach((replica) => store.closeBoard(replica)));
   const oldIds = legacy.map((replica) => {
-    store.register(replica, { lane: 'coordinator', path: '/legacy/repo' });
-    const oldBuilder = store.register(replica, { lane: 'web', path: '/legacy/web-1' });
-    store.register(replica, { lane: 'web', path: '/legacy/web-2' });
+    const [, oldBuilder] = registerPreGrant(replica, [['coordinator', '/legacy/repo'], ['web', '/legacy/web-1'], ['web', '/legacy/web-2']]);
     return { oldBuilder, oldItem: store.addItem(replica, {
       by: 'coordinator', lane: 'web', title: 'Legacy page', criterion: 'the page renders its heading',
     }) };
