@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createDeviceKeys, signDeviceEnrollment } from '../src/relay-device-keys.js';
 import { ENGINE_VERSION } from '../src/machine.js';
+import { relayOutboxSetting } from '../src/cli.js';
 import { relayClientFixture } from './relay-client-fixture.js';
 import { prepareKeylessInbox, readKeylessInbox } from './inbox-key-fixture.js';
 import { runFixtureGit } from './fixture-child.js';
@@ -30,6 +31,16 @@ async function assertLocalRead(box, board, ...args) {
   assert.match(result.document.diagnostics[0], /sign-in expired or was revoked/u);
   assert.match(result.document.diagnostics[0], /pullboard relay on.*pullboard relay off/u);
   return result;
+}
+
+/** Commit one fixture-only opt-out choice so the ordinary command reads the same setting as production. */
+function commitOutboxChoice(box, value) {
+  const file = join(box.root, 'pullboard.json');
+  const config = JSON.parse(readFileSync(file, 'utf8'));
+  config.relay = { ...config.relay, outbox: value };
+  writeFileSync(file, JSON.stringify(config, null, 2) + '\n');
+  runFixtureGit(['add', 'pullboard.json'], { cwd: box.root, env: box.env });
+  runFixtureGit(['commit', '-q', '-m', 'chore: configure relay outbox'], { cwd: box.root, env: box.env });
 }
 
 test('reads and status answer when the relay sign-in expired [H16,H5]', async t => {
@@ -155,6 +166,11 @@ test('moves stay local while the machine credential expires, then replay after s
 
   const orderedLink = readFileSync(box.linkFile, 'utf8');
   const phone = await box.phoneSession();
+  const configFile = join(box.root, 'pullboard.json');
+  const originalConfig = readFileSync(configFile);
+  assert.equal(relayOutboxSetting(box.root), true, 'the existing board uses the default-on local-first setting');
+  commitOutboxChoice(box, false);
+  assert.equal(relayOutboxSetting(box.root), false, 'the compatibility refusals below run with the explicit opt-out');
   for (const token of [state.agentTokens.coordinator.token, phone.token, undefined]) {
     const legacy = { ...JSON.parse(readFileSync(box.linkFile, 'utf8')), token };
     delete legacy.tokenId;
@@ -171,6 +187,10 @@ test('moves stay local while the machine credential expires, then replay after s
     assert.match(oldMove.document.error.message, /pullboard relay on.*pullboard relay off/u);
     assert.deepEqual((await box.cli('export')).document.tables, before, 'old PA, PS and tokenless links retain the local board');
   }
+  writeFileSync(configFile, originalConfig);
+  runFixtureGit(['add', 'pullboard.json'], { cwd: box.root, env: box.env });
+  runFixtureGit(['commit', '-q', '-m', 'chore: restore relay outbox setting'], { cwd: box.root, env: box.env });
+  assert.equal(relayOutboxSetting(box.root), true, 'restoring the original config restores its default-on policy');
   writeFileSync(box.linkFile, orderedLink, { mode: 0o600 });
 
   const queued = await box.cli('add', box.lane, 'local work waits for machine sign-in');

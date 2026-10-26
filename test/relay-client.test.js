@@ -31,6 +31,7 @@ import { openPagedSnapshot } from '../src/relay-page-layout.js';
 import { initialSpecApprovalBaseline } from '../src/spec-approval-bootstrap.js';
 import { captureSpecApprovalBaseline } from '../src/spec-approval.js';
 import { AGENT_SHELL_MARKERS, SSH_SHELL_MARKERS } from '../src/person.js';
+import { legacyMirrorQueueFragment } from './relay-client-legacy-case.js';
 
 const SIGN_INS = new Map();
 after(cleanupFixtureChildren);
@@ -512,7 +513,14 @@ test('[H1,H3,H7,H15,H16] relay on snapshots and orders ciphertext, refuses offli
   const off = await cli(root, relayEnv, 'relay', 'off');
   assert.equal(off.linked, false);
   assert.match(off.notice, /Local link removed\. The relay copy stays until you approve deleting it on your phone\./u);
-  assert.deepEqual((await cli(root, env, 'export')).tables, localBeforeOff.tables, 'unlink leaves local rows and counters unchanged');
+  const afterOffTables = (await cli(root, env, 'export')).tables;
+  const beforeOffWithoutEvents = { ...localBeforeOff.tables };
+  const afterOffWithoutEvents = { ...afterOffTables };
+  delete beforeOffWithoutEvents.event;
+  delete afterOffWithoutEvents.event;
+  assert.deepEqual(afterOffWithoutEvents, beforeOffWithoutEvents, 'unlink preserves the local board rows and counters');
+  assert.deepEqual(afterOffTables.event.slice(0, -1), localBeforeOff.tables.event, 'unlink appends one exclusion fact without changing earlier events');
+  assert.equal(afterOffTables.event.at(-1).event_kind, 'relay_exclusion', 'the person's opt-out intent stays in local history');
   assert.deepEqual(await auth.boardsFor(person.token), [{ id: boardId, repository: 'fixture/repository', linkedAt }],
     'zero-tap local unlink leaves the remote board linked');
   const session = await fetch(relay.origin + '/auth/session', { headers: { 'x-pullboard-engine': String(ENGINE_VERSION), authorization: `Bearer ${person.token}` } });
@@ -981,14 +989,16 @@ async function competingReplicaClaims(fixture, timing) {
     assert.equal(displayed.code, 'HELD');
     assert.ok(displayed.earlier.some(move => move.move === `claim #${id} by ${winners.get(id)}`),
       `the local refusal for #${id} names the ordered winning claim`);
-    assert.match(synced[loserIndex].stderr,
+    assert.match((synced[loserIndex].document.diagnostics ?? []).join('\n'),
       new RegExp(`\\[RELAY_OUTBOX_REFUSED\\].*claim #${id} by ${losers.get(id)} .*\\[HELD\\].*won by sequence \\d+ claim #${id} by ${winners.get(id)}`, 'u'));
   }
   assert.equal(receiptRows[0].length, receiptRows[1].length, 'both cloned boards retain the same number of applied operation receipts');
   const repeatedNotices = await Promise.all([0, 1].map(index => timing.wait(`confirm clone ${index + 1} notices are consumed once`,
     () => cliResult(worktrees[index], envs[index], 'status'))));
   assert.ok(repeatedNotices.every((result) => result.status === 0));
-  for (const repeated of repeatedNotices) assert.doesNotMatch(repeated.stderr, /RELAY_OUTBOX_REFUSED/u, 'replay refusal notices are delivered once');
+  for (const repeated of repeatedNotices) {
+    assert.doesNotMatch((repeated.document.diagnostics ?? []).join('\n'), /RELAY_OUTBOX_REFUSED/u, 'replay refusal notices are delivered once');
+  }
 
   relay.failMoves(true);
   const beforeWorktreeFailure = localEvents(replicaFiles[0]);
@@ -1090,11 +1100,14 @@ async function recoverReplicaReplies(fixture, timing) {
   const beforeDropped = relay.uploads.length;
   relay.dropNextReply({ offline: true });
   const lostAdd = await timing.wait('send clone A add with its reply dropped', () => cliResult(clones[0], envs[0], 'add', 'web', 'Lost clone reply'));
-  assert.equal(lostAdd.status, 1);
-  assert.equal(lostAdd.document.error.code, 'RELAY_UNAVAILABLE');
+  assert.equal(lostAdd.status, 0, 'a lost reply does not block the local-first add');
+  const lostId = lostAdd.document.item.item_id;
+  assert.equal(localEvents(replicaFiles[0]).filter(event => event.item_id === lostId && event.event_kind === 'add').length, 1,
+    'the add is durable locally once even though its relay reply is lost');
   relay.failReads(false);
   await timing.wait('sync all clones before retrying the lost add', () => Promise.all(clones.map((root, index) => cli(root, envs[index], 'status'))));
   const retriedAdd = await timing.wait('retry the lost clone add', () => cli(clones[0], envs[0], 'add', 'web', 'Lost clone reply'));
+  assert.equal(retriedAdd.item.item_id, lostId, 'the retry reports the exact item from the original local move');
   assert.equal(relay.uploads.length, beforeDropped + 1, 'three-clone recovery never posts a second operation');
   assert.equal(localEvents(replicaFiles[0]).filter(event => event.event_kind === 'spec_approval_baseline').length, 1,
     'a lost bootstrap reply is consumed through its original receipt, never a second baseline');
@@ -1350,78 +1363,6 @@ test('[H3,H16,V1,V17] three cloned linked replicas recover lost replies once', {
   });
 });
 
-/** Exercise migration of an old local-first mirror queue into the ordered native checkpoint. */
-async function legacyMirrorQueueFragment({
-  relay, root, relayEnv, boardFile, linkFile, lane, lanes, boardId, key, currentMachineToken,
-  localEvents, cli, store, unseal,
-}) {
-  const priorRows = localEvents(boardFile);
-  const link = JSON.parse(readFileSync(linkFile, 'utf8'));
-  assert.equal(link.mode, 'ordered');
-  link.cursor = priorRows.at(-1)?.event_id ?? 0;
-  // Model the pre-161 local-first outbox: old link metadata plus local rows committed before upload.
-  delete link.mode;
-  delete link.presentationDigest;
-  writeFileSync(linkFile, JSON.stringify(link) + '\n', { mode: 0o600 });
-
-  const board = store.openBoard(boardFile);
-  try {
-    store.addItem(board, {
-      by: 'coordinator', lane, title: 'legacy queued item', criterion: 'queued before ordered mode',
-    });
-    store.shout(board, {
-      from: 'coordinator', to: 'person', text: 'legacy queued shout', lanes,
-    });
-  } finally { store.closeBoard(board); }
-
-  const queuedRows = localEvents(boardFile);
-  const queuedEvents = queuedRows.slice(priorRows.length);
-  assert.deepEqual(queuedEvents.map((event) => event.event_kind), ['add', 'shout']);
-  const initialUploadCount = relay.uploads.length;
-  const expectedBehind = queuedEvents.length;
-
-  relay.failMoves(true);
-  const offline = await cli(root, relayEnv, 'status');
-  assert.equal(offline.relay.behind, expectedBehind, 'the legacy local rows remain in the durable queue');
-  assert.deepEqual(localEvents(boardFile), queuedRows, 'a failed migration leaves local rows untouched');
-  assert.equal(relay.uploads.length, initialUploadCount, 'refused uploads are not acknowledged');
-  const pendingLegacy = JSON.parse(readFileSync(linkFile, 'utf8'));
-  assert.equal(pendingLegacy.pending.sequence, link.sequence + 1);
-  assert.equal(pendingLegacy.pending.needsPresentation, true, 'the first legacy row has no projection covering its position');
-
-  relay.failMoves(false);
-  const resumed = await cli(root, relayEnv, 'status');
-  assert.equal(resumed.relay.behind, 0, 'the next reachable command drains the queued legacy rows');
-  assert.deepEqual(localEvents(boardFile), queuedRows, 'migration checkpoints existing rows instead of replaying them');
-  const legacyUploads = relay.uploads.slice(initialUploadCount);
-  assert.deepEqual(legacyUploads.map((upload) => upload.sequence), [4, 5]);
-  const openedLegacy = await Promise.all(legacyUploads.map(async (upload) => JSON.parse(new TextDecoder().decode(await unseal(
-    key, Buffer.from(upload.sealed, 'base64url'), { boardId, kind: 'move', sequence: upload.sequence },
-  )))));
-  assert.equal(openedLegacy[0].presentation, undefined, 'the historical first move cannot attest the later row');
-  assert.equal(openedLegacy[1].presentation.state.events[0].event_id, queuedEvents.at(-1).event_id, 'the final legacy move carries only its matching projection');
-
-  const authorization = { 'x-pullboard-engine': String(ENGINE_VERSION), authorization: `Bearer ${currentMachineToken}` };
-  const stateResponse = await fetch(`${relay.origin}/api/v1/boards/${boardId}/state`, { headers: authorization });
-  assert.equal(stateResponse.status, 200);
-  const stateDocument = await stateResponse.json();
-  assert.equal(stateDocument.state.sequence, 5, 'the native checkpoint covers the complete ordered prefix');
-  const checkpoint = snapshotDocument(await unseal(
-    key, Buffer.from(stateDocument.state.sealed, 'base64url'), { boardId, kind: 'snapshot', sequence: 5 },
-  ));
-  assert.deepEqual(checkpoint.tables.event.slice(priorRows.length), queuedEvents,
-    'the source-native snapshot records both legacy rows in order');
-  assert.ok(checkpoint.presentation.state.items.some((item) => item.title === 'legacy queued item'));
-
-  const repeated = await cli(root, relayEnv, 'status');
-  assert.equal(repeated.relay.behind, 0);
-  assert.deepEqual(localEvents(boardFile), queuedRows, 'a repeated sync does not execute legacy rows again');
-  assert.equal(relay.uploads.length, initialUploadCount + 2, 'a repeated sync does not append duplicate uploads');
-  const unchangedResponse = await fetch(`${relay.origin}/api/v1/boards/${boardId}/state`, { headers: authorization });
-  assert.equal((await unchangedResponse.json()).state.sealed, stateDocument.state.sealed,
-    'a repeated sync leaves the acknowledged native checkpoint unchanged');
-}
-
 /** Confirm migration refuses an unrecognized remote prefix before executing another local move. */
 async function legacyForeignPrefixFragment({
   relay, root, relayEnv, boardFile, linkFile, lane, boardId, currentMachineToken, localEvents, cliResult,
@@ -1499,11 +1440,15 @@ test('relay read recovery stays bounded and preserves refusals, invalid bodies a
 });
 
 
-test('a pending legacy approval baseline keeps its exact source through resume [H16,S1]', { timeout: 60_000 }, async t => { // budget: one lost setup reply and one real resume, bounded fixture cleanup.
+test('an accepted legacy approval baseline keeps its exact source through resume [H16,S1]', { timeout: 60_000 }, async t => { // budget: one lost setup reply and one real resume, bounded fixture cleanup.
   const timing = threeReplicaPhaseCapture(t);
   await timing.run(async () => {
     const fixture = await threeReplicaFixture(t, timing);
     const { clones, envs, relay, replicaFiles } = fixture;
+    const original = store.openBoard(replicaFiles[0]);
+    let originalBaseline;
+    try { originalBaseline = store.specApprovalBaseline(original); } finally { store.closeBoard(original); }
+    assert.ok(originalBaseline, 'the accepted setup baseline is present before the local add');
     for (const env of envs) env.PULLBOARD_RELAY_SENDER_BACKGROUND = '0';
     timing.begin('baseline reply recovery', 'lose one compatibility setup reply, change the spec, and resume');
     const uploadsBeforeLocalMove = relay.uploads.length;
@@ -1519,11 +1464,14 @@ test('a pending legacy approval baseline keeps its exact source through resume [
     writeFileSync(spec, readFileSync(spec, 'utf8') + '- G99 [approved, must] A later row needs confirmation. | gate: review\n');
     const local = store.openBoard(replicaFiles[0]);
     try {
-      assert.equal(store.specApprovalBaselineExists(local), false, 'the offline device has not replayed its pending setup');
+      assert.equal(store.specApprovalBaselineExists(local), true, 'the accepted setup baseline remains present while the add is queued');
+      const storedBaseline = store.specApprovalBaseline(local);
+      assert.deepEqual(storedBaseline, originalBaseline, 'the original baseline event and stored source remain unchanged');
+      assert.equal(storedBaseline.rows.some(row => row.id === 'G99'), false, 'a later spec row is not added to the stored baseline');
       const config = { spec: 'SPEC.md' };
       assert.ok(captureSpecApprovalBaseline(clones[0], config).rows.some(row => row.id === 'G99'));
       const selected = initialSpecApprovalBaseline({ info: { root: clones[0], isMain: true } }, local, 'recordHealthFindings');
-      assert.equal(selected.rows.some(row => row.id === 'G99'), false, 'pending setup retains its original source instead of approving the changed file');
+      assert.equal(selected, null, 'an existing accepted baseline is not replaced by the current spec');
       assert.equal(initialSpecApprovalBaseline({ info: { root: clones[0], isMain: false } }, local, 'recordHealthFindings'), null, 'a lane never seeds or consumes setup');
     } finally { store.closeBoard(local); }
     relay.failReads(false);
