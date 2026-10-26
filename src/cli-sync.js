@@ -10,7 +10,17 @@ import { Refused } from './refused.js';
 import { syncRelay } from './relay.js';
 import { executePersonRequests } from './relay-request-execution.js';
 import { autoLinkProject } from './relay-setup.js';
-import { gitSyncLinked } from './local-state.js';
+import {
+  gitSyncLinked,
+  relayLinkFile,
+} from './local-state.js';
+import { repoInfo } from './git.js';
+import { takeConflictNotices } from './relay-conflicts.js';
+import {
+  localFirstBoard,
+  nudgeRelaySender,
+  senderInBackground,
+} from './relay-local-first.js';
 import {
   context,
   withBoard,
@@ -29,8 +39,34 @@ async function reportQuietly(io, error) {
   }
 }
 
+/**
+ * The relay link of a local-first board at this checkout, or null (#1013): its commands neither sync nor wait, and
+ * the machine's background sender does the relay's work. With the sender off (the test runner), commands sync
+ * themselves as before.
+ */
+function localFirstLink(io) {
+  try {
+    const info = repoInfo(io.cwd);
+    const file = relayLinkFile(info.commonDir);
+    return localFirstBoard(file, () => relayOutboxSetting(info.root)) ? { root: info.root, file } : null;
+  } catch { return null; }
+}
+
+/** Say once, loudly, each queued move of this checkout's agent that lost to another machine's move (#1013). */
+function tellConflicts(io, link) {
+  if (!link) return;
+  for (const line of takeConflictNotices(link.file, link.root)) io.err(`pullboard: ${line}`);
+}
+
 /** A network refusal preserves offline reads; linked mutation dispatch requires an acknowledgement. */
 export async function retrySync(io) {
+  const local = senderInBackground() ? localFirstLink(io) : null;
+  if (local) {
+    // No sync and no lock: hand the relay's work to the machine's sender, and deliver finished baselines here.
+    nudgeRelaySender(local.root, local.file);
+    try { await retryCheckBaselines(io.cwd, io); } catch (error) { await reportQuietly(io, error); }
+    return;
+  }
   try {
     if (io.relayCommand?.cliOperation !== 'sync' && gitSyncLinked(io.cwd)) {
       const ctx = context(io);
@@ -46,7 +82,15 @@ export async function retrySync(io) {
 /** Before a command: link this project when the machine links new ones, sync, then run the person's waiting requests. */
 export async function syncBefore(io, main) {
   try { if (io.relayCommand?.cliOperation !== 'sync' && !gitSyncLinked(io.cwd)) await autoLinkProject(io.cwd, io); } catch (error) { if (!(error instanceof Refused)) throw error; }
+  const local = localFirstLink(io);
+  if (local && senderInBackground()) {
+    // The sender runs the person's waiting requests too, so a read never waits on them.
+    await retrySync(io);
+    tellConflicts(io, local);
+    return;
+  }
   await retrySync(io);
   try { await executePersonRequests(io.cwd, io, main); }
   catch (error) { await reportQuietly(io, error); }
+  tellConflicts(io, local);
 }
