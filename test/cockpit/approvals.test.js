@@ -29,7 +29,8 @@ test('agent approvals show full rows and styled actions at narrow width and reso
         const commit = row.querySelector('code');
         return { text: row.textContent, commit: commit.textContent, full: commit.title,
           labels: buttons.map(button => button.textContent),
-          styled: buttons.every(button => button.classList.contains(button.dataset.rowDecision === 'approve' ? 'approve-row' : 'decline-row')),
+          styled: buttons.every(button => button.classList.contains(button.dataset.rowDecision === 'approve' ? 'approve-row' : 'decline-row'))
+            && getComputedStyle(buttons[0]).backgroundColor !== 'rgba(0, 0, 0, 0)' && getComputedStyle(buttons[1]).borderTopStyle === 'solid',
           targets: boxes.every(box => box.height >= 44),
           beside: boxes[0].top === boxes[1].top && boxes[0].right <= boxes[1].left,
           overflow: document.documentElement.scrollWidth > innerWidth };
