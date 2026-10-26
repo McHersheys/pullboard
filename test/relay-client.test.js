@@ -5,10 +5,8 @@ import { createServer } from 'node:http';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { delimiter, dirname, join, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { performance } from 'node:perf_hooks';
 import { after, test } from 'node:test';
 import { gunzipSync } from 'node:zlib';
-import { DatabaseSync } from 'node:sqlite';
 import { createAuthHandler } from '../relay/auth-http.js';
 import { createRelayAuth } from '../relay/auth.js';
 import { createRelayHandler } from '../relay/service.js';
@@ -31,6 +29,11 @@ import { openPagedSnapshot } from '../src/relay-page-layout.js';
 import { initialSpecApprovalBaseline } from '../src/spec-approval-bootstrap.js';
 import { captureSpecApprovalBaseline } from '../src/spec-approval.js';
 import { AGENT_SHELL_MARKERS, SSH_SHELL_MARKERS } from '../src/person.js';
+import { legacyMirrorQueueFragment } from './relay-client-legacy-case.js';
+import { assertBaselineResumeEvidence, assertOriginalBaselineEvidence } from './relay-client-baseline-case.js';
+import { assertOriginalOutcomeDelivery, assertRecoveredStackUploads, assertReplicaClaimErrorEquality, localEvents, mergeCandidateForReview, receipts, syncReplica } from './relay-client-replica-fixture.js';
+import { assertDroppedReplyConsumed, commitInitializedRepoFiles, enterLegacyAckPolicy } from './relay-client-policy-fixture.js';
+import { threeReplicaPhaseCapture } from './relay-client-timing.js';
 
 const SIGN_INS = new Map();
 after(cleanupFixtureChildren);
@@ -68,134 +71,13 @@ async function cli(root, env, ...args) {
   return result.document;
 }
 
-/** Read local events directly so inspection itself cannot drain the durable retry queue. */
-function localEvents(file) {
-  const db = new DatabaseSync(file, { readOnly: true });
-  try { return JSON.parse(JSON.stringify(db.prepare('SELECT * FROM event ORDER BY event_id').all())); }
-  finally { db.close(); }
-}
-
-/** Keep sanitized timings for the three-clone fixture without extending its test timeout. */
-function threeReplicaPhaseCapture(t) {
-  const testStartedAt = performance.now();
-  const completed = [];
-  let active = null;
-  let timeoutSignal = null;
-
-  /** Record one completed phase while excluding fixture contents and credentials. */
-  function finishPhase() {
-    if (!active) return;
-    completed.push({
-      phase: active.phase,
-      startedAtMs: Math.round(active.startedAt - testStartedAt),
-      elapsedMs: Math.round(performance.now() - active.startedAt),
-      lastCompletedWait: active.lastCompletedWait,
-      waitingDescription: active.waitingDescription ?? null,
-      completedWaits: active.completedWaits,
-      activeWaits: active.activeWaits.map(({ operation, startedAt }) => ({ operation, elapsedMs: Math.round(performance.now() - startedAt) })),
-    });
-    active = null;
-  }
-
-  /** Return only timing labels and safe error identifiers for failure diagnostics. */
-  function snapshot(outcome, error = null) {
-    const now = performance.now();
-    const running = active && {
-      phase: active.phase,
-      startedAtMs: Math.round(active.startedAt - testStartedAt),
-      elapsedMs: Math.round(now - active.startedAt),
-      waitingOn: active.activeWaits.at(-1)?.operation ?? active.waitingDescription ?? null,
-      waitingElapsedMs: active.activeWaits.length ? Math.round(now - active.activeWaits.at(-1).startedAt) : null,
-      activeWaits: active.activeWaits.map(({ operation, startedAt }) => ({ operation, elapsedMs: Math.round(now - startedAt) })),
-      completedWaits: active.completedWaits,
-      lastCompletedWait: active.lastCompletedWait,
-    };
-    return {
-      outcome,
-      timeoutSignalled: timeoutSignal !== null,
-      timeoutSignalName: timeoutSignal?.name ?? null,
-      timeoutSignalCode: timeoutSignal?.code ?? null,
-      totalElapsedMs: Math.round(now - testStartedAt),
-      activePhase: running?.phase ?? null,
-      activeWait: running,
-      lastCompletedPhase: completed.at(-1)?.phase ?? null,
-      completedPhases: completed,
-      errorName: error?.name ?? null,
-      errorCode: error?.code ?? null,
-    };
-  }
-
-  /** Emit one bounded timing record before teardown, without replacing the original failure. */
-  function report(outcome, error = null) {
-    try { process.stderr.write('[three-replica-phase] ' + JSON.stringify(snapshot(outcome, error)) + '\n'); }
-    catch { /* Diagnostics must never replace the test result or timeout error. */ }
-  }
-
-  const onAbort = () => {
-    timeoutSignal = t.signal.reason ?? new Error('test timeout signal');
-    report('timeout-signal', timeoutSignal);
-  };
-  t.signal?.addEventListener('abort', onAbort, { once: true });
-  t.after(() => {
-    t.signal?.removeEventListener('abort', onAbort);
-    report('test-after-hook');
-  });
-
-  return {
-    /** Start a phase with a safe description of the operation it is waiting on. */
-    begin(phase, waitingOn) {
-      finishPhase();
-      active = { phase, startedAt: performance.now(), activeWaits: [], completedWaits: [], lastCompletedWait: null };
-      if (waitingOn) active.waitingDescription = waitingOn;
-    },
-    /** Time one unchanged operation and name the wait before yielding. */
-    async wait(label, operation) {
-      assert.ok(active, 'a named phase is active before every asynchronous wait');
-      const phase = active;
-      const frame = { operation: label, startedAt: performance.now() };
-      phase.activeWaits.push(frame);
-      let outcome = 'resolved';
-      try {
-        return await operation();
-      } catch (error) {
-        outcome = error?.name ?? 'rejected';
-        throw error;
-      } finally {
-        const waitReceipt = { operation: label, elapsedMs: Math.round(performance.now() - frame.startedAt), outcome };
-        phase.completedWaits.push(waitReceipt);
-        phase.lastCompletedWait = waitReceipt;
-        const index = phase.activeWaits.indexOf(frame);
-        if (index !== -1) phase.activeWaits.splice(index, 1);
-      }
-    },
-    /** Run the existing body and report the same thrown object after recording safe diagnostics. */
-    async run(body) {
-      try {
-        return await body();
-      } catch (error) {
-        report('test-error', error);
-        throw error;
-      }
-    },
-    /** Finish the final phase and require this scenario's named phases to have completed. */
-    finish(expected) {
-      finishPhase();
-      assert.deepEqual(completed.map(({ phase }) => phase), expected, 'all named relay phases completed in order');
-      assert.ok(completed.every((phase) => Number.isFinite(phase.startedAtMs) && Number.isFinite(phase.elapsedMs)),
-        'every phase has finite start and elapsed timings');
-      return completed;
-    },
-  };
-}
-
 /** Run the real auth and opaque board handlers together on a private loopback port. */
 async function relayServer(t, directory, auth, { legacyRelay = false } = {}) {
   let signIn;
   let api;
   let refuseMoves = false;
-  let loseReply = false;
+  let loseReply = null;
   let refuseReads = false;
-  let blockAfterDrop = false;
   let now = Date.now();
   const calls = [];
   const uploads = [];
@@ -209,12 +91,38 @@ async function relayServer(t, directory, auth, { legacyRelay = false } = {}) {
     }
     if (req.method === 'POST' && /\/moves$/.test(req.url)) {
       const drop = loseReply;
-      loseReply = false;
       const end = res.end.bind(res);
       res.end = (chunk, ...args) => {
         const document = JSON.parse(String(chunk));
         if (document.event) uploads.push({ sequence: document.event.event_id, sealed: document.event.sealed });
-        if (drop && document.event) { refuseReads = blockAfterDrop; res.destroy(); return res; }
+        if (drop && document.event) {
+          if (!drop.operation) {
+            loseReply = null;
+            refuseReads = drop.offline;
+            res.destroy();
+            return res;
+          }
+          // Select a targeted drop from authenticated fixture data; never expose plaintext to logs.
+          void (async () => {
+            const plain = await unseal(drop.key, Buffer.from(document.event.sealed, 'base64url'), {
+              boardId: drop.boardId, kind: 'move', sequence: document.event.event_id,
+            });
+            const move = JSON.parse(new TextDecoder().decode(plain));
+            const matches = move.operation === drop.operation
+              && (drop.item === undefined || move.args?.[0] === drop.item);
+            if (matches && loseReply === drop) {
+              loseReply = null;
+              refuseReads = drop.offline;
+              res.destroy();
+              return;
+            }
+            end(chunk, ...args);
+          })().catch(() => {
+            // Keep the drop armed so the existing consumed-drop assertion reports failure without exposing payload details.
+            res.destroy();
+          });
+          return res;
+        }
         return end(chunk, ...args);
       };
     }
@@ -258,8 +166,15 @@ async function relayServer(t, directory, auth, { legacyRelay = false } = {}) {
     throw new Error(`relay fixture: the reply drop armed before ${at} was never consumed by a move; relay calls since arming: ${since.join(', ') || 'none'}`);
   }
   return { origin, calls, uploads, failMoves(value) { refuseMoves = value; },
-    dropNextReply({ offline = false } = {}) { requireDropConsumed('arming another drop'); loseReply = true; blockAfterDrop = offline; dropArmedAt = calls.length; },
-    dropPending() { return loseReply; },
+    dropNextReply({ offline = false, operation, item, key, boardId } = {}) {
+      requireDropConsumed('arming another drop');
+      if (operation !== undefined && (typeof operation !== 'string' || !key || !boardId)) {
+        throw new Error('relay fixture: an operation-targeted drop needs its private board key and id');
+      }
+      loseReply = { offline, ...(operation === undefined ? {} : { operation, item, key, boardId }) };
+      dropArmedAt = calls.length;
+    },
+    dropPending() { return Boolean(loseReply); },
     failReads(value) { if (!value) requireDropConsumed('reads were restored'); refuseReads = value; },
     advance(days) { now = Date.now() + days * 86400000; } };
 }
@@ -462,6 +377,7 @@ test('[H1,H3,H7,H15,H16] relay on snapshots and orders ciphertext, refuses offli
   writeFileSync(lostBrief, 'The original lost-reply brief.\n');
   relay.dropNextReply({ offline: true });
   await assert.rejects(cli(root, relayEnv, 'add', lane, 'committed reply lost', '--specs', 'G1', '--brief-file', lostBrief), /RELAY_UNAVAILABLE/);
+  assertDroppedReplyConsumed(relay, 'the legacy add reply');
   const durableId = JSON.parse(readFileSync(linkFile, 'utf8')).pending.move.id;
   await cli(root, relayEnv, 'status');
   assert.equal(JSON.parse(readFileSync(linkFile, 'utf8')).pending.move.id, durableId,
@@ -512,7 +428,20 @@ test('[H1,H3,H7,H15,H16] relay on snapshots and orders ciphertext, refuses offli
   const off = await cli(root, relayEnv, 'relay', 'off');
   assert.equal(off.linked, false);
   assert.match(off.notice, /Local link removed\. The relay copy stays until you approve deleting it on your phone\./u);
-  assert.deepEqual((await cli(root, env, 'export')).tables, localBeforeOff.tables, 'unlink leaves local rows and counters unchanged');
+  const afterOffTables = (await cli(root, env, 'export')).tables;
+  const beforeOffWithoutEvents = { ...localBeforeOff.tables };
+  const afterOffWithoutEvents = { ...afterOffTables };
+  delete beforeOffWithoutEvents.event;
+  delete afterOffWithoutEvents.event;
+  const eventSequence = rows => rows.sqlite_sequence.find(row => row.name === 'event')?.seq ?? 0;
+  const beforeEventSequence = eventSequence(beforeOffWithoutEvents);
+  const afterEventSequence = eventSequence(afterOffWithoutEvents);
+  beforeOffWithoutEvents.sqlite_sequence = beforeOffWithoutEvents.sqlite_sequence.filter(row => row.name !== 'event');
+  afterOffWithoutEvents.sqlite_sequence = afterOffWithoutEvents.sqlite_sequence.filter(row => row.name !== 'event');
+  assert.deepEqual(afterOffWithoutEvents, beforeOffWithoutEvents, 'unlink preserves the local board rows and counters');
+  assert.equal(afterEventSequence, beforeEventSequence + 1, 'the appended exclusion fact advances only the event counter');
+  assert.deepEqual(afterOffTables.event.slice(0, -1), localBeforeOff.tables.event, 'unlink appends one exclusion fact without changing earlier events');
+  assert.equal(afterOffTables.event.at(-1).event_kind, 'relay_exclusion', 'the person\'s opt-out intent stays in local history');
   assert.deepEqual(await auth.boardsFor(person.token), [{ id: boardId, repository: 'fixture/repository', linkedAt }],
     'zero-tap local unlink leaves the remote board linked');
   const session = await fetch(relay.origin + '/auth/session', { headers: { 'x-pullboard-engine': String(ENGINE_VERSION), authorization: `Bearer ${person.token}` } });
@@ -606,6 +535,7 @@ function heldSecrets(root, pullboardHome) {
 async function loseReplyAtTransport({ root, env, lane, relay, pullboardHome }) {
   relay.dropNextReply({ offline: true });
   const lost = await cliResult(root, env, 'add', lane, 'reply lost at the transport');
+  assertDroppedReplyConsumed(relay, 'the legacy transport-failure add reply');
   assert.equal(lost.status, 1, lost.stderr);
   const refusal = lost.document.error;
   assert.equal(refusal.code, 'RELAY_UNAVAILABLE', 'the refusal code is unchanged');
@@ -733,6 +663,7 @@ async function threeReplicaFixture(t, timing) {
   symlinkSync(realpathSync(gitBinary), join(privateBin, 'git'));
   symlinkSync(realpathSync(process.execPath), join(privateBin, 'node'));
   symlinkSync(realpathSync('/bin/sh'), join(privateBin, 'sh'));
+  symlinkSync(resolve(import.meta.dirname, '../bin/pullboard.js'), join(privateBin, 'pullboard'));
   const envs = homes.map((home) => {
     const env = { ...process.env, HOME: home, USERPROFILE: home, PULLBOARD_HOME: join(home, '.pullboard'), PATH: privateBin };
     for (const key of Object.keys(env)) if (key.startsWith('GIT_')) delete env[key];
@@ -862,69 +793,126 @@ async function threeReplicaFixture(t, timing) {
   return { scratch, clones, worktrees, envs, gitAt, commonDir, auth, relay, person, key, boardId, replicaFiles };
 }
 
-/** Read replay receipts without changing either replica's event cursor. */
-function receipts(file) {
-  const db = new DatabaseSync(file, { readOnly: true });
-  try {
-    return db.prepare("SELECT meta_value FROM board_meta WHERE meta_key LIKE 'relay_receipt_%'")
-      .all().map(({ meta_value }) => JSON.parse(meta_value));
-  } finally { db.close(); }
-}
-
 /** Preserve the competing CLI claims, durable refusals, registration and local API ordering checks. */
 async function competingReplicaClaims(fixture, timing) {
   const { clones, worktrees, envs, gitAt, auth, relay, person, key, boardId, replicaFiles } = fixture;
-  timing.begin('competing claims', 'send each paired claim through two clones, release the winner, and compare ordered receipts');
-  const refusals = new Map();
+  timing.begin('competing claims', 'queue competing claims locally, replay each pair in order, and release that round\'s winner');
+  // Keep the sender out of the race so each pair is resolved before an agent starts its next claim.
+  for (const env of envs) env.PULLBOARD_RELAY_SENDER_BACKGROUND = '0';
+  const actors = new Map();
+  const winners = new Map();
+  const losers = new Map();
+  const senderDiagnosticsByClone = clones.map(() => []);
+  const userDiagnosticsByClone = clones.map(() => []);
+  relay.failMoves(true);
   for (let id = 1; id <= 20; id += 1) {
     const [left, right] = await timing.wait(`run the two competing CLI claims for item #${id}`, () => Promise.all([
       cliResult(worktrees[0], envs[0], 'claim', String(id)),
       cliResult(worktrees[1], envs[1], 'claim', String(id)),
     ]));
     const attempts = [left, right];
-    assert.equal(attempts.filter((result) => result.status === 0).length, 1, `one clone claims #${id}`);
-    const winner = attempts.findIndex((result) => result.status === 0);
-    const loser = attempts[1 - winner];
-    assert.equal(loser.status, 1, `the competing claim for #${id} is refused`);
-    assert.equal(loser.document.error.code, 'HELD');
-    assert.equal(typeof loser.document.error.message, 'string');
-    assert.equal(typeof loser.document.error.next, 'string');
-    refusals.set(id, loser.document.error);
-    const released = await timing.wait(`release item #${id} from its winning clone`, () => cliResult(worktrees[winner], envs[winner], 'release', String(id)));
-    assert.equal(released.status, 0, `the winner releases #${id} before the next round`);
+    attempts.forEach((attempt, index) => userDiagnosticsByClone[index].push(...(attempt.document.diagnostics ?? [])));
+    assert.ok(attempts.every((result) => result.status === 0), `both clones claim #${id} locally before relay ordering`);
+    const claimActors = [0, 1].map((index) => {
+      const claim = localEvents(replicaFiles[index]).filter((event) => event.item_id === id && event.event_kind === 'claim');
+      assert.equal(claim.length, 1, `clone ${index + 1} records its local claim for #${id} once`);
+      return claim[0].event_by;
+    });
+    assert.notEqual(claimActors[0], claimActors[1], `the competing local claims for #${id} have distinct agents`);
+    actors.set(id, claimActors);
+
+    const first = id % 2 === 1 ? 0 : 1;
+    const second = 1 - first;
+    relay.failMoves(false);
+    const firstReplay = await timing.wait(`replay clone ${first + 1}'s claim for #${id}`, () => syncReplica(worktrees[first], envs[first]));
+    senderDiagnosticsByClone[first].push(...firstReplay.diagnostics);
+    const secondReplay = await timing.wait(`replay clone ${second + 1}'s claim for #${id}`, () => syncReplica(worktrees[second], envs[second]));
+    senderDiagnosticsByClone[second].push(...secondReplay.diagnostics);
+    const winnerCatchUp = await timing.wait(`catch clone ${first + 1} up with the refusal for #${id}`, () => syncReplica(worktrees[first], envs[first]));
+    senderDiagnosticsByClone[first].push(...winnerCatchUp.diagnostics);
+
+    const claims = receipts(replicaFiles[first]).map((receipt) => ({ receipt, move: JSON.parse(receipt.move) }))
+      .filter(({ move }) => move.operation === 'claim' && move.args[0] === id);
+    assert.equal(claims.length, 2, `both competing claim attempts for #${id} have durable receipts`);
+    const accepted = claims.filter(({ receipt }) => !receipt.outcome.error);
+    const denied = claims.filter(({ receipt }) => receipt.outcome.error);
+    assert.equal(accepted.length, 1, `one claim for #${id} wins in relay order`);
+    assert.equal(denied.length, 1, `the other claim for #${id} has a durable refusal`);
+    const winningActor = accepted[0].move.actor;
+    const losingActor = denied[0].move.actor;
+    assert.ok(actors.get(id).includes(winningActor), `the ordered winner for #${id} is one of its local claimants`);
+    assert.ok(actors.get(id).includes(losingActor), `the ordered refusal for #${id} belongs to one of its local claimants`);
+    assert.notEqual(winningActor, losingActor, `the winning and losing local claimants for #${id} differ`);
+    winners.set(id, winningActor);
+    losers.set(id, losingActor);
+    assert.equal(denied[0].receipt.outcome.error.code, 'HELD', `the losing claim for #${id} is refused by the engine`);
+    assert.equal(denied[0].receipt.outcome.error.next, 'Run pullboard help, correct the reported problem, and retry the command.',
+      'current display guidance does not rewrite the historical receipt envelope');
+    for (const index of [0, 1]) {
+      const applied = localEvents(replicaFiles[index]).filter((event) => event.item_id === id && event.event_kind === 'claim');
+      assert.equal(applied.length, 1, `clone ${index + 1} applies only the ordered winning claim for #${id}`);
+      assert.equal(applied[0].event_by, winningActor, `clone ${index + 1} retains the same winner for #${id}`);
+    }
+
+    const winner = actors.get(id).indexOf(winningActor);
+    const released = await timing.wait(`release item #${id} from its replayed winner`, () => cliResult(worktrees[winner], envs[winner], 'release', String(id)));
+    userDiagnosticsByClone[winner].push(...(released.document.diagnostics ?? []));
+    assert.equal(released.status, 0, `the ordered winner releases #${id}`);
+    const winnerRelease = await timing.wait(`replay clone ${winner + 1}'s release for #${id}`, () => syncReplica(worktrees[winner], envs[winner]));
+    senderDiagnosticsByClone[winner].push(...winnerRelease.diagnostics);
+    const loserRelease = await timing.wait(`apply the release for #${id} on the other clone`, () => syncReplica(worktrees[1 - winner], envs[1 - winner]));
+    senderDiagnosticsByClone[1 - winner].push(...loserRelease.diagnostics);
+    relay.failMoves(true);
   }
 
-  const synced = await timing.wait('sync the three replicas after the competing claims', () => Promise.all(clones.map((clone, index) => cliResult(worktrees[index], envs[index], 'status'))));
-  assert.ok(synced.every((result) => result.status === 0), 'both replicas finish by applying the same relay prefix');
-
-  const eventRows = replicaFiles.map((file) => localEvents(file));
-  const receiptRows = replicaFiles.map(receipts);
-  const canonicalRefusals = new Map();
+  relay.failMoves(false);
+  const synced = [];
+  for (let index = 0; index < clones.length; index += 1) {
+    const read = await timing.wait(`read clone ${index + 1} after all claim rounds`, () => cliResult(worktrees[index], envs[index], 'status'));
+    synced.push(read);
+    userDiagnosticsByClone[index].push(...(read.document.diagnostics ?? []));
+    assert.equal(synced[index].status, 0, `clone ${index + 1} reads the completed ordered history`);
+  }
+  const receiptRows = replicaFiles.map((file) => receipts(file));
   for (let id = 1; id <= 20; id += 1) {
-    for (const events of eventRows) {
-      assert.equal(events.filter((event) => event.item_id === id && event.event_kind === 'claim').length, 1,
-        `item #${id} has exactly one applied claim event on each clone`);
-    }
+    assertReplicaClaimErrorEquality(receiptRows, id);
     for (const rows of receiptRows) {
       const claims = rows.map((receipt) => ({ receipt, move: JSON.parse(receipt.move) }))
         .filter(({ move }) => move.operation === 'claim' && move.args[0] === id);
-      assert.equal(claims.length, 2, `both ordered claim descriptors for #${id} have durable receipts`);
+      assert.equal(claims.length, 2, `both competing claim attempts for #${id} remain in every clone`);
+      const accepted = claims.filter(({ receipt }) => !receipt.outcome.error);
       const denied = claims.filter(({ receipt }) => receipt.outcome.error);
-      assert.equal(denied.length, 1, `exactly one durable claim receipt for #${id} is a refusal`);
-      const error = denied[0].receipt.outcome.error;
-      const displayed = refusals.get(id);
-      assert.deepEqual({ code: error.code, message: error.message },
-        { code: displayed.code, message: displayed.message }, `the durable refusal for #${id} retains the CLI rule and reason`);
-      assert.equal(error.next, 'Run pullboard help, correct the reported problem, and retry the command.',
-        'current display guidance does not rewrite the historical receipt envelope');
-      assert.equal(displayed.next, 'take another item: pullboard next', 'the CLI names the current recovery action');
-      if (canonicalRefusals.has(id)) assert.deepEqual(error, canonicalRefusals.get(id),
-        `all replicas retain the exact canonical refusal for #${id}`);
-      else canonicalRefusals.set(id, error);
+      assert.equal(accepted.length, 1, `one durable claim receipt for #${id} succeeds`);
+      assert.equal(denied.length, 1, `one durable claim receipt for #${id} is refused`);
+      assert.equal(accepted[0].move.actor, winners.get(id), `every clone retains the same winner for #${id}`);
+      assert.equal(denied[0].move.actor, losers.get(id), `every clone retains the same loser for #${id}`);
     }
+    const loserIndex = actors.get(id).indexOf(losers.get(id));
+    const displayed = (synced[loserIndex].document.relay.outboxRefusals ?? [])
+      .find((entry) => entry.move === `claim #${id} by ${losers.get(id)}`);
+    assert.ok(displayed, `the replayed refusal for #${id} is retained for its losing agent`);
+    assert.equal(displayed.code, 'HELD');
+    assert.ok(displayed.earlier.some(move => move.move === `claim #${id} by ${winners.get(id)}`),
+      `the local refusal for #${id} names the ordered winning claim`);
+    const notice = new RegExp(`\\[RELAY_OUTBOX_REFUSED\\].*claim #${id} by ${losers.get(id)} .*\\[HELD\\].*won by sequence \\d+ claim #${id} by ${winners.get(id)}`, 'u');
+    assert.equal(senderDiagnosticsByClone[loserIndex].filter(line => notice.test(line)).length, 1,
+      `the replay sender records one refusal callback for #${id}`);
+    assert.equal(userDiagnosticsByClone[loserIndex].filter(line => notice.test(line)).length, 1,
+      `the losing agent receives one CLI refusal notice for #${id}`);
   }
   assert.equal(receiptRows[0].length, receiptRows[1].length, 'both cloned boards retain the same number of applied operation receipts');
+  const repeatedNotices = await Promise.all([0, 1].map(index => timing.wait(`confirm clone ${index + 1} notices are consumed once`,
+    () => cliResult(worktrees[index], envs[index], 'status'))));
+  repeatedNotices.forEach((result, index) => userDiagnosticsByClone[index].push(...(result.document.diagnostics ?? [])));
+  assert.ok(repeatedNotices.every((result) => result.status === 0));
+  for (const repeated of repeatedNotices) {
+    assert.doesNotMatch((repeated.document.diagnostics ?? []).join('\n'), /RELAY_OUTBOX_REFUSED/u, 'replay refusal notices are delivered once');
+  }
 
+  await timing.wait('record the main-checkout setup baseline before refusing registration', () =>
+    cli(clones[0], envs[0], 'shout', 'all', 'Fixture setup before registration refusal'));
+  await timing.wait('sync the setup baseline to every clone before refusing registration', () =>
+    Promise.all(clones.map((root, index) => cli(root, envs[index], 'status'))));
   relay.failMoves(true);
   const beforeWorktreeFailure = localEvents(replicaFiles[0]);
   const beforeWorktrees = gitAt(clones[0], envs[0], 'worktree', 'list', '--porcelain');
@@ -946,6 +934,7 @@ async function competingReplicaClaims(fixture, timing) {
   const initializedClone = await timing.wait('initialize clone A without bypassing relay ordering', () => cli(clones[0], modelFreeInitEnv, 'init'));
   assert.equal(initializedClone.root, clones[0]);
   assert.deepEqual(localEvents(replicaFiles[0]), beforeInit, 'repeated init cannot bypass relay ordering to rewrite coordinator registration');
+  commitInitializedRepoFiles(clones[0], envs[0], gitAt);
 
   const board = store.openBoard(replicaFiles[0]);
   let earlier;
@@ -964,6 +953,7 @@ async function competingReplicaClaims(fixture, timing) {
     method: 'POST', headers, body: JSON.stringify({ sequence: next, sealed: earlierSealed }),
   }))).status, 200);
 
+  const restoreApiOutboxDefault = await enterLegacyAckPolicy(fixture);
   /** Run the actual local API command under this clone's isolated device credentials. */
   async function apiCommand(argv, io) {
     const names = ['PATH', 'HOME', 'PULLBOARD_HOME', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM'];
@@ -977,8 +967,9 @@ async function competingReplicaClaims(fixture, timing) {
       }
     }
   }
-  const localApi = await timing.wait('start the local API used to exercise relay ordering', () => serveApi({ runCommand: apiCommand, projects: () => [{ root: clones[0], name: 'Clone API' }] }));
+  let localApi;
   try {
+    localApi = await timing.wait('start the local API used to exercise relay ordering', () => serveApi({ runCommand: apiCommand, projects: () => [{ root: clones[0], name: 'Clone API' }] }));
     const address = new URL(localApi.url);
     const response = await timing.wait('send the first API move through clone A', () => fetchFresh(`${address.origin}/api/v1/boards/${boardId}/moves`, {
       method: 'POST', headers: { 'x-pullboard-key': address.searchParams.get('k'), 'content-type': 'application/json' },
@@ -998,6 +989,7 @@ async function competingReplicaClaims(fixture, timing) {
     const lostApi = await timing.wait('send the API move whose reply is dropped', () => fetchFresh(`${address.origin}/api/v1/boards/${boardId}/moves`, {
       method: 'POST', headers: apiLostHeaders, body: apiLostBody,
     }));
+    assertDroppedReplyConsumed(relay, 'the lost local API add reply');
     const lostApiResult = await timing.wait('read the dropped-reply API response', () => lostApi.json());
     assert.equal(lostApi.status, 409, JSON.stringify(lostApiResult));
     assert.equal(lostApiResult.error.code, 'RELAY_UNAVAILABLE');
@@ -1012,7 +1004,10 @@ async function competingReplicaClaims(fixture, timing) {
     assert.equal(apiRetryResult.event.item_id, apiRetryResult.result.item.item_id);
     assert.equal(apiRetryResult.result.item.item_title, apiLostTitle);
     assert.equal(relay.uploads.length, beforeLostApi + 1, 'local API retry returns its original emitted event without posting again');
-  } finally { await timing.wait('close the local clone API server', () => localApi.close()); }
+  } finally {
+    try { if (localApi) await timing.wait('close the local clone API server', () => localApi.close()); }
+    finally { await restoreApiOutboxDefault(); }
+  }
 }
 
 /** Preserve lost CLI replies, original outcomes and the receipt-missing stack guard. */
@@ -1025,15 +1020,21 @@ async function recoverReplicaReplies(fixture, timing) {
   const beforeDropped = relay.uploads.length;
   relay.dropNextReply({ offline: true });
   const lostAdd = await timing.wait('send clone A add with its reply dropped', () => cliResult(clones[0], envs[0], 'add', 'web', 'Lost clone reply'));
-  assert.equal(lostAdd.status, 1);
-  assert.equal(lostAdd.document.error.code, 'RELAY_UNAVAILABLE');
+  assert.equal(lostAdd.status, 0, 'a lost reply does not block the local-first add');
+  const lostId = lostAdd.document.item.item_id;
+  assert.equal(localEvents(replicaFiles[0]).filter(event => event.item_id === lostId && event.event_kind === 'add').length, 1,
+    'the add is durable locally once even though its relay reply is lost');
   relay.failReads(false);
-  await timing.wait('sync all clones before retrying the lost add', () => Promise.all(clones.map((root, index) => cli(root, envs[index], 'status'))));
-  const retriedAdd = await timing.wait('retry the lost clone add', () => cli(clones[0], envs[0], 'add', 'web', 'Lost clone reply'));
+  await timing.wait('sync all clones to recover the lost add reply', () => Promise.all(clones.map((root, index) => cli(root, envs[index], 'status'))));
+  assertDroppedReplyConsumed(relay, 'the local-first add during background replay');
+  const recovered = await timing.wait('read clone A after recovering its lost add reply', () => cli(clones[0], envs[0], 'status'));
+  assert.equal(recovered.relay.linked, true, 'receipt recovery leaves the board linked');
+  assert.equal(recovered.relay.behind, 0, 'the lost move has been acknowledged in order');
+  assert.deepEqual(recovered.relay.outbox ?? [], [], 'the recovered move is no longer queued');
   assert.equal(relay.uploads.length, beforeDropped + 1, 'three-clone recovery never posts a second operation');
   assert.equal(localEvents(replicaFiles[0]).filter(event => event.event_kind === 'spec_approval_baseline').length, 1,
     'a lost bootstrap reply is consumed through its original receipt, never a second baseline');
-  const retriedId = retriedAdd.item.item_id;
+  const retriedId = lostId;
   for (const file of replicaFiles) {
     assert.equal(localEvents(file).filter((event) => event.event_kind === 'add' && event.item_id === retriedId).length, 1,
       'each replica applies the recovered add once');
@@ -1041,34 +1042,72 @@ async function recoverReplicaReplies(fixture, timing) {
   assert.deepEqual(localEvents(replicaFiles[0]), localEvents(replicaFiles[1]));
   assert.deepEqual(localEvents(replicaFiles[1]), localEvents(replicaFiles[2]));
 
-  await timing.wait('claim item 1 before its competing lost-reply refusal', () => cli(worktrees[0], envs[0], 'claim', '1'));
+  relay.failMoves(true);
   const beforeDenied = relay.uploads.length;
+  const queuedClaims = await timing.wait('queue competing claims before ordered replay', () => Promise.all([
+    cliResult(worktrees[0], envs[0], 'claim', '1'),
+    cliResult(worktrees[1], envs[1], 'claim', '1'),
+  ]));
+  assert.ok(queuedClaims.every(result => result.status === 0), 'both claims are durably queued before either is replayed');
+  const summaryPath = index => join(commonDir(clones[index], envs[index]), 'pullboard', 'relay-outbox.summary.json');
+  const queuedMove = index => JSON.parse(readFileSync(summaryPath(index), 'utf8')).moves
+    .find(entry => entry.operation === 'claim' && entry.item === 1);
+  const queuedA = queuedMove(0);
+  const queuedB = queuedMove(1);
+  assert.ok(queuedA?.id && queuedB?.id && queuedA.id !== queuedB.id, 'each clone retains its own queued claim id');
+  relay.failMoves(false);
+  const replayA = await timing.wait('order clone A claim first', () => syncReplica(worktrees[0], envs[0]));
+  assert.equal(replayA.result.behind, 0, 'clone A claim is ordered before clone B');
+  const orderedWinner = receipts(replicaFiles[0]).find(receipt => JSON.parse(receipt.move).id === queuedA.id);
+  assert.ok(orderedWinner && !orderedWinner.outcome.error, 'clone A has the first accepted claim receipt');
+  const beforeDroppedDenial = relay.uploads.length;
   relay.dropNextReply({ offline: true });
-  const lostDenial = await timing.wait('send clone B competing claim with its reply dropped', () => cliResult(worktrees[1], envs[1], 'claim', '1'));
-  assert.equal(lostDenial.status, 1);
-  assert.equal(lostDenial.document.error.code, 'RELAY_UNAVAILABLE');
+  await timing.wait('send clone B claim with its ordered refusal reply dropped', () => syncReplica(worktrees[1], envs[1]));
+  assert.equal(relay.dropPending(), false, 'the injected reply loss was consumed by clone B claim replay');
+  assert.equal(relay.uploads.length, beforeDroppedDenial + 1, 'clone B posts exactly one claim move before losing its reply');
   relay.failReads(false);
-  await timing.wait('sync clone B after its lost claim reply', () => cli(clones[1], envs[1], 'status'));
-  const pendingState = JSON.parse(readFileSync(join(commonDir(clones[1], envs[1]), 'pullboard', 'relay.json'), 'utf8'));
-  const recordedDenial = receipts(replicaFiles[1]).find((receipt) => JSON.parse(receipt.move).id === pendingState.recovered.move.id);
+  const recoveredDenial = await timing.wait('recover clone B claim receipt after its reply loss', () => cli(clones[1], envs[1], 'status'));
+  assert.equal(recoveredDenial.relay.linked, true, 'receipt recovery keeps clone B linked');
+  assert.equal(recoveredDenial.relay.behind, 0, 'receipt recovery catches clone B up to the ordered prefix');
+  assert.deepEqual(recoveredDenial.relay.outbox ?? [], [], 'the recovered claim no longer waits in the outbox');
+  const recordedDenial = receipts(replicaFiles[1]).find((receipt) => JSON.parse(receipt.move).id === queuedB.id);
+  assert.ok(recordedDenial, 'the ordered refusal has one durable receipt');
   assert.equal(recordedDenial.outcome.error.code, 'HELD');
+  assert.ok(orderedWinner.sequence < recordedDenial.sequence, 'the refusal receipt follows the accepted competing claim');
   const originalReceipt = JSON.stringify(recordedDenial);
   const retriedDenial = await timing.wait('retry the claim that already has a durable refusal', () => cliResult(worktrees[1], envs[1], 'claim', '1'));
   assert.equal(retriedDenial.status, 1);
   assert.deepEqual(retriedDenial.document.error, { code: recordedDenial.outcome.error.code,
     message: recordedDenial.outcome.error.message, next: 'take another item: pullboard next' },
   'retry reports the original rule and reason with current recovery guidance');
-  const afterRetry = receipts(replicaFiles[1]).find((receipt) => JSON.parse(receipt.move).id === pendingState.recovered.move.id);
+  const afterRetry = receipts(replicaFiles[1]).find((receipt) => JSON.parse(receipt.move).id === queuedB.id);
   assert.equal(JSON.stringify(afterRetry), originalReceipt, 'presenting a retry does not rewrite any canonical receipt field');
-  assert.equal(relay.uploads.length, beforeDenied + 1, 'a refused move also keeps its original relay position');
+  assert.equal(relay.uploads.length, beforeDenied + 2, 'the two queued claims each post exactly once, including the refused move');
+  const restoreOutboxDefault = await enterLegacyAckPolicy(fixture);
+  const ackSetup = await timing.wait('confirm the ACK scenario starts with an empty outbox', () =>
+    cli(worktrees[0], envs[0], 'status'));
+  assert.equal(ackSetup.relay.linked, true);
+  assert.deepEqual(ackSetup.relay.outbox ?? [], [], 'legacy ACK probes start with no queued setup moves');
   await timing.wait('release item 1 after its durable refusal is checked', () => cli(worktrees[0], envs[0], 'release', '1'));
   await timing.wait('claim item 2 before its lost submission reply', () => cli(worktrees[0], envs[0], 'claim', '2'));
-  relay.dropNextReply({ offline: true });
+  const beforeLostSubmit = await timing.wait('confirm release and claim were acknowledged before the submit fault', () =>
+    cli(worktrees[0], envs[0], 'status'));
+  assert.equal(beforeLostSubmit.relay.linked, true);
+  assert.deepEqual(beforeLostSubmit.relay.outbox ?? [], [], 'the armed submit reply loss cannot hit a queued setup move');
+  relay.dropNextReply({ offline: true, operation: 'submit', item: 2, key, boardId });
   const lostSubmit = await timing.wait('submit item 2 with its relay reply dropped', () => cliResult(worktrees[0], envs[0], 'submit', '2'));
+  assertDroppedReplyConsumed(relay, 'the lost item-2 submission reply');
   assert.equal(lostSubmit.status, 1);
   assert.equal(lostSubmit.document.error.code, 'RELAY_UNAVAILABLE');
+  const linkFile = join(commonDir(clones[0], envs[0]), 'pullboard', 'relay.json');
+  const pendingSubmit = JSON.parse(readFileSync(linkFile, 'utf8')).pending?.move;
+  assert.equal(pendingSubmit?.operation, 'submit', 'the dropped reply belongs to the actual submission, not a preceding proof move');
+  assert.equal(pendingSubmit?.args?.[0], 2, 'the pending submission is for item 2');
   relay.failReads(false);
   await timing.wait('sync clone A after the lost submission reply', () => cli(clones[0], envs[0], 'status'));
+  const recoveredSubmit = JSON.parse(readFileSync(linkFile, 'utf8')).recovered?.move;
+  assert.equal(recoveredSubmit?.operation, 'submit', 'sync preserves the exact lost submit as a retryable outcome');
+  assert.equal(recoveredSubmit?.args?.[0], 2, 'the recovered outcome remains tied to item 2');
   const beforeSubmitRetry = relay.uploads.length;
   const originalCommit = gitAt(worktrees[0], envs[0], 'rev-parse', 'HEAD');
   writeFileSync(join(worktrees[0], 'web', 'README.md'), 'new committed work while the original submission reply is missing\n');
@@ -1076,19 +1115,43 @@ async function recoverReplicaReplies(fixture, timing) {
   gitAt(worktrees[0], envs[0], 'commit', '-q', '-m', 'test: move HEAD during submission recovery [G1]');
   assert.notEqual(gitAt(worktrees[0], envs[0], 'rev-parse', 'HEAD'), originalCommit);
   writeFileSync(join(worktrees[0], 'web', 'README.md'), 'dirty current work is not a fresh submission\n');
+  const afterSubmitRecoverySetup = relay.uploads.length;
   const retriedSubmit = await timing.wait('retry the original lost submission outcome', () => cli(worktrees[0], envs[0], 'submit', '2'));
+  const retryMoves = await Promise.all(relay.uploads.slice(afterSubmitRecoverySetup).map(async (upload) => {
+    const plain = await unseal(key, Buffer.from(upload.sealed, 'base64url'), {
+      boardId, kind: 'move', sequence: upload.sequence,
+    });
+    const move = JSON.parse(new TextDecoder().decode(plain));
+    return {
+      operation: move.operation,
+      moveId: move.id,
+      recipient: move.operation === 'recordActivityDelivery' ? move.args?.[0]?.agentId ?? null : null,
+    };
+  }));
+  const setupMoves = relay.uploads.slice(beforeSubmitRetry, afterSubmitRecoverySetup);
+  assert.equal(setupMoves.length, 0, 'committing and dirtying HEAD does not create a relay move');
+  const submittedBoard = store.openBoardForRead(join(commonDir(worktrees[0], envs[0]), 'pullboard', 'board.sqlite'));
+  let submittingAgent;
+  try { submittingAgent = store.getItem(submittedBoard, 2).item_owner; }
+  finally { store.closeBoard(submittedBoard); }
+  assert.deepEqual(retryMoves.map(({ operation }) => operation), ['recordActivityDelivery'],
+    'recovered reporting records only the expected activity delivery, never a second submit');
+  assert.equal(retryMoves[0].recipient, submittingAgent, 'the activity delivery is recorded for the submitting agent');
+  assert.equal(typeof retryMoves[0].moveId, 'string');
   assert.equal(retriedSubmit.commit, originalCommit);
   assert.equal(retriedSubmit.gate.green, true);
   assert.match(retriedSubmit.gate.report, /recovered the original submission/,
     'changed or dirty HEAD only receives the original receipt, never a fresh gate claim');
-  assert.equal(relay.uploads.length, beforeSubmitRetry, 'submitted-state preconditions cannot duplicate or strand recovery');
+  assert.equal(relay.uploads.length, beforeSubmitRetry + 1, 'submitted-state recovery emits only its one activity receipt, not another submit');
   assert.equal(gitAt(worktrees[0], envs[0], 'rev-parse', retriedSubmit.pin), originalCommit);
   gitAt(worktrees[0], envs[0], 'restore', 'web/README.md');
 
-  relay.dropNextReply({ offline: true });
+  mergeCandidateForReview(worktrees[1], envs[1], worktrees[0], originalCommit, gitAt);
+  relay.dropNextReply({ offline: true, operation: 'verify', item: 2, key, boardId });
   const lostVerify = await timing.wait('verify item 2 with its acknowledgement dropped', () => cliResult(worktrees[1], envs[1], 'verify', '2', 'accept', '--note', 'Lost verdict acknowledgement'));
   assert.equal(lostVerify.status, 1);
   assert.equal(lostVerify.document.error.code, 'RELAY_UNAVAILABLE');
+  assertDroppedReplyConsumed(relay, 'the lost item-2 verification reply');
   relay.failReads(false);
   await timing.wait('sync clone B after the lost verdict acknowledgement', () => cli(clones[1], envs[1], 'status'));
   const beforeVerifyRetry = relay.uploads.length;
@@ -1101,6 +1164,7 @@ async function recoverReplicaReplies(fixture, timing) {
   const beforeEdit = relay.uploads.length;
   relay.dropNextReply({ offline: true });
   const lostEdit = await timing.wait('edit item 1 with its relay reply dropped', () => cliResult(clones[0], envs[0], 'edit', '1', '--brief-file', lostEditBrief));
+  assertDroppedReplyConsumed(relay, 'the lost item-1 edit reply');
   assert.equal(lostEdit.document.error.code, 'RELAY_UNAVAILABLE');
   relay.failReads(false);
   await timing.wait('sync clone A before retrying the edit', () => cli(clones[0], envs[0], 'status'));
@@ -1110,10 +1174,14 @@ async function recoverReplicaReplies(fixture, timing) {
   assert.equal(relay.uploads.length, beforeEdit + 1, 'edit retries recover the original receipt after its brief disappears');
 
   const lostRef = 'lost-merge-reference';
+  gitAt(clones[0], envs[0], 'merge', '--ff-only', originalCommit);
+  assert.equal(gitAt(clones[0], envs[0], 'rev-parse', 'HEAD'), originalCommit,
+    'the verified submission is actually on fixture main before its merge receipt is recorded');
   gitAt(clones[0], envs[0], 'tag', lostRef, originalCommit);
   const beforeMerge = relay.uploads.length;
-  relay.dropNextReply({ offline: true });
+  relay.dropNextReply({ offline: true, operation: 'merged', item: 2, key, boardId });
   const lostMerge = await timing.wait('merge the lost reference with its reply dropped', () => cliResult(clones[0], envs[0], 'merged', '2', lostRef));
+  assertDroppedReplyConsumed(relay, 'the lost merge reply');
   assert.equal(lostMerge.document.error.code, 'RELAY_UNAVAILABLE');
   relay.failReads(false);
   await timing.wait('sync clone A before retrying the merge', () => cli(clones[0], envs[0], 'status'));
@@ -1127,6 +1195,7 @@ async function recoverReplicaReplies(fixture, timing) {
   const beforeAutomatic = relay.uploads.length;
   relay.dropNextReply();
   const automatic = await timing.wait('recover a dropped reply automatically on clone C', () => cli(clones[2], envs[2], 'add', 'web', 'Automatically recovered reply'));
+  assertDroppedReplyConsumed(relay, 'the automatically recovered add reply');
   assert.equal(automatic.item.item_title, 'Automatically recovered reply');
   assert.equal(relay.uploads.length, beforeAutomatic + 1, 'automatic recovery keeps one ordered move');
   assert.equal(JSON.parse(readFileSync(join(commonDir(clones[2], envs[2]), 'pullboard', 'relay.json'), 'utf8')).recovered,
@@ -1167,29 +1236,33 @@ async function recoverReplicaReplies(fixture, timing) {
   const freshStackCommit = gitAt(worktrees[2], envs[2], 'rev-parse', 'HEAD');
 
   const beforeRecoveredStack = relay.uploads.length;
-  relay.dropNextReply({ offline: true });
+  relay.dropNextReply({ offline: true, operation: 'submit', item: stackedB, key, boardId });
   const lostStackSubmit = await timing.wait('submit recovered-stack item B with its reply dropped', () => cliResult(worktrees[0], envs[0], 'submit', String(stackedB)));
+  const afterLostStackSubmit = relay.uploads.length;
+  assertDroppedReplyConsumed(relay, 'the recovered-stack submission reply');
   assert.equal(lostStackSubmit.status, 1);
   assert.equal(lostStackSubmit.document.error.code, 'RELAY_UNAVAILABLE');
   relay.failReads(false);
   const laterA = await timing.wait('submit stack item A after B has a lost reply', () => cliResult(worktrees[1], envs[1], 'submit', String(stackedA)));
+  const afterLaterA = relay.uploads.length;
   assert.equal(laterA.status, 0, laterA.stderr);
   assert.equal(laterA.document.commit, firstRecoveryCommit);
   await timing.wait('sync clone A to recover stacked submission B', () => cli(clones[0], envs[0], 'status'));
+  const afterStackRecovery = relay.uploads.length;
 
   const recoveredLink = join(commonDir(clones[0], envs[0]), 'pullboard', 'relay.json');
   const pendingOutcome = JSON.parse(readFileSync(recoveredLink, 'utf8')).recovered;
-  assert.equal(pendingOutcome.move.operation, 'submit');
-  assert.equal(pendingOutcome.move.args[0], stackedB);
-  assert.ok(pendingOutcome.move.args[1].commit === recoveredStackCommit);
-  const recoveredReceipt = receipts(replicaFiles[0]).find((receipt) => JSON.parse(receipt.move).id === pendingOutcome.move.id);
-  assert.deepEqual(JSON.parse(recoveredReceipt.move), pendingOutcome.move, 'the pending reply has the exact durable engine receipt');
   const beforeOutcomeRetry = relay.uploads.length;
-  assert.equal(beforeOutcomeRetry, beforeRecoveredStack + 2, 'the relay applied B and then A once each');
+  const stackOwnerB = await assertRecoveredStackUploads({
+    uploads: relay.uploads,
+    bounds: { beforeRecoveredStack, afterLostStackSubmit, afterLaterA, afterStackRecovery, beforeOutcomeRetry },
+    key, boardId, replicaFiles, stackedA, stackedB, firstRecoveryCommit, recoveredStackCommit, pendingOutcome,
+  });
   const originalOutcome = await timing.wait('read the durable original submission outcome for B', () => cli(worktrees[0], envs[0], 'submit', String(stackedB)));
   assert.equal(originalOutcome.commit, recoveredStackCommit);
   assert.match(originalOutcome.gate.report, /recovered the original submission/u);
-  assert.equal(relay.uploads.length, beforeOutcomeRetry, 'reporting the durable outcome creates no new relay move');
+  await assertOriginalOutcomeDelivery(relay.uploads.slice(beforeOutcomeRetry), key, boardId, stackOwnerB);
+  assert.equal(relay.uploads.length, beforeOutcomeRetry + 1);
 
   await timing.wait('sync clone C before checking its fabricated receiptless descriptor', () => cli(clones[2], envs[2], 'status'));
   const freshLinkFile = join(commonDir(clones[2], envs[2]), 'pullboard', 'relay.json');
@@ -1233,37 +1306,44 @@ async function recoverReplicaReplies(fixture, timing) {
   const freshAfter = store.openBoard(replicaFiles[2]);
   try { assert.equal(store.getItem(freshAfter, freshB).item_status, 'claimed'); }
   finally { store.closeBoard(freshAfter); }
+  await restoreOutboxDefault();
 }
 
 /** Reject the future engine move after all three replicas have recovered their ordered prefix. */
 async function finalReplicaOrder(fixture, timing) {
   const { clones, worktrees, envs, auth, relay, person, key, boardId, replicaFiles } = fixture;
   timing.begin('final order check', 'sync the worktrees, reject the future engine move, and confirm no replica applies later events');
-  await timing.wait('sync all worktrees before the final engine-version check', () => Promise.all(worktrees.map((root, index) => cli(root, envs[index], 'status'))));
-  const updated = store.openBoard(replicaFiles[0]);
-  let future;
-  let next;
+  // A known future relay prefix must use the ordered ACK guard, not local-first queuing.
+  const restoreOutboxDefault = await enterLegacyAckPolicy(fixture);
   try {
-    next = appliedSequence(updated) + 1;
-    future = { ...prepareEngineMove(updated, 'addItem', [{ by: 'coordinator', lane: 'web', title: 'Future engine item' }]), engine: ENGINE_VERSION + 1 };
-  } finally { store.closeBoard(updated); }
-  const coordinatorCredential = await timing.wait('issue the coordinator fixture credential for the final order check', () => auth.issueCoordinator(person.token, { board: boardId }));
-  const headers = { 'x-pullboard-engine': String(ENGINE_VERSION), authorization: 'Bearer ' + coordinatorCredential.token, 'content-type': 'application/json' };
-  const futureSealed = Buffer.from(await timing.wait('seal the future-engine move', () => seal(key, new TextEncoder().encode(JSON.stringify(future)), {
-    boardId, kind: 'move', sequence: next,
-  }))).toString('base64url');
-  assert.equal((await timing.wait('append the future-engine move to the relay', () => fetch(`${relay.origin}/api/v1/boards/${boardId}/moves`, {
-    method: 'POST', headers, body: JSON.stringify({ sequence: next, sealed: futureSealed }),
-  }))).status, 200);
-  const beforeFuture = replicaFiles.map(localEvents);
-  const incompatible = await timing.wait('ask all three replicas to reject the future engine move', () => Promise.all(clones.map((root, index) => cliResult(root, envs[index], 'add', 'web', 'Must not apply'))));
-  for (const result of incompatible) {
-    assert.equal(result.status, 1);
-    assert.equal(result.document.error.code, 'ENGINE_VERSION');
-    assert.match(result.document.error.message, new RegExp(`engine version ${ENGINE_VERSION + 1}.*engine version ${ENGINE_VERSION}`));
-    assert.match(result.document.error.next, /upgrade/);
+    await timing.wait('sync all worktrees before the final engine-version check', () => Promise.all(worktrees.map((root, index) => cli(root, envs[index], 'status'))));
+    const updated = store.openBoard(replicaFiles[0]);
+    let future;
+    let next;
+    try {
+      next = appliedSequence(updated) + 1;
+      future = { ...prepareEngineMove(updated, 'addItem', [{ by: 'coordinator', lane: 'web', title: 'Future engine item' }]), engine: ENGINE_VERSION + 1 };
+    } finally { store.closeBoard(updated); }
+    const coordinatorCredential = await timing.wait('issue the coordinator fixture credential for the final order check', () => auth.issueCoordinator(person.token, { board: boardId }));
+    const headers = { 'x-pullboard-engine': String(ENGINE_VERSION), authorization: 'Bearer ' + coordinatorCredential.token, 'content-type': 'application/json' };
+    const futureSealed = Buffer.from(await timing.wait('seal the future-engine move', () => seal(key, new TextEncoder().encode(JSON.stringify(future)), {
+      boardId, kind: 'move', sequence: next,
+    }))).toString('base64url');
+    assert.equal((await timing.wait('append the future-engine move to the relay', () => fetch(`${relay.origin}/api/v1/boards/${boardId}/moves`, {
+      method: 'POST', headers, body: JSON.stringify({ sequence: next, sealed: futureSealed }),
+    }))).status, 200);
+    const beforeFuture = replicaFiles.map(localEvents);
+    const incompatible = await timing.wait('ask all three replicas to reject the future engine move', () => Promise.all(clones.map((root, index) => cliResult(root, envs[index], 'add', 'web', 'Must not apply'))));
+    for (const result of incompatible) {
+      assert.equal(result.status, 1);
+      assert.equal(result.document.error.code, 'ENGINE_VERSION');
+      assert.match(result.document.error.message, new RegExp(`engine version ${ENGINE_VERSION + 1}.*engine version ${ENGINE_VERSION}`));
+      assert.match(result.document.error.next, /upgrade/);
+    }
+    assert.deepEqual(replicaFiles.map(localEvents), beforeFuture, 'neither clone applies a future engine or its own later move');
+  } finally {
+    await restoreOutboxDefault();
   }
-  assert.deepEqual(replicaFiles.map(localEvents), beforeFuture, 'neither clone applies a future engine or its own later move');
 }
 
 test('[H3,H16,V1,V17] three cloned linked replicas order competing claims', { timeout: 240_000 }, async (t) => { // 20 paired rounds (60 CLI spawns), six sync/registration spawns and three local API calls took 170s under load; setup fits the remaining ceiling.
@@ -1284,78 +1364,6 @@ test('[H3,H16,V1,V17] three cloned linked replicas recover lost replies once', {
     timing.finish(['cloning three replicas', 'lost-reply recovery', 'final order check']);
   });
 });
-
-/** Exercise migration of an old local-first mirror queue into the ordered native checkpoint. */
-async function legacyMirrorQueueFragment({
-  relay, root, relayEnv, boardFile, linkFile, lane, lanes, boardId, key, currentMachineToken,
-  localEvents, cli, store, unseal,
-}) {
-  const priorRows = localEvents(boardFile);
-  const link = JSON.parse(readFileSync(linkFile, 'utf8'));
-  assert.equal(link.mode, 'ordered');
-  link.cursor = priorRows.at(-1)?.event_id ?? 0;
-  // Model the pre-161 local-first outbox: old link metadata plus local rows committed before upload.
-  delete link.mode;
-  delete link.presentationDigest;
-  writeFileSync(linkFile, JSON.stringify(link) + '\n', { mode: 0o600 });
-
-  const board = store.openBoard(boardFile);
-  try {
-    store.addItem(board, {
-      by: 'coordinator', lane, title: 'legacy queued item', criterion: 'queued before ordered mode',
-    });
-    store.shout(board, {
-      from: 'coordinator', to: 'person', text: 'legacy queued shout', lanes,
-    });
-  } finally { store.closeBoard(board); }
-
-  const queuedRows = localEvents(boardFile);
-  const queuedEvents = queuedRows.slice(priorRows.length);
-  assert.deepEqual(queuedEvents.map((event) => event.event_kind), ['add', 'shout']);
-  const initialUploadCount = relay.uploads.length;
-  const expectedBehind = queuedEvents.length;
-
-  relay.failMoves(true);
-  const offline = await cli(root, relayEnv, 'status');
-  assert.equal(offline.relay.behind, expectedBehind, 'the legacy local rows remain in the durable queue');
-  assert.deepEqual(localEvents(boardFile), queuedRows, 'a failed migration leaves local rows untouched');
-  assert.equal(relay.uploads.length, initialUploadCount, 'refused uploads are not acknowledged');
-  const pendingLegacy = JSON.parse(readFileSync(linkFile, 'utf8'));
-  assert.equal(pendingLegacy.pending.sequence, link.sequence + 1);
-  assert.equal(pendingLegacy.pending.needsPresentation, true, 'the first legacy row has no projection covering its position');
-
-  relay.failMoves(false);
-  const resumed = await cli(root, relayEnv, 'status');
-  assert.equal(resumed.relay.behind, 0, 'the next reachable command drains the queued legacy rows');
-  assert.deepEqual(localEvents(boardFile), queuedRows, 'migration checkpoints existing rows instead of replaying them');
-  const legacyUploads = relay.uploads.slice(initialUploadCount);
-  assert.deepEqual(legacyUploads.map((upload) => upload.sequence), [4, 5]);
-  const openedLegacy = await Promise.all(legacyUploads.map(async (upload) => JSON.parse(new TextDecoder().decode(await unseal(
-    key, Buffer.from(upload.sealed, 'base64url'), { boardId, kind: 'move', sequence: upload.sequence },
-  )))));
-  assert.equal(openedLegacy[0].presentation, undefined, 'the historical first move cannot attest the later row');
-  assert.equal(openedLegacy[1].presentation.state.events[0].event_id, queuedEvents.at(-1).event_id, 'the final legacy move carries only its matching projection');
-
-  const authorization = { 'x-pullboard-engine': String(ENGINE_VERSION), authorization: `Bearer ${currentMachineToken}` };
-  const stateResponse = await fetch(`${relay.origin}/api/v1/boards/${boardId}/state`, { headers: authorization });
-  assert.equal(stateResponse.status, 200);
-  const stateDocument = await stateResponse.json();
-  assert.equal(stateDocument.state.sequence, 5, 'the native checkpoint covers the complete ordered prefix');
-  const checkpoint = snapshotDocument(await unseal(
-    key, Buffer.from(stateDocument.state.sealed, 'base64url'), { boardId, kind: 'snapshot', sequence: 5 },
-  ));
-  assert.deepEqual(checkpoint.tables.event.slice(priorRows.length), queuedEvents,
-    'the source-native snapshot records both legacy rows in order');
-  assert.ok(checkpoint.presentation.state.items.some((item) => item.title === 'legacy queued item'));
-
-  const repeated = await cli(root, relayEnv, 'status');
-  assert.equal(repeated.relay.behind, 0);
-  assert.deepEqual(localEvents(boardFile), queuedRows, 'a repeated sync does not execute legacy rows again');
-  assert.equal(relay.uploads.length, initialUploadCount + 2, 'a repeated sync does not append duplicate uploads');
-  const unchangedResponse = await fetch(`${relay.origin}/api/v1/boards/${boardId}/state`, { headers: authorization });
-  assert.equal((await unchangedResponse.json()).state.sealed, stateDocument.state.sealed,
-    'a repeated sync leaves the acknowledged native checkpoint unchanged');
-}
 
 /** Confirm migration refuses an unrecognized remote prefix before executing another local move. */
 async function legacyForeignPrefixFragment({
@@ -1434,35 +1442,58 @@ test('relay read recovery stays bounded and preserves refusals, invalid bodies a
 });
 
 
-test('a pending legacy approval baseline keeps its exact source through resume [H16,S1]', { timeout: 60_000 }, async t => { // budget: one lost setup reply and one real resume, bounded fixture cleanup.
+test('an accepted legacy approval baseline keeps its exact source through resume [H16,S1]', { timeout: 60_000 }, async t => { // budget: one lost setup reply and one real resume, bounded fixture cleanup.
   const timing = threeReplicaPhaseCapture(t);
   await timing.run(async () => {
     const fixture = await threeReplicaFixture(t, timing);
-    const { clones, envs, relay, replicaFiles } = fixture;
+    const { clones, envs, relay, person, replicaFiles } = fixture;
+    for (const env of envs) env.PULLBOARD_RELAY_SENDER_BACKGROUND = '0';
     timing.begin('baseline reply recovery', 'lose one compatibility setup reply, change the spec, and resume');
+    const uploadsBeforeLocalMove = relay.uploads.length;
     relay.dropNextReply({ offline: true });
     const first = await cliResult(clones[0], envs[0], 'add', 'web', 'Work after migration');
-    assert.equal(first.status, 1);
-    assert.equal(first.document.error.code, 'RELAY_UNAVAILABLE');
-    assert.equal(relay.uploads.length, 1, 'only setup reached the relay before the interrupted work');
+    assert.equal(first.status, 0, 'a lost setup reply does not block the local-first add');
+    const addedId = first.document.item.item_id;
+    assert.equal(localEvents(replicaFiles[0]).filter(event => event.item_id === addedId && event.event_kind === 'add').length, 1,
+      'the local add is recorded once before replay');
+    const original = store.openBoard(replicaFiles[0]);
+    let originalBaseline;
+    try { originalBaseline = store.specApprovalBaseline(original); } finally { store.closeBoard(original); }
+    assert.ok(originalBaseline, 'the local first move retains the accepted setup baseline');
+    const originalBaselineEvent = localEvents(replicaFiles[0]).find(event => event.event_kind === 'spec_approval_baseline');
+    assert.ok(originalBaselineEvent, 'the local first move records the setup baseline event once');
+    assertOriginalBaselineEvidence(originalBaselineEvent, originalBaseline);
+    assert.equal(relay.uploads.length, uploadsBeforeLocalMove + 1,
+      'only the existing setup move reaches the relay before the local add is replayed');
     const spec = join(clones[0], 'SPEC.md');
     writeFileSync(spec, readFileSync(spec, 'utf8') + '- G99 [approved, must] A later row needs confirmation. | gate: review\n');
     const local = store.openBoard(replicaFiles[0]);
     try {
-      assert.equal(store.specApprovalBaselineExists(local), false, 'the offline device has not replayed its pending setup');
+      assert.equal(store.specApprovalBaselineExists(local), true, 'the accepted setup baseline remains present while the add is queued');
+      const storedBaseline = store.specApprovalBaseline(local);
+      assert.deepEqual(storedBaseline, originalBaseline, 'the original baseline event and stored source remain unchanged');
+      assert.equal(storedBaseline.rows.some(row => row.id === 'G99'), false, 'a later spec row is not added to the stored baseline');
       const config = { spec: 'SPEC.md' };
       assert.ok(captureSpecApprovalBaseline(clones[0], config).rows.some(row => row.id === 'G99'));
       const selected = initialSpecApprovalBaseline({ info: { root: clones[0], isMain: true } }, local, 'recordHealthFindings');
-      assert.equal(selected.rows.some(row => row.id === 'G99'), false, 'pending setup retains its original source instead of approving the changed file');
+      assert.equal(selected, null, 'an existing accepted baseline is not replaced by the current spec');
       assert.equal(initialSpecApprovalBaseline({ info: { root: clones[0], isMain: false } }, local, 'recordHealthFindings'), null, 'a lane never seeds or consumes setup');
     } finally { store.closeBoard(local); }
     relay.failReads(false);
     const resumed = await cli(clones[0], envs[0], 'resume');
     assert.ok(resumed.needsYou.some(need => need.kind === 'agent-approved' && need.id === 'G99'));
-    const events = localEvents(replicaFiles[0]);
-    assert.equal(events.filter(event => event.event_kind === 'spec_approval_baseline').length, 1);
-    assert.equal(events.filter(event => event.event_kind === 'add' && JSON.parse(event.event_detail).title === 'Work after migration').length, 0,
-      'recovering internal setup never claims the interrupted add was performed');
+    relay.failReads(false);
+    const caughtUp = await cli(clones[0], envs[0], 'status');
+    assert.equal(caughtUp.relay.linked, true, 'the next reachable read keeps the board linked');
+    assert.equal(caughtUp.relay.behind, 0, 'the next reachable read completes ordered replay');
+    assert.deepEqual(caughtUp.relay.outbox ?? [], [], 'no queued moves remain after replay');
+    const outboxRenumbered = caughtUp.relay.outboxRenumbered ?? [];
+    const canonicalAddedId = outboxRenumbered.find(row => row.was === addedId)?.is ?? addedId;
+    const canonicalBoard = store.openBoard(replicaFiles[0]);
+    let addedItem;
+    try { addedItem = store.getItem(canonicalBoard, canonicalAddedId); } finally { store.closeBoard(canonicalBoard); }
+    assertBaselineResumeEvidence({ events: localEvents(replicaFiles[0]), receipts: receipts(replicaFiles[0]),
+      originalBaseline, originalBaselineEvent, authenticatedLogin: person.user.login, addedId, outboxRenumbered, addedItem });
     timing.finish(['cloning three replicas', 'baseline reply recovery']);
   });
 });
