@@ -85,7 +85,7 @@ test('relay snapshot guards its native board open even when presentation is alre
   const box = fixture(t); const before = box.versions(); box.bump('EVENT_LOG_VERSION', 1, 2);
   const relay = join(box.lane, 'src/relay-presentation.js');
   const original = readFileSync(relay, 'utf8');
-  const supplied = original.replace(/export function relayPresentation\(root, \{ board: providedBoard = null \} = \{\}\) \{[\s\S]*?\n\}/u,
+  const supplied = original.replace(/^export function relayPresentation\([^\n]+\) \{[\s\S]*?^\}/mu,
     'export function relayPresentation() { return {version:1,state:{events:[]}}; }');
   assert.notEqual(supplied, original, 'supply presentation without replacing the actual snapshot opener');
   writeFileSync(relay, supplied);
