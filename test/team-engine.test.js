@@ -1,4 +1,4 @@
-/** @pullboard-test-loads src/board.js src/engine.js src/exchange.js src/machine.js */
+/** @pullboard-test-loads src/board.js src/engine.js src/exchange.js src/machine.js src/agent-grant-engine.js */
 /** Sealed re-reviews bind the original work without changing released receipts [E8,H16,V8]. */
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
@@ -12,6 +12,7 @@ import { exportBoard, importBoard } from '../src/exchange.js';
 import { applyEngineMove, appliedSequence, engineReceipt, prepareEngineMove } from '../src/engine.js';
 import { ENGINE_VERSION, VERDICT_REVIEW_ENGINE } from '../src/machine.js';
 import { unpackRelease } from './release-archive.js';
+import { AGENT_GRANT_ENGINE } from '../src/agent-grant-engine.js';
 
 const BASE = 'a'.repeat(40);
 const COMMIT = 'b'.repeat(40);
@@ -19,10 +20,15 @@ const TRUNK = 'c'.repeat(40);
 const DIGEST = 'd'.repeat(64);
 const AT = '2026-10-16T00:00:00.000Z';
 
-/** Build a submitted, registered board entirely through public engine/store operations. */
+/**
+ * Build a submitted, registered board entirely through public engine/store operations.
+ * Its seats and claim are history from before agent grants (#348), as on any board an engine 12 client wrote;
+ * a seat or claim marked by a newer engine rightly refuses old-engine moves.
+ */
 function submitted(t) {
   const board = store.openBoard(':memory:', { now: () => new Date(AT) });
   t.after(() => store.closeBoard(board));
+  board.executionEngineVersion = AGENT_GRANT_ENGINE - 1;
   store.register(board, { lane: 'coordinator', path: '/fixture' });
   store.register(board, { lane: 'web', path: '/fixture/web-1' });
   store.register(board, { lane: 'web', path: '/fixture/web-2' });
@@ -30,6 +36,7 @@ function submitted(t) {
   store.claim(board, id, { agentId: 'web-1', lane: 'web', leaseMs: 3_600_000, head: BASE,
     freeze: () => ({ text: JSON.stringify({ rows: [], policy: { version: 1, commit: BASE, verify: { policy: 'any', family: 'off' } } }), digest: DIGEST }) });
   submitFixture(board, id, { agentId: 'web-1', commit: COMMIT, tree: TRUNK, files: ['web/feature.js'], policyCommit: BASE });
+  delete board.executionEngineVersion;
   return board;
 }
 
