@@ -175,6 +175,10 @@ try {
   if (codeMetadataMarker) {
     const { apiBoards } = await import(new URL('./api.js', pathToFileURL(serveFile)));
     const { withGitReadFacts } = await import(new URL('./git.js', pathToFileURL(serveFile)));
+    // A deliberately stale board stamp forces a write-open below. Warm its one-time own-PID
+    // diagnostic before measuring provenance; ordinary warmed reads still require zero children.
+    const { prepareBoardWriteIdentity } = await import(new URL('./board-write-lock.js', pathToFileURL(serveFile)));
+    prepareBoardWriteIdentity();
     for (const status of [undefined, true]) {
       // A current board opens read-only with no authority to decide; a cleared stamp makes each need a write open (#1047).
       for (const { root } of projects) {
@@ -884,8 +888,9 @@ test('[A2, N26] a delta brings a snapshot up to date', async (t) => {
   assert.equal(Object.hasOwn(claimed.merge.items, 'ids'), false, 'no item came or went, so the order is not sent');
   const still = await catchUp('nothing changed');
   assert.deepEqual(still.merge, {}, 'an unchanged board merges nothing');
-  assert.deepEqual(Object.keys(still.replace).sort(), ['decisions', 'holds', 'personRequests', 'proofStats', 'requests', 'unseen'],
-    'only the always-whole fields come');
+  assert.deepEqual(Object.keys(still.replace).sort(), ['decisionQueue', 'decisions', 'holds', 'personRequests', 'proofStats', 'requests', 'unseen'],
+    'only the always-whole fields come, including the landed coordinator decision queue');
+  assert.deepEqual(still.replace.decisionQueue, [], 'the unchanged empty coordinator queue travels as a whole field');
 
   await move({ verb: 'submit', item, agent: builder.agent });
   assert.equal((await catchUp('submit')).merge.items.set[0].status, 'submitted');
@@ -899,10 +904,12 @@ test('[A2, N26] a delta brings a snapshot up to date', async (t) => {
   const shouted = await catchUp('shout');
   assert.ok(changed(shouted, 'shouts').includes(asked.id), 'the new shout travels');
   assert.ok(changed(shouted, 'asked').includes(asked.id), 'and so does the open question');
+  assert.ok(shouted.replace.decisionQueue.some(row => row.shout_id === asked.id), 'the coordinator queue carries its actual new question');
   const answered = await move({ verb: 'answer', item: asked.id, args: { text: 'Only when nothing moved.' } });
   const answer = await catchUp('answer');
   assert.ok(changed(answer, 'shouts').includes(answered.id), 'the answer travels');
   assert.ok(answer.merge.asked.ids.every((id) => id !== asked.id), 'the answered question leaves the open list');
+  assert.ok(answer.replace.decisionQueue.every(row => row.shout_id !== asked.id), 'the answered question also leaves the coordinator queue');
 
   box.cli(box.root, 'spec', 'approve', 'G2');
   const decided = await catchUp('spec decision');
@@ -1404,9 +1411,11 @@ test('[A2, N26] the event stream says when the board changes without a move', as
   const cursorBefore = store.openBoard(localBoardPath);
   let beforeSeen;
   let beforeEvent;
+  let beforeHistory;
   try {
     beforeSeen = store.listAgents(cursorBefore).find((entry) => entry.agent_id === agent.agent).agent_last_shout_id;
     beforeEvent = cursorBefore.db.prepare('SELECT COALESCE(MAX(event_id), 0) AS id FROM event').get().id;
+    beforeHistory = cursorBefore.db.prepare('SELECT * FROM event ORDER BY event_id').all();
   } finally { store.closeBoard(cursorBefore); }
   box.cli(agent.path, 'inbox');
   const cursorAfter = store.openBoard(localBoardPath);
@@ -1414,8 +1423,14 @@ test('[A2, N26] the event stream says when the board changes without a move', as
     const afterSeen = store.listAgents(cursorAfter).find((entry) => entry.agent_id === agent.agent).agent_last_shout_id;
     const afterEvent = cursorAfter.db.prepare('SELECT COALESCE(MAX(event_id), 0) AS id FROM event').get().id;
     assert.ok(afterSeen > beforeSeen, 'the joined agent inbox advances its shout cursor');
-    process.stderr.write(JSON.stringify({ inboxEvents: cursorAfter.db.prepare('SELECT event_by,event_kind,item_id,event_detail FROM event WHERE event_id>? ORDER BY event_id').all(beforeEvent) }) + '\n');
-    assert.equal(afterEvent, beforeEvent, 'reading the inbox changes no append-only board event');
+    const delivered = cursorAfter.db.prepare('SELECT event_by,event_kind,item_id,event_detail FROM event WHERE event_id>? ORDER BY event_id').all(beforeEvent);
+    assert.equal(afterEvent, beforeEvent + 1, 'inbox records exactly its landed native delivery receipt');
+    assert.deepEqual(delivered.map(row => ({ by: row.event_by, kind: row.event_kind, item: row.item_id, detail: JSON.parse(row.event_detail) })), [{
+      by: agent.agent, kind: 'activity-delivered', item: null,
+      detail: { interrupts: [], through: beforeEvent, observedThrough: beforeEvent, digestThrough: beforeEvent, model: 'fixture-agent' },
+    }], 'only the attributed receipt for the observed prefix is appended, without an acknowledgement or item move');
+    assert.deepEqual(cursorAfter.db.prepare('SELECT * FROM event WHERE event_id<=? ORDER BY event_id').all(beforeEvent), beforeHistory,
+      'the delivered receipt never rewrites the existing native history');
   } finally { store.closeBoard(cursorAfter); }
   await changedOnce('seen-cursor');
 
