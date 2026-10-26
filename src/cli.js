@@ -1,6 +1,6 @@
 import { dependencyValues } from './item-dependencies.js';
 import { computedReturnArgs } from './computed-conflict-return.js';
-import { AGENT_GRANT_ENGINE } from './agent-grant-engine.js';
+import { ENGINE_VERSION as NATIVE_ENGINE } from './engine-metadata.js';
 import { requireAgentGrant } from './agent-grant.js';
 import {
   focusReviewFirst,
@@ -605,7 +605,7 @@ export async function ordered(ctx, board, operation, args) {
     ensureSpecApprovalCoordinator(ctx, board, initialBaseline);
     const write = () => store.atomic(board, () => {
       requireHandoffActive(board, actor, operation, args);
-      requireAgentGrant(board, { operation, args, engine: AGENT_GRANT_ENGINE });
+      requireAgentGrant(board, { operation, args, engine: NATIVE_ENGINE }); // A native write applies current semantics.
       return store[operation](board, ...args);
     });
     if (initialBaseline && actor) await recordBaseline(actor);
