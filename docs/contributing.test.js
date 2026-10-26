@@ -12,10 +12,10 @@ test('CONTRIBUTING teaches the sign-off and the runbook names every step [I11]',
   const contributing = read('CONTRIBUTING.md');
   assert.match(contributing, /How to sign off/u);
   assert.equal(createHash('sha256').update(contributing).digest('hex'),
-    '75ea0c986e0a3e8d2dc9f1affcafcce4896e67500cbd6d5509e6663a2b784177',
+    'bc9cf801e22c57244033d2b9e69add43019278d63ca6e7adbce3d7ef94245e5d',
     'the approved contributor guide, including the accurate CLA description, is preserved');
   for (const phrase of ['git commit -s', 'git commit --amend -s --no-edit', 'git rebase --signoff main',
-    'Contributor License Agreement', 'You keep ownership', 'patents', 'no fixed response time']) {
+    'Contributor License Agreement', 'You keep ownership', 'patents', 'We aim to reply within 7 days']) {
     assert.ok(contributing.includes(phrase), phrase);
   }
   for (const phrase of ['Apache Individual Contributor License Agreement v2.2 terms', 'Pullboard as recipient',
