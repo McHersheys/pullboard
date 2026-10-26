@@ -115,7 +115,7 @@ export function conflictProblem(board, item, conflict, found) {
     return new Refused('BAD_CONFLICT', 'a trunk conflict names its files and the full trunk commit; run pullboard reopen <id> --conflict <file> from the main checkout');
   }
   if (returning) return null;
-  const accept = board.db.prepare("SELECT event_id FROM event WHERE item_id = ? AND event_kind = 'accept' AND json_extract(event_detail, '$.commit') = ? ORDER BY event_id DESC LIMIT 1").get(item.item_id, item.item_commit);
+  const accept = board.db.prepare("SELECT event_id FROM event WHERE item_id = ? AND event_kind IN ('accept','merge-only-accept') AND json_extract(event_detail, '$.commit') = ? ORDER BY event_id DESC LIMIT 1").get(item.item_id, item.item_commit);
   if (!accept) return new Refused('NOT_ACCEPTED', `item #${item.item_id} has no accept at ${String(item.item_commit).slice(0, 12)}; --conflict reopens accepted work for a main merge`);
   found(accept.event_id);
   return null;
@@ -153,13 +153,14 @@ export function conflictNote({ files, trunk }) {
  *   returned: a submission sent back before any review (#807), which sets no accept aside.
  */
 export function mainMergeFor(board, id) {
-  const last = board.db.prepare("SELECT event_detail, event_at FROM event WHERE item_id = ? AND event_kind IN ('reopen', 'accept', 'reject') ORDER BY event_id DESC LIMIT 1").get(id);
+  const last = board.db.prepare("SELECT event_detail, event_at FROM event WHERE item_id = ? AND event_kind IN ('reopen', 'accept', 'reject', 'merge-only-accept') ORDER BY event_id DESC LIMIT 1").get(id);
   const detail = last ? JSON.parse(last.event_detail) : null;
   if (!detail?.conflict) return null;
   const returned = !Number.isSafeInteger(detail.supersedes);
   const accept = returned ? null : board.db.prepare('SELECT event_by, event_detail FROM event WHERE event_id = ?').get(detail.supersedes);
+  const accepted = accept ? JSON.parse(accept.event_detail) : null;
   return { ...detail.conflict, commit: detail.commit, at: last.event_at, returned,
-    accept: accept ? { by: accept.event_by, commit: JSON.parse(accept.event_detail).commit } : null };
+    accept: accept ? { by: accepted.by ?? accept.event_by, commit: accepted.commit } : null };
 }
 
 /**
