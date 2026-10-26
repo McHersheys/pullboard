@@ -1195,7 +1195,7 @@ export function submit(board, id, { agentId, commit, tree, files = [], policyCom
         proofRecorded: null, // The CLI records and validates native receipts before sealing submit; replay needs no origin files.
         treeStillDuringGate: null,
         submissionProofValid: () => {
-          if ((board.executionEngineVersion ?? ENGINE_VERSION) >= SUBMISSION_PROOF_ENGINE) recordedProof = submissionProof(proof);
+          if ((board.executionEngineVersion ?? ENGINE_VERSION) >= SUBMISSION_PROOF_ENGINE) recordedProof = submissionProof(proof, board.executionEngineVersion ?? ENGINE_VERSION);
           if ((board.executionEngineVersion ?? ENGINE_VERSION) >= FLOW_SIZE_ENGINE) recordedSize = submissionSize(size, commit);
           return null;
         },
