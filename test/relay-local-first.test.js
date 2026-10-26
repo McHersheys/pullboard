@@ -158,6 +158,41 @@ test('a move and a read return within a second with no network call while the se
   await eventually('the sender sends the queued move once the relay lock is free', () => outboxEmpty(box) && box.moveAcks.length > acks, () => senderLog(env));
 });
 
+test('a seat registration waits for relay authority while ordinary moves and reads stay local [H21,H5,H16]', async t => {
+  const { box, env } = await linkedBoard(t);
+  const agentPath = join(dirname(box.root), 'local-first-registration-agent');
+  runFixtureGit(['worktree', 'add', '-q', '-b', 'agent/local-first-registration', agentPath], { cwd: box.root, env: box.env });
+
+  let releaseRegistration;
+  const registrationResponse = new Promise(resolve => { releaseRegistration = resolve; });
+  let registrationReached = false;
+  box.beforeNextMove(async () => {
+    registrationReached = true;
+    await registrationResponse;
+  });
+  const joining = runFixtureChildAsync(process.execPath,
+    [CLI, 'join', box.lane, '--model', 'fixture-model', '--json'], { cwd: agentPath, env });
+  let joinResult;
+  try {
+    await eventually('the genuine agent registration reaches the relay', () => registrationReached,
+      () => `join exit code: ${joining.child.exitCode ?? 'still running'}`);
+    assert.equal(joining.child.exitCode, null, 'join stays pending while the relay holds its registration response');
+
+    const text = 'An ordinary move while registration waits for authority';
+    await local(box, t, box.root, env, 'registration-held-shout', ['shout', 'all', text]);
+    const status = await local(box, t, box.root, env, 'registration-held-status', ['status']);
+    assert.deepEqual(status.document.relay.outbox.map(move => move.operation), ['shout'], 'status reads the local move without waiting for registration');
+    const exported = await local(box, t, box.root, env, 'registration-held-export', ['export']);
+    assert.equal(shoutTexts(exported.document).filter(row => row === text).length, 1, 'the ordinary move is present locally while registration is pending');
+  } finally {
+    releaseRegistration();
+    joinResult = await joining;
+  }
+  assert.equal(joinResult.status, 0, joinResult.context);
+  assert.match(JSON.parse(joinResult.stdout).agent, /^web-/u, 'the real join completes after its authority response is released');
+  await eventually('the background sender delivers the ordinary move after registration completes', () => outboxEmpty(box), () => senderLog(env));
+});
+
 test('a stalled relay never delays a move: it is recorded and queued, not refused [H21,H5]', async t => {
   const { box, env } = await linkedBoard(t);
   box.stallApi();
