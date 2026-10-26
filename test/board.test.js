@@ -500,12 +500,16 @@ test('a rejected commit resubmits after its bar is corrected [V4,B3]', async (t)
   ];
   t.after(() => legacy.forEach((replica) => store.closeBoard(replica)));
   const oldIds = legacy.map((replica) => {
+    // The legacy seats predate agent grants (#348), as on any board an engine-8 client wrote.
+    replica.executionEngineVersion = AGENT_GRANT_ENGINE - 1;
     store.register(replica, { lane: 'coordinator', path: '/legacy/repo' });
     const oldBuilder = store.register(replica, { lane: 'web', path: '/legacy/web-1' });
     store.register(replica, { lane: 'web', path: '/legacy/web-2' });
-    return { oldBuilder, oldItem: store.addItem(replica, {
+    const oldItem = store.addItem(replica, {
       by: 'coordinator', lane: 'web', title: 'Legacy page', criterion: 'the page renders its heading',
-    }) };
+    });
+    delete replica.executionEngineVersion;
+    return { oldBuilder, oldItem };
   });
   for (const replica of legacy) {
     replica.db.prepare('UPDATE board_meta SET meta_value = ? WHERE meta_key = ?').run('8'.repeat(32), 'board_id');
