@@ -2,7 +2,7 @@
 name: Feature request
 about: Describe a problem Pullboard could solve
 title: ""
-labels: enhancement
+labels: feature
 assignees: ""
 ---
 
