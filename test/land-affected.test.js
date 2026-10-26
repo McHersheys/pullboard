@@ -14,7 +14,7 @@ function valueTest(expected) {
   return `import assert from 'node:assert/strict';\nimport { test } from 'node:test';\nimport { value } from './value.js';\ntest('the imported value remains compatible', () => assert.equal(value, ${expected}));\n`;
 }
 
-test('a batch that breaks an affected test is caught at landing [C7,V4]', () => {
+test('a batch that breaks an affected test is caught at landing [C7,V4]', t => {
   const box = e2e.project('node --test web/*.test.js');
   const configFile = join(box.repo, 'pullboard.json');
   const config = JSON.parse(readFileSync(configFile, 'utf8'));
@@ -50,7 +50,10 @@ test('a batch that breaks an affected test is caught at landing [C7,V4]', () => 
   const main = box.git(box.repo, 'rev-parse', 'main');
   const mainGate = box.run(box.repo, 'gate');
   assert.equal(mainGate.code, 0, mainGate.out + mainGate.err);
-  const landing = json(box, box.repo, 'land');
+  const outcome = box.run(box.repo, 'land', '--json');
+  assert.equal(outcome.code, 0, outcome.out + outcome.err);
+  const landing = JSON.parse(outcome.out);
+  t.diagnostic(JSON.stringify({ landing, messages: outcome.err }));
   assert.deepEqual(landing.landed, [], 'the merged-tree importer failure must stop adoption');
   assert.equal(landing.batch.state, 'blocked');
   assert.equal(box.git(box.repo, 'rev-parse', 'main'), main, 'red affected tests never move main');
