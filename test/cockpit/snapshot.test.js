@@ -21,12 +21,13 @@ function assertSnapshotObservation(expected, actual, board, root, message) {
   const statisticsAt = (observation) => {
     const now = Date.parse(observation.proofStats.flow.asOf);
     assert.ok(Number.isFinite(now), 'the projection records a valid observation clock');
+    assert.equal(observation.observedAt, new Date(now).toISOString(), 'the root read stamp matches its statistics observation clock');
     return portableSnapshot(JSON.parse(JSON.stringify(proofStats(board, { now }))), root);
   };
   assert.deepEqual(expected.proofStats, statisticsAt(expected), 'the live projection matches the public statistics reader at its clock');
   const actualStatistics = statisticsAt(actual);
   assert.deepEqual(actual.proofStats, actualStatistics, 'the export projection matches the public statistics reader at its clock');
-  assert.deepEqual(actual, { ...expected, proofStats: actualStatistics }, message);
+  assert.deepEqual(actual, { ...expected, observedAt: actual.observedAt, proofStats: actualStatistics }, message);
 }
 
 test('static export stays in its prefix and replays read-only in Chrome [A10,A3]', { timeout: 90_000 }, async (t) => {
