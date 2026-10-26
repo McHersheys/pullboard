@@ -241,7 +241,9 @@ export function resolveMechanicalIndex(root, files) {
   for (const entry of resolutions.filter(entry => entry.kind === 'generated')) {
     const generated = spawnSync(process.execPath, GENERATED.get(entry.path),
       { cwd: root, env: cleanGitEnvironment(), timeout: 30_000, maxBuffer: 32 * 1024 * 1024 });
-    if (generated.status !== 0) return { files: [entry.path], entries: [] };
+    if (generated.status !== 0) return { files: [], entries: [], failed: {
+      path: entry.path, generator: GENERATED.get(entry.path).join(' '), status: generated.status,
+    } };
     writeFileSync(join(root, entry.path), generated.stdout);
   }
   return { files: [], entries: resolutions.map(({ path, keys, kind }) => ({ path, keys, kind })) };
@@ -250,6 +252,6 @@ export function resolveMechanicalIndex(root, files) {
 /** Preserve the legacy all-or-nothing landing API and its resolution receipt entries. */
 export function resolveMechanicalMerge(root, files) {
   const result = resolveMechanicalIndex(root, files);
-  return result.files.length ? null : result.entries;
+  return result.failed || result.files.length ? null : result.entries;
 }
 

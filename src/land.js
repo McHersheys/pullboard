@@ -277,6 +277,10 @@ async function mergeGroup(state, items) {
       const files = tryGit(batch.root, ['diff', '--name-only', '--diff-filter=U']).stdout.split('\n').filter(Boolean);
       if (!files.length) throw new Refused('LAND_MERGE', `merge of #${item.item_id} failed outside a conflict: ${result.stderr || result.stdout}; inspect ${batch.root} and its hooks before adopting`);
       const resolution = resolveMechanicalIndex(batch.root, files);
+      if (resolution.failed) {
+        git(batch.root, ['merge', '--abort']);
+        throw new Refused('LAND_MERGE', `item #${item.item_id}: generator ${resolution.failed.generator} failed for ${resolution.failed.path} (exit ${resolution.failed.status ?? 'unavailable'}); repair the generator before adopting this landing`);
+      }
       if (!resolution.files.length) {
         git(batch.root, ['add', '--', ...files]);
         git(batch.root, ['commit', '--no-edit']);

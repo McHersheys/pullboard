@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { runFixtureChild, runFixtureGit } from './fixture-child.js';
 import { cleanGitEnvironment } from '../src/git.js';
 import { conflictFiles } from '../src/health.js';
@@ -19,6 +19,9 @@ import { withRecordedConflictContext } from '../src/recorded-conflict-context.js
 import reopenMove from '../src/moves/reopen.js';
 import { MECHANICAL_MERGE_ENGINE } from '../src/mechanical-merge-engine.js';
 import { AGENT_GRANT_ENGINE } from '../src/agent-grant-engine.js';
+
+console.log('# MECHANICAL_RUNTIME ' + JSON.stringify({ node: process.version, execPath: process.execPath,
+  platform: process.platform, arch: process.arch, host: hostname(), binarySha256: createHash('sha256').update(readFileSync(process.execPath)).digest('hex') }));
 
 const directories = [];
 after(() => directories.forEach(root => rmSync(root, { recursive: true, force: true })));
