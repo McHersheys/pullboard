@@ -130,15 +130,17 @@ test("the history is a timeline of the item's states [N26]", async () => {
     assert.deepEqual(done.map((row) => [row.dot, row.event]), [
       ['tl-open', 'add coordinator (unknown)'],
       ['tl-claimed', 'claim web-1 (Test Model)'],
+      ['tl-claimed tl-quiet', 'proof-run web-1 (Test Model)'],
       ['tl-submitted', 'submit web-1 (Test Model)'],
       ['tl-open tl-back', 'reject coordinator (unknown)'],
       ['tl-claimed', 'claim web-1 (Test Model)'],
+      ['tl-claimed tl-quiet', 'proof-run web-1 (Test Model)'],
       ['tl-submitted', 'submit web-1 (Test Model)'],
       ['tl-verified', 'accept coordinator (unknown)'],
       ['tl-verified tl-quiet', 'merged coordinator (unknown)'],
     ], 'a dot per event in the colour of the state it led to; a merge moves nothing');
-    assert.deepEqual(done.map((row) => row.stay.replace(/ for .*/, ' for')), ['open for', 'claimed for', 'submitted for', 'sent back for', 'claimed for', 'submitted for', verifiedIsFinal ? '' : 'verified for', ''], 'each stay until the next move; a final state has none and a quiet merge stays untimed');
-    assert.ok(done.slice(0, 6).every((row) => / for (under a minute|\d+m)$/.test(row.stay)), done.map((row) => row.stay).join(', '));
+    assert.deepEqual(done.map((row) => row.stay.replace(/ for .*/, ' for')), ['open for', 'claimed for', '', 'submitted for', 'sent back for', 'claimed for', '', 'submitted for', verifiedIsFinal ? '' : 'verified for', ''], 'each stay until the next move; a final state has none and quiet proof receipts and merge stay untimed');
+    assert.ok(done.filter(row => !row.dot.includes('tl-quiet')).slice(0, 6).every((row) => / for (under a minute|\d+m)$/.test(row.stay)), done.map((row) => row.stay).join(', '));
     assert.ok(done.every((row) => /^\d\d:\d\d$/.test(row.time)), 'every event keeps its time');
 
     await page.click({ go: 'item:2' });
@@ -395,7 +397,7 @@ test('times say which day they were [N26]', async () => {
     assert.ok(bare(times(later.show('activity'))), 'activity rows keep the clock time');
     assert.deepEqual(ages(later.show('feed')).map(([age, clock]) => [age, new RegExp(`^${date} \\d\\d:\\d\\d$`).test(clock)]), [['2d ago', true]], 'a shout says how long ago, with its date and time on hover');
     const history = times(later.show('detail'));
-    assert.ok(history.length === 3 && history.every((time) => new RegExp(`^${date} \\d\\d:\\d\\d$`).test(time)), `the history dates each move: ${history}`);
+    assert.ok(history.length === 4 && history.every((time) => new RegExp(`^${date} \\d\\d:\\d\\d$`).test(time)), `the history dates every move including its proof receipt: ${history}`);
 
     // A heading wherever the day changes, and only there.
     const at = (day, hour) => new Date(2026, 9, day, hour).toISOString();

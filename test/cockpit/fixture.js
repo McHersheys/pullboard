@@ -542,7 +542,7 @@ function drawing(svg) {
     })),
     routes: [...svg.matchAll(/<g><title>([^<]*)<\/title><path class="edge([^"]*)" d="([^"]*)"[^>]*\/>((?:<text class="tag[^"]*"[^>]*>[^<]*<\/text>)*)<\/g>/g)].map((match) => ({
       title: match[1],
-      pair: /^\w+, (\w+) to (\w+),/.exec(match[1]).slice(1).join('>'),
+      pair: /^[\w-]+, (\w+) to (\w+),/.exec(match[1]).slice(1).join('>'),
       back: match[2] === ' back',
       points: [...match[3].matchAll(/([\d.]+) ([\d.]+)/g)].map((point) => [Number(point[1]), Number(point[2])]),
       label: match[4] ? [...match[4].matchAll(/>([^<]*)<\/text>/g)].map((line) => line[1]).join(' · ') + (match[4].includes(' idle') ? ' (none yet)' : '') : null,

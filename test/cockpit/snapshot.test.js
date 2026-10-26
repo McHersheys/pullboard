@@ -7,9 +7,27 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { fetchLocal } from '../../src/local-fetch.js';
+import { closeBoard } from '../../src/board.js';
+import { events } from '../../src/board.js';
+import { openBoardForRead } from '../../src/board-read-open.js';
+import { proofStats } from '../../src/stats.js';
 import { exportView, portableSnapshot } from '../../src/serve.js';
-import { machine, project, build, sendBack, fetchLive, startView, accept, boardId, boardOf, assertObservationsEqual, chromeExecutable, browserPause, openSnapshotChrome, closeSnapshotChrome, press, travel, settled, roadmapRow, showing, readRoadmap, openRoadmapParts, serveFolder, proofShot } from './fixture.js';
+import { machine, project, build, sendBack, fetchLive, startView, accept, boardId, boardOf, chromeExecutable, browserPause, openSnapshotChrome, closeSnapshotChrome, press, travel, settled, roadmapRow, showing, readRoadmap, openRoadmapParts, serveFolder, proofShot } from './fixture.js';
 
+
+/** Compare every projection field, evaluating running statistics at each real observation clock. */
+function assertSnapshotObservation(expected, actual, board, root, message) {
+  /** Read the entire public statistics projection at its recorded observation time. */
+  const statisticsAt = (observation) => {
+    const now = Date.parse(observation.proofStats.flow.asOf);
+    assert.ok(Number.isFinite(now), 'the projection records a valid observation clock');
+    return portableSnapshot(JSON.parse(JSON.stringify(proofStats(board, { now }))), root);
+  };
+  assert.deepEqual(expected.proofStats, statisticsAt(expected), 'the live projection matches the public statistics reader at its clock');
+  const actualStatistics = statisticsAt(actual);
+  assert.deepEqual(actual.proofStats, actualStatistics, 'the export projection matches the public statistics reader at its clock');
+  assert.deepEqual(actual, { ...expected, proofStats: actualStatistics }, message);
+}
 
 test('static export stays in its prefix and replays read-only in Chrome [A10,A3]', { timeout: 90_000 }, async (t) => {
   const executable = chromeExecutable();
@@ -37,6 +55,12 @@ test('static export stays in its prefix and replays read-only in Chrome [A10,A3]
   try { expected = portableSnapshot(await boardOf(live, alpha.repo), alpha.repo); }
   finally { await live.stop(); }
 
+  const observationBoard = openBoardForRead(join(alpha.repo, '.git', 'pullboard', 'board.sqlite'));
+  assert.ok(observationBoard, 'the parity oracle reads the real native board');
+  t.after(() => closeBoard(observationBoard));
+  observationBoard.db.exec('BEGIN');
+  const observationEvents = JSON.parse(JSON.stringify(events(observationBoard)));
+
   const exportDir = join(box.dir, 'snapshot-export');
   box.run(alpha.repo, 'view', '--export', exportDir);
   assert.ok(existsSync(join(exportDir, 'index.html')));
@@ -45,6 +69,7 @@ test('static export stays in its prefix and replays read-only in Chrome [A10,A3]
   const boardId = exportedBoards.boards[0].id;
   const exportedEvents = JSON.parse(readFileSync(join(exportDir, 'api', 'v1', 'boards', boardId, 'events.json'), 'utf8')).events;
   const fullBoardLog = JSON.parse(box.run(alpha.repo, 'log', '--json')).events;
+  assert.deepEqual(fullBoardLog, observationEvents, 'the live and exported projections share the same unchanged native history');
   assert.equal(exportedEvents.length, fullBoardLog.length, 'the snapshot exports every board event');
   assert.deepEqual(exportedEvents.map((event) => event.event_id), fullBoardLog.map((event) => event.event_id),
     'the snapshot event file contains the complete ordered board log');
@@ -99,7 +124,7 @@ test('static export stays in its prefix and replays read-only in Chrome [A10,A3]
 
     const initial = JSON.parse(await evaluate(`JSON.stringify({ project: data.project, index: snapshotReplay.index, total: snapshotReplay.events.length, playing: snapshotReplay.playing, speedOptions: [...document.querySelector('#replay-speed').options].map((option) => option.value), bodyClass: document.body.classList.contains('snapshot') })`));
     assert.equal(initial.bodyClass, true);
-    assertObservationsEqual(expected, initial.project, 'the initial snapshot is the final live API state');
+    assertSnapshotObservation(expected, initial.project, observationBoard, alpha.repo, 'the initial snapshot is the final live API state');
     assert.deepEqual(initial.speedOptions, ['1', '4', '16']);
     assert.ok(initial.total >= 6, 'the exported board contains the complete claim/submit/reject/claim/submit/accept history');
     assert.ok(initial.index >= initial.total - 1, 'the initial replay position is the exported final state');
@@ -228,7 +253,7 @@ test('static export stays in its prefix and replays read-only in Chrome [A10,A3]
       ['building', 'verify', 'back', 'building', 'verify', 'verified'],
       'the actual item row renders claim, submit, reject, claim, submit, accept in order');
     const finalProject = await evaluate('JSON.stringify(data.project)');
-    assertObservationsEqual(expected, JSON.parse(finalProject), 'replay ends at the same state served live before export');
+    assertSnapshotObservation(expected, JSON.parse(finalProject), observationBoard, alpha.repo, 'replay ends at the same state served live before export');
 
     for (const [width, theme] of [[1280, 'light'], [375, 'dark']]) {
       await chrome.send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
@@ -733,7 +758,7 @@ test('the export asks for the full board [N26,A2]', { timeout: 90_000 }, // budg
       assert.equal(opened.criterion, criterion, 'the exported item shows its criterion');
       assert.deepEqual(opened.verdicts, [['REJECT', 'the first greeting needs a correction'], ['ACCEPT', 'the page shows it']],
         'the exported item shows both verdicts with their notes');
-      assert.deepEqual(opened.moves, ['add', 'claim', 'submit', 'reject', 'claim', 'submit', 'accept'], 'the exported thread shows every move');
+      assert.deepEqual(opened.moves, ['add', 'claim', 'proof-run', 'submit', 'reject', 'claim', 'proof-run', 'submit', 'accept'], 'the exported thread shows every move including native proof receipts');
       assert.deepEqual(opened.facts, ['The corrected greeting renders offline.'], 'the exported thread shows its fact');
       assert.ok(host.requests.some((request) => request.path.endsWith('/state.json')), 'the page reads the exported state file');
       assert.deepEqual(host.requests.filter((request) => !request.path.startsWith('/demo/') || request.status !== 200), [],

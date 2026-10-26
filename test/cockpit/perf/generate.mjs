@@ -1,5 +1,6 @@
 /** Deterministically seed a disposable Pullboard board through its public board operations. */
 import { createHash } from 'node:crypto';
+import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -12,6 +13,8 @@ import {
   register, reopen, shout, verify, withdraw,
 } from '../../../src/board.js';
 import { submitFixture } from '../../board-submit-fixture.js';
+import { appliedSequence, applyEngineMove } from '../../../src/engine.js';
+import { PROOF_RUN_ENGINE } from '../../../src/proof-run-engine.js';
 
 const ROOT = resolve(import.meta.dirname, '../../..');
 const BIN = join(ROOT, 'bin', 'pullboard.js');
@@ -25,6 +28,14 @@ const LANE_WEIGHTS = [317, 199, 46, 43];
 /** Hash one stable tuple for generated commits, trees, criterion digests and fact ids. */
 function digest(seed, ...parts) {
   return createHash('sha256').update(JSON.stringify([seed, ...parts])).digest('hex');
+}
+
+/** Retain the long historical stress corpus through real pre-limit replay, without relaxing current writes. */
+function historicalShout(board, { seed, index, from, text }) {
+  const move = { version: 1, engine: PROOF_RUN_ENGINE - 1, id: digest(seed, 'pre-limit-shout', index),
+    operation: 'shout', args: [{ from, to: 'all', text, lanes: LANES }] };
+  const result = applyEngineMove(board, move, { sequence: appliedSequence(board) + 1, at: FIXED_NOW.toISOString() });
+  assert.equal(result.error, undefined, 'the synthetic pre-limit record replays through the public engine');
 }
 
 /** Build a deterministic text body near the requested size without storing fixture randomness. */
@@ -303,8 +314,12 @@ export function generateStressBoard({ seed = 'pullboard-perf-606', size = 150, p
       const shoutCount = Math.round(7_289 * size / 605);
       for (let index = 0; index < shoutCount; index += 1) {
         const text = index === 0 ? textOf(seed, 'Longest generated shout', 14_000) : textOf(seed, `Generated board update ${index + 1}`, 410);
-        shout(board, { from: agents.writer, to: 'all', text, lanes: LANES });
+        historicalShout(board, { seed, index, from: agents.writer, text });
       }
+      const historicalCount = allShouts(board).length;
+      assert.throws(() => shout(board, { from: agents.writer, to: 'all', text: 'x'.repeat(401), lanes: LANES }),
+        error => error.code === 'SHOUT_TOO_LONG', 'new writes still obey the landed 400-character cap');
+      assert.equal(allShouts(board).length, historicalCount, 'the current-write refusal creates no extra fixture shout');
       const milestoneCount = Math.max(1, Math.round(size * 56 / 605));
       const rowCount = Math.max(milestoneCount, Math.round(size * 384 / 605));
       for (let index = 0, cursor = 0; index < milestoneCount; index += 1) {

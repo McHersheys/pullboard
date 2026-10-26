@@ -147,6 +147,8 @@ test('[V2,N26] stats counts agree in number', { timeout: 90_000 }, async () => {
     await chrome.waitFor("!!data?.project?.proofStats && document.querySelector('#proof-stats-summary')");
     await pickProject(chrome, `document.querySelector('[data-root=${JSON.stringify(alpha.repo)}]')`);
     await chrome.waitFor(`data?.project?.root === ${JSON.stringify(alpha.repo)} && !!document.querySelector('#proof-stats-summary')`);
+    await press(chrome, "document.querySelector('[data-tab=stats]')");
+    await chrome.waitFor("view.tab === 'stats'");
     await press(chrome, "document.querySelector('#proof-stats-summary')");
     const detail = await chrome.stable("document.querySelector('#proof-stats-full').textContent");
     const count = await chrome.stable("document.querySelector('[data-stat=agentCount]').textContent");
@@ -184,6 +186,8 @@ test('the stats card folds from its summary line [N26]', {
   try {
     chrome = await openSnapshotChrome(executable, view.link.href, profile);
     await chrome.waitFor("!!data?.project?.proofStats && document.querySelector('#proof-stats-summary')");
+    await press(chrome, "document.querySelector('[data-tab=stats]')");
+    await chrome.waitFor("view.tab === 'stats'");
     await chrome.stable(`(() => {
       window.__statsTouchTargets = [];
       document.addEventListener('pointerdown', event => {
