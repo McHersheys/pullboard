@@ -427,7 +427,7 @@ test('an agent grant narrows at claim without losing its submitted attempt recei
   for (const board of boards) {
     assert.deepEqual(store.getItem(board, id), before, 'recording a result does not change item authority or state');
     const rows = board.db.prepare("SELECT event_by,event_detail FROM event WHERE event_kind='attempt' AND item_id=?").all(id);
-    assert.deepEqual(rows.map(row => ({ ...row })), [{ event_by: agentId, event_detail: JSON.stringify({ n: 1, seconds: 2, result: 'green' }) }]);
+    assert.deepEqual(rows.map(row => ({ ...row })), [{ event_by: agentId, event_detail: JSON.stringify({ n: 1, seconds: 2, result: 'green', model: 'unknown' }) }]);
   }
   const foreignAttempt = prepareEngineMove(primary, 'recordAttempt', [id, { agentId, n: 2, seconds: 1, result: 'red' }]);
   const foreign = boards.map(board => applyRelayMove(board, foreignAttempt, {
