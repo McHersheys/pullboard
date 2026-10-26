@@ -4,7 +4,7 @@
  * inverted changesets, newest first, so the board is exactly as the relay last ordered it; replaying the relay's
  * records and making the queued moves again on top costs only the rows they touch, never a whole-board restore.
  */
-import { storeTriggers } from './machine.js';
+import { suspendStoreGuards } from './board-store-guards.js';
 import { atomic } from './board-event-log.js';
 
 /** SQLite's changeset conflict type for a row whose values changed, and the answers to a conflict. */
@@ -190,8 +190,7 @@ export function undoQueued(board, entries) {
     atomic(board, () => {
       // A move's rows come back table by table; references between them are checked once all are back.
       db.exec('PRAGMA defer_foreign_keys = ON');
-      const triggers = db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'machine_%'").all();
-      for (const { name } of triggers) db.exec(`DROP TRIGGER "${name.replaceAll('"', '""')}"`);
+      const restoreGuards = suspendStoreGuards(board);
       // This connection lets an item's status change only under moveItem's token; taking a move back holds it too.
       db.exec('CREATE TEMP TABLE IF NOT EXISTS moving (token INTEGER); INSERT INTO temp.moving (token) VALUES (1)');
       for (const entry of [...entries].reverse()) {
@@ -223,7 +222,7 @@ export function undoQueued(board, entries) {
         for (const row of counters) insert.run(row.name, row.seq);
       }
       db.exec('DELETE FROM temp.moving');
-      for (const { sql } of storeTriggers()) db.exec(sql);
+      restoreGuards();
     });
   } catch (error) {
     if (conflict) return conflict;
