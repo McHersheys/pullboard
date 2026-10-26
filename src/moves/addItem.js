@@ -1,3 +1,4 @@
+import { REFERENCE_ENGINE } from '../reference-engine.js';
 import { CROSS_REPO_DEPENDENCY_ENGINE } from '../cross-repo-dependency-engine.js';
 import { hasForeignDependencies } from '../item-dependencies.js';
 import { RIGOR_AUTO_ENGINE } from '../rigor-auto-engine.js';
@@ -18,7 +19,7 @@ function existingEngine(args, board, at) {
 
 /** Preserve every historical floor while preventing older replicas from flattening foreign references. */
 function minimumEngine(args, board, at) {
-  return Math.max(existingEngine(args, board, at), hasForeignDependencies(args[0]?.after) ? CROSS_REPO_DEPENDENCY_ENGINE : 1);
+  return Math.max((args[0]?.referenceAuthors !== undefined || args[0]?.referenceAuthority !== undefined) ? REFERENCE_ENGINE : 1, existingEngine(args, board, at), hasForeignDependencies(args[0]?.after) ? CROSS_REPO_DEPENDENCY_ENGINE : 1);
 }
 
 /** Read precisely the actor argument used by this operation [H2,H16]. */
@@ -27,6 +28,8 @@ function actor(move) { return move.args[0]?.by ?? null; }
 export default Object.freeze({ operation: "addItem", order: 8, engine: 1,
   itemIdFirstArgument: false, minimumEngine, actor,
   nextSteps: Object.freeze({
+  "REFERENCE_AUTHOR": "use the issue or pull request author's handle, or remove the handle from its Reference line, then add or edit the item again",
+  "REFERENCE_IS_BOARD": "use --specs for spec rows, --after for item dependencies, or --parent for a parent item",
   "BAD_CHECK": "ask your coordinator to set the check: pullboard edit <id> --check \"<command>\"",
   "BAD_CHECK_BASELINE": "the coordinator sets the check again: pullboard edit <id> --check \"<command>\"",
   "COORDINATOR_CHECK": "ask your coordinator to set the check: pullboard shout coordinator \"please set a check on #<id>\""
