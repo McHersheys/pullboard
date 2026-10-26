@@ -84,10 +84,10 @@ export const STATES = [
   { id: 'claimed', means: 'an agent holds it under a lease, its criterion frozen', requires: ['item_owner', 'item_lease_until', 'item_frozen_digest'] },
   { id: 'submitted', means: 'a native build gated green, or an intaken outside commit awaiting sandbox verification, at a pinned commit', requires: ['item_built_by', 'item_commit', 'item_frozen_digest'] },
   {
-    id: 'verified', means: 'another agent accepted the frozen work at this commit or its canonically recorded trunk-only merge', requires: ['item_verified_by', 'item_commit'],
+    id: 'verified', means: 'another agent accepted it at the submitted commit, its canonically recorded trunk-only merge, or the item carries an attributed source-board acceptance', requires: ['item_verified_by', 'item_commit'],
     proof: {
-      says: 'an immutable ACCEPT on the frozen criterion by its independent verifier, at this commit or bound by an ordered merge-only receipt',
-      sql: "EXISTS (SELECT 1 FROM verdict v WHERE v.item_id = NEW.item_id AND v.verdict_decision = 'ACCEPT' AND v.verdict_digest = NEW.item_frozen_digest AND v.verdict_by = NEW.item_verified_by AND v.verdict_by <> NEW.item_built_by AND (v.verdict_commit = NEW.item_commit OR EXISTS (SELECT 1 FROM event e WHERE e.item_id = NEW.item_id AND e.event_kind = 'merge-only-accept' AND json_extract(e.event_detail,'$.verdict') = v.verdict_id AND json_extract(e.event_detail,'$.commit') = NEW.item_commit AND json_extract(e.event_detail,'$.tree') = NEW.item_tree AND json_extract(e.event_detail,'$.digest') = NEW.item_frozen_digest AND json_extract(e.event_detail,'$.by') = v.verdict_by)))",
+      says: 'an ACCEPT on the frozen criterion by its independent verifier at this commit or bound by an ordered merge-only receipt, or an authenticated destination move attesting to an exact source acceptance',
+      sql: "EXISTS (SELECT 1 FROM verdict v WHERE v.item_id = NEW.item_id AND v.verdict_decision = 'ACCEPT' AND v.verdict_digest = NEW.item_frozen_digest AND v.verdict_by = NEW.item_verified_by AND v.verdict_by <> NEW.item_built_by AND (v.verdict_commit = NEW.item_commit OR EXISTS (SELECT 1 FROM event e WHERE e.item_id = NEW.item_id AND e.event_kind = 'merge-only-accept' AND json_extract(e.event_detail,'$.verdict') = v.verdict_id AND json_extract(e.event_detail,'$.commit') = NEW.item_commit AND json_extract(e.event_detail,'$.tree') = NEW.item_tree AND json_extract(e.event_detail,'$.digest') = NEW.item_frozen_digest AND json_extract(e.event_detail,'$.by') = v.verdict_by))) OR EXISTS (SELECT 1 FROM board_meta r WHERE r.meta_key = 'rehome_import:' || NEW.item_id AND json_extract(r.meta_value, '$.sourceBoardId') IS NOT NULL AND json_extract(r.meta_value, '$.sourceItemId') IS NOT NULL AND json_extract(r.meta_value, '$.moveId') IS NOT NULL AND json_extract(r.meta_value, '$.attestedBy') IS NOT NULL AND json_extract(r.meta_value, '$.sourceMoveDigest') IS NOT NULL AND json_extract(r.meta_value, '$.sourceReceipt.resultDigest') = json_extract(r.meta_value, '$.sourceMoveDigest') AND json_extract(r.meta_value, '$.verdict.decision') = 'ACCEPT' AND json_extract(r.meta_value, '$.verdict.commit') = NEW.item_commit AND json_extract(r.meta_value, '$.verdict.digest') = NEW.item_frozen_digest AND json_extract(r.meta_value, '$.verdict.by') = NEW.item_verified_by AND json_extract(r.meta_value, '$.verdict.by') <> NEW.item_built_by)",
     },
   },
   { id: 'withdrawn', final: true, means: 'nobody should build it; the reason stays on it', requires: ['item_withdrawn_reason'] },
@@ -95,11 +95,12 @@ export const STATES = [
 
 /** @type {Guard[]} */
 export const GUARDS = [
+  { id: 'sourceAcceptance', refuse: 'REHOME_VERDICT', rule: 'the authenticated destination mover attests to an exact source board ACCEPT reference keyed by the ordered source MOVEID and result digest', next: 'preserve the imported source acceptance attribution, frozen digest, commit and verifier reference', source: 'board' },
   { id: 'mergeOnlyRecorded', refuse: 'MERGE_ONLY_PROOF', rule: 'the sealed submit records the origin’s Git-derived carry, unchanged bar and original verifier; landing re-proves its heads, trees and resolution hash before merging', next: 'submit normally for outside review if the origin cannot prove the merge', source: 'board' },
   { id: 'outsideSubmission', refuse: 'OUTSIDE_SOURCE', rule: 'an outside author and exact fetched commit/tree are recorded with a trusted frozen criterion, without pretending a native builder gated it', next: 'fetch and intake the exact GitHub pull request again', source: 'board' },
   { id: IN_STATE, refuse: '', rule: "the move can start from the item's current state", next: 'pullboard show <id>', source: 'board' },
   { id: 'joined', refuse: 'NOT_JOINED', alsoRefuses: [{ code: 'AGENT_REPLACED', next: 'read the takeover and only shout on its exact hand-off item; continue work from the incoming agent worktree' }, { code: 'SESSION_LEDGER', next: 'make the agent-session ledger named in the message readable and writable by this user, then run the command again' }], rule: 'the caller is the main checkout, or an unreplaced worktree seat that joined a lane; an agent session\'s claims, submits and verdicts can be checked against its local ledger', next: 'pullboard join <lane> --model "<model name>" (see: pullboard lanes)', source: 'cli' },
-  { id: 'itemExists', refuse: 'NO_ITEM', rule: 'the item exists', next: 'pullboard list --all', source: 'board' },
+  { id: 'itemExists', refuse: 'NO_ITEM', alsoRefuses: [{ code: 'ITEM_MOVED', next: 'use the recorded destination reference shown in the refusal; do not move the old ID again' }], rule: 'the item exists and has not been moved', next: 'pullboard list --all', source: 'board' },
   { id: 'reopenAuthority', refuse: 'COORDINATOR_ONLY', rule: 'the coordinator reopens, the native board computes an automatic submitted-head conflict, or the exact accepting reviewer withdraws its verdict; older recorded submitted-conflict moves keep their joined-seat authority', next: 'ask the coordinator or the reviewer who recorded the accept', source: 'board', alsoRefuses: [{ code: 'NO_POLICY', next: 'restore the local Git configuration so the current trunk can be read, then compute a fresh automatic return' }, { code: 'GIT_GRAFTS', next: 'ask the coordinator to remove the replica graft file, then resume the same move' }, { code: 'GIT_REPLACE_REFS', next: 'ask the coordinator to remove the replica replacement refs, then resume the same move' }, { code: 'VERDICT_WITHDRAW_FORBIDDEN', next: 'ask the accepting reviewer or coordinator to withdraw the verdict' }, { code: 'VERDICT_WITHDRAW_STATE', next: 'refresh the item; only a current acceptance before landing can be withdrawn' }] },
   { id: 'coordinatorOnly', refuse: 'COORDINATOR_ONLY', rule: 'the caller is the coordinator', next: 'run it from the main checkout', source: 'board' },
   { id: 'roadmapReadable', refuse: 'MILESTONES_CORRUPT', alsoRefuses: [{ code: 'LINE_SETTING_RANGE', rule: 'the recorded board line-order setting has a valid registry value', next: 'restore the recorded board line setting from its ordered event history, then retry next --verify' }], rule: 'the recorded queue policy and roadmap are readable when selecting the next review', next: 'restore board metadata from a known-good board export', source: 'board', when: 'only next --verify selection; a review reserved by id does not consult the roadmap' },
@@ -169,6 +170,10 @@ const AGENT_GRANT_REFUSALS = [
 
 /** @type {Move[]} */
 export const MOVES = [
+  { verb: 'rehomeImport', from: ['open'], to: 'verified', by: ['agent'], refuse: 'REHOME_VERDICT',
+    guards: ['joined', 'itemExists', IN_STATE, 'sourceAcceptance', 'atSubmittedCommit', 'notBuilder', 'criterionUnchanged', 'proofNoted'],
+    sets: ['item_verified_by', 'item_commit'],
+    command: 'pullboard move <item reference> --to <handle>' },
   { verb: 'intake', from: ['open'], to: 'submitted', by: ['agent', 'coordinator'], refuse: 'NOT_CLAIMABLE',
     guards: ['joined', 'itemExists', IN_STATE, 'outsideSubmission'], sets: ['item_built_by', 'item_commit', 'item_frozen_digest'], command: 'pullboard intake <PR> --criterion \"...\" --check \"...\"' },
   {
@@ -520,7 +525,7 @@ export function storeTriggers(machine = MACHINE) {
   }
   for (const state of machine.states.filter((entry) => entry.proof)) {
     const complete = state.requires.length ? ` AND NOT (${missingOf(state)})` : '';
-    triggers.push(trigger(`machine_proof_${state.id}`, onWrite, `WHEN ${holds(state.id)}${complete} AND NOT ${state.proof.sql}\n${refuse('NOT_PROVEN', `${state.id} needs ${state.proof.says}`)}`));
+    triggers.push(trigger(`machine_proof_${state.id}`, onWrite, `WHEN ${holds(state.id)}${complete} AND NOT (${state.proof.sql})\n${refuse('NOT_PROVEN', `${state.id} needs ${state.proof.says}`)}`));
   }
   for (const [table, kept] of Object.entries(machine.records)) {
     for (const change of kept === 'append' ? ['update', 'delete'] : ['delete']) {

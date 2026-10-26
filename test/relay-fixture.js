@@ -7,16 +7,48 @@ import { once } from 'node:events';
 /** Start a provider with real signed JWT verification and one-use browser/device grants. */
 export async function githubFixture(t) {
   const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
-  const state = { access: true, permission: 'write', public: false, installed: true, repositoryID: 100, repositories: ['repository', 'repository-2', 'repository-3'], accountID: 7, permissionAccountID: 7, deviceAuthorized: false, deviceDeclined: false, deviceExpired: false, slow: false, redirect: null, beforeDevicePoll: null, beforeUser: null };
+  const state = { access: true, permission: 'write', public: false, installed: true, repositoryID: 100, repositories: ['repository', 'repository-2', 'repository-3'], qualifiedRepositories: {}, accountID: 7, permissionAccountID: 7, deviceAuthorized: false, deviceDeclined: false, deviceExpired: false, slow: false, redirect: null, beforeDevicePoll: null, beforeUser: null };
   const calls = [];
   const codes = new Map();
   // Each user credential remembers who signed in. state.signer picks the next person and state.people gives each
   // one an id and repository role; without them there is one person, fixture-user, as before.
   const userTokens = new Map();
   const installationTokens = new Set();
+  const installationScopes = new Map();
   const deviceCode = randomBytes(24).toString('base64url');
   const clientSecret = randomBytes(24).toString('base64url');
   let origin;
+
+  /** Resolve one exact repository record; non-fixture origins require explicit test provisioning. */
+  function repositoryRecord(owner, name) {
+    const fullName = `${owner}/${name}`;
+    if (Object.hasOwn(state.qualifiedRepositories, fullName)) {
+      const configured = state.qualifiedRepositories[fullName];
+      assert.ok(Number.isSafeInteger(configured.id) && configured.id > 0, `${fullName} has a stable repository ID`);
+      assert.ok(Number.isSafeInteger(configured.installationId) && configured.installationId > 0, `${fullName} has a stable installation ID`);
+      assert.ok(configured.people && typeof configured.people === 'object' && !Array.isArray(configured.people), `${fullName} has an explicit people allowlist`);
+      const duplicates = Object.entries(state.qualifiedRepositories)
+        .filter(([other, value]) => other !== fullName && (value.id === configured.id || value.installationId === configured.installationId));
+      assert.equal(duplicates.length, 0, `${fullName} has distinct repository and installation IDs`);
+      return { owner, name, fullName, id: configured.id, installationId: configured.installationId,
+        people: configured.people, public: configured.public === true };
+    }
+    if (owner !== 'fixture') return null;
+    const index = state.repositories.indexOf(name);
+    return index < 0 ? null : { owner, name, fullName, id: state.repositoryID + index, installationId: 42,
+      people: null, public: state.public };
+  }
+
+  /** Installation tokens are scoped to one explicitly provisioned qualified repository. */
+  function repositoryForInstallation(installationId, name) {
+    const fixtureRepositories = state.repositories.map((repositoryName, index) => repositoryRecord('fixture', repositoryName));
+    const qualifiedRepositories = Object.entries(state.qualifiedRepositories)
+      .map(([fullName]) => { const [owner, repositoryName] = fullName.split('/'); return repositoryRecord(owner, repositoryName); });
+    const matches = [...fixtureRepositories, ...qualifiedRepositories]
+      .filter(repository => repository?.installationId === installationId && repository.name === name);
+    assert.ok(matches.length <= 1, `installation ${installationId} and repository ${name} resolve uniquely`);
+    return matches[0] ?? null;
+  }
 
   /** Return JSON without recording provider credentials in fixture diagnostics. */
   function reply(res, status, value) {
@@ -100,25 +132,36 @@ export async function githubFixture(t) {
     // The public SSH keys on an account, as GitHub lists them; state.sshKeys maps a login to its key lines [E17].
     const keysOf = /^\/users\/([^/]+)\/keys$/u.exec(url.pathname)?.[1];
     if (keysOf) return reply(res, 200, (state.sshKeys?.[decodeURIComponent(keysOf)] ?? []).map((key, index) => ({ id: index + 1, key })));
-    const repositoryPath = url.pathname.match(/^\/repos\/fixture\/([^/]+)(?:\/(.*))?$/u);
-    const repositoryName = repositoryPath?.[1];
-    const allowedRepository = state.repositories.includes(repositoryName);
-    if (allowedRepository && repositoryPath[2] === 'installation') return reply(res, isApp && state.installed ? 200 : 404, { id: 42 });
-    if (url.pathname === '/app/installations/42/access_tokens') {
+    const repositoryPath = /^\/repos\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)(?:\/(.*))?$/u.exec(url.pathname);
+    const repository = repositoryPath ? repositoryRecord(repositoryPath[1], repositoryPath[2]) : null;
+    const allowedRepository = Boolean(repository);
+    const installationAccess = /^\/app\/installations\/(\d+)\/access_tokens$/u.exec(url.pathname);
+    if (allowedRepository && repositoryPath[3] === 'installation') {
+      return reply(res, isApp && state.installed ? 200 : 404, { id: repository.installationId });
+    }
+    if (installationAccess) {
       assert.ok(isApp, 'installation request has a valid RSA App JWT');
       const request = JSON.parse(raw);
       assert.equal(request.repositories.length, 1, 'installation token is scoped to one allowed fixture repository');
-      assert.ok(state.repositories.includes(request.repositories[0]), 'installation token names an explicitly allowed fixture repository');
       assert.deepEqual(request, { repositories: request.repositories, permissions: { metadata: 'read' } });
+      const scopedRepository = repositoryForInstallation(Number(installationAccess[1]), request.repositories[0]);
+      if (!scopedRepository) return reply(res, 404, { message: 'not available' });
       const token = 'ghs_' + randomBytes(32).toString('base64url');
       installationTokens.add(token);
+      installationScopes.set(token, scopedRepository.fullName);
       return reply(res, 201, { token, expires_at: new Date(Date.now() + 3600_000).toISOString() });
     }
-    if (allowedRepository && !repositoryPath[2]) return reply(res, isInstallation || state.public ? 200 : 404, { id: state.repositoryID + state.repositories.indexOf(repositoryName), full_name: 'fixture/' + repositoryName, private: !state.public });
-    const asked = /^collaborators\/([^/]+)\/permission$/u.exec(repositoryPath?.[2] ?? '')?.[1];
-    if (allowedRepository && asked && (asked === 'fixture-user' || state.people?.[asked])) {
+    const installationForRepository = isInstallation && installationScopes.get(bearer) === repository?.fullName;
+    if (allowedRepository && !repositoryPath[3]) {
+      return reply(res, installationForRepository || repository.public ? 200 : 404,
+        { id: repository.id, full_name: repository.fullName, private: !repository.public });
+    }
+    const asked = /^collaborators\/([^/]+)\/permission$/u.exec(repositoryPath?.[3] ?? '')?.[1];
+    const people = repository?.people ?? state.people;
+    const person = people && Object.hasOwn(people, asked) ? people[asked] : null;
+    const legacyFixturePerson = repository?.people === null && asked === 'fixture-user';
+    if (allowedRepository && asked && (person || legacyFixturePerson)) {
       if (state.beforePermission) await state.beforePermission();
-      const person = state.people?.[asked];
       const role = person ? person.permission : state.access ? state.permission : 'none';
       const permission = { triage: 'read', maintain: 'write' }[role] || role;
       const permissions = state.permissions ?? {
@@ -132,7 +175,7 @@ export async function githubFixture(t) {
         answer.role_name = state.roleName ?? role;
         answer.user.permissions = permissions;
       }
-      return reply(res, isInstallation ? 200 : 403, answer);
+      return reply(res, installationForRepository ? 200 : 403, answer);
     }
     return reply(res, 404, { message: 'not available' });
   }

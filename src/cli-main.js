@@ -63,6 +63,7 @@ const OPTIONS = {
   after: { type: 'string' },
   brief: { type: 'string' },
   'brief-file': { type: 'string' },
+  private: { type: 'boolean' },
   'coverage-file': { type: 'string' },
   text: { type: 'string' },
   gate: { type: 'string' },
@@ -293,6 +294,8 @@ async function runMain(argv, streams) {
       values: Object.fromEntries(Object.keys(parsed.values).filter(key => key !== 'json').sort().map(key => [key, parsed.values[key]])) };
     sync = Boolean(command) && !parsed.values.help && !parsed.values.version
       && !['help', 'version', 'hook', 'init', 'relay', 'tour', 'mcp', 'health', 'watch', 'digest'].includes(command)
+      // A private item never makes an otherwise unrelated repo transport on the way in or out.
+      && !(command === 'add' && parsed.values.private === true)
       // A coordinator declaration on a linked clone must refuse before auto-link or relay sync.
       && !(command === 'join' && parsed.positionals[1] === (await import('./config.js')).COORDINATOR);
     needsRepo = !(parsed.values.help || parsed.values.version || command === 'help' || command === 'version');

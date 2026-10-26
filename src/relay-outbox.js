@@ -88,6 +88,13 @@ export async function readOutbox(file, key, boardId) {
   return document;
 }
 
+/** The item currently created by a queued move, before the relay has made its number authoritative. */
+export async function outboxHasPendingCreatedItem(file, key, boardId, itemId) {
+  if (!Number.isSafeInteger(itemId) || itemId < 1) return false;
+  const outbox = await readOutbox(file, key, boardId);
+  return Boolean(outbox?.moves.some(entry => entryCreatedItems(entry).some(created => created.item === itemId)));
+}
+
 /** Seal and atomically replace the outbox, readable only by this user. */
 export async function writeOutbox(file, key, boardId, document) {
   // Old clients must refuse richer result bindings rather than treating temporary item numbers as final.
@@ -184,6 +191,8 @@ export const ITEM_SLOTS = Object.freeze({
   recordHealthFindings: [], decideSentinel: [], beginSentinelRun: [], finishSentinelRun: [],
   recordFlakeObservation: [], recordGateRun: [], recordProofRun: [[0, 'itemId'], [0, 'receipt', 'proof', 'item']], declareJob: [], recordJobRun: [], takeCoordinator: [], openHandoff: [], landingLeaseMove: [],
   recordActivityDelivery: [], actOnActivity: [], recordRowVerification: [], setBoardMembers: [],
+  // Re-home IDs are acknowledged-only; foreign board/source IDs are never locally rewritten.
+  reserveRehomeItemId: [], rehomeItem: [[0]], applyRehomeItem: [[0, 'destinationItemId']],
   ...Object.fromEntries(FIRST_ITEM.map((operation) => [operation, [[0]]])),
   intakeOutside: [[0, 'item', 'parentId'], [0, 'item', 'after', '*']],
   addItem: [[0, 'parentId'], [0, 'after', '*']],
@@ -239,6 +248,12 @@ function slot(move, path, value) {
 
 /** Keys under which a move might name an item that no declared slot reaches. */
 const ITEM_KEYS = /^(id|ids|item|items|itemId|parentId|after|implies|add|remove|skipIds)$/u;
+
+/** Moves whose IDs and results have to be ordered by the relay; they cannot become provisional outbox state [E15,H16]. */
+export const ACKNOWLEDGED_OPERATIONS = Object.freeze([
+  'register', 'ensureCoordinator', 'takeCoordinator', 'landingLeaseMove',
+  'reserveRehomeItemId', 'rehomeItem', 'applyRehomeItem',
+]);
 
 /**
  * Item numbers of offline adds that a move names outside its declared slots. Such a move is refused rather than
@@ -318,7 +333,7 @@ function outboxEnabled(io) {
 export function outboxQueueable(state, error, operation, io, args = []) {
   return state.mode === 'ordered' && state.baselineAccepted === true && !state.baselineConflict && !state.environment
     && process.env.PULLBOARD_RELAY_TOKEN === undefined && !io?.relayCanary && !io?.personRequest && !io?.personRequestMoveId
-    && !['register', 'ensureCoordinator', 'takeCoordinator', 'landingLeaseMove'].includes(operation)
+    && !ACKNOWLEDGED_OPERATIONS.includes(operation)
     && !args.some(arg => arg?.landingFence !== undefined) && transientRelayFailure(error) && outboxEnabled(io);
 }
 
@@ -388,6 +403,9 @@ function bumpGeneration(linkFile) {
  */
 export async function queueMove(link, { operation, args, command, move, error, applyLocally, quiet = false }) {
   const { root, file, state, io, localRecords, safePauseCode, safePauseMessage } = link;
+  if (ACKNOWLEDGED_OPERATIONS.includes(operation)) {
+    throw new Refused('RELAY_OUTBOX_UNBOUND', 'this move needs the relay to acknowledge its IDs and result; retry it when the relay answers');
+  }
   const key = readBoardKey(state.board);
   const where = outboxFile(file);
   // A new outbox holds no board image: the moves are taken back by their own rows, so queuing costs no export.

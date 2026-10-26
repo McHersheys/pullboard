@@ -104,10 +104,17 @@ export function boardId(board) {
  * @returns {any}
  */
 export function getItem(board, id) {
+  const redirect = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get(`item_redirect:${id}`);
+  if (redirect) {
+    const target = JSON.parse(redirect.meta_value);
+    throw new Refused('ITEM_MOVED', `item #${id} moved to ${target.destinationHandle ?? target.destinationBoardId}#${target.destinationItemId}`);
+  }
   const item = current(board, itemById(board, id));
   const baseline = itemCheckBaseline(board, item);
   const source = outsideSource(board, id);
-  return { ...item, ...(baseline ? { item_check_baseline: baseline } : {}), ...(source ? { outside: source } : {}) };
+  const rehome = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get(`rehome_import:${id}`);
+  return { ...item, ...(baseline ? { item_check_baseline: baseline } : {}), ...(source ? { outside: source } : {}),
+    ...(rehome ? { item_rehome_import: JSON.parse(rehome.meta_value) } : {}) };
 }
 
 /** Read an item's coordinator hold, or null when it is available for claims. */
@@ -130,15 +137,19 @@ export function itemHold(board, id) {
 export function listItems(board, { lane, all = false } = {}) {
   const hasLane = lane !== undefined && lane !== null;
   const rows = board.db
-    .prepare(`SELECT * FROM item WHERE ${all ? '1' : "item_status NOT IN ('verified','withdrawn')"}${hasLane ? ' AND item_lane=?' : ''} ORDER BY item_id DESC`)
+    .prepare(`SELECT item.*, imported.meta_value AS imported_rehome FROM item LEFT JOIN board_meta imported
+      ON imported.meta_key='rehome_import:' || item.item_id
+      WHERE NOT EXISTS (SELECT 1 FROM board_meta redirect WHERE redirect.meta_key='item_redirect:' || item.item_id)
+      AND ${all ? '1' : "item_status NOT IN ('verified','withdrawn')"}${hasLane ? ' AND item_lane=?' : ''} ORDER BY item_id DESC`)
     .all(...(hasLane ? [lane] : []));
-  const items = rows.map((item) => current(board, item));
+  const items = rows.map(({ imported_rehome: imported, ...item }) => ({ ...current(board, item),
+    ...(imported ? { item_rehome_import: JSON.parse(imported) } : {}) }));
   return items;
 }
 
 /** Read a stored status/owner slice, excluding claims whose leases have expired rather than caching items. */
 export function itemsInStatus(board, status, owner = null) {
-  return board.db.prepare(`SELECT * FROM item WHERE item_status=?${owner === null ? '' : ' AND item_owner=?'} ORDER BY item_id DESC`)
+  return board.db.prepare(`SELECT * FROM item WHERE item_status=? AND NOT EXISTS (SELECT 1 FROM board_meta redirect WHERE redirect.meta_key='item_redirect:' || item.item_id)${owner === null ? '' : ' AND item_owner=?'} ORDER BY item_id DESC`)
     .all(status, ...(owner === null ? [] : [owner])).map(item => current(board, item)).filter(item => item.item_status === status);
 }
 

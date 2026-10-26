@@ -182,6 +182,37 @@ export async function seedSpecAndHandoff(context) {
   return context;
 }
 
+/** Cover rehome operations with real source records and an auxiliary in-memory board. */
+export async function seedRehome(context) {
+  const { board, box, store, exercise, agent } = context;
+  const auxiliary = store.openBoard(':memory:');
+  try {
+    store.ensureCoordinator(auxiliary, join(box.root, '.parity-rehome-auxiliary'));
+    const sourceBoardId = store.boardId(auxiliary);
+    const destinationBoardId = store.boardId(board);
+    const incomingMoveId = 'parity-rehome-incoming';
+    const incomingItem = store.addItem(auxiliary, { by: 'coordinator', lane: box.lane,
+      title: 'Parity incoming item', criterion: 'A real open source item.' });
+    const incomingDestinationId = await exercise('reserveRehomeItemId', () =>
+      store.reserveRehomeItemId(board, sourceBoardId, incomingMoveId, { agentId: 'coordinator' }));
+    const incomingRecord = store.rehomeItem(auxiliary, incomingItem, { agentId: 'coordinator',
+      sourceMoveId: incomingMoveId, destinationBoardId, destinationItemId: incomingDestinationId });
+    await exercise('applyRehomeItem', () => store.applyRehomeItem(board, incomingRecord,
+      { destinationAgentId: 'coordinator' }));
+
+    const outgoingItem = await exercise('addItem', () => store.addItem(board, { by: 'coordinator', lane: box.lane,
+      title: 'Parity outgoing item', criterion: 'A real open source item.' }));
+    const outgoingMoveId = 'parity-rehome-outgoing';
+    const outgoingDestinationId = store.reserveRehomeItemId(auxiliary, destinationBoardId,
+      outgoingMoveId, { agentId: 'coordinator' });
+    await exercise('rehomeItem', () => store.rehomeItem(board, outgoingItem, { agentId: agent,
+      sourceMoveId: outgoingMoveId, destinationBoardId: sourceBoardId, destinationItemId: outgoingDestinationId }));
+  } finally {
+    store.closeBoard(auxiliary);
+  }
+  return context;
+}
+
 /** Retire the outgoing native seat only after its remaining projection recipes have completed. */
 export async function seedHandoff(context) {
   const { board, store, exercise, agent, reviewer } = context;

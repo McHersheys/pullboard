@@ -24,9 +24,27 @@ import { importsIn } from '../src/module-imports.js';
 import { readdirSync } from 'node:fs';
 import { minimumMoveEngine } from '../src/move-registry.js';
 import { SPEC_REVISION_ENGINE } from '../src/spec-revision-engine.js';
+import { PRIVATE_REHOME_ENGINE } from '../src/private-rehome-engine.js';
 
 const SNAPSHOT = JSON.parse(readFileSync(new URL('./move-registry-baseline.json', import.meta.url), 'utf8'));
 const CONSUMERS = ['src/engine.js', 'src/relay-sender.js', 'src/next-step-words.js'];
+const REHOME_OPERATIONS = ['reserveRehomeItemId', 'rehomeItem', 'applyRehomeItem'];
+const REHOME_STEPS = Object.freeze({
+  BAD_ITEM_ID: 'use owner/repo#id, ~owner/repo#id, or one safe positive item number on the current board',
+  PRIVATE_BOARD_NOT_FOUND: "run pullboard add <lane> <title> --private from that repo's checkout before using its private handle",
+  PRIVATE_BOARD_IDENTITY: 'open the original repo checkout under its recorded GitHub login; keep the existing private board files and identity intact',
+  ITEM_MOVED: 'use the recorded destination reference shown in the refusal; do not move the old ID again',
+  REHOME_PENDING: 'retry the same move ID and destination to finish delivery; do not allocate another destination ID',
+  REHOME_FORMAT: 'restore the exact source move record and retry it with an authorized destination handle',
+  REHOME_LINKS: 'move each parent or wait item to this destination first, then retry the same source MOVEID',
+  REHOME_SAME_BOARD: 'choose a different local board',
+  REHOME_STATE: 'open or verified items can move; keep other items on their current board',
+  REHOME_CHECK: 'keep the source check unchanged and choose a destination board whose policy accepts it',
+  REHOME_DESTINATION: 'apply the source move on its named destination board',
+  REHOME_CONFLICT: 'keep the original source move ID and resolve the destination board conflict before retrying',
+  REHOME_ID: 'preserve the source MOVEID and its reserved destination ID; resolve the item-ID conflict before retrying',
+  REHOME_VERDICT: 'keep the source board acceptance intact and inspect its exact commit, digest and verifier reference',
+});
 
 /** Hash the real consumer bytes so seed declarations cannot quietly edit a central list. */
 function consumerHashes(root) {
@@ -53,8 +71,8 @@ export default { operation: ${JSON.stringify(name)}, order: ${engine + 1000}, en
 }
 
 test('today\'s move order, actors, refusal recovery text and recorded SQLite prefix are unchanged [C7,V4,H3,H16]', t => {
-  assert.deepEqual(ENGINE_OPERATIONS, SNAPSHOT.operations);
-  assert.deepEqual(NEXT_STEPS, SNAPSHOT.nextSteps);
+  assert.deepEqual(ENGINE_OPERATIONS.filter(operation => !REHOME_OPERATIONS.includes(operation)), SNAPSHOT.operations);
+  assert.deepEqual(NEXT_STEPS, { ...SNAPSHOT.nextSteps, ...REHOME_STEPS });
   assert.equal(minimumMoveEngine('recordProofRun', [{ landingFence: {}, receipt: { environment: {} } }, { cause: 'conflict:new' }]), PROOF_RUN_ENGINE);
   assert.equal(MOVE_REGISTRY.recordProofRun.engine, PROOF_RUN_ENGINE);
   assert.equal(MOVE_REGISTRY.recordProofRun.itemIdFirstArgument, false);
@@ -63,6 +81,10 @@ test('today\'s move order, actors, refusal recovery text and recorded SQLite pre
   for (const operation of SNAPSHOT.operations) {
     assert.deepEqual(SNAPSHOT.actorVectors.map(vector => relayMoveActor({ operation, ...vector })), SNAPSHOT.actors[operation], operation);
   }
+  assert.equal(relayMoveActor({ operation: 'reserveRehomeItemId', args: ['0'.repeat(32), 'move-1', { agentId: 'destination' }] }), 'destination');
+  assert.equal(relayMoveActor({ operation: 'rehomeItem', args: [1, { agentId: 'source' }] }), 'source');
+  assert.equal(relayMoveActor({ operation: 'applyRehomeItem', args: [{}, { destinationAgentId: 'destination' }] }), 'destination');
+  for (const operation of REHOME_OPERATIONS) assert.equal(minimumMoveEngine(operation, []), PRIVATE_REHOME_ENGINE, `${operation} uses the declared re-home floor`);
   assert.equal(relayMoveActor({ operation: 'toString', args: [] }), null, 'object prototype names are not moves');
   const directory = mkdtempSync(join(tmpdir(), 'pullboard-registry-replay-'));
   const board = store.openBoard(join(directory, 'replica.sqlite'), { now: () => new Date(REGISTRY_AT) });
@@ -171,13 +193,13 @@ process.stdout.write(JSON.stringify(result));`;
   const result = JSON.parse(run(root, process.execPath, ['--input-type=module', '-e', child]));
   assert.ok(result.operations.includes('seedAlpha'), 'the first independent operation file is discovered');
   assert.ok(result.operations.includes('seedBeta'), 'the second independent operation file is discovered');
-  assert.deepEqual(result.operations.filter(name => !name.startsWith('seed')), SNAPSHOT.operations, 'existing order does not move');
+  assert.deepEqual(result.operations.filter(name => !name.startsWith('seed') && !REHOME_OPERATIONS.includes(name)), SNAPSHOT.operations, 'existing order does not move');
   assert.deepEqual(result.seedFloors, [9, 11]);
   assert.equal(result.pureImportClosure, true, 'routing metadata never imports its consumers, board writers or Git/process launchers');
   assert.equal(result.alphaActor, 'seed-agent');
   assert.equal(result.alphaStep, 'repair the first seeded move');
   assert.equal(result.betaStep, 'repair the second seeded move');
-  assert.deepEqual(result.itemIds.filter(name => !name.startsWith('seed')).sort(), [...SNAPSHOT.itemIdFirstArgument].sort());
+  assert.deepEqual(result.itemIds.filter(name => !name.startsWith('seed')).sort(), [...SNAPSHOT.itemIdFirstArgument, 'rehomeItem'].sort());
   assert.ok(result.itemIds.includes('seedAlpha'));
   assert.ok(!result.itemIds.includes('seedBeta'));
   assert.deepEqual(result.floors, SNAPSHOT.floorCases.map(entry => entry.expected), 'all historical first-match floor vectors retain their results');

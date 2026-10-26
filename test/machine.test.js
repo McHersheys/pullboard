@@ -467,7 +467,8 @@ test('the declared lifecycle is sound: reachable, no traps, no second door, ever
   assert.deepEqual(machineProblems(), []);
   assert.deepEqual(MACHINE.states.map((state) => state.id), ['open', 'claimed', 'submitted', 'verified', 'withdrawn']);
   assert.deepEqual(MACHINE.states.filter((state) => state.final).map((state) => state.id), ['withdrawn']);
-  assert.deepEqual(MACHINE.moves.map((move) => move.verb), ['intake', 'claim', 'release', 'lapse', 'submit', 'submit-merge', 'reserve', 'accept', 'reject', 'reopen', 'escalate', 'refreeze', 'refreeze', 'withdraw']);
+  assert.deepEqual(MACHINE.moves.map((move) => move.verb), ['rehomeImport', 'intake', 'claim', 'release', 'lapse', 'submit', 'submit-merge', 'reserve', 'accept', 'reject', 'reopen', 'escalate', 'refreeze', 'refreeze', 'withdraw']);
+  assert.deepEqual(MACHINE.moves.find((move) => move.verb === 'rehomeImport').sets, ['item_verified_by', 'item_commit']);
 });
 
 for (const broken of BROKEN) {
@@ -728,7 +729,9 @@ test('the board file refuses, written by hand: an unknown state, an undeclared m
     const raw = lab.raw();
     const refused = (sql, args, code) => assert.throws(() => raw.prepare(sql).run(...args), new RegExp(code), sql);
     refused('UPDATE item SET item_status = ? WHERE item_id = ?', ['shipped', open], 'UNDECLARED_STATE');
-    refused('UPDATE item SET item_status = ? WHERE item_id = ?', ['verified', open], 'UNDECLARED_MOVE');
+    refused('UPDATE item SET item_status = ? WHERE item_id = ?', ['verified', open], 'MISSING_FIELD');
+    refused("UPDATE item SET item_status = 'verified', item_verified_by = 'web-2', item_commit = ?, item_frozen_digest = 'digest:Forged', item_built_by = 'web-1' WHERE item_id = ?",
+      [SHA_A, open], 'NOT_PROVEN');
     refused("UPDATE item SET item_status = 'verified', item_verified_by = 'web-2' WHERE item_id = ?", [built], 'NOT_PROVEN');
     forgeAccept(raw, built, 'web-1', SHA_A);
     refused("UPDATE item SET item_status = 'verified', item_verified_by = 'web-1' WHERE item_id = ?", [built], 'NOT_PROVEN');
@@ -809,7 +812,7 @@ test('an older board gets the triggers quietly on its next open; one dropped by 
       assert.deepEqual(triggerNames(restored), every);
       const logged = restored.db.prepare("SELECT event_by, event_detail FROM event WHERE event_kind = 'guards'").all();
       assert.deepEqual(logged.map((row) => [row.event_by, JSON.parse(row.event_detail)]), [['board', { missing: ['machine_proof_verified'], changed: ['machine_item_move'], stale: [] }]]);
-      assert.throws(() => lab.raw().prepare("UPDATE item SET item_status = 'verified' WHERE item_id = ?").run(id), /UNDECLARED_MOVE/);
+      assert.throws(() => lab.raw().prepare("UPDATE item SET item_status = 'verified' WHERE item_id = ?").run(id), /MISSING_FIELD/);
     } finally {
       store.closeBoard(restored);
     }
@@ -822,14 +825,19 @@ test('the triggers come from the declaration, so a changed declaration changes t
   const moveSql = (machine) => storeTriggers(machine).find(({ name }) => name === 'machine_item_move').sql;
   const pairs = MACHINE.moves.flatMap((move) => move.from.filter((from) => from !== move.to).map((from) => `'${from}>${move.to}'`));
   for (const pair of pairs) assert.ok(moveSql(MACHINE).includes(pair), `the move trigger allows ${pair}`);
-  // Intake and a locally proved merge carry are declared; open>verified still has no direct door.
-  assert.ok(!moveSql(MACHINE).includes("'open>verified'"));
+  // The only open-to-verified edge is the source-acceptance import, not a direct verdict.
+  assert.deepEqual(MACHINE.moves.filter((move) => move.from.includes('open') && move.to === 'verified').map((move) => move.verb), ['rehomeImport']);
+  assert.ok(moveSql(MACHINE).includes("'open>verified'"));
   const machine = copy();
-  machine.moves.push({ verb: 'testDirectVerdict', from: ['open'], to: 'verified', by: ['coordinator'], refuse: 'CLOSED', guards: ['joined', 'coordinatorOnly', 'itemExists', IN_STATE], sets: ['item_built_by', 'item_commit', 'item_frozen_digest'] });
-  assert.ok(moveSql(machine).includes("'open>verified'"));
+  machine.moves.push({ verb: 'testDirectVerdict', from: ['withdrawn'], to: 'verified', by: ['coordinator'], refuse: 'CLOSED', guards: ['joined', 'coordinatorOnly', 'itemExists', IN_STATE], sets: ['item_built_by', 'item_commit', 'item_frozen_digest'] });
+  assert.ok(!moveSql(MACHINE).includes("'withdrawn>verified'"));
+  assert.ok(moveSql(machine).includes("'withdrawn>verified'"));
   const names = storeTriggers().map(({ name }) => name);
   for (const state of MACHINE.states.filter((entry) => entry.requires.length)) assert.ok(names.includes(`machine_fields_${state.id}`), `${state.id} has a fields trigger`);
   assert.ok(names.includes('machine_proof_verified'));
+  const proof = storeTriggers().find(({ name }) => name === 'machine_proof_verified').sql;
+  assert.match(proof, /AND NOT \(EXISTS[\s\S]+ OR EXISTS[\s\S]+\)\nBEGIN/u,
+    'the imported proof alternative stays inside the verified proof refusal condition');
 });
 
 test("a verified item's proof cannot be rewritten afterwards: its commit, builder, verifier or criterion [M3]", () => {
@@ -1345,7 +1353,7 @@ test('the lifecycle page and the help show the reservation: reserve, and reviewF
   assert.match(page, /^\| reserve \| submitted \| submitted \| agent, coordinator \| .*reviewFree \(REVIEW_HELD\), result \(BAD_DEPENDENCIES\) \|$/m);
   for (const verb of ['accept', 'reject']) assert.match(page, new RegExp(`^\\| ${verb} \\| submitted, verified \\| .*policyAllows \\(COORDINATOR_VERIFIES\\), familyAllows \\(O2_FAMILY_MATCH\\), reviewFree \\(REVIEW_HELD\\), criterionUnchanged`, 'm'));
   assert.match(page, /^\| REVIEW_HELD \| no other agent holds its review under a live lease \| pullboard next --verify/m);
-  assert.match(HELP.all, /^ {2}agent +intake, claim, release, submit, reserve, accept, reject, reopen, escalate, submit-merge \(when only an unchanged accepted bar and a proved trunk-only merge; no new reviewer verdict is created\), refreeze \(when a live claim has a pending coordinator correction\)$/m);
+  assert.match(HELP.all, /^ {2}agent +rehomeImport, intake, claim, release, submit, reserve, accept, reject, reopen, escalate, submit-merge \(when only an unchanged accepted bar and a proved trunk-only merge; no new reviewer verdict is created\), refreeze \(when a live claim has a pending coordinator correction\)$/m);
   assert.match(HELP.all, /pullboard next --verify +reserve the next submitted item you can check/);
 });
 

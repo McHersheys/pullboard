@@ -32,6 +32,7 @@ export const JSON_SHAPES = {
     relay: shape({ linked: 'boolean', board: 'string', url: 'string', link: 'string', sequence: 'number', behind: 'number', recovery: 'object' }),
     sync: shape({ ref: 'string', sequence: 'number', pending: 'string|null' }),
     list: shape({ items: 'array' }),
+    move: shape({ source: 'string', destination: 'string', moveId: 'string', item: 'object' }),
     queue: shape({ releases: 'array', unreleased: 'array', first: 'object' }),
     map: shape({ main: 'string', map: 'string' }),
     'flow replay': shape({ history: 'object', replay: 'object' }),
