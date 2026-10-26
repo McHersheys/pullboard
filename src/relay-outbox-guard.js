@@ -3,6 +3,7 @@
  * holds it while it queues and applies itself; the background sender holds it only while it rebuilds the board from
  * what the relay ordered. Neither holds it across a network call, so a move never waits on the relay.
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   mkdirSync,
 } from 'node:fs';
@@ -16,8 +17,11 @@ import {
 // largest board's rebuild with room, and a holder that died releases its lock with its process.
 const GUARD_WAIT_MS = 60_000;
 
-/** Guards this process holds now, by file, so a nested section inside one holder does not wait on itself. */
-const HELD = new Map();
+/** Only the active asynchronous owner may reenter its own guard; detached descendants lose that authority. */
+const OWNERS = new AsyncLocalStorage();
+
+/** Same-process contenders wait asynchronously, so none blocks the event loop needed by the current owner. */
+const WAITING = new Map();
 
 /** The guard file beside a relay link file. */
 export function outboxGuardFile(linkFile) {
@@ -47,20 +51,34 @@ export function withOutboxGuard(linkFile, work) {
  * @returns {Promise<T>}
  */
 export async function withFileLock(file, work) {
-  if (HELD.get(file)) {
-    HELD.set(file, HELD.get(file) + 1);
-    try { return await work(); } finally { HELD.set(file, HELD.get(file) - 1); }
+  if (OWNERS.getStore()?.get(file)?.active) return work();
+  const previous = WAITING.get(file);
+  let release;
+  const finished = new Promise(resolve => { release = resolve; });
+  WAITING.set(file, finished);
+  try {
+    if (previous) await previous;
+    return await ownFileLock(file, work);
+  } finally {
+    release();
+    if (WAITING.get(file) === finished) WAITING.delete(file);
   }
+}
+
+/** Hold the actual cross-process SQLite lock for one active asynchronous operation and its genuine nested work. */
+async function ownFileLock(file, work) {
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(file);
+  const owner = { active: true };
   try {
     db.exec(`PRAGMA busy_timeout = ${GUARD_WAIT_MS}`);
     db.exec('BEGIN EXCLUSIVE');
-    HELD.set(file, 1);
-    try { return await work(); }
-    finally {
-      HELD.delete(file);
-      try { db.exec('COMMIT'); } catch { /* Nothing was written; closing releases the lock either way. */ }
-    }
-  } finally { db.close(); }
+    const context = new Map(OWNERS.getStore() ?? []);
+    context.set(file, owner);
+    return await OWNERS.run(context, work);
+  } finally {
+    owner.active = false;
+    try { db.exec('COMMIT'); } catch { /* Nothing was written; closing releases the lock either way. */ }
+    db.close();
+  }
 }
