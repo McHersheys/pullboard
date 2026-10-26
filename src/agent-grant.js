@@ -4,7 +4,7 @@ import { MOVE_REGISTRY } from './move-registry.js';
 import { Refused } from './refused.js';
 
 // Attributed append-only findings never confer authority over item state.
-const ADMINISTRATIVE = new Set(['shout', 'claim', 'release', 'reserveReview', 'appendFact']);
+const ADMINISTRATIVE = new Set(['shout', 'claim', 'release', 'reserveReview', 'appendFact', 'recordAttempt']);
 
 /** Bind only item mutations declared by the public operation, including item creation. */
 function target(move) {

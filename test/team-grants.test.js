@@ -398,3 +398,36 @@ test('an agent grant narrows at claim after the recorded engine high-water mark 
   }
 });
 
+
+
+test('an agent grant narrows at claim without losing its submitted attempt receipt [E21,H16]', t => {
+  const box = helpers.project();
+  const clock = { now: () => new Date('2026-10-24T00:00:00Z') };
+  const boards = ['attempt-primary.sqlite', 'attempt-peer.sqlite'].map(name => store.openBoard(join(box.dir, name), clock));
+  t.after(() => boards.forEach(board => store.closeBoard(board)));
+  const primary = boards[0];
+  store.register(primary, { lane: 'coordinator', path: box.repo });
+  const agentId = store.register(primary, { lane: 'web', path: box.web, route: 'strong', parent: 'attempt-builder', session: 'attempt-child' });
+  const id = store.addItem(primary, { by: 'coordinator', lane: 'web', title: 'Completed native work' });
+  const freeze = item => ({ text: item.item_title, digest: `attempt:${item.item_id}` });
+  store.claim(primary, id, { agentId, lane: 'web', leaseMs: 60_000, freeze });
+  // Lifecycle state only: this fixture does not claim an executed check or an acceptance.
+  submitBoardStateFixture(primary, id, { agentId, commit: box.git(box.repo, 'rev-parse', 'HEAD'), tree: box.git(box.repo, 'rev-parse', 'HEAD^{tree}') });
+  const before = store.getItem(primary, id);
+  assert.equal(before.item_status, 'submitted');
+  assert.equal(before.item_owner, null, 'successful submit ended the claim before the runner records its attempt');
+  importBoard(boards[1], exportBoard(primary));
+  const move = prepareEngineMove(primary, 'recordAttempt', [id, { agentId, n: 1, seconds: 2, result: 'green' }]);
+  const outcomes = boards.map(board => applyEngineMove(board, move, { sequence: appliedSequence(board) + 1, at: clock.now().toISOString() }));
+  assert.deepEqual(outcomes[0], outcomes[1]);
+  assert.equal(outcomes[0].error, undefined, 'the authenticated append-only attempt is allowed after successful submit');
+  for (const board of boards) {
+    assert.deepEqual(store.getItem(board, id), before, 'recording a result does not change item authority or state');
+    const rows = board.db.prepare("SELECT event_by,event_detail FROM event WHERE event_kind='attempt' AND item_id=?").all(id);
+    assert.deepEqual(rows, [{ event_by: agentId, event_detail: JSON.stringify({ n: 1, seconds: 2, result: 'green' }) }]);
+  }
+  const edit = prepareEngineMove(primary, 'editItem', [id, { agentId, brief: 'claim-free state mutation' }]);
+  const refused = boards.map(board => applyEngineMove(board, edit, { sequence: appliedSequence(board) + 1, at: clock.now().toISOString() }));
+  assert.deepEqual(refused[0], refused[1]);
+  assert.equal(refused[0].error.code, 'AGENT_GRANT_EXPIRED', 'the append-only record never restores a mutation grant');
+});
