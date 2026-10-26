@@ -317,7 +317,7 @@ function outboxEnabled(io) {
  */
 export function outboxQueueable(state, error, operation, io, args = []) {
   return state.mode === 'ordered' && state.baselineAccepted === true && !state.baselineConflict && !state.environment
-    && process.env.PULLBOARD_RELAY_TOKEN === undefined && !io?.personRequest && !io?.personRequestMoveId
+    && process.env.PULLBOARD_RELAY_TOKEN === undefined && !io?.relayCanary && !io?.personRequest && !io?.personRequestMoveId
     && !['register', 'ensureCoordinator', 'takeCoordinator', 'landingLeaseMove'].includes(operation)
     && !args.some(arg => arg?.landingFence !== undefined) && transientRelayFailure(error) && outboxEnabled(io);
 }

@@ -1039,7 +1039,7 @@ function localFirstLink(file, operation, args, io) {
   try { state = loadLink(file); } catch { return null; }
   if (!state || state.unlinking || state.recovery || state.mode !== 'ordered' || state.baselineAccepted !== true
     || state.baselineConflict || state.baselinePause || state.baselineStale || state.environment) return null;
-  if (process.env.PULLBOARD_RELAY_TOKEN !== undefined || io?.personRequest || io?.personRequestMoveId) return null;
+  if (process.env.PULLBOARD_RELAY_TOKEN !== undefined || io?.relayCanary || io?.personRequest || io?.personRequestMoveId) return null;
   // A takeover needs the relay's authenticated sign-in lineage, which only the relay's order carries.
   if (['register', 'ensureCoordinator', 'takeCoordinator', 'landingLeaseMove'].includes(operation) || args?.[0]?.landingFence !== undefined) return null;
   if (credentialActor({ operation, args }) === 'person') return null;
