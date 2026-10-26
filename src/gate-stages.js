@@ -7,6 +7,23 @@ import {
 import { join } from 'node:path';
 
 /**
+ * Preserve accounting for the generated landing gate plus affected phase. Both phase bodies must
+ * already be readable without groups; arbitrary subshells still have no guessed account [C7,V4].
+ */
+export function gateStages(command) {
+  const source = String(command).trim();
+  const separator = '\n) && ';
+  const boundary = source.lastIndexOf(separator);
+  if (!source.startsWith('(\n') || boundary < 0) return ordinaryStages(source);
+  const gate = ordinaryStages(source.slice(2, boundary));
+  const affected = ordinaryStages(source.slice(boundary + separator.length));
+  if (!gate || !affected) return null;
+  gate[0] = { ...gate[0], groupStart: true };
+  gate[gate.length - 1] = { ...gate.at(-1), groupEnd: true };
+  return [...gate, ...affected];
+}
+
+/**
  * Split a gate command into its top-level stages, the commands joined by `&&`, `||`, `;` or a newline,
  * and each stage into its pipeline components, the commands joined by `|`. Anything the split cannot
  * read for certain (a subshell, a group, command substitution, a heredoc, a comment, a background job,
@@ -15,7 +32,7 @@ import { join } from 'node:path';
  * @param {string} command
  * @returns {Array<{ text: string, op: string, pipeline: string[] }> | null}
  */
-export function gateStages(command) {
+function ordinaryStages(command) {
   const source = String(command).trim();
   const stages = [];
   let current = '';
@@ -87,8 +104,8 @@ export function stagedScript(stages, marker, pipes) {
     + `pullboard_pipe_status=$(tail -n 1 ${file(index, at, 'status')} 2>/dev/null); (exit "\${pullboard_pipe_status:-125}"); }`;
   return stages.map((stage, index) => {
     const body = stage.pipeline.length > 1 ? stage.pipeline.map((text, at) => component(text, index, at)).join(' | ') : stage.text;
-    return `{ printf '\\n${marker} begin ${index}\\n'; {\n${body}\n}; pullboard_stage_status=$?; `
-      + `printf '\\n${marker} end ${index} %s\\n' "$pullboard_stage_status"; (exit "$pullboard_stage_status"); } ${stage.op}`;
+    return `${stage.groupStart ? '(\n' : ''}{ printf '\\n${marker} begin ${index}\\n'; {\n${body}\n}; pullboard_stage_status=$?; `
+      + `printf '\\n${marker} end ${index} %s\\n' "$pullboard_stage_status"; (exit "$pullboard_stage_status"); } ${stage.op}${stage.groupEnd ? '\n) &&' : ''}`;
   }).join('\n');
 }
 

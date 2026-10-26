@@ -337,7 +337,12 @@ function completionAccount() {
   let early = false;
   let plan = null;
   let topLevel = 0;
-  const counts = {};
+  let counts = {};
+  let prior = true;
+  /** Require every completed TAP stream, not just the last appended phase, to account for its tests. */
+  const finished = () => !early && Number.isSafeInteger(plan) && plan > 0 && plan === topLevel && Number.isSafeInteger(counts.tests)
+    && Number.isSafeInteger(counts.pass) && Number.isSafeInteger(counts.fail) && (counts.cancelled ?? 0) === 0
+    && counts.pass + counts.fail + (counts.skipped ?? 0) + (counts.todo ?? 0) === counts.tests;
   /** Recognize canonical incomplete accounts even when only a bounded line prefix is retained. */
   const markerPrefix = (text) => {
     if (/^(?:Landing gate stopped early after |Files not run: |Interrupted test files: )/u.test(text)) early = true;
@@ -347,6 +352,9 @@ function completionAccount() {
     /** Consume one complete output line without retaining test output or diagnostic blocks. */
     line(text) {
       markerPrefix(text);
+      if (/^TAP version \d+\s*$/u.test(text) && (plan !== null || topLevel || Object.keys(counts).length)) {
+        prior = prior && finished(); plan = null; topLevel = 0; counts = {};
+      }
       if (/^(?:not )?ok \d+\b/u.test(text)) topLevel++;
       const planned = /^1\.\.(\d+)\s*$/u.exec(text);
       if (planned) plan = Number(planned[1]);
@@ -355,10 +363,7 @@ function completionAccount() {
     },
     /** A complete plan accounts for every test and contains no interrupted or cancelled work. */
     complete() {
-      return !early && Number.isSafeInteger(plan) && plan > 0 && plan === topLevel && Number.isSafeInteger(counts.tests)
-        && Number.isSafeInteger(counts.pass) && Number.isSafeInteger(counts.fail)
-        && (counts.cancelled ?? 0) === 0
-        && counts.pass + counts.fail + (counts.skipped ?? 0) + (counts.todo ?? 0) === counts.tests;
+      return prior && finished();
     },
   };
 }
