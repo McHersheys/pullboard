@@ -105,6 +105,11 @@ async function keyDiagnostic(t, mode) {
     t.after(() => { if (existsSync(box.keyFile)) chmodSync(box.keyFile, 0o600); });
     assert.throws(() => readFileSync(box.keyFile), { code: 'EACCES' }, 'the fixture key is actually unreadable');
   }
+  const credentialTrace = join(dirname(box.root), 'foreground-credential-helper');
+  // A private executable records attempts without contacting any real credential service or delaying the read.
+  for (const helper of ['security', 'secret-tool']) {
+    writeFileSync(join(box.env.PATH, helper), `#!/bin/sh\nprintf 'attempt\\n' >> '${credentialTrace}'\nexit 1\n`, { mode: 0o700 });
+  }
   const trace = join(dirname(box.root), 'foreground-network');
   const preload = join(dirname(box.root), 'foreground-network.mjs');
   writeFileSync(preload, `
@@ -133,6 +138,7 @@ async function keyDiagnostic(t, mode) {
   let reads;
   try { reads = await commands(box, env, preload, [['status'], ['list', '--all'], ['show', '1']]); }
   finally { guard.exec('COMMIT'); guard.close(); }
+  assert.equal(existsSync(credentialTrace), false, 'local-read diagnostics never invoke a credential helper');
   for (const result of reads) {
     assert.equal(result.code, 0, 'a missing device key cannot take away local reads');
     assert.equal(result.document.diagnostics?.length, 1, 'pre/post sync emits exactly one repair diagnostic per command');
