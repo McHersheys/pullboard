@@ -1,6 +1,10 @@
 /** Indexed activation preserves the recorded prefix and exact grant floors [E21,H16,C7]. */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { mkdtempSync } from 'node:fs';
+import { rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import * as store from '../src/board.js';
 import { agentGrantMinimum } from '../src/agent-grant.js';
 import { AGENT_GRANT_ENGINE } from '../src/agent-grant-engine.js';
@@ -11,6 +15,8 @@ import { startRelayEpoch } from '../src/engine.js';
 import { exportBoard } from '../src/exchange.js';
 import { importBoard } from '../src/exchange.js';
 import { restoreRelaySnapshot } from '../src/exchange.js';
+import { recordSchemaStamp } from '../src/board-migrate.js';
+import { SCHEMA_DIGEST } from '../src/board-schema-source.js';
 
 const AT = '2026-10-01T12:00:00.000Z';
 const LEGACY = AGENT_GRANT_ENGINE - 1;
@@ -43,12 +49,31 @@ function lookupPlan(board, probe) {
   const plans = [];
   board.db.prepare = sql => {
     if (sql.includes("meta_key GLOB 'relay_receipt_*'") && sql.includes('json_extract')) {
-      plans.push(...prepare(`EXPLAIN QUERY PLAN ${sql}`).all(appliedSequence(board), AGENT_GRANT_ENGINE).map(row => row.detail));
+      const bindings = sql.includes('$.sequence') ? [appliedSequence(board), AGENT_GRANT_ENGINE] : [];
+      plans.push(...prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...bindings).map(row => row.detail));
     }
     return prepare(sql);
   };
   try { return { floor: agentGrantMinimum(board, probe), plans }; }
   finally { board.db.prepare = prepare; }
+}
+
+/** Use the literal pre-index predicate as an oracle for readable legacy types and corrupt-row behavior. */
+function originalFloor(board) {
+  const row = board.db.prepare("SELECT meta_value FROM board_meta WHERE meta_key='relay_applied_sequence'").get();
+  const sequence = row ? Number(row.meta_value) : 0;
+  if (!Number.isSafeInteger(sequence) || sequence < 1) return 1;
+  const witness = board.db.prepare(`SELECT 1 FROM board_meta WHERE meta_key GLOB 'relay_receipt_*'
+    AND json_extract(meta_value, '$.sequence') <= ?
+    AND json_extract(json_extract(meta_value, '$.move'), '$.engine') >= ? LIMIT 1`)
+    .get(sequence, AGENT_GRANT_ENGINE);
+  return witness ? AGENT_GRANT_ENGINE : 1;
+}
+
+/** Compare the actual return or SQLite error without swallowing either path's original result. */
+function observed(work) {
+  try { return { result: work() }; }
+  catch (error) { return { error: { code: error.code, errcode: error.errcode, message: error.message } }; }
 }
 
 test('recorded activation preserves pre/post floors, acknowledged replay and administrative ordering [E21,H16]', t => {
@@ -124,4 +149,100 @@ test('activation lookup seeks the engine index as genuine old receipts grow [E21
   }
   box.activate();
   assert.equal(lookupPlan(box.board, box.probe).floor, AGENT_GRANT_ENGINE);
+});
+
+test('indexed activation retains original JSON types and malformed-receipt short circuits [E21,H16]', t => {
+  const box = fixture(t);
+  const { board, probe } = box;
+  const cursor = appliedSequence(board);
+  const write = board.db.prepare('INSERT OR REPLACE INTO board_meta(meta_key,meta_value) VALUES (?,?)');
+  const remove = board.db.prepare('DELETE FROM board_meta WHERE meta_key=?');
+  const move = engine => JSON.stringify({ ...probe, engine });
+  // These are explicitly simulated legacy/corrupt metadata values, not claims of executed engine receipts.
+  const samples = [
+    JSON.stringify({ sequence: cursor, move: move(AGENT_GRANT_ENGINE) }),
+    JSON.stringify({ sequence: cursor + 1, move: move(AGENT_GRANT_ENGINE) }),
+    JSON.stringify({ sequence: String(cursor), move: move(AGENT_GRANT_ENGINE) }),
+    JSON.stringify({ sequence: null, move: move(AGENT_GRANT_ENGINE) }),
+    JSON.stringify({ sequence: cursor, move: move(String(AGENT_GRANT_ENGINE)) }),
+    JSON.stringify({ sequence: cursor, move: move(null) }),
+    JSON.stringify({ sequence: cursor, move: { engine: AGENT_GRANT_ENGINE } }),
+    `{sequence:${cursor},move:'{engine:${AGENT_GRANT_ENGINE},}',}`,
+    Buffer.from(JSON.stringify({ sequence: cursor, move: move(AGENT_GRANT_ENGINE) })),
+  ];
+  for (const sample of samples) {
+    write.run('relay_receipt_simulated', sample);
+    const stored = board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get('relay_receipt_simulated');
+    assert.deepEqual(observed(() => agentGrantMinimum(board, probe)), observed(() => originalFloor(board)));
+    assert.deepEqual(board.db.prepare('SELECT meta_value FROM board_meta WHERE meta_key=?').get('relay_receipt_simulated'), stored,
+      'lookup never repairs or rewrites legacy receipt bytes');
+  }
+  remove.run('relay_receipt_simulated');
+  const witness = JSON.stringify({ sequence: cursor, move: move(AGENT_GRANT_ENGINE) });
+  const broken = ['not JSON', JSON.stringify({ sequence: cursor, move: 'not JSON' }), Buffer.from('not JSON')];
+  for (const sample of broken) {
+    for (const before of [true, false]) {
+      write.run(before ? 'relay_receipt_0-witness' : 'relay_receipt_z-witness', witness);
+      write.run(before ? 'relay_receipt_z-broken' : 'relay_receipt_0-broken', sample);
+      assert.deepEqual(observed(() => agentGrantMinimum(board, probe)), observed(() => originalFloor(board)),
+        'malformed outer and inner values retain the original witness-before/error-before behavior');
+      for (const key of ['relay_receipt_0-witness', 'relay_receipt_z-witness', 'relay_receipt_z-broken', 'relay_receipt_0-broken']) remove.run(key);
+    }
+  }
+});
+
+test('owning open upgrades an old indexless board once without changing native data or read-only ownership [E21,H16,C7]', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'pullboard-activation-index-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, 'board.sqlite');
+  let board = store.openBoard(file);
+  let document;
+  let version;
+  try {
+    store.ensureCoordinator(board, dir);
+    const legacy = { ...prepareEngineMove(board, 'shout', [{ from: 'coordinator', to: 'all', text: 'Legacy receipt', lanes: ['web'] }]), engine: LEGACY };
+    assert.equal(applyEngineMove(board, legacy, { sequence: 1, at: AT }).error, undefined);
+    document = exportBoard(board);
+    version = board.db.prepare('PRAGMA user_version').get().user_version;
+    // Model an otherwise-current legacy board with its original, indexless schema stamp.
+    board.db.exec('DROP INDEX IF EXISTS board_meta_grant_activation_v1');
+    recordSchemaStamp(board.db, SCHEMA_DIGEST);
+  } finally { store.closeBoard(board); }
+  const read = store.openBoardForRead(file);
+  try {
+    assert.equal(read.current, true, 'old indexless boards remain readable at the same native schema version');
+    assert.equal(read.db.prepare("SELECT 1 FROM sqlite_master WHERE name='board_meta_grant_activation_v1'").get(), undefined);
+  } finally { read.db.close(); }
+  board = store.openBoard(file, undefined, { isMain: false });
+  try {
+    assert.equal(board.db.prepare("SELECT 1 FROM sqlite_master WHERE name='board_meta_grant_activation_v1'").get(), undefined,
+      'a non-owner never installs the additive index');
+    const probe = { operation: 'editItem', args: [1, { agentId: 'unmarked-web-seat' }] };
+    const warnings = [];
+    const warn = console.warn;
+    console.warn = (...args) => warnings.push(args.join(' '));
+    try {
+      assert.equal(agentGrantMinimum(board, probe), originalFloor(board));
+      assert.equal(agentGrantMinimum(board, probe), originalFloor(board));
+    } finally { console.warn = warn; }
+    assert.equal(warnings.length, 1, 'missing-index fallback emits only one notice per process');
+    assert.match(warnings[0], /^\[RELAY_ACTIVATION_INDEX_MISSING\].*owning main checkout/u);
+    assert.equal(board.db.prepare("SELECT 1 FROM sqlite_master WHERE name='board_meta_grant_activation_v1'").get(), undefined,
+      'the fallback remains read-only and does not refuse or install an index');
+  } finally { store.closeBoard(board); }
+  board = store.openBoard(file);
+  try {
+    assert.ok(board.db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='board_meta_grant_activation_v1'").get(),
+      'the owning writable opener installs the missing index on an already-current board');
+    assert.equal(board.db.prepare('PRAGMA user_version').get().user_version, version);
+    assert.deepEqual(exportBoard(board), document, 'index installation leaves every native row and export field unchanged');
+  } finally { store.closeBoard(board); }
+  const stamped = store.openBoardForRead(file);
+  try { assert.equal(stamped.current, true, 'installation and the actual index-shape stamp commit together'); }
+  finally { stamped.db.close(); }
+  board = store.openBoard(file);
+  try {
+    assert.equal(board.db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE name='board_meta_grant_activation_v1'").get().n, 1);
+    assert.deepEqual(exportBoard(board), document, 'a second owning open is idempotent');
+  } finally { store.closeBoard(board); }
 });

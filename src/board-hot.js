@@ -1,4 +1,5 @@
 import { ensureFactIdentityIndexes } from './fact-identity.js';
+import { ensureGrantActivationIndex } from './relay-activation.js';
 
 /**
  * The indexes and bounded reads behind the board's hot queries [C7]. Status, list, show, next, resume,
@@ -26,6 +27,7 @@ const HOT_INDEXES = [
 export function ensureHotIndexes(db) {
   for (const sql of HOT_INDEXES) db.exec(sql);
   ensureFactIdentityIndexes(db);
+  ensureGrantActivationIndex(db);
 }
 
 /**
