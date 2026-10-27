@@ -3,6 +3,11 @@ import assert from 'node:assert/strict';
 import { readFileSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
+import {
+  UNREAD_SHOUT_SQL,
+  unreadShoutBindings,
+} from '../src/shout-audience.js';
 import { fileURLToPath } from 'node:url';
 import { runFixtureGit } from './fixture-child.js';
 import { relayClientFixture } from './relay-client-fixture.js';
@@ -74,9 +79,19 @@ test("a message sent to a seat address lands in that seat's inbox and nowhere el
   const denied = await second.cliAt(sender.path, 'shout', initial.address, 'After known revocation');
   assert.notEqual(denied.code, 0, 'a known revoked grant cannot queue another message');
   assert.equal(denied.document.error.code, 'TOKEN_REVOKED');
-  for (const result of [await box.cliAt(recipient.path, 'inbox'), await box.cli('inbox'),
-    await second.cliAt(sender.path, 'inbox')]) {
-    assert.ok(!document(result).shouts.some(row => row.shout_id === queued.id
+  const senderInbox = await second.cliAt(sender.path, 'inbox');
+  assert.notEqual(senderInbox.code, 0, 'a revoked seat cannot record native inbox delivery');
+  assert.equal(senderInbox.document.error.code, 'TOKEN_REVOKED');
+  const replica = new DatabaseSync(join(second.root, '.git', 'pullboard', 'board.sqlite'), { readOnly: true });
+  let localInbox;
+  try {
+    // Inspect the real sender replica with the inbox's canonical audience query without recording a delivery.
+    const agent = replica.prepare('SELECT * FROM agent WHERE agent_id=?').get(sender.id);
+    localInbox = replica.prepare(`SELECT * ${UNREAD_SHOUT_SQL}`).all(...unreadShoutBindings(0, sender.id, agent.agent_lane));
+  } finally { replica.close(); }
+  for (const rows of [document(await box.cliAt(recipient.path, 'inbox')).shouts,
+    document(await box.cli('inbox')).shouts, localInbox]) {
+    assert.ok(!rows.some(row => row.shout_id === queued.id
       || ['After revocation', 'After known revocation'].includes(row.shout_text)),
     'neither revoked message reaches a genuine recipient, coordinator or sender inbox');
   }
