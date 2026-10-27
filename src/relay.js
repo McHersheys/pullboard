@@ -164,6 +164,7 @@ import {
 import { Refused } from './refused.js';
 import { landingRelayCallbacks } from './landing-relay.js';
 import { relayOrigin } from './relay-origin.js';
+import { readRelayLink } from './relay-link-read.js';
 import { refusalFromReceipt } from './recorded-refusal.js';
 import { relayNotices } from './relay-notices.js';
 import {
@@ -342,16 +343,8 @@ function forgetDeletedCopy(root, file, state, io) {
 
 /** Validate private link metadata before trusting its destination or acknowledgement cursor. */
 function loadLink(file) {
-  if (!existsSync(file)) return null;
-  const stat = lstatSync(file);
-  if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077)) throw new Refused('RELAY_STORAGE', 'restore relay.json as an owner-only regular file with mode 600');
-  let state;
-  try { state = JSON.parse(readFileSync(file, 'utf8')); } catch { throw new Refused('RELAY_STORAGE', 'restore valid relay link metadata before syncing this board'); }
-  if (!state || typeof state !== 'object' || state.version !== 1 || !/^[0-9a-f]{32}$/.test(state.board) || !(state.token === undefined || state.personReauth && state.token === null || /^(ps_|pa_|pm_)[A-Za-z0-9_-]{43}$/.test(state.token)) ||
-      !Number.isSafeInteger(state.sequence) || state.sequence < 0 || !Number.isSafeInteger(state.cursor) || state.cursor < 0) {
-    throw new Refused('RELAY_STORAGE', 'restore supported relay link metadata before syncing this board');
-  }
-  relayOrigin(state.url);
+  const state = readRelayLink(file);
+  if (!state) return null;
   if (state.token === undefined || state.token?.startsWith('ps_')) {
     state.token = null;
     delete state.tokenId;
