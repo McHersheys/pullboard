@@ -14,8 +14,8 @@ after(e2e.cleanup);
 test('README board-count badges read tracked main endpoint documents [I10,B3,V1]', () => {
   const readme = readFileSync(join(ROOT, 'README.md'), 'utf8');
   const badges = [...readme.matchAll(/<img\b[^>]*alt="(pullboard|agent-verified)(?:: [^"]*)?"[^>]*src="([^"]+)"/gu)];
-  assert.deepEqual(badges.map(([, label]) => label).sort(), ['agent-verified', 'pullboard'],
-    'both distinct board-count badges remain present');
+  assert.deepEqual(badges.map(([, label]) => label).sort(), ['pullboard'],
+    'only the item-count badge is live; the verification badge returns after #1306');
   for (const [, label, source] of badges) {
     const url = new URL(source.replaceAll('&amp;', '&'));
     assert.equal(url.origin, 'https://img.shields.io');
