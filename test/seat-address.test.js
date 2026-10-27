@@ -4,10 +4,7 @@ import { readFileSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import {
-  runFixtureChildAsync,
-  runFixtureGit,
-} from './fixture-child.js';
+import { runFixtureGit } from './fixture-child.js';
 import { relayClientFixture } from './relay-client-fixture.js';
 
 /** Require a real public command result without exposing private relay credentials. */
@@ -67,11 +64,8 @@ test("a message sent to a seat address lands in that seat's inbox and nowhere el
   assert.ok(readFileSync(join(second.root, '.git', 'pullboard', 'relay-outbox.sealed')).length > 0,
     'the accepted local move has a durable sealed outbox, not a delivery acknowledgment');
 
-  const synced = await runFixtureChildAsync(process.execPath,
-    [fileURLToPath(new URL('../bin/pullboard.js', import.meta.url)), 'relay', 'status', '--json'],
-    { cwd: sender.path, env: second.env });
-  assert.equal(synced.status, 0, synced.context);
-  assert.ok(synced.stderr.includes(`the relay token of ${sender.id} was revoked on this board`),
+  const synced = document(await second.cliAt(sender.path, 'relay', 'status'));
+  assert.ok(synced.diagnostics?.some(line => line.includes(`the relay token of ${sender.id} was revoked on this board`)),
     'the sender is told when replay obtains a fresh refusal');
   assert.equal(JSON.parse(readFileSync(join(second.root, '.git', 'pullboard', 'relay.json'), 'utf8'))
     .agentTokens[sender.id].revoked, true, 'the confirmed refusal fences this seat locally');
