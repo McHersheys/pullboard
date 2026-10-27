@@ -182,11 +182,11 @@ test('the roadmap reads every item as the Items tab does, opens each one, anothe
   box.run(alpha.repo, 'milestone', 'add', 'Later', '--note', 'Ideas not filed yet.');
   // What the person reads on each row: the Items tab's word for the item's state, and its colour's class.
   const words = [
-    { id: '#3', label: 'sent back', tone: 'no' },
+    { id: '#2', label: 'accepted', tone: 'ok' },
     { id: '#4', label: 'to verify', tone: 'warn' },
+    { id: '#3', label: 'sent back', tone: 'no' },
     { id: 'beacon#1', label: 'sent back', tone: 'no' },
     { id: '#1', label: 'verified', tone: 'ok' },
-    { id: '#2', label: 'accepted', tone: 'ok' },
     { id: '#5', label: 'building', tone: 'busy' },
     { id: '#6', label: 'unclaimed', tone: 'free' },
   ];
@@ -225,7 +225,7 @@ test('the roadmap reads every item as the Items tab does, opens each one, anothe
       const rows = seen.cards.flatMap((card) => card.rows);
       assert.deepEqual(rows.map(({ id, label, tone }) => ({ id, label, tone })), words, `${width}: each roadmap chip distinguishes landed and accepted with the Items tab's colour`);
       assert.ok(rows.every((row) => row.seen), `${width}: every chip is on screen`);
-      assert.deepEqual(rows.map((row) => row.title), [titles[2], titles[3], 'Billing webhook retries', titles[0], titles[1], titles[4], titles[5]], `${width}: unfinished work precedes verified items in each milestone`);
+      assert.deepEqual(rows.map((row) => row.title), [titles[1], titles[3], titles[2], 'Billing webhook retries', titles[0], titles[4], titles[5]], `${width}: shipping groups lead landed items and preserve milestone order within each group`);
       assert.deepEqual(rows.map((row) => row.tip), rows.map((row) => row.title), `${width}: each row's tooltip is its whole title`);
       assert.ok(rows.every((row) => row.lines === 1 && row.ellipsis), `${width}: every title holds one line, set to end in an ellipsis: ${JSON.stringify(rows)}`);
       assert.ok(rows.find((row) => row.id === '#6').cut, `${width}: the long title is cut, so its ellipsis shows`);
