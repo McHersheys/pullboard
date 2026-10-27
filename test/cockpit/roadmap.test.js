@@ -947,7 +947,8 @@ test('the roadmap shows landed, accepted and past target [N26]', { timeout: 90_0
   box.run(alpha.repo,'milestone','add','Past target','--items','1,2,3');
   box.run(alpha.repo,'milestone','edit','Past target','--target',new Date(Date.now()-86_400_000).toISOString());
   box.run(alpha.repo,'milestone','add','Shipped release','--items','4');
-  box.run(alpha.repo,'milestone','add','State summary','--items','5,6,7,8,9,10,11');
+  // Deliberately shuffle the six states; display grouping must not inherit this order.
+  box.run(alpha.repo,'milestone','add','State summary','--items','10,5,9,8,7,6,11');
   box.run(alpha.repo,'milestone','ship','Shipped release','--next','State summary');
   box.run(alpha.repo,'milestone','add','Empty shipped');
   box.run(alpha.repo,'milestone','ship','Empty shipped','--next','State summary');
@@ -996,6 +997,8 @@ test('the roadmap shows landed, accepted and past target [N26]', { timeout: 90_0
         assert.deepEqual(emptyPlan,{summary:false,empty:'No items yet.'},`${width}/${scheme}: an empty plan shows no header, only No items yet`);
       }
     }
+    const ordered = JSON.parse(await chrome.stable(`JSON.stringify([...${milestone('State summary')}.querySelectorAll('.milestone-item .id')].map(row => row.textContent))`));
+    assert.deepEqual(ordered, ['#6', '#7', '#8', '#9', '#10', '#5'], 'a milestone lists accepted, review, building, waiting, held, then landed despite shuffled membership');
     // Equal bounds read as one number, and the legend says waiting.
     await chrome.stable("(()=>{const m=data.project.milestones.find(m=>m.name==='State summary');m.summary={...m.summary,estimate:{low:2.5,high:2.5}};render();return true;})()");
     const single=await chrome.stable(`${milestone('State summary')}.querySelector('.roadmap-estimate')?.textContent||''`);
