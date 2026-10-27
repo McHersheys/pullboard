@@ -34,6 +34,7 @@ import { leaveConflictNotice } from './relay-conflicts.js';
 import { withOutboxGuard } from './relay-outbox-guard.js';
 import { transientRelayFailure } from './relay-move-fallback.js';
 import {
+  refuseRevokedSeat,
   seatReceipt,
   withSeatName,
 } from './relay-seats.js';
@@ -416,6 +417,7 @@ export async function queueMove(link, { operation, args, command, move, error, a
     move = stampCoordinatorHolder(localRecords(root, (board) => prepareEngineMove(board, operation, sent)), state.machine, state.computerName);
     move.actor = relayMoveActor(move) ?? credentialActor(move);
   }
+  refuseRevokedSeat(state, credentialActor(move));
   const stray = strayItemRefs(outbox, move);
   if (stray.length) {
     throw new Refused('RELAY_OUTBOX_UNBOUND', `this move names #${stray[0]}, which this machine added while the relay was down, in a field the outbox cannot follow if the relay renumbers it; run it again once the relay answers`);

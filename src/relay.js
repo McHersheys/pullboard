@@ -1051,14 +1051,18 @@ function localFirstLink(file, operation, args, io) {
  * Make a move on this machine at once and queue it for the relay (#1013): no network call and no relay lock, only
  * the short outbox guard. The background sender sends it and rebuilds the board once the relay has ordered it.
  */
-async function queueLocally(root, file, state, operation, args, io, command, applyLocally, onRecorded) {
+async function queueLocally(root, file, operation, args, io, command, applyLocally, onRecorded) {
   const guarded = landingRelayCallbacks(operation, args, {
     apply: () => typeof applyLocally === 'function' ? applyLocally() : localRecords(root, (board) => store[operation](board, ...args)),
     queue: () => { throw new Refused('RELAY_OUTBOX', 'a local-first move queues itself; it is never queued twice'); },
   });
   // An unlink that finished while this move waited for the guard leaves an ordinary local board.
-  const result = await withOutboxGuard(file, () => !existsSync(file) ? guarded.apply() : queueMove(outboxLink(root, file, state, io),
-    { operation, args, command, applyLocally: guarded.apply, quiet: true }));
+  const result = await withOutboxGuard(file, () => {
+    // A revoke can finish while this move waits: admission uses the cache protected by this guard, never its earlier snapshot.
+    const current = loadLink(file);
+    return !current ? guarded.apply() : queueMove(outboxLink(root, file, current, io),
+      { operation, args, command, applyLocally: guarded.apply, quiet: true });
+  });
   onRecorded?.();
   nudgeRelaySender(root, file);
   return result;
@@ -1069,7 +1073,7 @@ export async function relayOperation(root, operation, args, io, command, applyLo
   const roundTripStarted = Date.now();
   const file = linkFile(root);
   const local = localFirstLink(file, operation, args, io);
-  if (local) return queueLocally(root, file, local, operation, args, io, command, applyLocally, onRecorded);
+  if (local) return queueLocally(root, file, operation, args, io, command, applyLocally, onRecorded);
   return locked(file, async () => {
     const state = loadLink(file);
     if (operation === 'rehomeItem') await requireAuthoritativeRehomeItem(file, state, args?.[0]);
@@ -1311,8 +1315,12 @@ export async function relayRevoke(root, id, io) {
     }
     const result = await nativePhoneAction(state, 'revoke-token', id, io, request);
     if (result.id !== id || result.revoked !== true) throw new Refused('RELAY_RESPONSE', 'the relay did not acknowledge this token revocation; retry its opaque id');
-    for (const credential of Object.values(state.agentTokens ?? {})) if (credential.id === id) credential.revoked = true;
-    saveLink(file, state);
+    // Queue admission and the local revocation marker share one short guard; the phone and network never hold it.
+    await withOutboxGuard(file, () => {
+      const current = loadLink(file);
+      for (const credential of Object.values(current.agentTokens ?? {})) if (credential.id === id) credential.revoked = true;
+      saveLink(file, current);
+    });
     return { ...tokenContext(state), id: result.id, revoked: result.revoked };
   });
 }
