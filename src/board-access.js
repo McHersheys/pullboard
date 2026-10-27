@@ -1,8 +1,15 @@
 import { boardWriteHolderText } from './board-write-lock.js';
 /** Name a board this process cannot write, such as one inside a read-only agent sandbox [I1,P4]. */
 import { randomUUID } from 'node:crypto';
-import { closeSync, openSync, unlinkSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import {
+  closeSync,
+  openSync,
+  unlinkSync,
+} from 'node:fs';
+import {
+  dirname,
+  join,
+} from 'node:path';
 import { AGENT_SHELL_MARKERS } from './person.js';
 import { Refused } from './refused.js';
 
