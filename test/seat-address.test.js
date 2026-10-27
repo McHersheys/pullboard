@@ -68,7 +68,7 @@ test("a message sent to a seat address lands in that seat's inbox and nowhere el
     'the accepted local move has a durable sealed outbox, not a delivery acknowledgment');
 
   const synced = await runFixtureChildAsync(process.execPath,
-    [fileURLToPath(new URL('../bin/pullboard.js', import.meta.url)), 'status', '--json'],
+    [fileURLToPath(new URL('../bin/pullboard.js', import.meta.url)), 'relay', 'status', '--json'],
     { cwd: sender.path, env: second.env });
   assert.equal(synced.status, 0, synced.context);
   assert.ok(synced.stderr.includes(`the relay token of ${sender.id} was revoked on this board`),
