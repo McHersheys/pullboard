@@ -4,7 +4,10 @@ import { readFileSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { runFixtureGit } from './fixture-child.js';
+import {
+  runFixtureChildAsync,
+  runFixtureGit,
+} from './fixture-child.js';
 import { relayClientFixture } from './relay-client-fixture.js';
 
 /** Require a real public command result without exposing private relay credentials. */
@@ -56,7 +59,31 @@ test("a message sent to a seat address lands in that seat's inbox and nowhere el
   const revoked = await fetch(box.origin + '/auth/tokens/revoke', { method: 'POST',
     headers: { authorization: 'Bearer ' + person.token, 'content-type': 'application/json' }, body: JSON.stringify({ id: tokenId }) });
   assert.equal(revoked.status, 200, 'the real owner revokes only this private sender grant');
-  const denied = await second.cliAt(sender.path, 'shout', initial.address, 'After revocation');
-  assert.notEqual(denied.code, 0, 'a revoked board grant cannot send to a known seat address');
-  assert.ok(!document(await box.cliAt(recipient.path, 'inbox')).shouts.some(row => row.shout_text === 'After revocation'));
+  const queued = document(await second.cliAt(sender.path, 'shout', initial.address, 'After revocation'));
+  const summaryFile = join(second.root, '.git', 'pullboard', 'relay-outbox.summary.json');
+  const waiting = JSON.parse(readFileSync(summaryFile, 'utf8'));
+  assert.ok(waiting.moves.some(move => move.operation === 'shout' && move.actor === sender.id),
+    'an unknown remote revocation does not block the local-first queue');
+  assert.ok(readFileSync(join(second.root, '.git', 'pullboard', 'relay-outbox.sealed')).length > 0,
+    'the accepted local move has a durable sealed outbox, not a delivery acknowledgment');
+
+  const synced = await runFixtureChildAsync(process.execPath,
+    [fileURLToPath(new URL('../bin/pullboard.js', import.meta.url)), 'status', '--json'],
+    { cwd: sender.path, env: second.env });
+  assert.equal(synced.status, 0, synced.context);
+  assert.ok(synced.stderr.includes(`the relay token of ${sender.id} was revoked on this board`),
+    'the sender is told when replay obtains a fresh refusal');
+  assert.equal(JSON.parse(readFileSync(join(second.root, '.git', 'pullboard', 'relay.json'), 'utf8'))
+    .agentTokens[sender.id].revoked, true, 'the confirmed refusal fences this seat locally');
+  assert.deepEqual(JSON.parse(readFileSync(summaryFile, 'utf8')).moves, waiting.moves,
+    'the refused send retains its pending history');
+  const denied = await second.cliAt(sender.path, 'shout', initial.address, 'After known revocation');
+  assert.notEqual(denied.code, 0, 'a known revoked grant cannot queue another message');
+  assert.equal(denied.document.error.code, 'TOKEN_REVOKED');
+  for (const result of [await box.cliAt(recipient.path, 'inbox'), await box.cli('inbox'),
+    await second.cliAt(sender.path, 'inbox')]) {
+    assert.ok(!document(result).shouts.some(row => row.shout_id === queued.id
+      || ['After revocation', 'After known revocation'].includes(row.shout_text)),
+    'neither revoked message reaches a genuine recipient, coordinator or sender inbox');
+  }
 });
