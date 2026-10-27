@@ -4,7 +4,6 @@ import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { after, test } from 'node:test';
-import { badgeDocuments } from '../src/badge.js';
 import { createE2eHelpers } from '../test/e2e-helpers.js';
 import { runFixtureGit } from '../test/fixture-child.js';
 
@@ -45,9 +44,12 @@ test('landing rewrites stale tracked board badge counts inside the containing me
   const config = JSON.parse(readFileSync(configPath, 'utf8'));
   writeFileSync(configPath, JSON.stringify({ ...config, landing: { publish: 'separate' } }, null, 2));
   mkdirSync(join(box.repo, 'docs/badges'), { recursive: true });
-  const stale = badgeDocuments({ items: 99, percent: 0 });
-  for (const document of stale) writeFileSync(join(box.repo, document.path), document.text);
-  box.git(box.repo, 'add', 'pullboard.json', ...stale.map(document => document.path));
+  const stale = [
+    ['items', { schemaVersion: 1, label: 'pullboard', message: '99 items', color: '2f7d5b' }],
+    ['checked', { schemaVersion: 1, label: 'agent-verified', message: '0%', color: '6e7781' }],
+  ];
+  for (const [name, document] of stale) writeFileSync(join(box.repo, `docs/badges/${name}.json`), JSON.stringify(document, null, 2) + '\n');
+  box.git(box.repo, 'add', 'pullboard.json', ...stale.map(([name]) => `docs/badges/${name}.json`));
   box.git(box.repo, 'commit', '-q', '-m', 'test: seed stale tracked badge endpoints');
   box.git(box.web, 'merge', '-q', '--ff-only', 'main');
   const added = box.run(box.repo, 'add', 'web', 'Refresh tracked badges', '--criterion', 'The native probe passes.',
@@ -72,7 +74,7 @@ test('landing rewrites stale tracked board badge counts inside the containing me
     assert.equal(accepted.code, 0, accepted.err || accepted.out);
   } finally { box.git(box.repo, 'switch', '-q', 'main'); }
   const before = box.git(box.repo, 'rev-parse', 'HEAD');
-  for (const document of stale) assert.equal(box.git(box.repo, 'show', `HEAD:${document.path}`), document.text.trim());
+  for (const [name, document] of stale) assert.deepEqual(JSON.parse(box.git(box.repo, 'show', `HEAD:docs/badges/${name}.json`)), document);
   const result = box.run(box.repo, 'land', '--json');
   assert.equal(result.code, 0, result.err || result.out);
   const landed = JSON.parse(result.out);
@@ -81,8 +83,11 @@ test('landing rewrites stale tracked board badge counts inside the containing me
   assert.equal(item.item_merged_commit, landed.batch.tip);
   assert.deepEqual(box.git(box.repo, 'rev-list', '--parents', '-n', '1', landed.batch.tip).split(' '),
     [landed.batch.tip, before, commit], 'the refresh preserves both real merge parents');
-  for (const document of badgeDocuments({ items: 1, percent: 100 })) {
-    assert.equal(box.git(box.repo, 'show', `${landed.batch.tip}:${document.path}`), document.text.trim(),
+  for (const [name, label, message, color] of [
+    ['items', 'pullboard', '1 items', '2f7d5b'], ['checked', 'agent-verified', '100%', '6e7781'],
+  ]) {
+    assert.deepEqual(JSON.parse(box.git(box.repo, 'show', `${landed.batch.tip}:docs/badges/${name}.json`)),
+      { schemaVersion: 1, label, message, color },
       'the landed commit replaces the stale count with the actual independent board count');
   }
   assert.equal(box.git(box.repo, 'rev-parse', 'HEAD'), landed.batch.tip);
