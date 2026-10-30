@@ -81,7 +81,8 @@ test('a generated oversized review fits the actual sealed JSON request without a
   for (const move of [original, compact]) {
     const plain = new TextEncoder().encode(JSON.stringify(move));
     const sealed = await seal(key, plain, binding);
-    const body = JSON.stringify({ kind: 'move', sealed: Buffer.from(sealed).toString('base64'), sequence: 1 });
+    // Match relayOrdering.postPending's verify request (no registration receipt).
+    const body = JSON.stringify({ sequence: 1, sealed: Buffer.from(sealed).toString('base64url') });
     sizes.push(Buffer.byteLength(body));
     assert.deepEqual(JSON.parse(new TextDecoder().decode(await unseal(key, sealed, binding))), move);
   }
