@@ -35,27 +35,57 @@ function invalid(value) {
   assert.throws(() => expandReviewPaths(value), { code: 'BAD_VERDICT_REVIEW' });
 }
 
-test('lossless paths retain Unicode, split surrogate prefixes and literal metacharacters [H16,V8]', () => {
-  const paths = ['web/[literal]*?.txt', 'web/line\nbreak.txt', 'web/space name.txt', 'web/é.txt', 'web/😀.txt', 'web/😁.txt'].sort();
+test('review paths are an actual readable YAML block tree with explicit literal leaves [H16,V8]', () => {
+  const value = compactReviewPaths(['node', 'node.txt', 'node/child.txt', 'src/a.js', 'src/b.js']);
+  assert.equal(value.format, 'pullboard-review-path-yaml-v1');
+  assert.equal(value.yaml, '"node":\n  "": null\n  "child.txt": null\n"node.txt": null\n"src":\n  "a.js": null\n  "b.js": null\n');
+  assert.deepEqual(expandReviewPaths(value), ['node', 'node.txt', 'node/child.txt', 'src/a.js', 'src/b.js']);
+  assert.equal(compactReviewPaths([]).yaml, '{}\n');
+  assert.deepEqual(expandReviewPaths(compactReviewPaths([])), []);
+});
+
+test('YAML keys retain punctuation, Unicode, line breaks and literal wildcard characters [H16,V8]', () => {
+  const paths = ['__proto__/constructor', 'null', 'true', 'web/#: &*?![]{}.txt', 'web/[literal]*?.txt',
+    'web/line\nbreak.txt', 'web/return\rtab\t.txt', 'web/quote"\\name.txt', 'web/space name.txt',
+    'web/\u007f\u0085\u009f\u2028\u2029.txt', 'web/é.txt', 'web/😀.txt', 'web/😁.txt'].sort();
   const encoded = JSON.parse(JSON.stringify(compactReviewPaths(paths)));
   assert.deepEqual(expandReviewPaths(encoded), paths);
-  assert.deepEqual(expandReviewPaths(compactReviewPaths([])), []);
-  for (const bad of [['b', 'a'], ['a', 'a'], ['../a'], ['/a'], ['a//b'], ['a\0b']])
+  assert.ok(!/[\u007f-\u009f\u2028\u2029]/u.test(encoded.yaml), 'YAML-sensitive characters are escaped, not normalized');
+  for (const bad of [['b', 'a'], ['a', 'a'], ['../a'], ['/a'], ['a//b'], ['a\0b'], ['a/./b'], ['a/../b']])
     assert.throws(() => compactReviewPaths(bad), { code: 'BAD_VERDICT_REVIEW' });
 });
 
-test('corrupt, omitted, noncanonical and unbounded coverage cannot be interpreted [H16,V8]', () => {
+test('corrupt, omitted, duplicate, ambiguous or noncanonical YAML coverage is refused [H16,V8]', () => {
   const value = compactReviewPaths(['web/component/a', 'web/component/b']);
   const mutations = [
     v => { v.format = 'unknown'; }, v => { v.bytes += 1; }, v => { v.bytes = 32 * 1024 * 1024 + 1; },
-    v => { v.sha256 = '0'.repeat(64); }, v => { v.sha256 = {}; }, v => { v.entries.pop(); },
-    v => { v.entries[0][0] = 1; }, v => { v.entries[1][0] = -1; }, v => { v.entries[1][0] = 1.5; },
-    v => { v.entries[1][0] = 999; }, v => { v.entries[1] = [0, 'web/component/b']; },
-    v => { v.entries[1] = [...v.entries[0]]; }, v => { v.entries[0].push('extra'); },
-    v => { v.extra = true; }, v => { v.entries[1][1] = '\0'; },
+    v => { v.sha256 = '0'.repeat(64); }, v => { v.sha256 = {}; },
+    v => { v.yaml = v.yaml.replace('    "b": null\n', ''); },
+    v => { v.yaml = v.yaml.replace('    "b": null', '    "a": null'); },
+    v => { v.yaml = v.yaml.replace('    "a": null', '   "a": null'); },
+    v => { v.yaml = v.yaml.replace('    "a": null', '\t"a": null'); },
+    v => { v.yaml = v.yaml.replace('    "a": null', '      "a": null'); },
+    v => { v.yaml = v.yaml.replace('"component":', '"component": null'); },
+    v => { v.yaml = v.yaml.replace('"a": null', '"a":'); },
+    v => { v.yaml = v.yaml.replace('"a": null', '"a": {}'); },
+    v => { v.yaml = v.yaml.replace('"a": null', '"a": *alias'); },
+    v => { v.yaml = v.yaml.replace('"a": null', '"a": !!null null'); },
+    v => { v.yaml = v.yaml.replace('"a": null', 'a: null'); },
+    v => { v.yaml = v.yaml.replace('"a": null', '"\\u0061": null'); },
+    v => { v.yaml = v.yaml.replace('"a": null', '"a/b": null'); },
+    v => { v.yaml += '"empty":\n'; }, v => { v.yaml += '"": null\n'; },
+    v => { v.yaml += '# comment\n'; }, v => { v.yaml = '---\n' + v.yaml; },
+    v => { v.yaml = v.yaml.slice(0, -1); }, v => { v.yaml = v.yaml.replaceAll('\n', '\r\n'); },
+    v => { v.extra = true; }, v => { v.yaml = null; },
   ];
   for (const mutate of mutations) { const changed = structuredClone(value); mutate(changed); invalid(changed); }
-  for (const malformed of [null, {}, [], { ...value, entries: null }, { ...value, bytes: 1 }]) invalid(malformed);
+  for (const malformed of [null, {}, [], { ...value, yaml: [] }, { ...value, bytes: 1 }]) invalid(malformed);
+  // Rebind metadata too: grammar/shape rejection cannot depend only on a stale digest.
+  for (const yaml of ['"a":\n  "": null\n', '"a": null\n"a": null\n', '"a": null\n"a":\n  "b": null\n',
+    '"a": null\n"b":\n', '"a": null\n"b": null\n', '"..": null\n']) {
+    const text = JSON.stringify(['a']);
+    invalid({ format: value.format, bytes: Buffer.byteLength(text), sha256: createHash('sha256').update(text).digest('hex'), yaml });
+  }
 });
 
 test('wire compaction is smaller-only and leaves caller args and non-path fields exact [H3,H16,V8]', () => {
@@ -136,7 +166,7 @@ test('native capture, decode, refusals, stored arrays and literal freshness reta
     assert.equal(engineReceipt(board, move.id), null);
   }
   const malformed = structuredClone(move);
-  malformed.id = 'corrupt-review'; malformed.args[1].review.paths.entries.pop();
+  malformed.id = 'corrupt-review'; malformed.args[1].review.paths.yaml += '"unexpected": null\n';
   const refused = applyEngineMove(board, malformed, { sequence: 1, at: '2026-10-30T12:00:00Z' });
   assert.equal(refused.error?.code, 'BAD_VERDICT_REVIEW');
   assert.equal(store.verdictsFor(board, id).length, 0);
@@ -144,13 +174,14 @@ test('native capture, decode, refusals, stored arrays and literal freshness reta
   assert.equal(outcome.error, undefined, JSON.stringify(outcome));
   assert.deepEqual(store.verdictsFor(board, id)[0].review, options.review);
   assert.deepEqual(applyEngineMove(board, move, { sequence: 2, at: '2026-10-30T12:00:01Z' }), outcome);
-  for (const path of ['unrelated.txt', paths[0], paths.at(-1), 'web/[literal]*?.txt']) {
+  const unrelated = ['unrelated.txt', 'web/literal-neighbor.txt', paths.at(-1).replace('1419', '1420')];
+  for (const path of [...unrelated, paths[0], paths.at(-1), 'web/[literal]*?.txt']) {
     box.git('switch', '-qC', 'main', box.trunk);
     mkdirSync(dirname(join(box.root, path)), { recursive: true }); writeFileSync(join(box.root, path), 'trunk change\n');
     box.git('add', '--', path);
     box.git('-c', 'user.name=Encoding fixture', '-c', 'user.email=encoding@example.invalid', 'commit', '-qm', 'synthetic trunk change');
     const state = verdictProjector(box.root, board).state(store.getItem(board, id));
-    if (path === 'unrelated.txt') assert.equal(state, null);
+    if (unrelated.includes(path)) assert.equal(state, null, 'neither directory coverage nor wildcard matching is introduced');
     else { assert.equal(state?.code, 'STALE_VERDICT'); assert.equal(state.file, path); }
   }
   assert.deepEqual(store.verdictsFor(board, id)[0].review.paths, paths, 'freshness never rewrites the review');
