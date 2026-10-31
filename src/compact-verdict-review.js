@@ -20,7 +20,7 @@ function validPath(path) {
 
 /** Quote literal keys; escape YAML line separators and non-printable C1 characters too. */
 function quote(key) {
-  return JSON.stringify(key).replace(/[\u007f-\u009f\u2028\u2029]/gu, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+  return JSON.stringify(key).replace(/[\u007f-\u009f\u2028\u2029\ufffe\uffff]/gu, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 }
 
 /** Emit only a canonical YAML block-mapping subset, without recursive calls or prototype keys. */

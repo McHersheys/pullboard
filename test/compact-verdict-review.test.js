@@ -47,10 +47,10 @@ test('review paths are an actual readable YAML block tree with explicit literal 
 test('YAML keys retain punctuation, Unicode, line breaks and literal wildcard characters [H16,V8]', () => {
   const paths = ['__proto__/constructor', 'null', 'true', 'web/#: &*?![]{}.txt', 'web/[literal]*?.txt',
     'web/line\nbreak.txt', 'web/return\rtab\t.txt', 'web/quote"\\name.txt', 'web/space name.txt',
-    'web/\u007f\u0085\u009f\u2028\u2029.txt', 'web/é.txt', 'web/😀.txt', 'web/😁.txt'].sort();
+    'web/\u007f\u0085\u009f\u2028\u2029\ufffe\uffff.txt', 'web/\ud800.txt', 'web/é.txt', 'web/😀.txt', 'web/😁.txt'].sort();
   const encoded = JSON.parse(JSON.stringify(compactReviewPaths(paths)));
   assert.deepEqual(expandReviewPaths(encoded), paths);
-  assert.ok(!/[\u007f-\u009f\u2028\u2029]/u.test(encoded.yaml), 'YAML-sensitive characters are escaped, not normalized');
+  assert.ok(!/[\u007f-\u009f\u2028\u2029\ufffe\uffff]/u.test(encoded.yaml), 'YAML-sensitive characters are escaped, not normalized');
   for (const bad of [['b', 'a'], ['a', 'a'], ['../a'], ['/a'], ['a//b'], ['a\0b'], ['a/./b'], ['a/../b']])
     assert.throws(() => compactReviewPaths(bad), { code: 'BAD_VERDICT_REVIEW' });
 });
